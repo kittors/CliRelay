@@ -56,6 +56,9 @@ type APIKeyEntry struct {
 	// Name is a human-readable label for this key.
 	Name string `yaml:"name,omitempty" json:"name,omitempty"`
 
+	// Disabled marks this key as inactive. Disabled keys cannot authenticate.
+	Disabled bool `yaml:"disabled,omitempty" json:"disabled,omitempty"`
+
 	// DailyLimit is the maximum number of requests per day. 0 means unlimited.
 	DailyLimit int `yaml:"daily-limit,omitempty" json:"daily-limit,omitempty"`
 
@@ -87,7 +90,7 @@ func (c *SDKConfig) AllAPIKeys() []string {
 	}
 	for _, entry := range c.APIKeyEntries {
 		trimmed := entry.Key
-		if trimmed == "" {
+		if trimmed == "" || entry.Disabled {
 			continue
 		}
 		if _, exists := seen[trimmed]; exists {
