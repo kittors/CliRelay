@@ -16,33 +16,58 @@ func Register(cfg *sdkconfig.SDKConfig) {
 		return
 	}
 
-	keys := normalizeKeys(cfg.AllAPIKeys())
-	if len(keys) == 0 {
+	keyModels := buildKeyModelsMap(cfg)
+	if len(keyModels) == 0 {
 		sdkaccess.UnregisterProvider(sdkaccess.AccessProviderTypeConfigAPIKey)
 		return
 	}
 
 	sdkaccess.RegisterProvider(
 		sdkaccess.AccessProviderTypeConfigAPIKey,
-		newProvider(sdkaccess.DefaultAccessProviderName, keys),
+		newProvider(sdkaccess.DefaultAccessProviderName, keyModels),
 	)
+}
+
+// buildKeyModelsMap builds a map from API key to allowed models list.
+// Keys from both APIKeys (legacy, no restrictions) and APIKeyEntries are included.
+func buildKeyModelsMap(cfg *sdkconfig.SDKConfig) map[string][]string {
+	result := make(map[string][]string)
+	// APIKeyEntries first — they have the more specific config with AllowedModels
+	for _, entry := range cfg.APIKeyEntries {
+		trimmed := strings.TrimSpace(entry.Key)
+		if trimmed == "" || entry.Disabled {
+			continue
+		}
+		if _, exists := result[trimmed]; exists {
+			continue
+		}
+		result[trimmed] = entry.AllowedModels
+	}
+	// Legacy APIKeys — no model restrictions (empty slice = all models allowed)
+	for _, k := range cfg.APIKeys {
+		trimmed := strings.TrimSpace(k)
+		if trimmed == "" {
+			continue
+		}
+		if _, exists := result[trimmed]; exists {
+			continue
+		}
+		result[trimmed] = nil
+	}
+	return result
 }
 
 type provider struct {
 	name string
-	keys map[string]struct{}
+	keys map[string][]string // key -> allowed models (nil/empty = all models)
 }
 
-func newProvider(name string, keys []string) *provider {
+func newProvider(name string, keyModels map[string][]string) *provider {
 	providerName := strings.TrimSpace(name)
 	if providerName == "" {
 		providerName = sdkaccess.DefaultAccessProviderName
 	}
-	keySet := make(map[string]struct{}, len(keys))
-	for _, key := range keys {
-		keySet[key] = struct{}{}
-	}
-	return &provider{name: providerName, keys: keySet}
+	return &provider{name: providerName, keys: keyModels}
 }
 
 func (p *provider) Identifier() string {
@@ -89,13 +114,17 @@ func (p *provider) Authenticate(_ context.Context, r *http.Request) (*sdkaccess.
 		if candidate.value == "" {
 			continue
 		}
-		if _, ok := p.keys[candidate.value]; ok {
+		if allowedModels, ok := p.keys[candidate.value]; ok {
+			metadata := map[string]string{
+				"source": candidate.source,
+			}
+			if len(allowedModels) > 0 {
+				metadata["allowed-models"] = strings.Join(allowedModels, ",")
+			}
 			return &sdkaccess.Result{
 				Provider:  p.Identifier(),
 				Principal: candidate.value,
-				Metadata: map[string]string{
-					"source": candidate.source,
-				},
+				Metadata:  metadata,
 			}, nil
 		}
 	}
@@ -115,27 +144,4 @@ func extractBearerToken(header string) string {
 		return header
 	}
 	return strings.TrimSpace(parts[1])
-}
-
-func normalizeKeys(keys []string) []string {
-	if len(keys) == 0 {
-		return nil
-	}
-	normalized := make([]string, 0, len(keys))
-	seen := make(map[string]struct{}, len(keys))
-	for _, key := range keys {
-		trimmedKey := strings.TrimSpace(key)
-		if trimmedKey == "" {
-			continue
-		}
-		if _, exists := seen[trimmedKey]; exists {
-			continue
-		}
-		seen[trimmedKey] = struct{}{}
-		normalized = append(normalized, trimmedKey)
-	}
-	if len(normalized) == 0 {
-		return nil
-	}
-	return normalized
 }

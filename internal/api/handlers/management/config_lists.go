@@ -401,6 +401,7 @@ func (h *Handler) PutClaudeKeys(c *gin.Context) {
 }
 func (h *Handler) PatchClaudeKey(c *gin.Context) {
 	type claudeKeyPatch struct {
+		Name           *string               `json:"name"`
 		APIKey         *string               `json:"api-key"`
 		Prefix         *string               `json:"prefix"`
 		BaseURL        *string               `json:"base-url"`
@@ -437,6 +438,9 @@ func (h *Handler) PatchClaudeKey(c *gin.Context) {
 	}
 
 	entry := h.cfg.ClaudeKey[targetIndex]
+	if body.Value.Name != nil {
+		entry.Name = strings.TrimSpace(*body.Value.Name)
+	}
 	if body.Value.APIKey != nil {
 		entry.APIKey = strings.TrimSpace(*body.Value.APIKey)
 	}
@@ -1099,6 +1103,7 @@ func normalizeClaudeKey(entry *config.ClaudeKey) {
 	if entry == nil {
 		return
 	}
+	entry.Name = strings.TrimSpace(entry.Name)
 	entry.APIKey = strings.TrimSpace(entry.APIKey)
 	entry.BaseURL = strings.TrimSpace(entry.BaseURL)
 	entry.ProxyURL = strings.TrimSpace(entry.ProxyURL)

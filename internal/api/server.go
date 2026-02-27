@@ -5,10 +5,13 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"crypto/subtle"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -329,6 +332,7 @@ func (s *Server) setupRoutes() {
 	// OpenAI compatible API routes
 	v1 := s.engine.Group("/v1")
 	v1.Use(AuthMiddleware(s.accessManager))
+	v1.Use(ModelRestrictionMiddleware())
 	{
 		v1.GET("/models", s.unifiedModelsHandler(openaiHandlers, claudeCodeHandlers))
 		v1.POST("/chat/completions", openaiHandlers.ChatCompletions)
@@ -343,6 +347,7 @@ func (s *Server) setupRoutes() {
 	// Gemini compatible API routes
 	v1beta := s.engine.Group("/v1beta")
 	v1beta.Use(AuthMiddleware(s.accessManager))
+	v1beta.Use(ModelRestrictionMiddleware())
 	{
 		v1beta.GET("/models", geminiHandlers.GeminiModels)
 		v1beta.POST("/models/*action", geminiHandlers.GeminiHandler)
@@ -1057,5 +1062,82 @@ func AuthMiddleware(manager *sdkaccess.Manager) gin.HandlerFunc {
 			log.Errorf("authentication middleware error: %v", err)
 		}
 		c.AbortWithStatusJSON(statusCode, gin.H{"error": err.Message})
+	}
+}
+
+// ModelRestrictionMiddleware enforces the allowed-models restriction from API key config.
+// It reads the "allowed-models" metadata set by AuthMiddleware, parses the model from
+// the request body, and returns 403 if the model is not in the allowed list.
+func ModelRestrictionMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		// Only check POST requests (GET /models etc. don't need restriction)
+		if c.Request.Method != http.MethodPost {
+			c.Next()
+			return
+		}
+
+		// Get allowed-models from auth metadata
+		metadataVal, exists := c.Get("accessMetadata")
+		if !exists {
+			c.Next()
+			return
+		}
+		metadata, ok := metadataVal.(map[string]string)
+		if !ok {
+			c.Next()
+			return
+		}
+		allowedStr, exists := metadata["allowed-models"]
+		if !exists || allowedStr == "" {
+			// No restriction — allow all models
+			c.Next()
+			return
+		}
+
+		// Parse allowed models into a set
+		allowedModels := make(map[string]struct{})
+		for _, m := range strings.Split(allowedStr, ",") {
+			trimmed := strings.TrimSpace(m)
+			if trimmed != "" {
+				allowedModels[trimmed] = struct{}{}
+			}
+		}
+		if len(allowedModels) == 0 {
+			c.Next()
+			return
+		}
+
+		// Read the body to extract the model field
+		bodyBytes, err := io.ReadAll(c.Request.Body)
+		if err != nil {
+			c.Next()
+			return
+		}
+		// Restore body for downstream handlers
+		c.Request.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+
+		// Extract model field from JSON
+		var bodyObj struct {
+			Model string `json:"model"`
+		}
+		if err := json.Unmarshal(bodyBytes, &bodyObj); err != nil || bodyObj.Model == "" {
+			// Can't parse model — let downstream handle it
+			c.Next()
+			return
+		}
+
+		// Check if model is allowed
+		if _, allowed := allowedModels[bodyObj.Model]; !allowed {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
+				"error": map[string]interface{}{
+					"message": fmt.Sprintf("model '%s' is not allowed for this API key", bodyObj.Model),
+					"type":    "forbidden",
+					"code":    "model_not_allowed",
+				},
+			})
+			return
+		}
+
+		c.Next()
 	}
 }
