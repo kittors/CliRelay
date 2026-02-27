@@ -21,7 +21,7 @@ jobs:
             -ldflags="-s -w -X 'main.Version=${{ github.ref_name }}' -X 'main.Commit=${{ github.sha }}' -X 'main.BuildDate=$(date -u +%Y-%m-%dT%H:%M:%SZ)'" \
             -o cli-proxy-api ./cmd/server/
 
-      - name: Backup & deploy binary
+      - name: Stop service & backup
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.SERVER_HOST }}
@@ -30,6 +30,7 @@ jobs:
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
             cd /root/cliproxy
+            systemctl stop cliproxy
             cp cli-proxy-api "cli-proxy-api.bak.$(date +%Y%m%d_%H%M%S)"
             # Clean up old backups, keep last 3
             ls -1t cli-proxy-api.bak.* 2>/dev/null | tail -n +4 | xargs -r rm -f
@@ -45,7 +46,7 @@ jobs:
           target: "/root/cliproxy/"
           overwrite: true
 
-      - name: Restart service
+      - name: Start service
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.SERVER_HOST }}
@@ -54,6 +55,6 @@ jobs:
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
             chmod +x /root/cliproxy/cli-proxy-api
-            systemctl restart cliproxy
+            systemctl start cliproxy
             sleep 3
             systemctl is-active cliproxy
