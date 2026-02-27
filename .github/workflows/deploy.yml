@@ -41,12 +41,19 @@ jobs:
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
             cd /root/cliproxy
-            # Stop via systemd and kill any stray processes
+            # Stop via systemd
             systemctl stop cliproxy 2>/dev/null || true
-            pkill -f 'cli-proxy-api' 2>/dev/null || true
-            sleep 2
+            sleep 1
+            # Kill any stray processes (use pgrep for exact match, avoid killing ourselves)
+            PIDS=$(pgrep -x cli-proxy-api 2>/dev/null) || true
+            if [ -n "$PIDS" ]; then
+              kill $PIDS 2>/dev/null || true
+              sleep 2
+            fi
             # Backup current binary
-            cp cli-proxy-api "cli-proxy-api.bak.$(date +%Y%m%d_%H%M%S)" 2>/dev/null || true
+            if [ -f cli-proxy-api ]; then
+              cp cli-proxy-api "cli-proxy-api.bak.$(date +%Y%m%d_%H%M%S)"
+            fi
             # Swap in new binary
             mv cli-proxy-api-new cli-proxy-api
             chmod +x cli-proxy-api
