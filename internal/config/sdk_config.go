@@ -20,6 +20,10 @@ type SDKConfig struct {
 	// APIKeys is a list of keys for authenticating clients to this proxy server.
 	APIKeys []string `yaml:"api-keys" json:"api-keys"`
 
+	// APIKeyEntries is a list of API key entries with metadata for advanced management.
+	// Keys from both APIKeys and APIKeyEntries are valid for authentication.
+	APIKeyEntries []APIKeyEntry `yaml:"api-key-entries,omitempty" json:"api-key-entries,omitempty"`
+
 	// PassthroughHeaders controls whether upstream response headers are forwarded to downstream clients.
 	// Default is false (disabled).
 	PassthroughHeaders bool `yaml:"passthrough-headers" json:"passthrough-headers"`
@@ -42,4 +46,55 @@ type StreamingConfig struct {
 	// to allow auth rotation / transient recovery.
 	// <= 0 disables bootstrap retries. Default is 0.
 	BootstrapRetries int `yaml:"bootstrap-retries,omitempty" json:"bootstrap-retries,omitempty"`
+}
+
+// APIKeyEntry represents an API key with optional metadata for advanced management.
+type APIKeyEntry struct {
+	// Key is the API key string used for authentication.
+	Key string `yaml:"key" json:"key"`
+
+	// Name is a human-readable label for this key.
+	Name string `yaml:"name,omitempty" json:"name,omitempty"`
+
+	// DailyLimit is the maximum number of requests per day. 0 means unlimited.
+	DailyLimit int `yaml:"daily-limit,omitempty" json:"daily-limit,omitempty"`
+
+	// TotalQuota is the total number of requests allowed. 0 means unlimited.
+	TotalQuota int `yaml:"total-quota,omitempty" json:"total-quota,omitempty"`
+
+	// AllowedModels lists model patterns this key can access. Empty means all models.
+	AllowedModels []string `yaml:"allowed-models,omitempty" json:"allowed-models,omitempty"`
+
+	// CreatedAt is the ISO 8601 timestamp when this key was created.
+	CreatedAt string `yaml:"created-at,omitempty" json:"created-at,omitempty"`
+}
+
+// AllAPIKeys returns a merged, deduplicated list of all API key strings
+// from both the legacy APIKeys slice and the new APIKeyEntries slice.
+func (c *SDKConfig) AllAPIKeys() []string {
+	seen := make(map[string]struct{}, len(c.APIKeys)+len(c.APIKeyEntries))
+	var keys []string
+	for _, k := range c.APIKeys {
+		trimmed := k
+		if trimmed == "" {
+			continue
+		}
+		if _, exists := seen[trimmed]; exists {
+			continue
+		}
+		seen[trimmed] = struct{}{}
+		keys = append(keys, trimmed)
+	}
+	for _, entry := range c.APIKeyEntries {
+		trimmed := entry.Key
+		if trimmed == "" {
+			continue
+		}
+		if _, exists := seen[trimmed]; exists {
+			continue
+		}
+		seen[trimmed] = struct{}{}
+		keys = append(keys, trimmed)
+	}
+	return keys
 }

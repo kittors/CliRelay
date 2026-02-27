@@ -118,6 +118,136 @@ func (h *Handler) DeleteAPIKeys(c *gin.Context) {
 	h.deleteFromStringList(c, &h.cfg.APIKeys, func() {})
 }
 
+// api-key-entries: []APIKeyEntry (with metadata)
+func (h *Handler) GetAPIKeyEntries(c *gin.Context) {
+	entries := h.cfg.APIKeyEntries
+	if entries == nil {
+		entries = []config.APIKeyEntry{}
+	}
+	c.JSON(200, gin.H{"api-key-entries": entries})
+}
+
+func (h *Handler) PutAPIKeyEntries(c *gin.Context) {
+	data, err := c.GetRawData()
+	if err != nil {
+		c.JSON(400, gin.H{"error": "failed to read body"})
+		return
+	}
+	var arr []config.APIKeyEntry
+	if err = json.Unmarshal(data, &arr); err != nil {
+		var obj struct {
+			Items []config.APIKeyEntry `json:"items"`
+		}
+		if err2 := json.Unmarshal(data, &obj); err2 != nil || len(obj.Items) == 0 {
+			c.JSON(400, gin.H{"error": "invalid body"})
+			return
+		}
+		arr = obj.Items
+	}
+	// Trim whitespace from key values
+	for i := range arr {
+		arr[i].Key = strings.TrimSpace(arr[i].Key)
+		arr[i].Name = strings.TrimSpace(arr[i].Name)
+	}
+	h.cfg.APIKeyEntries = arr
+	h.persist(c)
+}
+
+func (h *Handler) PatchAPIKeyEntry(c *gin.Context) {
+	type apiKeyEntryPatch struct {
+		Key           *string   `json:"key"`
+		Name          *string   `json:"name"`
+		DailyLimit    *int      `json:"daily-limit"`
+		TotalQuota    *int      `json:"total-quota"`
+		AllowedModels *[]string `json:"allowed-models"`
+		CreatedAt     *string   `json:"created-at"`
+	}
+	var body struct {
+		Index *int              `json:"index"`
+		Match *string           `json:"match"`
+		Value *apiKeyEntryPatch `json:"value"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil || body.Value == nil {
+		c.JSON(400, gin.H{"error": "invalid body"})
+		return
+	}
+	targetIndex := -1
+	if body.Index != nil && *body.Index >= 0 && *body.Index < len(h.cfg.APIKeyEntries) {
+		targetIndex = *body.Index
+	}
+	if targetIndex == -1 && body.Match != nil {
+		match := strings.TrimSpace(*body.Match)
+		if match != "" {
+			for i := range h.cfg.APIKeyEntries {
+				if h.cfg.APIKeyEntries[i].Key == match {
+					targetIndex = i
+					break
+				}
+			}
+		}
+	}
+	if targetIndex == -1 {
+		c.JSON(404, gin.H{"error": "item not found"})
+		return
+	}
+
+	entry := h.cfg.APIKeyEntries[targetIndex]
+	if body.Value.Key != nil {
+		trimmed := strings.TrimSpace(*body.Value.Key)
+		if trimmed == "" {
+			// Empty key removes the entry
+			h.cfg.APIKeyEntries = append(h.cfg.APIKeyEntries[:targetIndex], h.cfg.APIKeyEntries[targetIndex+1:]...)
+			h.persist(c)
+			return
+		}
+		entry.Key = trimmed
+	}
+	if body.Value.Name != nil {
+		entry.Name = strings.TrimSpace(*body.Value.Name)
+	}
+	if body.Value.DailyLimit != nil {
+		entry.DailyLimit = *body.Value.DailyLimit
+	}
+	if body.Value.TotalQuota != nil {
+		entry.TotalQuota = *body.Value.TotalQuota
+	}
+	if body.Value.AllowedModels != nil {
+		entry.AllowedModels = append([]string(nil), (*body.Value.AllowedModels)...)
+	}
+	if body.Value.CreatedAt != nil {
+		entry.CreatedAt = strings.TrimSpace(*body.Value.CreatedAt)
+	}
+	h.cfg.APIKeyEntries[targetIndex] = entry
+	h.persist(c)
+}
+
+func (h *Handler) DeleteAPIKeyEntry(c *gin.Context) {
+	if val := strings.TrimSpace(c.Query("key")); val != "" {
+		out := make([]config.APIKeyEntry, 0, len(h.cfg.APIKeyEntries))
+		for _, v := range h.cfg.APIKeyEntries {
+			if v.Key != val {
+				out = append(out, v)
+			}
+		}
+		if len(out) != len(h.cfg.APIKeyEntries) {
+			h.cfg.APIKeyEntries = out
+			h.persist(c)
+		} else {
+			c.JSON(404, gin.H{"error": "item not found"})
+		}
+		return
+	}
+	if idxStr := c.Query("index"); idxStr != "" {
+		var idx int
+		if _, err := fmt.Sscanf(idxStr, "%d", &idx); err == nil && idx >= 0 && idx < len(h.cfg.APIKeyEntries) {
+			h.cfg.APIKeyEntries = append(h.cfg.APIKeyEntries[:idx], h.cfg.APIKeyEntries[idx+1:]...)
+			h.persist(c)
+			return
+		}
+	}
+	c.JSON(400, gin.H{"error": "missing key or index"})
+}
+
 // gemini-api-key: []GeminiKey
 func (h *Handler) GetGeminiKeys(c *gin.Context) {
 	c.JSON(200, gin.H{"gemini-api-key": h.cfg.GeminiKey})
