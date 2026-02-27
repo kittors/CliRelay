@@ -19,9 +19,20 @@ jobs:
         run: |
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
             -ldflags="-s -w -X 'main.Version=${{ github.ref_name }}' -X 'main.Commit=${{ github.sha }}' -X 'main.BuildDate=$(date -u +%Y-%m-%dT%H:%M:%SZ)'" \
-            -o cli-proxy-api ./cmd/server/
+            -o cli-proxy-api-new ./cmd/server/
 
-      - name: Stop service & backup
+      - name: Upload binary (as temp name)
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          port: ${{ secrets.SERVER_PORT }}
+          username: root
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          source: "cli-proxy-api-new"
+          target: "/root/cliproxy/"
+          overwrite: true
+
+      - name: Stop, swap, and restart
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.SERVER_HOST }}
@@ -30,31 +41,18 @@ jobs:
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
             cd /root/cliproxy
-            systemctl stop cliproxy
-            cp cli-proxy-api "cli-proxy-api.bak.$(date +%Y%m%d_%H%M%S)"
+            # Stop via systemd and kill any stray processes
+            systemctl stop cliproxy 2>/dev/null || true
+            pkill -f 'cli-proxy-api' 2>/dev/null || true
+            sleep 2
+            # Backup current binary
+            cp cli-proxy-api "cli-proxy-api.bak.$(date +%Y%m%d_%H%M%S)" 2>/dev/null || true
+            # Swap in new binary
+            mv cli-proxy-api-new cli-proxy-api
+            chmod +x cli-proxy-api
             # Clean up old backups, keep last 3
             ls -1t cli-proxy-api.bak.* 2>/dev/null | tail -n +4 | xargs -r rm -f
-
-      - name: Upload new binary
-        uses: appleboy/scp-action@v0.1.7
-        with:
-          host: ${{ secrets.SERVER_HOST }}
-          port: ${{ secrets.SERVER_PORT }}
-          username: root
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          source: "cli-proxy-api"
-          target: "/root/cliproxy/"
-          overwrite: true
-
-      - name: Start service
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{ secrets.SERVER_HOST }}
-          port: ${{ secrets.SERVER_PORT }}
-          username: root
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          script: |
-            chmod +x /root/cliproxy/cli-proxy-api
+            # Start service
             systemctl start cliproxy
             sleep 3
             systemctl is-active cliproxy
