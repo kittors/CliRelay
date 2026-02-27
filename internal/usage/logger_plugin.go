@@ -93,6 +93,7 @@ type RequestDetail struct {
 	Source    string     `json:"source"`
 	AuthIndex string     `json:"auth_index"`
 	Tokens    TokenStats `json:"tokens"`
+	LatencyMs int64      `json:"latency_ms,omitempty"`
 	Failed    bool       `json:"failed"`
 }
 
@@ -201,6 +202,7 @@ func (s *RequestStatistics) Record(ctx context.Context, record coreusage.Record)
 		Source:    record.Source,
 		AuthIndex: record.AuthIndex,
 		Tokens:    detail,
+		LatencyMs: record.LatencyMs,
 		Failed:    failed,
 	})
 
