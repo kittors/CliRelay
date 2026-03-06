@@ -24,7 +24,10 @@
 
 ---
 
-## ⚡ What is CliRelay?
+## ⚡ What is CliRelay (Enhanced Fork)?
+
+> **✨ This is a heavily modified and enhanced fork of the original project!**
+> Built upon the original core logic, this fork introduces massive improvements. We added precise backend channel management (API Key CRUD, channel naming/notes, `latency_ms` tracking, independent enable/disable toggles for keys, and a public `/manage/` usage query endpoint) and **completely rebuilt the frontend dashboard [codeProxy](https://github.com/kittors/codeProxy) from scratch** using modern tools (React 19 + Vite 7 + Tailwind CSS v4, featuring dark mode, immersive data monitoring, KPI metrics, and configuration snapshot tools).
 
 CliRelay lets you **proxy requests** from AI coding tools (Claude Code, Gemini CLI, OpenAI Codex, Amp CLI, etc.) through a single local endpoint. Authenticate once with OAuth, add your API keys — or both — and CliRelay handles the rest:
 
@@ -40,20 +43,18 @@ CliRelay lets you **proxy requests** from AI coding tools (Claude Code, Gemini C
 └───────────────────────┘
 ```
 
-## ✨ Highlights
+## ✨ Enhanced Fork Features
 
 | Feature | Description |
 |:--------|:------------|
-| 🔌 **Multi-Provider** | OpenAI, Gemini, Claude, Codex, Qwen, iFlow, Vertex, and any OpenAI-compatible upstream |
-| 🔑 **OAuth & API Keys** | Log in via browser OAuth *or* paste API keys — works with both |
-| ⚖️ **Load Balancing** | Round-robin / fill-first across multiple accounts per provider |
-| 🔄 **Auto Failover** | Smart quota-exceeded handling with project & model fallback |
-| 🖥️ **Management Panel** | Built-in web UI for monitoring, config, and usage stats — [codeProxy](https://github.com/kittors/codeProxy) |
-| 🧩 **Go SDK** | Embed the proxy in your own Go application |
-| 🛡️ **Security** | API key auth, TLS, localhost-only management, request cloaking |
-| 🎯 **Model Mapping** | Route unavailable models to alternatives automatically |
-| 🌊 **Streaming** | Full SSE streaming & non-streaming with keep-alive support |
-| 🧠 **Multimodal** | Text + image inputs, function calling / tools |
+| � **Advanced API Key Mgmt** | Full CRUD control for API Keys, with support for custom naming/notes and independent **enable/disable** toggles. |
+| ⏱️ **Precision Tracking** | Added precise latency tracking (`latency_ms`), detailed usage stats, and public query endpoints over `/manage/` routes. |
+| 🖥️ **All-New React 19 Panel** | A **completely rebuilt** dashboard [codeProxy](https://github.com/kittors/codeProxy): featuring ECharts monitoring, dark mode, KPI metrics, and config snapshot import/export. |
+| � **Multi-Provider Environment** | Support for OpenAI, Gemini, Claude, Codex, Qwen, iFlow, Vertex, and any OpenAI-compatible upstream providers. |
+| ⚖️ **Load Balancing & Failover** | Intelligent round-robin or fill-first scheduling, with **auto-failover** to backup projects when account quotas are fully consumed. |
+| 🧩 **Go SDK & Streaming Hub** | Native Go SDK for embedding the proxy target; full SSE streaming and non-streaming response handling with Keep-Alive. |
+| 🧠 **Multimodal & Tool Calling** | Seamless support for text + image multimodal inputs and comprehensive abstract Function Calling (Tools) capabilities. |
+| 🛡️ **Security & Cloaking Shield** | Robust API Key authentication, TLS handling, strict localhost panel isolation, and precise upstream request cloaking. |
 
 ## 🚀 Quick Start
 
@@ -169,36 +170,6 @@ CliRelay/
 | [SDK Access](docs/sdk-access.md) | Authentication in SDK context |
 | [SDK Watcher](docs/sdk-watcher.md) | Credential loading & hot-reload |
 
-## 🌍 Ecosystem
-
-Projects built on top of CliRelay:
-
-| Project | Platform | Description |
-|:--------|:---------|:------------|
-| [vibeproxy](https://github.com/automazeio/vibeproxy) | macOS | Menu bar app for Claude Code & ChatGPT subscriptions |
-| [Subtitle Translator](https://github.com/VjayC/SRT-Subtitle-Translator-Validator) | Web | SRT subtitle translator powered by Gemini |
-| [CCS](https://github.com/kaitranntt/ccs) | CLI | Instant switching between multiple Claude accounts |
-| [ProxyPal](https://github.com/heyhuynhgiabuu/proxypal) | macOS | GUI for managing providers & endpoints |
-| [Quotio](https://github.com/nguyenphutrong/quotio) | macOS | Unified subscription management with quota tracking |
-| [CodMate](https://github.com/loocor/CodMate) | macOS | SwiftUI app for CLI AI session management |
-| [ProxyPilot](https://github.com/Finesssee/ProxyPilot) | Windows | Windows-native fork with TUI & system tray |
-| [Claude Proxy VSCode](https://github.com/uzhao/claude-proxy-vscode) | VSCode | Quick model switching with built-in backend |
-| [ZeroLimit](https://github.com/0xtbug/zero-limit) | Windows | Tauri + React quota monitoring dashboard |
-| [CPA-XXX Panel](https://github.com/ferretgeek/CPA-X) | Web | Admin panel with health checks & request stats |
-| [CLIProxyAPI Tray](https://github.com/kitephp/CLIProxyAPI_Tray) | Windows | PowerShell-based tray app with auto-update |
-| [霖君 (LinJun)](https://github.com/wangdabaoqq/LinJun) | Cross-platform | Desktop app for managing AI coding assistants |
-| [CLIProxyAPI Dashboard](https://github.com/itsmylife44/cliproxyapi-dashboard) | Web | Next.js dashboard with real-time logs & config sync |
-
-**Inspired by CliRelay:**
-
-| Project | Description |
-|:--------|:------------|
-| [9Router](https://github.com/decolua/9router) | Next.js implementation with combo system & auto-fallback |
-| [OmniRoute](https://github.com/diegosouzapw/OmniRoute) | AI gateway with smart routing, caching & observability |
-
-> [!NOTE]
-> Built something with CliRelay? Open a PR to add it here!
-
 ## 🤝 Contributing
 
 Contributions are welcome! Here's how to get started:
@@ -221,8 +192,3 @@ git push origin feature/amazing-feature
 
 This project is licensed under the **MIT License** — see the [LICENSE](LICENSE) file for details.
 
----
-
-<p align="center">
-  <sub>Made with ❤️ by the CliRelay community</sub>
-</p>

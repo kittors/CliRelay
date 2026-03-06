@@ -24,7 +24,10 @@
 
 ---
 
-## ⚡ CliRelay 是什么？
+## ⚡ CliRelay (Enhanced Fork) 是什么？
+
+> **✨ 这是一个经过大量功能增强的魔改版本！**
+> 本项目并非原版上游，而是基于原核心逻辑进行的深度二次开发版本。我们不仅提升了后端的多渠道管理能力（支持 API Key 的 CRUD 管理、渠道分类备注、精准延迟统计 `latency_ms`、单服务启用/禁用控制、公开的用量查询接口 `/manage/` 等），还**完全从零重构了前端管理面板 [codeProxy](https://github.com/kittors/codeProxy)**——由 React 19 + Vite 7 + Tailwind CSS v4 打造的专业级后台，支持深色模式、精美的全数据监控面板和强大的导入导出配置快照管理。
 
 CliRelay 让你可以将 AI 编程工具（Claude Code、Gemini CLI、OpenAI Codex、Amp CLI 等）的请求**统一代理**到一个本地端点。通过 OAuth 登录或添加 API 密钥即可使用，CliRelay 自动处理路由和负载均衡：
 
@@ -40,20 +43,18 @@ CliRelay 让你可以将 AI 编程工具（Claude Code、Gemini CLI、OpenAI Cod
 └───────────────────────┘
 ```
 
-## ✨ 核心特性
+## ✨ 魔改版核心增强特性
 
 | 特性 | 说明 |
 |:-----|:-----|
-| 🔌 **多服务商** | OpenAI、Gemini、Claude、Codex、Qwen、iFlow、Vertex 及任何 OpenAI 兼容上游 |
-| 🔑 **OAuth & API Key** | 支持浏览器 OAuth 登录和 API Key 方式，两者可同时使用 |
-| ⚖️ **负载均衡** | 多账户轮询（round-robin）/ 填充优先（fill-first） |
-| 🔄 **自动故障转移** | 配额用完时自动切换项目/模型 |
-| 🖥️ **管理面板** | 内置 Web UI 监控、配置和用量统计 — [codeProxy](https://github.com/kittors/codeProxy) |
-| 🧩 **Go SDK** | 将代理嵌入到你自己的 Go 应用中 |
-| 🛡️ **安全** | API Key 鉴权、TLS、本地管理、请求伪装 |
-| 🎯 **模型映射** | 自动将不可用模型路由到替代方案 |
-| 🌊 **流式输出** | 完整的 SSE 流式和非流式响应，支持 Keep-Alive |
-| 🧠 **多模态** | 支持文本 + 图片输入，函数调用 / 工具 |
+| 🔑 **增强的 API Key 管理** | 完整的 API Key CRUD 控制，支持独立备注命名，以及一键**启用/禁用**单条 Key |
+| ⏱️ **精准监控与追踪** | 增加延迟追踪 (`latency_ms`)、详细用量统计、暴露公开的查询端点机制与 `/manage/` 路由 |
+| 🖥️ **全新 React 19 面板** | **完全重构**的 [codeProxy](https://github.com/kittors/codeProxy) 前端：搭载可视化监控大屏、暗黑模式、KPI 指标与快照导入导出功能 |
+| 🔌 **多服务商生态** | OpenAI、Gemini、Claude、Codex、Qwen、iFlow、Vertex 及任何 OpenAI 兼容上游 |
+| ⚖️ **负载均衡与转移** | 智能调度的多账户轮询/填充优先，配额用尽时**自动故障转移**（Failover）至可用模型 |
+| 🧩 **Go SDK 与流式输出** | 原生 Go SDK 支持嵌入代理；完整的 SSE 流式 / 非流式响应控制与 Keep-Alive 支持 |
+| 🧠 **多模态与工具回调** | 无缝支持文本 + 图片文件解析识别，以及 AI Function Calling (工具调用) 能力 |
+| 🛡️ **安全与防御隔离** | 基于 API Key 鉴权、TLS、管理后台本地化隔离与上游请求伪装替换策略 |
 
 ## 🚀 快速开始
 
@@ -169,36 +170,6 @@ CliRelay/
 | [SDK 认证](docs/sdk-access_CN.md) | SDK 认证上下文 |
 | [SDK Watcher](docs/sdk-watcher_CN.md) | 凭据加载与热重载 |
 
-## 🌍 生态系统
-
-基于 CliRelay 构建的项目：
-
-| 项目 | 平台 | 说明 |
-|:-----|:-----|:-----|
-| [vibeproxy](https://github.com/automazeio/vibeproxy) | macOS | 菜单栏应用，用 Claude Code & ChatGPT 订阅 |
-| [Subtitle Translator](https://github.com/VjayC/SRT-Subtitle-Translator-Validator) | Web | Gemini 驱动的 SRT 字幕翻译器 |
-| [CCS](https://github.com/kaitranntt/ccs) | CLI | 多 Claude 账户即时切换 |
-| [ProxyPal](https://github.com/heyhuynhgiabuu/proxypal) | macOS | GUI 管理服务商和端点 |
-| [Quotio](https://github.com/nguyenphutrong/quotio) | macOS | 统一订阅管理，实时配额追踪 |
-| [CodMate](https://github.com/loocor/CodMate) | macOS | SwiftUI CLI AI 会话管理器 |
-| [ProxyPilot](https://github.com/Finesssee/ProxyPilot) | Windows | Windows 原生版，TUI + 系统托盘 |
-| [Claude Proxy VSCode](https://github.com/uzhao/claude-proxy-vscode) | VSCode | 快速模型切换，内置后端 |
-| [ZeroLimit](https://github.com/0xtbug/zero-limit) | Windows | Tauri + React 配额监控面板 |
-| [CPA-XXX Panel](https://github.com/ferretgeek/CPA-X) | Web | 管理面板，健康检查与请求统计 |
-| [CLIProxyAPI Tray](https://github.com/kitephp/CLIProxyAPI_Tray) | Windows | PowerShell 托盘应用，自动更新 |
-| [霖君 (LinJun)](https://github.com/wangdabaoqq/LinJun) | 跨平台 | AI 编程助手管理桌面应用 |
-| [CLIProxyAPI Dashboard](https://github.com/itsmylife44/cliproxyapi-dashboard) | Web | Next.js 仪表盘，实时日志与配置同步 |
-
-**受 CliRelay 启发的项目：**
-
-| 项目 | 说明 |
-|:-----|:-----|
-| [9Router](https://github.com/decolua/9router) | Next.js 实现，组合系统与自动回退 |
-| [OmniRoute](https://github.com/diegosouzapw/OmniRoute) | AI 网关，智能路由、缓存与可观测性 |
-
-> [!NOTE]
-> 基于 CliRelay 开发了项目？欢迎提交 PR 添加到这里！
-
 ## 🤝 贡献
 
 欢迎贡献！以下是参与方式：
@@ -221,16 +192,3 @@ git push origin feature/amazing-feature
 
 本项目采用 **MIT 许可证** — 详见 [LICENSE](LICENSE) 文件。
 
----
-
-<p align="center">
-  <sub>由 CliRelay 社区用 ❤️ 打造</sub>
-</p>
-
-## 写给所有中国网友的
-
-QQ 群：188637136
-
-或
-
-Telegram 群：https://t.me/CLIProxyAPI
