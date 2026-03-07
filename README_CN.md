@@ -55,6 +55,7 @@ CliRelay 让你可以将 AI 编程工具（Claude Code、Gemini CLI、OpenAI Cod
 | 🧩 **Go SDK 与流式输出** | 原生 Go SDK 支持嵌入代理；完整的 SSE 流式 / 非流式响应控制与 Keep-Alive 支持 |
 | 🧠 **多模态与工具回调** | 无缝支持文本 + 图片文件解析识别，以及 AI Function Calling (工具调用) 能力 |
 | 🛡️ **安全与防御隔离** | 基于 API Key 鉴权、TLS、管理后台本地化隔离与上游请求伪装替换策略 |
+| 🗄️ **Redis 数据持久化** | 自动定时及在服务优雅停机时将 API 统计快照存入 Redis，确保服务重启或更新时前端面板监控数据 **零丢失** |
 
 ## 🚀 快速开始
 
@@ -80,6 +81,13 @@ cp config.example.yaml config.yaml
 ```bash
 docker compose up -d
 ```
+
+### 🗄️ 开启持久化（防数据丢失）
+
+默认情况下 API 调用统计数据存活于内存中，重启即焚。如果你希望在重启或发版后保留看板监控数据：
+1. 准备一个可用的 Redis 数据库。
+2. 编辑 `config.yaml` 找到最上方，将 `redis` 块下的 `enable` 改为 `true`，并填入地址。
+配置完成后，无论怎么重新启动服务，它都将自动完成快照恢复！
 
 ### 3️⃣ 配置工具
 

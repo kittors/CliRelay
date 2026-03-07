@@ -55,6 +55,7 @@ CliRelay lets you **proxy requests** from AI coding tools (Claude Code, Gemini C
 | 🧩 **Go SDK & Streaming Hub** | Native Go SDK for embedding the proxy target; full SSE streaming and non-streaming response handling with Keep-Alive. |
 | 🧠 **Multimodal & Tool Calling** | Seamless support for text + image multimodal inputs and comprehensive abstract Function Calling (Tools) capabilities. |
 | 🛡️ **Security & Cloaking Shield** | Robust API Key authentication, TLS handling, strict localhost panel isolation, and precise upstream request cloaking. |
+| 🗄️ **Redis Data Persistence** | Auto-snapshots API statistics to Redis periodically and on shutdown, guaranteeing **zero data loss** of usage charts across server restarts. |
 
 ## 🚀 Quick Start
 
@@ -80,6 +81,13 @@ Edit `config.yaml` to add your API keys or OAuth credentials.
 ```bash
 docker compose up -d
 ```
+
+### 🗄️ Enabling Data Persistence
+
+By default, API usage logs and charts are stored in memory and reset on restart. To permanently save your data across deployments:
+1. Ensure you have a Redis server running.
+2. Edit `config.yaml` and set `redis.enable: true` with your Redis address.
+CliRelay will automatically snap and restore traffic metrics on every startup!
 
 ### 3️⃣ Point Your Tools
 
