@@ -16,6 +16,7 @@ type LogRow struct {
 	ID              int64     `json:"id"`
 	Timestamp       time.Time `json:"timestamp"`
 	APIKey          string    `json:"api_key"`
+	APIKeyName      string    `json:"api_key_name"`
 	Model           string    `json:"model"`
 	Source          string    `json:"source"`
 	ChannelName     string    `json:"channel_name"`
@@ -49,8 +50,9 @@ type LogQueryResult struct {
 
 // FilterOptions holds the available filter values for the UI.
 type FilterOptions struct {
-	APIKeys []string `json:"api_keys"`
-	Models  []string `json:"models"`
+	APIKeys     []string          `json:"api_keys"`
+	APIKeyNames map[string]string `json:"api_key_names"`
+	Models      []string          `json:"models"`
 }
 
 // LogStats holds aggregated stats over the filtered result set.
