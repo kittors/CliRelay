@@ -168,12 +168,13 @@ func QuotaMiddleware() gin.HandlerFunc {
 		totalQuota := parseIntMetadata(metadata, "total-quota")
 		rpmLimit := parseIntMetadata(metadata, "rpm-limit")
 		tpmLimit := parseIntMetadata(metadata, "tpm-limit")
+		spendingLimit := parseFloatMetadata(metadata, "spending-limit")
 
 		// Cache limits for dashboard snapshot
 		UpdateKeyLimits(apiKey, rpmLimit, tpmLimit)
 
 		// No limits configured — skip all checks
-		if dailyLimit <= 0 && totalQuota <= 0 && rpmLimit <= 0 && tpmLimit <= 0 {
+		if dailyLimit <= 0 && totalQuota <= 0 && rpmLimit <= 0 && tpmLimit <= 0 && spendingLimit <= 0 {
 			c.Next()
 			return
 		}
@@ -241,6 +242,23 @@ func QuotaMiddleware() gin.HandlerFunc {
 			}
 		}
 
+		// --- Spending limit check (from usage DB) ---
+		if spendingLimit > 0 {
+			totalCost, err := queryTotalCostByKeyFunc(apiKey)
+			if err != nil {
+				log.Warnf("quota: failed to query total cost for key %s: %v", maskKey(apiKey), err)
+			} else if totalCost >= spendingLimit {
+				c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{
+					"error": map[string]interface{}{
+						"message": fmt.Sprintf("spending limit ($%.2f) exceeded for this API key (current: $%.2f)", spendingLimit, totalCost),
+						"type":    "rate_limit_exceeded",
+						"code":    "spending_limit_exceeded",
+					},
+				})
+				return
+			}
+		}
+
 		c.Next()
 	}
 }
@@ -250,8 +268,9 @@ func QuotaMiddleware() gin.HandlerFunc {
 // countTodayByKeyFunc and countTotalByKeyFunc are set by InitQuotaUsageFuncs.
 // They default to no-ops that always return 0 (no limit enforced) until set.
 var (
-	countTodayByKeyFunc = func(string) (int64, error) { return 0, nil }
-	countTotalByKeyFunc = func(string) (int64, error) { return 0, nil }
+	countTodayByKeyFunc     = func(string) (int64, error) { return 0, nil }
+	countTotalByKeyFunc     = func(string) (int64, error) { return 0, nil }
+	queryTotalCostByKeyFunc = func(string) (float64, error) { return 0, nil }
 )
 
 // InitQuotaUsageFuncs injects the usage DB query functions into the middleware.
@@ -259,9 +278,11 @@ var (
 func InitQuotaUsageFuncs(
 	countToday func(string) (int64, error),
 	countTotal func(string) (int64, error),
+	totalCost func(string) (float64, error),
 ) {
 	countTodayByKeyFunc = countToday
 	countTotalByKeyFunc = countTotal
+	queryTotalCostByKeyFunc = totalCost
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -283,6 +304,18 @@ func maskKey(key string) string {
 		return "***"
 	}
 	return key[:4] + "..." + key[len(key)-4:]
+}
+
+func parseFloatMetadata(metadata map[string]string, key string) float64 {
+	v, ok := metadata[key]
+	if !ok {
+		return 0
+	}
+	n, err := strconv.ParseFloat(strings.TrimSpace(v), 64)
+	if err != nil {
+		return 0
+	}
+	return n
 }
 
 // ─── Dashboard snapshot (for system_stats) ──────────────────────────────────

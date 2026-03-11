@@ -65,6 +65,11 @@ type APIKeyEntry struct {
 	// TotalQuota is the total number of requests allowed. 0 means unlimited.
 	TotalQuota int `yaml:"total-quota,omitempty" json:"total-quota,omitempty"`
 
+	// SpendingLimit is the maximum allowed spending in US dollars. 0 means unlimited.
+	// When model pricing is configured, requests will be rejected once the API key's
+	// total accumulated cost exceeds this limit.
+	SpendingLimit float64 `yaml:"spending-limit,omitempty" json:"spending-limit,omitempty"`
+
 	// ConcurrencyLimit is the maximum number of concurrent requests. 0 means unlimited.
 	ConcurrencyLimit int `yaml:"concurrency-limit,omitempty" json:"concurrency-limit,omitempty"`
 

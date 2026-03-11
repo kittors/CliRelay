@@ -28,6 +28,7 @@ type LogRow struct {
 	ReasoningTokens int64     `json:"reasoning_tokens"`
 	CachedTokens    int64     `json:"cached_tokens"`
 	TotalTokens     int64     `json:"total_tokens"`
+	Cost            float64   `json:"cost"`
 	HasContent      bool      `json:"has_content"`
 }
 
@@ -109,6 +110,16 @@ func migrateContentColumns(db *sql.DB) {
 	}
 }
 
+// migrateCostColumn adds cost column to an existing request_logs table.
+func migrateCostColumn(db *sql.DB) {
+	_, err := db.Exec("ALTER TABLE request_logs ADD COLUMN cost REAL NOT NULL DEFAULT 0")
+	if err != nil {
+		if !strings.Contains(err.Error(), "duplicate") {
+			log.Warnf("usage: migrate column cost: %v", err)
+		}
+	}
+}
+
 const maxContentBytes = 100 * 1024 // 100 KB per field
 
 // InitDB opens (or creates) the SQLite database at the given path and creates
@@ -137,6 +148,8 @@ func InitDB(dbPath string) error {
 	usageDB = db
 	usageDBPath = dbPath
 	migrateContentColumns(db)
+	migrateCostColumn(db)
+	initPricingTable()
 	log.Infof("usage: SQLite database initialised at %s", dbPath)
 	return nil
 }
@@ -177,18 +190,21 @@ func InsertLog(apiKey, model, source, channelName, authIndex string,
 		outputContent = outputContent[:maxContentBytes] + "\n... (truncated)"
 	}
 
+	// Calculate cost based on model pricing
+	cost := CalculateCost(model, tokens.InputTokens, tokens.OutputTokens, tokens.CachedTokens)
+
 	_, err := db.Exec(
 		`INSERT INTO request_logs
 			(timestamp, api_key, model, source, channel_name, auth_index,
 			 failed, latency_ms, input_tokens, output_tokens, reasoning_tokens, cached_tokens, total_tokens,
-			 input_content, output_content)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			 cost, input_content, output_content)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		timestamp.UTC().Format(time.RFC3339Nano),
 		apiKey, model, source, channelName, authIndex,
 		failedInt, latencyMs,
 		tokens.InputTokens, tokens.OutputTokens, tokens.ReasoningTokens,
 		tokens.CachedTokens, tokens.TotalTokens,
-		inputContent, outputContent,
+		cost, inputContent, outputContent,
 	)
 	if err != nil {
 		log.Errorf("usage: insert log: %v", err)
@@ -245,6 +261,7 @@ func QueryLogs(params LogQueryParams) (LogQueryResult, error) {
 	offset := (params.Page - 1) * params.Size
 	querySQL := "SELECT id, timestamp, api_key, model, source, channel_name, auth_index, " +
 		"failed, latency_ms, input_tokens, output_tokens, reasoning_tokens, cached_tokens, total_tokens, " +
+		"cost, " +
 		"(CASE WHEN length(input_content) > 0 OR length(output_content) > 0 THEN 1 ELSE 0 END) as has_content " +
 		"FROM request_logs" + where +
 		" ORDER BY timestamp DESC LIMIT ? OFFSET ?"
@@ -265,7 +282,7 @@ func QueryLogs(params LogQueryParams) (LogQueryResult, error) {
 			&row.ID, &ts, &row.APIKey, &row.Model, &row.Source, &row.ChannelName,
 			&row.AuthIndex, &failedInt, &row.LatencyMs,
 			&row.InputTokens, &row.OutputTokens, &row.ReasoningTokens,
-			&row.CachedTokens, &row.TotalTokens, &hasContentInt,
+			&row.CachedTokens, &row.TotalTokens, &row.Cost, &hasContentInt,
 		); err != nil {
 			return LogQueryResult{}, fmt.Errorf("usage: scan row: %w", err)
 		}

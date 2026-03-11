@@ -46,6 +46,7 @@ func buildKeyConfigMap(cfg *sdkconfig.SDKConfig) map[string]keyConfig {
 			allowedModels:    entry.AllowedModels,
 			dailyLimit:       entry.DailyLimit,
 			totalQuota:       entry.TotalQuota,
+			spendingLimit:    entry.SpendingLimit,
 			concurrencyLimit: entry.ConcurrencyLimit,
 			rpmLimit:         entry.RPMLimit,
 			tpmLimit:         entry.TPMLimit,
@@ -70,6 +71,7 @@ type keyConfig struct {
 	allowedModels    []string
 	dailyLimit       int
 	totalQuota       int
+	spendingLimit    float64
 	concurrencyLimit int
 	rpmLimit         int
 	tpmLimit         int
@@ -153,6 +155,9 @@ func (p *provider) Authenticate(_ context.Context, r *http.Request) (*sdkaccess.
 			}
 			if kc.tpmLimit > 0 {
 				metadata["tpm-limit"] = fmt.Sprintf("%d", kc.tpmLimit)
+			}
+			if kc.spendingLimit > 0 {
+				metadata["spending-limit"] = fmt.Sprintf("%f", kc.spendingLimit)
 			}
 			return &sdkaccess.Result{
 				Provider:  p.Identifier(),

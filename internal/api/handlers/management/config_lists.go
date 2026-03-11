@@ -159,6 +159,7 @@ func (h *Handler) PatchAPIKeyEntry(c *gin.Context) {
 		Name             *string   `json:"name"`
 		DailyLimit       *int      `json:"daily-limit"`
 		TotalQuota       *int      `json:"total-quota"`
+		SpendingLimit    *float64  `json:"spending-limit"`
 		ConcurrencyLimit *int      `json:"concurrency-limit"`
 		RPMLimit         *int      `json:"rpm-limit"`
 		TPMLimit         *int      `json:"tpm-limit"`
@@ -213,6 +214,9 @@ func (h *Handler) PatchAPIKeyEntry(c *gin.Context) {
 	}
 	if body.Value.TotalQuota != nil {
 		entry.TotalQuota = *body.Value.TotalQuota
+	}
+	if body.Value.SpendingLimit != nil {
+		entry.SpendingLimit = *body.Value.SpendingLimit
 	}
 	if body.Value.ConcurrencyLimit != nil {
 		entry.ConcurrencyLimit = *body.Value.ConcurrencyLimit
