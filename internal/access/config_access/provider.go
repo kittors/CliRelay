@@ -50,6 +50,7 @@ func buildKeyConfigMap(cfg *sdkconfig.SDKConfig) map[string]keyConfig {
 			concurrencyLimit: entry.ConcurrencyLimit,
 			rpmLimit:         entry.RPMLimit,
 			tpmLimit:         entry.TPMLimit,
+			systemPrompt:     entry.SystemPrompt,
 		}
 	}
 	// Legacy APIKeys — no restrictions
@@ -75,6 +76,7 @@ type keyConfig struct {
 	concurrencyLimit int
 	rpmLimit         int
 	tpmLimit         int
+	systemPrompt     string
 }
 
 type provider struct {
@@ -158,6 +160,9 @@ func (p *provider) Authenticate(_ context.Context, r *http.Request) (*sdkaccess.
 			}
 			if kc.spendingLimit > 0 {
 				metadata["spending-limit"] = fmt.Sprintf("%f", kc.spendingLimit)
+			}
+			if kc.systemPrompt != "" {
+				metadata["system-prompt"] = kc.systemPrompt
 			}
 			return &sdkaccess.Result{
 				Provider:  p.Identifier(),

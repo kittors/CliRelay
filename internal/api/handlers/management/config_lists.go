@@ -164,6 +164,7 @@ func (h *Handler) PatchAPIKeyEntry(c *gin.Context) {
 		RPMLimit         *int      `json:"rpm-limit"`
 		TPMLimit         *int      `json:"tpm-limit"`
 		AllowedModels    *[]string `json:"allowed-models"`
+		SystemPrompt     *string   `json:"system-prompt"`
 		CreatedAt        *string   `json:"created-at"`
 	}
 	var body struct {
@@ -229,6 +230,9 @@ func (h *Handler) PatchAPIKeyEntry(c *gin.Context) {
 	}
 	if body.Value.AllowedModels != nil {
 		entry.AllowedModels = append([]string(nil), (*body.Value.AllowedModels)...)
+	}
+	if body.Value.SystemPrompt != nil {
+		entry.SystemPrompt = strings.TrimSpace(*body.Value.SystemPrompt)
 	}
 	if body.Value.CreatedAt != nil {
 		entry.CreatedAt = strings.TrimSpace(*body.Value.CreatedAt)

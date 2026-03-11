@@ -82,6 +82,11 @@ type APIKeyEntry struct {
 	// AllowedModels lists model patterns this key can access. Empty means all models.
 	AllowedModels []string `yaml:"allowed-models,omitempty" json:"allowed-models,omitempty"`
 
+	// SystemPrompt is a system-level prompt that will be prepended to all requests
+	// made with this API key. When set, a system message with this content is
+	// automatically injected as the first message in the conversation.
+	SystemPrompt string `yaml:"system-prompt,omitempty" json:"system-prompt,omitempty"`
+
 	// CreatedAt is the ISO 8601 timestamp when this key was created.
 	CreatedAt string `yaml:"created-at,omitempty" json:"created-at,omitempty"`
 }

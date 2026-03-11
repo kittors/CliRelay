@@ -336,6 +336,7 @@ func (s *Server) setupRoutes() {
 	v1.Use(AuthMiddleware(s.accessManager))
 	v1.Use(middleware.QuotaMiddleware())
 	v1.Use(ModelRestrictionMiddleware())
+	v1.Use(SystemPromptMiddleware())
 	{
 		v1.GET("/models", s.unifiedModelsHandler(openaiHandlers, claudeCodeHandlers))
 		v1.POST("/chat/completions", openaiHandlers.ChatCompletions)
@@ -1302,6 +1303,92 @@ func ModelRestrictionMiddleware() gin.HandlerFunc {
 			return
 		}
 
+		c.Next()
+	}
+}
+
+// SystemPromptMiddleware injects a system-prompt message (from API key config)
+// as the first entry in the "messages" array of a POST request body.
+// It only operates on POST requests that have a recognized "messages" field
+// (OpenAI chat-completions / Claude messages format).
+func SystemPromptMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if c.Request.Method != http.MethodPost {
+			c.Next()
+			return
+		}
+
+		metadataVal, exists := c.Get("accessMetadata")
+		if !exists {
+			c.Next()
+			return
+		}
+		metadata, ok := metadataVal.(map[string]string)
+		if !ok {
+			c.Next()
+			return
+		}
+		systemPrompt, exists := metadata["system-prompt"]
+		if !exists || strings.TrimSpace(systemPrompt) == "" {
+			c.Next()
+			return
+		}
+
+		// Read body
+		bodyBytes, err := io.ReadAll(c.Request.Body)
+		if err != nil {
+			c.Next()
+			return
+		}
+
+		// Parse as generic JSON
+		var body map[string]interface{}
+		if err := json.Unmarshal(bodyBytes, &body); err != nil {
+			// Not JSON — restore and pass through
+			c.Request.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+			c.Next()
+			return
+		}
+
+		// Check for "messages" field (OpenAI / Claude format)
+		messagesRaw, hasMessages := body["messages"]
+		if !hasMessages {
+			// Not a chat-style request — restore and pass through
+			c.Request.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+			c.Next()
+			return
+		}
+
+		messages, ok := messagesRaw.([]interface{})
+		if !ok {
+			c.Request.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+			c.Next()
+			return
+		}
+
+		// Build the system message to inject
+		sysMsg := map[string]interface{}{
+			"role":    "system",
+			"content": systemPrompt,
+		}
+
+		// Prepend — push system message to the front
+		newMessages := make([]interface{}, 0, len(messages)+1)
+		newMessages = append(newMessages, sysMsg)
+		newMessages = append(newMessages, messages...)
+		body["messages"] = newMessages
+
+		// Re-serialize
+		newBody, err := json.Marshal(body)
+		if err != nil {
+			// Fallback: restore original body
+			c.Request.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+			c.Next()
+			return
+		}
+
+		c.Request.Body = io.NopCloser(bytes.NewReader(newBody))
+		c.Request.ContentLength = int64(len(newBody))
 		c.Next()
 	}
 }
