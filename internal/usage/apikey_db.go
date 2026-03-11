@@ -107,11 +107,10 @@ func MigrateAPIKeysFromConfig(cfg *config.Config, configFilePath string) int {
 		return 0
 	}
 	if count > 0 {
-		// Already migrated. Clear config slices and clean YAML if stale data remains.
-		needsClean := len(cfg.APIKeys) > 0 || len(cfg.APIKeyEntries) > 0
+		// Already migrated. Clear config slices and always try to clean YAML.
 		cfg.APIKeys = nil
 		cfg.APIKeyEntries = nil
-		if needsClean && configFilePath != "" {
+		if configFilePath != "" {
 			cleanAPIKeysFromYAML(configFilePath)
 		}
 		return 0
