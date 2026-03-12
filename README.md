@@ -249,7 +249,7 @@ By default, API usage logs are stored in SQLite for persistence. For additional 
 2. Edit `config.yaml` and set `redis.enable: true` with your Redis address.
 CliRelay will automatically snapshot and restore traffic metrics on every startup!
 
-For large installations, tune `request-log-storage` in `config.yaml` to control how long full request/response bodies are retained. By default, full content is compressed and kept for 30 days while lightweight request metadata remains queryable for longer-term statistics. Set `content-retention-days: 0` to keep full content indefinitely, or set `store-content: false` to stop new body storage without deleting existing historical content.
+For large installations, tune `request-log-storage` in `config.yaml` to control how long full request/response bodies are retained. By default, full content is compressed and kept for 30 days while lightweight request metadata remains queryable for longer-term statistics. Set `content-retention-days: 0` to keep full content indefinitely, set `store-content: false` to stop new body storage without deleting existing historical content, and set `max-total-size-mb` to cap body storage so the oldest full bodies are pruned before the retention window is reached.
 
 If you need non-local config/auth persistence, the server also supports PostgreSQL, Git-backed, and S3-compatible object-store backends through environment-based bootstrap settings.
 

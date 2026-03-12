@@ -571,6 +571,7 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	cfg.RequestLogStorage.StoreContent = true
 	cfg.RequestLogStorage.ContentRetentionDays = 30
 	cfg.RequestLogStorage.CleanupIntervalMinutes = 1440
+	cfg.RequestLogStorage.MaxTotalSizeMB = 0
 	cfg.RequestLogStorage.VacuumOnCleanup = true
 	cfg.DisableCooling = false
 	cfg.Pprof.Enable = false
@@ -639,6 +640,9 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 
 	if cfg.RequestLogStorage.CleanupIntervalMinutes <= 0 {
 		cfg.RequestLogStorage.CleanupIntervalMinutes = 1440
+	}
+	if cfg.RequestLogStorage.MaxTotalSizeMB < 0 {
+		cfg.RequestLogStorage.MaxTotalSizeMB = 0
 	}
 
 	// Sanitize Gemini API key configuration and migrate legacy entries.

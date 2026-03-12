@@ -53,6 +53,11 @@ type RequestLogStorageConfig struct {
 	// CleanupIntervalMinutes controls how often the background cleanup job runs.
 	CleanupIntervalMinutes int `yaml:"cleanup-interval-minutes,omitempty" json:"cleanup-interval-minutes,omitempty"`
 
+	// MaxTotalSizeMB caps the total size of stored request/response bodies.
+	// When the cap is exceeded, the oldest stored bodies are pruned before the
+	// normal retention window elapses. 0 disables the size cap.
+	MaxTotalSizeMB int `yaml:"max-total-size-mb,omitempty" json:"max-total-size-mb,omitempty"`
+
 	// VacuumOnCleanup triggers a database VACUUM after content pruning so disk space is reclaimed.
 	VacuumOnCleanup bool `yaml:"vacuum-on-cleanup" json:"vacuum-on-cleanup"`
 }

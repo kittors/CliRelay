@@ -18,6 +18,7 @@ type requestLogStorageRuntime struct {
 	StoreContent           bool
 	ContentRetentionDays   int
 	CleanupIntervalMinutes int
+	MaxTotalSizeMB         int
 	VacuumOnCleanup        bool
 }
 
@@ -26,6 +27,7 @@ var (
 		StoreContent:           true,
 		ContentRetentionDays:   30,
 		CleanupIntervalMinutes: 1440,
+		MaxTotalSizeMB:         0,
 		VacuumOnCleanup:        true,
 	}
 
@@ -62,6 +64,7 @@ func normalizeRequestLogStorageConfig(cfg config.RequestLogStorageConfig) reques
 			StoreContent:           true,
 			ContentRetentionDays:   30,
 			CleanupIntervalMinutes: 1440,
+			MaxTotalSizeMB:         0,
 			VacuumOnCleanup:        true,
 		}
 	}
@@ -70,6 +73,7 @@ func normalizeRequestLogStorageConfig(cfg config.RequestLogStorageConfig) reques
 		StoreContent:           cfg.StoreContent,
 		ContentRetentionDays:   cfg.ContentRetentionDays,
 		CleanupIntervalMinutes: cfg.CleanupIntervalMinutes,
+		MaxTotalSizeMB:         cfg.MaxTotalSizeMB,
 		VacuumOnCleanup:        cfg.VacuumOnCleanup,
 	}
 	if runtimeCfg.ContentRetentionDays < 0 {
@@ -78,7 +82,17 @@ func normalizeRequestLogStorageConfig(cfg config.RequestLogStorageConfig) reques
 	if runtimeCfg.CleanupIntervalMinutes <= 0 {
 		runtimeCfg.CleanupIntervalMinutes = 1440
 	}
+	if runtimeCfg.MaxTotalSizeMB < 0 {
+		runtimeCfg.MaxTotalSizeMB = 0
+	}
 	return runtimeCfg
+}
+
+func maxLogContentBytes() int64 {
+	if requestLogStorage.MaxTotalSizeMB <= 0 {
+		return 0
+	}
+	return int64(requestLogStorage.MaxTotalSizeMB) * 1024 * 1024
 }
 
 func startRequestLogMaintenance(db *sql.DB) {
@@ -139,6 +153,19 @@ func runRequestLogMaintenancePass(db *sql.DB) {
 	if deleted > 0 {
 		log.Infof("usage: pruned %d expired request log content rows", deleted)
 	}
+
+	trimmed, err := cleanupOversizedLogContent(db, maxLogContentBytes())
+	if err != nil {
+		log.Errorf("usage: enforce request log content size cap: %v", err)
+		return
+	}
+	if trimmed > 0 {
+		log.Infof("usage: pruned %d request log content rows to enforce size cap", trimmed)
+	}
+
+	if deleted+trimmed > 0 {
+		compactLogContentStorage(db)
+	}
 }
 
 func insertLogContentTx(tx *sql.Tx, logID int64, timestamp time.Time, inputContent, outputContent string) error {
@@ -153,6 +180,13 @@ func insertLogContentTx(tx *sql.Tx, logID int64, timestamp time.Time, inputConte
 	outputCompressed, err := compressLogContent(outputContent)
 	if err != nil {
 		return err
+	}
+
+	rowBytes := int64(len(inputCompressed) + len(outputCompressed))
+	maxBytes := maxLogContentBytes()
+	if maxBytes > 0 && rowBytes > maxBytes {
+		log.Warnf("usage: skip storing request log content for log_id=%d because compressed body %d bytes exceeds configured cap %d bytes", logID, rowBytes, maxBytes)
+		return nil
 	}
 
 	_, err = tx.Exec(
@@ -171,6 +205,11 @@ func insertLogContentTx(tx *sql.Tx, logID int64, timestamp time.Time, inputConte
 	)
 	if err != nil {
 		return fmt.Errorf("usage: insert compressed content: %w", err)
+	}
+	if maxBytes > 0 {
+		if _, err := cleanupOversizedLogContentQuerier(tx, maxBytes); err != nil {
+			return fmt.Errorf("usage: enforce content size cap: %w", err)
+		}
 	}
 	return nil
 }
@@ -299,21 +338,152 @@ func cleanupExpiredLogContent(db *sql.DB) (int64, error) {
 		return 0, fmt.Errorf("usage: delete expired content: %w", err)
 	}
 
-	if _, err := db.Exec(
+	legacyResult, err := db.Exec(
 		"UPDATE request_logs SET input_content = '', output_content = '' WHERE timestamp < ? AND (length(input_content) > 0 OR length(output_content) > 0)",
 		cutoff,
-	); err != nil {
+	)
+	if err != nil {
 		return 0, fmt.Errorf("usage: clear expired legacy content: %w", err)
+	}
+	legacyCleared, err := legacyResult.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("usage: affected rows for legacy content cleanup: %w", err)
 	}
 
 	deletedRows, err := result.RowsAffected()
 	if err != nil {
 		return 0, fmt.Errorf("usage: affected rows for content cleanup: %w", err)
 	}
-	if deletedRows == 0 {
+	totalChanged := deletedRows + legacyCleared
+	if totalChanged == 0 {
+		return 0, nil
+	}
+	return totalChanged, nil
+}
+
+type logContentQuerier interface {
+	Exec(query string, args ...any) (sql.Result, error)
+	Query(query string, args ...any) (*sql.Rows, error)
+	QueryRow(query string, args ...any) *sql.Row
+}
+
+func cleanupOversizedLogContent(db *sql.DB, maxBytes int64) (int64, error) {
+	if db == nil {
+		return 0, nil
+	}
+	return cleanupOversizedLogContentQuerier(db, maxBytes)
+}
+
+func cleanupOversizedLogContentQuerier(q logContentQuerier, maxBytes int64) (int64, error) {
+	if q == nil || maxBytes <= 0 {
 		return 0, nil
 	}
 
+	totalBytes, err := queryStoredContentBytes(q)
+	if err != nil {
+		return 0, err
+	}
+
+	var deletedRows int64
+	for totalBytes > maxBytes {
+		required := totalBytes - maxBytes
+		ids, reclaimed, err := oldestContentRowsForTrim(q, required, 200)
+		if err != nil {
+			return deletedRows, err
+		}
+		if len(ids) == 0 || reclaimed <= 0 {
+			break
+		}
+		query, args := buildDeleteContentRowsQuery(ids)
+		result, err := q.Exec(query, args...)
+		if err != nil {
+			return deletedRows, fmt.Errorf("usage: delete oversized content rows: %w", err)
+		}
+		affected, err := result.RowsAffected()
+		if err != nil {
+			return deletedRows, fmt.Errorf("usage: affected rows for oversized content cleanup: %w", err)
+		}
+		deletedRows += affected
+		totalBytes -= reclaimed
+	}
+	return deletedRows, nil
+}
+
+func queryStoredContentBytes(q logContentQuerier) (int64, error) {
+	var totalBytes sql.NullInt64
+	err := q.QueryRow(
+		`SELECT COALESCE(SUM(CAST(length(input_content) AS INTEGER) + CAST(length(output_content) AS INTEGER)), 0)
+		 FROM request_log_content`,
+	).Scan(&totalBytes)
+	if err != nil {
+		return 0, fmt.Errorf("usage: query stored content bytes: %w", err)
+	}
+	if !totalBytes.Valid {
+		return 0, nil
+	}
+	return totalBytes.Int64, nil
+}
+
+func oldestContentRowsForTrim(q logContentQuerier, requiredBytes int64, limit int) ([]int64, int64, error) {
+	if q == nil || requiredBytes <= 0 {
+		return nil, 0, nil
+	}
+	if limit <= 0 {
+		limit = 200
+	}
+
+	rows, err := q.Query(
+		`SELECT log_id, CAST(length(input_content) AS INTEGER) + CAST(length(output_content) AS INTEGER) AS size
+		 FROM request_log_content
+		 ORDER BY timestamp ASC, log_id ASC
+		 LIMIT ?`,
+		limit,
+	)
+	if err != nil {
+		return nil, 0, fmt.Errorf("usage: query oldest content rows: %w", err)
+	}
+	defer rows.Close()
+
+	ids := make([]int64, 0, limit)
+	var reclaimed int64
+	for rows.Next() {
+		var (
+			logID int64
+			size  int64
+		)
+		if err := rows.Scan(&logID, &size); err != nil {
+			return nil, 0, fmt.Errorf("usage: scan oldest content row: %w", err)
+		}
+		ids = append(ids, logID)
+		reclaimed += size
+		if reclaimed >= requiredBytes {
+			break
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, fmt.Errorf("usage: iterate oldest content rows: %w", err)
+	}
+	return ids, reclaimed, nil
+}
+
+func buildDeleteContentRowsQuery(ids []int64) (string, []any) {
+	placeholders := make([]byte, 0, len(ids)*2)
+	args := make([]any, 0, len(ids))
+	for i, id := range ids {
+		if i > 0 {
+			placeholders = append(placeholders, ',')
+		}
+		placeholders = append(placeholders, '?')
+		args = append(args, id)
+	}
+	query := fmt.Sprintf("DELETE FROM request_log_content WHERE log_id IN (%s)", string(placeholders))
+	return query, args
+}
+
+func compactLogContentStorage(db *sql.DB) {
+	if db == nil {
+		return
+	}
 	if _, err := db.Exec("PRAGMA wal_checkpoint(TRUNCATE)"); err != nil {
 		log.Warnf("usage: wal checkpoint after content cleanup failed: %v", err)
 	}
@@ -325,8 +495,6 @@ func cleanupExpiredLogContent(db *sql.DB) (int64, error) {
 	if _, err := db.Exec("PRAGMA optimize"); err != nil {
 		log.Warnf("usage: sqlite optimize after content cleanup failed: %v", err)
 	}
-
-	return deletedRows, nil
 }
 
 func queryCompressedLogContent(db *sql.DB, query string, args ...any) (LogContentResult, error) {

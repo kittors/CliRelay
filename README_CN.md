@@ -249,7 +249,7 @@ docker compose up -d
 2. 编辑 `config.yaml`，将 `redis.enable` 设为 `true` 并填入 Redis 地址。
 配置完成后，CliRelay 每次启动都会自动完成快照恢复！
 
-如果你的请求量较大，可以在 `config.yaml` 中调整 `request-log-storage`。默认情况下，全文请求/响应正文会以压缩形式保留 30 天，而轻量级请求元数据可继续用于长期统计与筛选。将 `content-retention-days: 0` 设为永久保留全文；将 `store-content: false` 设为停止写入新的正文，同时保留已有历史全文。
+如果你的请求量较大，可以在 `config.yaml` 中调整 `request-log-storage`。默认情况下，全文请求/响应正文会以压缩形式保留 30 天，而轻量级请求元数据可继续用于长期统计与筛选。将 `content-retention-days: 0` 设为永久保留全文；将 `store-content: false` 设为停止写入新的正文，同时保留已有历史全文；将 `max-total-size-mb` 设为正文存储体积上限，这样即使 retention 周期还没到，也会提前裁剪最老的全文正文。
 
 如果你需要非本地磁盘的配置/认证持久化，服务端还支持通过环境变量启用 PostgreSQL、Git 和 S3 兼容对象存储后端。
 

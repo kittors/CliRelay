@@ -8,6 +8,16 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 )
 
+func makePseudoRandomText(size int) string {
+	b := make([]byte, size)
+	var x uint32 = 1
+	for i := range b {
+		x = 1664525*x + 1013904223
+		b[i] = byte(32 + x%95)
+	}
+	return string(b)
+}
+
 func initTestUsageDB(t *testing.T, cfg config.RequestLogStorageConfig) {
 	t.Helper()
 	CloseDB()
@@ -453,5 +463,155 @@ func TestCleanupExpiredLogContentSkipsWhenStorageDisabledOrRetentionUnlimited(t 
 				t.Fatalf("content row count = %d, want 1", contentRows)
 			}
 		})
+	}
+}
+
+func TestCleanupOversizedLogContentPrunesOldestRows(t *testing.T) {
+	initTestUsageDB(t, config.RequestLogStorageConfig{
+		StoreContent:           true,
+		ContentRetentionDays:   30,
+		CleanupIntervalMinutes: 1440,
+		MaxTotalSizeMB:         1,
+		VacuumOnCleanup:        false,
+	})
+
+	db := getDB()
+	maxBytes := int64(1024 * 1024)
+	payload := makePseudoRandomText(420 * 1024)
+	compressed, err := compressLogContent(payload)
+	if err != nil {
+		t.Fatalf("compressLogContent() error = %v", err)
+	}
+	rowBytes := int64(len(compressed))
+	if rowBytes >= maxBytes {
+		t.Fatalf("test payload compressed too large: %d", rowBytes)
+	}
+	if rowBytes*3 <= maxBytes {
+		t.Fatalf("test payload compressed too small to exceed cap: %d", rowBytes)
+	}
+
+	insertRawContentRow := func(ts time.Time, apiKey string) int64 {
+		t.Helper()
+		result, err := db.Exec(
+			`INSERT INTO request_logs
+				(timestamp, api_key, model, source, channel_name, auth_index,
+				 failed, latency_ms, input_tokens, output_tokens, reasoning_tokens, cached_tokens, total_tokens, cost)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			ts.Format(time.RFC3339Nano),
+			apiKey, "model", "source", "channel", apiKey,
+			0, 5, 1, 1, 0, 0, 2, 0,
+		)
+		if err != nil {
+			t.Fatalf("insert request_logs row: %v", err)
+		}
+		logID, err := result.LastInsertId()
+		if err != nil {
+			t.Fatalf("LastInsertId() error = %v", err)
+		}
+		if _, err := db.Exec(
+			`INSERT INTO request_log_content (log_id, timestamp, compression, input_content, output_content)
+			 VALUES (?, ?, ?, ?, ?)`,
+			logID,
+			ts.Format(time.RFC3339Nano),
+			requestLogContentCompression,
+			compressed,
+			[]byte{},
+		); err != nil {
+			t.Fatalf("insert request_log_content row: %v", err)
+		}
+		return logID
+	}
+
+	oldestID := insertRawContentRow(time.Now().UTC().Add(-3*time.Hour), "sk-oldest")
+	_ = insertRawContentRow(time.Now().UTC().Add(-2*time.Hour), "sk-middle")
+	newestID := insertRawContentRow(time.Now().UTC().Add(-1*time.Hour), "sk-newest")
+
+	deleted, err := cleanupOversizedLogContent(db, maxBytes)
+	if err != nil {
+		t.Fatalf("cleanupOversizedLogContent() error = %v", err)
+	}
+	if deleted == 0 {
+		t.Fatalf("expected oversized cleanup to delete at least one row")
+	}
+
+	totalBytes, err := queryStoredContentBytes(db)
+	if err != nil {
+		t.Fatalf("queryStoredContentBytes() error = %v", err)
+	}
+	if totalBytes > maxBytes {
+		t.Fatalf("total stored bytes = %d, want <= %d", totalBytes, maxBytes)
+	}
+
+	var oldestRows int
+	if err := db.QueryRow("SELECT COUNT(*) FROM request_log_content WHERE log_id = ?", oldestID).Scan(&oldestRows); err != nil {
+		t.Fatalf("count oldest row: %v", err)
+	}
+	if oldestRows != 0 {
+		t.Fatalf("expected oldest row to be pruned, count=%d", oldestRows)
+	}
+
+	var newestRows int
+	if err := db.QueryRow("SELECT COUNT(*) FROM request_log_content WHERE log_id = ?", newestID).Scan(&newestRows); err != nil {
+		t.Fatalf("count newest row: %v", err)
+	}
+	if newestRows != 1 {
+		t.Fatalf("expected newest row to remain, count=%d", newestRows)
+	}
+}
+
+func TestInsertLogContentTxSkipsSingleRowLargerThanSizeCap(t *testing.T) {
+	initTestUsageDB(t, config.RequestLogStorageConfig{
+		StoreContent:           true,
+		ContentRetentionDays:   30,
+		CleanupIntervalMinutes: 1440,
+		MaxTotalSizeMB:         1,
+		VacuumOnCleanup:        false,
+	})
+
+	db := getDB()
+	maxBytes := int64(1024 * 1024)
+	payload := makePseudoRandomText(2 * 1024 * 1024)
+	compressed, err := compressLogContent(payload)
+	if err != nil {
+		t.Fatalf("compressLogContent() error = %v", err)
+	}
+	if int64(len(compressed)) <= maxBytes {
+		t.Fatalf("expected compressed payload to exceed cap, got %d", len(compressed))
+	}
+
+	result, err := db.Exec(
+		`INSERT INTO request_logs
+			(timestamp, api_key, model, source, channel_name, auth_index,
+			 failed, latency_ms, input_tokens, output_tokens, reasoning_tokens, cached_tokens, total_tokens, cost)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		time.Now().UTC().Format(time.RFC3339Nano),
+		"sk-large", "model", "source", "channel", "auth-large",
+		0, 5, 1, 1, 0, 0, 2, 0,
+	)
+	if err != nil {
+		t.Fatalf("insert request_logs row: %v", err)
+	}
+	logID, err := result.LastInsertId()
+	if err != nil {
+		t.Fatalf("LastInsertId() error = %v", err)
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatalf("Begin() error = %v", err)
+	}
+	if err := insertLogContentTx(tx, logID, time.Now().UTC(), payload, ""); err != nil {
+		t.Fatalf("insertLogContentTx() error = %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("Commit() error = %v", err)
+	}
+
+	var contentRows int
+	if err := db.QueryRow("SELECT COUNT(*) FROM request_log_content WHERE log_id = ?", logID).Scan(&contentRows); err != nil {
+		t.Fatalf("count content rows: %v", err)
+	}
+	if contentRows != 0 {
+		t.Fatalf("content row count = %d, want 0", contentRows)
 	}
 }

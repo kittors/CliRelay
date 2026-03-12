@@ -83,6 +83,11 @@ request-log-storage:
   # Run background content cleanup every N minutes.
   cleanup-interval-minutes: 1440
 
+  # Cap the total size of stored request/response bodies (MB).
+  # When exceeded, the oldest full bodies are pruned early even if their retention days are not over.
+  # Set to 0 to disable the size cap.
+  max-total-size-mb: 0
+
   # Reclaim disk space after cleanup. This can be I/O intensive on very large databases.
   vacuum-on-cleanup: true
 
