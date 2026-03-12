@@ -59,7 +59,7 @@ CliRelay lets you **proxy requests** from AI coding tools (Claude Code, Gemini C
 | Feature | Description |
 |:--------|:------------|
 | 📝 **Full Request Capture** | Every API request is logged to SQLite with timestamp, model, tokens (in/out/reasoning/cache), latency, status, and source channel |
-| 💬 **Message Body Storage** | Full request/response message content captured (including streaming SSE reassembly), with 100KB smart truncation |
+| 💬 **Message Body Storage** | Full request/response message content captured in compressed SQLite storage, with separate retention for content vs. metadata |
 | 🔍 **Advanced Querying** | Filter logs by API Key, model, status, time range with efficient pagination (LIMIT/OFFSET) |
 | 📈 **Analytics Aggregation** | Pre-computed dashboards: daily trends, model distribution, hourly heatmaps, per-key statistics |
 | 🏥 **Health Score Engine** | Real-time 0–100 health score considering success rate, latency, active channels, and error patterns |
@@ -224,6 +224,8 @@ By default, API usage logs are stored in SQLite for persistence. For additional 
 1. Ensure you have a Redis server running.
 2. Edit `config.yaml` and set `redis.enable: true` with your Redis address.
 CliRelay will automatically snapshot and restore traffic metrics on every startup!
+
+For large installations, tune `request-log-storage` in `config.yaml` to control how long full request/response bodies are retained. By default, full content is compressed and kept for 30 days while lightweight request metadata remains queryable for longer-term statistics.
 
 ### 3️⃣ Point Your Tools
 

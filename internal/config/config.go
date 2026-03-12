@@ -568,6 +568,10 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	cfg.LogsMaxTotalSizeMB = 0
 	cfg.ErrorLogsMaxFiles = 10
 	cfg.UsageStatisticsEnabled = false
+	cfg.RequestLogStorage.StoreContent = true
+	cfg.RequestLogStorage.ContentRetentionDays = 30
+	cfg.RequestLogStorage.CleanupIntervalMinutes = 1440
+	cfg.RequestLogStorage.VacuumOnCleanup = true
 	cfg.DisableCooling = false
 	cfg.Pprof.Enable = false
 	cfg.Pprof.Addr = DefaultPprofAddr
@@ -627,6 +631,14 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 
 	if cfg.ErrorLogsMaxFiles < 0 {
 		cfg.ErrorLogsMaxFiles = 10
+	}
+
+	if cfg.RequestLogStorage.ContentRetentionDays < 0 {
+		cfg.RequestLogStorage.ContentRetentionDays = 0
+	}
+
+	if cfg.RequestLogStorage.CleanupIntervalMinutes <= 0 {
+		cfg.RequestLogStorage.CleanupIntervalMinutes = 1440
 	}
 
 	// Sanitize Gemini API key configuration and migrate legacy entries.

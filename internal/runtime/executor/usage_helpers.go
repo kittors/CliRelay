@@ -29,6 +29,7 @@ type usageReporter struct {
 	// Content captured for log detail viewer
 	inputContent  string
 	outputContent string
+	outputBuilder strings.Builder
 }
 
 func newUsageReporter(ctx context.Context, provider, model string, auth *cliproxyauth.Auth) *usageReporter {
@@ -58,8 +59,6 @@ func (r *usageReporter) publishWithContent(ctx context.Context, detail usage.Det
 	r.publishWithOutcome(ctx, detail, false)
 }
 
-const maxReporterContentBytes = 100 * 1024 // 100 KB soft limit for accumulated streaming output
-
 // setInputContent stores the request payload for inclusion in usage records.
 // Call before starting the streaming goroutine.
 func (r *usageReporter) setInputContent(content string) {
@@ -67,12 +66,12 @@ func (r *usageReporter) setInputContent(content string) {
 }
 
 // appendOutputChunk accumulates a streaming response line for inclusion in usage records.
-// Silently stops accumulating once the soft limit is reached.
 func (r *usageReporter) appendOutputChunk(chunk []byte) {
-	if len(r.outputContent)+len(chunk)+1 > maxReporterContentBytes {
+	if r == nil || len(chunk) == 0 {
 		return
 	}
-	r.outputContent += string(chunk) + "\n"
+	r.outputBuilder.Write(chunk)
+	r.outputBuilder.WriteByte('\n')
 }
 
 func (r *usageReporter) publishFailure(ctx context.Context) {
@@ -102,6 +101,9 @@ func (r *usageReporter) publishWithOutcome(ctx context.Context, detail usage.Det
 		return
 	}
 	r.once.Do(func() {
+		if r.outputBuilder.Len() > 0 {
+			r.outputContent += r.outputBuilder.String()
+		}
 		latencyMs := time.Since(r.requestedAt).Milliseconds()
 		if latencyMs < 0 {
 			latencyMs = 0
@@ -133,6 +135,9 @@ func (r *usageReporter) ensurePublished(ctx context.Context) {
 		return
 	}
 	r.once.Do(func() {
+		if r.outputBuilder.Len() > 0 {
+			r.outputContent += r.outputBuilder.String()
+		}
 		latencyMs := time.Since(r.requestedAt).Milliseconds()
 		if latencyMs < 0 {
 			latencyMs = 0

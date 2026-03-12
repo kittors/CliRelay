@@ -29,7 +29,7 @@ import (
 //   - localPassword: Optional password accepted for local management requests
 func StartService(cfg *config.Config, configPath string, localPassword string) {
 	dbPath := filepath.Join(filepath.Dir(configPath), "usage.db")
-	if err := usage.InitDB(dbPath); err != nil {
+	if err := usage.InitDB(dbPath, cfg.RequestLogStorage); err != nil {
 		log.Errorf("usage: failed to initialize SQLite: %v", err)
 	}
 	usage.MigrateAPIKeysFromConfig(cfg, configPath)
@@ -72,7 +72,7 @@ func StartService(cfg *config.Config, configPath string, localPassword string) {
 // and returns a cancel function for shutdown and a done channel.
 func StartServiceBackground(cfg *config.Config, configPath string, localPassword string) (cancel func(), done <-chan struct{}) {
 	dbPath := filepath.Join(filepath.Dir(configPath), "usage.db")
-	if err := usage.InitDB(dbPath); err != nil {
+	if err := usage.InitDB(dbPath, cfg.RequestLogStorage); err != nil {
 		log.Errorf("usage: failed to initialize SQLite: %v", err)
 	}
 	usage.MigrateAPIKeysFromConfig(cfg, configPath)

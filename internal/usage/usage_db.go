@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	log "github.com/sirupsen/logrus"
 	_ "modernc.org/sqlite"
 )
@@ -92,10 +93,20 @@ CREATE TABLE IF NOT EXISTS request_logs (
   output_content   TEXT NOT NULL DEFAULT ''
 );
 
+CREATE TABLE IF NOT EXISTS request_log_content (
+  log_id           INTEGER PRIMARY KEY,
+  timestamp        DATETIME NOT NULL,
+  compression      TEXT NOT NULL DEFAULT 'zstd',
+  input_content    BLOB NOT NULL DEFAULT X'',
+  output_content   BLOB NOT NULL DEFAULT X'',
+  FOREIGN KEY(log_id) REFERENCES request_logs(id) ON DELETE CASCADE
+);
+
 CREATE INDEX IF NOT EXISTS idx_logs_timestamp ON request_logs(timestamp DESC);
 CREATE INDEX IF NOT EXISTS idx_logs_api_key ON request_logs(api_key);
 CREATE INDEX IF NOT EXISTS idx_logs_model ON request_logs(model);
 CREATE INDEX IF NOT EXISTS idx_logs_failed ON request_logs(failed);
+CREATE INDEX IF NOT EXISTS idx_log_content_timestamp ON request_log_content(timestamp DESC);
 `
 
 // migrateContentColumns adds input_content/output_content columns to an
@@ -122,11 +133,9 @@ func migrateCostColumn(db *sql.DB) {
 	}
 }
 
-const maxContentBytes = 100 * 1024 // 100 KB per field
-
 // InitDB opens (or creates) the SQLite database at the given path and creates
 // the request_logs table if it doesn't exist.
-func InitDB(dbPath string) error {
+func InitDB(dbPath string, storageCfg config.RequestLogStorageConfig) error {
 	usageDBMu.Lock()
 	defer usageDBMu.Unlock()
 
@@ -160,6 +169,7 @@ func InitDB(dbPath string) error {
 
 	usageDB = db
 	usageDBPath = dbPath
+	requestLogStorage = normalizeRequestLogStorageConfig(storageCfg)
 	log.Debugf("usage: running content column migration")
 	migrateContentColumns(db)
 	log.Debugf("usage: running cost column migration")
@@ -168,6 +178,7 @@ func InitDB(dbPath string) error {
 	initPricingTable(db)
 	log.Debugf("usage: initializing api_keys table")
 	initAPIKeysTable(db)
+	startRequestLogMaintenance(db)
 	log.Infof("usage: SQLite database initialised at %s", dbPath)
 	return nil
 }
@@ -177,6 +188,7 @@ func CloseDB() {
 	usageDBMu.Lock()
 	defer usageDBMu.Unlock()
 
+	stopRequestLogMaintenance()
 	if usageDB != nil {
 		_ = usageDB.Close()
 		usageDB = nil
@@ -200,32 +212,48 @@ func InsertLog(apiKey, model, source, channelName, authIndex string,
 		failedInt = 1
 	}
 
-	// Truncate content to limit storage cost
-	if len(inputContent) > maxContentBytes {
-		inputContent = inputContent[:maxContentBytes] + "\n... (truncated)"
-	}
-	if len(outputContent) > maxContentBytes {
-		outputContent = outputContent[:maxContentBytes] + "\n... (truncated)"
-	}
-
 	// Calculate cost based on model pricing
 	cost := CalculateCost(model, tokens.InputTokens, tokens.OutputTokens, tokens.CachedTokens)
 
-	_, err := db.Exec(
+	tx, err := db.BeginTx(context.Background(), nil)
+	if err != nil {
+		log.Errorf("usage: begin insert tx: %v", err)
+		return
+	}
+
+	result, err := tx.Exec(
 		`INSERT INTO request_logs
 			(timestamp, api_key, model, source, channel_name, auth_index,
-			 failed, latency_ms, input_tokens, output_tokens, reasoning_tokens, cached_tokens, total_tokens,
-			 cost, input_content, output_content)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			 failed, latency_ms, input_tokens, output_tokens, reasoning_tokens, cached_tokens, total_tokens, cost)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		timestamp.UTC().Format(time.RFC3339Nano),
 		apiKey, model, source, channelName, authIndex,
 		failedInt, latencyMs,
 		tokens.InputTokens, tokens.OutputTokens, tokens.ReasoningTokens,
-		tokens.CachedTokens, tokens.TotalTokens,
-		cost, inputContent, outputContent,
+		tokens.CachedTokens, tokens.TotalTokens, cost,
 	)
 	if err != nil {
+		_ = tx.Rollback()
 		log.Errorf("usage: insert log: %v", err)
+		return
+	}
+
+	if requestLogStorage.StoreContent && (inputContent != "" || outputContent != "") {
+		logID, errLastID := result.LastInsertId()
+		if errLastID != nil {
+			_ = tx.Rollback()
+			log.Errorf("usage: resolve inserted log id: %v", errLastID)
+			return
+		}
+		if errStore := insertLogContentTx(tx, logID, timestamp, inputContent, outputContent); errStore != nil {
+			_ = tx.Rollback()
+			log.Errorf("usage: insert log content: %v", errStore)
+			return
+		}
+	}
+
+	if errCommit := tx.Commit(); errCommit != nil {
+		log.Errorf("usage: commit log insert: %v", errCommit)
 		return
 	}
 
@@ -280,7 +308,8 @@ func QueryLogs(params LogQueryParams) (LogQueryResult, error) {
 	querySQL := "SELECT id, timestamp, api_key, model, source, channel_name, auth_index, " +
 		"failed, latency_ms, input_tokens, output_tokens, reasoning_tokens, cached_tokens, total_tokens, " +
 		"cost, " +
-		"(CASE WHEN length(input_content) > 0 OR length(output_content) > 0 THEN 1 ELSE 0 END) as has_content " +
+		"(CASE WHEN EXISTS (SELECT 1 FROM request_log_content content WHERE content.log_id = request_logs.id) " +
+		"OR length(input_content) > 0 OR length(output_content) > 0 THEN 1 ELSE 0 END) as has_content " +
 		"FROM request_logs" + where +
 		" ORDER BY timestamp DESC LIMIT ? OFFSET ?"
 	queryArgs := append(args, params.Size, offset)
@@ -552,14 +581,26 @@ func QueryLogContent(id int64) (LogContentResult, error) {
 		return LogContentResult{}, fmt.Errorf("usage: database not initialised")
 	}
 
-	var result LogContentResult
-	err := db.QueryRow(
+	result, err := queryCompressedLogContent(
+		db,
+		`SELECT logs.id, logs.model, content.compression, content.input_content, content.output_content
+		 FROM request_logs logs
+		 JOIN request_log_content content ON content.log_id = logs.id
+		 WHERE logs.id = ?`,
+		id,
+	)
+	if err == nil {
+		return result, nil
+	}
+
+	var fallback LogContentResult
+	err = db.QueryRow(
 		"SELECT id, model, input_content, output_content FROM request_logs WHERE id = ?", id,
-	).Scan(&result.ID, &result.Model, &result.InputContent, &result.OutputContent)
+	).Scan(&fallback.ID, &fallback.Model, &fallback.InputContent, &fallback.OutputContent)
 	if err != nil {
 		return LogContentResult{}, fmt.Errorf("usage: query log content: %w", err)
 	}
-	return result, nil
+	return fallback, nil
 }
 
 // QueryLogContentForKey retrieves log content for a single entry, but only if it belongs to the given API key.
@@ -570,14 +611,26 @@ func QueryLogContentForKey(id int64, apiKey string) (LogContentResult, error) {
 		return LogContentResult{}, fmt.Errorf("usage: database not initialised")
 	}
 
-	var result LogContentResult
-	err := db.QueryRow(
+	result, err := queryCompressedLogContent(
+		db,
+		`SELECT logs.id, logs.model, content.compression, content.input_content, content.output_content
+		 FROM request_logs logs
+		 JOIN request_log_content content ON content.log_id = logs.id
+		 WHERE logs.id = ? AND logs.api_key = ?`,
+		id, apiKey,
+	)
+	if err == nil {
+		return result, nil
+	}
+
+	var fallback LogContentResult
+	err = db.QueryRow(
 		"SELECT id, model, input_content, output_content FROM request_logs WHERE id = ? AND api_key = ?", id, apiKey,
-	).Scan(&result.ID, &result.Model, &result.InputContent, &result.OutputContent)
+	).Scan(&fallback.ID, &fallback.Model, &fallback.InputContent, &fallback.OutputContent)
 	if err != nil {
 		return LogContentResult{}, fmt.Errorf("usage: query log content: %w", err)
 	}
-	return result, nil
+	return fallback, nil
 }
 
 // DailySeriesPoint holds one day of aggregated usage data.

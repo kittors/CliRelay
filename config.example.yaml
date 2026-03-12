@@ -69,6 +69,21 @@ error-logs-max-files: 10
 # When false, disable in-memory usage statistics aggregation
 usage-statistics-enabled: false
 
+# Detailed request/response body retention settings for usage.db.
+request-log-storage:
+  # When true, persist full request and response bodies in SQLite.
+  store-content: true
+
+  # Keep full request/response bodies for the last N days.
+  # The lightweight request metadata rows are retained separately.
+  content-retention-days: 30
+
+  # Run background content cleanup every N minutes.
+  cleanup-interval-minutes: 1440
+
+  # Reclaim disk space after cleanup. This can be I/O intensive on very large databases.
+  vacuum-on-cleanup: true
+
 # Proxy URL. Supports socks5/http/https protocols. Example: socks5://user:pass@192.168.1.1:1080/
 proxy-url: ""
 
