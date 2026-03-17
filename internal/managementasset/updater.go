@@ -1,6 +1,8 @@
 package managementasset
 
 import (
+	"archive/zip"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -28,6 +30,8 @@ const (
 	defaultManagementReleaseURL  = "https://api.github.com/repos/kittors/codeProxy/releases/latest"
 	defaultManagementFallbackURL = "https://cpamc.router-for.me/"
 	managementAssetName          = "management.html"
+	panelDistZipName             = "panel-dist.zip"
+	panelVersionFile             = ".panel-version"
 	httpUserAgent                = "CLIProxyAPI-management-updater"
 	managementSyncMinInterval    = 30 * time.Second
 	updateCheckInterval          = 3 * time.Hour
@@ -172,7 +176,9 @@ func FilePath(configFilePath string) string {
 	return filepath.Join(dir, ManagementFileName)
 }
 
-// EnsureLatestManagementHTML checks the latest management.html asset and updates the local copy when needed.
+// EnsureLatestManagementHTML checks the latest management panel assets and updates the local copy when needed.
+// It first tries to download a full SPA zip bundle (panel-dist.zip) from the release.
+// If no zip is found, it falls back to downloading the single management.html file.
 // It coalesces concurrent sync attempts and returns whether the asset exists after the sync attempt.
 func EnsureLatestManagementHTML(ctx context.Context, staticDir string, proxyURL string, panelRepository string) bool {
 	if ctx == nil {
@@ -202,6 +208,20 @@ func EnsureLatestManagementHTML(ctx context.Context, staticDir string, proxyURL 
 		lastUpdateCheckTime = now
 		lastUpdateCheckMu.Unlock()
 
+		if errMkdirAll := os.MkdirAll(staticDir, 0o755); errMkdirAll != nil {
+			log.WithError(errMkdirAll).Warn("failed to prepare static directory for management asset")
+			return nil, nil
+		}
+
+		releaseURL := resolveReleaseURL(panelRepository)
+		client := newHTTPClient(proxyURL)
+
+		// Try SPA zip-based update first (panel-dist.zip).
+		if trySPAZipUpdate(ctx, client, staticDir, releaseURL) {
+			return nil, nil
+		}
+
+		// Fallback: single-file management.html download.
 		localFileMissing := false
 		if _, errStat := os.Stat(localPath); errStat != nil {
 			if errors.Is(errStat, os.ErrNotExist) {
@@ -211,14 +231,6 @@ func EnsureLatestManagementHTML(ctx context.Context, staticDir string, proxyURL 
 			}
 		}
 
-		if errMkdirAll := os.MkdirAll(staticDir, 0o755); errMkdirAll != nil {
-			log.WithError(errMkdirAll).Warn("failed to prepare static directory for management asset")
-			return nil, nil
-		}
-
-		releaseURL := resolveReleaseURL(panelRepository)
-		client := newHTTPClient(proxyURL)
-
 		localHash, err := fileSHA256(localPath)
 		if err != nil {
 			if !errors.Is(err, os.ErrNotExist) {
@@ -227,7 +239,7 @@ func EnsureLatestManagementHTML(ctx context.Context, staticDir string, proxyURL 
 			localHash = ""
 		}
 
-		asset, remoteHash, err := fetchLatestAsset(ctx, client, releaseURL)
+		asset, remoteHash, err := fetchReleaseAssetByName(ctx, client, releaseURL, managementAssetName)
 		if err != nil {
 			if localFileMissing {
 				log.WithError(err).Warn("failed to fetch latest management release information, trying fallback page")
@@ -271,8 +283,104 @@ func EnsureLatestManagementHTML(ctx context.Context, staticDir string, proxyURL 
 		return nil, nil
 	})
 
+	// Check if SPA panel exists (manage.html) or single-file (management.html).
+	manageHTML := filepath.Join(staticDir, "manage.html")
+	if _, errStat := os.Stat(manageHTML); errStat == nil {
+		return true
+	}
 	_, err := os.Stat(localPath)
 	return err == nil
+}
+
+// trySPAZipUpdate attempts to download and extract a panel-dist.zip from the release.
+// Returns true if the SPA panel was successfully installed or is already up to date.
+func trySPAZipUpdate(ctx context.Context, client *http.Client, staticDir string, releaseURL string) bool {
+	asset, remoteHash, err := fetchReleaseAssetByName(ctx, client, releaseURL, panelDistZipName)
+	if err != nil {
+		log.WithError(err).Debug("no panel-dist.zip in release, falling back to single-file")
+		return false
+	}
+
+	// Check version file to see if we already have this version.
+	versionFilePath := filepath.Join(staticDir, panelVersionFile)
+	if localVersion, errRead := os.ReadFile(versionFilePath); errRead == nil {
+		local := strings.TrimSpace(string(localVersion))
+		if remoteHash != "" && local != "" && strings.EqualFold(local, remoteHash) {
+			log.Debug("management SPA panel is already up to date")
+			return true
+		}
+	}
+
+	// Download zip.
+	data, downloadedHash, err := downloadAsset(ctx, client, asset.BrowserDownloadURL)
+	if err != nil {
+		log.WithError(err).Warn("failed to download management panel zip")
+		return false
+	}
+
+	if remoteHash != "" && !strings.EqualFold(remoteHash, downloadedHash) {
+		log.Warnf("remote digest mismatch for panel zip: expected %s got %s", remoteHash, downloadedHash)
+	}
+
+	// Extract to staticDir.
+	if errExtract := extractZipToDir(data, staticDir); errExtract != nil {
+		log.WithError(errExtract).Warn("failed to extract management panel zip")
+		return false
+	}
+
+	// Save version hash for future comparisons.
+	saveHash := downloadedHash
+	if remoteHash != "" {
+		saveHash = remoteHash
+	}
+	_ = os.WriteFile(versionFilePath, []byte(saveHash), 0o644)
+
+	log.Infof("management SPA panel updated successfully (hash=%s)", downloadedHash)
+	return true
+}
+
+// extractZipToDir extracts a zip archive into the target directory.
+// It safely handles path traversal by rejecting entries with ".." components.
+func extractZipToDir(zipData []byte, targetDir string) error {
+	reader, err := zip.NewReader(bytes.NewReader(zipData), int64(len(zipData)))
+	if err != nil {
+		return fmt.Errorf("open zip: %w", err)
+	}
+
+	for _, file := range reader.File {
+		cleanName := filepath.Clean(file.Name)
+		if strings.Contains(cleanName, "..") || filepath.IsAbs(cleanName) {
+			log.Warnf("skipping unsafe zip entry: %s", file.Name)
+			continue
+		}
+
+		targetPath := filepath.Join(targetDir, cleanName)
+
+		if file.FileInfo().IsDir() {
+			_ = os.MkdirAll(targetPath, 0o755)
+			continue
+		}
+
+		// Create parent directories.
+		_ = os.MkdirAll(filepath.Dir(targetPath), 0o755)
+
+		rc, errOpen := file.Open()
+		if errOpen != nil {
+			return fmt.Errorf("open zip entry %s: %w", file.Name, errOpen)
+		}
+
+		entryData, errRead := io.ReadAll(rc)
+		_ = rc.Close()
+		if errRead != nil {
+			return fmt.Errorf("read zip entry %s: %w", file.Name, errRead)
+		}
+
+		if errWrite := atomicWriteFile(targetPath, entryData); errWrite != nil {
+			return fmt.Errorf("write %s: %w", cleanName, errWrite)
+		}
+	}
+
+	return nil
 }
 
 func ensureFallbackManagementHTML(ctx context.Context, client *http.Client, localPath string) bool {
@@ -323,7 +431,8 @@ func resolveReleaseURL(repo string) string {
 	return defaultManagementReleaseURL
 }
 
-func fetchLatestAsset(ctx context.Context, client *http.Client, releaseURL string) (*releaseAsset, string, error) {
+// fetchReleaseAssetByName looks for an asset with the given name in the latest GitHub release.
+func fetchReleaseAssetByName(ctx context.Context, client *http.Client, releaseURL string, assetName string) (*releaseAsset, string, error) {
 	if strings.TrimSpace(releaseURL) == "" {
 		releaseURL = defaultManagementReleaseURL
 	}
@@ -359,13 +468,13 @@ func fetchLatestAsset(ctx context.Context, client *http.Client, releaseURL strin
 
 	for i := range release.Assets {
 		asset := &release.Assets[i]
-		if strings.EqualFold(asset.Name, managementAssetName) {
+		if strings.EqualFold(asset.Name, assetName) {
 			remoteHash := parseDigest(asset.Digest)
 			return asset, remoteHash, nil
 		}
 	}
 
-	return nil, "", fmt.Errorf("management asset %s not found in latest release", managementAssetName)
+	return nil, "", fmt.Errorf("asset %s not found in latest release", assetName)
 }
 
 func downloadAsset(ctx context.Context, client *http.Client, downloadURL string) ([]byte, string, error) {
