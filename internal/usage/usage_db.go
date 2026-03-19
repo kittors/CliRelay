@@ -680,9 +680,10 @@ func QueryLogContentForKey(id int64, apiKey string) (LogContentResult, error) {
 // DailySeriesPoint holds one day of aggregated usage data.
 type DailySeriesPoint struct {
 	Date         string `json:"date"`
-	Requests     int64  `json:"requests"`
-	InputTokens  int64  `json:"input_tokens"`
-	OutputTokens int64  `json:"output_tokens"`
+	Requests     int    `json:"requests"`
+	FailedReq    int    `json:"failed_requests"`
+	InputTokens  int    `json:"input_tokens"`
+	OutputTokens int    `json:"output_tokens"`
 }
 
 // ModelDistributionPoint holds aggregated usage data for a single model.
@@ -709,6 +710,7 @@ func QueryDailySeries(apiKey string, days int) ([]DailySeriesPoint, error) {
 	// (configured via TZ/time.Local) for correct day bucketing.
 	q := `SELECT date(timestamp, 'localtime') as d,
 	             COUNT(*) as reqs,
+	             SUM(CASE WHEN failed = 1 OR failed = 'true' THEN 1 ELSE 0 END) as failed_reqs,
 	             COALESCE(SUM(input_tokens),0),
 	             COALESCE(SUM(output_tokens),0)
 	      FROM request_logs` + where + `
@@ -723,7 +725,7 @@ func QueryDailySeries(apiKey string, days int) ([]DailySeriesPoint, error) {
 	var result []DailySeriesPoint
 	for rows.Next() {
 		var p DailySeriesPoint
-		if err := rows.Scan(&p.Date, &p.Requests, &p.InputTokens, &p.OutputTokens); err != nil {
+		if err := rows.Scan(&p.Date, &p.Requests, &p.FailedReq, &p.InputTokens, &p.OutputTokens); err != nil {
 			return nil, fmt.Errorf("usage: daily series scan: %w", err)
 		}
 		result = append(result, p)
