@@ -286,3 +286,76 @@ func (h *Handler) GetPublicLogContent(c *gin.Context) {
 
 	c.JSON(http.StatusOK, result)
 }
+
+// GetUsageChartData returns pre-aggregated chart data for the management portal.
+// It applies an optional apiKey filter.
+func (h *Handler) GetUsageChartData(c *gin.Context) {
+	apiKey := strings.TrimSpace(c.Query("api_key"))
+	days := intQueryDefault(c, "days", 7)
+
+	daily, err := usage.QueryDailySeries(apiKey, days)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if daily == nil {
+		daily = []usage.DailySeriesPoint{}
+	}
+
+	models, err := usage.QueryModelDistribution(apiKey, days)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if models == nil {
+		models = []usage.ModelDistributionPoint{}
+	}
+
+	hourlyTokens, hourlyModels, err := usage.QueryHourlySeries(apiKey, 24)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if hourlyTokens == nil {
+		hourlyTokens = []usage.HourlyTokenPoint{}
+	}
+	if hourlyModels == nil {
+		hourlyModels = []usage.HourlyModelPoint{}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"daily_series":       daily,
+		"model_distribution": models,
+		"hourly_tokens":      hourlyTokens,
+		"hourly_models":      hourlyModels,
+	})
+}
+
+// GetEntityUsageStats returns aggregated statistics grouped by source or auth_index
+func (h *Handler) GetEntityUsageStats(c *gin.Context) {
+	apiKey := strings.TrimSpace(c.Query("api_key"))
+	days := intQueryDefault(c, "days", 7)
+
+	sourceStats, err := usage.QueryEntityStats(apiKey, days, "source")
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if sourceStats == nil {
+		sourceStats = []usage.EntityStatPoint{}
+	}
+
+	authIndexStats, err := usage.QueryEntityStats(apiKey, days, "auth_index")
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if authIndexStats == nil {
+		authIndexStats = []usage.EntityStatPoint{}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"source":     sourceStats,
+		"auth_index": authIndexStats,
+	})
+}
