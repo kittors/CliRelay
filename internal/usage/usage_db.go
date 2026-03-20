@@ -804,10 +804,18 @@ func QueryHourlySeries(apiKey string, hours int) ([]HourlyTokenPoint, []HourlyMo
 	}
 
 	cutoff := time.Now().Add(-time.Duration(hours) * time.Hour).UTC().Format(time.RFC3339)
-	params := LogQueryParams{APIKey: apiKey, Days: 1} // dummy Days, not used since we override 'where'
-	where, args := buildWhereClause(params)
-	// Replace timestamp >= CutoffStartUTC with our hourly cutoff
-	where = strings.Replace(where, CutoffStartUTC(params.Days).Format(time.RFC3339), cutoff, 1)
+
+	// Build WHERE clause directly with the correct hourly cutoff.
+	// Previously this used buildWhereClause + strings.Replace, but that failed
+	// because buildWhereClause uses parameterised queries (? placeholders)
+	// so the time value lives in args, not in the where string.
+	conditions := []string{"timestamp >= ?"}
+	args := []interface{}{cutoff}
+	if apiKey != "" {
+		conditions = append(conditions, "api_key = ?")
+		args = append(args, apiKey)
+	}
+	where := " WHERE " + strings.Join(conditions, " AND ")
 
 	// query tokens by hour
 	tokenQuery := `SELECT strftime('%Y-%m-%d %H:00', timestamp, 'localtime') as h,
