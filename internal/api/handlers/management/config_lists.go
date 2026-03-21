@@ -346,8 +346,10 @@ func (h *Handler) DeleteAPIKeyEntry(c *gin.Context) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
+		// Cascade-delete all associated request logs
+		logsDeleted, _ := usage.DeleteLogsByAPIKey(val)
 		h.refreshAPIKeyCache()
-		c.JSON(200, gin.H{"status": "ok"})
+		c.JSON(200, gin.H{"status": "ok", "logs_deleted": logsDeleted})
 		return
 	}
 	if idxStr := c.Query("index"); idxStr != "" {
@@ -355,12 +357,15 @@ func (h *Handler) DeleteAPIKeyEntry(c *gin.Context) {
 		if _, err := fmt.Sscanf(idxStr, "%d", &idx); err == nil {
 			rows := usage.ListAPIKeys()
 			if idx >= 0 && idx < len(rows) {
-				if err := usage.DeleteAPIKey(rows[idx].Key); err != nil {
+				keyVal := rows[idx].Key
+				if err := usage.DeleteAPIKey(keyVal); err != nil {
 					c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 					return
 				}
+				// Cascade-delete all associated request logs
+				logsDeleted, _ := usage.DeleteLogsByAPIKey(keyVal)
 				h.refreshAPIKeyCache()
-				c.JSON(200, gin.H{"status": "ok"})
+				c.JSON(200, gin.H{"status": "ok", "logs_deleted": logsDeleted})
 				return
 			}
 		}

@@ -309,8 +309,8 @@ func QueryLogs(params LogQueryParams) (LogQueryResult, error) {
 	if params.Size < 1 {
 		params.Size = 50
 	}
-	if params.Size > 200 {
-		params.Size = 200
+	if params.Size > 500 {
+		params.Size = 500
 	}
 	if params.Days < 1 {
 		params.Days = 7
@@ -424,6 +424,37 @@ func QueryStats(params LogQueryParams) (LogStats, error) {
 		TotalTokens: totalTokens,
 		TotalCost:   totalCost,
 	}, nil
+}
+
+// DeleteLogsByAPIKey removes all request_logs and request_log_content entries
+// for the given API key. Returns the number of deleted log rows.
+func DeleteLogsByAPIKey(apiKey string) (int64, error) {
+	db := getDB()
+	if db == nil {
+		return 0, fmt.Errorf("usage: database not initialised")
+	}
+	if apiKey == "" {
+		return 0, fmt.Errorf("usage: empty api_key")
+	}
+
+	// Delete associated content rows first (FK cascade may handle this,
+	// but be explicit to ensure cleanup even without FK enforcement).
+	_, _ = db.Exec(
+		`DELETE FROM request_log_content WHERE log_id IN
+		 (SELECT id FROM request_logs WHERE api_key = ?)`, apiKey)
+
+	result, err := db.Exec("DELETE FROM request_logs WHERE api_key = ?", apiKey)
+	if err != nil {
+		return 0, fmt.Errorf("usage: delete logs by api_key: %w", err)
+	}
+	deleted, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("usage: affected rows: %w", err)
+	}
+	if deleted > 0 {
+		log.Infof("usage: deleted %d request log(s) for api_key=%s", deleted, apiKey)
+	}
+	return deleted, nil
 }
 
 // DashboardKPI holds the aggregated KPI data needed by the dashboard page.

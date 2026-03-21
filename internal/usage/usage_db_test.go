@@ -640,3 +640,68 @@ func TestInsertLogContentTxSkipsSingleRowLargerThanSizeCap(t *testing.T) {
 		t.Fatalf("content row count = %d, want 0", contentRows)
 	}
 }
+
+func TestDeleteLogsByAPIKeyRemovesLogsAndContent(t *testing.T) {
+	initTestUsageDB(t, config.RequestLogStorageConfig{
+		StoreContent:           true,
+		ContentRetentionDays:   30,
+		CleanupIntervalMinutes: 1440,
+	})
+
+	timestamp := time.Now().UTC()
+	input := `{"messages":[{"role":"user","content":"hello"}]}`
+	output := `{"id":"resp_1","output":"done"}`
+
+	// Insert 3 logs: 2 for "sk-target", 1 for "sk-other"
+	InsertLog("sk-target", "gpt-test", "source", "channel", "auth-1", false, timestamp, 100, TokenStats{
+		InputTokens: 10, OutputTokens: 20, TotalTokens: 30,
+	}, input, output)
+	InsertLog("sk-target", "gpt-test", "source", "channel", "auth-1", false, timestamp, 200, TokenStats{
+		InputTokens: 15, OutputTokens: 25, TotalTokens: 40,
+	}, input, output)
+	InsertLog("sk-other", "gpt-test", "source", "channel", "auth-2", false, timestamp, 300, TokenStats{
+		InputTokens: 5, OutputTokens: 10, TotalTokens: 15,
+	}, input, output)
+
+	// Verify all inserted
+	result, err := QueryLogs(LogQueryParams{Page: 1, Size: 10, Days: 1})
+	if err != nil {
+		t.Fatalf("QueryLogs() error = %v", err)
+	}
+	if len(result.Items) != 3 {
+		t.Fatalf("expected 3 log rows, got %d", len(result.Items))
+	}
+
+	// Delete logs for sk-target
+	deleted, err := DeleteLogsByAPIKey("sk-target")
+	if err != nil {
+		t.Fatalf("DeleteLogsByAPIKey() error = %v", err)
+	}
+	if deleted != 2 {
+		t.Fatalf("DeleteLogsByAPIKey() deleted = %d, want 2", deleted)
+	}
+
+	// Verify only sk-other remains
+	result, err = QueryLogs(LogQueryParams{Page: 1, Size: 10, Days: 1})
+	if err != nil {
+		t.Fatalf("QueryLogs() after delete error = %v", err)
+	}
+	if len(result.Items) != 1 {
+		t.Fatalf("expected 1 log row after delete, got %d", len(result.Items))
+	}
+	if result.Items[0].APIKey != "sk-other" {
+		t.Fatalf("remaining log api_key = %q, want sk-other", result.Items[0].APIKey)
+	}
+
+	// Verify content rows are also deleted for sk-target
+	db := getDB()
+	var contentCount int
+	err = db.QueryRow("SELECT COUNT(*) FROM request_log_content").Scan(&contentCount)
+	if err != nil {
+		t.Fatalf("count content rows: %v", err)
+	}
+	// Only sk-other's content should remain (1 row)
+	if contentCount != 1 {
+		t.Fatalf("expected 1 content row (sk-other only), got %d", contentCount)
+	}
+}
