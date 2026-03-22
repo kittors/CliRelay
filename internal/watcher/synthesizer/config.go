@@ -121,6 +121,9 @@ func (s *ConfigSynthesizer) synthesizeClaudeKeys(ctx *SynthesisContext) []*corea
 			attrs["models_hash"] = hash
 		}
 		addConfigHeadersToAttrs(ck.Headers, attrs)
+		if ck.SkipAnthropicProcessing {
+			attrs["skip_anthropic_processing"] = "true"
+		}
 		proxyURL := strings.TrimSpace(ck.ProxyURL)
 		label := strings.TrimSpace(ck.Name)
 		if label == "" {

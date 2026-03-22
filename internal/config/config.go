@@ -361,6 +361,12 @@ type ClaudeKey struct {
 
 	// Cloak configures request cloaking for non-Claude-Code clients.
 	Cloak *CloakConfig `yaml:"cloak,omitempty" json:"cloak,omitempty"`
+
+	// SkipAnthropicProcessing disables Anthropic-specific request processing
+	// (cloaking, cache_control injection, tool prefix, thinking constraints).
+	// Enable this when the base URL points to a third-party Claude-compatible API.
+	// Default: false (Anthropic processing enabled).
+	SkipAnthropicProcessing bool `yaml:"skip-anthropic-processing,omitempty" json:"skip-anthropic-processing,omitempty"`
 }
 
 func (k ClaudeKey) GetAPIKey() string  { return k.APIKey }
