@@ -141,6 +141,25 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 		}
 		lastRequest = updatedLastRequest
 
+		if prewarmPayloads, ok := responsesWebsocketPrewarmPayloads(requestJSON); ok {
+			for _, prewarmPayload := range prewarmPayloads {
+				markAPIResponseTimestamp(c)
+				appendWebsocketEvent(&wsBodyLog, "response", prewarmPayload)
+				if errWrite := conn.WriteMessage(websocket.TextMessage, prewarmPayload); errWrite != nil {
+					log.Warnf(
+						"responses websocket: prewarm write failed id=%s event=%s error=%v",
+						passthroughSessionID,
+						websocketPayloadEventType(prewarmPayload),
+						errWrite,
+					)
+					wsTerminateErr = errWrite
+					return
+				}
+			}
+			lastResponseOutput = []byte("[]")
+			continue
+		}
+
 		modelName := gjson.GetBytes(requestJSON, "model").String()
 		cliCtx, cliCancel := h.GetContextWithCancel(h, c, c.Request.Context())
 		cliCtx = cliproxyexecutor.WithDownstreamWebsocket(cliCtx)
@@ -376,6 +395,17 @@ func normalizeJSONArrayRaw(raw []byte) string {
 		return trimmed
 	}
 	return "[]"
+}
+
+func responsesWebsocketPrewarmPayloads(requestJSON []byte) ([][]byte, bool) {
+	if !gjson.GetBytes(requestJSON, "generate").Exists() || gjson.GetBytes(requestJSON, "generate").Bool() {
+		return nil, false
+	}
+
+	syntheticID := "resp_prewarm_" + uuid.NewString()
+	created := []byte(fmt.Sprintf(`{"type":"response.created","response":{"id":%q}}`, syntheticID))
+	done := []byte(fmt.Sprintf(`{"type":"response.done","response":{"id":%q,"output":[],"usage":{"input_tokens":0,"output_tokens":0,"total_tokens":0}}}`, syntheticID))
+	return [][]byte{created, done}, true
 }
 
 func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(

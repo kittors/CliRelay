@@ -32,6 +32,49 @@ func TestNormalizeResponsesWebsocketRequestCreate(t *testing.T) {
 	}
 }
 
+func TestResponsesWebsocketPrewarmPayloads(t *testing.T) {
+	requestJSON := []byte(`{"model":"test-model","generate":false,"stream":true,"input":[]}`)
+
+	payloads, ok := responsesWebsocketPrewarmPayloads(requestJSON)
+	if !ok {
+		t.Fatalf("expected prewarm payloads")
+	}
+	if len(payloads) != 2 {
+		t.Fatalf("payload len = %d, want 2", len(payloads))
+	}
+	if gjson.GetBytes(payloads[0], "type").String() != "response.created" {
+		t.Fatalf("unexpected created payload type: %s", gjson.GetBytes(payloads[0], "type").String())
+	}
+	if gjson.GetBytes(payloads[1], "type").String() != "response.done" {
+		t.Fatalf("unexpected done payload type: %s", gjson.GetBytes(payloads[1], "type").String())
+	}
+	responseID := gjson.GetBytes(payloads[0], "response.id").String()
+	if responseID == "" {
+		t.Fatalf("created payload missing response id")
+	}
+	if gjson.GetBytes(payloads[1], "response.id").String() != responseID {
+		t.Fatalf("done payload response id mismatch")
+	}
+	if len(gjson.GetBytes(payloads[1], "response.output").Array()) != 0 {
+		t.Fatalf("done payload output must be empty")
+	}
+	if gjson.GetBytes(payloads[1], "response.usage.total_tokens").Int() != 0 {
+		t.Fatalf("done payload total_tokens must be 0")
+	}
+}
+
+func TestResponsesWebsocketPrewarmPayloadsDisabledForGenerateTrue(t *testing.T) {
+	requestJSON := []byte(`{"model":"test-model","generate":true,"stream":true,"input":[]}`)
+
+	payloads, ok := responsesWebsocketPrewarmPayloads(requestJSON)
+	if ok {
+		t.Fatalf("generate=true must not be treated as prewarm")
+	}
+	if payloads != nil {
+		t.Fatalf("expected nil payloads when generate=true")
+	}
+}
+
 func TestNormalizeResponsesWebsocketRequestCreateWithHistory(t *testing.T) {
 	lastRequest := []byte(`{"model":"test-model","stream":true,"input":[{"type":"message","id":"msg-1"}]}`)
 	lastResponseOutput := []byte(`[
