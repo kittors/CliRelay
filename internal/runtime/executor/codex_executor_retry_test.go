@@ -60,6 +60,61 @@ func TestParseCodexRetryAfter(t *testing.T) {
 	})
 }
 
+func TestParseCodexQuotaProbe(t *testing.T) {
+	now := time.Now()
+	resetAt := now.Add(2 * time.Hour).Unix()
+
+	t.Run("keeps blocked when weekly window is exhausted", func(t *testing.T) {
+		body := []byte(`{"rate_limit":{"allowed":false,"limit_reached":true,"primary_window":{"used_percent":25,"reset_at":` + itoa(now.Add(5*time.Hour).Unix()) + `},"secondary_window":{"used_percent":100,"reset_at":` + itoa(resetAt) + `}}}`)
+		result := parseCodexQuotaProbe(body)
+		if result == nil {
+			t.Fatalf("expected quota probe result")
+		}
+		if result.Recovered {
+			t.Fatalf("expected blocked result when weekly window is exhausted")
+		}
+		if result.NextRecoverAt.IsZero() || result.NextRecoverAt.Unix() != resetAt {
+			t.Fatalf("NextRecoverAt = %v, want unix %d", result.NextRecoverAt, resetAt)
+		}
+	})
+
+	t.Run("keeps blocked when any window is exhausted", func(t *testing.T) {
+		body := []byte(`{"rate_limit":{"allowed":true,"limit_reached":false,"primary_window":{"used_percent":20},"secondary_window":{"used_percent":100,"reset_at":` + itoa(resetAt) + `}}}`)
+		result := parseCodexQuotaProbe(body)
+		if result == nil {
+			t.Fatalf("expected quota probe result")
+		}
+		if result.Recovered {
+			t.Fatalf("expected blocked result when one quota window is exhausted")
+		}
+	})
+
+	t.Run("recovers when all windows have capacity", func(t *testing.T) {
+		body := []byte(`{"rate_limit":{"allowed":true,"limit_reached":false,"primary_window":{"used_percent":20},"secondary_window":{"used_percent":80}}}`)
+		result := parseCodexQuotaProbe(body)
+		if result == nil {
+			t.Fatalf("expected quota probe result")
+		}
+		if !result.Recovered {
+			t.Fatalf("expected recovered result when all quota windows have capacity")
+		}
+	})
+
+	t.Run("recognizes explicit weekly window", func(t *testing.T) {
+		body := []byte(`{"rate_limit":{"allowed":true,"limit_reached":false,"primary_window":{"used_percent":20},"weekly_window":{"used_percent":100,"reset_after_seconds":3600}}}`)
+		result := parseCodexQuotaProbe(body)
+		if result == nil {
+			t.Fatalf("expected quota probe result")
+		}
+		if result.Recovered {
+			t.Fatalf("expected blocked result when weekly_window is exhausted")
+		}
+		if result.NextRecoverAt.IsZero() {
+			t.Fatalf("expected NextRecoverAt from weekly_window reset_after_seconds")
+		}
+	})
+}
+
 func itoa(v int64) string {
 	return strconv.FormatInt(v, 10)
 }

@@ -901,45 +901,93 @@ func parseCodexQuotaProbe(body []byte) *cliproxyauth.QuotaProbeResult {
 
 	allowed := rateLimit.Get("allowed")
 	limitReached := rateLimit.Get("limit_reached")
-	if allowed.Exists() && allowed.Bool() && (!limitReached.Exists() || !limitReached.Bool()) {
-		return &cliproxyauth.QuotaProbeResult{Recovered: true}
+	if allowed.Exists() && !allowed.Bool() {
+		return codexQuotaProbeBlocked(rateLimit)
+	}
+	if limitReached.Exists() && limitReached.Bool() {
+		return codexQuotaProbeBlocked(rateLimit)
 	}
 
-	nextRecoverAt := time.Time{}
-	for _, path := range []string{"primary_window", "secondary_window"} {
+	seenWindow := false
+	for _, path := range codexQuotaWindowPaths() {
 		window := rateLimit.Get(path)
 		if !window.Exists() {
 			continue
 		}
-		usedPercent := window.Get("used_percent")
-		if usedPercent.Exists() && usedPercent.Float() < 100 {
-			return &cliproxyauth.QuotaProbeResult{Recovered: true}
+		seenWindow = true
+		if codexQuotaWindowExceeded(window) {
+			return codexQuotaProbeBlocked(rateLimit)
 		}
-		if resetAt := codexQuotaWindowResetAt(window, time.Now()); !resetAt.IsZero() {
+	}
+	if seenWindow || (allowed.Exists() && allowed.Bool()) {
+		return &cliproxyauth.QuotaProbeResult{Recovered: true}
+	}
+
+	return codexQuotaProbeBlocked(rateLimit)
+}
+
+func codexQuotaProbeBlocked(rateLimit gjson.Result) *cliproxyauth.QuotaProbeResult {
+	return &cliproxyauth.QuotaProbeResult{
+		Recovered:     false,
+		NextRecoverAt: codexQuotaNextRecoverAt(rateLimit, time.Now()),
+	}
+}
+
+func codexQuotaWindowPaths() []string {
+	return []string{"primary_window", "secondary_window", "weekly_window", "week_window", "long_window"}
+}
+
+func codexQuotaNextRecoverAt(rateLimit gjson.Result, now time.Time) time.Time {
+	nextRecoverAt := time.Time{}
+	for _, path := range codexQuotaWindowPaths() {
+		window := rateLimit.Get(path)
+		if !window.Exists() || !codexQuotaWindowExceeded(window) {
+			continue
+		}
+		if resetAt := codexQuotaWindowResetAt(window, now); !resetAt.IsZero() {
 			if nextRecoverAt.IsZero() || resetAt.Before(nextRecoverAt) {
 				nextRecoverAt = resetAt
 			}
 		}
 	}
+	return nextRecoverAt
+}
 
-	return &cliproxyauth.QuotaProbeResult{
-		Recovered:     false,
-		NextRecoverAt: nextRecoverAt,
+func codexQuotaWindowExceeded(window gjson.Result) bool {
+	if !window.Exists() {
+		return false
 	}
+	if limitReached := window.Get("limit_reached"); limitReached.Exists() {
+		return limitReached.Bool()
+	}
+	if usedPercent := window.Get("used_percent"); usedPercent.Exists() {
+		return usedPercent.Float() >= 100
+	}
+	if remaining := window.Get("remaining"); remaining.Exists() {
+		return remaining.Float() <= 0
+	}
+	if available := window.Get("available"); available.Exists() {
+		return !available.Bool()
+	}
+	return false
 }
 
 func codexQuotaWindowResetAt(window gjson.Result, now time.Time) time.Time {
 	if !window.Exists() {
 		return time.Time{}
 	}
-	if resetAt := window.Get("reset_at").Int(); resetAt > 0 {
-		resetAtTime := time.Unix(resetAt, 0)
-		if resetAtTime.After(now) {
-			return resetAtTime
+	for _, path := range []string{"reset_at", "resets_at"} {
+		if resetAt := window.Get(path).Int(); resetAt > 0 {
+			resetAtTime := time.Unix(resetAt, 0)
+			if resetAtTime.After(now) {
+				return resetAtTime
+			}
 		}
 	}
-	if afterSeconds := window.Get("reset_after_seconds").Int(); afterSeconds > 0 {
-		return now.Add(time.Duration(afterSeconds) * time.Second)
+	for _, path := range []string{"reset_after_seconds", "resets_in_seconds"} {
+		if afterSeconds := window.Get(path).Int(); afterSeconds > 0 {
+			return now.Add(time.Duration(afterSeconds) * time.Second)
+		}
 	}
 	return time.Time{}
 }
