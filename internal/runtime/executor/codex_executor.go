@@ -127,6 +127,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		return e.executeCompact(ctx, auth, req, opts)
 	}
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
+	baseModel = resolveCodexTierModel(baseModel, auth)
 
 	apiKey, baseURL := codexCreds(auth)
 	if baseURL == "" {
@@ -242,6 +243,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 
 func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
+	baseModel = resolveCodexTierModel(baseModel, auth)
 
 	apiKey, baseURL := codexCreds(auth)
 	if baseURL == "" {
@@ -867,6 +869,19 @@ func codexCreds(a *cliproxyauth.Auth) (apiKey, baseURL string) {
 		}
 	}
 	return
+}
+
+func resolveCodexTierModel(requestedModel string, auth *cliproxyauth.Auth) string {
+	model := strings.TrimSpace(requestedModel)
+	if model == "" || auth == nil || auth.Metadata == nil {
+		return model
+	}
+	planType, _ := auth.Metadata["plan_type"].(string)
+	switch strings.ToLower(strings.TrimSpace(planType)) {
+	case "free", "legacy":
+		return model
+	}
+	return model
 }
 
 func (e *CodexExecutor) resolveCodexConfig(auth *cliproxyauth.Auth) *config.CodexKey {

@@ -500,6 +500,13 @@ func (s *Service) Run(ctx context.Context) error {
 		if errLoad := s.coreManager.Load(ctx); errLoad != nil {
 			log.Warnf("failed to load auth store: %v", errLoad)
 		}
+		for _, auth := range s.coreManager.List() {
+			if auth == nil || auth.ID == "" {
+				continue
+			}
+			s.ensureExecutorsForAuth(auth)
+			s.registerModelsForAuth(ctx, auth)
+		}
 	}
 
 	var err error
@@ -848,6 +855,7 @@ func (s *Service) registerModelsForAuth(ctx context.Context, a *coreauth.Auth) {
 		models = applyExcludedModels(models, excluded)
 	case "codex":
 		models = registry.GetOpenAIModels()
+		excluded = mergeExcludedModels(excluded, codexTierExcludedModelsFromAuth(a))
 		if entry := s.resolveConfigCodexKey(a); entry != nil {
 			if len(entry.Models) > 0 {
 				models = buildCodexConfigModels(entry)
@@ -1183,6 +1191,44 @@ func applyExcludedModels(models []*ModelInfo, excluded []string) []*ModelInfo {
 		}
 	}
 	return filtered
+}
+
+func mergeExcludedModels(base []string, extra []string) []string {
+	if len(extra) == 0 {
+		return base
+	}
+	seen := make(map[string]struct{}, len(base)+len(extra))
+	out := make([]string, 0, len(base)+len(extra))
+	appendUnique := func(values []string) {
+		for _, value := range values {
+			trimmed := strings.TrimSpace(value)
+			if trimmed == "" {
+				continue
+			}
+			key := strings.ToLower(trimmed)
+			if _, exists := seen[key]; exists {
+				continue
+			}
+			seen[key] = struct{}{}
+			out = append(out, trimmed)
+		}
+	}
+	appendUnique(base)
+	appendUnique(extra)
+	return out
+}
+
+func codexTierExcludedModelsFromAuth(auth *coreauth.Auth) []string {
+	if auth == nil || auth.Metadata == nil {
+		return nil
+	}
+	planType, _ := auth.Metadata["plan_type"].(string)
+	switch strings.ToLower(strings.TrimSpace(planType)) {
+	case "free", "legacy":
+		return nil
+	default:
+		return nil
+	}
 }
 
 func applyModelPrefixes(models []*ModelInfo, prefix string, forceModelPrefix bool) []*ModelInfo {

@@ -43,12 +43,22 @@ AGENTS.md
 CLAUDE.md
 GEMINI.md
 
+# Tool runtime/generated content
+node_modules/
+tools*/**/node_modules/
+tools*/**/.profiles/
+tools*/**/data/
+tools*/**/__pycache__/
+tools*/**/*.pyc
+
 # Tooling metadata
 .vscode/*
 .codex/*
 .claude/*
 .gemini/*
 .serena/*
+.hermes/*
+.playwright-mcp/*
 .tmp-go/*
 .agent/*
 .agents/*
@@ -58,6 +68,10 @@ GEMINI.md
 .bmad/*
 _bmad/*
 _bmad-output/*
+
+# Local backups / runtime data
+config.yaml.pre-sqlite-migration
+data/*
 
 # macOS
 .DS_Store

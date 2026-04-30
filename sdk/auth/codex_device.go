@@ -259,10 +259,11 @@ func (a *CodexAuthenticator) buildAuthRecord(authSvc *codex.CodexAuth, authBundl
 
 	planType := ""
 	hashAccountID := ""
+	accountID := ""
 	if tokenStorage.IDToken != "" {
 		if claims, errParse := codex.ParseJWTToken(tokenStorage.IDToken); errParse == nil && claims != nil {
-			planType = strings.TrimSpace(claims.CodexAuthInfo.ChatgptPlanType)
-			accountID := strings.TrimSpace(claims.CodexAuthInfo.ChatgptAccountID)
+			planType = strings.ToLower(strings.TrimSpace(claims.CodexAuthInfo.ChatgptPlanType))
+			accountID = strings.TrimSpace(claims.CodexAuthInfo.ChatgptAccountID)
 			if accountID != "" {
 				digest := sha256.Sum256([]byte(accountID))
 				hashAccountID = hex.EncodeToString(digest[:])[:8]
@@ -273,6 +274,12 @@ func (a *CodexAuthenticator) buildAuthRecord(authSvc *codex.CodexAuth, authBundl
 	fileName := codex.CredentialFileName(tokenStorage.Email, planType, hashAccountID, true)
 	metadata := map[string]any{
 		"email": tokenStorage.Email,
+	}
+	if accountID != "" {
+		metadata["account_id"] = accountID
+	}
+	if planType != "" {
+		metadata["plan_type"] = planType
 	}
 
 	fmt.Println("Codex authentication successful")
