@@ -55,6 +55,46 @@ func TestCanServeModelWithScopesSupportsAllowedGroupPrefixedModels(t *testing.T)
 	}
 }
 
+func TestCanServeModelWithScopesHonorsGroupAllowedModels(t *testing.T) {
+	t.Parallel()
+
+	reg := registry.GetGlobalRegistry()
+	now := time.Now().Unix()
+	reg.RegisterClient("team-auth", "openai", []*registry.ModelInfo{
+		{ID: "team/gpt-5", Created: now},
+		{ID: "team/claude-opus", Created: now},
+	})
+	t.Cleanup(func() {
+		reg.UnregisterClient("team-auth")
+	})
+
+	manager := NewManager(nil, nil, nil)
+	manager.SetConfig(&internalconfig.Config{
+		Routing: internalconfig.RoutingConfig{
+			ChannelGroups: []internalconfig.RoutingChannelGroup{
+				{
+					Name:          "team",
+					AllowedModels: []string{"gpt-5"},
+				},
+			},
+		},
+	})
+	if _, err := manager.Register(context.Background(), &Auth{
+		ID:       "team-auth",
+		Provider: "openai",
+		Prefix:   "team",
+	}); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+
+	if !manager.CanServeModelWithScopes("gpt-5", nil, nil, "team") {
+		t.Fatal("expected allowed model to be available through route group")
+	}
+	if manager.CanServeModelWithScopes("claude-opus", nil, nil, "team") {
+		t.Fatal("expected model outside routing group allowed-models to be unavailable")
+	}
+}
+
 func TestAuthGroupsMatchesLegacyOAuthEmailAfterRename(t *testing.T) {
 	t.Parallel()
 

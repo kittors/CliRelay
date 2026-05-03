@@ -19,6 +19,7 @@ type RoutingChannelGroup struct {
 	Match             ChannelGroupMatch `yaml:"match,omitempty" json:"match,omitempty"`
 	Priority          int               `yaml:"priority,omitempty" json:"priority,omitempty"`
 	ChannelPriorities map[string]int    `yaml:"channel-priorities,omitempty" json:"channel-priorities,omitempty"`
+	AllowedModels     []string          `yaml:"allowed-models,omitempty" json:"allowed-models,omitempty"`
 }
 
 // RoutingPathRoute maps a URL namespace path to a channel group.
@@ -98,6 +99,9 @@ func (cfg *Config) SanitizeRouting() {
 			return strings.TrimSpace(value)
 		})
 		group.ChannelPriorities = normalizeChannelPriorities(group.ChannelPriorities)
+		group.AllowedModels = normalizeStringList(group.AllowedModels, func(value string) string {
+			return strings.TrimSpace(value)
+		})
 		if group.Name == "" {
 			continue
 		}

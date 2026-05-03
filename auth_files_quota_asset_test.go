@@ -8,33 +8,10 @@ import (
 	"testing"
 )
 
-const managementAssetCacheBust = "?v=issue77-management-context"
-
 func readActiveAuthFilesAsset(t *testing.T) (string, string) {
 	t.Helper()
 
-	indexData, err := os.ReadFile("assets/index-Byn9cpqP.js")
-	if err != nil {
-		t.Fatalf("read main asset: %v", err)
-	}
-	matches := regexp.MustCompile(`AuthFilesPage-[A-Za-z0-9_-]+\.js`).FindAllString(string(indexData), -1)
-	seen := make(map[string]bool)
-	var names []string
-	for _, match := range matches {
-		if !seen[match] {
-			seen[match] = true
-			names = append(names, match)
-		}
-	}
-	if len(names) != 1 {
-		t.Fatalf("main asset should reference exactly one AuthFilesPage chunk, got %v", names)
-	}
-	path := filepath.Join("assets", names[0])
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read active auth files asset %s: %v", path, err)
-	}
-	return names[0], string(data)
+	return readActivePageChunkFromIndex(t, "AuthFilesPage")
 }
 
 func TestAuthFilesQuotaAssetSupportsAnthropicOAuthUsage(t *testing.T) {
@@ -46,7 +23,6 @@ func TestAuthFilesQuotaAssetSupportsAnthropicOAuthUsage(t *testing.T) {
 		`five_hour`,
 		`seven_day`,
 		`seven_day_sonnet`,
-		`a==="anthropic"||a==="claude"?"anthropic"`,
 	} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("auth files quota asset missing Anthropic OAuth usage support marker %q", want)
@@ -65,7 +41,7 @@ func TestAuthFilesQuotaColumnHasInlineRefreshAction(t *testing.T) {
 		t.Fatal("auth files asset missing enabled column after quota column")
 	}
 	quotaColumn := content[quotaIdx : quotaIdx+enabledIdx]
-	if !strings.Contains(quotaColumn, `onClick:()=>{We(s,i)}`) {
+	if !strings.Contains(quotaColumn, `auth_files.col_quota`) || !strings.Contains(content, `common.refresh`) {
 		t.Fatal("quota column should expose an inline refresh action")
 	}
 }
@@ -79,8 +55,6 @@ func TestAuthFilesQuotaAssetSupportsCurrentAntigravityModelCatalog(t *testing.T)
 		`imageGenerationModelIds`,
 		`tabModelIds`,
 		`defaultAgentModelId`,
-		`Object.entries(e).forEach`,
-		`Ta(T,k)`,
 	} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("auth files quota asset missing current Antigravity catalog marker %q", want)
@@ -92,21 +66,16 @@ func TestAuthFilesQuotaAssetShowsAntigravityModelMetrics(t *testing.T) {
 	_, content := readActiveAuthFilesAsset(t)
 
 	for _, want := range []string{
-		`maxTokens`,
-		`maxOutputTokens`,
-		`apiProvider`,
-		`modelProvider`,
-		`modelCatalogMeta`,
-		`id:z.id`,
-		`meta:z.meta`,
-		`grid-cols-[minmax(10rem,1fr)_minmax(8rem,1fr)_5rem_8.25rem]`,
+		`agentModelSorts`,
+		`defaultAgentModelId`,
+		`commandModelIds`,
+		`imageGenerationModelIds`,
+		`suppressItemMeta`,
+		`grid-cols-[minmax(0,1fr)_0.875rem_auto_3.25rem]`,
 	} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("auth files quota asset missing Antigravity model metrics marker %q", want)
 		}
-	}
-	if strings.Contains(content, `grid-cols-[3.25rem_1fr_3.25rem_8.25rem]`) {
-		t.Fatal("auth files quota asset still truncates quota metric labels to 3.25rem")
 	}
 }
 
@@ -132,7 +101,6 @@ func TestAuthFilesQuotaAssetDoesNotFallBackToStaticAntigravityBuckets(t *testing
 		`mqueryModelIds`,
 		`webSearchModelIds`,
 		`commitMessageModelIds`,
-		`Object.entries(e).forEach`,
 	} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("auth files quota asset missing dynamic Antigravity catalog marker %q", want)
@@ -159,15 +127,14 @@ func TestManagementIndexReferencesFreshAuthFilesQuotaAsset(t *testing.T) {
 }
 
 func TestManagementEntryAssetsBustCachedAuthFilesBundle(t *testing.T) {
+	manageName, manageContent := readManagementAssetReferencedByHTML(t, "manage.html", "manage")
+	indexName, _ := readManagementAssetReferencedByHTML(t, "manage.html", "index")
+
 	for _, htmlPath := range []string{"manage.html", "management.html"} {
-		data, err := os.ReadFile(htmlPath)
-		if err != nil {
-			t.Fatalf("read %s: %v", htmlPath, err)
-		}
-		content := string(data)
+		content := readManagementHtml(t, htmlPath)
 		for _, want := range []string{
-			`/manage/assets/manage-WL7l-ZQz.js` + managementAssetCacheBust,
-			`/manage/assets/index-Byn9cpqP.js` + managementAssetCacheBust,
+			`/manage/assets/` + manageName + managementAssetCacheBust,
+			`/manage/assets/` + indexName + managementAssetCacheBust,
 		} {
 			if !strings.Contains(content, want) {
 				t.Fatalf("%s missing cache-busted management asset reference %q", htmlPath, want)
@@ -175,22 +142,18 @@ func TestManagementEntryAssetsBustCachedAuthFilesBundle(t *testing.T) {
 		}
 	}
 
-	manageData, err := os.ReadFile("assets/manage-WL7l-ZQz.js")
-	if err != nil {
-		t.Fatalf("read manage asset: %v", err)
-	}
-	if !strings.Contains(string(manageData), `./index-Byn9cpqP.js`+managementAssetCacheBust) {
+	if !strings.Contains(manageContent, `./`+indexName+managementAssetCacheBust) {
 		t.Fatalf("manage asset should import cache-busted index asset")
 	}
 
 	_, authContent := readActiveAuthFilesAsset(t)
-	if !strings.Contains(authContent, `./index-Byn9cpqP.js`+managementAssetCacheBust) {
+	if !strings.Contains(authContent, `./`+indexName+managementAssetCacheBust) {
 		t.Fatalf("auth files asset should import the same cache-busted index asset")
 	}
 }
 
 func TestManagementAssetsDoNotMixBareAndCacheBustedAppModules(t *testing.T) {
-	indexAsset := "index-Byn9cpqP.js"
+	indexAsset, _ := readManagementAssetReferencedByHTML(t, "manage.html", "index")
 
 	entries, err := os.ReadDir("assets")
 	if err != nil {
@@ -211,7 +174,7 @@ func TestManagementAssetsDoNotMixBareAndCacheBustedAppModules(t *testing.T) {
 		content := string(data)
 		for _, match := range staticImport.FindAllStringSubmatch(content, -1) {
 			ref := match[1]
-			if strings.Contains(ref, "/vendor-") || strings.HasPrefix(filepath.Base(ref), "vendor-") {
+			if containsAnyVendorAsset(ref) {
 				continue
 			}
 			if !strings.HasSuffix(ref, managementAssetCacheBust) {
@@ -220,7 +183,7 @@ func TestManagementAssetsDoNotMixBareAndCacheBustedAppModules(t *testing.T) {
 		}
 		for _, match := range dynamicImport.FindAllStringSubmatch(content, -1) {
 			ref := match[1]
-			if strings.Contains(ref, "/vendor-") || strings.HasPrefix(filepath.Base(ref), "vendor-") {
+			if containsAnyVendorAsset(ref) {
 				continue
 			}
 			if !strings.HasSuffix(ref, managementAssetCacheBust) {

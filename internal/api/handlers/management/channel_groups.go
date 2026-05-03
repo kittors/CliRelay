@@ -19,13 +19,14 @@ type channelDescriptor struct {
 }
 
 type channelGroupItem struct {
-	Name        string   `json:"name"`
-	Description string   `json:"description,omitempty"`
-	Priority    int      `json:"priority,omitempty"`
-	Implicit    bool     `json:"implicit"`
-	Prefixes    []string `json:"prefixes,omitempty"`
-	Channels    []string `json:"channels,omitempty"`
-	PathRoutes  []string `json:"path-routes,omitempty"`
+	Name          string   `json:"name"`
+	Description   string   `json:"description,omitempty"`
+	Priority      int      `json:"priority,omitempty"`
+	Implicit      bool     `json:"implicit"`
+	Prefixes      []string `json:"prefixes,omitempty"`
+	Channels      []string `json:"channels,omitempty"`
+	AllowedModels []string `json:"allowed-models,omitempty"`
+	PathRoutes    []string `json:"path-routes,omitempty"`
 }
 
 func collectChannelDescriptors(cfg *config.Config, auths []*coreauth.Auth) []channelDescriptor {
@@ -114,6 +115,7 @@ func buildChannelGroupItems(cfg *config.Config, auths []*coreauth.Auth) []channe
 		}
 		item.Description = group.Description
 		item.Priority = group.Priority
+		item.AllowedModels = append(item.AllowedModels, group.AllowedModels...)
 		item.Prefixes = append(item.Prefixes, group.Match.Prefixes...)
 		configuredChannelsByGroup[item.Name] = append(configuredChannelsByGroup[item.Name], group.Match.Channels...)
 	}
