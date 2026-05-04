@@ -433,13 +433,21 @@ func extractGeminiConfig(body []byte, provider string) ThinkingConfig {
 // extractOpenAIConfig extracts thinking configuration from OpenAI format request body.
 //
 // OpenAI API format:
-//   - reasoning_effort: "none", "low", "medium", "high" (discrete levels)
+//   - reasoning_effort: "none", "low", "medium", "high" (Chat Completions)
+//   - reasoning.effort: "none", "low", "medium", "high" (Responses)
 //
 // OpenAI uses level-based thinking configuration only, no numeric budget support.
 // The "none" value is treated specially to return ModeNone.
 func extractOpenAIConfig(body []byte) ThinkingConfig {
 	// Check reasoning_effort (OpenAI Chat Completions format)
 	if effort := gjson.GetBytes(body, "reasoning_effort"); effort.Exists() {
+		value := effort.String()
+		if value == "none" {
+			return ThinkingConfig{Mode: ModeNone, Budget: 0}
+		}
+		return ThinkingConfig{Mode: ModeLevel, Level: ThinkingLevel(value)}
+	}
+	if effort := gjson.GetBytes(body, "reasoning.effort"); effort.Exists() {
 		value := effort.String()
 		if value == "none" {
 			return ThinkingConfig{Mode: ModeNone, Budget: 0}
