@@ -56,3 +56,59 @@ func TestOpenAICompatExecutorCompactPassthrough(t *testing.T) {
 		t.Fatalf("payload = %s", string(resp.Payload))
 	}
 }
+
+func TestOpenAICompatExecutorAppliesCodexIdentityFingerprint(t *testing.T) {
+	var got http.Header
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Clone()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl_1","object":"chat.completion","choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+	}))
+	defer server.Close()
+
+	executor := NewOpenAICompatExecutor("bigmodel-coding", &config.Config{
+		IdentityFingerprint: config.IdentityFingerprintConfig{
+			Codex: config.CodexIdentityFingerprintConfig{
+				Enabled:     true,
+				UserAgent:   "codex-tui/test",
+				Version:     "9.9.9",
+				Originator:  "codex-tui",
+				SessionMode: "fixed",
+				SessionID:   "session-fixed",
+			},
+		},
+		OpenAICompatibility: []config.OpenAICompatibility{
+			{Name: "bigmodel-coding", IdentityFingerprint: "codex"},
+		},
+	})
+	auth := &cliproxyauth.Auth{
+		Provider: "bigmodel-coding",
+		Attributes: map[string]string{
+			"base_url":             server.URL + "/v1",
+			"api_key":              "test",
+			"compat_name":          "bigmodel-coding",
+			"provider_key":         "bigmodel-coding",
+			"identity_fingerprint": "codex",
+		},
+	}
+	payload := []byte(`{"model":"gpt-5.3-codex","messages":[{"role":"user","content":"hi"}]}`)
+	_, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "gpt-5.3-codex",
+		Payload: payload,
+	}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FromString("openai")})
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+	if got.Get("User-Agent") != "codex-tui/test" {
+		t.Fatalf("User-Agent = %q", got.Get("User-Agent"))
+	}
+	if got.Get("Version") != "9.9.9" {
+		t.Fatalf("Version = %q", got.Get("Version"))
+	}
+	if got.Get("Originator") != "codex-tui" {
+		t.Fatalf("Originator = %q", got.Get("Originator"))
+	}
+	if got.Get("Session_id") != "session-fixed" {
+		t.Fatalf("Session_id = %q", got.Get("Session_id"))
+	}
+}

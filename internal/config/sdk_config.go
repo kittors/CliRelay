@@ -42,6 +42,35 @@ type SDKConfig struct {
 	// NonStreamKeepAliveInterval controls how often blank lines are emitted for non-streaming responses.
 	// <= 0 disables keep-alives. Value is in seconds.
 	NonStreamKeepAliveInterval int `yaml:"nonstream-keepalive-interval,omitempty" json:"nonstream-keepalive-interval,omitempty"`
+
+	// Observability controls optional high-cardinality diagnostic logs.
+	Observability ObservabilityConfig `yaml:"observability,omitempty" json:"observability,omitempty"`
+}
+
+// ObservabilityConfig groups optional diagnostic logging features.
+type ObservabilityConfig struct {
+	// ResponseTrace controls detailed /v1/responses lifecycle logs.
+	ResponseTrace ResponseTraceConfig `yaml:"response-trace,omitempty" json:"response-trace,omitempty"`
+}
+
+// ResponseTraceConfig controls detailed /v1/responses lifecycle logs.
+type ResponseTraceConfig struct {
+	// Enabled emits lifecycle and latency logs for Responses API requests.
+	Enabled bool `yaml:"enabled" json:"enabled"`
+
+	// SlowThresholdMS emits slow-request summaries at or above this total duration.
+	// Defaults to 20000ms when Enabled is true and this value is <= 0.
+	SlowThresholdMS int `yaml:"slow-threshold-ms,omitempty" json:"slow-threshold-ms,omitempty"`
+
+	// LogPayloadPreview includes a bounded request/response payload preview.
+	// Keep disabled unless actively debugging; payloads may contain sensitive content.
+	LogPayloadPreview bool `yaml:"log-payload-preview,omitempty" json:"log-payload-preview,omitempty"`
+
+	// PayloadPreviewBytes caps logged payload preview bytes. Defaults to 512 and is capped internally.
+	PayloadPreviewBytes int `yaml:"payload-preview-bytes,omitempty" json:"payload-preview-bytes,omitempty"`
+
+	// LogHeaders includes selected safe client identity headers in lifecycle logs.
+	LogHeaders bool `yaml:"log-headers,omitempty" json:"log-headers,omitempty"`
 }
 
 // RequestLogStorageConfig controls retention and cleanup of full request/response bodies.

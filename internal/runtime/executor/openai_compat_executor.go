@@ -44,6 +44,7 @@ func (e *OpenAICompatExecutor) PrepareRequest(req *http.Request, auth *cliproxya
 	if strings.TrimSpace(apiKey) != "" {
 		req.Header.Set("Authorization", "Bearer "+apiKey)
 	}
+	e.applyIdentityFingerprint(req, auth, false)
 	var attrs map[string]string
 	if auth != nil {
 		attrs = auth.Attributes
@@ -117,6 +118,7 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 		httpReq.Header.Set("Authorization", "Bearer "+apiKey)
 	}
 	httpReq.Header.Set("User-Agent", "cli-proxy-openai-compat")
+	e.applyIdentityFingerprint(httpReq, auth, false)
 	var attrs map[string]string
 	if auth != nil {
 		attrs = auth.Attributes
@@ -216,6 +218,7 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 		httpReq.Header.Set("Authorization", "Bearer "+apiKey)
 	}
 	httpReq.Header.Set("User-Agent", "cli-proxy-openai-compat")
+	e.applyIdentityFingerprint(httpReq, auth, false)
 	var attrs map[string]string
 	if auth != nil {
 		attrs = auth.Attributes
@@ -350,6 +353,30 @@ func (e *OpenAICompatExecutor) resolveCredentials(auth *cliproxyauth.Auth) (base
 		apiKey = strings.TrimSpace(auth.Attributes["api_key"])
 	}
 	return
+}
+
+func (e *OpenAICompatExecutor) applyIdentityFingerprint(req *http.Request, auth *cliproxyauth.Auth, websocket bool) {
+	if req == nil {
+		return
+	}
+	fingerprint := ""
+	if auth != nil && auth.Attributes != nil {
+		fingerprint = strings.TrimSpace(strings.ToLower(auth.Attributes["identity_fingerprint"]))
+	}
+	if fingerprint == "" {
+		if compat := e.resolveCompatConfig(auth); compat != nil {
+			fingerprint = strings.TrimSpace(strings.ToLower(compat.IdentityFingerprint))
+		}
+	}
+	switch fingerprint {
+	case "codex":
+		if fp, ok := codexIdentityFingerprint(e.cfg); ok {
+			applyCodexIdentityFingerprintHeaders(req.Header, fp, websocket)
+			if strings.TrimSpace(fp.Originator) != "" {
+				req.Header.Set("Originator", fp.Originator)
+			}
+		}
+	}
 }
 
 func (e *OpenAICompatExecutor) resolveCompatConfig(auth *cliproxyauth.Auth) *config.OpenAICompatibility {

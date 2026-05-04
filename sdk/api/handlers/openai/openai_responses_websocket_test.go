@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
+	internalconfig "github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/tidwall/gjson"
 )
 
@@ -72,6 +73,29 @@ func TestResponsesWebsocketPrewarmPayloadsDisabledForGenerateTrue(t *testing.T) 
 	}
 	if payloads != nil {
 		t.Fatalf("expected nil payloads when generate=true")
+	}
+}
+
+func TestWebsocketResponseTraceFromConfigDefaultsAndCaps(t *testing.T) {
+	trace := websocketResponseTraceFromConfig(&internalconfig.SDKConfig{
+		Observability: internalconfig.ObservabilityConfig{
+			ResponseTrace: internalconfig.ResponseTraceConfig{
+				Enabled:             true,
+				LogPayloadPreview:   true,
+				LogHeaders:          true,
+				PayloadPreviewBytes: wsPayloadLogMaxSize + 100,
+			},
+		},
+	})
+
+	if !trace.Enabled || !trace.LogPayloadPreview || !trace.LogHeaders {
+		t.Fatalf("trace booleans were not preserved: %+v", trace)
+	}
+	if trace.PayloadPreviewBytes != wsPayloadLogMaxSize {
+		t.Fatalf("payload preview cap = %d, want %d", trace.PayloadPreviewBytes, wsPayloadLogMaxSize)
+	}
+	if trace.SlowThreshold != wsResponseTraceDefaultSlowMS*1000000 {
+		t.Fatalf("slow threshold = %s, want default %dms", trace.SlowThreshold, wsResponseTraceDefaultSlowMS)
 	}
 }
 

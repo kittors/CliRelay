@@ -603,6 +603,10 @@ type OpenAICompatibility struct {
 
 	// Headers optionally adds extra HTTP headers for requests sent to this provider.
 	Headers map[string]string `yaml:"headers,omitempty" json:"headers,omitempty"`
+
+	// IdentityFingerprint optionally reuses a configured provider identity template
+	// for upstream requests. Currently supported value: "codex".
+	IdentityFingerprint string `yaml:"identity-fingerprint,omitempty" json:"identity-fingerprint,omitempty"`
 }
 
 // OpenAICompatibilityAPIKey represents an API key configuration with optional proxy setting.

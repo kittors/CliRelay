@@ -13,6 +13,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
+	internalconfig "github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/api/handlers"
@@ -23,17 +24,27 @@ import (
 )
 
 const (
-	wsRequestTypeCreate   = "response.create"
-	wsRequestTypeAppend   = "response.append"
-	wsEventTypeError      = "error"
-	wsEventTypeCompleted  = "response.completed"
-	wsEventTypeDone       = "response.done"
-	wsDoneMarker          = "[DONE]"
-	wsTurnStateHeader     = "x-codex-turn-state"
-	wsRequestBodyKey      = "REQUEST_BODY_OVERRIDE"
-	wsPayloadLogMaxSize   = 2048
-	wsNormalCloseDeadline = time.Second
+	wsRequestTypeCreate          = "response.create"
+	wsRequestTypeAppend          = "response.append"
+	wsEventTypeError             = "error"
+	wsEventTypeCompleted         = "response.completed"
+	wsEventTypeDone              = "response.done"
+	wsDoneMarker                 = "[DONE]"
+	wsTurnStateHeader            = "x-codex-turn-state"
+	wsRequestBodyKey             = "REQUEST_BODY_OVERRIDE"
+	wsPayloadLogMaxSize          = 2048
+	wsPayloadPreviewDefaultBytes = 512
+	wsResponseTraceDefaultSlowMS = 20000
+	wsNormalCloseDeadline        = time.Second
 )
+
+type websocketResponseTrace struct {
+	Enabled             bool
+	SlowThreshold       time.Duration
+	LogPayloadPreview   bool
+	PayloadPreviewBytes int
+	LogHeaders          bool
+}
 
 var responsesWebsocketUpgrader = websocket.Upgrader{
 	ReadBufferSize:  4096,
@@ -49,15 +60,32 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 	if err != nil {
 		return
 	}
+	trace := websocketResponseTraceFromConfig(nil)
+	if h != nil {
+		trace = websocketResponseTraceFromConfig(h.Cfg)
+	}
+	connectedAt := time.Now()
 	passthroughSessionID := uuid.NewString()
 	clientRemoteAddr := ""
 	if c != nil && c.Request != nil {
 		clientRemoteAddr = strings.TrimSpace(c.Request.RemoteAddr)
 	}
-	log.Infof("responses websocket: client connected id=%s remote=%s", passthroughSessionID, clientRemoteAddr)
+	if trace.Enabled {
+		log.Infof(
+			"responses websocket trace: client connected id=%s remote=%s headers=%s",
+			passthroughSessionID,
+			clientRemoteAddr,
+			websocketTraceHeaders(c, trace),
+		)
+	} else {
+		log.Infof("responses websocket: client connected id=%s remote=%s", passthroughSessionID, clientRemoteAddr)
+	}
 	var wsTerminateErr error
 	var wsBodyLog strings.Builder
 	defer func() {
+		if trace.Enabled {
+			log.Infof("responses websocket trace: session finished id=%s total_ms=%d error=%v", passthroughSessionID, time.Since(connectedAt).Milliseconds(), wsTerminateErr)
+		}
 		if wsTerminateErr != nil {
 			// log.Infof("responses websocket: session closing id=%s reason=%v", passthroughSessionID, wsTerminateErr)
 		} else {
@@ -78,6 +106,7 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 	pinnedAuthID := ""
 
 	for {
+		waitStart := time.Now()
 		msgType, payload, errReadMessage := conn.ReadMessage()
 		if errReadMessage != nil {
 			wsTerminateErr = errReadMessage
@@ -92,13 +121,10 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 		if msgType != websocket.TextMessage && msgType != websocket.BinaryMessage {
 			continue
 		}
-		log.Infof(
-			"responses websocket: downstream_in id=%s type=%d event=%s payload=%s",
-			passthroughSessionID,
-			msgType,
-			websocketPayloadEventType(payload),
-			websocketPayloadPreview(payload),
-		)
+		logResponsesWebsocketPayload(trace, "downstream_in", passthroughSessionID, msgType, websocketPayloadEventType(payload), false, 0, payload)
+		if trace.Enabled {
+			log.Infof("responses websocket trace: client message received id=%s wait_ms=%d bytes=%d", passthroughSessionID, time.Since(waitStart).Milliseconds(), len(payload))
+		}
 		appendWebsocketEvent(&wsBodyLog, "request", payload)
 
 		allowIncrementalInputWithPreviousResponseID := websocketUpstreamSupportsIncrementalInput(nil, nil)
@@ -122,13 +148,7 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 			markAPIResponseTimestamp(c)
 			errorPayload, errWrite := writeResponsesWebsocketError(conn, errMsg)
 			appendWebsocketEvent(&wsBodyLog, "response", errorPayload)
-			log.Infof(
-				"responses websocket: downstream_out id=%s type=%d event=%s payload=%s",
-				passthroughSessionID,
-				websocket.TextMessage,
-				websocketPayloadEventType(errorPayload),
-				websocketPayloadPreview(errorPayload),
-			)
+			logResponsesWebsocketPayload(trace, "downstream_out", passthroughSessionID, websocket.TextMessage, websocketPayloadEventType(errorPayload), false, 0, errorPayload)
 			if errWrite != nil {
 				log.Warnf(
 					"responses websocket: downstream_out write failed id=%s event=%s error=%v",
@@ -162,6 +182,10 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 		}
 
 		modelName := gjson.GetBytes(requestJSON, "model").String()
+		requestStart := time.Now()
+		if trace.Enabled {
+			log.Infof("responses websocket trace: upstream execution start id=%s model=%s request_bytes=%d", passthroughSessionID, modelName, len(requestJSON))
+		}
 		cliCtx, cliCancel := h.GetContextWithCancel(h, c, c.Request.Context())
 		cliCtx = cliproxyexecutor.WithDownstreamWebsocket(cliCtx)
 		cliCtx = handlers.WithExecutionSessionID(cliCtx, passthroughSessionID)
@@ -177,13 +201,17 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 			})
 		}
 		dataChan, _, errChan := h.ExecuteStreamWithAuthManager(cliCtx, h.HandlerType(), modelName, requestJSON, "")
+		if trace.Enabled {
+			log.Infof("responses websocket trace: upstream stream returned id=%s model=%s open_ms=%d", passthroughSessionID, modelName, time.Since(requestStart).Milliseconds())
+		}
 
-		completedOutput, errForward := h.forwardResponsesWebsocket(c, conn, cliCancel, dataChan, errChan, &wsBodyLog, passthroughSessionID, func(errMsg *interfaces.ErrorMessage) {
+		completedOutput, errForward := h.forwardResponsesWebsocket(c, conn, cliCancel, dataChan, errChan, &wsBodyLog, passthroughSessionID, trace, requestStart, func(errMsg *interfaces.ErrorMessage) {
 			if isResponsesWebsocketQuotaError(errMsg) && pinnedAuthID != "" {
 				log.Infof("responses websocket: unpinning quota exhausted auth id=%s auth_id=%s model=%s status=%d", passthroughSessionID, pinnedAuthID, modelName, errMsg.StatusCode)
 				pinnedAuthID = ""
 			}
 		})
+		logResponsesWebsocketTraceSummary(trace, passthroughSessionID, modelName, requestStart, errForward)
 		if errForward != nil {
 			wsTerminateErr = errForward
 			appendWebsocketEvent(&wsBodyLog, "disconnect", []byte(errForward.Error()))
@@ -206,6 +234,82 @@ func websocketUpgradeHeaders(req *http.Request) http.Header {
 		headers.Set(wsTurnStateHeader, turnState)
 	}
 	return headers
+}
+
+func websocketResponseTraceFromConfig(cfg *internalconfig.SDKConfig) websocketResponseTrace {
+	raw := internalconfig.ResponseTraceConfig{}
+	if cfg != nil {
+		raw = cfg.Observability.ResponseTrace
+	}
+	previewBytes := raw.PayloadPreviewBytes
+	if previewBytes <= 0 {
+		previewBytes = wsPayloadPreviewDefaultBytes
+	}
+	if previewBytes > wsPayloadLogMaxSize {
+		previewBytes = wsPayloadLogMaxSize
+	}
+	slowThresholdMS := raw.SlowThresholdMS
+	if slowThresholdMS <= 0 {
+		slowThresholdMS = wsResponseTraceDefaultSlowMS
+	}
+	return websocketResponseTrace{
+		Enabled:             raw.Enabled,
+		SlowThreshold:       time.Duration(slowThresholdMS) * time.Millisecond,
+		LogPayloadPreview:   raw.LogPayloadPreview,
+		PayloadPreviewBytes: previewBytes,
+		LogHeaders:          raw.LogHeaders,
+	}
+}
+
+func websocketTraceHeaders(c *gin.Context, trace websocketResponseTrace) string {
+	if !trace.LogHeaders || c == nil || c.Request == nil {
+		return "-"
+	}
+	headers := []string{}
+	for _, name := range []string{"User-Agent", "Originator", "Version", "OpenAI-Beta", wsTurnStateHeader} {
+		if value := strings.TrimSpace(c.Request.Header.Get(name)); value != "" {
+			headers = append(headers, fmt.Sprintf("%s=%q", name, value))
+		}
+	}
+	if len(headers) == 0 {
+		return "-"
+	}
+	return strings.Join(headers, " ")
+}
+
+func logResponsesWebsocketPayload(trace websocketResponseTrace, direction, sessionID string, msgType int, eventType string, completed bool, status int, payload []byte) {
+	if trace.Enabled {
+		fields := []string{
+			fmt.Sprintf("responses websocket trace: %s", direction),
+			fmt.Sprintf("id=%s", sessionID),
+			fmt.Sprintf("type=%d", msgType),
+			fmt.Sprintf("event=%s", eventType),
+			fmt.Sprintf("bytes=%d", len(payload)),
+		}
+		if status > 0 {
+			fields = append(fields, fmt.Sprintf("status=%d", status))
+		}
+		if completed {
+			fields = append(fields, "completed=true")
+		}
+		if trace.LogPayloadPreview {
+			fields = append(fields, fmt.Sprintf("payload=%s", websocketPayloadPreviewLimit(payload, trace.PayloadPreviewBytes)))
+		}
+		log.Info(strings.Join(fields, " "))
+		return
+	}
+	log.Debugf("responses websocket: %s id=%s type=%d event=%s bytes=%d", direction, sessionID, msgType, eventType, len(payload))
+}
+
+func logResponsesWebsocketTraceSummary(trace websocketResponseTrace, sessionID, modelName string, requestStart time.Time, errForward error) {
+	if !trace.Enabled || requestStart.IsZero() {
+		return
+	}
+	elapsed := time.Since(requestStart)
+	if elapsed < trace.SlowThreshold && errForward == nil {
+		return
+	}
+	log.Infof("responses websocket trace: request summary id=%s model=%s total_ms=%d slow_threshold_ms=%d error=%v", sessionID, modelName, elapsed.Milliseconds(), trace.SlowThreshold.Milliseconds(), errForward)
 }
 
 func normalizeResponsesWebsocketRequest(rawJSON []byte, lastRequest []byte, lastResponseOutput []byte) ([]byte, []byte, *interfaces.ErrorMessage) {
@@ -426,10 +530,13 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 	errs <-chan *interfaces.ErrorMessage,
 	wsBodyLog *strings.Builder,
 	sessionID string,
+	trace websocketResponseTrace,
+	requestStart time.Time,
 	onError func(*interfaces.ErrorMessage),
 ) ([]byte, error) {
 	completed := false
 	completedOutput := []byte("[]")
+	firstUpstreamEventLogged := false
 
 	for {
 		select {
@@ -449,14 +556,7 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 				markAPIResponseTimestamp(c)
 				errorPayload, errWrite := writeResponsesWebsocketError(conn, errMsg)
 				appendWebsocketEvent(wsBodyLog, "response", errorPayload)
-				log.Infof(
-					"responses websocket: downstream_out id=%s type=%d event=%s status=%d payload=%s",
-					sessionID,
-					websocket.TextMessage,
-					websocketPayloadEventType(errorPayload),
-					errMsg.StatusCode,
-					websocketPayloadPreview(errorPayload),
-				)
+				logResponsesWebsocketPayload(trace, "downstream_out", sessionID, websocket.TextMessage, websocketPayloadEventType(errorPayload), false, errMsg.StatusCode, errorPayload)
 				if errWrite != nil {
 					// log.Warnf(
 					// 	"responses websocket: downstream_out write failed id=%s event=%s error=%v",
@@ -485,13 +585,7 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 					markAPIResponseTimestamp(c)
 					errorPayload, errWrite := writeResponsesWebsocketError(conn, errMsg)
 					appendWebsocketEvent(wsBodyLog, "response", errorPayload)
-					log.Infof(
-						"responses websocket: downstream_out id=%s type=%d event=%s payload=%s",
-						sessionID,
-						websocket.TextMessage,
-						websocketPayloadEventType(errorPayload),
-						websocketPayloadPreview(errorPayload),
-					)
+					logResponsesWebsocketPayload(trace, "downstream_out", sessionID, websocket.TextMessage, websocketPayloadEventType(errorPayload), false, 0, errorPayload)
 					if errWrite != nil {
 						log.Warnf(
 							"responses websocket: downstream_out write failed id=%s event=%s error=%v",
@@ -513,6 +607,10 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 			payloads := websocketJSONPayloadsFromChunk(chunk)
 			for i := range payloads {
 				eventType := gjson.GetBytes(payloads[i], "type").String()
+				if trace.Enabled && !firstUpstreamEventLogged {
+					firstUpstreamEventLogged = true
+					log.Infof("responses websocket trace: first upstream event id=%s event=%s first_event_ms=%d bytes=%d", sessionID, eventType, time.Since(requestStart).Milliseconds(), len(payloads[i]))
+				}
 				if eventType == wsEventTypeCompleted {
 					// log.Infof("replace %s with %s", wsEventTypeCompleted, wsEventTypeDone)
 					payloads[i], _ = sjson.SetBytes(payloads[i], "type", wsEventTypeDone)
@@ -522,14 +620,7 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 				}
 				markAPIResponseTimestamp(c)
 				appendWebsocketEvent(wsBodyLog, "response", payloads[i])
-				log.Infof(
-					"responses websocket: downstream_out id=%s type=%d event=%s completed=%t payload=%s",
-					sessionID,
-					websocket.TextMessage,
-					websocketPayloadEventType(payloads[i]),
-					completed,
-					websocketPayloadPreview(payloads[i]),
-				)
+				logResponsesWebsocketPayload(trace, "downstream_out", sessionID, websocket.TextMessage, websocketPayloadEventType(payloads[i]), completed, 0, payloads[i])
 				if errWrite := conn.WriteMessage(websocket.TextMessage, payloads[i]); errWrite != nil {
 					log.Warnf(
 						"responses websocket: downstream_out write failed id=%s event=%s error=%v",
@@ -700,17 +791,27 @@ func websocketPayloadEventType(payload []byte) string {
 }
 
 func websocketPayloadPreview(payload []byte) string {
+	return websocketPayloadPreviewLimit(payload, wsPayloadLogMaxSize)
+}
+
+func websocketPayloadPreviewLimit(payload []byte, maxBytes int) string {
 	trimmedPayload := bytes.TrimSpace(payload)
 	if len(trimmedPayload) == 0 {
 		return "<empty>"
 	}
+	if maxBytes <= 0 {
+		maxBytes = wsPayloadPreviewDefaultBytes
+	}
+	if maxBytes > wsPayloadLogMaxSize {
+		maxBytes = wsPayloadLogMaxSize
+	}
 	preview := trimmedPayload
-	if len(preview) > wsPayloadLogMaxSize {
-		preview = preview[:wsPayloadLogMaxSize]
+	if len(preview) > maxBytes {
+		preview = preview[:maxBytes]
 	}
 	previewText := strings.ReplaceAll(string(preview), "\n", "\\n")
 	previewText = strings.ReplaceAll(previewText, "\r", "\\r")
-	if len(trimmedPayload) > wsPayloadLogMaxSize {
+	if len(trimmedPayload) > maxBytes {
 		return fmt.Sprintf("%s...(truncated,total=%d)", previewText, len(trimmedPayload))
 	}
 	return previewText

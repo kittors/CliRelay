@@ -445,8 +445,9 @@ func TestConfigSynthesizer_OpenAICompat_WithModelsHash(t *testing.T) {
 		Config: &config.Config{
 			OpenAICompatibility: []config.OpenAICompatibility{
 				{
-					Name:    "TestProvider",
-					BaseURL: "https://test.api.com",
+					Name:                "TestProvider",
+					BaseURL:             "https://test.api.com",
+					IdentityFingerprint: "codex",
 					Models: []config.OpenAICompatibilityModel{
 						{Name: "model-a"},
 						{Name: "model-b"},
@@ -473,6 +474,9 @@ func TestConfigSynthesizer_OpenAICompat_WithModelsHash(t *testing.T) {
 	}
 	if auths[0].Attributes["api_key"] != "key-with-models" {
 		t.Errorf("expected api_key key-with-models, got %s", auths[0].Attributes["api_key"])
+	}
+	if auths[0].Attributes["identity_fingerprint"] != "codex" {
+		t.Errorf("expected identity_fingerprint codex, got %s", auths[0].Attributes["identity_fingerprint"])
 	}
 }
 

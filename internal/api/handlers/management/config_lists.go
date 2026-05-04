@@ -782,6 +782,7 @@ func (h *Handler) PatchOpenAICompat(c *gin.Context) {
 		APIKeyEntries *[]config.OpenAICompatibilityAPIKey `json:"api-key-entries"`
 		Models        *[]config.OpenAICompatibilityModel  `json:"models"`
 		Headers       *map[string]string                  `json:"headers"`
+		Fingerprint   *string                             `json:"identity-fingerprint"`
 	}
 	var body struct {
 		Name  *string            `json:"name"`
@@ -835,6 +836,9 @@ func (h *Handler) PatchOpenAICompat(c *gin.Context) {
 	}
 	if body.Value.Headers != nil {
 		entry.Headers = config.NormalizeHeaders(*body.Value.Headers)
+	}
+	if body.Value.Fingerprint != nil {
+		entry.IdentityFingerprint = strings.TrimSpace(strings.ToLower(*body.Value.Fingerprint))
 	}
 	normalizeOpenAICompatibilityEntry(&entry)
 	prev := append([]config.OpenAICompatibility(nil), h.cfg.OpenAICompatibility...)
@@ -1338,6 +1342,7 @@ func normalizeOpenAICompatibilityEntry(entry *config.OpenAICompatibility) {
 	}
 	// Trim base-url; empty base-url indicates provider should be removed by sanitization
 	entry.BaseURL = strings.TrimSpace(entry.BaseURL)
+	entry.IdentityFingerprint = strings.TrimSpace(strings.ToLower(entry.IdentityFingerprint))
 	entry.Headers = config.NormalizeHeaders(entry.Headers)
 	existing := make(map[string]struct{}, len(entry.APIKeyEntries))
 	for i := range entry.APIKeyEntries {

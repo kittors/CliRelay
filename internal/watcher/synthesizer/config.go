@@ -233,6 +233,9 @@ func (s *ConfigSynthesizer) synthesizeOpenAICompat(ctx *SynthesisContext) []*cor
 			if compat.Priority != 0 {
 				attrs["priority"] = strconv.Itoa(compat.Priority)
 			}
+			if fingerprint := strings.TrimSpace(strings.ToLower(compat.IdentityFingerprint)); fingerprint != "" {
+				attrs["identity_fingerprint"] = fingerprint
+			}
 			if key != "" {
 				attrs["api_key"] = key
 			}
@@ -266,6 +269,9 @@ func (s *ConfigSynthesizer) synthesizeOpenAICompat(ctx *SynthesisContext) []*cor
 			}
 			if compat.Priority != 0 {
 				attrs["priority"] = strconv.Itoa(compat.Priority)
+			}
+			if fingerprint := strings.TrimSpace(strings.ToLower(compat.IdentityFingerprint)); fingerprint != "" {
+				attrs["identity_fingerprint"] = fingerprint
 			}
 			if hash := diff.ComputeOpenAICompatModelsHash(compat.Models); hash != "" {
 				attrs["models_hash"] = hash

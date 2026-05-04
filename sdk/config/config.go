@@ -12,6 +12,8 @@ type Config = internalconfig.Config
 type APIKeyEntry = internalconfig.APIKeyEntry
 
 type StreamingConfig = internalconfig.StreamingConfig
+type ObservabilityConfig = internalconfig.ObservabilityConfig
+type ResponseTraceConfig = internalconfig.ResponseTraceConfig
 type RoutingConfig = internalconfig.RoutingConfig
 type RoutingChannelGroup = internalconfig.RoutingChannelGroup
 type RoutingPathRoute = internalconfig.RoutingPathRoute
