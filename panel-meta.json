@@ -1,7 +1,7 @@
 {
-  "build_date": "2026-05-03T13:28:10.915Z",
-  "commit": "c9234484b2835215ff6be97e61b499afdcdb346f",
-  "ref": "fix/ccswitch-import-modal-ui",
+  "build_date": "2026-05-04T01:01:08.612Z",
+  "commit": "dd5002c963447cc97533c9c7c64b620198690646",
+  "ref": "fix/ccswitch-import-compact-tabs",
   "repository": "git@github.com:kittors/codeProxy.git",
-  "version": "panel-fix/ccswitch-import-modal-ui-c923448"
+  "version": "panel-fix/ccswitch-import-compact-tabs-dd5002c"
 }
