@@ -2,9 +2,11 @@ package usage
 
 import (
 	"database/sql"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
@@ -135,6 +137,67 @@ func TestCleanDBBackedConfigFromYAMLCleansPersistedSections(t *testing.T) {
 	}
 	if got := info.Mode().Perm(); got != 0o640 {
 		t.Fatalf("cleaned config mode = %o, want 640", got)
+	}
+}
+
+func TestCleanDBBackedConfigFromYAMLFallsBackWhenRenameBusy(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(configPath, []byte("port: 8318\nrouting:\n  strategy: round-robin\nlogging-to-file: true\n"), 0o640); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	originalRename := renameConfigFile
+	renameConfigFile = func(oldPath, newPath string) error {
+		return &os.PathError{Op: "rename", Path: oldPath, Err: syscall.EBUSY}
+	}
+	t.Cleanup(func() { renameConfigFile = originalRename })
+
+	if removed := cleanConfigKeysFromYAML(configPath, map[string]bool{"routing": true}, "routing_config"); removed != 1 {
+		t.Fatalf("cleanConfigKeysFromYAML removed %d sections, want 1", removed)
+	}
+
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	if strings.Contains(string(data), "routing:") {
+		t.Fatalf("routing should be removed from YAML after fallback write:\n%s", string(data))
+	}
+	if !strings.Contains(string(data), "port: 8318") || !strings.Contains(string(data), "logging-to-file: true") {
+		t.Fatalf("ordinary config should remain after fallback write:\n%s", string(data))
+	}
+	info, err := os.Stat(configPath)
+	if err != nil {
+		t.Fatalf("stat config: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o640 {
+		t.Fatalf("fallback config mode = %o, want 640", got)
+	}
+}
+
+func TestCleanDBBackedConfigFromYAMLDoesNotFallbackForUnexpectedRenameError(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	original := "port: 8318\nrouting:\n  strategy: round-robin\n"
+	if err := os.WriteFile(configPath, []byte(original), 0o640); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	originalRename := renameConfigFile
+	renameConfigFile = func(oldPath, newPath string) error {
+		return fmt.Errorf("unexpected rename failure")
+	}
+	t.Cleanup(func() { renameConfigFile = originalRename })
+
+	if removed := cleanConfigKeysFromYAML(configPath, map[string]bool{"routing": true}, "routing_config"); removed != 0 {
+		t.Fatalf("cleanConfigKeysFromYAML removed %d sections, want 0", removed)
+	}
+
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	if string(data) != original {
+		t.Fatalf("config should remain untouched after unexpected rename error:\n%s", string(data))
 	}
 }
 

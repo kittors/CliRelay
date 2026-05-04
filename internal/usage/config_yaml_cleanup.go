@@ -2,9 +2,12 @@ package usage
 
 import (
 	"bytes"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	log "github.com/sirupsen/logrus"
 	"gopkg.in/yaml.v3"
@@ -36,6 +39,8 @@ var dbBackedConfigYAMLKeys = map[string]bool{
 	"oauth-model-alias":      true,
 	"payload":                true,
 }
+
+var renameConfigFile = os.Rename
 
 // ConfigStoreAvailable reports whether the SQLite store that owns DB-backed
 // config sections is ready. Callers must not remove YAML fallbacks when this is
@@ -193,5 +198,40 @@ func writeYAMLNodeAtomic(configFilePath string, root *yaml.Node) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tmpPath, configFilePath)
+	if err := renameConfigFile(tmpPath, configFilePath); err != nil {
+		if !shouldFallbackToInPlaceConfigWrite(err) {
+			return err
+		}
+		return writeConfigFileInPlace(configFilePath, buf.Bytes(), mode)
+	}
+	return nil
+}
+
+func shouldFallbackToInPlaceConfigWrite(err error) bool {
+	return errors.Is(err, syscall.EBUSY) || errors.Is(err, syscall.EXDEV)
+}
+
+func writeConfigFileInPlace(configFilePath string, data []byte, mode os.FileMode) error {
+	f, err := os.OpenFile(configFilePath, os.O_WRONLY|os.O_TRUNC, mode)
+	if err != nil {
+		return err
+	}
+	if err := f.Chmod(mode); err != nil {
+		_ = f.Close()
+		return err
+	}
+	n, err := f.Write(data)
+	if err != nil {
+		_ = f.Close()
+		return err
+	}
+	if n != len(data) {
+		_ = f.Close()
+		return io.ErrShortWrite
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
 }
