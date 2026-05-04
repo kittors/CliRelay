@@ -18,8 +18,8 @@ import (
 
 const (
 	defaultListenAddr    = ":8320"
-	defaultComposeFile   = "/workspace/docker-compose.yml"
-	defaultEnvFile       = "/workspace/.env"
+	defaultComposeFile   = ""
+	defaultEnvFile       = ""
 	defaultTargetService = "clirelay"
 	updateCommandTimeout = 10 * time.Minute
 	maxUpdateLogEntries  = 200
@@ -242,13 +242,31 @@ func persistRequestedImage(envFile string, image string, tag string) error {
 func requestedImageRef(image string, tag string) string {
 	cleanImage := strings.TrimSpace(image)
 	cleanTag := strings.TrimSpace(tag)
-	if cleanImage == "" || cleanTag == "" {
+	if cleanImage == "" {
 		return ""
+	}
+	if cleanTag == "" {
+		if !isSafeImagePart(cleanImage) {
+			return ""
+		}
+		return cleanImage
 	}
 	if !isSafeImagePart(cleanImage) || !isSafeImagePart(cleanTag) {
 		return ""
 	}
+	if _, existingTag := splitDockerImageTag(cleanImage); existingTag != "" {
+		return cleanImage
+	}
 	return fmt.Sprintf("%s:%s", cleanImage, cleanTag)
+}
+
+func splitDockerImageTag(image string) (string, string) {
+	lastSlash := strings.LastIndex(image, "/")
+	lastColon := strings.LastIndex(image, ":")
+	if lastColon <= lastSlash {
+		return image, ""
+	}
+	return image[:lastColon], image[lastColon+1:]
 }
 
 func splitEnvLines(content string) []string {

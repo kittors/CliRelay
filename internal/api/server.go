@@ -51,9 +51,7 @@ import (
 )
 
 const (
-	oauthCallbackSuccessHTML = `<html><head><meta charset="utf-8"><title>Authentication successful</title><script>setTimeout(function(){window.close();},5000);</script></head><body><h1>Authentication successful!</h1><p>You can close this window.</p><p>This window will close automatically in 5 seconds.</p></body></html>`
-	// Main API requests can legitimately spend several minutes waiting on upstream model execution.
-	// Long-lived SSE and websocket routes explicitly clear this deadline before streaming/upgrading.
+	oauthCallbackSuccessHTML  = `<html><head><meta charset="utf-8"><title>Authentication successful</title><script>setTimeout(function(){window.close();},5000);</script></head><body><h1>Authentication successful!</h1><p>You can close this window.</p><p>This window will close automatically in 5 seconds.</p></body></html>`
 	mainAPIServerWriteTimeout = 10 * time.Minute
 )
 
@@ -342,7 +340,6 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 		Addr:              fmt.Sprintf("%s:%d", cfg.Host, cfg.Port),
 		Handler:           engine,
 		ReadHeaderTimeout: 5 * time.Second,
-		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      mainAPIServerWriteTimeout,
 		IdleTimeout:       2 * time.Minute,
 		MaxHeaderBytes:    1 << 20,
@@ -610,6 +607,9 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.DELETE("/model-configs/*id", s.mgmt.DeleteModelConfig)
 		mgmt.GET("/model-owner-presets", s.mgmt.GetModelOwnerPresets)
 		mgmt.PUT("/model-owner-presets", s.mgmt.PutModelOwnerPresets)
+		mgmt.GET("/model-openrouter-sync", s.mgmt.GetOpenRouterModelSync)
+		mgmt.PUT("/model-openrouter-sync", s.mgmt.PutOpenRouterModelSync)
+		mgmt.POST("/model-openrouter-sync/run", s.mgmt.PostOpenRouterModelSyncRun)
 		mgmt.GET("/channel-groups", s.mgmt.GetChannelGroups)
 		mgmt.GET("/routing-config", s.mgmt.GetRoutingConfig)
 		mgmt.PUT("/routing-config", s.mgmt.PutRoutingConfig)
@@ -623,6 +623,7 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.GET("/usage/logs", s.mgmt.GetUsageLogs)
 		mgmt.GET("/usage/logs/:id/content", s.mgmt.GetLogContent)
 		mgmt.GET("/usage/auth-file-group-trend", s.mgmt.GetAuthFileGroupTrend)
+		mgmt.GET("/usage/auth-file-trend", s.mgmt.GetAuthFileTrend)
 		mgmt.POST("/usage/auth-file-quota-snapshot", s.mgmt.PostAuthFileQuotaSnapshot)
 		mgmt.GET("/usage/chart-data", s.mgmt.GetUsageChartData)
 		mgmt.GET("/usage/entity-stats", s.mgmt.GetEntityUsageStats)
@@ -665,6 +666,9 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.PUT("/proxy-url", s.mgmt.PutProxyURL)
 		mgmt.PATCH("/proxy-url", s.mgmt.PutProxyURL)
 		mgmt.DELETE("/proxy-url", s.mgmt.DeleteProxyURL)
+		mgmt.GET("/proxy-pool", s.mgmt.GetProxyPool)
+		mgmt.PUT("/proxy-pool", s.mgmt.PutProxyPool)
+		mgmt.POST("/proxy-pool/check", s.mgmt.PostProxyPoolCheck)
 
 		mgmt.POST("/api-call", s.mgmt.APICall)
 
@@ -747,6 +751,16 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.PUT("/claude-api-key", s.mgmt.PutClaudeKeys)
 		mgmt.PATCH("/claude-api-key", s.mgmt.PatchClaudeKey)
 		mgmt.DELETE("/claude-api-key", s.mgmt.DeleteClaudeKey)
+
+		mgmt.GET("/bedrock-api-key", s.mgmt.GetBedrockKeys)
+		mgmt.PUT("/bedrock-api-key", s.mgmt.PutBedrockKeys)
+		mgmt.PATCH("/bedrock-api-key", s.mgmt.PatchBedrockKey)
+		mgmt.DELETE("/bedrock-api-key", s.mgmt.DeleteBedrockKey)
+
+		mgmt.GET("/opencode-go-api-key", s.mgmt.GetOpenCodeGoKeys)
+		mgmt.PUT("/opencode-go-api-key", s.mgmt.PutOpenCodeGoKeys)
+		mgmt.PATCH("/opencode-go-api-key", s.mgmt.PatchOpenCodeGoKey)
+		mgmt.DELETE("/opencode-go-api-key", s.mgmt.DeleteOpenCodeGoKey)
 
 		mgmt.GET("/codex-api-key", s.mgmt.GetCodexKeys)
 		mgmt.PUT("/codex-api-key", s.mgmt.PutCodexKeys)

@@ -14,6 +14,62 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+func TestOpenAICompatExecutorStreamAddsKimiReasoningForAssistantToolCalls(t *testing.T) {
+	var gotBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var err error
+		gotBody, err = io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer server.Close()
+
+	executor := NewOpenAICompatExecutor("opencode-go", &config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"base_url": server.URL + "/v1",
+		"api_key":  "test",
+	}}
+	payload := []byte(`{
+		"model":"kimi-k2.6",
+		"max_tokens":1024,
+		"messages":[
+			{"role":"user","content":[{"type":"text","text":"hi"}]},
+			{"role":"assistant","content":[
+				{"type":"tool_use","id":"Bash:3","name":"Bash","input":{"cmd":"pwd"}},
+				{"type":"tool_use","id":"Read:2","name":"Read","input":{"file_path":"README.md"}}
+			]}
+		],
+		"tools":[
+			{"name":"Bash","description":"Run command","input_schema":{"type":"object"}},
+			{"name":"Read","description":"Read file","input_schema":{"type":"object"}}
+		]
+	}`)
+
+	result, err := executor.ExecuteStream(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "kimi-k2.6",
+		Payload: payload,
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("claude"),
+		Stream:       true,
+	})
+	if err != nil {
+		t.Fatalf("ExecuteStream error: %v", err)
+	}
+	for range result.Chunks {
+	}
+
+	reasoning := gjson.GetBytes(gotBody, "messages.1.reasoning_content")
+	if !reasoning.Exists() {
+		t.Fatalf("messages.1.reasoning_content should exist in upstream body: %s", string(gotBody))
+	}
+	if reasoning.String() == "" {
+		t.Fatalf("messages.1.reasoning_content should not be empty")
+	}
+}
+
 func TestOpenAICompatExecutorCompactPassthrough(t *testing.T) {
 	var gotPath string
 	var gotBody []byte

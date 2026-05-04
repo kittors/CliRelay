@@ -25,6 +25,9 @@ const (
 	DefaultAutoUpdateRepository  = "https://github.com/kittors/CliRelay"
 	DefaultAutoUpdateDockerImage = "ghcr.io/kittors/clirelay"
 	DefaultAutoUpdateUpdaterURL  = "http://clirelay-updater:8320"
+
+	// EnvAuthPath overrides auth-dir with the path visible inside the running container/process.
+	EnvAuthPath = "AUTH_PATH"
 )
 
 // Config represents the application's configuration, loaded from a YAML file.
@@ -118,6 +121,12 @@ type Config struct {
 	// ClaudeKey defines a list of Claude API key configurations as specified in the YAML configuration file.
 	ClaudeKey []ClaudeKey `yaml:"claude-api-key" json:"claude-api-key"`
 
+	// BedrockKey defines AWS Bedrock Runtime credential configurations.
+	BedrockKey []BedrockKey `yaml:"bedrock-api-key" json:"bedrock-api-key"`
+
+	// OpenCodeGoKey defines OpenCode Go plan API key configurations.
+	OpenCodeGoKey []OpenCodeGoKey `yaml:"opencode-go-api-key" json:"opencode-go-api-key"`
+
 	// ClaudeHeaderDefaults configures default header values for Claude API requests.
 	// These are used as fallbacks when the client does not send its own headers.
 	ClaudeHeaderDefaults ClaudeHeaderDefaults `yaml:"claude-header-defaults" json:"claude-header-defaults"`
@@ -128,6 +137,9 @@ type Config struct {
 
 	// IdentityFingerprint controls provider-specific upstream identity headers.
 	IdentityFingerprint IdentityFingerprintConfig `yaml:"identity-fingerprint,omitempty" json:"identity-fingerprint,omitempty"`
+
+	// ProxyPool stores reusable outbound proxies that can be referenced by providers and auth files.
+	ProxyPool []ProxyPoolEntry `yaml:"proxy-pool,omitempty" json:"proxy-pool,omitempty"`
 
 	// OpenAICompatibility defines OpenAI API compatibility configurations for external providers.
 	OpenAICompatibility []OpenAICompatibility `yaml:"openai-compatibility" json:"openai-compatibility"`
@@ -182,11 +194,20 @@ const (
 	DefaultCodexFingerprintOriginator    = "codex-tui"
 	DefaultCodexFingerprintWebsocketBeta = "responses_websockets=2026-02-06"
 	DefaultCodexFingerprintSessionMode   = "per-request"
+
+	DefaultClaudeFingerprintCLIVersion              = "2.1.88"
+	DefaultClaudeFingerprintEntrypoint              = "cli"
+	DefaultClaudeFingerprintAnthropicBeta           = "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,redact-thinking-2026-02-12,context-management-2025-06-27,prompt-caching-scope-2026-01-05,advanced-tool-use-2025-11-20,effort-2025-11-24"
+	DefaultClaudeFingerprintStainlessPackageVersion = "0.74.0"
+	DefaultClaudeFingerprintStainlessRuntimeVersion = "v22.13.0"
+	DefaultClaudeFingerprintStainlessTimeout        = "600"
+	DefaultClaudeFingerprintSessionMode             = "per-request"
 )
 
 // IdentityFingerprintConfig groups provider-specific upstream identity settings.
 type IdentityFingerprintConfig struct {
-	Codex CodexIdentityFingerprintConfig `yaml:"codex,omitempty" json:"codex,omitempty"`
+	Codex  CodexIdentityFingerprintConfig  `yaml:"codex,omitempty" json:"codex,omitempty"`
+	Claude ClaudeIdentityFingerprintConfig `yaml:"claude,omitempty" json:"claude,omitempty"`
 }
 
 // CodexIdentityFingerprintConfig configures Codex upstream identity headers.
@@ -211,6 +232,40 @@ func DefaultCodexIdentityFingerprint() CodexIdentityFingerprintConfig {
 		WebsocketBeta: DefaultCodexFingerprintWebsocketBeta,
 		SessionMode:   DefaultCodexFingerprintSessionMode,
 		CustomHeaders: map[string]string{},
+	}
+}
+
+// ClaudeIdentityFingerprintConfig configures Claude Code-style Anthropic OAuth identity.
+type ClaudeIdentityFingerprintConfig struct {
+	Enabled                 bool              `yaml:"enabled" json:"enabled"`
+	CLIVersion              string            `yaml:"cli-version,omitempty" json:"cli-version,omitempty"`
+	Entrypoint              string            `yaml:"entrypoint,omitempty" json:"entrypoint,omitempty"`
+	UserAgent               string            `yaml:"user-agent,omitempty" json:"user-agent,omitempty"`
+	AnthropicBeta           string            `yaml:"anthropic-beta,omitempty" json:"anthropic-beta,omitempty"`
+	StainlessPackageVersion string            `yaml:"stainless-package-version,omitempty" json:"stainless-package-version,omitempty"`
+	StainlessRuntimeVersion string            `yaml:"stainless-runtime-version,omitempty" json:"stainless-runtime-version,omitempty"`
+	StainlessTimeout        string            `yaml:"stainless-timeout,omitempty" json:"stainless-timeout,omitempty"`
+	SessionMode             string            `yaml:"session-mode,omitempty" json:"session-mode,omitempty"`
+	SessionID               string            `yaml:"session-id,omitempty" json:"session-id,omitempty"`
+	DeviceID                string            `yaml:"device-id,omitempty" json:"device-id,omitempty"`
+	CustomHeaders           map[string]string `yaml:"custom-headers,omitempty" json:"custom-headers,omitempty"`
+}
+
+// DefaultClaudeIdentityFingerprint returns the recommended Claude Code identity template.
+func DefaultClaudeIdentityFingerprint() ClaudeIdentityFingerprintConfig {
+	cliVersion := DefaultClaudeFingerprintCLIVersion
+	entrypoint := DefaultClaudeFingerprintEntrypoint
+	return ClaudeIdentityFingerprintConfig{
+		Enabled:                 false,
+		CLIVersion:              cliVersion,
+		Entrypoint:              entrypoint,
+		UserAgent:               BuildClaudeFingerprintUserAgent(cliVersion, entrypoint),
+		AnthropicBeta:           DefaultClaudeFingerprintAnthropicBeta,
+		StainlessPackageVersion: DefaultClaudeFingerprintStainlessPackageVersion,
+		StainlessRuntimeVersion: DefaultClaudeFingerprintStainlessRuntimeVersion,
+		StainlessTimeout:        DefaultClaudeFingerprintStainlessTimeout,
+		SessionMode:             DefaultClaudeFingerprintSessionMode,
+		CustomHeaders:           map[string]string{},
 	}
 }
 
@@ -447,6 +502,9 @@ type ClaudeKey struct {
 	// ProxyURL overrides the global proxy setting for this API key if provided.
 	ProxyURL string `yaml:"proxy-url" json:"proxy-url"`
 
+	// ProxyID references a reusable proxy-pool entry. When valid, it takes precedence over ProxyURL.
+	ProxyID string `yaml:"proxy-id,omitempty" json:"proxy-id,omitempty"`
+
 	// Models defines upstream model names and aliases for request routing.
 	Models []ClaudeModel `yaml:"models" json:"models"`
 
@@ -507,6 +565,9 @@ type CodexKey struct {
 	// ProxyURL overrides the global proxy setting for this API key if provided.
 	ProxyURL string `yaml:"proxy-url" json:"proxy-url"`
 
+	// ProxyID references a reusable proxy-pool entry. When valid, it takes precedence over ProxyURL.
+	ProxyID string `yaml:"proxy-id,omitempty" json:"proxy-id,omitempty"`
+
 	// Models defines upstream model names and aliases for request routing.
 	Models []CodexModel `yaml:"models" json:"models"`
 
@@ -553,6 +614,9 @@ type GeminiKey struct {
 
 	// ProxyURL optionally overrides the global proxy for this API key.
 	ProxyURL string `yaml:"proxy-url,omitempty" json:"proxy-url,omitempty"`
+
+	// ProxyID references a reusable proxy-pool entry. When valid, it takes precedence over ProxyURL.
+	ProxyID string `yaml:"proxy-id,omitempty" json:"proxy-id,omitempty"`
 
 	// Models defines upstream model names and aliases for request routing.
 	Models []GeminiModel `yaml:"models,omitempty" json:"models,omitempty"`
@@ -616,6 +680,9 @@ type OpenAICompatibilityAPIKey struct {
 
 	// ProxyURL overrides the global proxy setting for this API key if provided.
 	ProxyURL string `yaml:"proxy-url,omitempty" json:"proxy-url,omitempty"`
+
+	// ProxyID references a reusable proxy-pool entry. When valid, it takes precedence over ProxyURL.
+	ProxyID string `yaml:"proxy-id,omitempty" json:"proxy-id,omitempty"`
 }
 
 // OpenAICompatibilityModel represents a model configuration for OpenAI compatibility,
@@ -630,6 +697,35 @@ type OpenAICompatibilityModel struct {
 
 func (m OpenAICompatibilityModel) GetName() string  { return m.Name }
 func (m OpenAICompatibilityModel) GetAlias() string { return m.Alias }
+
+// OpenCodeGoKey represents an OpenCode Go plan API key.
+// The upstream endpoint is fixed to https://opencode.ai/zen/go/v1.
+type OpenCodeGoKey struct {
+	// APIKey is the authentication key for OpenCode Go.
+	APIKey string `yaml:"api-key" json:"api-key"`
+
+	// Name is a human-readable label for this channel.
+	Name string `yaml:"name,omitempty" json:"name,omitempty"`
+
+	// Priority controls selection preference when multiple credentials match.
+	// Higher values are preferred; defaults to 0.
+	Priority int `yaml:"priority,omitempty" json:"priority,omitempty"`
+
+	// Prefix optionally namespaces models for this credential.
+	Prefix string `yaml:"prefix,omitempty" json:"prefix,omitempty"`
+
+	// ProxyURL overrides the global proxy setting for this API key if provided.
+	ProxyURL string `yaml:"proxy-url,omitempty" json:"proxy-url,omitempty"`
+
+	// ProxyID references a reusable proxy-pool entry. When valid, it takes precedence over ProxyURL.
+	ProxyID string `yaml:"proxy-id,omitempty" json:"proxy-id,omitempty"`
+
+	// Headers optionally adds extra HTTP headers for requests sent with this key.
+	Headers map[string]string `yaml:"headers,omitempty" json:"headers,omitempty"`
+
+	// ExcludedModels lists model IDs that should be excluded for this provider.
+	ExcludedModels []string `yaml:"excluded-models,omitempty" json:"excluded-models,omitempty"`
+}
 
 // LoadConfig reads a YAML configuration file from the given path,
 // unmarshals it into a Config struct, applies environment variable overrides,
@@ -709,6 +805,7 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 		}
 		return nil, fmt.Errorf("failed to parse config file: %w", err)
 	}
+	cfg.ApplyEnvOverrides()
 
 	// NOTE: Startup legacy key migration is intentionally disabled.
 	// Reason: avoid mutating config.yaml during server startup.
@@ -782,8 +879,17 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	// Sanitize Claude key headers
 	cfg.SanitizeClaudeKeys()
 
+	// Sanitize AWS Bedrock Runtime credentials.
+	cfg.SanitizeBedrockKeys()
+
+	// Sanitize OpenCode Go plan API keys.
+	cfg.SanitizeOpenCodeGoKeys()
+
 	// Normalize provider identity fingerprints.
 	cfg.SanitizeIdentityFingerprint()
+
+	// Normalize reusable outbound proxy entries.
+	cfg.SanitizeProxyPool()
 
 	// Sanitize OpenAI compatibility providers: drop entries without base-url
 	cfg.SanitizeOpenAICompatibility()
@@ -820,6 +926,16 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 
 	// Return the populated configuration struct.
 	return &cfg, nil
+}
+
+// ApplyEnvOverrides applies process-level configuration overrides.
+func (cfg *Config) ApplyEnvOverrides() {
+	if cfg == nil {
+		return
+	}
+	if authPath := strings.TrimSpace(os.Getenv(EnvAuthPath)); authPath != "" {
+		cfg.AuthDir = authPath
+	}
 }
 
 // SanitizePayloadRules validates raw JSON payload rule params and drops invalid rules.
@@ -957,6 +1073,10 @@ func (cfg *Config) SanitizeOpenAICompatibility() {
 		e.Prefix = normalizeModelPrefix(e.Prefix)
 		e.BaseURL = strings.TrimSpace(e.BaseURL)
 		e.Headers = NormalizeHeaders(e.Headers)
+		for j := range e.APIKeyEntries {
+			e.APIKeyEntries[j].ProxyURL = strings.TrimSpace(e.APIKeyEntries[j].ProxyURL)
+			e.APIKeyEntries[j].ProxyID = strings.TrimSpace(e.APIKeyEntries[j].ProxyID)
+		}
 		if e.BaseURL == "" {
 			// Skip providers with no base-url; treated as removed
 			continue
@@ -977,6 +1097,8 @@ func (cfg *Config) SanitizeCodexKeys() {
 		e := cfg.CodexKey[i]
 		e.Prefix = normalizeModelPrefix(e.Prefix)
 		e.BaseURL = strings.TrimSpace(e.BaseURL)
+		e.ProxyURL = strings.TrimSpace(e.ProxyURL)
+		e.ProxyID = strings.TrimSpace(e.ProxyID)
 		e.Headers = NormalizeHeaders(e.Headers)
 		e.ExcludedModels = NormalizeExcludedModels(e.ExcludedModels)
 		if e.BaseURL == "" {
@@ -987,17 +1109,56 @@ func (cfg *Config) SanitizeCodexKeys() {
 	cfg.CodexKey = out
 }
 
-// SanitizeClaudeKeys normalizes headers for Claude credentials.
+// SanitizeClaudeKeys removes empty Claude API-key rows and normalizes headers.
 func (cfg *Config) SanitizeClaudeKeys() {
 	if cfg == nil || len(cfg.ClaudeKey) == 0 {
 		return
 	}
+	out := make([]ClaudeKey, 0, len(cfg.ClaudeKey))
 	for i := range cfg.ClaudeKey {
-		entry := &cfg.ClaudeKey[i]
+		entry := cfg.ClaudeKey[i]
+		entry.APIKey = strings.TrimSpace(entry.APIKey)
+		if entry.APIKey == "" {
+			continue
+		}
+		entry.Name = strings.TrimSpace(entry.Name)
 		entry.Prefix = normalizeModelPrefix(entry.Prefix)
+		entry.BaseURL = strings.TrimSpace(entry.BaseURL)
+		entry.ProxyURL = strings.TrimSpace(entry.ProxyURL)
+		entry.ProxyID = strings.TrimSpace(entry.ProxyID)
 		entry.Headers = NormalizeHeaders(entry.Headers)
 		entry.ExcludedModels = NormalizeExcludedModels(entry.ExcludedModels)
+		out = append(out, entry)
 	}
+	cfg.ClaudeKey = out
+}
+
+// SanitizeOpenCodeGoKeys deduplicates and normalizes OpenCode Go credentials.
+func (cfg *Config) SanitizeOpenCodeGoKeys() {
+	if cfg == nil || len(cfg.OpenCodeGoKey) == 0 {
+		return
+	}
+	seen := make(map[string]struct{}, len(cfg.OpenCodeGoKey))
+	out := make([]OpenCodeGoKey, 0, len(cfg.OpenCodeGoKey))
+	for i := range cfg.OpenCodeGoKey {
+		entry := cfg.OpenCodeGoKey[i]
+		entry.APIKey = strings.TrimSpace(entry.APIKey)
+		if entry.APIKey == "" {
+			continue
+		}
+		if _, exists := seen[entry.APIKey]; exists {
+			continue
+		}
+		seen[entry.APIKey] = struct{}{}
+		entry.Name = strings.TrimSpace(entry.Name)
+		entry.Prefix = normalizeModelPrefix(entry.Prefix)
+		entry.ProxyURL = strings.TrimSpace(entry.ProxyURL)
+		entry.ProxyID = strings.TrimSpace(entry.ProxyID)
+		entry.Headers = NormalizeHeaders(entry.Headers)
+		entry.ExcludedModels = NormalizeExcludedModels(entry.ExcludedModels)
+		out = append(out, entry)
+	}
+	cfg.OpenCodeGoKey = out
 }
 
 // SanitizeGeminiKeys deduplicates and normalizes Gemini credentials.
@@ -1017,6 +1178,7 @@ func (cfg *Config) SanitizeGeminiKeys() {
 		entry.Prefix = normalizeModelPrefix(entry.Prefix)
 		entry.BaseURL = strings.TrimSpace(entry.BaseURL)
 		entry.ProxyURL = strings.TrimSpace(entry.ProxyURL)
+		entry.ProxyID = strings.TrimSpace(entry.ProxyID)
 		entry.Headers = NormalizeHeaders(entry.Headers)
 		entry.ExcludedModels = NormalizeExcludedModels(entry.ExcludedModels)
 		if _, exists := seen[entry.APIKey]; exists {

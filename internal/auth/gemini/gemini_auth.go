@@ -41,6 +41,72 @@ var Scopes = []string{
 	"https://www.googleapis.com/auth/userinfo.profile",
 }
 
+func EnrichOAuthTokenMap(tokenMap map[string]any, oauthConfig *oauth2.Config) map[string]any {
+	if tokenMap == nil {
+		tokenMap = make(map[string]any)
+	}
+	tokenMap["token_uri"] = "https://oauth2.googleapis.com/token"
+	if oauthConfig != nil {
+		if strings.TrimSpace(oauthConfig.ClientID) != "" {
+			tokenMap["client_id"] = strings.TrimSpace(oauthConfig.ClientID)
+		}
+		if strings.TrimSpace(oauthConfig.ClientSecret) != "" {
+			tokenMap["client_secret"] = strings.TrimSpace(oauthConfig.ClientSecret)
+		}
+		if len(oauthConfig.Scopes) > 0 {
+			tokenMap["scopes"] = append([]string(nil), oauthConfig.Scopes...)
+		} else {
+			tokenMap["scopes"] = append([]string(nil), Scopes...)
+		}
+	} else {
+		tokenMap["scopes"] = append([]string(nil), Scopes...)
+	}
+	tokenMap["universe_domain"] = "googleapis.com"
+	return tokenMap
+}
+
+func ResolveOAuthClientCredentials(appConfig *config.Config, tokenData, metadata map[string]any) (string, string) {
+	clientID := strings.TrimSpace(stringFromMap(tokenData, "client_id"))
+	clientSecret := strings.TrimSpace(stringFromMap(tokenData, "client_secret"))
+	if clientID == "" {
+		clientID = strings.TrimSpace(stringFromMap(metadata, "client_id"))
+	}
+	if clientSecret == "" {
+		clientSecret = strings.TrimSpace(stringFromMap(metadata, "client_secret"))
+	}
+	if clientID != "" {
+		if clientSecret == "" && appConfig != nil {
+			cfgClientID, cfgClientSecret := appConfig.OAuthClientCredentials(config.OAuthClientGemini)
+			if strings.TrimSpace(cfgClientID) == clientID {
+				clientSecret = strings.TrimSpace(cfgClientSecret)
+			}
+		}
+		if clientSecret == "" && clientID == config.GeminiCLIOAuthClientID {
+			clientSecret = config.GeminiCLIOAuthClientSecret
+		}
+		return clientID, clientSecret
+	}
+	if appConfig == nil {
+		appConfig = &config.Config{}
+	}
+	return appConfig.OAuthClientCredentials(config.OAuthClientGemini)
+}
+
+func stringFromMap(m map[string]any, key string) string {
+	if m == nil {
+		return ""
+	}
+	if v, ok := m[key]; ok {
+		switch typed := v.(type) {
+		case string:
+			return typed
+		case fmt.Stringer:
+			return typed.String()
+		}
+	}
+	return ""
+}
+
 // GeminiAuth provides methods for handling the Gemini OAuth2 authentication flow.
 // It encapsulates the logic for obtaining, storing, and refreshing authentication tokens
 // for Google's Gemini AI services.
@@ -201,10 +267,7 @@ func (g *GeminiAuth) createTokenStorage(ctx context.Context, config *oauth2.Conf
 		return nil, fmt.Errorf("failed to unmarshal token: %w", err)
 	}
 
-	ifToken["token_uri"] = "https://oauth2.googleapis.com/token"
-	ifToken["client_id"] = strings.TrimSpace(config.ClientID)
-	ifToken["scopes"] = Scopes
-	ifToken["universe_domain"] = "googleapis.com"
+	ifToken = EnrichOAuthTokenMap(ifToken, config)
 
 	ts := GeminiTokenStorage{
 		Token:     ifToken,

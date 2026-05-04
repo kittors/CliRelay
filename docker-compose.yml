@@ -23,6 +23,7 @@ services:
       CLIRELAY_UPDATER_URL: ${CLIRELAY_UPDATER_URL:-http://clirelay-updater:8320}
       CLIRELAY_UPDATER_TOKEN: ${CLIRELAY_UPDATER_TOKEN:-}
       CLIRELAY_TARGET_SERVICE: ${CLIRELAY_TARGET_SERVICE:-cli-proxy-api}
+      AUTH_PATH: ${AUTH_PATH:-/root/.cli-proxy-api}
       LANG: ${CLIRELAY_LANG:-C.UTF-8}
       LANGUAGE: ${CLIRELAY_LANGUAGE:-en_US:en}
       LC_ALL: ${CLIRELAY_LANG:-C.UTF-8}
@@ -34,10 +35,10 @@ services:
       - "127.0.0.1:51121:51121"
       - "127.0.0.1:11451:11451"
     volumes:
-      - ${CLI_PROXY_CONFIG_PATH:-./config.yaml}:/CLIProxyAPI/config.yaml
-      - ${CLI_PROXY_AUTH_PATH:-./auths}:/root/.cli-proxy-api
-      - ${CLI_PROXY_LOG_PATH:-./logs}:/CLIProxyAPI/logs
-      - ${CLI_PROXY_DATA_PATH:-./data}:/CLIProxyAPI/data
+      - ${CLI_PROXY_CONFIG_PATH:-${CLIRELAY_PROJECT_DIR:-${PWD:-.}}/config.yaml}:/CLIProxyAPI/config.yaml
+      - ${CLI_PROXY_AUTH_PATH:-${CLIRELAY_PROJECT_DIR:-${PWD:-.}}/auths}:${AUTH_PATH:-/root/.cli-proxy-api}
+      - ${CLI_PROXY_LOG_PATH:-${CLIRELAY_PROJECT_DIR:-${PWD:-.}}/logs}:/CLIProxyAPI/logs
+      - ${CLI_PROXY_DATA_PATH:-${CLIRELAY_PROJECT_DIR:-${PWD:-.}}/data}:/CLIProxyAPI/data
     restart: unless-stopped
 
   clirelay-updater:
@@ -46,12 +47,13 @@ services:
     command: ["./clirelay-updater"]
     environment:
       CLIRELAY_UPDATER_TOKEN: ${CLIRELAY_UPDATER_TOKEN:-}
-      CLIRELAY_COMPOSE_FILE: /workspace/docker-compose.yml
-      CLIRELAY_ENV_FILE: ${CLIRELAY_ENV_FILE:-/workspace/.env}
+      CLIRELAY_PROJECT_DIR: ${CLIRELAY_PROJECT_DIR:-${PWD:-.}}
+      CLIRELAY_COMPOSE_FILE: ${CLIRELAY_PROJECT_DIR:-${PWD:-.}}/docker-compose.yml
+      CLIRELAY_ENV_FILE: ${CLIRELAY_ENV_FILE:-${CLIRELAY_PROJECT_DIR:-${PWD:-.}}/.env}
       CLIRELAY_COMPOSE_PROJECT_NAME: ${CLIRELAY_COMPOSE_PROJECT_NAME:-}
       CLIRELAY_TARGET_SERVICE: ${CLIRELAY_TARGET_SERVICE:-cli-proxy-api}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - ./docker-compose.yml:/workspace/docker-compose.yml:ro
-      - ./.env:/workspace/.env
+      - ./docker-compose.yml:${CLIRELAY_PROJECT_DIR:-${PWD:-.}}/docker-compose.yml:ro
+      - ./.env:${CLIRELAY_PROJECT_DIR:-${PWD:-.}}/.env
     restart: unless-stopped

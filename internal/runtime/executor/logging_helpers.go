@@ -51,7 +51,7 @@ type upstreamAttempt struct {
 
 // recordAPIRequest stores the upstream request metadata in Gin context for request logging.
 func recordAPIRequest(ctx context.Context, cfg *config.Config, info upstreamRequestLog) {
-	if cfg == nil || !cfg.RequestLog {
+	if !shouldCaptureAPIExchangeLog(cfg) {
 		return
 	}
 	ginCtx := ginContextFrom(ctx)
@@ -98,7 +98,7 @@ func recordAPIRequest(ctx context.Context, cfg *config.Config, info upstreamRequ
 
 // recordAPIResponseMetadata captures upstream response status/header information for the latest attempt.
 func recordAPIResponseMetadata(ctx context.Context, cfg *config.Config, status int, headers http.Header) {
-	if cfg == nil || !cfg.RequestLog {
+	if !shouldCaptureAPIExchangeLog(cfg) {
 		return
 	}
 	ginCtx := ginContextFrom(ctx)
@@ -124,7 +124,7 @@ func recordAPIResponseMetadata(ctx context.Context, cfg *config.Config, status i
 
 // recordAPIResponseError adds an error entry for the latest attempt when no HTTP response is available.
 func recordAPIResponseError(ctx context.Context, cfg *config.Config, err error) {
-	if cfg == nil || !cfg.RequestLog || err == nil {
+	if !shouldCaptureAPIExchangeLog(cfg) || err == nil {
 		return
 	}
 	ginCtx := ginContextFrom(ctx)
@@ -149,7 +149,7 @@ func recordAPIResponseError(ctx context.Context, cfg *config.Config, err error) 
 
 // appendAPIResponseChunk appends an upstream response chunk to Gin context for request logging.
 func appendAPIResponseChunk(ctx context.Context, cfg *config.Config, chunk []byte) {
-	if cfg == nil || !cfg.RequestLog {
+	if !shouldCaptureAPIExchangeLog(cfg) {
 		return
 	}
 	data := bytes.TrimSpace(chunk)
@@ -180,6 +180,13 @@ func appendAPIResponseChunk(ctx context.Context, cfg *config.Config, chunk []byt
 	attempt.bodyHasContent = true
 
 	updateAggregatedResponse(ginCtx, attempts)
+}
+
+func shouldCaptureAPIExchangeLog(cfg *config.Config) bool {
+	if cfg == nil {
+		return false
+	}
+	return cfg.RequestLog || cfg.RequestLogStorage.StoreContent
 }
 
 func ginContextFrom(ctx context.Context) *gin.Context {

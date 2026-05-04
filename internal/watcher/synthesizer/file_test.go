@@ -71,6 +71,7 @@ func TestFileSynthesizer_Synthesize_ValidAuthFile(t *testing.T) {
 	authData := map[string]any{
 		"type":            "claude",
 		"email":           "test@example.com",
+		"proxy_id":        "hk",
 		"proxy_url":       "http://proxy.local",
 		"prefix":          "test-prefix",
 		"disable_cooling": true,
@@ -109,6 +110,9 @@ func TestFileSynthesizer_Synthesize_ValidAuthFile(t *testing.T) {
 	}
 	if auths[0].ProxyURL != "http://proxy.local" {
 		t.Errorf("expected proxy_url http://proxy.local, got %s", auths[0].ProxyURL)
+	}
+	if auths[0].ProxyID != "hk" {
+		t.Errorf("expected proxy_id hk, got %s", auths[0].ProxyID)
 	}
 	if v, ok := auths[0].Metadata["disable_cooling"].(bool); !ok || !v {
 		t.Errorf("expected disable_cooling true, got %v", auths[0].Metadata["disable_cooling"])

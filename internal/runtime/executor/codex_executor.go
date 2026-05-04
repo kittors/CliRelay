@@ -113,6 +113,96 @@ func mergeCodexResponsesCompletedOutput(payload []byte, pendingItems [][]byte, p
 	return updated
 }
 
+func collectCodexOutputItems(data []byte) []byte {
+	lines := bytes.Split(data, []byte("\n"))
+	outputItems := make([][]byte, 0, 2)
+	completedIdx := -1
+	var completedPayload []byte
+
+	for i := range lines {
+		line := lines[i]
+		if !bytes.HasPrefix(line, dataTag) {
+			continue
+		}
+		payload := bytes.TrimSpace(line[len(dataTag):])
+		if len(payload) == 0 || bytes.Equal(payload, []byte("[DONE]")) {
+			continue
+		}
+		eventType := strings.TrimSpace(gjson.GetBytes(payload, "type").String())
+		switch eventType {
+		case "response.output_item.done":
+			item := gjson.GetBytes(payload, "item")
+			if item.Exists() {
+				raw := strings.TrimSpace(item.Raw)
+				if raw != "" {
+					outputItems = append(outputItems, []byte(raw))
+				}
+			}
+		case "response.completed", "response.done":
+			completedIdx = i
+			completedPayload = normalizeCodexCompletionPayload(payload)
+		}
+	}
+
+	if completedIdx < 0 {
+		return data
+	}
+
+	changed := !bytes.Equal(completedPayload, bytes.TrimSpace(lines[completedIdx][len(dataTag):]))
+	if len(outputItems) > 0 {
+		existingOutput := gjson.GetBytes(completedPayload, "response.output")
+		if !existingOutput.Exists() || len(existingOutput.Array()) == 0 {
+			merged, err := sjson.SetRawBytes(completedPayload, "response.output", marshalJSONArrayRaw(outputItems))
+			if err == nil && len(merged) > 0 {
+				completedPayload = merged
+				changed = true
+			}
+		}
+	}
+
+	if !changed {
+		return data
+	}
+	updatedLine := make([]byte, 0, len(dataTag)+1+len(completedPayload))
+	updatedLine = append(updatedLine, dataTag...)
+	updatedLine = append(updatedLine, ' ')
+	updatedLine = append(updatedLine, completedPayload...)
+	lines[completedIdx] = updatedLine
+	return bytes.Join(lines, []byte("\n"))
+}
+
+func marshalJSONArrayRaw(items [][]byte) []byte {
+	if len(items) == 0 {
+		return []byte("[]")
+	}
+	total := 2
+	for i := range items {
+		total += len(items[i])
+	}
+	total += len(items) - 1
+	buf := make([]byte, 0, total)
+	buf = append(buf, '[')
+	for i := range items {
+		if i > 0 {
+			buf = append(buf, byte(44))
+		}
+		buf = append(buf, items[i]...)
+	}
+	buf = append(buf, ']')
+	return buf
+}
+
+func normalizeCodexCompletionPayload(payload []byte) []byte {
+	if strings.TrimSpace(gjson.GetBytes(payload, "type").String()) != "response.done" {
+		return payload
+	}
+	updated, err := sjson.SetBytes(payload, "type", "response.completed")
+	if err == nil && len(updated) > 0 {
+		return updated
+	}
+	return payload
+}
+
 // CodexExecutor is a stateless executor for Codex (OpenAI Responses API entrypoint).
 // If api_key is unavailable on auth, it falls back to legacy via ClientAdapter.
 type CodexExecutor struct {
@@ -305,6 +395,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		}
 
 		line = bytes.TrimSpace(line[5:])
+		line = normalizeCodexCompletionPayload(line)
 		if item, key, ok := extractCodexResponsesOutputItemDone(line); ok {
 			if _, exists := pendingSeen[key]; !exists {
 				pendingSeen[key] = struct{}{}
@@ -539,6 +630,10 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 			}
 		}
 		if errScan := scanner.Err(); errScan != nil {
+			if shouldSuppressUsageFailure(errScan, "") {
+				out <- cliproxyexecutor.StreamChunk{Err: errScan}
+				return
+			}
 			recordAPIResponseError(ctx, e.cfg, errScan)
 			reporter.publishFailure(ctx)
 			out <- cliproxyexecutor.StreamChunk{Err: errScan}
@@ -901,45 +996,93 @@ func parseCodexQuotaProbe(body []byte) *cliproxyauth.QuotaProbeResult {
 
 	allowed := rateLimit.Get("allowed")
 	limitReached := rateLimit.Get("limit_reached")
-	if allowed.Exists() && allowed.Bool() && (!limitReached.Exists() || !limitReached.Bool()) {
-		return &cliproxyauth.QuotaProbeResult{Recovered: true}
+	if allowed.Exists() && !allowed.Bool() {
+		return codexQuotaProbeBlocked(rateLimit)
+	}
+	if limitReached.Exists() && limitReached.Bool() {
+		return codexQuotaProbeBlocked(rateLimit)
 	}
 
-	nextRecoverAt := time.Time{}
-	for _, path := range []string{"primary_window", "secondary_window"} {
+	seenWindow := false
+	for _, path := range codexQuotaWindowPaths() {
 		window := rateLimit.Get(path)
 		if !window.Exists() {
 			continue
 		}
-		usedPercent := window.Get("used_percent")
-		if usedPercent.Exists() && usedPercent.Float() < 100 {
-			return &cliproxyauth.QuotaProbeResult{Recovered: true}
+		seenWindow = true
+		if codexQuotaWindowExceeded(window) {
+			return codexQuotaProbeBlocked(rateLimit)
 		}
-		if resetAt := codexQuotaWindowResetAt(window, time.Now()); !resetAt.IsZero() {
+	}
+	if seenWindow || (allowed.Exists() && allowed.Bool()) {
+		return &cliproxyauth.QuotaProbeResult{Recovered: true}
+	}
+
+	return codexQuotaProbeBlocked(rateLimit)
+}
+
+func codexQuotaProbeBlocked(rateLimit gjson.Result) *cliproxyauth.QuotaProbeResult {
+	return &cliproxyauth.QuotaProbeResult{
+		Recovered:     false,
+		NextRecoverAt: codexQuotaNextRecoverAt(rateLimit, time.Now()),
+	}
+}
+
+func codexQuotaWindowPaths() []string {
+	return []string{"primary_window", "secondary_window", "weekly_window", "week_window", "long_window"}
+}
+
+func codexQuotaNextRecoverAt(rateLimit gjson.Result, now time.Time) time.Time {
+	nextRecoverAt := time.Time{}
+	for _, path := range codexQuotaWindowPaths() {
+		window := rateLimit.Get(path)
+		if !window.Exists() || !codexQuotaWindowExceeded(window) {
+			continue
+		}
+		if resetAt := codexQuotaWindowResetAt(window, now); !resetAt.IsZero() {
 			if nextRecoverAt.IsZero() || resetAt.Before(nextRecoverAt) {
 				nextRecoverAt = resetAt
 			}
 		}
 	}
+	return nextRecoverAt
+}
 
-	return &cliproxyauth.QuotaProbeResult{
-		Recovered:     false,
-		NextRecoverAt: nextRecoverAt,
+func codexQuotaWindowExceeded(window gjson.Result) bool {
+	if !window.Exists() {
+		return false
 	}
+	if limitReached := window.Get("limit_reached"); limitReached.Exists() {
+		return limitReached.Bool()
+	}
+	if usedPercent := window.Get("used_percent"); usedPercent.Exists() {
+		return usedPercent.Float() >= 100
+	}
+	if remaining := window.Get("remaining"); remaining.Exists() {
+		return remaining.Float() <= 0
+	}
+	if available := window.Get("available"); available.Exists() {
+		return !available.Bool()
+	}
+	return false
 }
 
 func codexQuotaWindowResetAt(window gjson.Result, now time.Time) time.Time {
 	if !window.Exists() {
 		return time.Time{}
 	}
-	if resetAt := window.Get("reset_at").Int(); resetAt > 0 {
-		resetAtTime := time.Unix(resetAt, 0)
-		if resetAtTime.After(now) {
-			return resetAtTime
+	for _, path := range []string{"reset_at", "resets_at"} {
+		if resetAt := window.Get(path).Int(); resetAt > 0 {
+			resetAtTime := time.Unix(resetAt, 0)
+			if resetAtTime.After(now) {
+				return resetAtTime
+			}
 		}
 	}
-	if afterSeconds := window.Get("reset_after_seconds").Int(); afterSeconds > 0 {
-		return now.Add(time.Duration(afterSeconds) * time.Second)
+	for _, path := range []string{"reset_after_seconds", "resets_in_seconds"} {
+		if afterSeconds := window.Get(path).Int(); afterSeconds > 0 {
+			return now.Add(time.Duration(afterSeconds) * time.Second)
+		}
 	}
 	return time.Time{}
 }

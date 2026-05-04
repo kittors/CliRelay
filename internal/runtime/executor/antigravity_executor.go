@@ -1102,7 +1102,7 @@ func FetchAntigravityModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *c
 
 	for idx, baseURL := range baseURLs {
 		modelsURL := baseURL + antigravityModelsPath
-		httpReq, errReq := http.NewRequestWithContext(ctx, http.MethodPost, modelsURL, bytes.NewReader([]byte(`{}`)))
+		httpReq, errReq := http.NewRequestWithContext(ctx, http.MethodPost, modelsURL, bytes.NewReader(antigravityModelsRequestPayload(auth)))
 		if errReq != nil {
 			return fallbackAntigravityPrimaryModels()
 		}
@@ -1171,8 +1171,7 @@ func FetchAntigravityModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *c
 			if modelID == "" {
 				continue
 			}
-			switch modelID {
-			case "chat_20706", "chat_23310", "gemini-2.5-flash-thinking", "gemini-3-pro-low", "gemini-2.5-pro":
+			if isInternalAntigravityModel(modelID, modelData) {
 				continue
 			}
 			modelCfg := modelConfig[modelID]
@@ -1193,6 +1192,14 @@ func FetchAntigravityModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *c
 				Created:     now,
 				OwnedBy:     antigravityAuthType,
 				Type:        antigravityAuthType,
+			}
+			if maxTokens := modelData.Get("maxTokens").Int(); maxTokens > 0 {
+				modelInfo.ContextLength = int(maxTokens)
+				modelInfo.InputTokenLimit = int(maxTokens)
+			}
+			if maxOutputTokens := modelData.Get("maxOutputTokens").Int(); maxOutputTokens > 0 {
+				modelInfo.MaxCompletionTokens = int(maxOutputTokens)
+				modelInfo.OutputTokenLimit = int(maxOutputTokens)
 			}
 			// Look up Thinking support from static config using upstream model name.
 			if modelCfg != nil {
@@ -1217,6 +1224,46 @@ func FetchAntigravityModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *c
 		return models
 	}
 	return fallbackAntigravityPrimaryModels()
+}
+
+func antigravityModelsRequestPayload(auth *cliproxyauth.Auth) []byte {
+	projectID := ""
+	if auth != nil {
+		if auth.Metadata != nil {
+			projectID = metaStringValue(auth.Metadata, "project_id")
+			if projectID == "" {
+				projectID = metaStringValue(auth.Metadata, "project")
+			}
+		}
+		if projectID == "" && auth.Attributes != nil {
+			projectID = strings.TrimSpace(auth.Attributes["project_id"])
+			if projectID == "" {
+				projectID = strings.TrimSpace(auth.Attributes["project"])
+			}
+		}
+	}
+	if projectID == "" {
+		return []byte(`{}`)
+	}
+	payload, err := json.Marshal(map[string]string{"project": projectID})
+	if err != nil {
+		return []byte(`{}`)
+	}
+	return payload
+}
+
+func isInternalAntigravityModel(modelID string, modelData gjson.Result) bool {
+	id := strings.ToLower(strings.TrimSpace(modelID))
+	if id == "" {
+		return true
+	}
+	if modelData.Get("isInternal").Bool() {
+		return true
+	}
+	return strings.HasPrefix(id, "chat_") ||
+		strings.HasPrefix(id, "tab_") ||
+		strings.HasPrefix(id, "tab-jump") ||
+		strings.HasPrefix(id, "tab_jump")
 }
 
 func (e *AntigravityExecutor) ensureAccessToken(ctx context.Context, auth *cliproxyauth.Auth) (string, *cliproxyauth.Auth, error) {

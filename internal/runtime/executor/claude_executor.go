@@ -116,11 +116,18 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 		return resp, err
 	}
 
+	claudeFP, claudeFPEnabled := claudeIdentityFingerprint(e.cfg)
+	claudeFPSessionID := ""
 	// Apply cloaking (system prompt injection, fake user ID, sensitive word obfuscation)
 	// based on client type and configuration.
 	// Skipped when skip_anthropic_processing is enabled (third-party Claude-compatible APIs).
 	if !skipAnthropic {
-		body = applyCloaking(ctx, e.cfg, auth, body, baseModel, apiKey)
+		if claudeFPEnabled {
+			claudeFPSessionID = claudeFingerprintSessionID(claudeFP)
+			body = applyClaudeIdentityFingerprintPayload(auth, body, claudeFP, claudeFPSessionID)
+		} else {
+			body = applyCloaking(ctx, e.cfg, auth, body, baseModel, apiKey)
+		}
 	}
 
 	requestedModel := payloadRequestedModel(opts, req.Model)
@@ -150,7 +157,7 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 	if err != nil {
 		return resp, err
 	}
-	applyClaudeHeaders(httpReq, auth, apiKey, false, extraBetas, e.cfg)
+	applyClaudeHeaders(httpReq, auth, apiKey, false, extraBetas, e.cfg, claudeFP, claudeFPEnabled, claudeFPSessionID)
 	var authID, authLabel, authType, authValue string
 	if auth != nil {
 		authID = auth.ID
@@ -265,11 +272,18 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 		return nil, err
 	}
 
+	claudeFP, claudeFPEnabled := claudeIdentityFingerprint(e.cfg)
+	claudeFPSessionID := ""
 	// Apply cloaking (system prompt injection, fake user ID, sensitive word obfuscation)
 	// based on client type and configuration.
 	// Skipped when skip_anthropic_processing is enabled (third-party Claude-compatible APIs).
 	if !skipAnthropic {
-		body = applyCloaking(ctx, e.cfg, auth, body, baseModel, apiKey)
+		if claudeFPEnabled {
+			claudeFPSessionID = claudeFingerprintSessionID(claudeFP)
+			body = applyClaudeIdentityFingerprintPayload(auth, body, claudeFP, claudeFPSessionID)
+		} else {
+			body = applyCloaking(ctx, e.cfg, auth, body, baseModel, apiKey)
+		}
 	}
 
 	requestedModel := payloadRequestedModel(opts, req.Model)
@@ -299,7 +313,7 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	if err != nil {
 		return nil, err
 	}
-	applyClaudeHeaders(httpReq, auth, apiKey, true, extraBetas, e.cfg)
+	applyClaudeHeaders(httpReq, auth, apiKey, true, extraBetas, e.cfg, claudeFP, claudeFPEnabled, claudeFPSessionID)
 	var authID, authLabel, authType, authValue string
 	if auth != nil {
 		authID = auth.ID
@@ -451,7 +465,12 @@ func (e *ClaudeExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Aut
 	if err != nil {
 		return cliproxyexecutor.Response{}, err
 	}
-	applyClaudeHeaders(httpReq, auth, apiKey, false, extraBetas, e.cfg)
+	claudeFP, claudeFPEnabled := claudeIdentityFingerprint(e.cfg)
+	claudeFPSessionID := ""
+	if claudeFPEnabled {
+		claudeFPSessionID = claudeFingerprintSessionID(claudeFP)
+	}
+	applyClaudeHeaders(httpReq, auth, apiKey, false, extraBetas, e.cfg, claudeFP, claudeFPEnabled, claudeFPSessionID)
 	var authID, authLabel, authType, authValue string
 	if auth != nil {
 		authID = auth.ID
@@ -687,7 +706,7 @@ func mapStainlessArch() string {
 	}
 }
 
-func applyClaudeHeaders(r *http.Request, auth *cliproxyauth.Auth, apiKey string, stream bool, extraBetas []string, cfg *config.Config) {
+func applyClaudeHeaders(r *http.Request, auth *cliproxyauth.Auth, apiKey string, stream bool, extraBetas []string, cfg *config.Config, claudeFP config.ClaudeIdentityFingerprintConfig, claudeFPEnabled bool, claudeFPSessionID string) {
 	hdrDefault := func(cfgVal, fallback string) string {
 		if cfgVal != "" {
 			return cfgVal
@@ -709,6 +728,18 @@ func applyClaudeHeaders(r *http.Request, auth *cliproxyauth.Auth, apiKey string,
 		r.Header.Set("Authorization", "Bearer "+apiKey)
 	}
 	r.Header.Set("Content-Type", "application/json")
+
+	var attrs map[string]string
+	if auth != nil {
+		attrs = auth.Attributes
+	}
+	if claudeFPEnabled {
+		util.ApplyCustomHeadersFromAttrs(r, attrs)
+		applyClaudeIdentityFingerprintHeaders(r.Header, claudeFP, stream, extraBetas, claudeFPSessionID)
+		r.Header.Set("Connection", "keep-alive")
+		r.Header.Set("Accept-Encoding", "gzip, deflate, br, zstd")
+		return
+	}
 
 	var ginHeaders http.Header
 	if ginCtx, ok := r.Context().Value(util.ContextKeyGin).(*gin.Context); ok && ginCtx != nil && ginCtx.Request != nil {
@@ -766,10 +797,6 @@ func applyClaudeHeaders(r *http.Request, auth *cliproxyauth.Auth, apiKey string,
 	}
 	// Keep OS/Arch mapping dynamic (not configurable).
 	// They intentionally continue to derive from runtime.GOOS/runtime.GOARCH.
-	var attrs map[string]string
-	if auth != nil {
-		attrs = auth.Attributes
-	}
 	util.ApplyCustomHeadersFromAttrs(r, attrs)
 }
 

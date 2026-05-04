@@ -151,15 +151,15 @@ func (m *Manager) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 	if replaced != nil {
 		replaced.cleanup(errors.New("replaced by new connection"))
 	}
-		if m.onConnected != nil {
-			m.onConnected(s.provider)
-		}
-
-		// Each websocket session owns its own read loop for as long as the
-		// underlying connection stays alive. Session cleanup closes the connection,
-		// removes it from the manager, and terminates this detached loop.
-		go s.run(context.Background())
+	if m.onConnected != nil {
+		m.onConnected(s.provider)
 	}
+
+	// Each websocket session owns its own read loop for as long as the
+	// underlying connection stays alive. Session cleanup closes the connection,
+	// removes it from the manager, and terminates this detached loop.
+	go s.run(context.Background())
+}
 
 // Send forwards the message to the specific provider connection and returns a channel
 // yielding response messages.

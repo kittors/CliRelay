@@ -82,10 +82,9 @@ jobs:
         run: |
           go test ./...
       - name: Golangci-lint
-        uses: golangci/golangci-lint-action@v6
-        with:
-          version: v1.64.5
-          args: --config .golangci.yml
+        run: |
+          go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.5
+          "$(go env GOPATH)/bin/golangci-lint" run --config .golangci.yml
       - name: Build
         run: |
           go build -o test-output ./cmd/server

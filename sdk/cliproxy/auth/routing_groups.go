@@ -238,13 +238,16 @@ func candidateSupportsModel(cfg *internalconfig.Config, registryRef *registry.Mo
 	if auth == nil || modelID == "" {
 		return false
 	}
+	groups := authGroups(cfg, auth)
+	if !modelAllowedByRoutingGroupScopes(cfg, modelID, groups, routeGroup, allowedGroups) {
+		return false
+	}
 	if registryRef == nil {
 		return true
 	}
 	if registryRef.ClientSupportsModel(auth.ID, modelID) {
 		return true
 	}
-	groups := authGroups(cfg, auth)
 	if len(groups) == 0 {
 		return false
 	}
@@ -271,6 +274,71 @@ func candidateSupportsModel(cfg *internalconfig.Config, registryRef *registry.Mo
 			continue
 		}
 		if registryRef.ClientSupportsModel(auth.ID, group+"/"+modelID) {
+			return true
+		}
+	}
+	return false
+}
+
+func modelAllowedByRoutingGroupScopes(cfg *internalconfig.Config, modelID string, candidateGroups map[string]struct{}, routeGroup string, allowedGroups map[string]struct{}) bool {
+	modelID = strings.TrimSpace(modelID)
+	if cfg == nil || modelID == "" || len(candidateGroups) == 0 {
+		return true
+	}
+
+	scopedGroups := make(map[string]struct{})
+	if routeGroup != "" {
+		normalized := internalrouting.NormalizeGroupName(routeGroup)
+		if _, ok := candidateGroups[normalized]; ok {
+			scopedGroups[normalized] = struct{}{}
+		}
+	}
+	if len(allowedGroups) > 0 {
+		for group := range candidateGroups {
+			if _, ok := allowedGroups[group]; ok {
+				scopedGroups[group] = struct{}{}
+			}
+		}
+	}
+	if len(scopedGroups) == 0 {
+		return true
+	}
+
+	foundRestrictedGroup := false
+	for _, group := range cfg.Routing.ChannelGroups {
+		groupName := internalrouting.NormalizeGroupName(group.Name)
+		if _, ok := scopedGroups[groupName]; !ok {
+			continue
+		}
+		if len(group.AllowedModels) == 0 {
+			return true
+		}
+		foundRestrictedGroup = true
+		if routingGroupAllowsModel(groupName, group.AllowedModels, modelID) {
+			return true
+		}
+	}
+	return !foundRestrictedGroup
+}
+
+func routingGroupAllowsModel(groupName string, allowedModels []string, modelID string) bool {
+	modelID = strings.TrimSpace(modelID)
+	if modelID == "" {
+		return false
+	}
+	unprefixed := modelID
+	if groupName != "" {
+		prefix := groupName + "/"
+		if strings.HasPrefix(strings.ToLower(modelID), strings.ToLower(prefix)) {
+			unprefixed = modelID[len(prefix):]
+		}
+	}
+	for _, allowed := range allowedModels {
+		allowed = strings.TrimSpace(allowed)
+		if allowed == "" {
+			continue
+		}
+		if strings.EqualFold(allowed, modelID) || strings.EqualFold(allowed, unprefixed) {
 			return true
 		}
 	}

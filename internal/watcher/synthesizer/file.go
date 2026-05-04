@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/auth/codex"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/runtime/geminicli"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 )
@@ -79,6 +80,9 @@ func (s *FileSynthesizer) Synthesize(ctx *SynthesisContext) ([]*coreauth.Auth, e
 		if provider == "gemini" {
 			provider = "gemini-cli"
 		}
+		if provider == "codex" {
+			backfillCodexMetadata(metadata)
+		}
 		label := fileAuthLabel(metadata, provider)
 		// Use relative path under authDir as ID to stay consistent with the file-based token store
 		id := full
@@ -89,6 +93,10 @@ func (s *FileSynthesizer) Synthesize(ctx *SynthesisContext) ([]*coreauth.Auth, e
 		proxyURL := ""
 		if p, ok := metadata["proxy_url"].(string); ok {
 			proxyURL = p
+		}
+		proxyID := ""
+		if p, ok := metadata["proxy_id"].(string); ok {
+			proxyID = p
 		}
 
 		prefix := ""
@@ -121,6 +129,7 @@ func (s *FileSynthesizer) Synthesize(ctx *SynthesisContext) ([]*coreauth.Auth, e
 				"path":   full,
 			},
 			ProxyURL:  proxyURL,
+			ProxyID:   proxyID,
 			Metadata:  metadata,
 			CreatedAt: now,
 			UpdatedAt: now,
@@ -151,6 +160,29 @@ func (s *FileSynthesizer) Synthesize(ctx *SynthesisContext) ([]*coreauth.Auth, e
 		out = append(out, a)
 	}
 	return out, nil
+}
+
+func backfillCodexMetadata(metadata map[string]any) {
+	if len(metadata) == 0 {
+		return
+	}
+	if planType, _ := metadata["plan_type"].(string); strings.TrimSpace(planType) != "" {
+		metadata["plan_type"] = strings.ToLower(strings.TrimSpace(planType))
+		return
+	}
+	idToken, _ := metadata["id_token"].(string)
+	idToken = strings.TrimSpace(idToken)
+	if idToken == "" {
+		return
+	}
+	claims, err := codex.ParseJWTToken(idToken)
+	if err != nil || claims == nil {
+		return
+	}
+	planType := strings.ToLower(strings.TrimSpace(claims.CodexAuthInfo.ChatgptPlanType))
+	if planType != "" {
+		metadata["plan_type"] = planType
+	}
 }
 
 // SynthesizeGeminiVirtualAuths creates virtual Auth entries for multi-project Gemini credentials.
@@ -221,6 +253,10 @@ func SynthesizeGeminiVirtualAuths(primary *coreauth.Auth, metadata map[string]an
 		if proxy != "" {
 			metadataCopy["proxy_url"] = proxy
 		}
+		proxyID := strings.TrimSpace(primary.ProxyID)
+		if proxyID != "" {
+			metadataCopy["proxy_id"] = proxyID
+		}
 		virtual := &coreauth.Auth{
 			ID:         buildGeminiVirtualID(primary.ID, projectID),
 			Provider:   originalProvider,
@@ -229,6 +265,7 @@ func SynthesizeGeminiVirtualAuths(primary *coreauth.Auth, metadata map[string]an
 			Attributes: attrs,
 			Metadata:   metadataCopy,
 			ProxyURL:   primary.ProxyURL,
+			ProxyID:    primary.ProxyID,
 			Prefix:     primary.Prefix,
 			CreatedAt:  primary.CreatedAt,
 			UpdatedAt:  primary.UpdatedAt,

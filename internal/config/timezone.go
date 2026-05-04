@@ -40,4 +40,3 @@ func ApplyTimeZone(timezone string) *time.Location {
 
 	return loc
 }
-

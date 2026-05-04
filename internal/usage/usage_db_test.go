@@ -55,6 +55,85 @@ func TestCutoffStartUTCAtUsesProjectTimezoneForDayBoundaries(t *testing.T) {
 	}
 }
 
+func TestQueryDailyCallsByAuthIndexesBucketsByProjectTimezone(t *testing.T) {
+	CloseDB()
+	dbPath := filepath.Join(t.TempDir(), "usage.db")
+	loc := time.FixedZone("UTC+14", 14*3600)
+	if err := InitDB(dbPath, config.RequestLogStorageConfig{StoreContent: false}, loc); err != nil {
+		t.Fatalf("InitDB() error = %v", err)
+	}
+	stopRequestLogMaintenance()
+	t.Cleanup(CloseDB)
+
+	nowLocal := time.Now().In(loc)
+	localToday := time.Date(nowLocal.Year(), nowLocal.Month(), nowLocal.Day(), 0, 30, 0, 0, loc)
+	InsertLog("", "", "gpt-5.4", "codex", "Codex", "auth-local-day", false, localToday, 1, 1, TokenStats{TotalTokens: 1}, "", "")
+
+	points, err := QueryDailyCallsByAuthIndexes([]string{"auth-local-day"}, 1)
+	if err != nil {
+		t.Fatalf("QueryDailyCallsByAuthIndexes() error = %v", err)
+	}
+	if len(points) != 1 {
+		t.Fatalf("points len = %d, want 1: %+v", len(points), points)
+	}
+	wantDate := localToday.Format("2006-01-02")
+	if points[0].Date != wantDate {
+		t.Fatalf("point date = %q, want local day %q", points[0].Date, wantDate)
+	}
+	if points[0].Requests != 1 {
+		t.Fatalf("point requests = %d, want 1", points[0].Requests)
+	}
+}
+
+func TestQuotaSnapshotPointsKeepFineGrainedSeries(t *testing.T) {
+	initTestUsageDB(t, config.RequestLogStorageConfig{})
+
+	recordedAt := time.Date(2026, 4, 30, 16, 0, 0, 0, time.UTC)
+	resetAt := recordedAt.Add(5 * time.Hour)
+	remaining := 100.0
+
+	err := RecordQuotaSnapshotPoints("auth-1", "codex", []QuotaSnapshotPoint{
+		{
+			RecordedAt:    recordedAt,
+			QuotaKey:      "additional:codex_bengalfox:5h",
+			QuotaLabel:    "GPT-5.3-Codex-Spark: 5h",
+			Percent:       &remaining,
+			ResetAt:       &resetAt,
+			WindowSeconds: 18000,
+		},
+	})
+	if err != nil {
+		t.Fatalf("RecordQuotaSnapshotPoints() error = %v", err)
+	}
+
+	points, err := QueryQuotaSnapshotPoints("auth-1", recordedAt.Add(-time.Minute), recordedAt.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("QueryQuotaSnapshotPoints() error = %v", err)
+	}
+	if len(points) != 1 {
+		t.Fatalf("points = %d, want 1", len(points))
+	}
+	point := points[0]
+	if point.Provider != "codex" {
+		t.Fatalf("Provider = %q, want codex", point.Provider)
+	}
+	if point.QuotaKey != "additional:codex_bengalfox:5h" {
+		t.Fatalf("QuotaKey = %q", point.QuotaKey)
+	}
+	if point.QuotaLabel != "GPT-5.3-Codex-Spark: 5h" {
+		t.Fatalf("QuotaLabel = %q", point.QuotaLabel)
+	}
+	if point.Percent == nil || *point.Percent != 100 {
+		t.Fatalf("Percent = %v, want 100", point.Percent)
+	}
+	if point.ResetAt == nil || !point.ResetAt.Equal(resetAt) {
+		t.Fatalf("ResetAt = %v, want %v", point.ResetAt, resetAt)
+	}
+	if point.WindowSeconds != 18000 {
+		t.Fatalf("WindowSeconds = %d, want 18000", point.WindowSeconds)
+	}
+}
+
 func TestQueryLogsSupportsSystemRequestLogFilterValue(t *testing.T) {
 	initTestUsageDB(t, config.RequestLogStorageConfig{})
 
@@ -124,6 +203,39 @@ func TestQueryLogContentKeepsMissingFailedOutputEmpty(t *testing.T) {
 	}
 	if part.Content != "" {
 		t.Fatalf("part.Content = %q, want empty historical missing output", part.Content)
+	}
+}
+
+func TestQueryLogContentPartReturnsStoredRequestDetails(t *testing.T) {
+	initTestUsageDB(t, config.RequestLogStorageConfig{
+		StoreContent:           true,
+		ContentRetentionDays:   30,
+		CleanupIntervalMinutes: 1440,
+	})
+
+	now := time.Now().UTC()
+	details := `{"client":{"ip":"203.0.113.8","headers":{"Authorization":"Bearer sk-client-plaintext"}},"upstream":{"headers":{"Authorization":"Bearer sk-upstream-plaintext"}},"response":{"headers":{"X-Request-Id":"req-plaintext"}}}`
+	InsertLogWithDetails("sk-test", "Primary", "gpt-test", "codex", "Codex", "auth-1", false, now, 100, 10, TokenStats{
+		InputTokens: 1, OutputTokens: 1, TotalTokens: 2,
+	}, `{"messages":[]}`, `{"choices":[]}`, details)
+
+	result, err := QueryLogs(LogQueryParams{Page: 1, Size: 10, Days: 1})
+	if err != nil {
+		t.Fatalf("QueryLogs() error = %v", err)
+	}
+	if len(result.Items) != 1 {
+		t.Fatalf("expected 1 log row, got %d", len(result.Items))
+	}
+
+	part, err := QueryLogContentPart(result.Items[0].ID, "details")
+	if err != nil {
+		t.Fatalf("QueryLogContentPart(details) error = %v", err)
+	}
+	if part.Part != "details" {
+		t.Fatalf("part.Part = %q, want details", part.Part)
+	}
+	if part.Content != details {
+		t.Fatalf("details content = %q, want %q", part.Content, details)
 	}
 }
 
@@ -350,7 +462,7 @@ func TestCleanupExpiredLogContentKeepsMetadataRows(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Begin() error = %v", err)
 	}
-	if err := insertLogContentTx(tx, logID, timestamp, "expired-input", "expired-output"); err != nil {
+	if err := insertLogContentTx(tx, logID, timestamp, "expired-input", "expired-output", ""); err != nil {
 		t.Fatalf("insertLogContentTx() error = %v", err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -769,7 +881,7 @@ func TestInsertLogContentTxSkipsSingleRowLargerThanSizeCap(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Begin() error = %v", err)
 	}
-	if err := insertLogContentTx(tx, logID, time.Now().UTC(), payload, ""); err != nil {
+	if err := insertLogContentTx(tx, logID, time.Now().UTC(), payload, "", ""); err != nil {
 		t.Fatalf("insertLogContentTx() error = %v", err)
 	}
 	if err := tx.Commit(); err != nil {

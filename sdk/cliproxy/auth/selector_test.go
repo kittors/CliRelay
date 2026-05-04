@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -451,6 +452,53 @@ func TestSelectorPick_AllCooldownReturnsModelCooldownError(t *testing.T) {
 			t.Fatalf("Error().error.provider = %q, want %q", got, "gemini")
 		}
 	})
+}
+
+func TestSelectorPick_AllTemporaryFailuresReturnsModelUnavailableError(t *testing.T) {
+	t.Parallel()
+
+	model := "test-model"
+	now := time.Now()
+	next := now.Add(60 * time.Second)
+	auths := []*Auth{
+		{
+			ID: "a",
+			ModelStates: map[string]*ModelState{
+				model: {
+					Status:         StatusError,
+					Unavailable:    true,
+					NextRetryAfter: next,
+				},
+			},
+		},
+		{
+			ID: "b",
+			ModelStates: map[string]*ModelState{
+				model: {
+					Status:         StatusError,
+					Unavailable:    true,
+					NextRetryAfter: next,
+				},
+			},
+		},
+	}
+
+	selector := &FillFirstSelector{}
+	_, err := selector.Pick(context.Background(), "claude", model, cliproxyexecutor.Options{}, auths)
+	if err == nil {
+		t.Fatal("Pick() error = nil")
+	}
+
+	statusErr, ok := err.(interface{ StatusCode() int })
+	if !ok {
+		t.Fatalf("Pick() error = %T, want status error", err)
+	}
+	if got := statusErr.StatusCode(); got != http.StatusServiceUnavailable {
+		t.Fatalf("StatusCode() = %d, want %d", got, http.StatusServiceUnavailable)
+	}
+	if strings.Contains(err.Error(), "auth_unavailable") {
+		t.Fatalf("Error() = %q, should not report auth_unavailable", err.Error())
+	}
 }
 
 func TestIsAuthBlockedForModel_UnavailableWithoutNextRetryIsNotBlocked(t *testing.T) {

@@ -13,6 +13,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/api/bodyutil"
+	claudeauth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/claude"
+	geminiAuth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/gemini"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/runtime/geminicli"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
@@ -36,6 +38,20 @@ var geminiOAuthScopes = []string{
 }
 
 var antigravityOAuthTokenURL = "https://oauth2.googleapis.com/token"
+
+type claudeOAuthRefresher interface {
+	RefreshTokens(ctx context.Context, refreshToken string) (*claudeauth.ClaudeTokenData, error)
+}
+
+var newClaudeOAuthRefresher = func(cfg *config.Config) claudeOAuthRefresher {
+	if cfg == nil {
+		cfg = &config.Config{}
+	}
+	return claudeauth.NewClaudeAuth(cfg)
+}
+
+const kimiOAuthClientID = "17e5f671-d194-4dfb-9706-5516cb48c098"
+const kimiOAuthTokenURL = "https://auth.kimi.com/api/oauth/token"
 
 type apiCallRequest struct {
 	AuthIndexSnake  *string           `json:"auth_index"`
@@ -261,8 +277,95 @@ func (h *Handler) resolveTokenForAuth(ctx context.Context, auth *coreauth.Auth) 
 		token, errToken := h.refreshAntigravityOAuthAccessToken(ctx, auth)
 		return token, errToken
 	}
+	if provider == "claude" || provider == "anthropic" {
+		token, errToken := h.refreshClaudeOAuthAccessToken(ctx, auth)
+		return token, errToken
+	}
+	if provider == "kimi" {
+		token, errToken := h.refreshKimiOAuthAccessToken(ctx, auth)
+		return token, errToken
+	}
 
 	return tokenValueForAuth(auth), nil
+}
+
+func (h *Handler) refreshClaudeOAuthAccessToken(ctx context.Context, auth *coreauth.Auth) (string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if auth == nil {
+		return "", nil
+	}
+
+	metadata := auth.Metadata
+	if len(metadata) == 0 {
+		return "", fmt.Errorf("claude oauth metadata missing")
+	}
+
+	current := strings.TrimSpace(tokenValueFromMetadata(metadata))
+	if current != "" && !claudeTokenNeedsRefresh(metadata) {
+		return current, nil
+	}
+
+	refreshToken := stringValue(metadata, "refresh_token")
+	if refreshToken == "" {
+		return "", fmt.Errorf("claude refresh token missing")
+	}
+
+	refresher := newClaudeOAuthRefresher(h.claudeOAuthRefreshConfig(auth))
+	tokenData, errRefresh := refresher.RefreshTokens(ctx, refreshToken)
+	if errRefresh != nil {
+		return "", errRefresh
+	}
+	if tokenData == nil || strings.TrimSpace(tokenData.AccessToken) == "" {
+		return "", fmt.Errorf("claude oauth token refresh returned empty access_token")
+	}
+
+	if auth.Metadata == nil {
+		auth.Metadata = make(map[string]any)
+	}
+	auth.Metadata["access_token"] = strings.TrimSpace(tokenData.AccessToken)
+	if strings.TrimSpace(tokenData.RefreshToken) != "" {
+		auth.Metadata["refresh_token"] = strings.TrimSpace(tokenData.RefreshToken)
+	}
+	if strings.TrimSpace(tokenData.Email) != "" {
+		auth.Metadata["email"] = strings.TrimSpace(tokenData.Email)
+	}
+	if strings.TrimSpace(tokenData.Expire) != "" {
+		auth.Metadata["expired"] = strings.TrimSpace(tokenData.Expire)
+	}
+	auth.Metadata["type"] = "claude"
+	now := time.Now()
+	auth.Metadata["last_refresh"] = now.Format(time.RFC3339)
+
+	if h != nil && h.authManager != nil {
+		auth.LastRefreshedAt = now
+		auth.UpdatedAt = now
+		_, _ = h.authManager.Update(ctx, auth)
+	}
+
+	return strings.TrimSpace(tokenData.AccessToken), nil
+}
+
+func (h *Handler) claudeOAuthRefreshConfig(auth *coreauth.Auth) *config.Config {
+	var cfgCopy config.Config
+	if h != nil && h.cfg != nil {
+		cfgCopy = *h.cfg
+	}
+	if auth == nil {
+		return &cfgCopy
+	}
+
+	var proxyURL string
+	if h != nil && h.cfg != nil {
+		proxyURL = h.cfg.ResolveProxyURL(auth.ProxyID, auth.ProxyURL)
+	} else {
+		proxyURL = auth.ProxyURL
+	}
+	if trimmed := strings.TrimSpace(proxyURL); trimmed != "" {
+		cfgCopy.ProxyURL = trimmed
+	}
+	return &cfgCopy
 }
 
 func (h *Handler) refreshGeminiOAuthAccessToken(ctx context.Context, auth *coreauth.Auth) (string, error) {
@@ -314,7 +417,7 @@ func (h *Handler) refreshGeminiOAuthAccessToken(ctx context.Context, auth *corea
 	if cfg == nil {
 		cfg = &config.Config{}
 	}
-	clientID, clientSecret := cfg.OAuthClientCredentials(config.OAuthClientGemini)
+	clientID, clientSecret := geminiAuth.ResolveOAuthClientCredentials(cfg, base, metadata)
 	if strings.TrimSpace(clientID) == "" {
 		return "", fmt.Errorf("gemini oauth client-id missing (set config oauth-clients.gemini.client-id or env %s)", config.EnvGeminiOAuthClientID)
 	}
@@ -452,6 +555,116 @@ func (h *Handler) refreshAntigravityOAuthAccessToken(ctx context.Context, auth *
 	return strings.TrimSpace(tokenResp.AccessToken), nil
 }
 
+func (h *Handler) refreshKimiOAuthAccessToken(ctx context.Context, auth *coreauth.Auth) (string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if auth == nil {
+		return "", nil
+	}
+
+	metadata := auth.Metadata
+	if len(metadata) == 0 {
+		return "", fmt.Errorf("kimi oauth metadata missing")
+	}
+
+	current := strings.TrimSpace(tokenValueFromMetadata(metadata))
+	expStr := stringValue(metadata, "expired")
+	if current != "" && expStr != "" {
+		if ts, errParse := time.Parse(time.RFC3339, strings.TrimSpace(expStr)); errParse == nil {
+			if time.Now().Add(30 * time.Second).Before(ts) {
+				return current, nil
+			}
+		}
+	}
+
+	refreshToken := stringValue(metadata, "refresh_token")
+	if refreshToken == "" {
+		return "", fmt.Errorf("kimi refresh token missing")
+	}
+
+	deviceID := stringValue(metadata, "device_id")
+
+	form := url.Values{}
+	form.Set("client_id", kimiOAuthClientID)
+	form.Set("grant_type", "refresh_token")
+	form.Set("refresh_token", refreshToken)
+
+	req, errReq := http.NewRequestWithContext(ctx, http.MethodPost, kimiOAuthTokenURL, strings.NewReader(form.Encode()))
+	if errReq != nil {
+		return "", errReq
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("X-Msh-Platform", "cli-proxy-api")
+	if deviceID != "" {
+		req.Header.Set("X-Msh-Device-Id", deviceID)
+	}
+
+	httpClient := util.NewHTTPClient(30 * time.Second)
+	httpClient.Transport = h.apiCallTransport(auth)
+	resp, errDo := httpClient.Do(req)
+	if errDo != nil {
+		return "", errDo
+	}
+	defer func() {
+		if errClose := resp.Body.Close(); errClose != nil {
+			log.Errorf("response body close error: %v", errClose)
+		}
+	}()
+
+	bodyBytes, errRead := bodyutil.ReadAll(resp.Body, managementOAuthTokenResponseLimit)
+	if errRead != nil {
+		if bodyutil.IsTooLarge(errRead) {
+			return "", fmt.Errorf("kimi oauth token refresh response too large")
+		}
+		return "", errRead
+	}
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return "", fmt.Errorf("kimi oauth token refresh failed: status %d: %s", resp.StatusCode, strings.TrimSpace(string(bodyBytes)))
+	}
+
+	var tokenResp struct {
+		AccessToken  string  `json:"access_token"`
+		RefreshToken string  `json:"refresh_token"`
+		ExpiresIn    float64 `json:"expires_in"`
+		TokenType    string  `json:"token_type"`
+	}
+	if errUnmarshal := json.Unmarshal(bodyBytes, &tokenResp); errUnmarshal != nil {
+		return "", errUnmarshal
+	}
+
+	if strings.TrimSpace(tokenResp.AccessToken) == "" {
+		return "", fmt.Errorf("kimi oauth token refresh returned empty access_token")
+	}
+
+	if auth.Metadata == nil {
+		auth.Metadata = make(map[string]any)
+	}
+	now := time.Now()
+	auth.Metadata["access_token"] = strings.TrimSpace(tokenResp.AccessToken)
+	if strings.TrimSpace(tokenResp.RefreshToken) != "" {
+		auth.Metadata["refresh_token"] = strings.TrimSpace(tokenResp.RefreshToken)
+	}
+	auth.Metadata["type"] = "kimi"
+	if deviceID != "" {
+		auth.Metadata["device_id"] = deviceID
+	}
+	if tokenResp.ExpiresIn > 0 {
+		auth.Metadata["expires_in"] = int64(tokenResp.ExpiresIn)
+		auth.Metadata["timestamp"] = now.UnixMilli()
+		auth.Metadata["expired"] = now.Add(time.Duration(tokenResp.ExpiresIn) * time.Second).Format(time.RFC3339)
+	}
+
+	if h != nil && h.authManager != nil {
+		auth.LastRefreshedAt = now
+		auth.UpdatedAt = now
+		_, _ = h.authManager.Update(ctx, auth)
+	}
+
+	return strings.TrimSpace(tokenResp.AccessToken), nil
+}
+
 func antigravityTokenNeedsRefresh(metadata map[string]any) bool {
 	// Refresh a bit early to avoid requests racing token expiry.
 	const skew = 30 * time.Second
@@ -471,6 +684,23 @@ func antigravityTokenNeedsRefresh(metadata map[string]any) bool {
 		return !exp.After(time.Now().Add(skew))
 	}
 	return true
+}
+
+func claudeTokenNeedsRefresh(metadata map[string]any) bool {
+	// Refresh a bit early to avoid requests racing token expiry.
+	const skew = 30 * time.Second
+
+	if metadata == nil {
+		return true
+	}
+	for _, key := range []string{"expired", "expiry", "expires_at", "expiresAt"} {
+		if expStr, ok := metadata[key].(string); ok {
+			if ts, errParse := time.Parse(time.RFC3339, strings.TrimSpace(expStr)); errParse == nil {
+				return !ts.After(time.Now().Add(skew))
+			}
+		}
+	}
+	return false
 }
 
 func int64Value(raw any) int64 {
@@ -650,13 +880,18 @@ func (h *Handler) authByIndex(authIndex string) *coreauth.Auth {
 
 func (h *Handler) apiCallTransport(auth *coreauth.Auth) http.RoundTripper {
 	var proxyCandidates []string
-	if auth != nil {
-		if proxyStr := strings.TrimSpace(auth.ProxyURL); proxyStr != "" {
+	if h != nil && h.cfg != nil {
+		proxyID := ""
+		fallbackURL := ""
+		if auth != nil {
+			proxyID = auth.ProxyID
+			fallbackURL = auth.ProxyURL
+		}
+		if proxyStr := strings.TrimSpace(h.cfg.ResolveProxyURL(proxyID, fallbackURL)); proxyStr != "" {
 			proxyCandidates = append(proxyCandidates, proxyStr)
 		}
-	}
-	if h != nil && h.cfg != nil {
-		if proxyStr := strings.TrimSpace(h.cfg.ProxyURL); proxyStr != "" {
+	} else if auth != nil {
+		if proxyStr := strings.TrimSpace(auth.ProxyURL); proxyStr != "" {
 			proxyCandidates = append(proxyCandidates, proxyStr)
 		}
 	}

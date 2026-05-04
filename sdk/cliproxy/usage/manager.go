@@ -29,6 +29,7 @@ type Record struct {
 	// content according to runtime configuration.
 	InputContent  string
 	OutputContent string
+	DetailContent string
 }
 
 // Detail holds the token usage breakdown.

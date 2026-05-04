@@ -116,6 +116,14 @@ func TestSanitizeConfigForAPI(t *testing.T) {
 				ExcludedModels: []string{"gpt-old"},
 			},
 		},
+		OpenCodeGoKey: []config.OpenCodeGoKey{
+			{
+				APIKey:         "sk-goXXXX1234000000",
+				Name:           "OpenCode Go 渠道",
+				ProxyURL:       "https://proxy.example.com/go",
+				ExcludedModels: []string{"minimax-m2.5"},
+			},
+		},
 		OAuthModelAlias: map[string][]config.OAuthModelAlias{
 			"antigravity": {
 				{Name: "rev19-uic3-1p", Alias: "gemini-2.5-computer-use-preview"},
@@ -191,6 +199,19 @@ func TestSanitizeConfigForAPI(t *testing.T) {
 		}
 	}
 
+	// ── Verify OpenCode Go keys ──
+	for _, c := range sanitized.OpenCodeGoKey {
+		if c.APIKey == "sk-goXXXX1234000000" {
+			t.Error("OpenCodeGoKey: api-key not masked")
+		}
+		if c.Name == "OpenCode Go 渠道" {
+			t.Error("OpenCodeGoKey: name not masked")
+		}
+		if c.ProxyURL == "https://proxy.example.com/go" {
+			t.Error("OpenCodeGoKey: proxy-url not masked")
+		}
+	}
+
 	// ── Verify OAuthModelAlias is stripped ──
 	if sanitized.OAuthModelAlias != nil {
 		t.Error("OAuthModelAlias not cleared")
@@ -215,6 +236,11 @@ func TestSanitizeConfigForAPI(t *testing.T) {
 	for _, c := range sanitized.CodexKey {
 		if c.ExcludedModels != nil {
 			t.Error("CodexKey: excluded-models not cleared")
+		}
+	}
+	for _, c := range sanitized.OpenCodeGoKey {
+		if c.ExcludedModels != nil {
+			t.Error("OpenCodeGoKey: excluded-models not cleared")
 		}
 	}
 

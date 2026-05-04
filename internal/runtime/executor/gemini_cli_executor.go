@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	geminiAuth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/gemini"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/misc"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/runtime/geminicli"
@@ -659,7 +660,7 @@ func prepareGeminiCLITokenSource(ctx context.Context, cfg *config.Config, auth *
 	if cfg == nil {
 		cfg = &config.Config{}
 	}
-	clientID, clientSecret := cfg.OAuthClientCredentials(config.OAuthClientGemini)
+	clientID, clientSecret := resolveGeminiCLITokenOAuthClient(cfg, base, metadata)
 	if strings.TrimSpace(clientID) == "" {
 		return nil, nil, fmt.Errorf("gemini-cli oauth client-id missing (set config oauth-clients.gemini.client-id or env %s)", config.EnvGeminiOAuthClientID)
 	}
@@ -678,6 +679,10 @@ func prepareGeminiCLITokenSource(ctx context.Context, cfg *config.Config, auth *
 	}
 	updateGeminiCLITokenMetadata(auth, base, currentToken)
 	return oauth2.ReuseTokenSource(currentToken, src), base, nil
+}
+
+func resolveGeminiCLITokenOAuthClient(cfg *config.Config, tokenData, metadata map[string]any) (string, string) {
+	return geminiAuth.ResolveOAuthClientCredentials(cfg, tokenData, metadata)
 }
 
 func updateGeminiCLITokenMetadata(auth *cliproxyauth.Auth, base map[string]any, tok *oauth2.Token) {

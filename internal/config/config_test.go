@@ -28,6 +28,23 @@ func TestLoadConfigDefaultsDisableControlPanel(t *testing.T) {
 	}
 }
 
+func TestLoadConfigAllowsAuthPathEnvOverride(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(configPath, []byte("auth-dir: /root/.cli-proxy-api\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	t.Setenv("AUTH_PATH", "/CLIProxyAPI/auths")
+
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("LoadConfig returned error: %v", err)
+	}
+
+	if cfg.AuthDir != "/CLIProxyAPI/auths" {
+		t.Fatalf("AuthDir = %q, want AUTH_PATH override", cfg.AuthDir)
+	}
+}
+
 func TestLoadConfigDefaultsAutoUpdateEnabled(t *testing.T) {
 	t.Parallel()
 

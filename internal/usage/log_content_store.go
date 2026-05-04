@@ -241,7 +241,7 @@ func runRequestLogMaintenancePass(db *sql.DB) {
 	compactLogContentStorageInternal(db, true)
 }
 
-func insertLogContentTx(tx *sql.Tx, logID int64, timestamp time.Time, inputContent, outputContent string) error {
+func insertLogContentTx(tx *sql.Tx, logID int64, timestamp time.Time, inputContent, outputContent, detailContent string) error {
 	if tx == nil || logID < 1 || (!requestLogStorage.StoreContent) {
 		return nil
 	}
@@ -254,8 +254,12 @@ func insertLogContentTx(tx *sql.Tx, logID int64, timestamp time.Time, inputConte
 	if err != nil {
 		return err
 	}
+	detailCompressed, err := compressLogContent(detailContent)
+	if err != nil {
+		return err
+	}
 
-	rowBytes := int64(len(inputCompressed) + len(outputCompressed))
+	rowBytes := int64(len(inputCompressed) + len(outputCompressed) + len(detailCompressed))
 	maxBytes := maxLogContentBytes()
 	if maxBytes > 0 && rowBytes > maxBytes {
 		log.Warnf("usage: skip storing request log content for log_id=%d because compressed body %d bytes exceeds configured cap %d bytes", logID, rowBytes, maxBytes)
@@ -263,18 +267,20 @@ func insertLogContentTx(tx *sql.Tx, logID int64, timestamp time.Time, inputConte
 	}
 
 	_, err = tx.Exec(
-		`INSERT INTO request_log_content (log_id, timestamp, compression, input_content, output_content)
-		 VALUES (?, ?, ?, ?, ?)
+		`INSERT INTO request_log_content (log_id, timestamp, compression, input_content, output_content, detail_content)
+		 VALUES (?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(log_id) DO UPDATE SET
 		   timestamp = excluded.timestamp,
 		   compression = excluded.compression,
 		   input_content = excluded.input_content,
-		   output_content = excluded.output_content`,
+		   output_content = excluded.output_content,
+		   detail_content = excluded.detail_content`,
 		logID,
 		timestamp.UTC().Format(time.RFC3339Nano),
 		requestLogContentCompression,
 		inputCompressed,
 		outputCompressed,
+		detailCompressed,
 	)
 	if err != nil {
 		return fmt.Errorf("usage: insert compressed content: %w", err)
@@ -402,7 +408,7 @@ func migrateLegacyContentBatch(db *sql.DB, batchSize int) (int, error) {
 
 		shouldKeep := requestLogStorage.StoreContent && withinContentRetention(timestamp)
 		if shouldKeep {
-			if errStore := insertLogContentTx(tx, row.ID, timestamp, row.InputContent, row.OutputContent); errStore != nil {
+			if errStore := insertLogContentTx(tx, row.ID, timestamp, row.InputContent, row.OutputContent, ""); errStore != nil {
 				_ = tx.Rollback()
 				return 0, errStore
 			}
@@ -535,7 +541,7 @@ func cleanupOversizedLogContentQuerierWithTotalInternal(q logContentQuerier, tot
 func queryStoredContentBytes(q logContentQuerier) (int64, error) {
 	var totalBytes sql.NullInt64
 	err := q.QueryRow(
-		`SELECT COALESCE(SUM(CAST(length(input_content) AS INTEGER) + CAST(length(output_content) AS INTEGER)), 0)
+		`SELECT COALESCE(SUM(CAST(length(input_content) AS INTEGER) + CAST(length(output_content) AS INTEGER) + CAST(length(detail_content) AS INTEGER)), 0)
 		 FROM request_log_content`,
 	).Scan(&totalBytes)
 	if err != nil {
@@ -556,7 +562,7 @@ func oldestContentRowsForTrim(q logContentQuerier, requiredBytes int64, limit in
 	}
 
 	rows, err := q.Query(
-		`SELECT log_id, CAST(length(input_content) AS INTEGER) + CAST(length(output_content) AS INTEGER) AS size
+		`SELECT log_id, CAST(length(input_content) AS INTEGER) + CAST(length(output_content) AS INTEGER) + CAST(length(detail_content) AS INTEGER) AS size
 		 FROM request_log_content
 		 ORDER BY timestamp ASC, log_id ASC
 		 LIMIT ?`,

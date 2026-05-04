@@ -1,0 +1,71 @@
+name: Sync upstream
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '7 2 * * *'
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  UPSTREAM_REPOSITORY: kittors/CliRelay
+  UPSTREAM_BRANCH: dev
+  BASE_BRANCH: dev
+  SYNC_BRANCH: chore/sync-kittors-dev-to-dev
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout fork
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.BASE_BRANCH }}
+          fetch-depth: 0
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch upstream
+        run: |
+          git remote add upstream "https://github.com/${UPSTREAM_REPOSITORY}.git"
+          git fetch origin "${BASE_BRANCH}"
+          git fetch upstream "${UPSTREAM_BRANCH}"
+
+      - name: Merge upstream
+        id: merge
+        run: |
+          set -euo pipefail
+          git checkout -B "${SYNC_BRANCH}" "origin/${BASE_BRANCH}"
+          base_sha="$(git rev-parse HEAD)"
+          git merge --no-edit "upstream/${UPSTREAM_BRANCH}"
+          head_sha="$(git rev-parse HEAD)"
+          if [ "${base_sha}" = "${head_sha}" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Push sync branch
+        if: steps.merge.outputs.changed == 'true'
+        run: git push --force-with-lease origin "${SYNC_BRANCH}"
+
+      - name: Create or update pull request
+        if: steps.merge.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          title="chore: sync upstream ${UPSTREAM_BRANCH} into ${BASE_BRANCH}"
+          body="Automated upstream sync from ${UPSTREAM_REPOSITORY}:${UPSTREAM_BRANCH} into ${BASE_BRANCH}."
+          existing_pr="$(gh pr list --base "${BASE_BRANCH}" --head "${SYNC_BRANCH}" --state open --json number --jq '.[0].number // empty')"
+          if [ -n "${existing_pr}" ]; then
+            gh pr edit "${existing_pr}" --title "${title}" --body "${body}"
+          else
+            gh pr create --base "${BASE_BRANCH}" --head "${SYNC_BRANCH}" --title "${title}" --body "${body}"
+          fi

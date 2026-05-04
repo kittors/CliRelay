@@ -107,6 +107,12 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 	if err != nil {
 		return resp, err
 	}
+	if shouldNormalizeKimiCompatPayload(baseModel) {
+		translated, err = normalizeKimiToolMessageLinks(translated)
+		if err != nil {
+			return resp, err
+		}
+	}
 
 	url := strings.TrimSuffix(baseURL, "/") + endpoint
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(translated))
@@ -206,6 +212,12 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 	translated, err = thinking.ApplyThinking(translated, req.Model, from.String(), to.String(), e.Identifier())
 	if err != nil {
 		return nil, err
+	}
+	if shouldNormalizeKimiCompatPayload(baseModel) {
+		translated, err = normalizeKimiToolMessageLinks(translated)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	url := strings.TrimSuffix(baseURL, "/") + "/chat/completions"
@@ -412,6 +424,13 @@ func (e *OpenAICompatExecutor) overrideModel(payload []byte, model string) []byt
 	}
 	payload, _ = sjson.SetBytes(payload, "model", model)
 	return payload
+}
+
+func shouldNormalizeKimiCompatPayload(model string) bool {
+	model = strings.ToLower(strings.TrimSpace(thinking.ParseSuffix(model).ModelName))
+	return strings.HasPrefix(model, "kimi-") ||
+		strings.Contains(model, "/kimi-") ||
+		strings.Contains(model, "moonshot")
 }
 
 type statusErr struct {

@@ -338,6 +338,10 @@ func (m *Manager) rebuildAPIKeyModelAliasLocked(cfg *internalconfig.Config) {
 			if entry := resolveCodexAPIKeyConfig(cfg, auth); entry != nil {
 				compileAPIKeyModelAliasForModels(byAlias, entry.Models)
 			}
+		case "bedrock":
+			if entry := resolveBedrockAPIKeyConfig(cfg, auth); entry != nil {
+				compileAPIKeyModelAliasForModels(byAlias, entry.Models)
+			}
 		case "vertex":
 			if entry := resolveVertexAPIKeyConfig(cfg, auth); entry != nil {
 				compileAPIKeyModelAliasForModels(byAlias, entry.Models)
@@ -556,6 +560,9 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 	}
 
 	_, maxWait := m.retrySettings()
+	if cooldownWaitDisabled(opts.Metadata) {
+		maxWait = 0
+	}
 
 	var lastErr error
 	for attempt := 0; ; attempt++ {
@@ -618,6 +625,9 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 	}
 
 	_, maxWait := m.retrySettings()
+	if cooldownWaitDisabled(opts.Metadata) {
+		maxWait = 0
+	}
 
 	var lastErr error
 	for attempt := 0; ; attempt++ {
@@ -733,19 +743,10 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 		execReq.Model = m.applyOAuthModelAlias(auth, execReq.Model)
 		execReq.Model = m.applyAPIKeyModelAlias(auth, execReq.Model)
 		resp, errExec := executor.CountTokens(execCtx, auth, execReq, opts)
-		result := Result{AuthID: auth.ID, Provider: provider, Model: routeModel, Success: errExec == nil}
 		if errExec != nil {
 			if errCtx := execCtx.Err(); errCtx != nil {
 				return cliproxyexecutor.Response{}, errCtx
 			}
-			result.Error = &Error{Message: errExec.Error()}
-			if se, ok := errors.AsType[cliproxyexecutor.StatusError](errExec); ok && se != nil {
-				result.Error.HTTPStatus = se.StatusCode()
-			}
-			if ra := retryAfterFromError(errExec); ra != nil {
-				result.RetryAfter = ra
-			}
-			m.MarkResult(execCtx, result)
 			if isRequestInvalidError(errExec) {
 				return cliproxyexecutor.Response{}, errExec
 			}
@@ -755,7 +756,6 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 			lastErr = errExec
 			continue
 		}
-		m.MarkResult(execCtx, result)
 		return resp, nil
 	}
 }
@@ -905,6 +905,18 @@ func isSinglePickRouteRequest(meta map[string]any) bool {
 	return ok && enabled
 }
 
+func cooldownWaitDisabled(meta map[string]any) bool {
+	if len(meta) == 0 {
+		return false
+	}
+	raw, ok := meta[cliproxyexecutor.DisableCooldownWaitMetadataKey]
+	if !ok || raw == nil {
+		return false
+	}
+	enabled, ok := parseBoolAny(raw)
+	return ok && enabled
+}
+
 func allowedChannelsFromMetadata(meta map[string]any) map[string]struct{} {
 	if len(meta) == 0 {
 		return nil
@@ -1024,6 +1036,8 @@ func (m *Manager) applyAPIKeyModelAlias(auth *Auth, requestedModel string) strin
 		upstreamModel = resolveUpstreamModelForClaudeAPIKey(cfg, auth, requestedModel)
 	case "codex":
 		upstreamModel = resolveUpstreamModelForCodexAPIKey(cfg, auth, requestedModel)
+	case "bedrock":
+		upstreamModel = resolveUpstreamModelForBedrockAPIKey(cfg, auth, requestedModel)
 	case "vertex":
 		upstreamModel = resolveUpstreamModelForVertexAPIKey(cfg, auth, requestedModel)
 	default:
@@ -1103,6 +1117,65 @@ func resolveCodexAPIKeyConfig(cfg *internalconfig.Config, auth *Auth) *internalc
 	return resolveAPIKeyConfig(cfg.CodexKey, auth)
 }
 
+func resolveBedrockAPIKeyConfig(cfg *internalconfig.Config, auth *Auth) *internalconfig.BedrockKey {
+	if cfg == nil || auth == nil {
+		return nil
+	}
+	attrKey := ""
+	attrAccessKeyID := ""
+	attrBase := ""
+	attrRegion := ""
+	attrMode := ""
+	if auth.Attributes != nil {
+		attrKey = strings.TrimSpace(auth.Attributes["api_key"])
+		attrAccessKeyID = strings.TrimSpace(auth.Attributes["access_key_id"])
+		attrBase = strings.TrimSpace(auth.Attributes["base_url"])
+		attrRegion = strings.TrimSpace(auth.Attributes["region"])
+		attrMode = strings.ToLower(strings.TrimSpace(auth.Attributes["auth_mode"]))
+	}
+	if attrMode == "apikey" || attrMode == "api_key" {
+		attrMode = "api-key"
+	}
+	for i := range cfg.BedrockKey {
+		entry := &cfg.BedrockKey[i]
+		cfgMode := strings.ToLower(strings.TrimSpace(entry.AuthMode))
+		if cfgMode == "" {
+			cfgMode = "sigv4"
+		}
+		if cfgMode == "apikey" || cfgMode == "api_key" {
+			cfgMode = "api-key"
+		}
+		if attrMode != "" && cfgMode != attrMode {
+			continue
+		}
+		cfgBase := strings.TrimSpace(entry.BaseURL)
+		if attrBase != "" && !strings.EqualFold(cfgBase, attrBase) {
+			continue
+		}
+		cfgRegion := strings.TrimSpace(entry.Region)
+		if cfgRegion == "" {
+			cfgRegion = internalconfig.DefaultBedrockRegion
+		}
+		if attrRegion != "" && !strings.EqualFold(cfgRegion, attrRegion) {
+			continue
+		}
+		if cfgMode == "api-key" {
+			if attrKey != "" && strings.EqualFold(strings.TrimSpace(entry.APIKey), attrKey) {
+				return entry
+			}
+			continue
+		}
+		cfgAccessKeyID := strings.TrimSpace(entry.AccessKeyID)
+		if attrAccessKeyID != "" && strings.EqualFold(cfgAccessKeyID, attrAccessKeyID) {
+			return entry
+		}
+		if attrKey != "" && strings.EqualFold(cfgAccessKeyID, attrKey) {
+			return entry
+		}
+	}
+	return nil
+}
+
 func resolveVertexAPIKeyConfig(cfg *internalconfig.Config, auth *Auth) *internalconfig.VertexCompatKey {
 	if cfg == nil {
 		return nil
@@ -1128,6 +1201,14 @@ func resolveUpstreamModelForClaudeAPIKey(cfg *internalconfig.Config, auth *Auth,
 
 func resolveUpstreamModelForCodexAPIKey(cfg *internalconfig.Config, auth *Auth, requestedModel string) string {
 	entry := resolveCodexAPIKeyConfig(cfg, auth)
+	if entry == nil {
+		return ""
+	}
+	return resolveModelAliasFromConfigModels(requestedModel, asModelAliasEntries(entry.Models))
+}
+
+func resolveUpstreamModelForBedrockAPIKey(cfg *internalconfig.Config, auth *Auth, requestedModel string) string {
+	entry := resolveBedrockAPIKeyConfig(cfg, auth)
 	if entry == nil {
 		return ""
 	}
@@ -1292,6 +1373,9 @@ func (m *Manager) shouldRetryAfterError(err error, attempt int, providers []stri
 		return 0, false
 	}
 	if isSinglePickRouteRequest(meta) {
+		return 0, false
+	}
+	if cooldownWaitDisabled(meta) {
 		return 0, false
 	}
 	if status := statusCodeFromError(err); status == http.StatusOK {
@@ -2176,7 +2260,7 @@ func (m *Manager) snapshotAuths() []*Auth {
 }
 
 func (m *Manager) shouldRefresh(a *Auth, now time.Time) bool {
-	if a == nil || a.Disabled {
+	if a == nil {
 		return false
 	}
 	if !a.NextRefreshAfter.IsZero() && now.Before(a.NextRefreshAfter) {
@@ -2384,7 +2468,7 @@ func (m *Manager) markRefreshPending(id string, now time.Time) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	auth, ok := m.auths[id]
-	if !ok || auth == nil || auth.Disabled {
+	if !ok || auth == nil {
 		return false
 	}
 	if !auth.NextRefreshAfter.IsZero() && now.Before(auth.NextRefreshAfter) {

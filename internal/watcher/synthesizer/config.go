@@ -10,7 +10,7 @@ import (
 )
 
 // ConfigSynthesizer generates Auth entries from configuration API keys.
-// It handles Gemini, Claude, Codex, OpenAI-compat, and Vertex-compat providers.
+// It handles Gemini, Claude, Bedrock, Codex, OpenCode Go, OpenAI-compat, and Vertex-compat providers.
 type ConfigSynthesizer struct{}
 
 // NewConfigSynthesizer creates a new ConfigSynthesizer instance.
@@ -29,8 +29,12 @@ func (s *ConfigSynthesizer) Synthesize(ctx *SynthesisContext) ([]*coreauth.Auth,
 	out = append(out, s.synthesizeGeminiKeys(ctx)...)
 	// Claude API Keys
 	out = append(out, s.synthesizeClaudeKeys(ctx)...)
+	// AWS Bedrock Runtime credentials
+	out = append(out, s.synthesizeBedrockKeys(ctx)...)
 	// Codex API Keys
 	out = append(out, s.synthesizeCodexKeys(ctx)...)
+	// OpenCode Go API Keys
+	out = append(out, s.synthesizeOpenCodeGoKeys(ctx)...)
 	// OpenAI-compat
 	out = append(out, s.synthesizeOpenAICompat(ctx)...)
 	// Vertex-compat
@@ -55,6 +59,7 @@ func (s *ConfigSynthesizer) synthesizeGeminiKeys(ctx *SynthesisContext) []*corea
 		prefix := strings.TrimSpace(entry.Prefix)
 		base := strings.TrimSpace(entry.BaseURL)
 		proxyURL := strings.TrimSpace(entry.ProxyURL)
+		proxyID := strings.TrimSpace(entry.ProxyID)
 		id, token := idGen.Next("gemini:apikey", key, base)
 		attrs := map[string]string{
 			"source":  fmt.Sprintf("config:gemini[%s]", token),
@@ -81,6 +86,7 @@ func (s *ConfigSynthesizer) synthesizeGeminiKeys(ctx *SynthesisContext) []*corea
 			Prefix:     prefix,
 			Status:     coreauth.StatusActive,
 			ProxyURL:   proxyURL,
+			ProxyID:    proxyID,
 			Attributes: attrs,
 			CreatedAt:  now,
 			UpdatedAt:  now,
@@ -125,6 +131,7 @@ func (s *ConfigSynthesizer) synthesizeClaudeKeys(ctx *SynthesisContext) []*corea
 			attrs["skip_anthropic_processing"] = "true"
 		}
 		proxyURL := strings.TrimSpace(ck.ProxyURL)
+		proxyID := strings.TrimSpace(ck.ProxyID)
 		label := strings.TrimSpace(ck.Name)
 		if label == "" {
 			label = "claude-apikey"
@@ -136,11 +143,102 @@ func (s *ConfigSynthesizer) synthesizeClaudeKeys(ctx *SynthesisContext) []*corea
 			Prefix:     prefix,
 			Status:     coreauth.StatusActive,
 			ProxyURL:   proxyURL,
+			ProxyID:    proxyID,
 			Attributes: attrs,
 			CreatedAt:  now,
 			UpdatedAt:  now,
 		}
 		ApplyAuthExcludedModelsMeta(a, cfg, ck.ExcludedModels, "apikey")
+		out = append(out, a)
+	}
+	return out
+}
+
+// synthesizeBedrockKeys creates Auth entries for AWS Bedrock Runtime credentials.
+func (s *ConfigSynthesizer) synthesizeBedrockKeys(ctx *SynthesisContext) []*coreauth.Auth {
+	cfg := ctx.Config
+	now := ctx.Now
+	idGen := ctx.IDGenerator
+
+	out := make([]*coreauth.Auth, 0, len(cfg.BedrockKey))
+	for i := range cfg.BedrockKey {
+		entry := cfg.BedrockKey[i]
+		authMode := strings.ToLower(strings.TrimSpace(entry.AuthMode))
+		switch authMode {
+		case "apikey", "api_key", "api-key":
+			authMode = "api-key"
+		default:
+			authMode = "sigv4"
+		}
+
+		region := strings.TrimSpace(entry.Region)
+		if region == "" {
+			region = "us-east-1"
+		}
+		base := strings.TrimSpace(entry.BaseURL)
+		proxyURL := strings.TrimSpace(entry.ProxyURL)
+		proxyID := strings.TrimSpace(entry.ProxyID)
+		prefix := strings.TrimSpace(entry.Prefix)
+
+		attrs := map[string]string{
+			"auth_mode": authMode,
+			"region":    region,
+		}
+		idParts := []string{authMode, region, base, proxyURL}
+		switch authMode {
+		case "api-key":
+			key := strings.TrimSpace(entry.APIKey)
+			if key == "" {
+				continue
+			}
+			attrs["api_key"] = key
+			idParts = append(idParts, key)
+		default:
+			accessKeyID := strings.TrimSpace(entry.AccessKeyID)
+			secretAccessKey := strings.TrimSpace(entry.SecretAccessKey)
+			if accessKeyID == "" || secretAccessKey == "" {
+				continue
+			}
+			attrs["api_key"] = accessKeyID
+			attrs["access_key_id"] = accessKeyID
+			attrs["secret_access_key"] = secretAccessKey
+			if sessionToken := strings.TrimSpace(entry.SessionToken); sessionToken != "" {
+				attrs["session_token"] = sessionToken
+			}
+			idParts = append(idParts, accessKeyID, secretAccessKey, strings.TrimSpace(entry.SessionToken))
+		}
+		if entry.Priority != 0 {
+			attrs["priority"] = strconv.Itoa(entry.Priority)
+		}
+		if base != "" {
+			attrs["base_url"] = base
+		}
+		if entry.ForceGlobal {
+			attrs["force_global"] = "true"
+		}
+		if hash := diff.ComputeBedrockModelsHash(entry.Models); hash != "" {
+			attrs["models_hash"] = hash
+		}
+		addConfigHeadersToAttrs(entry.Headers, attrs)
+		id, token := idGen.Next("bedrock:apikey", idParts...)
+		attrs["source"] = fmt.Sprintf("config:bedrock[%s]", token)
+		label := strings.TrimSpace(entry.Name)
+		if label == "" {
+			label = "bedrock-apikey"
+		}
+		a := &coreauth.Auth{
+			ID:         id,
+			Provider:   "bedrock",
+			Label:      label,
+			Prefix:     prefix,
+			Status:     coreauth.StatusActive,
+			ProxyURL:   proxyURL,
+			ProxyID:    proxyID,
+			Attributes: attrs,
+			CreatedAt:  now,
+			UpdatedAt:  now,
+		}
+		ApplyAuthExcludedModelsMeta(a, cfg, entry.ExcludedModels, "apikey")
 		out = append(out, a)
 	}
 	return out
@@ -179,6 +277,7 @@ func (s *ConfigSynthesizer) synthesizeCodexKeys(ctx *SynthesisContext) []*coreau
 		}
 		addConfigHeadersToAttrs(ck.Headers, attrs)
 		proxyURL := strings.TrimSpace(ck.ProxyURL)
+		proxyID := strings.TrimSpace(ck.ProxyID)
 		label := strings.TrimSpace(ck.Name)
 		if label == "" {
 			label = "codex-apikey"
@@ -190,11 +289,59 @@ func (s *ConfigSynthesizer) synthesizeCodexKeys(ctx *SynthesisContext) []*coreau
 			Prefix:     prefix,
 			Status:     coreauth.StatusActive,
 			ProxyURL:   proxyURL,
+			ProxyID:    proxyID,
 			Attributes: attrs,
 			CreatedAt:  now,
 			UpdatedAt:  now,
 		}
 		ApplyAuthExcludedModelsMeta(a, cfg, ck.ExcludedModels, "apikey")
+		out = append(out, a)
+	}
+	return out
+}
+
+// synthesizeOpenCodeGoKeys creates Auth entries for OpenCode Go API keys.
+func (s *ConfigSynthesizer) synthesizeOpenCodeGoKeys(ctx *SynthesisContext) []*coreauth.Auth {
+	cfg := ctx.Config
+	now := ctx.Now
+	idGen := ctx.IDGenerator
+
+	out := make([]*coreauth.Auth, 0, len(cfg.OpenCodeGoKey))
+	for i := range cfg.OpenCodeGoKey {
+		entry := cfg.OpenCodeGoKey[i]
+		key := strings.TrimSpace(entry.APIKey)
+		if key == "" {
+			continue
+		}
+		prefix := strings.TrimSpace(entry.Prefix)
+		proxyURL := strings.TrimSpace(entry.ProxyURL)
+		proxyID := strings.TrimSpace(entry.ProxyID)
+		id, token := idGen.Next("opencode-go:apikey", key, proxyURL)
+		attrs := map[string]string{
+			"source":  fmt.Sprintf("config:opencode-go[%s]", token),
+			"api_key": key,
+		}
+		if entry.Priority != 0 {
+			attrs["priority"] = strconv.Itoa(entry.Priority)
+		}
+		addConfigHeadersToAttrs(entry.Headers, attrs)
+		label := strings.TrimSpace(entry.Name)
+		if label == "" {
+			label = "opencode-go-apikey"
+		}
+		a := &coreauth.Auth{
+			ID:         id,
+			Provider:   "opencode-go",
+			Label:      label,
+			Prefix:     prefix,
+			Status:     coreauth.StatusActive,
+			ProxyURL:   proxyURL,
+			ProxyID:    proxyID,
+			Attributes: attrs,
+			CreatedAt:  now,
+			UpdatedAt:  now,
+		}
+		ApplyAuthExcludedModelsMeta(a, cfg, entry.ExcludedModels, "apikey")
 		out = append(out, a)
 	}
 	return out
@@ -222,6 +369,7 @@ func (s *ConfigSynthesizer) synthesizeOpenAICompat(ctx *SynthesisContext) []*cor
 			entry := &compat.APIKeyEntries[j]
 			key := strings.TrimSpace(entry.APIKey)
 			proxyURL := strings.TrimSpace(entry.ProxyURL)
+			proxyID := strings.TrimSpace(entry.ProxyID)
 			idKind := fmt.Sprintf("openai-compatibility:%s", providerName)
 			id, token := idGen.Next(idKind, key, base, proxyURL)
 			attrs := map[string]string{
@@ -250,6 +398,7 @@ func (s *ConfigSynthesizer) synthesizeOpenAICompat(ctx *SynthesisContext) []*cor
 				Prefix:     prefix,
 				Status:     coreauth.StatusActive,
 				ProxyURL:   proxyURL,
+				ProxyID:    proxyID,
 				Attributes: attrs,
 				CreatedAt:  now,
 				UpdatedAt:  now,
@@ -308,6 +457,7 @@ func (s *ConfigSynthesizer) synthesizeVertexCompat(ctx *SynthesisContext) []*cor
 		key := strings.TrimSpace(compat.APIKey)
 		prefix := strings.TrimSpace(compat.Prefix)
 		proxyURL := strings.TrimSpace(compat.ProxyURL)
+		proxyID := strings.TrimSpace(compat.ProxyID)
 		idKind := "vertex:apikey"
 		id, token := idGen.Next(idKind, key, base, proxyURL)
 		attrs := map[string]string{
@@ -332,6 +482,7 @@ func (s *ConfigSynthesizer) synthesizeVertexCompat(ctx *SynthesisContext) []*cor
 			Prefix:     prefix,
 			Status:     coreauth.StatusActive,
 			ProxyURL:   proxyURL,
+			ProxyID:    proxyID,
 			Attributes: attrs,
 			CreatedAt:  now,
 			UpdatedAt:  now,

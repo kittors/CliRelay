@@ -38,7 +38,7 @@ func routingConfigMeaningful(cfg config.RoutingConfig) bool {
 }
 
 func ApplyStoredRoutingConfig(cfg *config.Config) bool {
-	if cfg == nil {
+	if cfg == nil || !ConfigStoreAvailable() {
 		return false
 	}
 	stored := GetRoutingConfig()
@@ -49,13 +49,25 @@ func ApplyStoredRoutingConfig(cfg *config.Config) bool {
 	return true
 }
 
-func MigrateRoutingConfigFromConfig(cfg *config.Config) bool {
-	if cfg == nil || !routingConfigMeaningful(cfg.Routing) || GetRoutingConfig() != nil {
+func MigrateRoutingConfigFromConfig(cfg *config.Config, configFilePath string) bool {
+	if cfg == nil || !ConfigStoreAvailable() {
+		return false
+	}
+	if GetRoutingConfig() != nil {
+		cleanRoutingConfigFromYAML(configFilePath)
+		return false
+	}
+	if !routingConfigMeaningful(cfg.Routing) {
 		return false
 	}
 	if err := UpsertRoutingConfig(cfg.Routing); err != nil {
 		log.Errorf("usage: migrate routing config: %v", err)
 		return false
+	}
+	if strings.TrimSpace(configFilePath) != "" {
+		if backupConfigForMigration(configFilePath, routingMigrationBackupSuffix) {
+			cleanRoutingConfigFromYAML(configFilePath)
+		}
 	}
 	return true
 }

@@ -19,10 +19,12 @@ import (
 
 // OAuth configuration constants for Claude/Anthropic
 const (
-	AuthURL     = "https://claude.ai/oauth/authorize"
-	TokenURL    = "https://api.anthropic.com/v1/oauth/token"
-	ClientID    = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
-	RedirectURI = "http://localhost:54545/callback"
+	AuthURL             = "https://claude.ai/oauth/authorize"
+	TokenURL            = "https://api.anthropic.com/v1/oauth/token"
+	ClientID            = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+	LocalRedirectURI    = "http://localhost:54545/callback"
+	PlatformRedirectURI = "https://platform.claude.com/oauth/code/callback"
+	RedirectURI         = LocalRedirectURI
 )
 
 // tokenResponse represents the response structure from Anthropic's OAuth token endpoint.
@@ -79,15 +81,21 @@ func NewClaudeAuth(cfg *config.Config) *ClaudeAuth {
 //   - string: The state parameter for verification
 //   - error: An error if PKCE codes are missing or URL generation fails
 func (o *ClaudeAuth) GenerateAuthURL(state string, pkceCodes *PKCECodes) (string, string, error) {
+	return o.GenerateAuthURLWithRedirectURI(state, pkceCodes, RedirectURI)
+}
+
+// GenerateAuthURLWithRedirectURI creates the OAuth authorization URL with a caller-selected redirect URI.
+func (o *ClaudeAuth) GenerateAuthURLWithRedirectURI(state string, pkceCodes *PKCECodes, redirectURI string) (string, string, error) {
 	if pkceCodes == nil {
 		return "", "", fmt.Errorf("PKCE codes are required")
 	}
+	redirectURI = normalizeRedirectURI(redirectURI)
 
 	params := url.Values{
 		"code":                  {"true"},
 		"client_id":             {ClientID},
 		"response_type":         {"code"},
-		"redirect_uri":          {RedirectURI},
+		"redirect_uri":          {redirectURI},
 		"scope":                 {"org:create_api_key user:profile user:inference"},
 		"code_challenge":        {pkceCodes.CodeChallenge},
 		"code_challenge_method": {"S256"},
@@ -130,9 +138,15 @@ func (c *ClaudeAuth) parseCodeAndState(code string) (parsedCode, parsedState str
 //   - *ClaudeAuthBundle: The complete authentication bundle with tokens
 //   - error: An error if token exchange fails
 func (o *ClaudeAuth) ExchangeCodeForTokens(ctx context.Context, code, state string, pkceCodes *PKCECodes) (*ClaudeAuthBundle, error) {
+	return o.ExchangeCodeForTokensWithRedirectURI(ctx, code, state, pkceCodes, RedirectURI)
+}
+
+// ExchangeCodeForTokensWithRedirectURI exchanges an authorization code using the redirect URI from the auth request.
+func (o *ClaudeAuth) ExchangeCodeForTokensWithRedirectURI(ctx context.Context, code, state string, pkceCodes *PKCECodes, redirectURI string) (*ClaudeAuthBundle, error) {
 	if pkceCodes == nil {
 		return nil, fmt.Errorf("PKCE codes are required for token exchange")
 	}
+	redirectURI = normalizeRedirectURI(redirectURI)
 	newCode, newState := o.parseCodeAndState(code)
 
 	// Prepare token exchange request
@@ -141,7 +155,7 @@ func (o *ClaudeAuth) ExchangeCodeForTokens(ctx context.Context, code, state stri
 		"state":         state,
 		"grant_type":    "authorization_code",
 		"client_id":     ClientID,
-		"redirect_uri":  RedirectURI,
+		"redirect_uri":  redirectURI,
 		"code_verifier": pkceCodes.CodeVerifier,
 	}
 
@@ -195,6 +209,7 @@ func (o *ClaudeAuth) ExchangeCodeForTokens(ctx context.Context, code, state stri
 		AccessToken:  tokenResp.AccessToken,
 		RefreshToken: tokenResp.RefreshToken,
 		Email:        tokenResp.Account.EmailAddress,
+		AccountUUID:  tokenResp.Account.UUID,
 		Expire:       time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second).Format(time.RFC3339),
 	}
 
@@ -205,6 +220,14 @@ func (o *ClaudeAuth) ExchangeCodeForTokens(ctx context.Context, code, state stri
 	}
 
 	return bundle, nil
+}
+
+func normalizeRedirectURI(redirectURI string) string {
+	redirectURI = strings.TrimSpace(redirectURI)
+	if redirectURI == "" {
+		return RedirectURI
+	}
+	return redirectURI
 }
 
 // RefreshTokens refreshes the access token using the refresh token.
@@ -271,6 +294,7 @@ func (o *ClaudeAuth) RefreshTokens(ctx context.Context, refreshToken string) (*C
 		AccessToken:  tokenResp.AccessToken,
 		RefreshToken: tokenResp.RefreshToken,
 		Email:        tokenResp.Account.EmailAddress,
+		AccountUUID:  tokenResp.Account.UUID,
 		Expire:       time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second).Format(time.RFC3339),
 	}, nil
 }
@@ -290,6 +314,7 @@ func (o *ClaudeAuth) CreateTokenStorage(bundle *ClaudeAuthBundle) *ClaudeTokenSt
 		RefreshToken: bundle.TokenData.RefreshToken,
 		LastRefresh:  bundle.LastRefresh,
 		Email:        bundle.TokenData.Email,
+		AccountUUID:  bundle.TokenData.AccountUUID,
 		Expire:       bundle.TokenData.Expire,
 	}
 

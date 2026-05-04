@@ -27,6 +27,9 @@ func (h *Handler) renameChannelReferences(oldNames []string, newName string) err
 		}
 		if renameOAuthModelAliasChannels(h.cfg, oldNameSet, newName) {
 			configChanged = true
+			if err := usage.UpsertRuntimeSetting(usage.RuntimeSettingOAuthModelAlias, h.cfg.OAuthModelAlias); err != nil {
+				return fmt.Errorf("failed to persist oauth model aliases: %w", err)
+			}
 		}
 	}
 
@@ -41,6 +44,9 @@ func (h *Handler) renameChannelReferences(oldNames []string, newName string) err
 	if configChanged && h.cfg != nil && strings.TrimSpace(h.configFilePath) != "" {
 		if err := config.SaveConfigPreserveComments(h.configFilePath, h.cfg); err != nil {
 			return fmt.Errorf("failed to save config: %w", err)
+		}
+		if usage.ConfigStoreAvailable() {
+			usage.CleanDBBackedConfigFromYAML(h.configFilePath)
 		}
 	}
 	if configChanged && h.authManager != nil {

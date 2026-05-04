@@ -9,7 +9,7 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: kittors/clirelay
+  IMAGE_NAME: zuohuadong/clirelay
 
 jobs:
   build-and-push:

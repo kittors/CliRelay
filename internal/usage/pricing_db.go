@@ -149,6 +149,20 @@ func DeleteModelPricing(modelID string) error {
 	return nil
 }
 
+func calculateTokenCost(inputTokens, outputTokens, cachedTokens int64, inputPrice, outputPrice, cachedPrice float64) float64 {
+	billableInputTokens := inputTokens
+	if cachedTokens > 0 && inputTokens >= cachedTokens {
+		// OpenAI-compatible usage reports cached tokens as a subset of input tokens.
+		billableInputTokens = inputTokens - cachedTokens
+	}
+	if cachedPrice <= 0 {
+		cachedPrice = inputPrice
+	}
+	return float64(billableInputTokens)/1_000_000*inputPrice +
+		float64(outputTokens)/1_000_000*outputPrice +
+		float64(cachedTokens)/1_000_000*cachedPrice
+}
+
 // CalculateCost computes the cost for a request based on the model's pricing.
 // Returns 0 if no pricing is configured for the model.
 func CalculateCost(modelID string, inputTokens, outputTokens, cachedTokens int64) float64 {
@@ -161,9 +175,14 @@ func CalculateCost(modelID string, inputTokens, outputTokens, cachedTokens int64
 		if normalizePricingMode(row.PricingMode) == "call" {
 			return row.PricePerCall
 		}
-		return float64(inputTokens)/1_000_000*row.InputPricePerMillion +
-			float64(outputTokens)/1_000_000*row.OutputPricePerMillion +
-			float64(cachedTokens)/1_000_000*row.CachedPricePerMillion
+		return calculateTokenCost(
+			inputTokens,
+			outputTokens,
+			cachedTokens,
+			row.InputPricePerMillion,
+			row.OutputPricePerMillion,
+			row.CachedPricePerMillion,
+		)
 	}
 	modelConfigCacheMu.RUnlock()
 
@@ -173,10 +192,14 @@ func CalculateCost(modelID string, inputTokens, outputTokens, cachedTokens int64
 	if !ok {
 		return 0
 	}
-	cost := float64(inputTokens)/1_000_000*row.InputPricePerMillion +
-		float64(outputTokens)/1_000_000*row.OutputPricePerMillion +
-		float64(cachedTokens)/1_000_000*row.CachedPricePerMillion
-	return cost
+	return calculateTokenCost(
+		inputTokens,
+		outputTokens,
+		cachedTokens,
+		row.InputPricePerMillion,
+		row.OutputPricePerMillion,
+		row.CachedPricePerMillion,
+	)
 }
 
 // QueryTotalCostByKey returns the total accumulated cost for a given API key.

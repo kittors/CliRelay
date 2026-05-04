@@ -167,6 +167,17 @@ func ConvertOpenAIRequestToClaude(modelName string, inputRawJSON []byte, stream 
 				msg := `{"role":"","content":[]}`
 				msg, _ = sjson.Set(msg, "role", role)
 
+				if role == "assistant" {
+					if reasoning := message.Get("reasoning_content"); reasoning.Exists() {
+						reasoningText := reasoning.String()
+						if strings.TrimSpace(reasoningText) != "" {
+							thinkingPart := `{"type":"thinking","thinking":""}`
+							thinkingPart, _ = sjson.Set(thinkingPart, "thinking", reasoningText)
+							msg, _ = sjson.SetRaw(msg, "content.-1", thinkingPart)
+						}
+					}
+				}
+
 				// Handle content based on its type (string or array)
 				if contentResult.Exists() && contentResult.Type == gjson.String && contentResult.String() != "" {
 					part := `{"type":"text","text":""}`

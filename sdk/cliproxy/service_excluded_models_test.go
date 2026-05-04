@@ -65,3 +65,49 @@ func TestRegisterModelsForAuth_UsesPreMergedExcludedModelsAttribute(t *testing.T
 		t.Fatal("expected global excluded model to be present when attribute override is set")
 	}
 }
+
+func TestRegisterModelsForAuth_OpenAICompatibilityRegistersConfigModels(t *testing.T) {
+	service := &Service{
+		cfg: &config.Config{
+			OpenAICompatibility: []config.OpenAICompatibility{
+				{
+					Name: "qwen tokenplan",
+					Models: []config.OpenAICompatibilityModel{
+						{Name: "qwen3.6-plus"},
+						{Name: "qwen-image-2.0"},
+					},
+				},
+			},
+		},
+	}
+	auth := &coreauth.Auth{
+		ID:       "compat-qwen-tokenplan",
+		Provider: "qwen tokenplan",
+		Status:   coreauth.StatusActive,
+		Attributes: map[string]string{
+			"compat_name":  "qwen tokenplan",
+			"provider_key": "qwen tokenplan",
+		},
+	}
+
+	registry := GlobalModelRegistry()
+	registry.UnregisterClient(auth.ID)
+	t.Cleanup(func() {
+		registry.UnregisterClient(auth.ID)
+	})
+
+	service.registerModelsForAuth(context.Background(), auth)
+
+	models := registry.GetAvailableModelsByProvider("qwen tokenplan")
+	ids := map[string]bool{}
+	for _, model := range models {
+		if model != nil {
+			ids[strings.TrimSpace(model.ID)] = true
+		}
+	}
+	for _, want := range []string{"qwen3.6-plus", "qwen-image-2.0"} {
+		if !ids[want] {
+			t.Fatalf("expected model %q to be registered, got %+v", want, ids)
+		}
+	}
+}

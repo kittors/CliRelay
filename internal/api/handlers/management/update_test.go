@@ -133,6 +133,23 @@ func TestDockerTagForChannel(t *testing.T) {
 	}
 }
 
+func TestDockerImageAndTagForConfig(t *testing.T) {
+	image, tag := dockerImageAndTagForConfig("ghcr.io/zuohuadong/clirelay:dev", "dev", "a35756e")
+	if image != "ghcr.io/zuohuadong/clirelay" || tag != "dev" {
+		t.Fatalf("dockerImageAndTagForConfig(tagged dev) = %q, %q", image, tag)
+	}
+
+	image, tag = dockerImageAndTagForConfig("ghcr.io/zuohuadong/clirelay", "dev", "a35756e")
+	if image != "ghcr.io/zuohuadong/clirelay" || tag != "dev" {
+		t.Fatalf("dockerImageAndTagForConfig(untagged dev) = %q, %q", image, tag)
+	}
+
+	image, tag = dockerImageAndTagForConfig("localhost:5000/clirelay:latest", "main", "a35756e")
+	if image != "localhost:5000/clirelay" || tag != "latest" {
+		t.Fatalf("dockerImageAndTagForConfig(registry port) = %q, %q", image, tag)
+	}
+}
+
 func TestUpdateDisplayVersionsIncludeConcreteCommit(t *testing.T) {
 	if got := currentUpdateDisplayVersion("dev-d5c2482"); got != "dev-d5c2482" {
 		t.Fatalf("currentUpdateDisplayVersion(dev-d5c2482) = %q, want dev-d5c2482", got)

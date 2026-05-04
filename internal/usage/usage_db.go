@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -81,6 +82,35 @@ type DailyQuotaPoint struct {
 	Samples int64    `json:"samples"`
 }
 
+type HourlyCountPoint struct {
+	Hour     string `json:"hour"`
+	Requests int64  `json:"requests"`
+}
+
+type QuotaSnapshotPoint struct {
+	RecordedAt    time.Time  `json:"recorded_at"`
+	AuthIndex     string     `json:"auth_index"`
+	Provider      string     `json:"provider"`
+	QuotaKey      string     `json:"quota_key"`
+	QuotaLabel    string     `json:"quota_label"`
+	Percent       *float64   `json:"percent"`
+	ResetAt       *time.Time `json:"reset_at,omitempty"`
+	WindowSeconds int64      `json:"window_seconds"`
+}
+
+type QuotaSnapshotSeriesPoint struct {
+	Timestamp time.Time  `json:"timestamp"`
+	Percent   *float64   `json:"percent"`
+	ResetAt   *time.Time `json:"reset_at,omitempty"`
+}
+
+type QuotaSnapshotSeries struct {
+	QuotaKey      string                     `json:"quota_key"`
+	QuotaLabel    string                     `json:"quota_label"`
+	WindowSeconds int64                      `json:"window_seconds"`
+	Points        []QuotaSnapshotSeriesPoint `json:"points"`
+}
+
 const systemRequestLogFilterValue = "__system__"
 
 var (
@@ -117,6 +147,7 @@ CREATE TABLE IF NOT EXISTS request_log_content (
   compression      TEXT NOT NULL DEFAULT 'zstd',
   input_content    BLOB NOT NULL DEFAULT X'',
   output_content   BLOB NOT NULL DEFAULT X'',
+  detail_content   BLOB NOT NULL DEFAULT X'',
   FOREIGN KEY(log_id) REFERENCES request_logs(id) ON DELETE CASCADE
 );
 
@@ -139,6 +170,21 @@ CREATE TABLE IF NOT EXISTS auth_file_quota_snapshots (
 
 CREATE INDEX IF NOT EXISTS idx_quota_snapshots_date ON auth_file_quota_snapshots(date_key);
 CREATE INDEX IF NOT EXISTS idx_quota_snapshots_auth ON auth_file_quota_snapshots(auth_index);
+
+CREATE TABLE IF NOT EXISTS auth_file_quota_snapshot_points (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  recorded_at    DATETIME NOT NULL,
+  auth_index     TEXT NOT NULL,
+  provider       TEXT NOT NULL DEFAULT '',
+  quota_key      TEXT NOT NULL,
+  quota_label    TEXT NOT NULL DEFAULT '',
+  percent        REAL,
+  reset_at       DATETIME,
+  window_seconds INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_quota_snapshot_points_auth_time ON auth_file_quota_snapshot_points(auth_index, recorded_at);
+CREATE INDEX IF NOT EXISTS idx_quota_snapshot_points_auth_key_time ON auth_file_quota_snapshot_points(auth_index, quota_key, recorded_at);
 `
 
 // migrateContentColumns adds input_content/output_content columns to an
@@ -183,6 +229,15 @@ func migrateFirstTokenColumn(db *sql.DB) {
 	if err != nil {
 		if !strings.Contains(err.Error(), "duplicate") {
 			log.Warnf("usage: migrate column first_token_ms: %v", err)
+		}
+	}
+}
+
+func migrateRequestLogDetailColumn(db *sql.DB) {
+	_, err := db.Exec("ALTER TABLE request_log_content ADD COLUMN detail_content BLOB NOT NULL DEFAULT X''")
+	if err != nil {
+		if !strings.Contains(err.Error(), "duplicate") {
+			log.Warnf("usage: migrate column detail_content: %v", err)
 		}
 	}
 }
@@ -254,6 +309,8 @@ func InitDB(dbPath string, storageCfg config.RequestLogStorageConfig, loc *time.
 	migrateApiKeyNameColumn(db)
 	log.Debugf("usage: running first_token_ms column migration")
 	migrateFirstTokenColumn(db)
+	log.Debugf("usage: running request log detail column migration")
+	migrateRequestLogDetailColumn(db)
 	log.Debugf("usage: initializing pricing table")
 	initPricingTable(db)
 	log.Debugf("usage: initializing model config tables")
@@ -262,6 +319,10 @@ func InitDB(dbPath string, storageCfg config.RequestLogStorageConfig, loc *time.
 	initAPIKeysTable(db)
 	log.Debugf("usage: initializing routing_config table")
 	initRoutingConfigTable(db)
+	log.Debugf("usage: initializing proxy_pool table")
+	initProxyPoolTable(db)
+	log.Debugf("usage: initializing runtime_settings table")
+	initRuntimeSettingsTable(db)
 	startRequestLogMaintenance(db)
 	log.Infof("usage: SQLite database initialised at %s", dbPath)
 	return nil
@@ -286,7 +347,18 @@ func CloseDB() {
 func InsertLog(apiKey, apiKeyName, model, source, channelName, authIndex string,
 	failed bool, timestamp time.Time, latencyMs, firstTokenMs int64, tokens TokenStats,
 	inputContent, outputContent string) {
+	insertLog(apiKey, apiKeyName, model, source, channelName, authIndex, failed, timestamp, latencyMs, firstTokenMs, tokens, inputContent, outputContent, "")
+}
 
+func InsertLogWithDetails(apiKey, apiKeyName, model, source, channelName, authIndex string,
+	failed bool, timestamp time.Time, latencyMs, firstTokenMs int64, tokens TokenStats,
+	inputContent, outputContent, detailContent string) {
+	insertLog(apiKey, apiKeyName, model, source, channelName, authIndex, failed, timestamp, latencyMs, firstTokenMs, tokens, inputContent, outputContent, detailContent)
+}
+
+func insertLog(apiKey, apiKeyName, model, source, channelName, authIndex string,
+	failed bool, timestamp time.Time, latencyMs, firstTokenMs int64, tokens TokenStats,
+	inputContent, outputContent, detailContent string) {
 	db := getDB()
 	if db == nil {
 		return
@@ -325,14 +397,14 @@ func InsertLog(apiKey, apiKeyName, model, source, channelName, authIndex string,
 		return
 	}
 
-	if requestLogStorage.StoreContent && (inputContent != "" || outputContent != "") {
+	if requestLogStorage.StoreContent && (inputContent != "" || outputContent != "" || detailContent != "") {
 		logID, errLastID := result.LastInsertId()
 		if errLastID != nil {
 			_ = tx.Rollback()
 			log.Errorf("usage: resolve inserted log id: %v", errLastID)
 			return
 		}
-		if errStore := insertLogContentTx(tx, logID, timestamp, inputContent, outputContent); errStore != nil {
+		if errStore := insertLogContentTx(tx, logID, timestamp, inputContent, outputContent, detailContent); errStore != nil {
 			_ = tx.Rollback()
 			log.Errorf("usage: insert log content: %v", errStore)
 			return
@@ -550,6 +622,7 @@ type DashboardKPI struct {
 	ReasoningTokens int64   `json:"reasoning_tokens"`
 	CachedTokens    int64   `json:"cached_tokens"`
 	TotalTokens     int64   `json:"total_tokens"`
+	TotalCost       float64 `json:"total_cost"`
 }
 
 type DashboardTrendPoint struct {
@@ -594,7 +667,8 @@ func QueryDashboardKPI(days int) (DashboardKPI, error) {
 			COALESCE(SUM(output_tokens), 0),
 			COALESCE(SUM(reasoning_tokens), 0),
 			COALESCE(SUM(cached_tokens), 0),
-			COALESCE(SUM(total_tokens), 0)
+			COALESCE(SUM(total_tokens), 0),
+			COALESCE(SUM(cost), 0)
 		FROM request_logs
 		WHERE timestamp >= ?
 	`, cutoff).Scan(
@@ -606,6 +680,7 @@ func QueryDashboardKPI(days int) (DashboardKPI, error) {
 		&kpi.ReasoningTokens,
 		&kpi.CachedTokens,
 		&kpi.TotalTokens,
+		&kpi.TotalCost,
 	)
 	if err != nil {
 		return DashboardKPI{}, fmt.Errorf("usage: dashboard KPI query: %w", err)
@@ -825,7 +900,7 @@ func dashboardTrendsFromBuckets(buckets []dashboardBucket) DashboardTrends {
 		SuccessRate:      make([]DashboardTrendPoint, 0, len(buckets)),
 		TotalTokens:      make([]DashboardTrendPoint, 0, len(buckets)),
 		FailedRequests:   make([]DashboardTrendPoint, 0, len(buckets)),
-		ThroughputSeries: make([]DashboardThroughputPoint, 0, 0),
+		ThroughputSeries: make([]DashboardThroughputPoint, 0),
 	}
 
 	for _, bucket := range buckets {
@@ -873,6 +948,19 @@ func MigrateFromSnapshot(snapshot StatisticsSnapshot) (int64, error) {
 
 // --- internal helpers ---
 
+func parseStoredTime(value string) (time.Time, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return time.Time{}, false
+	}
+	for _, layout := range []string{time.RFC3339Nano, time.RFC3339, "2006-01-02 15:04:05"} {
+		if parsed, err := time.Parse(layout, value); err == nil {
+			return parsed.UTC(), true
+		}
+	}
+	return time.Time{}, false
+}
+
 func getDB() *sql.DB {
 	usageDBMu.Lock()
 	defer usageDBMu.Unlock()
@@ -908,6 +996,11 @@ func CutoffStartUTC(days int) time.Time {
 func localDayKeyAt(t time.Time) string {
 	loc := getUsageLocation()
 	return t.In(loc).Format("2006-01-02")
+}
+
+// LocalDayKeyAt returns the YYYY-MM-DD day key in the project-configured timezone.
+func LocalDayKeyAt(t time.Time) string {
+	return localDayKeyAt(t)
 }
 
 func cutoffDayKey(days int) string {
@@ -1051,6 +1144,8 @@ func normalizeLogContentPart(part string) (string, error) {
 		return "input", nil
 	case "output":
 		return "output", nil
+	case "details":
+		return "details", nil
 	default:
 		return "", fmt.Errorf("usage: invalid content part %q", part)
 	}
@@ -1101,6 +1196,8 @@ func QueryLogContentPart(id int64, part string) (LogContentPartResult, error) {
 	column := "input_content"
 	if part == "output" {
 		column = "output_content"
+	} else if part == "details" {
+		column = "detail_content"
 	}
 
 	result, err := queryCompressedLogContentPart(
@@ -1117,6 +1214,15 @@ func QueryLogContentPart(id int64, part string) (LogContentPartResult, error) {
 	)
 	if err == nil {
 		return result, nil
+	}
+	if part == "details" {
+		var fallback LogContentPartResult
+		fallback.Part = part
+		err = db.QueryRow("SELECT id, model FROM request_logs WHERE id = ?", id).Scan(&fallback.ID, &fallback.Model)
+		if err != nil {
+			return LogContentPartResult{}, fmt.Errorf("usage: query log content part: %w", err)
+		}
+		return fallback, nil
 	}
 
 	var fallback LogContentPartResult
@@ -1177,6 +1283,8 @@ func QueryLogContentPartForKey(id int64, apiKey string, part string) (LogContent
 	column := "input_content"
 	if part == "output" {
 		column = "output_content"
+	} else if part == "details" {
+		column = "detail_content"
 	}
 
 	result, err := queryCompressedLogContentPart(
@@ -1193,6 +1301,15 @@ func QueryLogContentPartForKey(id int64, apiKey string, part string) (LogContent
 	)
 	if err == nil {
 		return result, nil
+	}
+	if part == "details" {
+		var fallback LogContentPartResult
+		fallback.Part = part
+		err = db.QueryRow("SELECT id, model FROM request_logs WHERE id = ? AND api_key = ?", id, apiKey).Scan(&fallback.ID, &fallback.Model)
+		if err != nil {
+			return LogContentPartResult{}, fmt.Errorf("usage: query log content part: %w", err)
+		}
+		return fallback, nil
 	}
 
 	var fallback LogContentPartResult
@@ -1520,11 +1637,10 @@ func QueryDailyCallsByAuthIndexes(authIndexes []string, days int) ([]DailyCountP
 	}
 
 	q := fmt.Sprintf(`
-		SELECT substr(timestamp, 1, 10) AS day_key, COUNT(*)
+		SELECT timestamp
 		FROM request_logs
 		WHERE timestamp >= ? AND auth_index IN (%s)
-		GROUP BY day_key
-		ORDER BY day_key ASC
+		ORDER BY timestamp ASC
 	`, placeholders)
 
 	rows, err := db.Query(q, args...)
@@ -1533,15 +1649,106 @@ func QueryDailyCallsByAuthIndexes(authIndexes []string, days int) ([]DailyCountP
 	}
 	defer rows.Close()
 
-	result := make([]DailyCountPoint, 0, days)
+	byDate := make(map[string]int64, days)
 	for rows.Next() {
-		var point DailyCountPoint
-		if err := rows.Scan(&point.Date, &point.Requests); err != nil {
+		var ts string
+		if err := rows.Scan(&ts); err != nil {
 			return nil, fmt.Errorf("usage: daily calls by auth indexes scan: %w", err)
 		}
+		parsed, ok := parseStoredTime(ts)
+		if !ok {
+			continue
+		}
+		byDate[localDayKeyAt(parsed)]++
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	result := make([]DailyCountPoint, 0, len(byDate))
+	for date, requests := range byDate {
+		point := DailyCountPoint{Date: date, Requests: requests}
 		result = append(result, point)
 	}
-	return result, rows.Err()
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].Date < result[j].Date
+	})
+	return result, nil
+}
+
+func QueryHourlyCallsByAuthIndex(authIndex string, hours int) ([]HourlyCountPoint, error) {
+	db := getDB()
+	if db == nil {
+		return []HourlyCountPoint{}, nil
+	}
+	authIndex = strings.TrimSpace(authIndex)
+	if authIndex == "" {
+		return []HourlyCountPoint{}, nil
+	}
+	if hours < 1 {
+		hours = 5
+	}
+	if hours > 24 {
+		hours = 24
+	}
+
+	loc := getUsageLocation()
+	now := time.Now().In(loc).Truncate(time.Hour)
+	start := now.Add(-time.Duration(hours-1) * time.Hour)
+	buckets := make([]HourlyCountPoint, 0, hours)
+	byKey := make(map[string]*HourlyCountPoint, hours)
+	for i := 0; i < hours; i++ {
+		key := start.Add(time.Duration(i) * time.Hour).Format("2006-01-02 15:00")
+		buckets = append(buckets, HourlyCountPoint{Hour: key, Requests: 0})
+		byKey[key] = &buckets[len(buckets)-1]
+	}
+
+	rows, err := db.Query(`
+		SELECT timestamp
+		FROM request_logs
+		WHERE timestamp >= ? AND auth_index = ?
+	`, start.UTC().Format(time.RFC3339), authIndex)
+	if err != nil {
+		return nil, fmt.Errorf("usage: hourly calls by auth index query: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var ts string
+		if err := rows.Scan(&ts); err != nil {
+			return nil, fmt.Errorf("usage: hourly calls by auth index scan: %w", err)
+		}
+		parsed, ok := parseStoredTime(ts)
+		if !ok {
+			continue
+		}
+		key := parsed.In(loc).Truncate(time.Hour).Format("2006-01-02 15:00")
+		if bucket := byKey[key]; bucket != nil {
+			bucket.Requests++
+		}
+	}
+	return buckets, rows.Err()
+}
+
+func QueryRequestCountByAuthIndexSince(authIndex string, since time.Time) (int64, error) {
+	db := getDB()
+	if db == nil {
+		return 0, nil
+	}
+	authIndex = strings.TrimSpace(authIndex)
+	if authIndex == "" {
+		return 0, nil
+	}
+	var count int64
+	err := db.QueryRow(`
+		SELECT COUNT(*)
+		FROM request_logs
+		WHERE timestamp >= ? AND auth_index = ?
+	`, since.UTC().Format(time.RFC3339), authIndex).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("usage: request count by auth index query: %w", err)
+	}
+	return count, nil
 }
 
 func RecordDailyQuotaSnapshot(authIndex, provider string, quotas map[string]*float64) error {
@@ -1616,6 +1823,98 @@ func RecordDailyQuotaSnapshot(authIndex, provider string, quotas map[string]*flo
 	return nil
 }
 
+func RecordQuotaSnapshotPoints(authIndex, provider string, points []QuotaSnapshotPoint) error {
+	db := getDB()
+	if db == nil {
+		return nil
+	}
+
+	authIndex = strings.TrimSpace(authIndex)
+	if authIndex == "" || len(points) == 0 {
+		return nil
+	}
+	provider = strings.TrimSpace(provider)
+	now := time.Now()
+
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("usage: quota snapshot points begin: %w", err)
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback()
+		}
+	}()
+
+	stmt, err := tx.Prepare(`
+		INSERT INTO auth_file_quota_snapshot_points
+			(recorded_at, auth_index, provider, quota_key, quota_label, percent, reset_at, window_seconds)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	`)
+	if err != nil {
+		return fmt.Errorf("usage: quota snapshot points prepare: %w", err)
+	}
+	defer stmt.Close()
+
+	for _, point := range points {
+		quotaKey := strings.TrimSpace(point.QuotaKey)
+		if quotaKey == "" {
+			continue
+		}
+		quotaLabel := strings.TrimSpace(point.QuotaLabel)
+		if quotaLabel == "" {
+			quotaLabel = quotaKey
+		}
+		recordedAt := point.RecordedAt
+		if recordedAt.IsZero() {
+			recordedAt = now
+		}
+		pointProvider := strings.TrimSpace(point.Provider)
+		if pointProvider == "" {
+			pointProvider = provider
+		}
+		var value any
+		if point.Percent == nil {
+			value = nil
+		} else {
+			percent := *point.Percent
+			if percent < 0 {
+				percent = 0
+			}
+			if percent > 100 {
+				percent = 100
+			}
+			value = percent
+		}
+		var resetValue any
+		if point.ResetAt != nil && !point.ResetAt.IsZero() {
+			resetValue = point.ResetAt.UTC().Format(time.RFC3339Nano)
+		}
+		if _, err = stmt.Exec(
+			recordedAt.UTC().Format(time.RFC3339Nano),
+			authIndex,
+			pointProvider,
+			quotaKey,
+			quotaLabel,
+			value,
+			resetValue,
+			point.WindowSeconds,
+		); err != nil {
+			return fmt.Errorf("usage: quota snapshot points insert: %w", err)
+		}
+	}
+
+	retentionCutoff := now.AddDate(0, 0, -8).UTC().Format(time.RFC3339Nano)
+	if _, err = tx.Exec(`DELETE FROM auth_file_quota_snapshot_points WHERE recorded_at < ?`, retentionCutoff); err != nil {
+		return fmt.Errorf("usage: quota snapshot points prune: %w", err)
+	}
+
+	if err = tx.Commit(); err != nil {
+		return fmt.Errorf("usage: quota snapshot points commit: %w", err)
+	}
+	return nil
+}
+
 func QueryDailyQuotaByAuthIndexes(authIndexes []string, quotaKey string, days int) ([]DailyQuotaPoint, error) {
 	db := getDB()
 	if db == nil {
@@ -1686,6 +1985,97 @@ func QueryDailyQuotaByAuthIndexes(authIndexes []string, quotaKey string, days in
 	return result, rows.Err()
 }
 
+func QueryQuotaSnapshotPoints(authIndex string, start, end time.Time) ([]QuotaSnapshotPoint, error) {
+	db := getDB()
+	if db == nil {
+		return []QuotaSnapshotPoint{}, nil
+	}
+	authIndex = strings.TrimSpace(authIndex)
+	if authIndex == "" {
+		return []QuotaSnapshotPoint{}, nil
+	}
+	if start.IsZero() {
+		start = time.Now().AddDate(0, 0, -7)
+	}
+	if end.IsZero() {
+		end = time.Now()
+	}
+
+	rows, err := db.Query(`
+		SELECT recorded_at, auth_index, provider, quota_key, quota_label, percent, reset_at, window_seconds
+		FROM auth_file_quota_snapshot_points
+		WHERE auth_index = ? AND recorded_at >= ? AND recorded_at <= ?
+		ORDER BY recorded_at ASC, quota_key ASC
+	`, authIndex, start.UTC().Format(time.RFC3339Nano), end.UTC().Format(time.RFC3339Nano))
+	if err != nil {
+		return nil, fmt.Errorf("usage: quota snapshot points query: %w", err)
+	}
+	defer rows.Close()
+
+	result := make([]QuotaSnapshotPoint, 0)
+	for rows.Next() {
+		var point QuotaSnapshotPoint
+		var recordedAt string
+		var resetAt sql.NullString
+		var percent sql.NullFloat64
+		if err := rows.Scan(
+			&recordedAt,
+			&point.AuthIndex,
+			&point.Provider,
+			&point.QuotaKey,
+			&point.QuotaLabel,
+			&percent,
+			&resetAt,
+			&point.WindowSeconds,
+		); err != nil {
+			return nil, fmt.Errorf("usage: quota snapshot points scan: %w", err)
+		}
+		if parsed, ok := parseStoredTime(recordedAt); ok {
+			point.RecordedAt = parsed
+		}
+		if percent.Valid {
+			v := percent.Float64
+			point.Percent = &v
+		}
+		if resetAt.Valid {
+			if parsed, ok := parseStoredTime(resetAt.String); ok {
+				point.ResetAt = &parsed
+			}
+		}
+		result = append(result, point)
+	}
+	return result, rows.Err()
+}
+
+func QueryQuotaSnapshotSeries(authIndex string, start, end time.Time) ([]QuotaSnapshotSeries, error) {
+	points, err := QueryQuotaSnapshotPoints(authIndex, start, end)
+	if err != nil {
+		return nil, err
+	}
+	series := make([]QuotaSnapshotSeries, 0)
+	indexByKey := make(map[string]int)
+	for _, point := range points {
+		seriesKey := fmt.Sprintf("%s\x00%d", point.QuotaKey, point.WindowSeconds)
+		idx, ok := indexByKey[seriesKey]
+		if !ok {
+			idx = len(series)
+			indexByKey[seriesKey] = idx
+			series = append(series, QuotaSnapshotSeries{
+				QuotaKey:      point.QuotaKey,
+				QuotaLabel:    point.QuotaLabel,
+				WindowSeconds: point.WindowSeconds,
+				Points:        []QuotaSnapshotSeriesPoint{},
+			})
+		}
+		series[idx].Points = append(series[idx].Points, QuotaSnapshotSeriesPoint{
+			Timestamp: point.RecordedAt,
+			Percent:   point.Percent,
+			ResetAt:   point.ResetAt,
+		})
+	}
+	return series, nil
+}
+
 // GetRequestLogStorageBytes returns the approximate bytes currently occupied by
 // stored request/response bodies. It includes compressed rows in
 // request_log_content and any legacy inline content not yet migrated out of
@@ -1700,7 +2090,7 @@ func GetRequestLogStorageBytes() (int64, error) {
 	err := db.QueryRow(`
 		SELECT
 			COALESCE((
-				SELECT SUM(CAST(length(input_content) AS INTEGER) + CAST(length(output_content) AS INTEGER))
+				SELECT SUM(CAST(length(input_content) AS INTEGER) + CAST(length(output_content) AS INTEGER) + CAST(length(detail_content) AS INTEGER))
 				FROM request_log_content
 			), 0) +
 			COALESCE((

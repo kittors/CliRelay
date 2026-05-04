@@ -48,6 +48,13 @@ func TestCodexExecutorExecuteImageGeneration(t *testing.T) {
 	var server *httptest.Server
 	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/backend-api/codex/responses":
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte(
+				"data: {\"type\":\"response.created\",\"response\":{\"created_at\":1710000002}}\n\n" +
+					"data: {\"type\":\"response.completed\",\"response\":{\"created_at\":1710000002,\"output\":[{\"type\":\"image_generation_call\",\"result\":\"" + pngBase64 + "\",\"revised_prompt\":\"revised fox prompt\"}]}}\n\n" +
+					"data: [DONE]\n\n",
+			))
 		case r.Method == http.MethodGet && r.URL.Path == "/":
 			w.WriteHeader(http.StatusOK)
 		case r.Method == http.MethodPost && r.URL.Path == "/backend-api/sentinel/chat-requirements":
@@ -90,6 +97,9 @@ func TestCodexExecutorExecuteImageGeneration(t *testing.T) {
 		ID:       "codex-auth",
 		Provider: "codex",
 		Status:   cliproxyauth.StatusActive,
+		Attributes: map[string]string{
+			"base_url": server.URL + "/backend-api/codex",
+		},
 		Metadata: map[string]any{
 			"access_token": "token",
 			"account_id":   "account-1",
@@ -173,6 +183,19 @@ func TestCodexExecutorExecuteImageGenerationRunsMultipleImagesSequentially(t *te
 	var server *httptest.Server
 	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/backend-api/codex/responses":
+			count := conversationCount.Add(1)
+			if current := inFlight.Add(1); current != 1 {
+				t.Fatalf("image generations should run sequentially, got %d in-flight requests", current)
+			}
+			defer inFlight.Add(-1)
+			time.Sleep(20 * time.Millisecond)
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte(
+				"data: {\"type\":\"response.created\",\"response\":{\"created_at\":1710000002}}\n\n" +
+					"data: {\"type\":\"response.completed\",\"response\":{\"created_at\":1710000002,\"output\":[{\"type\":\"image_generation_call\",\"result\":\"" + pngBase64 + "\",\"revised_prompt\":\"variation " + strconv.Itoa(int(count)) + "\"}]}}\n\n" +
+					"data: [DONE]\n\n",
+			))
 		case r.Method == http.MethodGet && r.URL.Path == "/":
 			w.WriteHeader(http.StatusOK)
 		case r.Method == http.MethodPost && r.URL.Path == "/backend-api/sentinel/chat-requirements":
@@ -220,6 +243,9 @@ func TestCodexExecutorExecuteImageGenerationRunsMultipleImagesSequentially(t *te
 		ID:       "codex-auth",
 		Provider: "codex",
 		Status:   cliproxyauth.StatusActive,
+		Attributes: map[string]string{
+			"base_url": server.URL + "/backend-api/codex",
+		},
 		Metadata: map[string]any{
 			"access_token": "token",
 			"account_id":   "account-1",
@@ -264,6 +290,13 @@ func TestCodexExecutorExecuteImageGenerationSkipsPollingWhenStreamAlreadyHasInli
 	var conversationPolls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/backend-api/codex/responses":
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte(
+				"data: {\"type\":\"response.created\",\"response\":{\"created_at\":1710000002}}\n\n" +
+					"data: {\"type\":\"response.completed\",\"response\":{\"created_at\":1710000002,\"output\":[{\"type\":\"image_generation_call\",\"result\":\"" + pngBase64 + "\",\"revised_prompt\":\"inline fox prompt\"}]}}\n\n" +
+					"data: [DONE]\n\n",
+			))
 		case r.Method == http.MethodGet && r.URL.Path == "/":
 			w.WriteHeader(http.StatusOK)
 		case r.Method == http.MethodPost && r.URL.Path == "/backend-api/sentinel/chat-requirements":
@@ -300,6 +333,9 @@ func TestCodexExecutorExecuteImageGenerationSkipsPollingWhenStreamAlreadyHasInli
 		ID:       "codex-auth",
 		Provider: "codex",
 		Status:   cliproxyauth.StatusActive,
+		Attributes: map[string]string{
+			"base_url": server.URL + "/backend-api/codex",
+		},
 		Metadata: map[string]any{
 			"access_token": "token",
 			"account_id":   "account-1",
@@ -436,6 +472,214 @@ func TestCodexExecutorExecuteImageEditsViaResponses(t *testing.T) {
 	}
 	if payload.Data[0].RevisedPrompt != "turn it green" {
 		t.Fatalf("revised_prompt = %q, want turn it green", payload.Data[0].RevisedPrompt)
+	}
+}
+
+func TestCodexExecutorExecuteImageGenerationViaResponsesToolChoice(t *testing.T) {
+	var lastBody string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/backend-api/codex/responses" {
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		body, _ := io.ReadAll(r.Body)
+		lastBody = string(body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(
+			"data: {\"type\":\"response.created\",\"response\":{\"created_at\":1710000002,\"tools\":[{\"type\":\"image_generation\",\"model\":\"gpt-image-2\",\"quality\":\"high\",\"size\":\"1024x1024\"}]}}\n\n" +
+				"data: {\"type\":\"response.completed\",\"response\":{\"created_at\":1710000002,\"tool_usage\":{\"image_gen\":{\"images\":1}},\"output\":[{\"type\":\"image_generation_call\",\"result\":\"Z2VuZXJhdGVk\",\"revised_prompt\":\"Spring Boot architecture diagram\",\"quality\":\"high\",\"size\":\"1024x1024\"}]}}\n\n" +
+				"data: [DONE]\n\n",
+		))
+	}))
+	defer server.Close()
+
+	originalBaseURL := codexImageChatGPTBaseURL
+	codexImageChatGPTBaseURL = server.URL
+	defer func() {
+		codexImageChatGPTBaseURL = originalBaseURL
+	}()
+
+	executor := NewCodexExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{
+		ID:       "codex-auth-generation-responses",
+		Provider: "codex",
+		Status:   cliproxyauth.StatusActive,
+		Attributes: map[string]string{
+			"base_url": server.URL + "/backend-api/codex",
+		},
+		Metadata: map[string]any{
+			"access_token": "token",
+			"account_id":   "account-1",
+		},
+	}
+
+	resp, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "gpt-image-2",
+		Payload: []byte(`{"model":"gpt-image-2","prompt":"给我绘制一个 springboot 的系统架构图","size":"1024x1024","quality":"high"}`),
+		Format:  sdktranslator.FromString("openai"),
+	}, cliproxyexecutor.Options{
+		Alt:          "images/generations",
+		SourceFormat: sdktranslator.FromString("openai"),
+	})
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+
+	if !strings.Contains(lastBody, `"tool_choice":{"type":"image_generation"}`) {
+		t.Fatalf("request body = %s, want image_generation tool choice", lastBody)
+	}
+	if !strings.Contains(lastBody, `"action":"generate"`) {
+		t.Fatalf("request body = %s, want generate action", lastBody)
+	}
+	if !strings.Contains(lastBody, `"model":"gpt-image-2"`) {
+		t.Fatalf("request body = %s, want gpt-image-2 tool model", lastBody)
+	}
+
+	var payload struct {
+		Data []struct {
+			B64JSON       string `json:"b64_json"`
+			RevisedPrompt string `json:"revised_prompt"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(resp.Payload, &payload); err != nil {
+		t.Fatalf("Unmarshal payload: %v", err)
+	}
+	if len(payload.Data) != 1 {
+		t.Fatalf("data length = %d, want 1", len(payload.Data))
+	}
+	if payload.Data[0].B64JSON != "Z2VuZXJhdGVk" {
+		t.Fatalf("b64_json = %q, want generated image", payload.Data[0].B64JSON)
+	}
+	if payload.Data[0].RevisedPrompt != "Spring Boot architecture diagram" {
+		t.Fatalf("revised_prompt = %q, want Spring Boot architecture diagram", payload.Data[0].RevisedPrompt)
+	}
+}
+
+func TestCodexExecutorExecuteImageGenerationRetriesResponsesFailedRateLimit(t *testing.T) {
+	var attempts atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/backend-api/codex/responses" {
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		if attempts.Add(1) == 1 {
+			_, _ = w.Write([]byte(
+				"data: {\"type\":\"response.created\",\"response\":{\"created_at\":1710000002}}\n\n" +
+					"data: {\"type\":\"error\",\"error\":{\"type\":\"input-images\",\"code\":\"rate_limit_exceeded\",\"message\":\"Rate limit reached for gpt-image-2. Please try again in 1ms.\"}}\n\n" +
+					"data: {\"type\":\"response.failed\",\"response\":{\"created_at\":1710000002,\"error\":{\"code\":\"rate_limit_exceeded\",\"message\":\"Rate limit reached for gpt-image-2. Please try again in 1ms.\"}}}\n\n" +
+					"data: [DONE]\n\n",
+			))
+			return
+		}
+		_, _ = w.Write([]byte(
+			"data: {\"type\":\"response.created\",\"response\":{\"created_at\":1710000003}}\n\n" +
+				"data: {\"type\":\"response.completed\",\"response\":{\"created_at\":1710000003,\"output\":[{\"type\":\"image_generation_call\",\"result\":\"Z2VuZXJhdGVk\",\"revised_prompt\":\"retried image\"}]}}\n\n" +
+				"data: [DONE]\n\n",
+		))
+	}))
+	defer server.Close()
+
+	executor := NewCodexExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{
+		ID:       "codex-auth-generation-retry",
+		Provider: "codex",
+		Status:   cliproxyauth.StatusActive,
+		Attributes: map[string]string{
+			"base_url": server.URL + "/backend-api/codex",
+		},
+		Metadata: map[string]any{
+			"access_token": "token",
+			"account_id":   "account-1",
+		},
+	}
+
+	resp, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "gpt-image-2",
+		Payload: []byte(`{"model":"gpt-image-2","prompt":"给我绘制一个 springboot 的系统架构图"}`),
+		Format:  sdktranslator.FromString("openai"),
+	}, cliproxyexecutor.Options{
+		Alt:          "images/generations",
+		SourceFormat: sdktranslator.FromString("openai"),
+	})
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if attempts.Load() != 2 {
+		t.Fatalf("attempts = %d, want 2", attempts.Load())
+	}
+
+	var payload struct {
+		Data []struct {
+			B64JSON       string `json:"b64_json"`
+			RevisedPrompt string `json:"revised_prompt"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(resp.Payload, &payload); err != nil {
+		t.Fatalf("Unmarshal payload: %v", err)
+	}
+	if len(payload.Data) != 1 {
+		t.Fatalf("data length = %d, want 1", len(payload.Data))
+	}
+	if payload.Data[0].B64JSON != "Z2VuZXJhdGVk" {
+		t.Fatalf("b64_json = %q, want generated image", payload.Data[0].B64JSON)
+	}
+	if payload.Data[0].RevisedPrompt != "retried image" {
+		t.Fatalf("revised_prompt = %q, want retried image", payload.Data[0].RevisedPrompt)
+	}
+}
+
+func TestCodexExecutorExecuteImageGenerationReturnsResponsesFailedRateLimit(t *testing.T) {
+	var attempts atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/backend-api/codex/responses" {
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		attempts.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(
+			"data: {\"type\":\"response.created\",\"response\":{\"created_at\":1710000002}}\n\n" +
+				"data: {\"type\":\"response.failed\",\"response\":{\"created_at\":1710000002,\"error\":{\"code\":\"rate_limit_exceeded\",\"message\":\"Rate limit reached for gpt-image-2. Please try again in 1ms.\"}}}\n\n" +
+				"data: [DONE]\n\n",
+		))
+	}))
+	defer server.Close()
+
+	executor := NewCodexExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{
+		ID:       "codex-auth-generation-rate-limit",
+		Provider: "codex",
+		Status:   cliproxyauth.StatusActive,
+		Attributes: map[string]string{
+			"base_url": server.URL + "/backend-api/codex",
+		},
+		Metadata: map[string]any{
+			"access_token": "token",
+			"account_id":   "account-1",
+		},
+	}
+
+	_, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "gpt-image-2",
+		Payload: []byte(`{"model":"gpt-image-2","prompt":"draw a fox"}`),
+		Format:  sdktranslator.FromString("openai"),
+	}, cliproxyexecutor.Options{
+		Alt:          "images/generations",
+		SourceFormat: sdktranslator.FromString("openai"),
+	})
+	if err == nil {
+		t.Fatal("Execute() error = nil, want rate limit error")
+	}
+	status, ok := err.(statusErr)
+	if !ok {
+		t.Fatalf("Execute() error type = %T, want statusErr", err)
+	}
+	if status.StatusCode() != http.StatusTooManyRequests {
+		t.Fatalf("StatusCode() = %d, want 429", status.StatusCode())
+	}
+	if !strings.Contains(status.Error(), "rate_limit_exceeded") || strings.Contains(status.Error(), "stream disconnected") {
+		t.Fatalf("error = %q, want upstream rate limit without disconnected message", status.Error())
+	}
+	if attempts.Load() != 3 {
+		t.Fatalf("attempts = %d, want 3 retries including initial attempt", attempts.Load())
 	}
 }
 
@@ -711,6 +955,32 @@ func TestParseCodexImageRequestAcceptsExtendedGenerationOptions(t *testing.T) {
 	}
 }
 
+func TestParseCodexImageRequestAcceptsArbitraryPositiveDimensions(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		size     string
+		wantSize string
+	}{
+		{name: "small square", size: "128x128", wantSize: "128x128"},
+		{name: "uppercase separator", size: "128X256", wantSize: "128x256"},
+		{name: "custom widescreen", size: "3000x1200", wantSize: "3000x1200"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			parsed, err := parseCodexImageRequest([]byte(`{
+				"model":"gpt-image-2",
+				"prompt":"draw a fox",
+				"size":"` + tc.size + `"
+			}`))
+			if err != nil {
+				t.Fatalf("parseCodexImageRequest(size=%s) error = %v", tc.size, err)
+			}
+			if parsed.Size != tc.wantSize {
+				t.Fatalf("size = %q, want %q", parsed.Size, tc.wantSize)
+			}
+		})
+	}
+}
+
 func TestParseCodexImageRequestAcceptsImageEditsPayload(t *testing.T) {
 	parsed, err := parseCodexImageRequest([]byte(`{
 		"model":"gpt-image-2",
@@ -977,6 +1247,16 @@ func TestCodexExecutorExecuteImageGenerationForcesImageOnlyPrompt(t *testing.T) 
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/backend-api/codex/responses":
+			body, _ := io.ReadAll(r.Body)
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte("data: {\"type\":\"response.created\",\"response\":{\"created_at\":1710000002}}\n\n"))
+			if strings.Contains(string(body), `"tool_choice":{"type":"image_generation"}`) {
+				_, _ = w.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"created_at\":1710000002,\"output\":[{\"type\":\"image_generation_call\",\"result\":\"" + pngBase64 + "\",\"revised_prompt\":\"forced image prompt\"}]}}\n\n"))
+			} else {
+				_, _ = w.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"created_at\":1710000002,\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"Hi! How can I assist you today?\"}]}]}}\n\n"))
+			}
+			_, _ = w.Write([]byte("data: [DONE]\n\n"))
 		case r.Method == http.MethodGet && r.URL.Path == "/":
 			w.WriteHeader(http.StatusOK)
 		case r.Method == http.MethodPost && r.URL.Path == "/backend-api/sentinel/chat-requirements":
@@ -1013,6 +1293,9 @@ func TestCodexExecutorExecuteImageGenerationForcesImageOnlyPrompt(t *testing.T) 
 		ID:       "codex-auth",
 		Provider: "codex",
 		Status:   cliproxyauth.StatusActive,
+		Attributes: map[string]string{
+			"base_url": server.URL + "/backend-api/codex",
+		},
 		Metadata: map[string]any{
 			"access_token": "token",
 			"account_id":   "account-1",

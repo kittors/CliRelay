@@ -64,6 +64,7 @@ func (s *FileTokenStore) Save(ctx context.Context, auth *cliproxyauth.Auth) (str
 	if err = os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return "", fmt.Errorf("auth filestore: create dir failed: %w", err)
 	}
+	syncRoutingMetadata(auth)
 
 	switch {
 	case auth.Storage != nil:
@@ -233,6 +234,9 @@ func (s *FileTokenStore) readAuthFile(path, baseDir string) (*cliproxyauth.Auth,
 	auth := &cliproxyauth.Auth{
 		ID:               id,
 		Provider:         provider,
+		Prefix:           metadataString(metadata, "prefix"),
+		ProxyURL:         metadataString(metadata, "proxy_url", "proxy-url", "proxyUrl"),
+		ProxyID:          metadataString(metadata, "proxy_id", "proxy-id", "proxyId"),
 		FileName:         id,
 		Label:            s.labelFor(metadata),
 		Status:           status,
@@ -248,6 +252,47 @@ func (s *FileTokenStore) readAuthFile(path, baseDir string) (*cliproxyauth.Auth,
 		auth.Attributes["email"] = email
 	}
 	return auth, nil
+}
+
+func metadataString(metadata map[string]any, keys ...string) string {
+	if len(metadata) == 0 {
+		return ""
+	}
+	for _, key := range keys {
+		if key == "" {
+			continue
+		}
+		if raw, ok := metadata[key].(string); ok {
+			if value := strings.TrimSpace(raw); value != "" {
+				return value
+			}
+		}
+	}
+	return ""
+}
+
+func syncRoutingMetadata(auth *cliproxyauth.Auth) {
+	if auth == nil {
+		return
+	}
+	prefix := strings.TrimSpace(auth.Prefix)
+	proxyURL := strings.TrimSpace(auth.ProxyURL)
+	proxyID := strings.TrimSpace(auth.ProxyID)
+	if prefix == "" && proxyURL == "" && proxyID == "" {
+		return
+	}
+	if auth.Metadata == nil {
+		auth.Metadata = make(map[string]any)
+	}
+	if prefix != "" {
+		auth.Metadata["prefix"] = prefix
+	}
+	if proxyURL != "" {
+		auth.Metadata["proxy_url"] = proxyURL
+	}
+	if proxyID != "" {
+		auth.Metadata["proxy_id"] = proxyID
+	}
 }
 
 func (s *FileTokenStore) idFor(path, baseDir string) string {

@@ -3,7 +3,9 @@
 host: ""
 
 # OAuth client credentials for provider login flows.
-# You can set these either in config.yaml or via environment variables:
+# Gemini CLI / Code Assist and Antigravity OAuth use their official OAuth clients by default.
+# Set credentials only when you intentionally want to override those clients.
+# You can set overrides either in config.yaml or via environment variables:
 #   - Gemini:      CLIRELAY_GEMINI_OAUTH_CLIENT_ID / CLIRELAY_GEMINI_OAUTH_CLIENT_SECRET
 #   - Antigravity: CLIRELAY_ANTIGRAVITY_OAUTH_CLIENT_ID / CLIRELAY_ANTIGRAVITY_OAUTH_CLIENT_SECRET
 oauth-clients:
@@ -70,7 +72,8 @@ auto-update:
   docker-image: ghcr.io/kittors/clirelay
   updater-url: http://clirelay-updater:8320
 
-# Authentication directory (supports ~ for home directory)
+# Authentication directory (supports ~ for home directory).
+# In Docker/cloud deployments, AUTH_PATH overrides this value at runtime.
 auth-dir: "~/.cli-proxy-api"
 
 # API keys for authentication

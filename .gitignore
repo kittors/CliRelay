@@ -1,6 +1,17 @@
 # Binaries
 cli-proxy-api
+CLIProxyAPI*
+clirelay-updater
 *.exe
+*.bin
+*.gz
+*.zip
+*.tar
+*.tgz
+
+# Build outputs and dependencies
+dist/
+node_modules/
 
 # Configuration
 config.yaml
@@ -43,12 +54,22 @@ AGENTS.md
 CLAUDE.md
 GEMINI.md
 
+# Tool runtime/generated content
+node_modules/
+tools*/**/node_modules/
+tools*/**/.profiles/
+tools*/**/data/
+tools*/**/__pycache__/
+tools*/**/*.pyc
+
 # Tooling metadata
 .vscode/*
 .codex/*
 .claude/*
 .gemini/*
 .serena/*
+.hermes/*
+.playwright-mcp/*
 .tmp-go/*
 .agent/*
 .agents/*
@@ -59,6 +80,22 @@ GEMINI.md
 _bmad/*
 _bmad-output/*
 
+# Local backups / runtime data
+config.yaml.pre-sqlite-migration
+data/*
+
 # macOS
 .DS_Store
 ._*
+
+progress.md
+servers.local.md
+.mailbox/
+.agents/state/
+.cursorrules
+HERMES.md
+OPENCODE.md
+.goosehints
+.roomodes
+.roo/
+.zed/CONVENTIONS.md

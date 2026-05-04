@@ -259,6 +259,7 @@ func (h *Handler) buildUpdateCheck(ctx context.Context) (*updateCheckResponse, e
 
 	backendUpdateAvailable := branchErr == nil && autoUpdateAvailableFromCommit(currentCommit, branch.SHA)
 	frontendUpdateAvailable := frontendErr == nil && autoUpdateAvailableFromCommit(currentUICommit, frontendBranch.SHA)
+	dockerImage, dockerTag := dockerImageAndTagForConfig(cfg.AutoUpdate.DockerImage, channel, branch.SHA)
 
 	resp := &updateCheckResponse{
 		Enabled:           cfg.AutoUpdate.Enabled,
@@ -274,8 +275,8 @@ func (h *Handler) buildUpdateCheck(ctx context.Context) (*updateCheckResponse, e
 		LatestUIVersion:   latestUIVersion,
 		LatestUICommit:    latestUICommit,
 		LatestUICommitURL: latestUICommitURL,
-		DockerImage:       cfg.AutoUpdate.DockerImage,
-		DockerTag:         dockerTagForChannel(channel, branch.SHA),
+		DockerImage:       dockerImage,
+		DockerTag:         dockerTag,
 		ReleaseNotes:      releaseNotes,
 		ReleaseURL:        strings.TrimSpace(release.HTMLURL),
 		UpdateAvailable:   cfg.AutoUpdate.Enabled && (backendUpdateAvailable || frontendUpdateAvailable),
@@ -304,6 +305,7 @@ func (h *Handler) buildCurrentUpdateState(ctx context.Context) *updateCheckRespo
 	}
 
 	currentUIVersion, currentUICommit := h.currentFrontendState()
+	dockerImage, dockerTag := dockerImageAndTagForConfig(cfg.AutoUpdate.DockerImage, channel, "")
 
 	return &updateCheckResponse{
 		Enabled:          cfg.AutoUpdate.Enabled,
@@ -313,8 +315,8 @@ func (h *Handler) buildCurrentUpdateState(ctx context.Context) *updateCheckRespo
 		CurrentUICommit:  currentUICommit,
 		BuildDate:        buildinfo.BuildDate,
 		TargetChannel:    channel,
-		DockerImage:      cfg.AutoUpdate.DockerImage,
-		DockerTag:        dockerTagForChannel(channel, ""),
+		DockerImage:      dockerImage,
+		DockerTag:        dockerTag,
 		UpdaterAvailable: checkUpdaterAvailable(ctx, cfg),
 	}
 }
@@ -506,8 +508,29 @@ func dockerTagForChannel(channel string, _ string) string {
 	return "latest"
 }
 
-func normalizeGitHubRepository(repo string) string {
-	trimmed := strings.TrimSpace(repo)
+func dockerImageAndTagForConfig(image string, channel string, sha string) (string, string) {
+	cleanImage := strings.TrimSpace(image)
+	if cleanImage == "" {
+		return cleanImage, dockerTagForChannel(channel, sha)
+	}
+	name, tag := splitDockerImageTag(cleanImage)
+	if tag != "" {
+		return name, tag
+	}
+	return cleanImage, dockerTagForChannel(channel, sha)
+}
+
+func splitDockerImageTag(image string) (string, string) {
+	lastSlash := strings.LastIndex(image, "/")
+	lastColon := strings.LastIndex(image, ":")
+	if lastColon <= lastSlash {
+		return image, ""
+	}
+	return image[:lastColon], image[lastColon+1:]
+}
+
+func normalizeGitHubRepository(raw string) string {
+	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {
 		return "kittors/CliRelay"
 	}

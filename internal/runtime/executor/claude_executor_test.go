@@ -3,9 +3,11 @@ package executor
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
@@ -318,6 +320,100 @@ func TestClaudeExecutor_GeneratesNewUserIDByDefault(t *testing.T) {
 	}
 	if !isValidUserID(userIDs[0]) || !isValidUserID(userIDs[1]) {
 		t.Fatalf("user_ids should be valid, got %q and %q", userIDs[0], userIDs[1])
+	}
+}
+
+func TestClaudeExecutorAppliesClaudeIdentityFingerprint(t *testing.T) {
+	var gotHeaders http.Header
+	var gotBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotHeaders = r.Header.Clone()
+		var err error
+		gotBody, err = io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read request body: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"msg_1","type":"message","model":"claude-sonnet-4-5","role":"assistant","content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":1,"output_tokens":1}}`))
+	}))
+	defer server.Close()
+
+	executor := NewClaudeExecutor(&config.Config{
+		IdentityFingerprint: config.IdentityFingerprintConfig{
+			Claude: config.ClaudeIdentityFingerprintConfig{
+				Enabled:     true,
+				CLIVersion:  "2.1.88",
+				Entrypoint:  "cli",
+				SessionMode: "fixed",
+				SessionID:   "session-fixed-123",
+				DeviceID:    "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+			},
+		},
+	})
+	auth := &cliproxyauth.Auth{
+		Attributes: map[string]string{
+			"api_key":  "oauth-access-token",
+			"base_url": server.URL,
+		},
+		Metadata: map[string]any{
+			"type":         "claude",
+			"account_uuid": "account-uuid-123",
+		},
+	}
+	payload := []byte(`{"model":"claude-sonnet-4-5","messages":[{"role":"user","content":[{"type":"text","text":"hello from user message"}]}]}`)
+
+	if _, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "claude-sonnet-4-5",
+		Payload: payload,
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("claude"),
+	}); err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+
+	if got := gotHeaders.Get("User-Agent"); got != "claude-cli/2.1.88 (external, cli)" {
+		t.Fatalf("User-Agent = %q, want Claude Code fingerprint", got)
+	}
+	if got := gotHeaders.Get("Anthropic-Beta"); !strings.Contains(got, "redact-thinking-2026-02-12") ||
+		!strings.Contains(got, "oauth-2025-04-20") {
+		t.Fatalf("Anthropic-Beta = %q, want Claude Code OAuth betas", got)
+	}
+	if got := gotHeaders.Get("X-Stainless-Package-Version"); got != "0.74.0" {
+		t.Fatalf("X-Stainless-Package-Version = %q, want 0.74.0", got)
+	}
+	if got := gotHeaders.Get("X-Stainless-Runtime-Version"); got != "v22.13.0" {
+		t.Fatalf("X-Stainless-Runtime-Version = %q, want v22.13.0", got)
+	}
+	if got := gotHeaders.Get("X-Claude-Code-Session-Id"); got != "session-fixed-123" {
+		t.Fatalf("X-Claude-Code-Session-Id = %q, want fixed session", got)
+	}
+	if got := gotHeaders.Get("X-App"); got != "cli" {
+		t.Fatalf("X-App = %q, want cli", got)
+	}
+	if got := gotHeaders.Get("X-Client-Request-Id"); got == "" {
+		t.Fatal("X-Client-Request-Id is empty")
+	}
+
+	billing := gjson.GetBytes(gotBody, "system.0.text").String()
+	if !strings.Contains(billing, "x-anthropic-billing-header: cc_version=2.1.88.") ||
+		!strings.Contains(billing, "cc_entrypoint=cli") {
+		t.Fatalf("billing header block = %q, want Claude Code billing fingerprint", billing)
+	}
+	if got := gjson.GetBytes(gotBody, "system.1.text").String(); got != "You are Claude Code, Anthropic's official CLI for Claude." {
+		t.Fatalf("system.1.text = %q, want Claude Code prefix", got)
+	}
+
+	var userID struct {
+		DeviceID    string `json:"device_id"`
+		AccountUUID string `json:"account_uuid"`
+		SessionID   string `json:"session_id"`
+	}
+	if err := json.Unmarshal([]byte(gjson.GetBytes(gotBody, "metadata.user_id").String()), &userID); err != nil {
+		t.Fatalf("metadata.user_id is not JSON: %v; body=%s", err, string(gotBody))
+	}
+	if userID.DeviceID != "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" ||
+		userID.AccountUUID != "account-uuid-123" || userID.SessionID != "session-fixed-123" {
+		t.Fatalf("metadata.user_id = %#v, want device/account/session fingerprint", userID)
 	}
 }
 

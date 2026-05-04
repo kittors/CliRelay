@@ -1,6 +1,14 @@
 package auth
 
-import "testing"
+import (
+	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"testing"
+
+	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+)
 
 func TestExtractAccessToken(t *testing.T) {
 	t.Parallel()
@@ -76,5 +84,75 @@ func TestExtractAccessToken(t *testing.T) {
 				t.Errorf("extractAccessToken() = %q, want %q", got, tt.expected)
 			}
 		})
+	}
+}
+
+func TestFileTokenStoreListAppliesRoutingMetadata(t *testing.T) {
+	dir := t.TempDir()
+	fileName := "claude-max.json"
+	data := []byte(`{"type":"claude","email":"max@example.com","prefix":"team-b","proxy_url":"http://auth-proxy.local:8080","proxy_id":"premium-egress"}`)
+	if err := os.WriteFile(filepath.Join(dir, fileName), data, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	store := NewFileTokenStore()
+	store.SetBaseDir(dir)
+	auths, err := store.List(context.Background())
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(auths) != 1 {
+		t.Fatalf("auth count = %d, want 1", len(auths))
+	}
+	auth := auths[0]
+	if auth.Prefix != "team-b" {
+		t.Fatalf("Prefix = %q, want team-b", auth.Prefix)
+	}
+	if auth.ProxyURL != "http://auth-proxy.local:8080" {
+		t.Fatalf("ProxyURL = %q, want auth proxy", auth.ProxyURL)
+	}
+	if auth.ProxyID != "premium-egress" {
+		t.Fatalf("ProxyID = %q, want premium-egress", auth.ProxyID)
+	}
+}
+
+func TestFileTokenStoreSavePersistsRoutingMetadata(t *testing.T) {
+	dir := t.TempDir()
+	fileName := "claude-pro.json"
+	store := NewFileTokenStore()
+	store.SetBaseDir(dir)
+
+	_, err := store.Save(context.Background(), &cliproxyauth.Auth{
+		ID:       fileName,
+		FileName: fileName,
+		Provider: "claude",
+		Prefix:   "team-c",
+		ProxyURL: "http://auth-proxy.local:8080",
+		ProxyID:  "premium-egress",
+		Metadata: map[string]any{
+			"type":  "claude",
+			"email": "pro@example.com",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	raw, err := os.ReadFile(filepath.Join(dir, fileName))
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	var metadata map[string]any
+	if err := json.Unmarshal(raw, &metadata); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if metadata["prefix"] != "team-c" {
+		t.Fatalf("prefix = %#v, want team-c", metadata["prefix"])
+	}
+	if metadata["proxy_url"] != "http://auth-proxy.local:8080" {
+		t.Fatalf("proxy_url = %#v, want auth proxy", metadata["proxy_url"])
+	}
+	if metadata["proxy_id"] != "premium-egress" {
+		t.Fatalf("proxy_id = %#v, want premium-egress", metadata["proxy_id"])
 	}
 }

@@ -58,6 +58,20 @@ CREATE TABLE IF NOT EXISTS model_owner_presets (
   enabled     INTEGER NOT NULL DEFAULT 1,
   updated_at  DATETIME NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS model_openrouter_sync_state (
+  id               INTEGER PRIMARY KEY CHECK(id = 1),
+  enabled          INTEGER NOT NULL DEFAULT 0,
+  interval_minutes INTEGER NOT NULL DEFAULT 1440,
+  last_sync_at     TEXT NOT NULL DEFAULT '',
+  last_success_at  TEXT NOT NULL DEFAULT '',
+  last_error       TEXT NOT NULL DEFAULT '',
+  last_seen        INTEGER NOT NULL DEFAULT 0,
+  last_added       INTEGER NOT NULL DEFAULT 0,
+  last_updated     INTEGER NOT NULL DEFAULT 0,
+  last_skipped     INTEGER NOT NULL DEFAULT 0,
+  updated_at       DATETIME NOT NULL
+);
 `
 
 var (
@@ -95,6 +109,7 @@ func initModelConfigTables(db *sql.DB) {
 		log.Errorf("usage: create model config tables: %v", err)
 		return
 	}
+	ensureOpenRouterModelSyncStateSchema(db)
 	seedDefaultModelConfigRows(db)
 	mergeLegacyPricingIntoModelConfigs(db)
 	reloadModelConfigCache(db)
@@ -591,7 +606,7 @@ func ReplaceModelOwnerPresets(rows []ModelOwnerPresetRow) error {
 	if err != nil {
 		return fmt.Errorf("usage: begin owner preset replace: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	if _, err := tx.Exec("DELETE FROM model_owner_presets"); err != nil {
 		return fmt.Errorf("usage: clear owner presets: %w", err)

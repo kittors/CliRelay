@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -37,11 +38,14 @@ const (
 	codexImageConversationTimout = 5 * time.Minute
 	codexImageMaxN               = 4
 	codexImageMaxUploads         = 5
+	codexImageResponsesMaxTries  = 3
+	codexImageResponsesMaxRetry  = 2 * time.Second
 )
 
 var codexImageChatGPTBaseURL = "https://chatgpt.com"
 var codexImagePollTimeout = codexImageConversationTimout
 var codexImagePollInterval = 3 * time.Second
+var codexImageSizePattern = regexp.MustCompile(`^[1-9][0-9]*x[1-9][0-9]*$`)
 
 type codexImageRequest struct {
 	Model             string
@@ -124,14 +128,31 @@ func (e *CodexExecutor) executeImageGeneration(ctx context.Context, auth *clipro
 	if strings.TrimSpace(apiKey) == "" {
 		return cliproxyexecutor.Response{}, statusErr{code: http.StatusUnauthorized, msg: "codex image generation requires a Codex OAuth access token"}
 	}
-	if opts.Alt == codexImageEditsAlt || parsed.hasEditInputs() {
-		payload, headers, execErr := e.executeCodexImageViaResponses(ctx, auth, req.Payload, parsed)
-		if execErr != nil {
-			return cliproxyexecutor.Response{}, execErr
+	if opts.Alt == codexImageGenerationAlt || opts.Alt == codexImageEditsAlt || parsed.hasEditInputs() {
+		payloads := make([][]byte, 0, parsed.N)
+		var responseHeaders http.Header
+		for i := 0; i < parsed.N; i++ {
+			parsedOnce := *parsed
+			parsedOnce.N = 1
+			if parsed.N > 1 {
+				parsedOnce.Prompt = buildCodexImagePrompt(parsed, i)
+			}
+			payload, headers, execErr := e.executeCodexImageViaResponses(ctx, auth, req.Payload, &parsedOnce)
+			if execErr != nil {
+				return cliproxyexecutor.Response{}, execErr
+			}
+			payloads = append(payloads, payload)
+			if responseHeaders == nil {
+				responseHeaders = headers
+			}
+		}
+		payload, err := mergeCodexImageOpenAIResponses(payloads)
+		if err != nil {
+			return cliproxyexecutor.Response{}, err
 		}
 		reporter.publishWithContent(ctx, parseOpenAIUsage(payload), inputForLog, string(payload))
 		reporter.ensurePublished(ctx)
-		return cliproxyexecutor.Response{Payload: payload, Headers: headers}, nil
+		return cliproxyexecutor.Response{Payload: payload, Headers: responseHeaders}, nil
 	}
 
 	ctxRequest := ctx
@@ -334,8 +355,8 @@ func parseCodexImageRequest(body []byte) (*codexImageRequest, error) {
 		return nil, fmt.Errorf("only response_format=b64_json is supported for Codex OAuth image generation")
 	}
 	parsed.Size = strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, "size").String()))
-	if parsed.Size != "" && !isSupportedCodexImageSize(parsed.Size) {
-		return nil, fmt.Errorf("size must be one of 1024x1024, 1792x1024, 1024x1792, 2560x1440, 2160x3840")
+	if parsed.Size != "" && !isValidCodexImageSize(parsed.Size) {
+		return nil, fmt.Errorf("size must be WIDTHxHEIGHT using positive integers")
 	}
 	parsed.Quality = strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, "quality").String()))
 	if parsed.Quality != "" && !isSupportedCodexImageQuality(parsed.Quality) {
@@ -460,13 +481,8 @@ func parseCodexImageUpload(item gjson.Result, defaultFileName string) (*codexIma
 	return upload, nil
 }
 
-func isSupportedCodexImageSize(size string) bool {
-	switch strings.ToLower(strings.TrimSpace(size)) {
-	case "1024x1024", "1792x1024", "1024x1792", "2560x1440", "2160x3840":
-		return true
-	default:
-		return false
-	}
+func isValidCodexImageSize(size string) bool {
+	return codexImageSizePattern.MatchString(strings.ToLower(strings.TrimSpace(size)))
 }
 
 func isSupportedCodexImageQuality(quality string) bool {
@@ -960,68 +976,80 @@ func (e *CodexExecutor) executeCodexImageViaResponses(
 		return nil, nil, statusErr{code: http.StatusBadRequest, msg: err.Error()}
 	}
 	url := strings.TrimSuffix(baseURL, "/") + "/responses"
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
-	if err != nil {
-		return nil, nil, err
-	}
-	applyCodexHeaders(httpReq, e.cfg, auth, apiKey, true)
-
 	var authID, authLabel, authType, authValue string
 	if auth != nil {
 		authID = auth.ID
 		authLabel = auth.Label
 		authType, authValue = auth.AccountInfo()
 	}
-	recordAPIRequest(ctx, e.cfg, upstreamRequestLog{
-		URL:       url,
-		Method:    http.MethodPost,
-		Headers:   httpReq.Header.Clone(),
-		Body:      body,
-		Provider:  e.Identifier(),
-		AuthID:    authID,
-		AuthLabel: authLabel,
-		AuthType:  authType,
-		AuthValue: authValue,
-	})
 
 	httpClient := newProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
-	httpResp, err := httpClient.Do(httpReq)
-	if err != nil {
-		recordAPIResponseError(ctx, e.cfg, err)
-		return nil, nil, err
-	}
-	defer func() {
-		if httpResp != nil && httpResp.Body != nil {
-			_ = httpResp.Body.Close()
+	var lastErr error
+	for attempt := 1; attempt <= codexImageResponsesMaxTries; attempt++ {
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+		if err != nil {
+			return nil, nil, err
 		}
-	}()
-	recordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
-	if httpResp.StatusCode < http.StatusOK || httpResp.StatusCode >= http.StatusMultipleChoices {
-		upstreamBody := readUpstreamErrorBody(e.Identifier(), httpResp.Body)
-		appendAPIResponseChunk(ctx, e.cfg, upstreamBody)
-		return nil, nil, newCodexStatusErr(httpResp.StatusCode, upstreamBody)
-	}
+		applyCodexHeaders(httpReq, e.cfg, auth, apiKey, true)
+		recordAPIRequest(ctx, e.cfg, upstreamRequestLog{
+			URL:       url,
+			Method:    http.MethodPost,
+			Headers:   httpReq.Header.Clone(),
+			Body:      body,
+			Provider:  e.Identifier(),
+			AuthID:    authID,
+			AuthLabel: authLabel,
+			AuthType:  authType,
+			AuthValue: authValue,
+		})
 
-	rawBody, err := readUpstreamResponseBody(e.Identifier(), httpResp.Body)
-	if err != nil {
-		recordAPIResponseError(ctx, e.cfg, err)
-		return nil, nil, err
-	}
-	appendAPIResponseChunk(ctx, e.cfg, rawBody)
+		httpResp, err := httpClient.Do(httpReq)
+		if err != nil {
+			recordAPIResponseError(ctx, e.cfg, err)
+			return nil, nil, err
+		}
+		recordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
+		if httpResp.StatusCode < http.StatusOK || httpResp.StatusCode >= http.StatusMultipleChoices {
+			upstreamBody := readUpstreamErrorBody(e.Identifier(), httpResp.Body)
+			_ = httpResp.Body.Close()
+			appendAPIResponseChunk(ctx, e.cfg, upstreamBody)
+			return nil, nil, newCodexStatusErr(httpResp.StatusCode, upstreamBody)
+		}
 
-	results, createdAt, err := collectCodexImagesFromResponsesBody(rawBody)
-	if err != nil {
-		return nil, nil, err
+		rawBody, err := readUpstreamResponseBody(e.Identifier(), httpResp.Body)
+		responseHeaders := httpResp.Header.Clone()
+		_ = httpResp.Body.Close()
+		if err != nil {
+			recordAPIResponseError(ctx, e.cfg, err)
+			return nil, nil, err
+		}
+		appendAPIResponseChunk(ctx, e.cfg, rawBody)
+
+		results, createdAt, err := collectCodexImagesFromResponsesBody(rawBody)
+		if err != nil {
+			lastErr = err
+			if retryDelay, ok := codexImageResponsesRetryDelay(err, attempt); ok {
+				if waitErr := waitCodexImageResponsesRetry(ctx, retryDelay); waitErr != nil {
+					return nil, nil, waitErr
+				}
+				continue
+			}
+			return nil, nil, err
+		}
+		if len(results) == 0 {
+			return nil, nil, statusErr{code: http.StatusBadGateway, msg: "responses image request returned no generated images"}
+		}
+		payload, err := buildCodexImageOpenAIResponseFromResults(results, createdAt)
+		if err != nil {
+			return nil, nil, err
+		}
+		_ = originalPayload
+		return payload, responseHeaders, nil
 	}
-	if len(results) == 0 {
-		return nil, nil, statusErr{code: http.StatusBadGateway, msg: "responses image request returned no generated images"}
+	if lastErr != nil {
+		return nil, nil, lastErr
 	}
-	payload, err := buildCodexImageOpenAIResponseFromResults(results, createdAt)
-	if err != nil {
-		return nil, nil, err
-	}
-	_ = originalPayload
-	return payload, httpResp.Header.Clone(), nil
+	return nil, nil, statusErr{code: http.StatusBadGateway, msg: "responses image request failed"}
 }
 
 func buildCodexImageResponsesRequest(parsed *codexImageRequest, toolModel string) ([]byte, error) {
@@ -1122,6 +1150,7 @@ func collectCodexImagesFromResponsesBody(body []byte) ([]codexResponsesImageResu
 		fallbackSeen    = make(map[string]struct{})
 		createdAt       int64
 		foundFinal      bool
+		streamErr       error
 	)
 	for _, line := range bytes.Split(body, []byte("\n")) {
 		line = bytes.TrimRight(line, "\r")
@@ -1135,6 +1164,8 @@ func collectCodexImagesFromResponsesBody(body []byte) ([]codexResponsesImageResu
 		}
 		eventType := gjson.GetBytes(payload, "type").String()
 		switch eventType {
+		case "error":
+			streamErr = codexResponsesFailedStatusErr(payload)
 		case "response.output_item.done":
 			result, itemID, ok := extractCodexImageFromResponsesOutputItemDone(payload)
 			if !ok {
@@ -1158,6 +1189,8 @@ func collectCodexImagesFromResponsesBody(body []byte) ([]codexResponsesImageResu
 				return results, createdAt, nil
 			}
 			foundFinal = true
+		case "response.failed":
+			return nil, createdAt, codexResponsesFailedStatusErr(payload)
 		case "response.created":
 			if createdAt == 0 {
 				createdAt = gjson.GetBytes(payload, "response.created_at").Int()
@@ -1170,10 +1203,113 @@ func collectCodexImagesFromResponsesBody(body []byte) ([]codexResponsesImageResu
 	if len(fallbackResults) > 0 {
 		return fallbackResults, createdAt, nil
 	}
+	if streamErr != nil {
+		return nil, createdAt, streamErr
+	}
 	if foundFinal {
 		return nil, createdAt, nil
 	}
 	return nil, createdAt, fmt.Errorf("stream disconnected before response.completed")
+}
+
+func codexResponsesFailedStatusErr(payload []byte) statusErr {
+	message := strings.TrimSpace(gjson.GetBytes(payload, "response.error.message").String())
+	if message == "" {
+		message = strings.TrimSpace(gjson.GetBytes(payload, "error.message").String())
+	}
+	code := strings.TrimSpace(gjson.GetBytes(payload, "response.error.code").String())
+	if code == "" {
+		code = strings.TrimSpace(gjson.GetBytes(payload, "error.code").String())
+	}
+	errType := strings.TrimSpace(gjson.GetBytes(payload, "response.error.type").String())
+	if errType == "" {
+		errType = strings.TrimSpace(gjson.GetBytes(payload, "error.type").String())
+	}
+	statusCode := http.StatusBadGateway
+	if strings.Contains(code, "rate_limit") || strings.Contains(errType, "rate_limit") {
+		statusCode = http.StatusTooManyRequests
+		errType = "rate_limit_error"
+	}
+	if message == "" {
+		message = "responses image request failed"
+	}
+	if errType == "" {
+		errType = "upstream_error"
+	}
+	body, _ := json.Marshal(map[string]any{
+		"error": map[string]any{
+			"message": message,
+			"type":    errType,
+			"code":    code,
+		},
+	})
+	err := statusErr{code: statusCode, msg: string(body), upstreamBody: body}
+	if retryAfter := codexImageResponsesRetryAfter(message); retryAfter > 0 {
+		err.retryAfter = &retryAfter
+	}
+	return err
+}
+
+func codexImageResponsesRetryDelay(err error, attempt int) (time.Duration, bool) {
+	if attempt >= codexImageResponsesMaxTries {
+		return 0, false
+	}
+	status, ok := err.(statusErr)
+	if !ok || status.code != http.StatusTooManyRequests || status.retryAfter == nil {
+		return 0, false
+	}
+	if *status.retryAfter <= 0 || *status.retryAfter > codexImageResponsesMaxRetry {
+		return 0, false
+	}
+	return *status.retryAfter, true
+}
+
+func waitCodexImageResponsesRetry(ctx context.Context, delay time.Duration) error {
+	if delay <= 0 {
+		return nil
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+var codexImageRetryAfterPattern = regexp.MustCompile(`(?i)try again in\s+([0-9]+(?:\.[0-9]+)?\s*(?:ms|s|sec|secs|second|seconds|m|min|mins|minute|minutes))`)
+
+func codexImageResponsesRetryAfter(message string) time.Duration {
+	match := codexImageRetryAfterPattern.FindStringSubmatch(message)
+	if len(match) < 2 {
+		return 0
+	}
+	value := strings.ToLower(strings.ReplaceAll(strings.TrimSpace(match[1]), " ", ""))
+	replacements := []struct {
+		suffix string
+		with   string
+	}{
+		{suffix: "seconds", with: "s"},
+		{suffix: "second", with: "s"},
+		{suffix: "secs", with: "s"},
+		{suffix: "sec", with: "s"},
+		{suffix: "minutes", with: "m"},
+		{suffix: "minute", with: "m"},
+		{suffix: "mins", with: "m"},
+		{suffix: "min", with: "m"},
+	}
+	for _, replacement := range replacements {
+		if strings.HasSuffix(value, replacement.suffix) {
+			value = strings.TrimSuffix(value, replacement.suffix) + replacement.with
+			break
+		}
+	}
+	delay, err := time.ParseDuration(value)
+	if err != nil {
+		return 0
+	}
+	return delay
 }
 
 func extractCodexImagesFromResponsesCompleted(payload []byte) ([]codexResponsesImageResult, int64, error) {

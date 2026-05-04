@@ -426,6 +426,10 @@ func (s *Service) ensureExecutorsForAuthWithMode(a *coreauth.Auth, forceReplace 
 		s.coreManager.RegisterExecutor(executor.NewAntigravityExecutor(s.cfg))
 	case "claude":
 		s.coreManager.RegisterExecutor(executor.NewClaudeExecutor(s.cfg))
+	case "bedrock":
+		s.coreManager.RegisterExecutor(executor.NewBedrockExecutor(s.cfg))
+	case "opencode-go":
+		s.coreManager.RegisterExecutor(executor.NewOpenCodeGoExecutor(s.cfg))
 	case "qwen":
 		s.coreManager.RegisterExecutor(executor.NewQwenExecutor(s.cfg))
 	case "iflow":
@@ -499,6 +503,13 @@ func (s *Service) Run(ctx context.Context) error {
 	if s.coreManager != nil {
 		if errLoad := s.coreManager.Load(ctx); errLoad != nil {
 			log.Warnf("failed to load auth store: %v", errLoad)
+		}
+		for _, auth := range s.coreManager.List() {
+			if auth == nil || auth.ID == "" {
+				continue
+			}
+			s.ensureExecutorsForAuth(auth)
+			s.registerModelsForAuth(ctx, auth)
 		}
 	}
 
@@ -583,7 +594,12 @@ func (s *Service) Run(ctx context.Context) error {
 		if newCfg == nil {
 			return
 		}
+		internalusage.MigrateRoutingConfigFromConfig(newCfg, s.configPath)
 		internalusage.ApplyStoredRoutingConfig(newCfg)
+		internalusage.MigrateProxyPoolFromConfig(newCfg, s.configPath)
+		internalusage.ApplyStoredProxyPool(newCfg)
+		internalusage.MigrateRuntimeSettingsFromConfig(newCfg, s.configPath)
+		internalusage.ApplyStoredRuntimeSettings(newCfg)
 
 		nextStrategy := strings.ToLower(strings.TrimSpace(newCfg.Routing.Strategy))
 		normalizeStrategy := func(strategy string) string {
@@ -650,6 +666,7 @@ func (s *Service) Run(ctx context.Context) error {
 		s.coreManager.StartAutoRefresh(context.WithoutCancel(ctx), interval)
 		log.Infof("core auth auto-refresh started (interval=%s)", interval)
 	}
+	internalusage.StartOpenRouterModelSyncScheduler(ctx)
 
 	select {
 	case <-ctx.Done():
@@ -794,6 +811,11 @@ func (s *Service) registerModelsForAuth(ctx context.Context, a *coreauth.Auth) {
 			excluded = strings.Split(val, ",")
 		}
 	}
+	if compatDetected {
+		if s.registerOpenAICompatibilityModels(a, compatProviderKey, compatDisplayName) {
+			return
+		}
+	}
 	var models []*ModelInfo
 	switch provider {
 	case "gemini":
@@ -846,6 +868,23 @@ func (s *Service) registerModelsForAuth(ctx context.Context, a *coreauth.Auth) {
 			}
 		}
 		models = applyExcludedModels(models, excluded)
+	case "bedrock":
+		models = registry.GetBedrockModels()
+		if entry := s.resolveConfigBedrockKey(a); entry != nil {
+			if len(entry.Models) > 0 {
+				models = buildBedrockConfigModels(entry)
+			}
+			if authKind == "apikey" {
+				excluded = entry.ExcludedModels
+			}
+		}
+		models = applyExcludedModels(models, excluded)
+	case "opencode-go":
+		models = registry.GetOpenCodeGoModels()
+		if entry := s.resolveConfigOpenCodeGoKey(a); entry != nil && authKind == "apikey" {
+			excluded = entry.ExcludedModels
+		}
+		models = applyExcludedModels(models, excluded)
 	case "codex":
 		models = registry.GetOpenAIModels()
 		if entry := s.resolveConfigCodexKey(a); entry != nil {
@@ -866,85 +905,6 @@ func (s *Service) registerModelsForAuth(ctx context.Context, a *coreauth.Auth) {
 	case "kimi":
 		models = registry.GetKimiModels()
 		models = applyExcludedModels(models, excluded)
-	default:
-		// Handle OpenAI-compatibility providers by name using config
-		if s.cfg != nil {
-			providerKey := provider
-			compatName := strings.TrimSpace(a.Provider)
-			isCompatAuth := false
-			if compatDetected {
-				if compatProviderKey != "" {
-					providerKey = compatProviderKey
-				}
-				if compatDisplayName != "" {
-					compatName = compatDisplayName
-				}
-				isCompatAuth = true
-			}
-			if strings.EqualFold(providerKey, "openai-compatibility") {
-				isCompatAuth = true
-				if a.Attributes != nil {
-					if v := strings.TrimSpace(a.Attributes["compat_name"]); v != "" {
-						compatName = v
-					}
-					if v := strings.TrimSpace(a.Attributes["provider_key"]); v != "" {
-						providerKey = strings.ToLower(v)
-					}
-				}
-				if providerKey == "openai-compatibility" && compatName != "" {
-					providerKey = strings.ToLower(compatName)
-				}
-			} else if a.Attributes != nil {
-				if v := strings.TrimSpace(a.Attributes["compat_name"]); v != "" {
-					compatName = v
-					isCompatAuth = true
-				}
-				if v := strings.TrimSpace(a.Attributes["provider_key"]); v != "" {
-					providerKey = strings.ToLower(v)
-					isCompatAuth = true
-				}
-			}
-			for i := range s.cfg.OpenAICompatibility {
-				compat := &s.cfg.OpenAICompatibility[i]
-				if strings.EqualFold(compat.Name, compatName) {
-					// Convert compatibility models to registry models
-					ms := make([]*ModelInfo, 0, len(compat.Models))
-					for j := range compat.Models {
-						m := compat.Models[j]
-						// Use alias as model ID, fallback to name if alias is empty
-						modelID := m.Alias
-						if modelID == "" {
-							modelID = m.Name
-						}
-						ms = append(ms, &ModelInfo{
-							ID:          modelID,
-							Object:      "model",
-							Created:     time.Now().Unix(),
-							OwnedBy:     compat.Name,
-							Type:        "openai-compatibility",
-							DisplayName: modelID,
-							UserDefined: true,
-						})
-					}
-					// Register and return
-					if len(ms) > 0 {
-						if providerKey == "" {
-							providerKey = "openai-compatibility"
-						}
-						GlobalModelRegistry().RegisterClient(a.ID, providerKey, applyModelPrefixes(ms, a.Prefix, s.cfg.ForceModelPrefix))
-					} else {
-						// Ensure stale registrations are cleared when model list becomes empty.
-						GlobalModelRegistry().UnregisterClient(a.ID)
-					}
-					return
-				}
-			}
-			if isCompatAuth {
-				// No matching provider found or models removed entirely; drop any prior registration.
-				GlobalModelRegistry().UnregisterClient(a.ID)
-				return
-			}
-		}
 	}
 	models = applyOAuthModelAlias(s.cfg, provider, authKind, models)
 	if len(models) > 0 {
@@ -960,6 +920,71 @@ func (s *Service) registerModelsForAuth(ctx context.Context, a *coreauth.Auth) {
 	}
 
 	GlobalModelRegistry().UnregisterClient(a.ID)
+}
+
+func (s *Service) registerOpenAICompatibilityModels(a *coreauth.Auth, providerKey, compatName string) bool {
+	if s == nil || s.cfg == nil || a == nil {
+		return false
+	}
+	if providerKey == "" {
+		providerKey = strings.ToLower(strings.TrimSpace(a.Provider))
+	}
+	if compatName == "" {
+		compatName = strings.TrimSpace(a.Provider)
+	}
+	if strings.EqualFold(providerKey, "openai-compatibility") {
+		if a.Attributes != nil {
+			if v := strings.TrimSpace(a.Attributes["compat_name"]); v != "" {
+				compatName = v
+			}
+			if v := strings.TrimSpace(a.Attributes["provider_key"]); v != "" {
+				providerKey = strings.ToLower(v)
+			}
+		}
+		if providerKey == "openai-compatibility" && compatName != "" {
+			providerKey = strings.ToLower(compatName)
+		}
+	} else if a.Attributes != nil {
+		if v := strings.TrimSpace(a.Attributes["compat_name"]); v != "" {
+			compatName = v
+		}
+		if v := strings.TrimSpace(a.Attributes["provider_key"]); v != "" {
+			providerKey = strings.ToLower(v)
+		}
+	}
+	for i := range s.cfg.OpenAICompatibility {
+		compat := &s.cfg.OpenAICompatibility[i]
+		if strings.EqualFold(compat.Name, compatName) {
+			ms := make([]*ModelInfo, 0, len(compat.Models))
+			for j := range compat.Models {
+				m := compat.Models[j]
+				modelID := m.Alias
+				if modelID == "" {
+					modelID = m.Name
+				}
+				ms = append(ms, &ModelInfo{
+					ID:          modelID,
+					Object:      "model",
+					Created:     time.Now().Unix(),
+					OwnedBy:     compat.Name,
+					Type:        "openai-compatibility",
+					DisplayName: modelID,
+					UserDefined: true,
+				})
+			}
+			if len(ms) > 0 {
+				if providerKey == "" {
+					providerKey = "openai-compatibility"
+				}
+				GlobalModelRegistry().RegisterClient(a.ID, providerKey, applyModelPrefixes(ms, a.Prefix, s.cfg.ForceModelPrefix))
+			} else {
+				GlobalModelRegistry().UnregisterClient(a.ID)
+			}
+			return true
+		}
+	}
+	GlobalModelRegistry().UnregisterClient(a.ID)
+	return true
 }
 
 func (s *Service) resolveConfigClaudeKey(auth *coreauth.Auth) *config.ClaudeKey {
@@ -1021,6 +1046,78 @@ func (s *Service) resolveConfigGeminiKey(auth *coreauth.Auth) *config.GeminiKey 
 			continue
 		}
 		if attrKey == "" && attrBase != "" && strings.EqualFold(cfgBase, attrBase) {
+			return entry
+		}
+	}
+	return nil
+}
+
+func (s *Service) resolveConfigBedrockKey(auth *coreauth.Auth) *config.BedrockKey {
+	if auth == nil || s.cfg == nil {
+		return nil
+	}
+	var attrKey, attrAccessKeyID, attrBase, attrRegion, attrMode string
+	if auth.Attributes != nil {
+		attrKey = strings.TrimSpace(auth.Attributes["api_key"])
+		attrAccessKeyID = strings.TrimSpace(auth.Attributes["access_key_id"])
+		attrBase = strings.TrimSpace(auth.Attributes["base_url"])
+		attrRegion = strings.TrimSpace(auth.Attributes["region"])
+		attrMode = strings.ToLower(strings.TrimSpace(auth.Attributes["auth_mode"]))
+	}
+	if attrMode == "apikey" || attrMode == "api_key" {
+		attrMode = "api-key"
+	}
+	for i := range s.cfg.BedrockKey {
+		entry := &s.cfg.BedrockKey[i]
+		cfgMode := strings.ToLower(strings.TrimSpace(entry.AuthMode))
+		if cfgMode == "" {
+			cfgMode = "sigv4"
+		}
+		if cfgMode == "apikey" || cfgMode == "api_key" {
+			cfgMode = "api-key"
+		}
+		if attrMode != "" && cfgMode != attrMode {
+			continue
+		}
+		cfgBase := strings.TrimSpace(entry.BaseURL)
+		if attrBase != "" && !strings.EqualFold(cfgBase, attrBase) {
+			continue
+		}
+		cfgRegion := strings.TrimSpace(entry.Region)
+		if cfgRegion == "" {
+			cfgRegion = config.DefaultBedrockRegion
+		}
+		if attrRegion != "" && !strings.EqualFold(cfgRegion, attrRegion) {
+			continue
+		}
+		if cfgMode == "api-key" {
+			if attrKey != "" && strings.EqualFold(strings.TrimSpace(entry.APIKey), attrKey) {
+				return entry
+			}
+			continue
+		}
+		cfgAccessKeyID := strings.TrimSpace(entry.AccessKeyID)
+		if attrAccessKeyID != "" && strings.EqualFold(cfgAccessKeyID, attrAccessKeyID) {
+			return entry
+		}
+		if attrKey != "" && strings.EqualFold(cfgAccessKeyID, attrKey) {
+			return entry
+		}
+	}
+	return nil
+}
+
+func (s *Service) resolveConfigOpenCodeGoKey(auth *coreauth.Auth) *config.OpenCodeGoKey {
+	if auth == nil || s.cfg == nil {
+		return nil
+	}
+	var attrKey string
+	if auth.Attributes != nil {
+		attrKey = strings.TrimSpace(auth.Attributes["api_key"])
+	}
+	for i := range s.cfg.OpenCodeGoKey {
+		entry := &s.cfg.OpenCodeGoKey[i]
+		if attrKey != "" && strings.EqualFold(strings.TrimSpace(entry.APIKey), attrKey) {
 			return entry
 		}
 	}
@@ -1340,6 +1437,13 @@ func buildClaudeConfigModels(entry *config.ClaudeKey) []*ModelInfo {
 		return nil
 	}
 	return buildConfigModels(entry.Models, "anthropic", "claude")
+}
+
+func buildBedrockConfigModels(entry *config.BedrockKey) []*ModelInfo {
+	if entry == nil {
+		return nil
+	}
+	return buildConfigModels(entry.Models, "aws", "bedrock")
 }
 
 func buildCodexConfigModels(entry *config.CodexKey) []*ModelInfo {

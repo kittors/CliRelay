@@ -3,6 +3,7 @@ package management
 import (
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
@@ -60,11 +61,27 @@ func (h *Handler) PostQuotaReconcile(c *gin.Context) {
 }
 
 type quotaSnapshotRequest struct {
-	AuthIndexSnake  *string             `json:"auth_index"`
-	AuthIndexCamel  *string             `json:"authIndex"`
-	AuthIndexPascal *string             `json:"AuthIndex"`
-	Provider        string              `json:"provider"`
-	Quotas          map[string]*float64 `json:"quotas"`
+	AuthIndexSnake   *string                     `json:"auth_index"`
+	AuthIndexCamel   *string                     `json:"authIndex"`
+	AuthIndexPascal  *string                     `json:"AuthIndex"`
+	Provider         string                      `json:"provider"`
+	Quotas           map[string]*float64         `json:"quotas"`
+	QuotaPoints      []quotaSnapshotPointRequest `json:"quota_points"`
+	QuotaPointsCamel []quotaSnapshotPointRequest `json:"quotaPoints"`
+}
+
+type quotaSnapshotPointRequest struct {
+	RecordedAtSnake    *time.Time `json:"recorded_at"`
+	RecordedAtCamel    *time.Time `json:"recordedAt"`
+	QuotaKeySnake      string     `json:"quota_key"`
+	QuotaKeyCamel      string     `json:"quotaKey"`
+	QuotaLabelSnake    string     `json:"quota_label"`
+	QuotaLabelCamel    string     `json:"quotaLabel"`
+	Percent            *float64   `json:"percent"`
+	ResetAtSnake       *time.Time `json:"reset_at"`
+	ResetAtCamel       *time.Time `json:"resetAt"`
+	WindowSecondsSnake int64      `json:"window_seconds"`
+	WindowSecondsCamel int64      `json:"windowSeconds"`
 }
 
 func (h *Handler) PostAuthFileQuotaSnapshot(c *gin.Context) {
@@ -84,8 +101,12 @@ func (h *Handler) PostAuthFileQuotaSnapshot(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "auth_index is required"})
 		return
 	}
-	if len(body.Quotas) == 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "quotas is required"})
+	quotaPoints := body.QuotaPoints
+	if len(quotaPoints) == 0 && len(body.QuotaPointsCamel) > 0 {
+		quotaPoints = body.QuotaPointsCamel
+	}
+	if len(body.Quotas) == 0 && len(quotaPoints) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "quotas or quota_points is required"})
 		return
 	}
 
@@ -101,10 +122,60 @@ func (h *Handler) PostAuthFileQuotaSnapshot(c *gin.Context) {
 		}
 	}
 
-	if err := usage.RecordDailyQuotaSnapshot(authIndex, provider, body.Quotas); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
+	if len(body.Quotas) > 0 {
+		if err := usage.RecordDailyQuotaSnapshot(authIndex, provider, body.Quotas); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+	}
+	if len(quotaPoints) > 0 {
+		points := make([]usage.QuotaSnapshotPoint, 0, len(quotaPoints))
+		for _, point := range quotaPoints {
+			quotaKey := strings.TrimSpace(firstNonEmptyValue(point.QuotaKeySnake, point.QuotaKeyCamel))
+			if quotaKey == "" {
+				continue
+			}
+			recordedAt := time.Time{}
+			if point.RecordedAtSnake != nil {
+				recordedAt = point.RecordedAtSnake.UTC()
+			} else if point.RecordedAtCamel != nil {
+				recordedAt = point.RecordedAtCamel.UTC()
+			}
+			var resetAt *time.Time
+			if point.ResetAtSnake != nil {
+				value := point.ResetAtSnake.UTC()
+				resetAt = &value
+			} else if point.ResetAtCamel != nil {
+				value := point.ResetAtCamel.UTC()
+				resetAt = &value
+			}
+			windowSeconds := point.WindowSecondsSnake
+			if windowSeconds == 0 {
+				windowSeconds = point.WindowSecondsCamel
+			}
+			points = append(points, usage.QuotaSnapshotPoint{
+				RecordedAt:    recordedAt,
+				QuotaKey:      quotaKey,
+				QuotaLabel:    firstNonEmptyValue(point.QuotaLabelSnake, point.QuotaLabelCamel),
+				Percent:       point.Percent,
+				ResetAt:       resetAt,
+				WindowSeconds: windowSeconds,
+			})
+		}
+		if err := usage.RecordQuotaSnapshotPoints(authIndex, provider, points); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
 	}
 	h.clearTrendCache()
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
+}
+
+func firstNonEmptyValue(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
 }

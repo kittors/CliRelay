@@ -20,6 +20,18 @@ type authFileGroupTrendResponse struct {
 	QuotaPoints []usage.DailyQuotaPoint `json:"quota_points"`
 }
 
+type authFileTrendResponse struct {
+	AuthIndex         string                      `json:"auth_index"`
+	Days              int                         `json:"days"`
+	Hours             int                         `json:"hours"`
+	RequestTotal      int64                       `json:"request_total"`
+	CycleRequestTotal int64                       `json:"cycle_request_total"`
+	CycleStart        string                      `json:"cycle_start"`
+	DailyUsage        []usage.DailyCountPoint     `json:"daily_usage"`
+	HourlyUsage       []usage.HourlyCountPoint    `json:"hourly_usage"`
+	QuotaSeries       []usage.QuotaSnapshotSeries `json:"quota_series"`
+}
+
 // GetUsageLogs returns paginated, filterable request log entries from SQLite.
 // It enriches each log item with resolved api_key_name and channel_name
 // from the in-memory config, eliminating the need for multiple frontend API calls.
@@ -276,7 +288,7 @@ func normalizeLogContentPartValue(part string) string {
 		return "both"
 	}
 	switch part {
-	case "both", "input", "output":
+	case "both", "input", "output", "details":
 		return part
 	default:
 		return "both"
@@ -300,7 +312,7 @@ func (h *Handler) GetLogContent(c *gin.Context) {
 	format := normalizeLogContentFormat(c)
 
 	if format == "text" && part == "both" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "format=text requires part=input or part=output"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "format=text requires part=input, part=output, or part=details"})
 		return
 	}
 
@@ -480,6 +492,10 @@ func (h *Handler) GetPublicLogContent(c *gin.Context) {
 
 	part := req.Part
 	format := req.Format
+	if part == "details" {
+		c.JSON(http.StatusForbidden, gin.H{"error": "request details are only available in the management API"})
+		return
+	}
 
 	if format == "text" && part == "both" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "format=text requires part=input or part=output"})
@@ -657,6 +673,134 @@ func (h *Handler) GetAuthFileGroupTrend(c *gin.Context) {
 	payload := authFileGroupTrendResponse{Days: days, Group: group, Points: points, QuotaPoints: quotaPoints}
 	h.setTrendCache(cacheKey, payload)
 	c.JSON(http.StatusOK, payload)
+}
+
+func (h *Handler) GetAuthFileTrend(c *gin.Context) {
+	authIndex := strings.TrimSpace(c.Query("auth_index"))
+	if authIndex == "" {
+		authIndex = strings.TrimSpace(c.Query("authIndex"))
+	}
+	if authIndex == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "auth_index is required"})
+		return
+	}
+	if h != nil && h.authManager != nil && h.authByIndex(authIndex) == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "auth not found"})
+		return
+	}
+
+	days := intQueryDefault(c, "days", 7)
+	if days < 1 {
+		days = 7
+	}
+	if days > 7 {
+		days = 7
+	}
+	hours := intQueryDefault(c, "hours", 5)
+	if hours < 1 {
+		hours = 5
+	}
+	if hours > 24 {
+		hours = 24
+	}
+
+	dailyRaw, err := usage.QueryDailyCallsByAuthIndexes([]string{authIndex}, days)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	daily := fillDailyCountPoints(dailyRaw, days)
+
+	hourly, err := usage.QueryHourlyCallsByAuthIndex(authIndex, hours)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if hourly == nil {
+		hourly = []usage.HourlyCountPoint{}
+	}
+
+	cutoff := usage.CutoffStartUTC(days)
+	requestTotal, err := usage.QueryRequestCountByAuthIndexSince(authIndex, cutoff)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	trendStart := time.Now().AddDate(0, 0, -7)
+	trendEnd := time.Now().Add(time.Minute)
+	series, err := usage.QueryQuotaSnapshotSeries(authIndex, trendStart, trendEnd)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if series == nil {
+		series = []usage.QuotaSnapshotSeries{}
+	}
+
+	cycleStart := cutoff
+	if weeklyCycleStart, ok := latestWeeklyQuotaCycleStart(series); ok && weeklyCycleStart.After(cutoff) {
+		cycleStart = weeklyCycleStart
+	}
+	cycleRequestTotal, err := usage.QueryRequestCountByAuthIndexSince(authIndex, cycleStart)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, authFileTrendResponse{
+		AuthIndex:         authIndex,
+		Days:              days,
+		Hours:             hours,
+		RequestTotal:      requestTotal,
+		CycleRequestTotal: cycleRequestTotal,
+		CycleStart:        cycleStart.UTC().Format(time.RFC3339),
+		DailyUsage:        daily,
+		HourlyUsage:       hourly,
+		QuotaSeries:       series,
+	})
+}
+
+func fillDailyCountPoints(points []usage.DailyCountPoint, days int) []usage.DailyCountPoint {
+	if days < 1 {
+		days = 7
+	}
+	byDate := make(map[string]int64, len(points))
+	for _, point := range points {
+		byDate[point.Date] += point.Requests
+	}
+	start := usage.CutoffStartUTC(days)
+	result := make([]usage.DailyCountPoint, 0, days)
+	for i := 0; i < days; i++ {
+		date := usage.LocalDayKeyAt(start.AddDate(0, 0, i))
+		result = append(result, usage.DailyCountPoint{Date: date, Requests: byDate[date]})
+	}
+	return result
+}
+
+func latestWeeklyQuotaCycleStart(series []usage.QuotaSnapshotSeries) (time.Time, bool) {
+	var latestPoint *usage.QuotaSnapshotSeriesPoint
+	var latestWindow int64
+	for i := range series {
+		if series[i].WindowSeconds < 604800 {
+			continue
+		}
+		windowSeconds := series[i].WindowSeconds
+		for j := range series[i].Points {
+			point := &series[i].Points[j]
+			if point.ResetAt == nil || point.ResetAt.IsZero() {
+				continue
+			}
+			if latestPoint == nil || point.Timestamp.After(latestPoint.Timestamp) {
+				latestPoint = point
+				latestWindow = windowSeconds
+			}
+		}
+	}
+	if latestPoint == nil || latestWindow <= 0 {
+		return time.Time{}, false
+	}
+	return latestPoint.ResetAt.Add(-time.Duration(latestWindow) * time.Second).UTC(), true
 }
 
 func (h *Handler) authIndexesForProviderGroup(group string) []string {

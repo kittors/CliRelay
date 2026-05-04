@@ -503,6 +503,11 @@ CLIRELAY_UPDATER_URL=http://clirelay-updater:8320
 CLIRELAY_UPDATER_TOKEN=$(rand_hex 16)
 CLIRELAY_TARGET_SERVICE=clirelay
 CLIRELAY_COMPOSE_PROJECT_NAME=$(basename "${INSTALL_DIR}")
+CLI_PROXY_CONFIG_PATH=${INSTALL_DIR}/config.yaml
+CLI_PROXY_AUTH_PATH=${INSTALL_DIR}/auths
+AUTH_PATH=/root/.cli-proxy-api
+CLI_PROXY_LOG_PATH=${INSTALL_DIR}/logs
+CLI_PROXY_DATA_PATH=${INSTALL_DIR}/data
 TZ=${TZ_VALUE}
 EOF
 }
@@ -518,10 +523,10 @@ services:
     ports:
       - "${CLIRELAY_PORT}:${CLIRELAY_PORT}"
     volumes:
-      - ./config.yaml:/CLIProxyAPI/config.yaml
-      - ./auths:/root/.cli-proxy-api
-      - ./logs:/CLIProxyAPI/logs
-      - ./data:/CLIProxyAPI/data
+      - ${CLI_PROXY_CONFIG_PATH}:/CLIProxyAPI/config.yaml
+      - ${CLI_PROXY_AUTH_PATH}:${AUTH_PATH}
+      - ${CLI_PROXY_LOG_PATH}:/CLIProxyAPI/logs
+      - ${CLI_PROXY_DATA_PATH}:/CLIProxyAPI/data
     environment:
       TZ: ${TZ}
       CLIRELAY_LOCALE: ${CLIRELAY_LOCALE}
@@ -529,6 +534,7 @@ services:
       CLIRELAY_UPDATER_URL: ${CLIRELAY_UPDATER_URL}
       CLIRELAY_UPDATER_TOKEN: ${CLIRELAY_UPDATER_TOKEN}
       CLIRELAY_TARGET_SERVICE: ${CLIRELAY_TARGET_SERVICE}
+      AUTH_PATH: ${AUTH_PATH}
       LANG: ${CLIRELAY_LANG}
       LANGUAGE: ${CLIRELAY_LANGUAGE}
       LC_ALL: ${CLIRELAY_LANG}
@@ -547,14 +553,14 @@ services:
     command: ["./clirelay-updater"]
     environment:
       CLIRELAY_UPDATER_TOKEN: ${CLIRELAY_UPDATER_TOKEN}
-      CLIRELAY_COMPOSE_FILE: /workspace/docker-compose.yml
-      CLIRELAY_ENV_FILE: /workspace/.env
+      CLIRELAY_COMPOSE_FILE: ${CLIRELAY_INSTALL_DIR}/docker-compose.yml
+      CLIRELAY_ENV_FILE: ${CLIRELAY_INSTALL_DIR}/.env
       CLIRELAY_COMPOSE_PROJECT_NAME: ${CLIRELAY_COMPOSE_PROJECT_NAME}
       CLIRELAY_TARGET_SERVICE: ${CLIRELAY_TARGET_SERVICE}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - ./docker-compose.yml:/workspace/docker-compose.yml:ro
-      - ./.env:/workspace/.env
+      - ./docker-compose.yml:${CLIRELAY_INSTALL_DIR}/docker-compose.yml:ro
+      - ./.env:${CLIRELAY_INSTALL_DIR}/.env
     restart: unless-stopped
 YAML
 }

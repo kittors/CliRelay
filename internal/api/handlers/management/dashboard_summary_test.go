@@ -83,6 +83,49 @@ func TestGetDashboardSummaryIncludesTrendsAndMeta(t *testing.T) {
 	}
 }
 
+func TestGetDashboardSummaryIncludesTotalCost(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	dbPath := filepath.Join(t.TempDir(), "usage.db")
+	if err := usage.InitDB(dbPath, config.RequestLogStorageConfig{StoreContent: false}, time.UTC); err != nil {
+		t.Fatalf("InitDB: %v", err)
+	}
+	t.Cleanup(usage.CloseDB)
+
+	if err := usage.UpsertModelPricing("gpt-cost-test", 1, 2, 0); err != nil {
+		t.Fatalf("UpsertModelPricing: %v", err)
+	}
+	usage.InsertLog("", "", "gpt-cost-test", "codex", "codex", "auth-1", false, time.Now().UTC(), 100, 20, usage.TokenStats{
+		InputTokens:  1000,
+		OutputTokens: 2000,
+		TotalTokens:  3000,
+	}, "", "")
+
+	h := &Handler{cfg: &config.Config{}}
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodGet, "/dashboard-summary?days=7", nil)
+
+	h.GetDashboardSummary(c)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d, body=%s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	var payload struct {
+		KPI struct {
+			TotalCost float64 `json:"total_cost"`
+		} `json:"kpi"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+
+	if payload.KPI.TotalCost != 0.005 {
+		t.Fatalf("kpi.total_cost = %v, want 0.005", payload.KPI.TotalCost)
+	}
+}
+
 func TestGetDashboardSummaryCountsAPIKeysFromSQLite(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

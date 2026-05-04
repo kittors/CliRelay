@@ -26,6 +26,8 @@ const (
 	SelectedAuthCallbackMetadataKey = "selected_auth_callback"
 	// ExecutionSessionMetadataKey identifies a long-lived downstream execution session.
 	ExecutionSessionMetadataKey = "execution_session_id"
+	// DisableCooldownWaitMetadataKey skips manager-level cooldown waiting for latency-sensitive requests.
+	DisableCooldownWaitMetadataKey = "disable_cooldown_wait"
 )
 
 // Request encapsulates the translated payload that will be sent to a provider executor.

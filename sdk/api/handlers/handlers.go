@@ -60,6 +60,7 @@ const (
 type pinnedAuthContextKey struct{}
 type selectedAuthCallbackContextKey struct{}
 type executionSessionContextKey struct{}
+type cooldownWaitDisabledContextKey struct{}
 
 // ReadJSONRequestBody applies the shared request-body limit and writes a standard API error response.
 func ReadJSONRequestBody(c *gin.Context) ([]byte, bool) {
@@ -124,6 +125,13 @@ func WithExecutionSessionID(ctx context.Context, sessionID string) context.Conte
 		ctx = context.Background()
 	}
 	return context.WithValue(ctx, executionSessionContextKey{}, sessionID)
+}
+
+func WithCooldownWaitDisabled(ctx context.Context) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, cooldownWaitDisabledContextKey{}, true)
 }
 
 // BuildErrorResponseBody builds an OpenAI-compatible JSON error response body.
@@ -285,6 +293,9 @@ func requestExecutionMetadata(ctx context.Context) map[string]any {
 	if executionSessionID := executionSessionIDFromContext(ctx); executionSessionID != "" {
 		meta[coreexecutor.ExecutionSessionMetadataKey] = executionSessionID
 	}
+	if cooldownWaitDisabledFromContext(ctx) {
+		meta[coreexecutor.DisableCooldownWaitMetadataKey] = true
+	}
 	return meta
 }
 
@@ -341,6 +352,14 @@ func executionSessionIDFromContext(ctx context.Context) string {
 	default:
 		return ""
 	}
+}
+
+func cooldownWaitDisabledFromContext(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	enabled, _ := ctx.Value(cooldownWaitDisabledContextKey{}).(bool)
+	return enabled
 }
 
 // BaseAPIHandler contains the handlers for API endpoints.

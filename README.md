@@ -28,7 +28,7 @@
 
 > **✨ Heavily enhanced fork of the [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) project** — rebuilt with a production-grade management layer, web control panel hosting, and a terminal TUI for day-2 operations.
 
-CliRelay lets you **proxy requests** from AI coding tools and compatible API clients (Claude Code, Gemini CLI, OpenAI Codex, Amp CLI, OpenAI-compatible clients, etc.) through a single unified endpoint. Authenticate with OAuth, API keys, cookies, or a mix of them, and CliRelay handles routing, failover, usage logging, `/manage` web hosting, and terminal management workflows automatically.
+CliRelay turns AI CLI subscriptions, OAuth credentials, API keys, and compatible upstream services into one managed API layer. It proxies Claude Code, Gemini CLI, OpenAI Codex, Amp CLI, OpenAI-compatible clients, and other AI coding tools through a unified endpoint, then adds routing groups, failover, request logging, quota control, model pricing, image-generation support, API-key self-service, online updates, `/manage` web hosting, and terminal management workflows around that traffic.
 
 ```
 ┌───────────────────────┐         ┌──────────────┐         ┌────────────────────┐
@@ -52,8 +52,9 @@ CliRelay lets you **proxy requests** from AI coding tools and compatible API cli
 |:--------|:------------|
 | 🌐 **Unified Endpoint** | One `http://localhost:8317` fronts Gemini, Claude, Codex, Qwen, iFlow, Antigravity, Vertex-compatible endpoints, OpenAI-compatible upstreams, and Amp integration |
 | ⚖️ **Smart Load Balancing** | Round-robin or fill-first scheduling across multiple API keys for the same provider |
+| 🧭 **Group & Path Routing** | Bind channels into groups, restrict API keys to allowed groups, and expose custom path namespaces for teams or workloads |
 | 🔄 **Auto Failover** | Automatically switches to backup channels when quotas are exhausted or errors occur |
-| 🧠 **Multimodal Support** | Full support for text + image inputs, function calling (tools), and streaming SSE responses |
+| 🧠 **Multimodal Support** | Full support for text + image inputs, image-generation routing, function calling (tools), and streaming SSE responses |
 | 🔗 **OpenAI-Compatible** | Works with any upstream that speaks the OpenAI Chat Completions protocol |
 
 ### 📊 Request Logging & Monitoring (SQLite)
@@ -75,6 +76,7 @@ CliRelay lets you **proxy requests** from AI coding tools and compatible API cli
 | 🔑 **API Key CRUD** | Create, edit, delete API keys via Management API — each with custom name, notes, and independent enable/disable toggle |
 | 📊 **Per-Key Quotas** | Set max token / request quotas per key with automatic enforcement |
 | ⏱️ **Rate Limiting** | Per-key rate limiting (requests per minute/hour) |
+| 👥 **Team Permissions** | Assign API keys to different users or groups with scoped channel access and model permissions |
 | 🔒 **Key Masking** | API keys are always displayed masked (`sk-***xxx`) in UI and logs |
 | 🌍 **Public Lookup Page** | End users can query their own usage stats and request logs via a public self-service page (no login required) |
 
@@ -84,9 +86,11 @@ CliRelay lets you **proxy requests** from AI coding tools and compatible API cli
 |:--------|:------------|
 | 📋 **Multi-Tab Config** | Manage channels organized by provider type: Gemini, Claude, Codex, Vertex, OpenAI Compatible, Ampcode |
 | 🏷️ **Channel Naming** | Each channel can have a custom name, notes, proxy URL, custom headers, and model alias mappings |
+| 🧩 **Reusable Proxy Pool** | Maintain outbound proxy entries once and attach them to OAuth/auth channels when needed |
 | ⏱️ **Latency Tracking** | Average latency (`latency_ms`) tracked per channel with visual indicators |
 | 🔄 **Enable/Disable** | Individually toggle channels on/off without deletion |
 | 🚫 **Model Exclusions** | Exclude specific models from a channel (e.g., block expensive models on backup keys) |
+| 🧾 **Model Library Sync** | Maintain custom models and sync model IDs/pricing from OpenRouter for quota accounting |
 | 📊 **Channel Stats** | Per-channel success/fail counts and model availability displayed on each channel card |
 
 ### 🛡️ Security & Authentication
@@ -94,9 +98,21 @@ CliRelay lets you **proxy requests** from AI coding tools and compatible API cli
 | Feature | Description |
 |:--------|:------------|
 | 🔐 **OAuth Support** | Native OAuth flows for Gemini, Claude, Codex, Qwen, iFlow, Antigravity, and Kimi, plus device/browser/cookie variants where supported |
+| 🪪 **Identity Fingerprints** | Centralize upstream identity metadata so providers receive consistent client fingerprints |
 | 🔒 **TLS Handling** | Configurable TLS settings for upstream communication |
 | 🏠 **Panel Isolation** | Management panel access controlled independently with admin password |
 | 🛡️ **Request Cloaking** | Upstream requests are stripped of client-identifying headers for privacy |
+
+### 🛠️ Operator Experience
+
+| Feature | Description |
+|:--------|:------------|
+| 🖥️ **Visual Management Panel** | Configure providers, auth, API keys, models, routing, logs, updates, and system status from `/manage` |
+| 🌐 **Chinese / English UI** | Built-in i18n for the management panel and Compose/TUI language selection |
+| 🌙 **Dark Mode** | Full dark theme for long-running operational sessions |
+| 🧬 **Visual Config Editor** | Edit runtime config visually or inspect source YAML when you need exact control |
+| 🔄 **Online Update Flow** | Check versions, review update notes, trigger the updater sidecar, and wait for backend recovery from the panel |
+| 📥 **CC Switch Import** | Import cc-switch style configuration into the managed model/channel workspace |
 
 ### 🗄️ Data Persistence
 
@@ -111,114 +127,69 @@ CliRelay lets you **proxy requests** from AI coding tools and compatible API cli
 
 CliRelay can expose a built-in web control panel at `/manage`. The server can host bundled SPA assets or fall back to synced management assets from the configured panel repository.
 
-The latest panel walkthrough below covers all 13 core screens now shipped in the management workflow.
+The gallery below uses the latest supplied screenshots, covering the current end-to-end management workflow.
 
-| Screen | What operators can do there |
-| :----- | :-------------------------- |
-| Dashboard Overview | Review KPIs, health score, system status, resource usage, throughput, and channel latency |
-| Monitor Center | Analyze model distribution, daily trends, API Key usage share, and time-range summaries |
-| Request Logs | Filter and inspect requests by time range, key, model, channel, and status |
-| Request Details | Read formatted prompt/response bodies with Markdown rendering and collapsible blocks |
-| AI Providers | Manage provider tabs, channel health, model coverage, and CRUD operations |
-| Auth Files | Inspect stored auth files, rename channels, configure prefixes/proxies, and download credentials |
-| OAuth Login | Start provider authorization and submit remote callback URLs |
-| API Keys | Control key quotas, RPM/TPM, allowed models, channel bindings, and shortcuts |
-| Model Pricing | Maintain quota-cost pricing for input, output, and cache dimensions |
-| Quota | Review remaining refresh time and quota progress across provider families |
-| Config | Edit source YAML, search config, and switch runtime/config views |
-| System | Inspect base URLs, versions, lookup links, and discovered model inventory |
-| Logs | Stream runtime logs with search, download, clear, and visibility toggles |
+### Dashboard, Locale & Theme
 
-### 1. Dashboard Overview
+| Home overview | Operations overview |
+| :------------ | :------------------ |
+| <img src="docs/images/readme-showcase/home-overview-1.png" width="100%" alt="CliRelay dashboard overview" /> | <img src="docs/images/readme-showcase/home-overview-2.png" width="100%" alt="CliRelay operations dashboard" /> |
 
-<p align="center">
-  <img src="docs/images/dashboard-overview.png" width="100%" />
-</p>
-<p align="center"><em>Dashboard — KPI cards, health score, live system monitor, throughput, storage, and channel latency ranking.</em></p>
+| Chinese / English interface | Dark mode |
+| :-------------------------- | :-------- |
+| <img src="docs/images/readme-showcase/home-i18n.png" width="100%" alt="Chinese and English management panel locale" /> | <img src="docs/images/readme-showcase/dark-mode.png" width="100%" alt="Management panel dark mode" /> |
 
-### 2. Monitor Center
+### Monitoring, Logs & Self-Service
 
-<p align="center">
-  <img src="docs/images/monitor-center-zh.png" width="100%" />
-</p>
-<p align="center"><em>Monitor Center (Chinese locale) — request summary, model distribution, daily token/request trends, and API Key usage share.</em></p>
+| Monitor center | Request logs |
+| :------------- | :----------- |
+| <img src="docs/images/readme-showcase/monitor-center.png" width="100%" alt="Monitor center charts and request metrics" /> | <img src="docs/images/readme-showcase/request-logs.png" width="100%" alt="Request log table with filters" /> |
 
-### 3. Request Logs
+| Request details | Log query system |
+| :-------------- | :--------------- |
+| <img src="docs/images/readme-showcase/request-details.png" width="100%" alt="Request details viewer" /> | <img src="docs/images/readme-showcase/log-query-system.png" width="100%" alt="Log query system" /> |
 
-<p align="center">
-  <img src="docs/images/request-logs-table.png" width="100%" />
-</p>
-<p align="center"><em>Request Logs — time-range switcher, multi-filter toolbar, high-density table, and success metrics at a glance.</em></p>
+| API key lookup |
+| :------------- |
+| <img src="docs/images/readme-showcase/api-key-lookup.png" width="100%" alt="Public API key lookup page" /> |
 
-### 4. Request Details Viewer
+### Auth, Identity & Access
 
-<p align="center">
-  <img src="docs/images/request-details-modal.png" width="100%" />
-</p>
-<p align="center"><em>Request Details — input/output tabs, Markdown rendering, collapsible sections, and copy/export helpers.</em></p>
+| Unified OAuth management | Identity fingerprints |
+| :----------------------- | :-------------------- |
+| <img src="docs/images/readme-showcase/oauth-management.png" width="100%" alt="Unified OAuth management" /> | <img src="docs/images/readme-showcase/identity-fingerprint-management.png" width="100%" alt="Identity fingerprint management" /> |
 
-### 5. AI Providers
+| Team permissions | OAuth proxy assignment |
+| :--------------- | :--------------------- |
+| <img src="docs/images/readme-showcase/team-permissions.png" width="100%" alt="Team API key assignment and permissions" /> | <img src="docs/images/readme-showcase/proxy-config-for-oauth.png" width="100%" alt="Proxy configuration assigned to OAuth auth records" /> |
 
-<p align="center">
-  <img src="docs/images/providers-codex.png" width="100%" />
-</p>
-<p align="center"><em>AI Providers — provider tabs, per-channel success/failure stats, model badges, latency bars, and CRUD actions.</em></p>
+### Channels, Routing & Configuration
 
-### 6. Auth Files
+| Multi-channel API setup | Group routing and custom paths |
+| :---------------------- | :----------------------------- |
+| <img src="docs/images/readme-showcase/multi-channel-api-add.png" width="100%" alt="Add multiple API channels" /> | <img src="docs/images/readme-showcase/group-routing-custom-path.png" width="100%" alt="Channel group routing and custom path configuration" /> |
 
-<p align="center">
-  <img src="docs/images/auth-files-grid.png" width="100%" />
-</p>
-<p align="center"><em>Auth Files — card-based inventory for saved credentials with model inspection, rename, proxy-prefix, download, and delete actions.</em></p>
+| Visual config | Upstream debug passthrough |
+| :------------ | :------------------------- |
+| <img src="docs/images/readme-showcase/visual-config.png" width="100%" alt="Visual configuration editor" /> | <img src="docs/images/readme-showcase/upstream-debug-passthrough.png" width="100%" alt="Debug passthrough content sent to upstream" /> |
 
-### 7. OAuth Login Workbench
+| CC Switch import |
+| :--------------- |
+| <img src="docs/images/readme-showcase/cc-switch-import.png" width="100%" alt="Configurable CC Switch import" /> |
 
-<p align="center">
-  <img src="docs/images/oauth-login-workbench.png" width="100%" />
-</p>
-<p align="center"><em>OAuth Login — provider-specific authorization launcher plus remote callback URL submission workflow.</em></p>
+### Models, Image Generation & Updates
 
-### 8. API Keys Management
+| OpenRouter model sync | Custom model maintenance |
+| :-------------------- | :----------------------- |
+| <img src="docs/images/readme-showcase/model-openrouter-sync.png" width="100%" alt="OpenRouter model ID and pricing sync" /> | <img src="docs/images/readme-showcase/custom-model-maintenance.png" width="100%" alt="Custom model maintenance" /> |
 
-<p align="center">
-  <img src="docs/images/api-keys-management.png" width="100%" />
-</p>
-<p align="center"><em>API Keys — quotas, RPM/TPM limits, model permissions, channel bindings, and quick analytics/edit actions.</em></p>
+| Image generation config | Online update flow |
+| :---------------------- | :----------------- |
+| <img src="docs/images/readme-showcase/image-generation-config.png" width="100%" alt="Image generation configuration" /> | <img src="docs/images/readme-showcase/online-update.png" width="100%" alt="Online update mechanism" /> |
 
-### 9. Model Pricing
-
-<p align="center">
-  <img src="docs/images/model-pricing.png" width="100%" />
-</p>
-<p align="center"><em>Models — built-in pricing catalog for input/output/cache cost calculation and quota accounting.</em></p>
-
-### 10. Quota Management
-
-<p align="center">
-  <img src="docs/images/quota-management.png" width="100%" />
-</p>
-<p align="center"><em>Quota — remaining refresh time and progress bars for Codex, Gemini CLI, Kiro, and other provider-specific quotas.</em></p>
-
-### 11. Config Editor
-
-<p align="center">
-  <img src="docs/images/config-source-editor.png" width="100%" />
-</p>
-<p align="center"><em>Config — source editor mode with YAML search, keyboard-friendly navigation, and runtime config switching.</em></p>
-
-### 12. System Info
-
-<p align="center">
-  <img src="docs/images/system-info-models.png" width="100%" />
-</p>
-<p align="center"><em>System — API base, management endpoint, version/build metadata, API Key lookup entry, and vendor-colored model tags.</em></p>
-
-### 13. Live Logs
-
-<p align="center">
-  <img src="docs/images/live-logs.png" width="100%" />
-</p>
-<p align="center"><em>Logs — live stream viewer with keyword search, hide-management toggle, download, clear, and jump-to-latest controls.</em></p>
+| System information |
+| :----------------- |
+| <img src="docs/images/readme-showcase/system-info.png" width="100%" alt="System information page" /> |
 
 > 🔗 The runtime panel source is configurable via `remote-management.panel-github-repository`. The default repository is [kittors/codeProxy](https://github.com/kittors/codeProxy).
 
@@ -239,114 +210,38 @@ The latest panel walkthrough below covers all 13 core screens now shipped in the
 
 ## 🚀 Quick Start
 
-### 1️⃣ Download & Configure
+### 🐳 Install With Docker Compose
+
+Docker Compose is the recommended installation path for CliRelay. The included `docker-compose.yml` uses the published `ghcr.io/kittors/clirelay:latest` image by default and starts both the API service and updater sidecar.
 
 ```bash
-# Download the latest release for your platform from GitHub Releases
-# Then copy the example config
+git clone https://github.com/kittors/CliRelay.git
+cd CliRelay
 cp config.example.yaml config.yaml
-
-# Optional: build locally from source
-go build -o cli-proxy-api ./cmd/server
-```
-
-Edit `config.yaml` to add your API keys or OAuth credentials. By default, client API routes
-(`/v1`, `/v1beta`) require an API key. To run without client keys, set `allow-unauthenticated: true`
-(not recommended for production).
-
-### 2️⃣ Run
-
-```bash
-./cli-proxy-api -config ./config.yaml
-# Server: http://localhost:8317
-# Web panel (if enabled): http://localhost:8317/manage
-```
-
-The release artifact is currently named `cli-proxy-api`. The `clirelay` command shown later is a helper wrapper installed by `install.sh`, not the raw server binary name.
-
-### Useful CLI Modes
-
-```bash
-# OAuth / credential flows
-./cli-proxy-api -login
-./cli-proxy-api -codex-login
-./cli-proxy-api -codex-device-login
-./cli-proxy-api -claude-login
-./cli-proxy-api -qwen-login
-./cli-proxy-api -iflow-login
-./cli-proxy-api -iflow-cookie
-./cli-proxy-api -antigravity-login
-./cli-proxy-api -kimi-login
-
-# Admin interfaces
-./cli-proxy-api -tui
-./cli-proxy-api -tui -standalone
-
-# Other utilities
-./cli-proxy-api -vertex-import ./service-account.json
-./cli-proxy-api -oauth-callback-port 18080 -no-browser
-```
-
-### 🐳 Docker (Recommended)
-
-Docker is the recommended deployment path if you want automatic update prompts from the management panel. Published images include an updater sidecar that can pull the next `main`/`dev` image, restart the API container, and let the Web UI wait for the backend heartbeat before reporting success.
-
-**One-Click Deploy**:
-
-- Linux `amd64` / `arm64`: supported for automatic Docker installation
-- macOS `arm64` / `amd64`: supported when Docker Desktop / OrbStack / Colima is already installed and running
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/kittors/CliRelay/main/install.sh | bash
-```
-
-The script will:
-
-- automatically install Docker when needed
-- detect the host architecture and pin the correct Docker platform for `amd64` / `arm64`
-- let you choose **English** or **Chinese** during installation
-- persist that language into the container so the built-in TUI starts in the selected language by default
-- install a local `clirelay` helper command for day-2 operations
-- install an internal updater sidecar used by the Web UI's one-click Docker update flow
-
-On macOS, the installer will **not** try to install Docker for you. It will reuse your existing Docker runtime and stop with a clear message if Docker Desktop / OrbStack / Colima is not running.
-
-After installation, use:
-
-```bash
-clirelay status
-clirelay update
-clirelay restart
-clirelay logs
-clirelay tui
-```
-
-`clirelay update` keeps the existing configuration and only refreshes the image + containers, so ongoing upgrades stay simple. The management panel can now do the same flow interactively: it checks GitHub releases/branch images, shows release notes, asks for confirmation, triggers the updater sidecar, and waits until the backend heartbeat is back.
-
-> 💡 If `curl` is not installed, install it first:
-> ```bash
-> # Debian / Ubuntu
-> apt-get update && apt-get install -y curl
->
-> # CentOS / RHEL / Fedora
-> yum install -y curl
-> ```
-
-Or deploy manually with Docker Compose:
-
-```bash
 docker compose up -d
 ```
 
-The included `docker-compose.yml` uses the published `ghcr.io/kittors/clirelay:latest` image by default, so a fresh clone follows the normal production deployment path and does not compile Go on the target machine.
-
-The bundled `build:` section is kept as a local fallback for source-level verification or emergency rebuilds. If you explicitly want to force a local build from the checked out source instead of pulling GHCR:
+Edit `config.yaml` to add your API keys or OAuth credentials, then restart the service:
 
 ```bash
-CLI_PROXY_IMAGE=clirelay-local:dev CLI_PROXY_PULL_POLICY=never docker compose up -d
+docker compose restart cli-proxy-api
 ```
 
-For manual Docker deployments, you can also set `CLIRELAY_LOCALE=en` or `CLIRELAY_LOCALE=zh` in your Compose environment to control the default TUI language.
+By default, client API routes (`/v1`, `/v1beta`) require an API key. To run without client keys, set `allow-unauthenticated: true` in `config.yaml` (not recommended for production).
+
+After startup:
+
+- API endpoint: `http://localhost:8317`
+- Web panel: `http://localhost:8317/manage`
+- Logs: `docker compose logs -f cli-proxy-api`
+- Restart: `docker compose restart cli-proxy-api`
+- Stop: `docker compose down`
+- TUI: `docker compose exec cli-proxy-api ./cli-proxy-api -tui`
+- OAuth login modes: `docker compose exec cli-proxy-api ./cli-proxy-api -login`
+
+Set `CLIRELAY_LOCALE=en` or `CLIRELAY_LOCALE=zh` in your Compose environment to control the default TUI language.
+
+For cloud platforms that only allow one mounted directory, set `AUTH_PATH` to the authentication directory inside the container, for example `/CLIProxyAPI/auths`. `CLI_PROXY_AUTH_PATH` remains the host-side bind path, while `AUTH_PATH` is also used to override `auth-dir` at runtime.
 
 To disable automatic update prompts, set the following in `config.yaml` or turn off **Automatic Update Checks** in the Config page:
 
@@ -395,12 +290,12 @@ When the control panel is enabled, open:
 http://localhost:8317/manage
 ```
 
-- `remote-management.disable-control-panel` now defaults to `false` in the example config and installer-generated config, so the control panel is reachable after a standard deployment.
+- `remote-management.disable-control-panel` defaults to `false` in the example config, so the control panel is reachable after a standard Docker Compose deployment.
 - When enabled, the current panel route is `/manage/login`. The old `management.html#/login` route is legacy-only.
-- Official Docker installs and the published image expose the panel at `/manage`.
+- Docker Compose deployments expose the panel at `/manage`.
 - The server can serve a bundled SPA directory or auto-fetch panel assets when needed.
 - This repository contains the hosting/update path for `/manage`; the standalone web panel source is maintained separately from the Go server code.
-- Terminal-first management is also available through `clirelay tui` or `./cli-proxy-api -tui`.
+- Terminal-first management is also available through `docker compose exec cli-proxy-api ./cli-proxy-api -tui`.
 - If you want to customize the panel asset source, set `remote-management.panel-github-repository`.
 
 ## 📐 Architecture
@@ -441,16 +336,20 @@ Contributions are welcome! Here's how to get started:
 ```bash
 # 1. Clone the repository
 git clone https://github.com/kittors/CliRelay.git
+cd CliRelay
 
-# 2. Create a feature branch
-git checkout -b feature/amazing-feature
+# 2. Create a feature branch from the latest dev baseline
+git fetch origin
+git switch -c feature/amazing-feature origin/dev
 
 # 3. Make your changes & commit
 git commit -m "feat: add amazing feature"
 
-# 4. Push to your branch & open a PR
+# 4. Push to your branch & open a PR targeting dev
 git push origin feature/amazing-feature
 ```
+
+Please target pull requests at `dev`, not `main`. Maintainers merge verified changes into `dev` first; `main` is updated separately for release/stable integration. See [CONTRIBUTING.md](CONTRIBUTING.md) for the full branch and merge workflow.
 
 ## 📜 License
 

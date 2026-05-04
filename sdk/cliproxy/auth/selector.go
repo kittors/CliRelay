@@ -54,11 +54,28 @@ type modelCooldownError struct {
 	provider string
 }
 
+type modelUnavailableError struct {
+	model    string
+	resetIn  time.Duration
+	provider string
+}
+
 func newModelCooldownError(model, provider string, resetIn time.Duration) *modelCooldownError {
 	if resetIn < 0 {
 		resetIn = 0
 	}
 	return &modelCooldownError{
+		model:    model,
+		provider: provider,
+		resetIn:  resetIn,
+	}
+}
+
+func newModelUnavailableError(model, provider string, resetIn time.Duration) *modelUnavailableError {
+	if resetIn < 0 {
+		resetIn = 0
+	}
+	return &modelUnavailableError{
 		model:    model,
 		provider: provider,
 		resetIn:  resetIn,
@@ -107,6 +124,58 @@ func (e *modelCooldownError) StatusCode() int {
 }
 
 func (e *modelCooldownError) Headers() http.Header {
+	headers := make(http.Header)
+	headers.Set("Content-Type", "application/json")
+	resetSeconds := int(math.Ceil(e.resetIn.Seconds()))
+	if resetSeconds < 0 {
+		resetSeconds = 0
+	}
+	headers.Set("Retry-After", strconv.Itoa(resetSeconds))
+	return headers
+}
+
+func (e *modelUnavailableError) Error() string {
+	modelName := e.model
+	if modelName == "" {
+		modelName = "requested model"
+	}
+	message := fmt.Sprintf("All credentials for model %s are temporarily unavailable", modelName)
+	if e.provider != "" {
+		message = fmt.Sprintf("%s via provider %s", message, e.provider)
+	}
+	resetSeconds := int(math.Ceil(e.resetIn.Seconds()))
+	if resetSeconds < 0 {
+		resetSeconds = 0
+	}
+	displayDuration := e.resetIn
+	if displayDuration > 0 && displayDuration < time.Second {
+		displayDuration = time.Second
+	} else {
+		displayDuration = displayDuration.Round(time.Second)
+	}
+	errorBody := map[string]any{
+		"code":          "model_unavailable",
+		"message":       message,
+		"model":         e.model,
+		"reset_time":    displayDuration.String(),
+		"reset_seconds": resetSeconds,
+	}
+	if e.provider != "" {
+		errorBody["provider"] = e.provider
+	}
+	payload := map[string]any{"error": errorBody}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Sprintf(`{"error":{"code":"model_unavailable","message":"%s"}}`, message)
+	}
+	return string(data)
+}
+
+func (e *modelUnavailableError) StatusCode() int {
+	return http.StatusServiceUnavailable
+}
+
+func (e *modelUnavailableError) Headers() http.Header {
 	headers := make(http.Header)
 	headers.Set("Content-Type", "application/json")
 	resetSeconds := int(math.Ceil(e.resetIn.Seconds()))
@@ -209,7 +278,7 @@ func preferCodexWebsocketAuths(ctx context.Context, provider string, available [
 	return available
 }
 
-func collectAvailableByPriority(auths []*Auth, model string, now time.Time) (available map[int][]*Auth, cooldownCount int, earliest time.Time) {
+func collectAvailableByPriority(auths []*Auth, model string, now time.Time) (available map[int][]*Auth, cooldownCount int, cooldownEarliest time.Time, temporaryCount int, temporaryEarliest time.Time) {
 	available = make(map[int][]*Auth)
 	for i := 0; i < len(auths); i++ {
 		candidate := auths[i]
@@ -221,12 +290,20 @@ func collectAvailableByPriority(auths []*Auth, model string, now time.Time) (ava
 		}
 		if reason == blockReasonCooldown {
 			cooldownCount++
-			if !next.IsZero() && (earliest.IsZero() || next.Before(earliest)) {
-				earliest = next
+			if !next.IsZero() && (cooldownEarliest.IsZero() || next.Before(cooldownEarliest)) {
+				cooldownEarliest = next
+			}
+		}
+		if reason == blockReasonCooldown || reason == blockReasonOther {
+			if !next.IsZero() {
+				temporaryCount++
+				if temporaryEarliest.IsZero() || next.Before(temporaryEarliest) {
+					temporaryEarliest = next
+				}
 			}
 		}
 	}
-	return available, cooldownCount, earliest
+	return available, cooldownCount, cooldownEarliest, temporaryCount, temporaryEarliest
 }
 
 func routeGroupSelectionScope(meta map[string]any) string {
@@ -318,7 +395,7 @@ func getAvailableAuths(auths []*Auth, provider, model string, now time.Time, inc
 		return nil, &Error{Code: "auth_not_found", Message: "no auth candidates"}
 	}
 
-	availableByPriority, cooldownCount, earliest := collectAvailableByPriority(auths, model, now)
+	availableByPriority, cooldownCount, earliest, temporaryCount, temporaryEarliest := collectAvailableByPriority(auths, model, now)
 	if len(availableByPriority) == 0 {
 		if cooldownCount == len(auths) && !earliest.IsZero() {
 			providerForError := provider
@@ -330,6 +407,17 @@ func getAvailableAuths(auths []*Auth, provider, model string, now time.Time, inc
 				resetIn = 0
 			}
 			return nil, newModelCooldownError(model, providerForError, resetIn)
+		}
+		if temporaryCount == len(auths) && !temporaryEarliest.IsZero() {
+			providerForError := provider
+			if providerForError == "mixed" {
+				providerForError = ""
+			}
+			resetIn := temporaryEarliest.Sub(now)
+			if resetIn < 0 {
+				resetIn = 0
+			}
+			return nil, newModelUnavailableError(model, providerForError, resetIn)
 		}
 		return nil, &Error{Code: "auth_unavailable", Message: "no auth available"}
 	}

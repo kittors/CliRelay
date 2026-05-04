@@ -16,6 +16,20 @@ import (
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 )
 
+type recordingPersistAuthStore struct {
+	memoryAuthStore
+	persistedPaths []string
+}
+
+func (s *recordingPersistAuthStore) PersistAuthFiles(ctx context.Context, message string, paths ...string) error {
+	_ = ctx
+	_ = message
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.persistedPaths = append(s.persistedPaths, paths...)
+	return nil
+}
+
 func TestUploadAuthFileRejectsOversizedMultipart(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -61,6 +75,80 @@ func TestUploadAuthFileRejectsOversizedMultipart(t *testing.T) {
 	}
 	if len(entries) != 0 {
 		t.Fatalf("expected no files written, got %d", len(entries))
+	}
+}
+
+func TestUploadAuthFilePersistsUploadedJSONThroughStorePersister(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	authDir := t.TempDir()
+	store := &recordingPersistAuthStore{}
+	manager := coreauth.NewManager(store, nil, nil)
+	h := &Handler{
+		cfg: &config.Config{
+			AuthDir: authDir,
+		},
+		authManager: manager,
+		tokenStore:  store,
+	}
+
+	payload := []byte(`{"type":"codex","email":"subscriber@example.com","subscription_started_at":"2027-01-02T03:04:00Z","subscription_period":"monthly"}`)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	req := httptest.NewRequest(http.MethodPost, "/auth-files?name=codex-subscription.json", bytes.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	c.Request = req
+
+	h.UploadAuthFile(c)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	wantPath := filepath.Join(authDir, "codex-subscription.json")
+	store.mu.Lock()
+	gotPaths := append([]string(nil), store.persistedPaths...)
+	store.mu.Unlock()
+	if len(gotPaths) != 1 || gotPaths[0] != wantPath {
+		t.Fatalf("persisted paths = %#v, want [%q]", gotPaths, wantPath)
+	}
+}
+
+func TestRegisterAuthFromFileAppliesRoutingMetadata(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	authDir := t.TempDir()
+	store := &memoryAuthStore{}
+	manager := coreauth.NewManager(store, nil, nil)
+	h := &Handler{
+		cfg: &config.Config{
+			AuthDir: authDir,
+		},
+		authManager: manager,
+	}
+
+	fileName := "claude-pro.json"
+	absPath := filepath.Join(authDir, fileName)
+	data := []byte(`{"type":"claude","email":"pro@example.com","prefix":"team-a","proxy_url":"http://auth-proxy.local:8080","proxy_id":"premium-egress"}`)
+	if err := os.WriteFile(absPath, data, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	if err := h.registerAuthFromFile(context.Background(), absPath, data); err != nil {
+		t.Fatalf("registerAuthFromFile: %v", err)
+	}
+
+	auth, ok := manager.GetByID(fileName)
+	if !ok || auth == nil {
+		t.Fatalf("registered auth not found")
+	}
+	if auth.Prefix != "team-a" {
+		t.Fatalf("Prefix = %q, want team-a", auth.Prefix)
+	}
+	if auth.ProxyURL != "http://auth-proxy.local:8080" {
+		t.Fatalf("ProxyURL = %q, want auth proxy", auth.ProxyURL)
+	}
+	if auth.ProxyID != "premium-egress" {
+		t.Fatalf("ProxyID = %q, want premium-egress", auth.ProxyID)
 	}
 }
 

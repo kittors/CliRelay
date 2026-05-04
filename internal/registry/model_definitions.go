@@ -16,16 +16,20 @@ import (
 //   - vertex
 //   - gemini-cli
 //   - aistudio
+//   - bedrock
 //   - codex
 //   - qwen
 //   - iflow
 //   - kimi
+//   - opencode-go
 //   - antigravity (returns static overrides only)
 func GetStaticModelDefinitionsByChannel(channel string) []*ModelInfo {
 	key := strings.ToLower(strings.TrimSpace(channel))
 	switch key {
 	case "claude":
 		return GetClaudeModels()
+	case "bedrock":
+		return GetBedrockModels()
 	case "gemini":
 		return GetGeminiModels()
 	case "vertex":
@@ -42,6 +46,8 @@ func GetStaticModelDefinitionsByChannel(channel string) []*ModelInfo {
 		return GetIFlowModels()
 	case "kimi":
 		return GetKimiModels()
+	case "opencode-go":
+		return GetOpenCodeGoModels()
 	case "antigravity":
 		cfg := GetAntigravityModelConfig()
 		if len(cfg) == 0 {
@@ -79,6 +85,7 @@ func LookupStaticModelInfo(modelID string) *ModelInfo {
 
 	allModels := [][]*ModelInfo{
 		GetClaudeModels(),
+		GetBedrockModels(),
 		GetGeminiModels(),
 		GetGeminiVertexModels(),
 		GetGeminiCLIModels(),
@@ -87,6 +94,7 @@ func LookupStaticModelInfo(modelID string) *ModelInfo {
 		GetQwenModels(),
 		GetIFlowModels(),
 		GetKimiModels(),
+		GetOpenCodeGoModels(),
 	}
 	for _, models := range allModels {
 		for _, m := range models {
@@ -106,4 +114,23 @@ func LookupStaticModelInfo(modelID string) *ModelInfo {
 	}
 
 	return nil
+}
+
+// GetBedrockModels returns the Claude-family model definitions exposed through AWS Bedrock.
+func GetBedrockModels() []*ModelInfo {
+	claudeModels := GetClaudeModels()
+	if len(claudeModels) == 0 {
+		return nil
+	}
+	out := make([]*ModelInfo, 0, len(claudeModels))
+	for _, model := range claudeModels {
+		if model == nil {
+			continue
+		}
+		clone := *model
+		clone.OwnedBy = "aws"
+		clone.Type = "bedrock"
+		out = append(out, &clone)
+	}
+	return out
 }

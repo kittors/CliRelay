@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	claudeauth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/claude"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 )
@@ -182,6 +183,203 @@ func TestResolveTokenForAuth_Antigravity_SkipsRefreshWhenTokenValid(t *testing.T
 	}
 	if callCount != 0 {
 		t.Fatalf("expected no refresh calls, got %d", callCount)
+	}
+}
+
+type fakeClaudeOAuthRefresher struct {
+	tokenData *claudeauth.ClaudeTokenData
+	err       error
+	calls     int
+	gotRT     string
+}
+
+func (f *fakeClaudeOAuthRefresher) RefreshTokens(ctx context.Context, refreshToken string) (*claudeauth.ClaudeTokenData, error) {
+	_ = ctx
+	f.calls++
+	f.gotRT = refreshToken
+	return f.tokenData, f.err
+}
+
+func TestResolveTokenForAuth_Claude_RefreshesExpiredToken(t *testing.T) {
+	refresher := &fakeClaudeOAuthRefresher{
+		tokenData: &claudeauth.ClaudeTokenData{
+			AccessToken:  "new-claude-token",
+			RefreshToken: "new-claude-refresh",
+			Email:        "claude@example.com",
+			Expire:       time.Now().Add(time.Hour).Format(time.RFC3339),
+		},
+	}
+	originalFactory := newClaudeOAuthRefresher
+	newClaudeOAuthRefresher = func(cfg *config.Config) claudeOAuthRefresher {
+		_ = cfg
+		return refresher
+	}
+	t.Cleanup(func() { newClaudeOAuthRefresher = originalFactory })
+
+	store := &memoryAuthStore{}
+	manager := coreauth.NewManager(store, nil, nil)
+
+	auth := &coreauth.Auth{
+		ID:       "claude-test.json",
+		FileName: "claude-test.json",
+		Provider: "claude",
+		Metadata: map[string]any{
+			"type":          "claude",
+			"access_token":  "old-claude-token",
+			"refresh_token": "old-claude-refresh",
+			"expired":       time.Now().Add(-time.Hour).Format(time.RFC3339),
+			"email":         "old@example.com",
+		},
+	}
+	if _, err := manager.Register(context.Background(), auth); err != nil {
+		t.Fatalf("register auth: %v", err)
+	}
+
+	h := &Handler{cfg: &config.Config{}, authManager: manager}
+	token, err := h.resolveTokenForAuth(context.Background(), auth)
+	if err != nil {
+		t.Fatalf("resolveTokenForAuth: %v", err)
+	}
+	if token != "new-claude-token" {
+		t.Fatalf("expected refreshed token, got %q", token)
+	}
+	if refresher.calls != 1 {
+		t.Fatalf("expected 1 refresh call, got %d", refresher.calls)
+	}
+	if refresher.gotRT != "old-claude-refresh" {
+		t.Fatalf("unexpected refresh token: %q", refresher.gotRT)
+	}
+
+	updated, ok := manager.GetByID(auth.ID)
+	if !ok || updated == nil {
+		t.Fatalf("expected auth in manager after update")
+	}
+	if got := tokenValueFromMetadata(updated.Metadata); got != "new-claude-token" {
+		t.Fatalf("expected manager metadata updated, got %q", got)
+	}
+	if got, _ := updated.Metadata["refresh_token"].(string); got != "new-claude-refresh" {
+		t.Fatalf("expected refresh_token updated, got %q", got)
+	}
+	if got, _ := updated.Metadata["email"].(string); got != "claude@example.com" {
+		t.Fatalf("expected email updated, got %q", got)
+	}
+}
+
+func TestResolveTokenForAuth_Claude_RefreshUsesAuthProxyURL(t *testing.T) {
+	refresher := &fakeClaudeOAuthRefresher{
+		tokenData: &claudeauth.ClaudeTokenData{
+			AccessToken: "new-claude-token",
+			Expire:      time.Now().Add(time.Hour).Format(time.RFC3339),
+		},
+	}
+	var gotProxyURL string
+	originalFactory := newClaudeOAuthRefresher
+	newClaudeOAuthRefresher = func(cfg *config.Config) claudeOAuthRefresher {
+		if cfg != nil {
+			gotProxyURL = cfg.ProxyURL
+		}
+		return refresher
+	}
+	t.Cleanup(func() { newClaudeOAuthRefresher = originalFactory })
+
+	auth := &coreauth.Auth{
+		ID:       "claude-proxy.json",
+		FileName: "claude-proxy.json",
+		Provider: "claude",
+		ProxyURL: "http://auth-proxy.local:8080",
+		Metadata: map[string]any{
+			"type":          "claude",
+			"access_token":  "old-claude-token",
+			"refresh_token": "old-claude-refresh",
+			"expired":       time.Now().Add(-time.Hour).Format(time.RFC3339),
+		},
+	}
+	h := &Handler{cfg: &config.Config{SDKConfig: config.SDKConfig{ProxyURL: "http://global-proxy.local:8080"}}}
+
+	if _, err := h.resolveTokenForAuth(context.Background(), auth); err != nil {
+		t.Fatalf("resolveTokenForAuth: %v", err)
+	}
+	if gotProxyURL != "http://auth-proxy.local:8080" {
+		t.Fatalf("expected Claude refresh to use auth proxy URL, got %q", gotProxyURL)
+	}
+}
+
+func TestResolveTokenForAuth_Claude_RefreshUsesProxyIDBeforeProxyURL(t *testing.T) {
+	refresher := &fakeClaudeOAuthRefresher{
+		tokenData: &claudeauth.ClaudeTokenData{
+			AccessToken: "new-claude-token",
+			Expire:      time.Now().Add(time.Hour).Format(time.RFC3339),
+		},
+	}
+	var gotProxyURL string
+	originalFactory := newClaudeOAuthRefresher
+	newClaudeOAuthRefresher = func(cfg *config.Config) claudeOAuthRefresher {
+		if cfg != nil {
+			gotProxyURL = cfg.ProxyURL
+		}
+		return refresher
+	}
+	t.Cleanup(func() { newClaudeOAuthRefresher = originalFactory })
+
+	auth := &coreauth.Auth{
+		ID:       "claude-proxy-id.json",
+		FileName: "claude-proxy-id.json",
+		Provider: "claude",
+		ProxyID:  "premium-egress",
+		ProxyURL: "http://legacy-proxy.local:8080",
+		Metadata: map[string]any{
+			"type":          "claude",
+			"access_token":  "old-claude-token",
+			"refresh_token": "old-claude-refresh",
+			"expired":       time.Now().Add(-time.Hour).Format(time.RFC3339),
+		},
+	}
+	h := &Handler{cfg: &config.Config{
+		SDKConfig: config.SDKConfig{ProxyURL: "http://global-proxy.local:8080"},
+		ProxyPool: []config.ProxyPoolEntry{
+			{ID: "premium-egress", URL: "http://pool-proxy.local:8080", Enabled: true},
+		},
+	}}
+
+	if _, err := h.resolveTokenForAuth(context.Background(), auth); err != nil {
+		t.Fatalf("resolveTokenForAuth: %v", err)
+	}
+	if gotProxyURL != "http://pool-proxy.local:8080" {
+		t.Fatalf("expected Claude refresh to use proxy-id URL, got %q", gotProxyURL)
+	}
+}
+
+func TestResolveTokenForAuth_Claude_SkipsRefreshWhenTokenValid(t *testing.T) {
+	refresher := &fakeClaudeOAuthRefresher{
+		tokenData: &claudeauth.ClaudeTokenData{AccessToken: "should-not-be-used"},
+	}
+	originalFactory := newClaudeOAuthRefresher
+	newClaudeOAuthRefresher = func(cfg *config.Config) claudeOAuthRefresher {
+		_ = cfg
+		return refresher
+	}
+	t.Cleanup(func() { newClaudeOAuthRefresher = originalFactory })
+
+	auth := &coreauth.Auth{
+		ID:       "claude-valid.json",
+		FileName: "claude-valid.json",
+		Provider: "claude",
+		Metadata: map[string]any{
+			"type":         "claude",
+			"access_token": "ok-claude-token",
+			"expired":      time.Now().Add(30 * time.Minute).Format(time.RFC3339),
+		},
+	}
+	h := &Handler{cfg: &config.Config{}}
+	token, err := h.resolveTokenForAuth(context.Background(), auth)
+	if err != nil {
+		t.Fatalf("resolveTokenForAuth: %v", err)
+	}
+	if token != "ok-claude-token" {
+		t.Fatalf("expected existing token, got %q", token)
+	}
+	if refresher.calls != 0 {
+		t.Fatalf("expected no refresh calls, got %d", refresher.calls)
 	}
 }
 
