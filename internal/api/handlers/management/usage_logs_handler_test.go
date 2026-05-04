@@ -374,8 +374,8 @@ func TestGetAuthFileTrendUsesWeeklyResetCycleForRequestTotal(t *testing.T) {
 		t.Fatalf("register auth: %v", err)
 	}
 
-	now := time.Date(2026, 4, 30, 16, 0, 0, 0, time.UTC)
-	resetAt := now.Add(4 * 24 * time.Hour)
+	now := time.Now().UTC().Truncate(time.Second).Add(-time.Hour)
+	resetAt := now.Add(5 * 24 * time.Hour)
 	cycleStart := resetAt.Add(-7 * 24 * time.Hour)
 
 	usage.InsertLog("", "", "gpt-5.4", "codex", "GptPro2", auth.Index, false, cycleStart.Add(-time.Hour), 1, 1, usage.TokenStats{TotalTokens: 1}, "", "")
