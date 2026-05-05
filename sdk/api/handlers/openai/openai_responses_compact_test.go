@@ -61,7 +61,7 @@ func (e *compactCaptureExecutor) HttpRequest(context.Context, *coreauth.Auth, *h
 
 func TestOpenAIResponsesCompactRejectsStream(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	executor := &compactCaptureExecutor{}
+	executor := &compactCaptureExecutor{provider: "codex"}
 	manager := coreauth.NewManager(nil, nil, nil)
 	manager.RegisterExecutor(executor)
 
@@ -94,7 +94,7 @@ func TestOpenAIResponsesCompactRejectsStream(t *testing.T) {
 
 func TestOpenAIResponsesCompactExecute(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	executor := &compactCaptureExecutor{}
+	executor := &compactCaptureExecutor{provider: "codex"}
 	manager := coreauth.NewManager(nil, nil, nil)
 	manager.RegisterExecutor(executor)
 

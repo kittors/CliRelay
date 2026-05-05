@@ -172,7 +172,7 @@ func compactAttemptModels(requestedModel string) []string {
 		seen[model] = struct{}{}
 		models = append(models, model)
 	}
-	addModel(requestedModel, false)
+	addModel(requestedModel, true)
 	for _, model := range compactFallbackModels {
 		addModel(model, true)
 	}
