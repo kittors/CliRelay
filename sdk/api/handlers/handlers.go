@@ -17,6 +17,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/api/bodyutil"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/contextretrieval"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
@@ -27,6 +28,7 @@ import (
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v6/sdk/translator"
+	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 )
 
@@ -389,6 +391,22 @@ func NewBaseAPIHandlers(cfg *config.SDKConfig, authManager *coreauth.Manager) *B
 	}
 }
 
+func (h *BaseAPIHandler) applyContextRetrieval(ctx context.Context, modelName string, handlerType string, rawJSON []byte) []byte {
+	if h == nil || h.Cfg == nil || !h.Cfg.ContextRetrieval.Enabled || len(rawJSON) == 0 {
+		return rawJSON
+	}
+	reduced, report, err := contextretrieval.Reduce(ctx, rawJSON, modelName, handlerType, h.Cfg.ContextRetrieval)
+	if err != nil {
+		log.WithError(err).Warnf("context retrieval: failed for model=%s protocol=%s", modelName, handlerType)
+		return rawJSON
+	}
+	if report.Applied {
+		log.Infof("context retrieval: reduced request model=%s protocol=%s %s", modelName, handlerType, report.String())
+		return reduced
+	}
+	return rawJSON
+}
+
 // UpdateClients updates the handlers' client list and configuration.
 // This method is called when the configuration or authentication tokens change.
 //
@@ -635,6 +653,7 @@ func (h *BaseAPIHandler) ExecuteWithAuthManager(ctx context.Context, handlerType
 	if errMsg != nil {
 		return nil, nil, errMsg
 	}
+	rawJSON = h.applyContextRetrieval(ctx, normalizedModel, handlerType, rawJSON)
 	reqMeta := requestExecutionMetadata(ctx)
 	reqMeta[coreexecutor.RequestedModelMetadataKey] = normalizedModel
 	reqMeta[coreexecutor.RequestBytesMetadataKey] = len(rawJSON)
@@ -737,6 +756,7 @@ func (h *BaseAPIHandler) ExecuteStreamWithAuthManager(ctx context.Context, handl
 		close(errChan)
 		return nil, nil, errChan
 	}
+	rawJSON = h.applyContextRetrieval(ctx, normalizedModel, handlerType, rawJSON)
 	reqMeta := requestExecutionMetadata(ctx)
 	reqMeta[coreexecutor.RequestedModelMetadataKey] = normalizedModel
 	reqMeta[coreexecutor.RequestBytesMetadataKey] = len(rawJSON)

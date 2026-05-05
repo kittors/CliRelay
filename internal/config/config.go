@@ -941,6 +941,9 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	// Validate raw payload rules and drop invalid entries.
 	cfg.SanitizePayloadRules()
 
+	// Normalize local context retrieval config.
+	cfg.SanitizeContextRetrieval()
+
 	// NOTE: Legacy migration persistence is intentionally disabled together with
 	// startup legacy migration to keep startup read-only for config.yaml.
 	// Re-enable the block below if automatic startup migration is needed again.
@@ -1166,6 +1169,46 @@ func normalizePolicyValues(values []string, lower bool) []string {
 		out = append(out, trimmed)
 	}
 	return out
+}
+
+// SanitizeContextRetrieval normalizes local context retrieval defaults.
+func (cfg *Config) SanitizeContextRetrieval() {
+	if cfg == nil {
+		return
+	}
+	cr := &cfg.ContextRetrieval
+	if !cr.Enabled {
+		return
+	}
+	if cr.MaxInputBytes <= 0 {
+		cr.MaxInputBytes = 700000
+	}
+	if cr.PreserveRecentTurns <= 0 {
+		cr.PreserveRecentTurns = 6
+	}
+	if cr.Chunk.MaxBytes <= 0 {
+		cr.Chunk.MaxBytes = 12000
+	}
+	if cr.Retrieval.TopK <= 0 {
+		cr.Retrieval.TopK = 20
+	}
+	cr.Retrieval.Strategy = strings.ToLower(strings.TrimSpace(cr.Retrieval.Strategy))
+	if cr.Retrieval.Strategy == "" {
+		cr.Retrieval.Strategy = "keyword"
+	}
+	if cr.Retrieval.Strategy != "keyword" {
+		cr.Retrieval.Strategy = "keyword"
+	}
+	out := make([]PayloadModelRule, 0, len(cr.Models))
+	for _, rule := range cr.Models {
+		rule.Name = strings.TrimSpace(rule.Name)
+		rule.Protocol = strings.TrimSpace(rule.Protocol)
+		if rule.Name == "" {
+			continue
+		}
+		out = append(out, rule)
+	}
+	cr.Models = out
 }
 
 // SanitizeCodexKeys removes Codex API key entries missing a BaseURL.

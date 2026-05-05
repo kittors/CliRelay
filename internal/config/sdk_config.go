@@ -45,6 +45,28 @@ type SDKConfig struct {
 
 	// Observability controls optional high-cardinality diagnostic logs.
 	Observability ObservabilityConfig `yaml:"observability,omitempty" json:"observability,omitempty"`
+
+	// ContextRetrieval reduces oversized conversational payloads using local retrieval.
+	ContextRetrieval ContextRetrievalConfig `yaml:"context-retrieval,omitempty" json:"context-retrieval,omitempty"`
+}
+
+// ContextRetrievalConfig controls local SQLite FTS based context reduction.
+type ContextRetrievalConfig struct {
+	Enabled             bool                         `yaml:"enabled" json:"enabled"`
+	Models              []PayloadModelRule           `yaml:"models,omitempty" json:"models,omitempty"`
+	MaxInputBytes       int                          `yaml:"max-input-bytes,omitempty" json:"max-input-bytes,omitempty"`
+	PreserveRecentTurns int                          `yaml:"preserve-recent-turns,omitempty" json:"preserve-recent-turns,omitempty"`
+	Chunk               ContextRetrievalChunkConfig  `yaml:"chunk,omitempty" json:"chunk,omitempty"`
+	Retrieval           ContextRetrievalSearchConfig `yaml:"retrieval,omitempty" json:"retrieval,omitempty"`
+}
+
+type ContextRetrievalChunkConfig struct {
+	MaxBytes int `yaml:"max-bytes,omitempty" json:"max-bytes,omitempty"`
+}
+
+type ContextRetrievalSearchConfig struct {
+	TopK     int    `yaml:"top-k,omitempty" json:"top-k,omitempty"`
+	Strategy string `yaml:"strategy,omitempty" json:"strategy,omitempty"`
 }
 
 // ObservabilityConfig groups optional diagnostic logging features.

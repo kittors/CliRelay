@@ -25,6 +25,7 @@ const (
 	RuntimeSettingOAuthModelAlias      = "oauth-model-alias"
 	RuntimeSettingPayload              = "payload"
 	RuntimeSettingRequestPolicies      = "request-policies"
+	RuntimeSettingContextRetrieval     = "context-retrieval"
 )
 
 const createRuntimeSettingsTableSQL = `
@@ -367,6 +368,29 @@ func runtimeSettingSpecs() []runtimeSettingSpec {
 				holder := &config.Config{RequestPolicies: value}
 				holder.SanitizeRequestPolicies()
 				cfg.RequestPolicies = holder.RequestPolicies
+				return true
+			},
+		},
+		{
+			key: RuntimeSettingContextRetrieval,
+			meaningful: func(cfg *config.Config) bool {
+				holder := &config.Config{SDKConfig: config.SDKConfig{ContextRetrieval: cfg.ContextRetrieval}}
+				holder.SanitizeContextRetrieval()
+				return holder.ContextRetrieval.Enabled
+			},
+			value: func(cfg *config.Config) any {
+				holder := &config.Config{SDKConfig: config.SDKConfig{ContextRetrieval: cfg.ContextRetrieval}}
+				holder.SanitizeContextRetrieval()
+				return holder.ContextRetrieval
+			},
+			apply: func(cfg *config.Config, raw json.RawMessage) bool {
+				var value config.ContextRetrievalConfig
+				if err := json.Unmarshal(raw, &value); err != nil {
+					log.Warnf("usage: decode %s: %v", RuntimeSettingContextRetrieval, err)
+					return false
+				}
+				cfg.ContextRetrieval = value
+				cfg.SanitizeContextRetrieval()
 				return true
 			},
 		},
