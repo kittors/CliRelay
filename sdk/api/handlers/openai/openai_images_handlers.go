@@ -13,11 +13,8 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	internalrouting "github.com/router-for-me/CLIProxyAPI/v6/internal/routing"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/api/handlers"
-	coreexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
-	sdktranslator "github.com/router-for-me/CLIProxyAPI/v6/sdk/translator"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -68,7 +65,6 @@ func (h *OpenAIImagesAPIHandler) executeImages(c *gin.Context, rawJSON []byte, a
 	}
 
 	cliCtx := context.WithValue(c.Request.Context(), util.ContextKeyGin, c)
-	meta := requestImageExecutionMetadata(c)
 	if h.AuthManager == nil {
 		writeOpenAIImagesError(c, http.StatusInternalServerError, "server_error", "authentication manager not initialized")
 		return
@@ -89,28 +85,23 @@ func (h *OpenAIImagesAPIHandler) executeImages(c *gin.Context, rawJSON []byte, a
 				return
 			}
 		}
-		resp, err := h.AuthManager.Execute(cliCtx, []string{"codex"}, coreexecutor.Request{
-			Model:   "",
-			Payload: execPayload,
-			Format:  sdktranslator.FromString("openai"),
-		}, coreexecutor.Options{
-			Alt:             alt,
-			OriginalRequest: rawJSON,
-			SourceFormat:    sdktranslator.FromString("openai"),
-			Metadata:        cloneImageExecutionMetadata(meta),
-		})
-		if err != nil {
-			status := http.StatusBadGateway
-			if statusErr, ok := err.(coreexecutor.StatusError); ok && statusErr.StatusCode() > 0 {
-				status = statusErr.StatusCode()
+		payload, headers, errMsg := h.ExecuteWithAuthManager(cliCtx, "openai", modelName, execPayload, alt)
+		if errMsg != nil {
+			status := errMsg.StatusCode
+			if status <= 0 {
+				status = http.StatusBadGateway
 			}
-			writeOpenAIImagesError(c, status, errorTypeForStatus(status), err.Error())
+			message := ""
+			if errMsg.Error != nil {
+				message = errMsg.Error.Error()
+			}
+			writeOpenAIImagesError(c, status, errorTypeForStatus(status), message)
 			return
 		}
 		if responseHeaders == nil {
-			responseHeaders = resp.Headers
+			responseHeaders = headers
 		}
-		payloads = append(payloads, resp.Payload)
+		payloads = append(payloads, payload)
 	}
 	payload, err := mergeOpenAIImageResponses(payloads)
 	if err != nil {
@@ -135,17 +126,6 @@ func openAIImageRequestCount(rawJSON []byte) (int, error) {
 		return 0, fmt.Errorf("n must be between 1 and %d", openAIImageMaxN)
 	}
 	return n, nil
-}
-
-func cloneImageExecutionMetadata(meta map[string]any) map[string]any {
-	if len(meta) == 0 {
-		return nil
-	}
-	out := make(map[string]any, len(meta))
-	for key, value := range meta {
-		out[key] = value
-	}
-	return out
 }
 
 func mergeOpenAIImageResponses(payloads [][]byte) ([]byte, error) {
@@ -321,33 +301,6 @@ func firstOpenAIImagesFormValue(values map[string][]string, key, fallback string
 		}
 	}
 	return fallback
-}
-
-func requestImageExecutionMetadata(c *gin.Context) map[string]any {
-	meta := map[string]any{
-		coreexecutor.SinglePickMetadataKey: true,
-	}
-	if metadataVal, exists := c.Get("accessMetadata"); exists {
-		if metadata, ok := metadataVal.(map[string]string); ok {
-			if allowedChannels := strings.TrimSpace(metadata["allowed-channels"]); allowedChannels != "" {
-				meta["allowed-channels"] = allowedChannels
-			}
-			if allowedGroups := strings.TrimSpace(metadata["allowed-channel-groups"]); allowedGroups != "" {
-				meta["allowed-channel-groups"] = allowedGroups
-			}
-		}
-	}
-	if routeVal, exists := c.Get(internalrouting.GinPathRouteContextKey); exists {
-		if route, ok := routeVal.(*internalrouting.PathRouteContext); ok && route != nil {
-			if group := strings.TrimSpace(route.Group); group != "" {
-				meta[coreexecutor.RouteGroupMetadataKey] = group
-			}
-			if fallback := strings.TrimSpace(route.Fallback); fallback != "" {
-				meta[coreexecutor.RouteFallbackMetadataKey] = fallback
-			}
-		}
-	}
-	return meta
 }
 
 func errorTypeForStatus(status int) string {

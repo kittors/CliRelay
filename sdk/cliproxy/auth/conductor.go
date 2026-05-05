@@ -108,6 +108,10 @@ func quotaCooldownDisabledForAuth(auth *Auth) bool {
 	return quotaCooldownDisabled.Load()
 }
 
+func shouldSuspendMissingModelForResult(result Result) bool {
+	return strings.TrimSpace(result.Alt) == ""
+}
+
 // Result captures execution outcome used to adjust auth state.
 type Result struct {
 	// AuthID references the auth that produced this result.
@@ -116,6 +120,8 @@ type Result struct {
 	Provider string
 	// Model is the upstream model identifier used for the request.
 	Model string
+	// Alt identifies alternate endpoint modes such as responses/compact.
+	Alt string
 	// Success marks whether the execution succeeded.
 	Success bool
 	// RetryAfter carries a provider supplied retry hint (e.g. 429 retryDelay).
@@ -683,7 +689,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 		execReq.Model = m.applyOAuthModelAlias(auth, execReq.Model)
 		execReq.Model = m.applyAPIKeyModelAlias(auth, execReq.Model)
 		resp, errExec := executor.Execute(execCtx, auth, execReq, opts)
-		result := Result{AuthID: auth.ID, Provider: provider, Model: routeModel, Success: errExec == nil}
+		result := Result{AuthID: auth.ID, Provider: provider, Model: routeModel, Alt: opts.Alt, Success: errExec == nil}
 		if errExec != nil {
 			if errCtx := execCtx.Err(); errCtx != nil {
 				return cliproxyexecutor.Response{}, errCtx
@@ -801,7 +807,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 			if se, ok := errors.AsType[cliproxyexecutor.StatusError](errStream); ok && se != nil {
 				rerr.HTTPStatus = se.StatusCode()
 			}
-			result := Result{AuthID: auth.ID, Provider: provider, Model: routeModel, Success: false, Error: rerr}
+			result := Result{AuthID: auth.ID, Provider: provider, Model: routeModel, Alt: opts.Alt, Success: false, Error: rerr}
 			result.RetryAfter = retryAfterFromError(errStream)
 			m.MarkResult(execCtx, result)
 			if isRequestInvalidError(errStream) {
@@ -825,7 +831,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 					if se, ok := errors.AsType[cliproxyexecutor.StatusError](chunk.Err); ok && se != nil {
 						rerr.HTTPStatus = se.StatusCode()
 					}
-					m.MarkResult(streamCtx, Result{AuthID: streamAuth.ID, Provider: streamProvider, Model: routeModel, Success: false, Error: rerr})
+					m.MarkResult(streamCtx, Result{AuthID: streamAuth.ID, Provider: streamProvider, Model: routeModel, Alt: opts.Alt, Success: false, Error: rerr})
 				}
 				if !forward {
 					continue
@@ -841,7 +847,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 				}
 			}
 			if !failed {
-				m.MarkResult(streamCtx, Result{AuthID: streamAuth.ID, Provider: streamProvider, Model: routeModel, Success: true})
+				m.MarkResult(streamCtx, Result{AuthID: streamAuth.ID, Provider: streamProvider, Model: routeModel, Alt: opts.Alt, Success: true})
 			}
 		}(execCtx, auth.Clone(), provider, streamResult.Chunks)
 		return &cliproxyexecutor.StreamResult{
@@ -1466,7 +1472,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 					next := now.Add(12 * time.Hour)
 					state.NextRetryAfter = next
 					suspendReason = "not_found"
-					shouldSuspendModel = true
+					shouldSuspendModel = shouldSuspendMissingModelForResult(result)
 				case 429:
 					var next time.Time
 					backoffLevel := state.Quota.BackoffLevel
