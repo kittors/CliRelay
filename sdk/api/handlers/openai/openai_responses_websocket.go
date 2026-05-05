@@ -205,9 +205,11 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 		lastRequest = updatedLastRequest
 
 		if prewarmPayloads, ok := responsesWebsocketPrewarmPayloads(requestJSON); ok {
+			log.Infof("responses websocket: prewarm response handled locally id=%s model=%s", passthroughSessionID, gjson.GetBytes(requestJSON, "model").String())
 			for _, prewarmPayload := range prewarmPayloads {
 				markAPIResponseTimestamp(c)
 				appendWebsocketEvent(&wsBodyLog, "response", prewarmPayload)
+				logResponsesWebsocketPayload(trace, "downstream_out", passthroughSessionID, websocket.TextMessage, websocketPayloadEventType(prewarmPayload), websocketPayloadEventType(prewarmPayload) == wsEventTypeDone, 0, prewarmPayload)
 				if errWrite := writeResponsesWebsocketMessage(conn, websocket.TextMessage, prewarmPayload); errWrite != nil {
 					log.Warnf(
 						"responses websocket: prewarm write failed id=%s event=%s error=%v",
@@ -220,7 +222,11 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 				}
 			}
 			lastResponseOutput = []byte("[]")
-			continue
+			if errClose := closeResponsesWebsocketNormally(conn); errClose != nil {
+				log.Debugf("responses websocket: prewarm normal close failed id=%s error=%v", passthroughSessionID, errClose)
+			}
+			log.Infof("responses websocket: prewarm completed session closed id=%s", passthroughSessionID)
+			return
 		}
 
 		modelName := gjson.GetBytes(requestJSON, "model").String()
