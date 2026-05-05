@@ -637,6 +637,7 @@ func (h *BaseAPIHandler) ExecuteWithAuthManager(ctx context.Context, handlerType
 	}
 	reqMeta := requestExecutionMetadata(ctx)
 	reqMeta[coreexecutor.RequestedModelMetadataKey] = normalizedModel
+	reqMeta[coreexecutor.RequestBytesMetadataKey] = len(rawJSON)
 	payload := rawJSON
 	if len(payload) == 0 {
 		payload = nil
@@ -685,6 +686,7 @@ func (h *BaseAPIHandler) ExecuteCountWithAuthManager(ctx context.Context, handle
 	}
 	reqMeta := requestExecutionMetadata(ctx)
 	reqMeta[coreexecutor.RequestedModelMetadataKey] = normalizedModel
+	reqMeta[coreexecutor.RequestBytesMetadataKey] = len(rawJSON)
 	payload := rawJSON
 	if len(payload) == 0 {
 		payload = nil
@@ -737,6 +739,7 @@ func (h *BaseAPIHandler) ExecuteStreamWithAuthManager(ctx context.Context, handl
 	}
 	reqMeta := requestExecutionMetadata(ctx)
 	reqMeta[coreexecutor.RequestedModelMetadataKey] = normalizedModel
+	reqMeta[coreexecutor.RequestBytesMetadataKey] = len(rawJSON)
 	groupedRoute := isGroupedRouteRequestMeta(reqMeta)
 	payload := rawJSON
 	if len(payload) == 0 {

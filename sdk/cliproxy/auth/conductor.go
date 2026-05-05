@@ -2086,6 +2086,8 @@ func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model s
 		}
 	}
 	registryRef := registry.GetGlobalRegistry()
+	var policySkipErr *requestPolicyLimitError
+	var policyRejectErr *requestPolicyLimitError
 	buildCandidates := func(enforceRouteGroup bool) []*Auth {
 		candidates := make([]*Auth, 0, len(m.auths))
 		for _, candidate := range m.auths {
@@ -2120,6 +2122,17 @@ func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model s
 			if modelKey != "" && !candidateSupportsModel(cfg, registryRef, candidate, modelKey, routeGroup, allowedGroups) {
 				continue
 			}
+			upstreamModel := rewriteModelForAuth(model, candidate)
+			upstreamModel = m.applyOAuthModelAlias(candidate, upstreamModel)
+			upstreamModel = m.applyAPIKeyModelAlias(candidate, upstreamModel)
+			if blocked, policyErr := requestPolicyDecision(cfg, candidate, opts, model, providerKey, upstreamModel); blocked {
+				if policyErr != nil && policyErr.action == requestPolicyActionReject {
+					policyRejectErr = policyErr
+				} else if policyErr != nil {
+					policySkipErr = policyErr
+				}
+				continue
+			}
 			scopedRouteGroup := ""
 			if enforceRouteGroup {
 				scopedRouteGroup = routeGroup
@@ -2129,11 +2142,22 @@ func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model s
 		return candidates
 	}
 	candidates := buildCandidates(routeGroup != "")
+	if policyRejectErr != nil {
+		m.mu.RUnlock()
+		return nil, nil, "", policyRejectErr
+	}
 	if len(candidates) == 0 && routeGroup != "" && routeFallback == "default" {
 		candidates = buildCandidates(false)
+		if policyRejectErr != nil {
+			m.mu.RUnlock()
+			return nil, nil, "", policyRejectErr
+		}
 	}
 	if len(candidates) == 0 {
 		m.mu.RUnlock()
+		if policySkipErr != nil {
+			return nil, nil, "", policySkipErr
+		}
 		return nil, nil, "", &Error{Code: "auth_not_found", Message: "no auth available"}
 	}
 	selected, errPick := m.selector.Pick(ctx, "mixed", model, opts, candidates)

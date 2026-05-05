@@ -24,6 +24,7 @@ const (
 	RuntimeSettingOAuthExcludedModels  = "oauth-excluded-models"
 	RuntimeSettingOAuthModelAlias      = "oauth-model-alias"
 	RuntimeSettingPayload              = "payload"
+	RuntimeSettingRequestPolicies      = "request-policies"
 )
 
 const createRuntimeSettingsTableSQL = `
@@ -342,6 +343,30 @@ func runtimeSettingSpecs() []runtimeSettingSpec {
 				holder := &config.Config{Payload: value}
 				holder.SanitizePayloadRules()
 				cfg.Payload = holder.Payload
+				return true
+			},
+		},
+		{
+			key: RuntimeSettingRequestPolicies,
+			meaningful: func(cfg *config.Config) bool {
+				holder := &config.Config{RequestPolicies: append([]config.RequestPolicy(nil), cfg.RequestPolicies...)}
+				holder.SanitizeRequestPolicies()
+				return len(holder.RequestPolicies) > 0
+			},
+			value: func(cfg *config.Config) any {
+				holder := &config.Config{RequestPolicies: append([]config.RequestPolicy(nil), cfg.RequestPolicies...)}
+				holder.SanitizeRequestPolicies()
+				return holder.RequestPolicies
+			},
+			apply: func(cfg *config.Config, raw json.RawMessage) bool {
+				var value []config.RequestPolicy
+				if err := json.Unmarshal(raw, &value); err != nil {
+					log.Warnf("usage: decode %s: %v", RuntimeSettingRequestPolicies, err)
+					return false
+				}
+				holder := &config.Config{RequestPolicies: value}
+				holder.SanitizeRequestPolicies()
+				cfg.RequestPolicies = holder.RequestPolicies
 				return true
 			},
 		},

@@ -144,6 +144,9 @@ type Config struct {
 	// OpenAICompatibility defines OpenAI API compatibility configurations for external providers.
 	OpenAICompatibility []OpenAICompatibility `yaml:"openai-compatibility" json:"openai-compatibility"`
 
+	// RequestPolicies define request-size and routing guards evaluated before upstream execution.
+	RequestPolicies []RequestPolicy `yaml:"request-policies,omitempty" json:"request-policies,omitempty"`
+
 	// VertexCompatAPIKey defines Vertex AI-compatible API key configurations for third-party providers.
 	// Used for services that use Vertex AI-style paths but with simple API key authentication.
 	VertexCompatAPIKey []VertexCompatKey `yaml:"vertex-api-key" json:"vertex-api-key"`
@@ -698,6 +701,32 @@ type OpenAICompatibilityModel struct {
 func (m OpenAICompatibilityModel) GetName() string  { return m.Name }
 func (m OpenAICompatibilityModel) GetAlias() string { return m.Alias }
 
+// RequestPolicy defines a generic pre-execution policy for matching requests and channels.
+type RequestPolicy struct {
+	Name      string                 `yaml:"name,omitempty" json:"name,omitempty"`
+	Match     RequestPolicyMatch     `yaml:"match,omitempty" json:"match,omitempty"`
+	Limits    RequestPolicyLimits    `yaml:"limits,omitempty" json:"limits,omitempty"`
+	OverLimit RequestPolicyOverLimit `yaml:"over-limit,omitempty" json:"over-limit,omitempty"`
+}
+
+// RequestPolicyMatch controls which requested/upstream model route a policy applies to.
+type RequestPolicyMatch struct {
+	RequestedModels   []string `yaml:"requested-models,omitempty" json:"requested-models,omitempty"`
+	UpstreamProviders []string `yaml:"upstream-providers,omitempty" json:"upstream-providers,omitempty"`
+	UpstreamModels    []string `yaml:"upstream-models,omitempty" json:"upstream-models,omitempty"`
+}
+
+// RequestPolicyLimits contains hard request limits.
+type RequestPolicyLimits struct {
+	MaxRequestBytes int64 `yaml:"max-request-bytes,omitempty" json:"max-request-bytes,omitempty"`
+}
+
+// RequestPolicyOverLimit controls behavior after a request exceeds a configured limit.
+type RequestPolicyOverLimit struct {
+	// Action is "skip-channel" or "reject". Empty defaults to "skip-channel".
+	Action string `yaml:"action,omitempty" json:"action,omitempty"`
+}
+
 // OpenCodeGoKey represents an OpenCode Go plan API key.
 // The upstream endpoint is fixed to https://opencode.ai/zen/go/v1.
 type OpenCodeGoKey struct {
@@ -894,6 +923,9 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	// Sanitize OpenAI compatibility providers: drop entries without base-url
 	cfg.SanitizeOpenAICompatibility()
 
+	// Normalize request policies.
+	cfg.SanitizeRequestPolicies()
+
 	// Normalize OAuth provider model exclusion map.
 	cfg.OAuthExcludedModels = NormalizeOAuthExcludedModels(cfg.OAuthExcludedModels)
 
@@ -1084,6 +1116,56 @@ func (cfg *Config) SanitizeOpenAICompatibility() {
 		out = append(out, e)
 	}
 	cfg.OpenAICompatibility = out
+}
+
+// SanitizeRequestPolicies normalizes request policy matching and drops inactive rules.
+func (cfg *Config) SanitizeRequestPolicies() {
+	if cfg == nil || len(cfg.RequestPolicies) == 0 {
+		return
+	}
+	out := make([]RequestPolicy, 0, len(cfg.RequestPolicies))
+	for i := range cfg.RequestPolicies {
+		policy := cfg.RequestPolicies[i]
+		policy.Name = strings.TrimSpace(policy.Name)
+		policy.Match.RequestedModels = normalizePolicyValues(policy.Match.RequestedModels, false)
+		policy.Match.UpstreamProviders = normalizePolicyValues(policy.Match.UpstreamProviders, true)
+		policy.Match.UpstreamModels = normalizePolicyValues(policy.Match.UpstreamModels, false)
+		policy.OverLimit.Action = strings.ToLower(strings.TrimSpace(policy.OverLimit.Action))
+		switch policy.OverLimit.Action {
+		case "", "skip-channel", "reject":
+		default:
+			policy.OverLimit.Action = "skip-channel"
+		}
+		if policy.Limits.MaxRequestBytes <= 0 {
+			continue
+		}
+		out = append(out, policy)
+	}
+	cfg.RequestPolicies = out
+}
+
+func normalizePolicyValues(values []string, lower bool) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if lower {
+			trimmed = strings.ToLower(trimmed)
+		}
+		if trimmed == "" {
+			continue
+		}
+		key := strings.ToLower(trimmed)
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, trimmed)
+	}
+	return out
 }
 
 // SanitizeCodexKeys removes Codex API key entries missing a BaseURL.

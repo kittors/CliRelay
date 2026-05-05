@@ -11,6 +11,8 @@ import (
 const RequestedModelMetadataKey = "requested_model"
 
 const (
+	// RequestBytesMetadataKey stores the inbound request body size in bytes.
+	RequestBytesMetadataKey = "request_bytes"
 	// PinnedAuthMetadataKey locks execution to a specific auth ID.
 	PinnedAuthMetadataKey = "pinned_auth_id"
 	// SinglePickMetadataKey forces the auth manager to use exactly one picked auth
