@@ -58,6 +58,7 @@ type ContextRetrievalConfig struct {
 	PreserveRecentTurns int                          `yaml:"preserve-recent-turns,omitempty" json:"preserve-recent-turns,omitempty"`
 	Chunk               ContextRetrievalChunkConfig  `yaml:"chunk,omitempty" json:"chunk,omitempty"`
 	Retrieval           ContextRetrievalSearchConfig `yaml:"retrieval,omitempty" json:"retrieval,omitempty"`
+	CodexAware          CodexAwareContextConfig      `yaml:"codex-aware,omitempty" json:"codex-aware,omitempty"`
 }
 
 type ContextRetrievalChunkConfig struct {
@@ -67,6 +68,16 @@ type ContextRetrievalChunkConfig struct {
 type ContextRetrievalSearchConfig struct {
 	TopK     int    `yaml:"top-k,omitempty" json:"top-k,omitempty"`
 	Strategy string `yaml:"strategy,omitempty" json:"strategy,omitempty"`
+}
+
+// CodexAwareContextConfig preserves Codex tool semantics while reducing context.
+type CodexAwareContextConfig struct {
+	Enabled                bool `yaml:"enabled" json:"enabled"`
+	PreserveToolPairs      bool `yaml:"preserve-tool-pairs,omitempty" json:"preserve-tool-pairs,omitempty"`
+	InsertSummary          bool `yaml:"insert-summary,omitempty" json:"insert-summary,omitempty"`
+	MaxSummaryBytes        int  `yaml:"max-summary-bytes,omitempty" json:"max-summary-bytes,omitempty"`
+	PreserveRecentCommands int  `yaml:"preserve-recent-commands,omitempty" json:"preserve-recent-commands,omitempty"`
+	PreserveRecentErrors   int  `yaml:"preserve-recent-errors,omitempty" json:"preserve-recent-errors,omitempty"`
 }
 
 // ObservabilityConfig groups optional diagnostic logging features.

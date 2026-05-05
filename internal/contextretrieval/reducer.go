@@ -35,6 +35,7 @@ type item struct {
 }
 
 var keywordPattern = regexp.MustCompile(`[A-Za-z0-9_]{3,}`)
+var filePathPattern = regexp.MustCompile(`[A-Za-z0-9_./-]+\.(?:go|ts|tsx|js|jsx|py|rs|java|kt|md|yaml|yml|json|toml|sh|sql|css|html)`)
 
 func Reduce(ctx context.Context, raw []byte, model, protocol string, cfg config.ContextRetrievalConfig) ([]byte, Report, error) {
 	_ = ctx
@@ -57,7 +58,7 @@ func Reduce(ctx context.Context, raw []byte, model, protocol string, cfg config.
 	report.Field = field
 	report.OriginalItems = len(items)
 
-	markPreserved(items, cfg.PreserveRecentTurns)
+	markPreserved(items, cfg.PreserveRecentTurns, cfg.CodexAware)
 	query := buildQuery(items)
 	matched := map[int]struct{}{}
 	if query != "" {
@@ -78,7 +79,10 @@ func Reduce(ctx context.Context, raw []byte, model, protocol string, cfg config.
 	for idx := range matched {
 		keep[idx] = struct{}{}
 	}
-	reduced, kept, err := assembleWithinBudget(raw, field, items, keep, cfg.MaxInputBytes)
+	if cfg.CodexAware.Enabled && cfg.CodexAware.PreserveToolPairs {
+		preserveToolPairs(items, keep)
+	}
+	reduced, kept, err := assembleWithinBudget(raw, field, items, keep, cfg.MaxInputBytes, cfg)
 	if err != nil {
 		return raw, report, err
 	}
@@ -103,6 +107,17 @@ func normalizeConfig(cfg *config.ContextRetrievalConfig) {
 	}
 	if cfg.Retrieval.TopK <= 0 {
 		cfg.Retrieval.TopK = 20
+	}
+	if cfg.CodexAware.Enabled {
+		if cfg.CodexAware.MaxSummaryBytes <= 0 {
+			cfg.CodexAware.MaxSummaryBytes = 4000
+		}
+		if cfg.CodexAware.PreserveRecentCommands <= 0 {
+			cfg.CodexAware.PreserveRecentCommands = 8
+		}
+		if cfg.CodexAware.PreserveRecentErrors <= 0 {
+			cfg.CodexAware.PreserveRecentErrors = 8
+		}
 	}
 }
 
@@ -177,7 +192,7 @@ func walkText(value any, parts *[]string) {
 	}
 }
 
-func markPreserved(items []item, recent int) {
+func markPreserved(items []item, recent int, codex config.CodexAwareContextConfig) {
 	if recent <= 0 {
 		recent = 6
 	}
@@ -194,6 +209,41 @@ func markPreserved(items []item, recent int) {
 			items[i].Forced = true
 		}
 	}
+	if !codex.Enabled {
+		return
+	}
+	preserveMatchingRecentSignals(items, commandLike, codex.PreserveRecentCommands)
+	preserveMatchingRecentSignals(items, errorLike, codex.PreserveRecentErrors)
+}
+
+func preserveMatchingRecentSignals(items []item, match func(string) bool, limit int) {
+	if limit <= 0 {
+		return
+	}
+	for i := len(items) - 1; i >= 0 && limit > 0; i-- {
+		if items[i].Forced || items[i].Recent {
+			continue
+		}
+		if match(items[i].Text) {
+			items[i].Forced = true
+			limit--
+		}
+	}
+}
+
+func commandLike(text string) bool {
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "$ ") || strings.HasPrefix(line, "go test ") || strings.HasPrefix(line, "git ") || strings.HasPrefix(line, "rg ") || strings.Contains(line, `"cmd"`) {
+			return true
+		}
+	}
+	return false
+}
+
+func errorLike(text string) bool {
+	lower := strings.ToLower(text)
+	return strings.Contains(lower, "error") || strings.Contains(lower, "failed") || strings.Contains(lower, "panic") || strings.Contains(lower, "exception") || strings.Contains(lower, "timeout") || strings.Contains(lower, "traceback") || strings.Contains(lower, " 503") || strings.Contains(lower, " 429") || strings.Contains(lower, " 404")
 }
 
 func buildQuery(items []item) string {
@@ -296,11 +346,11 @@ func splitByBytes(text string, maxBytes int) []string {
 	return chunks
 }
 
-func assembleWithinBudget(raw []byte, field string, items []item, keep map[int]struct{}, maxBytes int) ([]byte, int, error) {
+func assembleWithinBudget(raw []byte, field string, items []item, keep map[int]struct{}, maxBytes int, cfg config.ContextRetrievalConfig) ([]byte, int, error) {
 	if len(keep) == 0 {
 		return raw, 0, nil
 	}
-	reduced, err := assemble(raw, field, items, keep)
+	reduced, err := assemble(raw, field, items, keep, cfg)
 	if err != nil || len(reduced) <= maxBytes {
 		return reduced, len(keep), err
 	}
@@ -318,7 +368,7 @@ func assembleWithinBudget(raw []byte, field string, items []item, keep map[int]s
 	sort.Sort(sort.Reverse(sort.IntSlice(removable)))
 	for _, idx := range removable {
 		delete(keep, idx)
-		reduced, err = assemble(raw, field, items, keep)
+		reduced, err = assemble(raw, field, items, keep, cfg)
 		if err != nil || len(reduced) <= maxBytes {
 			return reduced, len(keep), err
 		}
@@ -337,7 +387,7 @@ func assembleWithinBudget(raw []byte, field string, items []item, keep map[int]s
 	sort.Ints(recentRemovable)
 	for _, idx := range recentRemovable {
 		delete(keep, idx)
-		reduced, err = assemble(raw, field, items, keep)
+		reduced, err = assemble(raw, field, items, keep, cfg)
 		if err != nil || len(reduced) <= maxBytes {
 			return reduced, len(keep), err
 		}
@@ -345,11 +395,16 @@ func assembleWithinBudget(raw []byte, field string, items []item, keep map[int]s
 	return reduced, len(keep), err
 }
 
-func assemble(raw []byte, field string, items []item, keep map[int]struct{}) ([]byte, error) {
+func assemble(raw []byte, field string, items []item, keep map[int]struct{}, cfg config.ContextRetrievalConfig) ([]byte, error) {
 	selected := make([]json.RawMessage, 0, len(keep))
 	for i := range items {
 		if _, ok := keep[items[i].Index]; ok {
 			selected = append(selected, items[i].Raw)
+		}
+	}
+	if cfg.CodexAware.Enabled && cfg.CodexAware.InsertSummary {
+		if summary := buildCodexSummary(items, keep, cfg.CodexAware.MaxSummaryBytes); summary != "" {
+			selected = insertSummaryItem(field, selected, summary)
 		}
 	}
 	arr, err := json.Marshal(selected)
@@ -361,6 +416,190 @@ func assemble(raw []byte, field string, items []item, keep map[int]struct{}) ([]
 		return nil, err
 	}
 	return out, nil
+}
+
+func preserveToolPairs(items []item, keep map[int]struct{}) {
+	if len(keep) == 0 {
+		return
+	}
+	callIDs := map[string][]int{}
+	for i := range items {
+		for _, id := range itemCallIDs(items[i].Raw) {
+			callIDs[id] = append(callIDs[id], items[i].Index)
+		}
+	}
+	for _, idxs := range callIDs {
+		shouldKeep := false
+		for _, idx := range idxs {
+			if _, ok := keep[idx]; ok {
+				shouldKeep = true
+				break
+			}
+		}
+		if shouldKeep {
+			for _, idx := range idxs {
+				keep[idx] = struct{}{}
+			}
+		}
+	}
+}
+
+func itemCallIDs(raw json.RawMessage) []string {
+	var value any
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	var out []string
+	var walk func(any)
+	walk = func(v any) {
+		switch x := v.(type) {
+		case map[string]any:
+			for _, key := range []string{"call_id", "tool_call_id"} {
+				if s, ok := x[key].(string); ok && strings.TrimSpace(s) != "" {
+					id := strings.TrimSpace(s)
+					if _, exists := seen[id]; !exists {
+						seen[id] = struct{}{}
+						out = append(out, id)
+					}
+				}
+			}
+			for _, child := range x {
+				walk(child)
+			}
+		case []any:
+			for _, child := range x {
+				walk(child)
+			}
+		}
+	}
+	walk(value)
+	return out
+}
+
+func buildCodexSummary(items []item, keep map[int]struct{}, maxBytes int) string {
+	if maxBytes <= 0 {
+		maxBytes = 4000
+	}
+	paths := orderedUniqueMatches(items, keep, filePathPattern, 24)
+	errors := collectLines(items, keep, errorLike, 8)
+	commands := collectLines(items, keep, commandLike, 8)
+	if len(paths) == 0 && len(errors) == 0 && len(commands) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("Retrieved summary from older omitted Codex context. Prefer recent explicit messages over this summary.\n")
+	if len(paths) > 0 {
+		b.WriteString("Relevant file paths: ")
+		b.WriteString(strings.Join(paths, ", "))
+		b.WriteByte('\n')
+	}
+	if len(commands) > 0 {
+		b.WriteString("Recent commands/tool activity:\n")
+		for _, line := range commands {
+			b.WriteString("- ")
+			b.WriteString(line)
+			b.WriteByte('\n')
+		}
+	}
+	if len(errors) > 0 {
+		b.WriteString("Recent errors/signals:\n")
+		for _, line := range errors {
+			b.WriteString("- ")
+			b.WriteString(line)
+			b.WriteByte('\n')
+		}
+	}
+	out := b.String()
+	if len(out) > maxBytes {
+		out = out[:maxBytes]
+	}
+	return out
+}
+
+func orderedUniqueMatches(items []item, keep map[int]struct{}, re *regexp.Regexp, limit int) []string {
+	seen := map[string]struct{}{}
+	var out []string
+	for i := len(items) - 1; i >= 0 && len(out) < limit; i-- {
+		if _, ok := keep[items[i].Index]; ok {
+			continue
+		}
+		for _, match := range re.FindAllString(items[i].Text, -1) {
+			match = strings.TrimSpace(match)
+			if match == "" {
+				continue
+			}
+			key := strings.ToLower(match)
+			if _, exists := seen[key]; exists {
+				continue
+			}
+			seen[key] = struct{}{}
+			out = append(out, match)
+			if len(out) >= limit {
+				break
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+func collectLines(items []item, keep map[int]struct{}, match func(string) bool, limit int) []string {
+	var out []string
+	seen := map[string]struct{}{}
+	for i := len(items) - 1; i >= 0 && len(out) < limit; i-- {
+		if _, ok := keep[items[i].Index]; ok {
+			continue
+		}
+		for _, line := range strings.Split(items[i].Text, "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" || !match(line) {
+				continue
+			}
+			if len(line) > 240 {
+				line = line[:240]
+			}
+			key := strings.ToLower(line)
+			if _, exists := seen[key]; exists {
+				continue
+			}
+			seen[key] = struct{}{}
+			out = append(out, line)
+			if len(out) >= limit {
+				break
+			}
+		}
+	}
+	return out
+}
+
+func insertSummaryItem(field string, selected []json.RawMessage, summary string) []json.RawMessage {
+	var raw []byte
+	if field == "messages" {
+		raw, _ = json.Marshal(map[string]any{"role": "system", "content": summary})
+	} else {
+		raw, _ = json.Marshal(map[string]any{
+			"type":    "message",
+			"role":    "developer",
+			"content": []map[string]string{{"type": "input_text", "text": summary}},
+		})
+	}
+	if len(raw) == 0 {
+		return selected
+	}
+	insertAt := 0
+	for insertAt < len(selected) {
+		role := itemRole(selected[insertAt])
+		if role != "system" && role != "developer" {
+			break
+		}
+		insertAt++
+	}
+	out := make([]json.RawMessage, 0, len(selected)+1)
+	out = append(out, selected[:insertAt]...)
+	out = append(out, json.RawMessage(raw))
+	out = append(out, selected[insertAt:]...)
+	return out
 }
 
 func modelAllowed(rules []config.PayloadModelRule, model, protocol string) bool {

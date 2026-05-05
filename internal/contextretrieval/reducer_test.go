@@ -104,3 +104,45 @@ func TestReduceChatMessagesPreservesSystemAndLatest(t *testing.T) {
 		t.Fatalf("first role = %v, want system", decoded.Messages[0]["role"])
 	}
 }
+
+func TestReduceCodexAwareInsertsSummaryAndPreservesToolPair(t *testing.T) {
+	noise := strings.Repeat("irrelevant historical terminal output ", 80)
+	raw := []byte(`{"model":"gpt-5.3-codex","input":[` +
+		`{"type":"message","role":"user","content":[{"type":"input_text","text":"old notes mention internal/router/session.go and command go test ./... failed with timeout"}]},` +
+		`{"type":"message","role":"user","content":[{"type":"input_text","text":"archived signal: failed migration in internal/db/migrate.go"}]},` +
+		`{"type":"message","role":"user","content":[{"type":"input_text","text":"` + noise + `"}]},` +
+		`{"type":"function_call","call_id":"call_1","name":"read_file","arguments":"{\"path\":\"internal/router/session.go\"}"},` +
+		`{"type":"function_call_output","call_id":"call_1","output":"panic: websocket timeout in internal/router/session.go"},` +
+		`{"type":"message","role":"user","content":[{"type":"input_text","text":"latest asks about websocket timeout"}]}` +
+		`]}`)
+
+	reduced, report, err := Reduce(context.Background(), raw, "gpt-5.3-codex", "openai-response", config.ContextRetrievalConfig{
+		Enabled:             true,
+		MaxInputBytes:       1200,
+		PreserveRecentTurns: 1,
+		Retrieval:           config.ContextRetrievalSearchConfig{TopK: 1},
+		CodexAware: config.CodexAwareContextConfig{
+			Enabled:              true,
+			PreserveToolPairs:    true,
+			InsertSummary:        true,
+			MaxSummaryBytes:      800,
+			PreserveRecentErrors: 1,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Reduce() error = %v", err)
+	}
+	if !report.Applied {
+		t.Fatal("expected reduction to apply")
+	}
+	body := string(reduced)
+	if !strings.Contains(body, "Retrieved summary") {
+		t.Fatalf("expected synthetic summary, got %s", body)
+	}
+	if !strings.Contains(body, "internal/router/session.go") {
+		t.Fatalf("expected file path in retained context or summary, got %s", body)
+	}
+	if strings.Contains(body, "call_1") && (!strings.Contains(body, "function_call") || !strings.Contains(body, "function_call_output")) {
+		t.Fatalf("expected tool call/output pair to stay together, got %s", body)
+	}
+}

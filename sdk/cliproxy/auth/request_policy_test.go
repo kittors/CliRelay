@@ -192,3 +192,75 @@ func TestManagerExecute_RequestPolicyRejectsWhenNoFallback(t *testing.T) {
 		t.Fatalf("bigmodel calls = %v, want none", calls)
 	}
 }
+
+func TestManagerExecute_RequestPolicyFeatureSkipChannel(t *testing.T) {
+	manager := NewManager(nil, &RoundRobinSelector{}, nil)
+	bigmodel := &requestPolicyTestExecutor{id: "bigmodel-coding"}
+	codex := &requestPolicyTestExecutor{id: "codex"}
+	manager.RegisterExecutor(bigmodel)
+	manager.RegisterExecutor(codex)
+	manager.SetConfig(&internalconfig.Config{
+		OpenAICompatibility: []internalconfig.OpenAICompatibility{
+			{
+				Name: "bigmodel-coding",
+				Models: []internalconfig.OpenAICompatibilityModel{
+					{Name: "glm-5.1", Alias: "gpt-5.3-codex"},
+				},
+			},
+		},
+		RequestPolicies: []internalconfig.RequestPolicy{
+			{
+				Name: "glm-multimodal-skip",
+				Match: internalconfig.RequestPolicyMatch{
+					RequestedModels:   []string{"gpt-5.3-codex"},
+					UpstreamProviders: []string{"bigmodel-coding"},
+					UpstreamModels:    []string{"glm-5.1"},
+					RequestFeatures:   []string{"multimodal"},
+				},
+			},
+		},
+	})
+
+	for _, auth := range []*Auth{
+		{
+			ID:       "bigmodel-auth",
+			Provider: "bigmodel-coding",
+			Status:   StatusActive,
+			Attributes: map[string]string{
+				"api_key":      "bigmodel-key",
+				"provider_key": "bigmodel-coding",
+				"compat_name":  "bigmodel-coding",
+			},
+		},
+		{
+			ID:       "codex-auth",
+			Provider: "codex",
+			Status:   StatusActive,
+			Metadata: map[string]any{"email": "codex@example.com"},
+		},
+	} {
+		if _, err := manager.Register(context.Background(), auth); err != nil {
+			t.Fatalf("register %s: %v", auth.ID, err)
+		}
+		registry.GetGlobalRegistry().RegisterClient(auth.ID, auth.Provider, []*registry.ModelInfo{{ID: "gpt-5.3-codex", Name: "gpt-5.3-codex"}})
+		t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(auth.ID) })
+	}
+
+	_, err := manager.Execute(context.Background(), []string{"bigmodel-coding", "codex"}, cliproxyexecutor.Request{
+		Model:   "gpt-5.3-codex",
+		Payload: []byte(`{"model":"gpt-5.3-codex"}`),
+	}, cliproxyexecutor.Options{
+		Metadata: map[string]any{
+			cliproxyexecutor.RequestFeaturesMetadataKey: []string{"multimodal"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if calls := bigmodel.Calls(); len(calls) != 0 {
+		t.Fatalf("bigmodel calls = %v, want none", calls)
+	}
+	if calls := codex.Calls(); len(calls) != 1 || calls[0] != "codex-auth" {
+		t.Fatalf("codex calls = %v, want [codex-auth]", calls)
+	}
+}

@@ -714,11 +714,15 @@ type RequestPolicyMatch struct {
 	RequestedModels   []string `yaml:"requested-models,omitempty" json:"requested-models,omitempty"`
 	UpstreamProviders []string `yaml:"upstream-providers,omitempty" json:"upstream-providers,omitempty"`
 	UpstreamModels    []string `yaml:"upstream-models,omitempty" json:"upstream-models,omitempty"`
+	RequestFeatures   []string `yaml:"request-features,omitempty" json:"request-features,omitempty"`
 }
 
 // RequestPolicyLimits contains hard request limits.
 type RequestPolicyLimits struct {
 	MaxRequestBytes int64 `yaml:"max-request-bytes,omitempty" json:"max-request-bytes,omitempty"`
+	MinRequestBytes int64 `yaml:"min-request-bytes,omitempty" json:"min-request-bytes,omitempty"`
+	MinInputItems   int   `yaml:"min-input-items,omitempty" json:"min-input-items,omitempty"`
+	MinToolCalls    int   `yaml:"min-tool-calls,omitempty" json:"min-tool-calls,omitempty"`
 }
 
 // RequestPolicyOverLimit controls behavior after a request exceeds a configured limit.
@@ -1133,13 +1137,14 @@ func (cfg *Config) SanitizeRequestPolicies() {
 		policy.Match.RequestedModels = normalizePolicyValues(policy.Match.RequestedModels, false)
 		policy.Match.UpstreamProviders = normalizePolicyValues(policy.Match.UpstreamProviders, true)
 		policy.Match.UpstreamModels = normalizePolicyValues(policy.Match.UpstreamModels, false)
+		policy.Match.RequestFeatures = normalizePolicyValues(policy.Match.RequestFeatures, true)
 		policy.OverLimit.Action = strings.ToLower(strings.TrimSpace(policy.OverLimit.Action))
 		switch policy.OverLimit.Action {
 		case "", "skip-channel", "reject":
 		default:
 			policy.OverLimit.Action = "skip-channel"
 		}
-		if policy.Limits.MaxRequestBytes <= 0 {
+		if policy.Limits.MaxRequestBytes <= 0 && policy.Limits.MinRequestBytes <= 0 && policy.Limits.MinInputItems <= 0 && policy.Limits.MinToolCalls <= 0 && len(policy.Match.RequestFeatures) == 0 {
 			continue
 		}
 		out = append(out, policy)
@@ -1198,6 +1203,17 @@ func (cfg *Config) SanitizeContextRetrieval() {
 	}
 	if cr.Retrieval.Strategy != "keyword" {
 		cr.Retrieval.Strategy = "keyword"
+	}
+	if cr.CodexAware.Enabled {
+		if cr.CodexAware.MaxSummaryBytes <= 0 {
+			cr.CodexAware.MaxSummaryBytes = 4000
+		}
+		if cr.CodexAware.PreserveRecentCommands <= 0 {
+			cr.CodexAware.PreserveRecentCommands = 8
+		}
+		if cr.CodexAware.PreserveRecentErrors <= 0 {
+			cr.CodexAware.PreserveRecentErrors = 8
+		}
 	}
 	out := make([]PayloadModelRule, 0, len(cr.Models))
 	for _, rule := range cr.Models {

@@ -13,6 +13,12 @@ const RequestedModelMetadataKey = "requested_model"
 const (
 	// RequestBytesMetadataKey stores the inbound request body size in bytes.
 	RequestBytesMetadataKey = "request_bytes"
+	// RequestFeaturesMetadataKey stores derived request features used by routing policies.
+	RequestFeaturesMetadataKey = "request_features"
+	// InputItemsMetadataKey stores the number of top-level input/messages items.
+	InputItemsMetadataKey = "input_items"
+	// ToolCallsMetadataKey stores the number of detected tool/function calls and outputs.
+	ToolCallsMetadataKey = "tool_calls"
 	// PinnedAuthMetadataKey locks execution to a specific auth ID.
 	PinnedAuthMetadataKey = "pinned_auth_id"
 	// SinglePickMetadataKey forces the auth manager to use exactly one picked auth

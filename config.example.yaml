@@ -134,6 +134,71 @@ request-log-storage:
   # Reclaim disk space after cleanup. This can be I/O intensive on very large databases.
   vacuum-on-cleanup: true
 
+# Optional request context retrieval for large Codex/OpenAI-compatible payloads.
+# This trims oversized request history before forwarding while preserving recent turns
+# and retrieving older keyword-relevant items.
+# context-retrieval:
+#   enabled: false
+#   models:
+#     - name: "gpt-5.3-codex"
+#       protocol: "openai-response"
+#     - name: "gpt-5.3-codex"
+#       protocol: "openai"
+#   max-input-bytes: 350000
+#   preserve-recent-turns: 10
+#   chunk:
+#     max-bytes: 12000
+#   retrieval:
+#     top-k: 40
+#     strategy: "keyword"
+#   codex-aware:
+#     enabled: true
+#     preserve-tool-pairs: true
+#     insert-summary: true
+#     max-summary-bytes: 4000
+#     preserve-recent-commands: 8
+#     preserve-recent-errors: 8
+
+# Optional request policies for routing around provider/model limits.
+# Policies can skip a channel or reject locally when request size/features exceed
+# configured limits. Use skip-channel to fall back to the next available provider.
+# request-policies:
+#   - name: "glm-5.1-large-request-guard"
+#     match:
+#       requested-models: ["gpt-5.3-codex"]
+#       upstream-providers: ["bigmodel-coding"]
+#       upstream-models: ["glm-5.1"]
+#     limits:
+#       max-request-bytes: 800000
+#     over-limit:
+#       action: "skip-channel"
+#   - name: "glm-5.1-multimodal-skip"
+#     match:
+#       requested-models: ["gpt-5.3-codex"]
+#       upstream-providers: ["bigmodel-coding"]
+#       upstream-models: ["glm-5.1"]
+#       request-features: ["multimodal"]
+#     over-limit:
+#       action: "skip-channel"
+#   - name: "glm-5.1-tool-heavy-skip"
+#     match:
+#       requested-models: ["gpt-5.3-codex"]
+#       upstream-providers: ["bigmodel-coding"]
+#       upstream-models: ["glm-5.1"]
+#     limits:
+#       min-tool-calls: 16
+#     over-limit:
+#       action: "skip-channel"
+#   - name: "glm-5.1-long-thread-skip"
+#     match:
+#       requested-models: ["gpt-5.3-codex"]
+#       upstream-providers: ["bigmodel-coding"]
+#       upstream-models: ["glm-5.1"]
+#     limits:
+#       min-input-items: 120
+#     over-limit:
+#       action: "skip-channel"
+
 # Proxy URL. Supports socks5/http/https protocols. Example: socks5://user:pass@192.168.1.1:1080/
 proxy-url: ""
 

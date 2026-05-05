@@ -301,6 +301,57 @@ func requestExecutionMetadata(ctx context.Context) map[string]any {
 	return meta
 }
 
+func enrichRequestExecutionMetadata(meta map[string]any, rawJSON []byte) {
+	if meta == nil || len(rawJSON) == 0 {
+		return
+	}
+	inputItems := countTopLevelItems(rawJSON)
+	toolCalls := countJSONOccurrences(rawJSON, []string{"function_call", "tool_call", "function_call_output", "tool_result"})
+	features := requestFeatures(rawJSON, inputItems, toolCalls)
+	meta[coreexecutor.InputItemsMetadataKey] = inputItems
+	meta[coreexecutor.ToolCallsMetadataKey] = toolCalls
+	if len(features) > 0 {
+		meta[coreexecutor.RequestFeaturesMetadataKey] = features
+	}
+}
+
+func countTopLevelItems(rawJSON []byte) int {
+	for _, path := range []string{"input", "messages"} {
+		result := gjson.GetBytes(rawJSON, path)
+		if result.IsArray() {
+			return len(result.Array())
+		}
+	}
+	return 0
+}
+
+func countJSONOccurrences(rawJSON []byte, needles []string) int {
+	text := strings.ToLower(string(rawJSON))
+	total := 0
+	for _, needle := range needles {
+		total += strings.Count(text, strings.ToLower(needle))
+	}
+	return total
+}
+
+func requestFeatures(rawJSON []byte, inputItems int, toolCalls int) []string {
+	text := strings.ToLower(string(rawJSON))
+	features := make([]string, 0, 4)
+	if strings.Contains(text, "input_image") || strings.Contains(text, "image_url") || strings.Contains(text, "input_file") || strings.Contains(text, "file_url") || strings.Contains(text, "input_video") || strings.Contains(text, "video_url") {
+		features = append(features, "multimodal")
+	}
+	if toolCalls > 0 {
+		features = append(features, "tools")
+	}
+	if toolCalls >= 16 {
+		features = append(features, "tool-heavy")
+	}
+	if inputItems >= 80 {
+		features = append(features, "long-thread")
+	}
+	return features
+}
+
 func isGroupedRouteRequestMeta(meta map[string]any) bool {
 	if len(meta) == 0 {
 		return false
@@ -653,8 +704,10 @@ func (h *BaseAPIHandler) ExecuteWithAuthManager(ctx context.Context, handlerType
 	if errMsg != nil {
 		return nil, nil, errMsg
 	}
+	originalJSON := rawJSON
 	rawJSON = h.applyContextRetrieval(ctx, normalizedModel, handlerType, rawJSON)
 	reqMeta := requestExecutionMetadata(ctx)
+	enrichRequestExecutionMetadata(reqMeta, originalJSON)
 	reqMeta[coreexecutor.RequestedModelMetadataKey] = normalizedModel
 	reqMeta[coreexecutor.RequestBytesMetadataKey] = len(rawJSON)
 	payload := rawJSON
@@ -704,6 +757,7 @@ func (h *BaseAPIHandler) ExecuteCountWithAuthManager(ctx context.Context, handle
 		return nil, nil, errMsg
 	}
 	reqMeta := requestExecutionMetadata(ctx)
+	enrichRequestExecutionMetadata(reqMeta, rawJSON)
 	reqMeta[coreexecutor.RequestedModelMetadataKey] = normalizedModel
 	reqMeta[coreexecutor.RequestBytesMetadataKey] = len(rawJSON)
 	payload := rawJSON
@@ -756,8 +810,10 @@ func (h *BaseAPIHandler) ExecuteStreamWithAuthManager(ctx context.Context, handl
 		close(errChan)
 		return nil, nil, errChan
 	}
+	originalJSON := rawJSON
 	rawJSON = h.applyContextRetrieval(ctx, normalizedModel, handlerType, rawJSON)
 	reqMeta := requestExecutionMetadata(ctx)
+	enrichRequestExecutionMetadata(reqMeta, originalJSON)
 	reqMeta[coreexecutor.RequestedModelMetadataKey] = normalizedModel
 	reqMeta[coreexecutor.RequestBytesMetadataKey] = len(rawJSON)
 	groupedRoute := isGroupedRouteRequestMeta(reqMeta)
