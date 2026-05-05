@@ -76,6 +76,28 @@ func TestResponsesWebsocketPrewarmPayloadsDisabledForGenerateTrue(t *testing.T) 
 	}
 }
 
+func TestWebsocketRequestSummary(t *testing.T) {
+	raw := []byte(`{"type":"response.create","model":"gpt-5.3-codex","generate":false,"previous_response_id":"resp_123","input":[{"type":"message"},{"type":"message"}]}`)
+
+	got := websocketRequestSummary(raw)
+
+	if !strings.Contains(got, "type=response.create") {
+		t.Fatalf("summary missing type: %q", got)
+	}
+	if !strings.Contains(got, "model=gpt-5.3-codex") {
+		t.Fatalf("summary missing model: %q", got)
+	}
+	if !strings.Contains(got, "generate=false") {
+		t.Fatalf("summary missing generate flag: %q", got)
+	}
+	if !strings.Contains(got, "previous_response_id=resp_123") {
+		t.Fatalf("summary missing previous_response_id: %q", got)
+	}
+	if !strings.Contains(got, "input_items=2") {
+		t.Fatalf("summary missing input count: %q", got)
+	}
+}
+
 func TestWebsocketResponseTraceFromConfigDefaultsAndCaps(t *testing.T) {
 	trace := websocketResponseTraceFromConfig(&internalconfig.SDKConfig{
 		Observability: internalconfig.ObservabilityConfig{

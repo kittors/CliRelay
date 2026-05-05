@@ -166,6 +166,7 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 		logResponsesWebsocketPayload(trace, "downstream_in", passthroughSessionID, msgType, websocketPayloadEventType(payload), false, 0, payload)
 		if trace.Enabled {
 			log.Infof("responses websocket trace: client message received id=%s wait_ms=%d bytes=%d", passthroughSessionID, time.Since(waitStart).Milliseconds(), len(payload))
+			log.Infof("responses websocket trace: request summary id=%s %s", passthroughSessionID, websocketRequestSummary(payload))
 		}
 		appendWebsocketEvent(&wsBodyLog, "request", payload)
 
@@ -585,6 +586,27 @@ func responsesWebsocketPrewarmPayloads(requestJSON []byte) ([][]byte, bool) {
 	created := []byte(fmt.Sprintf(`{"type":"response.created","response":{"id":%q}}`, syntheticID))
 	done := []byte(fmt.Sprintf(`{"type":"response.done","response":{"id":%q,"output":[],"usage":{"input_tokens":0,"output_tokens":0,"total_tokens":0}}}`, syntheticID))
 	return [][]byte{created, done}, true
+}
+
+func websocketRequestSummary(rawJSON []byte) string {
+	requestType := strings.TrimSpace(gjson.GetBytes(rawJSON, "type").String())
+	modelName := strings.TrimSpace(gjson.GetBytes(rawJSON, "model").String())
+	prevResponseID := strings.TrimSpace(gjson.GetBytes(rawJSON, "previous_response_id").String())
+	generateResult := gjson.GetBytes(rawJSON, "generate")
+	generateValue := "<unset>"
+	if generateResult.Exists() {
+		if generateResult.Bool() {
+			generateValue = "true"
+		} else {
+			generateValue = "false"
+		}
+	}
+	inputCount := 0
+	inputResult := gjson.GetBytes(rawJSON, "input")
+	if inputResult.Exists() && inputResult.IsArray() {
+		inputCount = len(inputResult.Array())
+	}
+	return fmt.Sprintf("type=%s model=%s generate=%s previous_response_id=%s input_items=%d", requestType, modelName, generateValue, prevResponseID, inputCount)
 }
 
 func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
