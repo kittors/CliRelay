@@ -194,3 +194,26 @@ func TestApplyOAuthModelAlias_SuffixPreservation(t *testing.T) {
 		t.Errorf("applyOAuthModelAlias() model = %q, want %q", resolvedModel, "gemini-2.5-pro-exp-03-25(8192)")
 	}
 }
+
+func TestApplyOAuthModelAlias_BuiltInCodexAutoReview(t *testing.T) {
+	t.Parallel()
+
+	mgr := NewManager(nil, nil, nil)
+	mgr.SetConfig(&internalconfig.Config{})
+
+	auth := &Auth{
+		ID:       "codex-oauth",
+		Provider: "codex",
+		Attributes: map[string]string{
+			"auth_kind": "oauth",
+		},
+		Metadata: map[string]any{
+			"email": "codex@example.com",
+		},
+	}
+
+	resolvedModel := mgr.applyOAuthModelAlias(auth, "codex-auto-review")
+	if resolvedModel != "gpt-5.5" {
+		t.Errorf("applyOAuthModelAlias() model = %q, want %q", resolvedModel, "gpt-5.5")
+	}
+}

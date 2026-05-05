@@ -19,6 +19,8 @@
 
 合并/推送时只包含本次任务相关文件，不要把本地未跟踪目录或无关改动一起提交。
 
+回复或更新 GitHub issue/PR 评论时，必须保证评论正文按 Markdown 正常渲染：多段内容使用真实换行、列表和代码反引号；使用 `gh issue comment`、`gh pr comment`、`gh issue close --comment` 等命令时，优先使用 heredoc/临时文件/`--body-file -` 传入正文，或使用 shell 支持的真实换行字符串。严禁把 `\n` 当作普通字符写进评论，提交前应通过 `gh issue view --comments` 或 `gh pr view --comments` 抽查渲染文本是否正确。
+
 常规修复流程应按上述分支规范推送到远端功能分支并合并到 `dev`，由用户确认后再进行部署。不要用“已经查明原因”“本地测试通过”“构建成功”作为自动部署的理由。
 
 GitHub 仓库必须为 `main` 和 `dev` 开启分支保护：要求通过 Pull Request 合并、保护规则应用到管理员、禁止 force push、禁止删除分支。若发现保护规则缺失或被关闭，先恢复保护规则，再继续开发流程。

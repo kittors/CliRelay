@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/auth/codex"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 )
 
@@ -185,5 +186,57 @@ func TestRequestAntigravityTokenUsesAvailableLocalCallbackWhenPreferredPortBusy(
 		t.Fatalf("redirect_uri missing callback port: %q", redirectURI)
 	}
 
+	SetOAuthSessionError(payload.State, "test shutdown")
+}
+
+func TestRequestCodexTokenDoesNotRequireLocalCallbackForwarder(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	busy, err := net.Listen("tcp", "127.0.0.1:1455")
+	if err != nil {
+		t.Skipf("codex callback port already unavailable: %v", err)
+	}
+	defer func() { _ = busy.Close() }()
+
+	previousStore := oauthSessions
+	oauthSessions = newOAuthSessionStore(oauthCallbackWaitTimeout)
+	t.Cleanup(func() {
+		oauthSessions = previousStore
+	})
+
+	h := &Handler{
+		cfg: &config.Config{
+			AuthDir: t.TempDir(),
+			Port:    8317,
+		},
+	}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	req := httptest.NewRequest(http.MethodGet, "/codex-auth-url?is_webui=true", nil)
+	c.Request = req
+
+	h.RequestCodexToken(c)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var payload struct {
+		URL   string `json:"url"`
+		State string `json:"state"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if payload.State == "" {
+		t.Fatalf("expected state in response")
+	}
+	authURL, err := url.Parse(payload.URL)
+	if err != nil {
+		t.Fatalf("parse auth URL: %v", err)
+	}
+	if redirectURI := authURL.Query().Get("redirect_uri"); redirectURI != codex.RedirectURI {
+		t.Fatalf("redirect_uri = %q, want %q", redirectURI, codex.RedirectURI)
+	}
 	SetOAuthSessionError(payload.State, "test shutdown")
 }

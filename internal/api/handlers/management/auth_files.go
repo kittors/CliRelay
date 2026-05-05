@@ -1945,20 +1945,17 @@ func (h *Handler) RequestCodexToken(c *gin.Context) {
 	if isWebUI {
 		targetURL, errTarget := h.managementCallbackURL("/codex/callback")
 		if errTarget != nil {
-			log.WithError(errTarget).Error("failed to compute codex callback target")
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "callback server unavailable"})
-			return
-		}
-		var errStart error
-		if forwarder, errStart = startCallbackForwarder(codexCallbackPort, "codex", targetURL); errStart != nil {
-			log.WithError(errStart).Error("failed to start codex callback forwarder")
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to start callback server"})
-			return
+			log.WithError(errTarget).Warn("failed to compute codex callback target; continuing with manual callback submission")
+		} else {
+			var errStart error
+			if forwarder, errStart = startCallbackForwarder(codexCallbackPort, "codex", targetURL); errStart != nil {
+				log.WithError(errStart).Warn("failed to start codex callback forwarder; continuing with manual callback submission")
+			}
 		}
 	}
 
 	go func() {
-		if isWebUI {
+		if forwarder != nil {
 			defer stopCallbackForwarderInstance(ctx, codexCallbackPort, forwarder)
 		}
 

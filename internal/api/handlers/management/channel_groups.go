@@ -246,7 +246,6 @@ func validateRoutingAndAPIKeyRestrictions(cfg *config.Config, auths []*coreauth.
 	apiKeyEntries := canonicalizeAPIKeyEntriesChannels(cfg.APIKeyEntries, known)
 
 	groups := buildChannelGroupItems(cfg, auths)
-	descriptors := collectChannelDescriptors(cfg, auths)
 	knownGroups := make(map[string]channelGroupItem, len(groups))
 	for _, group := range groups {
 		knownGroups[group.Name] = group
@@ -262,7 +261,7 @@ func validateRoutingAndAPIKeyRestrictions(cfg *config.Config, auths []*coreauth.
 			return fmt.Errorf("duplicate channel group %q", group.Name)
 		}
 		seenGroupNames[name] = struct{}{}
-		if _, exists := knownGroups[name]; !exists || (name != "default" && !channelGroupMatchesAnyDescriptor(group, descriptors)) {
+		if _, exists := knownGroups[name]; !exists {
 			return fmt.Errorf("channel group %q does not match any known channel", group.Name)
 		}
 	}

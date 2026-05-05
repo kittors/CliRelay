@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -363,10 +364,12 @@ func buildRequestDetailContent(ctx context.Context) string {
 	req := ginCtx.Request
 	apiRequest, _ := ginCtx.Get(apiRequestKey)
 	apiResponse, _ := ginCtx.Get(apiResponseKey)
+	clientIP, clientIPSource := requestLogClientIP(ginCtx, req)
 
 	detail := map[string]any{
 		"client": map[string]any{
-			"ip":                  ginCtx.ClientIP(),
+			"ip":                  clientIP,
+			"ip_source":           clientIPSource,
 			"remote_addr":         req.RemoteAddr,
 			"method":              req.Method,
 			"url":                 req.URL.String(),
@@ -390,6 +393,103 @@ func buildRequestDetailContent(ctx context.Context) string {
 		return ""
 	}
 	return string(data)
+}
+
+func requestLogClientIP(ginCtx *gin.Context, req *http.Request) (string, string) {
+	if ip, source := forwardedClientIP(req); ip != "" {
+		return ip, source
+	}
+	if ginCtx != nil {
+		if ip := strings.TrimSpace(ginCtx.ClientIP()); ip != "" {
+			return ip, "client_ip"
+		}
+	}
+	if req != nil {
+		if ip := remoteAddrIP(req.RemoteAddr); ip != "" {
+			return ip, "remote_addr"
+		}
+	}
+	return "", ""
+}
+
+func forwardedClientIP(req *http.Request) (string, string) {
+	if req == nil || req.Header == nil {
+		return "", ""
+	}
+	headerPriority := []string{
+		"CF-Connecting-IP",
+		"True-Client-IP",
+		"X-Real-IP",
+		"X-Forwarded-For",
+	}
+	for _, header := range headerPriority {
+		if ip := firstHeaderIP(req.Header, header); ip != "" {
+			return ip, header
+		}
+	}
+	if ip := forwardedHeaderIP(req.Header); ip != "" {
+		return ip, "Forwarded"
+	}
+	return "", ""
+}
+
+func firstHeaderIP(headers http.Header, header string) string {
+	for _, value := range headers.Values(header) {
+		for _, candidate := range strings.Split(value, ",") {
+			if ip := normalizeIPCandidate(candidate); ip != "" {
+				return ip
+			}
+		}
+	}
+	return ""
+}
+
+func forwardedHeaderIP(headers http.Header) string {
+	for _, value := range headers.Values("Forwarded") {
+		for _, entry := range strings.Split(value, ",") {
+			for _, part := range strings.Split(entry, ";") {
+				key, rawValue, ok := strings.Cut(part, "=")
+				if !ok || !strings.EqualFold(strings.TrimSpace(key), "for") {
+					continue
+				}
+				if ip := normalizeIPCandidate(rawValue); ip != "" {
+					return ip
+				}
+			}
+		}
+	}
+	return ""
+}
+
+func remoteAddrIP(remoteAddr string) string {
+	remoteAddr = strings.TrimSpace(remoteAddr)
+	if remoteAddr == "" {
+		return ""
+	}
+	if host, _, err := net.SplitHostPort(remoteAddr); err == nil {
+		return normalizeIPCandidate(host)
+	}
+	return normalizeIPCandidate(remoteAddr)
+}
+
+func normalizeIPCandidate(candidate string) string {
+	candidate = strings.TrimSpace(candidate)
+	candidate = strings.Trim(candidate, `"`)
+	if candidate == "" || strings.EqualFold(candidate, "unknown") {
+		return ""
+	}
+	if strings.HasPrefix(candidate, "[") {
+		if end := strings.Index(candidate, "]"); end > 0 {
+			candidate = candidate[1:end]
+		}
+	} else if host, _, err := net.SplitHostPort(candidate); err == nil {
+		candidate = host
+	}
+	ip := net.ParseIP(strings.TrimSpace(candidate))
+	if ip == nil {
+		return ""
+	}
+	return ip.String()
 }
 
 func bytesToString(value any) string {

@@ -58,7 +58,20 @@ func (h *Handler) GetUsageLogs(c *gin.Context) {
 		}
 	}
 	var authIndexes []string
+	var channelNames []string
 	if len(selectedChannelKeys) > 0 {
+		for key := range selectedChannelKeys {
+			channelNames = append(channelNames, key)
+		}
+		for raw, name := range channelNameMap {
+			key := strings.ToLower(strings.TrimSpace(name))
+			if key == "" {
+				continue
+			}
+			if _, ok := selectedChannelKeys[key]; ok {
+				channelNames = append(channelNames, raw)
+			}
+		}
 		for idx, name := range authIndexChannelMap {
 			key := strings.ToLower(strings.TrimSpace(name))
 			if key == "" {
@@ -69,19 +82,20 @@ func (h *Handler) GetUsageLogs(c *gin.Context) {
 			}
 		}
 		// No matches should yield an empty result set rather than "no filter".
-		if len(authIndexes) == 0 {
+		if len(authIndexes) == 0 && len(channelNames) == 0 {
 			authIndexes = []string{""}
 		}
 	}
 
 	params := usage.LogQueryParams{
-		Page:        intQueryDefault(c, "page", 1),
-		Size:        intQueryDefault(c, "size", 50),
-		Days:        intQueryDefault(c, "days", 7),
-		APIKey:      strings.TrimSpace(c.Query("api_key")),
-		Model:       strings.TrimSpace(c.Query("model")),
-		Status:      strings.TrimSpace(c.Query("status")),
-		AuthIndexes: authIndexes,
+		Page:         intQueryDefault(c, "page", 1),
+		Size:         intQueryDefault(c, "size", 50),
+		Days:         intQueryDefault(c, "days", 7),
+		APIKey:       strings.TrimSpace(c.Query("api_key")),
+		Model:        strings.TrimSpace(c.Query("model")),
+		Status:       strings.TrimSpace(c.Query("status")),
+		AuthIndexes:  authIndexes,
+		ChannelNames: channelNames,
 	}
 
 	result, err := usage.QueryLogs(params)
@@ -110,17 +124,20 @@ func (h *Handler) GetUsageLogs(c *gin.Context) {
 				item.APIKeyName = name
 			}
 		}
-		// Prefer the current auth-index derived channel name so renamed OAuth
-		// channels are reflected in logs immediately without rewriting history.
+		// Keep the channel captured at request time. Only translate legacy
+		// source identifiers (email/API key) into display names.
+		if item.ChannelName != "" {
+			if name, ok := channelNameMap[item.ChannelName]; ok && strings.TrimSpace(name) != "" {
+				item.ChannelName = name
+			}
+			continue
+		}
 		if name, ok := authIndexChannelMap[item.AuthIndex]; ok && strings.TrimSpace(name) != "" {
 			item.ChannelName = name
 			continue
 		}
-		// Fall back to source-based mapping when the stored log channel is empty.
-		if item.ChannelName == "" {
-			if name, ok := channelNameMap[item.Source]; ok {
-				item.ChannelName = name
-			}
+		if name, ok := channelNameMap[item.Source]; ok {
+			item.ChannelName = name
 		}
 	}
 
@@ -131,12 +148,14 @@ func (h *Handler) GetUsageLogs(c *gin.Context) {
 			filters.APIKeyNames[key] = name
 		}
 	}
-	// Add channel filter options from current auth snapshot.
-	if len(authIndexChannelMap) > 0 {
+	if len(filters.Channels) > 0 {
 		seen := make(map[string]struct{})
-		channels := make([]string, 0, len(authIndexChannelMap))
-		for _, name := range authIndexChannelMap {
-			trimmed := strings.TrimSpace(name)
+		channels := make([]string, 0, len(filters.Channels))
+		for _, value := range filters.Channels {
+			trimmed := strings.TrimSpace(value)
+			if name, ok := channelNameMap[trimmed]; ok && strings.TrimSpace(name) != "" {
+				trimmed = strings.TrimSpace(name)
+			}
 			key := strings.ToLower(trimmed)
 			if key == "" {
 				continue

@@ -19,7 +19,7 @@ import (
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 )
 
-func TestGetUsageLogsPrefersCurrentAuthChannelNameByAuthIndex(t *testing.T) {
+func TestGetUsageLogsResolvesLegacySourceChannelName(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	tmpDir := t.TempDir()
@@ -93,6 +93,106 @@ func TestGetUsageLogsPrefersCurrentAuthChannelNameByAuthIndex(t *testing.T) {
 	}
 	if payload.Items[0].FirstTokenMs != 45 {
 		t.Fatalf("first_token_ms = %d, want %d", payload.Items[0].FirstTokenMs, 45)
+	}
+}
+
+func TestGetUsageLogsKeepsStoredChannelNameWhenCurrentAuthNameDiffers(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "usage.db")
+	if err := usage.InitDB(dbPath, config.RequestLogStorageConfig{}, time.UTC); err != nil {
+		t.Fatalf("InitDB: %v", err)
+	}
+	t.Cleanup(func() {
+		usage.CloseDB()
+		_ = os.Remove(dbPath)
+		_ = os.Remove(dbPath + "-wal")
+		_ = os.Remove(dbPath + "-shm")
+	})
+
+	store := &memoryAuthStore{}
+	manager := coreauth.NewManager(store, nil, nil)
+	auth, err := manager.Register(context.Background(), &coreauth.Auth{
+		ID:       "tabcode-auth",
+		FileName: "tabcode.json",
+		Provider: "codex",
+		Label:    "tabcode-pro",
+		Metadata: map[string]any{"label": "tabcode-pro"},
+	})
+	if err != nil {
+		t.Fatalf("register auth: %v", err)
+	}
+
+	usage.InsertLog(
+		"", "", "gpt-5.4", "tabcode-plus", "tabcode-plus", auth.Index,
+		false, time.Now().UTC(), 123, 45,
+		usage.TokenStats{InputTokens: 1, OutputTokens: 2, TotalTokens: 3},
+		"", "",
+	)
+
+	h := &Handler{
+		cfg:         &config.Config{},
+		authManager: manager,
+	}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodGet, "/usage/logs?days=7&page=1&size=50", nil)
+
+	h.GetUsageLogs(c)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d, body=%s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	var payload struct {
+		Items []struct {
+			ChannelName string `json:"channel_name"`
+		} `json:"items"`
+		Filters struct {
+			Channels []string `json:"channels"`
+		} `json:"filters"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if len(payload.Items) != 1 {
+		t.Fatalf("expected 1 item, got %d", len(payload.Items))
+	}
+	if payload.Items[0].ChannelName != "tabcode-plus" {
+		t.Fatalf("channel_name = %q, want %q", payload.Items[0].ChannelName, "tabcode-plus")
+	}
+	if len(payload.Filters.Channels) != 1 || payload.Filters.Channels[0] != "tabcode-plus" {
+		t.Fatalf("filters.channels = %#v, want [tabcode-plus]", payload.Filters.Channels)
+	}
+
+	rec = httptest.NewRecorder()
+	c, _ = gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodGet, "/usage/logs?days=7&page=1&size=50&channel=tabcode-plus", nil)
+	h.GetUsageLogs(c)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("filtered expected status %d, got %d, body=%s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal filtered response: %v", err)
+	}
+	if len(payload.Items) != 1 || payload.Items[0].ChannelName != "tabcode-plus" {
+		t.Fatalf("filtered items = %#v, want one tabcode-plus item", payload.Items)
+	}
+
+	rec = httptest.NewRecorder()
+	c, _ = gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodGet, "/usage/logs?days=7&page=1&size=50&channel=tabcode-pro", nil)
+	h.GetUsageLogs(c)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("mismatched filtered expected status %d, got %d, body=%s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal mismatched filtered response: %v", err)
+	}
+	if len(payload.Items) != 0 {
+		t.Fatalf("mismatched filtered items = %#v, want none", payload.Items)
 	}
 }
 
@@ -374,8 +474,8 @@ func TestGetAuthFileTrendUsesWeeklyResetCycleForRequestTotal(t *testing.T) {
 		t.Fatalf("register auth: %v", err)
 	}
 
-	now := time.Now().UTC().Truncate(time.Second).Add(-time.Hour)
-	resetAt := now.Add(5 * 24 * time.Hour)
+	now := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
+	resetAt := now.Add(4 * 24 * time.Hour)
 	cycleStart := resetAt.Add(-7 * 24 * time.Hour)
 
 	usage.InsertLog("", "", "gpt-5.4", "codex", "GptPro2", auth.Index, false, cycleStart.Add(-time.Hour), 1, 1, usage.TokenStats{TotalTokens: 1}, "", "")

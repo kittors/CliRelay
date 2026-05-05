@@ -17,6 +17,11 @@ type oauthModelAliasTable struct {
 	reverse map[string]map[string]string
 }
 
+const (
+	codexAutoReviewModel         = "codex-auto-review"
+	codexAutoReviewUpstreamModel = "gpt-5.5"
+)
+
 func compileOAuthModelAliasTable(aliases map[string][]internalconfig.OAuthModelAlias) *oauthModelAliasTable {
 	if len(aliases) == 0 {
 		return &oauthModelAliasTable{}
@@ -75,9 +80,32 @@ func (m *Manager) SetOAuthModelAlias(aliases map[string][]internalconfig.OAuthMo
 func (m *Manager) applyOAuthModelAlias(auth *Auth, requestedModel string) string {
 	upstreamModel := m.resolveOAuthUpstreamModel(auth, requestedModel)
 	if upstreamModel == "" {
+		if modelAliasChannel(auth) != "" {
+			if builtIn := resolveBuiltInCodexModelAlias(auth, requestedModel); builtIn != "" {
+				return builtIn
+			}
+		}
 		return requestedModel
 	}
 	return upstreamModel
+}
+
+func resolveBuiltInCodexModelAlias(auth *Auth, requestedModel string) string {
+	if auth == nil || !strings.EqualFold(strings.TrimSpace(auth.Provider), "codex") {
+		return ""
+	}
+	requestedModel = strings.TrimSpace(requestedModel)
+	if requestedModel == "" {
+		return ""
+	}
+	parsed := thinking.ParseSuffix(requestedModel)
+	if !strings.EqualFold(strings.TrimSpace(parsed.ModelName), codexAutoReviewModel) {
+		return ""
+	}
+	if parsed.HasSuffix && parsed.RawSuffix != "" {
+		return codexAutoReviewUpstreamModel + "(" + parsed.RawSuffix + ")"
+	}
+	return codexAutoReviewUpstreamModel
 }
 
 func resolveModelAliasFromConfigModels(requestedModel string, models []modelAliasEntry) string {

@@ -38,13 +38,14 @@ type LogRow struct {
 
 // LogQueryParams holds filter/pagination parameters for QueryLogs.
 type LogQueryParams struct {
-	Page        int      // 1-based
-	Size        int      // rows per page
-	Days        int      // time range in days
-	APIKey      string   // exact match filter
-	Model       string   // exact match filter
-	Status      string   // "success", "failed", or "" (all)
-	AuthIndexes []string // optional auth_index IN (...) filter
+	Page         int      // 1-based
+	Size         int      // rows per page
+	Days         int      // time range in days
+	APIKey       string   // exact match filter
+	Model        string   // exact match filter
+	Status       string   // "success", "failed", or "" (all)
+	AuthIndexes  []string // optional auth_index IN (...) filter
+	ChannelNames []string // optional channel_name IN (...) filter
 }
 
 // LogQueryResult holds the paginated query result.
@@ -538,12 +539,16 @@ func QueryFilters(days int) (FilterOptions, error) {
 	if err != nil {
 		return FilterOptions{}, err
 	}
+	channels, err := queryDistinct(db, "channel_name", cutoff)
+	if err != nil {
+		return FilterOptions{}, err
+	}
 
 	return FilterOptions{
 		APIKeys:     keys,
 		APIKeyNames: make(map[string]string),
 		Models:      models,
-		Channels:    make([]string, 0),
+		Channels:    channels,
 	}, nil
 }
 
@@ -1045,20 +1050,39 @@ func buildWhereClause(params LogQueryParams) (string, []interface{}) {
 	} else if params.Status == "failed" {
 		conditions = append(conditions, "failed = 1")
 	}
-	if len(params.AuthIndexes) > 0 {
-		placeholders := make([]string, 0, len(params.AuthIndexes))
+	if len(params.AuthIndexes) > 0 || len(params.ChannelNames) > 0 {
+		filterConditions := make([]string, 0, 2)
+
+		authPlaceholders := make([]string, 0, len(params.AuthIndexes))
 		for _, idx := range params.AuthIndexes {
 			trimmed := strings.TrimSpace(idx)
 			if trimmed == "" {
 				continue
 			}
-			placeholders = append(placeholders, "?")
+			authPlaceholders = append(authPlaceholders, "?")
 			args = append(args, trimmed)
 		}
-		if len(placeholders) > 0 {
-			conditions = append(conditions, "auth_index IN ("+strings.Join(placeholders, ",")+")")
+		if len(authPlaceholders) > 0 {
+			filterConditions = append(filterConditions, "(auth_index IN ("+strings.Join(authPlaceholders, ",")+") AND trim(coalesce(channel_name, '')) = '')")
+		}
+
+		channelPlaceholders := make([]string, 0, len(params.ChannelNames))
+		for _, name := range params.ChannelNames {
+			trimmed := strings.ToLower(strings.TrimSpace(name))
+			if trimmed == "" {
+				continue
+			}
+			channelPlaceholders = append(channelPlaceholders, "?")
+			args = append(args, trimmed)
+		}
+		if len(channelPlaceholders) > 0 {
+			filterConditions = append(filterConditions, "lower(trim(channel_name)) IN ("+strings.Join(channelPlaceholders, ",")+")")
+		}
+
+		if len(filterConditions) > 0 {
+			conditions = append(conditions, "("+strings.Join(filterConditions, " OR ")+")")
 		} else {
-			// If caller attempted to filter but provided no usable auth indexes, match nothing.
+			// If caller attempted to filter but provided no usable channel selectors, match nothing.
 			conditions = append(conditions, "1 = 0")
 		}
 	}

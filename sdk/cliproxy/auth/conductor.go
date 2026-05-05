@@ -1054,6 +1054,9 @@ func (m *Manager) applyAPIKeyModelAlias(auth *Auth, requestedModel string) strin
 	if upstreamModel != "" {
 		return upstreamModel
 	}
+	if builtIn := resolveBuiltInCodexModelAlias(auth, requestedModel); builtIn != "" {
+		return builtIn
+	}
 	return requestedModel
 }
 

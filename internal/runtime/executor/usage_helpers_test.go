@@ -154,6 +154,35 @@ func TestRequestDetailsCaptureUpstreamLogsWhenOnlyContentStorageEnabled(t *testi
 	}
 }
 
+func TestRequestDetailsPreferForwardedClientIPForCDNRequests(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ginCtx, engine := gin.CreateTestContext(httptest.NewRecorder())
+	if err := engine.SetTrustedProxies(nil); err != nil {
+		t.Fatalf("SetTrustedProxies(nil): %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"input":"hi"}`))
+	req.RemoteAddr = "198.51.100.10:45678"
+	req.Header.Set("X-Forwarded-For", "203.0.113.24, 198.51.100.10")
+	ginCtx.Request = req
+	ctx := context.WithValue(req.Context(), util.ContextKeyGin, ginCtx)
+
+	var detail struct {
+		Client struct {
+			IP         string `json:"ip"`
+			RemoteAddr string `json:"remote_addr"`
+		} `json:"client"`
+	}
+	if err := json.Unmarshal([]byte(buildRequestDetailContent(ctx)), &detail); err != nil {
+		t.Fatalf("unmarshal request details: %v", err)
+	}
+	if detail.Client.IP != "203.0.113.24" {
+		t.Fatalf("client.ip = %q, want real forwarded client IP", detail.Client.IP)
+	}
+	if detail.Client.RemoteAddr != "198.51.100.10:45678" {
+		t.Fatalf("client.remote_addr = %q, want CDN connection address preserved", detail.Client.RemoteAddr)
+	}
+}
+
 func TestFirstTokenLatencyMsFromContext(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	ginCtx, _ := gin.CreateTestContext(nil)

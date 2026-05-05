@@ -136,14 +136,14 @@ func TestValidateRoutingAndAPIKeyRestrictions(t *testing.T) {
 			wantMessage: `duplicate channel group "PRO"`,
 		},
 		{
-			name: "group must match known channel",
+			name: "empty group is allowed",
 			mutate: func(cfg *config.Config) {
 				cfg.Routing.ChannelGroups = append(cfg.Routing.ChannelGroups, config.RoutingChannelGroup{
 					Name:  "ghost",
 					Match: config.ChannelGroupMatch{Prefixes: []string{"ghost"}},
 				})
 			},
-			wantMessage: `channel group "ghost" does not match any known channel`,
+			wantMessage: "",
 		},
 		{
 			name: "duplicate path routes are rejected",
@@ -198,6 +198,12 @@ func TestValidateRoutingAndAPIKeyRestrictions(t *testing.T) {
 			tc.mutate(cfg)
 
 			err := validateRoutingAndAPIKeyRestrictions(cfg, nil)
+			if tc.wantMessage == "" {
+				if err != nil {
+					t.Fatalf("expected no validation error, got: %v", err)
+				}
+				return
+			}
 			if err == nil {
 				t.Fatalf("expected validation error containing %q", tc.wantMessage)
 			}
