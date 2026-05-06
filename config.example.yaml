@@ -248,6 +248,7 @@ request-log-storage:
 #         Authorization: "Bearer ${Z_AI_API_KEY}"
 #       tool-name: "glm-5.1"
 #       env:
+#         identity_fingerprint: "codex"
 #         max_tokens: "512"
 #         disable_thinking: "true"
 #       timeout-seconds: 60

@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 )
 
@@ -567,6 +568,7 @@ func callZAIVisionHTTPExtractor(ctx context.Context, refs []mediaRef, extractor 
 			req.Header.Set(key, os.ExpandEnv(value))
 		}
 	}
+	applyExtractorIdentityFingerprint(req.Header, extractor)
 	if req.Header.Get("Authorization") == "" {
 		if apiKey := strings.TrimSpace(os.ExpandEnv(extractor.Env["api_key"])); apiKey != "" {
 			req.Header.Set("Authorization", "Bearer "+apiKey)
@@ -589,6 +591,15 @@ func callZAIVisionHTTPExtractor(ctx context.Context, refs []mediaRef, extractor 
 		return nil, fmt.Errorf("multimodal adapter extractor %q returned no text", extractor.Name)
 	}
 	return []string{text}, nil
+}
+
+func applyExtractorIdentityFingerprint(headers http.Header, extractor config.MultimodalExtractorConfig) {
+	if headers == nil || !strings.EqualFold(strings.TrimSpace(extractor.Env["identity_fingerprint"]), "codex") {
+		return
+	}
+	if strings.TrimSpace(headers.Get("Session_id")) == "" {
+		headers.Set("Session_id", uuid.NewString())
+	}
 }
 
 func extractHTTPText(data []byte) string {

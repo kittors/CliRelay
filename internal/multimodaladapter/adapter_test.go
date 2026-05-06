@@ -107,9 +107,11 @@ func TestApplyZAIVisionHTTPExtractorStripsMediaAndInjectsVisualContext(t *testin
 	var extractorBody map[string]any
 	var gotPath string
 	var gotAuth string
+	var gotSessionID string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
 		gotAuth = r.Header.Get("Authorization")
+		gotSessionID = r.Header.Get("Session_id")
 		if err := json.NewDecoder(r.Body).Decode(&extractorBody); err != nil {
 			t.Fatalf("decode extractor body: %v", err)
 		}
@@ -139,6 +141,7 @@ func TestApplyZAIVisionHTTPExtractorStripsMediaAndInjectsVisualContext(t *testin
 				Endpoint: server.URL + "/api/paas/v4",
 				ToolName: "glm-4.5v",
 				Headers:  map[string]string{"Authorization": "Bearer sk-test"},
+				Env:      map[string]string{"identity_fingerprint": "codex"},
 			},
 		},
 	}
@@ -158,6 +161,9 @@ func TestApplyZAIVisionHTTPExtractorStripsMediaAndInjectsVisualContext(t *testin
 	}
 	if gotAuth != "Bearer sk-test" {
 		t.Fatalf("Authorization = %q", gotAuth)
+	}
+	if strings.TrimSpace(gotSessionID) == "" {
+		t.Fatalf("Session_id should be generated")
 	}
 	if extractorBody["model"] != "glm-4.5v" {
 		t.Fatalf("model = %#v", extractorBody["model"])
