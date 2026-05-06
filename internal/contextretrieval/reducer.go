@@ -37,6 +37,11 @@ type item struct {
 var keywordPattern = regexp.MustCompile(`[A-Za-z0-9_]{3,}`)
 var filePathPattern = regexp.MustCompile(`[A-Za-z0-9_./-]+\.(?:go|ts|tsx|js|jsx|py|rs|java|kt|md|yaml|yml|json|toml|sh|sql|css|html)`)
 
+const (
+	toolPairRepairOff         = "off"
+	toolPairRepairDropOrphans = "drop-orphans"
+)
+
 func Reduce(ctx context.Context, raw []byte, model, protocol string, cfg config.ContextRetrievalConfig) ([]byte, Report, error) {
 	_ = ctx
 	report := Report{OriginalBytes: len(raw)}
@@ -44,7 +49,15 @@ func Reduce(ctx context.Context, raw []byte, model, protocol string, cfg config.
 		return raw, report, nil
 	}
 	normalizeConfig(&cfg)
-	if cfg.MaxInputBytes <= 0 || len(raw) <= cfg.MaxInputBytes {
+	if cfg.MaxInputBytes <= 0 {
+		return raw, report, nil
+	}
+	overBudget := len(raw) > cfg.MaxInputBytes
+	repairMode := ""
+	if cfg.CodexAware.Enabled {
+		repairMode = cfg.CodexAware.ToolPairRepair
+	}
+	if !overBudget && (repairMode == "" || repairMode == toolPairRepairOff) {
 		return raw, report, nil
 	}
 	if !modelAllowed(cfg.Models, model, protocol) {
@@ -57,6 +70,26 @@ func Reduce(ctx context.Context, raw []byte, model, protocol string, cfg config.
 	}
 	report.Field = field
 	report.OriginalItems = len(items)
+
+	if !overBudget {
+		keep := make(map[int]struct{}, len(items))
+		for i := range items {
+			keep[items[i].Index] = struct{}{}
+		}
+		if !repairToolPairKeep(items, keep, repairMode) {
+			return raw, report, nil
+		}
+		repairOnlyCfg := cfg
+		repairOnlyCfg.CodexAware.InsertSummary = false
+		repaired, err := assemble(raw, field, items, keep, repairOnlyCfg)
+		if err != nil {
+			return raw, report, err
+		}
+		report.Applied = true
+		report.ReducedBytes = len(repaired)
+		report.KeptItems = len(keep)
+		return repaired, report, nil
+	}
 
 	markPreserved(items, cfg.PreserveRecentTurns, cfg.CodexAware)
 	query := buildQuery(items)
@@ -109,6 +142,10 @@ func normalizeConfig(cfg *config.ContextRetrievalConfig) {
 		cfg.Retrieval.TopK = 20
 	}
 	if cfg.CodexAware.Enabled {
+		cfg.CodexAware.ToolPairRepair = strings.ToLower(strings.TrimSpace(cfg.CodexAware.ToolPairRepair))
+		if cfg.CodexAware.ToolPairRepair == "" && cfg.CodexAware.PreserveToolPairs {
+			cfg.CodexAware.ToolPairRepair = toolPairRepairDropOrphans
+		}
 		if cfg.CodexAware.MaxSummaryBytes <= 0 {
 			cfg.CodexAware.MaxSummaryBytes = 4000
 		}
@@ -350,6 +387,12 @@ func assembleWithinBudget(raw []byte, field string, items []item, keep map[int]s
 	if len(keep) == 0 {
 		return raw, 0, nil
 	}
+	toolGroups := toolPairGroupsByIndex(items)
+	toolRepair := ""
+	if cfg.CodexAware.Enabled {
+		toolRepair = cfg.CodexAware.ToolPairRepair
+	}
+	repairToolPairKeep(items, keep, toolRepair)
 	reduced, err := assemble(raw, field, items, keep, cfg)
 	if err != nil || len(reduced) <= maxBytes {
 		return reduced, len(keep), err
@@ -367,7 +410,12 @@ func assembleWithinBudget(raw []byte, field string, items []item, keep map[int]s
 	}
 	sort.Sort(sort.Reverse(sort.IntSlice(removable)))
 	for _, idx := range removable {
-		delete(keep, idx)
+		if !deleteKeepItem(keep, idx, toolGroups, protectedToolPairIndexes(items, keep, func(it item) bool {
+			return it.Forced || it.Recent
+		})) {
+			continue
+		}
+		repairToolPairKeep(items, keep, toolRepair)
 		reduced, err = assemble(raw, field, items, keep, cfg)
 		if err != nil || len(reduced) <= maxBytes {
 			return reduced, len(keep), err
@@ -386,13 +434,50 @@ func assembleWithinBudget(raw []byte, field string, items []item, keep map[int]s
 	}
 	sort.Ints(recentRemovable)
 	for _, idx := range recentRemovable {
-		delete(keep, idx)
+		if !deleteKeepItem(keep, idx, toolGroups, protectedToolPairIndexes(items, keep, func(it item) bool {
+			return it.Forced || it.Index == len(items)-1
+		})) {
+			continue
+		}
+		repairToolPairKeep(items, keep, toolRepair)
 		reduced, err = assemble(raw, field, items, keep, cfg)
 		if err != nil || len(reduced) <= maxBytes {
 			return reduced, len(keep), err
 		}
 	}
 	return reduced, len(keep), err
+}
+
+func deleteKeepItem(keep map[int]struct{}, idx int, groups map[int][]int, protected map[int]struct{}) bool {
+	toDelete := []int{idx}
+	if group := groups[idx]; len(group) > 0 {
+		toDelete = group
+	}
+	for _, candidate := range toDelete {
+		if _, ok := keep[candidate]; !ok {
+			continue
+		}
+		if _, ok := protected[candidate]; ok {
+			return false
+		}
+	}
+	for _, candidate := range toDelete {
+		delete(keep, candidate)
+	}
+	return true
+}
+
+func protectedToolPairIndexes(items []item, keep map[int]struct{}, protected func(item) bool) map[int]struct{} {
+	out := map[int]struct{}{}
+	for i := range items {
+		if _, ok := keep[items[i].Index]; !ok {
+			continue
+		}
+		if protected(items[i]) {
+			out[items[i].Index] = struct{}{}
+		}
+	}
+	return out
 }
 
 func assemble(raw []byte, field string, items []item, keep map[int]struct{}, cfg config.ContextRetrievalConfig) ([]byte, error) {
@@ -441,6 +526,92 @@ func preserveToolPairs(items []item, keep map[int]struct{}) {
 				keep[idx] = struct{}{}
 			}
 		}
+	}
+}
+
+func toolPairGroupsByIndex(items []item) map[int][]int {
+	byCallID := map[string][]int{}
+	for i := range items {
+		for _, id := range itemCallIDs(items[i].Raw) {
+			byCallID[id] = append(byCallID[id], items[i].Index)
+		}
+	}
+	out := map[int][]int{}
+	for _, idxs := range byCallID {
+		if len(idxs) < 2 {
+			continue
+		}
+		for _, idx := range idxs {
+			out[idx] = idxs
+		}
+	}
+	return out
+}
+
+func repairToolPairKeep(items []item, keep map[int]struct{}, mode string) bool {
+	if mode == "" || mode == toolPairRepairOff || len(keep) == 0 {
+		return false
+	}
+	if mode != toolPairRepairDropOrphans {
+		return false
+	}
+
+	changed := false
+	type pairState struct {
+		calls   []int
+		outputs []int
+	}
+	states := map[string]*pairState{}
+	for i := range items {
+		if _, ok := keep[items[i].Index]; !ok {
+			continue
+		}
+		kind, ids := toolPairItemKind(items[i].Raw)
+		if kind == "" || len(ids) == 0 {
+			continue
+		}
+		for _, id := range ids {
+			state := states[id]
+			if state == nil {
+				state = &pairState{}
+				states[id] = state
+			}
+			switch kind {
+			case "call":
+				state.calls = append(state.calls, items[i].Index)
+			case "output":
+				state.outputs = append(state.outputs, items[i].Index)
+			}
+		}
+	}
+	for _, state := range states {
+		if len(state.calls) == 0 || len(state.outputs) > 0 {
+			continue
+		}
+		for _, idx := range state.calls {
+			if _, ok := keep[idx]; ok {
+				delete(keep, idx)
+				changed = true
+			}
+		}
+	}
+	return changed
+}
+
+func toolPairItemKind(raw json.RawMessage) (string, []string) {
+	var obj map[string]any
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return "", nil
+	}
+	itemType, _ := obj["type"].(string)
+	itemType = strings.ToLower(strings.TrimSpace(itemType))
+	switch itemType {
+	case "function_call":
+		return "call", itemCallIDs(raw)
+	case "function_call_output":
+		return "output", itemCallIDs(raw)
+	default:
+		return "", nil
 	}
 }
 

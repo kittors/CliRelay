@@ -146,3 +146,74 @@ func TestReduceCodexAwareInsertsSummaryAndPreservesToolPair(t *testing.T) {
 		t.Fatalf("expected tool call/output pair to stay together, got %s", body)
 	}
 }
+
+func TestReduceCodexAwareTrimsToolPairAtomically(t *testing.T) {
+	largeOutput := strings.Repeat("terminal output mentions pkg/router/session.go ", 120)
+	raw, err := json.Marshal(map[string]any{
+		"model": "gpt-5.3-codex",
+		"input": []map[string]any{
+			{"type": "message", "role": "user", "content": []map[string]string{{"type": "input_text", "text": "old notes mention pkg/router/session.go"}}},
+			{"type": "function_call", "call_id": "call_atomic", "name": "read_file", "arguments": `{"path":"pkg/router/session.go"}`},
+			{"type": "function_call_output", "call_id": "call_atomic", "output": largeOutput},
+			{"type": "message", "role": "user", "content": []map[string]string{{"type": "input_text", "text": "latest asks about pkg/router/session.go timeout"}}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal raw: %v", err)
+	}
+
+	reduced, report, err := Reduce(context.Background(), raw, "gpt-5.3-codex", "openai-response", config.ContextRetrievalConfig{
+		Enabled:             true,
+		MaxInputBytes:       900,
+		PreserveRecentTurns: 1,
+		Retrieval:           config.ContextRetrievalSearchConfig{TopK: 2},
+		CodexAware: config.CodexAwareContextConfig{
+			Enabled:           true,
+			PreserveToolPairs: true,
+			InsertSummary:     true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Reduce() error = %v", err)
+	}
+	if !report.Applied {
+		t.Fatal("expected reduction to apply")
+	}
+	body := string(reduced)
+	if strings.Contains(body, "call_atomic") && (!strings.Contains(body, "function_call") || !strings.Contains(body, "function_call_output")) {
+		t.Fatalf("tool pair was split by trimming: %s", body)
+	}
+}
+
+func TestReduceCodexAwareDropsOrphanFunctionCall(t *testing.T) {
+	raw, err := json.Marshal(map[string]any{
+		"model": "gpt-5.3-codex",
+		"input": []map[string]any{
+			{"type": "function_call", "call_id": "call_orphan", "name": "shell_command", "arguments": `{"cmd":"go test ./..."}`},
+			{"type": "message", "role": "user", "content": []map[string]string{{"type": "input_text", "text": strings.Repeat("latest compile failure ", 120)}}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal raw: %v", err)
+	}
+
+	reduced, report, err := Reduce(context.Background(), raw, "gpt-5.3-codex", "openai-response", config.ContextRetrievalConfig{
+		Enabled:             true,
+		MaxInputBytes:       700,
+		PreserveRecentTurns: 2,
+		CodexAware: config.CodexAwareContextConfig{
+			Enabled:           true,
+			PreserveToolPairs: true,
+			ToolPairRepair:    "drop-orphans",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Reduce() error = %v", err)
+	}
+	if !report.Applied {
+		t.Fatal("expected reduction to apply")
+	}
+	if strings.Contains(string(reduced), "call_orphan") {
+		t.Fatalf("orphan function_call was not dropped: %s", reduced)
+	}
+}

@@ -1205,6 +1205,10 @@ func (cfg *Config) SanitizeContextRetrieval() {
 		cr.Retrieval.Strategy = "keyword"
 	}
 	if cr.CodexAware.Enabled {
+		cr.CodexAware.ToolPairRepair = strings.ToLower(strings.TrimSpace(cr.CodexAware.ToolPairRepair))
+		if cr.CodexAware.ToolPairRepair == "" && cr.CodexAware.PreserveToolPairs {
+			cr.CodexAware.ToolPairRepair = "drop-orphans"
+		}
 		if cr.CodexAware.MaxSummaryBytes <= 0 {
 			cr.CodexAware.MaxSummaryBytes = 4000
 		}

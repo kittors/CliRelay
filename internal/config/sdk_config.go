@@ -72,12 +72,13 @@ type ContextRetrievalSearchConfig struct {
 
 // CodexAwareContextConfig preserves Codex tool semantics while reducing context.
 type CodexAwareContextConfig struct {
-	Enabled                bool `yaml:"enabled" json:"enabled"`
-	PreserveToolPairs      bool `yaml:"preserve-tool-pairs,omitempty" json:"preserve-tool-pairs,omitempty"`
-	InsertSummary          bool `yaml:"insert-summary,omitempty" json:"insert-summary,omitempty"`
-	MaxSummaryBytes        int  `yaml:"max-summary-bytes,omitempty" json:"max-summary-bytes,omitempty"`
-	PreserveRecentCommands int  `yaml:"preserve-recent-commands,omitempty" json:"preserve-recent-commands,omitempty"`
-	PreserveRecentErrors   int  `yaml:"preserve-recent-errors,omitempty" json:"preserve-recent-errors,omitempty"`
+	Enabled                bool   `yaml:"enabled" json:"enabled"`
+	PreserveToolPairs      bool   `yaml:"preserve-tool-pairs,omitempty" json:"preserve-tool-pairs,omitempty"`
+	ToolPairRepair         string `yaml:"tool-pair-repair,omitempty" json:"tool-pair-repair,omitempty"`
+	InsertSummary          bool   `yaml:"insert-summary,omitempty" json:"insert-summary,omitempty"`
+	MaxSummaryBytes        int    `yaml:"max-summary-bytes,omitempty" json:"max-summary-bytes,omitempty"`
+	PreserveRecentCommands int    `yaml:"preserve-recent-commands,omitempty" json:"preserve-recent-commands,omitempty"`
+	PreserveRecentErrors   int    `yaml:"preserve-recent-errors,omitempty" json:"preserve-recent-errors,omitempty"`
 }
 
 // ObservabilityConfig groups optional diagnostic logging features.

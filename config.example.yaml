@@ -154,6 +154,9 @@ request-log-storage:
 #   codex-aware:
 #     enabled: true
 #     preserve-tool-pairs: true
+#     # off, drop-orphans. drop-orphans removes historical function_call items
+#     # whose matching function_call_output is not present after context reduction.
+#     tool-pair-repair: "drop-orphans"
 #     insert-summary: true
 #     max-summary-bytes: 4000
 #     preserve-recent-commands: 8
