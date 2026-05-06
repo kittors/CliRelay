@@ -80,3 +80,25 @@ func TestEnrichRequestExecutionMetadataDistinguishesMediaFeatures(t *testing.T) 
 		})
 	}
 }
+
+func TestEnrichRequestExecutionMetadataDoesNotTreatTextMentionsAsMedia(t *testing.T) {
+	meta := map[string]any{}
+	raw := []byte(`{
+		"model": "gpt-5.3-codex",
+		"input": [
+			{
+				"role": "user",
+				"content": "Previous logs mention input_image and image_url, but this request has no media attachment."
+			}
+		]
+	}`)
+
+	enrichRequestExecutionMetadata(meta, raw)
+
+	features, _ := meta[coreexecutor.RequestFeaturesMetadataKey].([]string)
+	for _, feature := range features {
+		if feature == "image" || feature == "multimodal" {
+			t.Fatalf("features = %v, want no image or multimodal feature for plain text mentions", features)
+		}
+	}
+}
