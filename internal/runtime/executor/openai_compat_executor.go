@@ -350,11 +350,15 @@ func (e *OpenAICompatExecutor) applyMultimodalAdapter(ctx context.Context, paylo
 		Protocol:         protocol,
 	}, e.cfg.MultimodalAdapters)
 	if err != nil {
+		if report.MediaItems > 0 || report.Extractor != "" {
+			log.Warnf("multimodal adapter: rejected request requested_model=%s upstream_provider=%s upstream_model=%s protocol=%s media=%d extractor=%s injected=%v stripped=%v error=%v",
+				requestedModel, e.Identifier(), upstreamModel, protocol, report.MediaItems, report.Extractor, report.Injected, report.Stripped, err)
+		}
 		return payload, report, err
 	}
 	if report.Applied {
-		log.Infof("multimodal adapter: processed request requested_model=%s upstream_provider=%s upstream_model=%s protocol=%s media=%d extractor=%s stripped=%v injected=%v",
-			requestedModel, e.Identifier(), upstreamModel, protocol, report.MediaItems, report.Extractor, report.Stripped, report.Injected)
+		log.Infof("multimodal adapter: processed request requested_model=%s upstream_provider=%s upstream_model=%s protocol=%s media=%d extractor=%s injected=%v stripped=%v",
+			requestedModel, e.Identifier(), upstreamModel, protocol, report.MediaItems, report.Extractor, report.Injected, report.Stripped)
 	}
 	return adapted, report, nil
 }
