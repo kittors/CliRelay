@@ -31,6 +31,8 @@ const (
 	managementOAuthTokenResponseLimit int64 = 64 << 10
 )
 
+var managementAPICallSlots = make(chan struct{}, 4)
+
 var geminiOAuthScopes = []string{
 	"https://www.googleapis.com/auth/cloud-platform",
 	"https://www.googleapis.com/auth/userinfo.email",
@@ -120,6 +122,11 @@ type apiCallResponse struct {
 //	  -H "Content-Type: application/json" \
 //	  -d '{"auth_index":"<AUTH_INDEX>","method":"POST","url":"https://api.example.com/v1/fetchAvailableModels","header":{"Authorization":"Bearer $TOKEN$","Content-Type":"application/json","User-Agent":"cliproxyapi"},"data":"{}"}'
 func (h *Handler) APICall(c *gin.Context) {
+	if !tryAcquireManagementSlot(c, managementAPICallSlots, "api-call") {
+		return
+	}
+	defer releaseManagementSlot(managementAPICallSlots)
+
 	var body apiCallRequest
 	if errBindJSON := c.ShouldBindJSON(&body); errBindJSON != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})

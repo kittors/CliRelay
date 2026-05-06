@@ -9,6 +9,11 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 )
 
+var (
+	managementQuotaReconcileSlots = make(chan struct{}, 2)
+	managementQuotaSnapshotSlots  = make(chan struct{}, 2)
+)
+
 // Quota exceeded toggles
 func (h *Handler) GetSwitchProject(c *gin.Context) {
 	c.JSON(200, gin.H{"switch-project": h.cfg.QuotaExceeded.SwitchProject})
@@ -35,6 +40,10 @@ func (h *Handler) PostQuotaReconcile(c *gin.Context) {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "auth manager unavailable"})
 		return
 	}
+	if !tryAcquireManagementSlot(c, managementQuotaReconcileSlots, "quota-reconcile") {
+		return
+	}
+	defer releaseManagementSlot(managementQuotaReconcileSlots)
 
 	var body quotaReconcileRequest
 	if err := c.ShouldBindJSON(&body); err != nil {
@@ -87,6 +96,13 @@ type quotaSnapshotPointRequest struct {
 func (h *Handler) PostAuthFileQuotaSnapshot(c *gin.Context) {
 	if h == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "handler unavailable"})
+		return
+	}
+	select {
+	case managementQuotaSnapshotSlots <- struct{}{}:
+		defer releaseManagementSlot(managementQuotaSnapshotSlots)
+	default:
+		c.JSON(http.StatusOK, gin.H{"status": "skipped", "reason": "busy"})
 		return
 	}
 

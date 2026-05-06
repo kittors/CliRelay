@@ -39,6 +39,7 @@ type Handler struct {
 	cfg                 *config.Config
 	configFilePath      string
 	mu                  sync.Mutex
+	authFilesMu         sync.Mutex
 	attemptsMu          sync.Mutex
 	failedAttempts      map[string]*attemptInfo // keyed by client IP
 	authManager         *coreauth.Manager
@@ -351,6 +352,27 @@ func (h *Handler) persistRuntimeSetting(c *gin.Context, key string, value any) b
 	}
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 	return true
+}
+
+func tryAcquireManagementSlot(c *gin.Context, sem chan struct{}, operation string) bool {
+	select {
+	case sem <- struct{}{}:
+		return true
+	default:
+		c.Header("Retry-After", "2")
+		c.JSON(http.StatusTooManyRequests, gin.H{
+			"error":     "management operation busy",
+			"operation": operation,
+		})
+		return false
+	}
+}
+
+func releaseManagementSlot(sem chan struct{}) {
+	select {
+	case <-sem:
+	default:
+	}
 }
 
 // Helper methods for simple types

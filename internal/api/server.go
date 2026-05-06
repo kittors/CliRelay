@@ -419,6 +419,15 @@ func (s *Server) setupRoutes() {
 	groupedV1Beta.Use(ModelRestrictionMiddleware())
 	registerV1BetaRoutes(groupedV1Beta)
 
+	// Lightweight health endpoints for local watchdogs and load balancers.
+	// Keep these independent from auth, SQLite, and upstream providers.
+	s.engine.GET("/health", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"status": "ok"})
+	})
+	s.engine.GET("/healthz", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"status": "ok"})
+	})
+
 	s.engine.NoRoute(func(c *gin.Context) {
 		if _, rewritten := c.Get("cliproxy.grouped_path_rewrite"); rewritten {
 			c.AbortWithStatus(http.StatusNotFound)

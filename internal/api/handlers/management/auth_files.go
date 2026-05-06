@@ -836,6 +836,9 @@ func (h *Handler) UploadAuthFile(c *gin.Context) {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "core auth manager unavailable"})
 		return
 	}
+	h.authFilesMu.Lock()
+	defer h.authFilesMu.Unlock()
+
 	ctx := c.Request.Context()
 	if c.Request != nil && c.Request.Body != nil && c.Writer != nil {
 		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, bodyutil.AuthFileBodyLimit+(64<<10))
@@ -860,19 +863,29 @@ func (h *Handler) UploadAuthFile(c *gin.Context) {
 			c.JSON(400, gin.H{"error": "file must be .json"})
 			return
 		}
+		src, errOpen := file.Open()
+		if errOpen != nil {
+			c.JSON(400, gin.H{"error": fmt.Sprintf("failed to read file: %v", errOpen)})
+			return
+		}
+		data, errRead := bodyutil.ReadAll(src, bodyutil.AuthFileBodyLimit)
+		_ = src.Close()
+		if errRead != nil {
+			if bodyutil.IsTooLarge(errRead) {
+				c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "file too large"})
+				return
+			}
+			c.JSON(400, gin.H{"error": fmt.Sprintf("failed to read file: %v", errRead)})
+			return
+		}
 		dst := filepath.Join(h.cfg.AuthDir, name)
 		if !filepath.IsAbs(dst) {
 			if abs, errAbs := filepath.Abs(dst); errAbs == nil {
 				dst = abs
 			}
 		}
-		if errSave := c.SaveUploadedFile(file, dst); errSave != nil {
+		if errSave := writeAuthFileAtomic(dst, data); errSave != nil {
 			c.JSON(500, gin.H{"error": fmt.Sprintf("failed to save file: %v", errSave)})
-			return
-		}
-		data, errRead := os.ReadFile(dst)
-		if errRead != nil {
-			c.JSON(500, gin.H{"error": fmt.Sprintf("failed to read saved file: %v", errRead)})
 			return
 		}
 		if errReg := h.registerAuthFromFile(ctx, dst, data); errReg != nil {
@@ -910,7 +923,7 @@ func (h *Handler) UploadAuthFile(c *gin.Context) {
 			dst = abs
 		}
 	}
-	if errWrite := os.WriteFile(dst, data, 0o600); errWrite != nil {
+	if errWrite := writeAuthFileAtomic(dst, data); errWrite != nil {
 		c.JSON(500, gin.H{"error": fmt.Sprintf("failed to write file: %v", errWrite)})
 		return
 	}
@@ -925,12 +938,56 @@ func (h *Handler) UploadAuthFile(c *gin.Context) {
 	c.JSON(200, gin.H{"status": "ok"})
 }
 
+func writeAuthFileAtomic(dst string, data []byte) error {
+	if strings.TrimSpace(dst) == "" {
+		return fmt.Errorf("destination path is empty")
+	}
+	dir := filepath.Dir(dst)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	tmp := filepath.Join(dir, fmt.Sprintf(".%s.%d.tmp", filepath.Base(dst), time.Now().UnixNano()))
+	file, err := os.OpenFile(tmp, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.Remove(tmp)
+		}
+	}()
+	if _, err = file.Write(data); err != nil {
+		_ = file.Close()
+		return err
+	}
+	if err = file.Sync(); err != nil {
+		_ = file.Close()
+		return err
+	}
+	if err = file.Close(); err != nil {
+		return err
+	}
+	if err = os.Rename(tmp, dst); err != nil {
+		return err
+	}
+	cleanup = false
+	if dirFile, errOpen := os.Open(dir); errOpen == nil {
+		_ = dirFile.Sync()
+		_ = dirFile.Close()
+	}
+	return nil
+}
+
 // Delete auth files: single by name or all
 func (h *Handler) DeleteAuthFile(c *gin.Context) {
 	if h.authManager == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "core auth manager unavailable"})
 		return
 	}
+	h.authFilesMu.Lock()
+	defer h.authFilesMu.Unlock()
+
 	ctx := c.Request.Context()
 	if all := c.Query("all"); all == "true" || all == "1" || all == "*" {
 		entries, err := os.ReadDir(h.cfg.AuthDir)
@@ -1097,6 +1154,8 @@ func (h *Handler) PatchAuthFileStatus(c *gin.Context) {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "core auth manager unavailable"})
 		return
 	}
+	h.authFilesMu.Lock()
+	defer h.authFilesMu.Unlock()
 
 	var req struct {
 		Name     string `json:"name"`
@@ -1163,6 +1222,8 @@ func (h *Handler) PatchAuthFileFields(c *gin.Context) {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "core auth manager unavailable"})
 		return
 	}
+	h.authFilesMu.Lock()
+	defer h.authFilesMu.Unlock()
 
 	var req struct {
 		Name                  string    `json:"name"`
