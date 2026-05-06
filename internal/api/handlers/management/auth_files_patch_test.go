@@ -94,6 +94,147 @@ func TestPatchAuthFileFieldsUpdatesOAuthChannelLabel(t *testing.T) {
 	}
 }
 
+func TestPatchAuthFileFieldsUpdatesCustomTagsAndHiddenDefaultTags(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	store := &memoryAuthStore{}
+	manager := coreauth.NewManager(store, nil, nil)
+	_, err := manager.Register(context.Background(), &coreauth.Auth{
+		ID:       "oauth-auth-tags",
+		FileName: "oauth-auth-tags.json",
+		Provider: "codex",
+		Metadata: map[string]any{
+			"email":     "tags@example.com",
+			"plan_type": "pro",
+		},
+	})
+	if err != nil {
+		t.Fatalf("register auth: %v", err)
+	}
+
+	h := &Handler{
+		cfg:         &config.Config{},
+		authManager: manager,
+	}
+
+	body, err := json.Marshal(map[string]any{
+		"name":                "oauth-auth-tags.json",
+		"custom_tags":         []string{" Team ", "priority", "team"},
+		"hidden_default_tags": []string{"pro", " codex "},
+	})
+	if err != nil {
+		t.Fatalf("marshal body: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPatch, "/auth-files/fields", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	h.PatchAuthFileFields(c)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d, body=%s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	updated, ok := manager.GetByID("oauth-auth-tags")
+	if !ok || updated == nil {
+		t.Fatal("expected updated auth")
+	}
+	customTags, ok := updated.Metadata["custom_tags"].([]string)
+	if !ok {
+		t.Fatalf("custom_tags type = %T, want []string", updated.Metadata["custom_tags"])
+	}
+	if len(customTags) != 2 || customTags[0] != "team" || customTags[1] != "priority" {
+		t.Fatalf("custom_tags = %#v, want [team priority]", customTags)
+	}
+	hiddenTags, ok := updated.Metadata["hidden_default_tags"].([]string)
+	if !ok {
+		t.Fatalf("hidden_default_tags type = %T, want []string", updated.Metadata["hidden_default_tags"])
+	}
+	if len(hiddenTags) != 2 || hiddenTags[0] != "pro" || hiddenTags[1] != "codex" {
+		t.Fatalf("hidden_default_tags = %#v, want [pro codex]", hiddenTags)
+	}
+}
+
+func TestPatchAuthFileFieldsRejectsMoreThanThreeCustomTags(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	store := &memoryAuthStore{}
+	manager := coreauth.NewManager(store, nil, nil)
+	_, err := manager.Register(context.Background(), &coreauth.Auth{
+		ID:       "oauth-auth-too-many-tags",
+		FileName: "oauth-auth-too-many-tags.json",
+		Provider: "codex",
+		Metadata: map[string]any{
+			"email": "tags@example.com",
+		},
+	})
+	if err != nil {
+		t.Fatalf("register auth: %v", err)
+	}
+
+	h := &Handler{
+		cfg:         &config.Config{},
+		authManager: manager,
+	}
+
+	body, err := json.Marshal(map[string]any{
+		"name":        "oauth-auth-too-many-tags.json",
+		"custom_tags": []string{"one", "two", "three", "four"},
+	})
+	if err != nil {
+		t.Fatalf("marshal body: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPatch, "/auth-files/fields", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	h.PatchAuthFileFields(c)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected status %d, got %d, body=%s", http.StatusBadRequest, rec.Code, rec.Body.String())
+	}
+}
+
+func TestBuildAuthFileEntryIncludesDefaultAndDisplayTags(t *testing.T) {
+	auth := &coreauth.Auth{
+		ID:       "codex-tagged-auth",
+		FileName: "codex-tagged-auth.json",
+		Provider: "codex",
+		Attributes: map[string]string{
+			"path": "codex-tagged-auth.json",
+		},
+		Metadata: map[string]any{
+			"email":               "tagged@example.com",
+			"plan_type":           "pro",
+			"custom_tags":         []string{"team-a"},
+			"hidden_default_tags": []string{"pro"},
+		},
+	}
+
+	entry := (&Handler{}).buildAuthFileEntry(auth)
+	if entry == nil {
+		t.Fatal("expected auth file entry")
+	}
+	defaultTags, ok := entry["default_tags"].([]string)
+	if !ok {
+		t.Fatalf("default_tags type = %T, want []string", entry["default_tags"])
+	}
+	if len(defaultTags) != 2 || defaultTags[0] != "codex" || defaultTags[1] != "pro" {
+		t.Fatalf("default_tags = %#v, want [codex pro]", defaultTags)
+	}
+	displayTags, ok := entry["display_tags"].([]string)
+	if !ok {
+		t.Fatalf("display_tags type = %T, want []string", entry["display_tags"])
+	}
+	if len(displayTags) != 2 || displayTags[0] != "codex" || displayTags[1] != "team-a" {
+		t.Fatalf("display_tags = %#v, want [codex team-a]", displayTags)
+	}
+}
+
 func TestBuildAuthFileEntryIncludesSubscriptionExpiration(t *testing.T) {
 	expiresAt := time.Now().UTC().Add(90 * time.Minute).Truncate(time.Minute)
 	auth := &coreauth.Auth{

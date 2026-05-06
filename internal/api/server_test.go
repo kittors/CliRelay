@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -452,8 +453,9 @@ func TestAttachWebsocketRouteClearsWriteDeadlineBeforeServingHandler(t *testing.
 func TestCORSMiddlewareRejectsUnconfiguredCrossOriginRequest(t *testing.T) {
 	server := newTestServer(t)
 
+	origin := "https://evil.example"
 	req := httptest.NewRequest(http.MethodOptions, "/v1/models", nil)
-	req.Header.Set("Origin", "https://evil.example")
+	req.Header.Set("Origin", origin)
 
 	rr := httptest.NewRecorder()
 	server.engine.ServeHTTP(rr, req)
@@ -463,6 +465,19 @@ func TestCORSMiddlewareRejectsUnconfiguredCrossOriginRequest(t *testing.T) {
 	}
 	if got := rr.Header().Get("Access-Control-Allow-Origin"); got != "" {
 		t.Fatalf("Access-Control-Allow-Origin = %q, want empty", got)
+	}
+	var body struct {
+		Error  string `json:"error"`
+		Origin string `json:"origin"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("failed to decode response body: %v; body=%s", err, rr.Body.String())
+	}
+	if body.Error != "origin not allowed" {
+		t.Fatalf("error = %q, want %q", body.Error, "origin not allowed")
+	}
+	if body.Origin != origin {
+		t.Fatalf("origin = %q, want %q", body.Origin, origin)
 	}
 }
 

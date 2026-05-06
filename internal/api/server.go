@@ -1307,7 +1307,10 @@ func corsMiddleware(cfgProvider func() *config.Config) gin.HandlerFunc {
 
 		allowedOrigin := resolveAllowedCORSOrigin(c.Request, cfg)
 		if allowedOrigin == "" {
-			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "origin not allowed"})
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
+				"error":  "origin not allowed",
+				"origin": origin,
+			})
 			return
 		}
 

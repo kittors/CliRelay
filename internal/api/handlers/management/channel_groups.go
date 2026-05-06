@@ -13,48 +13,61 @@ import (
 )
 
 type channelDescriptor struct {
-	Name   string
-	Prefix string
-	Source string
+	Name              string
+	Prefix            string
+	Source            string
+	DefaultTags       []string
+	CustomTags        []string
+	HiddenDefaultTags []string
+	DisplayTags       []string
 }
 
 type channelGroupItem struct {
-	Name          string   `json:"name"`
-	Description   string   `json:"description,omitempty"`
-	Priority      int      `json:"priority,omitempty"`
-	Implicit      bool     `json:"implicit"`
-	Prefixes      []string `json:"prefixes,omitempty"`
-	Channels      []string `json:"channels,omitempty"`
-	AllowedModels []string `json:"allowed-models,omitempty"`
-	PathRoutes    []string `json:"path-routes,omitempty"`
+	Name           string                      `json:"name"`
+	Description    string                      `json:"description,omitempty"`
+	Priority       int                         `json:"priority,omitempty"`
+	Implicit       bool                        `json:"implicit"`
+	Prefixes       []string                    `json:"prefixes,omitempty"`
+	Channels       []string                    `json:"channels,omitempty"`
+	ChannelDetails []channelGroupChannelDetail `json:"channel-details,omitempty"`
+	AllowedModels  []string                    `json:"allowed-models,omitempty"`
+	PathRoutes     []string                    `json:"path-routes,omitempty"`
 }
 
 func collectChannelDescriptors(cfg *config.Config, auths []*coreauth.Auth) []channelDescriptor {
 	items := make([]channelDescriptor, 0)
-	push := func(name, prefix, source string) {
+	push := func(name, prefix, source string, tags authTagPayload) {
 		name = strings.TrimSpace(name)
 		prefix = internalrouting.NormalizeGroupName(prefix)
 		if name == "" && prefix == "" {
 			return
 		}
-		items = append(items, channelDescriptor{Name: name, Prefix: prefix, Source: source})
+		items = append(items, channelDescriptor{
+			Name:              name,
+			Prefix:            prefix,
+			Source:            source,
+			DefaultTags:       append([]string{}, tags.DefaultTags...),
+			CustomTags:        append([]string{}, tags.CustomTags...),
+			HiddenDefaultTags: append([]string{}, tags.HiddenDefaultTags...),
+			DisplayTags:       append([]string{}, tags.DisplayTags...),
+		})
 	}
 
 	if cfg != nil {
 		for _, entry := range cfg.GeminiKey {
-			push(entry.Name, entry.Prefix, "gemini")
+			push(entry.Name, entry.Prefix, "gemini", buildAuthTagPayloadFromValues("gemini", nil))
 		}
 		for _, entry := range cfg.ClaudeKey {
-			push(entry.Name, entry.Prefix, "claude")
+			push(entry.Name, entry.Prefix, "claude", buildAuthTagPayloadFromValues("claude", nil))
 		}
 		for _, entry := range cfg.CodexKey {
-			push(entry.Name, entry.Prefix, "codex")
+			push(entry.Name, entry.Prefix, "codex", buildAuthTagPayloadFromValues("codex", nil))
 		}
 		for _, entry := range cfg.VertexCompatAPIKey {
-			push("", entry.Prefix, "vertex")
+			push("", entry.Prefix, "vertex", buildAuthTagPayloadFromValues("vertex", nil))
 		}
 		for _, entry := range cfg.OpenAICompatibility {
-			push(entry.Name, entry.Prefix, "openai")
+			push(entry.Name, entry.Prefix, "openai", buildAuthTagPayloadFromValues("openai", nil))
 		}
 	}
 
@@ -62,7 +75,7 @@ func collectChannelDescriptors(cfg *config.Config, auths []*coreauth.Auth) []cha
 		if !includeAuthInChannelGroups(auth) {
 			continue
 		}
-		push(auth.ChannelName(), auth.Prefix, auth.Provider)
+		push(auth.ChannelName(), auth.Prefix, auth.Provider, buildAuthTagPayload(auth))
 	}
 
 	return items
@@ -161,6 +174,14 @@ func buildChannelGroupItems(cfg *config.Config, auths []*coreauth.Auth) []channe
 			}
 			if matched && channelName != "" {
 				group.Channels = append(group.Channels, channelName)
+				group.ChannelDetails = append(group.ChannelDetails, channelGroupChannelDetail{
+					Name:              channelName,
+					Source:            channel.Source,
+					DefaultTags:       append([]string{}, channel.DefaultTags...),
+					CustomTags:        append([]string{}, channel.CustomTags...),
+					HiddenDefaultTags: append([]string{}, channel.HiddenDefaultTags...),
+					DisplayTags:       append([]string{}, channel.DisplayTags...),
+				})
 			}
 		}
 	}
@@ -170,6 +191,7 @@ func buildChannelGroupItems(cfg *config.Config, auths []*coreauth.Auth) []channe
 		item.Name = name
 		item.Prefixes = uniqueSortedStrings(item.Prefixes, internalrouting.NormalizeGroupName)
 		item.Channels = uniqueSortedStrings(item.Channels, func(value string) string { return strings.TrimSpace(value) })
+		item.ChannelDetails = uniqueSortedChannelDetails(item.ChannelDetails)
 		item.PathRoutes = uniqueSortedStrings(knownPaths[name], internalrouting.NormalizeNamespacePath)
 		out = append(out, *item)
 	}

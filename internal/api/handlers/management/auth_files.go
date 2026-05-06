@@ -691,6 +691,11 @@ func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth) gin.H {
 			entry["account"] = account
 		}
 	}
+	tags := buildAuthTagPayload(auth)
+	entry["default_tags"] = tags.DefaultTags
+	entry["custom_tags"] = tags.CustomTags
+	entry["hidden_default_tags"] = tags.HiddenDefaultTags
+	entry["display_tags"] = tags.DisplayTags
 	addSubscriptionFields(entry, auth.Metadata, time.Now())
 	if !auth.CreatedAt.IsZero() {
 		entry["created_at"] = auth.CreatedAt
@@ -1160,15 +1165,17 @@ func (h *Handler) PatchAuthFileFields(c *gin.Context) {
 	}
 
 	var req struct {
-		Name                  string  `json:"name"`
-		Label                 *string `json:"label"`
-		Prefix                *string `json:"prefix"`
-		ProxyURL              *string `json:"proxy_url"`
-		ProxyID               *string `json:"proxy_id"`
-		Priority              *int    `json:"priority"`
-		SubscriptionStartedAt *string `json:"subscription_started_at"`
-		SubscriptionPeriod    *string `json:"subscription_period"`
-		SubscriptionExpiresAt *string `json:"subscription_expires_at"`
+		Name                  string    `json:"name"`
+		Label                 *string   `json:"label"`
+		CustomTags            *[]string `json:"custom_tags"`
+		HiddenDefaultTags     *[]string `json:"hidden_default_tags"`
+		Prefix                *string   `json:"prefix"`
+		ProxyURL              *string   `json:"proxy_url"`
+		ProxyID               *string   `json:"proxy_id"`
+		Priority              *int      `json:"priority"`
+		SubscriptionStartedAt *string   `json:"subscription_started_at"`
+		SubscriptionPeriod    *string   `json:"subscription_period"`
+		SubscriptionExpiresAt *string   `json:"subscription_expires_at"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
@@ -1238,6 +1245,34 @@ func (h *Handler) PatchAuthFileFields(c *gin.Context) {
 			delete(targetAuth.Metadata, "prefix")
 		} else {
 			targetAuth.Metadata["prefix"] = targetAuth.Prefix
+		}
+		changed = true
+	}
+	if req.CustomTags != nil {
+		tags, errNormalize := normalizeEditableTags(*req.CustomTags, maxCustomAuthTags)
+		if errNormalize != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": errNormalize.Error()})
+			return
+		}
+		if targetAuth.Metadata == nil {
+			targetAuth.Metadata = make(map[string]any)
+		}
+		if len(tags) == 0 {
+			delete(targetAuth.Metadata, "custom_tags")
+		} else {
+			targetAuth.Metadata["custom_tags"] = tags
+		}
+		changed = true
+	}
+	if req.HiddenDefaultTags != nil {
+		tags := normalizeTagList(*req.HiddenDefaultTags)
+		if targetAuth.Metadata == nil {
+			targetAuth.Metadata = make(map[string]any)
+		}
+		if len(tags) == 0 {
+			delete(targetAuth.Metadata, "hidden_default_tags")
+		} else {
+			targetAuth.Metadata["hidden_default_tags"] = tags
 		}
 		changed = true
 	}

@@ -1,6 +1,7 @@
 package management
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -236,6 +237,90 @@ func TestGetChannelGroupsReturnsGroupMetadata(t *testing.T) {
 	}
 	if len(body.Items) < 3 {
 		t.Fatalf("expected at least 3 group items, got %d", len(body.Items))
+	}
+}
+
+func TestGetChannelGroupsReturnsChannelDetailsWithTags(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	manager := coreauth.NewManager(&memoryAuthStore{}, nil, nil)
+	_, err := manager.Register(context.Background(), &coreauth.Auth{
+		ID:       "oauth-auth-tags",
+		FileName: "oauth-auth-tags.json",
+		Provider: "codex",
+		Label:    "A_GptPro",
+		Prefix:   "team-a",
+		Metadata: map[string]any{
+			"email":               "tags@example.com",
+			"plan_type":           "pro",
+			"custom_tags":         []string{"vip"},
+			"hidden_default_tags": []string{"pro"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("register auth: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodGet, "/channel-groups", nil)
+
+	h := &Handler{
+		cfg:         testRoutingConfig(),
+		authManager: manager,
+	}
+	h.GetChannelGroups(c)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	var body struct {
+		Items []struct {
+			Name           string `json:"name"`
+			ChannelDetails []struct {
+				Name        string   `json:"name"`
+				DefaultTags []string `json:"default_tags"`
+				DisplayTags []string `json:"display_tags"`
+			} `json:"channel-details"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+
+	var matched *struct {
+		Name           string `json:"name"`
+		ChannelDetails []struct {
+			Name        string   `json:"name"`
+			DefaultTags []string `json:"default_tags"`
+			DisplayTags []string `json:"display_tags"`
+		} `json:"channel-details"`
+	}
+	for i := range body.Items {
+		if body.Items[i].Name == "team-a" {
+			matched = &body.Items[i]
+			break
+		}
+	}
+	if matched == nil {
+		t.Fatal("expected team-a group")
+	}
+	if len(matched.ChannelDetails) == 0 {
+		t.Fatal("expected channel details for team-a group")
+	}
+	if matched.ChannelDetails[0].Name != "A_GptPro" {
+		t.Fatalf("channel detail name = %q, want A_GptPro", matched.ChannelDetails[0].Name)
+	}
+	if len(matched.ChannelDetails[0].DefaultTags) != 2 ||
+		matched.ChannelDetails[0].DefaultTags[0] != "codex" ||
+		matched.ChannelDetails[0].DefaultTags[1] != "pro" {
+		t.Fatalf("default_tags = %#v, want [codex pro]", matched.ChannelDetails[0].DefaultTags)
+	}
+	if len(matched.ChannelDetails[0].DisplayTags) != 2 ||
+		matched.ChannelDetails[0].DisplayTags[0] != "codex" ||
+		matched.ChannelDetails[0].DisplayTags[1] != "vip" {
+		t.Fatalf("display_tags = %#v, want [codex vip]", matched.ChannelDetails[0].DisplayTags)
 	}
 }
 
