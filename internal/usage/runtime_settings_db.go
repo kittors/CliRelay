@@ -25,6 +25,7 @@ const (
 	RuntimeSettingOAuthModelAlias      = "oauth-model-alias"
 	RuntimeSettingPayload              = "payload"
 	RuntimeSettingRequestPolicies      = "request-policies"
+	RuntimeSettingProviderPreferences  = "provider-preferences"
 	RuntimeSettingContextRetrieval     = "context-retrieval"
 )
 
@@ -368,6 +369,30 @@ func runtimeSettingSpecs() []runtimeSettingSpec {
 				holder := &config.Config{RequestPolicies: value}
 				holder.SanitizeRequestPolicies()
 				cfg.RequestPolicies = holder.RequestPolicies
+				return true
+			},
+		},
+		{
+			key: RuntimeSettingProviderPreferences,
+			meaningful: func(cfg *config.Config) bool {
+				holder := &config.Config{ProviderPreferences: append([]config.ProviderPreference(nil), cfg.ProviderPreferences...)}
+				holder.SanitizeProviderPreferences()
+				return len(holder.ProviderPreferences) > 0
+			},
+			value: func(cfg *config.Config) any {
+				holder := &config.Config{ProviderPreferences: append([]config.ProviderPreference(nil), cfg.ProviderPreferences...)}
+				holder.SanitizeProviderPreferences()
+				return holder.ProviderPreferences
+			},
+			apply: func(cfg *config.Config, raw json.RawMessage) bool {
+				var value []config.ProviderPreference
+				if err := json.Unmarshal(raw, &value); err != nil {
+					log.Warnf("usage: decode %s: %v", RuntimeSettingProviderPreferences, err)
+					return false
+				}
+				holder := &config.Config{ProviderPreferences: value}
+				holder.SanitizeProviderPreferences()
+				cfg.ProviderPreferences = holder.ProviderPreferences
 				return true
 			},
 		},

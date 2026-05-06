@@ -38,6 +38,7 @@ var dbBackedConfigYAMLKeys = map[string]bool{
 	"oauth-excluded-models":  true,
 	"oauth-model-alias":      true,
 	"payload":                true,
+	"provider-preferences":   true,
 }
 
 var renameConfigFile = os.Rename
@@ -108,6 +109,7 @@ func cleanRuntimeSettingsFromYAML(configFilePath string) {
 		"oauth-excluded-models":  true,
 		"oauth-model-alias":      true,
 		"payload":                true,
+		"provider-preferences":   true,
 	}, "runtime_settings")
 }
 

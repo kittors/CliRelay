@@ -67,7 +67,11 @@ func TestManagerExecute_RequestPolicySkipChannelFallsBack(t *testing.T) {
 	manager.SetConfig(&internalconfig.Config{
 		OpenAICompatibility: []internalconfig.OpenAICompatibility{
 			{
-				Name: "bigmodel-coding",
+				Name:    "bigmodel-coding",
+				BaseURL: "https://bigmodel.example/v1",
+				APIKeyEntries: []internalconfig.OpenAICompatibilityAPIKey{
+					{APIKey: "bigmodel-key"},
+				},
 				Models: []internalconfig.OpenAICompatibilityModel{
 					{Name: "glm-5.1", Alias: "gpt-5.3-codex"},
 				},
@@ -93,6 +97,7 @@ func TestManagerExecute_RequestPolicySkipChannelFallsBack(t *testing.T) {
 			Status:   StatusActive,
 			Attributes: map[string]string{
 				"api_key":      "bigmodel-key",
+				"base_url":     "https://bigmodel.example/v1",
 				"provider_key": "bigmodel-coding",
 				"compat_name":  "bigmodel-coding",
 			},
@@ -129,6 +134,105 @@ func TestManagerExecute_RequestPolicySkipChannelFallsBack(t *testing.T) {
 	}
 	if calls := codex.Calls(); len(calls) != 1 || calls[0] != "codex-auth" {
 		t.Fatalf("codex calls = %v, want [codex-auth]", calls)
+	}
+}
+
+func TestManagerExecute_ProviderPreferencePrefersBigmodelAndFallsBack(t *testing.T) {
+	manager := NewManager(nil, &RoundRobinSelector{}, nil)
+	bigmodel := &requestPolicyTestExecutor{id: "bigmodel-coding"}
+	codex := &requestPolicyTestExecutor{id: "codex"}
+	manager.RegisterExecutor(bigmodel)
+	manager.RegisterExecutor(codex)
+	manager.SetConfig(&internalconfig.Config{
+		OpenAICompatibility: []internalconfig.OpenAICompatibility{
+			{
+				Name:    "bigmodel-coding",
+				BaseURL: "https://bigmodel.example/v1",
+				APIKeyEntries: []internalconfig.OpenAICompatibilityAPIKey{
+					{APIKey: "bigmodel-key"},
+				},
+				Models: []internalconfig.OpenAICompatibilityModel{
+					{Name: "glm-5.1", Alias: "gpt-5.3-codex"},
+				},
+			},
+		},
+		ProviderPreferences: []internalconfig.ProviderPreference{
+			{
+				Name: "prefer-bigmodel-coding",
+				Match: internalconfig.ProviderPreferenceMatch{
+					RequestedModels:   []string{"gpt-5.3-codex"},
+					UpstreamProviders: []string{"bigmodel-coding"},
+					UpstreamModels:    []string{"glm-5.1"},
+				},
+				Priority: 100,
+			},
+		},
+		RequestPolicies: []internalconfig.RequestPolicy{
+			{
+				Name: "glm-limit",
+				Match: internalconfig.RequestPolicyMatch{
+					RequestedModels:   []string{"gpt-5.3-codex"},
+					UpstreamProviders: []string{"bigmodel-coding"},
+					UpstreamModels:    []string{"glm-5.1"},
+				},
+				Limits: internalconfig.RequestPolicyLimits{MaxRequestBytes: 10},
+			},
+		},
+	})
+
+	for _, auth := range []*Auth{
+		{
+			ID:       "bigmodel-auth",
+			Provider: "bigmodel-coding",
+			Status:   StatusActive,
+			Attributes: map[string]string{
+				"api_key":      "bigmodel-key",
+				"base_url":     "https://bigmodel.example/v1",
+				"provider_key": "bigmodel-coding",
+				"compat_name":  "bigmodel-coding",
+			},
+		},
+		{
+			ID:       "codex-auth",
+			Provider: "codex",
+			Status:   StatusActive,
+			Metadata: map[string]any{"email": "codex@example.com"},
+		},
+	} {
+		if _, err := manager.Register(context.Background(), auth); err != nil {
+			t.Fatalf("register %s: %v", auth.ID, err)
+		}
+		registry.GetGlobalRegistry().RegisterClient(auth.ID, auth.Provider, []*registry.ModelInfo{{ID: "gpt-5.3-codex", Name: "gpt-5.3-codex"}})
+		t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(auth.ID) })
+	}
+
+	_, err := manager.Execute(context.Background(), []string{"bigmodel-coding", "codex"}, cliproxyexecutor.Request{
+		Model:   "gpt-5.3-codex",
+		Payload: []byte(`{"model":"gpt-5.3-codex","input":"small"}`),
+	}, cliproxyexecutor.Options{
+		Metadata: map[string]any{cliproxyexecutor.RequestBytesMetadataKey: 5},
+	})
+	if err != nil {
+		t.Fatalf("Execute() small error = %v", err)
+	}
+	if calls := bigmodel.Calls(); len(calls) != 1 || calls[0] != "bigmodel-auth" {
+		t.Fatalf("bigmodel calls = %v, want [bigmodel-auth]", calls)
+	}
+	if calls := codex.Calls(); len(calls) != 0 {
+		t.Fatalf("codex calls after small request = %v, want none", calls)
+	}
+
+	_, err = manager.Execute(context.Background(), []string{"bigmodel-coding", "codex"}, cliproxyexecutor.Request{
+		Model:   "gpt-5.3-codex",
+		Payload: []byte(`{"model":"gpt-5.3-codex","input":"large"}`),
+	}, cliproxyexecutor.Options{
+		Metadata: map[string]any{cliproxyexecutor.RequestBytesMetadataKey: 42},
+	})
+	if err != nil {
+		t.Fatalf("Execute() large error = %v", err)
+	}
+	if calls := codex.Calls(); len(calls) != 1 || calls[0] != "codex-auth" {
+		t.Fatalf("codex calls after fallback = %v, want [codex-auth]", calls)
 	}
 }
 

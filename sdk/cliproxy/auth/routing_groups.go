@@ -211,13 +211,60 @@ func derivedGroupPriority(cfg *internalconfig.Config, auth *Auth, scopedGroups m
 	return best, found
 }
 
-func prepareCandidateForSelection(cfg *internalconfig.Config, auth *Auth, routeGroup string, allowedGroups map[string]struct{}) *Auth {
+func providerPreferencePriority(cfg *internalconfig.Config, requestedModel, upstreamProvider, upstreamModel string) (int, bool) {
+	if cfg == nil || len(cfg.ProviderPreferences) == 0 {
+		return 0, false
+	}
+	requestedModel = canonicalPolicyModel(requestedModel)
+	upstreamProvider = strings.ToLower(strings.TrimSpace(upstreamProvider))
+	upstreamModel = canonicalPolicyModel(upstreamModel)
+	best := 0
+	found := false
+	for i := range cfg.ProviderPreferences {
+		rule := cfg.ProviderPreferences[i]
+		if rule.Priority <= 0 {
+			continue
+		}
+		if !policyValuesMatchModel(rule.Match.RequestedModels, requestedModel) {
+			continue
+		}
+		if !policyValuesMatchString(rule.Match.UpstreamProviders, upstreamProvider) {
+			continue
+		}
+		if !policyValuesMatchModel(rule.Match.UpstreamModels, upstreamModel) {
+			continue
+		}
+		if !found || rule.Priority > best {
+			best = rule.Priority
+			found = true
+		}
+	}
+	return best, found
+}
+
+func setCandidatePriority(auth *Auth, priority int) {
+	if auth == nil || priority < 0 {
+		return
+	}
+	if auth.Attributes == nil {
+		auth.Attributes = make(map[string]string)
+	}
+	auth.Attributes["priority"] = strconv.Itoa(priority)
+}
+
+func prepareCandidateForSelection(cfg *internalconfig.Config, auth *Auth, routeGroup string, allowedGroups map[string]struct{}, requestedModel, upstreamProvider, upstreamModel string) *Auth {
 	if auth == nil {
 		return nil
 	}
 	cloned := auth.Clone()
 	if cloned == nil {
 		return nil
+	}
+	if priority, ok := providerPreferencePriority(cfg, requestedModel, upstreamProvider, upstreamModel); ok {
+		current, hasCurrent := authPriorityValue(cloned)
+		if !hasCurrent || priority > current {
+			setCandidatePriority(cloned, priority)
+		}
 	}
 	if strings.TrimSpace(cloned.Attributes["priority"]) != "" {
 		return cloned
@@ -226,10 +273,7 @@ func prepareCandidateForSelection(cfg *internalconfig.Config, auth *Auth, routeG
 	if !ok {
 		return cloned
 	}
-	if cloned.Attributes == nil {
-		cloned.Attributes = make(map[string]string)
-	}
-	cloned.Attributes["priority"] = strconv.Itoa(priority)
+	setCandidatePriority(cloned, priority)
 	return cloned
 }
 

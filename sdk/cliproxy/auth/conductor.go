@@ -2018,11 +2018,14 @@ func (m *Manager) pickNext(ctx context.Context, provider, model string, opts cli
 			if modelKey != "" && !candidateSupportsModel(cfg, registryRef, candidate, modelKey, routeGroup, allowedGroups) {
 				continue
 			}
+			upstreamModel := rewriteModelForAuth(model, candidate)
+			upstreamModel = m.applyOAuthModelAlias(candidate, upstreamModel)
+			upstreamModel = m.applyAPIKeyModelAlias(candidate, upstreamModel)
 			scopedRouteGroup := ""
 			if enforceRouteGroup {
 				scopedRouteGroup = routeGroup
 			}
-			candidates = append(candidates, prepareCandidateForSelection(cfg, candidate, scopedRouteGroup, allowedGroups))
+			candidates = append(candidates, prepareCandidateForSelection(cfg, candidate, scopedRouteGroup, allowedGroups, model, provider, upstreamModel))
 		}
 		return candidates
 	}
@@ -2130,6 +2133,7 @@ func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model s
 					policyRejectErr = policyErr
 				} else if policyErr != nil {
 					policySkipErr = policyErr
+					logEntryWithRequestID(ctx).Debugf("request policy skipped auth=%s provider=%s model=%s upstream_model=%s policy=%s reason=%s", candidate.ID, providerKey, model, upstreamModel, policyErr.policy, policyErr.reason)
 				}
 				continue
 			}
@@ -2137,7 +2141,7 @@ func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model s
 			if enforceRouteGroup {
 				scopedRouteGroup = routeGroup
 			}
-			candidates = append(candidates, prepareCandidateForSelection(cfg, candidate, scopedRouteGroup, allowedGroups))
+			candidates = append(candidates, prepareCandidateForSelection(cfg, candidate, scopedRouteGroup, allowedGroups, model, providerKey, upstreamModel))
 		}
 		return candidates
 	}

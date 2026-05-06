@@ -210,6 +210,16 @@ request-log-storage:
 #     over-limit:
 #       action: "skip-channel"
 
+# Optional provider preferences for model-scoped upstream priority overrides.
+# This keeps fallback behavior intact while making a specific provider win first.
+# provider-preferences:
+#   - name: "prefer-bigmodel-coding-for-gpt-5.3-codex"
+#     match:
+#       requested-models: ["gpt-5.3-codex"]
+#       upstream-providers: ["bigmodel-coding"]
+#       upstream-models: ["glm-5.1"]
+#     priority: 100
+
 # Proxy URL. Supports socks5/http/https protocols. Example: socks5://user:pass@192.168.1.1:1080/
 proxy-url: ""
 

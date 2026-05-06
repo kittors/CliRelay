@@ -147,6 +147,9 @@ type Config struct {
 	// RequestPolicies define request-size and routing guards evaluated before upstream execution.
 	RequestPolicies []RequestPolicy `yaml:"request-policies,omitempty" json:"request-policies,omitempty"`
 
+	// ProviderPreferences define model-scoped upstream provider priority overrides.
+	ProviderPreferences []ProviderPreference `yaml:"provider-preferences,omitempty" json:"provider-preferences,omitempty"`
+
 	// VertexCompatAPIKey defines Vertex AI-compatible API key configurations for third-party providers.
 	// Used for services that use Vertex AI-style paths but with simple API key authentication.
 	VertexCompatAPIKey []VertexCompatKey `yaml:"vertex-api-key" json:"vertex-api-key"`
@@ -735,6 +738,20 @@ type RequestPolicyOverLimit struct {
 	Action string `yaml:"action,omitempty" json:"action,omitempty"`
 }
 
+// ProviderPreference sets model-scoped upstream provider selection priority.
+type ProviderPreference struct {
+	Name     string                  `yaml:"name,omitempty" json:"name,omitempty"`
+	Match    ProviderPreferenceMatch `yaml:"match,omitempty" json:"match,omitempty"`
+	Priority int                     `yaml:"priority,omitempty" json:"priority,omitempty"`
+}
+
+// ProviderPreferenceMatch controls which requested/upstream route receives the priority override.
+type ProviderPreferenceMatch struct {
+	RequestedModels   []string `yaml:"requested-models,omitempty" json:"requested-models,omitempty"`
+	UpstreamProviders []string `yaml:"upstream-providers,omitempty" json:"upstream-providers,omitempty"`
+	UpstreamModels    []string `yaml:"upstream-models,omitempty" json:"upstream-models,omitempty"`
+}
+
 // OpenCodeGoKey represents an OpenCode Go plan API key.
 // The upstream endpoint is fixed to https://opencode.ai/zen/go/v1.
 type OpenCodeGoKey struct {
@@ -933,6 +950,9 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 
 	// Normalize request policies.
 	cfg.SanitizeRequestPolicies()
+
+	// Normalize upstream provider preference rules.
+	cfg.SanitizeProviderPreferences()
 
 	// Normalize OAuth provider model exclusion map.
 	cfg.OAuthExcludedModels = NormalizeOAuthExcludedModels(cfg.OAuthExcludedModels)
@@ -1164,6 +1184,29 @@ func (cfg *Config) SanitizeRequestPolicies() {
 		out = append(out, policy)
 	}
 	cfg.RequestPolicies = out
+}
+
+// SanitizeProviderPreferences normalizes model-scoped upstream provider priority overrides.
+func (cfg *Config) SanitizeProviderPreferences() {
+	if cfg == nil || len(cfg.ProviderPreferences) == 0 {
+		return
+	}
+	out := make([]ProviderPreference, 0, len(cfg.ProviderPreferences))
+	for i := range cfg.ProviderPreferences {
+		rule := cfg.ProviderPreferences[i]
+		rule.Name = strings.TrimSpace(rule.Name)
+		rule.Match.RequestedModels = normalizePolicyValues(rule.Match.RequestedModels, false)
+		rule.Match.UpstreamProviders = normalizePolicyValues(rule.Match.UpstreamProviders, true)
+		rule.Match.UpstreamModels = normalizePolicyValues(rule.Match.UpstreamModels, false)
+		if rule.Priority <= 0 {
+			continue
+		}
+		if len(rule.Match.RequestedModels) == 0 && len(rule.Match.UpstreamProviders) == 0 && len(rule.Match.UpstreamModels) == 0 {
+			continue
+		}
+		out = append(out, rule)
+	}
+	cfg.ProviderPreferences = out
 }
 
 func normalizePolicyValues(values []string, lower bool) []string {

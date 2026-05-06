@@ -157,7 +157,7 @@ func TestDerivedGroupPriorityPreservesExplicitZero(t *testing.T) {
 		t.Fatalf("derivedGroupPriority() = %d, want 0", got)
 	}
 
-	prepared := prepareCandidateForSelection(cfg, auth, "", map[string]struct{}{"team-alpha": {}})
+	prepared := prepareCandidateForSelection(cfg, auth, "", map[string]struct{}{"team-alpha": {}}, "", "", "")
 	if prepared == nil {
 		t.Fatal("prepareCandidateForSelection() = nil")
 	}
@@ -186,7 +186,7 @@ func TestPrepareCandidateForSelectionIgnoresPriorityOutsideSelectionScope(t *tes
 	}
 	auth := &Auth{Label: "chatgpt-pro1"}
 
-	prepared := prepareCandidateForSelection(cfg, auth, "", nil)
+	prepared := prepareCandidateForSelection(cfg, auth, "", nil, "", "", "")
 	if prepared == nil {
 		t.Fatal("prepareCandidateForSelection() = nil")
 	}
