@@ -157,6 +157,62 @@ func TestPatchAuthFileFieldsUpdatesCustomTagsAndHiddenDefaultTags(t *testing.T) 
 	}
 }
 
+func TestPatchAuthFileFieldsUpdatesDisplayTags(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	store := &memoryAuthStore{}
+	manager := coreauth.NewManager(store, nil, nil)
+	_, err := manager.Register(context.Background(), &coreauth.Auth{
+		ID:       "oauth-auth-display-tags",
+		FileName: "oauth-auth-display-tags.json",
+		Provider: "codex",
+		Metadata: map[string]any{
+			"email":     "display-tags@example.com",
+			"plan_type": "pro",
+		},
+	})
+	if err != nil {
+		t.Fatalf("register auth: %v", err)
+	}
+
+	h := &Handler{
+		cfg:         &config.Config{},
+		authManager: manager,
+	}
+
+	body, err := json.Marshal(map[string]any{
+		"name":         "oauth-auth-display-tags.json",
+		"custom_tags":  []string{"vip"},
+		"display_tags": []string{"codex", "vip"},
+	})
+	if err != nil {
+		t.Fatalf("marshal body: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPatch, "/auth-files/fields", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	h.PatchAuthFileFields(c)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d, body=%s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	updated, ok := manager.GetByID("oauth-auth-display-tags")
+	if !ok || updated == nil {
+		t.Fatal("expected updated auth")
+	}
+	displayTags, ok := updated.Metadata["display_tags"].([]string)
+	if !ok {
+		t.Fatalf("display_tags type = %T, want []string", updated.Metadata["display_tags"])
+	}
+	if len(displayTags) != 2 || displayTags[0] != "codex" || displayTags[1] != "vip" {
+		t.Fatalf("display_tags = %#v, want [codex vip]", displayTags)
+	}
+}
+
 func TestPatchAuthFileFieldsRejectsMoreThanThreeCustomTags(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -232,6 +288,78 @@ func TestBuildAuthFileEntryIncludesDefaultAndDisplayTags(t *testing.T) {
 	}
 	if len(displayTags) != 2 || displayTags[0] != "codex" || displayTags[1] != "team-a" {
 		t.Fatalf("display_tags = %#v, want [codex team-a]", displayTags)
+	}
+}
+
+func TestBuildAuthFileEntryHonorsExplicitEmptyDisplayTags(t *testing.T) {
+	auth := &coreauth.Auth{
+		ID:       "codex-hidden-tags",
+		FileName: "codex-hidden-tags.json",
+		Provider: "codex",
+		Attributes: map[string]string{
+			"path": "codex-hidden-tags.json",
+		},
+		Metadata: map[string]any{
+			"plan_type":    "pro",
+			"custom_tags":  []string{"vip"},
+			"display_tags": []string{},
+		},
+	}
+
+	entry := (&Handler{}).buildAuthFileEntry(auth)
+	if entry == nil {
+		t.Fatal("expected auth file entry")
+	}
+	displayTags, ok := entry["display_tags"].([]string)
+	if !ok {
+		t.Fatalf("display_tags type = %T, want []string", entry["display_tags"])
+	}
+	if len(displayTags) != 0 {
+		t.Fatalf("display_tags = %#v, want empty list", displayTags)
+	}
+}
+
+func TestBuildAuthFileEntryIncludesActiveRestrictions(t *testing.T) {
+	nextRetry := time.Now().Add(34*time.Minute + 50*time.Second).UTC().Truncate(time.Second)
+	auth := &coreauth.Auth{
+		ID:       "codex-restricted",
+		FileName: "codex-restricted.json",
+		Provider: "codex",
+		Status:   coreauth.StatusError,
+		Attributes: map[string]string{
+			"path": "codex-restricted.json",
+		},
+		ModelStates: map[string]*coreauth.ModelState{
+			"gpt-5": {
+				Status:         coreauth.StatusError,
+				StatusMessage:  "unauthorized",
+				Unavailable:    true,
+				NextRetryAfter: nextRetry,
+				LastError:      &coreauth.Error{Message: "unauthorized", HTTPStatus: http.StatusUnauthorized},
+			},
+		},
+	}
+
+	entry := (&Handler{}).buildAuthFileEntry(auth)
+	if entry == nil {
+		t.Fatal("expected auth file entry")
+	}
+	restrictions, ok := entry["restrictions"].([]gin.H)
+	if !ok {
+		t.Fatalf("restrictions type = %T, want []gin.H", entry["restrictions"])
+	}
+	if len(restrictions) != 1 {
+		t.Fatalf("restrictions length = %d, want 1", len(restrictions))
+	}
+	got := restrictions[0]
+	if got["scope"] != "model" || got["model"] != "gpt-5" || got["http_status"] != http.StatusUnauthorized {
+		t.Fatalf("restriction = %#v, want model gpt-5 401", got)
+	}
+	if got["status_message"] != "unauthorized" {
+		t.Fatalf("status_message = %#v, want unauthorized", got["status_message"])
+	}
+	if retry, ok := got["next_retry_after"].(time.Time); !ok || !retry.Equal(nextRetry) {
+		t.Fatalf("next_retry_after = %#v, want %v", got["next_retry_after"], nextRetry)
 	}
 }
 

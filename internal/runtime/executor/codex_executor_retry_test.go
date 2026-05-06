@@ -61,31 +61,37 @@ func TestParseCodexRetryAfter(t *testing.T) {
 }
 
 func TestParseCodexQuotaProbe(t *testing.T) {
-	now := time.Now()
-	resetAt := now.Add(2 * time.Hour).Unix()
+	t.Run("does not recover when primary window is exhausted", func(t *testing.T) {
+		primaryResetAt := time.Date(2030, 1, 1, 1, 0, 0, 0, time.UTC).Unix()
+		secondaryResetAt := time.Date(2030, 1, 1, 0, 15, 0, 0, time.UTC).Unix()
+		body := []byte(`{"rate_limit":{"primary_window":{"used_percent":100,"reset_at":` + itoa(primaryResetAt) + `},"secondary_window":{"used_percent":70,"reset_at":` + itoa(secondaryResetAt) + `}}}`)
 
-	t.Run("keeps blocked when weekly window is exhausted", func(t *testing.T) {
-		body := []byte(`{"rate_limit":{"allowed":false,"limit_reached":true,"primary_window":{"used_percent":25,"reset_at":` + itoa(now.Add(5*time.Hour).Unix()) + `},"secondary_window":{"used_percent":100,"reset_at":` + itoa(resetAt) + `}}}`)
-		result := parseCodexQuotaProbe(body)
-		if result == nil {
-			t.Fatalf("expected quota probe result")
+		got := parseCodexQuotaProbe(body)
+		if got == nil {
+			t.Fatal("expected quota probe result, got nil")
 		}
-		if result.Recovered {
-			t.Fatalf("expected blocked result when weekly window is exhausted")
+		if got.Recovered {
+			t.Fatal("Recovered = true, want false while primary window is exhausted")
 		}
-		if result.NextRecoverAt.IsZero() || result.NextRecoverAt.Unix() != resetAt {
-			t.Fatalf("NextRecoverAt = %v, want unix %d", result.NextRecoverAt, resetAt)
+		wantRecoverAt := time.Unix(primaryResetAt, 0)
+		if !got.NextRecoverAt.Equal(wantRecoverAt) {
+			t.Fatalf("NextRecoverAt = %v, want %v", got.NextRecoverAt, wantRecoverAt)
 		}
 	})
 
-	t.Run("keeps blocked when any window is exhausted", func(t *testing.T) {
-		body := []byte(`{"rate_limit":{"allowed":true,"limit_reached":false,"primary_window":{"used_percent":20},"secondary_window":{"used_percent":100,"reset_at":` + itoa(resetAt) + `}}}`)
-		result := parseCodexQuotaProbe(body)
-		if result == nil {
-			t.Fatalf("expected quota probe result")
+	t.Run("does not recover when explicit limit reached", func(t *testing.T) {
+		resetAt := time.Date(2030, 1, 1, 1, 0, 0, 0, time.UTC).Unix()
+		body := []byte(`{"rate_limit":{"allowed":false,"limit_reached":true,"primary_window":{"used_percent":80,"reset_at":` + itoa(resetAt) + `},"secondary_window":{"used_percent":70,"reset_at":` + itoa(resetAt) + `}}}`)
+
+		got := parseCodexQuotaProbe(body)
+		if got == nil {
+			t.Fatal("expected quota probe result, got nil")
 		}
-		if result.Recovered {
-			t.Fatalf("expected blocked result when one quota window is exhausted")
+		if got.Recovered {
+			t.Fatal("Recovered = true, want false while limit_reached is true")
+		}
+		if !got.NextRecoverAt.Equal(time.Unix(resetAt, 0)) {
+			t.Fatalf("NextRecoverAt = %v, want %v", got.NextRecoverAt, time.Unix(resetAt, 0))
 		}
 	})
 

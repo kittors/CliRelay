@@ -34,7 +34,12 @@ func (h *Handler) GetLogs(c *gin.Context) {
 		return
 	}
 	if !h.cfg.LoggingToFile {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "logging to file disabled"})
+		cutoff := parseCutoff(c.Query("after"))
+		c.JSON(http.StatusOK, gin.H{
+			"lines":            []string{},
+			"line-count":       0,
+			"latest-timestamp": cutoff,
+		})
 		return
 	}
 

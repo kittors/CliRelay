@@ -16,6 +16,7 @@ type ChannelGroupMatch struct {
 type RoutingChannelGroup struct {
 	Name              string            `yaml:"name" json:"name"`
 	Description       string            `yaml:"description,omitempty" json:"description,omitempty"`
+	Strategy          string            `yaml:"strategy,omitempty" json:"strategy,omitempty"`
 	Match             ChannelGroupMatch `yaml:"match,omitempty" json:"match,omitempty"`
 	Priority          int               `yaml:"priority,omitempty" json:"priority,omitempty"`
 	ChannelPriorities map[string]int    `yaml:"channel-priorities,omitempty" json:"channel-priorities,omitempty"`
@@ -78,15 +79,28 @@ func normalizeChannelPriorities(values map[string]int) map[string]int {
 	return out
 }
 
+func NormalizeRoutingStrategy(strategy string) string {
+	switch strings.TrimSpace(strings.ToLower(strategy)) {
+	case "fill-first", "fillfirst", "ff":
+		return "fill-first"
+	default:
+		return "round-robin"
+	}
+}
+
+func normalizeOptionalRoutingStrategy(strategy string) string {
+	if strings.TrimSpace(strategy) == "" {
+		return ""
+	}
+	return NormalizeRoutingStrategy(strategy)
+}
+
 // SanitizeRouting normalizes routing configuration, deduplicating groups and paths.
 func (cfg *Config) SanitizeRouting() {
 	if cfg == nil {
 		return
 	}
-	cfg.Routing.Strategy = strings.TrimSpace(strings.ToLower(cfg.Routing.Strategy))
-	if cfg.Routing.Strategy == "" {
-		cfg.Routing.Strategy = "round-robin"
-	}
+	cfg.Routing.Strategy = NormalizeRoutingStrategy(cfg.Routing.Strategy)
 
 	seenGroups := make(map[string]struct{}, len(cfg.Routing.ChannelGroups))
 	groups := make([]RoutingChannelGroup, 0, len(cfg.Routing.ChannelGroups))
@@ -94,6 +108,7 @@ func (cfg *Config) SanitizeRouting() {
 		group := cfg.Routing.ChannelGroups[i]
 		group.Name = internalrouting.NormalizeGroupName(group.Name)
 		group.Description = strings.TrimSpace(group.Description)
+		group.Strategy = normalizeOptionalRoutingStrategy(group.Strategy)
 		group.Match.Prefixes = normalizeStringList(group.Match.Prefixes, internalrouting.NormalizeGroupName)
 		group.Match.Channels = normalizeStringList(group.Match.Channels, func(value string) string {
 			return strings.TrimSpace(value)

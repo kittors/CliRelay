@@ -710,6 +710,9 @@ func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth) gin.H {
 	if !auth.NextRetryAfter.IsZero() {
 		entry["next_retry_after"] = auth.NextRetryAfter
 	}
+	if restrictions := buildAuthRestrictionPayload(auth, time.Now()); len(restrictions) > 0 {
+		entry["restrictions"] = restrictions
+	}
 	if path != "" {
 		entry["path"] = path
 		entry["source"] = "file"
@@ -730,6 +733,109 @@ func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth) gin.H {
 		entry["id_token"] = claims
 	}
 	return entry
+}
+
+func buildAuthRestrictionPayload(auth *coreauth.Auth, now time.Time) []gin.H {
+	if auth == nil {
+		return nil
+	}
+	restrictions := make([]gin.H, 0)
+	if len(auth.ModelStates) == 0 || auth.Unavailable || auth.Quota.Exceeded || auth.NextRetryAfter.After(now) {
+		if restriction := buildRestrictionEntry(
+			"auth",
+			"",
+			auth.Status,
+			auth.StatusMessage,
+			auth.Unavailable,
+			auth.NextRetryAfter,
+			auth.LastError,
+			auth.Quota,
+			now,
+		); restriction != nil {
+			restrictions = append(restrictions, restriction)
+		}
+	}
+	if len(auth.ModelStates) == 0 {
+		return restrictions
+	}
+
+	models := make([]string, 0, len(auth.ModelStates))
+	for model := range auth.ModelStates {
+		models = append(models, model)
+	}
+	sort.Strings(models)
+	for _, model := range models {
+		state := auth.ModelStates[model]
+		if state == nil {
+			continue
+		}
+		if restriction := buildRestrictionEntry(
+			"model",
+			model,
+			state.Status,
+			state.StatusMessage,
+			state.Unavailable,
+			state.NextRetryAfter,
+			state.LastError,
+			state.Quota,
+			now,
+		); restriction != nil {
+			restrictions = append(restrictions, restriction)
+		}
+	}
+	return restrictions
+}
+
+func buildRestrictionEntry(scope, model string, status coreauth.Status, statusMessage string, unavailable bool, nextRetryAfter time.Time, lastError *coreauth.Error, quota coreauth.QuotaState, now time.Time) gin.H {
+	if !isActiveRestriction(status, unavailable, nextRetryAfter, lastError, quota, now) {
+		return nil
+	}
+	entry := gin.H{
+		"scope":       scope,
+		"status":      status,
+		"unavailable": unavailable,
+	}
+	if model != "" {
+		entry["model"] = model
+	}
+	statusMessage = strings.TrimSpace(statusMessage)
+	if statusMessage == "" && lastError != nil {
+		statusMessage = strings.TrimSpace(lastError.Message)
+	}
+	if statusMessage != "" {
+		entry["status_message"] = statusMessage
+	}
+	if !nextRetryAfter.IsZero() && nextRetryAfter.After(now) {
+		entry["next_retry_after"] = nextRetryAfter
+	}
+	if lastError != nil {
+		if lastError.Code != "" {
+			entry["code"] = lastError.Code
+		}
+		if lastError.HTTPStatus > 0 {
+			entry["http_status"] = lastError.HTTPStatus
+		}
+		if lastError.Retryable {
+			entry["retryable"] = true
+		}
+	}
+	if quota.Exceeded {
+		entry["quota_exceeded"] = true
+		if quota.Reason != "" {
+			entry["reason"] = quota.Reason
+		}
+		if !quota.NextRecoverAt.IsZero() && quota.NextRecoverAt.After(now) {
+			entry["next_recover_at"] = quota.NextRecoverAt
+		}
+	}
+	return entry
+}
+
+func isActiveRestriction(status coreauth.Status, unavailable bool, nextRetryAfter time.Time, lastError *coreauth.Error, quota coreauth.QuotaState, now time.Time) bool {
+	hasErrorState := status == coreauth.StatusError || unavailable || lastError != nil
+	hasActiveRetry := !nextRetryAfter.IsZero() && nextRetryAfter.After(now)
+	hasActiveQuota := quota.Exceeded && (quota.NextRecoverAt.IsZero() || quota.NextRecoverAt.After(now))
+	return hasErrorState || hasActiveRetry || hasActiveQuota
 }
 
 func extractCodexIDTokenClaims(auth *coreauth.Auth) gin.H {
@@ -1230,6 +1336,7 @@ func (h *Handler) PatchAuthFileFields(c *gin.Context) {
 		Label                 *string   `json:"label"`
 		CustomTags            *[]string `json:"custom_tags"`
 		HiddenDefaultTags     *[]string `json:"hidden_default_tags"`
+		DisplayTags           *[]string `json:"display_tags"`
 		Prefix                *string   `json:"prefix"`
 		ProxyURL              *string   `json:"proxy_url"`
 		ProxyID               *string   `json:"proxy_id"`
@@ -1335,6 +1442,14 @@ func (h *Handler) PatchAuthFileFields(c *gin.Context) {
 		} else {
 			targetAuth.Metadata["hidden_default_tags"] = tags
 		}
+		changed = true
+	}
+	if req.DisplayTags != nil {
+		tags := normalizeTagList(*req.DisplayTags)
+		if targetAuth.Metadata == nil {
+			targetAuth.Metadata = make(map[string]any)
+		}
+		targetAuth.Metadata["display_tags"] = tags
 		changed = true
 	}
 	if req.ProxyURL != nil {

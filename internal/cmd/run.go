@@ -57,6 +57,7 @@ func StartService(cfg *config.Config, configPath string, localPassword string) {
 		log.Errorf("usage: failed to initialize SQLite: %v", err)
 	}
 	usage.MigrateAPIKeysFromConfig(cfg, configPath)
+	usage.MigrateAPIKeyPermissionProfilesFromYAML(configPath)
 	usage.MigrateRoutingConfigFromConfig(cfg, configPath)
 	usage.ApplyStoredRoutingConfig(cfg)
 	usage.MigrateProxyPoolFromConfig(cfg, configPath)
@@ -128,6 +129,7 @@ func StartServiceBackground(cfg *config.Config, configPath string, localPassword
 		log.Errorf("usage: failed to initialize SQLite: %v", err)
 	}
 	usage.MigrateAPIKeysFromConfig(cfg, configPath)
+	usage.MigrateAPIKeyPermissionProfilesFromYAML(configPath)
 	usage.MigrateRoutingConfigFromConfig(cfg, configPath)
 	usage.ApplyStoredRoutingConfig(cfg)
 	usage.MigrateProxyPoolFromConfig(cfg, configPath)

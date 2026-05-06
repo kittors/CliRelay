@@ -67,3 +67,7 @@ func SaveConfigPreserveCommentsUpdateNestedScalar(configFile string, path []stri
 func NormalizeCommentIndentation(data []byte) []byte {
 	return internalconfig.NormalizeCommentIndentation(data)
 }
+
+func NormalizeRoutingStrategy(strategy string) string {
+	return internalconfig.NormalizeRoutingStrategy(strategy)
+}

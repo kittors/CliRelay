@@ -602,16 +602,8 @@ func (s *Service) Run(ctx context.Context) error {
 		internalusage.ApplyStoredRuntimeSettings(newCfg)
 
 		nextStrategy := strings.ToLower(strings.TrimSpace(newCfg.Routing.Strategy))
-		normalizeStrategy := func(strategy string) string {
-			switch strategy {
-			case "fill-first", "fillfirst", "ff":
-				return "fill-first"
-			default:
-				return "round-robin"
-			}
-		}
-		previousStrategy = normalizeStrategy(previousStrategy)
-		nextStrategy = normalizeStrategy(nextStrategy)
+		previousStrategy = config.NormalizeRoutingStrategy(previousStrategy)
+		nextStrategy = config.NormalizeRoutingStrategy(nextStrategy)
 		if s.coreManager != nil && previousStrategy != nextStrategy {
 			var selector coreauth.Selector
 			switch nextStrategy {

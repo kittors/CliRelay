@@ -28,6 +28,41 @@ func TestLoadConfigDefaultsDisableControlPanel(t *testing.T) {
 	}
 }
 
+func TestSanitizeRoutingPreservesChannelGroupStrategy(t *testing.T) {
+	t.Parallel()
+
+	cfg := &Config{
+		Routing: RoutingConfig{
+			Strategy: "fill-first",
+			ChannelGroups: []RoutingChannelGroup{
+				{
+					Name:     " Team ",
+					Strategy: "round-robin",
+					Match: ChannelGroupMatch{
+						Channels: []string{"Team Channel"},
+					},
+				},
+				{
+					Name:     " Cache ",
+					Strategy: "ff",
+					Match: ChannelGroupMatch{
+						Channels: []string{"Cache Channel"},
+					},
+				},
+			},
+		},
+	}
+
+	cfg.SanitizeRouting()
+
+	if got := cfg.Routing.ChannelGroups[0].Strategy; got != "round-robin" {
+		t.Fatalf("group strategy = %q, want round-robin", got)
+	}
+	if got := cfg.Routing.ChannelGroups[1].Strategy; got != "fill-first" {
+		t.Fatalf("group strategy alias = %q, want fill-first", got)
+	}
+}
+
 func TestLoadConfigAllowsAuthPathEnvOverride(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
 	if err := os.WriteFile(configPath, []byte("auth-dir: /root/.cli-proxy-api\n"), 0o600); err != nil {

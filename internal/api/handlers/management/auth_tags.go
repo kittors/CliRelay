@@ -33,26 +33,33 @@ func buildAuthTagPayloadFromValues(provider string, metadata map[string]any) aut
 	defaultTags := defaultAuthTags(provider, metadata)
 	customTags := metadataStringSlice(metadata, "custom_tags")
 	hiddenDefaultTags := metadataStringSlice(metadata, "hidden_default_tags")
+	explicitDisplayTags, hasExplicitDisplayTags := metadataStringSliceWithPresence(
+		metadata,
+		"display_tags",
+	)
 	hiddenSet := make(map[string]struct{}, len(hiddenDefaultTags))
 	for _, tag := range hiddenDefaultTags {
 		hiddenSet[tag] = struct{}{}
 	}
 
-	displayTags := make([]string, 0, len(defaultTags)+len(customTags))
-	for _, tag := range defaultTags {
-		if _, hidden := hiddenSet[tag]; hidden {
-			continue
+	displayTags := explicitDisplayTags
+	if !hasExplicitDisplayTags {
+		displayTags = make([]string, 0, len(defaultTags)+len(customTags))
+		for _, tag := range defaultTags {
+			if _, hidden := hiddenSet[tag]; hidden {
+				continue
+			}
+			displayTags = append(displayTags, tag)
 		}
-		displayTags = append(displayTags, tag)
-	}
-	for _, tag := range customTags {
-		if _, exists := hiddenSet[tag]; exists {
-			continue
+		for _, tag := range customTags {
+			if _, exists := hiddenSet[tag]; exists {
+				continue
+			}
+			if containsNormalizedTag(displayTags, tag) {
+				continue
+			}
+			displayTags = append(displayTags, tag)
 		}
-		if containsNormalizedTag(displayTags, tag) {
-			continue
-		}
-		displayTags = append(displayTags, tag)
 	}
 
 	return authTagPayload{
@@ -125,16 +132,21 @@ func containsNormalizedTag(values []string, target string) bool {
 }
 
 func metadataStringSlice(metadata map[string]any, key string) []string {
+	values, _ := metadataStringSliceWithPresence(metadata, key)
+	return values
+}
+
+func metadataStringSliceWithPresence(metadata map[string]any, key string) ([]string, bool) {
 	if len(metadata) == 0 {
-		return []string{}
+		return []string{}, false
 	}
 	raw, ok := metadata[key]
 	if !ok || raw == nil {
-		return []string{}
+		return []string{}, ok
 	}
 	switch typed := raw.(type) {
 	case []string:
-		return normalizeTagList(typed)
+		return normalizeTagList(typed), true
 	case []any:
 		values := make([]string, 0, len(typed))
 		for _, item := range typed {
@@ -142,14 +154,14 @@ func metadataStringSlice(metadata map[string]any, key string) []string {
 				values = append(values, text)
 			}
 		}
-		return normalizeTagList(values)
+		return normalizeTagList(values), true
 	case string:
 		if strings.TrimSpace(typed) == "" {
-			return []string{}
+			return []string{}, true
 		}
-		return normalizeTagList(strings.Split(typed, ","))
+		return normalizeTagList(strings.Split(typed, ",")), true
 	default:
-		return []string{}
+		return []string{}, true
 	}
 }
 
