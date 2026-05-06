@@ -59,6 +59,7 @@ type ContextRetrievalConfig struct {
 	Chunk               ContextRetrievalChunkConfig  `yaml:"chunk,omitempty" json:"chunk,omitempty"`
 	Retrieval           ContextRetrievalSearchConfig `yaml:"retrieval,omitempty" json:"retrieval,omitempty"`
 	CodexAware          CodexAwareContextConfig      `yaml:"codex-aware,omitempty" json:"codex-aware,omitempty"`
+	Secondary           ContextRetrievalSecondPass   `yaml:"secondary,omitempty" json:"secondary,omitempty"`
 }
 
 type ContextRetrievalChunkConfig struct {
@@ -68,6 +69,16 @@ type ContextRetrievalChunkConfig struct {
 type ContextRetrievalSearchConfig struct {
 	TopK     int    `yaml:"top-k,omitempty" json:"top-k,omitempty"`
 	Strategy string `yaml:"strategy,omitempty" json:"strategy,omitempty"`
+}
+
+// ContextRetrievalSecondPass controls a more aggressive fallback compression pass.
+type ContextRetrievalSecondPass struct {
+	Enabled             bool `yaml:"enabled" json:"enabled"`
+	MaxInputBytes       int  `yaml:"max-input-bytes,omitempty" json:"max-input-bytes,omitempty"`
+	PreserveRecentTurns int  `yaml:"preserve-recent-turns,omitempty" json:"preserve-recent-turns,omitempty"`
+	TopK                int  `yaml:"top-k,omitempty" json:"top-k,omitempty"`
+	MaxSummaryBytes     int  `yaml:"max-summary-bytes,omitempty" json:"max-summary-bytes,omitempty"`
+	MaxItemBytes        int  `yaml:"max-item-bytes,omitempty" json:"max-item-bytes,omitempty"`
 }
 
 // CodexAwareContextConfig preserves Codex tool semantics while reducing context.

@@ -1276,6 +1276,38 @@ func (cfg *Config) SanitizeContextRetrieval() {
 			cr.CodexAware.PreserveRecentErrors = 8
 		}
 	}
+	if cr.Secondary.Enabled {
+		if cr.Secondary.MaxInputBytes <= 0 || cr.Secondary.MaxInputBytes >= cr.MaxInputBytes {
+			cr.Secondary.MaxInputBytes = cr.MaxInputBytes * 2 / 3
+		}
+		if cr.Secondary.MaxInputBytes <= 0 {
+			cr.Secondary.MaxInputBytes = cr.MaxInputBytes
+		}
+		if cr.Secondary.PreserveRecentTurns <= 0 || cr.Secondary.PreserveRecentTurns >= cr.PreserveRecentTurns {
+			cr.Secondary.PreserveRecentTurns = cr.PreserveRecentTurns / 2
+		}
+		if cr.Secondary.PreserveRecentTurns <= 0 {
+			cr.Secondary.PreserveRecentTurns = 1
+		}
+		if cr.Secondary.TopK <= 0 || cr.Secondary.TopK >= cr.Retrieval.TopK {
+			cr.Secondary.TopK = cr.Retrieval.TopK / 2
+		}
+		if cr.Secondary.TopK <= 0 {
+			cr.Secondary.TopK = 8
+		}
+		if cr.Secondary.MaxSummaryBytes <= 0 {
+			cr.Secondary.MaxSummaryBytes = cr.CodexAware.MaxSummaryBytes / 2
+		}
+		if cr.Secondary.MaxSummaryBytes <= 0 {
+			cr.Secondary.MaxSummaryBytes = 2000
+		}
+		if cr.Secondary.MaxItemBytes <= 0 {
+			cr.Secondary.MaxItemBytes = cr.Secondary.MaxInputBytes / 4
+		}
+		if cr.Secondary.MaxItemBytes <= 0 {
+			cr.Secondary.MaxItemBytes = 24000
+		}
+	}
 	out := make([]PayloadModelRule, 0, len(cr.Models))
 	for _, rule := range cr.Models {
 		rule.Name = strings.TrimSpace(rule.Name)

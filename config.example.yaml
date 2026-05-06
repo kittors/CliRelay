@@ -151,6 +151,15 @@ request-log-storage:
 #   retrieval:
 #     top-k: 40
 #     strategy: "keyword"
+#   # Optional second pass: if primary retrieval still exceeds budget, retry with
+#   # a smaller budget and truncate oversized retained item text with prefix/suffix.
+#   secondary:
+#     enabled: true
+#     max-input-bytes: 220000
+#     preserve-recent-turns: 6
+#     top-k: 24
+#     max-summary-bytes: 2000
+#     max-item-bytes: 24000
 #   codex-aware:
 #     enabled: true
 #     preserve-tool-pairs: true

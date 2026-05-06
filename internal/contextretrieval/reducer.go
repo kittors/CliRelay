@@ -17,6 +17,7 @@ import (
 
 type Report struct {
 	Applied       bool
+	Secondary     bool
 	Field         string
 	OriginalBytes int
 	ReducedBytes  int
@@ -119,6 +120,19 @@ func Reduce(ctx context.Context, raw []byte, model, protocol string, cfg config.
 	if err != nil {
 		return raw, report, err
 	}
+	if cfg.Secondary.Enabled && len(reduced) > cfg.Secondary.MaxInputBytes {
+		secondaryCfg := secondaryConfig(cfg)
+		secondaryReduced, secondaryKept, secondaryMatched, errSecondary := reduceOverBudget(raw, field, items, secondaryCfg)
+		if errSecondary != nil {
+			return raw, report, errSecondary
+		}
+		if len(secondaryReduced) < len(reduced) {
+			reduced = secondaryReduced
+			kept = secondaryKept
+			report.MatchedItems = secondaryMatched
+			report.Secondary = true
+		}
+	}
 	if len(reduced) >= len(raw) {
 		return raw, report, nil
 	}
@@ -156,6 +170,94 @@ func normalizeConfig(cfg *config.ContextRetrievalConfig) {
 			cfg.CodexAware.PreserveRecentErrors = 8
 		}
 	}
+	if cfg.Secondary.Enabled {
+		if cfg.Secondary.MaxInputBytes <= 0 || cfg.Secondary.MaxInputBytes >= cfg.MaxInputBytes {
+			cfg.Secondary.MaxInputBytes = cfg.MaxInputBytes * 2 / 3
+		}
+		if cfg.Secondary.MaxInputBytes <= 0 {
+			cfg.Secondary.MaxInputBytes = cfg.MaxInputBytes
+		}
+		if cfg.Secondary.PreserveRecentTurns <= 0 || cfg.Secondary.PreserveRecentTurns >= cfg.PreserveRecentTurns {
+			cfg.Secondary.PreserveRecentTurns = cfg.PreserveRecentTurns / 2
+		}
+		if cfg.Secondary.PreserveRecentTurns <= 0 {
+			cfg.Secondary.PreserveRecentTurns = 1
+		}
+		if cfg.Secondary.TopK <= 0 || cfg.Secondary.TopK >= cfg.Retrieval.TopK {
+			cfg.Secondary.TopK = cfg.Retrieval.TopK / 2
+		}
+		if cfg.Secondary.TopK <= 0 {
+			cfg.Secondary.TopK = 8
+		}
+		if cfg.Secondary.MaxSummaryBytes <= 0 {
+			cfg.Secondary.MaxSummaryBytes = cfg.CodexAware.MaxSummaryBytes / 2
+		}
+		if cfg.Secondary.MaxSummaryBytes <= 0 {
+			cfg.Secondary.MaxSummaryBytes = 2000
+		}
+		if cfg.Secondary.MaxItemBytes <= 0 {
+			cfg.Secondary.MaxItemBytes = cfg.Secondary.MaxInputBytes / 4
+		}
+		if cfg.Secondary.MaxItemBytes <= 0 {
+			cfg.Secondary.MaxItemBytes = 24000
+		}
+	}
+}
+
+func secondaryConfig(cfg config.ContextRetrievalConfig) config.ContextRetrievalConfig {
+	secondary := cfg
+	secondary.MaxInputBytes = cfg.Secondary.MaxInputBytes
+	secondary.PreserveRecentTurns = cfg.Secondary.PreserveRecentTurns
+	secondary.Retrieval.TopK = cfg.Secondary.TopK
+	if secondary.CodexAware.Enabled {
+		secondary.CodexAware.MaxSummaryBytes = cfg.Secondary.MaxSummaryBytes
+	}
+	return secondary
+}
+
+func reduceOverBudget(raw []byte, field string, sourceItems []item, cfg config.ContextRetrievalConfig) ([]byte, int, int, error) {
+	items := cloneItems(sourceItems)
+	markPreserved(items, cfg.PreserveRecentTurns, cfg.CodexAware)
+	query := buildQuery(items)
+	matched := map[int]struct{}{}
+	if query != "" {
+		var err error
+		matched, err = searchItems(items, query, cfg.Chunk.MaxBytes, cfg.Retrieval.TopK)
+		if err != nil {
+			return raw, 0, 0, err
+		}
+	}
+	keep := make(map[int]struct{}, len(items))
+	for i := range items {
+		if items[i].Recent || items[i].Forced {
+			keep[items[i].Index] = struct{}{}
+		}
+	}
+	for idx := range matched {
+		keep[idx] = struct{}{}
+	}
+	if cfg.CodexAware.Enabled && cfg.CodexAware.PreserveToolPairs {
+		preserveToolPairs(items, keep)
+	}
+	reduced, kept, err := assembleWithinBudget(raw, field, items, keep, cfg.MaxInputBytes, cfg)
+	if err != nil || len(reduced) <= cfg.MaxInputBytes || cfg.Secondary.MaxItemBytes <= 0 {
+		return reduced, kept, len(matched), err
+	}
+	if trimKeptItems(items, keep, cfg.Secondary.MaxItemBytes) {
+		reduced, kept, err = assembleWithinBudget(raw, field, items, keep, cfg.MaxInputBytes, cfg)
+	}
+	return reduced, kept, len(matched), err
+}
+
+func cloneItems(items []item) []item {
+	out := make([]item, len(items))
+	for i := range items {
+		out[i] = items[i]
+		out[i].Recent = false
+		out[i].Forced = false
+		out[i].Raw = append(json.RawMessage(nil), items[i].Raw...)
+	}
+	return out
 }
 
 func extractItems(raw []byte) (string, []item, error) {
@@ -503,6 +605,153 @@ func assemble(raw []byte, field string, items []item, keep map[int]struct{}, cfg
 	return out, nil
 }
 
+func trimKeptItems(items []item, keep map[int]struct{}, maxItemBytes int) bool {
+	if maxItemBytes <= 0 {
+		return false
+	}
+	changed := false
+	for i := range items {
+		if _, ok := keep[items[i].Index]; !ok {
+			continue
+		}
+		if items[i].Forced || len(items[i].Raw) <= maxItemBytes {
+			continue
+		}
+		raw, ok := truncateItemRaw(items[i].Raw, maxItemBytes)
+		if !ok {
+			continue
+		}
+		items[i].Raw = raw
+		items[i].Text = extractText(raw)
+		changed = true
+	}
+	return changed
+}
+
+func truncateItemRaw(raw json.RawMessage, maxBytes int) (json.RawMessage, bool) {
+	if maxBytes <= 0 || len(raw) <= maxBytes {
+		return raw, false
+	}
+	var value any
+	decoder := json.NewDecoder(strings.NewReader(string(raw)))
+	decoder.UseNumber()
+	if err := decoder.Decode(&value); err != nil {
+		return raw, false
+	}
+	changed := false
+	maxStringBytes := maxBytes / 2
+	if maxStringBytes < 256 {
+		maxStringBytes = 256
+	}
+	var out []byte
+	for attempt := 0; attempt < 6; attempt++ {
+		cloned := truncateJSONStrings(value, maxStringBytes, &changed)
+		data, err := json.Marshal(cloned)
+		if err != nil {
+			return raw, false
+		}
+		out = data
+		if len(out) <= maxBytes || maxStringBytes <= 256 {
+			break
+		}
+		maxStringBytes /= 2
+		if maxStringBytes < 256 {
+			maxStringBytes = 256
+		}
+	}
+	if !changed || len(out) == 0 || len(out) >= len(raw) {
+		return raw, false
+	}
+	return json.RawMessage(out), true
+}
+
+func truncateJSONStrings(value any, maxStringBytes int, changed *bool) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(typed))
+		for key, child := range typed {
+			lower := strings.ToLower(strings.TrimSpace(key))
+			if isStructuralStringKey(lower) {
+				out[key] = child
+				continue
+			}
+			out[key] = truncateJSONStrings(child, maxStringBytes, changed)
+		}
+		return out
+	case []any:
+		out := make([]any, len(typed))
+		for i := range typed {
+			out[i] = truncateJSONStrings(typed[i], maxStringBytes, changed)
+		}
+		return out
+	case string:
+		if len(typed) <= maxStringBytes {
+			return typed
+		}
+		*changed = true
+		return truncateStringBytes(typed, maxStringBytes)
+	default:
+		return value
+	}
+}
+
+func isStructuralStringKey(key string) bool {
+	switch key {
+	case "type", "role", "name", "call_id", "tool_call_id", "id", "status":
+		return true
+	default:
+		return false
+	}
+}
+
+func truncateStringBytes(value string, maxBytes int) string {
+	if maxBytes <= 0 || len(value) <= maxBytes {
+		return value
+	}
+	const marker = "\n...[truncated by context retrieval]...\n"
+	if maxBytes <= len(marker)+32 {
+		return marker
+	}
+	edge := (maxBytes - len(marker)) / 2
+	prefix := safeBytePrefix(value, edge)
+	suffix := safeByteSuffix(value, edge)
+	return prefix + marker + suffix
+}
+
+func safeBytePrefix(value string, maxBytes int) string {
+	if len(value) <= maxBytes {
+		return value
+	}
+	end := 0
+	for i := range value {
+		if i > maxBytes {
+			break
+		}
+		end = i
+	}
+	if end == 0 {
+		return ""
+	}
+	return value[:end]
+}
+
+func safeByteSuffix(value string, maxBytes int) string {
+	if len(value) <= maxBytes {
+		return value
+	}
+	start := len(value)
+	for i := range value {
+		if len(value)-i <= maxBytes {
+			start = i
+			break
+		}
+	}
+	if start >= len(value) {
+		return ""
+	}
+	return value[start:]
+}
+
 func preserveToolPairs(items []item, keep map[int]struct{}) {
 	if len(keep) == 0 {
 		return
@@ -834,5 +1083,9 @@ func (r Report) String() string {
 	if !r.Applied {
 		return "context retrieval not applied"
 	}
-	return fmt.Sprintf("field=%s bytes=%d->%d items=%d->%d matched=%d", r.Field, r.OriginalBytes, r.ReducedBytes, r.OriginalItems, r.KeptItems, r.MatchedItems)
+	pass := "primary"
+	if r.Secondary {
+		pass = "secondary"
+	}
+	return fmt.Sprintf("field=%s pass=%s bytes=%d->%d items=%d->%d matched=%d", r.Field, pass, r.OriginalBytes, r.ReducedBytes, r.OriginalItems, r.KeptItems, r.MatchedItems)
 }
