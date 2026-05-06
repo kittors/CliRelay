@@ -347,8 +347,20 @@ func countJSONOccurrences(rawJSON []byte, needles []string) int {
 func requestFeatures(rawJSON []byte, inputItems int, toolDefinitions int, toolCalls int) []string {
 	text := strings.ToLower(string(rawJSON))
 	features := make([]string, 0, 4)
-	if strings.Contains(text, "input_image") || strings.Contains(text, "image_url") || strings.Contains(text, "input_file") || strings.Contains(text, "file_url") || strings.Contains(text, "input_video") || strings.Contains(text, "video_url") {
+	hasImage := strings.Contains(text, "input_image") || strings.Contains(text, "image_url")
+	hasFile := strings.Contains(text, "input_file") || strings.Contains(text, "file_url")
+	hasVideo := strings.Contains(text, "input_video") || strings.Contains(text, "video_url")
+	if hasImage || hasFile || hasVideo {
 		features = append(features, "multimodal")
+	}
+	if hasImage {
+		features = append(features, "image")
+	}
+	if hasFile {
+		features = append(features, "file")
+	}
+	if hasVideo {
+		features = append(features, "video")
 	}
 	if toolDefinitions > 0 || toolCalls > 0 {
 		features = append(features, "tools")

@@ -175,12 +175,20 @@ request-log-storage:
 #       max-request-bytes: 800000
 #     over-limit:
 #       action: "skip-channel"
-#   - name: "glm-5.1-multimodal-skip"
+#   - name: "glm-5.1-image-skip"
 #     match:
 #       requested-models: ["gpt-5.3-codex"]
 #       upstream-providers: ["bigmodel-coding"]
 #       upstream-models: ["glm-5.1"]
-#       request-features: ["multimodal"]
+#       request-features: ["image"]
+#     over-limit:
+#       action: "skip-channel"
+#   - name: "glm-5.1-video-skip"
+#     match:
+#       requested-models: ["gpt-5.3-codex"]
+#       upstream-providers: ["bigmodel-coding"]
+#       upstream-models: ["glm-5.1"]
+#       request-features: ["video"]
 #     over-limit:
 #       action: "skip-channel"
 #   - name: "glm-5.1-tool-heavy-skip"
