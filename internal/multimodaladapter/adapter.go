@@ -36,13 +36,29 @@ type Report struct {
 type StatusError struct {
 	StatusCodeValue int
 	Message         string
+	Code            string
 }
 
 func (e StatusError) Error() string {
-	if strings.TrimSpace(e.Message) != "" {
-		return e.Message
+	message := strings.TrimSpace(e.Message)
+	if message == "" {
+		message = http.StatusText(e.StatusCode())
 	}
-	return http.StatusText(e.StatusCodeValue)
+	code := strings.TrimSpace(e.Code)
+	if code == "" {
+		code = "multimodal_adapter_unavailable"
+	}
+	body, err := json.Marshal(map[string]any{
+		"error": map[string]any{
+			"message": message,
+			"type":    "invalid_request_error",
+			"code":    code,
+		},
+	})
+	if err != nil {
+		return message
+	}
+	return string(body)
 }
 
 func (e StatusError) StatusCode() int {
@@ -93,7 +109,7 @@ func Apply(ctx context.Context, raw []byte, route Route, cfg config.MultimodalAd
 
 	switch rule.action {
 	case "reject":
-		return raw, report, StatusError{StatusCodeValue: http.StatusBadRequest, Message: "request contains media inputs but the selected upstream route is configured to reject media"}
+		return raw, report, StatusError{StatusCodeValue: http.StatusBadRequest, Message: "request contains media inputs but the selected upstream route is configured to reject media", Code: "multimodal_media_rejected"}
 	case "strip":
 		return stripAndInject(raw, payload, route.Protocol, rule, "Media inputs were removed because the selected upstream model does not support direct multimodal input.", &report)
 	}
@@ -234,7 +250,7 @@ func unavailable(raw []byte, payload any, protocol string, rule selectedRule, me
 	case "strip":
 		return stripAndInject(raw, payload, protocol, rule, "Media inputs were removed because visual extraction is unavailable: "+message, report)
 	default:
-		return raw, *report, StatusError{StatusCodeValue: http.StatusBadRequest, Message: message}
+		return raw, *report, StatusError{StatusCodeValue: http.StatusBadRequest, Message: message, Code: "multimodal_extractor_unavailable"}
 	}
 }
 

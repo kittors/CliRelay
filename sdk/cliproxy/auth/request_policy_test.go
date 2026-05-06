@@ -16,6 +16,7 @@ type requestPolicyTestExecutor struct {
 
 	mu    sync.Mutex
 	calls []string
+	err   error
 }
 
 func (e *requestPolicyTestExecutor) Identifier() string { return e.id }
@@ -31,6 +32,9 @@ func (e *requestPolicyTestExecutor) Execute(ctx context.Context, auth *Auth, req
 	e.mu.Lock()
 	e.calls = append(e.calls, authID)
 	e.mu.Unlock()
+	if e.err != nil {
+		return cliproxyexecutor.Response{}, e.err
+	}
 	return cliproxyexecutor.Response{Payload: []byte(`{"ok":true}`)}, nil
 }
 
@@ -57,6 +61,14 @@ func (e *requestPolicyTestExecutor) Calls() []string {
 	copy(out, e.calls)
 	return out
 }
+
+type requestPolicyStatusError struct {
+	status int
+	msg    string
+}
+
+func (e requestPolicyStatusError) Error() string   { return e.msg }
+func (e requestPolicyStatusError) StatusCode() int { return e.status }
 
 func TestManagerExecute_RequestPolicySkipChannelFallsBack(t *testing.T) {
 	manager := NewManager(nil, &RoundRobinSelector{}, nil)
@@ -294,6 +306,60 @@ func TestManagerExecute_RequestPolicyRejectsWhenNoFallback(t *testing.T) {
 	}
 	if calls := bigmodel.Calls(); len(calls) != 0 {
 		t.Fatalf("bigmodel calls = %v, want none", calls)
+	}
+}
+
+func TestManagerExecute_InvalidRequestErrorDoesNotFallback(t *testing.T) {
+	manager := NewManager(nil, &RoundRobinSelector{}, nil)
+	bigmodel := &requestPolicyTestExecutor{
+		id: "bigmodel-coding",
+		err: requestPolicyStatusError{
+			status: http.StatusBadRequest,
+			msg:    `{"error":{"message":"multimodal adapter matched this route but no extractor is configured","type":"invalid_request_error","code":"multimodal_extractor_unavailable"}}`,
+		},
+	}
+	codex := &requestPolicyTestExecutor{id: "codex"}
+	manager.RegisterExecutor(bigmodel)
+	manager.RegisterExecutor(codex)
+	manager.SetConfig(&internalconfig.Config{})
+
+	for _, auth := range []*Auth{
+		{
+			ID:       "bigmodel-auth",
+			Provider: "bigmodel-coding",
+			Status:   StatusActive,
+			Attributes: map[string]string{
+				"priority": "10",
+			},
+		},
+		{
+			ID:       "codex-auth",
+			Provider: "codex",
+			Status:   StatusActive,
+			Attributes: map[string]string{
+				"priority": "1",
+			},
+		},
+	} {
+		if _, err := manager.Register(context.Background(), auth); err != nil {
+			t.Fatalf("register %s: %v", auth.ID, err)
+		}
+		registry.GetGlobalRegistry().RegisterClient(auth.ID, auth.Provider, []*registry.ModelInfo{{ID: "gpt-5.3-codex", Name: "gpt-5.3-codex"}})
+		t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(auth.ID) })
+	}
+
+	_, err := manager.Execute(context.Background(), []string{"bigmodel-coding", "codex"}, cliproxyexecutor.Request{
+		Model:   "gpt-5.3-codex",
+		Payload: []byte(`{"model":"gpt-5.3-codex","input":"small"}`),
+	}, cliproxyexecutor.Options{})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if calls := bigmodel.Calls(); len(calls) != 1 || calls[0] != "bigmodel-auth" {
+		t.Fatalf("bigmodel calls = %v, want [bigmodel-auth]", calls)
+	}
+	if calls := codex.Calls(); len(calls) != 0 {
+		t.Fatalf("codex calls = %v, want none", calls)
 	}
 }
 
