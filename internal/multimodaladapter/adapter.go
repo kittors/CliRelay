@@ -528,9 +528,15 @@ func callZAIVisionHTTPExtractor(ctx context.Context, refs []mediaRef, extractor 
 		model = strings.TrimSpace(extractor.Env["model"])
 	}
 	if model == "" {
-		model = "glm-4.5v"
+		model = "glm-5.1"
 	}
-	body, err := json.Marshal(map[string]any{
+	maxTokens := 512
+	if rawMaxTokens := strings.TrimSpace(extractor.Env["max_tokens"]); rawMaxTokens != "" {
+		if parsed, err := strconv.Atoi(rawMaxTokens); err == nil && parsed > 0 {
+			maxTokens = parsed
+		}
+	}
+	requestBody := map[string]any{
 		"model": model,
 		"messages": []map[string]any{
 			{
@@ -538,7 +544,12 @@ func callZAIVisionHTTPExtractor(ctx context.Context, refs []mediaRef, extractor 
 				"content": content,
 			},
 		},
-	})
+		"max_tokens": maxTokens,
+	}
+	if !strings.EqualFold(strings.TrimSpace(extractor.Env["disable_thinking"]), "false") {
+		requestBody["thinking"] = map[string]any{"type": "disabled"}
+	}
+	body, err := json.Marshal(requestBody)
 	if err != nil {
 		return nil, err
 	}

@@ -162,6 +162,13 @@ func TestApplyZAIVisionHTTPExtractorStripsMediaAndInjectsVisualContext(t *testin
 	if extractorBody["model"] != "glm-4.5v" {
 		t.Fatalf("model = %#v", extractorBody["model"])
 	}
+	if extractorBody["max_tokens"] != float64(512) {
+		t.Fatalf("max_tokens = %#v", extractorBody["max_tokens"])
+	}
+	thinking, _ := extractorBody["thinking"].(map[string]any)
+	if thinking["type"] != "disabled" {
+		t.Fatalf("thinking = %#v", extractorBody["thinking"])
+	}
 	if !report.Applied || !report.Stripped || !report.Injected || report.MediaItems != 1 || report.Extractor != "zai-vision-http" {
 		t.Fatalf("report = %#v", report)
 	}

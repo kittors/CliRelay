@@ -246,7 +246,10 @@ request-log-storage:
 #       endpoint: "https://open.bigmodel.cn/api/paas/v4"
 #       headers:
 #         Authorization: "Bearer ${Z_AI_API_KEY}"
-#       tool-name: "glm-4.5v"
+#       tool-name: "glm-5.1"
+#       env:
+#         max_tokens: "512"
+#         disable_thinking: "true"
 #       timeout-seconds: 60
 #     - name: "zai-vision-mcp"
 #       type: "mcp"
