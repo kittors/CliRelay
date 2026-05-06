@@ -39,6 +39,10 @@ type ErrorResponse struct {
 	Error ErrorDetail `json:"error"`
 }
 
+type upstreamErrorBodyProvider interface {
+	UpstreamErrorBody() []byte
+}
+
 // ErrorDetail provides specific information about an error that occurred.
 // It includes a human-readable message, an error type, and an optional error code.
 type ErrorDetail struct {
@@ -1273,13 +1277,20 @@ func (h *BaseAPIHandler) WriteErrorResponse(c *gin.Context, msg *interfaces.Erro
 	}
 
 	errText := http.StatusText(status)
+	var upstreamBody []byte
 	if msg != nil && msg.Error != nil {
 		if v := strings.TrimSpace(msg.Error.Error()); v != "" {
 			errText = v
 		}
+		if upstreamErr, ok := msg.Error.(upstreamErrorBodyProvider); ok && upstreamErr != nil {
+			upstreamBody = bytes.TrimSpace(upstreamErr.UpstreamErrorBody())
+		}
 	}
 
 	body := BuildErrorResponseBody(status, errText)
+	if len(upstreamBody) > 0 {
+		body = BuildErrorResponseBody(status, string(upstreamBody))
+	}
 	// Append first to preserve upstream response logs, then drop duplicate payloads if already recorded.
 	var previous []byte
 	if existing, exists := c.Get("API_RESPONSE"); exists {

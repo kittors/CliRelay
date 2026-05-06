@@ -174,7 +174,7 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 		appendAPIResponseChunk(ctx, e.cfg, b)
 		logWithRequestID(ctx).Debugf("request error, error status: %d, error message: %s", httpResp.StatusCode, summarizeErrorBody(httpResp.Header.Get("Content-Type"), b))
 		reporter.publishFailureWithContent(ctx, string(req.Payload), string(b))
-		err = statusErr{code: httpResp.StatusCode, msg: string(b)}
+		err = statusErr{code: httpResp.StatusCode, msg: string(b), upstreamBody: b}
 		return resp, err
 	}
 	body, err := readUpstreamResponseBody(e.Identifier(), httpResp.Body)
@@ -280,7 +280,7 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 		if errClose := httpResp.Body.Close(); errClose != nil {
 			log.Errorf("openai compat executor: close response body error: %v", errClose)
 		}
-		err = statusErr{code: httpResp.StatusCode, msg: string(b)}
+		err = statusErr{code: httpResp.StatusCode, msg: string(b), upstreamBody: b}
 		return nil, err
 	}
 	out := make(chan cliproxyexecutor.StreamChunk)
@@ -544,6 +544,9 @@ func (e statusErr) StatusCode() int            { return e.code }
 func (e statusErr) RetryAfter() *time.Duration { return e.retryAfter }
 func (e statusErr) UpstreamErrorBody() []byte {
 	if len(e.upstreamBody) == 0 {
+		if trimmed := strings.TrimSpace(e.msg); trimmed != "" && json.Valid([]byte(trimmed)) {
+			return []byte(trimmed)
+		}
 		return nil
 	}
 	return append([]byte(nil), e.upstreamBody...)

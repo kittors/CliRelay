@@ -113,6 +113,39 @@ func TestOpenAICompatExecutorCompactPassthrough(t *testing.T) {
 	}
 }
 
+func TestOpenAICompatExecutorPreservesUpstreamErrorBody(t *testing.T) {
+	upstreamBody := []byte(`{"error":{"code":"1305","message":"该模型当前访问量过大，请您稍后再试"}}`)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write(upstreamBody)
+	}))
+	defer server.Close()
+
+	executor := NewOpenAICompatExecutor("bigmodel-coding", &config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"base_url": server.URL + "/v1",
+		"api_key":  "test",
+	}}
+	_, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "glm-5.1",
+		Payload: []byte(`{"model":"glm-5.1","messages":[{"role":"user","content":"hi"}]}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai"),
+		Stream:       false,
+	})
+	if err == nil {
+		t.Fatal("Execute error = nil, want upstream status error")
+	}
+	upstreamErr, ok := err.(interface{ UpstreamErrorBody() []byte })
+	if !ok {
+		t.Fatalf("error %T does not expose upstream body", err)
+	}
+	if got := string(upstreamErr.UpstreamErrorBody()); got != string(upstreamBody) {
+		t.Fatalf("upstream body = %s, want %s", got, string(upstreamBody))
+	}
+}
+
 func TestOpenAICompatExecutorConvertsImageEditsToChatMultimodal(t *testing.T) {
 	var gotPath string
 	var gotBody []byte
