@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -16,6 +17,7 @@ import (
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v6/sdk/translator"
 	log "github.com/sirupsen/logrus"
+	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
 
@@ -111,6 +113,12 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 		translated, err = normalizeKimiToolMessageLinks(translated)
 		if err != nil {
 			return resp, err
+		}
+	}
+	if opts.Alt == "images/edits" && e.imageEditsMode(auth) == "chat-multimodal" {
+		translated, err = convertImageEditPayloadToChatMultimodal(translated)
+		if err != nil {
+			return resp, statusErr{code: http.StatusBadRequest, msg: err.Error()}
 		}
 	}
 
@@ -391,6 +399,24 @@ func (e *OpenAICompatExecutor) applyIdentityFingerprint(req *http.Request, auth 
 	}
 }
 
+func (e *OpenAICompatExecutor) imageEditsMode(auth *cliproxyauth.Auth) string {
+	if auth != nil && auth.Attributes != nil {
+		if v := strings.TrimSpace(strings.ToLower(auth.Attributes["image_edits_mode"])); v != "" {
+			switch v {
+			case "chat-multimodal":
+				return v
+			}
+		}
+	}
+	if compat := e.resolveCompatConfig(auth); compat != nil {
+		switch strings.TrimSpace(strings.ToLower(compat.ImageEditsMode)) {
+		case "chat-multimodal":
+			return "chat-multimodal"
+		}
+	}
+	return ""
+}
+
 func (e *OpenAICompatExecutor) resolveCompatConfig(auth *cliproxyauth.Auth) *config.OpenAICompatibility {
 	if auth == nil || e.cfg == nil {
 		return nil
@@ -416,6 +442,74 @@ func (e *OpenAICompatExecutor) resolveCompatConfig(auth *cliproxyauth.Auth) *con
 		}
 	}
 	return nil
+}
+
+func convertImageEditPayloadToChatMultimodal(payload []byte) ([]byte, error) {
+	if len(bytes.TrimSpace(payload)) == 0 {
+		return payload, nil
+	}
+	model := strings.TrimSpace(gjson.GetBytes(payload, "model").String())
+	if model == "" {
+		return nil, fmt.Errorf("model is required")
+	}
+	prompt := strings.TrimSpace(gjson.GetBytes(payload, "prompt").String())
+	if prompt == "" {
+		return nil, fmt.Errorf("prompt is required")
+	}
+	files := gjson.GetBytes(payload, "image_files")
+	if !files.Exists() || !files.IsArray() || len(files.Array()) == 0 {
+		return nil, fmt.Errorf("image file is required")
+	}
+
+	content := make([]map[string]any, 0, 1+len(files.Array())+1)
+	content = append(content, map[string]any{"type": "text", "text": prompt})
+	for _, file := range files.Array() {
+		data := strings.TrimSpace(file.Get("data_base64").String())
+		if data == "" {
+			return nil, fmt.Errorf("image_files[].data_base64 is required")
+		}
+		contentType := strings.TrimSpace(file.Get("content_type").String())
+		if contentType == "" {
+			contentType = "image/png"
+		}
+		url := data
+		if !strings.HasPrefix(strings.ToLower(url), "data:") {
+			url = "data:" + contentType + ";base64," + data
+		}
+		content = append(content, map[string]any{
+			"type": "image_url",
+			"image_url": map[string]any{
+				"url": url,
+			},
+		})
+	}
+	if mask := gjson.GetBytes(payload, "mask_file"); mask.Exists() {
+		data := strings.TrimSpace(mask.Get("data_base64").String())
+		if data != "" {
+			contentType := strings.TrimSpace(mask.Get("content_type").String())
+			if contentType == "" {
+				contentType = "image/png"
+			}
+			content = append(content, map[string]any{"type": "text", "text": "Mask image:"})
+			content = append(content, map[string]any{
+				"type": "image_url",
+				"image_url": map[string]any{
+					"url": "data:" + contentType + ";base64," + data,
+				},
+			})
+		}
+	}
+
+	out := map[string]any{
+		"model": model,
+		"messages": []map[string]any{
+			{"role": "user", "content": content},
+		},
+	}
+	if stream := gjson.GetBytes(payload, "stream"); stream.Exists() {
+		out["stream"] = stream.Bool()
+	}
+	return json.Marshal(out)
 }
 
 func (e *OpenAICompatExecutor) overrideModel(payload []byte, model string) []byte {

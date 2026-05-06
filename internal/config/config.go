@@ -674,6 +674,10 @@ type OpenAICompatibility struct {
 	// IdentityFingerprint optionally reuses a configured provider identity template
 	// for upstream requests. Currently supported value: "codex".
 	IdentityFingerprint string `yaml:"identity-fingerprint,omitempty" json:"identity-fingerprint,omitempty"`
+
+	// ImageEditsMode controls how OpenAI /v1/images/edits requests are adapted
+	// for this OpenAI-compatible provider. Supported value: "chat-multimodal".
+	ImageEditsMode string `yaml:"image-edits-mode,omitempty" json:"image-edits-mode,omitempty"`
 }
 
 // OpenAICompatibilityAPIKey represents an API key configuration with optional proxy setting.
@@ -1111,6 +1115,7 @@ func (cfg *Config) SanitizeOpenAICompatibility() {
 		e.Name = strings.TrimSpace(e.Name)
 		e.Prefix = normalizeModelPrefix(e.Prefix)
 		e.BaseURL = strings.TrimSpace(e.BaseURL)
+		e.ImageEditsMode = normalizeOpenAICompatImageEditsMode(e.ImageEditsMode)
 		e.Headers = NormalizeHeaders(e.Headers)
 		for j := range e.APIKeyEntries {
 			e.APIKeyEntries[j].ProxyURL = strings.TrimSpace(e.APIKeyEntries[j].ProxyURL)
@@ -1123,6 +1128,15 @@ func (cfg *Config) SanitizeOpenAICompatibility() {
 		out = append(out, e)
 	}
 	cfg.OpenAICompatibility = out
+}
+
+func normalizeOpenAICompatImageEditsMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "chat-multimodal":
+		return "chat-multimodal"
+	default:
+		return ""
+	}
 }
 
 // SanitizeRequestPolicies normalizes request policy matching and drops inactive rules.

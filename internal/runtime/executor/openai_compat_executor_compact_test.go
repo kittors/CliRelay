@@ -113,6 +113,66 @@ func TestOpenAICompatExecutorCompactPassthrough(t *testing.T) {
 	}
 }
 
+func TestOpenAICompatExecutorConvertsImageEditsToChatMultimodal(t *testing.T) {
+	var gotPath string
+	var gotBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		body, _ := io.ReadAll(r.Body)
+		gotBody = body
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl_1","object":"chat.completion","choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	executor := NewOpenAICompatExecutor("grsai", &config.Config{
+		OpenAICompatibility: []config.OpenAICompatibility{
+			{Name: "grsai", ImageEditsMode: "chat-multimodal"},
+		},
+	})
+	auth := &cliproxyauth.Auth{
+		Provider: "grsai",
+		Attributes: map[string]string{
+			"base_url":    server.URL + "/v1",
+			"api_key":     "test",
+			"compat_name": "grsai",
+		},
+	}
+	payload := []byte(`{
+		"model":"gpt-image-2",
+		"prompt":"put this logo on a t-shirt",
+		"size":"1024x1024",
+		"quality":"high",
+		"response_format":"b64_json",
+		"image_files":[{"file_name":"logo.png","content_type":"image/png","data_base64":"aGVsbG8="}]
+	}`)
+	_, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "gpt-image-2",
+		Payload: payload,
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai"),
+		Alt:          "images/edits",
+	})
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+	if gotPath != "/v1/chat/completions" {
+		t.Fatalf("path = %q, want /v1/chat/completions", gotPath)
+	}
+	if gjson.GetBytes(gotBody, "image_files").Exists() {
+		t.Fatalf("image_files should be removed from upstream body: %s", string(gotBody))
+	}
+	if gjson.GetBytes(gotBody, "prompt").Exists() || gjson.GetBytes(gotBody, "size").Exists() || gjson.GetBytes(gotBody, "quality").Exists() {
+		t.Fatalf("image-only fields should be removed from upstream body: %s", string(gotBody))
+	}
+	if got := gjson.GetBytes(gotBody, "messages.0.content.0.text").String(); got != "put this logo on a t-shirt" {
+		t.Fatalf("text content = %q", got)
+	}
+	if got := gjson.GetBytes(gotBody, "messages.0.content.1.image_url.url").String(); got != "data:image/png;base64,aGVsbG8=" {
+		t.Fatalf("image url = %q", got)
+	}
+}
+
 func TestOpenAICompatExecutorAppliesCodexIdentityFingerprint(t *testing.T) {
 	var got http.Header
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

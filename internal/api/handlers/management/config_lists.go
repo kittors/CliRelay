@@ -1165,13 +1165,14 @@ func (h *Handler) PutOpenAICompat(c *gin.Context) {
 }
 func (h *Handler) PatchOpenAICompat(c *gin.Context) {
 	type openAICompatPatch struct {
-		Name          *string                             `json:"name"`
-		Prefix        *string                             `json:"prefix"`
-		BaseURL       *string                             `json:"base-url"`
-		APIKeyEntries *[]config.OpenAICompatibilityAPIKey `json:"api-key-entries"`
-		Models        *[]config.OpenAICompatibilityModel  `json:"models"`
-		Headers       *map[string]string                  `json:"headers"`
-		Fingerprint   *string                             `json:"identity-fingerprint"`
+		Name           *string                             `json:"name"`
+		Prefix         *string                             `json:"prefix"`
+		BaseURL        *string                             `json:"base-url"`
+		APIKeyEntries  *[]config.OpenAICompatibilityAPIKey `json:"api-key-entries"`
+		Models         *[]config.OpenAICompatibilityModel  `json:"models"`
+		Headers        *map[string]string                  `json:"headers"`
+		Fingerprint    *string                             `json:"identity-fingerprint"`
+		ImageEditsMode *string                             `json:"image-edits-mode"`
 	}
 	var body struct {
 		Name  *string            `json:"name"`
@@ -1228,6 +1229,9 @@ func (h *Handler) PatchOpenAICompat(c *gin.Context) {
 	}
 	if body.Value.Fingerprint != nil {
 		entry.IdentityFingerprint = strings.TrimSpace(strings.ToLower(*body.Value.Fingerprint))
+	}
+	if body.Value.ImageEditsMode != nil {
+		entry.ImageEditsMode = normalizeOpenAICompatImageEditsMode(*body.Value.ImageEditsMode)
 	}
 	normalizeOpenAICompatibilityEntry(&entry)
 	prev := append([]config.OpenAICompatibility(nil), h.cfg.OpenAICompatibility...)
@@ -1740,6 +1744,7 @@ func normalizeOpenAICompatibilityEntry(entry *config.OpenAICompatibility) {
 	// Trim base-url; empty base-url indicates provider should be removed by sanitization
 	entry.BaseURL = strings.TrimSpace(entry.BaseURL)
 	entry.IdentityFingerprint = strings.TrimSpace(strings.ToLower(entry.IdentityFingerprint))
+	entry.ImageEditsMode = normalizeOpenAICompatImageEditsMode(entry.ImageEditsMode)
 	entry.Headers = config.NormalizeHeaders(entry.Headers)
 	existing := make(map[string]struct{}, len(entry.APIKeyEntries))
 	for i := range entry.APIKeyEntries {
@@ -1750,6 +1755,15 @@ func normalizeOpenAICompatibilityEntry(entry *config.OpenAICompatibility) {
 		if trimmed != "" {
 			existing[trimmed] = struct{}{}
 		}
+	}
+}
+
+func normalizeOpenAICompatImageEditsMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "chat-multimodal":
+		return "chat-multimodal"
+	default:
+		return ""
 	}
 }
 
