@@ -1358,7 +1358,7 @@ func (cfg *Config) SanitizeMultimodalAdapters() {
 				extractor.Type = "mcp"
 			}
 		}
-		if extractor.Type != "http" && extractor.Type != "mcp" {
+		if extractor.Type != "http" && extractor.Type != "mcp" && extractor.Type != "zai-vision-http" {
 			continue
 		}
 		extractor.Endpoint = strings.TrimSpace(extractor.Endpoint)

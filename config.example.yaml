@@ -242,8 +242,11 @@ request-log-storage:
 #       extractor: "zai-vision-http"
 #   extractors:
 #     - name: "zai-vision-http"
-#       type: "http"
-#       endpoint: "http://127.0.0.1:8787/vision/extract"
+#       type: "zai-vision-http"
+#       endpoint: "https://open.bigmodel.cn/api/paas/v4"
+#       headers:
+#         Authorization: "Bearer ${Z_AI_API_KEY}"
+#       tool-name: "glm-4.5v"
 #       timeout-seconds: 60
 #     - name: "zai-vision-mcp"
 #       type: "mcp"

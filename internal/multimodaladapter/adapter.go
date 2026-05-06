@@ -431,6 +431,8 @@ func extractVisualContext(ctx context.Context, refs []mediaRef, route Route, ext
 	switch strings.ToLower(strings.TrimSpace(extractor.Type)) {
 	case "http":
 		return callHTTPExtractor(ctx, refs, route, extractor)
+	case "zai-vision-http":
+		return callZAIVisionHTTPExtractor(ctx, refs, extractor)
 	case "mcp":
 		return callMCPExtractor(ctx, refs, extractor)
 	default:
@@ -467,6 +469,96 @@ func callHTTPExtractor(ctx context.Context, refs []mediaRef, route Route, extrac
 	for key, value := range extractor.Headers {
 		if strings.TrimSpace(key) != "" {
 			req.Header.Set(key, os.ExpandEnv(value))
+		}
+	}
+	resp, err := (&http.Client{Timeout: timeout}).Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("multimodal adapter extractor %q request failed: %w", extractor.Name, err)
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("multimodal adapter extractor %q returned status %d: %s", extractor.Name, resp.StatusCode, strings.TrimSpace(string(data)))
+	}
+	text := extractHTTPText(data)
+	if strings.TrimSpace(text) == "" {
+		return nil, fmt.Errorf("multimodal adapter extractor %q returned no text", extractor.Name)
+	}
+	return []string{text}, nil
+}
+
+func callZAIVisionHTTPExtractor(ctx context.Context, refs []mediaRef, extractor config.MultimodalExtractorConfig) ([]string, error) {
+	if strings.TrimSpace(extractor.Endpoint) == "" {
+		return nil, fmt.Errorf("multimodal adapter extractor %q endpoint is not configured", extractor.Name)
+	}
+	imageRefs := make([]mediaRef, 0, len(refs))
+	for _, ref := range refs {
+		if ref.Kind == "image" && strings.TrimSpace(ref.URL) != "" {
+			imageRefs = append(imageRefs, ref)
+		}
+	}
+	if len(imageRefs) == 0 {
+		return nil, fmt.Errorf("multimodal adapter extractor %q requires at least one image input", extractor.Name)
+	}
+	timeout := time.Duration(extractor.TimeoutSeconds) * time.Second
+	if timeout <= 0 {
+		timeout = 60 * time.Second
+	}
+	callCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	prompt := strings.TrimSpace(extractor.Prompt)
+	if prompt == "" {
+		prompt = "Describe this visual input for a coding assistant. Extract visible text, UI elements, errors, filenames, paths, code snippets, charts, and anything needed to answer the user's request. Be concise and factual."
+	}
+	content := []map[string]any{{"type": "text", "text": prompt}}
+	for _, ref := range imageRefs {
+		content = append(content, map[string]any{
+			"type": "image_url",
+			"image_url": map[string]any{
+				"url": strings.TrimSpace(ref.URL),
+			},
+		})
+	}
+	model := strings.TrimSpace(extractor.ToolName)
+	if model == "" {
+		model = strings.TrimSpace(extractor.Env["model"])
+	}
+	if model == "" {
+		model = "glm-4.5v"
+	}
+	body, err := json.Marshal(map[string]any{
+		"model": model,
+		"messages": []map[string]any{
+			{
+				"role":    "user",
+				"content": content,
+			},
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	endpoint := strings.TrimRight(os.ExpandEnv(extractor.Endpoint), "/")
+	if !strings.HasSuffix(endpoint, "/chat/completions") {
+		endpoint += "/chat/completions"
+	}
+	req, err := http.NewRequestWithContext(callCtx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	for key, value := range extractor.Headers {
+		if strings.TrimSpace(key) != "" {
+			req.Header.Set(key, os.ExpandEnv(value))
+		}
+	}
+	if req.Header.Get("Authorization") == "" {
+		if apiKey := strings.TrimSpace(os.ExpandEnv(extractor.Env["api_key"])); apiKey != "" {
+			req.Header.Set("Authorization", "Bearer "+apiKey)
 		}
 	}
 	resp, err := (&http.Client{Timeout: timeout}).Do(req)
