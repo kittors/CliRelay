@@ -221,6 +221,40 @@ request-log-storage:
 #       upstream-models: ["glm-5.1"]
 #     priority: 100
 
+# Optional media-to-text adapter for text-only upstream models.
+# It runs after alias resolution, so the rule below matches the real route:
+# requested gpt-5.3-codex -> bigmodel-coding/glm-5.1. Native GPT-5.5/5.4
+# channels are unaffected.
+# multimodal-adapters:
+#   enabled: true
+#   default-action: "extract" # extract, reject, strip
+#   unavailable-action: "reject" # reject, strip, pass-through
+#   inject-as: "visual_context"
+#   max-media-items: 4
+#   max-output-bytes: 12000
+#   rules:
+#     - name: "glm-5.1-codex-vision"
+#       match:
+#         requested-models: ["gpt-5.3-codex"]
+#         upstream-providers: ["bigmodel-coding"]
+#         upstream-models: ["glm-5.1"]
+#         protocols: ["openai-response", "openai"]
+#       extractor: "zai-vision-http"
+#   extractors:
+#     - name: "zai-vision-http"
+#       type: "http"
+#       endpoint: "http://127.0.0.1:8787/vision/extract"
+#       timeout-seconds: 60
+#     - name: "zai-vision-mcp"
+#       type: "mcp"
+#       command: "npx"
+#       args: ["-y", "@z_ai/mcp-server@latest"]
+#       env:
+#         Z_AI_API_KEY: "${Z_AI_API_KEY}"
+#         Z_AI_MODE: "ZHIPU"
+#       tool-name: "image_analysis"
+#       timeout-seconds: 60
+
 # Proxy URL. Supports socks5/http/https protocols. Example: socks5://user:pass@192.168.1.1:1080/
 proxy-url: ""
 

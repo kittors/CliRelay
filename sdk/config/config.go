@@ -26,6 +26,10 @@ type PayloadConfig = internalconfig.PayloadConfig
 type PayloadRule = internalconfig.PayloadRule
 type PayloadFilterRule = internalconfig.PayloadFilterRule
 type PayloadModelRule = internalconfig.PayloadModelRule
+type MultimodalAdaptersConfig = internalconfig.MultimodalAdaptersConfig
+type MultimodalAdapterRule = internalconfig.MultimodalAdapterRule
+type MultimodalAdapterMatch = internalconfig.MultimodalAdapterMatch
+type MultimodalExtractorConfig = internalconfig.MultimodalExtractorConfig
 
 type GeminiKey = internalconfig.GeminiKey
 type CodexKey = internalconfig.CodexKey

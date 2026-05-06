@@ -48,6 +48,9 @@ type SDKConfig struct {
 
 	// ContextRetrieval reduces oversized conversational payloads using local retrieval.
 	ContextRetrieval ContextRetrievalConfig `yaml:"context-retrieval,omitempty" json:"context-retrieval,omitempty"`
+
+	// MultimodalAdapters turns unsupported media inputs into text context before routing to text models.
+	MultimodalAdapters MultimodalAdaptersConfig `yaml:"multimodal-adapters,omitempty" json:"multimodal-adapters,omitempty"`
 }
 
 // ContextRetrievalConfig controls local SQLite FTS based context reduction.
@@ -90,6 +93,52 @@ type CodexAwareContextConfig struct {
 	MaxSummaryBytes        int    `yaml:"max-summary-bytes,omitempty" json:"max-summary-bytes,omitempty"`
 	PreserveRecentCommands int    `yaml:"preserve-recent-commands,omitempty" json:"preserve-recent-commands,omitempty"`
 	PreserveRecentErrors   int    `yaml:"preserve-recent-errors,omitempty" json:"preserve-recent-errors,omitempty"`
+}
+
+// MultimodalAdaptersConfig controls media-to-text preprocessing for text-only upstream models.
+type MultimodalAdaptersConfig struct {
+	Enabled           *bool                       `yaml:"enabled,omitempty" json:"enabled,omitempty"`
+	DefaultAction     string                      `yaml:"default-action,omitempty" json:"default-action,omitempty"`
+	UnavailableAction string                      `yaml:"unavailable-action,omitempty" json:"unavailable-action,omitempty"`
+	InjectAs          string                      `yaml:"inject-as,omitempty" json:"inject-as,omitempty"`
+	MaxMediaItems     int                         `yaml:"max-media-items,omitempty" json:"max-media-items,omitempty"`
+	MaxOutputBytes    int                         `yaml:"max-output-bytes,omitempty" json:"max-output-bytes,omitempty"`
+	Rules             []MultimodalAdapterRule     `yaml:"rules,omitempty" json:"rules,omitempty"`
+	Extractors        []MultimodalExtractorConfig `yaml:"extractors,omitempty" json:"extractors,omitempty"`
+}
+
+// MultimodalAdapterRule scopes media preprocessing to a selected upstream route.
+type MultimodalAdapterRule struct {
+	Name              string                 `yaml:"name,omitempty" json:"name,omitempty"`
+	Match             MultimodalAdapterMatch `yaml:"match,omitempty" json:"match,omitempty"`
+	Extractor         string                 `yaml:"extractor,omitempty" json:"extractor,omitempty"`
+	Action            string                 `yaml:"action,omitempty" json:"action,omitempty"`
+	UnavailableAction string                 `yaml:"unavailable-action,omitempty" json:"unavailable-action,omitempty"`
+	InjectAs          string                 `yaml:"inject-as,omitempty" json:"inject-as,omitempty"`
+	MaxMediaItems     int                    `yaml:"max-media-items,omitempty" json:"max-media-items,omitempty"`
+	MaxOutputBytes    int                    `yaml:"max-output-bytes,omitempty" json:"max-output-bytes,omitempty"`
+}
+
+// MultimodalAdapterMatch controls which requested/upstream route receives media preprocessing.
+type MultimodalAdapterMatch struct {
+	RequestedModels   []string `yaml:"requested-models,omitempty" json:"requested-models,omitempty"`
+	UpstreamProviders []string `yaml:"upstream-providers,omitempty" json:"upstream-providers,omitempty"`
+	UpstreamModels    []string `yaml:"upstream-models,omitempty" json:"upstream-models,omitempty"`
+	Protocols         []string `yaml:"protocols,omitempty" json:"protocols,omitempty"`
+}
+
+// MultimodalExtractorConfig describes a replaceable visual extraction backend.
+type MultimodalExtractorConfig struct {
+	Name           string            `yaml:"name,omitempty" json:"name,omitempty"`
+	Type           string            `yaml:"type,omitempty" json:"type,omitempty"`
+	Endpoint       string            `yaml:"endpoint,omitempty" json:"endpoint,omitempty"`
+	Command        string            `yaml:"command,omitempty" json:"command,omitempty"`
+	Args           []string          `yaml:"args,omitempty" json:"args,omitempty"`
+	Env            map[string]string `yaml:"env,omitempty" json:"env,omitempty"`
+	Headers        map[string]string `yaml:"headers,omitempty" json:"headers,omitempty"`
+	ToolName       string            `yaml:"tool-name,omitempty" json:"tool-name,omitempty"`
+	TimeoutSeconds int               `yaml:"timeout-seconds,omitempty" json:"timeout-seconds,omitempty"`
+	Prompt         string            `yaml:"prompt,omitempty" json:"prompt,omitempty"`
 }
 
 // ObservabilityConfig groups optional diagnostic logging features.

@@ -2,9 +2,11 @@ package executor
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
@@ -143,6 +145,77 @@ func TestOpenAICompatExecutorPreservesUpstreamErrorBody(t *testing.T) {
 	}
 	if got := string(upstreamErr.UpstreamErrorBody()); got != string(upstreamBody) {
 		t.Fatalf("upstream body = %s, want %s", got, string(upstreamBody))
+	}
+}
+
+func TestOpenAICompatExecutorAppliesMultimodalAdapterAfterAliasResolution(t *testing.T) {
+	var extractorBody map[string]any
+	extractorServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&extractorBody); err != nil {
+			t.Fatalf("decode extractor body: %v", err)
+		}
+		_, _ = w.Write([]byte(`{"text":"Screenshot contains a panic stack trace."}`))
+	}))
+	defer extractorServer.Close()
+
+	var upstreamBody []byte
+	upstreamServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var err error
+		upstreamBody, err = io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read upstream body: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"ok"}}]}`))
+	}))
+	defer upstreamServer.Close()
+
+	enabled := true
+	executor := NewOpenAICompatExecutor("bigmodel-coding", &config.Config{
+		SDKConfig: config.SDKConfig{
+			MultimodalAdapters: config.MultimodalAdaptersConfig{
+				Enabled:       &enabled,
+				DefaultAction: "extract",
+				InjectAs:      "visual_context",
+				Rules: []config.MultimodalAdapterRule{
+					{
+						Name:      "glm-5.1-codex-vision",
+						Extractor: "vision",
+						Match: config.MultimodalAdapterMatch{
+							RequestedModels:   []string{"gpt-5.3-codex"},
+							UpstreamProviders: []string{"bigmodel-coding"},
+							UpstreamModels:    []string{"glm-5.1"},
+						},
+					},
+				},
+				Extractors: []config.MultimodalExtractorConfig{{Name: "vision", Type: "http", Endpoint: extractorServer.URL}},
+			},
+		},
+	})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"base_url": upstreamServer.URL + "/v1",
+		"api_key":  "test",
+	}}
+	payload := []byte(`{"model":"gpt-5.3-codex","messages":[{"role":"user","content":[{"type":"text","text":"what is wrong?"},{"type":"image_url","image_url":{"url":"https://example.com/panic.png"}}]}]}`)
+	_, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "glm-5.1",
+		Payload: payload,
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai"),
+		Metadata:     map[string]any{cliproxyexecutor.RequestedModelMetadataKey: "gpt-5.3-codex"},
+	})
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+	body := string(upstreamBody)
+	if strings.Contains(body, "image_url") {
+		t.Fatalf("upstream body still contains media: %s", body)
+	}
+	if !strings.Contains(body, "visual_context") || !strings.Contains(body, "panic stack trace") {
+		t.Fatalf("upstream body missing injected visual context: %s", body)
+	}
+	if extractorBody["upstream_provider"] != "bigmodel-coding" || extractorBody["upstream_model"] != "glm-5.1" {
+		t.Fatalf("extractor route metadata = %#v", extractorBody)
 	}
 }
 

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/multimodaladapter"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/thinking"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
@@ -94,10 +95,15 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 	if len(opts.OriginalRequest) > 0 {
 		originalPayloadSource = opts.OriginalRequest
 	}
+	requestedModel := payloadRequestedModel(opts, req.Model)
+	adaptedPayload, _, err := e.applyMultimodalAdapter(ctx, req.Payload, requestedModel, baseModel, opts.SourceFormat.String())
+	if err != nil {
+		return resp, err
+	}
+	req.Payload = adaptedPayload
 	originalPayload := originalPayloadSource
 	originalTranslated := sdktranslator.TranslateRequest(from, to, baseModel, originalPayload, opts.Stream)
 	translated := sdktranslator.TranslateRequest(from, to, baseModel, req.Payload, opts.Stream)
-	requestedModel := payloadRequestedModel(opts, req.Model)
 	translated = applyPayloadConfigWithRoot(e.cfg, baseModel, to.String(), "", translated, originalTranslated, requestedModel)
 	if opts.Alt == "responses/compact" {
 		if updated, errDelete := sjson.DeleteBytes(translated, "stream"); errDelete == nil {
@@ -211,10 +217,15 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 	if len(opts.OriginalRequest) > 0 {
 		originalPayloadSource = opts.OriginalRequest
 	}
+	requestedModel := payloadRequestedModel(opts, req.Model)
+	adaptedPayload, _, err := e.applyMultimodalAdapter(ctx, req.Payload, requestedModel, baseModel, opts.SourceFormat.String())
+	if err != nil {
+		return nil, err
+	}
+	req.Payload = adaptedPayload
 	originalPayload := originalPayloadSource
 	originalTranslated := sdktranslator.TranslateRequest(from, to, baseModel, originalPayload, true)
 	translated := sdktranslator.TranslateRequest(from, to, baseModel, req.Payload, true)
-	requestedModel := payloadRequestedModel(opts, req.Model)
 	translated = applyPayloadConfigWithRoot(e.cfg, baseModel, to.String(), "", translated, originalTranslated, requestedModel)
 
 	translated, err = thinking.ApplyThinking(translated, req.Model, from.String(), to.String(), e.Identifier())
@@ -326,6 +337,26 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 		reporter.ensurePublished(ctx)
 	}()
 	return &cliproxyexecutor.StreamResult{Headers: httpResp.Header.Clone(), Chunks: out}, nil
+}
+
+func (e *OpenAICompatExecutor) applyMultimodalAdapter(ctx context.Context, payload []byte, requestedModel, upstreamModel, protocol string) ([]byte, multimodaladapter.Report, error) {
+	if e == nil || e.cfg == nil || len(payload) == 0 {
+		return payload, multimodaladapter.Report{}, nil
+	}
+	adapted, report, err := multimodaladapter.Apply(ctx, payload, multimodaladapter.Route{
+		RequestedModel:   requestedModel,
+		UpstreamProvider: e.Identifier(),
+		UpstreamModel:    upstreamModel,
+		Protocol:         protocol,
+	}, e.cfg.MultimodalAdapters)
+	if err != nil {
+		return payload, report, err
+	}
+	if report.Applied {
+		log.Infof("multimodal adapter: processed request requested_model=%s upstream_provider=%s upstream_model=%s protocol=%s media=%d extractor=%s stripped=%v injected=%v",
+			requestedModel, e.Identifier(), upstreamModel, protocol, report.MediaItems, report.Extractor, report.Stripped, report.Injected)
+	}
+	return adapted, report, nil
 }
 
 func (e *OpenAICompatExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {

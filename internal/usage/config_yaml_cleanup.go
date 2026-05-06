@@ -39,6 +39,7 @@ var dbBackedConfigYAMLKeys = map[string]bool{
 	"oauth-model-alias":      true,
 	"payload":                true,
 	"provider-preferences":   true,
+	"multimodal-adapters":    true,
 }
 
 var renameConfigFile = os.Rename
@@ -110,6 +111,7 @@ func cleanRuntimeSettingsFromYAML(configFilePath string) {
 		"oauth-model-alias":      true,
 		"payload":                true,
 		"provider-preferences":   true,
+		"multimodal-adapters":    true,
 	}, "runtime_settings")
 }
 
