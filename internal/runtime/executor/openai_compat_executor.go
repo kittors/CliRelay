@@ -87,9 +87,21 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 	from := opts.SourceFormat
 	to := sdktranslator.FromString("openai")
 	endpoint := "/chat/completions"
-	if opts.Alt == "responses/compact" {
+	imagePassthrough := false
+	switch opts.Alt {
+	case "responses/compact":
 		to = sdktranslator.FromString("openai-response")
 		endpoint = "/responses/compact"
+	case "images/generations":
+		endpoint = "/images/generations"
+		imagePassthrough = true
+	case "images/edits":
+		if e.imageEditsMode(auth) == "chat-multimodal" {
+			endpoint = "/chat/completions"
+		} else {
+			endpoint = "/images/edits"
+			imagePassthrough = true
+		}
 	}
 	originalPayloadSource := req.Payload
 	if len(opts.OriginalRequest) > 0 {
@@ -101,30 +113,35 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 		return resp, err
 	}
 	req.Payload = adaptedPayload
-	originalPayload := originalPayloadSource
-	originalTranslated := sdktranslator.TranslateRequest(from, to, baseModel, originalPayload, opts.Stream)
-	translated := sdktranslator.TranslateRequest(from, to, baseModel, req.Payload, opts.Stream)
-	translated = applyPayloadConfigWithRoot(e.cfg, baseModel, to.String(), "", translated, originalTranslated, requestedModel)
-	if opts.Alt == "responses/compact" {
-		if updated, errDelete := sjson.DeleteBytes(translated, "stream"); errDelete == nil {
-			translated = updated
+	var translated []byte
+	if imagePassthrough {
+		translated = e.overrideModel(req.Payload, baseModel)
+	} else {
+		originalPayload := originalPayloadSource
+		originalTranslated := sdktranslator.TranslateRequest(from, to, baseModel, originalPayload, opts.Stream)
+		translated = sdktranslator.TranslateRequest(from, to, baseModel, req.Payload, opts.Stream)
+		translated = applyPayloadConfigWithRoot(e.cfg, baseModel, to.String(), "", translated, originalTranslated, requestedModel)
+		if opts.Alt == "responses/compact" {
+			if updated, errDelete := sjson.DeleteBytes(translated, "stream"); errDelete == nil {
+				translated = updated
+			}
 		}
-	}
 
-	translated, err = thinking.ApplyThinking(translated, req.Model, from.String(), to.String(), e.Identifier())
-	if err != nil {
-		return resp, err
-	}
-	if shouldNormalizeKimiCompatPayload(baseModel) {
-		translated, err = normalizeKimiToolMessageLinks(translated)
+		translated, err = thinking.ApplyThinking(translated, req.Model, from.String(), to.String(), e.Identifier())
 		if err != nil {
 			return resp, err
 		}
-	}
-	if opts.Alt == "images/edits" && e.imageEditsMode(auth) == "chat-multimodal" {
-		translated, err = convertImageEditPayloadToChatMultimodal(translated)
-		if err != nil {
-			return resp, statusErr{code: http.StatusBadRequest, msg: err.Error()}
+		if shouldNormalizeKimiCompatPayload(baseModel) {
+			translated, err = normalizeKimiToolMessageLinks(translated)
+			if err != nil {
+				return resp, err
+			}
+		}
+		if opts.Alt == "images/edits" && e.imageEditsMode(auth) == "chat-multimodal" {
+			translated, err = convertImageEditPayloadToChatMultimodal(translated)
+			if err != nil {
+				return resp, statusErr{code: http.StatusBadRequest, msg: err.Error()}
+			}
 		}
 	}
 
@@ -192,6 +209,10 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 	reporter.publishWithContent(ctx, parseOpenAIUsage(body), string(req.Payload), string(body))
 	// Ensure we at least record the request even if upstream doesn't return usage
 	reporter.ensurePublished(ctx)
+	if imagePassthrough {
+		resp = cliproxyexecutor.Response{Payload: body, Headers: httpResp.Header.Clone()}
+		return resp, nil
+	}
 	// Translate response back to source format when needed
 	var param any
 	out := sdktranslator.TranslateNonStream(ctx, to, from, req.Model, opts.OriginalRequest, translated, body, &param)
