@@ -189,6 +189,14 @@ request-log-storage:
 #       min-tool-calls: 16
 #     over-limit:
 #       action: "skip-channel"
+#   - name: "glm-5.1-tools-skip"
+#     match:
+#       requested-models: ["gpt-5.3-codex"]
+#       upstream-providers: ["bigmodel-coding"]
+#       upstream-models: ["glm-5.1"]
+#       request-features: ["tools"]
+#     over-limit:
+#       action: "skip-channel"
 #   - name: "glm-5.1-long-thread-skip"
 #     match:
 #       requested-models: ["gpt-5.3-codex"]

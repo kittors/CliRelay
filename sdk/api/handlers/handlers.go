@@ -306,9 +306,11 @@ func enrichRequestExecutionMetadata(meta map[string]any, rawJSON []byte) {
 		return
 	}
 	inputItems := countTopLevelItems(rawJSON)
+	toolDefinitions := countTopLevelTools(rawJSON)
 	toolCalls := countJSONOccurrences(rawJSON, []string{"function_call", "tool_call", "function_call_output", "tool_result"})
-	features := requestFeatures(rawJSON, inputItems, toolCalls)
+	features := requestFeatures(rawJSON, inputItems, toolDefinitions, toolCalls)
 	meta[coreexecutor.InputItemsMetadataKey] = inputItems
+	meta[coreexecutor.ToolDefinitionsMetadataKey] = toolDefinitions
 	meta[coreexecutor.ToolCallsMetadataKey] = toolCalls
 	if len(features) > 0 {
 		meta[coreexecutor.RequestFeaturesMetadataKey] = features
@@ -325,6 +327,14 @@ func countTopLevelItems(rawJSON []byte) int {
 	return 0
 }
 
+func countTopLevelTools(rawJSON []byte) int {
+	result := gjson.GetBytes(rawJSON, "tools")
+	if result.IsArray() {
+		return len(result.Array())
+	}
+	return 0
+}
+
 func countJSONOccurrences(rawJSON []byte, needles []string) int {
 	text := strings.ToLower(string(rawJSON))
 	total := 0
@@ -334,13 +344,13 @@ func countJSONOccurrences(rawJSON []byte, needles []string) int {
 	return total
 }
 
-func requestFeatures(rawJSON []byte, inputItems int, toolCalls int) []string {
+func requestFeatures(rawJSON []byte, inputItems int, toolDefinitions int, toolCalls int) []string {
 	text := strings.ToLower(string(rawJSON))
 	features := make([]string, 0, 4)
 	if strings.Contains(text, "input_image") || strings.Contains(text, "image_url") || strings.Contains(text, "input_file") || strings.Contains(text, "file_url") || strings.Contains(text, "input_video") || strings.Contains(text, "video_url") {
 		features = append(features, "multimodal")
 	}
-	if toolCalls > 0 {
+	if toolDefinitions > 0 || toolCalls > 0 {
 		features = append(features, "tools")
 	}
 	if toolCalls >= 16 {
