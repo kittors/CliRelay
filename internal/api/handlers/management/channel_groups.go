@@ -25,6 +25,7 @@ type channelDescriptor struct {
 type channelGroupItem struct {
 	Name           string                      `json:"name"`
 	Description    string                      `json:"description,omitempty"`
+	Strategy       string                      `json:"strategy,omitempty"`
 	Priority       int                         `json:"priority,omitempty"`
 	Implicit       bool                        `json:"implicit"`
 	Prefixes       []string                    `json:"prefixes,omitempty"`
@@ -127,6 +128,7 @@ func buildChannelGroupItems(cfg *config.Config, auths []*coreauth.Auth) []channe
 			continue
 		}
 		item.Description = group.Description
+		item.Strategy = group.Strategy
 		item.Priority = group.Priority
 		item.AllowedModels = append(item.AllowedModels, group.AllowedModels...)
 		item.Prefixes = append(item.Prefixes, group.Match.Prefixes...)

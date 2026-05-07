@@ -39,6 +39,10 @@ type ErrorResponse struct {
 	Error ErrorDetail `json:"error"`
 }
 
+type upstreamErrorBodyProvider interface {
+	UpstreamErrorBody() []byte
+}
+
 // ErrorDetail provides specific information about an error that occurred.
 // It includes a human-readable message, an error type, and an optional error code.
 type ErrorDetail struct {
@@ -345,11 +349,8 @@ func countJSONOccurrences(rawJSON []byte, needles []string) int {
 }
 
 func requestFeatures(rawJSON []byte, inputItems int, toolDefinitions int, toolCalls int) []string {
-	text := strings.ToLower(string(rawJSON))
 	features := make([]string, 0, 4)
-	hasImage := strings.Contains(text, "input_image") || strings.Contains(text, "image_url")
-	hasFile := strings.Contains(text, "input_file") || strings.Contains(text, "file_url")
-	hasVideo := strings.Contains(text, "input_video") || strings.Contains(text, "video_url")
+	hasImage, hasFile, hasVideo := structuredMediaFeatures(rawJSON)
 	if hasImage || hasFile || hasVideo {
 		features = append(features, "multimodal")
 	}
@@ -372,6 +373,50 @@ func requestFeatures(rawJSON []byte, inputItems int, toolDefinitions int, toolCa
 		features = append(features, "long-thread")
 	}
 	return features
+}
+
+func structuredMediaFeatures(rawJSON []byte) (hasImage, hasFile, hasVideo bool) {
+	if len(rawJSON) == 0 {
+		return false, false, false
+	}
+	var payload any
+	if err := json.Unmarshal(rawJSON, &payload); err != nil {
+		return false, false, false
+	}
+	var walk func(any)
+	walk = func(value any) {
+		switch typed := value.(type) {
+		case map[string]any:
+			for key, child := range typed {
+				switch strings.ToLower(strings.TrimSpace(key)) {
+				case "type":
+					if s, ok := child.(string); ok {
+						switch strings.ToLower(strings.TrimSpace(s)) {
+						case "input_image", "image":
+							hasImage = true
+						case "input_file", "file":
+							hasFile = true
+						case "input_video", "video":
+							hasVideo = true
+						}
+					}
+				case "image_url":
+					hasImage = true
+				case "file_url":
+					hasFile = true
+				case "video_url":
+					hasVideo = true
+				}
+				walk(child)
+			}
+		case []any:
+			for _, child := range typed {
+				walk(child)
+			}
+		}
+	}
+	walk(payload)
+	return hasImage, hasFile, hasVideo
 }
 
 func isGroupedRouteRequestMeta(meta map[string]any) bool {
@@ -1232,13 +1277,20 @@ func (h *BaseAPIHandler) WriteErrorResponse(c *gin.Context, msg *interfaces.Erro
 	}
 
 	errText := http.StatusText(status)
+	var upstreamBody []byte
 	if msg != nil && msg.Error != nil {
 		if v := strings.TrimSpace(msg.Error.Error()); v != "" {
 			errText = v
 		}
+		if upstreamErr, ok := msg.Error.(upstreamErrorBodyProvider); ok && upstreamErr != nil {
+			upstreamBody = bytes.TrimSpace(upstreamErr.UpstreamErrorBody())
+		}
 	}
 
 	body := BuildErrorResponseBody(status, errText)
+	if len(upstreamBody) > 0 {
+		body = BuildErrorResponseBody(status, string(upstreamBody))
+	}
 	// Append first to preserve upstream response logs, then drop duplicate payloads if already recorded.
 	var previous []byte
 	if existing, exists := c.Get("API_RESPONSE"); exists {

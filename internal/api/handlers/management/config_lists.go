@@ -203,6 +203,53 @@ func (h *Handler) DeleteAPIKeys(c *gin.Context) {
 	c.JSON(400, gin.H{"error": "missing value"})
 }
 
+func (h *Handler) GetAPIKeyPermissionProfiles(c *gin.Context) {
+	profiles := usage.ListAPIKeyPermissionProfiles()
+	c.JSON(200, gin.H{
+		"api-key-permission-profiles": profiles,
+		"items":                       profiles,
+	})
+}
+
+func (h *Handler) PutAPIKeyPermissionProfiles(c *gin.Context) {
+	data, err := c.GetRawData()
+	if err != nil {
+		c.JSON(400, gin.H{"error": "failed to read body"})
+		return
+	}
+
+	var profiles []usage.APIKeyPermissionProfileRow
+	if err = json.Unmarshal(data, &profiles); err != nil {
+		var obj struct {
+			Items []usage.APIKeyPermissionProfileRow `json:"items"`
+		}
+		if err2 := json.Unmarshal(data, &obj); err2 != nil {
+			c.JSON(400, gin.H{"error": "invalid body"})
+			return
+		}
+		profiles = obj.Items
+	}
+
+	for idx := range profiles {
+		profiles[idx].ID = strings.TrimSpace(profiles[idx].ID)
+		profiles[idx].Name = strings.TrimSpace(profiles[idx].Name)
+		if profiles[idx].ID == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "id is required"})
+			return
+		}
+		if profiles[idx].Name == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "name is required"})
+			return
+		}
+	}
+
+	if err := usage.ReplaceAllAPIKeyPermissionProfiles(profiles); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"status": "ok"})
+}
+
 // api-key-entries: backed by SQLite api_keys table
 func (h *Handler) GetAPIKeyEntries(c *gin.Context) {
 	rows := usage.ListAPIKeys()
@@ -1173,6 +1220,7 @@ func (h *Handler) PatchOpenAICompat(c *gin.Context) {
 		Headers        *map[string]string                  `json:"headers"`
 		Fingerprint    *string                             `json:"identity-fingerprint"`
 		ImageEditsMode *string                             `json:"image-edits-mode"`
+		ImageField     *string                             `json:"image-generations-image-field"`
 	}
 	var body struct {
 		Name  *string            `json:"name"`
@@ -1232,6 +1280,9 @@ func (h *Handler) PatchOpenAICompat(c *gin.Context) {
 	}
 	if body.Value.ImageEditsMode != nil {
 		entry.ImageEditsMode = normalizeOpenAICompatImageEditsMode(*body.Value.ImageEditsMode)
+	}
+	if body.Value.ImageField != nil {
+		entry.ImageGenerationsImageField = normalizeOpenAICompatImageGenerationsImageField(*body.Value.ImageField)
 	}
 	normalizeOpenAICompatibilityEntry(&entry)
 	prev := append([]config.OpenAICompatibility(nil), h.cfg.OpenAICompatibility...)
@@ -1762,6 +1813,19 @@ func normalizeOpenAICompatImageEditsMode(mode string) string {
 	switch strings.ToLower(strings.TrimSpace(mode)) {
 	case "chat-multimodal":
 		return "chat-multimodal"
+	case "image-generations":
+		return "image-generations"
+	default:
+		return ""
+	}
+}
+
+func normalizeOpenAICompatImageGenerationsImageField(field string) string {
+	switch strings.ToLower(strings.TrimSpace(field)) {
+	case "image_url":
+		return "image_url"
+	case "image":
+		return "image"
 	default:
 		return ""
 	}

@@ -39,6 +39,7 @@ func testRoutingConfig() *config.Config {
 					Name:        "pro",
 					Description: "Pro channels",
 					Priority:    100,
+					Strategy:    "round-robin",
 					Match: config.ChannelGroupMatch{
 						Prefixes: []string{"pro"},
 					},
@@ -47,6 +48,7 @@ func testRoutingConfig() *config.Config {
 					Name:        "team-a",
 					Description: "Team A channels",
 					Priority:    50,
+					Strategy:    "fill-first",
 					Match: config.ChannelGroupMatch{
 						Channels: []string{"Team A Codex"},
 					},
@@ -81,6 +83,9 @@ func TestBuildChannelGroupItemsIncludesExplicitImplicitAndRoutes(t *testing.T) {
 	if pro.Priority != 100 {
 		t.Fatalf("pro priority = %d, want 100", pro.Priority)
 	}
+	if pro.Strategy != "round-robin" {
+		t.Fatalf("pro strategy = %q, want round-robin", pro.Strategy)
+	}
 	if strings.Join(pro.PathRoutes, ",") != "/pro" {
 		t.Fatalf("pro path-routes = %v, want [/pro]", pro.PathRoutes)
 	}
@@ -94,6 +99,9 @@ func TestBuildChannelGroupItemsIncludesExplicitImplicitAndRoutes(t *testing.T) {
 	}
 	if teamA.Implicit {
 		t.Fatal("expected team-a group to be explicit")
+	}
+	if teamA.Strategy != "fill-first" {
+		t.Fatalf("team-a strategy = %q, want fill-first", teamA.Strategy)
 	}
 	if strings.Join(teamA.PathRoutes, ",") != "/team-a" {
 		t.Fatalf("team-a path-routes = %v, want [/team-a]", teamA.PathRoutes)

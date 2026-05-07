@@ -6,6 +6,7 @@ import (
 	"sync"
 	"testing"
 
+	internalconfig "github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
 )
 
@@ -62,6 +63,27 @@ func (e *sequenceExecutor) Calls() []string {
 	out := make([]string, len(e.execAuth))
 	copy(out, e.execAuth)
 	return out
+}
+
+type successfulSequenceExecutor struct {
+	sequenceExecutor
+}
+
+func (e *successfulSequenceExecutor) Execute(ctx context.Context, auth *Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+	_ = ctx
+	_ = req
+	_ = opts
+
+	authID := ""
+	if auth != nil {
+		authID = auth.ID
+	}
+
+	e.mu.Lock()
+	e.execAuth = append(e.execAuth, authID)
+	e.mu.Unlock()
+
+	return cliproxyexecutor.Response{Payload: []byte("ok")}, nil
 }
 
 type invalidModelExecutor struct {
@@ -185,5 +207,83 @@ func TestManagerExecute_ModelNotSupportedBadRequestDoesNotFailOver(t *testing.T)
 	}
 	if calls[0] != "auth-a" {
 		t.Fatalf("expected first auth only, got %v", calls)
+	}
+}
+
+func TestManagerExecute_GroupStrategyFillFirstOverridesGlobalRoundRobin(t *testing.T) {
+	t.Parallel()
+
+	executor := &successfulSequenceExecutor{}
+	manager := NewManager(nil, &RoundRobinSelector{}, nil)
+	manager.SetConfig(&internalconfig.Config{
+		Routing: internalconfig.RoutingConfig{
+			Strategy: "round-robin",
+			ChannelGroups: []internalconfig.RoutingChannelGroup{
+				{
+					Name:     "pro",
+					Strategy: "fill-first",
+					Match: internalconfig.ChannelGroupMatch{
+						Prefixes: []string{"pro"},
+					},
+				},
+			},
+		},
+	})
+	manager.RegisterExecutor(executor)
+	registerGroupedRouteTestAuths(t, manager)
+
+	for i := 0; i < 2; i++ {
+		resp, err := manager.Execute(context.Background(), []string{"codex"}, cliproxyexecutor.Request{}, cliproxyexecutor.Options{
+			Metadata: map[string]any{cliproxyexecutor.RouteGroupMetadataKey: "pro"},
+		})
+		if err != nil {
+			t.Fatalf("Execute(%d) error = %v", i, err)
+		}
+		if string(resp.Payload) != "ok" {
+			t.Fatalf("Execute(%d) payload = %q, want ok", i, string(resp.Payload))
+		}
+	}
+
+	if calls := executor.Calls(); len(calls) != 2 || calls[0] != "auth-a" || calls[1] != "auth-a" {
+		t.Fatalf("group fill-first should keep using first available auth, got %v", calls)
+	}
+}
+
+func TestManagerExecute_GroupStrategyRoundRobinOverridesGlobalFillFirst(t *testing.T) {
+	t.Parallel()
+
+	executor := &successfulSequenceExecutor{}
+	manager := NewManager(nil, &FillFirstSelector{}, nil)
+	manager.SetConfig(&internalconfig.Config{
+		Routing: internalconfig.RoutingConfig{
+			Strategy: "fill-first",
+			ChannelGroups: []internalconfig.RoutingChannelGroup{
+				{
+					Name:     "pro",
+					Strategy: "round-robin",
+					Match: internalconfig.ChannelGroupMatch{
+						Prefixes: []string{"pro"},
+					},
+				},
+			},
+		},
+	})
+	manager.RegisterExecutor(executor)
+	registerGroupedRouteTestAuths(t, manager)
+
+	for i := 0; i < 2; i++ {
+		resp, err := manager.Execute(context.Background(), []string{"codex"}, cliproxyexecutor.Request{}, cliproxyexecutor.Options{
+			Metadata: map[string]any{cliproxyexecutor.RouteGroupMetadataKey: "pro"},
+		})
+		if err != nil {
+			t.Fatalf("Execute(%d) error = %v", i, err)
+		}
+		if string(resp.Payload) != "ok" {
+			t.Fatalf("Execute(%d) payload = %q, want ok", i, string(resp.Payload))
+		}
+	}
+
+	if calls := executor.Calls(); len(calls) != 2 || calls[0] != "auth-a" || calls[1] != "auth-b" {
+		t.Fatalf("group round-robin should rotate scoped route auths, got %v", calls)
 	}
 }

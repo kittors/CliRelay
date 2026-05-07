@@ -48,6 +48,9 @@ type SDKConfig struct {
 
 	// ContextRetrieval reduces oversized conversational payloads using local retrieval.
 	ContextRetrieval ContextRetrievalConfig `yaml:"context-retrieval,omitempty" json:"context-retrieval,omitempty"`
+
+	// MultimodalAdapters turns unsupported media inputs into text context before routing to text models.
+	MultimodalAdapters MultimodalAdaptersConfig `yaml:"multimodal-adapters,omitempty" json:"multimodal-adapters,omitempty"`
 }
 
 // ContextRetrievalConfig controls local SQLite FTS based context reduction.
@@ -59,6 +62,7 @@ type ContextRetrievalConfig struct {
 	Chunk               ContextRetrievalChunkConfig  `yaml:"chunk,omitempty" json:"chunk,omitempty"`
 	Retrieval           ContextRetrievalSearchConfig `yaml:"retrieval,omitempty" json:"retrieval,omitempty"`
 	CodexAware          CodexAwareContextConfig      `yaml:"codex-aware,omitempty" json:"codex-aware,omitempty"`
+	Secondary           ContextRetrievalSecondPass   `yaml:"secondary,omitempty" json:"secondary,omitempty"`
 }
 
 type ContextRetrievalChunkConfig struct {
@@ -70,6 +74,16 @@ type ContextRetrievalSearchConfig struct {
 	Strategy string `yaml:"strategy,omitempty" json:"strategy,omitempty"`
 }
 
+// ContextRetrievalSecondPass controls a more aggressive fallback compression pass.
+type ContextRetrievalSecondPass struct {
+	Enabled             bool `yaml:"enabled" json:"enabled"`
+	MaxInputBytes       int  `yaml:"max-input-bytes,omitempty" json:"max-input-bytes,omitempty"`
+	PreserveRecentTurns int  `yaml:"preserve-recent-turns,omitempty" json:"preserve-recent-turns,omitempty"`
+	TopK                int  `yaml:"top-k,omitempty" json:"top-k,omitempty"`
+	MaxSummaryBytes     int  `yaml:"max-summary-bytes,omitempty" json:"max-summary-bytes,omitempty"`
+	MaxItemBytes        int  `yaml:"max-item-bytes,omitempty" json:"max-item-bytes,omitempty"`
+}
+
 // CodexAwareContextConfig preserves Codex tool semantics while reducing context.
 type CodexAwareContextConfig struct {
 	Enabled                bool   `yaml:"enabled" json:"enabled"`
@@ -79,6 +93,52 @@ type CodexAwareContextConfig struct {
 	MaxSummaryBytes        int    `yaml:"max-summary-bytes,omitempty" json:"max-summary-bytes,omitempty"`
 	PreserveRecentCommands int    `yaml:"preserve-recent-commands,omitempty" json:"preserve-recent-commands,omitempty"`
 	PreserveRecentErrors   int    `yaml:"preserve-recent-errors,omitempty" json:"preserve-recent-errors,omitempty"`
+}
+
+// MultimodalAdaptersConfig controls media-to-text preprocessing for text-only upstream models.
+type MultimodalAdaptersConfig struct {
+	Enabled           *bool                       `yaml:"enabled,omitempty" json:"enabled,omitempty"`
+	DefaultAction     string                      `yaml:"default-action,omitempty" json:"default-action,omitempty"`
+	UnavailableAction string                      `yaml:"unavailable-action,omitempty" json:"unavailable-action,omitempty"`
+	InjectAs          string                      `yaml:"inject-as,omitempty" json:"inject-as,omitempty"`
+	MaxMediaItems     int                         `yaml:"max-media-items,omitempty" json:"max-media-items,omitempty"`
+	MaxOutputBytes    int                         `yaml:"max-output-bytes,omitempty" json:"max-output-bytes,omitempty"`
+	Rules             []MultimodalAdapterRule     `yaml:"rules,omitempty" json:"rules,omitempty"`
+	Extractors        []MultimodalExtractorConfig `yaml:"extractors,omitempty" json:"extractors,omitempty"`
+}
+
+// MultimodalAdapterRule scopes media preprocessing to a selected upstream route.
+type MultimodalAdapterRule struct {
+	Name              string                 `yaml:"name,omitempty" json:"name,omitempty"`
+	Match             MultimodalAdapterMatch `yaml:"match,omitempty" json:"match,omitempty"`
+	Extractor         string                 `yaml:"extractor,omitempty" json:"extractor,omitempty"`
+	Action            string                 `yaml:"action,omitempty" json:"action,omitempty"`
+	UnavailableAction string                 `yaml:"unavailable-action,omitempty" json:"unavailable-action,omitempty"`
+	InjectAs          string                 `yaml:"inject-as,omitempty" json:"inject-as,omitempty"`
+	MaxMediaItems     int                    `yaml:"max-media-items,omitempty" json:"max-media-items,omitempty"`
+	MaxOutputBytes    int                    `yaml:"max-output-bytes,omitempty" json:"max-output-bytes,omitempty"`
+}
+
+// MultimodalAdapterMatch controls which requested/upstream route receives media preprocessing.
+type MultimodalAdapterMatch struct {
+	RequestedModels   []string `yaml:"requested-models,omitempty" json:"requested-models,omitempty"`
+	UpstreamProviders []string `yaml:"upstream-providers,omitempty" json:"upstream-providers,omitempty"`
+	UpstreamModels    []string `yaml:"upstream-models,omitempty" json:"upstream-models,omitempty"`
+	Protocols         []string `yaml:"protocols,omitempty" json:"protocols,omitempty"`
+}
+
+// MultimodalExtractorConfig describes a replaceable visual extraction backend.
+type MultimodalExtractorConfig struct {
+	Name           string            `yaml:"name,omitempty" json:"name,omitempty"`
+	Type           string            `yaml:"type,omitempty" json:"type,omitempty"`
+	Endpoint       string            `yaml:"endpoint,omitempty" json:"endpoint,omitempty"`
+	Command        string            `yaml:"command,omitempty" json:"command,omitempty"`
+	Args           []string          `yaml:"args,omitempty" json:"args,omitempty"`
+	Env            map[string]string `yaml:"env,omitempty" json:"env,omitempty"`
+	Headers        map[string]string `yaml:"headers,omitempty" json:"headers,omitempty"`
+	ToolName       string            `yaml:"tool-name,omitempty" json:"tool-name,omitempty"`
+	TimeoutSeconds int               `yaml:"timeout-seconds,omitempty" json:"timeout-seconds,omitempty"`
+	Prompt         string            `yaml:"prompt,omitempty" json:"prompt,omitempty"`
 }
 
 // ObservabilityConfig groups optional diagnostic logging features.

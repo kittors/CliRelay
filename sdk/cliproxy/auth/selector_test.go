@@ -196,7 +196,7 @@ func TestRoundRobinSelectorPick_AllowedChannelGroupZeroWeightIsExcluded(t *testi
 	}
 }
 
-func TestFillFirstSelectorPick_GroupedRouteUsesWeightedScheduling(t *testing.T) {
+func TestFillFirstSelectorPick_GroupedRouteUsesHighestPriorityFillFirst(t *testing.T) {
 	t.Parallel()
 
 	selector := &FillFirstSelector{}
@@ -208,7 +208,7 @@ func TestFillFirstSelectorPick_GroupedRouteUsesWeightedScheduling(t *testing.T) 
 		Metadata: map[string]any{cliproxyexecutor.RouteGroupMetadataKey: "pro"},
 	}
 
-	want := []string{"a", "b", "a", "a"}
+	want := []string{"a", "a", "a", "a"}
 	for i, id := range want {
 		got, err := selector.Pick(context.Background(), "mixed", "", opts, auths)
 		if err != nil {
@@ -220,6 +220,52 @@ func TestFillFirstSelectorPick_GroupedRouteUsesWeightedScheduling(t *testing.T) 
 		if got.ID != id {
 			t.Fatalf("Pick() #%d auth.ID = %q, want %q", i, got.ID, id)
 		}
+	}
+}
+
+func TestFillFirstSelectorPick_GroupScopesStayOnFirstAvailable(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name string
+		meta map[string]any
+	}{
+		{
+			name: "path route group",
+			meta: map[string]any{cliproxyexecutor.RouteGroupMetadataKey: "pro"},
+		},
+		{
+			name: "allowed channel groups",
+			meta: map[string]any{"allowed-channel-groups": "chatgpt-mix"},
+		},
+	}
+
+	for _, tc := range testCases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			selector := &FillFirstSelector{}
+			auths := []*Auth{
+				{ID: "b"},
+				{ID: "a"},
+				{ID: "c"},
+			}
+			opts := cliproxyexecutor.Options{Metadata: tc.meta}
+
+			for i := 0; i < 4; i++ {
+				got, err := selector.Pick(context.Background(), "mixed", "", opts, auths)
+				if err != nil {
+					t.Fatalf("Pick() #%d error = %v", i, err)
+				}
+				if got == nil {
+					t.Fatalf("Pick() #%d auth = nil", i)
+				}
+				if got.ID != "a" {
+					t.Fatalf("Pick() #%d auth.ID = %q, want %q", i, got.ID, "a")
+				}
+			}
+		})
 	}
 }
 
@@ -528,6 +574,35 @@ func TestIsAuthBlockedForModel_UnavailableWithoutNextRetryIsNotBlocked(t *testin
 	}
 	if !next.IsZero() {
 		t.Fatalf("next = %v, want zero", next)
+	}
+}
+
+func TestIsAuthBlockedForModel_AuthQuotaCooldownBlocksAllModels(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	next := now.Add(15 * time.Minute)
+
+	auth := &Auth{
+		ID: "a",
+		Quota: QuotaState{
+			Exceeded:      true,
+			Reason:        "quota",
+			NextRecoverAt: next,
+		},
+		NextRetryAfter: next,
+	}
+
+	// Even if the requested model has no per-model state yet, auth-level cooldown should block it.
+	blocked, reason, gotNext := isAuthBlockedForModel(auth, "some-new-model", now)
+	if !blocked {
+		t.Fatalf("blocked = false, want true")
+	}
+	if reason != blockReasonCooldown {
+		t.Fatalf("reason = %v, want %v", reason, blockReasonCooldown)
+	}
+	if gotNext.IsZero() || gotNext.Sub(next) > time.Second || next.Sub(gotNext) > time.Second {
+		t.Fatalf("next = %v, want around %v", gotNext, next)
 	}
 }
 

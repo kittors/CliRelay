@@ -10,6 +10,16 @@ import (
 
 const maxCustomAuthTags = 3
 
+var codexPlanDisplayTags = map[string]struct{}{
+	"business":   {},
+	"edu":        {},
+	"enterprise": {},
+	"free":       {},
+	"plus":       {},
+	"pro":        {},
+	"team":       {},
+}
+
 type authTagPayload struct {
 	DefaultTags       []string
 	CustomTags        []string
@@ -33,26 +43,41 @@ func buildAuthTagPayloadFromValues(provider string, metadata map[string]any) aut
 	defaultTags := defaultAuthTags(provider, metadata)
 	customTags := metadataStringSlice(metadata, "custom_tags")
 	hiddenDefaultTags := metadataStringSlice(metadata, "hidden_default_tags")
+	explicitDisplayTags, hasExplicitDisplayTags := metadataStringSliceWithPresence(
+		metadata,
+		"display_tags",
+	)
 	hiddenSet := make(map[string]struct{}, len(hiddenDefaultTags))
 	for _, tag := range hiddenDefaultTags {
 		hiddenSet[tag] = struct{}{}
 	}
 
-	displayTags := make([]string, 0, len(defaultTags)+len(customTags))
-	for _, tag := range defaultTags {
-		if _, hidden := hiddenSet[tag]; hidden {
-			continue
+	var displayTags []string
+	if !hasExplicitDisplayTags {
+		displayTags = make([]string, 0, len(defaultTags)+len(customTags))
+		for _, tag := range defaultTags {
+			if _, hidden := hiddenSet[tag]; hidden {
+				continue
+			}
+			displayTags = append(displayTags, tag)
 		}
-		displayTags = append(displayTags, tag)
-	}
-	for _, tag := range customTags {
-		if _, exists := hiddenSet[tag]; exists {
-			continue
+		for _, tag := range customTags {
+			if _, exists := hiddenSet[tag]; exists {
+				continue
+			}
+			if containsNormalizedTag(displayTags, tag) {
+				continue
+			}
+			displayTags = append(displayTags, tag)
 		}
-		if containsNormalizedTag(displayTags, tag) {
-			continue
-		}
-		displayTags = append(displayTags, tag)
+	} else {
+		displayTags = reconcileExplicitDisplayTags(
+			provider,
+			metadata,
+			defaultTags,
+			customTags,
+			explicitDisplayTags,
+		)
 	}
 
 	return authTagPayload{
@@ -61,6 +86,56 @@ func buildAuthTagPayloadFromValues(provider string, metadata map[string]any) aut
 		HiddenDefaultTags: append([]string{}, hiddenDefaultTags...),
 		DisplayTags:       append([]string{}, displayTags...),
 	}
+}
+
+func reconcileExplicitDisplayTags(provider string, metadata map[string]any, defaultTags []string, customTags []string, explicitDisplayTags []string) []string {
+	if len(explicitDisplayTags) == 0 {
+		return []string{}
+	}
+	allowed := make(map[string]struct{}, len(defaultTags)+len(customTags))
+	for _, tag := range defaultTags {
+		if normalized := normalizeTagValue(tag); normalized != "" {
+			allowed[normalized] = struct{}{}
+		}
+	}
+	for _, tag := range customTags {
+		if normalized := normalizeTagValue(tag); normalized != "" {
+			allowed[normalized] = struct{}{}
+		}
+	}
+
+	providerTag := normalizeTagValue(provider)
+	currentPlan := normalizeTagValue(metadataString(metadata, "plan_type", "planType"))
+	out := make([]string, 0, len(explicitDisplayTags))
+	for _, tag := range explicitDisplayTags {
+		normalized := normalizeTagValue(tag)
+		if normalized == "" {
+			continue
+		}
+		if _, ok := allowed[normalized]; ok {
+			if !containsNormalizedTag(out, normalized) {
+				out = append(out, normalized)
+			}
+			continue
+		}
+		if isStaleCodexPlanDisplayTag(providerTag, currentPlan, normalized) {
+			if _, ok := allowed[currentPlan]; ok && !containsNormalizedTag(out, currentPlan) {
+				out = append(out, currentPlan)
+			}
+		}
+	}
+	return out
+}
+
+func isStaleCodexPlanDisplayTag(providerTag string, currentPlan string, tag string) bool {
+	if providerTag != "codex" || currentPlan == "" || tag == currentPlan {
+		return false
+	}
+	if _, ok := codexPlanDisplayTags[currentPlan]; !ok {
+		return false
+	}
+	_, ok := codexPlanDisplayTags[tag]
+	return ok
 }
 
 func defaultAuthTags(provider string, metadata map[string]any) []string {
@@ -125,16 +200,21 @@ func containsNormalizedTag(values []string, target string) bool {
 }
 
 func metadataStringSlice(metadata map[string]any, key string) []string {
+	values, _ := metadataStringSliceWithPresence(metadata, key)
+	return values
+}
+
+func metadataStringSliceWithPresence(metadata map[string]any, key string) ([]string, bool) {
 	if len(metadata) == 0 {
-		return []string{}
+		return []string{}, false
 	}
 	raw, ok := metadata[key]
 	if !ok || raw == nil {
-		return []string{}
+		return []string{}, ok
 	}
 	switch typed := raw.(type) {
 	case []string:
-		return normalizeTagList(typed)
+		return normalizeTagList(typed), true
 	case []any:
 		values := make([]string, 0, len(typed))
 		for _, item := range typed {
@@ -142,14 +222,14 @@ func metadataStringSlice(metadata map[string]any, key string) []string {
 				values = append(values, text)
 			}
 		}
-		return normalizeTagList(values)
+		return normalizeTagList(values), true
 	case string:
 		if strings.TrimSpace(typed) == "" {
-			return []string{}
+			return []string{}, true
 		}
-		return normalizeTagList(strings.Split(typed, ","))
+		return normalizeTagList(strings.Split(typed, ",")), true
 	default:
-		return []string{}
+		return []string{}, true
 	}
 }
 

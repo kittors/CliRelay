@@ -151,6 +151,15 @@ request-log-storage:
 #   retrieval:
 #     top-k: 40
 #     strategy: "keyword"
+#   # Optional second pass: if primary retrieval still exceeds budget, retry with
+#   # a smaller budget and truncate oversized retained item text with prefix/suffix.
+#   secondary:
+#     enabled: true
+#     max-input-bytes: 220000
+#     preserve-recent-turns: 6
+#     top-k: 24
+#     max-summary-bytes: 2000
+#     max-item-bytes: 24000
 #   codex-aware:
 #     enabled: true
 #     preserve-tool-pairs: true
@@ -163,7 +172,7 @@ request-log-storage:
 #     preserve-recent-errors: 8
 
 # Optional request policies for routing around provider/model limits.
-# Policies can skip a channel or reject locally when request size/features exceed
+# Policies can skip a channel or reject locally when request size/tools exceed
 # configured limits. Use skip-channel to fall back to the next available provider.
 # request-policies:
 #   - name: "glm-5.1-large-request-guard"
@@ -173,22 +182,6 @@ request-log-storage:
 #       upstream-models: ["glm-5.1"]
 #     limits:
 #       max-request-bytes: 800000
-#     over-limit:
-#       action: "skip-channel"
-#   - name: "glm-5.1-image-skip"
-#     match:
-#       requested-models: ["gpt-5.3-codex"]
-#       upstream-providers: ["bigmodel-coding"]
-#       upstream-models: ["glm-5.1"]
-#       request-features: ["image"]
-#     over-limit:
-#       action: "skip-channel"
-#   - name: "glm-5.1-video-skip"
-#     match:
-#       requested-models: ["gpt-5.3-codex"]
-#       upstream-providers: ["bigmodel-coding"]
-#       upstream-models: ["glm-5.1"]
-#       request-features: ["video"]
 #     over-limit:
 #       action: "skip-channel"
 #   - name: "glm-5.1-tool-heavy-skip"
@@ -227,6 +220,47 @@ request-log-storage:
 #       upstream-providers: ["bigmodel-coding"]
 #       upstream-models: ["glm-5.1"]
 #     priority: 100
+
+# Optional media-to-text adapter for text-only upstream models.
+# It runs after alias resolution, so the rule below matches the real route:
+# requested gpt-5.3-codex -> bigmodel-coding/glm-5.1. Native GPT-5.5/5.4
+# channels are unaffected.
+# multimodal-adapters:
+#   enabled: true
+#   default-action: "extract" # extract, reject, strip
+#   unavailable-action: "reject" # reject, strip, pass-through
+#   inject-as: "visual_context"
+#   max-media-items: 4
+#   max-output-bytes: 12000
+#   rules:
+#     - name: "glm-5.1-codex-vision"
+#       match:
+#         requested-models: ["gpt-5.3-codex"]
+#         upstream-providers: ["bigmodel-coding"]
+#         upstream-models: ["glm-5.1"]
+#         protocols: ["openai-response", "openai"]
+#       extractor: "zai-vision-http"
+#   extractors:
+#     - name: "zai-vision-http"
+#       type: "zai-vision-http"
+#       endpoint: "https://open.bigmodel.cn/api/paas/v4"
+#       headers:
+#         Authorization: "Bearer ${Z_AI_API_KEY}"
+#       tool-name: "glm-5.1"
+#       env:
+#         identity_fingerprint: "codex"
+#         max_tokens: "512"
+#         disable_thinking: "true"
+#       timeout-seconds: 60
+#     - name: "zai-vision-mcp"
+#       type: "mcp"
+#       command: "npx"
+#       args: ["-y", "@z_ai/mcp-server@latest"]
+#       env:
+#         Z_AI_API_KEY: "${Z_AI_API_KEY}"
+#         Z_AI_MODE: "ZHIPU"
+#       tool-name: "image_analysis"
+#       timeout-seconds: 60
 
 # Proxy URL. Supports socks5/http/https protocols. Example: socks5://user:pass@192.168.1.1:1080/
 proxy-url: ""
@@ -373,6 +407,12 @@ nonstream-keepalive-interval: 0
 #     base-url: "https://openrouter.ai/api/v1" # The base URL of the provider.
 #     headers:
 #       X-Custom-Header: "custom-value"
+#     # optional: "chat-multimodal" or "image-generations" for providers that
+#     # do not support OpenAI-style /v1/images/edits directly.
+#     image-edits-mode: ""
+#     # optional with image-edits-mode: "image-generations"; supported values
+#     # are "image" and "image_url". Empty defaults to "image".
+#     image-generations-image-field: ""
 #     api-key-entries:
 #       - api-key: "sk-or-v1-...b780"
 #         proxy-url: "socks5://proxy.example.com:1080" # optional: per-key proxy override

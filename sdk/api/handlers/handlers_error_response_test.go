@@ -5,12 +5,45 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/interfaces"
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
 )
+
+type upstreamBodyTestError struct{}
+
+func (upstreamBodyTestError) Error() string {
+	return "provider failed after retries"
+}
+
+func (upstreamBodyTestError) UpstreamErrorBody() []byte {
+	return []byte(`{"error":{"code":"1305","message":"该模型当前访问量过大，请您稍后再试"}}`)
+}
+
+func TestWriteErrorResponse_PreservesUpstreamErrorBody(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodGet, "/", nil)
+
+	handler := NewBaseAPIHandlers(nil, nil)
+	handler.WriteErrorResponse(c, &interfaces.ErrorMessage{
+		StatusCode: http.StatusServiceUnavailable,
+		Error:      upstreamBodyTestError{},
+	})
+
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusServiceUnavailable)
+	}
+	body := strings.TrimSpace(recorder.Body.String())
+	want := `{"error":{"code":"1305","message":"该模型当前访问量过大，请您稍后再试"}}`
+	if body != want {
+		t.Fatalf("body = %s, want %s", body, want)
+	}
+}
 
 func TestWriteErrorResponse_AddonHeadersDisabledByDefault(t *testing.T) {
 	gin.SetMode(gin.TestMode)

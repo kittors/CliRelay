@@ -295,6 +295,7 @@ http://localhost:8317/manage
 - Docker Compose deployments expose the panel at `/manage`.
 - The server can serve a bundled SPA directory or auto-fetch panel assets when needed.
 - This repository contains the hosting/update path for `/manage`; the standalone web panel source is maintained separately from the Go server code.
+- Make UI/interaction/copy changes in the panel source repository (default: `kittors/codeProxy`) and ship them via its release artifacts for the server to fetch.
 - Terminal-first management is also available through `docker compose exec cli-proxy-api ./cli-proxy-api -tui`.
 - If you want to customize the panel asset source, set `remote-management.panel-github-repository`.
 

@@ -2,7 +2,6 @@ package usage
 
 import (
 	"database/sql"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"gopkg.in/yaml.v3"
 	_ "modernc.org/sqlite"
 )
 
@@ -29,6 +29,7 @@ func setupConfigMigrationTestDB(t *testing.T) func() {
 		t.Fatalf("create request_logs table: %v", err)
 	}
 	initAPIKeysTable(db)
+	initAPIKeyPermissionProfilesTable(db)
 	initRoutingConfigTable(db)
 	initProxyPoolTable(db)
 	initRuntimeSettingsTable(db)
@@ -110,20 +111,20 @@ func TestMigrateRoutingConfigFromConfigKeepsYAMLWhenDBUnavailable(t *testing.T) 
 
 func TestCleanDBBackedConfigFromYAMLCleansPersistedSections(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
-	content := []byte("port: 8318\napi-keys:\n  - sk-test\napi-key-entries:\n  - key: sk-entry\nrouting:\n  strategy: round-robin\nproxy-pool:\n  - id: hk\n    url: http://127.0.0.1:7890\ngemini-api-key:\n  - api-key: sk-gemini\ncodex-api-key:\n  - api-key: sk-codex\n    base-url: https://codex.example.com\nclaude-api-key:\n  - api-key: sk-claude\n    base-url: https://claude.example.com\nbedrock-api-key:\n  - name: bedrock\nopencode-go-api-key:\n  - api-key: sk-opencode\nopenai-compatibility:\n  - name: compat\n    base-url: https://compat.example.com\nvertex-api-key:\n  - api-key: sk-vertex\n    base-url: https://vertex.example.com\nclaude-header-defaults:\n  user-agent: ClaudeCLI/1.0\nkimi-header-defaults:\n  user-agent: KimiCLI/1.24.0\nidentity-fingerprint:\n  codex:\n    enabled: true\noauth-excluded-models:\n  codex:\n    - gpt-4\noauth-model-alias:\n  codex:\n    - name: gpt-5\n      alias: codex-gpt5\npayload:\n  default:\n    - models:\n        - name: gpt-5\n      params:\n        temperature: 0.2\nprovider-preferences:\n  - name: prefer-compat\n    priority: 100\nlogging-to-file: true\n")
+	content := []byte("port: 8318\napi-keys:\n  - sk-test\napi-key-entries:\n  - key: sk-entry\napi-key-permission-profiles:\n  - id: standard\n    name: Standard\nrouting:\n  strategy: round-robin\nproxy-pool:\n  - id: hk\n    url: http://127.0.0.1:7890\ngemini-api-key:\n  - api-key: sk-gemini\ncodex-api-key:\n  - api-key: sk-codex\n    base-url: https://codex.example.com\nclaude-api-key:\n  - api-key: sk-claude\n    base-url: https://claude.example.com\nbedrock-api-key:\n  - name: bedrock\nopencode-go-api-key:\n  - api-key: sk-opencode\nopenai-compatibility:\n  - name: compat\n    base-url: https://compat.example.com\nvertex-api-key:\n  - api-key: sk-vertex\n    base-url: https://vertex.example.com\nclaude-header-defaults:\n  user-agent: ClaudeCLI/1.0\nkimi-header-defaults:\n  user-agent: KimiCLI/1.24.0\nidentity-fingerprint:\n  codex:\n    enabled: true\noauth-excluded-models:\n  codex:\n    - gpt-4\noauth-model-alias:\n  codex:\n    - name: gpt-5\n      alias: codex-gpt5\npayload:\n  default:\n    - models:\n        - name: gpt-5\n      params:\n        temperature: 0.2\nprovider-preferences:\n  - name: prefer-compat\n    priority: 100\nmultimodal-adapters:\n  enabled: true\nlogging-to-file: true\n")
 	if err := os.WriteFile(configPath, content, 0o640); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 
-	if removed := CleanDBBackedConfigFromYAML(configPath); removed != 18 {
-		t.Fatalf("CleanDBBackedConfigFromYAML removed %d sections, want 18", removed)
+	if removed := CleanDBBackedConfigFromYAML(configPath); removed != 20 {
+		t.Fatalf("CleanDBBackedConfigFromYAML removed %d sections, want 20", removed)
 	}
 
 	data, err := os.ReadFile(configPath)
 	if err != nil {
 		t.Fatalf("read config: %v", err)
 	}
-	for _, forbidden := range []string{"api-keys:", "api-key-entries:", "routing:", "proxy-pool:", "gemini-api-key:", "codex-api-key:", "claude-api-key:", "bedrock-api-key:", "opencode-go-api-key:", "openai-compatibility:", "vertex-api-key:", "claude-header-defaults:", "kimi-header-defaults:", "identity-fingerprint:", "oauth-excluded-models:", "oauth-model-alias:", "payload:", "provider-preferences:"} {
+	for _, forbidden := range []string{"api-keys:", "api-key-entries:", "api-key-permission-profiles:", "routing:", "proxy-pool:", "gemini-api-key:", "codex-api-key:", "claude-api-key:", "bedrock-api-key:", "opencode-go-api-key:", "openai-compatibility:", "vertex-api-key:", "claude-header-defaults:", "kimi-header-defaults:", "identity-fingerprint:", "oauth-excluded-models:", "oauth-model-alias:", "payload:", "provider-preferences:", "multimodal-adapters:"} {
 		if strings.Contains(string(data), forbidden) {
 			t.Fatalf("%s should be removed from YAML:\n%s", forbidden, string(data))
 		}
@@ -140,64 +141,48 @@ func TestCleanDBBackedConfigFromYAMLCleansPersistedSections(t *testing.T) {
 	}
 }
 
-func TestCleanDBBackedConfigFromYAMLFallsBackWhenRenameBusy(t *testing.T) {
+func TestWriteYAMLNodeAtomicFallsBackWhenRenameTargetBusy(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
-	if err := os.WriteFile(configPath, []byte("port: 8318\nrouting:\n  strategy: round-robin\nlogging-to-file: true\n"), 0o640); err != nil {
+	if err := os.WriteFile(configPath, []byte("routing:\n  strategy: round-robin\n"), 0o640); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 
-	originalRename := renameConfigFile
-	renameConfigFile = func(oldPath, newPath string) error {
-		return &os.PathError{Op: "rename", Path: oldPath, Err: syscall.EBUSY}
+	var root yaml.Node
+	if err := yaml.Unmarshal([]byte("port: 8318\nlogging-to-file: true\n"), &root); err != nil {
+		t.Fatalf("parse yaml: %v", err)
 	}
-	t.Cleanup(func() { renameConfigFile = originalRename })
 
-	if removed := cleanConfigKeysFromYAML(configPath, map[string]bool{"routing": true}, "routing_config"); removed != 1 {
-		t.Fatalf("cleanConfigKeysFromYAML removed %d sections, want 1", removed)
+	renameCalled := false
+	err := writeYAMLNodeAtomicWithRename(configPath, &root, func(oldPath, newPath string) error {
+		renameCalled = true
+		if filepath.Dir(oldPath) != filepath.Dir(configPath) {
+			t.Fatalf("temp file dir = %s, want %s", filepath.Dir(oldPath), filepath.Dir(configPath))
+		}
+		if newPath != configPath {
+			t.Fatalf("rename target = %s, want %s", newPath, configPath)
+		}
+		return &os.LinkError{Op: "rename", Old: oldPath, New: newPath, Err: syscall.EBUSY}
+	})
+	if err != nil {
+		t.Fatalf("writeYAMLNodeAtomicWithRename returned error: %v", err)
+	}
+	if !renameCalled {
+		t.Fatal("rename was not attempted")
 	}
 
 	data, err := os.ReadFile(configPath)
 	if err != nil {
 		t.Fatalf("read config: %v", err)
 	}
-	if strings.Contains(string(data), "routing:") {
-		t.Fatalf("routing should be removed from YAML after fallback write:\n%s", string(data))
-	}
-	if !strings.Contains(string(data), "port: 8318") || !strings.Contains(string(data), "logging-to-file: true") {
-		t.Fatalf("ordinary config should remain after fallback write:\n%s", string(data))
+	if got := string(data); strings.Contains(got, "routing:") || !strings.Contains(got, "logging-to-file: true") {
+		t.Fatalf("config was not rewritten in place:\n%s", got)
 	}
 	info, err := os.Stat(configPath)
 	if err != nil {
 		t.Fatalf("stat config: %v", err)
 	}
 	if got := info.Mode().Perm(); got != 0o640 {
-		t.Fatalf("fallback config mode = %o, want 640", got)
-	}
-}
-
-func TestCleanDBBackedConfigFromYAMLDoesNotFallbackForUnexpectedRenameError(t *testing.T) {
-	configPath := filepath.Join(t.TempDir(), "config.yaml")
-	original := "port: 8318\nrouting:\n  strategy: round-robin\n"
-	if err := os.WriteFile(configPath, []byte(original), 0o640); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
-
-	originalRename := renameConfigFile
-	renameConfigFile = func(oldPath, newPath string) error {
-		return fmt.Errorf("unexpected rename failure")
-	}
-	t.Cleanup(func() { renameConfigFile = originalRename })
-
-	if removed := cleanConfigKeysFromYAML(configPath, map[string]bool{"routing": true}, "routing_config"); removed != 0 {
-		t.Fatalf("cleanConfigKeysFromYAML removed %d sections, want 0", removed)
-	}
-
-	data, err := os.ReadFile(configPath)
-	if err != nil {
-		t.Fatalf("read config: %v", err)
-	}
-	if string(data) != original {
-		t.Fatalf("config should remain untouched after unexpected rename error:\n%s", string(data))
+		t.Fatalf("config mode = %o, want 640", got)
 	}
 }
 
@@ -215,6 +200,60 @@ func TestAPIKeyMigrationBackupUsesPrivatePermissions(t *testing.T) {
 		t.Fatalf("MigrateAPIKeysFromConfig = %d, want 1", migrated)
 	}
 	assertMigrationBackupMode(t, configPath+".pre-sqlite-migration", 0o600)
+}
+
+func TestMigrateAPIKeyPermissionProfilesFromYAMLCleansYAML(t *testing.T) {
+	cleanup := setupConfigMigrationTestDB(t)
+	defer cleanup()
+
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	content := []byte(`port: 8318
+api-key-permission-profiles:
+  - id: mixed-gpt-opencode
+    name: 混合 gpt+opencode 模型
+    daily-limit: 15000
+    total-quota: 0
+    concurrency-limit: 0
+    rpm-limit: 0
+    tpm-limit: 0
+    allowed-channel-groups:
+      - chatgpt-mix
+      - opencode
+    allowed-channels: []
+    allowed-models: []
+    system-prompt: ""
+logging-to-file: true
+`)
+	if err := os.WriteFile(configPath, content, 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	if migrated := MigrateAPIKeyPermissionProfilesFromYAML(configPath); migrated != 1 {
+		t.Fatalf("MigrateAPIKeyPermissionProfilesFromYAML = %d, want 1", migrated)
+	}
+
+	profiles := ListAPIKeyPermissionProfiles()
+	if len(profiles) != 1 {
+		t.Fatalf("ListAPIKeyPermissionProfiles len = %d, want 1", len(profiles))
+	}
+	if profiles[0].ID != "mixed-gpt-opencode" || profiles[0].DailyLimit != 15000 {
+		t.Fatalf("migrated profile = %#v", profiles[0])
+	}
+	if len(profiles[0].AllowedChannelGroups) != 2 || profiles[0].AllowedChannelGroups[1] != "opencode" {
+		t.Fatalf("migrated allowed-channel-groups = %#v", profiles[0].AllowedChannelGroups)
+	}
+
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	if strings.Contains(string(data), "api-key-permission-profiles:") {
+		t.Fatalf("api-key-permission-profiles should be removed from YAML after migration:\n%s", string(data))
+	}
+	if !strings.Contains(string(data), "port: 8318") || !strings.Contains(string(data), "logging-to-file: true") {
+		t.Fatalf("ordinary config should remain in YAML:\n%s", string(data))
+	}
+	assertMigrationBackupMode(t, configPath+".pre-api-key-permission-profiles-sqlite-migration", 0o600)
 }
 
 func assertMigrationBackupMode(t *testing.T, path string, want os.FileMode) {

@@ -2,9 +2,11 @@ package executor
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
@@ -110,6 +112,346 @@ func TestOpenAICompatExecutorCompactPassthrough(t *testing.T) {
 	}
 	if string(resp.Payload) != `{"id":"resp_1","object":"response.compaction","usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3}}` {
 		t.Fatalf("payload = %s", string(resp.Payload))
+	}
+}
+
+func TestOpenAICompatExecutorPreservesUpstreamErrorBody(t *testing.T) {
+	upstreamBody := []byte(`{"error":{"code":"1305","message":"该模型当前访问量过大，请您稍后再试"}}`)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write(upstreamBody)
+	}))
+	defer server.Close()
+
+	executor := NewOpenAICompatExecutor("bigmodel-coding", &config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"base_url": server.URL + "/v1",
+		"api_key":  "test",
+	}}
+	_, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "glm-5.1",
+		Payload: []byte(`{"model":"glm-5.1","messages":[{"role":"user","content":"hi"}]}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai"),
+		Stream:       false,
+	})
+	if err == nil {
+		t.Fatal("Execute error = nil, want upstream status error")
+	}
+	upstreamErr, ok := err.(interface{ UpstreamErrorBody() []byte })
+	if !ok {
+		t.Fatalf("error %T does not expose upstream body", err)
+	}
+	if got := string(upstreamErr.UpstreamErrorBody()); got != string(upstreamBody) {
+		t.Fatalf("upstream body = %s, want %s", got, string(upstreamBody))
+	}
+}
+
+func TestOpenAICompatExecutorAppliesMultimodalAdapterAfterAliasResolution(t *testing.T) {
+	var extractorBody map[string]any
+	extractorServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&extractorBody); err != nil {
+			t.Fatalf("decode extractor body: %v", err)
+		}
+		_, _ = w.Write([]byte(`{"text":"Screenshot contains a panic stack trace."}`))
+	}))
+	defer extractorServer.Close()
+
+	var upstreamBody []byte
+	upstreamServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var err error
+		upstreamBody, err = io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read upstream body: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"ok"}}]}`))
+	}))
+	defer upstreamServer.Close()
+
+	enabled := true
+	executor := NewOpenAICompatExecutor("bigmodel-coding", &config.Config{
+		SDKConfig: config.SDKConfig{
+			MultimodalAdapters: config.MultimodalAdaptersConfig{
+				Enabled:       &enabled,
+				DefaultAction: "extract",
+				InjectAs:      "visual_context",
+				Rules: []config.MultimodalAdapterRule{
+					{
+						Name:      "glm-5.1-codex-vision",
+						Extractor: "vision",
+						Match: config.MultimodalAdapterMatch{
+							RequestedModels:   []string{"gpt-5.3-codex"},
+							UpstreamProviders: []string{"bigmodel-coding"},
+							UpstreamModels:    []string{"glm-5.1"},
+						},
+					},
+				},
+				Extractors: []config.MultimodalExtractorConfig{{Name: "vision", Type: "http", Endpoint: extractorServer.URL}},
+			},
+		},
+	})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"base_url": upstreamServer.URL + "/v1",
+		"api_key":  "test",
+	}}
+	payload := []byte(`{"model":"gpt-5.3-codex","messages":[{"role":"user","content":[{"type":"text","text":"what is wrong?"},{"type":"image_url","image_url":{"url":"https://example.com/panic.png"}}]}]}`)
+	_, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "glm-5.1",
+		Payload: payload,
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai"),
+		Metadata:     map[string]any{cliproxyexecutor.RequestedModelMetadataKey: "gpt-5.3-codex"},
+	})
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+	body := string(upstreamBody)
+	if strings.Contains(body, "image_url") {
+		t.Fatalf("upstream body still contains media: %s", body)
+	}
+	if !strings.Contains(body, "visual_context") || !strings.Contains(body, "panic stack trace") {
+		t.Fatalf("upstream body missing injected visual context: %s", body)
+	}
+	if extractorBody["upstream_provider"] != "bigmodel-coding" || extractorBody["upstream_model"] != "glm-5.1" {
+		t.Fatalf("extractor route metadata = %#v", extractorBody)
+	}
+}
+
+func TestOpenAICompatExecutorPassesImageGenerationsToImagesEndpoint(t *testing.T) {
+	var gotPath string
+	var gotBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		body, _ := io.ReadAll(r.Body)
+		gotBody = body
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"created":1770000000,"data":[{"url":"https://example.com/image.png"}]}`))
+	}))
+	defer server.Close()
+
+	executor := NewOpenAICompatExecutor("grsai", &config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"base_url": server.URL + "/v1",
+		"api_key":  "test",
+	}}
+	payload := []byte(`{"model":"gpt-image-2","prompt":"draw a red square","size":"1024x1024"}`)
+	resp, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "gpt-image-2",
+		Payload: payload,
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai"),
+		Alt:          "images/generations",
+	})
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+	if gotPath != "/v1/images/generations" {
+		t.Fatalf("path = %q, want /v1/images/generations", gotPath)
+	}
+	if got := gjson.GetBytes(gotBody, "prompt").String(); got != "draw a red square" {
+		t.Fatalf("prompt = %q", got)
+	}
+	if gjson.GetBytes(gotBody, "messages").Exists() {
+		t.Fatalf("unexpected chat messages in image generation body: %s", string(gotBody))
+	}
+	if string(resp.Payload) != `{"created":1770000000,"data":[{"url":"https://example.com/image.png"}]}` {
+		t.Fatalf("payload = %s", string(resp.Payload))
+	}
+}
+
+func TestOpenAICompatExecutorPassesImageEditsToImagesEndpointByDefault(t *testing.T) {
+	var gotPath string
+	var gotBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		body, _ := io.ReadAll(r.Body)
+		gotBody = body
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"created":1770000000,"data":[{"b64_json":"aW1hZ2U="}]}`))
+	}))
+	defer server.Close()
+
+	executor := NewOpenAICompatExecutor("grsai", &config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"base_url": server.URL + "/v1",
+		"api_key":  "test",
+	}}
+	payload := []byte(`{"model":"gpt-image-2","prompt":"put logo on shirt","image_files":[{"file_name":"logo.png","content_type":"image/png","data_base64":"aGVsbG8="}]}`)
+	resp, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "gpt-image-2",
+		Payload: payload,
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai"),
+		Alt:          "images/edits",
+	})
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+	if gotPath != "/v1/images/edits" {
+		t.Fatalf("path = %q, want /v1/images/edits", gotPath)
+	}
+	if !gjson.GetBytes(gotBody, "image_files").Exists() {
+		t.Fatalf("image_files should pass through upstream body: %s", string(gotBody))
+	}
+	if gjson.GetBytes(gotBody, "messages").Exists() {
+		t.Fatalf("unexpected chat messages in image edit body: %s", string(gotBody))
+	}
+	if string(resp.Payload) != `{"created":1770000000,"data":[{"b64_json":"aW1hZ2U="}]}` {
+		t.Fatalf("payload = %s", string(resp.Payload))
+	}
+}
+
+func TestOpenAICompatExecutorConvertsImageEditsToImageGenerations(t *testing.T) {
+	var gotPath string
+	var gotBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		body, _ := io.ReadAll(r.Body)
+		gotBody = body
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"created":1770000000,"data":[{"url":"https://example.com/image.png"}]}`))
+	}))
+	defer server.Close()
+
+	executor := NewOpenAICompatExecutor("qwen tokenplan", &config.Config{
+		OpenAICompatibility: []config.OpenAICompatibility{
+			{Name: "qwen tokenplan", ImageEditsMode: "image-generations"},
+		},
+	})
+	auth := &cliproxyauth.Auth{
+		Provider: "qwen tokenplan",
+		Attributes: map[string]string{
+			"base_url":    server.URL + "/v1",
+			"api_key":     "test",
+			"compat_name": "qwen tokenplan",
+		},
+	}
+	payload := []byte(`{
+		"model":"qwen-image-2.0",
+		"prompt":"put logo on shirt",
+		"size":"1024x1024",
+		"image_files":[{"file_name":"logo.png","content_type":"image/png","data_base64":"aGVsbG8="}]
+	}`)
+	_, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "qwen-image-2.0",
+		Payload: payload,
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai"),
+		Alt:          "images/edits",
+	})
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+	if gotPath != "/v1/images/generations" {
+		t.Fatalf("path = %q, want /v1/images/generations", gotPath)
+	}
+	if got := gjson.GetBytes(gotBody, "prompt").String(); got != "put logo on shirt" {
+		t.Fatalf("prompt = %q", got)
+	}
+	if got := gjson.GetBytes(gotBody, "image").String(); got != "data:image/png;base64,aGVsbG8=" {
+		t.Fatalf("image = %q", got)
+	}
+	if gjson.GetBytes(gotBody, "image_files").Exists() {
+		t.Fatalf("image_files should be removed from upstream body: %s", string(gotBody))
+	}
+}
+
+func TestOpenAICompatExecutorNormalizesImageGenerationsInputMessages(t *testing.T) {
+	var gotBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		gotBody = body
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"created":1770000000,"data":[{"url":"https://example.com/image.png"}]}`))
+	}))
+	defer server.Close()
+
+	executor := NewOpenAICompatExecutor("qwen tokenplan", &config.Config{
+		OpenAICompatibility: []config.OpenAICompatibility{
+			{Name: "qwen tokenplan", ImageEditsMode: "image-generations"},
+		},
+	})
+	auth := &cliproxyauth.Auth{
+		Provider: "qwen tokenplan",
+		Attributes: map[string]string{
+			"base_url":    server.URL + "/v1",
+			"api_key":     "test",
+			"compat_name": "qwen tokenplan",
+		},
+	}
+	payload := []byte(`{
+		"model":"qwen-image-2.0",
+		"input":{"messages":[{"role":"user","content":[
+			{"type":"input_text","text":"make it cinematic"},
+			{"type":"input_image","image_url":"data:image/jpeg;base64,Zm9v"}
+		]}]}
+	}`)
+	_, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "qwen-image-2.0",
+		Payload: payload,
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai"),
+		Alt:          "images/generations",
+	})
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+	if got := gjson.GetBytes(gotBody, "prompt").String(); got != "make it cinematic" {
+		t.Fatalf("prompt = %q", got)
+	}
+	if got := gjson.GetBytes(gotBody, "image").String(); got != "data:image/jpeg;base64,Zm9v" {
+		t.Fatalf("image = %q", got)
+	}
+	if gjson.GetBytes(gotBody, "input").Exists() {
+		t.Fatalf("input should be removed from upstream body: %s", string(gotBody))
+	}
+}
+
+func TestOpenAICompatExecutorUsesConfiguredImageGenerationsImageField(t *testing.T) {
+	var gotBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		gotBody = body
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"created":1770000000,"data":[{"url":"https://example.com/image.png"}]}`))
+	}))
+	defer server.Close()
+
+	executor := NewOpenAICompatExecutor("grsai", &config.Config{
+		OpenAICompatibility: []config.OpenAICompatibility{
+			{Name: "grsai", ImageEditsMode: "image-generations", ImageGenerationsImageField: "image_url"},
+		},
+	})
+	auth := &cliproxyauth.Auth{
+		Provider: "grsai",
+		Attributes: map[string]string{
+			"base_url":    server.URL + "/v1",
+			"api_key":     "test",
+			"compat_name": "grsai",
+		},
+	}
+	payload := []byte(`{
+		"model":"gpt-image-2",
+		"prompt":"put logo on shirt",
+		"image_files":[{"file_name":"logo.png","content_type":"image/png","data_base64":"aGVsbG8="}]
+	}`)
+	_, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "gpt-image-2",
+		Payload: payload,
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai"),
+		Alt:          "images/edits",
+	})
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+	if got := gjson.GetBytes(gotBody, "image_url").String(); got != "data:image/png;base64,aGVsbG8=" {
+		t.Fatalf("image_url = %q", got)
+	}
+	if gjson.GetBytes(gotBody, "image").Exists() {
+		t.Fatalf("image should not be sent when image_url is configured: %s", string(gotBody))
 	}
 }
 

@@ -217,3 +217,52 @@ func TestReduceCodexAwareDropsOrphanFunctionCall(t *testing.T) {
 		t.Fatalf("orphan function_call was not dropped: %s", reduced)
 	}
 }
+
+func TestReduceSecondaryPassTruncatesOversizedRetainedItems(t *testing.T) {
+	raw, err := json.Marshal(map[string]any{
+		"model": "gpt-5.3-codex",
+		"input": []map[string]any{
+			{"type": "message", "role": "developer", "content": []map[string]string{{"type": "input_text", "text": "developer rules stay intact"}}},
+			{"type": "message", "role": "user", "content": []map[string]string{{"type": "input_text", "text": strings.Repeat("old terminal output ", 240)}}},
+			{"type": "message", "role": "user", "content": []map[string]string{{"type": "input_text", "text": "latest question with " + strings.Repeat("large pasted output ", 240)}}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal raw: %v", err)
+	}
+
+	reduced, report, err := Reduce(context.Background(), raw, "gpt-5.3-codex", "openai-response", config.ContextRetrievalConfig{
+		Enabled:             true,
+		MaxInputBytes:       900,
+		PreserveRecentTurns: 2,
+		Retrieval:           config.ContextRetrievalSearchConfig{TopK: 1},
+		CodexAware: config.CodexAwareContextConfig{
+			Enabled:       true,
+			InsertSummary: true,
+		},
+		Secondary: config.ContextRetrievalSecondPass{
+			Enabled:             true,
+			MaxInputBytes:       700,
+			PreserveRecentTurns: 1,
+			TopK:                0,
+			MaxSummaryBytes:     200,
+			MaxItemBytes:        360,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Reduce() error = %v", err)
+	}
+	if !report.Applied || !report.Secondary {
+		t.Fatalf("report = %#v, want secondary reduction", report)
+	}
+	if len(reduced) >= len(raw) {
+		t.Fatalf("expected reduction: %d >= %d", len(reduced), len(raw))
+	}
+	body := string(reduced)
+	if !strings.Contains(body, "developer rules stay intact") {
+		t.Fatalf("developer item was not preserved: %s", body)
+	}
+	if !strings.Contains(body, "truncated by context retrieval") {
+		t.Fatalf("expected retained oversized text to be truncated: %s", body)
+	}
+}

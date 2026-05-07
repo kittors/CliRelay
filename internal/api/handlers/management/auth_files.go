@@ -696,6 +696,9 @@ func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth) gin.H {
 	entry["custom_tags"] = tags.CustomTags
 	entry["hidden_default_tags"] = tags.HiddenDefaultTags
 	entry["display_tags"] = tags.DisplayTags
+	if planType := normalizeTagValue(metadataString(auth.Metadata, "plan_type", "planType")); planType != "" {
+		entry["plan_type"] = planType
+	}
 	addSubscriptionFields(entry, auth.Metadata, time.Now())
 	if !auth.CreatedAt.IsZero() {
 		entry["created_at"] = auth.CreatedAt
@@ -709,6 +712,9 @@ func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth) gin.H {
 	}
 	if !auth.NextRetryAfter.IsZero() {
 		entry["next_retry_after"] = auth.NextRetryAfter
+	}
+	if restrictions := buildAuthRestrictionPayload(auth, time.Now()); len(restrictions) > 0 {
+		entry["restrictions"] = restrictions
 	}
 	if path != "" {
 		entry["path"] = path
@@ -730,6 +736,222 @@ func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth) gin.H {
 		entry["id_token"] = claims
 	}
 	return entry
+}
+
+func buildAuthRestrictionPayload(auth *coreauth.Auth, now time.Time) []gin.H {
+	if auth == nil {
+		return nil
+	}
+	restrictions := make([]gin.H, 0)
+	if len(auth.ModelStates) == 0 || auth.Unavailable || auth.Quota.Exceeded || auth.NextRetryAfter.After(now) {
+		if restriction := buildRestrictionEntry(
+			"auth",
+			"",
+			auth.Status,
+			auth.StatusMessage,
+			auth.Unavailable,
+			auth.NextRetryAfter,
+			auth.LastError,
+			auth.Quota,
+			now,
+		); restriction != nil {
+			restrictions = append(restrictions, restriction)
+		}
+	}
+	if len(auth.ModelStates) == 0 {
+		return dedupeRestrictionEntries(restrictions)
+	}
+
+	models := make([]string, 0, len(auth.ModelStates))
+	for model := range auth.ModelStates {
+		models = append(models, model)
+	}
+	sort.Strings(models)
+	for _, model := range models {
+		state := auth.ModelStates[model]
+		if state == nil {
+			continue
+		}
+		if restriction := buildRestrictionEntry(
+			"model",
+			model,
+			state.Status,
+			state.StatusMessage,
+			state.Unavailable,
+			state.NextRetryAfter,
+			state.LastError,
+			state.Quota,
+			now,
+		); restriction != nil {
+			restrictions = append(restrictions, restriction)
+		}
+	}
+	return dedupeRestrictionEntries(restrictions)
+}
+
+// dedupeRestrictionEntries collapses duplicate auth/model restriction entries that share the same
+// actionable surface (e.g. repeated 429 quota errors across multiple models). This keeps the
+// management list UI readable without losing the fact that the auth is restricted.
+//
+// Rule: entries are deduped by a stable key that ignores the model field, and "auth" scope wins
+// over "model" scope when picking a representative entry.
+func dedupeRestrictionEntries(entries []gin.H) []gin.H {
+	if len(entries) <= 1 {
+		return entries
+	}
+
+	type picked struct {
+		entry gin.H
+		score int
+	}
+
+	bestByKey := make(map[string]picked, len(entries))
+	order := make([]string, 0, len(entries))
+
+	for _, entry := range entries {
+		key := restrictionDedupeKey(entry)
+		if key == "" {
+			// Shouldn't happen, but keep it stable-ish.
+			key = fmt.Sprintf("unknown:%d", len(order))
+		}
+		score := restrictionEntryScore(entry)
+		if existing, ok := bestByKey[key]; ok {
+			if score > existing.score {
+				bestByKey[key] = picked{entry: entry, score: score}
+			}
+			continue
+		}
+		bestByKey[key] = picked{entry: entry, score: score}
+		order = append(order, key)
+	}
+
+	out := make([]gin.H, 0, len(order))
+	for _, key := range order {
+		out = append(out, bestByKey[key].entry)
+	}
+	return out
+}
+
+func restrictionEntryScore(entry gin.H) int {
+	// Prefer "auth" scope as the summary surface.
+	scope, _ := entry["scope"].(string)
+	if scope == "auth" {
+		return 2
+	}
+	if scope == "model" {
+		return 1
+	}
+	return 0
+}
+
+func restrictionDedupeKey(entry gin.H) string {
+	if entry == nil {
+		return ""
+	}
+
+	status := fmt.Sprint(entry["status"])
+
+	httpStatus := coerceInt(entry["http_status"])
+	code, _ := entry["code"].(string)
+	reason, _ := entry["reason"].(string)
+	quotaExceeded := coerceBool(entry["quota_exceeded"])
+
+	// Intentionally ignore "scope", "model", and "unavailable" to keep the list UI readable.
+	// If a user hits a 429, seeing it once is enough even if it applies to multiple models.
+	if httpStatus > 0 {
+		return fmt.Sprintf("http=%d|quota=%t|reason=%s", httpStatus, quotaExceeded, strings.TrimSpace(reason))
+	}
+	return fmt.Sprintf("status=%s|code=%s|quota=%t|reason=%s",
+		status,
+		strings.TrimSpace(code),
+		quotaExceeded,
+		strings.TrimSpace(reason),
+	)
+}
+
+func coerceInt(v any) int {
+	switch val := v.(type) {
+	case int:
+		return val
+	case int64:
+		return int(val)
+	case float64:
+		return int(val)
+	case json.Number:
+		if i, err := val.Int64(); err == nil {
+			return int(i)
+		}
+	}
+	return 0
+}
+
+func coerceBool(v any) bool {
+	switch val := v.(type) {
+	case bool:
+		return val
+	case string:
+		s := strings.TrimSpace(strings.ToLower(val))
+		return s == "true" || s == "1" || s == "yes"
+	case int:
+		return val != 0
+	case int64:
+		return val != 0
+	case float64:
+		return val != 0
+	}
+	return false
+}
+
+func buildRestrictionEntry(scope, model string, status coreauth.Status, statusMessage string, unavailable bool, nextRetryAfter time.Time, lastError *coreauth.Error, quota coreauth.QuotaState, now time.Time) gin.H {
+	if !isActiveRestriction(status, unavailable, nextRetryAfter, lastError, quota, now) {
+		return nil
+	}
+	entry := gin.H{
+		"scope":       scope,
+		"status":      status,
+		"unavailable": unavailable,
+	}
+	if model != "" {
+		entry["model"] = model
+	}
+	statusMessage = strings.TrimSpace(statusMessage)
+	if statusMessage == "" && lastError != nil {
+		statusMessage = strings.TrimSpace(lastError.Message)
+	}
+	if statusMessage != "" {
+		entry["status_message"] = statusMessage
+	}
+	if !nextRetryAfter.IsZero() && nextRetryAfter.After(now) {
+		entry["next_retry_after"] = nextRetryAfter
+	}
+	if lastError != nil {
+		if lastError.Code != "" {
+			entry["code"] = lastError.Code
+		}
+		if lastError.HTTPStatus > 0 {
+			entry["http_status"] = lastError.HTTPStatus
+		}
+		if lastError.Retryable {
+			entry["retryable"] = true
+		}
+	}
+	if quota.Exceeded {
+		entry["quota_exceeded"] = true
+		if quota.Reason != "" {
+			entry["reason"] = quota.Reason
+		}
+		if !quota.NextRecoverAt.IsZero() && quota.NextRecoverAt.After(now) {
+			entry["next_recover_at"] = quota.NextRecoverAt
+		}
+	}
+	return entry
+}
+
+func isActiveRestriction(status coreauth.Status, unavailable bool, nextRetryAfter time.Time, lastError *coreauth.Error, quota coreauth.QuotaState, now time.Time) bool {
+	hasErrorState := status == coreauth.StatusError || unavailable || lastError != nil
+	hasActiveRetry := !nextRetryAfter.IsZero() && nextRetryAfter.After(now)
+	hasActiveQuota := quota.Exceeded && (quota.NextRecoverAt.IsZero() || quota.NextRecoverAt.After(now))
+	return hasErrorState || hasActiveRetry || hasActiveQuota
 }
 
 func extractCodexIDTokenClaims(auth *coreauth.Auth) gin.H {
@@ -1230,6 +1452,7 @@ func (h *Handler) PatchAuthFileFields(c *gin.Context) {
 		Label                 *string   `json:"label"`
 		CustomTags            *[]string `json:"custom_tags"`
 		HiddenDefaultTags     *[]string `json:"hidden_default_tags"`
+		DisplayTags           *[]string `json:"display_tags"`
 		Prefix                *string   `json:"prefix"`
 		ProxyURL              *string   `json:"proxy_url"`
 		ProxyID               *string   `json:"proxy_id"`
@@ -1335,6 +1558,14 @@ func (h *Handler) PatchAuthFileFields(c *gin.Context) {
 		} else {
 			targetAuth.Metadata["hidden_default_tags"] = tags
 		}
+		changed = true
+	}
+	if req.DisplayTags != nil {
+		tags := normalizeTagList(*req.DisplayTags)
+		if targetAuth.Metadata == nil {
+			targetAuth.Metadata = make(map[string]any)
+		}
+		targetAuth.Metadata["display_tags"] = tags
 		changed = true
 	}
 	if req.ProxyURL != nil {

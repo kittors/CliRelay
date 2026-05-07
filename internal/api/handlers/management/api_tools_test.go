@@ -383,6 +383,90 @@ func TestResolveTokenForAuth_Claude_SkipsRefreshWhenTokenValid(t *testing.T) {
 	}
 }
 
+func TestAPICallReconcilesCodexWhamUsagePlanType(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/backend-api/wham/usage" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer access-token" {
+			t.Fatalf("unexpected authorization header: %q", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"email":     "aleckmason123@gmail.com",
+			"plan_type": "free",
+		})
+	}))
+	t.Cleanup(upstream.Close)
+
+	store := &memoryAuthStore{}
+	manager := coreauth.NewManager(store, nil, nil)
+	auth := &coreauth.Auth{
+		ID:       "codex-plan.json",
+		FileName: "codex-plan.json",
+		Provider: "codex",
+		Metadata: map[string]any{
+			"type":         "codex",
+			"access_token": "access-token",
+			"email":        "aleckmason123@gmail.com",
+			"plan_type":    "plus",
+			"display_tags": []string{"codex", "plus"},
+		},
+	}
+	registered, err := manager.Register(context.Background(), auth)
+	if err != nil {
+		t.Fatalf("register auth: %v", err)
+	}
+	registered.EnsureIndex()
+
+	requestBody, err := json.Marshal(map[string]any{
+		"authIndex": registered.Index,
+		"method":    "GET",
+		"url":       upstream.URL + "/backend-api/wham/usage",
+		"header": map[string]string{
+			"Authorization": "Bearer $TOKEN$",
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal request body: %v", err)
+	}
+
+	h := &Handler{cfg: &config.Config{}, authManager: manager}
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v0/management/api-call", bytes.NewReader(requestBody))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	h.APICall(c)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d, body=%s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+	updated, ok := manager.GetByID(auth.ID)
+	if !ok || updated == nil {
+		t.Fatal("expected updated auth")
+	}
+	if got, _ := updated.Metadata["plan_type"].(string); got != "free" {
+		t.Fatalf("plan_type = %q, want free", got)
+	}
+	displayTags, ok := updated.Metadata["display_tags"].([]string)
+	if !ok {
+		t.Fatalf("display_tags type = %T, want []string", updated.Metadata["display_tags"])
+	}
+	if len(displayTags) != 2 || displayTags[0] != "codex" || displayTags[1] != "free" {
+		t.Fatalf("display_tags = %#v, want [codex free]", displayTags)
+	}
+	saved := store.items[auth.ID]
+	if saved == nil {
+		t.Fatal("expected auth store to persist reconciled auth")
+	}
+	if got, _ := saved.Metadata["plan_type"].(string); got != "free" {
+		t.Fatalf("saved plan_type = %q, want free", got)
+	}
+}
+
 func TestAPICallRejectsOversizedUpstreamResponse(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

@@ -82,6 +82,47 @@ func routeFallbackFromMetadata(meta map[string]any) string {
 	}
 }
 
+func channelGroupStrategy(cfg *internalconfig.Config, groupName string) string {
+	if cfg == nil {
+		return ""
+	}
+	groupName = internalrouting.NormalizeGroupName(groupName)
+	if groupName == "" {
+		return ""
+	}
+	for i := range cfg.Routing.ChannelGroups {
+		group := cfg.Routing.ChannelGroups[i]
+		if internalrouting.NormalizeGroupName(group.Name) != groupName {
+			continue
+		}
+		if strings.TrimSpace(group.Strategy) == "" {
+			return ""
+		}
+		return internalconfig.NormalizeRoutingStrategy(group.Strategy)
+	}
+	return ""
+}
+
+func onlyAllowedGroupName(allowedGroups map[string]struct{}) string {
+	if len(allowedGroups) != 1 {
+		return ""
+	}
+	for group := range allowedGroups {
+		return internalrouting.NormalizeGroupName(group)
+	}
+	return ""
+}
+
+func scopedRoutingStrategy(cfg *internalconfig.Config, routeGroup string, allowedGroups map[string]struct{}) string {
+	if routeGroup = internalrouting.NormalizeGroupName(routeGroup); routeGroup != "" {
+		return channelGroupStrategy(cfg, routeGroup)
+	}
+	if allowedGroup := onlyAllowedGroupName(allowedGroups); allowedGroup != "" {
+		return channelGroupStrategy(cfg, allowedGroup)
+	}
+	return ""
+}
+
 func includeDefaultGroup(cfg *internalconfig.Config) bool {
 	if cfg == nil {
 		return true

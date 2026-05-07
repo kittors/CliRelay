@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/multimodaladapter"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/thinking"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
@@ -86,39 +87,71 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 	from := opts.SourceFormat
 	to := sdktranslator.FromString("openai")
 	endpoint := "/chat/completions"
-	if opts.Alt == "responses/compact" {
+	imagePassthrough := false
+	switch opts.Alt {
+	case "responses/compact":
 		to = sdktranslator.FromString("openai-response")
 		endpoint = "/responses/compact"
+	case "images/generations":
+		endpoint = "/images/generations"
+		imagePassthrough = true
+	case "images/edits":
+		switch e.imageEditsMode(auth) {
+		case "chat-multimodal":
+			endpoint = "/chat/completions"
+		case "image-generations":
+			endpoint = "/images/generations"
+			imagePassthrough = true
+		default:
+			endpoint = "/images/edits"
+			imagePassthrough = true
+		}
 	}
 	originalPayloadSource := req.Payload
 	if len(opts.OriginalRequest) > 0 {
 		originalPayloadSource = opts.OriginalRequest
 	}
-	originalPayload := originalPayloadSource
-	originalTranslated := sdktranslator.TranslateRequest(from, to, baseModel, originalPayload, opts.Stream)
-	translated := sdktranslator.TranslateRequest(from, to, baseModel, req.Payload, opts.Stream)
 	requestedModel := payloadRequestedModel(opts, req.Model)
-	translated = applyPayloadConfigWithRoot(e.cfg, baseModel, to.String(), "", translated, originalTranslated, requestedModel)
-	if opts.Alt == "responses/compact" {
-		if updated, errDelete := sjson.DeleteBytes(translated, "stream"); errDelete == nil {
-			translated = updated
-		}
-	}
-
-	translated, err = thinking.ApplyThinking(translated, req.Model, from.String(), to.String(), e.Identifier())
+	adaptedPayload, _, err := e.applyMultimodalAdapter(ctx, req.Payload, requestedModel, baseModel, opts.SourceFormat.String())
 	if err != nil {
 		return resp, err
 	}
-	if shouldNormalizeKimiCompatPayload(baseModel) {
-		translated, err = normalizeKimiToolMessageLinks(translated)
+	req.Payload = adaptedPayload
+	var translated []byte
+	if imagePassthrough {
+		translated = e.overrideModel(req.Payload, baseModel)
+		if e.imageEditsMode(auth) == "image-generations" {
+			translated, err = convertImagePayloadToImageGenerations(translated, e.imageGenerationsImageField(auth))
+			if err != nil {
+				return resp, statusErr{code: http.StatusBadRequest, msg: err.Error()}
+			}
+		}
+	} else {
+		originalPayload := originalPayloadSource
+		originalTranslated := sdktranslator.TranslateRequest(from, to, baseModel, originalPayload, opts.Stream)
+		translated = sdktranslator.TranslateRequest(from, to, baseModel, req.Payload, opts.Stream)
+		translated = applyPayloadConfigWithRoot(e.cfg, baseModel, to.String(), "", translated, originalTranslated, requestedModel)
+		if opts.Alt == "responses/compact" {
+			if updated, errDelete := sjson.DeleteBytes(translated, "stream"); errDelete == nil {
+				translated = updated
+			}
+		}
+
+		translated, err = thinking.ApplyThinking(translated, req.Model, from.String(), to.String(), e.Identifier())
 		if err != nil {
 			return resp, err
 		}
-	}
-	if opts.Alt == "images/edits" && e.imageEditsMode(auth) == "chat-multimodal" {
-		translated, err = convertImageEditPayloadToChatMultimodal(translated)
-		if err != nil {
-			return resp, statusErr{code: http.StatusBadRequest, msg: err.Error()}
+		if shouldNormalizeKimiCompatPayload(baseModel) {
+			translated, err = normalizeKimiToolMessageLinks(translated)
+			if err != nil {
+				return resp, err
+			}
+		}
+		if opts.Alt == "images/edits" && e.imageEditsMode(auth) == "chat-multimodal" {
+			translated, err = convertImageEditPayloadToChatMultimodal(translated)
+			if err != nil {
+				return resp, statusErr{code: http.StatusBadRequest, msg: err.Error()}
+			}
 		}
 	}
 
@@ -174,7 +207,7 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 		appendAPIResponseChunk(ctx, e.cfg, b)
 		logWithRequestID(ctx).Debugf("request error, error status: %d, error message: %s", httpResp.StatusCode, summarizeErrorBody(httpResp.Header.Get("Content-Type"), b))
 		reporter.publishFailureWithContent(ctx, string(req.Payload), string(b))
-		err = statusErr{code: httpResp.StatusCode, msg: string(b)}
+		err = statusErr{code: httpResp.StatusCode, msg: string(b), upstreamBody: b}
 		return resp, err
 	}
 	body, err := readUpstreamResponseBody(e.Identifier(), httpResp.Body)
@@ -186,6 +219,10 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 	reporter.publishWithContent(ctx, parseOpenAIUsage(body), string(req.Payload), string(body))
 	// Ensure we at least record the request even if upstream doesn't return usage
 	reporter.ensurePublished(ctx)
+	if imagePassthrough {
+		resp = cliproxyexecutor.Response{Payload: body, Headers: httpResp.Header.Clone()}
+		return resp, nil
+	}
 	// Translate response back to source format when needed
 	var param any
 	out := sdktranslator.TranslateNonStream(ctx, to, from, req.Model, opts.OriginalRequest, translated, body, &param)
@@ -211,10 +248,15 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 	if len(opts.OriginalRequest) > 0 {
 		originalPayloadSource = opts.OriginalRequest
 	}
+	requestedModel := payloadRequestedModel(opts, req.Model)
+	adaptedPayload, _, err := e.applyMultimodalAdapter(ctx, req.Payload, requestedModel, baseModel, opts.SourceFormat.String())
+	if err != nil {
+		return nil, err
+	}
+	req.Payload = adaptedPayload
 	originalPayload := originalPayloadSource
 	originalTranslated := sdktranslator.TranslateRequest(from, to, baseModel, originalPayload, true)
 	translated := sdktranslator.TranslateRequest(from, to, baseModel, req.Payload, true)
-	requestedModel := payloadRequestedModel(opts, req.Model)
 	translated = applyPayloadConfigWithRoot(e.cfg, baseModel, to.String(), "", translated, originalTranslated, requestedModel)
 
 	translated, err = thinking.ApplyThinking(translated, req.Model, from.String(), to.String(), e.Identifier())
@@ -280,7 +322,7 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 		if errClose := httpResp.Body.Close(); errClose != nil {
 			log.Errorf("openai compat executor: close response body error: %v", errClose)
 		}
-		err = statusErr{code: httpResp.StatusCode, msg: string(b)}
+		err = statusErr{code: httpResp.StatusCode, msg: string(b), upstreamBody: b}
 		return nil, err
 	}
 	out := make(chan cliproxyexecutor.StreamChunk)
@@ -326,6 +368,30 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 		reporter.ensurePublished(ctx)
 	}()
 	return &cliproxyexecutor.StreamResult{Headers: httpResp.Header.Clone(), Chunks: out}, nil
+}
+
+func (e *OpenAICompatExecutor) applyMultimodalAdapter(ctx context.Context, payload []byte, requestedModel, upstreamModel, protocol string) ([]byte, multimodaladapter.Report, error) {
+	if e == nil || e.cfg == nil || len(payload) == 0 {
+		return payload, multimodaladapter.Report{}, nil
+	}
+	adapted, report, err := multimodaladapter.Apply(ctx, payload, multimodaladapter.Route{
+		RequestedModel:   requestedModel,
+		UpstreamProvider: e.Identifier(),
+		UpstreamModel:    upstreamModel,
+		Protocol:         protocol,
+	}, e.cfg.MultimodalAdapters)
+	if err != nil {
+		if report.MediaItems > 0 || report.Extractor != "" {
+			log.Warnf("multimodal adapter: rejected request requested_model=%s upstream_provider=%s upstream_model=%s protocol=%s media=%d extractor=%s injected=%v stripped=%v error=%v",
+				requestedModel, e.Identifier(), upstreamModel, protocol, report.MediaItems, report.Extractor, report.Injected, report.Stripped, err)
+		}
+		return payload, report, err
+	}
+	if report.Applied {
+		log.Infof("multimodal adapter: processed request requested_model=%s upstream_provider=%s upstream_model=%s protocol=%s media=%d extractor=%s injected=%v stripped=%v",
+			requestedModel, e.Identifier(), upstreamModel, protocol, report.MediaItems, report.Extractor, report.Injected, report.Stripped)
+	}
+	return adapted, report, nil
 }
 
 func (e *OpenAICompatExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
@@ -403,7 +469,7 @@ func (e *OpenAICompatExecutor) imageEditsMode(auth *cliproxyauth.Auth) string {
 	if auth != nil && auth.Attributes != nil {
 		if v := strings.TrimSpace(strings.ToLower(auth.Attributes["image_edits_mode"])); v != "" {
 			switch v {
-			case "chat-multimodal":
+			case "chat-multimodal", "image-generations":
 				return v
 			}
 		}
@@ -412,9 +478,36 @@ func (e *OpenAICompatExecutor) imageEditsMode(auth *cliproxyauth.Auth) string {
 		switch strings.TrimSpace(strings.ToLower(compat.ImageEditsMode)) {
 		case "chat-multimodal":
 			return "chat-multimodal"
+		case "image-generations":
+			return "image-generations"
 		}
 	}
 	return ""
+}
+
+func (e *OpenAICompatExecutor) imageGenerationsImageField(auth *cliproxyauth.Auth) string {
+	if auth != nil && auth.Attributes != nil {
+		if v := normalizeImageGenerationsImageField(auth.Attributes["image_generations_image_field"]); v != "" {
+			return v
+		}
+	}
+	if compat := e.resolveCompatConfig(auth); compat != nil {
+		if v := normalizeImageGenerationsImageField(compat.ImageGenerationsImageField); v != "" {
+			return v
+		}
+	}
+	return "image"
+}
+
+func normalizeImageGenerationsImageField(field string) string {
+	switch strings.ToLower(strings.TrimSpace(field)) {
+	case "image_url":
+		return "image_url"
+	case "image":
+		return "image"
+	default:
+		return ""
+	}
 }
 
 func (e *OpenAICompatExecutor) resolveCompatConfig(auth *cliproxyauth.Auth) *config.OpenAICompatibility {
@@ -442,6 +535,166 @@ func (e *OpenAICompatExecutor) resolveCompatConfig(auth *cliproxyauth.Auth) *con
 		}
 	}
 	return nil
+}
+
+func convertImagePayloadToImageGenerations(payload []byte, imageField string) ([]byte, error) {
+	if len(bytes.TrimSpace(payload)) == 0 {
+		return payload, nil
+	}
+	var root map[string]any
+	if err := json.Unmarshal(payload, &root); err != nil {
+		return nil, fmt.Errorf("invalid image payload: %w", err)
+	}
+	model := strings.TrimSpace(gjson.GetBytes(payload, "model").String())
+	if model == "" {
+		return nil, fmt.Errorf("model is required")
+	}
+	prompt := strings.TrimSpace(gjson.GetBytes(payload, "prompt").String())
+	if prompt == "" {
+		prompt = strings.TrimSpace(extractImageGenerationPrompt(payload))
+	}
+	image := strings.TrimSpace(firstImageGenerationImage(payload))
+	if image != "" && prompt == "" {
+		return nil, fmt.Errorf("prompt is required")
+	}
+	if image == "" && prompt != "" && !hasImageEditOnlyFields(payload) {
+		return payload, nil
+	}
+	out := make(map[string]any, len(root))
+	for _, field := range []string{
+		"model", "prompt", "size", "quality", "response_format", "background", "output_format",
+		"moderation", "input_fidelity", "style", "n", "output_compression", "partial_images",
+	} {
+		if value, ok := root[field]; ok {
+			out[field] = value
+		}
+	}
+	out["model"] = model
+	if prompt != "" {
+		out["prompt"] = prompt
+	}
+	if image != "" {
+		field := normalizeImageGenerationsImageField(imageField)
+		if field == "" {
+			field = "image"
+		}
+		out[field] = image
+	}
+	return json.Marshal(out)
+}
+
+func hasImageEditOnlyFields(payload []byte) bool {
+	for _, field := range []string{"image_files", "mask_file", "input", "messages"} {
+		if gjson.GetBytes(payload, field).Exists() {
+			return true
+		}
+	}
+	return false
+}
+
+func extractImageGenerationPrompt(payload []byte) string {
+	texts := make([]string, 0, 4)
+	if input := gjson.GetBytes(payload, "input"); input.Exists() {
+		collectPromptText(input, &texts)
+	}
+	if messages := gjson.GetBytes(payload, "messages"); messages.Exists() {
+		collectPromptText(messages, &texts)
+	}
+	return strings.Join(texts, "\n")
+}
+
+func collectPromptText(value gjson.Result, texts *[]string) {
+	switch {
+	case value.IsArray():
+		for _, item := range value.Array() {
+			collectPromptText(item, texts)
+		}
+	case value.IsObject():
+		if messages := value.Get("messages"); messages.Exists() {
+			collectPromptText(messages, texts)
+			return
+		}
+		if content := value.Get("content"); content.Exists() {
+			collectPromptText(content, texts)
+			return
+		}
+		for _, field := range []string{"text", "input_text"} {
+			if text := strings.TrimSpace(value.Get(field).String()); text != "" {
+				*texts = append(*texts, text)
+				return
+			}
+		}
+	default:
+		if text := strings.TrimSpace(value.String()); text != "" {
+			*texts = append(*texts, text)
+		}
+	}
+}
+
+func firstImageGenerationImage(payload []byte) string {
+	for _, field := range []string{"image", "image_url"} {
+		if image := imageURLFromResult(gjson.GetBytes(payload, field)); image != "" {
+			return image
+		}
+	}
+	if files := gjson.GetBytes(payload, "image_files"); files.Exists() && files.IsArray() {
+		for _, file := range files.Array() {
+			data := strings.TrimSpace(file.Get("data_base64").String())
+			if data == "" {
+				continue
+			}
+			if strings.HasPrefix(strings.ToLower(data), "data:") {
+				return data
+			}
+			contentType := strings.TrimSpace(file.Get("content_type").String())
+			if contentType == "" {
+				contentType = "image/png"
+			}
+			return "data:" + contentType + ";base64," + data
+		}
+	}
+	for _, path := range []string{"input", "messages"} {
+		if image := firstImageFromContent(gjson.GetBytes(payload, path)); image != "" {
+			return image
+		}
+	}
+	return ""
+}
+
+func firstImageFromContent(value gjson.Result) string {
+	switch {
+	case value.IsArray():
+		for _, item := range value.Array() {
+			if image := firstImageFromContent(item); image != "" {
+				return image
+			}
+		}
+	case value.IsObject():
+		if messages := value.Get("messages"); messages.Exists() {
+			if image := firstImageFromContent(messages); image != "" {
+				return image
+			}
+		}
+		for _, field := range []string{"image", "image_url"} {
+			if image := imageURLFromResult(value.Get(field)); image != "" {
+				return image
+			}
+		}
+		if content := value.Get("content"); content.Exists() {
+			return firstImageFromContent(content)
+		}
+	}
+	return ""
+}
+
+func imageURLFromResult(value gjson.Result) string {
+	if !value.Exists() {
+		return ""
+	}
+	if value.IsObject() {
+		return strings.TrimSpace(value.Get("url").String())
+	}
+	return strings.TrimSpace(value.String())
 }
 
 func convertImageEditPayloadToChatMultimodal(payload []byte) ([]byte, error) {
@@ -544,6 +797,9 @@ func (e statusErr) StatusCode() int            { return e.code }
 func (e statusErr) RetryAfter() *time.Duration { return e.retryAfter }
 func (e statusErr) UpstreamErrorBody() []byte {
 	if len(e.upstreamBody) == 0 {
+		if trimmed := strings.TrimSpace(e.msg); trimmed != "" && json.Valid([]byte(trimmed)) {
+			return []byte(trimmed)
+		}
 		return nil
 	}
 	return append([]byte(nil), e.upstreamBody...)

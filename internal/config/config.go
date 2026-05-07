@@ -679,8 +679,14 @@ type OpenAICompatibility struct {
 	IdentityFingerprint string `yaml:"identity-fingerprint,omitempty" json:"identity-fingerprint,omitempty"`
 
 	// ImageEditsMode controls how OpenAI /v1/images/edits requests are adapted
-	// for this OpenAI-compatible provider. Supported value: "chat-multimodal".
+	// for this OpenAI-compatible provider. Supported values: "chat-multimodal",
+	// "image-generations".
 	ImageEditsMode string `yaml:"image-edits-mode,omitempty" json:"image-edits-mode,omitempty"`
+
+	// ImageGenerationsImageField controls the image field emitted when
+	// image-edits-mode is "image-generations". Supported values: "image",
+	// "image_url". Empty defaults to "image".
+	ImageGenerationsImageField string `yaml:"image-generations-image-field,omitempty" json:"image-generations-image-field,omitempty"`
 }
 
 // OpenAICompatibilityAPIKey represents an API key configuration with optional proxy setting.
@@ -972,6 +978,9 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	// Normalize local context retrieval config.
 	cfg.SanitizeContextRetrieval()
 
+	// Normalize multimodal preprocessing config.
+	cfg.SanitizeMultimodalAdapters()
+
 	// NOTE: Legacy migration persistence is intentionally disabled together with
 	// startup legacy migration to keep startup read-only for config.yaml.
 	// Re-enable the block below if automatic startup migration is needed again.
@@ -1136,6 +1145,7 @@ func (cfg *Config) SanitizeOpenAICompatibility() {
 		e.Prefix = normalizeModelPrefix(e.Prefix)
 		e.BaseURL = strings.TrimSpace(e.BaseURL)
 		e.ImageEditsMode = normalizeOpenAICompatImageEditsMode(e.ImageEditsMode)
+		e.ImageGenerationsImageField = normalizeOpenAICompatImageGenerationsImageField(e.ImageGenerationsImageField)
 		e.Headers = NormalizeHeaders(e.Headers)
 		for j := range e.APIKeyEntries {
 			e.APIKeyEntries[j].ProxyURL = strings.TrimSpace(e.APIKeyEntries[j].ProxyURL)
@@ -1154,6 +1164,19 @@ func normalizeOpenAICompatImageEditsMode(mode string) string {
 	switch strings.ToLower(strings.TrimSpace(mode)) {
 	case "chat-multimodal":
 		return "chat-multimodal"
+	case "image-generations":
+		return "image-generations"
+	default:
+		return ""
+	}
+}
+
+func normalizeOpenAICompatImageGenerationsImageField(field string) string {
+	switch strings.ToLower(strings.TrimSpace(field)) {
+	case "image_url":
+		return "image_url"
+	case "image":
+		return "image"
 	default:
 		return ""
 	}
@@ -1276,6 +1299,38 @@ func (cfg *Config) SanitizeContextRetrieval() {
 			cr.CodexAware.PreserveRecentErrors = 8
 		}
 	}
+	if cr.Secondary.Enabled {
+		if cr.Secondary.MaxInputBytes <= 0 || cr.Secondary.MaxInputBytes >= cr.MaxInputBytes {
+			cr.Secondary.MaxInputBytes = cr.MaxInputBytes * 2 / 3
+		}
+		if cr.Secondary.MaxInputBytes <= 0 {
+			cr.Secondary.MaxInputBytes = cr.MaxInputBytes
+		}
+		if cr.Secondary.PreserveRecentTurns <= 0 || cr.Secondary.PreserveRecentTurns >= cr.PreserveRecentTurns {
+			cr.Secondary.PreserveRecentTurns = cr.PreserveRecentTurns / 2
+		}
+		if cr.Secondary.PreserveRecentTurns <= 0 {
+			cr.Secondary.PreserveRecentTurns = 1
+		}
+		if cr.Secondary.TopK <= 0 || cr.Secondary.TopK >= cr.Retrieval.TopK {
+			cr.Secondary.TopK = cr.Retrieval.TopK / 2
+		}
+		if cr.Secondary.TopK <= 0 {
+			cr.Secondary.TopK = 8
+		}
+		if cr.Secondary.MaxSummaryBytes <= 0 {
+			cr.Secondary.MaxSummaryBytes = cr.CodexAware.MaxSummaryBytes / 2
+		}
+		if cr.Secondary.MaxSummaryBytes <= 0 {
+			cr.Secondary.MaxSummaryBytes = 2000
+		}
+		if cr.Secondary.MaxItemBytes <= 0 {
+			cr.Secondary.MaxItemBytes = cr.Secondary.MaxInputBytes / 4
+		}
+		if cr.Secondary.MaxItemBytes <= 0 {
+			cr.Secondary.MaxItemBytes = 24000
+		}
+	}
 	out := make([]PayloadModelRule, 0, len(cr.Models))
 	for _, rule := range cr.Models {
 		rule.Name = strings.TrimSpace(rule.Name)
@@ -1286,6 +1341,134 @@ func (cfg *Config) SanitizeContextRetrieval() {
 		out = append(out, rule)
 	}
 	cr.Models = out
+}
+
+// SanitizeMultimodalAdapters normalizes media-to-text preprocessing defaults.
+func (cfg *Config) SanitizeMultimodalAdapters() {
+	if cfg == nil {
+		return
+	}
+	ma := &cfg.MultimodalAdapters
+	configured := ma.Enabled != nil || strings.TrimSpace(ma.DefaultAction) != "" || strings.TrimSpace(ma.UnavailableAction) != "" ||
+		strings.TrimSpace(ma.InjectAs) != "" || ma.MaxMediaItems > 0 || ma.MaxOutputBytes > 0 || len(ma.Rules) > 0 || len(ma.Extractors) > 0
+	if !configured {
+		return
+	}
+	ma.DefaultAction = normalizeMultimodalAdapterAction(ma.DefaultAction)
+	ma.UnavailableAction = normalizeMultimodalUnavailableAction(ma.UnavailableAction)
+	ma.InjectAs = strings.TrimSpace(ma.InjectAs)
+	if ma.InjectAs == "" {
+		ma.InjectAs = "visual_context"
+	}
+	if ma.MaxMediaItems <= 0 {
+		ma.MaxMediaItems = 4
+	}
+	if ma.MaxOutputBytes <= 0 {
+		ma.MaxOutputBytes = 12000
+	}
+	extractors := make([]MultimodalExtractorConfig, 0, len(ma.Extractors))
+	seenExtractors := map[string]struct{}{}
+	for _, extractor := range ma.Extractors {
+		extractor.Name = strings.TrimSpace(extractor.Name)
+		extractor.Type = strings.ToLower(strings.TrimSpace(extractor.Type))
+		if extractor.Type == "" {
+			if strings.TrimSpace(extractor.Endpoint) != "" {
+				extractor.Type = "http"
+			} else if strings.TrimSpace(extractor.Command) != "" {
+				extractor.Type = "mcp"
+			}
+		}
+		if extractor.Type != "http" && extractor.Type != "mcp" && extractor.Type != "zai-vision-http" {
+			continue
+		}
+		extractor.Endpoint = strings.TrimSpace(extractor.Endpoint)
+		extractor.Command = strings.TrimSpace(extractor.Command)
+		extractor.ToolName = strings.TrimSpace(extractor.ToolName)
+		if extractor.TimeoutSeconds <= 0 {
+			extractor.TimeoutSeconds = 60
+		}
+		if strings.TrimSpace(extractor.Prompt) == "" {
+			extractor.Prompt = "Describe this visual input for a coding assistant. Extract visible text, UI elements, errors, filenames, paths, code snippets, charts, and anything needed to answer the user's request. Be concise and factual."
+		}
+		if extractor.Name == "" {
+			extractor.Name = extractor.Type
+		}
+		key := strings.ToLower(extractor.Name)
+		if _, ok := seenExtractors[key]; ok {
+			continue
+		}
+		seenExtractors[key] = struct{}{}
+		extractors = append(extractors, extractor)
+	}
+	ma.Extractors = extractors
+
+	rules := make([]MultimodalAdapterRule, 0, len(ma.Rules))
+	for _, rule := range ma.Rules {
+		rule.Name = strings.TrimSpace(rule.Name)
+		rule.Extractor = strings.TrimSpace(rule.Extractor)
+		if rule.Extractor == "" {
+			rule.Extractor = firstMultimodalExtractorName(extractors)
+		}
+		rule.Action = normalizeMultimodalAdapterAction(rule.Action)
+		if strings.TrimSpace(rule.UnavailableAction) != "" {
+			rule.UnavailableAction = normalizeMultimodalUnavailableAction(rule.UnavailableAction)
+		}
+		rule.InjectAs = strings.TrimSpace(rule.InjectAs)
+		rule.Match.RequestedModels = normalizePolicyValues(rule.Match.RequestedModels, false)
+		rule.Match.UpstreamProviders = normalizePolicyValues(rule.Match.UpstreamProviders, true)
+		rule.Match.UpstreamModels = normalizePolicyValues(rule.Match.UpstreamModels, false)
+		rule.Match.Protocols = normalizePolicyValues(rule.Match.Protocols, true)
+		if len(rule.Match.RequestedModels) == 0 && len(rule.Match.UpstreamProviders) == 0 && len(rule.Match.UpstreamModels) == 0 && len(rule.Match.Protocols) == 0 {
+			continue
+		}
+		rules = append(rules, rule)
+	}
+	if len(rules) == 0 {
+		rules = []MultimodalAdapterRule{
+			{
+				Name:      "glm-5.1-codex-vision",
+				Extractor: firstMultimodalExtractorName(extractors),
+				Match: MultimodalAdapterMatch{
+					RequestedModels:   []string{"gpt-5.3-codex"},
+					UpstreamProviders: []string{"bigmodel-coding"},
+					UpstreamModels:    []string{"glm-5.1"},
+					Protocols:         []string{"openai-response", "openai"},
+				},
+			},
+		}
+	}
+	ma.Rules = rules
+}
+
+func normalizeMultimodalAdapterAction(action string) string {
+	switch strings.ToLower(strings.TrimSpace(action)) {
+	case "extract", "mcp-extract", "http-extract":
+		return "extract"
+	case "reject":
+		return "reject"
+	case "strip":
+		return "strip"
+	default:
+		return "extract"
+	}
+}
+
+func normalizeMultimodalUnavailableAction(action string) string {
+	switch strings.ToLower(strings.TrimSpace(action)) {
+	case "strip":
+		return "strip"
+	case "pass-through":
+		return "pass-through"
+	default:
+		return "reject"
+	}
+}
+
+func firstMultimodalExtractorName(extractors []MultimodalExtractorConfig) string {
+	if len(extractors) == 0 {
+		return ""
+	}
+	return extractors[0].Name
 }
 
 // SanitizeCodexKeys removes Codex API key entries missing a BaseURL.

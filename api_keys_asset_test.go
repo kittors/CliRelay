@@ -31,11 +31,11 @@ func TestAPIKeysPageAssetProvidesClipboardFallback(t *testing.T) {
 }
 
 func TestAPIKeysTranslationsIncludeSpendingLimit(t *testing.T) {
-	for _, path := range []string{
-		"zh-CN-C-fkoaW5.js",
-		"en-CkNDvH8X.js",
+	for _, prefix := range []string{
+		"zh-CN",
+		"en",
 	} {
-		content := readManagementAsset(t, path)
+		path, content := readManagementAssetByPrefix(t, prefix)
 		for _, want := range []string{
 			"col_spending_limit",
 			"spending_limit_help",

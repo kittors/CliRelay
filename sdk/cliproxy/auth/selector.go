@@ -28,11 +28,7 @@ type RoundRobinSelector struct {
 // FillFirstSelector selects the first available credential (deterministic ordering).
 // This "burns" one account before moving to the next, which can help stagger
 // rolling-window subscription caps (e.g. chat message limits).
-type FillFirstSelector struct {
-	mu       sync.Mutex
-	weighted map[string]*weightedCursorState
-	maxKeys  int
-}
+type FillFirstSelector struct{}
 
 type weightedCursorState struct {
 	current   map[string]int
@@ -664,30 +660,11 @@ func groupByVirtualParent(auths []*Auth) (map[string][]*Auth, []string) {
 // Pick selects the first available auth for the provider in a deterministic manner.
 func (s *FillFirstSelector) Pick(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, auths []*Auth) (*Auth, error) {
 	now := time.Now()
-	weightedSelection := isWeightedPrioritySelection(opts.Metadata)
-	available, err := getAvailableAuths(auths, provider, model, now, weightedSelection)
+	available, err := getAvailableAuths(auths, provider, model, now, false)
 	if err != nil {
 		return nil, err
 	}
 	available = preferCodexWebsocketAuths(ctx, provider, available)
-	if weightedSelection {
-		s.mu.Lock()
-		if s.weighted == nil {
-			s.weighted = make(map[string]*weightedCursorState)
-		}
-		limit := s.maxKeys
-		if limit <= 0 {
-			limit = 4096
-		}
-		weightedKey := weightedSelectionKey(provider, model, opts)
-		s.weighted = ensureWeightedState(s.weighted, weightedKey, limit)
-		selected := pickWeightedAvailable(s.weighted, weightedKey, available)
-		s.mu.Unlock()
-		if selected == nil {
-			return nil, &Error{Code: "auth_not_found", Message: "selector returned no auth"}
-		}
-		return selected, nil
-	}
 	return available[0], nil
 }
 
@@ -698,6 +675,24 @@ func isAuthBlockedForModel(auth *Auth, model string, now time.Time) (bool, block
 	if auth.Disabled || auth.Status == StatusDisabled {
 		return true, blockReasonDisabled, time.Time{}
 	}
+
+	// Quota exceeded is an auth-level cooldown signal. Once we know an auth is cooling down,
+	// we should block *all* model requests for that auth until recovery, even if per-model
+	// state hasn't been initialized yet. This prevents clients from burning extra upstream
+	// requests by switching models during the same quota window.
+	if auth.Quota.Exceeded {
+		next := auth.Quota.NextRecoverAt
+		if !next.IsZero() && next.After(now) {
+			if auth.NextRetryAfter.After(now) && (next.IsZero() || auth.NextRetryAfter.Before(next)) {
+				next = auth.NextRetryAfter
+			}
+			if next.Before(now) {
+				next = now
+			}
+			return true, blockReasonCooldown, next
+		}
+	}
+
 	if model != "" {
 		if len(auth.ModelStates) > 0 {
 			state, ok := auth.ModelStates[model]

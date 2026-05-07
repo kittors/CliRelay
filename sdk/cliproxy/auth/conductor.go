@@ -159,12 +159,14 @@ func (NoopHook) OnResult(context.Context, Result) {}
 
 // Manager orchestrates auth lifecycle, selection, execution, and persistence.
 type Manager struct {
-	store     Store
-	executors map[string]ProviderExecutor
-	selector  Selector
-	hook      Hook
-	mu        sync.RWMutex
-	auths     map[string]*Auth
+	store              Store
+	executors          map[string]ProviderExecutor
+	selector           Selector
+	roundRobinSelector *RoundRobinSelector
+	fillFirstSelector  *FillFirstSelector
+	hook               Hook
+	mu                 sync.RWMutex
+	auths              map[string]*Auth
 	// providerOffsets tracks per-model provider rotation state for multi-provider routing.
 	providerOffsets map[string]int
 
@@ -197,18 +199,28 @@ func NewManager(store Store, selector Selector, hook Hook) *Manager {
 	if selector == nil {
 		selector = &RoundRobinSelector{}
 	}
+	roundRobinSelector, _ := selector.(*RoundRobinSelector)
+	if roundRobinSelector == nil {
+		roundRobinSelector = &RoundRobinSelector{}
+	}
+	fillFirstSelector, _ := selector.(*FillFirstSelector)
+	if fillFirstSelector == nil {
+		fillFirstSelector = &FillFirstSelector{}
+	}
 	if hook == nil {
 		hook = NoopHook{}
 	}
 	manager := &Manager{
-		store:            store,
-		executors:        make(map[string]ProviderExecutor),
-		selector:         selector,
-		hook:             hook,
-		auths:            make(map[string]*Auth),
-		providerOffsets:  make(map[string]int),
-		refreshSemaphore: make(chan struct{}, refreshMaxConcurrency),
-		quotaProbeAfter:  make(map[string]time.Time),
+		store:              store,
+		executors:          make(map[string]ProviderExecutor),
+		selector:           selector,
+		roundRobinSelector: roundRobinSelector,
+		fillFirstSelector:  fillFirstSelector,
+		hook:               hook,
+		auths:              make(map[string]*Auth),
+		providerOffsets:    make(map[string]int),
+		refreshSemaphore:   make(chan struct{}, refreshMaxConcurrency),
+		quotaProbeAfter:    make(map[string]time.Time),
 	}
 	// atomic.Value requires non-nil initial value.
 	manager.runtimeConfig.Store(&internalconfig.Config{})
@@ -225,7 +237,42 @@ func (m *Manager) SetSelector(selector Selector) {
 	}
 	m.mu.Lock()
 	m.selector = selector
+	if roundRobinSelector, ok := selector.(*RoundRobinSelector); ok {
+		m.roundRobinSelector = roundRobinSelector
+	}
+	if fillFirstSelector, ok := selector.(*FillFirstSelector); ok {
+		m.fillFirstSelector = fillFirstSelector
+	}
+	if m.roundRobinSelector == nil {
+		m.roundRobinSelector = &RoundRobinSelector{}
+	}
+	if m.fillFirstSelector == nil {
+		m.fillFirstSelector = &FillFirstSelector{}
+	}
 	m.mu.Unlock()
+}
+
+func (m *Manager) selectorForRoutingScopeLocked(cfg *internalconfig.Config, routeGroup string, allowedGroups map[string]struct{}) Selector {
+	if m == nil {
+		return &RoundRobinSelector{}
+	}
+	switch scopedRoutingStrategy(cfg, routeGroup, allowedGroups) {
+	case "fill-first":
+		if m.fillFirstSelector != nil {
+			return m.fillFirstSelector
+		}
+		return &FillFirstSelector{}
+	case "round-robin":
+		if m.roundRobinSelector != nil {
+			return m.roundRobinSelector
+		}
+		return &RoundRobinSelector{}
+	default:
+		if m.selector != nil {
+			return m.selector
+		}
+		return &RoundRobinSelector{}
+	}
 }
 
 // SetStore swaps the underlying persistence store.
@@ -2037,7 +2084,8 @@ func (m *Manager) pickNext(ctx context.Context, provider, model string, opts cli
 		m.mu.RUnlock()
 		return nil, nil, &Error{Code: "auth_not_found", Message: "no auth available"}
 	}
-	selected, errPick := m.selector.Pick(ctx, provider, model, opts, candidates)
+	selector := m.selectorForRoutingScopeLocked(cfg, routeGroup, allowedGroups)
+	selected, errPick := selector.Pick(ctx, provider, model, opts, candidates)
 	if errPick != nil {
 		m.mu.RUnlock()
 		return nil, nil, errPick
@@ -2164,7 +2212,8 @@ func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model s
 		}
 		return nil, nil, "", &Error{Code: "auth_not_found", Message: "no auth available"}
 	}
-	selected, errPick := m.selector.Pick(ctx, "mixed", model, opts, candidates)
+	selector := m.selectorForRoutingScopeLocked(cfg, routeGroup, allowedGroups)
+	selected, errPick := selector.Pick(ctx, "mixed", model, opts, candidates)
 	if errPick != nil {
 		m.mu.RUnlock()
 		return nil, nil, "", errPick

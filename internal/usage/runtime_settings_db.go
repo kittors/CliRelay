@@ -27,6 +27,7 @@ const (
 	RuntimeSettingRequestPolicies      = "request-policies"
 	RuntimeSettingProviderPreferences  = "provider-preferences"
 	RuntimeSettingContextRetrieval     = "context-retrieval"
+	RuntimeSettingMultimodalAdapters   = "multimodal-adapters"
 )
 
 const createRuntimeSettingsTableSQL = `
@@ -416,6 +417,39 @@ func runtimeSettingSpecs() []runtimeSettingSpec {
 				}
 				cfg.ContextRetrieval = value
 				cfg.SanitizeContextRetrieval()
+				return true
+			},
+		},
+		{
+			key: RuntimeSettingMultimodalAdapters,
+			meaningful: func(cfg *config.Config) bool {
+				if cfg.MultimodalAdapters.Enabled == nil &&
+					strings.TrimSpace(cfg.MultimodalAdapters.DefaultAction) == "" &&
+					strings.TrimSpace(cfg.MultimodalAdapters.UnavailableAction) == "" &&
+					strings.TrimSpace(cfg.MultimodalAdapters.InjectAs) == "" &&
+					cfg.MultimodalAdapters.MaxMediaItems <= 0 &&
+					cfg.MultimodalAdapters.MaxOutputBytes <= 0 &&
+					len(cfg.MultimodalAdapters.Rules) == 0 &&
+					len(cfg.MultimodalAdapters.Extractors) == 0 {
+					return false
+				}
+				holder := &config.Config{SDKConfig: config.SDKConfig{MultimodalAdapters: cfg.MultimodalAdapters}}
+				holder.SanitizeMultimodalAdapters()
+				return holder.MultimodalAdapters.Enabled == nil || *holder.MultimodalAdapters.Enabled
+			},
+			value: func(cfg *config.Config) any {
+				holder := &config.Config{SDKConfig: config.SDKConfig{MultimodalAdapters: cfg.MultimodalAdapters}}
+				holder.SanitizeMultimodalAdapters()
+				return holder.MultimodalAdapters
+			},
+			apply: func(cfg *config.Config, raw json.RawMessage) bool {
+				var value config.MultimodalAdaptersConfig
+				if err := json.Unmarshal(raw, &value); err != nil {
+					log.Warnf("usage: decode %s: %v", RuntimeSettingMultimodalAdapters, err)
+					return false
+				}
+				cfg.MultimodalAdapters = value
+				cfg.SanitizeMultimodalAdapters()
 				return true
 			},
 		},
