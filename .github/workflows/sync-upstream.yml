@@ -58,7 +58,9 @@ jobs:
       - name: Create or update pull request
         if: steps.merge.outputs.changed == 'true'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Prefer a PAT when provided because some repos/orgs block PR creation
+          # by GITHUB_TOKEN ("Resource not accessible by integration").
+          GH_TOKEN: ${{ secrets.SYNC_PR_TOKEN != '' && secrets.SYNC_PR_TOKEN || secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           title="chore: sync upstream ${UPSTREAM_BRANCH} into ${BASE_BRANCH}"
