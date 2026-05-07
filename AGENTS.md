@@ -3,6 +3,11 @@
 <INSTRUCTIONS>
 所有通过 `spawn_agent` 调用的子代理必须显式指定 `model: "gpt-5.3-codex"`；不要再使用 `gpt-5.1-codex-mini`。轻量子任务可通过降低 `reasoning_effort`（例如 `low`）控制成本。
 
+重要：管理面板前后端分离（避免改错仓库）
+- Go 服务端仓库（本仓库）只负责 `/manage` 的托管与“运行时拉取面板资源”的同步链路（见 `internal/managementasset/*`）。
+- 面板源码在独立前端仓库维护，运行时会从 `remote-management.panel-github-repository` 指定的 GitHub 仓库拉取 release 资源；默认指向 `https://github.com/kittors/codeProxy`。
+- 所以：要改“manage 页面 UI/交互/文案/组件”，应该去 `codeProxy` 仓库改并走它的构建/发版流程；不要在本仓库里直接改已打包的静态 assets 来期待上线生效。
+
 严禁轻易部署、重启、替换远端服务或修改生产环境。除非用户明确要求“部署”“重启”“上线”“替换远端二进制”“发布到服务器”等生产操作，否则只能在本地修改、测试、构建和说明，不得主动执行远端部署。
 
 开始任何项目/任务前，必须先确保本地 `dev` 和 `main` 分支已同步到远端最新代码；建议先 `git fetch origin`，再分别更新 `dev` 与 `main`（优先使用 fast-forward 更新，避免无意产生合并提交）。若工作区存在未提交改动，先确认改动归属，避免覆盖用户或其它任务的变更。
