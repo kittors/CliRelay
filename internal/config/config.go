@@ -682,6 +682,11 @@ type OpenAICompatibility struct {
 	// for this OpenAI-compatible provider. Supported values: "chat-multimodal",
 	// "image-generations".
 	ImageEditsMode string `yaml:"image-edits-mode,omitempty" json:"image-edits-mode,omitempty"`
+
+	// ImageGenerationsImageField controls the image field emitted when
+	// image-edits-mode is "image-generations". Supported values: "image",
+	// "image_url". Empty defaults to "image".
+	ImageGenerationsImageField string `yaml:"image-generations-image-field,omitempty" json:"image-generations-image-field,omitempty"`
 }
 
 // OpenAICompatibilityAPIKey represents an API key configuration with optional proxy setting.
@@ -1140,6 +1145,7 @@ func (cfg *Config) SanitizeOpenAICompatibility() {
 		e.Prefix = normalizeModelPrefix(e.Prefix)
 		e.BaseURL = strings.TrimSpace(e.BaseURL)
 		e.ImageEditsMode = normalizeOpenAICompatImageEditsMode(e.ImageEditsMode)
+		e.ImageGenerationsImageField = normalizeOpenAICompatImageGenerationsImageField(e.ImageGenerationsImageField)
 		e.Headers = NormalizeHeaders(e.Headers)
 		for j := range e.APIKeyEntries {
 			e.APIKeyEntries[j].ProxyURL = strings.TrimSpace(e.APIKeyEntries[j].ProxyURL)
@@ -1160,6 +1166,17 @@ func normalizeOpenAICompatImageEditsMode(mode string) string {
 		return "chat-multimodal"
 	case "image-generations":
 		return "image-generations"
+	default:
+		return ""
+	}
+}
+
+func normalizeOpenAICompatImageGenerationsImageField(field string) string {
+	switch strings.ToLower(strings.TrimSpace(field)) {
+	case "image_url":
+		return "image_url"
+	case "image":
+		return "image"
 	default:
 		return ""
 	}

@@ -409,6 +409,52 @@ func TestOpenAICompatExecutorNormalizesImageGenerationsInputMessages(t *testing.
 	}
 }
 
+func TestOpenAICompatExecutorUsesConfiguredImageGenerationsImageField(t *testing.T) {
+	var gotBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		gotBody = body
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"created":1770000000,"data":[{"url":"https://example.com/image.png"}]}`))
+	}))
+	defer server.Close()
+
+	executor := NewOpenAICompatExecutor("grsai", &config.Config{
+		OpenAICompatibility: []config.OpenAICompatibility{
+			{Name: "grsai", ImageEditsMode: "image-generations", ImageGenerationsImageField: "image_url"},
+		},
+	})
+	auth := &cliproxyauth.Auth{
+		Provider: "grsai",
+		Attributes: map[string]string{
+			"base_url":    server.URL + "/v1",
+			"api_key":     "test",
+			"compat_name": "grsai",
+		},
+	}
+	payload := []byte(`{
+		"model":"gpt-image-2",
+		"prompt":"put logo on shirt",
+		"image_files":[{"file_name":"logo.png","content_type":"image/png","data_base64":"aGVsbG8="}]
+	}`)
+	_, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "gpt-image-2",
+		Payload: payload,
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai"),
+		Alt:          "images/edits",
+	})
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+	if got := gjson.GetBytes(gotBody, "image_url").String(); got != "data:image/png;base64,aGVsbG8=" {
+		t.Fatalf("image_url = %q", got)
+	}
+	if gjson.GetBytes(gotBody, "image").Exists() {
+		t.Fatalf("image should not be sent when image_url is configured: %s", string(gotBody))
+	}
+}
+
 func TestOpenAICompatExecutorConvertsImageEditsToChatMultimodal(t *testing.T) {
 	var gotPath string
 	var gotBody []byte

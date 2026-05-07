@@ -410,6 +410,9 @@ nonstream-keepalive-interval: 0
 #     # optional: "chat-multimodal" or "image-generations" for providers that
 #     # do not support OpenAI-style /v1/images/edits directly.
 #     image-edits-mode: ""
+#     # optional with image-edits-mode: "image-generations"; supported values
+#     # are "image" and "image_url". Empty defaults to "image".
+#     image-generations-image-field: ""
 #     api-key-entries:
 #       - api-key: "sk-or-v1-...b780"
 #         proxy-url: "socks5://proxy.example.com:1080" # optional: per-key proxy override

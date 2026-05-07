@@ -121,7 +121,7 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 	if imagePassthrough {
 		translated = e.overrideModel(req.Payload, baseModel)
 		if e.imageEditsMode(auth) == "image-generations" {
-			translated, err = convertImagePayloadToImageGenerations(translated)
+			translated, err = convertImagePayloadToImageGenerations(translated, e.imageGenerationsImageField(auth))
 			if err != nil {
 				return resp, statusErr{code: http.StatusBadRequest, msg: err.Error()}
 			}
@@ -485,6 +485,31 @@ func (e *OpenAICompatExecutor) imageEditsMode(auth *cliproxyauth.Auth) string {
 	return ""
 }
 
+func (e *OpenAICompatExecutor) imageGenerationsImageField(auth *cliproxyauth.Auth) string {
+	if auth != nil && auth.Attributes != nil {
+		if v := normalizeImageGenerationsImageField(auth.Attributes["image_generations_image_field"]); v != "" {
+			return v
+		}
+	}
+	if compat := e.resolveCompatConfig(auth); compat != nil {
+		if v := normalizeImageGenerationsImageField(compat.ImageGenerationsImageField); v != "" {
+			return v
+		}
+	}
+	return "image"
+}
+
+func normalizeImageGenerationsImageField(field string) string {
+	switch strings.ToLower(strings.TrimSpace(field)) {
+	case "image_url":
+		return "image_url"
+	case "image":
+		return "image"
+	default:
+		return ""
+	}
+}
+
 func (e *OpenAICompatExecutor) resolveCompatConfig(auth *cliproxyauth.Auth) *config.OpenAICompatibility {
 	if auth == nil || e.cfg == nil {
 		return nil
@@ -512,7 +537,7 @@ func (e *OpenAICompatExecutor) resolveCompatConfig(auth *cliproxyauth.Auth) *con
 	return nil
 }
 
-func convertImagePayloadToImageGenerations(payload []byte) ([]byte, error) {
+func convertImagePayloadToImageGenerations(payload []byte, imageField string) ([]byte, error) {
 	if len(bytes.TrimSpace(payload)) == 0 {
 		return payload, nil
 	}
@@ -549,7 +574,11 @@ func convertImagePayloadToImageGenerations(payload []byte) ([]byte, error) {
 		out["prompt"] = prompt
 	}
 	if image != "" {
-		out["image"] = image
+		field := normalizeImageGenerationsImageField(imageField)
+		if field == "" {
+			field = "image"
+		}
+		out[field] = image
 	}
 	return json.Marshal(out)
 }

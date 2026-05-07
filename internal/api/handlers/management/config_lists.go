@@ -1220,6 +1220,7 @@ func (h *Handler) PatchOpenAICompat(c *gin.Context) {
 		Headers        *map[string]string                  `json:"headers"`
 		Fingerprint    *string                             `json:"identity-fingerprint"`
 		ImageEditsMode *string                             `json:"image-edits-mode"`
+		ImageField     *string                             `json:"image-generations-image-field"`
 	}
 	var body struct {
 		Name  *string            `json:"name"`
@@ -1279,6 +1280,9 @@ func (h *Handler) PatchOpenAICompat(c *gin.Context) {
 	}
 	if body.Value.ImageEditsMode != nil {
 		entry.ImageEditsMode = normalizeOpenAICompatImageEditsMode(*body.Value.ImageEditsMode)
+	}
+	if body.Value.ImageField != nil {
+		entry.ImageGenerationsImageField = normalizeOpenAICompatImageGenerationsImageField(*body.Value.ImageField)
 	}
 	normalizeOpenAICompatibilityEntry(&entry)
 	prev := append([]config.OpenAICompatibility(nil), h.cfg.OpenAICompatibility...)
@@ -1811,6 +1815,17 @@ func normalizeOpenAICompatImageEditsMode(mode string) string {
 		return "chat-multimodal"
 	case "image-generations":
 		return "image-generations"
+	default:
+		return ""
+	}
+}
+
+func normalizeOpenAICompatImageGenerationsImageField(field string) string {
+	switch strings.ToLower(strings.TrimSpace(field)) {
+	case "image_url":
+		return "image_url"
+	case "image":
+		return "image"
 	default:
 		return ""
 	}
