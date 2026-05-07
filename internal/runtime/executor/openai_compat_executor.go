@@ -96,9 +96,13 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 		endpoint = "/images/generations"
 		imagePassthrough = true
 	case "images/edits":
-		if e.imageEditsMode(auth) == "chat-multimodal" {
+		switch e.imageEditsMode(auth) {
+		case "chat-multimodal":
 			endpoint = "/chat/completions"
-		} else {
+		case "image-generations":
+			endpoint = "/images/generations"
+			imagePassthrough = true
+		default:
 			endpoint = "/images/edits"
 			imagePassthrough = true
 		}
@@ -116,6 +120,12 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 	var translated []byte
 	if imagePassthrough {
 		translated = e.overrideModel(req.Payload, baseModel)
+		if e.imageEditsMode(auth) == "image-generations" {
+			translated, err = convertImagePayloadToImageGenerations(translated)
+			if err != nil {
+				return resp, statusErr{code: http.StatusBadRequest, msg: err.Error()}
+			}
+		}
 	} else {
 		originalPayload := originalPayloadSource
 		originalTranslated := sdktranslator.TranslateRequest(from, to, baseModel, originalPayload, opts.Stream)
@@ -459,7 +469,7 @@ func (e *OpenAICompatExecutor) imageEditsMode(auth *cliproxyauth.Auth) string {
 	if auth != nil && auth.Attributes != nil {
 		if v := strings.TrimSpace(strings.ToLower(auth.Attributes["image_edits_mode"])); v != "" {
 			switch v {
-			case "chat-multimodal":
+			case "chat-multimodal", "image-generations":
 				return v
 			}
 		}
@@ -468,6 +478,8 @@ func (e *OpenAICompatExecutor) imageEditsMode(auth *cliproxyauth.Auth) string {
 		switch strings.TrimSpace(strings.ToLower(compat.ImageEditsMode)) {
 		case "chat-multimodal":
 			return "chat-multimodal"
+		case "image-generations":
+			return "image-generations"
 		}
 	}
 	return ""
@@ -498,6 +510,162 @@ func (e *OpenAICompatExecutor) resolveCompatConfig(auth *cliproxyauth.Auth) *con
 		}
 	}
 	return nil
+}
+
+func convertImagePayloadToImageGenerations(payload []byte) ([]byte, error) {
+	if len(bytes.TrimSpace(payload)) == 0 {
+		return payload, nil
+	}
+	var root map[string]any
+	if err := json.Unmarshal(payload, &root); err != nil {
+		return nil, fmt.Errorf("invalid image payload: %w", err)
+	}
+	model := strings.TrimSpace(gjson.GetBytes(payload, "model").String())
+	if model == "" {
+		return nil, fmt.Errorf("model is required")
+	}
+	prompt := strings.TrimSpace(gjson.GetBytes(payload, "prompt").String())
+	if prompt == "" {
+		prompt = strings.TrimSpace(extractImageGenerationPrompt(payload))
+	}
+	image := strings.TrimSpace(firstImageGenerationImage(payload))
+	if image != "" && prompt == "" {
+		return nil, fmt.Errorf("prompt is required")
+	}
+	if image == "" && prompt != "" && !hasImageEditOnlyFields(payload) {
+		return payload, nil
+	}
+	out := make(map[string]any, len(root))
+	for _, field := range []string{
+		"model", "prompt", "size", "quality", "response_format", "background", "output_format",
+		"moderation", "input_fidelity", "style", "n", "output_compression", "partial_images",
+	} {
+		if value, ok := root[field]; ok {
+			out[field] = value
+		}
+	}
+	out["model"] = model
+	if prompt != "" {
+		out["prompt"] = prompt
+	}
+	if image != "" {
+		out["image"] = image
+	}
+	return json.Marshal(out)
+}
+
+func hasImageEditOnlyFields(payload []byte) bool {
+	for _, field := range []string{"image_files", "mask_file", "input", "messages"} {
+		if gjson.GetBytes(payload, field).Exists() {
+			return true
+		}
+	}
+	return false
+}
+
+func extractImageGenerationPrompt(payload []byte) string {
+	texts := make([]string, 0, 4)
+	if input := gjson.GetBytes(payload, "input"); input.Exists() {
+		collectPromptText(input, &texts)
+	}
+	if messages := gjson.GetBytes(payload, "messages"); messages.Exists() {
+		collectPromptText(messages, &texts)
+	}
+	return strings.Join(texts, "\n")
+}
+
+func collectPromptText(value gjson.Result, texts *[]string) {
+	switch {
+	case value.IsArray():
+		for _, item := range value.Array() {
+			collectPromptText(item, texts)
+		}
+	case value.IsObject():
+		if messages := value.Get("messages"); messages.Exists() {
+			collectPromptText(messages, texts)
+			return
+		}
+		if content := value.Get("content"); content.Exists() {
+			collectPromptText(content, texts)
+			return
+		}
+		for _, field := range []string{"text", "input_text"} {
+			if text := strings.TrimSpace(value.Get(field).String()); text != "" {
+				*texts = append(*texts, text)
+				return
+			}
+		}
+	default:
+		if text := strings.TrimSpace(value.String()); text != "" {
+			*texts = append(*texts, text)
+		}
+	}
+}
+
+func firstImageGenerationImage(payload []byte) string {
+	for _, field := range []string{"image", "image_url"} {
+		if image := imageURLFromResult(gjson.GetBytes(payload, field)); image != "" {
+			return image
+		}
+	}
+	if files := gjson.GetBytes(payload, "image_files"); files.Exists() && files.IsArray() {
+		for _, file := range files.Array() {
+			data := strings.TrimSpace(file.Get("data_base64").String())
+			if data == "" {
+				continue
+			}
+			if strings.HasPrefix(strings.ToLower(data), "data:") {
+				return data
+			}
+			contentType := strings.TrimSpace(file.Get("content_type").String())
+			if contentType == "" {
+				contentType = "image/png"
+			}
+			return "data:" + contentType + ";base64," + data
+		}
+	}
+	for _, path := range []string{"input", "messages"} {
+		if image := firstImageFromContent(gjson.GetBytes(payload, path)); image != "" {
+			return image
+		}
+	}
+	return ""
+}
+
+func firstImageFromContent(value gjson.Result) string {
+	switch {
+	case value.IsArray():
+		for _, item := range value.Array() {
+			if image := firstImageFromContent(item); image != "" {
+				return image
+			}
+		}
+	case value.IsObject():
+		if messages := value.Get("messages"); messages.Exists() {
+			if image := firstImageFromContent(messages); image != "" {
+				return image
+			}
+		}
+		for _, field := range []string{"image", "image_url"} {
+			if image := imageURLFromResult(value.Get(field)); image != "" {
+				return image
+			}
+		}
+		if content := value.Get("content"); content.Exists() {
+			return firstImageFromContent(content)
+		}
+	}
+	return ""
+}
+
+func imageURLFromResult(value gjson.Result) string {
+	if !value.Exists() {
+		return ""
+	}
+	if value.IsObject() {
+		return strings.TrimSpace(value.Get("url").String())
+	}
+	return strings.TrimSpace(value.String())
 }
 
 func convertImageEditPayloadToChatMultimodal(payload []byte) ([]byte, error) {

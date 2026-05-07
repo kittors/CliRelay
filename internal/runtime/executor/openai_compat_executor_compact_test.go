@@ -303,6 +303,112 @@ func TestOpenAICompatExecutorPassesImageEditsToImagesEndpointByDefault(t *testin
 	}
 }
 
+func TestOpenAICompatExecutorConvertsImageEditsToImageGenerations(t *testing.T) {
+	var gotPath string
+	var gotBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		body, _ := io.ReadAll(r.Body)
+		gotBody = body
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"created":1770000000,"data":[{"url":"https://example.com/image.png"}]}`))
+	}))
+	defer server.Close()
+
+	executor := NewOpenAICompatExecutor("qwen tokenplan", &config.Config{
+		OpenAICompatibility: []config.OpenAICompatibility{
+			{Name: "qwen tokenplan", ImageEditsMode: "image-generations"},
+		},
+	})
+	auth := &cliproxyauth.Auth{
+		Provider: "qwen tokenplan",
+		Attributes: map[string]string{
+			"base_url":    server.URL + "/v1",
+			"api_key":     "test",
+			"compat_name": "qwen tokenplan",
+		},
+	}
+	payload := []byte(`{
+		"model":"qwen-image-2.0",
+		"prompt":"put logo on shirt",
+		"size":"1024x1024",
+		"image_files":[{"file_name":"logo.png","content_type":"image/png","data_base64":"aGVsbG8="}]
+	}`)
+	_, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "qwen-image-2.0",
+		Payload: payload,
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai"),
+		Alt:          "images/edits",
+	})
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+	if gotPath != "/v1/images/generations" {
+		t.Fatalf("path = %q, want /v1/images/generations", gotPath)
+	}
+	if got := gjson.GetBytes(gotBody, "prompt").String(); got != "put logo on shirt" {
+		t.Fatalf("prompt = %q", got)
+	}
+	if got := gjson.GetBytes(gotBody, "image").String(); got != "data:image/png;base64,aGVsbG8=" {
+		t.Fatalf("image = %q", got)
+	}
+	if gjson.GetBytes(gotBody, "image_files").Exists() {
+		t.Fatalf("image_files should be removed from upstream body: %s", string(gotBody))
+	}
+}
+
+func TestOpenAICompatExecutorNormalizesImageGenerationsInputMessages(t *testing.T) {
+	var gotBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		gotBody = body
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"created":1770000000,"data":[{"url":"https://example.com/image.png"}]}`))
+	}))
+	defer server.Close()
+
+	executor := NewOpenAICompatExecutor("qwen tokenplan", &config.Config{
+		OpenAICompatibility: []config.OpenAICompatibility{
+			{Name: "qwen tokenplan", ImageEditsMode: "image-generations"},
+		},
+	})
+	auth := &cliproxyauth.Auth{
+		Provider: "qwen tokenplan",
+		Attributes: map[string]string{
+			"base_url":    server.URL + "/v1",
+			"api_key":     "test",
+			"compat_name": "qwen tokenplan",
+		},
+	}
+	payload := []byte(`{
+		"model":"qwen-image-2.0",
+		"input":{"messages":[{"role":"user","content":[
+			{"type":"input_text","text":"make it cinematic"},
+			{"type":"input_image","image_url":"data:image/jpeg;base64,Zm9v"}
+		]}]}
+	}`)
+	_, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "qwen-image-2.0",
+		Payload: payload,
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai"),
+		Alt:          "images/generations",
+	})
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+	if got := gjson.GetBytes(gotBody, "prompt").String(); got != "make it cinematic" {
+		t.Fatalf("prompt = %q", got)
+	}
+	if got := gjson.GetBytes(gotBody, "image").String(); got != "data:image/jpeg;base64,Zm9v" {
+		t.Fatalf("image = %q", got)
+	}
+	if gjson.GetBytes(gotBody, "input").Exists() {
+		t.Fatalf("input should be removed from upstream body: %s", string(gotBody))
+	}
+}
+
 func TestOpenAICompatExecutorConvertsImageEditsToChatMultimodal(t *testing.T) {
 	var gotPath string
 	var gotBody []byte

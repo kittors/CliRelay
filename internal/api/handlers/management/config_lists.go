@@ -1809,6 +1809,8 @@ func normalizeOpenAICompatImageEditsMode(mode string) string {
 	switch strings.ToLower(strings.TrimSpace(mode)) {
 	case "chat-multimodal":
 		return "chat-multimodal"
+	case "image-generations":
+		return "image-generations"
 	default:
 		return ""
 	}

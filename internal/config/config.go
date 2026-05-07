@@ -679,7 +679,8 @@ type OpenAICompatibility struct {
 	IdentityFingerprint string `yaml:"identity-fingerprint,omitempty" json:"identity-fingerprint,omitempty"`
 
 	// ImageEditsMode controls how OpenAI /v1/images/edits requests are adapted
-	// for this OpenAI-compatible provider. Supported value: "chat-multimodal".
+	// for this OpenAI-compatible provider. Supported values: "chat-multimodal",
+	// "image-generations".
 	ImageEditsMode string `yaml:"image-edits-mode,omitempty" json:"image-edits-mode,omitempty"`
 }
 
@@ -1157,6 +1158,8 @@ func normalizeOpenAICompatImageEditsMode(mode string) string {
 	switch strings.ToLower(strings.TrimSpace(mode)) {
 	case "chat-multimodal":
 		return "chat-multimodal"
+	case "image-generations":
+		return "image-generations"
 	default:
 		return ""
 	}
