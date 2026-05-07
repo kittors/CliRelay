@@ -295,6 +295,7 @@ http://localhost:8317/manage
 - Docker Compose 部署会在 `/manage` 暴露控制面板。
 - 服务端既支持托管打包后的 SPA 目录，也支持在需要时自动拉取面板资源。
 - 当前仓库只包含 `/manage` 的托管和同步链路，独立 Web 面板源码与 Go 服务端代码分仓维护。
+- 面板的 UI/交互/文案 等改动请到面板源码仓库（默认 `kittors/codeProxy`）提交，并通过其发布产物（GitHub Release）供服务端拉取。
 - 如果你偏向终端运维，也可以使用 `docker compose exec cli-proxy-api ./cli-proxy-api -tui`。
 - 如果你希望自定义面板资源来源，可设置 `remote-management.panel-github-repository`。
 

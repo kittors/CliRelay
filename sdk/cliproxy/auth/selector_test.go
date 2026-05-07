@@ -577,6 +577,35 @@ func TestIsAuthBlockedForModel_UnavailableWithoutNextRetryIsNotBlocked(t *testin
 	}
 }
 
+func TestIsAuthBlockedForModel_AuthQuotaCooldownBlocksAllModels(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	next := now.Add(15 * time.Minute)
+
+	auth := &Auth{
+		ID: "a",
+		Quota: QuotaState{
+			Exceeded:      true,
+			Reason:        "quota",
+			NextRecoverAt: next,
+		},
+		NextRetryAfter: next,
+	}
+
+	// Even if the requested model has no per-model state yet, auth-level cooldown should block it.
+	blocked, reason, gotNext := isAuthBlockedForModel(auth, "some-new-model", now)
+	if !blocked {
+		t.Fatalf("blocked = false, want true")
+	}
+	if reason != blockReasonCooldown {
+		t.Fatalf("reason = %v, want %v", reason, blockReasonCooldown)
+	}
+	if gotNext.IsZero() || gotNext.Sub(next) > time.Second || next.Sub(gotNext) > time.Second {
+		t.Fatalf("next = %v, want around %v", gotNext, next)
+	}
+}
+
 func TestFillFirstSelectorPick_ThinkingSuffixFallsBackToBaseModelState(t *testing.T) {
 	t.Parallel()
 

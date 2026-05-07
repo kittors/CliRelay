@@ -230,6 +230,9 @@ func (h *Handler) APICall(c *gin.Context) {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to read response"})
 		return
 	}
+	if errReconcile := h.reconcileCodexWhamUsagePlan(c.Request.Context(), auth, parsedURL, resp.StatusCode, respBody); errReconcile != nil {
+		log.WithError(errReconcile).Warn("failed to reconcile codex usage plan type")
+	}
 
 	c.JSON(http.StatusOK, apiCallResponse{
 		StatusCode: resp.StatusCode,
@@ -248,6 +251,94 @@ func firstNonEmptyString(values ...*string) string {
 		}
 	}
 	return ""
+}
+
+func (h *Handler) reconcileCodexWhamUsagePlan(ctx context.Context, auth *coreauth.Auth, parsedURL *url.URL, statusCode int, respBody []byte) error {
+	if h == nil || h.authManager == nil || auth == nil {
+		return nil
+	}
+	if statusCode < http.StatusOK || statusCode >= http.StatusMultipleChoices {
+		return nil
+	}
+	if !isCodexWhamUsageURL(parsedURL) {
+		return nil
+	}
+	if !strings.EqualFold(strings.TrimSpace(auth.Provider), "codex") {
+		return nil
+	}
+
+	var payload struct {
+		PlanType string `json:"plan_type"`
+	}
+	if err := json.Unmarshal(respBody, &payload); err != nil {
+		return nil
+	}
+	planType := normalizeTagValue(payload.PlanType)
+	if planType == "" {
+		return nil
+	}
+
+	if auth.Metadata == nil {
+		return nil
+	}
+	changed := false
+	if currentType, _ := auth.Metadata["type"].(string); strings.TrimSpace(currentType) == "" {
+		auth.Metadata["type"] = "codex"
+		changed = true
+	}
+	currentPlanType := normalizeTagValue(metadataString(auth.Metadata, "plan_type", "planType"))
+	if currentPlanType != planType {
+		auth.Metadata["plan_type"] = planType
+		delete(auth.Metadata, "planType")
+		changed = true
+	}
+	if reconcileAuthExplicitDisplayTags(auth) {
+		changed = true
+	}
+	if !changed {
+		return nil
+	}
+
+	now := time.Now()
+	auth.UpdatedAt = now
+	_, err := h.authManager.Update(ctx, auth)
+	return err
+}
+
+func isCodexWhamUsageURL(parsedURL *url.URL) bool {
+	if parsedURL == nil {
+		return false
+	}
+	path := strings.TrimRight(parsedURL.EscapedPath(), "/")
+	return path == "/backend-api/wham/usage"
+}
+
+func reconcileAuthExplicitDisplayTags(auth *coreauth.Auth) bool {
+	if auth == nil || auth.Metadata == nil {
+		return false
+	}
+	currentTags, ok := metadataStringSliceWithPresence(auth.Metadata, "display_tags")
+	if !ok {
+		return false
+	}
+	reconciledTags := buildAuthTagPayload(auth).DisplayTags
+	if normalizedStringSlicesEqual(currentTags, reconciledTags) {
+		return false
+	}
+	auth.Metadata["display_tags"] = reconciledTags
+	return true
+}
+
+func normalizedStringSlicesEqual(a []string, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if normalizeTagValue(a[i]) != normalizeTagValue(b[i]) {
+			return false
+		}
+	}
+	return true
 }
 
 func tokenValueForAuth(auth *coreauth.Auth) string {

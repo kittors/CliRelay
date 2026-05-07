@@ -675,6 +675,24 @@ func isAuthBlockedForModel(auth *Auth, model string, now time.Time) (bool, block
 	if auth.Disabled || auth.Status == StatusDisabled {
 		return true, blockReasonDisabled, time.Time{}
 	}
+
+	// Quota exceeded is an auth-level cooldown signal. Once we know an auth is cooling down,
+	// we should block *all* model requests for that auth until recovery, even if per-model
+	// state hasn't been initialized yet. This prevents clients from burning extra upstream
+	// requests by switching models during the same quota window.
+	if auth.Quota.Exceeded {
+		next := auth.Quota.NextRecoverAt
+		if !next.IsZero() && next.After(now) {
+			if auth.NextRetryAfter.After(now) && (next.IsZero() || auth.NextRetryAfter.Before(next)) {
+				next = auth.NextRetryAfter
+			}
+			if next.Before(now) {
+				next = now
+			}
+			return true, blockReasonCooldown, next
+		}
+	}
+
 	if model != "" {
 		if len(auth.ModelStates) > 0 {
 			state, ok := auth.ModelStates[model]

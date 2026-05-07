@@ -696,6 +696,9 @@ func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth) gin.H {
 	entry["custom_tags"] = tags.CustomTags
 	entry["hidden_default_tags"] = tags.HiddenDefaultTags
 	entry["display_tags"] = tags.DisplayTags
+	if planType := normalizeTagValue(metadataString(auth.Metadata, "plan_type", "planType")); planType != "" {
+		entry["plan_type"] = planType
+	}
 	addSubscriptionFields(entry, auth.Metadata, time.Now())
 	if !auth.CreatedAt.IsZero() {
 		entry["created_at"] = auth.CreatedAt
@@ -756,7 +759,7 @@ func buildAuthRestrictionPayload(auth *coreauth.Auth, now time.Time) []gin.H {
 		}
 	}
 	if len(auth.ModelStates) == 0 {
-		return restrictions
+		return dedupeRestrictionEntries(restrictions)
 	}
 
 	models := make([]string, 0, len(auth.ModelStates))
@@ -783,7 +786,120 @@ func buildAuthRestrictionPayload(auth *coreauth.Auth, now time.Time) []gin.H {
 			restrictions = append(restrictions, restriction)
 		}
 	}
-	return restrictions
+	return dedupeRestrictionEntries(restrictions)
+}
+
+// dedupeRestrictionEntries collapses duplicate auth/model restriction entries that share the same
+// actionable surface (e.g. repeated 429 quota errors across multiple models). This keeps the
+// management list UI readable without losing the fact that the auth is restricted.
+//
+// Rule: entries are deduped by a stable key that ignores the model field, and "auth" scope wins
+// over "model" scope when picking a representative entry.
+func dedupeRestrictionEntries(entries []gin.H) []gin.H {
+	if len(entries) <= 1 {
+		return entries
+	}
+
+	type picked struct {
+		entry gin.H
+		score int
+	}
+
+	bestByKey := make(map[string]picked, len(entries))
+	order := make([]string, 0, len(entries))
+
+	for _, entry := range entries {
+		key := restrictionDedupeKey(entry)
+		if key == "" {
+			// Shouldn't happen, but keep it stable-ish.
+			key = fmt.Sprintf("unknown:%d", len(order))
+		}
+		score := restrictionEntryScore(entry)
+		if existing, ok := bestByKey[key]; ok {
+			if score > existing.score {
+				bestByKey[key] = picked{entry: entry, score: score}
+			}
+			continue
+		}
+		bestByKey[key] = picked{entry: entry, score: score}
+		order = append(order, key)
+	}
+
+	out := make([]gin.H, 0, len(order))
+	for _, key := range order {
+		out = append(out, bestByKey[key].entry)
+	}
+	return out
+}
+
+func restrictionEntryScore(entry gin.H) int {
+	// Prefer "auth" scope as the summary surface.
+	scope, _ := entry["scope"].(string)
+	if scope == "auth" {
+		return 2
+	}
+	if scope == "model" {
+		return 1
+	}
+	return 0
+}
+
+func restrictionDedupeKey(entry gin.H) string {
+	if entry == nil {
+		return ""
+	}
+
+	status := fmt.Sprint(entry["status"])
+
+	httpStatus := coerceInt(entry["http_status"])
+	code, _ := entry["code"].(string)
+	reason, _ := entry["reason"].(string)
+	quotaExceeded := coerceBool(entry["quota_exceeded"])
+
+	// Intentionally ignore "scope", "model", and "unavailable" to keep the list UI readable.
+	// If a user hits a 429, seeing it once is enough even if it applies to multiple models.
+	if httpStatus > 0 {
+		return fmt.Sprintf("http=%d|quota=%t|reason=%s", httpStatus, quotaExceeded, strings.TrimSpace(reason))
+	}
+	return fmt.Sprintf("status=%s|code=%s|quota=%t|reason=%s",
+		status,
+		strings.TrimSpace(code),
+		quotaExceeded,
+		strings.TrimSpace(reason),
+	)
+}
+
+func coerceInt(v any) int {
+	switch val := v.(type) {
+	case int:
+		return val
+	case int64:
+		return int(val)
+	case float64:
+		return int(val)
+	case json.Number:
+		if i, err := val.Int64(); err == nil {
+			return int(i)
+		}
+	}
+	return 0
+}
+
+func coerceBool(v any) bool {
+	switch val := v.(type) {
+	case bool:
+		return val
+	case string:
+		s := strings.TrimSpace(strings.ToLower(val))
+		return s == "true" || s == "1" || s == "yes"
+	case int:
+		return val != 0
+	case int64:
+		return val != 0
+	case float64:
+		return val != 0
+	}
+	return false
 }
 
 func buildRestrictionEntry(scope, model string, status coreauth.Status, statusMessage string, unavailable bool, nextRetryAfter time.Time, lastError *coreauth.Error, quota coreauth.QuotaState, now time.Time) gin.H {

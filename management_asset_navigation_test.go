@@ -41,7 +41,7 @@ func TestChannelGroupsAssetExposesRoutingStrategyControl(t *testing.T) {
 		`channel_groups_page.routing_strategy_tooltip`,
 		`channel_groups_page.routing_strategy_round_robin`,
 		`channel_groups_page.routing_strategy_fill_first`,
-		`strategy:t.currentTarget.value==="fill-first"?"fill-first":"round-robin"`,
+		`strategy:t==="fill-first"?"fill-first":"round-robin"`,
 	} {
 		if !strings.Contains(pageContent, want) {
 			t.Fatalf("channel groups asset missing %q", want)
@@ -69,6 +69,36 @@ func TestChannelGroupsAssetExposesRoutingStrategyControl(t *testing.T) {
 	} {
 		if !strings.Contains(enContent, want) {
 			t.Fatalf("en asset missing routing strategy wording %q", want)
+		}
+	}
+}
+
+func TestChannelGroupsRoutingStrategyUsesSharedSelect(t *testing.T) {
+	_, pageContent := readManagementAssetByPrefix(t, "ChannelGroupsPage")
+
+	if !strings.Contains(pageContent, `from"./Select-`) {
+		t.Fatalf("channel groups asset should import the shared Select component")
+	}
+
+	for _, unwanted := range []string{
+		`t.jsxs("select",{"data-testid":"routing-strategy-select"`,
+		`t.jsx("option",{value:"round-robin"`,
+		`t.jsx("option",{value:"fill-first"`,
+		`t.currentTarget.value==="fill-first"`,
+	} {
+		if strings.Contains(pageContent, unwanted) {
+			t.Fatalf("routing strategy selector should use the shared Select component, found native select fragment %q", unwanted)
+		}
+	}
+
+	_, selectContent := readManagementAssetByPrefix(t, "Select")
+	for _, want := range []string{
+		`disabled:G=!1,...I`,
+		`disabled:G,...I`,
+		`G||c(e=>!e)`,
+	} {
+		if !strings.Contains(selectContent, want) {
+			t.Fatalf("shared Select asset should support disabled and data attribute passthrough, missing %q", want)
 		}
 	}
 }
@@ -110,7 +140,7 @@ func TestChannelGroupsRoutingStrategyControlIsGroupScoped(t *testing.T) {
 	}
 
 	for _, want := range []string{
-		`strategy:t.currentTarget.value==="fill-first"?"fill-first":"round-robin"`,
+		`strategy:t==="fill-first"?"fill-first":"round-robin"`,
 		`value:h.strategy`,
 		`strategy:h.strategy==="fill-first"?"fill-first":"round-robin"`,
 		`strategy:i?.strategy==="fill-first"?"fill-first":"round-robin"`,
