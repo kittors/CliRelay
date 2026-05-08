@@ -73,15 +73,17 @@ jobs:
           GH_TOKEN: ${{ secrets.SYNC_PR_TOKEN != '' && secrets.SYNC_PR_TOKEN || secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
+          repository="${GITHUB_REPOSITORY}"
+          head_owner="${GITHUB_REPOSITORY_OWNER}"
           title="chore: sync upstream ${UPSTREAM_BRANCH} into ${BASE_BRANCH}"
           body="Automated upstream sync from ${UPSTREAM_REPOSITORY}:${UPSTREAM_BRANCH} into ${BASE_BRANCH}."
           if [ "${{ steps.merge.outputs.conflicted }}" = "true" ]; then
             title="${title} (conflicts)"
             body="${body}"$'\n\n'"This sync branch contains merge conflicts and needs manual resolution before merge."
           fi
-          existing_pr="$(gh pr list --base "${BASE_BRANCH}" --head "${SYNC_BRANCH}" --state open --json number --jq '.[0].number // empty')"
+          existing_pr="$(gh pr list --repo "${repository}" --base "${BASE_BRANCH}" --head "${SYNC_BRANCH}" --state open --json number --jq '.[0].number // empty')"
           if [ -n "${existing_pr}" ]; then
-            gh pr edit "${existing_pr}" --title "${title}" --body "${body}"
+            gh pr edit "${existing_pr}" --repo "${repository}" --title "${title}" --body "${body}"
           else
-            gh pr create --base "${BASE_BRANCH}" --head "${SYNC_BRANCH}" --title "${title}" --body "${body}"
+            gh pr create --repo "${repository}" --base "${BASE_BRANCH}" --head "${head_owner}:${SYNC_BRANCH}" --title "${title}" --body "${body}"
           fi
