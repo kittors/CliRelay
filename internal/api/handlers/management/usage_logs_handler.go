@@ -32,6 +32,12 @@ type authFileTrendResponse struct {
 	QuotaSeries       []usage.QuotaSnapshotSeries `json:"quota_series"`
 }
 
+type deleteUsageLogsRequest struct {
+	ClearBodyContent    bool `json:"clear_body_content"`
+	ClearDetailContent  bool `json:"clear_detail_content"`
+	ClearRequestRecords bool `json:"clear_request_records"`
+}
+
 // GetUsageLogs returns paginated, filterable request log entries from SQLite.
 // It enriches each log item with resolved api_key_name and channel_name
 // from the in-memory config, eliminating the need for multiple frontend API calls.
@@ -195,6 +201,39 @@ func (h *Handler) GetUsageLogs(c *gin.Context) {
 		"filters": filters,
 		"stats":   stats,
 	})
+}
+
+func (h *Handler) DeleteUsageLogs(c *gin.Context) {
+	if c.Request.ContentLength == 0 {
+		result, err := usage.ClearAllRequestLogs()
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, result)
+		return
+	}
+
+	var req deleteUsageLogsRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	result, err := usage.ClearRequestLogs(usage.ClearRequestLogsOptions{
+		ClearBodyContent:    req.ClearBodyContent,
+		ClearDetailContent:  req.ClearDetailContent,
+		ClearRequestRecords: req.ClearRequestRecords,
+	})
+	if err != nil {
+		if strings.Contains(err.Error(), "at least one cleanup option") {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, result)
 }
 
 // buildNameMaps builds three maps from the current config/auth store:

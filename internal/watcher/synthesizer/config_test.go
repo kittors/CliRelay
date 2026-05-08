@@ -359,6 +359,33 @@ func TestConfigSynthesizer_OpenAICompat(t *testing.T) {
 			wantLen: 2,
 		},
 		{
+			name: "skips disabled APIKeyEntries without fallback",
+			compat: []config.OpenAICompatibility{
+				{
+					Name:    "CustomProvider",
+					BaseURL: "https://custom.api.com",
+					APIKeyEntries: []config.OpenAICompatibilityAPIKey{
+						{APIKey: "key-enabled"},
+						{APIKey: "key-disabled", Disabled: true},
+					},
+				},
+			},
+			wantLen: 1,
+		},
+		{
+			name: "all disabled APIKeyEntries do not create fallback auth",
+			compat: []config.OpenAICompatibility{
+				{
+					Name:    "CustomProvider",
+					BaseURL: "https://custom.api.com",
+					APIKeyEntries: []config.OpenAICompatibilityAPIKey{
+						{APIKey: "key-disabled", Disabled: true},
+					},
+				},
+			},
+			wantLen: 0,
+		},
+		{
 			name: "empty APIKeyEntries included (legacy)",
 			compat: []config.OpenAICompatibility{
 				{

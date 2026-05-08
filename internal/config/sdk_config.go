@@ -9,6 +9,11 @@ type SDKConfig struct {
 	// ProxyURL is the URL of an optional proxy server to use for outbound requests.
 	ProxyURL string `yaml:"proxy-url" json:"proxy-url"`
 
+	// PreferIPv4 forces all outbound upstream connections to use IPv4 only.
+	// When true, the dialer binds to 0.0.0.0 and skips IPv6 resolution.
+	// Useful when the server's IPv6 route quality is poor (e.g. SIT tunnel).
+	PreferIPv4 bool `yaml:"prefer-ipv4" json:"prefer-ipv4"`
+
 	// ForceModelPrefix requires explicit model prefixes (e.g., "teamA/gemini-3-pro-preview")
 	// to target prefixed credentials. When false, unprefixed model requests may use prefixed
 	// credentials as well.
@@ -193,7 +198,7 @@ type RequestLogStorageConfig struct {
 // StreamingConfig holds server streaming behavior configuration.
 type StreamingConfig struct {
 	// KeepAliveSeconds controls how often the server emits SSE heartbeats (": keep-alive\n\n").
-	// <= 0 disables keep-alives. Default is 0.
+	// < 0 disables keep-alives. Default is 15.
 	KeepAliveSeconds int `yaml:"keepalive-seconds,omitempty" json:"keepalive-seconds,omitempty"`
 
 	// BootstrapRetries controls how many times the server may retry a streaming request before any bytes are sent,

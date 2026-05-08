@@ -364,9 +364,12 @@ func (s *ConfigSynthesizer) synthesizeOpenAICompat(ctx *SynthesisContext) []*cor
 		base := strings.TrimSpace(compat.BaseURL)
 
 		// Handle new APIKeyEntries format (preferred)
-		createdEntries := 0
+		hasAPIKeyEntries := len(compat.APIKeyEntries) > 0
 		for j := range compat.APIKeyEntries {
 			entry := &compat.APIKeyEntries[j]
+			if entry.Disabled {
+				continue
+			}
 			key := strings.TrimSpace(entry.APIKey)
 			proxyURL := strings.TrimSpace(entry.ProxyURL)
 			proxyID := strings.TrimSpace(entry.ProxyID)
@@ -404,10 +407,9 @@ func (s *ConfigSynthesizer) synthesizeOpenAICompat(ctx *SynthesisContext) []*cor
 				UpdatedAt:  now,
 			}
 			out = append(out, a)
-			createdEntries++
 		}
 		// Fallback: create entry without API key if no APIKeyEntries
-		if createdEntries == 0 {
+		if !hasAPIKeyEntries {
 			idKind := fmt.Sprintf("openai-compatibility:%s", providerName)
 			id, token := idGen.Next(idKind, base)
 			attrs := map[string]string{

@@ -2,6 +2,8 @@ package executor
 
 import (
 	"context"
+	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -73,4 +75,45 @@ func TestNewProxyAwareHTTPClientFallsBackWhenProxyIDMissing(t *testing.T) {
 		t.Fatalf("client.Get returned error: %v", err)
 	}
 	_ = resp.Body.Close()
+}
+
+func TestNewProxyAwareHTTPClientHonorsPreferIPv4ForHTTPProxy(t *testing.T) {
+	t.Parallel()
+
+	listener, err := net.Listen("tcp6", "[::1]:0")
+	if err != nil {
+		t.Skipf("ipv6 loopback unavailable: %v", err)
+	}
+
+	proxyHits := 0
+	proxyServer := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		proxyHits++
+		if r.URL.String() != "http://target.example/check" {
+			t.Fatalf("proxy received URL %q", r.URL.String())
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	proxyServer.Listener = listener
+	proxyServer.Start()
+	defer proxyServer.Close()
+
+	cfg := &config.Config{}
+	cfg.PreferIPv4 = true
+	auth := &cliproxyauth.Auth{
+		ProxyURL: fmt.Sprintf("http://%s", listener.Addr().String()),
+	}
+	client := newProxyAwareHTTPClient(context.Background(), cfg, auth, 0)
+
+	req, err := http.NewRequest(http.MethodGet, "http://target.example/check", nil)
+	if err != nil {
+		t.Fatalf("create request: %v", err)
+	}
+	resp, err := client.Do(req)
+	if err == nil {
+		_ = resp.Body.Close()
+		t.Fatalf("client.Do unexpectedly succeeded via IPv6 proxy while preferIPv4 is enabled")
+	}
+	if proxyHits != 0 {
+		t.Fatalf("proxy hits = %d, want 0 when preferIPv4 blocks IPv6-only proxy", proxyHits)
+	}
 }

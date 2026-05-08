@@ -44,7 +44,7 @@ func newProxyAwareHTTPClient(ctx context.Context, cfg *config.Config, auth *clip
 
 	// If we have a proxy URL configured, set up the transport
 	if proxyURL != "" {
-		transport := util.BuildProxyTransport(proxyURL)
+		transport := util.BuildProxyTransport(proxyURL, cfg != nil && cfg.PreferIPv4)
 		if transport != nil {
 			httpClient.Transport = transport
 			return httpClient
@@ -56,6 +56,10 @@ func newProxyAwareHTTPClient(ctx context.Context, cfg *config.Config, auth *clip
 	// Priority 4: Use RoundTripper from context (typically from RoundTripperFor)
 	if rt, ok := ctx.Value(util.ContextKeyRoundTripper).(http.RoundTripper); ok && rt != nil {
 		httpClient.Transport = rt
+	}
+
+	if httpClient.Transport == nil {
+		httpClient.Transport = util.NewDefaultTransport(cfg != nil && cfg.PreferIPv4)
 	}
 
 	return httpClient
