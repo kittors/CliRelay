@@ -3,7 +3,8 @@ name: Sync upstream
 on:
   workflow_dispatch:
   schedule:
-    - cron: '7 2 * * *'
+    # GitHub cron is UTC; 18:07 UTC is 02:07 Beijing time.
+    - cron: '7 18 * * *'
 
 permissions:
   contents: write
