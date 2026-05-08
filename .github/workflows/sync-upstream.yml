@@ -43,7 +43,17 @@ jobs:
           set -euo pipefail
           git checkout -B "${SYNC_BRANCH}" "origin/${BASE_BRANCH}"
           base_sha="$(git rev-parse HEAD)"
+          set +e
           git merge --no-edit "upstream/${UPSTREAM_BRANCH}"
+          merge_status="$?"
+          set -e
+          if [ "${merge_status}" -ne 0 ]; then
+            echo "conflicted=true" >> "$GITHUB_OUTPUT"
+            git add -A
+            git commit -m "chore: sync upstream ${UPSTREAM_BRANCH} into ${BASE_BRANCH} with conflicts"
+          else
+            echo "conflicted=false" >> "$GITHUB_OUTPUT"
+          fi
           head_sha="$(git rev-parse HEAD)"
           if [ "${base_sha}" = "${head_sha}" ]; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
@@ -65,6 +75,10 @@ jobs:
           set -euo pipefail
           title="chore: sync upstream ${UPSTREAM_BRANCH} into ${BASE_BRANCH}"
           body="Automated upstream sync from ${UPSTREAM_REPOSITORY}:${UPSTREAM_BRANCH} into ${BASE_BRANCH}."
+          if [ "${{ steps.merge.outputs.conflicted }}" = "true" ]; then
+            title="${title} (conflicts)"
+            body="${body}"$'\n\n'"This sync branch contains merge conflicts and needs manual resolution before merge."
+          fi
           existing_pr="$(gh pr list --base "${BASE_BRANCH}" --head "${SYNC_BRANCH}" --state open --json number --jq '.[0].number // empty')"
           if [ -n "${existing_pr}" ]; then
             gh pr edit "${existing_pr}" --title "${title}" --body "${body}"
