@@ -717,7 +717,7 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 				firstUpstreamEvent := !receivedUpstreamEvent
 				receivedUpstreamEvent = true
 				lastUpstreamEventAt = time.Now()
-				if upstreamIdleTimer.Stop() == false {
+				if !upstreamIdleTimer.Stop() {
 					select {
 					case <-upstreamIdleTimer.C:
 					default:

@@ -807,7 +807,7 @@ func buildToolArgs(tool mcpTool, ref mediaRef, prompt string) map[string]any {
 }
 
 func chooseMediaArg(keys []string, kind, ref string) string {
-	preferred := []string{}
+	var preferred []string
 	if kind == "image" {
 		preferred = []string{"image_url", "image", "url", "path", "image_path", "file", "file_path"}
 	} else if kind == "file" {
