@@ -2,13 +2,20 @@ package openai
 
 import (
 	"bytes"
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/gorilla/websocket"
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v6/sdk/api/handlers"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	sdkconfig "github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
 	"github.com/tidwall/gjson"
 )
 
@@ -46,8 +53,8 @@ func TestResponsesWebsocketPrewarmPayloads(t *testing.T) {
 	if gjson.GetBytes(payloads[0], "type").String() != "response.created" {
 		t.Fatalf("unexpected created payload type: %s", gjson.GetBytes(payloads[0], "type").String())
 	}
-	if gjson.GetBytes(payloads[1], "type").String() != "response.done" {
-		t.Fatalf("unexpected done payload type: %s", gjson.GetBytes(payloads[1], "type").String())
+	if gjson.GetBytes(payloads[1], "type").String() != wsEventTypeCompleted {
+		t.Fatalf("unexpected completed payload type: %s", gjson.GetBytes(payloads[1], "type").String())
 	}
 	responseID := gjson.GetBytes(payloads[0], "response.id").String()
 	if responseID == "" {
@@ -73,6 +80,80 @@ func TestResponsesWebsocketPrewarmPayloadsDisabledForGenerateTrue(t *testing.T) 
 	}
 	if payloads != nil {
 		t.Fatalf("expected nil payloads when generate=true")
+	}
+}
+
+func TestResponsesWebsocketPrewarmKeepsConnectionForRealRequest(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	executor := &responsesCaptureExecutor{}
+	manager := coreauth.NewManager(nil, nil, nil)
+	manager.RegisterExecutor(executor)
+
+	auth := &coreauth.Auth{ID: "auth-ws-prewarm", Provider: executor.Identifier(), Status: coreauth.StatusActive}
+	if _, err := manager.Register(context.Background(), auth); err != nil {
+		t.Fatalf("Register auth: %v", err)
+	}
+	registry.GetGlobalRegistry().RegisterClient(auth.ID, auth.Provider, []*registry.ModelInfo{{ID: "test-model"}})
+	t.Cleanup(func() {
+		registry.GetGlobalRegistry().UnregisterClient(auth.ID)
+	})
+
+	base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager)
+	h := NewOpenAIResponsesAPIHandler(base)
+	router := gin.New()
+	router.GET("/v1/responses", h.ResponsesWebsocket)
+
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/v1/responses"
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial websocket: %v", err)
+	}
+	defer conn.Close()
+
+	if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.create","model":"test-model","generate":false}`)); err != nil {
+		t.Fatalf("write prewarm request: %v", err)
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, createdPayload, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("read prewarm created: %v", err)
+	}
+	if gjson.GetBytes(createdPayload, "type").String() != "response.created" {
+		t.Fatalf("created type = %s, want response.created", gjson.GetBytes(createdPayload, "type").String())
+	}
+	prewarmID := gjson.GetBytes(createdPayload, "response.id").String()
+	if prewarmID == "" {
+		t.Fatalf("prewarm response id is empty")
+	}
+
+	_, completedPayload, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("read prewarm completed: %v", err)
+	}
+	if gjson.GetBytes(completedPayload, "type").String() != wsEventTypeCompleted {
+		t.Fatalf("completed type = %s, want %s", gjson.GetBytes(completedPayload, "type").String(), wsEventTypeCompleted)
+	}
+	if executor.streamCalls != 0 {
+		t.Fatalf("stream calls after prewarm = %d, want 0", executor.streamCalls)
+	}
+
+	followUp := []byte(`{"type":"response.create","previous_response_id":"` + prewarmID + `","input":[{"type":"message","id":"msg-1"}]}`)
+	if err := conn.WriteMessage(websocket.TextMessage, followUp); err != nil {
+		t.Fatalf("write follow-up request: %v", err)
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, upstreamPayload, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("read follow-up response: %v", err)
+	}
+	if gjson.GetBytes(upstreamPayload, "type").String() != wsEventTypeCompleted {
+		t.Fatalf("follow-up type = %s, want %s", gjson.GetBytes(upstreamPayload, "type").String(), wsEventTypeCompleted)
+	}
+	if executor.streamCalls != 1 {
+		t.Fatalf("stream calls after follow-up = %d, want 1", executor.streamCalls)
 	}
 }
 

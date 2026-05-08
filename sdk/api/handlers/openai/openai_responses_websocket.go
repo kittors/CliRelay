@@ -28,7 +28,6 @@ const (
 	wsRequestTypeAppend                          = "response.append"
 	wsEventTypeError                             = "error"
 	wsEventTypeCompleted                         = "response.completed"
-	wsEventTypeDone                              = "response.done"
 	wsDoneMarker                                 = "[DONE]"
 	wsTurnStateHeader                            = "x-codex-turn-state"
 	wsRequestBodyKey                             = "REQUEST_BODY_OVERRIDE"
@@ -210,7 +209,7 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 			for _, prewarmPayload := range prewarmPayloads {
 				markAPIResponseTimestamp(c)
 				appendWebsocketEvent(&wsBodyLog, "response", prewarmPayload)
-				logResponsesWebsocketPayload(trace, "downstream_out", passthroughSessionID, websocket.TextMessage, websocketPayloadEventType(prewarmPayload), websocketPayloadEventType(prewarmPayload) == wsEventTypeDone, 0, prewarmPayload)
+				logResponsesWebsocketPayload(trace, "downstream_out", passthroughSessionID, websocket.TextMessage, websocketPayloadEventType(prewarmPayload), websocketPayloadEventType(prewarmPayload) == wsEventTypeCompleted, 0, prewarmPayload)
 				if errWrite := writeResponsesWebsocketMessage(conn, websocket.TextMessage, prewarmPayload); errWrite != nil {
 					log.Warnf(
 						"responses websocket: prewarm write failed id=%s event=%s error=%v",
@@ -223,11 +222,8 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 				}
 			}
 			lastResponseOutput = []byte("[]")
-			if errClose := closeResponsesWebsocketNormally(conn); errClose != nil {
-				log.Debugf("responses websocket: prewarm normal close failed id=%s error=%v", passthroughSessionID, errClose)
-			}
-			log.Infof("responses websocket: prewarm completed session closed id=%s", passthroughSessionID)
-			return
+			log.Infof("responses websocket: prewarm completed id=%s", passthroughSessionID)
+			continue
 		}
 
 		modelName := gjson.GetBytes(requestJSON, "model").String()
@@ -584,7 +580,7 @@ func responsesWebsocketPrewarmPayloads(requestJSON []byte) ([][]byte, bool) {
 
 	syntheticID := "resp_prewarm_" + uuid.NewString()
 	created := []byte(fmt.Sprintf(`{"type":"response.created","response":{"id":%q}}`, syntheticID))
-	done := []byte(fmt.Sprintf(`{"type":"response.done","response":{"id":%q,"output":[],"usage":{"input_tokens":0,"output_tokens":0,"total_tokens":0}}}`, syntheticID))
+	done := []byte(fmt.Sprintf(`{"type":"response.completed","response":{"id":%q,"output":[],"usage":{"input_tokens":0,"output_tokens":0,"total_tokens":0}}}`, syntheticID))
 	return [][]byte{created, done}, true
 }
 
@@ -740,9 +736,6 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 			for i := range payloads {
 				eventType := gjson.GetBytes(payloads[i], "type").String()
 				if eventType == wsEventTypeCompleted {
-					// log.Infof("replace %s with %s", wsEventTypeCompleted, wsEventTypeDone)
-					payloads[i], _ = sjson.SetBytes(payloads[i], "type", wsEventTypeDone)
-
 					completed = true
 					completedOutput = responseCompletedOutputFromPayload(payloads[i])
 				}
