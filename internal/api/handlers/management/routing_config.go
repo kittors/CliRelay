@@ -83,4 +83,7 @@ func (h *Handler) PutRoutingConfig(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
+	if h != nil && h.onConfigMutated != nil {
+		h.onConfigMutated(cfgRef)
+	}
 }

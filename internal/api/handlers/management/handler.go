@@ -50,6 +50,7 @@ type Handler struct {
 	envSecret           string
 	logDir              string
 	postAuthHook        coreauth.PostAuthHook
+	onConfigMutated     func(*config.Config)
 	startTime           time.Time
 	attemptCleanupStop  chan struct{}
 	attemptCleanupOnce  sync.Once
@@ -143,6 +144,8 @@ func (h *Handler) SetConfig(cfg *config.Config) { h.cfg = cfg }
 
 // SetAuthManager updates the auth manager reference used by management endpoints.
 func (h *Handler) SetAuthManager(manager *coreauth.Manager) { h.authManager = manager }
+
+func (h *Handler) SetConfigMutatedHook(fn func(*config.Config)) { h.onConfigMutated = fn }
 
 // SetAccessManager wires the request authentication access manager so management writes
 // (such as API key channel/model restrictions) can be applied immediately at runtime.
@@ -320,19 +323,25 @@ func (h *Handler) Middleware() gin.HandlerFunc {
 // persist saves the current in-memory config to disk.
 func (h *Handler) persist(c *gin.Context) bool {
 	h.mu.Lock()
-	defer h.mu.Unlock()
+	cfg := h.cfg
+	mutated := h.onConfigMutated
 	if usage.ConfigStoreAvailable() {
-		usage.PersistRuntimeSettingsFromConfig(h.cfg)
+		usage.PersistRuntimeSettingsFromConfig(cfg)
 	}
 	// Preserve comments when writing
-	if err := config.SaveConfigPreserveComments(h.configFilePath, h.cfg); err != nil {
+	if err := config.SaveConfigPreserveComments(h.configFilePath, cfg); err != nil {
+		h.mu.Unlock()
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to save config: %v", err)})
 		return false
 	}
 	if usage.ConfigStoreAvailable() {
 		usage.CleanDBBackedConfigFromYAML(h.configFilePath)
 	}
+	h.mu.Unlock()
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
+	if mutated != nil {
+		mutated(cfg)
+	}
 	return true
 }
 
@@ -347,10 +356,14 @@ func (h *Handler) persistRuntimeSetting(c *gin.Context, key string, value any) b
 	if strings.TrimSpace(h.configFilePath) != "" {
 		usage.CleanDBBackedConfigFromYAML(h.configFilePath)
 	}
-	if h != nil && h.authManager != nil {
-		h.authManager.SetConfig(h.cfg)
+	cfg := h.cfg
+	if h.authManager != nil {
+		h.authManager.SetConfig(cfg)
 	}
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
+	if h.onConfigMutated != nil {
+		h.onConfigMutated(cfg)
+	}
 	return true
 }
 
