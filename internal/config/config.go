@@ -314,6 +314,12 @@ type RemoteManagement struct {
 	// PanelGitHubRepository overrides the GitHub repository used to fetch the management panel asset.
 	// Accepts either a repository URL (https://github.com/org/repo) or an API releases endpoint.
 	PanelGitHubRepository string `yaml:"panel-github-repository"`
+	// MaxAuthFailures is the number of failed auth attempts before an IP is temporarily banned.
+	// Set to -1 to disable the ban mechanism entirely. Defaults to 20 when unset (zero).
+	MaxAuthFailures int `yaml:"max-auth-failures"`
+	// AuthBanDuration is how long an IP remains banned after exceeding MaxAuthFailures.
+	// Parsed as a Go duration string (e.g. "5m", "1h"). Defaults to "5m" when empty.
+	AuthBanDuration string `yaml:"auth-ban-duration"`
 }
 
 // AutoUpdateConfig holds Docker-first update check and sidecar settings.

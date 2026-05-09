@@ -179,8 +179,9 @@ func (h *Handler) SetPostAuthHook(hook coreauth.PostAuthHook) {
 // All requests (local and remote) require a valid management key.
 // Additionally, remote access requires allow-remote-management=true.
 func (h *Handler) Middleware() gin.HandlerFunc {
-	const maxFailures = 5
-	const banDuration = 30 * time.Minute
+	// Sensible defaults: generous failure limit, short ban window.
+	const defaultMaxFailures = 20
+	const defaultBanDuration = 5 * time.Minute
 
 	return func(c *gin.Context) {
 		c.Header("X-CPA-VERSION", buildinfo.Version)
@@ -197,9 +198,22 @@ func (h *Handler) Middleware() gin.HandlerFunc {
 			allowRemote bool
 			secretHash  string
 		)
+		maxFailures := defaultMaxFailures
+		banDuration := defaultBanDuration
 		if cfg != nil {
 			allowRemote = cfg.RemoteManagement.AllowRemote
 			secretHash = cfg.RemoteManagement.SecretKey
+			if cfg.RemoteManagement.MaxAuthFailures < 0 {
+				// Negative value disables the ban mechanism entirely.
+				maxFailures = 0
+			} else if cfg.RemoteManagement.MaxAuthFailures > 0 {
+				maxFailures = cfg.RemoteManagement.MaxAuthFailures
+			}
+			if d := cfg.RemoteManagement.AuthBanDuration; d != "" {
+				if parsed, err := time.ParseDuration(d); err == nil {
+					banDuration = parsed
+				}
+			}
 		}
 		if h.allowRemoteOverride {
 			allowRemote = true
@@ -208,42 +222,46 @@ func (h *Handler) Middleware() gin.HandlerFunc {
 
 		fail := func() {}
 		if !localClient {
-			h.attemptsMu.Lock()
-			ai := h.failedAttempts[clientIP]
-			if ai != nil {
-				if !ai.blockedUntil.IsZero() {
-					if time.Now().Before(ai.blockedUntil) {
-						remaining := time.Until(ai.blockedUntil).Round(time.Second)
-						h.attemptsMu.Unlock()
-						c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": fmt.Sprintf("IP banned due to too many failed attempts. Try again in %s", remaining)})
-						return
+			if maxFailures > 0 {
+				// Check existing ban
+				h.attemptsMu.Lock()
+				ai := h.failedAttempts[clientIP]
+				if ai != nil {
+					if !ai.blockedUntil.IsZero() {
+						if time.Now().Before(ai.blockedUntil) {
+							remaining := time.Until(ai.blockedUntil).Round(time.Second)
+							h.attemptsMu.Unlock()
+							c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": fmt.Sprintf("IP banned due to too many failed attempts. Try again in %s", remaining)})
+							return
+						}
+						ai.blockedUntil = time.Time{}
+						ai.count = 0
 					}
-					// Ban expired, reset state
-					ai.blockedUntil = time.Time{}
-					ai.count = 0
 				}
+				h.attemptsMu.Unlock()
 			}
-			h.attemptsMu.Unlock()
 
 			if !allowRemote {
 				c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "remote management disabled"})
 				return
 			}
 
-			fail = func() {
-				h.attemptsMu.Lock()
-				aip := h.failedAttempts[clientIP]
-				if aip == nil {
-					aip = &attemptInfo{}
-					h.failedAttempts[clientIP] = aip
+			if maxFailures > 0 {
+				fail = func() {
+					h.attemptsMu.Lock()
+					aip := h.failedAttempts[clientIP]
+					if aip == nil {
+						aip = &attemptInfo{}
+						h.failedAttempts[clientIP] = aip
+					}
+					aip.count++
+					aip.lastActivity = time.Now()
+					if aip.count >= maxFailures {
+						aip.blockedUntil = time.Now().Add(banDuration)
+						aip.count = 0
+					}
+					h.attemptsMu.Unlock()
 				}
-				aip.count++
-				aip.lastActivity = time.Now()
-				if aip.count >= maxFailures {
-					aip.blockedUntil = time.Now().Add(banDuration)
-					aip.count = 0
-				}
-				h.attemptsMu.Unlock()
 			}
 		}
 		if secretHash == "" && envSecret == "" {
