@@ -948,7 +948,7 @@ func buildRestrictionEntry(scope, model string, status coreauth.Status, statusMe
 }
 
 func isActiveRestriction(status coreauth.Status, unavailable bool, nextRetryAfter time.Time, lastError *coreauth.Error, quota coreauth.QuotaState, now time.Time) bool {
-	hasErrorState := status == coreauth.StatusError || unavailable || lastError != nil
+	hasErrorState := status == coreauth.StatusError || status == coreauth.StatusRevoked || unavailable || lastError != nil
 	hasActiveRetry := !nextRetryAfter.IsZero() && nextRetryAfter.After(now)
 	hasActiveQuota := quota.Exceeded && (quota.NextRecoverAt.IsZero() || quota.NextRecoverAt.After(now))
 	return hasErrorState || hasActiveRetry || hasActiveQuota

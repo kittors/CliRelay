@@ -1516,6 +1516,10 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 					shouldSuspendModel = true
 					shouldRefreshAuth = true
 					auth.NextRefreshAfter = time.Time{}
+					if isCredentialRevokedMessage(result.Error) {
+						auth.Status = StatusRevoked
+						auth.StatusMessage = "credential_revoked"
+					}
 				case 402, 403:
 					next := now.Add(30 * time.Minute)
 					state.NextRetryAfter = next
@@ -1559,7 +1563,9 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 					state.NextRetryAfter = time.Time{}
 				}
 
-				auth.Status = StatusError
+				if auth.Status != StatusRevoked {
+					auth.Status = StatusError
+				}
 				auth.UpdatedAt = now
 				updateAggregatedAvailability(auth, now)
 			} else {
@@ -1567,6 +1573,10 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 				if statusCodeFromResult(result.Error) == 401 {
 					shouldRefreshAuth = true
 					auth.NextRefreshAfter = time.Time{}
+					if isCredentialRevokedMessage(result.Error) {
+						auth.Status = StatusRevoked
+						auth.StatusMessage = "credential_revoked"
+					}
 				}
 			}
 		}
@@ -1706,6 +1716,9 @@ func hasModelError(auth *Auth, now time.Time) bool {
 
 func clearAuthStateOnSuccess(auth *Auth, now time.Time) {
 	if auth == nil {
+		return
+	}
+	if auth.Status == StatusRevoked {
 		return
 	}
 	auth.Unavailable = false
@@ -2612,13 +2625,8 @@ func (m *Manager) refreshAuth(ctx context.Context, id string) {
 			current.NextRefreshAfter = now.Add(refreshFailureBackoff)
 			current.LastError = &Error{Message: err.Error()}
 			if permanent {
-				if supportsRefreshTokenRaceRecovery(current) && canKeepRefreshFailureActive(current, now) {
-					current.Status = StatusActive
-					current.StatusMessage = ""
-				} else {
-					current.Status = StatusError
-					current.StatusMessage = err.Error()
-				}
+				current.Status = StatusRevoked
+				current.StatusMessage = "credential_revoked"
 			}
 			current.UpdatedAt = now
 			m.auths[id] = current
@@ -2831,6 +2839,18 @@ func authAccessTokenUsable(auth *Auth, now time.Time) bool {
 	}
 	expiry, hasExpiry := auth.ExpirationTime()
 	return !hasExpiry || expiry.After(now)
+}
+
+func isCredentialRevokedMessage(err *Error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Message)
+	return strings.Contains(msg, "invalidated") ||
+		strings.Contains(msg, "revoked") ||
+		strings.Contains(msg, "banned") ||
+		strings.Contains(msg, "suspended") ||
+		strings.Contains(msg, "account has been")
 }
 
 func authRefreshToken(auth *Auth) string {

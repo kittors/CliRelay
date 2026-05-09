@@ -358,6 +358,9 @@ func clearQuotaAuthState(auth *Auth, now time.Time) bool {
 	if auth == nil {
 		return false
 	}
+	if auth.Status == StatusRevoked {
+		return false
+	}
 	changed := auth.Unavailable || auth.Status != StatusActive || auth.StatusMessage != "" || !auth.NextRetryAfter.IsZero() || auth.LastError != nil || auth.Quota != (QuotaState{})
 	auth.Unavailable = false
 	auth.Status = StatusActive

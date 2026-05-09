@@ -122,11 +122,11 @@ func TestRefreshAuth_PermanentError_MarksCredentialUnavailable(t *testing.T) {
 	if current.LastError == nil || current.LastError.Message == "" {
 		t.Fatal("expected LastError to be set after permanent error")
 	}
-	if current.Status != StatusError {
-		t.Fatalf("expected StatusError after permanent error, got %q", current.Status)
+	if current.Status != StatusRevoked {
+		t.Fatalf("expected StatusRevoked after permanent error, got %q", current.Status)
 	}
-	if current.StatusMessage == "" {
-		t.Fatal("expected StatusMessage to be set after permanent error")
+	if current.StatusMessage != "credential_revoked" {
+		t.Fatalf("expected StatusMessage 'credential_revoked', got %q", current.StatusMessage)
 	}
 
 	// Store.Delete should NOT have been called: refresh failures are not proof
@@ -169,11 +169,11 @@ func TestRefreshAuth_PermanentError_KeepsUsableAccessTokenActive(t *testing.T) {
 	if !ok {
 		t.Fatal("expected auth to remain in memory after permanent error")
 	}
-	if current.Status != StatusActive {
-		t.Fatalf("expected usable access token to remain active, got %q", current.Status)
+	if current.Status != StatusRevoked {
+		t.Fatalf("expected usable access token to be marked revoked after permanent refresh failure, got %q", current.Status)
 	}
-	if current.StatusMessage != "" {
-		t.Fatalf("expected empty StatusMessage, got %q", current.StatusMessage)
+	if current.StatusMessage != "credential_revoked" {
+		t.Fatalf("expected StatusMessage 'credential_revoked', got %q", current.StatusMessage)
 	}
 	if current.LastError == nil || current.LastError.Message == "" {
 		t.Fatal("expected LastError to retain refresh failure diagnostics")
@@ -479,11 +479,11 @@ func TestRefreshAuth_PermanentError_DoesNotKeepGenericProviderActive(t *testing.
 	if !ok {
 		t.Fatal("expected auth to remain in memory after permanent error")
 	}
-	if current.Status != StatusError {
-		t.Fatalf("expected generic provider to preserve permanent-error semantics, got %q", current.Status)
+	if current.Status != StatusRevoked {
+		t.Fatalf("expected generic provider to be marked revoked after permanent refresh failure, got %q", current.Status)
 	}
-	if current.StatusMessage == "" {
-		t.Fatal("expected StatusMessage to be set after generic permanent error")
+	if current.StatusMessage != "credential_revoked" {
+		t.Fatalf("expected StatusMessage 'credential_revoked', got %q", current.StatusMessage)
 	}
 }
 
@@ -853,5 +853,180 @@ func TestRefreshAuth_Success_DoesNotResumeNonUnauthorizedModels(t *testing.T) {
 	}
 	if quotaState.StatusMessage != "quota" {
 		t.Fatalf("expected quota model StatusMessage to remain 'quota', got %q", quotaState.StatusMessage)
+	}
+}
+
+func TestMarkResult_401_Invalidated_SetsRevokedStatus(t *testing.T) {
+	store := &trackingStore{}
+	mgr := NewManager(store, nil, nil)
+
+	auth := &Auth{
+		ID:       "test-auth-revoked-401",
+		Provider: "codex",
+		Status:   StatusActive,
+		Metadata: map[string]any{
+			"type":          "codex",
+			"access_token":  "some-token",
+			"refresh_token": "some-refresh-token",
+		},
+	}
+
+	ctx := WithSkipPersist(context.Background())
+	if _, err := mgr.Register(ctx, auth); err != nil {
+		t.Fatalf("Register failed: %v", err)
+	}
+
+	mgr.MarkResult(context.Background(), Result{
+		AuthID: auth.ID,
+		Model:  "codex-mini",
+		Error: &Error{
+			Message:    "Your authentication token has been invalidated. Please try signing in again.",
+			HTTPStatus: 401,
+		},
+	})
+
+	current, ok := mgr.GetByID(auth.ID)
+	if !ok {
+		t.Fatal("expected auth to exist")
+	}
+	if current.Status != StatusRevoked {
+		t.Fatalf("expected status revoked, got %q", current.Status)
+	}
+	if current.StatusMessage != "credential_revoked" {
+		t.Fatalf("expected status_message 'credential_revoked', got %q", current.StatusMessage)
+	}
+}
+
+func TestMarkResult_401_Expired_NotRevokedStatus(t *testing.T) {
+	store := &trackingStore{}
+	mgr := NewManager(store, nil, nil)
+
+	auth := &Auth{
+		ID:       "test-auth-expired-401",
+		Provider: "codex",
+		Status:   StatusActive,
+		Metadata: map[string]any{
+			"type":          "codex",
+			"access_token":  "some-token",
+			"refresh_token": "some-refresh-token",
+		},
+	}
+
+	ctx := WithSkipPersist(context.Background())
+	if _, err := mgr.Register(ctx, auth); err != nil {
+		t.Fatalf("Register failed: %v", err)
+	}
+
+	mgr.MarkResult(context.Background(), Result{
+		AuthID: auth.ID,
+		Model:  "codex-mini",
+		Error: &Error{
+			Message:    "token_expired",
+			HTTPStatus: 401,
+		},
+	})
+
+	current, ok := mgr.GetByID(auth.ID)
+	if !ok {
+		t.Fatal("expected auth to exist")
+	}
+	if current.Status == StatusRevoked {
+		t.Fatal("expected status NOT to be revoked for simple token expiration")
+	}
+}
+
+func TestRefreshAuth_PermanentError_SetsRevokedStatus(t *testing.T) {
+	store := &trackingStore{}
+	mgr := NewManager(store, nil, nil)
+
+	auth := &Auth{
+		ID:       "test-auth-permanent-revoked",
+		Provider: "test-provider",
+		Status:   StatusActive,
+		Metadata: map[string]any{
+			"type":          "codex",
+			"access_token":  "old-access-token",
+			"refresh_token": "old-refresh-token",
+		},
+	}
+
+	ctx := WithSkipPersist(context.Background())
+	if _, err := mgr.Register(ctx, auth); err != nil {
+		t.Fatalf("Register failed: %v", err)
+	}
+	mgr.RegisterExecutor(&stubExecutor{
+		refreshErr: &PermanentAuthError{
+			Reason: "credential revoked or expired",
+			Cause:  fmt.Errorf("invalid_grant"),
+		},
+	})
+
+	mgr.refreshAuth(context.Background(), auth.ID)
+
+	current, ok := mgr.GetByID(auth.ID)
+	if !ok {
+		t.Fatal("expected auth to remain after permanent refresh failure")
+	}
+	if current.Status != StatusRevoked {
+		t.Fatalf("expected status revoked, got %q", current.Status)
+	}
+	if current.StatusMessage != "credential_revoked" {
+		t.Fatalf("expected status_message 'credential_revoked', got %q", current.StatusMessage)
+	}
+}
+
+func TestClearAuthStateOnSuccess_DoesNotClearRevoked(t *testing.T) {
+	auth := &Auth{
+		Status:        StatusRevoked,
+		StatusMessage: "credential_revoked",
+		Unavailable:   true,
+	}
+	clearAuthStateOnSuccess(auth, time.Now())
+	if auth.Status != StatusRevoked {
+		t.Fatalf("expected revoked status to be preserved, got %q", auth.Status)
+	}
+	if auth.StatusMessage != "credential_revoked" {
+		t.Fatalf("expected status_message to be preserved, got %q", auth.StatusMessage)
+	}
+}
+
+func TestClearQuotaAuthState_DoesNotClearRevoked(t *testing.T) {
+	auth := &Auth{
+		Status:        StatusRevoked,
+		StatusMessage: "credential_revoked",
+		Unavailable:   true,
+	}
+	changed := clearQuotaAuthState(auth, time.Now())
+	if changed {
+		t.Fatal("expected no change for revoked auth")
+	}
+	if auth.Status != StatusRevoked {
+		t.Fatalf("expected revoked status to be preserved, got %q", auth.Status)
+	}
+}
+
+func TestIsCredentialRevokedMessage(t *testing.T) {
+	tests := []struct {
+		message  string
+		expected bool
+	}{
+		{"Your authentication token has been invalidated. Please try signing in again.", true},
+		{"Token has been revoked", true},
+		{"Your account has been suspended", true},
+		{"Your account has been banned", true},
+		{"token_expired", false},
+		{"rate limit exceeded", false},
+		{"internal server error", false},
+		{"", false},
+	}
+	for _, tt := range tests {
+		var err *Error
+		if tt.message != "" {
+			err = &Error{Message: tt.message}
+		}
+		got := isCredentialRevokedMessage(err)
+		if got != tt.expected {
+			t.Errorf("isCredentialRevokedMessage(%q) = %v, want %v", tt.message, got, tt.expected)
+		}
 	}
 }
