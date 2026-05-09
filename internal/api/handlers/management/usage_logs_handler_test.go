@@ -786,3 +786,111 @@ func TestGetPublicUsageLogs_RejectsOversizedPOSTBody(t *testing.T) {
 		t.Fatalf("expected oversized body rejection, body=%s", rec.Body.String())
 	}
 }
+
+func TestDeleteUsageLogsClearsRequestLogDatabase(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "usage.db")
+	if err := usage.InitDB(dbPath, config.RequestLogStorageConfig{
+		StoreContent:           true,
+		ContentRetentionDays:   30,
+		CleanupIntervalMinutes: 1440,
+	}, time.UTC); err != nil {
+		t.Fatalf("InitDB: %v", err)
+	}
+	t.Cleanup(func() {
+		usage.CloseDB()
+		_ = os.Remove(dbPath)
+		_ = os.Remove(dbPath + "-wal")
+		_ = os.Remove(dbPath + "-shm")
+	})
+
+	now := time.Now().UTC()
+	usage.InsertLog("sk-target", "", "gpt-5.4", "codex", "Codex", "auth-1", false, now, 123, 45, usage.TokenStats{
+		InputTokens: 1, OutputTokens: 2, TotalTokens: 3,
+	}, `{"messages":[{"role":"user","content":"hello"}]}`, `{"id":"resp_1"}`)
+
+	h := &Handler{cfg: &config.Config{}}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodDelete, "/usage/logs", nil)
+
+	h.DeleteUsageLogs(c)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d, body=%s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	var payload struct {
+		DeletedLogs     int64 `json:"deleted_logs"`
+		DeletedContents int64 `json:"deleted_contents"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if payload.DeletedLogs != 1 {
+		t.Fatalf("DeletedLogs = %d, want 1", payload.DeletedLogs)
+	}
+	if payload.DeletedContents != 1 {
+		t.Fatalf("DeletedContents = %d, want 1", payload.DeletedContents)
+	}
+
+	result, err := usage.QueryLogs(usage.LogQueryParams{Page: 1, Size: 10, Days: 1})
+	if err != nil {
+		t.Fatalf("QueryLogs() after delete error = %v", err)
+	}
+	if len(result.Items) != 0 {
+		t.Fatalf("expected 0 request logs after delete, got %d", len(result.Items))
+	}
+}
+
+func TestDeleteUsageLogsSupportsSelectiveBodyCleanup(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "usage.db")
+	if err := usage.InitDB(dbPath, config.RequestLogStorageConfig{
+		StoreContent:           true,
+		ContentRetentionDays:   30,
+		CleanupIntervalMinutes: 1440,
+	}, time.UTC); err != nil {
+		t.Fatalf("InitDB: %v", err)
+	}
+	t.Cleanup(func() {
+		usage.CloseDB()
+		_ = os.Remove(dbPath)
+		_ = os.Remove(dbPath + "-wal")
+		_ = os.Remove(dbPath + "-shm")
+	})
+
+	now := time.Now().UTC()
+	usage.InsertLogWithDetails("sk-target", "Primary", "gpt-5.4", "codex", "Codex", "auth-1", false, now, 123, 45, usage.TokenStats{
+		InputTokens: 1, OutputTokens: 2, TotalTokens: 3,
+	}, `{"messages":[{"role":"user","content":"hello"}]}`, `{"id":"resp_1"}`, `{"request_id":"req-1"}`)
+
+	h := &Handler{cfg: &config.Config{}}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodDelete, "/usage/logs", strings.NewReader(`{"clear_body_content":true,"clear_detail_content":true}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	h.DeleteUsageLogs(c)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d, body=%s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	result, err := usage.QueryLogs(usage.LogQueryParams{Page: 1, Size: 10, Days: 1})
+	if err != nil {
+		t.Fatalf("QueryLogs() after selective delete error = %v", err)
+	}
+	if len(result.Items) != 1 {
+		t.Fatalf("expected 1 request log after selective cleanup, got %d", len(result.Items))
+	}
+	if result.Items[0].HasContent {
+		t.Fatalf("HasContent = true, want false after selective cleanup")
+	}
+}

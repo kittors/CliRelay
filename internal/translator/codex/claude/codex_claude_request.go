@@ -172,7 +172,10 @@ func ConvertClaudeRequestToCodex(modelName string, inputRawJSON []byte, _ bool) 
 		// Claude Code may set defer_loading on tools when tool schemas are deferred.
 		// The Codex endpoint we proxy to rejects defer_loading without tool_search, so strip the flag.
 		if toolsResult.Get("#(defer_loading=true)").Exists() {
-			rawJSON, _ = sjson.DeleteBytes(rawJSON, "tools.#.defer_loading")
+			toolsResult.ForEach(func(i, _ gjson.Result) bool {
+				rawJSON, _ = sjson.DeleteBytes(rawJSON, fmt.Sprintf("tools.%d.defer_loading", i.Int()))
+				return true
+			})
 			rootResult = gjson.ParseBytes(rawJSON)
 			toolsResult = rootResult.Get("tools")
 		}

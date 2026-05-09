@@ -150,7 +150,7 @@ func (h *Handler) PostProxyPoolCheck(c *gin.Context) {
 }
 
 func checkProxyConnectivity(ctx context.Context, proxyURL string, testURL string) (int, error) {
-	transport := util.BuildProxyTransport(proxyURL)
+	transport := util.BuildProxyTransport(proxyURL, false)
 	if transport == nil {
 		return 0, fmt.Errorf("failed to build proxy transport")
 	}

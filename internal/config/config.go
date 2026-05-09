@@ -694,6 +694,9 @@ type OpenAICompatibilityAPIKey struct {
 	// APIKey is the authentication key for accessing the external API services.
 	APIKey string `yaml:"api-key" json:"api-key"`
 
+	// Disabled marks this API key entry as inactive while preserving the config.
+	Disabled bool `yaml:"disabled,omitempty" json:"disabled,omitempty"`
+
 	// ProxyURL overrides the global proxy setting for this API key if provided.
 	ProxyURL string `yaml:"proxy-url,omitempty" json:"proxy-url,omitempty"`
 

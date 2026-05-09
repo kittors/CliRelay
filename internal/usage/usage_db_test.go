@@ -88,7 +88,7 @@ func TestQueryDailyCallsByAuthIndexesBucketsByProjectTimezone(t *testing.T) {
 func TestQuotaSnapshotPointsKeepFineGrainedSeries(t *testing.T) {
 	initTestUsageDB(t, config.RequestLogStorageConfig{})
 
-	recordedAt := time.Date(2026, 4, 30, 16, 0, 0, 0, time.UTC)
+	recordedAt := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
 	resetAt := recordedAt.Add(5 * time.Hour)
 	remaining := 100.0
 
@@ -959,5 +959,142 @@ func TestDeleteLogsByAPIKeyRemovesLogsAndContent(t *testing.T) {
 	// Only sk-other's content should remain (1 row)
 	if contentCount != 1 {
 		t.Fatalf("expected 1 content row (sk-other only), got %d", contentCount)
+	}
+}
+
+func TestClearAllRequestLogsRemovesRequestLogTablesOnly(t *testing.T) {
+	initTestUsageDB(t, config.RequestLogStorageConfig{
+		StoreContent:           true,
+		ContentRetentionDays:   30,
+		CleanupIntervalMinutes: 1440,
+	})
+
+	if err := UpsertAPIKey(APIKeyRow{
+		Key:       "sk-config-keep",
+		Name:      "Config Keep",
+		CreatedAt: time.Now().UTC().Format(time.RFC3339),
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339),
+	}); err != nil {
+		t.Fatalf("UpsertAPIKey() error = %v", err)
+	}
+
+	timestamp := time.Now().UTC()
+	input := `{"messages":[{"role":"user","content":"hello"}]}`
+	output := `{"id":"resp_1","output":"done"}`
+
+	InsertLog("sk-target", "", "gpt-test", "source", "channel", "auth-1", false, timestamp, 100, 10, TokenStats{
+		InputTokens: 10, OutputTokens: 20, TotalTokens: 30,
+	}, input, output)
+	InsertLog("sk-other", "", "gpt-test", "source", "channel", "auth-2", false, timestamp, 200, 20, TokenStats{
+		InputTokens: 5, OutputTokens: 10, TotalTokens: 15,
+	}, input, output)
+
+	result, err := QueryLogs(LogQueryParams{Page: 1, Size: 10, Days: 1})
+	if err != nil {
+		t.Fatalf("QueryLogs() error = %v", err)
+	}
+	if len(result.Items) != 2 {
+		t.Fatalf("expected 2 log rows before cleanup, got %d", len(result.Items))
+	}
+
+	cleared, err := ClearAllRequestLogs()
+	if err != nil {
+		t.Fatalf("ClearAllRequestLogs() error = %v", err)
+	}
+	if cleared.DeletedLogs != 2 {
+		t.Fatalf("DeletedLogs = %d, want 2", cleared.DeletedLogs)
+	}
+	if cleared.DeletedContents != 2 {
+		t.Fatalf("DeletedContents = %d, want 2", cleared.DeletedContents)
+	}
+
+	result, err = QueryLogs(LogQueryParams{Page: 1, Size: 10, Days: 1})
+	if err != nil {
+		t.Fatalf("QueryLogs() after cleanup error = %v", err)
+	}
+	if len(result.Items) != 0 {
+		t.Fatalf("expected 0 log rows after cleanup, got %d", len(result.Items))
+	}
+
+	db := getDB()
+	var contentCount int
+	if err := db.QueryRow("SELECT COUNT(*) FROM request_log_content").Scan(&contentCount); err != nil {
+		t.Fatalf("count content rows: %v", err)
+	}
+	if contentCount != 0 {
+		t.Fatalf("expected 0 content rows after cleanup, got %d", contentCount)
+	}
+
+	keys := ListAPIKeys()
+	if len(keys) != 1 || keys[0].Key != "sk-config-keep" {
+		t.Fatalf("ListAPIKeys() = %#v, want preserved api key row", keys)
+	}
+}
+
+func TestClearRequestLogsClearsBodiesButKeepsRequestRows(t *testing.T) {
+	initTestUsageDB(t, config.RequestLogStorageConfig{
+		StoreContent:           true,
+		ContentRetentionDays:   30,
+		CleanupIntervalMinutes: 1440,
+	})
+
+	now := time.Now().UTC()
+	details := `{"request_id":"req-1","provider":"codex"}`
+	InsertLogWithDetails("sk-target", "Primary", "gpt-5.4", "codex", "Codex", "auth-1", false, now, 123, 45, TokenStats{
+		InputTokens: 11, OutputTokens: 22, TotalTokens: 33,
+	}, `{"messages":[{"role":"user","content":"hello"}]}`, `{"id":"resp_1"}`, details)
+
+	before, err := GetRequestLogStorageBytes()
+	if err != nil {
+		t.Fatalf("GetRequestLogStorageBytes() before error = %v", err)
+	}
+	if before <= 0 {
+		t.Fatalf("expected request log storage bytes before cleanup, got %d", before)
+	}
+
+	result, err := ClearRequestLogs(ClearRequestLogsOptions{
+		ClearBodyContent:   true,
+		ClearDetailContent: true,
+	})
+	if err != nil {
+		t.Fatalf("ClearRequestLogs() error = %v", err)
+	}
+	if result.DeletedLogs != 0 {
+		t.Fatalf("DeletedLogs = %d, want 0", result.DeletedLogs)
+	}
+
+	rows, err := QueryLogs(LogQueryParams{Page: 1, Size: 10, Days: 1})
+	if err != nil {
+		t.Fatalf("QueryLogs() after cleanup error = %v", err)
+	}
+	if len(rows.Items) != 1 {
+		t.Fatalf("expected 1 request log row after cleanup, got %d", len(rows.Items))
+	}
+	if rows.Items[0].HasContent {
+		t.Fatalf("HasContent = true, want false after content cleanup")
+	}
+
+	content, err := QueryLogContent(rows.Items[0].ID)
+	if err != nil {
+		t.Fatalf("QueryLogContent() after cleanup error = %v", err)
+	}
+	if content.InputContent != "" || content.OutputContent != "" {
+		t.Fatalf("expected empty input/output content after cleanup, got input=%q output=%q", content.InputContent, content.OutputContent)
+	}
+
+	part, err := QueryLogContentPart(rows.Items[0].ID, "details")
+	if err != nil {
+		t.Fatalf("QueryLogContentPart(details) after cleanup error = %v", err)
+	}
+	if part.Content != "" {
+		t.Fatalf("expected empty details content after cleanup, got %q", part.Content)
+	}
+
+	after, err := GetRequestLogStorageBytes()
+	if err != nil {
+		t.Fatalf("GetRequestLogStorageBytes() after error = %v", err)
+	}
+	if after != 0 {
+		t.Fatalf("expected request log storage bytes to be 0 after cleanup, got %d", after)
 	}
 }

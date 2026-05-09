@@ -27,6 +27,8 @@ type utlsRoundTripper struct {
 	pending map[string]*sync.Cond
 	// dialer is used to create network connections, supporting proxies
 	dialer proxy.Dialer
+	// preferIPv4 forces IPv4-only dialing when true
+	preferIPv4 bool
 }
 
 // newUtlsRoundTripper creates a new utls-based round tripper with optional proxy support
@@ -50,6 +52,7 @@ func newUtlsRoundTripper(cfg *config.SDKConfig) *utlsRoundTripper {
 		connections: make(map[string]*http2.ClientConn),
 		pending:     make(map[string]*sync.Cond),
 		dialer:      dialer,
+		preferIPv4:  cfg != nil && cfg.PreferIPv4,
 	}
 }
 
@@ -103,7 +106,11 @@ func (t *utlsRoundTripper) getOrCreateConnection(host, addr string) (*http2.Clie
 
 // createConnection creates a new HTTP/2 connection with Firefox TLS fingerprint
 func (t *utlsRoundTripper) createConnection(host, addr string) (*http2.ClientConn, error) {
-	conn, err := t.dialer.Dial("tcp", addr)
+	network := "tcp"
+	if t.preferIPv4 {
+		network = "tcp4"
+	}
+	conn, err := t.dialer.Dial(network, addr)
 	if err != nil {
 		return nil, err
 	}
