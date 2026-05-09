@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"mime"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -263,11 +265,29 @@ func TestOpenAICompatExecutorPassesImageGenerationsToImagesEndpoint(t *testing.T
 
 func TestOpenAICompatExecutorPassesImageEditsToImagesEndpointByDefault(t *testing.T) {
 	var gotPath string
-	var gotBody []byte
+	var gotForm map[string][]string
+	var gotImage []byte
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
-		body, _ := io.ReadAll(r.Body)
-		gotBody = body
+		mediaType, params, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+		if err != nil {
+			t.Fatalf("parse content type: %v", err)
+		}
+		if mediaType != "multipart/form-data" {
+			t.Fatalf("content type = %q, want multipart/form-data", mediaType)
+		}
+		reader := multipart.NewReader(r.Body, params["boundary"])
+		form, err := reader.ReadForm(1 << 20)
+		if err != nil {
+			t.Fatalf("read multipart form: %v", err)
+		}
+		gotForm = form.Value
+		file, err := form.File["image"][0].Open()
+		if err != nil {
+			t.Fatalf("open image part: %v", err)
+		}
+		gotImage, _ = io.ReadAll(file)
+		_ = file.Close()
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"created":1770000000,"data":[{"b64_json":"aW1hZ2U="}]}`))
 	}))
@@ -292,11 +312,11 @@ func TestOpenAICompatExecutorPassesImageEditsToImagesEndpointByDefault(t *testin
 	if gotPath != "/v1/images/edits" {
 		t.Fatalf("path = %q, want /v1/images/edits", gotPath)
 	}
-	if !gjson.GetBytes(gotBody, "image_files").Exists() {
-		t.Fatalf("image_files should pass through upstream body: %s", string(gotBody))
+	if firstFormValue(gotForm, "prompt") != "put logo on shirt" {
+		t.Fatalf("prompt = %q", firstFormValue(gotForm, "prompt"))
 	}
-	if gjson.GetBytes(gotBody, "messages").Exists() {
-		t.Fatalf("unexpected chat messages in image edit body: %s", string(gotBody))
+	if string(gotImage) != "hello" {
+		t.Fatalf("image data = %q", string(gotImage))
 	}
 	if string(resp.Payload) != `{"created":1770000000,"data":[{"b64_json":"aW1hZ2U="}]}` {
 		t.Fatalf("payload = %s", string(resp.Payload))
@@ -356,6 +376,86 @@ func TestOpenAICompatExecutorConvertsImageEditsToImageGenerations(t *testing.T) 
 	if gjson.GetBytes(gotBody, "image_files").Exists() {
 		t.Fatalf("image_files should be removed from upstream body: %s", string(gotBody))
 	}
+}
+
+func TestOpenAICompatExecutorImageEditsPassthroughUsesNativeEndpoint(t *testing.T) {
+	var gotPath string
+	var gotForm map[string][]string
+	var gotImage []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		mediaType, params, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+		if err != nil {
+			t.Fatalf("parse content type: %v", err)
+		}
+		if mediaType != "multipart/form-data" {
+			t.Fatalf("content type = %q, want multipart/form-data", mediaType)
+		}
+		reader := multipart.NewReader(r.Body, params["boundary"])
+		form, err := reader.ReadForm(1 << 20)
+		if err != nil {
+			t.Fatalf("read multipart form: %v", err)
+		}
+		gotForm = form.Value
+		file, err := form.File["image"][0].Open()
+		if err != nil {
+			t.Fatalf("open image part: %v", err)
+		}
+		gotImage, _ = io.ReadAll(file)
+		_ = file.Close()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"created":1770000000,"data":[{"b64_json":"aW1hZ2U="}]}`))
+	}))
+	defer server.Close()
+
+	executor := NewOpenAICompatExecutor("qwen tokenplan", &config.Config{
+		OpenAICompatibility: []config.OpenAICompatibility{
+			{Name: "qwen tokenplan", ImageEditsMode: "passthrough"},
+		},
+	})
+	auth := &cliproxyauth.Auth{
+		Provider: "qwen tokenplan",
+		Attributes: map[string]string{
+			"base_url":    server.URL + "/v1",
+			"api_key":     "test",
+			"compat_name": "qwen tokenplan",
+		},
+	}
+	payload := []byte(`{
+		"model":"qwen-image-2.0",
+		"prompt":"extract the print",
+		"size":"1024x1024",
+		"image_files":[{"file_name":"shirt.png","content_type":"image/png","data_base64":"aGVsbG8="}]
+	}`)
+	_, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "qwen-image-2.0",
+		Payload: payload,
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai"),
+		Alt:          "images/edits",
+	})
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+	if gotPath != "/v1/images/edits" {
+		t.Fatalf("path = %q, want /v1/images/edits", gotPath)
+	}
+	if string(gotImage) != "hello" {
+		t.Fatalf("image data = %q", string(gotImage))
+	}
+	if got := firstFormValue(gotForm, "prompt"); got != "extract the print" {
+		t.Fatalf("prompt = %q", got)
+	}
+	if got := firstFormValue(gotForm, "model"); got != "qwen-image-2.0" {
+		t.Fatalf("model = %q", got)
+	}
+}
+
+func firstFormValue(values map[string][]string, key string) string {
+	if len(values[key]) == 0 {
+		return ""
+	}
+	return values[key][0]
 }
 
 func TestOpenAICompatExecutorNormalizesImageGenerationsInputMessages(t *testing.T) {

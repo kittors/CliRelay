@@ -1811,6 +1811,8 @@ func normalizeOpenAICompatibilityEntry(entry *config.OpenAICompatibility) {
 
 func normalizeOpenAICompatImageEditsMode(mode string) string {
 	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "passthrough", "native", "image-edits":
+		return "passthrough"
 	case "chat-multimodal":
 		return "chat-multimodal"
 	case "image-generations":
