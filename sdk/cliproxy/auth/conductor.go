@@ -2629,8 +2629,6 @@ func (m *Manager) refreshAuth(ctx context.Context, id string) {
 	if updated == nil {
 		updated = cloned
 	}
-	// Preserve runtime created by the executor during Refresh.
-	// If executor didn't set one, fall back to the previous runtime.
 	if updated.Runtime == nil {
 		updated.Runtime = auth.Runtime
 	}
@@ -2638,7 +2636,47 @@ func (m *Manager) refreshAuth(ctx context.Context, id string) {
 	updated.NextRefreshAfter = time.Time{}
 	updated.LastError = nil
 	updated.UpdatedAt = now
+
+	resumedModels := m.resumeSuspendedModelsAfterRefresh(updated, now)
+
 	_, _ = m.Update(ctx, updated)
+
+	for _, model := range resumedModels {
+		registry.GetGlobalRegistry().ResumeClientModel(id, model)
+	}
+}
+
+func (m *Manager) resumeSuspendedModelsAfterRefresh(auth *Auth, now time.Time) []string {
+	if auth == nil || len(auth.ModelStates) == 0 {
+		return nil
+	}
+	var resumed []string
+	for model, state := range auth.ModelStates {
+		if state == nil || !state.Unavailable {
+			continue
+		}
+		if state.NextRetryAfter.IsZero() || !state.NextRetryAfter.After(now) {
+			continue
+		}
+		if state.StatusMessage != "unauthorized" {
+			continue
+		}
+		resetModelState(state, now)
+		resumed = append(resumed, model)
+	}
+	if len(resumed) == 0 {
+		return nil
+	}
+	updateAggregatedAvailability(auth, now)
+	if !hasModelError(auth, now) {
+		auth.LastError = nil
+		auth.StatusMessage = ""
+		auth.Status = StatusActive
+	}
+	auth.NextRetryAfter = time.Time{}
+	auth.Unavailable = false
+	auth.UpdatedAt = now
+	return resumed
 }
 
 func (m *Manager) recoverRotatedRefreshToken(ctx context.Context, id string, used *Auth, now time.Time, refreshErr error) bool {

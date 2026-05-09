@@ -731,3 +731,127 @@ func TestPermanentAuthError_Unwrap(t *testing.T) {
 		t.Fatal("expected errors.Is to find cause through Unwrap")
 	}
 }
+
+func TestRefreshAuth_Success_ResumesUnauthorizedSuspendedModels(t *testing.T) {
+	store := &trackingStore{}
+	mgr := NewManager(store, nil, nil)
+
+	auth := &Auth{
+		ID:       "test-auth-refresh-resume",
+		Provider: "test-provider",
+		Status:   StatusError,
+		Metadata: map[string]any{
+			"type":          "codex",
+			"access_token":  "old-access-token",
+			"refresh_token": "old-refresh-token",
+			"expired":       time.Now().Add(-time.Minute).Format(time.RFC3339),
+		},
+		ModelStates: map[string]*ModelState{
+			"codex-mini": {
+				Unavailable:    true,
+				Status:         StatusError,
+				StatusMessage:  "unauthorized",
+				NextRetryAfter: time.Now().Add(30 * time.Minute),
+			},
+		},
+		Unavailable:    true,
+		NextRetryAfter: time.Now().Add(30 * time.Minute),
+	}
+
+	ctx := WithSkipPersist(context.Background())
+	if _, err := mgr.Register(ctx, auth); err != nil {
+		t.Fatalf("Register failed: %v", err)
+	}
+	mgr.RegisterExecutor(&stubExecutor{})
+
+	mgr.refreshAuth(context.Background(), auth.ID)
+
+	current, ok := mgr.GetByID(auth.ID)
+	if !ok {
+		t.Fatal("expected auth to remain after refresh")
+	}
+	if current.Unavailable {
+		t.Fatal("expected auth to no longer be unavailable after successful refresh")
+	}
+	if current.Status != StatusActive {
+		t.Fatalf("expected auth status Active, got %q", current.Status)
+	}
+	if !current.NextRetryAfter.IsZero() {
+		t.Fatalf("expected NextRetryAfter to be cleared, got %s", current.NextRetryAfter)
+	}
+	state, exists := current.ModelStates["codex-mini"]
+	if !exists || state == nil {
+		t.Fatal("expected model state to exist")
+	}
+	if state.Unavailable {
+		t.Fatal("expected model to no longer be unavailable after refresh")
+	}
+	if !state.NextRetryAfter.IsZero() {
+		t.Fatalf("expected model NextRetryAfter to be cleared, got %s", state.NextRetryAfter)
+	}
+	if state.StatusMessage != "" {
+		t.Fatalf("expected model StatusMessage to be cleared, got %q", state.StatusMessage)
+	}
+}
+
+func TestRefreshAuth_Success_DoesNotResumeNonUnauthorizedModels(t *testing.T) {
+	store := &trackingStore{}
+	mgr := NewManager(store, nil, nil)
+
+	auth := &Auth{
+		ID:       "test-auth-refresh-no-resume-quota",
+		Provider: "test-provider",
+		Status:   StatusError,
+		Metadata: map[string]any{
+			"type":          "codex",
+			"access_token":  "old-access-token",
+			"refresh_token": "old-refresh-token",
+			"expired":       time.Now().Add(-time.Minute).Format(time.RFC3339),
+		},
+		ModelStates: map[string]*ModelState{
+			"codex-mini": {
+				Unavailable:    true,
+				Status:         StatusError,
+				StatusMessage:  "unauthorized",
+				NextRetryAfter: time.Now().Add(30 * time.Minute),
+			},
+			"codex-pro": {
+				Unavailable:    true,
+				Status:         StatusError,
+				StatusMessage:  "quota",
+				NextRetryAfter: time.Now().Add(30 * time.Minute),
+				Quota: QuotaState{
+					Exceeded:      true,
+					Reason:        "quota",
+					NextRecoverAt: time.Now().Add(30 * time.Minute),
+				},
+			},
+		},
+		Unavailable:    true,
+		NextRetryAfter: time.Now().Add(30 * time.Minute),
+	}
+
+	ctx := WithSkipPersist(context.Background())
+	if _, err := mgr.Register(ctx, auth); err != nil {
+		t.Fatalf("Register failed: %v", err)
+	}
+	mgr.RegisterExecutor(&stubExecutor{})
+
+	mgr.refreshAuth(context.Background(), auth.ID)
+
+	current, ok := mgr.GetByID(auth.ID)
+	if !ok {
+		t.Fatal("expected auth to remain after refresh")
+	}
+
+	quotaState := current.ModelStates["codex-pro"]
+	if quotaState == nil {
+		t.Fatal("expected codex-pro model state to exist")
+	}
+	if !quotaState.Unavailable {
+		t.Fatal("expected quota-suspended model to remain unavailable")
+	}
+	if quotaState.StatusMessage != "quota" {
+		t.Fatalf("expected quota model StatusMessage to remain 'quota', got %q", quotaState.StatusMessage)
+	}
+}
