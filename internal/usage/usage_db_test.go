@@ -88,7 +88,7 @@ func TestQueryDailyCallsByAuthIndexesBucketsByProjectTimezone(t *testing.T) {
 func TestQuotaSnapshotPointsKeepFineGrainedSeries(t *testing.T) {
 	initTestUsageDB(t, config.RequestLogStorageConfig{})
 
-	recordedAt := time.Date(2026, 4, 30, 16, 0, 0, 0, time.UTC)
+	recordedAt := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
 	resetAt := recordedAt.Add(5 * time.Hour)
 	remaining := 100.0
 
