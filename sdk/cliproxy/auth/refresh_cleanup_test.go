@@ -63,7 +63,7 @@ func (e *stubExecutor) HttpRequest(_ context.Context, _ *Auth, _ *http.Request) 
 
 // --- tests ---
 
-func TestRefreshAuth_PermanentError_RemovesCredential(t *testing.T) {
+func TestRefreshAuth_PermanentError_MarksCredentialUnavailable(t *testing.T) {
 	store := &trackingStore{}
 	mgr := NewManager(store, nil, nil)
 
@@ -88,17 +88,27 @@ func TestRefreshAuth_PermanentError_RemovesCredential(t *testing.T) {
 	// Trigger refresh.
 	mgr.refreshAuth(context.Background(), "test-auth-1")
 
-	// Auth should be removed from memory.
-	if _, ok := mgr.GetByID("test-auth-1"); ok {
-		t.Fatal("expected auth to be removed from memory after permanent error")
+	current, ok := mgr.GetByID("test-auth-1")
+	if !ok {
+		t.Fatal("expected auth to remain in memory after permanent error")
+	}
+	if current.NextRefreshAfter.IsZero() {
+		t.Fatal("expected NextRefreshAfter to be set after permanent error")
+	}
+	if current.LastError == nil || current.LastError.Message == "" {
+		t.Fatal("expected LastError to be set after permanent error")
+	}
+	if current.Status != StatusError {
+		t.Fatalf("expected StatusError after permanent error, got %q", current.Status)
+	}
+	if current.StatusMessage == "" {
+		t.Fatal("expected StatusMessage to be set after permanent error")
 	}
 
-	// Store.Delete should have been called.
-	if got := store.deleteCount.Load(); got != 1 {
-		t.Fatalf("expected 1 Delete call, got %d", got)
-	}
-	if store.lastDeleted != "test-auth-1" {
-		t.Fatalf("expected Delete for 'test-auth-1', got '%s'", store.lastDeleted)
+	// Store.Delete should NOT have been called: refresh failures are not proof
+	// that the user intentionally removed the account.
+	if got := store.deleteCount.Load(); got != 0 {
+		t.Fatalf("expected 0 Delete calls, got %d", got)
 	}
 }
 

@@ -68,9 +68,9 @@ const (
 	quotaBackoffMax       = 30 * time.Minute
 )
 
-// PermanentAuthError indicates an unrecoverable authentication failure.
-// When an executor's Refresh method returns this error, the conductor
-// will automatically remove the credential from memory and disk.
+// PermanentAuthError indicates a refresh failure that should be surfaced as
+// unavailable instead of retried immediately. It is not proof that the user
+// intentionally removed the credential.
 type PermanentAuthError struct {
 	Reason string
 	Cause  error
@@ -2588,19 +2588,18 @@ func (m *Manager) refreshAuth(ctx context.Context, id string) {
 	log.Debugf("refreshed %s, %s, %v", auth.Provider, auth.ID, err)
 	now := time.Now()
 	if err != nil {
-		// If the error is permanent (e.g. invalid_grant, refresh_token_reused),
-		// remove the credential from memory and disk.
 		if IsPermanentAuthError(err) {
-			log.Warnf("permanent refresh failure for %s (%s): %v — removing credential", auth.ID, auth.Provider, err)
+			log.Warnf("permanent refresh failure for %s (%s): %v", auth.ID, auth.Provider, err)
 			m.mu.Lock()
-			delete(m.auths, id)
-			delete(m.quotaProbeAfter, id)
-			m.mu.Unlock()
-			if m.store != nil {
-				if delErr := m.store.Delete(ctx, id); delErr != nil {
-					log.Errorf("failed to delete invalid auth file %s: %v", id, delErr)
-				}
+			if current := m.auths[id]; current != nil {
+				current.NextRefreshAfter = now.Add(refreshFailureBackoff)
+				current.LastError = &Error{Message: err.Error()}
+				current.Status = StatusError
+				current.StatusMessage = err.Error()
+				current.UpdatedAt = now
+				m.auths[id] = current
 			}
+			m.mu.Unlock()
 			return
 		}
 		m.mu.Lock()
