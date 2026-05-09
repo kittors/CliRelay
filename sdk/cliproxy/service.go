@@ -697,6 +697,7 @@ func (s *Service) Shutdown(ctx context.Context) error {
 		}
 		if s.coreManager != nil {
 			s.coreManager.StopAutoRefresh()
+			s.coreManager.CloseExecutionSession(coreauth.CloseAllExecutionSessionsID)
 		}
 		if s.watcher != nil {
 			if err := s.watcher.Stop(); err != nil {
