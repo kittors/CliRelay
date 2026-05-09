@@ -270,9 +270,6 @@ func (h *Handler) Middleware() gin.HandlerFunc {
 		}
 
 		if provided == "" {
-			if !localClient {
-				fail()
-			}
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "missing management key"})
 			return
 		}
