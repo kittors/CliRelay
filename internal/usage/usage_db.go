@@ -753,6 +753,7 @@ func ClearRequestLogs(options ClearRequestLogsOptions) (ClearRequestLogsResult, 
 		return ClearRequestLogsResult{}, fmt.Errorf("usage: commit clear request logs: %w", err)
 	}
 	committed = true
+	refreshRequestLogContentBytes(db)
 
 	if _, err := db.Exec("VACUUM"); err != nil {
 		log.Warnf("usage: vacuum after request log cleanup failed: %v", err)

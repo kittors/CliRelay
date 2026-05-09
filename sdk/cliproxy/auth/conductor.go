@@ -2600,24 +2600,27 @@ func (m *Manager) refreshAuth(ctx context.Context, id string) {
 	log.Debugf("refreshed %s, %s, %v", auth.Provider, auth.ID, err)
 	now := time.Now()
 	if err != nil {
-		if IsPermanentAuthError(err) {
+		permanent := IsPermanentAuthError(err)
+		if permanent {
 			log.Warnf("permanent refresh failure for %s (%s): %v", auth.ID, auth.Provider, err)
-			m.mu.Lock()
-			if current := m.auths[id]; current != nil {
-				current.NextRefreshAfter = now.Add(refreshFailureBackoff)
-				current.LastError = &Error{Message: err.Error()}
-				current.Status = StatusError
-				current.StatusMessage = err.Error()
-				current.UpdatedAt = now
-				m.auths[id] = current
+			if supportsRefreshTokenRaceRecovery(cloned) && m.recoverRotatedRefreshToken(ctx, id, cloned, now, err) {
+				return
 			}
-			m.mu.Unlock()
-			return
 		}
 		m.mu.Lock()
 		if current := m.auths[id]; current != nil {
 			current.NextRefreshAfter = now.Add(refreshFailureBackoff)
 			current.LastError = &Error{Message: err.Error()}
+			if permanent {
+				if supportsRefreshTokenRaceRecovery(current) && canKeepRefreshFailureActive(current, now) {
+					current.Status = StatusActive
+					current.StatusMessage = ""
+				} else {
+					current.Status = StatusError
+					current.StatusMessage = err.Error()
+				}
+			}
+			current.UpdatedAt = now
 			m.auths[id] = current
 		}
 		m.mu.Unlock()
@@ -2636,6 +2639,211 @@ func (m *Manager) refreshAuth(ctx context.Context, id string) {
 	updated.LastError = nil
 	updated.UpdatedAt = now
 	_, _ = m.Update(ctx, updated)
+}
+
+func (m *Manager) recoverRotatedRefreshToken(ctx context.Context, id string, used *Auth, now time.Time, refreshErr error) bool {
+	usedRefreshToken := authRefreshToken(used)
+	if usedRefreshToken == "" {
+		return false
+	}
+
+	latest := m.findAuthWithDifferentRefreshToken(id, usedRefreshToken)
+	if latest == nil && m.store != nil {
+		if items, err := m.store.List(ctx); err == nil {
+			for _, item := range items {
+				if item == nil || item.ID != id {
+					continue
+				}
+				if latestRefreshToken := authRefreshToken(item); latestRefreshToken != "" && latestRefreshToken != usedRefreshToken {
+					latest = item.Clone()
+				}
+				break
+			}
+		} else {
+			log.Debugf("failed to re-read auth store after refresh failure for %s: %v", id, err)
+		}
+	}
+	if latest == nil {
+		return false
+	}
+
+	m.mu.Lock()
+	if current := m.auths[id]; current != nil {
+		if currentRefreshToken := authRefreshToken(current); currentRefreshToken != "" && currentRefreshToken != usedRefreshToken {
+			latest = current.Clone()
+		} else {
+			preserveRuntimeFields(latest, current)
+		}
+	} else {
+		m.mu.Unlock()
+		return false
+	}
+	applyRecoveredRefreshState(latest, now, refreshErr)
+	latest.UpdatedAt = now
+	latest.EnsureIndex()
+	m.auths[id] = latest.Clone()
+	m.mu.Unlock()
+
+	log.Infof("recovered refresh failure for %s by loading rotated refresh token", id)
+	m.hook.OnAuthUpdated(ctx, latest.Clone())
+	return true
+}
+
+func applyRecoveredRefreshState(auth *Auth, now time.Time, refreshErr error) {
+	if auth == nil {
+		return
+	}
+	if canKeepRefreshFailureActive(auth, now) {
+		auth.NextRefreshAfter = time.Time{}
+		auth.LastError = nil
+		auth.Status = StatusActive
+		auth.StatusMessage = ""
+		return
+	}
+	if auth.Disabled || auth.Status == StatusDisabled || auth.Unavailable || auth.Quota.Exceeded {
+		return
+	}
+	auth.NextRefreshAfter = now.Add(refreshFailureBackoff)
+	auth.LastError = &Error{Message: refreshErrorMessage(refreshErr)}
+	auth.Status = StatusError
+	auth.StatusMessage = auth.LastError.Message
+}
+
+func refreshErrorMessage(err error) string {
+	if err == nil {
+		return "refresh token recovered but access token is not usable"
+	}
+	return err.Error()
+}
+
+func supportsRefreshTokenRaceRecovery(auth *Auth) bool {
+	if auth == nil {
+		return false
+	}
+	provider := strings.ToLower(strings.TrimSpace(auth.Provider))
+	if providerSupportsRefreshTokenRaceRecovery(provider) {
+		return true
+	}
+	if auth.Metadata != nil {
+		if typ, _ := auth.Metadata["type"].(string); providerSupportsRefreshTokenRaceRecovery(typ) {
+			return true
+		}
+	}
+	return false
+}
+
+func providerSupportsRefreshTokenRaceRecovery(provider string) bool {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "codex", "claude":
+		return true
+	default:
+		return false
+	}
+}
+
+func (m *Manager) findAuthWithDifferentRefreshToken(id string, usedRefreshToken string) *Auth {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	current := m.auths[id]
+	if current == nil {
+		return nil
+	}
+	currentRefreshToken := authRefreshToken(current)
+	if currentRefreshToken == "" || currentRefreshToken == usedRefreshToken {
+		return nil
+	}
+	return current.Clone()
+}
+
+func preserveRuntimeFields(dst *Auth, src *Auth) {
+	if dst == nil || src == nil {
+		return
+	}
+	if dst.Runtime == nil {
+		dst.Runtime = src.Runtime
+	}
+	if dst.Storage == nil {
+		dst.Storage = src.Storage
+	}
+	if dst.Index == "" {
+		dst.Index = src.Index
+		dst.indexAssigned = src.indexAssigned
+	}
+	if dst.FileName == "" {
+		dst.FileName = src.FileName
+	}
+}
+
+func canKeepRefreshFailureActive(auth *Auth, now time.Time) bool {
+	if auth == nil || auth.Disabled || auth.Status == StatusDisabled {
+		return false
+	}
+	if auth.Unavailable || auth.Quota.Exceeded {
+		return false
+	}
+	if !authAccessTokenUsable(auth, now) {
+		return false
+	}
+	return auth.Status == "" || auth.Status == StatusUnknown || auth.Status == StatusActive || auth.Status == StatusError
+}
+
+func authAccessTokenUsable(auth *Auth, now time.Time) bool {
+	if authTokenValue(auth, "access_token", "accessToken") == "" {
+		return false
+	}
+	expiry, hasExpiry := auth.ExpirationTime()
+	return !hasExpiry || expiry.After(now)
+}
+
+func authRefreshToken(auth *Auth) string {
+	return authTokenValue(auth, "refresh_token", "refreshToken")
+}
+
+func authTokenValue(auth *Auth, keys ...string) string {
+	if auth == nil {
+		return ""
+	}
+	if val := tokenValueFromMap(auth.Metadata, keys...); val != "" {
+		return val
+	}
+	for _, nestedKey := range []string{"token", "Token"} {
+		nested, ok := auth.Metadata[nestedKey]
+		if !ok {
+			continue
+		}
+		switch typed := nested.(type) {
+		case map[string]any:
+			if val := tokenValueFromMap(typed, keys...); val != "" {
+				return val
+			}
+		case map[string]string:
+			for _, key := range keys {
+				if val := strings.TrimSpace(typed[key]); val != "" {
+					return val
+				}
+			}
+		}
+	}
+	return ""
+}
+
+func tokenValueFromMap(meta map[string]any, keys ...string) string {
+	if len(meta) == 0 {
+		return ""
+	}
+	for _, key := range keys {
+		switch raw := meta[key].(type) {
+		case string:
+			if val := strings.TrimSpace(raw); val != "" {
+				return val
+			}
+		case []byte:
+			if val := strings.TrimSpace(string(raw)); val != "" {
+				return val
+			}
+		}
+	}
+	return ""
 }
 
 func (m *Manager) executorFor(provider string) ProviderExecutor {

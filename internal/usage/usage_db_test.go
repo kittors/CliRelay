@@ -1098,3 +1098,62 @@ func TestClearRequestLogsClearsBodiesButKeepsRequestRows(t *testing.T) {
 		t.Fatalf("expected request log storage bytes to be 0 after cleanup, got %d", after)
 	}
 }
+
+func TestClearRequestLogsAllowsNewContentAfterSizeCapCleanup(t *testing.T) {
+	initTestUsageDB(t, config.RequestLogStorageConfig{
+		StoreContent:           true,
+		ContentRetentionDays:   30,
+		CleanupIntervalMinutes: 1440,
+		MaxTotalSizeMB:         1,
+	})
+
+	maxBytes := maxLogContentBytes()
+	if maxBytes <= 0 {
+		t.Fatalf("maxLogContentBytes() = %d, want positive cap", maxBytes)
+	}
+
+	now := time.Now().UTC()
+	firstBody := makePseudoRandomText(650 * 1024)
+	InsertLogWithDetails("sk-target", "Primary", "gpt-5.4", "codex", "Codex", "auth-1", false, now, 123, 45, TokenStats{
+		InputTokens: 11, OutputTokens: 22, TotalTokens: 33,
+	}, firstBody, `{"id":"first"}`, `{"request_id":"req-first"}`)
+
+	before, err := GetRequestLogStorageBytes()
+	if err != nil {
+		t.Fatalf("GetRequestLogStorageBytes() before error = %v", err)
+	}
+	if before <= 0 || before >= maxBytes {
+		t.Fatalf("expected first stored body to be below cap, got before=%d max=%d", before, maxBytes)
+	}
+
+	if _, err := ClearRequestLogs(ClearRequestLogsOptions{
+		ClearBodyContent:   true,
+		ClearDetailContent: true,
+	}); err != nil {
+		t.Fatalf("ClearRequestLogs() error = %v", err)
+	}
+
+	after, err := GetRequestLogStorageBytes()
+	if err != nil {
+		t.Fatalf("GetRequestLogStorageBytes() after cleanup error = %v", err)
+	}
+	if after != 0 {
+		t.Fatalf("expected stored bytes to be 0 after cleanup, got %d", after)
+	}
+
+	secondBody := makePseudoRandomText(650 * 1024)
+	InsertLogWithDetails("sk-target", "Primary", "gpt-5.4", "codex", "Codex", "auth-1", false, now.Add(time.Second), 123, 45, TokenStats{
+		InputTokens: 11, OutputTokens: 22, TotalTokens: 33,
+	}, secondBody, `{"id":"second"}`, `{"request_id":"req-second"}`)
+
+	rows, err := QueryLogs(LogQueryParams{Page: 1, Size: 1, Days: 1})
+	if err != nil {
+		t.Fatalf("QueryLogs() after reinserting content error = %v", err)
+	}
+	if len(rows.Items) != 1 {
+		t.Fatalf("expected latest request log row, got %d", len(rows.Items))
+	}
+	if !rows.Items[0].HasContent {
+		t.Fatalf("HasContent = false for new log after cleanup, want true")
+	}
+}

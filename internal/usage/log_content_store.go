@@ -241,6 +241,14 @@ func runRequestLogMaintenancePass(db *sql.DB) {
 	compactLogContentStorageInternal(db, true)
 }
 
+func refreshRequestLogContentBytes(q logContentQuerier) {
+	if total, err := queryStoredContentBytes(q); err == nil {
+		requestLogContentBytes.Store(total)
+	} else {
+		requestLogContentBytes.Store(-1)
+	}
+}
+
 func insertLogContentTx(tx *sql.Tx, logID int64, timestamp time.Time, inputContent, outputContent, detailContent string) error {
 	if tx == nil || logID < 1 || (!requestLogStorage.StoreContent) {
 		return nil
