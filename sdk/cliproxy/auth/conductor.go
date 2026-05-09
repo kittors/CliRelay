@@ -1472,6 +1472,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 	suspendReason := ""
 	clearModelQuota := false
 	setModelQuota := false
+	shouldRefreshAuth := false
 
 	m.mu.Lock()
 	if auth, ok := m.auths[result.AuthID]; ok && auth != nil {
@@ -1513,6 +1514,8 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 					state.NextRetryAfter = next
 					suspendReason = "unauthorized"
 					shouldSuspendModel = true
+					shouldRefreshAuth = true
+					auth.NextRefreshAfter = time.Time{}
 				case 402, 403:
 					next := now.Add(30 * time.Minute)
 					state.NextRetryAfter = next
@@ -1561,6 +1564,10 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 				updateAggregatedAvailability(auth, now)
 			} else {
 				applyAuthFailureState(auth, result.Error, result.RetryAfter, now)
+				if statusCodeFromResult(result.Error) == 401 {
+					shouldRefreshAuth = true
+					auth.NextRefreshAfter = time.Time{}
+				}
 			}
 		}
 
@@ -1578,6 +1585,11 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 		registry.GetGlobalRegistry().ResumeClientModel(result.AuthID, result.Model)
 	} else if shouldSuspendModel {
 		registry.GetGlobalRegistry().SuspendClientModel(result.AuthID, result.Model, suspendReason)
+	}
+	if shouldRefreshAuth && result.AuthID != "" {
+		if m.markRefreshPending(result.AuthID, time.Now()) {
+			go m.refreshAuthWithLimit(ctx, result.AuthID)
+		}
 	}
 
 	m.hook.OnResult(ctx, result)
