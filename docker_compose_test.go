@@ -49,8 +49,7 @@ func TestRepositoryComposeMirrorsDeploymentFilesAtProjectDirInUpdater(t *testing
 		"CLIRELAY_PROJECT_DIR: ${CLIRELAY_PROJECT_DIR:-${PWD:-.}}",
 		"CLIRELAY_COMPOSE_FILE: ${CLIRELAY_PROJECT_DIR:-${PWD:-.}}/docker-compose.yml",
 		"CLIRELAY_ENV_FILE: ${CLIRELAY_ENV_FILE:-${CLIRELAY_PROJECT_DIR:-${PWD:-.}}/.env}",
-		"./docker-compose.yml:${CLIRELAY_PROJECT_DIR:-${PWD:-.}}/docker-compose.yml:ro",
-		"./.env:${CLIRELAY_PROJECT_DIR:-${PWD:-.}}/.env",
+		"${CLIRELAY_PROJECT_DIR:-${PWD:-.}}:${CLIRELAY_PROJECT_DIR:-${PWD:-.}}",
 	} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("docker-compose.yml updater config missing %q", want)
@@ -63,6 +62,22 @@ func TestRepositoryComposeMirrorsDeploymentFilesAtProjectDirInUpdater(t *testing
 	} {
 		if strings.Contains(content, forbidden) {
 			t.Fatalf("docker-compose.yml still contains updater /workspace path %q", forbidden)
+		}
+	}
+}
+
+func TestRepositoryComposeDoesNotCreateEnvDirectoryForUpdater(t *testing.T) {
+	data, err := os.ReadFile("docker-compose.yml")
+	if err != nil {
+		t.Fatalf("read docker-compose.yml: %v", err)
+	}
+	content := string(data)
+
+	for _, forbidden := range []string{
+		"./.env:${CLIRELAY_PROJECT_DIR:-${PWD:-.}}/.env",
+	} {
+		if strings.Contains(content, forbidden) {
+			t.Fatalf("docker-compose.yml should not default updater to missing .env bind %q", forbidden)
 		}
 	}
 }

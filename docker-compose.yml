@@ -54,6 +54,5 @@ services:
       CLIRELAY_TARGET_SERVICE: ${CLIRELAY_TARGET_SERVICE:-cli-proxy-api}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - ./docker-compose.yml:${CLIRELAY_PROJECT_DIR:-${PWD:-.}}/docker-compose.yml:ro
-      - ./.env:${CLIRELAY_PROJECT_DIR:-${PWD:-.}}/.env
+      - ${CLIRELAY_PROJECT_DIR:-${PWD:-.}}:${CLIRELAY_PROJECT_DIR:-${PWD:-.}}
     restart: unless-stopped
