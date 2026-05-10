@@ -1187,7 +1187,6 @@ func (e *CodexWebsocketsExecutor) readUpstreamLoop(sess *codexWebsocketSession, 
 				default:
 				}
 				sess.clearActive(ch)
-				close(ch)
 			}
 			e.invalidateUpstreamConn(sess, conn, "upstream_disconnected", errRead)
 			return
@@ -1207,7 +1206,6 @@ func (e *CodexWebsocketsExecutor) readUpstreamLoop(sess *codexWebsocketSession, 
 					default:
 					}
 					sess.clearActive(ch)
-					close(ch)
 				}
 				e.invalidateUpstreamConn(sess, conn, "unexpected_binary", errBinary)
 				return
