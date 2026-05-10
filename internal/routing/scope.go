@@ -17,6 +17,22 @@ type PathRouteContext struct {
 	RoutePath string
 	Group     string
 	Fallback  string
+	CcSwitch  *CcSwitchRouteContext
+}
+
+type CcSwitchRouteContext struct {
+	ConfigID             string
+	ClientType           string
+	RoutePath            string
+	EndpointPath         string
+	AllowedChannelGroups []string
+	ModelMappings        []CcSwitchModelMapping
+}
+
+type CcSwitchModelMapping struct {
+	Role         string
+	RequestModel string
+	TargetModel  string
 }
 
 type pathRouteContextKey struct{}
@@ -29,8 +45,7 @@ func WithPathRouteContext(ctx context.Context, route *PathRouteContext) context.
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	cloned := *route
-	return context.WithValue(ctx, pathRouteContextKey{}, &cloned)
+	return context.WithValue(ctx, pathRouteContextKey{}, clonePathRouteContext(route))
 }
 
 // PathRouteContextFromContext extracts the resolved path-route scope from context.
@@ -43,7 +58,24 @@ func PathRouteContextFromContext(ctx context.Context) *PathRouteContext {
 	if route == nil {
 		return nil
 	}
+	return clonePathRouteContext(route)
+}
+
+func clonePathRouteContext(route *PathRouteContext) *PathRouteContext {
+	if route == nil {
+		return nil
+	}
 	cloned := *route
+	if route.CcSwitch != nil {
+		ccSwitch := *route.CcSwitch
+		if route.CcSwitch.AllowedChannelGroups != nil {
+			ccSwitch.AllowedChannelGroups = append([]string(nil), route.CcSwitch.AllowedChannelGroups...)
+		}
+		if route.CcSwitch.ModelMappings != nil {
+			ccSwitch.ModelMappings = append([]CcSwitchModelMapping(nil), route.CcSwitch.ModelMappings...)
+		}
+		cloned.CcSwitch = &ccSwitch
+	}
 	return &cloned
 }
 

@@ -47,6 +47,9 @@ func newProxyAwareHTTPClient(ctx context.Context, cfg *config.Config, auth *clip
 		transport := util.BuildProxyTransport(proxyURL, cfg != nil && cfg.PreferIPv4)
 		if transport != nil {
 			httpClient.Transport = transport
+			if sdkCfg := cfgToSDKCfg(cfg); sdkCfg != nil {
+				util.ApplyTLSConfig(transport, sdkCfg)
+			}
 			return httpClient
 		}
 		// If proxy setup failed, log and fall through to context RoundTripper
@@ -59,8 +62,20 @@ func newProxyAwareHTTPClient(ctx context.Context, cfg *config.Config, auth *clip
 	}
 
 	if httpClient.Transport == nil {
-		httpClient.Transport = util.NewDefaultTransport(cfg != nil && cfg.PreferIPv4)
+		transport := util.NewDefaultTransport(cfg != nil && cfg.PreferIPv4)
+		httpClient.Transport = transport
+		if sdkCfg := cfgToSDKCfg(cfg); sdkCfg != nil {
+			util.ApplyTLSConfig(transport, sdkCfg)
+		}
 	}
 
 	return httpClient
+}
+
+// cfgToSDKCfg extracts the embedded SDKConfig from Config for TLS settings.
+func cfgToSDKCfg(cfg *config.Config) *config.SDKConfig {
+	if cfg == nil {
+		return nil
+	}
+	return &cfg.SDKConfig
 }

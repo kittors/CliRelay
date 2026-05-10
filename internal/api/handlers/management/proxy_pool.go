@@ -128,8 +128,12 @@ func (h *Handler) PostProxyPoolCheck(c *gin.Context) {
 		return
 	}
 
+	var sdkCfg *config.SDKConfig
+	if h != nil && h.cfg != nil {
+		sdkCfg = &h.cfg.SDKConfig
+	}
 	started := time.Now()
-	statusCode, err := checkProxyConnectivity(c.Request.Context(), proxyURL, testURL)
+	statusCode, err := checkProxyConnectivity(c.Request.Context(), proxyURL, testURL, sdkCfg)
 	latencyMs := time.Since(started).Milliseconds()
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{
@@ -149,11 +153,12 @@ func (h *Handler) PostProxyPoolCheck(c *gin.Context) {
 	})
 }
 
-func checkProxyConnectivity(ctx context.Context, proxyURL string, testURL string) (int, error) {
+func checkProxyConnectivity(ctx context.Context, proxyURL string, testURL string, sdkCfg *config.SDKConfig) (int, error) {
 	transport := util.BuildProxyTransport(proxyURL, false)
 	if transport == nil {
 		return 0, fmt.Errorf("failed to build proxy transport")
 	}
+	util.ApplyTLSConfig(transport, sdkCfg)
 	client := &http.Client{Timeout: defaultProxyCheckTimeout, Transport: transport}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, testURL, nil)
 	if err != nil {

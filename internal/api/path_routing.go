@@ -7,6 +7,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	internalrouting "github.com/router-for-me/CLIProxyAPI/v6/internal/routing"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 )
 
@@ -28,6 +29,21 @@ func resolvePathRouteContext(cfg *config.Config, authManager *cliproxyauth.Manag
 	routePath := internalrouting.NormalizeNamespacePath(group)
 	if routePath == "" {
 		return nil, false
+	}
+	if row, ok := usage.FindCcSwitchImportConfigByRoutePath(routePath); ok {
+		group := ""
+		if len(row.AllowedChannelGroups) > 0 {
+			group = internalrouting.NormalizeGroupName(row.AllowedChannelGroups[0])
+		}
+		if group == "" {
+			return nil, false
+		}
+		return &internalrouting.PathRouteContext{
+			RoutePath: row.RoutePath,
+			Group:     group,
+			Fallback:  "none",
+			CcSwitch:  ccSwitchRouteContextFromImportConfig(row),
+		}, true
 	}
 	if cfg != nil {
 		for i := range cfg.Routing.PathRoutes {
@@ -51,6 +67,25 @@ func resolvePathRouteContext(cfg *config.Config, authManager *cliproxyauth.Manag
 		}
 	}
 	return nil, false
+}
+
+func ccSwitchRouteContextFromImportConfig(row usage.CcSwitchImportConfigRow) *internalrouting.CcSwitchRouteContext {
+	mappings := make([]internalrouting.CcSwitchModelMapping, 0, len(row.ModelMappings))
+	for _, mapping := range row.ModelMappings {
+		mappings = append(mappings, internalrouting.CcSwitchModelMapping{
+			Role:         strings.TrimSpace(mapping.Role),
+			RequestModel: strings.TrimSpace(mapping.RequestModel),
+			TargetModel:  strings.TrimSpace(mapping.TargetModel),
+		})
+	}
+	return &internalrouting.CcSwitchRouteContext{
+		ConfigID:             strings.TrimSpace(row.ID),
+		ClientType:           strings.ToLower(strings.TrimSpace(row.ClientType)),
+		RoutePath:            row.RoutePath,
+		EndpointPath:         row.EndpointPath,
+		AllowedChannelGroups: append([]string(nil), row.AllowedChannelGroups...),
+		ModelMappings:        mappings,
+	}
 }
 
 func groupRoutingMiddleware(resolve func(string) (*internalrouting.PathRouteContext, bool)) gin.HandlerFunc {

@@ -66,6 +66,7 @@ func (h *ClaudeCodeAPIHandler) ClaudeMessages(c *gin.Context) {
 	if !ok {
 		return
 	}
+	rawJSON, _, _ = rewriteCcSwitchClaudeRequestModel(rawJSON, routeContextFromGin(c))
 
 	// Check if the client requested a streaming response.
 	streamResult := gjson.GetBytes(rawJSON, "stream")
@@ -87,6 +88,7 @@ func (h *ClaudeCodeAPIHandler) ClaudeCountTokens(c *gin.Context) {
 	if !ok {
 		return
 	}
+	rawJSON, _, _ = rewriteCcSwitchClaudeRequestModel(rawJSON, routeContextFromGin(c))
 
 	c.Header("Content-Type", "application/json")
 

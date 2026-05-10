@@ -46,7 +46,11 @@ func TestCcSwitchImportConfigsManagementHandlersUseDatabase(t *testing.T) {
     "allowed-channel-groups": ["team-a", "team-b"],
     "endpoint-path": "/anthropic",
     "usage-auto-interval": 45,
-    "api-key-field": "ANTHROPIC_AUTH_TOKEN"
+    "api-key-field": "ANTHROPIC_AUTH_TOKEN",
+    "model-mappings": [
+      {"role": "main", "request-model": "kimi-k2.5", "target-model": "kimi-k2.5"},
+      {"role": "haiku", "request-model": "claude-3-5-haiku", "target-model": "kimi-k2.5"}
+    ]
   }
 ]`)
 
@@ -85,6 +89,19 @@ func TestCcSwitchImportConfigsManagementHandlersUseDatabase(t *testing.T) {
 	}
 	if got.Items[0]["api-key-field"] != "ANTHROPIC_AUTH_TOKEN" {
 		t.Fatalf("api-key-field = %#v, want ANTHROPIC_AUTH_TOKEN", got.Items[0]["api-key-field"])
+	}
+	modelMappings, ok := got.Items[0]["model-mappings"].([]any)
+	if !ok || len(modelMappings) != 2 {
+		t.Fatalf("model-mappings = %#v, want 2 mappings", got.Items[0]["model-mappings"])
+	}
+	secondMapping, ok := modelMappings[1].(map[string]any)
+	if !ok {
+		t.Fatalf("second model mapping = %#v, want object", modelMappings[1])
+	}
+	if secondMapping["role"] != "haiku" ||
+		secondMapping["request-model"] != "claude-3-5-haiku" ||
+		secondMapping["target-model"] != "kimi-k2.5" {
+		t.Fatalf("second model mapping = %#v, want haiku mapping", secondMapping)
 	}
 }
 

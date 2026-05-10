@@ -54,6 +54,10 @@ type Config struct {
 	// Leave empty to disable cross-origin browser access by default.
 	CORSAllowOrigins []string `yaml:"cors-allow-origins" json:"cors-allow-origins"`
 
+	// TrustedProxies lists reverse proxy IPs or CIDRs whose forwarding headers may be trusted.
+	// Leave empty to ignore X-Forwarded-For/X-Real-IP and use the direct peer address.
+	TrustedProxies []string `yaml:"trusted-proxies,omitempty" json:"trusted-proxies,omitempty"`
+
 	// RemoteManagement nests management-related options under 'remote-management'.
 	RemoteManagement RemoteManagement `yaml:"remote-management" json:"-"`
 

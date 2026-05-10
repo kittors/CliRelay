@@ -55,4 +55,5 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ${CLIRELAY_PROJECT_DIR:-${PWD:-.}}:${CLIRELAY_PROJECT_DIR:-${PWD:-.}}
+      - ${CLI_PROXY_CONFIG_PATH:-${CLIRELAY_PROJECT_DIR:-${PWD:-.}}/config.yaml}:/CLIProxyAPI/config.yaml
     restart: unless-stopped

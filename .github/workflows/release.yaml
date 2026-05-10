@@ -16,6 +16,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - name: Reject vendored panel assets
+        run: ./scripts/ensure-no-vendored-panel-assets.sh
       - run: git fetch --force --tags
       - uses: actions/setup-go@v4
         with:

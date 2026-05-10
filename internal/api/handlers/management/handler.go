@@ -221,47 +221,54 @@ func (h *Handler) Middleware() gin.HandlerFunc {
 		envSecret := h.envSecret
 
 		fail := func() {}
+		isBanned := func() (time.Duration, bool) { return 0, false }
+		clearFailures := func() {}
 		if !localClient {
-			if maxFailures > 0 {
-				// Check existing ban
-				h.attemptsMu.Lock()
-				ai := h.failedAttempts[clientIP]
-				if ai != nil {
-					if !ai.blockedUntil.IsZero() {
-						if time.Now().Before(ai.blockedUntil) {
-							remaining := time.Until(ai.blockedUntil).Round(time.Second)
-							h.attemptsMu.Unlock()
-							c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": fmt.Sprintf("IP banned due to too many failed attempts. Try again in %s", remaining)})
-							return
-						}
-						ai.blockedUntil = time.Time{}
-						ai.count = 0
-					}
-				}
-				h.attemptsMu.Unlock()
-			}
-
 			if !allowRemote {
 				c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "remote management disabled"})
 				return
 			}
 
-			if maxFailures > 0 {
-				fail = func() {
-					h.attemptsMu.Lock()
-					aip := h.failedAttempts[clientIP]
-					if aip == nil {
-						aip = &attemptInfo{}
-						h.failedAttempts[clientIP] = aip
-					}
+			isBanned = func() (time.Duration, bool) {
+				h.attemptsMu.Lock()
+				defer h.attemptsMu.Unlock()
+				ai := h.failedAttempts[clientIP]
+				if ai == nil || ai.blockedUntil.IsZero() {
+					return 0, false
+				}
+				if time.Now().Before(ai.blockedUntil) {
+					return time.Until(ai.blockedUntil).Round(time.Second), true
+				}
+				ai.blockedUntil = time.Time{}
+				ai.count = 0
+				return 0, false
+			}
+
+			fail = func() {
+				h.attemptsMu.Lock()
+				aip := h.failedAttempts[clientIP]
+				if aip == nil {
+					aip = &attemptInfo{}
+					h.failedAttempts[clientIP] = aip
+				}
+				if maxFailures > 0 {
 					aip.count++
 					aip.lastActivity = time.Now()
 					if aip.count >= maxFailures {
 						aip.blockedUntil = time.Now().Add(banDuration)
 						aip.count = 0
 					}
-					h.attemptsMu.Unlock()
 				}
+				h.attemptsMu.Unlock()
+			}
+
+			clearFailures = func() {
+				h.attemptsMu.Lock()
+				if ai := h.failedAttempts[clientIP]; ai != nil {
+					ai.count = 0
+					ai.blockedUntil = time.Time{}
+				}
+				h.attemptsMu.Unlock()
 			}
 		}
 		if secretHash == "" && envSecret == "" {
@@ -288,6 +295,13 @@ func (h *Handler) Middleware() gin.HandlerFunc {
 		}
 
 		if provided == "" {
+			if !localClient {
+				if remaining, banned := isBanned(); banned {
+					c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": fmt.Sprintf("IP banned due to too many failed attempts. Try again in %s", remaining)})
+					return
+				}
+				fail()
+			}
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "missing management key"})
 			return
 		}
@@ -302,34 +316,24 @@ func (h *Handler) Middleware() gin.HandlerFunc {
 		}
 
 		if envSecret != "" && subtle.ConstantTimeCompare([]byte(provided), []byte(envSecret)) == 1 {
-			if !localClient {
-				h.attemptsMu.Lock()
-				if ai := h.failedAttempts[clientIP]; ai != nil {
-					ai.count = 0
-					ai.blockedUntil = time.Time{}
-				}
-				h.attemptsMu.Unlock()
-			}
+			clearFailures()
 			c.Next()
 			return
 		}
 
 		if secretHash == "" || bcrypt.CompareHashAndPassword([]byte(secretHash), []byte(provided)) != nil {
 			if !localClient {
+				if remaining, banned := isBanned(); banned {
+					c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": fmt.Sprintf("IP banned due to too many failed attempts. Try again in %s", remaining)})
+					return
+				}
 				fail()
 			}
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid management key"})
 			return
 		}
 
-		if !localClient {
-			h.attemptsMu.Lock()
-			if ai := h.failedAttempts[clientIP]; ai != nil {
-				ai.count = 0
-				ai.blockedUntil = time.Time{}
-			}
-			h.attemptsMu.Unlock()
-		}
+		clearFailures()
 
 		c.Next()
 	}

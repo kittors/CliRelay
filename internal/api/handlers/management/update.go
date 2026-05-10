@@ -362,7 +362,11 @@ func (h *Handler) githubClient() *http.Client {
 	if h != nil && h.cfg != nil {
 		proxyURL := strings.TrimSpace(h.cfg.ProxyURL)
 		if proxyURL != "" {
-			util.SetProxy(&sdkconfig.SDKConfig{ProxyURL: proxyURL}, client)
+			util.SetProxy(&sdkconfig.SDKConfig{
+				ProxyURL:           proxyURL,
+				InsecureSkipVerify: h.cfg.InsecureSkipVerify,
+				CACert:             h.cfg.CACert,
+			}, client)
 		}
 	}
 	return client

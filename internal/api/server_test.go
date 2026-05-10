@@ -617,3 +617,27 @@ func TestManagementRemoteRestrictionIgnoresForgedForwardedFor(t *testing.T) {
 		t.Fatalf("expected remote management disabled response, got %s", rr.Body.String())
 	}
 }
+
+func TestServerTrustedProxiesAllowConfiguredReverseProxyClientIP(t *testing.T) {
+	server := newTestServerWithConfig(t, func(cfg *proxyconfig.Config) {
+		cfg.TrustedProxies = []string{"172.18.0.0/16"}
+	})
+	server.engine.GET("/test-client-ip", func(c *gin.Context) {
+		c.String(http.StatusOK, c.ClientIP())
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/test-client-ip", nil)
+	req.RemoteAddr = "172.18.0.1:4321"
+	req.Header.Set("X-Forwarded-For", "203.0.113.55")
+	req.Header.Set("X-Real-IP", "198.51.100.23")
+
+	rr := httptest.NewRecorder()
+	server.engine.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	if got := strings.TrimSpace(rr.Body.String()); got != "203.0.113.55" {
+		t.Fatalf("ClientIP() = %q, want forwarded client IP", got)
+	}
+}

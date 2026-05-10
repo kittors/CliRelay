@@ -56,6 +56,15 @@ type SDKConfig struct {
 
 	// MultimodalAdapters turns unsupported media inputs into text context before routing to text models.
 	MultimodalAdapters MultimodalAdaptersConfig `yaml:"multimodal-adapters,omitempty" json:"multimodal-adapters,omitempty"`
+
+	// InsecureSkipVerify disables TLS certificate verification for upstream HTTPS connections.
+	// When true, the proxy will accept any certificate presented by upstream servers.
+	// This is insecure and should only be used in testing or trusted internal networks.
+	InsecureSkipVerify bool `yaml:"insecure-skip-verify" json:"insecure-skip-verify"`
+
+	// CACert is the path to a PEM-encoded CA certificate file used to verify upstream server certificates.
+	// When empty, the system default root CA pool is used.
+	CACert string `yaml:"ca-cert" json:"ca-cert"`
 }
 
 // ContextRetrievalConfig controls local SQLite FTS based context reduction.
@@ -79,7 +88,6 @@ type ContextRetrievalSearchConfig struct {
 	Strategy string `yaml:"strategy,omitempty" json:"strategy,omitempty"`
 }
 
-// ContextRetrievalSecondPass controls a more aggressive fallback compression pass.
 type ContextRetrievalSecondPass struct {
 	Enabled             bool `yaml:"enabled" json:"enabled"`
 	MaxInputBytes       int  `yaml:"max-input-bytes,omitempty" json:"max-input-bytes,omitempty"`
@@ -89,7 +97,6 @@ type ContextRetrievalSecondPass struct {
 	MaxItemBytes        int  `yaml:"max-item-bytes,omitempty" json:"max-item-bytes,omitempty"`
 }
 
-// CodexAwareContextConfig preserves Codex tool semantics while reducing context.
 type CodexAwareContextConfig struct {
 	Enabled                bool   `yaml:"enabled" json:"enabled"`
 	PreserveToolPairs      bool   `yaml:"preserve-tool-pairs,omitempty" json:"preserve-tool-pairs,omitempty"`
@@ -100,7 +107,6 @@ type CodexAwareContextConfig struct {
 	PreserveRecentErrors   int    `yaml:"preserve-recent-errors,omitempty" json:"preserve-recent-errors,omitempty"`
 }
 
-// MultimodalAdaptersConfig controls media-to-text preprocessing for text-only upstream models.
 type MultimodalAdaptersConfig struct {
 	Enabled           *bool                       `yaml:"enabled,omitempty" json:"enabled,omitempty"`
 	DefaultAction     string                      `yaml:"default-action,omitempty" json:"default-action,omitempty"`
@@ -112,7 +118,6 @@ type MultimodalAdaptersConfig struct {
 	Extractors        []MultimodalExtractorConfig `yaml:"extractors,omitempty" json:"extractors,omitempty"`
 }
 
-// MultimodalAdapterRule scopes media preprocessing to a selected upstream route.
 type MultimodalAdapterRule struct {
 	Name              string                 `yaml:"name,omitempty" json:"name,omitempty"`
 	Match             MultimodalAdapterMatch `yaml:"match,omitempty" json:"match,omitempty"`
@@ -124,7 +129,6 @@ type MultimodalAdapterRule struct {
 	MaxOutputBytes    int                    `yaml:"max-output-bytes,omitempty" json:"max-output-bytes,omitempty"`
 }
 
-// MultimodalAdapterMatch controls which requested/upstream route receives media preprocessing.
 type MultimodalAdapterMatch struct {
 	RequestedModels   []string `yaml:"requested-models,omitempty" json:"requested-models,omitempty"`
 	UpstreamProviders []string `yaml:"upstream-providers,omitempty" json:"upstream-providers,omitempty"`
@@ -132,7 +136,6 @@ type MultimodalAdapterMatch struct {
 	Protocols         []string `yaml:"protocols,omitempty" json:"protocols,omitempty"`
 }
 
-// MultimodalExtractorConfig describes a replaceable visual extraction backend.
 type MultimodalExtractorConfig struct {
 	Name           string            `yaml:"name,omitempty" json:"name,omitempty"`
 	Type           string            `yaml:"type,omitempty" json:"type,omitempty"`
@@ -146,30 +149,16 @@ type MultimodalExtractorConfig struct {
 	Prompt         string            `yaml:"prompt,omitempty" json:"prompt,omitempty"`
 }
 
-// ObservabilityConfig groups optional diagnostic logging features.
 type ObservabilityConfig struct {
-	// ResponseTrace controls detailed /v1/responses lifecycle logs.
 	ResponseTrace ResponseTraceConfig `yaml:"response-trace,omitempty" json:"response-trace,omitempty"`
 }
 
-// ResponseTraceConfig controls detailed /v1/responses lifecycle logs.
 type ResponseTraceConfig struct {
-	// Enabled emits lifecycle and latency logs for Responses API requests.
-	Enabled bool `yaml:"enabled" json:"enabled"`
-
-	// SlowThresholdMS emits slow-request summaries at or above this total duration.
-	// Defaults to 20000ms when Enabled is true and this value is <= 0.
-	SlowThresholdMS int `yaml:"slow-threshold-ms,omitempty" json:"slow-threshold-ms,omitempty"`
-
-	// LogPayloadPreview includes a bounded request/response payload preview.
-	// Keep disabled unless actively debugging; payloads may contain sensitive content.
-	LogPayloadPreview bool `yaml:"log-payload-preview,omitempty" json:"log-payload-preview,omitempty"`
-
-	// PayloadPreviewBytes caps logged payload preview bytes. Defaults to 512 and is capped internally.
-	PayloadPreviewBytes int `yaml:"payload-preview-bytes,omitempty" json:"payload-preview-bytes,omitempty"`
-
-	// LogHeaders includes selected safe client identity headers in lifecycle logs.
-	LogHeaders bool `yaml:"log-headers,omitempty" json:"log-headers,omitempty"`
+	Enabled             bool `yaml:"enabled" json:"enabled"`
+	SlowThresholdMS     int  `yaml:"slow-threshold-ms,omitempty" json:"slow-threshold-ms,omitempty"`
+	LogPayloadPreview   bool `yaml:"log-payload-preview,omitempty" json:"log-payload-preview,omitempty"`
+	PayloadPreviewBytes int  `yaml:"payload-preview-bytes,omitempty" json:"payload-preview-bytes,omitempty"`
+	LogHeaders          bool `yaml:"log-headers,omitempty" json:"log-headers,omitempty"`
 }
 
 // RequestLogStorageConfig controls retention and cleanup of full request/response bodies.

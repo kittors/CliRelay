@@ -1,1 +1,0 @@
-import{r}from"./vendor-react-ijdNy76Q.js";function f(e,t){const n=r.useRef(null);r.useEffect(()=>{n.current=e},[e]),r.useEffect(()=>{if(t===null)return;const s=setInterval(()=>{n.current?.()},t);return()=>clearInterval(s)},[t])}export{f as u};

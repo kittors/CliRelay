@@ -45,6 +45,13 @@ tls:
 #   - "http://localhost:5173"
 cors-allow-origins: []
 
+# Reverse proxies whose X-Forwarded-For / X-Real-IP headers may be trusted.
+# Leave empty for direct exposure. For Docker bridge + Nginx, trust only the
+# proxy/container subnet, for example:
+# trusted-proxies:
+#   - "172.18.0.0/16"
+trusted-proxies: []
+
 # Management API settings
 remote-management:
   # Whether to allow remote (non-localhost) management access.
@@ -264,6 +271,15 @@ request-log-storage:
 
 # Proxy URL. Supports socks5/http/https protocols. Example: socks5://user:pass@192.168.1.1:1080/
 proxy-url: ""
+
+# When true, disables TLS certificate verification for all upstream HTTPS connections.
+# Use only when upstream APIs use self-signed certificates or in trusted internal networks.
+# Default is false (verification enabled).
+insecure-skip-verify: false
+
+# Path to a PEM-encoded CA certificate file for verifying upstream server certificates.
+# When empty, the system default root CA pool is used.
+ca-cert: ""
 
 # When true, unprefixed model requests only use credentials without a prefix (except when prefix == model name).
 force-model-prefix: false

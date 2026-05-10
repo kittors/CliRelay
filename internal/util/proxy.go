@@ -116,5 +116,8 @@ func SetProxy(cfg *config.SDKConfig, httpClient *http.Client) *http.Client {
 	if transport := BuildProxyTransport(cfg.ProxyURL, cfg.PreferIPv4); transport != nil {
 		httpClient.Transport = transport
 	}
+	if t, ok := httpClient.Transport.(*http.Transport); ok {
+		ApplyTLSConfig(t, cfg)
+	}
 	return httpClient
 }

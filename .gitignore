@@ -31,6 +31,12 @@ objectstore/*
 
 # Static assets
 static/*
+/assets/
+/manage.html
+/management.html
+/panel-meta.json
+/dist/
+/panel-dist.zip
 
 # Authentication data
 auths/*

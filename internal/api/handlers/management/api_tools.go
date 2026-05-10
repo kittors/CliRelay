@@ -994,8 +994,12 @@ func (h *Handler) apiCallTransport(auth *coreauth.Auth) http.RoundTripper {
 		}
 	}
 
+	var sdkCfg *config.SDKConfig
+	if h != nil && h.cfg != nil {
+		sdkCfg = &h.cfg.SDKConfig
+	}
 	for _, proxyStr := range proxyCandidates {
-		if transport := buildProxyTransport(proxyStr); transport != nil {
+		if transport := buildProxyTransport(proxyStr, sdkCfg); transport != nil {
 			return transport
 		}
 	}
@@ -1003,7 +1007,7 @@ func (h *Handler) apiCallTransport(auth *coreauth.Auth) http.RoundTripper {
 	return nil
 }
 
-func buildProxyTransport(proxyStr string) *http.Transport {
+func buildProxyTransport(proxyStr string, sdkCfg *config.SDKConfig) *http.Transport {
 	proxyStr = strings.TrimSpace(proxyStr)
 	if proxyStr == "" {
 		return nil
@@ -1040,7 +1044,9 @@ func buildProxyTransport(proxyStr string) *http.Transport {
 	}
 
 	if proxyURL.Scheme == "http" || proxyURL.Scheme == "https" {
-		return &http.Transport{Proxy: http.ProxyURL(proxyURL)}
+		transport := &http.Transport{Proxy: http.ProxyURL(proxyURL)}
+		util.ApplyTLSConfig(transport, sdkCfg)
+		return transport
 	}
 
 	log.Debugf("unsupported proxy scheme: %s", proxyURL.Scheme)

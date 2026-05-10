@@ -211,6 +211,10 @@ func (h *Handler) GetLatestVersion(c *gin.Context) {
 	}
 	if proxyURL != "" {
 		sdkCfg := &sdkconfig.SDKConfig{ProxyURL: proxyURL}
+		if h != nil && h.cfg != nil {
+			sdkCfg.InsecureSkipVerify = h.cfg.InsecureSkipVerify
+			sdkCfg.CACert = h.cfg.CACert
+		}
 		util.SetProxy(sdkCfg, client)
 	}
 

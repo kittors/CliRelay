@@ -57,15 +57,16 @@ const (
 )
 
 type serverOptionConfig struct {
-	extraMiddleware      []gin.HandlerFunc
-	engineConfigurator   func(*gin.Engine)
-	routerConfigurator   func(*gin.Engine, *handlers.BaseAPIHandler, *config.Config)
-	requestLoggerFactory func(*config.Config, string) logging.RequestLogger
-	localPassword        string
-	keepAliveEnabled     bool
-	keepAliveTimeout     time.Duration
-	keepAliveOnTimeout   func()
-	postAuthHook         auth.PostAuthHook
+	extraMiddleware       []gin.HandlerFunc
+	engineConfigurator    func(*gin.Engine)
+	routerConfigurator    func(*gin.Engine, *handlers.BaseAPIHandler, *config.Config)
+	requestLoggerFactory  func(*config.Config, string) logging.RequestLogger
+	localPassword         string
+	keepAliveEnabled      bool
+	keepAliveTimeout      time.Duration
+	keepAliveOnTimeout    func()
+	postAuthHook          auth.PostAuthHook
+	configMutatedCallback func(*config.Config)
 }
 
 // ServerOption customises HTTP server construction.
@@ -130,6 +131,12 @@ func WithRequestLoggerFactory(factory func(*config.Config, string) logging.Reque
 func WithPostAuthHook(hook auth.PostAuthHook) ServerOption {
 	return func(cfg *serverOptionConfig) {
 		cfg.postAuthHook = hook
+	}
+}
+
+func WithConfigMutatedCallback(fn func(*config.Config)) ServerOption {
+	return func(cfg *serverOptionConfig) {
+		cfg.configMutatedCallback = fn
 	}
 }
 
@@ -222,9 +229,7 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 
 	// Create gin engine
 	engine := gin.New()
-	if err := engine.SetTrustedProxies(nil); err != nil {
-		log.Warnf("failed to disable trusted proxies: %v", err)
-	}
+	configureTrustedProxies(engine, cfg.TrustedProxies)
 	if optionState.engineConfigurator != nil {
 		optionState.engineConfigurator(engine)
 	}
@@ -294,21 +299,25 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	// Initialize management handler
 	s.mgmt = managementHandlers.NewHandler(cfg, configFilePath, authManager)
 	s.mgmt.SetAccessManager(accessManager)
-	s.mgmt.SetConfigMutatedHook(func(updated *config.Config) {
-		if updated == nil {
-			updated = cfg
-		}
-		if updated == nil {
-			return
-		}
-		usage.MigrateRoutingConfigFromConfig(updated, configFilePath)
-		usage.ApplyStoredRoutingConfig(updated)
-		usage.MigrateProxyPoolFromConfig(updated, configFilePath)
-		usage.ApplyStoredProxyPool(updated)
-		usage.MigrateRuntimeSettingsFromConfig(updated, configFilePath)
-		usage.ApplyStoredRuntimeSettings(updated)
-		s.UpdateClients(updated)
-	})
+	if optionState.configMutatedCallback != nil {
+		s.mgmt.SetConfigMutatedHook(optionState.configMutatedCallback)
+	} else {
+		s.mgmt.SetConfigMutatedHook(func(updated *config.Config) {
+			if updated == nil {
+				updated = cfg
+			}
+			if updated == nil {
+				return
+			}
+			usage.MigrateRoutingConfigFromConfig(updated, configFilePath)
+			usage.ApplyStoredRoutingConfig(updated)
+			usage.MigrateProxyPoolFromConfig(updated, configFilePath)
+			usage.ApplyStoredProxyPool(updated)
+			usage.MigrateRuntimeSettingsFromConfig(updated, configFilePath)
+			usage.ApplyStoredRuntimeSettings(updated)
+			s.UpdateClients(updated)
+		})
+	}
 	if optionState.localPassword != "" {
 		s.mgmt.SetLocalPassword(optionState.localPassword)
 	}
@@ -566,6 +575,33 @@ func (s *Server) setupRoutes() {
 	})
 
 	// Management routes are registered lazily by registerManagementRoutes when a secret is configured.
+}
+
+func configureTrustedProxies(engine *gin.Engine, trustedProxies []string) {
+	if engine == nil {
+		return
+	}
+
+	proxies := make([]string, 0, len(trustedProxies))
+	for _, proxy := range trustedProxies {
+		if trimmed := strings.TrimSpace(proxy); trimmed != "" {
+			proxies = append(proxies, trimmed)
+		}
+	}
+
+	if len(proxies) == 0 {
+		if err := engine.SetTrustedProxies(nil); err != nil {
+			log.Warnf("failed to disable trusted proxies: %v", err)
+		}
+		return
+	}
+
+	if err := engine.SetTrustedProxies(proxies); err != nil {
+		log.Warnf("failed to configure trusted proxies %v: %v; forwarded client IP headers will be ignored", proxies, err)
+		if fallbackErr := engine.SetTrustedProxies(nil); fallbackErr != nil {
+			log.Warnf("failed to disable trusted proxies after configuration error: %v", fallbackErr)
+		}
+	}
 }
 
 // AttachWebsocketRoute registers a websocket upgrade handler on the primary Gin engine.

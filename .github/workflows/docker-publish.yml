@@ -22,6 +22,9 @@ jobs:
       - name: Checkout backend
         uses: actions/checkout@v4
 
+      - name: Reject vendored panel assets
+        run: ./scripts/ensure-no-vendored-panel-assets.sh
+
       - name: Compute build metadata
         id: build_meta
         run: |

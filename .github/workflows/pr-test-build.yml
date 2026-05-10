@@ -12,6 +12,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+      - name: Reject vendored panel assets
+        run: ./scripts/ensure-no-vendored-panel-assets.sh
       - name: Set up Go
         uses: actions/setup-go@v5
         with:

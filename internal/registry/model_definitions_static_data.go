@@ -1073,6 +1073,18 @@ func GetKimiModels() []*ModelInfo {
 			MaxCompletionTokens: 32768,
 			Thinking:            &ThinkingSupport{Min: 1024, Max: 32000, ZeroAllowed: true, DynamicAllowed: true},
 		},
+		{
+			ID:                  "kimi-k2.6",
+			Object:              "model",
+			Created:             1776038400, // 2026-04-13
+			OwnedBy:             "moonshot",
+			Type:                "kimi",
+			DisplayName:         "Kimi K2.6",
+			Description:         "Kimi K2.6 - Latest Moonshot AI coding model with improved capabilities",
+			ContextLength:       131072,
+			MaxCompletionTokens: 32768,
+			Thinking:            &ThinkingSupport{Min: 1024, Max: 32000, ZeroAllowed: true, DynamicAllowed: true},
+		},
 	}
 }
 

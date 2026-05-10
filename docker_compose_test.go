@@ -50,6 +50,7 @@ func TestRepositoryComposeMirrorsDeploymentFilesAtProjectDirInUpdater(t *testing
 		"CLIRELAY_COMPOSE_FILE: ${CLIRELAY_PROJECT_DIR:-${PWD:-.}}/docker-compose.yml",
 		"CLIRELAY_ENV_FILE: ${CLIRELAY_ENV_FILE:-${CLIRELAY_PROJECT_DIR:-${PWD:-.}}/.env}",
 		"${CLIRELAY_PROJECT_DIR:-${PWD:-.}}:${CLIRELAY_PROJECT_DIR:-${PWD:-.}}",
+		"${CLI_PROXY_CONFIG_PATH:-${CLIRELAY_PROJECT_DIR:-${PWD:-.}}/config.yaml}:/CLIProxyAPI/config.yaml",
 	} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("docker-compose.yml updater config missing %q", want)
