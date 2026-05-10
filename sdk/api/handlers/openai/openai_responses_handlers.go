@@ -129,6 +129,7 @@ var compactFallbackModels = []string{
 	"codex-auto-review",
 	"gpt-5.4",
 	"gpt-5.1-codex-max",
+	"gpt-5.3-codex",
 }
 
 func (h *OpenAIResponsesAPIHandler) executeCompactWithFallback(cliCtx context.Context, requestedModel string, rawJSON []byte) ([]byte, http.Header, *interfaces.ErrorMessage) {
