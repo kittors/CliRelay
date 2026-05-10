@@ -37,6 +37,7 @@ import (
 	internalrouting "github.com/router-for-me/CLIProxyAPI/v6/internal/routing"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/watcher/synthesizer"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v6/sdk/access"
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/api/handlers"
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/api/handlers/claude"
@@ -1542,6 +1543,7 @@ func (s *Server) UpdateClients(cfg *config.Config) {
 	// Save YAML snapshot for next comparison
 	s.oldConfigYaml, _ = yaml.Marshal(cfg)
 
+	s.syncConfigDerivedAuths(cfg)
 	s.handlers.UpdateClients(&cfg.SDKConfig)
 
 	if s.mgmt != nil {
@@ -1591,6 +1593,78 @@ func (s *Server) UpdateClients(cfg *config.Config) {
 		vertexAICompatCount,
 		openAICompatCount,
 	)
+}
+
+func (s *Server) syncConfigDerivedAuths(cfg *config.Config) {
+	if s == nil || s.handlers == nil || s.handlers.AuthManager == nil || cfg == nil {
+		return
+	}
+
+	ctx := auth.WithSkipPersist(context.Background())
+	synth := synthesizer.NewConfigSynthesizer()
+	auths, err := synth.Synthesize(&synthesizer.SynthesisContext{
+		Config:      cfg,
+		AuthDir:     cfg.AuthDir,
+		Now:         time.Now(),
+		IDGenerator: synthesizer.NewStableIDGenerator(),
+	})
+	if err != nil {
+		log.WithError(err).Warn("failed to synthesize config auths during client update")
+		return
+	}
+
+	manager := s.handlers.AuthManager
+	desiredIDs := make(map[string]struct{}, len(auths))
+	for _, next := range auths {
+		if next == nil || strings.TrimSpace(next.ID) == "" {
+			continue
+		}
+		desiredIDs[next.ID] = struct{}{}
+		if existing, ok := manager.GetByID(next.ID); ok && existing != nil {
+			next.CreatedAt = existing.CreatedAt
+			next.LastRefreshedAt = existing.LastRefreshedAt
+			next.NextRefreshAfter = existing.NextRefreshAfter
+			_, err = manager.Update(ctx, next)
+		} else {
+			_, err = manager.Register(ctx, next)
+		}
+		if err != nil {
+			log.WithError(err).Warnf("failed to apply config auth %s", next.ID)
+		}
+	}
+
+	for _, existing := range manager.List() {
+		if existing == nil || strings.TrimSpace(existing.ID) == "" {
+			continue
+		}
+		if !isConfigDerivedAuth(existing) {
+			continue
+		}
+		if _, stillConfigured := desiredIDs[existing.ID]; stillConfigured {
+			continue
+		}
+		if existing.Disabled && existing.Status == auth.StatusDisabled {
+			continue
+		}
+		disabled := existing.Clone()
+		disabled.Disabled = true
+		disabled.Status = auth.StatusDisabled
+		disabled.StatusMessage = "removed via config update"
+		disabled.UpdatedAt = time.Now()
+		if _, err := manager.Update(ctx, disabled); err != nil {
+			log.WithError(err).Warnf("failed to disable removed config auth %s", disabled.ID)
+		}
+	}
+}
+
+func isConfigDerivedAuth(authState *auth.Auth) bool {
+	if authState == nil {
+		return false
+	}
+	if authState.Attributes == nil {
+		return false
+	}
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(authState.Attributes["source"])), "config:")
 }
 
 func (s *Server) SetWebsocketAuthChangeHandler(fn func(bool, bool)) {

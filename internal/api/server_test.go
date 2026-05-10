@@ -206,6 +206,55 @@ func TestGroupedNestedV1RouteConfigured(t *testing.T) {
 	}
 }
 
+func TestUpdateClientsDisablesRemovedConfigAuths(t *testing.T) {
+	server := newTestServer(t)
+	manager := server.handlers.AuthManager
+	ctx := context.Background()
+
+	for _, seed := range []*auth.Auth{
+		{
+			ID:       "claude-config-auth",
+			Provider: "claude",
+			Label:    "Claude API key",
+			Status:   auth.StatusActive,
+			Attributes: map[string]string{
+				"source":  "config:claude[old]",
+				"api_key": "sk-claude-old",
+			},
+		},
+		{
+			ID:       "kimi-config-auth",
+			Provider: "kimi",
+			Label:    "Kimi API key",
+			Status:   auth.StatusActive,
+			Attributes: map[string]string{
+				"source":       "config:kimi[old]",
+				"api_key":      "sk-kimi-old",
+				"compat_name":  "Kimi",
+				"provider_key": "kimi",
+			},
+		},
+	} {
+		if _, err := manager.Register(ctx, seed); err != nil {
+			t.Fatalf("register auth %s: %v", seed.ID, err)
+		}
+	}
+
+	next := *server.cfg
+	next.ClaudeKey = nil
+	server.UpdateClients(&next)
+
+	for _, id := range []string{"claude-config-auth", "kimi-config-auth"} {
+		updated, ok := manager.GetByID(id)
+		if !ok {
+			t.Fatalf("expected existing auth %s to remain as disabled runtime state", id)
+		}
+		if !updated.Disabled || updated.Status != auth.StatusDisabled {
+			t.Fatalf("%s should be disabled after removal, got disabled=%t status=%s", id, updated.Disabled, updated.Status)
+		}
+	}
+}
+
 func TestGroupedV1RouteForbiddenByAPIKeyGroups(t *testing.T) {
 	server := newTestServerWithConfig(t, func(cfg *proxyconfig.Config) {
 		cfg.SDKConfig.APIKeys = nil
