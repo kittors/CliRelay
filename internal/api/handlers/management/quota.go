@@ -10,8 +10,8 @@ import (
 )
 
 var (
-	managementQuotaReconcileSlots = make(chan struct{}, 2)
-	managementQuotaSnapshotSlots  = make(chan struct{}, 2)
+	managementQuotaReconcileSlots = make(chan struct{}, 6)
+	managementQuotaSnapshotSlots  = make(chan struct{}, 4)
 )
 
 // Quota exceeded toggles

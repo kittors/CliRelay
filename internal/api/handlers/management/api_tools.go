@@ -31,7 +31,7 @@ const (
 	managementOAuthTokenResponseLimit int64 = 64 << 10
 )
 
-var managementAPICallSlots = make(chan struct{}, 4)
+var managementAPICallSlots = make(chan struct{}, 8)
 
 var geminiOAuthScopes = []string{
 	"https://www.googleapis.com/auth/cloud-platform",

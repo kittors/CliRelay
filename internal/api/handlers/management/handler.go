@@ -387,15 +387,19 @@ func (h *Handler) persistRuntimeSetting(c *gin.Context, key string, value any) b
 }
 
 func tryAcquireManagementSlot(c *gin.Context, sem chan struct{}, operation string) bool {
+	timeout := time.NewTimer(5 * time.Second)
+	defer timeout.Stop()
 	select {
 	case sem <- struct{}{}:
 		return true
-	default:
+	case <-timeout.C:
 		c.Header("Retry-After", "2")
 		c.JSON(http.StatusTooManyRequests, gin.H{
 			"error":     "management operation busy",
 			"operation": operation,
 		})
+		return false
+	case <-c.Request.Context().Done():
 		return false
 	}
 }
