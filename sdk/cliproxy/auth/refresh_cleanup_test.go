@@ -1030,3 +1030,161 @@ func TestIsCredentialRevokedMessage(t *testing.T) {
 		}
 	}
 }
+
+func TestIsNetworkTransientError(t *testing.T) {
+	tests := []struct {
+		message  string
+		expected bool
+	}{
+		{"http2: timeout awaiting response headers", true},
+		{"context deadline exceeded (Client.Timeout exceeded while awaiting headers)", true},
+		{"dial tcp 1.2.3.4:443: connection refused", true},
+		{"read tcp: connection reset by peer", true},
+		{"lookup example.com: no such host", true},
+		{"net/http: TLS handshake timeout", true},
+		{"unexpected EOF", true},
+		{"dial tcp 1.2.3.4:443: i/o timeout", true},
+		{"network is unreachable", true},
+		{"Your authentication token has been invalidated", false},
+		{"rate limit exceeded", false},
+		{"internal server error", false},
+		{"", false},
+	}
+	for _, tt := range tests {
+		var err *Error
+		if tt.message != "" {
+			err = &Error{Message: tt.message}
+		}
+		got := isNetworkTransientError(err)
+		if got != tt.expected {
+			t.Errorf("isNetworkTransientError(%q) = %v, want %v", tt.message, got, tt.expected)
+		}
+	}
+}
+
+func TestMarkResult_NetworkTimeout_NotMarkedUnavailable(t *testing.T) {
+	store := &trackingStore{}
+	mgr := NewManager(store, nil, nil)
+
+	auth := &Auth{
+		ID:       "net-test",
+		Provider: "codex",
+		Status:   StatusActive,
+		Metadata: map[string]any{
+			"type":         "codex",
+			"access_token": "some-token",
+		},
+	}
+	ctx := WithSkipPersist(context.Background())
+	if _, err := mgr.Register(ctx, auth); err != nil {
+		t.Fatalf("Register failed: %v", err)
+	}
+
+	mgr.MarkResult(context.Background(), Result{
+		AuthID:  auth.ID,
+		Model:   "codex-mini",
+		Success: false,
+		Error:   &Error{Message: "http2: timeout awaiting response headers"},
+	})
+
+	current, ok := mgr.GetByID(auth.ID)
+	if !ok {
+		t.Fatal("auth not found")
+	}
+	state := current.ModelStates["codex-mini"]
+	if state == nil {
+		t.Fatal("model state not found")
+	}
+	if state.Unavailable {
+		t.Error("model should NOT be marked Unavailable for network timeout")
+	}
+	if state.Status == StatusError {
+		t.Error("model status should NOT be StatusError for network timeout")
+	}
+	if current.Status == StatusError {
+		t.Error("auth status should NOT be StatusError for network timeout")
+	}
+	if state.NextRetryAfter.IsZero() {
+		t.Error("model should have NextRetryAfter set for network timeout")
+	}
+}
+
+func TestMarkResult_5xx_StillMarkedUnavailable(t *testing.T) {
+	store := &trackingStore{}
+	mgr := NewManager(store, nil, nil)
+
+	auth := &Auth{
+		ID:       "5xx-test",
+		Provider: "codex",
+		Status:   StatusActive,
+		Metadata: map[string]any{
+			"type":         "codex",
+			"access_token": "some-token",
+		},
+	}
+	ctx := WithSkipPersist(context.Background())
+	if _, err := mgr.Register(ctx, auth); err != nil {
+		t.Fatalf("Register failed: %v", err)
+	}
+
+	mgr.MarkResult(context.Background(), Result{
+		AuthID:  auth.ID,
+		Model:   "codex-mini",
+		Success: false,
+		Error:   &Error{Message: "bad gateway", HTTPStatus: 502},
+	})
+
+	current, ok := mgr.GetByID(auth.ID)
+	if !ok {
+		t.Fatal("auth not found")
+	}
+	state := current.ModelStates["codex-mini"]
+	if state == nil {
+		t.Fatal("model state not found")
+	}
+	if !state.Unavailable {
+		t.Error("model SHOULD be marked Unavailable for 502")
+	}
+	if state.Status != StatusError {
+		t.Error("model status SHOULD be StatusError for 502")
+	}
+}
+
+func TestMarkResult_NetworkTimeout_NoModel_NotMarkedUnavailable(t *testing.T) {
+	store := &trackingStore{}
+	mgr := NewManager(store, nil, nil)
+
+	auth := &Auth{
+		ID:       "net-nomodel-test",
+		Provider: "codex",
+		Status:   StatusActive,
+		Metadata: map[string]any{
+			"type":         "codex",
+			"access_token": "some-token",
+		},
+	}
+	ctx := WithSkipPersist(context.Background())
+	if _, err := mgr.Register(ctx, auth); err != nil {
+		t.Fatalf("Register failed: %v", err)
+	}
+
+	mgr.MarkResult(context.Background(), Result{
+		AuthID:  auth.ID,
+		Success: false,
+		Error:   &Error{Message: "dial tcp 1.2.3.4:443: i/o timeout"},
+	})
+
+	current, ok := mgr.GetByID(auth.ID)
+	if !ok {
+		t.Fatal("auth not found")
+	}
+	if current.Unavailable {
+		t.Error("auth should NOT be marked Unavailable for network timeout")
+	}
+	if current.Status == StatusError {
+		t.Error("auth status should NOT be StatusError for network timeout")
+	}
+	if current.NextRetryAfter.IsZero() {
+		t.Error("auth should have NextRetryAfter set for network timeout")
+	}
+}
