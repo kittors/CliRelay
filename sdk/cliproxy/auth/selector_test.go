@@ -584,7 +584,8 @@ func TestIsAuthBlockedForModel_AuthQuotaCooldownBlocksAllModels(t *testing.T) {
 	next := now.Add(15 * time.Minute)
 
 	auth := &Auth{
-		ID: "a",
+		ID:          "a",
+		Unavailable: true,
 		Quota: QuotaState{
 			Exceeded:      true,
 			Reason:        "quota",
@@ -593,7 +594,6 @@ func TestIsAuthBlockedForModel_AuthQuotaCooldownBlocksAllModels(t *testing.T) {
 		NextRetryAfter: next,
 	}
 
-	// Even if the requested model has no per-model state yet, auth-level cooldown should block it.
 	blocked, reason, gotNext := isAuthBlockedForModel(auth, "some-new-model", now)
 	if !blocked {
 		t.Fatalf("blocked = false, want true")
@@ -603,6 +603,27 @@ func TestIsAuthBlockedForModel_AuthQuotaCooldownBlocksAllModels(t *testing.T) {
 	}
 	if gotNext.IsZero() || gotNext.Sub(next) > time.Second || next.Sub(gotNext) > time.Second {
 		t.Fatalf("next = %v, want around %v", gotNext, next)
+	}
+}
+
+func TestIsAuthBlockedForModel_RevokedBlocksAllModels(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	auth := &Auth{
+		ID:     "a",
+		Status: StatusRevoked,
+	}
+
+	blocked, reason, next := isAuthBlockedForModel(auth, "some-new-model", now)
+	if !blocked {
+		t.Fatalf("blocked = false, want true")
+	}
+	if reason != blockReasonOther {
+		t.Fatalf("reason = %v, want %v", reason, blockReasonOther)
+	}
+	if !next.IsZero() {
+		t.Fatalf("next = %v, want zero", next)
 	}
 }
 
