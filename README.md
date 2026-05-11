@@ -16,6 +16,7 @@
 </p>
 
 <p align="center">
+  <a href="#fork-improvements-over-upstream">🚀 Fork Improvements</a> ·
   <a href="https://help.router-for.me/">📖 Docs</a> ·
   <a href="https://github.com/kittors/codeProxy">🖥️ Management Panel</a> ·
   <a href="https://github.com/kittors/CliRelay/issues">🐛 Report Bug</a> ·
@@ -23,6 +24,67 @@
 </p>
 
 ---
+
+## 🚀 Fork Improvements Over Upstream
+
+This repository is the enhanced `zuohuadong/CliRelay` fork of upstream [`kittors/CliRelay`](https://github.com/kittors/CliRelay). The fork focuses on production Codex stability, large-context handling, multimodal routing, image workflows, management reliability, and automated upstream sync.
+
+Quick links:
+
+- [Context retrieval and smart compression](#context-retrieval-and-smart-compression)
+- [Multimodal adapters](#multimodal-adapters)
+- [Request policies and provider preferences](#request-policies-and-provider-preferences)
+- [Auth and credential lifecycle](#auth-and-credential-lifecycle)
+- [Codex WebSocket and session stability](#codex-websocket-and-session-stability)
+- [Image generation and image edits](#image-generation-and-image-edits)
+- [OpenAI-compatible executor improvements](#openai-compatible-executor-improvements)
+- [Configuration and runtime operations](#configuration-and-runtime-operations)
+- [CI/CD and upstream synchronization](#cicd-and-upstream-synchronization)
+
+<a id="context-retrieval-and-smart-compression"></a>
+### 🧠 Context Retrieval and Smart Compression
+
+Adds `internal/contextretrieval`, a configurable local reducer for oversized OpenAI / Responses payloads. It keeps system and recent turns, retrieves older relevant content with SQLite FTS-style matching, preserves Codex tool-call pairs atomically, inserts Codex-aware summaries, and falls back to a secondary truncation pass when a retained item is still too large.
+
+<a id="multimodal-adapters"></a>
+### 🔌 Multimodal Adapters
+
+Adds `internal/multimodaladapter`, a route-scoped media-to-text preprocessing layer for text-only upstreams. It can extract visual context through HTTP, ZAI Vision HTTP, or MCP tools; then strip, reject, pass through, or inject the extracted visual context into OpenAI / Responses requests without affecting native multimodal channels.
+
+<a id="request-policies-and-provider-preferences"></a>
+### 🛡️ Request Policies and Provider Preferences
+
+Adds generic `request-policies` and `provider-preferences` config. Policies can skip a channel or reject locally when requests exceed provider-specific limits such as payload size, tools, or media features. Provider preferences let a requested model prefer a specific upstream provider/model first while keeping normal fallback behavior.
+
+<a id="auth-and-credential-lifecycle"></a>
+### 🔐 Auth and Credential Lifecycle
+
+Strengthens channel selection around revoked credentials, token refresh, transient network failures, quota recovery, weighted rotation, and config hot-apply behavior. Revoked auth entries can be blocked or removed, unauthorized suspensions can recover after refresh, and network timeouts are treated as transient instead of permanently restricting credentials.
+
+<a id="codex-websocket-and-session-stability"></a>
+### 🌐 Codex WebSocket and Session Stability
+
+Hardens Codex Responses WebSocket handling for warmup sessions, reconnects, idle upstreams, close ordering, read-loop panics, incremental input compatibility, request/response tracing, and output assembly. Non-streaming Responses output can be recovered from `response.output_item.done` events when the final completed event is incomplete.
+
+<a id="image-generation-and-image-edits"></a>
+### 🖼️ Image Generation and Image Edits
+
+Improves `/v1/images/generations` and `/v1/images/edits` routing across Codex and OpenAI-compatible providers. Native edits can pass through, while providers without native edit semantics can be configured to use image-generations or chat-multimodal conversion, including configurable image field names for Qwen-style upstreams.
+
+<a id="openai-compatible-executor-improvements"></a>
+### 🧩 OpenAI-Compatible Executor Improvements
+
+Extends the OpenAI-compatible executor with multimodal adaptation, image edit conversion, compact fallback, upstream error preservation, Kimi payload normalization, identity fingerprinting, response tracing, and safer stream parsing. This makes non-OpenAI upstreams behave more consistently for Codex and OpenAI-compatible clients.
+
+<a id="configuration-and-runtime-operations"></a>
+### ⚙️ Configuration and Runtime Operations
+
+Adds config surface for context retrieval, multimodal adapters, request policies, provider preferences, OpenAI-compatible image edit modes, GPT-5.4 / GPT-5.5 1M-context registry updates, management auth-rate tuning, runtime settings persistence, and safer updater behavior in bind-mounted or containerized deployments.
+
+<a id="cicd-and-upstream-synchronization"></a>
+### 🔄 CI/CD and Upstream Synchronization
+
+Adds an upstream sync workflow for `kittors/CliRelay`, Docker publishing adjustments, Node 24 action updates, and conflict-aware PR creation. The fork is designed to keep local production patches reviewable while still regularly absorbing upstream `dev`.
 
 ## ⚡ What is CliRelay?
 
