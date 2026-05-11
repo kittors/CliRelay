@@ -8,6 +8,7 @@ import (
 	"time"
 
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	internalregistry "github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
@@ -169,6 +170,46 @@ func TestRegisterModelsForAuth_OpenAICompatibilityRegistersConfigModels(t *testi
 	for _, want := range []string{"qwen3.6-plus", "qwen-image-2.0"} {
 		if !ids[want] {
 			t.Fatalf("expected model %q to be registered, got %+v", want, ids)
+		}
+	}
+}
+
+func TestRegisterModelsForAuth_OpenAICompatibilityRegistersAliasAndUpstreamName(t *testing.T) {
+	service := &Service{
+		cfg: &config.Config{
+			OpenAICompatibility: []config.OpenAICompatibility{
+				{
+					Name: "bigmodel-coding",
+					Models: []config.OpenAICompatibilityModel{
+						{Name: "glm-5.1", Alias: "gpt-5.3-codex"},
+					},
+				},
+			},
+		},
+	}
+	auth := &coreauth.Auth{
+		ID:       "compat-bigmodel-coding",
+		Provider: "bigmodel-coding",
+		Status:   coreauth.StatusActive,
+		Attributes: map[string]string{
+			"auth_kind":    "apikey",
+			"compat_name":  "bigmodel-coding",
+			"provider_key": "bigmodel-coding",
+		},
+	}
+
+	modelRegistry := internalregistry.GetGlobalRegistry()
+	modelRegistry.UnregisterClient(auth.ID)
+	t.Cleanup(func() {
+		modelRegistry.UnregisterClient(auth.ID)
+	})
+
+	service.registerModelsForAuth(context.Background(), auth)
+
+	for _, modelID := range []string{"gpt-5.3-codex", "glm-5.1"} {
+		providers := modelRegistry.GetModelProviders(modelID)
+		if len(providers) != 1 || providers[0] != "bigmodel-coding" {
+			t.Fatalf("providers for %q = %#v, want [bigmodel-coding]", modelID, providers)
 		}
 	}
 }

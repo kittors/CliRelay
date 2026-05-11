@@ -970,22 +970,37 @@ func (s *Service) registerOpenAICompatibilityModels(a *coreauth.Auth, providerKe
 	for i := range s.cfg.OpenAICompatibility {
 		compat := &s.cfg.OpenAICompatibility[i]
 		if strings.EqualFold(compat.Name, compatName) {
-			ms := make([]*ModelInfo, 0, len(compat.Models))
-			for j := range compat.Models {
-				m := compat.Models[j]
-				modelID := m.Alias
+			now := time.Now().Unix()
+			ms := make([]*ModelInfo, 0, len(compat.Models)*2)
+			seenModels := make(map[string]struct{}, len(compat.Models)*2)
+			addModel := func(modelID string) {
+				modelID = strings.TrimSpace(modelID)
 				if modelID == "" {
-					modelID = m.Name
+					return
 				}
+				key := strings.ToLower(modelID)
+				if _, exists := seenModels[key]; exists {
+					return
+				}
+				seenModels[key] = struct{}{}
 				ms = append(ms, &ModelInfo{
 					ID:          modelID,
 					Object:      "model",
-					Created:     time.Now().Unix(),
+					Created:     now,
 					OwnedBy:     compat.Name,
 					Type:        "openai-compatibility",
 					DisplayName: modelID,
 					UserDefined: true,
 				})
+			}
+			for j := range compat.Models {
+				m := compat.Models[j]
+				name := strings.TrimSpace(m.Name)
+				alias := strings.TrimSpace(m.Alias)
+				if alias != "" {
+					addModel(alias)
+				}
+				addModel(name)
 			}
 			if len(ms) > 0 {
 				if providerKey == "" {
