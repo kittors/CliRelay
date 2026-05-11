@@ -184,7 +184,8 @@ request-log-storage:
 # request-policies:
 #   - name: "glm-5.1-large-request-guard"
 #     match:
-#       requested-models: ["gpt-5.3-codex", "codex-auto-review"]
+#       # No requested-models needed: policy matches by upstream provider/model,
+#       # so any client model aliased to GLM-5.1 is automatically protected.
 #       upstream-providers: ["bigmodel-coding"]
 #       upstream-models: ["glm-5.1"]
 #     limits:
@@ -193,7 +194,6 @@ request-log-storage:
 #       action: "skip-channel"
 #   - name: "glm-5.1-tool-heavy-skip"
 #     match:
-#       requested-models: ["gpt-5.3-codex", "codex-auto-review"]
 #       upstream-providers: ["bigmodel-coding"]
 #       upstream-models: ["glm-5.1"]
 #     limits:
@@ -202,7 +202,6 @@ request-log-storage:
 #       action: "skip-channel"
 #   - name: "glm-5.1-tools-skip"
 #     match:
-#       requested-models: ["gpt-5.3-codex", "codex-auto-review"]
 #       upstream-providers: ["bigmodel-coding"]
 #       upstream-models: ["glm-5.1"]
 #       request-features: ["tools"]
@@ -210,7 +209,6 @@ request-log-storage:
 #       action: "skip-channel"
 #   - name: "glm-5.1-long-thread-skip"
 #     match:
-#       requested-models: ["gpt-5.3-codex", "codex-auto-review"]
 #       upstream-providers: ["bigmodel-coding"]
 #       upstream-models: ["glm-5.1"]
 #     limits:
@@ -221,9 +219,8 @@ request-log-storage:
 # Optional provider preferences for model-scoped upstream priority overrides.
 # This keeps fallback behavior intact while making a specific provider win first.
 # provider-preferences:
-#   - name: "prefer-bigmodel-coding-for-gpt-5.3-codex"
+#   - name: "prefer-bigmodel-coding-for-glm-5.1"
 #     match:
-#       requested-models: ["gpt-5.3-codex"]
 #       upstream-providers: ["bigmodel-coding"]
 #       upstream-models: ["glm-5.1"]
 #     priority: 100
