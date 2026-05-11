@@ -15,6 +15,7 @@ env:
   UPSTREAM_BRANCH: dev
   BASE_BRANCH: dev
   SYNC_BRANCH: chore/sync-kittors-dev-to-dev
+  FORK_EXCLUDED_PATHS: .github/workflows/deploy.yml
 
 jobs:
   sync:
@@ -26,6 +27,7 @@ jobs:
         with:
           ref: ${{ env.BASE_BRANCH }}
           fetch-depth: 0
+          token: ${{ secrets.SYNC_PR_TOKEN != '' && secrets.SYNC_PR_TOKEN || secrets.GITHUB_TOKEN }}
 
       - name: Configure git
         run: |
@@ -55,6 +57,18 @@ jobs:
           else
             echo "conflicted=false" >> "$GITHUB_OUTPUT"
           fi
+
+          removed=false
+          for path in ${FORK_EXCLUDED_PATHS}; do
+            if [ -e "${path}" ]; then
+              git rm -f "${path}"
+              removed=true
+            fi
+          done
+          if [ "${removed}" = "true" ]; then
+            git commit --amend --no-edit
+          fi
+
           head_sha="$(git rev-parse HEAD)"
           if [ "${base_sha}" = "${head_sha}" ]; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
