@@ -57,6 +57,11 @@ type SDKConfig struct {
 	// MultimodalAdapters turns unsupported media inputs into text context before routing to text models.
 	MultimodalAdapters MultimodalAdaptersConfig `yaml:"multimodal-adapters,omitempty" json:"multimodal-adapters,omitempty"`
 
+	// AutoDeleteRevoked controls whether revoked auth entries are automatically
+	// deleted from the store. When true (default), auth entries marked as
+	// StatusRevoked are removed from disk and memory after a short delay.
+	AutoDeleteRevoked *bool `yaml:"auto-delete-revoked,omitempty" json:"auto-delete-revoked,omitempty"`
+
 	// InsecureSkipVerify disables TLS certificate verification for upstream HTTPS connections.
 	// When true, the proxy will accept any certificate presented by upstream servers.
 	// This is insecure and should only be used in testing or trusted internal networks.
@@ -246,6 +251,16 @@ type APIKeyEntry struct {
 }
 
 // AllAPIKeys returns a merged, deduplicated list of all API key strings
+func (c *SDKConfig) IsAutoDeleteRevoked() bool {
+	if c == nil {
+		return true
+	}
+	if c.AutoDeleteRevoked == nil {
+		return true
+	}
+	return *c.AutoDeleteRevoked
+}
+
 // from both the legacy APIKeys slice and the new APIKeyEntries slice.
 func (c *SDKConfig) AllAPIKeys() []string {
 	seen := make(map[string]struct{}, len(c.APIKeys)+len(c.APIKeyEntries))
