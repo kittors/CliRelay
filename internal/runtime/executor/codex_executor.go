@@ -27,9 +27,8 @@ import (
 )
 
 const (
-	// Keep defaults aligned with upstream CLIProxyAPI (codex-tui).
-	codexUserAgent  = "codex-tui/0.125.0 (Mac OS 26.3.1; arm64) iTerm.app/3.6.9 (codex-tui; 0.125.0)"
-	codexOriginator = "codex-tui"
+	codexUserAgent  = "Codex Desktop/0.130.0-alpha.5 (Mac OS 26.4.1; arm64) unknown (Codex Desktop; 26.506.31421)"
+	codexOriginator = "Codex Desktop"
 )
 
 var dataTag = []byte("data:")

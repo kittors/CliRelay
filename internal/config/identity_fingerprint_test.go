@@ -10,11 +10,11 @@ func TestDefaultCodexIdentityFingerprintUsesCurrentVersionAndDynamicSessions(t *
 	if got.Enabled {
 		t.Fatalf("Enabled = true, want false by default")
 	}
-	if got.Version != "" {
-		t.Fatalf("Version = %q, want empty (codex-tui does not require Version)", got.Version)
+	if got.Version != "0.130.0-alpha.5" {
+		t.Fatalf("Version = %q, want 0.130.0-alpha.5", got.Version)
 	}
-	if got.UserAgent != "codex-tui/0.118.0 (Mac OS 26.3.1; arm64) iTerm.app/3.6.9 (codex-tui; 0.118.0)" {
-		t.Fatalf("UserAgent = %q, want codex-tui user agent", got.UserAgent)
+	if got.UserAgent != "Codex Desktop/0.130.0-alpha.5 (Mac OS 26.4.1; arm64) unknown (Codex Desktop; 26.506.31421)" {
+		t.Fatalf("UserAgent = %q, want Codex Desktop user agent", got.UserAgent)
 	}
 	if got.SessionMode != "per-request" {
 		t.Fatalf("SessionMode = %q, want per-request", got.SessionMode)
@@ -26,11 +26,11 @@ func TestNormalizeCodexIdentityFingerprintAppliesCurrentDefaults(t *testing.T) {
 
 	got := NormalizeCodexIdentityFingerprint(CodexIdentityFingerprintConfig{})
 
-	if got.Version != "" {
-		t.Fatalf("Version = %q, want empty (codex-tui does not require Version)", got.Version)
+	if got.Version != "0.130.0-alpha.5" {
+		t.Fatalf("Version = %q, want 0.130.0-alpha.5", got.Version)
 	}
-	if got.UserAgent != "codex-tui/0.118.0 (Mac OS 26.3.1; arm64) iTerm.app/3.6.9 (codex-tui; 0.118.0)" {
-		t.Fatalf("UserAgent = %q, want codex-tui user agent", got.UserAgent)
+	if got.UserAgent != "Codex Desktop/0.130.0-alpha.5 (Mac OS 26.4.1; arm64) unknown (Codex Desktop; 26.506.31421)" {
+		t.Fatalf("UserAgent = %q, want Codex Desktop user agent", got.UserAgent)
 	}
 	if got.SessionMode != "per-request" {
 		t.Fatalf("SessionMode = %q, want per-request", got.SessionMode)
