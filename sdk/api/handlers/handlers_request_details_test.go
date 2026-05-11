@@ -151,6 +151,36 @@ func TestGetRequestDetails_AllowedGroupResolvesPrefixedModelProvider(t *testing.
 	}
 }
 
+func TestGetRequestDetails_RegisteredOpenAICompatUpstreamModelsDoNotReturnUnknownProvider(t *testing.T) {
+	modelRegistry := registry.GetGlobalRegistry()
+	modelRegistry.RegisterClient("test-request-details-bigmodel", "bigmodel-coding", []*registry.ModelInfo{
+		{ID: "gpt-5.3-codex", Created: time.Now().Unix()},
+		{ID: "glm-5.1", Created: time.Now().Unix()},
+		{ID: "custom-public-model", Created: time.Now().Unix()},
+		{ID: "vendor/custom-model", Created: time.Now().Unix()},
+	})
+	t.Cleanup(func() {
+		modelRegistry.UnregisterClient("test-request-details-bigmodel")
+	})
+
+	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, coreauth.NewManager(nil, nil, nil))
+
+	for _, modelID := range []string{"glm-5.1", "vendor/custom-model"} {
+		t.Run(modelID, func(t *testing.T) {
+			providers, model, errMsg := handler.getRequestDetails(context.Background(), modelID)
+			if errMsg != nil {
+				t.Fatalf("getRequestDetails() unexpected error = %v", errMsg)
+			}
+			if !reflect.DeepEqual(providers, []string{"bigmodel-coding"}) {
+				t.Fatalf("providers = %v, want [bigmodel-coding]", providers)
+			}
+			if model != modelID {
+				t.Fatalf("model = %q, want %q", model, modelID)
+			}
+		})
+	}
+}
+
 func TestGetRequestDetails_RouteGroupRejectsConflictingModelPrefix(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

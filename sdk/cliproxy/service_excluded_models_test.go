@@ -174,7 +174,7 @@ func TestRegisterModelsForAuth_OpenAICompatibilityRegistersConfigModels(t *testi
 	}
 }
 
-func TestRegisterModelsForAuth_OpenAICompatibilityRegistersAliasAndUpstreamName(t *testing.T) {
+func TestRegisterModelsForAuth_OpenAICompatibilityRegistersAliasesAndUpstreamNames(t *testing.T) {
 	service := &Service{
 		cfg: &config.Config{
 			OpenAICompatibility: []config.OpenAICompatibility{
@@ -182,6 +182,8 @@ func TestRegisterModelsForAuth_OpenAICompatibilityRegistersAliasAndUpstreamName(
 					Name: "bigmodel-coding",
 					Models: []config.OpenAICompatibilityModel{
 						{Name: "glm-5.1", Alias: "gpt-5.3-codex"},
+						{Name: "vendor/custom-model", Alias: "custom-public-model"},
+						{Name: "direct-only-model"},
 					},
 				},
 			},
@@ -206,7 +208,13 @@ func TestRegisterModelsForAuth_OpenAICompatibilityRegistersAliasAndUpstreamName(
 
 	service.registerModelsForAuth(context.Background(), auth)
 
-	for _, modelID := range []string{"gpt-5.3-codex", "glm-5.1"} {
+	for _, modelID := range []string{
+		"gpt-5.3-codex",
+		"glm-5.1",
+		"custom-public-model",
+		"vendor/custom-model",
+		"direct-only-model",
+	} {
 		providers := modelRegistry.GetModelProviders(modelID)
 		if len(providers) != 1 || providers[0] != "bigmodel-coding" {
 			t.Fatalf("providers for %q = %#v, want [bigmodel-coding]", modelID, providers)
