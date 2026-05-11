@@ -176,7 +176,8 @@ func (h *Handler) SetPostAuthHook(hook coreauth.PostAuthHook) {
 }
 
 // Middleware enforces access control for management endpoints.
-// All requests (local and remote) require a valid management key.
+// All requests (local and remote) require a valid management key, except the
+// sanitized read-only config used by the management UI before login.
 // Additionally, remote access requires allow-remote-management=true.
 func (h *Handler) Middleware() gin.HandlerFunc {
 	// Sensible defaults: generous failure limit, short ban window.
@@ -276,6 +277,11 @@ func (h *Handler) Middleware() gin.HandlerFunc {
 			return
 		}
 
+		if isPublicManagementConfigRequest(c) {
+			c.Next()
+			return
+		}
+
 		// Accept either Authorization: Bearer <key> or X-Management-Key
 		var provided string
 		if ah := c.GetHeader("Authorization"); ah != "" {
@@ -295,13 +301,6 @@ func (h *Handler) Middleware() gin.HandlerFunc {
 		}
 
 		if provided == "" {
-			if !localClient {
-				if remaining, banned := isBanned(); banned {
-					c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": fmt.Sprintf("IP banned due to too many failed attempts. Try again in %s", remaining)})
-					return
-				}
-				fail()
-			}
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "missing management key"})
 			return
 		}
@@ -337,6 +336,14 @@ func (h *Handler) Middleware() gin.HandlerFunc {
 
 		c.Next()
 	}
+}
+
+func isPublicManagementConfigRequest(c *gin.Context) bool {
+	if c == nil || c.Request == nil || c.Request.Method != http.MethodGet {
+		return false
+	}
+	path := strings.TrimRight(c.Request.URL.Path, "/")
+	return path == "/v0/management/config"
 }
 
 // persist saves the current in-memory config to disk.

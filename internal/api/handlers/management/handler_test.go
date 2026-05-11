@@ -46,18 +46,20 @@ func TestMiddlewareAllowsValidKeyAfterRemoteIPIsBanned(t *testing.T) {
 		rr := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodGet, "/v0/management/ping", nil)
 		req.RemoteAddr = "203.0.113.10:4321"
+		req.Header.Set("X-Management-Key", "wrong")
 		router.ServeHTTP(rr, req)
 		if rr.Code != http.StatusUnauthorized {
-			t.Fatalf("missing-key attempt %d status = %d, want %d; body=%s", i+1, rr.Code, http.StatusUnauthorized, rr.Body.String())
+			t.Fatalf("invalid-key attempt %d status = %d, want %d; body=%s", i+1, rr.Code, http.StatusUnauthorized, rr.Body.String())
 		}
 	}
 
 	rrBanned := httptest.NewRecorder()
 	reqBanned := httptest.NewRequest(http.MethodGet, "/v0/management/ping", nil)
 	reqBanned.RemoteAddr = "203.0.113.10:4321"
+	reqBanned.Header.Set("X-Management-Key", "wrong")
 	router.ServeHTTP(rrBanned, reqBanned)
 	if rrBanned.Code != http.StatusForbidden {
-		t.Fatalf("banned missing-key status = %d, want %d; body=%s", rrBanned.Code, http.StatusForbidden, rrBanned.Body.String())
+		t.Fatalf("banned invalid-key status = %d, want %d; body=%s", rrBanned.Code, http.StatusForbidden, rrBanned.Body.String())
 	}
 	if !strings.Contains(rrBanned.Body.String(), "IP banned") {
 		t.Fatalf("expected IP banned response, got %s", rrBanned.Body.String())
@@ -75,13 +77,50 @@ func TestMiddlewareAllowsValidKeyAfterRemoteIPIsBanned(t *testing.T) {
 	rrAfterClear := httptest.NewRecorder()
 	reqAfterClear := httptest.NewRequest(http.MethodGet, "/v0/management/ping", nil)
 	reqAfterClear.RemoteAddr = "203.0.113.10:4321"
+	reqAfterClear.Header.Set("X-Management-Key", "wrong")
 	router.ServeHTTP(rrAfterClear, reqAfterClear)
 	if rrAfterClear.Code != http.StatusUnauthorized {
-		t.Fatalf("missing-key status after valid key cleared ban = %d, want %d; body=%s", rrAfterClear.Code, http.StatusUnauthorized, rrAfterClear.Body.String())
+		t.Fatalf("invalid-key status after valid key cleared ban = %d, want %d; body=%s", rrAfterClear.Code, http.StatusUnauthorized, rrAfterClear.Body.String())
 	}
 }
 
 func TestMiddlewareMissingManagementKeyDoesNotBanClient(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "")
+	gin.SetMode(gin.TestMode)
+
+	hash, err := bcrypt.GenerateFromPassword([]byte("secret"), bcrypt.MinCost)
+	if err != nil {
+		t.Fatalf("hash management key: %v", err)
+	}
+	h := NewHandlerWithoutConfigFilePath(&config.Config{
+		RemoteManagement: config.RemoteManagement{
+			AllowRemote:     true,
+			SecretKey:       string(hash),
+			MaxAuthFailures: 5,
+		},
+	}, nil)
+	defer h.Close()
+
+	router := gin.New()
+	router.Use(h.Middleware())
+	router.GET("/v0/management/ping", func(c *gin.Context) {
+		c.Status(http.StatusOK)
+	})
+
+	for i := 0; i < 10; i++ {
+		w := performManagementRequest(router, http.MethodGet, "/v0/management/ping", "")
+		if w.Code != http.StatusUnauthorized {
+			t.Fatalf("missing key attempt %d status = %d, want %d; body=%s", i+1, w.Code, http.StatusUnauthorized, w.Body.String())
+		}
+	}
+
+	w := performManagementRequest(router, http.MethodGet, "/v0/management/ping", "secret")
+	if w.Code != http.StatusOK {
+		t.Fatalf("valid key after missing-key attempts status = %d, want %d; body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+}
+
+func TestMiddlewareAllowsPublicConfigWithoutManagementKey(t *testing.T) {
 	t.Setenv("MANAGEMENT_PASSWORD", "")
 	gin.SetMode(gin.TestMode)
 
@@ -99,20 +138,13 @@ func TestMiddlewareMissingManagementKeyDoesNotBanClient(t *testing.T) {
 
 	router := gin.New()
 	router.Use(h.Middleware())
-	router.GET("/v0/management/ping", func(c *gin.Context) {
-		c.Status(http.StatusOK)
+	router.GET("/v0/management/config", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"ok": true})
 	})
 
-	for i := 0; i < 6; i++ {
-		w := performManagementRequest(router, http.MethodGet, "/v0/management/ping", "")
-		if w.Code != http.StatusUnauthorized {
-			t.Fatalf("missing key attempt %d status = %d, want %d; body=%s", i+1, w.Code, http.StatusUnauthorized, w.Body.String())
-		}
-	}
-
-	w := performManagementRequest(router, http.MethodGet, "/v0/management/ping", "secret")
+	w := performManagementRequest(router, http.MethodGet, "/v0/management/config", "")
 	if w.Code != http.StatusOK {
-		t.Fatalf("valid key after missing-key attempts status = %d, want %d; body=%s", w.Code, http.StatusOK, w.Body.String())
+		t.Fatalf("public config status = %d, want %d; body=%s", w.Code, http.StatusOK, w.Body.String())
 	}
 }
 
