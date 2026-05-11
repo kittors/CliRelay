@@ -309,6 +309,64 @@ func TestGroupedNestedV1RouteForbiddenByAPIKeyGroups(t *testing.T) {
 	}
 }
 
+func TestGroupedV1RouteForbiddenByChannelGroupAllowedModels(t *testing.T) {
+	server := newTestServerWithConfig(t, func(cfg *proxyconfig.Config) {
+		cfg.Routing.ChannelGroups = []proxyconfig.RoutingChannelGroup{
+			{
+				Name:          "pro",
+				AllowedModels: []string{"gpt-5.5"},
+			},
+		}
+		cfg.Routing.PathRoutes = []proxyconfig.RoutingPathRoute{
+			{Path: "/pro", Group: "pro"},
+		}
+		cfg.SanitizeRouting()
+	})
+
+	body := `{"model":"minimax-m2.7","messages":[{"role":"user","content":"hello"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/pro/v1/messages/count_tokens", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer test-key")
+	req.Header.Set("Content-Type", "application/json")
+
+	rr := httptest.NewRecorder()
+	server.engine.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d; body=%s", rr.Code, http.StatusForbidden, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "model_not_allowed") {
+		t.Fatalf("expected model_not_allowed in body, got %s", rr.Body.String())
+	}
+}
+
+func TestRootV1RouteForbiddenByDefaultChannelGroupAllowedModels(t *testing.T) {
+	server := newTestServerWithConfig(t, func(cfg *proxyconfig.Config) {
+		cfg.Routing.IncludeDefaultGroup = true
+		cfg.Routing.ChannelGroups = []proxyconfig.RoutingChannelGroup{
+			{
+				Name:          "default",
+				AllowedModels: []string{"gpt-5.5"},
+			},
+		}
+		cfg.SanitizeRouting()
+	})
+
+	body := `{"model":"minimax-m2.7","messages":[{"role":"user","content":"hello"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages/count_tokens", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer test-key")
+	req.Header.Set("Content-Type", "application/json")
+
+	rr := httptest.NewRecorder()
+	server.engine.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d; body=%s", rr.Code, http.StatusForbidden, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "model_not_allowed") {
+		t.Fatalf("expected model_not_allowed in body, got %s", rr.Body.String())
+	}
+}
+
 func TestGroupedNestedResponsesSuccessReturnsOK(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

@@ -12,7 +12,9 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 )
 
 func initManagementModelsTestDB(t *testing.T) {
@@ -231,6 +233,349 @@ func TestModelOwnerPresetHandlersReplacePresets(t *testing.T) {
 	if _, ok := usage.GetModelOwnerPreset("acme-ai"); !ok {
 		t.Fatal("expected acme-ai owner preset")
 	}
+}
+
+func TestGetModelPathAvailabilityIncludesRootAndConfiguredPath(t *testing.T) {
+	modelID := "model-path-availability-test"
+	reg := registry.GetGlobalRegistry()
+	reg.RegisterClient("model-path-availability-client", "openai", []*registry.ModelInfo{
+		{ID: modelID, Object: "model", OwnedBy: "openai", Type: "openai"},
+	})
+	t.Cleanup(func() {
+		reg.UnregisterClient("model-path-availability-client")
+	})
+
+	h := NewHandler(&config.Config{
+		Routing: config.RoutingConfig{
+			PathRoutes: []config.RoutingPathRoute{
+				{Path: "/team-a", Group: "team-a"},
+			},
+		},
+	}, "", nil)
+
+	rec := performModelsRequest(http.MethodGet, "/model-path-availability", nil, h.GetModelPathAvailability)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GetModelPathAvailability status = %d body = %s", rec.Code, rec.Body.String())
+	}
+
+	var payload struct {
+		Routes []struct {
+			Path         string `json:"path"`
+			System       bool   `json:"system"`
+			Capabilities []struct {
+				Method string `json:"method"`
+				Path   string `json:"path"`
+				Label  string `json:"label"`
+			} `json:"capabilities"`
+		} `json:"routes"`
+		Data []struct {
+			ID    string `json:"id"`
+			Paths []struct {
+				Scope  string `json:"scope"`
+				Method string `json:"method"`
+				Path   string `json:"path"`
+				Label  string `json:"label"`
+			} `json:"paths"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+
+	hasRootRoute := false
+	hasTeamRoute := false
+	for _, route := range payload.Routes {
+		if route.Path == "/" && route.System {
+			hasRootRoute = true
+		}
+		if route.Path == "/team-a" && !route.System {
+			hasTeamRoute = true
+		}
+	}
+	if !hasRootRoute {
+		t.Fatal("expected system root route")
+	}
+	if !hasTeamRoute {
+		t.Fatal("expected configured /team-a route")
+	}
+
+	var gotModel *struct {
+		ID    string `json:"id"`
+		Paths []struct {
+			Scope  string `json:"scope"`
+			Method string `json:"method"`
+			Path   string `json:"path"`
+			Label  string `json:"label"`
+		} `json:"paths"`
+	}
+	for i := range payload.Data {
+		if payload.Data[i].ID == modelID {
+			gotModel = &payload.Data[i]
+			break
+		}
+	}
+	if gotModel == nil {
+		t.Fatalf("expected model %q in response", modelID)
+	}
+
+	hasRootModels := false
+	hasTeamModels := false
+	for _, path := range gotModel.Paths {
+		if path.Scope == "root" && path.Method == http.MethodGet && path.Path == "/v1/models" {
+			hasRootModels = true
+		}
+		if path.Scope == "group" && path.Method == http.MethodGet && path.Path == "/team-a/v1/models" {
+			hasTeamModels = true
+		}
+	}
+	if !hasRootModels {
+		t.Fatalf("expected root /v1/models path for %q", modelID)
+	}
+	if !hasTeamModels {
+		t.Fatalf("expected /team-a/v1/models path for %q", modelID)
+	}
+}
+
+func TestGetModelPathAvailabilityFiltersConfiguredPathByRouteGroup(t *testing.T) {
+	allowedModelID := "model-path-availability-team-allowed"
+	blockedModelID := "model-path-availability-team-blocked"
+	reg := registry.GetGlobalRegistry()
+	reg.RegisterClient("model-path-availability-team-auth", "openai", []*registry.ModelInfo{
+		{ID: allowedModelID, Object: "model", OwnedBy: "openai", Type: "openai"},
+		{ID: blockedModelID, Object: "model", OwnedBy: "openai", Type: "openai"},
+	})
+	t.Cleanup(func() {
+		reg.UnregisterClient("model-path-availability-team-auth")
+	})
+
+	cfg := &config.Config{
+		Routing: config.RoutingConfig{
+			ChannelGroups: []config.RoutingChannelGroup{
+				{
+					Name:          "team-a",
+					AllowedModels: []string{allowedModelID},
+				},
+			},
+			PathRoutes: []config.RoutingPathRoute{
+				{Path: "/team-a", Group: "team-a"},
+			},
+		},
+	}
+	manager := coreauth.NewManager(nil, nil, nil)
+	manager.SetConfig(cfg)
+	if _, err := manager.Register(context.Background(), &coreauth.Auth{
+		ID:       "model-path-availability-team-auth",
+		Provider: "openai",
+		Prefix:   "team-a",
+	}); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+
+	h := NewHandler(cfg, "", manager)
+	rec := performModelsRequest(http.MethodGet, "/model-path-availability", nil, h.GetModelPathAvailability)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GetModelPathAvailability status = %d body = %s", rec.Code, rec.Body.String())
+	}
+
+	var payload struct {
+		Data []struct {
+			ID    string `json:"id"`
+			Paths []struct {
+				Method string `json:"method"`
+				Path   string `json:"path"`
+			} `json:"paths"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+
+	hasTeamPath := func(modelID string) bool {
+		t.Helper()
+		for _, item := range payload.Data {
+			if item.ID != modelID {
+				continue
+			}
+			for _, path := range item.Paths {
+				if path.Method == http.MethodGet && path.Path == "/team-a/v1/models" {
+					return true
+				}
+			}
+		}
+		return false
+	}
+
+	if !hasTeamPath(allowedModelID) {
+		t.Fatalf("expected %q to have /team-a/v1/models path", allowedModelID)
+	}
+	if hasTeamPath(blockedModelID) {
+		t.Fatalf("did not expect %q to have /team-a/v1/models path", blockedModelID)
+	}
+}
+
+func TestGetModelPathAvailabilityFiltersRootByDefaultAllowedModels(t *testing.T) {
+	allowedModelID := "model-path-availability-default-allowed"
+	blockedModelID := "model-path-availability-default-blocked"
+	reg := registry.GetGlobalRegistry()
+	reg.RegisterClient("model-path-availability-default-auth", "openai", []*registry.ModelInfo{
+		{ID: allowedModelID, Object: "model", OwnedBy: "openai", Type: "openai"},
+		{ID: blockedModelID, Object: "model", OwnedBy: "openai", Type: "openai"},
+	})
+	t.Cleanup(func() {
+		reg.UnregisterClient("model-path-availability-default-auth")
+	})
+
+	cfg := &config.Config{
+		Routing: config.RoutingConfig{
+			IncludeDefaultGroup: true,
+			ChannelGroups: []config.RoutingChannelGroup{
+				{
+					Name:          "default",
+					AllowedModels: []string{allowedModelID},
+				},
+			},
+		},
+	}
+	manager := coreauth.NewManager(nil, nil, nil)
+	manager.SetConfig(cfg)
+	if _, err := manager.Register(context.Background(), &coreauth.Auth{
+		ID:       "model-path-availability-default-auth",
+		Provider: "openai",
+	}); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+
+	h := NewHandler(cfg, "", manager)
+	rec := performModelsRequest(http.MethodGet, "/model-path-availability", nil, h.GetModelPathAvailability)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GetModelPathAvailability status = %d body = %s", rec.Code, rec.Body.String())
+	}
+
+	var payload struct {
+		Data []struct {
+			ID    string `json:"id"`
+			Paths []struct {
+				Method string `json:"method"`
+				Path   string `json:"path"`
+			} `json:"paths"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+
+	hasRootPath := func(modelID string) bool {
+		t.Helper()
+		for _, item := range payload.Data {
+			if item.ID != modelID {
+				continue
+			}
+			for _, path := range item.Paths {
+				if path.Method == http.MethodGet && path.Path == "/v1/models" {
+					return true
+				}
+			}
+		}
+		return false
+	}
+
+	if !hasRootPath(allowedModelID) {
+		t.Fatalf("expected %q to have root /v1/models path", allowedModelID)
+	}
+	if hasRootPath(blockedModelID) {
+		t.Fatalf("did not expect %q to have root /v1/models path", blockedModelID)
+	}
+}
+
+func TestGetModelPathAvailabilityIncludesCcSwitchRoutePaths(t *testing.T) {
+	initManagementModelsTestDB(t)
+
+	modelID := "model-path-availability-ccswitch"
+	reg := registry.GetGlobalRegistry()
+	reg.RegisterClient("model-path-availability-ccswitch-auth", "openai", []*registry.ModelInfo{
+		{ID: modelID, Object: "model", OwnedBy: "openai", Type: "openai"},
+	})
+	t.Cleanup(func() {
+		reg.UnregisterClient("model-path-availability-ccswitch-auth")
+	})
+
+	if err := usage.ReplaceAllCcSwitchImportConfigs([]usage.CcSwitchImportConfigRow{
+		{
+			ID:                   "cfg-model-path-availability",
+			ClientType:           "claude",
+			ProviderName:         "Team Relay",
+			DefaultModel:         modelID,
+			AllowedChannelGroups: []string{"team-a"},
+			RoutePath:            "/ccswitch/team-a",
+			EndpointPath:         "/v1",
+			UsageAutoInterval:    30,
+		},
+	}); err != nil {
+		t.Fatalf("ReplaceAllCcSwitchImportConfigs() error = %v", err)
+	}
+
+	cfg := &config.Config{
+		Routing: config.RoutingConfig{
+			ChannelGroups: []config.RoutingChannelGroup{
+				{Name: "team-a"},
+			},
+		},
+	}
+	manager := coreauth.NewManager(nil, nil, nil)
+	manager.SetConfig(cfg)
+	if _, err := manager.Register(context.Background(), &coreauth.Auth{
+		ID:       "model-path-availability-ccswitch-auth",
+		Provider: "openai",
+		Prefix:   "team-a",
+	}); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+
+	h := NewHandler(cfg, "", manager)
+	rec := performModelsRequest(http.MethodGet, "/model-path-availability", nil, h.GetModelPathAvailability)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GetModelPathAvailability status = %d body = %s", rec.Code, rec.Body.String())
+	}
+
+	var payload struct {
+		Routes []struct {
+			Path  string `json:"path"`
+			Group string `json:"group"`
+		} `json:"routes"`
+		Data []struct {
+			ID    string `json:"id"`
+			Paths []struct {
+				Method string `json:"method"`
+				Path   string `json:"path"`
+			} `json:"paths"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+
+	hasRoute := false
+	for _, route := range payload.Routes {
+		if route.Path == "/ccswitch/team-a" && route.Group == "team-a" {
+			hasRoute = true
+			break
+		}
+	}
+	if !hasRoute {
+		t.Fatal("expected ccswitch route /ccswitch/team-a in route list")
+	}
+
+	for _, item := range payload.Data {
+		if item.ID != modelID {
+			continue
+		}
+		for _, path := range item.Paths {
+			if path.Method == http.MethodGet && path.Path == "/ccswitch/team-a/v1/models" {
+				return
+			}
+		}
+	}
+	t.Fatalf("expected %q to include /ccswitch/team-a/v1/models path", modelID)
 }
 
 func TestOpenRouterModelSyncHandlersConfigureAndRun(t *testing.T) {

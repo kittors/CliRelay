@@ -3,14 +3,54 @@ package management
 import (
 	"context"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
 	internalrouting "github.com/router-for-me/CLIProxyAPI/v6/internal/routing"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 )
+
+type modelPathCapabilityResponse struct {
+	Label  string `json:"label"`
+	Method string `json:"method"`
+	Path   string `json:"path"`
+	Family string `json:"family"`
+}
+
+type modelPathResponse struct {
+	Scope  string `json:"scope"`
+	Label  string `json:"label"`
+	Method string `json:"method"`
+	Path   string `json:"path"`
+	Family string `json:"family"`
+}
+
+type modelPathAvailabilityResponse struct {
+	ID      string              `json:"id"`
+	OwnedBy string              `json:"owned_by,omitempty"`
+	Kind    string              `json:"kind"`
+	Alias   bool                `json:"alias"`
+	Paths   []modelPathResponse `json:"paths"`
+}
+
+type modelPathRouteResponse struct {
+	Label        string                        `json:"label"`
+	Path         string                        `json:"path"`
+	Group        string                        `json:"group,omitempty"`
+	System       bool                          `json:"system"`
+	ReadOnly     bool                          `json:"read_only"`
+	Capabilities []modelPathCapabilityResponse `json:"capabilities"`
+}
+
+type configuredModelPathRoute struct {
+	Label string
+	Path  string
+	Group string
+}
 
 type modelConfigPayload struct {
 	ID          string `json:"id"`
@@ -42,6 +82,183 @@ func modelConfigResponse(row usage.ModelConfigRow) map[string]any {
 		"source":     row.Source,
 		"updated_at": row.UpdatedAt,
 	}
+}
+
+func capabilityPath(prefix, suffix string) string {
+	prefix = strings.TrimRight(strings.TrimSpace(prefix), "/")
+	if prefix == "" || prefix == "/" {
+		return suffix
+	}
+	return prefix + suffix
+}
+
+func openAIV1Capabilities(prefix string) []modelPathCapabilityResponse {
+	return []modelPathCapabilityResponse{
+		{Label: "models", Method: http.MethodGet, Path: capabilityPath(prefix, "/v1/models"), Family: "openai-v1-models"},
+		{Label: "chat", Method: http.MethodPost, Path: capabilityPath(prefix, "/v1/chat/completions"), Family: "openai-v1-chat"},
+		{Label: "completions", Method: http.MethodPost, Path: capabilityPath(prefix, "/v1/completions"), Family: "openai-v1-completions"},
+		{Label: "responses", Method: http.MethodPost, Path: capabilityPath(prefix, "/v1/responses"), Family: "openai-v1-responses"},
+		{Label: "messages", Method: http.MethodPost, Path: capabilityPath(prefix, "/v1/messages"), Family: "claude-v1-messages"},
+		{Label: "images", Method: http.MethodPost, Path: capabilityPath(prefix, "/v1/images/generations"), Family: "openai-v1-images"},
+	}
+}
+
+func geminiV1BetaCapabilities(prefix string) []modelPathCapabilityResponse {
+	return []modelPathCapabilityResponse{
+		{Label: "v1beta", Method: http.MethodGet, Path: capabilityPath(prefix, "/v1beta/models"), Family: "gemini-v1beta-models"},
+		{Label: "v1beta", Method: http.MethodPost, Path: capabilityPath(prefix, "/v1beta/models/*action"), Family: "gemini-v1beta-action"},
+	}
+}
+
+func modelPathScope(prefix string) string {
+	if strings.TrimSpace(prefix) == "" || strings.TrimSpace(prefix) == "/" {
+		return "root"
+	}
+	return "group"
+}
+
+func appendModelPaths(
+	items map[string]*modelPathAvailabilityResponse,
+	models []map[string]any,
+	scopePrefix string,
+	capabilities []modelPathCapabilityResponse,
+) {
+	scope := modelPathScope(scopePrefix)
+	for _, model := range models {
+		id := strings.TrimSpace(modelPathStringValue(model["id"]))
+		if id == "" {
+			continue
+		}
+		item := items[id]
+		if item == nil {
+			item = &modelPathAvailabilityResponse{
+				ID:      id,
+				OwnedBy: strings.TrimSpace(modelPathStringValue(model["owned_by"])),
+				Kind:    "canonical",
+				Alias:   false,
+				Paths:   []modelPathResponse{},
+			}
+			items[id] = item
+		}
+		seen := make(map[string]struct{}, len(item.Paths))
+		for _, path := range item.Paths {
+			seen[path.Method+" "+path.Path+" "+path.Family] = struct{}{}
+		}
+		for _, capability := range capabilities {
+			key := capability.Method + " " + capability.Path + " " + capability.Family
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			item.Paths = append(item.Paths, modelPathResponse{
+				Scope:  scope,
+				Label:  capability.Label,
+				Method: capability.Method,
+				Path:   capability.Path,
+				Family: capability.Family,
+			})
+			seen[key] = struct{}{}
+		}
+	}
+}
+
+func modelPathStringValue(value any) string {
+	switch v := value.(type) {
+	case string:
+		return v
+	case []byte:
+		return string(v)
+	default:
+		return ""
+	}
+}
+
+func configuredPathRoutes(cfg *config.Config) []configuredModelPathRoute {
+	seen := make(map[string]struct{})
+	out := []configuredModelPathRoute{}
+	appendRoute := func(label, path, group string) {
+		path = internalrouting.NormalizeNamespacePath(path)
+		group = internalrouting.NormalizeGroupName(group)
+		if path == "" || group == "" {
+			return
+		}
+		key := strings.ToLower(path)
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		if strings.TrimSpace(label) == "" {
+			label = path
+		}
+		out = append(out, configuredModelPathRoute{
+			Label: strings.TrimSpace(label),
+			Path:  path,
+			Group: group,
+		})
+	}
+
+	if cfg == nil {
+		cfg = &config.Config{}
+	}
+	cfg.SanitizeRouting()
+	for _, route := range cfg.Routing.PathRoutes {
+		appendRoute(route.Path, route.Path, route.Group)
+	}
+	for _, row := range usage.ListCcSwitchImportConfigs() {
+		if row.RoutePath == "" || len(row.AllowedChannelGroups) == 0 {
+			continue
+		}
+		appendRoute(row.ProviderName, row.RoutePath, row.AllowedChannelGroups[0])
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].Path < out[j].Path
+	})
+	return out
+}
+
+func (h *Handler) modelPathRouteScopedModels(models []map[string]any, routeGroup string) []map[string]any {
+	routeGroup = internalrouting.NormalizeGroupName(routeGroup)
+	if h == nil || h.authManager == nil || routeGroup == "" {
+		return models
+	}
+	filtered := make([]map[string]any, 0, len(models))
+	for _, model := range models {
+		id := strings.TrimSpace(modelPathStringValue(model["id"]))
+		if id == "" {
+			continue
+		}
+		if h.authManager.CanServeModelWithScopes(id, nil, nil, routeGroup) {
+			filtered = append(filtered, model)
+		}
+	}
+	return filtered
+}
+
+func (h *Handler) modelRootRouteScopedModels(models []map[string]any) []map[string]any {
+	if h == nil || h.authManager == nil || h.cfg == nil || !h.cfg.Routing.IncludeDefaultGroup {
+		return models
+	}
+	restricted := false
+	for _, group := range h.cfg.Routing.ChannelGroups {
+		if internalrouting.NormalizeGroupName(group.Name) == "default" && len(group.AllowedModels) > 0 {
+			restricted = true
+			break
+		}
+	}
+	if !restricted {
+		return models
+	}
+	allowedGroups := map[string]struct{}{"default": {}}
+	filtered := make([]map[string]any, 0, len(models))
+	for _, model := range models {
+		id := strings.TrimSpace(modelPathStringValue(model["id"]))
+		if id == "" {
+			continue
+		}
+		if h.authManager.CanServeModelWithScopes(id, nil, allowedGroups, "") {
+			filtered = append(filtered, model)
+		}
+	}
+	return filtered
 }
 
 func modelConfigScope(c *gin.Context) string {
@@ -206,6 +423,69 @@ func (h *Handler) GetModels(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"object": "list",
 		"data":   filteredModels,
+	})
+}
+
+// GetModelPathAvailability returns client-visible model IDs with the request paths
+// where those IDs can be discovered or called from the management UI.
+//
+// Endpoint:
+//
+//	GET /v0/management/model-path-availability
+func (h *Handler) GetModelPathAvailability(c *gin.Context) {
+	modelRegistry := registry.GetGlobalRegistry()
+	items := make(map[string]*modelPathAvailabilityResponse)
+
+	rootOpenAICapabilities := openAIV1Capabilities("/")
+	rootGeminiCapabilities := geminiV1BetaCapabilities("/")
+	appendModelPaths(items, h.modelRootRouteScopedModels(modelRegistry.GetAvailableModels("openai")), "/", rootOpenAICapabilities)
+	appendModelPaths(items, h.modelRootRouteScopedModels(modelRegistry.GetAvailableModels("gemini")), "/", rootGeminiCapabilities)
+
+	routes := []modelPathRouteResponse{
+		{
+			Label:        "系统默认",
+			Path:         "/",
+			System:       true,
+			ReadOnly:     true,
+			Capabilities: append(append([]modelPathCapabilityResponse{}, rootOpenAICapabilities...), rootGeminiCapabilities...),
+		},
+	}
+
+	for _, route := range configuredPathRoutes(h.cfg) {
+		capabilities := append(append([]modelPathCapabilityResponse{}, openAIV1Capabilities(route.Path)...), geminiV1BetaCapabilities(route.Path)...)
+		routes = append(routes, modelPathRouteResponse{
+			Label:        route.Label,
+			Path:         route.Path,
+			Group:        route.Group,
+			System:       false,
+			ReadOnly:     false,
+			Capabilities: capabilities,
+		})
+		appendModelPaths(items, h.modelPathRouteScopedModels(modelRegistry.GetAvailableModels("openai"), route.Group), route.Path, openAIV1Capabilities(route.Path))
+		appendModelPaths(items, h.modelPathRouteScopedModels(modelRegistry.GetAvailableModels("gemini"), route.Group), route.Path, geminiV1BetaCapabilities(route.Path))
+	}
+
+	data := make([]modelPathAvailabilityResponse, 0, len(items))
+	for _, item := range items {
+		sort.Slice(item.Paths, func(i, j int) bool {
+			if item.Paths[i].Scope != item.Paths[j].Scope {
+				return item.Paths[i].Scope < item.Paths[j].Scope
+			}
+			if item.Paths[i].Path != item.Paths[j].Path {
+				return item.Paths[i].Path < item.Paths[j].Path
+			}
+			return item.Paths[i].Method < item.Paths[j].Method
+		})
+		data = append(data, *item)
+	}
+	sort.Slice(data, func(i, j int) bool {
+		return data[i].ID < data[j].ID
+	})
+
+	c.JSON(http.StatusOK, gin.H{
+		"object": "list",
+		"data":   data,
+		"routes": routes,
 	})
 }
 
