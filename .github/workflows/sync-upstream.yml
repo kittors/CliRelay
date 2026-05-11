@@ -44,17 +44,73 @@ jobs:
           set -euo pipefail
           git checkout -B "${SYNC_BRANCH}" "origin/${BASE_BRANCH}"
           base_sha="$(git rev-parse HEAD)"
+          conflict_file="${RUNNER_TEMP}/sync-conflicts.txt"
+          workflow_skip_file="${RUNNER_TEMP}/sync-workflow-changes-skipped.txt"
+          : > "${conflict_file}"
+          : > "${workflow_skip_file}"
+
           set +e
-          git merge --no-edit "upstream/${UPSTREAM_BRANCH}"
+          git merge --no-ff --no-commit "upstream/${UPSTREAM_BRANCH}"
           merge_status="$?"
           set -e
+
           if [ "${merge_status}" -ne 0 ]; then
             echo "conflicted=true" >> "$GITHUB_OUTPUT"
-            git add -A
-            git commit -m "chore: sync upstream ${UPSTREAM_BRANCH} into ${BASE_BRANCH} with conflicts"
+            git diff --name-only --diff-filter=U > "${conflict_file}" || true
           else
             echo "conflicted=false" >> "$GITHUB_OUTPUT"
           fi
+
+          # GitHub Apps cannot create or update workflow files unless their token has
+          # the workflows permission. Keep upstream workflow changes out of the bot
+          # sync branch so conflict PRs can still be opened for manual review.
+          if [ -s "${conflict_file}" ]; then
+            grep -E '^\.github/workflows/' "${conflict_file}" | while IFS= read -r path; do
+              [ -n "${path}" ] || continue
+              if git cat-file -e "HEAD:${path}" 2>/dev/null; then
+                git restore --source=HEAD --staged --worktree -- "${path}" || true
+              else
+                git rm -f -- "${path}" || true
+              fi
+            done
+          fi
+
+          git add -A
+
+          git diff --cached --name-only -- .github/workflows > "${workflow_skip_file}" || true
+          if [ -s "${workflow_skip_file}" ]; then
+            while IFS= read -r path; do
+              [ -n "${path}" ] || continue
+              if git cat-file -e "HEAD:${path}" 2>/dev/null; then
+                git restore --source=HEAD --staged --worktree -- "${path}"
+              else
+                git rm -f --cached -- "${path}" || true
+                rm -f -- "${path}" || true
+              fi
+            done < "${workflow_skip_file}"
+          fi
+
+          if git diff --cached --quiet; then
+            if [ -s "${workflow_skip_file}" ]; then
+              git commit --allow-empty -m "chore: sync upstream ${UPSTREAM_BRANCH} into ${BASE_BRANCH} with workflow changes skipped"
+            fi
+          else
+            if [ "${merge_status}" -ne 0 ]; then
+              git commit -m "chore: sync upstream ${UPSTREAM_BRANCH} into ${BASE_BRANCH} with conflicts"
+            else
+              git commit -m "chore: sync upstream ${UPSTREAM_BRANCH} into ${BASE_BRANCH}"
+            fi
+          fi
+
+          {
+            echo "conflict_files<<EOF"
+            cat "${conflict_file}"
+            echo "EOF"
+            echo "workflow_changes_skipped<<EOF"
+            cat "${workflow_skip_file}"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
           head_sha="$(git rev-parse HEAD)"
           if [ "${base_sha}" = "${head_sha}" ]; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
@@ -72,6 +128,8 @@ jobs:
           # Prefer a PAT when provided because some repos/orgs block PR creation
           # by GITHUB_TOKEN ("Resource not accessible by integration").
           GH_TOKEN: ${{ secrets.SYNC_PR_TOKEN != '' && secrets.SYNC_PR_TOKEN || secrets.GITHUB_TOKEN }}
+          CONFLICT_FILES: ${{ steps.merge.outputs.conflict_files }}
+          WORKFLOW_CHANGES_SKIPPED: ${{ steps.merge.outputs.workflow_changes_skipped }}
         run: |
           set -euo pipefail
           repository="${GITHUB_REPOSITORY}"
@@ -81,6 +139,20 @@ jobs:
           if [ "${{ steps.merge.outputs.conflicted }}" = "true" ]; then
             title="${title} (conflicts)"
             body="${body}"$'\n\n'"This sync branch contains merge conflicts and needs manual resolution before merge."
+          fi
+          if [ -n "${CONFLICT_FILES}" ]; then
+            body="${body}"$'\n\n'"Conflicted files:"
+            while IFS= read -r path; do
+              [ -n "${path}" ] || continue
+              body="${body}"$'\n'"- \`${path}\`"
+            done <<< "${CONFLICT_FILES}"
+          fi
+          if [ -n "${WORKFLOW_CHANGES_SKIPPED}" ]; then
+            body="${body}"$'\n\n'"Workflow file changes were omitted from the bot sync branch because GitHub rejects GitHub App pushes that create or update workflow files without the workflows permission. Review these upstream files manually:"
+            while IFS= read -r path; do
+              [ -n "${path}" ] || continue
+              body="${body}"$'\n'"- \`${path}\`"
+            done <<< "${WORKFLOW_CHANGES_SKIPPED}"
           fi
           existing_pr="$(gh pr list --repo "${repository}" --base "${BASE_BRANCH}" --head "${SYNC_BRANCH}" --state open --json number --jq '.[0].number // empty')"
           if [ -n "${existing_pr}" ]; then
