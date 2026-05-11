@@ -22,6 +22,18 @@
 
 未经用户明确要求，不允许合并、推送或以任何方式改动 `main`/`origin/main`。只有当用户清楚说明“合并到 main”“推送到 main”或同等含义时，才可以执行 `main` 相关操作。
 
+`dev` 合并到 `main` 的专用流程（仅当用户明确要求时执行）：
+- 若用户说“把我们的 dev 合并到 main”且没有限定单个仓库，默认需要分别处理 `CliRelay/` 和 `codeProxy/` 两个仓库；若用户明确指定仓库，则只处理指定仓库。
+- 只做合并发布流程，不做功能开发、重构或顺手修复；若发现冲突或检查失败，先报告阻塞点，不要在 `main` 或 `dev` 上直接改代码。
+- 开始前先在每个目标仓库执行 `git fetch origin --prune`，确认 `dev == origin/dev`、`main == origin/main`。本地分支落后时只允许 fast-forward；当前工作区脏或在其它任务分支上时，使用临时 worktree/临时目录处理，不要切走或覆盖用户现有改动。
+- 先用 `git log --oneline origin/main..origin/dev` 或等价命令确认 `dev` 是否确实领先 `main`；如果没有领先提交，直接报告该仓库已同步，不要创建空 PR。
+- 合并必须通过 GitHub PR：优先复用已有 `base=main`、`head=dev` 的 open PR；没有则创建 `dev -> main` PR。不要本地直接 merge 后推 `main`，不要 force push。
+- 测试和构建默认交给 GitHub Actions。合并流程中不要在本地跑全量 `go test ./...`、`bun run test`、`bun run build`、`npm`/`npx` 等重负载命令；只做 `git status`、`git diff --check`、PR/check 状态查询这类轻量检查。`codeProxy` 如确需本地轻量命令，必须使用 Bun（`bun run ...`），不要使用 npm。
+- 使用 `gh pr checks --watch` 或等价方式等待 PR 必要检查完成；检查通过后再执行 PR merge。检查失败时读取失败日志，区分是既有测试失败、CI 配置问题还是真实代码问题，并向用户说明，不要盲目本地重跑高负载测试。
+- 如果 PR 出现冲突，不要在 `main` 或 `dev` 上手工解冲突；从最新 `origin/dev` 新建修复分支解决冲突/兼容问题，走 PR 合回 `dev` 后，再重新发起 `dev -> main`。
+- PR 合并后再次 `git fetch origin --prune`，fast-forward 本地 `main`/`dev` 到远端，最后报告每个仓库的 `dev`、`origin/dev`、`main`、`origin/main` 短哈希以及 PR 链接和检查结论。
+- 合并到 `main` 不等于允许手动部署、重启或替换远端服务；除非用户另行明确要求生产操作，否则只完成 GitHub 合并和同步确认。
+
 合并/推送时只包含本次任务相关文件，不要把本地未跟踪目录或无关改动一起提交。
 
 回复或更新 GitHub issue/PR 评论时，必须保证评论正文按 Markdown 正常渲染：多段内容使用真实换行、列表和代码反引号；使用 `gh issue comment`、`gh pr comment`、`gh issue close --comment` 等命令时，优先使用 heredoc/临时文件/`--body-file -` 传入正文，或使用 shell 支持的真实换行字符串。严禁把 `\n` 当作普通字符写进评论，提交前应通过 `gh issue view --comments` 或 `gh pr view --comments` 抽查渲染文本是否正确。

@@ -1,12 +1,15 @@
 package cliproxy
 
-import "context"
-
 import (
+	"context"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
 )
@@ -167,5 +170,214 @@ func TestRegisterModelsForAuth_OpenAICompatibilityRegistersConfigModels(t *testi
 		if !ids[want] {
 			t.Fatalf("expected model %q to be registered, got %+v", want, ids)
 		}
+	}
+}
+
+func TestRegisterModelsForAuth_AddsUserModelConfigsForOAuthProvider(t *testing.T) {
+	usage.CloseDB()
+	dbPath := filepath.Join(t.TempDir(), "usage.db")
+	if err := usage.InitDB(dbPath, internalconfig.RequestLogStorageConfig{}, time.UTC); err != nil {
+		t.Fatalf("InitDB() error = %v", err)
+	}
+	t.Cleanup(usage.CloseDB)
+
+	if err := usage.UpsertModelConfig(usage.ModelConfigRow{
+		ModelID:     "claude-opus-4-7",
+		OwnedBy:     "claude",
+		Description: "User-defined Claude OAuth model",
+		Enabled:     true,
+		Source:      "user",
+	}); err != nil {
+		t.Fatalf("UpsertModelConfig() error = %v", err)
+	}
+
+	service := &Service{cfg: &config.Config{}}
+	auth := &coreauth.Auth{
+		ID:       "claude-oauth-user-models",
+		Provider: "claude",
+		Status:   coreauth.StatusActive,
+		Attributes: map[string]string{
+			"auth_kind": "oauth",
+		},
+		Metadata: map[string]any{
+			"email": "claude@example.com",
+		},
+	}
+
+	registry := GlobalModelRegistry()
+	registry.UnregisterClient(auth.ID)
+	t.Cleanup(func() {
+		registry.UnregisterClient(auth.ID)
+	})
+
+	service.registerModelsForAuth(context.Background(), auth)
+
+	if !hasModelID(registry.GetAvailableModelsByProvider("claude"), "claude-opus-4-7") {
+		t.Fatal("expected user-defined Claude model config to be registered for Claude OAuth auth")
+	}
+}
+
+func TestRegisterModelsForAuth_ClaudeOAuthStaticMaxModelIsRouteableWithoutModelConfig(t *testing.T) {
+	usage.CloseDB()
+	dbPath := filepath.Join(t.TempDir(), "usage.db")
+	if err := usage.InitDB(dbPath, internalconfig.RequestLogStorageConfig{}, time.UTC); err != nil {
+		t.Fatalf("InitDB() error = %v", err)
+	}
+	t.Cleanup(usage.CloseDB)
+
+	service := &Service{cfg: &config.Config{}}
+	auth := &coreauth.Auth{
+		ID:       "claude-oauth-static-max-models",
+		Provider: "claude",
+		Status:   coreauth.StatusActive,
+		Metadata: map[string]any{
+			"email": "claude@example.com",
+		},
+	}
+
+	registry := GlobalModelRegistry()
+	registry.UnregisterClient(auth.ID)
+	t.Cleanup(func() {
+		registry.UnregisterClient(auth.ID)
+	})
+
+	service.registerModelsForAuth(context.Background(), auth)
+
+	providers := util.GetProviderName("claude-opus-4-7")
+	for _, provider := range providers {
+		if provider == "claude" {
+			return
+		}
+	}
+	t.Fatalf("expected claude-opus-4-7 to route to claude after Claude OAuth registration, got providers %v", providers)
+}
+
+func TestRegisterModelsForAuth_AddsUserModelConfigsForOAuthProviderInferredFromAccountInfo(t *testing.T) {
+	usage.CloseDB()
+	dbPath := filepath.Join(t.TempDir(), "usage.db")
+	if err := usage.InitDB(dbPath, internalconfig.RequestLogStorageConfig{}, time.UTC); err != nil {
+		t.Fatalf("InitDB() error = %v", err)
+	}
+	t.Cleanup(usage.CloseDB)
+
+	if err := usage.UpsertModelConfig(usage.ModelConfigRow{
+		ModelID:     "claude-opus-4-7",
+		OwnedBy:     "anthropic",
+		Description: "User-defined Claude OAuth model",
+		Enabled:     true,
+		Source:      "user",
+	}); err != nil {
+		t.Fatalf("UpsertModelConfig() error = %v", err)
+	}
+
+	service := &Service{cfg: &config.Config{}}
+	auth := &coreauth.Auth{
+		ID:       "claude-oauth-account-info-models",
+		Provider: "claude",
+		Status:   coreauth.StatusActive,
+		Metadata: map[string]any{
+			"email": "claude@example.com",
+		},
+	}
+
+	registry := GlobalModelRegistry()
+	registry.UnregisterClient(auth.ID)
+	t.Cleanup(func() {
+		registry.UnregisterClient(auth.ID)
+	})
+
+	service.registerModelsForAuth(context.Background(), auth)
+
+	if !hasModelID(registry.GetAvailableModelsByProvider("claude"), "claude-opus-4-7") {
+		t.Fatal("expected Claude OAuth model config to be registered when oauth is inferred from account info")
+	}
+}
+
+func TestRegisterModelsForAuth_AddsOpenRouterAnthropicModelConfigsForOAuthProvider(t *testing.T) {
+	usage.CloseDB()
+	dbPath := filepath.Join(t.TempDir(), "usage.db")
+	if err := usage.InitDB(dbPath, internalconfig.RequestLogStorageConfig{}, time.UTC); err != nil {
+		t.Fatalf("InitDB() error = %v", err)
+	}
+	t.Cleanup(usage.CloseDB)
+
+	if err := usage.UpsertModelConfig(usage.ModelConfigRow{
+		ModelID:     "claude-opus-4-7",
+		OwnedBy:     "anthropic",
+		Description: "OpenRouter-synced Claude model",
+		Enabled:     true,
+		Source:      "openrouter",
+	}); err != nil {
+		t.Fatalf("UpsertModelConfig() error = %v", err)
+	}
+
+	service := &Service{cfg: &config.Config{}}
+	auth := &coreauth.Auth{
+		ID:       "claude-oauth-openrouter-models",
+		Provider: "claude",
+		Status:   coreauth.StatusActive,
+		Attributes: map[string]string{
+			"auth_kind": "oauth",
+		},
+		Metadata: map[string]any{
+			"email": "claude@example.com",
+		},
+	}
+
+	registry := GlobalModelRegistry()
+	registry.UnregisterClient(auth.ID)
+	t.Cleanup(func() {
+		registry.UnregisterClient(auth.ID)
+	})
+
+	service.registerModelsForAuth(context.Background(), auth)
+
+	if !hasModelID(registry.GetAvailableModelsByProvider("claude"), "claude-opus-4-7") {
+		t.Fatal("expected OpenRouter-synced Anthropic model config to be registered for Claude OAuth auth")
+	}
+}
+
+func TestRegisterModelsForAuth_AddsClaudeCodeModelConfigsForOAuthProvider(t *testing.T) {
+	usage.CloseDB()
+	dbPath := filepath.Join(t.TempDir(), "usage.db")
+	if err := usage.InitDB(dbPath, internalconfig.RequestLogStorageConfig{}, time.UTC); err != nil {
+		t.Fatalf("InitDB() error = %v", err)
+	}
+	t.Cleanup(usage.CloseDB)
+
+	const modelID = "claude-code-custom-model"
+	if err := usage.UpsertModelConfig(usage.ModelConfigRow{
+		ModelID:     modelID,
+		OwnedBy:     "claude-code",
+		Description: "Claude Code model library entry",
+		Enabled:     true,
+		Source:      "seed",
+	}); err != nil {
+		t.Fatalf("UpsertModelConfig() error = %v", err)
+	}
+
+	service := &Service{cfg: &config.Config{}}
+	auth := &coreauth.Auth{
+		ID:       "claude-oauth-claude-code-models",
+		Provider: "claude",
+		Status:   coreauth.StatusActive,
+		Attributes: map[string]string{
+			"auth_kind": "oauth",
+		},
+		Metadata: map[string]any{
+			"email": "claude@example.com",
+		},
+	}
+
+	registry := GlobalModelRegistry()
+	registry.UnregisterClient(auth.ID)
+	t.Cleanup(func() {
+		registry.UnregisterClient(auth.ID)
+	})
+
+	service.registerModelsForAuth(context.Background(), auth)
+
+	if !hasModelID(registry.GetAvailableModelsByProvider("claude"), modelID) {
+		t.Fatal("expected Claude Code model config to be registered for Claude OAuth auth")
 	}
 }

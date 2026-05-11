@@ -390,6 +390,9 @@ func (a *Auth) AccountInfo() (string, string) {
 			}
 		}
 	}
+	if strings.EqualFold(strings.TrimSpace(a.Provider), "kimi") && hasKimiOAuthTokenMetadata(a.Metadata) {
+		return "oauth", "kimi"
+	}
 	// Fall back to API key (API-key auth)
 	if a.Attributes != nil {
 		if v := a.Attributes["api_key"]; v != "" {
@@ -397,6 +400,18 @@ func (a *Auth) AccountInfo() (string, string) {
 		}
 	}
 	return "", ""
+}
+
+func hasKimiOAuthTokenMetadata(metadata map[string]any) bool {
+	if metadata == nil {
+		return false
+	}
+	for _, key := range []string{"refresh_token", "access_token"} {
+		if value, ok := metadata[key].(string); ok && strings.TrimSpace(value) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // ChannelName returns the user-facing channel label used by management UI and routing restrictions.

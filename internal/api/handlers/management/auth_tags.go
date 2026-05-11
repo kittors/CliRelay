@@ -250,6 +250,7 @@ func metadataString(metadata map[string]any, keys ...string) string {
 type channelGroupChannelDetail struct {
 	Name              string   `json:"name"`
 	Source            string   `json:"source,omitempty"`
+	Disabled          bool     `json:"disabled,omitempty"`
 	DefaultTags       []string `json:"default_tags"`
 	CustomTags        []string `json:"custom_tags"`
 	HiddenDefaultTags []string `json:"hidden_default_tags"`
@@ -299,5 +300,9 @@ func uniqueSortedChannelDetails(values []channelGroupChannelDetail) []channelGro
 }
 
 func tagPayloadScore(value channelGroupChannelDetail) int {
-	return len(value.DisplayTags)*100 + len(value.DefaultTags)*10 + len(value.CustomTags)
+	score := len(value.DisplayTags)*100 + len(value.DefaultTags)*10 + len(value.CustomTags)
+	if value.Disabled {
+		score -= 10000
+	}
+	return score
 }

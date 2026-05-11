@@ -46,6 +46,9 @@ type LogQueryParams struct {
 	Status       string   // "success", "failed", or "" (all)
 	AuthIndexes  []string // optional auth_index IN (...) filter
 	ChannelNames []string // optional channel_name IN (...) filter
+	// Optional precise legacy matches for renamed auth channels whose stored
+	// channel_name was a shared provider/source value.
+	AuthIndexChannelNames map[string][]string
 }
 
 // LogQueryResult holds the paginated query result.
@@ -1227,6 +1230,29 @@ func buildWhereClause(params LogQueryParams) (string, []interface{}) {
 		}
 		if len(authPlaceholders) > 0 {
 			filterConditions = append(filterConditions, "(auth_index IN ("+strings.Join(authPlaceholders, ",")+") AND trim(coalesce(channel_name, '')) = '')")
+		}
+
+		for idx, names := range params.AuthIndexChannelNames {
+			trimmedIndex := strings.TrimSpace(idx)
+			if trimmedIndex == "" {
+				continue
+			}
+			pairPlaceholders := make([]string, 0, len(names))
+			pairArgs := make([]any, 0, len(names)+1)
+			pairArgs = append(pairArgs, trimmedIndex)
+			for _, name := range names {
+				trimmedName := strings.ToLower(strings.TrimSpace(name))
+				if trimmedName == "" {
+					continue
+				}
+				pairPlaceholders = append(pairPlaceholders, "?")
+				pairArgs = append(pairArgs, trimmedName)
+			}
+			if len(pairPlaceholders) == 0 {
+				continue
+			}
+			filterConditions = append(filterConditions, "(auth_index = ? AND lower(trim(channel_name)) IN ("+strings.Join(pairPlaceholders, ",")+"))")
+			args = append(args, pairArgs...)
 		}
 
 		channelPlaceholders := make([]string, 0, len(params.ChannelNames))

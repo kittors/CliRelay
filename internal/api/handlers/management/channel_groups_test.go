@@ -332,6 +332,45 @@ func TestGetChannelGroupsReturnsChannelDetailsWithTags(t *testing.T) {
 	}
 }
 
+func TestBuildChannelGroupItemsKeepsRenamedKimiOAuthChannelsSeparate(t *testing.T) {
+	auths := []*coreauth.Auth{
+		{
+			ID:       "kimi-team-a",
+			Label:    "Kimi Team A",
+			Provider: "kimi",
+			Metadata: map[string]any{
+				"type":          "kimi",
+				"refresh_token": "kimi-refresh-a",
+			},
+		},
+		{
+			ID:       "kimi-team-b",
+			Label:    "Kimi Team B",
+			Provider: "kimi",
+			Metadata: map[string]any{
+				"type":          "kimi",
+				"refresh_token": "kimi-refresh-b",
+			},
+		},
+	}
+
+	items := buildChannelGroupItems(&config.Config{
+		Routing: config.RoutingConfig{IncludeDefaultGroup: true},
+	}, auths)
+	if len(items) != 1 {
+		t.Fatalf("expected default group, got %d groups: %#v", len(items), items)
+	}
+	if !containsString(items[0].Channels, "Kimi Team A") {
+		t.Fatalf("channels = %v, want Kimi Team A", items[0].Channels)
+	}
+	if !containsString(items[0].Channels, "Kimi Team B") {
+		t.Fatalf("channels = %v, want Kimi Team B", items[0].Channels)
+	}
+	if len(items[0].ChannelDetails) != 2 {
+		t.Fatalf("channel details = %#v, want two distinct Kimi entries", items[0].ChannelDetails)
+	}
+}
+
 func TestBuildChannelGroupItemsCanonicalizesRenamedOAuthChannel(t *testing.T) {
 	cfg := &config.Config{
 		Routing: config.RoutingConfig{
@@ -409,6 +448,42 @@ func TestBuildChannelGroupItemsSkipsDisabledAuthChannels(t *testing.T) {
 	}
 	if _, exists := byName["team-b"]; exists {
 		t.Fatalf("unexpected lingering team-b group from deleted auth: %v", byName["team-b"])
+	}
+}
+
+func TestBuildChannelGroupItemsIncludesDisabledAuthFileChannels(t *testing.T) {
+	auths := []*coreauth.Auth{
+		{
+			ID:       "disabled-auth",
+			Label:    "GptPlus8",
+			Prefix:   "chatgpt-mix",
+			Provider: "codex",
+			Disabled: true,
+			Status:   coreauth.StatusDisabled,
+			Attributes: map[string]string{
+				"path": "/tmp/codex-gpt-plus-8.json",
+			},
+		},
+	}
+
+	items := buildChannelGroupItems(&config.Config{}, auths)
+	byName := make(map[string]channelGroupItem, len(items))
+	for _, item := range items {
+		byName[item.Name] = item
+	}
+
+	chatgptMix, ok := byName["chatgpt-mix"]
+	if !ok {
+		t.Fatal("expected chatgpt-mix group for disabled auth-file channel")
+	}
+	if !containsString(chatgptMix.Channels, "GptPlus8") {
+		t.Fatalf("chatgpt-mix channels = %v, want disabled channel GptPlus8", chatgptMix.Channels)
+	}
+	if len(chatgptMix.ChannelDetails) != 1 {
+		t.Fatalf("channel details = %#v, want one disabled channel detail", chatgptMix.ChannelDetails)
+	}
+	if !chatgptMix.ChannelDetails[0].Disabled {
+		t.Fatalf("channel detail = %#v, want disabled=true", chatgptMix.ChannelDetails[0])
 	}
 }
 

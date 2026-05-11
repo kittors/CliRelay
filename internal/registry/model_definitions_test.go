@@ -27,3 +27,22 @@ func TestCodexStaticModelsIncludeCurrentCodexModels(t *testing.T) {
 		t.Fatalf("expected LookupStaticModelInfo to exclude removed Cherry alias gptimage-2")
 	}
 }
+
+func TestClaudeStaticModelsIncludeCurrentMaxModels(t *testing.T) {
+	models := GetStaticModelDefinitionsByChannel("claude")
+	modelIDs := make(map[string]bool, len(models))
+	for _, model := range models {
+		if model != nil {
+			modelIDs[model.ID] = true
+		}
+	}
+
+	for _, id := range []string{"claude-opus-4-6", "claude-opus-4-7"} {
+		if !modelIDs[id] {
+			t.Fatalf("expected claude static models to include %q", id)
+		}
+		if LookupStaticModelInfo(id) == nil {
+			t.Fatalf("expected LookupStaticModelInfo to find %q", id)
+		}
+	}
+}
