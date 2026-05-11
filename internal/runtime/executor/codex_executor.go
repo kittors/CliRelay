@@ -27,8 +27,9 @@ import (
 )
 
 const (
-	codexUserAgent  = "Codex Desktop/0.130.0-alpha.5 (Mac OS 26.4.1; arm64) unknown (Codex Desktop; 26.506.31421)"
-	codexOriginator = "Codex Desktop"
+	codexUserAgent                    = "Codex Desktop/0.130.0-alpha.5 (Mac OS 26.4.1; arm64) unknown (Codex Desktop; 26.506.31421)"
+	codexOriginator                   = "Codex Desktop"
+	codexCompactResponseHeaderTimeout = 2 * time.Minute
 )
 
 var dataTag = []byte("data:")
@@ -475,7 +476,7 @@ func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.A
 		AuthType:  authType,
 		AuthValue: authValue,
 	})
-	httpClient := newProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
+	httpClient := newProxyAwareHTTPClientWithResponseHeaderTimeout(ctx, e.cfg, auth, 0, codexCompactResponseHeaderTimeout)
 	httpResp, err := httpClient.Do(httpReq)
 	if err != nil {
 		recordAPIResponseError(ctx, e.cfg, err)

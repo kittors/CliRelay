@@ -7,8 +7,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 )
 
@@ -115,5 +117,27 @@ func TestNewProxyAwareHTTPClientHonorsPreferIPv4ForHTTPProxy(t *testing.T) {
 	}
 	if proxyHits != 0 {
 		t.Fatalf("proxy hits = %d, want 0 when preferIPv4 blocks IPv6-only proxy", proxyHits)
+	}
+}
+
+func TestProxyAwareHTTPClientUsesDefaultResponseHeaderTimeout(t *testing.T) {
+	client := newProxyAwareHTTPClient(context.Background(), &config.Config{}, nil, 0)
+	transport, ok := client.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("transport = %T, want *http.Transport", client.Transport)
+	}
+	if transport.ResponseHeaderTimeout != util.DefaultHTTPResponseHeaderTimout {
+		t.Fatalf("ResponseHeaderTimeout = %s, want %s", transport.ResponseHeaderTimeout, util.DefaultHTTPResponseHeaderTimout)
+	}
+}
+
+func TestProxyAwareHTTPClientWithResponseHeaderTimeoutOverridesOwnedTransport(t *testing.T) {
+	client := newProxyAwareHTTPClientWithResponseHeaderTimeout(context.Background(), &config.Config{}, nil, 0, 2*time.Minute)
+	transport, ok := client.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("transport = %T, want *http.Transport", client.Transport)
+	}
+	if transport.ResponseHeaderTimeout != 2*time.Minute {
+		t.Fatalf("ResponseHeaderTimeout = %s, want 2m", transport.ResponseHeaderTimeout)
 	}
 }
