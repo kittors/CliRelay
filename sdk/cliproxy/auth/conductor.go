@@ -1473,6 +1473,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 	clearModelQuota := false
 	setModelQuota := false
 	shouldRefreshAuth := false
+	shouldDeleteRevoked := false
 
 	m.mu.Lock()
 	if auth, ok := m.auths[result.AuthID]; ok && auth != nil {
@@ -1533,6 +1534,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 						if isCredentialRevokedMessage(result.Error) {
 							auth.Status = StatusRevoked
 							auth.StatusMessage = "credential_revoked"
+							shouldDeleteRevoked = true
 						}
 					case 402, 403:
 						next := now.Add(30 * time.Minute)
@@ -1591,6 +1593,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 					if isCredentialRevokedMessage(result.Error) {
 						auth.Status = StatusRevoked
 						auth.StatusMessage = "credential_revoked"
+						shouldDeleteRevoked = true
 					}
 				}
 			}
@@ -1615,6 +1618,9 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 		if m.markRefreshPending(result.AuthID, time.Now()) {
 			go m.refreshAuthWithLimit(ctx, result.AuthID)
 		}
+	}
+	if shouldDeleteRevoked && result.AuthID != "" {
+		go m.deleteRevokedAuth(context.WithoutCancel(ctx), result.AuthID)
 	}
 
 	m.hook.OnResult(ctx, result)
@@ -2319,6 +2325,34 @@ func (m *Manager) persist(ctx context.Context, auth *Auth) error {
 	return err
 }
 
+func (m *Manager) deleteRevokedAuth(ctx context.Context, id string) {
+	if m == nil || id == "" {
+		return
+	}
+	cfg, _ := m.runtimeConfig.Load().(*internalconfig.Config)
+	if cfg == nil || !cfg.IsAutoDeleteRevoked() {
+		return
+	}
+	m.mu.Lock()
+	auth, ok := m.auths[id]
+	if !ok || auth == nil || auth.Status != StatusRevoked {
+		m.mu.Unlock()
+		return
+	}
+	delete(m.auths, id)
+	m.mu.Unlock()
+	if m.store != nil {
+		if err := m.store.Delete(ctx, id); err != nil {
+			log.Errorf("failed to delete revoked auth %s from store: %v", id, err)
+			return
+		}
+	}
+	channelName := auth.ChannelName()
+	provider := auth.Provider
+	log.Warnf("auto-deleted revoked auth: id=%s provider=%s channel=%s", id, provider, channelName)
+	m.hook.OnAuthUpdated(ctx, &Auth{ID: id, Status: StatusRevoked, StatusMessage: "deleted"})
+}
+
 // StartAutoRefresh launches a background loop that evaluates auth freshness
 // every few seconds and triggers refresh operations when required.
 // Only one loop is kept alive; starting a new one cancels the previous run.
@@ -2665,6 +2699,9 @@ func (m *Manager) refreshAuth(ctx context.Context, id string) {
 			m.auths[id] = current
 		}
 		m.mu.Unlock()
+		if permanent {
+			go m.deleteRevokedAuth(context.WithoutCancel(ctx), id)
+		}
 		return
 	}
 	if updated == nil {
