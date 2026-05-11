@@ -149,6 +149,9 @@ func (h *OpenAIResponsesAPIHandler) executeCompactWithFallback(cliCtx context.Co
 			return resp, upstreamHeaders, nil
 		}
 		lastErr = errMsg
+		if isCompactModelUnsupportedError(errMsg) {
+			continue
+		}
 		if idx == 0 && !shouldRetryCompactWithFallback(errMsg) {
 			return nil, nil, errMsg
 		}
@@ -197,6 +200,9 @@ func shouldRetryCompactWithFallback(errMsg *interfaces.ErrorMessage) bool {
 	if errMsg == nil {
 		return false
 	}
+	if isCompactModelUnsupportedError(errMsg) {
+		return true
+	}
 	switch errMsg.StatusCode {
 	case http.StatusNotFound, http.StatusTooManyRequests, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusNotImplemented:
 		return true
@@ -206,6 +212,22 @@ func shouldRetryCompactWithFallback(errMsg *interfaces.ErrorMessage) bool {
 	}
 	errText := strings.ToLower(strings.TrimSpace(errMsg.Error.Error()))
 	return strings.Contains(errText, "responses/compact") || strings.Contains(errText, "unknown provider")
+}
+
+func isCompactModelUnsupportedError(errMsg *interfaces.ErrorMessage) bool {
+	if errMsg == nil {
+		return false
+	}
+	if errMsg.StatusCode != http.StatusBadRequest {
+		return false
+	}
+	if errMsg.Error == nil {
+		return false
+	}
+	errText := strings.ToLower(strings.TrimSpace(errMsg.Error.Error()))
+	return strings.Contains(errText, "model is not supported") ||
+		strings.Contains(errText, "model not supported") ||
+		strings.Contains(errText, "not supported when using codex with a chatgpt account")
 }
 
 // handleNonStreamingResponse handles non-streaming chat completion responses
