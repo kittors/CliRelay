@@ -15,6 +15,7 @@ env:
   UPSTREAM_BRANCH: dev
   BASE_BRANCH: dev
   SYNC_BRANCH: chore/sync-kittors-dev-to-dev
+  FORK_EXCLUDED_PATHS: .github/workflows/deploy.yml
 
 jobs:
   sync:
@@ -26,6 +27,7 @@ jobs:
         with:
           ref: ${{ env.BASE_BRANCH }}
           fetch-depth: 0
+          token: ${{ secrets.SYNC_PR_TOKEN != '' && secrets.SYNC_PR_TOKEN || secrets.GITHUB_TOKEN }}
 
       - name: Configure git
         run: |
@@ -78,6 +80,11 @@ jobs:
           git add -A
 
           git diff --cached --name-only -- .github/workflows > "${workflow_skip_file}" || true
+          for path in ${FORK_EXCLUDED_PATHS}; do
+            if git diff --cached --name-only -- "${path}" | grep -qxF "${path}"; then
+              grep -qxF "${path}" "${workflow_skip_file}" || echo "${path}" >> "${workflow_skip_file}"
+            fi
+          done
           if [ -s "${workflow_skip_file}" ]; then
             while IFS= read -r path; do
               [ -n "${path}" ] || continue
