@@ -52,6 +52,18 @@ func GetClaudeModels() []*ModelInfo {
 			Thinking:            &ThinkingSupport{Min: 1024, Max: 128000, ZeroAllowed: true, DynamicAllowed: false},
 		},
 		{
+			ID:                  "claude-opus-4-7",
+			Object:              "model",
+			Created:             1776297600, // 2026-04-15
+			OwnedBy:             "anthropic",
+			Type:                "claude",
+			DisplayName:         "Claude Opus 4.7",
+			Description:         "Premium model combining maximum intelligence with practical performance",
+			ContextLength:       1000000,
+			MaxCompletionTokens: 128000,
+			Thinking:            &ThinkingSupport{Min: 1024, Max: 128000, ZeroAllowed: true, DynamicAllowed: false, Levels: []string{"low", "medium", "high", "xhigh", "max"}},
+		},
+		{
 			ID:                  "claude-opus-4-5-20251101",
 			Object:              "model",
 			Created:             1761955200, // 2025-11-01

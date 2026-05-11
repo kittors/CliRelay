@@ -33,3 +33,22 @@ func TestToolPrefixDisabled(t *testing.T) {
 		t.Error("should return false when set to false")
 	}
 }
+
+func TestKimiTokenAuthReportsOAuthAccountInfo(t *testing.T) {
+	t.Parallel()
+
+	auth := &Auth{
+		Provider: "kimi",
+		Metadata: map[string]any{
+			"refresh_token": "kimi-refresh-token",
+		},
+	}
+
+	accountType, account := auth.AccountInfo()
+	if accountType != "oauth" {
+		t.Fatalf("accountType = %q, want oauth", accountType)
+	}
+	if account != "kimi" {
+		t.Fatalf("account = %q, want kimi", account)
+	}
+}

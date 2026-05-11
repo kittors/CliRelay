@@ -196,6 +196,120 @@ func TestGetUsageLogsKeepsStoredChannelNameWhenCurrentAuthNameDiffers(t *testing
 	}
 }
 
+func TestGetUsageLogsResolvesGenericKimiChannelByAuthIndex(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "usage.db")
+	if err := usage.InitDB(dbPath, config.RequestLogStorageConfig{}, time.UTC); err != nil {
+		t.Fatalf("InitDB: %v", err)
+	}
+	t.Cleanup(func() {
+		usage.CloseDB()
+		_ = os.Remove(dbPath)
+		_ = os.Remove(dbPath + "-wal")
+		_ = os.Remove(dbPath + "-shm")
+	})
+
+	store := &memoryAuthStore{}
+	manager := coreauth.NewManager(store, nil, nil)
+	authA, err := manager.Register(context.Background(), &coreauth.Auth{
+		ID:       "kimi-auth-a",
+		FileName: "kimi-a.json",
+		Provider: "kimi",
+		Label:    "kimi-a",
+		Metadata: map[string]any{
+			"label":         "kimi-a",
+			"refresh_token": "refresh-a",
+		},
+	})
+	if err != nil {
+		t.Fatalf("register auth A: %v", err)
+	}
+	authB, err := manager.Register(context.Background(), &coreauth.Auth{
+		ID:       "kimi-auth-b",
+		FileName: "kimi-b.json",
+		Provider: "kimi",
+		Label:    "kimi-b",
+		Metadata: map[string]any{
+			"label":         "kimi-b",
+			"refresh_token": "refresh-b",
+		},
+	})
+	if err != nil {
+		t.Fatalf("register auth B: %v", err)
+	}
+
+	now := time.Now().UTC()
+	usage.InsertLog(
+		"", "", "kimi-k2.6", "kimi", "kimi", authA.Index,
+		false, now.Add(-time.Minute), 123, 45,
+		usage.TokenStats{InputTokens: 1, OutputTokens: 2, TotalTokens: 3},
+		"", "",
+	)
+	usage.InsertLog(
+		"", "", "kimi-k2.6", "kimi", "kimi", authB.Index,
+		false, now, 123, 45,
+		usage.TokenStats{InputTokens: 1, OutputTokens: 2, TotalTokens: 3},
+		"", "",
+	)
+
+	h := &Handler{
+		cfg:         &config.Config{},
+		authManager: manager,
+	}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodGet, "/usage/logs?days=7&page=1&size=50", nil)
+
+	h.GetUsageLogs(c)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d, body=%s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	var payload struct {
+		Items []struct {
+			ChannelName string `json:"channel_name"`
+			AuthIndex   string `json:"auth_index"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if len(payload.Items) != 2 {
+		t.Fatalf("expected 2 items, got %d", len(payload.Items))
+	}
+	gotByIndex := make(map[string]string, len(payload.Items))
+	for _, item := range payload.Items {
+		gotByIndex[item.AuthIndex] = item.ChannelName
+	}
+	if gotByIndex[authA.Index] != "kimi-a" {
+		t.Fatalf("channel_name for auth A = %q, want kimi-a", gotByIndex[authA.Index])
+	}
+	if gotByIndex[authB.Index] != "kimi-b" {
+		t.Fatalf("channel_name for auth B = %q, want kimi-b", gotByIndex[authB.Index])
+	}
+
+	rec = httptest.NewRecorder()
+	c, _ = gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodGet, "/usage/logs?days=7&page=1&size=50&channel=kimi-b", nil)
+	h.GetUsageLogs(c)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("filtered expected status %d, got %d, body=%s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal filtered response: %v", err)
+	}
+	if len(payload.Items) != 1 {
+		t.Fatalf("filtered item count = %d, want 1", len(payload.Items))
+	}
+	if payload.Items[0].AuthIndex != authB.Index || payload.Items[0].ChannelName != "kimi-b" {
+		t.Fatalf("filtered item = %+v, want auth B kimi-b", payload.Items[0])
+	}
+}
+
 func TestGetUsageLogs_EmptyDB_DoesNotReturnNullSlices(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

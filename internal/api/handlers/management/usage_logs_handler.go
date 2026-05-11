@@ -44,7 +44,7 @@ type deleteUsageLogsRequest struct {
 func (h *Handler) GetUsageLogs(c *gin.Context) {
 	// Build name maps from config and auth store first so channel filtering can resolve
 	// to stable auth_index values (and reflect renamed OAuth channels).
-	keyNameMap, channelNameMap, authIndexChannelMap := h.buildNameMaps()
+	keyNameMap, channelNameMap, authIndexChannelMap, ambiguousAuthIndexChannelMap := h.buildNameMaps()
 
 	channelFilterRaw := strings.TrimSpace(c.Query("channel"))
 	if channelFilterRaw == "" {
@@ -65,6 +65,7 @@ func (h *Handler) GetUsageLogs(c *gin.Context) {
 	}
 	var authIndexes []string
 	var channelNames []string
+	authIndexChannelNames := make(map[string][]string)
 	if len(selectedChannelKeys) > 0 {
 		for key := range selectedChannelKeys {
 			channelNames = append(channelNames, key)
@@ -85,6 +86,9 @@ func (h *Handler) GetUsageLogs(c *gin.Context) {
 			}
 			if _, ok := selectedChannelKeys[key]; ok {
 				authIndexes = append(authIndexes, idx)
+				if legacyChannels := ambiguousAuthIndexChannelMap[idx]; len(legacyChannels) > 0 {
+					authIndexChannelNames[idx] = append(authIndexChannelNames[idx], legacyChannels...)
+				}
 			}
 		}
 		// No matches should yield an empty result set rather than "no filter".
@@ -94,14 +98,15 @@ func (h *Handler) GetUsageLogs(c *gin.Context) {
 	}
 
 	params := usage.LogQueryParams{
-		Page:         intQueryDefault(c, "page", 1),
-		Size:         intQueryDefault(c, "size", 50),
-		Days:         intQueryDefault(c, "days", 7),
-		APIKey:       strings.TrimSpace(c.Query("api_key")),
-		Model:        strings.TrimSpace(c.Query("model")),
-		Status:       strings.TrimSpace(c.Query("status")),
-		AuthIndexes:  authIndexes,
-		ChannelNames: channelNames,
+		Page:                  intQueryDefault(c, "page", 1),
+		Size:                  intQueryDefault(c, "size", 50),
+		Days:                  intQueryDefault(c, "days", 7),
+		APIKey:                strings.TrimSpace(c.Query("api_key")),
+		Model:                 strings.TrimSpace(c.Query("model")),
+		Status:                strings.TrimSpace(c.Query("status")),
+		AuthIndexes:           authIndexes,
+		ChannelNames:          channelNames,
+		AuthIndexChannelNames: authIndexChannelNames,
 	}
 
 	result, err := usage.QueryLogs(params)
@@ -133,6 +138,12 @@ func (h *Handler) GetUsageLogs(c *gin.Context) {
 		// Keep the channel captured at request time. Only translate legacy
 		// source identifiers (email/API key) into display names.
 		if item.ChannelName != "" {
+			if name, ok := authIndexChannelMap[item.AuthIndex]; ok && strings.TrimSpace(name) != "" {
+				if _, legacy := channelNameMap[item.ChannelName]; legacy || containsFold(ambiguousAuthIndexChannelMap[item.AuthIndex], item.ChannelName) {
+					item.ChannelName = name
+					continue
+				}
+			}
 			if name, ok := channelNameMap[item.ChannelName]; ok && strings.TrimSpace(name) != "" {
 				item.ChannelName = name
 			}
@@ -240,10 +251,11 @@ func (h *Handler) DeleteUsageLogs(c *gin.Context) {
 //  1. keyNameMap:          user-facing api_key → display name
 //  2. channelNameMap:      source/api_key/email → channel name
 //  3. authIndexChannelMap: auth_index → current channel name
-func (h *Handler) buildNameMaps() (keyNameMap, channelNameMap, authIndexChannelMap map[string]string) {
+func (h *Handler) buildNameMaps() (keyNameMap, channelNameMap, authIndexChannelMap map[string]string, ambiguousAuthIndexChannelMap map[string][]string) {
 	keyNameMap = make(map[string]string)
 	channelNameMap = make(map[string]string)
 	authIndexChannelMap = make(map[string]string)
+	ambiguousAuthIndexChannelMap = make(map[string][]string)
 
 	// User-facing API key names from SQLite
 	for _, row := range usage.ListAPIKeys() {
@@ -284,6 +296,13 @@ func (h *Handler) buildNameMaps() (keyNameMap, channelNameMap, authIndexChannelM
 		}
 	}
 
+	type legacyChannelCandidate struct {
+		key       string
+		channel   string
+		authIndex string
+	}
+	var legacyCandidates []legacyChannelCandidate
+
 	if h.authManager != nil {
 		for _, auth := range h.authManager.List() {
 			if auth == nil {
@@ -299,16 +318,63 @@ func (h *Handler) buildNameMaps() (keyNameMap, channelNameMap, authIndexChannelM
 			}
 			if accountType, account := auth.AccountInfo(); strings.EqualFold(accountType, "oauth") {
 				if source := strings.TrimSpace(account); source != "" {
-					channelNameMap[source] = channel
+					legacyCandidates = append(legacyCandidates, legacyChannelCandidate{
+						key:       source,
+						channel:   channel,
+						authIndex: strings.TrimSpace(auth.Index),
+					})
 				}
 			}
 			if email := strings.TrimSpace(authEmail(auth)); email != "" {
-				channelNameMap[email] = channel
+				legacyCandidates = append(legacyCandidates, legacyChannelCandidate{
+					key:       email,
+					channel:   channel,
+					authIndex: strings.TrimSpace(auth.Index),
+				})
 			}
 		}
 	}
 
+	legacyChannelsByKey := make(map[string]map[string]struct{})
+	for _, candidate := range legacyCandidates {
+		key := strings.TrimSpace(candidate.key)
+		channel := strings.TrimSpace(candidate.channel)
+		if key == "" || channel == "" {
+			continue
+		}
+		if legacyChannelsByKey[key] == nil {
+			legacyChannelsByKey[key] = make(map[string]struct{})
+		}
+		legacyChannelsByKey[key][strings.ToLower(channel)] = struct{}{}
+	}
+	for _, candidate := range legacyCandidates {
+		key := strings.TrimSpace(candidate.key)
+		if key == "" {
+			continue
+		}
+		if len(legacyChannelsByKey[key]) > 1 {
+			if candidate.authIndex != "" {
+				ambiguousAuthIndexChannelMap[candidate.authIndex] = append(ambiguousAuthIndexChannelMap[candidate.authIndex], key)
+			}
+			continue
+		}
+		channelNameMap[key] = strings.TrimSpace(candidate.channel)
+	}
+
 	return
+}
+
+func containsFold(values []string, needle string) bool {
+	needle = strings.TrimSpace(needle)
+	if needle == "" {
+		return false
+	}
+	for _, value := range values {
+		if strings.EqualFold(strings.TrimSpace(value), needle) {
+			return true
+		}
+	}
+	return false
 }
 
 func intQueryDefault(c *gin.Context, key string, def int) int {
@@ -644,7 +710,7 @@ func (h *Handler) GetUsageChartData(c *gin.Context) {
 		}
 		// Fallback: for older logs where api_key_name was not yet stored,
 		// enrich with display names from the current config.
-		keyNameMap, _, _ := h.buildNameMaps()
+		keyNameMap, _, _, _ := h.buildNameMaps()
 		for i := range apikeyDist {
 			if apikeyDist[i].Name == "" {
 				if name, ok := keyNameMap[apikeyDist[i].APIKey]; ok {

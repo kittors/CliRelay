@@ -16,6 +16,7 @@ type channelDescriptor struct {
 	Name              string
 	Prefix            string
 	Source            string
+	Disabled          bool
 	DefaultTags       []string
 	CustomTags        []string
 	HiddenDefaultTags []string
@@ -37,7 +38,7 @@ type channelGroupItem struct {
 
 func collectChannelDescriptors(cfg *config.Config, auths []*coreauth.Auth) []channelDescriptor {
 	items := make([]channelDescriptor, 0)
-	push := func(name, prefix, source string, tags authTagPayload) {
+	push := func(name, prefix, source string, disabled bool, tags authTagPayload) {
 		name = strings.TrimSpace(name)
 		prefix = internalrouting.NormalizeGroupName(prefix)
 		if name == "" && prefix == "" {
@@ -47,6 +48,7 @@ func collectChannelDescriptors(cfg *config.Config, auths []*coreauth.Auth) []cha
 			Name:              name,
 			Prefix:            prefix,
 			Source:            source,
+			Disabled:          disabled,
 			DefaultTags:       append([]string{}, tags.DefaultTags...),
 			CustomTags:        append([]string{}, tags.CustomTags...),
 			HiddenDefaultTags: append([]string{}, tags.HiddenDefaultTags...),
@@ -56,19 +58,19 @@ func collectChannelDescriptors(cfg *config.Config, auths []*coreauth.Auth) []cha
 
 	if cfg != nil {
 		for _, entry := range cfg.GeminiKey {
-			push(entry.Name, entry.Prefix, "gemini", buildAuthTagPayloadFromValues("gemini", nil))
+			push(entry.Name, entry.Prefix, "gemini", false, buildAuthTagPayloadFromValues("gemini", nil))
 		}
 		for _, entry := range cfg.ClaudeKey {
-			push(entry.Name, entry.Prefix, "claude", buildAuthTagPayloadFromValues("claude", nil))
+			push(entry.Name, entry.Prefix, "claude", false, buildAuthTagPayloadFromValues("claude", nil))
 		}
 		for _, entry := range cfg.CodexKey {
-			push(entry.Name, entry.Prefix, "codex", buildAuthTagPayloadFromValues("codex", nil))
+			push(entry.Name, entry.Prefix, "codex", false, buildAuthTagPayloadFromValues("codex", nil))
 		}
 		for _, entry := range cfg.VertexCompatAPIKey {
-			push("", entry.Prefix, "vertex", buildAuthTagPayloadFromValues("vertex", nil))
+			push("", entry.Prefix, "vertex", false, buildAuthTagPayloadFromValues("vertex", nil))
 		}
 		for _, entry := range cfg.OpenAICompatibility {
-			push(entry.Name, entry.Prefix, "openai", buildAuthTagPayloadFromValues("openai", nil))
+			push(entry.Name, entry.Prefix, "openai", false, buildAuthTagPayloadFromValues("openai", nil))
 		}
 	}
 
@@ -76,7 +78,13 @@ func collectChannelDescriptors(cfg *config.Config, auths []*coreauth.Auth) []cha
 		if !includeAuthInChannelGroups(auth) {
 			continue
 		}
-		push(auth.ChannelName(), auth.Prefix, auth.Provider, buildAuthTagPayload(auth))
+		push(
+			auth.ChannelName(),
+			auth.Prefix,
+			auth.Provider,
+			auth.Disabled || auth.Status == coreauth.StatusDisabled,
+			buildAuthTagPayload(auth),
+		)
 	}
 
 	return items
@@ -86,7 +94,15 @@ func includeAuthInChannelGroups(auth *coreauth.Auth) bool {
 	if auth == nil {
 		return false
 	}
-	return !auth.Disabled && auth.Status != coreauth.StatusDisabled
+	statusMessage := strings.TrimSpace(auth.StatusMessage)
+	if strings.EqualFold(statusMessage, "removed via management api") ||
+		strings.EqualFold(statusMessage, "removed via config update") {
+		return false
+	}
+	if isRuntimeOnlyAuth(auth) && (auth.Disabled || auth.Status == coreauth.StatusDisabled) {
+		return false
+	}
+	return true
 }
 
 func buildChannelGroupItems(cfg *config.Config, auths []*coreauth.Auth) []channelGroupItem {
@@ -179,6 +195,7 @@ func buildChannelGroupItems(cfg *config.Config, auths []*coreauth.Auth) []channe
 				group.ChannelDetails = append(group.ChannelDetails, channelGroupChannelDetail{
 					Name:              channelName,
 					Source:            channel.Source,
+					Disabled:          channel.Disabled,
 					DefaultTags:       append([]string{}, channel.DefaultTags...),
 					CustomTags:        append([]string{}, channel.CustomTags...),
 					HiddenDefaultTags: append([]string{}, channel.HiddenDefaultTags...),

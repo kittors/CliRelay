@@ -95,6 +95,62 @@ func TestPatchAuthFileFieldsUpdatesOAuthChannelLabel(t *testing.T) {
 	}
 }
 
+func TestPatchAuthFileFieldsUpdatesKimiOAuthChannelLabel(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	store := &memoryAuthStore{}
+	manager := coreauth.NewManager(store, nil, nil)
+	_, err := manager.Register(context.Background(), &coreauth.Auth{
+		ID:       "kimi-auth-1",
+		FileName: "kimi-auth-1.json",
+		Provider: "kimi",
+		Label:    "Kimi User",
+		Metadata: map[string]any{
+			"type":          "kimi",
+			"access_token":  "kimi-access-token",
+			"refresh_token": "kimi-refresh-token",
+		},
+	})
+	if err != nil {
+		t.Fatalf("register auth: %v", err)
+	}
+
+	h := &Handler{
+		cfg:         &config.Config{},
+		authManager: manager,
+	}
+
+	body, err := json.Marshal(map[string]any{
+		"name":  "kimi-auth-1.json",
+		"label": "Kimi Team A",
+	})
+	if err != nil {
+		t.Fatalf("marshal body: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPatch, "/auth-files/fields", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	h.PatchAuthFileFields(c)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d, body=%s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	updated, ok := manager.GetByID("kimi-auth-1")
+	if !ok || updated == nil {
+		t.Fatal("expected updated auth")
+	}
+	if updated.Label != "Kimi Team A" {
+		t.Fatalf("label = %q, want %q", updated.Label, "Kimi Team A")
+	}
+	if got, _ := updated.Metadata["label"].(string); got != "Kimi Team A" {
+		t.Fatalf("metadata label = %q, want %q", got, "Kimi Team A")
+	}
+}
+
 func TestPatchAuthFileFieldsUpdatesCustomTagsAndHiddenDefaultTags(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
