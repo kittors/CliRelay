@@ -14,13 +14,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
       - name: Reject vendored panel assets
         run: ./scripts/ensure-no-vendored-panel-assets.sh
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
       - name: Login to DockerHub
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
@@ -42,7 +42,7 @@ jobs:
           echo "UI_VERSION=${UI_VERSION}" >> "$GITHUB_ENV"
           echo "FRONTEND_COMMIT=${FRONTEND_COMMIT}" >> "$GITHUB_ENV"
       - name: Build and push (amd64)
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           platforms: linux/amd64
@@ -61,13 +61,13 @@ jobs:
     runs-on: ubuntu-24.04-arm
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
       - name: Reject vendored panel assets
         run: ./scripts/ensure-no-vendored-panel-assets.sh
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
       - name: Login to DockerHub
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
@@ -89,7 +89,7 @@ jobs:
           echo "UI_VERSION=${UI_VERSION}" >> "$GITHUB_ENV"
           echo "FRONTEND_COMMIT=${FRONTEND_COMMIT}" >> "$GITHUB_ENV"
       - name: Build and push (arm64)
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           platforms: linux/arm64
@@ -111,13 +111,13 @@ jobs:
       - docker_arm64
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
       - name: Reject vendored panel assets
         run: ./scripts/ensure-no-vendored-panel-assets.sh
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
       - name: Login to DockerHub
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
