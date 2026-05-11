@@ -16,6 +16,7 @@
 </p>
 
 <p align="center">
+  <a href="#相对上游的优化调整">🚀 优化调整</a> ·
   <a href="https://help.router-for.me/cn/">📖 文档</a> ·
   <a href="https://github.com/kittors/codeProxy">🖥️ 管理面板</a> ·
   <a href="https://github.com/kittors/CliRelay/issues">🐛 报告问题</a> ·
@@ -23,6 +24,67 @@
 </p>
 
 ---
+
+## 🚀 相对上游的优化调整
+
+本仓库是基于上游 [`kittors/CliRelay`](https://github.com/kittors/CliRelay) 的增强 fork（`zuohuadong/CliRelay`）。我们的优化重点很明确：Codex / WebSocket 稳定性、大上下文处理、多模态路由、图片生成与编辑、管理端可靠性，以及自动跟进上游。
+
+快速跳转：
+
+- [上下文检索与智能压缩](#上下文检索与智能压缩)
+- [多模态适配器](#多模态适配器)
+- [请求策略与 Provider 偏好](#请求策略与-provider-偏好)
+- [认证与凭据生命周期](#认证与凭据生命周期)
+- [Codex WebSocket 与会话稳定性](#codex-websocket-与会话稳定性)
+- [图片生成与图片编辑](#图片生成与图片编辑)
+- [OpenAI 兼容执行器增强](#openai-兼容执行器增强)
+- [配置与运行时运维](#配置与运行时运维)
+- [CI/CD 与上游同步](#cicd-与上游同步)
+
+<a id="上下文检索与智能压缩"></a>
+### 🧠 上下文检索与智能压缩
+
+新增 `internal/contextretrieval`，用于在 OpenAI / Responses 请求过大时做本地上下文裁剪。它会保留 system 与最近轮次，通过类 SQLite FTS 的检索找回旧消息中的相关内容，原子保留 Codex 工具调用配对，插入 Codex 感知摘要，并在保留项仍然过大时执行二次压缩。
+
+<a id="多模态适配器"></a>
+### 🔌 多模态适配器
+
+新增 `internal/multimodaladapter`，把“只有文本能力”的上游也纳入多模态路由。它支持按请求模型、上游 provider、上游模型和协议匹配规则，调用 HTTP、ZAI Vision HTTP 或 MCP 提取视觉上下文，然后按配置执行提取注入、剥离、拒绝或透传，不影响原生多模态渠道。
+
+<a id="请求策略与-provider-偏好"></a>
+### 🛡️ 请求策略与 Provider 偏好
+
+新增通用 `request-policies` 和 `provider-preferences` 配置。请求策略可按上游 provider/model、请求体大小、工具、媒体特征等条件跳过某个渠道或本地拒绝；Provider 偏好可以让指定模型优先选择某个上游，同时保留原有 fallback 能力。
+
+<a id="认证与凭据生命周期"></a>
+### 🔐 认证与凭据生命周期
+
+强化了 revoked 凭据、token refresh、网络超时、额度恢复、加权轮换和配置热更新逻辑。被撤销的凭据可被阻断或自动清理，401 后可立即刷新并恢复被挂起模型，网络超时按临时错误处理，避免把可恢复问题误判为永久限制。
+
+<a id="codex-websocket-与会话稳定性"></a>
+### 🌐 Codex WebSocket 与会话稳定性
+
+针对 Codex Responses WebSocket 做了 warmup、重连、上游空闲、关闭顺序、读循环 panic、增量输入兼容、请求/响应 trace 和输出组装修复。非流式 Responses 在最终 completed 事件缺失 output 时，可以从 `response.output_item.done` 事件补齐内容。
+
+<a id="图片生成与图片编辑"></a>
+### 🖼️ 图片生成与图片编辑
+
+增强 `/v1/images/generations` 和 `/v1/images/edits` 的路由能力。原生 edits 可直接透传；不支持原生 edits 的 OpenAI 兼容上游，可配置转成 image-generations 或 chat-multimodal，并支持配置图片字段名，适配 Qwen 等上游的差异化接口。
+
+<a id="openai-兼容执行器增强"></a>
+### 🧩 OpenAI 兼容执行器增强
+
+OpenAI 兼容执行器增加了多模态适配、图片编辑转换、compact fallback、上游错误体保留、Kimi payload 归一化、身份指纹、响应 trace 和更稳健的流式解析，让非 OpenAI 上游在 Codex 与 OpenAI 兼容客户端中表现更一致。
+
+<a id="配置与运行时运维"></a>
+### ⚙️ 配置与运行时运维
+
+扩展了上下文检索、多模态适配器、请求策略、Provider 偏好、OpenAI 兼容图片编辑模式、GPT-5.4 / GPT-5.5 1M 上下文模型注册、管理端认证限流、运行时设置持久化，以及容器/挂载配置下更安全的 updater 行为。
+
+<a id="cicd-与上游同步"></a>
+### 🔄 CI/CD 与上游同步
+
+新增面向 `kittors/CliRelay` 的上游同步工作流，调整 Docker 发布链路，升级 Node 24 actions，并支持冲突场景下创建同步 PR。目标是在保留本 fork 生产补丁的同时，定期、可审查地吸收上游 `dev`。
 
 ## ⚡ CliRelay 是什么？
 
