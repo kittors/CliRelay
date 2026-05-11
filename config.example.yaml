@@ -147,11 +147,11 @@ request-log-storage:
 # context-retrieval:
 #   enabled: false
 #   models:
-#     - name: "gpt-5.3-codex"
+#     - name: "*codex*"
 #       protocol: "openai-response"
-#     - name: "gpt-5.3-codex"
+#     - name: "*codex*"
 #       protocol: "openai"
-#   max-input-bytes: 350000
+#   max-input-bytes: 1600000
 #   preserve-recent-turns: 10
 #   chunk:
 #     max-bytes: 12000
@@ -162,7 +162,7 @@ request-log-storage:
 #   # a smaller budget and truncate oversized retained item text with prefix/suffix.
 #   secondary:
 #     enabled: true
-#     max-input-bytes: 220000
+#     max-input-bytes: 800000
 #     preserve-recent-turns: 6
 #     top-k: 24
 #     max-summary-bytes: 2000
@@ -184,16 +184,16 @@ request-log-storage:
 # request-policies:
 #   - name: "glm-5.1-large-request-guard"
 #     match:
-#       requested-models: ["gpt-5.3-codex"]
+#       requested-models: ["gpt-5.3-codex", "codex-auto-review"]
 #       upstream-providers: ["bigmodel-coding"]
 #       upstream-models: ["glm-5.1"]
 #     limits:
-#       max-request-bytes: 800000
+#       max-request-bytes: 600000
 #     over-limit:
 #       action: "skip-channel"
 #   - name: "glm-5.1-tool-heavy-skip"
 #     match:
-#       requested-models: ["gpt-5.3-codex"]
+#       requested-models: ["gpt-5.3-codex", "codex-auto-review"]
 #       upstream-providers: ["bigmodel-coding"]
 #       upstream-models: ["glm-5.1"]
 #     limits:
@@ -202,7 +202,7 @@ request-log-storage:
 #       action: "skip-channel"
 #   - name: "glm-5.1-tools-skip"
 #     match:
-#       requested-models: ["gpt-5.3-codex"]
+#       requested-models: ["gpt-5.3-codex", "codex-auto-review"]
 #       upstream-providers: ["bigmodel-coding"]
 #       upstream-models: ["glm-5.1"]
 #       request-features: ["tools"]
@@ -210,7 +210,7 @@ request-log-storage:
 #       action: "skip-channel"
 #   - name: "glm-5.1-long-thread-skip"
 #     match:
-#       requested-models: ["gpt-5.3-codex"]
+#       requested-models: ["gpt-5.3-codex", "codex-auto-review"]
 #       upstream-providers: ["bigmodel-coding"]
 #       upstream-models: ["glm-5.1"]
 #     limits:
