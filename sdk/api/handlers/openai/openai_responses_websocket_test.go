@@ -69,6 +69,30 @@ func TestResponsesWebsocketPrewarmPayloads(t *testing.T) {
 	if gjson.GetBytes(payloads[1], "response.usage.total_tokens").Int() != 0 {
 		t.Fatalf("done payload total_tokens must be 0")
 	}
+	if gjson.GetBytes(payloads[0], "response.object").String() != "response" {
+		t.Fatalf("created payload missing response.object: %s", gjson.GetBytes(payloads[0], "response.object").String())
+	}
+	if gjson.GetBytes(payloads[0], "response.status").String() != "in_progress" {
+		t.Fatalf("created payload response.status = %s, want in_progress", gjson.GetBytes(payloads[0], "response.status").String())
+	}
+	if gjson.GetBytes(payloads[0], "response.model").String() != "test-model" {
+		t.Fatalf("created payload response.model = %s, want test-model", gjson.GetBytes(payloads[0], "response.model").String())
+	}
+	if gjson.GetBytes(payloads[1], "response.object").String() != "response" {
+		t.Fatalf("completed payload missing response.object: %s", gjson.GetBytes(payloads[1], "response.object").String())
+	}
+	if gjson.GetBytes(payloads[1], "response.status").String() != "completed" {
+		t.Fatalf("completed payload response.status = %s, want completed", gjson.GetBytes(payloads[1], "response.status").String())
+	}
+	if gjson.GetBytes(payloads[1], "response.model").String() != "test-model" {
+		t.Fatalf("completed payload response.model = %s, want test-model", gjson.GetBytes(payloads[1], "response.model").String())
+	}
+	if gjson.GetBytes(payloads[1], "response.created_at").Int() == 0 {
+		t.Fatalf("completed payload missing response.created_at")
+	}
+	if gjson.GetBytes(payloads[1], "response.completed_at").Int() == 0 {
+		t.Fatalf("completed payload missing response.completed_at")
+	}
 }
 
 func TestResponsesWebsocketPrewarmPayloadsDisabledForGenerateTrue(t *testing.T) {
