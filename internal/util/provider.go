@@ -99,6 +99,9 @@ func IsOpenAICompatibilityAlias(modelName string, cfg *config.Config) bool {
 	}
 
 	for _, compat := range cfg.OpenAICompatibility {
+		if compat.Disabled {
+			continue
+		}
 		for _, model := range compat.Models {
 			if model.Alias == modelName {
 				return true
@@ -124,6 +127,9 @@ func GetOpenAICompatibilityConfig(alias string, cfg *config.Config) (*config.Ope
 	}
 
 	for _, compat := range cfg.OpenAICompatibility {
+		if compat.Disabled {
+			continue
+		}
 		for _, model := range compat.Models {
 			if model.Alias == alias {
 				return &compat, &model

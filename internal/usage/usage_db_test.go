@@ -85,6 +85,42 @@ func TestQueryDailyCallsByAuthIndexesBucketsByProjectTimezone(t *testing.T) {
 	}
 }
 
+func TestQueryEntityStatsFiltersByRequestedEntities(t *testing.T) {
+	initTestUsageDB(t, config.RequestLogStorageConfig{})
+
+	now := time.Now().UTC()
+	InsertLog("", "", "gpt-5.4", "codex-a", "Codex A", "auth-a", false, now, 10, 1, TokenStats{TotalTokens: 11}, "", "")
+	InsertLog("", "", "gpt-5.4", "codex-b", "Codex B", "auth-b", true, now, 20, 1, TokenStats{TotalTokens: 21}, "", "")
+	InsertLog("", "", "gpt-5.4", "codex-c", "Codex C", "auth-c", false, now, 30, 1, TokenStats{TotalTokens: 31}, "", "")
+
+	authStats, err := QueryEntityStats("", 30, "auth_index", []string{"auth-a", "auth-b"})
+	if err != nil {
+		t.Fatalf("QueryEntityStats(auth_index) error = %v", err)
+	}
+	if len(authStats) != 2 {
+		t.Fatalf("auth stats len = %d, want 2: %+v", len(authStats), authStats)
+	}
+	for _, point := range authStats {
+		if point.EntityName == "auth-c" {
+			t.Fatalf("auth stats included unrequested auth-c: %+v", authStats)
+		}
+	}
+
+	sourceStats, err := QueryEntityStats("", 30, "source", []string{"codex-b"})
+	if err != nil {
+		t.Fatalf("QueryEntityStats(source) error = %v", err)
+	}
+	if len(sourceStats) != 1 {
+		t.Fatalf("source stats len = %d, want 1: %+v", len(sourceStats), sourceStats)
+	}
+	if sourceStats[0].EntityName != "codex-b" {
+		t.Fatalf("source entity = %q, want codex-b", sourceStats[0].EntityName)
+	}
+	if sourceStats[0].Requests != 1 || sourceStats[0].Failed != 1 {
+		t.Fatalf("source stats = %+v, want one failed request", sourceStats[0])
+	}
+}
+
 func TestQuotaSnapshotPointsKeepFineGrainedSeries(t *testing.T) {
 	initTestUsageDB(t, config.RequestLogStorageConfig{})
 

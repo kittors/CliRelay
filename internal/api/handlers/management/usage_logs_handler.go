@@ -736,8 +736,10 @@ func (h *Handler) GetUsageChartData(c *gin.Context) {
 func (h *Handler) GetEntityUsageStats(c *gin.Context) {
 	apiKey := strings.TrimSpace(c.Query("api_key"))
 	days := intQueryDefault(c, "days", 7)
+	authIndexes := queryStringList(c, "auth_index")
+	sources := queryStringList(c, "source")
 
-	sourceStats, err := usage.QueryEntityStats(apiKey, days, "source")
+	sourceStats, err := usage.QueryEntityStats(apiKey, days, "source", sources)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -746,7 +748,7 @@ func (h *Handler) GetEntityUsageStats(c *gin.Context) {
 		sourceStats = []usage.EntityStatPoint{}
 	}
 
-	authIndexStats, err := usage.QueryEntityStats(apiKey, days, "auth_index")
+	authIndexStats, err := usage.QueryEntityStats(apiKey, days, "auth_index", authIndexes)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -759,6 +761,29 @@ func (h *Handler) GetEntityUsageStats(c *gin.Context) {
 		"source":     sourceStats,
 		"auth_index": authIndexStats,
 	})
+}
+
+func queryStringList(c *gin.Context, key string) []string {
+	rawValues := c.QueryArray(key)
+	if len(rawValues) == 0 {
+		rawValues = []string{c.Query(key)}
+	}
+	seen := map[string]struct{}{}
+	values := make([]string, 0, len(rawValues))
+	for _, raw := range rawValues {
+		for _, part := range strings.Split(raw, ",") {
+			trimmed := strings.TrimSpace(part)
+			if trimmed == "" {
+				continue
+			}
+			if _, ok := seen[trimmed]; ok {
+				continue
+			}
+			seen[trimmed] = struct{}{}
+			values = append(values, trimmed)
+		}
+	}
+	return values
 }
 
 func (h *Handler) GetAuthFileGroupTrend(c *gin.Context) {

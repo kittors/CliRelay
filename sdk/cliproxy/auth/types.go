@@ -103,6 +103,11 @@ type QuotaState struct {
 	Exceeded bool `json:"exceeded"`
 	// Reason provides an optional provider specific human readable description.
 	Reason string `json:"reason,omitempty"`
+	// Window identifies the provider quota window that was exhausted, such as
+	// "5h" or "week" for Codex.
+	Window string `json:"window,omitempty"`
+	// WindowMinutes stores the provider quota window duration when known.
+	WindowMinutes int `json:"window_minutes,omitempty"`
 	// NextRecoverAt is when the credential may become available again.
 	NextRecoverAt time.Time `json:"next_recover_at"`
 	// BackoffLevel stores the progressive cooldown exponent used for rate limits.

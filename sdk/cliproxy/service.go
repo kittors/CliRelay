@@ -87,6 +87,9 @@ type Service struct {
 	// coreManager handles core authentication and execution.
 	coreManager *coreauth.Manager
 
+	// compositeHook receives auth lifecycle events (e.g. revoked) and dispatches to notifiers.
+	compositeHook *compositeHook
+
 	// shutdownOnce ensures shutdown is called only once.
 	shutdownOnce sync.Once
 

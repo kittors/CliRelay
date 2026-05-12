@@ -1013,7 +1013,7 @@ func (e *CodexExecutor) executeCodexImageViaResponses(
 			upstreamBody := readUpstreamErrorBody(e.Identifier(), httpResp.Body)
 			_ = httpResp.Body.Close()
 			appendAPIResponseChunk(ctx, e.cfg, upstreamBody)
-			return nil, nil, newCodexStatusErr(httpResp.StatusCode, upstreamBody)
+			return nil, nil, newCodexStatusErr(httpResp.StatusCode, upstreamBody, httpResp.Header)
 		}
 
 		rawBody, err := readUpstreamResponseBody(e.Identifier(), httpResp.Body)

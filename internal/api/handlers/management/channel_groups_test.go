@@ -487,6 +487,37 @@ func TestBuildChannelGroupItemsIncludesDisabledAuthFileChannels(t *testing.T) {
 	}
 }
 
+func TestBuildChannelGroupItemsMarksDisabledOpenAICompatChannels(t *testing.T) {
+	cfg := &config.Config{
+		OpenAICompatibility: []config.OpenAICompatibility{
+			{
+				Name:     "OpenAI Main",
+				Disabled: true,
+				BaseURL:  "https://example.com/v1",
+				Prefix:   "openai-main",
+				Models:   []config.OpenAICompatibilityModel{{Name: "gpt-4.1"}},
+			},
+		},
+	}
+
+	items := buildChannelGroupItems(cfg, nil)
+	byName := make(map[string]channelGroupItem, len(items))
+	for _, item := range items {
+		byName[item.Name] = item
+	}
+
+	defaultGroup, ok := byName["openai-main"]
+	if !ok {
+		t.Fatal("expected openai-main group for OpenAI compatibility channel")
+	}
+	if len(defaultGroup.ChannelDetails) != 1 {
+		t.Fatalf("channel details = %#v, want one OpenAI channel detail", defaultGroup.ChannelDetails)
+	}
+	if !defaultGroup.ChannelDetails[0].Disabled {
+		t.Fatalf("channel detail = %#v, want disabled=true", defaultGroup.ChannelDetails[0])
+	}
+}
+
 func TestBuildChannelGroupItemsDoesNotSurfaceDeletedConfiguredChannels(t *testing.T) {
 	cfg := &config.Config{
 		Routing: config.RoutingConfig{

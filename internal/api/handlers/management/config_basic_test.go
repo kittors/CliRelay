@@ -4,11 +4,16 @@ import (
 	"bytes"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/api/bodyutil"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 )
 
 func TestMaskKey(t *testing.T) {
@@ -303,5 +308,89 @@ func TestPutConfigYAMLRejectsOversizedBody(t *testing.T) {
 
 	if rec.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("expected status %d, got %d", http.StatusRequestEntityTooLarge, rec.Code)
+	}
+}
+
+func TestPutConfigYAMLUpdatesExistingStoredPayloadRuntimeSetting(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	usage.CloseDB()
+	dbPath := filepath.Join(t.TempDir(), "usage.sqlite")
+	if err := usage.InitDB(dbPath, config.RequestLogStorageConfig{}, time.UTC); err != nil {
+		t.Fatalf("InitDB: %v", err)
+	}
+	t.Cleanup(usage.CloseDB)
+
+	if err := usage.UpsertRuntimeSetting(usage.RuntimeSettingPayload, config.PayloadConfig{
+		Override: []config.PayloadRule{
+			{
+				Models: []config.PayloadModelRule{{Name: "old-model", Protocol: "codex"}},
+				Params: map[string]any{"service_tier": "standard"},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("seed payload runtime setting: %v", err)
+	}
+
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(configPath, []byte("port: 8318\nlogging-to-file: true\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	body := []byte(`port: 8318
+payload:
+  override:
+    - models:
+        - name: gpt-5.4
+          protocol: codex
+        - name: gpt-5.4-mini
+          protocol: codex
+      params:
+        service_tier: priority
+logging-to-file: true
+`)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPut, "/config.yaml", bytes.NewReader(body))
+
+	h := NewHandler(&config.Config{}, configPath, nil)
+	h.PutConfigYAML(c)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PutConfigYAML status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	assertPayloadOverrideRule(t, h.cfg.Payload)
+
+	var stored config.Config
+	if !usage.ApplyStoredRuntimeSettings(&stored) {
+		t.Fatal("ApplyStoredRuntimeSettings returned false")
+	}
+	assertPayloadOverrideRule(t, stored.Payload)
+
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	if strings.Contains(string(data), "payload:") {
+		t.Fatalf("payload should be migrated out of YAML after save:\n%s", string(data))
+	}
+}
+
+func assertPayloadOverrideRule(t *testing.T, payload config.PayloadConfig) {
+	t.Helper()
+	if len(payload.Override) != 1 {
+		t.Fatalf("payload override rule count = %d, want 1: %#v", len(payload.Override), payload.Override)
+	}
+	rule := payload.Override[0]
+	if len(rule.Models) != 2 {
+		t.Fatalf("payload override model count = %d, want 2: %#v", len(rule.Models), rule.Models)
+	}
+	if rule.Models[0].Name != "gpt-5.4" || rule.Models[0].Protocol != "codex" {
+		t.Fatalf("first payload model = %#v", rule.Models[0])
+	}
+	if rule.Models[1].Name != "gpt-5.4-mini" || rule.Models[1].Protocol != "codex" {
+		t.Fatalf("second payload model = %#v", rule.Models[1])
+	}
+	if got := rule.Params["service_tier"]; got != "priority" {
+		t.Fatalf("service_tier = %#v, want priority", got)
 	}
 }

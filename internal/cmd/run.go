@@ -15,6 +15,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/api"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/api/middleware"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/proxy"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy"
 	log "github.com/sirupsen/logrus"
@@ -93,6 +94,27 @@ func StartService(cfg *config.Config, configPath string, localPassword string) {
 		return
 	}
 
+
+	if cfg.IsProxyManagerEnabled() {
+		coreMgr := service.CoreAuthManager()
+		var authStore proxy.AuthStore
+		if coreMgr != nil {
+			authStore = proxy.NewCoreManagerAuthStore(
+				coreMgr,
+				nil,
+			)
+		}
+		pm := proxy.NewProxyManager(
+			cfg.ProxyManager,
+			&proxy.SQLitePoolMutator{},
+			authStore,
+			&cfg.SDKConfig,
+		)
+		service.RegisterProxyBanNotifier(pm)
+		service.AddServerOption(api.WithProxyManager(pm))
+		go pm.Start(runCtx)
+		log.Info("proxy manager enabled and started")
+	}
 	err = service.Run(runCtx)
 	if err != nil && !errors.Is(err, context.Canceled) {
 		log.Errorf("proxy service exited with error: %v", err)
@@ -153,6 +175,28 @@ func StartServiceBackground(cfg *config.Config, configPath string, localPassword
 		log.Errorf("failed to build proxy service: %v", err)
 		close(doneCh)
 		return cancelFn, doneCh
+	}
+
+	// ProxyManager initialization for background mode
+	if cfg.IsProxyManagerEnabled() {
+		coreMgr := service.CoreAuthManager()
+		var authStore proxy.AuthStore
+		if coreMgr != nil {
+			authStore = proxy.NewCoreManagerAuthStore(
+				coreMgr,
+				nil,
+			)
+		}
+		pm := proxy.NewProxyManager(
+			cfg.ProxyManager,
+			&proxy.SQLitePoolMutator{},
+			authStore,
+			&cfg.SDKConfig,
+		)
+		service.RegisterProxyBanNotifier(pm)
+		service.AddServerOption(api.WithProxyManager(pm))
+		go pm.Start(ctx)
+		log.Info("proxy manager enabled and started (background)")
 	}
 
 	go func() {

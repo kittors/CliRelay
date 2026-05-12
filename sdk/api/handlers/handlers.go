@@ -1212,13 +1212,14 @@ func (h *BaseAPIHandler) getRequestDetails(ctx context.Context, modelName string
 	}
 
 	providers = scopedProvidersForModel(lookupModel, scopedGroups)
-	// Fallback: if baseModel has no provider but differs from resolvedModelName,
-	// try using the full model name. This handles edge cases where custom models
-	// may be registered with their full suffixed name (e.g., "my-model(8192)").
-	// Evaluated in Story 11.8: This fallback is intentionally preserved to support
-	// custom model registrations that include thinking suffixes.
 	if len(providers) == 0 && baseModel != resolvedModelName {
 		providers = scopedProvidersForModel(resolvedModelName, scopedGroups)
+	}
+
+	if len(providers) == 0 {
+		if info := registry.LookupStaticModelInfo(lookupModel); info != nil && info.Type != "" {
+			providers = []string{strings.ToLower(info.Type)}
+		}
 	}
 
 	if len(providers) == 0 {

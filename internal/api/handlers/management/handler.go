@@ -15,6 +15,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/buildinfo"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/proxy"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v6/sdk/access"
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v6/sdk/auth"
@@ -55,6 +56,7 @@ type Handler struct {
 	attemptCleanupStop  chan struct{}
 	attemptCleanupOnce  sync.Once
 	accessManager       *sdkaccess.Manager
+	proxyMgr            *proxy.ProxyManager
 	trendCacheMu        sync.Mutex
 	trendCache          map[string]trendCacheEntry
 	imageTasksMu        sync.Mutex
@@ -453,4 +455,87 @@ func (h *Handler) updateStringField(c *gin.Context, set func(string)) {
 	}
 	set(*body.Value)
 	h.persist(c)
+}
+
+func (h *Handler) SetProxyManager(pm *proxy.ProxyManager) {
+	h.proxyMgr = pm
+}
+
+func (h *Handler) HasProxyManager() bool {
+	return h.proxyMgr != nil && h.proxyMgr.IsEnabled()
+}
+
+func (h *Handler) GetProxyManagerStatus(c *gin.Context) {
+	if h.proxyMgr == nil {
+		c.JSON(http.StatusOK, gin.H{"enabled": false})
+		return
+	}
+	status := gin.H{
+		"enabled": h.proxyMgr.IsEnabled(),
+	}
+	if health := h.proxyMgr.GetHealthStatuses(); health != nil {
+		status["health"] = health
+	}
+	if dist := h.proxyMgr.GetDistribution(); dist != nil {
+		status["distribution"] = dist
+	}
+	c.JSON(http.StatusOK, status)
+}
+
+func (h *Handler) GetProxyHealth(c *gin.Context) {
+	if h.proxyMgr == nil {
+		c.JSON(http.StatusOK, gin.H{"enabled": false})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"enabled":  true,
+		"statuses": h.proxyMgr.GetHealthStatuses(),
+	})
+}
+
+func (h *Handler) GetProxyDistribution(c *gin.Context) {
+	if h.proxyMgr == nil {
+		c.JSON(http.StatusOK, gin.H{"enabled": false})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"enabled":      true,
+		"distribution": h.proxyMgr.GetDistribution(),
+	})
+}
+
+func (h *Handler) GetBanEvents(c *gin.Context) {
+	if h.proxyMgr == nil {
+		c.JSON(http.StatusOK, gin.H{"enabled": false})
+		return
+	}
+	proxyID := c.Query("proxy_id")
+	limit := 50
+	events := h.proxyMgr.GetBanEvents(proxyID, limit)
+	c.JSON(http.StatusOK, gin.H{
+		"enabled": true,
+		"events":  events,
+	})
+}
+
+func (h *Handler) PostForceHealthCheck(c *gin.Context) {
+	if h.proxyMgr == nil {
+		c.JSON(http.StatusOK, gin.H{"enabled": false})
+		return
+	}
+	disabled := h.proxyMgr.ForceHealthCheck(c.Request.Context())
+	c.JSON(http.StatusOK, gin.H{
+		"disabled_proxies": disabled,
+	})
+}
+
+func (h *Handler) PostTriggerAssignment(c *gin.Context) {
+	if h.proxyMgr == nil {
+		c.JSON(http.StatusOK, gin.H{"enabled": false})
+		return
+	}
+	count := h.proxyMgr.TriggerAssignment()
+	c.JSON(http.StatusOK, gin.H{
+		"assigned_count": count,
+	})
 }

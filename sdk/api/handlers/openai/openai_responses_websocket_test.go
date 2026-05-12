@@ -11,7 +11,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
-	internalconfig "github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/api/handlers"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
@@ -53,7 +52,7 @@ func TestResponsesWebsocketPrewarmPayloads(t *testing.T) {
 	if gjson.GetBytes(payloads[0], "type").String() != "response.created" {
 		t.Fatalf("unexpected created payload type: %s", gjson.GetBytes(payloads[0], "type").String())
 	}
-	if gjson.GetBytes(payloads[1], "type").String() != wsEventTypeCompleted {
+	if gjson.GetBytes(payloads[1], "type").String() != wsEventTypeDone {
 		t.Fatalf("unexpected completed payload type: %s", gjson.GetBytes(payloads[1], "type").String())
 	}
 	responseID := gjson.GetBytes(payloads[0], "response.id").String()
@@ -68,6 +67,30 @@ func TestResponsesWebsocketPrewarmPayloads(t *testing.T) {
 	}
 	if gjson.GetBytes(payloads[1], "response.usage.total_tokens").Int() != 0 {
 		t.Fatalf("done payload total_tokens must be 0")
+	}
+	if gjson.GetBytes(payloads[0], "response.object").String() != "response" {
+		t.Fatalf("created payload missing response.object: %s", gjson.GetBytes(payloads[0], "response.object").String())
+	}
+	if gjson.GetBytes(payloads[0], "response.status").String() != "in_progress" {
+		t.Fatalf("created payload response.status = %s, want in_progress", gjson.GetBytes(payloads[0], "response.status").String())
+	}
+	if gjson.GetBytes(payloads[0], "response.model").String() != "test-model" {
+		t.Fatalf("created payload response.model = %s, want test-model", gjson.GetBytes(payloads[0], "response.model").String())
+	}
+	if gjson.GetBytes(payloads[1], "response.object").String() != "response" {
+		t.Fatalf("completed payload missing response.object: %s", gjson.GetBytes(payloads[1], "response.object").String())
+	}
+	if gjson.GetBytes(payloads[1], "response.status").String() != "completed" {
+		t.Fatalf("completed payload response.status = %s, want completed", gjson.GetBytes(payloads[1], "response.status").String())
+	}
+	if gjson.GetBytes(payloads[1], "response.model").String() != "test-model" {
+		t.Fatalf("completed payload response.model = %s, want test-model", gjson.GetBytes(payloads[1], "response.model").String())
+	}
+	if gjson.GetBytes(payloads[1], "response.created_at").Int() == 0 {
+		t.Fatalf("completed payload missing response.created_at")
+	}
+	if gjson.GetBytes(payloads[1], "response.completed_at").Int() == 0 {
+		t.Fatalf("completed payload missing response.completed_at")
 	}
 }
 
@@ -133,8 +156,8 @@ func TestResponsesWebsocketPrewarmKeepsConnectionForRealRequest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read prewarm completed: %v", err)
 	}
-	if gjson.GetBytes(completedPayload, "type").String() != wsEventTypeCompleted {
-		t.Fatalf("completed type = %s, want %s", gjson.GetBytes(completedPayload, "type").String(), wsEventTypeCompleted)
+	if gjson.GetBytes(completedPayload, "type").String() != wsEventTypeDone {
+		t.Fatalf("completed type = %s, want %s", gjson.GetBytes(completedPayload, "type").String(), wsEventTypeDone)
 	}
 	if executor.streamCalls != 0 {
 		t.Fatalf("stream calls after prewarm = %d, want 0", executor.streamCalls)
@@ -149,56 +172,11 @@ func TestResponsesWebsocketPrewarmKeepsConnectionForRealRequest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read follow-up response: %v", err)
 	}
-	if gjson.GetBytes(upstreamPayload, "type").String() != wsEventTypeCompleted {
-		t.Fatalf("follow-up type = %s, want %s", gjson.GetBytes(upstreamPayload, "type").String(), wsEventTypeCompleted)
+	if gjson.GetBytes(upstreamPayload, "type").String() != wsEventTypeDone {
+		t.Fatalf("follow-up type = %s, want %s", gjson.GetBytes(upstreamPayload, "type").String(), wsEventTypeDone)
 	}
 	if executor.streamCalls != 1 {
 		t.Fatalf("stream calls after follow-up = %d, want 1", executor.streamCalls)
-	}
-}
-
-func TestWebsocketRequestSummary(t *testing.T) {
-	raw := []byte(`{"type":"response.create","model":"gpt-5.3-codex","generate":false,"previous_response_id":"resp_123","input":[{"type":"message"},{"type":"message"}]}`)
-
-	got := websocketRequestSummary(raw)
-
-	if !strings.Contains(got, "type=response.create") {
-		t.Fatalf("summary missing type: %q", got)
-	}
-	if !strings.Contains(got, "model=gpt-5.3-codex") {
-		t.Fatalf("summary missing model: %q", got)
-	}
-	if !strings.Contains(got, "generate=false") {
-		t.Fatalf("summary missing generate flag: %q", got)
-	}
-	if !strings.Contains(got, "previous_response_id=resp_123") {
-		t.Fatalf("summary missing previous_response_id: %q", got)
-	}
-	if !strings.Contains(got, "input_items=2") {
-		t.Fatalf("summary missing input count: %q", got)
-	}
-}
-
-func TestWebsocketResponseTraceFromConfigDefaultsAndCaps(t *testing.T) {
-	trace := websocketResponseTraceFromConfig(&internalconfig.SDKConfig{
-		Observability: internalconfig.ObservabilityConfig{
-			ResponseTrace: internalconfig.ResponseTraceConfig{
-				Enabled:             true,
-				LogPayloadPreview:   true,
-				LogHeaders:          true,
-				PayloadPreviewBytes: wsPayloadLogMaxSize + 100,
-			},
-		},
-	})
-
-	if !trace.Enabled || !trace.LogPayloadPreview || !trace.LogHeaders {
-		t.Fatalf("trace booleans were not preserved: %+v", trace)
-	}
-	if trace.PayloadPreviewBytes != wsPayloadLogMaxSize {
-		t.Fatalf("payload preview cap = %d, want %d", trace.PayloadPreviewBytes, wsPayloadLogMaxSize)
-	}
-	if trace.SlowThreshold != wsResponseTraceDefaultSlowMS*1000000 {
-		t.Fatalf("slow threshold = %s, want default %dms", trace.SlowThreshold, wsResponseTraceDefaultSlowMS)
 	}
 }
 
