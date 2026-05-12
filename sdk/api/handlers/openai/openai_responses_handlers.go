@@ -8,13 +8,16 @@ package openai
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	. "github.com/router-for-me/CLIProxyAPI/v6/internal/constant"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/api/handlers"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -109,7 +112,7 @@ func (h *OpenAIResponsesAPIHandler) Compact(c *gin.Context) {
 	modelName := gjson.GetBytes(rawJSON, "model").String()
 	cliCtx, cliCancel := h.GetContextWithCancel(h, c, c.Request.Context())
 	stopKeepAlive := h.StartNonStreamingKeepAlive(c, cliCtx)
-	resp, upstreamHeaders, errMsg := h.ExecuteWithAuthManager(cliCtx, h.HandlerType(), modelName, rawJSON, "responses/compact")
+	resp, upstreamHeaders, errMsg := h.executeCompactWithFallback(cliCtx, modelName, rawJSON)
 	stopKeepAlive()
 	if errMsg != nil {
 		h.WriteErrorResponse(c, errMsg)
@@ -119,6 +122,126 @@ func (h *OpenAIResponsesAPIHandler) Compact(c *gin.Context) {
 	handlers.WriteUpstreamHeaders(c.Writer.Header(), upstreamHeaders)
 	_, _ = c.Writer.Write(resp)
 	cliCancel()
+}
+
+var compactFallbackModels = []string{
+	"gpt-5.5",
+	"codex-auto-review",
+	"gpt-5.4",
+	"gpt-5.1-codex-max",
+	"gpt-5.3-codex",
+}
+
+func (h *OpenAIResponsesAPIHandler) executeCompactWithFallback(cliCtx context.Context, requestedModel string, rawJSON []byte) ([]byte, http.Header, *interfaces.ErrorMessage) {
+	models := compactAttemptModels(requestedModel)
+	var lastErr *interfaces.ErrorMessage
+	for idx, candidateModel := range models {
+		attemptJSON := rawJSON
+		if candidateModel != requestedModel {
+			updated, err := sjson.SetBytes(rawJSON, "model", candidateModel)
+			if err != nil {
+				return nil, nil, &interfaces.ErrorMessage{StatusCode: http.StatusInternalServerError, Error: err}
+			}
+			attemptJSON = updated
+		}
+		resp, upstreamHeaders, errMsg := h.ExecuteWithAuthManager(cliCtx, h.HandlerType(), candidateModel, attemptJSON, "responses/compact")
+		if errMsg == nil {
+			return resp, upstreamHeaders, nil
+		}
+		lastErr = errMsg
+		if isCompactModelUnsupportedError(errMsg) {
+			continue
+		}
+		if idx == 0 && !shouldRetryCompactWithFallback(errMsg) {
+			return nil, nil, errMsg
+		}
+	}
+	return nil, nil, lastErr
+}
+
+func compactAttemptModels(requestedModel string) []string {
+	models := make([]string, 0, 1+len(compactFallbackModels))
+	seen := make(map[string]struct{}, 1+len(compactFallbackModels))
+	addModel := func(model string, requireCompactProvider bool) {
+		model = strings.TrimSpace(model)
+		if model == "" {
+			return
+		}
+		if _, exists := seen[model]; exists {
+			return
+		}
+		if requireCompactProvider && !modelHasCompactCapableProvider(model) {
+			return
+		}
+		seen[model] = struct{}{}
+		models = append(models, model)
+	}
+	addModel(requestedModel, false)
+	for _, model := range compactFallbackModels {
+		addModel(model, true)
+	}
+	return models
+}
+
+func modelHasCompactCapableProvider(model string) bool {
+	for _, provider := range util.GetProviderName(model) {
+		if providerSupportsCompact(provider) {
+			return true
+		}
+	}
+	return false
+}
+
+func providerSupportsCompact(provider string) bool {
+	return strings.EqualFold(strings.TrimSpace(provider), "codex")
+}
+
+func shouldRetryCompactWithFallback(errMsg *interfaces.ErrorMessage) bool {
+	if errMsg == nil {
+		return false
+	}
+	if isCompactModelUnsupportedError(errMsg) {
+		return true
+	}
+	switch errMsg.StatusCode {
+	case http.StatusRequestTimeout,
+		http.StatusNotFound,
+		http.StatusTooManyRequests,
+		http.StatusBadGateway,
+		http.StatusServiceUnavailable,
+		http.StatusGatewayTimeout,
+		http.StatusNotImplemented,
+		499:
+		return true
+	}
+	if errMsg.Error == nil {
+		return false
+	}
+	errText := strings.ToLower(strings.TrimSpace(errMsg.Error.Error()))
+	return isCompactUpstreamTimeout(errText) || strings.Contains(errText, "responses/compact") || strings.Contains(errText, "unknown provider")
+}
+
+func isCompactUpstreamTimeout(errText string) bool {
+	return strings.Contains(errText, "timeout awaiting response headers") ||
+		strings.Contains(errText, "client.timeout exceeded") ||
+		strings.Contains(errText, "context deadline exceeded") ||
+		strings.Contains(errText, "i/o timeout")
+}
+
+func isCompactModelUnsupportedError(errMsg *interfaces.ErrorMessage) bool {
+	if errMsg == nil {
+		return false
+	}
+	if errMsg.StatusCode != http.StatusBadRequest {
+		return false
+	}
+	if errMsg.Error == nil {
+		return false
+	}
+	errText := strings.ToLower(strings.TrimSpace(errMsg.Error.Error()))
+	return strings.Contains(errText, "model is not supported") ||
+		strings.Contains(errText, "model not supported") ||
+		strings.Contains(errText, "not supported when using codex with a chatgpt account")
 }
 
 // handleNonStreamingResponse handles non-streaming chat completion responses
