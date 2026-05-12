@@ -940,6 +940,12 @@ func buildRestrictionEntry(scope, model string, status coreauth.Status, statusMe
 		if quota.Reason != "" {
 			entry["reason"] = quota.Reason
 		}
+		if quota.Window != "" {
+			entry["quota_window"] = quota.Window
+		}
+		if quota.WindowMinutes > 0 {
+			entry["quota_window_minutes"] = quota.WindowMinutes
+		}
 		if !quota.NextRecoverAt.IsZero() && quota.NextRecoverAt.After(now) {
 			entry["next_recover_at"] = quota.NextRecoverAt
 		}

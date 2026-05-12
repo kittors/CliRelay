@@ -407,10 +407,12 @@ func shouldNormalizeKimiCompatPayload(model string) bool {
 }
 
 type statusErr struct {
-	code         int
-	msg          string
-	retryAfter   *time.Duration
-	upstreamBody []byte
+	code               int
+	msg                string
+	retryAfter         *time.Duration
+	upstreamBody       []byte
+	quotaWindow        string
+	quotaWindowMinutes int
 }
 
 func (e statusErr) Error() string {
@@ -421,6 +423,7 @@ func (e statusErr) Error() string {
 }
 func (e statusErr) StatusCode() int            { return e.code }
 func (e statusErr) RetryAfter() *time.Duration { return e.retryAfter }
+func (e statusErr) QuotaWindow() (string, int) { return e.quotaWindow, e.quotaWindowMinutes }
 func (e statusErr) UpstreamErrorBody() []byte {
 	if len(e.upstreamBody) == 0 {
 		return nil

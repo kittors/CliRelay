@@ -538,6 +538,8 @@ func TestBuildAuthFileEntryDedupesDuplicateRestrictions(t *testing.T) {
 			Exceeded:      true,
 			Reason:        "quota",
 			NextRecoverAt: nextRecover,
+			Window:        "5h",
+			WindowMinutes: 300,
 		},
 		ModelStates: map[string]*coreauth.ModelState{
 			"gpt-5.4-mini": makeModelState(),
@@ -559,6 +561,9 @@ func TestBuildAuthFileEntryDedupesDuplicateRestrictions(t *testing.T) {
 	got := restrictions[0]
 	if got["scope"] != "auth" || got["http_status"] != http.StatusTooManyRequests {
 		t.Fatalf("restriction = %#v, want auth 429", got)
+	}
+	if got["quota_window"] != "5h" || got["quota_window_minutes"] != 300 {
+		t.Fatalf("quota window = %#v/%#v, want 5h/300", got["quota_window"], got["quota_window_minutes"])
 	}
 	if _, hasModel := got["model"]; hasModel {
 		t.Fatalf("restriction model = %#v, want no model field", got["model"])

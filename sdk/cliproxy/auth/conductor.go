@@ -729,10 +729,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			if errCtx := execCtx.Err(); errCtx != nil {
 				return cliproxyexecutor.Response{}, errCtx
 			}
-			result.Error = &Error{Message: errExec.Error()}
-			if se, ok := errors.AsType[cliproxyexecutor.StatusError](errExec); ok && se != nil {
-				result.Error.HTTPStatus = se.StatusCode()
-			}
+			result.Error = errorFromExecution(errExec)
 			if ra := retryAfterFromError(errExec); ra != nil {
 				result.RetryAfter = ra
 			}
@@ -838,10 +835,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 			if errCtx := execCtx.Err(); errCtx != nil {
 				return nil, errCtx
 			}
-			rerr := &Error{Message: errStream.Error()}
-			if se, ok := errors.AsType[cliproxyexecutor.StatusError](errStream); ok && se != nil {
-				rerr.HTTPStatus = se.StatusCode()
-			}
+			rerr := errorFromExecution(errStream)
 			result := Result{AuthID: auth.ID, Provider: provider, Model: routeModel, Success: false, Error: rerr}
 			result.RetryAfter = retryAfterFromError(errStream)
 			m.MarkResult(execCtx, result)
@@ -862,10 +856,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 			for chunk := range streamChunks {
 				if chunk.Err != nil && !failed {
 					failed = true
-					rerr := &Error{Message: chunk.Err.Error()}
-					if se, ok := errors.AsType[cliproxyexecutor.StatusError](chunk.Err); ok && se != nil {
-						rerr.HTTPStatus = se.StatusCode()
-					}
+					rerr := errorFromExecution(chunk.Err)
 					m.MarkResult(streamCtx, Result{AuthID: streamAuth.ID, Provider: streamProvider, Model: routeModel, Success: false, Error: rerr})
 				}
 				if !forward {
@@ -1512,6 +1503,8 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 					state.Quota = QuotaState{
 						Exceeded:      true,
 						Reason:        "quota",
+						Window:        result.Error.QuotaWindow,
+						WindowMinutes: result.Error.QuotaWindowMinutes,
 						NextRecoverAt: next,
 						BackoffLevel:  backoffLevel,
 					}
@@ -1592,6 +1585,8 @@ func updateAggregatedAvailability(auth *Auth, now time.Time) {
 	earliestRetry := time.Time{}
 	quotaExceeded := false
 	quotaRecover := time.Time{}
+	quotaWindow := ""
+	quotaWindowMinutes := 0
 	maxBackoffLevel := 0
 	for _, state := range auth.ModelStates {
 		if state == nil {
@@ -1620,6 +1615,11 @@ func updateAggregatedAvailability(auth *Auth, now time.Time) {
 			quotaExceeded = true
 			if quotaRecover.IsZero() || (!state.Quota.NextRecoverAt.IsZero() && state.Quota.NextRecoverAt.Before(quotaRecover)) {
 				quotaRecover = state.Quota.NextRecoverAt
+				quotaWindow = state.Quota.Window
+				quotaWindowMinutes = state.Quota.WindowMinutes
+			} else if quotaWindow == "" {
+				quotaWindow = state.Quota.Window
+				quotaWindowMinutes = state.Quota.WindowMinutes
 			}
 			if state.Quota.BackoffLevel > maxBackoffLevel {
 				maxBackoffLevel = state.Quota.BackoffLevel
@@ -1635,11 +1635,15 @@ func updateAggregatedAvailability(auth *Auth, now time.Time) {
 	if quotaExceeded {
 		auth.Quota.Exceeded = true
 		auth.Quota.Reason = "quota"
+		auth.Quota.Window = quotaWindow
+		auth.Quota.WindowMinutes = quotaWindowMinutes
 		auth.Quota.NextRecoverAt = quotaRecover
 		auth.Quota.BackoffLevel = maxBackoffLevel
 	} else {
 		auth.Quota.Exceeded = false
 		auth.Quota.Reason = ""
+		auth.Quota.Window = ""
+		auth.Quota.WindowMinutes = 0
 		auth.Quota.NextRecoverAt = time.Time{}
 		auth.Quota.BackoffLevel = 0
 	}
@@ -1674,6 +1678,8 @@ func clearAuthStateOnSuccess(auth *Auth, now time.Time) {
 	auth.StatusMessage = ""
 	auth.Quota.Exceeded = false
 	auth.Quota.Reason = ""
+	auth.Quota.Window = ""
+	auth.Quota.WindowMinutes = 0
 	auth.Quota.NextRecoverAt = time.Time{}
 	auth.Quota.BackoffLevel = 0
 	auth.LastError = nil
@@ -1686,11 +1692,28 @@ func cloneError(err *Error) *Error {
 		return nil
 	}
 	return &Error{
-		Code:       err.Code,
-		Message:    err.Message,
-		Retryable:  err.Retryable,
-		HTTPStatus: err.HTTPStatus,
+		Code:               err.Code,
+		Message:            err.Message,
+		Retryable:          err.Retryable,
+		HTTPStatus:         err.HTTPStatus,
+		QuotaWindow:        err.QuotaWindow,
+		QuotaWindowMinutes: err.QuotaWindowMinutes,
 	}
+}
+
+func errorFromExecution(err error) *Error {
+	result := &Error{Message: err.Error()}
+	if se, ok := errors.AsType[cliproxyexecutor.StatusError](err); ok && se != nil {
+		result.HTTPStatus = se.StatusCode()
+	}
+	type quotaWindowProvider interface {
+		QuotaWindow() (string, int)
+	}
+	var qwp quotaWindowProvider
+	if errors.As(err, &qwp) && qwp != nil {
+		result.QuotaWindow, result.QuotaWindowMinutes = qwp.QuotaWindow()
+	}
+	return result
 }
 
 func statusCodeFromError(err error) int {
@@ -1850,6 +1873,10 @@ func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Durati
 		auth.StatusMessage = "quota exhausted"
 		auth.Quota.Exceeded = true
 		auth.Quota.Reason = "quota"
+		if resultErr != nil {
+			auth.Quota.Window = resultErr.QuotaWindow
+			auth.Quota.WindowMinutes = resultErr.QuotaWindowMinutes
+		}
 		var next time.Time
 		if retryAfter != nil {
 			next = now.Add(*retryAfter)

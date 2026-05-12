@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -193,7 +194,7 @@ func (e *CodexExecutor) ProbeQuotaRecovery(ctx context.Context, auth *cliproxyau
 		return nil, err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, newCodexStatusErr(resp.StatusCode, body)
+		return nil, newCodexStatusErr(resp.StatusCode, body, resp.Header)
 	}
 	return parseCodexQuotaProbe(body), nil
 }
@@ -285,7 +286,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		appendAPIResponseChunk(ctx, e.cfg, b)
 		logWithRequestID(ctx).Debugf("request error, error status: %d, error message: %s", httpResp.StatusCode, summarizeErrorBody(httpResp.Header.Get("Content-Type"), b))
 		reporter.publishFailureWithContent(ctx, string(req.Payload), string(b))
-		err = newCodexStatusErr(httpResp.StatusCode, b)
+		err = newCodexStatusErr(httpResp.StatusCode, b, httpResp.Header)
 		return resp, err
 	}
 	data, err := readUpstreamResponseBody(e.Identifier(), httpResp.Body)
@@ -403,7 +404,7 @@ func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.A
 		appendAPIResponseChunk(ctx, e.cfg, b)
 		logWithRequestID(ctx).Debugf("request error, error status: %d, error message: %s", httpResp.StatusCode, summarizeErrorBody(httpResp.Header.Get("Content-Type"), b))
 		reporter.publishFailureWithContent(ctx, string(req.Payload), string(b))
-		err = newCodexStatusErr(httpResp.StatusCode, b)
+		err = newCodexStatusErr(httpResp.StatusCode, b, httpResp.Header)
 		return resp, err
 	}
 	data, err := readUpstreamResponseBody(e.Identifier(), httpResp.Body)
@@ -504,7 +505,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 		appendAPIResponseChunk(ctx, e.cfg, data)
 		logWithRequestID(ctx).Debugf("request error, error status: %d, error message: %s", httpResp.StatusCode, summarizeErrorBody(httpResp.Header.Get("Content-Type"), data))
 		reporter.publishFailureWithContent(ctx, string(req.Payload), string(data))
-		err = newCodexStatusErr(httpResp.StatusCode, data)
+		err = newCodexStatusErr(httpResp.StatusCode, data, httpResp.Header)
 		return nil, err
 	}
 	out := make(chan cliproxyexecutor.StreamChunk)
@@ -864,12 +865,115 @@ func applyCodexHeaders(r *http.Request, cfg *config.Config, auth *cliproxyauth.A
 	}
 }
 
-func newCodexStatusErr(statusCode int, body []byte) statusErr {
+func newCodexStatusErr(statusCode int, body []byte, headers ...http.Header) statusErr {
 	err := statusErr{code: statusCode, msg: string(body)}
 	if retryAfter := parseCodexRetryAfter(statusCode, body, time.Now()); retryAfter != nil {
 		err.retryAfter = retryAfter
 	}
+	var header http.Header
+	if len(headers) > 0 {
+		header = headers[0]
+	}
+	if window, minutes := parseCodexQuotaWindow(statusCode, body, header); window != "" {
+		err.quotaWindow = window
+		err.quotaWindowMinutes = minutes
+	}
 	return err
+}
+
+func parseCodexQuotaWindow(statusCode int, errorBody []byte, header http.Header) (string, int) {
+	if statusCode != http.StatusTooManyRequests || len(errorBody) == 0 || header == nil {
+		return "", 0
+	}
+	if strings.TrimSpace(gjson.GetBytes(errorBody, "error.type").String()) != "usage_limit_reached" {
+		return "", 0
+	}
+
+	bodyResetAt := gjson.GetBytes(errorBody, "error.resets_at").Int()
+	if window, minutes := codexQuotaWindowFromHeaderReset(header, bodyResetAt); window != "" {
+		return window, minutes
+	}
+	if window, minutes := codexQuotaExhaustedWindow(header, "Secondary"); window != "" {
+		return window, minutes
+	}
+	if window, minutes := codexQuotaExhaustedWindow(header, "Primary"); window != "" {
+		return window, minutes
+	}
+	return "", 0
+}
+
+func codexQuotaWindowFromHeaderReset(header http.Header, bodyResetAt int64) (string, int) {
+	if bodyResetAt <= 0 {
+		return "", 0
+	}
+	for _, prefix := range []string{"Primary", "Secondary"} {
+		resetAt, ok := codexHeaderInt64(header, "X-Codex-"+prefix+"-Reset-At")
+		if !ok || resetAt != bodyResetAt {
+			continue
+		}
+		minutes, _ := codexHeaderInt(header, "X-Codex-"+prefix+"-Window-Minutes")
+		return codexQuotaWindowLabel(minutes), minutes
+	}
+	return "", 0
+}
+
+func codexQuotaExhaustedWindow(header http.Header, prefix string) (string, int) {
+	usedPercent, ok := codexHeaderFloat(header, "X-Codex-"+prefix+"-Used-Percent")
+	if !ok || usedPercent < 100 {
+		return "", 0
+	}
+	minutes, _ := codexHeaderInt(header, "X-Codex-"+prefix+"-Window-Minutes")
+	return codexQuotaWindowLabel(minutes), minutes
+}
+
+func codexHeaderInt(header http.Header, key string) (int, bool) {
+	value := strings.TrimSpace(header.Get(key))
+	if value == "" {
+		return 0, false
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		return 0, false
+	}
+	return parsed, true
+}
+
+func codexHeaderInt64(header http.Header, key string) (int64, bool) {
+	value := strings.TrimSpace(header.Get(key))
+	if value == "" {
+		return 0, false
+	}
+	parsed, err := strconv.ParseInt(value, 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	return parsed, true
+}
+
+func codexHeaderFloat(header http.Header, key string) (float64, bool) {
+	value := strings.TrimSpace(header.Get(key))
+	if value == "" {
+		return 0, false
+	}
+	parsed, err := strconv.ParseFloat(value, 64)
+	if err != nil {
+		return 0, false
+	}
+	return parsed, true
+}
+
+func codexQuotaWindowLabel(minutes int) string {
+	switch minutes {
+	case 300:
+		return "5h"
+	case 10080:
+		return "week"
+	default:
+		if minutes > 0 {
+			return fmt.Sprintf("%dm", minutes)
+		}
+		return ""
+	}
 }
 
 func parseCodexRetryAfter(statusCode int, errorBody []byte, now time.Time) *time.Duration {
