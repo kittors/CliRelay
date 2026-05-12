@@ -53,7 +53,7 @@ func TestResponsesWebsocketPrewarmPayloads(t *testing.T) {
 	if gjson.GetBytes(payloads[0], "type").String() != "response.created" {
 		t.Fatalf("unexpected created payload type: %s", gjson.GetBytes(payloads[0], "type").String())
 	}
-	if gjson.GetBytes(payloads[1], "type").String() != wsEventTypeCompleted {
+	if gjson.GetBytes(payloads[1], "type").String() != wsEventTypeDone {
 		t.Fatalf("unexpected completed payload type: %s", gjson.GetBytes(payloads[1], "type").String())
 	}
 	responseID := gjson.GetBytes(payloads[0], "response.id").String()
@@ -157,8 +157,8 @@ func TestResponsesWebsocketPrewarmKeepsConnectionForRealRequest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read prewarm completed: %v", err)
 	}
-	if gjson.GetBytes(completedPayload, "type").String() != wsEventTypeCompleted {
-		t.Fatalf("completed type = %s, want %s", gjson.GetBytes(completedPayload, "type").String(), wsEventTypeCompleted)
+	if gjson.GetBytes(completedPayload, "type").String() != wsEventTypeDone {
+		t.Fatalf("completed type = %s, want %s", gjson.GetBytes(completedPayload, "type").String(), wsEventTypeDone)
 	}
 	if executor.streamCalls != 0 {
 		t.Fatalf("stream calls after prewarm = %d, want 0", executor.streamCalls)
