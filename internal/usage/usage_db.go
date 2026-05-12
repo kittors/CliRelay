@@ -1775,7 +1775,7 @@ type EntityStatPoint struct {
 
 // QueryEntityStats returns aggregates grouped by a given column (e.g. "source" or "auth_index").
 // Time range is derived from days logic.
-func QueryEntityStats(apiKey string, days int, groupColumn string) ([]EntityStatPoint, error) {
+func QueryEntityStats(apiKey string, days int, groupColumn string, entityNames []string) ([]EntityStatPoint, error) {
 	db := getDB()
 	if db == nil {
 		return nil, nil
@@ -1789,6 +1789,19 @@ func QueryEntityStats(apiKey string, days int, groupColumn string) ([]EntityStat
 
 	params := LogQueryParams{APIKey: apiKey, Days: days}
 	where, args := buildWhereClause(params)
+	entityNames = normalizeEntityStatFilters(entityNames)
+	if len(entityNames) > 0 {
+		placeholders := make([]string, 0, len(entityNames))
+		for _, name := range entityNames {
+			placeholders = append(placeholders, "?")
+			args = append(args, name)
+		}
+		if where == "" {
+			where = " WHERE " + groupColumn + " IN (" + strings.Join(placeholders, ",") + ")"
+		} else {
+			where += " AND " + groupColumn + " IN (" + strings.Join(placeholders, ",") + ")"
+		}
+	}
 
 	q := fmt.Sprintf(`
 		SELECT %s, COUNT(*), COALESCE(SUM(failed),0), COALESCE(AVG(latency_ms),0), COALESCE(SUM(total_tokens),0)
@@ -1811,6 +1824,26 @@ func QueryEntityStats(apiKey string, days int, groupColumn string) ([]EntityStat
 		result = append(result, p)
 	}
 	return result, rows.Err()
+}
+
+func normalizeEntityStatFilters(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(values))
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			continue
+		}
+		if _, ok := seen[trimmed]; ok {
+			continue
+		}
+		seen[trimmed] = struct{}{}
+		result = append(result, trimmed)
+	}
+	return result
 }
 
 func QueryDailyCallsByAuthIndexes(authIndexes []string, days int) ([]DailyCountPoint, error) {

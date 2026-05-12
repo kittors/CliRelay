@@ -678,6 +678,9 @@ func (e *OpenAICompatExecutor) resolveCompatConfig(auth *cliproxyauth.Auth) *con
 	}
 	for i := range e.cfg.OpenAICompatibility {
 		compat := &e.cfg.OpenAICompatibility[i]
+		if compat.Disabled {
+			continue
+		}
 		for _, candidate := range candidates {
 			if candidate != "" && strings.EqualFold(strings.TrimSpace(candidate), compat.Name) {
 				return compat
@@ -931,10 +934,12 @@ func shouldNormalizeKimiCompatPayload(model string) bool {
 }
 
 type statusErr struct {
-	code         int
-	msg          string
-	retryAfter   *time.Duration
-	upstreamBody []byte
+	code               int
+	msg                string
+	retryAfter         *time.Duration
+	upstreamBody       []byte
+	quotaWindow        string
+	quotaWindowMinutes int
 }
 
 func (e statusErr) Error() string {
@@ -945,6 +950,7 @@ func (e statusErr) Error() string {
 }
 func (e statusErr) StatusCode() int            { return e.code }
 func (e statusErr) RetryAfter() *time.Duration { return e.retryAfter }
+func (e statusErr) QuotaWindow() (string, int) { return e.quotaWindow, e.quotaWindowMinutes }
 func (e statusErr) UpstreamErrorBody() []byte {
 	if len(e.upstreamBody) == 0 {
 		if trimmed := strings.TrimSpace(e.msg); trimmed != "" && json.Valid([]byte(trimmed)) {

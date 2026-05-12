@@ -1,6 +1,7 @@
 package synthesizer
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -386,6 +387,20 @@ func TestConfigSynthesizer_OpenAICompat(t *testing.T) {
 			wantLen: 0,
 		},
 		{
+			name: "provider disabled skips all APIKeyEntries",
+			compat: mustDecodeOpenAICompatibility(t, `[
+				{
+					"name": "DisabledProvider",
+					"disabled": true,
+					"base-url": "https://disabled.api.com",
+					"api-key-entries": [
+						{"api-key": "key-enabled"}
+					]
+				}
+			]`),
+			wantLen: 0,
+		},
+		{
 			name: "empty APIKeyEntries included (legacy)",
 			compat: []config.OpenAICompatibility{
 				{
@@ -441,6 +456,15 @@ func TestConfigSynthesizer_OpenAICompat(t *testing.T) {
 			}
 		})
 	}
+}
+
+func mustDecodeOpenAICompatibility(t *testing.T, raw string) []config.OpenAICompatibility {
+	t.Helper()
+	var out []config.OpenAICompatibility
+	if err := json.Unmarshal([]byte(raw), &out); err != nil {
+		t.Fatalf("decode openai compatibility: %v", err)
+	}
+	return out
 }
 
 func TestConfigSynthesizer_VertexCompat(t *testing.T) {

@@ -8,6 +8,7 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	log "github.com/sirupsen/logrus"
+	"gopkg.in/yaml.v3"
 )
 
 const (
@@ -570,6 +571,59 @@ func PersistRuntimeSettingsFromConfig(cfg *config.Config) int {
 		persisted++
 	}
 	return persisted
+}
+
+// PersistRuntimeSettingsPresentInYAML stores DB-backed runtime settings that
+// were explicitly included in a management config.yaml save.
+func PersistRuntimeSettingsPresentInYAML(cfg *config.Config, yamlContent []byte) int {
+	if cfg == nil || !ConfigStoreAvailable() {
+		return 0
+	}
+	present := yamlRootKeys(yamlContent)
+	if len(present) == 0 {
+		return 0
+	}
+	persisted := 0
+	for _, spec := range runtimeSettingSpecs() {
+		if !present[spec.key] {
+			continue
+		}
+		if err := UpsertRuntimeSetting(spec.key, spec.value(cfg)); err != nil {
+			log.Errorf("usage: persist runtime setting %s from YAML save: %v", spec.key, err)
+			continue
+		}
+		persisted++
+	}
+	return persisted
+}
+
+func yamlRootKeys(data []byte) map[string]bool {
+	if len(data) == 0 {
+		return nil
+	}
+	var root yaml.Node
+	if err := yaml.Unmarshal(data, &root); err != nil {
+		return nil
+	}
+	if root.Kind != yaml.DocumentNode || len(root.Content) == 0 {
+		return nil
+	}
+	mapping := root.Content[0]
+	if mapping == nil || mapping.Kind != yaml.MappingNode {
+		return nil
+	}
+	keys := make(map[string]bool, len(mapping.Content)/2)
+	for i := 0; i+1 < len(mapping.Content); i += 2 {
+		key := mapping.Content[i]
+		if key == nil || key.Kind != yaml.ScalarNode {
+			continue
+		}
+		name := strings.TrimSpace(key.Value)
+		if name != "" {
+			keys[name] = true
+		}
+	}
+	return keys
 }
 
 func ApplyStoredRuntimeSettings(cfg *config.Config) bool {

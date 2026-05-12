@@ -561,6 +561,69 @@ func TestGetAuthFileGroupTrendAggregatesByProvider(t *testing.T) {
 	}
 }
 
+func TestGetEntityUsageStatsScopesAuthIndexesAndSources(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "usage.db")
+	if err := usage.InitDB(dbPath, config.RequestLogStorageConfig{}, time.UTC); err != nil {
+		t.Fatalf("InitDB: %v", err)
+	}
+	t.Cleanup(func() {
+		usage.CloseDB()
+		_ = os.Remove(dbPath)
+		_ = os.Remove(dbPath + "-wal")
+		_ = os.Remove(dbPath + "-shm")
+	})
+
+	now := time.Now().UTC()
+	usage.InsertLog("", "", "gpt-5.4", "codex-a", "Codex A", "auth-a", false, now, 10, 1, usage.TokenStats{TotalTokens: 11}, "", "")
+	usage.InsertLog("", "", "gpt-5.4", "codex-b", "Codex B", "auth-b", true, now, 20, 1, usage.TokenStats{TotalTokens: 21}, "", "")
+	usage.InsertLog("", "", "gpt-5.4", "codex-c", "Codex C", "auth-c", false, now, 30, 1, usage.TokenStats{TotalTokens: 31}, "", "")
+
+	h := &Handler{cfg: &config.Config{}}
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(
+		http.MethodGet,
+		"/usage/entity-stats?days=30&auth_index=auth-a&auth_index=auth-b&source=codex-b",
+		nil,
+	)
+
+	h.GetEntityUsageStats(c)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d, body=%s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	var payload struct {
+		Source []struct {
+			EntityName string `json:"entity_name"`
+			Requests   int64  `json:"requests"`
+			Failed     int64  `json:"failed"`
+		} `json:"source"`
+		AuthIndex []struct {
+			EntityName string `json:"entity_name"`
+			Requests   int64  `json:"requests"`
+			Failed     int64  `json:"failed"`
+		} `json:"auth_index"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if len(payload.Source) != 1 || payload.Source[0].EntityName != "codex-b" {
+		t.Fatalf("source payload = %+v, want only codex-b", payload.Source)
+	}
+	if len(payload.AuthIndex) != 2 {
+		t.Fatalf("auth_index payload len = %d, want 2: %+v", len(payload.AuthIndex), payload.AuthIndex)
+	}
+	for _, point := range payload.AuthIndex {
+		if point.EntityName == "auth-c" {
+			t.Fatalf("auth_index payload included unrequested auth-c: %+v", payload.AuthIndex)
+		}
+	}
+}
+
 func TestGetAuthFileTrendUsesWeeklyResetCycleForRequestTotal(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

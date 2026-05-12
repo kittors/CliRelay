@@ -1641,6 +1641,9 @@ func (s *Server) UpdateClients(cfg *config.Config) {
 	openAICompatCount := 0
 	for i := range cfg.OpenAICompatibility {
 		entry := cfg.OpenAICompatibility[i]
+		if entry.Disabled {
+			continue
+		}
 		openAICompatCount += len(entry.APIKeyEntries)
 	}
 
