@@ -32,6 +32,7 @@ import (
 	ampmodule "github.com/router-for-me/CLIProxyAPI/v6/internal/api/modules/amp"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/buildinfo"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/proxy"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/managementasset"
 	internalrouting "github.com/router-for-me/CLIProxyAPI/v6/internal/routing"
@@ -67,6 +68,7 @@ type serverOptionConfig struct {
 	keepAliveOnTimeout    func()
 	postAuthHook          auth.PostAuthHook
 	configMutatedCallback func(*config.Config)
+	proxyManager          *proxy.ProxyManager
 }
 
 // ServerOption customises HTTP server construction.
@@ -134,6 +136,11 @@ func WithPostAuthHook(hook auth.PostAuthHook) ServerOption {
 	}
 }
 
+func WithProxyManager(pm *proxy.ProxyManager) ServerOption {
+	return func(cfg *serverOptionConfig) {
+		cfg.proxyManager = pm
+	}
+}
 func WithConfigMutatedCallback(fn func(*config.Config)) ServerOption {
 	return func(cfg *serverOptionConfig) {
 		cfg.configMutatedCallback = fn
@@ -299,6 +306,9 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	// Initialize management handler
 	s.mgmt = managementHandlers.NewHandler(cfg, configFilePath, authManager)
 	s.mgmt.SetAccessManager(accessManager)
+	if optionState.proxyManager != nil {
+		s.mgmt.SetProxyManager(optionState.proxyManager)
+	}
 	if optionState.configMutatedCallback != nil {
 		s.mgmt.SetConfigMutatedHook(optionState.configMutatedCallback)
 	} else {
@@ -734,6 +744,15 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.GET("/proxy-pool", s.mgmt.GetProxyPool)
 		mgmt.PUT("/proxy-pool", s.mgmt.PutProxyPool)
 		mgmt.POST("/proxy-pool/check", s.mgmt.PostProxyPoolCheck)
+
+		if s.mgmt.HasProxyManager() {
+			mgmt.GET("/proxy-manager/status", s.mgmt.GetProxyManagerStatus)
+			mgmt.GET("/proxy-manager/health", s.mgmt.GetProxyHealth)
+			mgmt.GET("/proxy-manager/distribution", s.mgmt.GetProxyDistribution)
+			mgmt.GET("/proxy-manager/ban-events", s.mgmt.GetBanEvents)
+			mgmt.POST("/proxy-manager/health-check", s.mgmt.PostForceHealthCheck)
+			mgmt.POST("/proxy-manager/assign", s.mgmt.PostTriggerAssignment)
+		}
 
 		mgmt.POST("/api-call", s.mgmt.APICall)
 

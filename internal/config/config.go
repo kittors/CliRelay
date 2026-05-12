@@ -145,6 +145,9 @@ type Config struct {
 	// ProxyPool stores reusable outbound proxies that can be referenced by providers and auth files.
 	ProxyPool []ProxyPoolEntry `yaml:"proxy-pool,omitempty" json:"proxy-pool,omitempty"`
 
+	// ProxyManager controls automatic proxy assignment, health checking, and ban-aware rotation.
+	ProxyManager ProxyManagerConfig `yaml:"proxy-manager,omitempty" json:"proxy-manager,omitempty"`
+
 	// OpenAICompatibility defines OpenAI API compatibility configurations for external providers.
 	OpenAICompatibility []OpenAICompatibility `yaml:"openai-compatibility" json:"openai-compatibility"`
 
@@ -961,6 +964,9 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 
 	// Normalize reusable outbound proxy entries.
 	cfg.SanitizeProxyPool()
+
+	// Normalize proxy manager configuration (assignment, health, ban detection).
+	cfg.SanitizeProxyManager()
 
 	// Sanitize OpenAI compatibility providers: drop entries without base-url
 	cfg.SanitizeOpenAICompatibility()

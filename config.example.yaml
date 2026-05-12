@@ -269,6 +269,36 @@ request-log-storage:
 # Proxy URL. Supports socks5/http/https protocols. Example: socks5://user:pass@192.168.1.1:1080/
 proxy-url: ""
 
+# Proxy Manager controls automatic proxy assignment, health checking, and ban-aware rotation.
+# When enabled, auth entries without a proxy_id/proxy_url are automatically assigned from the
+# proxy-pool, unhealthy proxies are detected and disabled, and proxies associated with banned
+# accounts are taken offline to prevent further account losses.
+#
+# proxy-manager:
+#   # Automatic proxy assignment for auth entries that have no proxy configured.
+#   proxy-assignment:
+#     enabled: true
+#     strategy: spread              # spread | round-robin | random
+#     providers:                    # only assign to these providers (empty = all)
+#       - codex
+#       - claude
+#
+#   # Background health checking for enabled proxy-pool entries.
+#   proxy-health:
+#     enabled: true
+#     interval: 5m                  # check interval
+#     timeout: 10s                  # per-check timeout
+#     failure-threshold: 3          # consecutive failures before auto-disable
+#     recovery-interval: 15m        # retry a disabled proxy after this long
+#     test-url: "https://api.openai.com/v1/models"
+#
+#   # Ban-aware rotation: when accounts using the same proxy get banned, auto-disable it.
+#   proxy-ban-detect:
+#     enabled: true
+#     ban-threshold: 3              # bans within window to trigger proxy disable
+#     window-minutes: 60            # rolling window in minutes
+#     auto-disable-proxy: true      # disable the proxy when threshold is reached
+
 # When true, disables TLS certificate verification for all upstream HTTPS connections.
 # Use only when upstream APIs use self-signed certificates or in trusted internal networks.
 # Default is false (verification enabled).
