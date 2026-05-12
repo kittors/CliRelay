@@ -1503,8 +1503,28 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 				state := ensureModelState(auth, result.Model)
 				statusCode := statusCodeFromResult(result.Error)
 				isNetworkErr := statusCode == 0 && isNetworkTransientError(result.Error)
+				isSilentTimeout := isSilentTimeoutError(statusCode, result.Error)
 
-				if isNetworkErr {
+				if isSilentTimeout {
+					state.UpdatedAt = now
+					if result.Error != nil {
+						state.LastError = cloneError(result.Error)
+						state.StatusMessage = result.Error.Message
+					}
+					if quotaCooldownDisabledForAuth(auth) {
+						state.NextRetryAfter = time.Time{}
+					} else {
+						state.NextRetryAfter = now.Add(5 * time.Minute)
+					}
+					state.Quota = QuotaState{
+						Exceeded:      true,
+						Reason:        "silent_timeout",
+						NextRecoverAt: now.Add(5 * time.Minute),
+					}
+					suspendReason = "silent_timeout"
+					shouldSuspendModel = true
+					setModelQuota = true
+				} else if isNetworkErr {
 					state.UpdatedAt = now
 					if result.Error != nil {
 						state.LastError = cloneError(result.Error)
@@ -1904,7 +1924,23 @@ func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Durati
 	}
 	statusCode := statusCodeFromResult(resultErr)
 	isNetworkErr := statusCode == 0 && isNetworkTransientError(resultErr)
+	isSilentTO := isSilentTimeoutError(statusCode, resultErr)
 
+	if isSilentTO {
+		auth.UpdatedAt = now
+		if resultErr != nil {
+			auth.LastError = cloneError(resultErr)
+			if resultErr.Message != "" {
+				auth.StatusMessage = resultErr.Message
+			}
+		}
+		if quotaCooldownDisabledForAuth(auth) {
+			auth.NextRetryAfter = time.Time{}
+		} else {
+			auth.NextRetryAfter = now.Add(5 * time.Minute)
+		}
+		return
+	}
 	if isNetworkErr {
 		auth.UpdatedAt = now
 		if resultErr != nil {
@@ -2940,6 +2976,14 @@ func isNetworkTransientError(err *Error) bool {
 		strings.Contains(msg, "eof") ||
 		strings.Contains(msg, "network is unreachable") ||
 		strings.Contains(msg, "dial tcp")
+}
+
+func isSilentTimeoutError(statusCode int, err *Error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Message)
+	return statusCode == 504 && strings.Contains(msg, "silent timeout")
 }
 
 func authRefreshToken(auth *Auth) string {

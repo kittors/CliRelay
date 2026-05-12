@@ -30,11 +30,16 @@ import (
 )
 
 const (
-	// Keep aligned with upstream CLIProxyAPI (codex-tui).
 	codexResponsesWebsocketBetaHeaderValue = "responses_websockets=2026-02-06"
 	codexResponsesWebsocketIdleTimeout     = 20 * time.Minute
 	codexResponsesWebsocketHandshakeTO     = 30 * time.Second
+	codexResponsesWebsocketFirstMsgTimeout = 30 * time.Second
 )
+
+type silentTimeoutErr struct{}
+
+func (e silentTimeoutErr) Error() string { return "upstream silent timeout: connected but no data received" }
+func (e silentTimeoutErr) StatusCode() int { return 504 }
 
 // CodexWebsocketsExecutor executes Codex Responses requests using a WebSocket transport.
 //
@@ -314,14 +319,32 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 	}
 	markCodexWebsocketCreateSent(sess, conn, wsReqBody)
 
+	firstMsgReceived := false
 	for {
 		if ctx != nil && ctx.Err() != nil {
 			return resp, ctx.Err()
 		}
-		msgType, payload, errRead := readCodexWebsocketMessage(ctx, sess, conn, readCh)
-		if errRead != nil {
-			recordAPIResponseError(ctx, e.cfg, errRead)
-			return resp, errRead
+		var msgType int
+		var payload []byte
+		var errRead error
+		if !firstMsgReceived {
+			msgType, payload, errRead = readCodexWebsocketMessageWithTimeout(ctx, sess, conn, readCh, codexResponsesWebsocketFirstMsgTimeout)
+			if errRead != nil {
+				if isSilentTimeout(errRead) {
+					log.Warnf("codex websockets executor: first message timeout (%v), upstream silent", codexResponsesWebsocketFirstMsgTimeout)
+					recordAPIResponseError(ctx, e.cfg, errRead)
+					return resp, silentTimeoutErr{}
+				}
+				recordAPIResponseError(ctx, e.cfg, errRead)
+				return resp, errRead
+			}
+			firstMsgReceived = true
+		} else {
+			msgType, payload, errRead = readCodexWebsocketMessage(ctx, sess, conn, readCh)
+			if errRead != nil {
+				recordAPIResponseError(ctx, e.cfg, errRead)
+				return resp, errRead
+			}
 		}
 		if msgType != websocket.TextMessage {
 			if msgType == websocket.BinaryMessage {
@@ -549,6 +572,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 		}
 
 		var param any
+		firstMsgReceived := false
 		for {
 			if ctx != nil && ctx.Err() != nil {
 				terminateReason = "context_done"
@@ -556,8 +580,24 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 				_ = send(cliproxyexecutor.StreamChunk{Err: ctx.Err()})
 				return
 			}
-			msgType, payload, errRead := readCodexWebsocketMessage(ctx, sess, conn, readCh)
+			var msgType int
+			var payload []byte
+			var errRead error
+			if !firstMsgReceived {
+				msgType, payload, errRead = readCodexWebsocketMessageWithTimeout(ctx, sess, conn, readCh, codexResponsesWebsocketFirstMsgTimeout)
+			} else {
+				msgType, payload, errRead = readCodexWebsocketMessage(ctx, sess, conn, readCh)
+			}
 			if errRead != nil {
+				if !firstMsgReceived && isSilentTimeout(errRead) {
+					log.Warnf("codex websockets executor stream: first message timeout (%v), upstream silent", codexResponsesWebsocketFirstMsgTimeout)
+					terminateReason = "silent_timeout"
+					terminateErr = silentTimeoutErr{}
+					recordAPIResponseError(ctx, e.cfg, terminateErr)
+					reporter.publishFailure(ctx)
+					_ = send(cliproxyexecutor.StreamChunk{Err: silentTimeoutErr{}})
+					return
+				}
 				if sess != nil && ctx != nil && ctx.Err() != nil {
 					terminateReason = "context_done"
 					terminateErr = ctx.Err()
@@ -571,6 +611,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 				_ = send(cliproxyexecutor.StreamChunk{Err: errRead})
 				return
 			}
+			firstMsgReceived = true
 			if msgType != websocket.TextMessage {
 				if msgType == websocket.BinaryMessage {
 					err = fmt.Errorf("codex websockets executor: unexpected binary message")
@@ -723,6 +764,72 @@ func readCodexWebsocketMessage(ctx context.Context, sess *codexWebsocketSession,
 			return ev.msgType, ev.payload, nil
 		}
 	}
+}
+
+func readCodexWebsocketMessageWithTimeout(ctx context.Context, sess *codexWebsocketSession, conn *websocket.Conn, readCh chan codexWebsocketRead, timeout time.Duration) (int, []byte, error) {
+	if sess == nil {
+		if conn == nil {
+			return 0, nil, fmt.Errorf("codex websockets executor: websocket conn is nil")
+		}
+		_ = conn.SetReadDeadline(time.Now().Add(timeout))
+		msgType, payload, errRead := conn.ReadMessage()
+		if errRead != nil {
+			if netErr, ok := errRead.(net.Error); ok && netErr.Timeout() {
+				return 0, nil, &silentFirstMsgTimeout{underlying: errRead}
+			}
+		}
+		return msgType, payload, errRead
+	}
+	if conn == nil {
+		return 0, nil, fmt.Errorf("codex websockets executor: websocket conn is nil")
+	}
+	if readCh == nil {
+		return 0, nil, fmt.Errorf("codex websockets executor: session read channel is nil")
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return 0, nil, ctx.Err()
+		case <-timer.C:
+			return 0, nil, &silentFirstMsgTimeout{}
+		case ev, ok := <-readCh:
+			if !ok {
+				return 0, nil, fmt.Errorf("codex websockets executor: session read channel closed")
+			}
+			if ev.conn != conn {
+				continue
+			}
+			if ev.err != nil {
+				return 0, nil, ev.err
+			}
+			return ev.msgType, ev.payload, nil
+		}
+	}
+}
+
+type silentFirstMsgTimeout struct {
+	underlying error
+}
+
+func (e *silentFirstMsgTimeout) Error() string {
+	if e.underlying != nil {
+		return fmt.Sprintf("first message timeout: %v", e.underlying)
+	}
+	return "first message timeout: no data received within deadline"
+}
+func (e *silentFirstMsgTimeout) Timeout() bool   { return true }
+func (e *silentFirstMsgTimeout) Temporary() bool { return true }
+
+func isSilentTimeout(err error) bool {
+	if err == nil {
+		return false
+	}
+	if _, ok := err.(*silentFirstMsgTimeout); ok {
+		return true
+	}
+	return false
 }
 
 func markCodexWebsocketCreateSent(sess *codexWebsocketSession, conn *websocket.Conn, payload []byte) {
