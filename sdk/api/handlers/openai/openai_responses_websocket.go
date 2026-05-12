@@ -403,8 +403,17 @@ func responsesWebsocketPrewarmPayloads(requestJSON []byte) ([][]byte, bool) {
 	}
 
 	syntheticID := "resp_prewarm_" + uuid.NewString()
-	created := []byte(fmt.Sprintf(`{"type":"response.created","response":{"id":%q}}`, syntheticID))
-	done := []byte(fmt.Sprintf(`{"type":"response.done","response":{"id":%q,"output":[],"usage":{"input_tokens":0,"output_tokens":0,"total_tokens":0}}}`, syntheticID))
+	modelName := gjson.GetBytes(requestJSON, "model").String()
+	now := time.Now().Unix()
+
+	created := []byte(fmt.Sprintf(
+		`{"type":"response.created","response":{"id":%q,"object":"response","created_at":%d,"status":"in_progress","background":false,"completed_at":null,"error":null,"model":%q}}`,
+		syntheticID, now, modelName,
+	))
+	done := []byte(fmt.Sprintf(
+		`{"type":"response.done","response":{"id":%q,"object":"response","created_at":%d,"status":"completed","background":false,"completed_at":%d,"error":null,"model":%q,"output":[],"usage":{"input_tokens":0,"output_tokens":0,"total_tokens":0}}}`,
+		syntheticID, now, now, modelName,
+	))
 	return [][]byte{created, done}, true
 }
 
