@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 )
@@ -113,6 +114,109 @@ func TestFileTokenStoreListAppliesRoutingMetadata(t *testing.T) {
 	}
 	if auth.ProxyID != "premium-egress" {
 		t.Fatalf("ProxyID = %q, want premium-egress", auth.ProxyID)
+	}
+}
+
+func TestFileTokenStoreListInfersCodexProviderForOpenAIOAuthJSON(t *testing.T) {
+	dir := t.TempDir()
+	fileName := "openai-oauth.json"
+	data := []byte(`{"chatgpt_account_id":"acct-123","client_id":"app_test","access_token":"access-token","id_token":"id-token","email":"subscriber@example.com","plan_type":"plus"}`)
+	if err := os.WriteFile(filepath.Join(dir, fileName), data, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	store := NewFileTokenStore()
+	store.SetBaseDir(dir)
+	auths, err := store.List(context.Background())
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(auths) != 1 {
+		t.Fatalf("auth count = %d, want 1", len(auths))
+	}
+	if auths[0].Provider != "codex" {
+		t.Fatalf("Provider = %q, want codex", auths[0].Provider)
+	}
+	if auths[0].Metadata["type"] != "codex" {
+		t.Fatalf("metadata type = %#v, want codex", auths[0].Metadata["type"])
+	}
+}
+
+func TestFileTokenStoreListNormalizesOpenAIBundleJSONForCodex(t *testing.T) {
+	dir := t.TempDir()
+	fileName := "openai-bundle.json"
+	accountID := "acct-bundle"
+	issuedAt := int64(1_779_210_280)
+	expiresAt := int64(1_780_074_280)
+	accessToken := makeJWTForTest(t, map[string]any{
+		"iat": issuedAt,
+		"exp": expiresAt,
+		"https://api.openai.com/auth": map[string]any{
+			"chatgpt_account_id": accountID,
+			"chatgpt_plan_type":  "plus",
+		},
+	})
+	idToken := makeJWTForTest(t, map[string]any{
+		"email": "bundle@example.com",
+		"iat":   issuedAt,
+		"exp":   expiresAt,
+		"https://api.openai.com/auth": map[string]any{
+			"chatgpt_account_id": accountID,
+			"chatgpt_plan_type":  "plus",
+		},
+	})
+	data, err := json.Marshal(map[string]any{
+		"version":              1,
+		"platform":             "openai",
+		"account_claims_email": "bundle@example.com",
+		"access_token":         accessToken,
+		"id_token":             idToken,
+		"refresh_token":        "",
+		"client_id":            "app_test",
+		"chatgpt_account_id":   accountID,
+		"disabled":             false,
+	})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	path := filepath.Join(dir, fileName)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	store := NewFileTokenStore()
+	store.SetBaseDir(dir)
+	auths, err := store.List(context.Background())
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(auths) != 1 {
+		t.Fatalf("auth count = %d, want 1", len(auths))
+	}
+	wantExpired := time.Unix(expiresAt, 0).UTC().Format(time.RFC3339)
+	wantLastRefresh := time.Unix(issuedAt, 0).UTC().Format(time.RFC3339)
+	for key, want := range map[string]any{
+		"type":         "codex",
+		"account_id":   accountID,
+		"email":        "bundle@example.com",
+		"expired":      wantExpired,
+		"last_refresh": wantLastRefresh,
+		"plan_type":    "plus",
+	} {
+		if got := auths[0].Metadata[key]; got != want {
+			t.Fatalf("metadata[%s] = %#v, want %#v", key, got, want)
+		}
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	var persisted map[string]any
+	if err := json.Unmarshal(raw, &persisted); err != nil {
+		t.Fatalf("Unmarshal persisted: %v", err)
+	}
+	if persisted["account_id"] != accountID || persisted["type"] != "codex" {
+		t.Fatalf("persisted normalized fields = %#v", persisted)
 	}
 }
 

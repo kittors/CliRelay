@@ -3,12 +3,15 @@ package management
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/api/bodyutil"
@@ -150,6 +153,145 @@ func TestRegisterAuthFromFileAppliesRoutingMetadata(t *testing.T) {
 	if auth.ProxyID != "premium-egress" {
 		t.Fatalf("ProxyID = %q, want premium-egress", auth.ProxyID)
 	}
+}
+
+func TestRegisterAuthFromFileInfersCodexProviderForOpenAIOAuthJSON(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	authDir := t.TempDir()
+	store := &memoryAuthStore{}
+	manager := coreauth.NewManager(store, nil, nil)
+	h := &Handler{
+		cfg: &config.Config{
+			AuthDir: authDir,
+		},
+		authManager: manager,
+	}
+
+	fileName := "openai-oauth.json"
+	absPath := filepath.Join(authDir, fileName)
+	data := []byte(`{"chatgpt_account_id":"acct-123","client_id":"app_test","access_token":"access-token","id_token":"id-token","email":"subscriber@example.com","plan_type":"plus"}`)
+	if err := os.WriteFile(absPath, data, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	if err := h.registerAuthFromFile(context.Background(), absPath, data); err != nil {
+		t.Fatalf("registerAuthFromFile: %v", err)
+	}
+
+	auth, ok := manager.GetByID(fileName)
+	if !ok || auth == nil {
+		t.Fatalf("registered auth not found")
+	}
+	if auth.Provider != "codex" {
+		t.Fatalf("Provider = %q, want codex", auth.Provider)
+	}
+	if auth.Metadata["type"] != "codex" {
+		t.Fatalf("metadata type = %#v, want codex", auth.Metadata["type"])
+	}
+}
+
+func TestRegisterAuthFromFileNormalizesOpenAIBundleJSONForCodex(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	authDir := t.TempDir()
+	store := &memoryAuthStore{}
+	manager := coreauth.NewManager(store, nil, nil)
+	h := &Handler{
+		cfg: &config.Config{
+			AuthDir: authDir,
+		},
+		authManager: manager,
+	}
+
+	accountID := "acct-bundle"
+	issuedAt := int64(1_779_210_280)
+	expiresAt := int64(1_780_074_280)
+	accessToken := makeJWTForAuthFilesUploadTest(t, map[string]any{
+		"iat": issuedAt,
+		"exp": expiresAt,
+		"https://api.openai.com/auth": map[string]any{
+			"chatgpt_account_id": accountID,
+			"chatgpt_plan_type":  "plus",
+		},
+	})
+	idToken := makeJWTForAuthFilesUploadTest(t, map[string]any{
+		"email": "bundle@example.com",
+		"iat":   issuedAt,
+		"exp":   expiresAt,
+		"https://api.openai.com/auth": map[string]any{
+			"chatgpt_account_id": accountID,
+			"chatgpt_plan_type":  "plus",
+		},
+	})
+	fileName := "openai-bundle.json"
+	absPath := filepath.Join(authDir, fileName)
+	data, err := json.Marshal(map[string]any{
+		"version":              1,
+		"platform":             "openai",
+		"account_claims_email": "bundle@example.com",
+		"access_token":         accessToken,
+		"id_token":             idToken,
+		"refresh_token":        "",
+		"client_id":            "app_test",
+		"chatgpt_account_id":   accountID,
+		"disabled":             false,
+	})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if err := os.WriteFile(absPath, data, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	if err := h.registerAuthFromFile(context.Background(), absPath, data); err != nil {
+		t.Fatalf("registerAuthFromFile: %v", err)
+	}
+
+	auth, ok := manager.GetByID(fileName)
+	if !ok || auth == nil {
+		t.Fatalf("registered auth not found")
+	}
+	if auth.Provider != "codex" {
+		t.Fatalf("Provider = %q, want codex", auth.Provider)
+	}
+	wantExpired := time.Unix(expiresAt, 0).UTC().Format(time.RFC3339)
+	wantLastRefresh := time.Unix(issuedAt, 0).UTC().Format(time.RFC3339)
+	for key, want := range map[string]any{
+		"type":         "codex",
+		"account_id":   accountID,
+		"email":        "bundle@example.com",
+		"expired":      wantExpired,
+		"last_refresh": wantLastRefresh,
+		"plan_type":    "plus",
+	} {
+		if got := auth.Metadata[key]; got != want {
+			t.Fatalf("metadata[%s] = %#v, want %#v", key, got, want)
+		}
+	}
+	raw, err := os.ReadFile(absPath)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	var persisted map[string]any
+	if err := json.Unmarshal(raw, &persisted); err != nil {
+		t.Fatalf("Unmarshal persisted: %v", err)
+	}
+	if persisted["account_id"] != accountID || persisted["type"] != "codex" {
+		t.Fatalf("persisted normalized fields = %#v", persisted)
+	}
+}
+
+func makeJWTForAuthFilesUploadTest(t *testing.T, claims map[string]any) string {
+	t.Helper()
+	encode := func(v any) string {
+		raw, err := json.Marshal(v)
+		if err != nil {
+			t.Fatalf("marshal jwt part: %v", err)
+		}
+		return base64.RawURLEncoding.EncodeToString(raw)
+	}
+	return encode(map[string]any{"alg": "none", "typ": "JWT"}) + "." + encode(claims) + ".sig"
 }
 
 func TestImportVertexCredentialRejectsOversizedMultipart(t *testing.T) {

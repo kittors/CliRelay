@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -1273,9 +1274,17 @@ func (h *Handler) registerAuthFromFile(ctx context.Context, path string, data []
 	if err := json.Unmarshal(data, &metadata); err != nil {
 		return fmt.Errorf("invalid auth file: %w", err)
 	}
-	provider, _ := metadata["type"].(string)
-	if provider == "" {
-		provider = "unknown"
+	provider := sdkAuth.InferAuthProvider(metadata)
+	normalized := sdkAuth.NormalizeAuthMetadata(metadata, provider)
+	if !reflect.DeepEqual(metadata, normalized) {
+		metadata = normalized
+		normalizedData, errMarshal := json.Marshal(metadata)
+		if errMarshal != nil {
+			return fmt.Errorf("failed to normalize auth file: %w", errMarshal)
+		}
+		if errWrite := os.WriteFile(path, normalizedData, 0o600); errWrite != nil {
+			return fmt.Errorf("failed to write normalized auth file: %w", errWrite)
+		}
 	}
 	label := authChannelLabelFromMetadata(metadata, provider)
 	lastRefresh, hasLastRefresh := extractLastRefreshTimestamp(metadata)
