@@ -365,12 +365,6 @@ func (r *ModelRegistry) RegisterClient(clientID, clientProvider string, models [
 				reg.InfoByProvider[provider] = cloneModelInfo(model)
 			}
 			reg.LastUpdated = now
-			if reg.QuotaExceededClients != nil {
-				delete(reg.QuotaExceededClients, clientID)
-			}
-			if reg.SuspendedClients != nil {
-				delete(reg.SuspendedClients, clientID)
-			}
 			if providerChanged && provider != "" {
 				if _, newlyAdded := addedSet[id]; newlyAdded {
 					continue
