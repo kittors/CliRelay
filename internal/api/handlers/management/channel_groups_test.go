@@ -433,6 +433,63 @@ func TestBuildChannelGroupItemsKeepsRenamedKimiOAuthChannelsSeparate(t *testing.
 	}
 }
 
+func TestBuildChannelGroupItemsExcludesIsolatedGroupChannelsFromDefault(t *testing.T) {
+	auths := []*coreauth.Auth{
+		{
+			ID:       "codex-default",
+			Label:    "Default Codex",
+			Provider: "codex",
+		},
+		{
+			ID:       "kimi-isolated",
+			Label:    "Kimi Channel",
+			Provider: "kimi",
+		},
+	}
+	cfg := &config.Config{
+		Routing: config.RoutingConfig{
+			IncludeDefaultGroup: true,
+			ChannelGroups: []config.RoutingChannelGroup{
+				{
+					Name:               "kimicode",
+					ExcludeFromDefault: true,
+					Match: config.ChannelGroupMatch{
+						Channels: []string{"Kimi Channel"},
+					},
+				},
+			},
+		},
+	}
+
+	items := buildChannelGroupItems(cfg, auths)
+	byName := make(map[string]channelGroupItem, len(items))
+	for _, item := range items {
+		byName[item.Name] = item
+	}
+
+	defaultGroup, ok := byName["default"]
+	if !ok {
+		t.Fatal("expected default group")
+	}
+	if !containsString(defaultGroup.Channels, "Default Codex") {
+		t.Fatalf("default channels = %v, want Default Codex", defaultGroup.Channels)
+	}
+	if containsString(defaultGroup.Channels, "Kimi Channel") {
+		t.Fatalf("default channels = %v, should not include isolated Kimi channel", defaultGroup.Channels)
+	}
+
+	kimiGroup, ok := byName["kimicode"]
+	if !ok {
+		t.Fatal("expected kimicode group")
+	}
+	if !kimiGroup.ExcludeFromDefault {
+		t.Fatal("expected exclude-from-default flag in group response")
+	}
+	if !containsString(kimiGroup.Channels, "Kimi Channel") {
+		t.Fatalf("kimicode channels = %v, want Kimi Channel", kimiGroup.Channels)
+	}
+}
+
 func TestBuildChannelGroupItemsCanonicalizesRenamedOAuthChannel(t *testing.T) {
 	cfg := &config.Config{
 		Routing: config.RoutingConfig{

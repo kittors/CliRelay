@@ -129,6 +129,64 @@ func TestAuthGroupsMatchesLegacyOAuthEmailAfterRename(t *testing.T) {
 	}
 }
 
+func TestAuthGroupsExcludeFromDefaultKeepsExplicitGroup(t *testing.T) {
+	t.Parallel()
+
+	cfg := &internalconfig.Config{
+		Routing: internalconfig.RoutingConfig{
+			IncludeDefaultGroup: true,
+			ChannelGroups: []internalconfig.RoutingChannelGroup{
+				{
+					Name:               "kimicode",
+					ExcludeFromDefault: true,
+					Match: internalconfig.ChannelGroupMatch{
+						Channels: []string{"Kimi Channel"},
+					},
+				},
+			},
+		},
+	}
+	auth := &Auth{
+		Label:    "Kimi Channel",
+		Provider: "kimi",
+	}
+
+	groups := authGroups(cfg, auth)
+	if _, ok := groups["kimicode"]; !ok {
+		t.Fatalf("expected explicit kimicode group, got %v", groups)
+	}
+	if _, ok := groups["default"]; ok {
+		t.Fatalf("exclusive group member should not be in default, got %v", groups)
+	}
+	if authAllowedByGroups(cfg, auth, map[string]struct{}{"default": {}}) {
+		t.Fatal("expected default group restriction to reject isolated auth")
+	}
+	if !authAllowedByGroups(cfg, auth, map[string]struct{}{"kimicode": {}}) {
+		t.Fatal("expected explicit group restriction to allow isolated auth")
+	}
+}
+
+func TestEffectiveRouteGroupForSelectionDefaultsOnlyForUnprefixedRootModels(t *testing.T) {
+	t.Parallel()
+
+	cfg := &internalconfig.Config{
+		Routing: internalconfig.RoutingConfig{IncludeDefaultGroup: true},
+	}
+
+	if got := effectiveRouteGroupForSelection(cfg, "", nil, "gpt-5.5"); got != "default" {
+		t.Fatalf("unprefixed root route group = %q, want default", got)
+	}
+	if got := effectiveRouteGroupForSelection(cfg, "", nil, "kimicode/gpt-5.5"); got != "" {
+		t.Fatalf("prefixed root route group = %q, want empty", got)
+	}
+	if got := effectiveRouteGroupForSelection(cfg, "kimicode", nil, "gpt-5.5"); got != "kimicode" {
+		t.Fatalf("explicit route group = %q, want kimicode", got)
+	}
+	if got := effectiveRouteGroupForSelection(cfg, "", map[string]struct{}{"kimicode": {}}, "gpt-5.5"); got != "" {
+		t.Fatalf("allowed group route group = %q, want empty", got)
+	}
+}
+
 func TestAuthGroupsMatchesAnyDisplayTagDynamically(t *testing.T) {
 	t.Parallel()
 

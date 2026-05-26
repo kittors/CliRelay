@@ -296,46 +296,94 @@ func includeDefaultGroup(cfg *internalconfig.Config) bool {
 	return cfg.Routing.IncludeDefaultGroup
 }
 
+func routingChannelGroupMatchesAuth(auth *Auth, group internalconfig.RoutingChannelGroup, authPrefix string) bool {
+	if auth == nil {
+		return false
+	}
+	if authPrefix == "" {
+		authPrefix = internalrouting.NormalizeGroupName(auth.Prefix)
+	}
+	for _, prefix := range group.Match.Prefixes {
+		if authPrefix != "" && internalrouting.NormalizeGroupName(prefix) == authPrefix {
+			return true
+		}
+	}
+	for _, channel := range group.Match.Channels {
+		if authMatchesChannelName(auth, channel) {
+			return true
+		}
+	}
+	return authMatchesAnyTag(auth, group.Match.Tags)
+}
+
+func requestedModelHasRoutingPrefix(model string) bool {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return false
+	}
+	parts := strings.SplitN(model, "/", 2)
+	if len(parts) != 2 {
+		return false
+	}
+	return internalrouting.NormalizeGroupName(parts[0]) != "" && strings.TrimSpace(parts[1]) != ""
+}
+
+func defaultRouteGroupForSelection(cfg *internalconfig.Config, model string) string {
+	if cfg == nil || !cfg.Routing.IncludeDefaultGroup || requestedModelHasRoutingPrefix(model) {
+		return ""
+	}
+	return "default"
+}
+
+func effectiveRouteGroupForSelection(cfg *internalconfig.Config, routeGroup string, allowedGroups map[string]struct{}, model string) string {
+	if routeGroup = internalrouting.NormalizeGroupName(routeGroup); routeGroup != "" {
+		return routeGroup
+	}
+	if len(allowedGroups) > 0 {
+		return ""
+	}
+	return defaultRouteGroupForSelection(cfg, model)
+}
+
 func authGroups(cfg *internalconfig.Config, auth *Auth) map[string]struct{} {
 	if auth == nil {
 		return nil
 	}
 	out := make(map[string]struct{})
-	if prefix := internalrouting.NormalizeGroupName(auth.Prefix); prefix != "" {
-		out[prefix] = struct{}{}
-	} else if includeDefaultGroup(cfg) {
-		out["default"] = struct{}{}
-	}
+	authPrefix := internalrouting.NormalizeGroupName(auth.Prefix)
 	if cfg == nil {
+		if authPrefix != "" {
+			out[authPrefix] = struct{}{}
+		} else if includeDefaultGroup(cfg) {
+			out["default"] = struct{}{}
+		}
 		if len(out) == 0 {
 			return nil
 		}
 		return out
 	}
-	authPrefix := internalrouting.NormalizeGroupName(auth.Prefix)
+	explicitGroups := make(map[string]struct{})
+	excludeFromDefault := false
 	for i := range cfg.Routing.ChannelGroups {
 		group := cfg.Routing.ChannelGroups[i]
-		matched := false
-		for _, prefix := range group.Match.Prefixes {
-			if authPrefix != "" && internalrouting.NormalizeGroupName(prefix) == authPrefix {
-				matched = true
-				break
+		groupName := internalrouting.NormalizeGroupName(group.Name)
+		if groupName == "" {
+			continue
+		}
+		if routingChannelGroupMatchesAuth(auth, group, authPrefix) {
+			explicitGroups[groupName] = struct{}{}
+			if groupName != "default" && group.ExcludeFromDefault {
+				excludeFromDefault = true
 			}
 		}
-		if !matched {
-			for _, channel := range group.Match.Channels {
-				if authMatchesChannelName(auth, channel) {
-					matched = true
-					break
-				}
-			}
-		}
-		if !matched && authMatchesAnyTag(auth, group.Match.Tags) {
-			matched = true
-		}
-		if matched {
-			out[group.Name] = struct{}{}
-		}
+	}
+	if authPrefix != "" {
+		out[authPrefix] = struct{}{}
+	} else if includeDefaultGroup(cfg) && !excludeFromDefault {
+		out["default"] = struct{}{}
+	}
+	for group := range explicitGroups {
+		out[group] = struct{}{}
 	}
 	if len(out) == 0 {
 		return nil
@@ -587,6 +635,7 @@ func (m *Manager) CanServeModelWithScopes(modelID string, allowedChannels, allow
 	}
 	registryRef := registry.GetGlobalRegistry()
 	cfg, _ := m.runtimeConfig.Load().(*internalconfig.Config)
+	selectionRouteGroup := effectiveRouteGroupForSelection(cfg, routeGroup, allowedGroups, modelID)
 
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -600,10 +649,10 @@ func (m *Manager) CanServeModelWithScopes(modelID string, allowedChannels, allow
 		if !authAllowedByGroups(cfg, candidate, allowedGroups) {
 			continue
 		}
-		if !authInRouteGroup(cfg, candidate, routeGroup) {
+		if !authInRouteGroup(cfg, candidate, selectionRouteGroup) {
 			continue
 		}
-		if candidateSupportsModel(cfg, registryRef, candidate, modelID, routeGroup, allowedGroups) {
+		if candidateSupportsModel(cfg, registryRef, candidate, modelID, selectionRouteGroup, allowedGroups) {
 			return true
 		}
 	}

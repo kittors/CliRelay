@@ -2116,6 +2116,21 @@ func (m *Manager) CloseExecutionSession(sessionID string) {
 	}
 }
 
+func optionsForSelectionRouteGroup(opts cliproxyexecutor.Options, routeGroup string) cliproxyexecutor.Options {
+	next := opts
+	meta := make(map[string]any, len(opts.Metadata)+1)
+	for key, value := range opts.Metadata {
+		meta[key] = value
+	}
+	if routeGroup != "" {
+		meta[cliproxyexecutor.RouteGroupMetadataKey] = routeGroup
+	} else {
+		delete(meta, cliproxyexecutor.RouteGroupMetadataKey)
+	}
+	next.Metadata = meta
+	return next
+}
+
 func (m *Manager) pickNext(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, tried map[string]struct{}) (*Auth, ProviderExecutor, error) {
 	pinnedAuthID := pinnedAuthIDFromMetadata(opts.Metadata)
 	allowedChannels := allowedChannelsFromMetadata(opts.Metadata)
@@ -2138,8 +2153,9 @@ func (m *Manager) pickNext(ctx context.Context, provider, model string, opts cli
 			modelKey = strings.TrimSpace(parsed.ModelName)
 		}
 	}
+	selectionRouteGroup := effectiveRouteGroupForSelection(cfg, routeGroup, allowedGroups, modelKey)
 	registryRef := registry.GetGlobalRegistry()
-	buildCandidates := func(enforceRouteGroup bool) []*Auth {
+	buildCandidates := func(scopedRouteGroup string) []*Auth {
 		candidates := make([]*Auth, 0, len(m.auths))
 		for _, candidate := range m.auths {
 			if candidate.Provider != provider || candidate.Disabled {
@@ -2154,33 +2170,31 @@ func (m *Manager) pickNext(ctx context.Context, provider, model string, opts cli
 			if !authAllowedByGroups(cfg, candidate, allowedGroups) {
 				continue
 			}
-			if enforceRouteGroup && !authInRouteGroup(cfg, candidate, routeGroup) {
+			if scopedRouteGroup != "" && !authInRouteGroup(cfg, candidate, scopedRouteGroup) {
 				continue
 			}
 			if _, used := tried[candidate.ID]; used {
 				continue
 			}
-			if modelKey != "" && !candidateSupportsModel(cfg, registryRef, candidate, modelKey, routeGroup, allowedGroups) {
+			if modelKey != "" && !candidateSupportsModel(cfg, registryRef, candidate, modelKey, scopedRouteGroup, allowedGroups) {
 				continue
-			}
-			scopedRouteGroup := ""
-			if enforceRouteGroup {
-				scopedRouteGroup = routeGroup
 			}
 			candidates = append(candidates, prepareCandidateForSelection(cfg, candidate, scopedRouteGroup, allowedGroups))
 		}
 		return candidates
 	}
-	candidates := buildCandidates(routeGroup != "")
+	selectorRouteGroup := selectionRouteGroup
+	candidates := buildCandidates(selectorRouteGroup)
 	if len(candidates) == 0 && routeGroup != "" && routeFallback == "default" {
-		candidates = buildCandidates(false)
+		selectorRouteGroup = defaultRouteGroupForSelection(cfg, modelKey)
+		candidates = buildCandidates(selectorRouteGroup)
 	}
 	if len(candidates) == 0 {
 		m.mu.RUnlock()
 		return nil, nil, &Error{Code: "auth_not_found", Message: "no auth available"}
 	}
-	selector := m.selectorForRoutingScopeLocked(cfg, routeGroup, allowedGroups)
-	selected, errPick := selector.Pick(ctx, provider, model, opts, candidates)
+	selector := m.selectorForRoutingScopeLocked(cfg, selectorRouteGroup, allowedGroups)
+	selected, errPick := selector.Pick(ctx, provider, model, optionsForSelectionRouteGroup(opts, selectorRouteGroup), candidates)
 	if errPick != nil {
 		m.mu.RUnlock()
 		return nil, nil, errPick
@@ -2231,8 +2245,9 @@ func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model s
 			modelKey = strings.TrimSpace(parsed.ModelName)
 		}
 	}
+	selectionRouteGroup := effectiveRouteGroupForSelection(cfg, routeGroup, allowedGroups, modelKey)
 	registryRef := registry.GetGlobalRegistry()
-	buildCandidates := func(enforceRouteGroup bool) []*Auth {
+	buildCandidates := func(scopedRouteGroup string) []*Auth {
 		candidates := make([]*Auth, 0, len(m.auths))
 		for _, candidate := range m.auths {
 			if candidate == nil || candidate.Disabled {
@@ -2247,7 +2262,7 @@ func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model s
 			if !authAllowedByGroups(cfg, candidate, allowedGroups) {
 				continue
 			}
-			if enforceRouteGroup && !authInRouteGroup(cfg, candidate, routeGroup) {
+			if scopedRouteGroup != "" && !authInRouteGroup(cfg, candidate, scopedRouteGroup) {
 				continue
 			}
 			providerKey := strings.TrimSpace(strings.ToLower(candidate.Provider))
@@ -2263,27 +2278,25 @@ func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model s
 			if _, ok := m.executors[providerKey]; !ok {
 				continue
 			}
-			if modelKey != "" && !candidateSupportsModel(cfg, registryRef, candidate, modelKey, routeGroup, allowedGroups) {
+			if modelKey != "" && !candidateSupportsModel(cfg, registryRef, candidate, modelKey, scopedRouteGroup, allowedGroups) {
 				continue
-			}
-			scopedRouteGroup := ""
-			if enforceRouteGroup {
-				scopedRouteGroup = routeGroup
 			}
 			candidates = append(candidates, prepareCandidateForSelection(cfg, candidate, scopedRouteGroup, allowedGroups))
 		}
 		return candidates
 	}
-	candidates := buildCandidates(routeGroup != "")
+	selectorRouteGroup := selectionRouteGroup
+	candidates := buildCandidates(selectorRouteGroup)
 	if len(candidates) == 0 && routeGroup != "" && routeFallback == "default" {
-		candidates = buildCandidates(false)
+		selectorRouteGroup = defaultRouteGroupForSelection(cfg, modelKey)
+		candidates = buildCandidates(selectorRouteGroup)
 	}
 	if len(candidates) == 0 {
 		m.mu.RUnlock()
 		return nil, nil, "", &Error{Code: "auth_not_found", Message: "no auth available"}
 	}
-	selector := m.selectorForRoutingScopeLocked(cfg, routeGroup, allowedGroups)
-	selected, errPick := selector.Pick(ctx, "mixed", model, opts, candidates)
+	selector := m.selectorForRoutingScopeLocked(cfg, selectorRouteGroup, allowedGroups)
+	selected, errPick := selector.Pick(ctx, "mixed", model, optionsForSelectionRouteGroup(opts, selectorRouteGroup), candidates)
 	if errPick != nil {
 		m.mu.RUnlock()
 		return nil, nil, "", errPick

@@ -495,6 +495,102 @@ func TestGetModelPathAvailabilityFiltersRootByDefaultAllowedModels(t *testing.T)
 	}
 }
 
+func TestGetModelPathAvailabilityExcludesIsolatedGroupFromRoot(t *testing.T) {
+	rootModelID := "model-path-availability-root-default"
+	isolatedModelID := "model-path-availability-root-isolated"
+	reg := registry.GetGlobalRegistry()
+	reg.RegisterClient("model-path-availability-root-default-auth", "openai", []*registry.ModelInfo{
+		{ID: rootModelID, Object: "model", OwnedBy: "openai", Type: "openai"},
+	})
+	reg.RegisterClient("model-path-availability-root-isolated-auth", "openai", []*registry.ModelInfo{
+		{ID: isolatedModelID, Object: "model", OwnedBy: "openai", Type: "openai"},
+	})
+	t.Cleanup(func() {
+		reg.UnregisterClient("model-path-availability-root-default-auth")
+		reg.UnregisterClient("model-path-availability-root-isolated-auth")
+	})
+
+	cfg := &config.Config{
+		Routing: config.RoutingConfig{
+			IncludeDefaultGroup: true,
+			ChannelGroups: []config.RoutingChannelGroup{
+				{
+					Name:               "kimicode",
+					ExcludeFromDefault: true,
+					Match: config.ChannelGroupMatch{
+						Channels: []string{"Kimi Channel"},
+					},
+				},
+			},
+			PathRoutes: []config.RoutingPathRoute{
+				{Path: "/kimicode", Group: "kimicode"},
+			},
+		},
+	}
+	manager := coreauth.NewManager(nil, nil, nil)
+	manager.SetConfig(cfg)
+	for _, auth := range []*coreauth.Auth{
+		{
+			ID:       "model-path-availability-root-default-auth",
+			Label:    "Default Channel",
+			Provider: "openai",
+		},
+		{
+			ID:       "model-path-availability-root-isolated-auth",
+			Label:    "Kimi Channel",
+			Provider: "openai",
+		},
+	} {
+		if _, err := manager.Register(context.Background(), auth); err != nil {
+			t.Fatalf("Register(%s) error = %v", auth.ID, err)
+		}
+	}
+
+	h := NewHandler(cfg, "", manager)
+	rec := performModelsRequest(http.MethodGet, "/model-path-availability", nil, h.GetModelPathAvailability)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GetModelPathAvailability status = %d body = %s", rec.Code, rec.Body.String())
+	}
+
+	var payload struct {
+		Data []struct {
+			ID    string `json:"id"`
+			Paths []struct {
+				Method string `json:"method"`
+				Path   string `json:"path"`
+			} `json:"paths"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+
+	hasPath := func(modelID, path string) bool {
+		t.Helper()
+		for _, item := range payload.Data {
+			if item.ID != modelID {
+				continue
+			}
+			for _, itemPath := range item.Paths {
+				if itemPath.Method == http.MethodGet && itemPath.Path == path {
+					return true
+				}
+			}
+		}
+		return false
+	}
+
+	if !hasPath(rootModelID, "/v1/models") {
+		t.Fatalf("expected %q to have root /v1/models path", rootModelID)
+	}
+	if hasPath(isolatedModelID, "/v1/models") {
+		t.Fatalf("did not expect %q to have root /v1/models path", isolatedModelID)
+	}
+	if !hasPath(isolatedModelID, "/kimicode/v1/models") {
+		t.Fatalf("expected %q to have /kimicode/v1/models path", isolatedModelID)
+	}
+}
+
 func TestGetModelPathAvailabilityIncludesCcSwitchRoutePaths(t *testing.T) {
 	initManagementModelsTestDB(t)
 

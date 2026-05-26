@@ -28,7 +28,7 @@ func TestLoadConfigDefaultsDisableControlPanel(t *testing.T) {
 	}
 }
 
-func TestSanitizeRoutingPreservesChannelGroupStrategy(t *testing.T) {
+func TestSanitizeRoutingPreservesChannelGroupSettings(t *testing.T) {
 	t.Parallel()
 
 	cfg := &Config{
@@ -36,15 +36,17 @@ func TestSanitizeRoutingPreservesChannelGroupStrategy(t *testing.T) {
 			Strategy: "fill-first",
 			ChannelGroups: []RoutingChannelGroup{
 				{
-					Name:     " Team ",
-					Strategy: "round-robin",
+					Name:               " Team ",
+					Strategy:           "round-robin",
+					ExcludeFromDefault: true,
 					Match: ChannelGroupMatch{
 						Channels: []string{"Team Channel"},
 					},
 				},
 				{
-					Name:     " Cache ",
-					Strategy: "ff",
+					Name:               " Default ",
+					Strategy:           "ff",
+					ExcludeFromDefault: true,
 					Match: ChannelGroupMatch{
 						Channels: []string{"Cache Channel"},
 					},
@@ -60,6 +62,12 @@ func TestSanitizeRoutingPreservesChannelGroupStrategy(t *testing.T) {
 	}
 	if got := cfg.Routing.ChannelGroups[1].Strategy; got != "fill-first" {
 		t.Fatalf("group strategy alias = %q, want fill-first", got)
+	}
+	if !cfg.Routing.ChannelGroups[0].ExcludeFromDefault {
+		t.Fatal("exclude-from-default should be preserved for non-default groups")
+	}
+	if cfg.Routing.ChannelGroups[1].ExcludeFromDefault {
+		t.Fatal("exclude-from-default should be cleared for the default group")
 	}
 }
 

@@ -15,13 +15,14 @@ type ChannelGroupMatch struct {
 
 // RoutingChannelGroup defines a named channel group used by routing and API-key permissions.
 type RoutingChannelGroup struct {
-	Name              string            `yaml:"name" json:"name"`
-	Description       string            `yaml:"description,omitempty" json:"description,omitempty"`
-	Strategy          string            `yaml:"strategy,omitempty" json:"strategy,omitempty"`
-	Match             ChannelGroupMatch `yaml:"match,omitempty" json:"match,omitempty"`
-	Priority          int               `yaml:"priority,omitempty" json:"priority,omitempty"`
-	ChannelPriorities map[string]int    `yaml:"channel-priorities,omitempty" json:"channel-priorities,omitempty"`
-	AllowedModels     []string          `yaml:"allowed-models,omitempty" json:"allowed-models,omitempty"`
+	Name               string            `yaml:"name" json:"name"`
+	Description        string            `yaml:"description,omitempty" json:"description,omitempty"`
+	Strategy           string            `yaml:"strategy,omitempty" json:"strategy,omitempty"`
+	Match              ChannelGroupMatch `yaml:"match,omitempty" json:"match,omitempty"`
+	ExcludeFromDefault bool              `yaml:"exclude-from-default,omitempty" json:"exclude-from-default,omitempty"`
+	Priority           int               `yaml:"priority,omitempty" json:"priority,omitempty"`
+	ChannelPriorities  map[string]int    `yaml:"channel-priorities,omitempty" json:"channel-priorities,omitempty"`
+	AllowedModels      []string          `yaml:"allowed-models,omitempty" json:"allowed-models,omitempty"`
 }
 
 // RoutingPathRoute maps a URL namespace path to a channel group.
@@ -118,6 +119,9 @@ func (cfg *Config) SanitizeRouting() {
 		group.Name = internalrouting.NormalizeGroupName(group.Name)
 		group.Description = strings.TrimSpace(group.Description)
 		group.Strategy = normalizeOptionalRoutingStrategy(group.Strategy)
+		if group.Name == "default" {
+			group.ExcludeFromDefault = false
+		}
 		group.Match.Prefixes = normalizeStringList(group.Match.Prefixes, internalrouting.NormalizeGroupName)
 		group.Match.Channels = normalizeStringList(group.Match.Channels, func(value string) string {
 			return strings.TrimSpace(value)

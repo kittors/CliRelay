@@ -86,6 +86,15 @@ func (e *successfulSequenceExecutor) Execute(ctx context.Context, auth *Auth, re
 	return cliproxyexecutor.Response{Payload: []byte("ok")}, nil
 }
 
+type successfulProviderExecutor struct {
+	sequenceExecutor
+	provider string
+}
+
+func (e *successfulProviderExecutor) Identifier() string {
+	return e.provider
+}
+
 type invalidModelExecutor struct {
 	sequenceExecutor
 }
@@ -171,6 +180,11 @@ func TestManagerExecute_NonGroupedRouteStillFailsOver(t *testing.T) {
 
 	executor := &sequenceExecutor{}
 	manager := NewManager(nil, &RoundRobinSelector{}, nil)
+	manager.SetConfig(&internalconfig.Config{
+		Routing: internalconfig.RoutingConfig{
+			IncludeDefaultGroup: false,
+		},
+	})
 	manager.RegisterExecutor(executor)
 	registerGroupedRouteTestAuths(t, manager)
 
@@ -188,6 +202,66 @@ func TestManagerExecute_NonGroupedRouteStillFailsOver(t *testing.T) {
 	}
 	if calls[0] != "auth-a" || calls[1] != "auth-b" {
 		t.Fatalf("expected failover sequence [auth-a auth-b], got %v", calls)
+	}
+}
+
+func TestManagerExecute_RootRouteUsesDefaultGroupAndExcludesIsolatedGroups(t *testing.T) {
+	codexExecutor := &successfulProviderExecutor{provider: "codex"}
+	kimiExecutor := &successfulProviderExecutor{provider: "kimi"}
+	manager := NewManager(nil, &FillFirstSelector{}, nil)
+	manager.SetConfig(&internalconfig.Config{
+		Routing: internalconfig.RoutingConfig{
+			IncludeDefaultGroup: true,
+			ChannelGroups: []internalconfig.RoutingChannelGroup{
+				{
+					Name:               "kimicode",
+					ExcludeFromDefault: true,
+					Match: internalconfig.ChannelGroupMatch{
+						Channels: []string{"Kimi Channel"},
+					},
+				},
+			},
+		},
+	})
+	manager.RegisterExecutor(codexExecutor)
+	manager.RegisterExecutor(kimiExecutor)
+	for _, auth := range []*Auth{
+		{
+			ID:       "codex-default-auth",
+			Label:    "Default Codex",
+			Provider: "codex",
+			Status:   StatusActive,
+		},
+		{
+			ID:       "kimi-isolated-auth",
+			Label:    "Kimi Channel",
+			Provider: "kimi",
+			Status:   StatusActive,
+		},
+	} {
+		if _, err := manager.Register(context.Background(), auth); err != nil {
+			t.Fatalf("register %s: %v", auth.ID, err)
+		}
+	}
+
+	if _, err := manager.Execute(context.Background(), []string{"kimi", "codex"}, cliproxyexecutor.Request{}, cliproxyexecutor.Options{}); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+
+	if calls := kimiExecutor.Calls(); len(calls) != 0 {
+		t.Fatalf("root default route should not call isolated Kimi group, got %v", calls)
+	}
+	if calls := codexExecutor.Calls(); len(calls) != 1 || calls[0] != "codex-default-auth" {
+		t.Fatalf("root default route should call default Codex auth, got %v", calls)
+	}
+
+	if _, err := manager.Execute(context.Background(), []string{"kimi", "codex"}, cliproxyexecutor.Request{}, cliproxyexecutor.Options{
+		Metadata: map[string]any{cliproxyexecutor.RouteGroupMetadataKey: "kimicode"},
+	}); err != nil {
+		t.Fatalf("group Execute() error = %v", err)
+	}
+	if calls := kimiExecutor.Calls(); len(calls) != 1 || calls[0] != "kimi-isolated-auth" {
+		t.Fatalf("explicit group route should call isolated Kimi auth, got %v", calls)
 	}
 }
 

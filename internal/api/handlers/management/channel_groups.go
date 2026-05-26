@@ -30,17 +30,18 @@ const (
 )
 
 type channelGroupItem struct {
-	Name           string                      `json:"name"`
-	Description    string                      `json:"description,omitempty"`
-	Strategy       string                      `json:"strategy,omitempty"`
-	Priority       int                         `json:"priority,omitempty"`
-	Implicit       bool                        `json:"implicit"`
-	Prefixes       []string                    `json:"prefixes,omitempty"`
-	Tags           []string                    `json:"tags,omitempty"`
-	Channels       []string                    `json:"channels,omitempty"`
-	ChannelDetails []channelGroupChannelDetail `json:"channel-details,omitempty"`
-	AllowedModels  []string                    `json:"allowed-models,omitempty"`
-	PathRoutes     []string                    `json:"path-routes,omitempty"`
+	Name               string                      `json:"name"`
+	Description        string                      `json:"description,omitempty"`
+	Strategy           string                      `json:"strategy,omitempty"`
+	Priority           int                         `json:"priority,omitempty"`
+	ExcludeFromDefault bool                        `json:"exclude-from-default,omitempty"`
+	Implicit           bool                        `json:"implicit"`
+	Prefixes           []string                    `json:"prefixes,omitempty"`
+	Tags               []string                    `json:"tags,omitempty"`
+	Channels           []string                    `json:"channels,omitempty"`
+	ChannelDetails     []channelGroupChannelDetail `json:"channel-details,omitempty"`
+	AllowedModels      []string                    `json:"allowed-models,omitempty"`
+	PathRoutes         []string                    `json:"path-routes,omitempty"`
 }
 
 func collectChannelDescriptors(cfg *config.Config, auths []*coreauth.Auth) []channelDescriptor {
@@ -187,6 +188,7 @@ func buildChannelGroupItems(cfg *config.Config, auths []*coreauth.Auth) []channe
 		item.Description = group.Description
 		item.Strategy = group.Strategy
 		item.Priority = group.Priority
+		item.ExcludeFromDefault = group.ExcludeFromDefault
 		item.AllowedModels = append(item.AllowedModels, group.AllowedModels...)
 		item.Prefixes = append(item.Prefixes, group.Match.Prefixes...)
 		item.Tags = append(item.Tags, group.Match.Tags...)
@@ -209,6 +211,7 @@ func buildChannelGroupItems(cfg *config.Config, auths []*coreauth.Auth) []channe
 	for _, channel := range items {
 		prefix := internalrouting.NormalizeGroupName(channel.Prefix)
 		channelName := strings.TrimSpace(channel.Name)
+		excludedFromDefault := channelExcludedFromImplicitDefault(routingCfg, channel)
 		for groupName, group := range groupMap {
 			matched := false
 			for _, candidatePrefix := range group.Prefixes {
@@ -229,7 +232,7 @@ func buildChannelGroupItems(cfg *config.Config, auths []*coreauth.Auth) []channe
 				matched = true
 			}
 			if !matched {
-				if group.Name == "default" && prefix == "" && includeDefault {
+				if group.Name == "default" && prefix == "" && includeDefault && !excludedFromDefault {
 					matched = true
 				} else if prefix != "" && group.Name == prefix {
 					matched = true
@@ -263,6 +266,41 @@ func buildChannelGroupItems(cfg *config.Config, auths []*coreauth.Auth) []channe
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
+}
+
+func channelExcludedFromImplicitDefault(routingCfg config.RoutingConfig, channel channelDescriptor) bool {
+	if internalrouting.NormalizeGroupName(channel.Prefix) != "" {
+		return false
+	}
+	for _, group := range routingCfg.ChannelGroups {
+		if !group.ExcludeFromDefault {
+			continue
+		}
+		groupName := internalrouting.NormalizeGroupName(group.Name)
+		if groupName == "" || groupName == "default" {
+			continue
+		}
+		if channelGroupMatchesDescriptor(group, channel) {
+			return true
+		}
+	}
+	return false
+}
+
+func channelGroupMatchesDescriptor(group config.RoutingChannelGroup, channel channelDescriptor) bool {
+	prefix := internalrouting.NormalizeGroupName(channel.Prefix)
+	for _, candidatePrefix := range group.Match.Prefixes {
+		if prefix != "" && prefix == internalrouting.NormalizeGroupName(candidatePrefix) {
+			return true
+		}
+	}
+	channelName := strings.TrimSpace(channel.Name)
+	for _, candidateChannel := range group.Match.Channels {
+		if channelName != "" && strings.EqualFold(strings.TrimSpace(candidateChannel), channelName) {
+			return true
+		}
+	}
+	return channelMatchesAnyTag(channel, group.Match.Tags)
 }
 
 func channelMatchesAnyTag(channel channelDescriptor, tags []string) bool {

@@ -263,24 +263,13 @@ func (h *Handler) modelRootRouteScopedModels(models []map[string]any) []map[stri
 	if h == nil || h.authManager == nil || h.cfg == nil || !h.cfg.Routing.IncludeDefaultGroup {
 		return models
 	}
-	restricted := false
-	for _, group := range h.cfg.Routing.ChannelGroups {
-		if internalrouting.NormalizeGroupName(group.Name) == "default" && len(group.AllowedModels) > 0 {
-			restricted = true
-			break
-		}
-	}
-	if !restricted {
-		return models
-	}
-	allowedGroups := map[string]struct{}{"default": {}}
 	filtered := make([]map[string]any, 0, len(models))
 	for _, model := range models {
 		id := strings.TrimSpace(modelPathStringValue(model["id"]))
 		if id == "" {
 			continue
 		}
-		if h.authManager.CanServeModelWithScopes(id, nil, allowedGroups, "") {
+		if h.authManager.CanServeModelWithScopes(id, nil, nil, "") {
 			filtered = append(filtered, model)
 		}
 	}
