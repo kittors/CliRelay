@@ -230,6 +230,42 @@ func TestConfigSynthesizer_ClaudeKeys_SkipsEmptyAndHeaders(t *testing.T) {
 	}
 }
 
+func TestConfigSynthesizer_ClaudeKeyDisableAllModelsMarksAuthDisabled(t *testing.T) {
+	synth := NewConfigSynthesizer()
+	ctx := &SynthesisContext{
+		Config: &config.Config{
+			ClaudeKey: []config.ClaudeKey{
+				{
+					APIKey:         "sk-claude-disabled",
+					Name:           "Kimi渠道",
+					BaseURL:        "https://api.kimi.com/coding/",
+					ExcludedModels: []string{"*"},
+					Models: []config.ClaudeModel{
+						{Name: "K2.6", Alias: "claude-sonnet-4-6"},
+					},
+				},
+			},
+		},
+		Now:         time.Now(),
+		IDGenerator: NewStableIDGenerator(),
+	}
+
+	auths, err := synth.Synthesize(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(auths) != 1 {
+		t.Fatalf("expected 1 auth, got %d", len(auths))
+	}
+	auth := auths[0]
+	if !auth.Disabled || auth.Status != coreauth.StatusDisabled {
+		t.Fatalf("expected disabled auth for excluded-models wildcard, got disabled=%t status=%s", auth.Disabled, auth.Status)
+	}
+	if auth.Attributes["excluded_models"] != "*" || auth.Attributes["auth_kind"] != "apikey" {
+		t.Fatalf("expected exclusion metadata to be preserved, got %#v", auth.Attributes)
+	}
+}
+
 func TestConfigSynthesizer_CodexKeys(t *testing.T) {
 	synth := NewConfigSynthesizer()
 	ctx := &SynthesisContext{

@@ -62,6 +62,68 @@ func TestApplyConfigReloadRefreshesModelRegistryForConfigAuths(t *testing.T) {
 	}
 }
 
+func TestApplyConfigReloadDisableAllModelsPreventsClaudeAPIKeySelection(t *testing.T) {
+	cfg := &config.Config{
+		Routing: config.RoutingConfig{IncludeDefaultGroup: true},
+		ClaudeKey: []config.ClaudeKey{{
+			APIKey:  "sk-claude-hot-reload-key",
+			Name:    "Kimi渠道",
+			BaseURL: "https://api.kimi.com/coding/",
+			Models:  []internalconfig.ClaudeModel{{Name: "K2.6", Alias: "claude-sonnet-4-6"}},
+		}},
+	}
+	manager := coreauth.NewManager(nil, nil, nil)
+	service := &Service{cfg: cfg, coreManager: manager}
+	auth := &coreauth.Auth{
+		ID:       "claude-hot-reload-auth",
+		Provider: "claude",
+		Label:    "Kimi渠道",
+		Status:   coreauth.StatusActive,
+		Attributes: map[string]string{
+			"api_key":   "sk-claude-hot-reload-key",
+			"base_url":  "https://api.kimi.com/coding/",
+			"auth_kind": "apikey",
+			"source":    "config:claude[test]",
+		},
+	}
+	ctx := context.Background()
+	if _, err := manager.Register(ctx, auth); err != nil {
+		t.Fatalf("register auth: %v", err)
+	}
+
+	registry := GlobalModelRegistry()
+	registry.UnregisterClient(auth.ID)
+	t.Cleanup(func() {
+		registry.UnregisterClient(auth.ID)
+	})
+
+	service.registerModelsForAuth(ctx, auth)
+	if !manager.CanServeModelWithScopes("claude-sonnet-4-6", nil, nil, "") {
+		t.Fatal("expected model to be routeable before disable-all config")
+	}
+
+	next := *cfg
+	next.ClaudeKey = []config.ClaudeKey{{
+		APIKey:         "sk-claude-hot-reload-key",
+		Name:           "Kimi渠道",
+		BaseURL:        "https://api.kimi.com/coding/",
+		Models:         []internalconfig.ClaudeModel{{Name: "K2.6", Alias: "claude-sonnet-4-6"}},
+		ExcludedModels: []string{"*"},
+	}}
+	service.applyConfigReload(&next, true)
+
+	updated, ok := manager.GetByID(auth.ID)
+	if !ok {
+		t.Fatal("expected config auth to remain registered as disabled")
+	}
+	if !updated.Disabled || updated.Status != coreauth.StatusDisabled {
+		t.Fatalf("expected disabled config auth, got disabled=%t status=%s", updated.Disabled, updated.Status)
+	}
+	if manager.CanServeModelWithScopes("claude-sonnet-4-6", nil, nil, "") {
+		t.Fatal("disabled config auth should not be routeable")
+	}
+}
+
 func TestApplyConfigReloadDropsDisabledOpenAICompatibleProviderModels(t *testing.T) {
 	cfg := &config.Config{
 		OpenAICompatibility: []config.OpenAICompatibility{{

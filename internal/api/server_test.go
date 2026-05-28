@@ -256,6 +256,51 @@ func TestUpdateClientsDisablesRemovedConfigAuths(t *testing.T) {
 	}
 }
 
+func TestUpdateClientsDisableAllModelsMarksConfigAuthDisabled(t *testing.T) {
+	server := newTestServerWithConfig(t, func(cfg *proxyconfig.Config) {
+		cfg.ClaudeKey = []proxyconfig.ClaudeKey{{
+			APIKey:  "sk-claude-hot-reload-key",
+			Name:    "Kimi渠道",
+			BaseURL: "https://api.kimi.com/coding/",
+			Models:  []proxyconfig.ClaudeModel{{Name: "K2.6", Alias: "claude-sonnet-4-6"}},
+		}}
+	})
+	manager := server.handlers.AuthManager
+
+	server.UpdateClients(server.cfg)
+	var active *auth.Auth
+	for _, candidate := range manager.List() {
+		if candidate != nil && candidate.Provider == "claude" {
+			active = candidate
+			break
+		}
+	}
+	if active == nil {
+		t.Fatal("expected initial config-derived Claude auth")
+	}
+	if active.Disabled || active.Status != auth.StatusActive {
+		t.Fatalf("expected initial active auth, got disabled=%t status=%s", active.Disabled, active.Status)
+	}
+
+	next := *server.cfg
+	next.ClaudeKey = []proxyconfig.ClaudeKey{{
+		APIKey:         "sk-claude-hot-reload-key",
+		Name:           "Kimi渠道",
+		BaseURL:        "https://api.kimi.com/coding/",
+		Models:         []proxyconfig.ClaudeModel{{Name: "K2.6", Alias: "claude-sonnet-4-6"}},
+		ExcludedModels: []string{"*"},
+	}}
+	server.UpdateClients(&next)
+
+	updated, ok := manager.GetByID(active.ID)
+	if !ok {
+		t.Fatal("expected config-derived auth to remain registered")
+	}
+	if !updated.Disabled || updated.Status != auth.StatusDisabled {
+		t.Fatalf("expected disable-all config auth to be disabled, got disabled=%t status=%s", updated.Disabled, updated.Status)
+	}
+}
+
 func TestGroupedV1RouteForbiddenByAPIKeyGroups(t *testing.T) {
 	server := newTestServerWithConfig(t, func(cfg *proxyconfig.Config) {
 		cfg.SDKConfig.APIKeys = nil

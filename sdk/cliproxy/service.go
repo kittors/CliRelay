@@ -17,6 +17,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/runtime/executor"
 	internalusage "github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/watcher"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/watcher/synthesizer"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/wsrelay"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v6/sdk/access"
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v6/sdk/auth"
@@ -391,6 +392,8 @@ func (s *Service) applyConfigReload(newCfg *config.Config, refreshRegisteredMode
 	s.applyPprofConfig(newCfg)
 	if s.server != nil {
 		s.server.UpdateClients(newCfg)
+	} else {
+		s.syncConfigDerivedAuths(newCfg)
 	}
 	s.cfgMu.Lock()
 	s.cfg = newCfg
@@ -408,6 +411,74 @@ func (s *Service) applyConfigReload(newCfg *config.Config, refreshRegisteredMode
 			s.registerModelsForAuth(context.Background(), auth)
 		}
 	}
+}
+
+func (s *Service) syncConfigDerivedAuths(cfg *config.Config) {
+	if s == nil || s.coreManager == nil || cfg == nil {
+		return
+	}
+
+	ctx := coreauth.WithSkipPersist(context.Background())
+	synth := synthesizer.NewConfigSynthesizer()
+	auths, err := synth.Synthesize(&synthesizer.SynthesisContext{
+		Config:      cfg,
+		AuthDir:     cfg.AuthDir,
+		Now:         time.Now(),
+		IDGenerator: synthesizer.NewStableIDGenerator(),
+	})
+	if err != nil {
+		log.WithError(err).Warn("failed to synthesize config auths during service config reload")
+		return
+	}
+
+	desiredIDs := make(map[string]struct{}, len(auths))
+	for _, next := range auths {
+		if next == nil || strings.TrimSpace(next.ID) == "" {
+			continue
+		}
+		desiredIDs[next.ID] = struct{}{}
+		if existing, ok := s.coreManager.GetByID(next.ID); ok && existing != nil {
+			next.CreatedAt = existing.CreatedAt
+			next.LastRefreshedAt = existing.LastRefreshedAt
+			next.NextRefreshAfter = existing.NextRefreshAfter
+			_, err = s.coreManager.Update(ctx, next)
+		} else {
+			_, err = s.coreManager.Register(ctx, next)
+		}
+		if err != nil {
+			log.WithError(err).Warnf("failed to apply config auth %s", next.ID)
+		}
+	}
+
+	for _, existing := range s.coreManager.List() {
+		if existing == nil || strings.TrimSpace(existing.ID) == "" {
+			continue
+		}
+		if !isServiceConfigDerivedAuth(existing) {
+			continue
+		}
+		if _, stillConfigured := desiredIDs[existing.ID]; stillConfigured {
+			continue
+		}
+		if existing.Disabled && existing.Status == coreauth.StatusDisabled {
+			continue
+		}
+		disabled := existing.Clone()
+		disabled.Disabled = true
+		disabled.Status = coreauth.StatusDisabled
+		disabled.StatusMessage = "removed via config update"
+		disabled.UpdatedAt = time.Now()
+		if _, err := s.coreManager.Update(ctx, disabled); err != nil {
+			log.WithError(err).Warnf("failed to disable removed config auth %s", disabled.ID)
+		}
+	}
+}
+
+func isServiceConfigDerivedAuth(authState *coreauth.Auth) bool {
+	if authState == nil || authState.Attributes == nil {
+		return false
+	}
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(authState.Attributes["source"])), "config:")
 }
 
 func openAICompatInfoFromAuth(a *coreauth.Auth) (providerKey string, compatName string, ok bool) {

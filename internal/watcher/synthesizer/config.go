@@ -92,6 +92,7 @@ func (s *ConfigSynthesizer) synthesizeGeminiKeys(ctx *SynthesisContext) []*corea
 			UpdatedAt:  now,
 		}
 		ApplyAuthExcludedModelsMeta(a, cfg, entry.ExcludedModels, "apikey")
+		ApplyDisableAllModelsState(a, entry.ExcludedModels)
 		out = append(out, a)
 	}
 	return out
@@ -149,6 +150,7 @@ func (s *ConfigSynthesizer) synthesizeClaudeKeys(ctx *SynthesisContext) []*corea
 			UpdatedAt:  now,
 		}
 		ApplyAuthExcludedModelsMeta(a, cfg, ck.ExcludedModels, "apikey")
+		ApplyDisableAllModelsState(a, ck.ExcludedModels)
 		out = append(out, a)
 	}
 	return out
@@ -239,6 +241,7 @@ func (s *ConfigSynthesizer) synthesizeBedrockKeys(ctx *SynthesisContext) []*core
 			UpdatedAt:  now,
 		}
 		ApplyAuthExcludedModelsMeta(a, cfg, entry.ExcludedModels, "apikey")
+		ApplyDisableAllModelsState(a, entry.ExcludedModels)
 		out = append(out, a)
 	}
 	return out
@@ -295,6 +298,7 @@ func (s *ConfigSynthesizer) synthesizeCodexKeys(ctx *SynthesisContext) []*coreau
 			UpdatedAt:  now,
 		}
 		ApplyAuthExcludedModelsMeta(a, cfg, ck.ExcludedModels, "apikey")
+		ApplyDisableAllModelsState(a, ck.ExcludedModels)
 		out = append(out, a)
 	}
 	return out
@@ -345,6 +349,7 @@ func (s *ConfigSynthesizer) synthesizeOpenCodeGoKeys(ctx *SynthesisContext) []*c
 			UpdatedAt:  now,
 		}
 		ApplyAuthExcludedModelsMeta(a, cfg, entry.ExcludedModels, "apikey")
+		ApplyDisableAllModelsState(a, entry.ExcludedModels)
 		out = append(out, a)
 	}
 	return out

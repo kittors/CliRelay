@@ -103,6 +103,21 @@ func ApplyAuthExcludedModelsMeta(auth *coreauth.Auth, cfg *config.Config, perKey
 	}
 }
 
+func ApplyDisableAllModelsState(auth *coreauth.Auth, excludedModels []string) {
+	if auth == nil {
+		return
+	}
+	for _, model := range excludedModels {
+		if strings.TrimSpace(model) != "*" {
+			continue
+		}
+		auth.Disabled = true
+		auth.Status = coreauth.StatusDisabled
+		auth.StatusMessage = "disabled via excluded-models wildcard"
+		return
+	}
+}
+
 // addConfigHeadersToAttrs adds header configuration to auth attributes.
 // Headers are prefixed with "header:" in the attributes map.
 func addConfigHeadersToAttrs(headers map[string]string, attrs map[string]string) {
