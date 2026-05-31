@@ -81,6 +81,7 @@ func ccSwitchRouteContextFromImportConfig(row usage.CcSwitchImportConfigRow) *in
 	return &internalrouting.CcSwitchRouteContext{
 		ConfigID:             strings.TrimSpace(row.ID),
 		ClientType:           strings.ToLower(strings.TrimSpace(row.ClientType)),
+		DefaultModel:         strings.TrimSpace(row.DefaultModel),
 		RoutePath:            row.RoutePath,
 		EndpointPath:         row.EndpointPath,
 		AllowedChannelGroups: append([]string(nil), row.AllowedChannelGroups...),

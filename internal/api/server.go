@@ -1247,6 +1247,31 @@ func (s *Server) unifiedModelsHandler(openaiHandler *openai.OpenAIAPIHandler, cl
 		}
 		resp.Data = filtered
 
+		// Filter models by CC switch target models if this is a CC switch route
+		if routeCtx != nil && routeCtx.CcSwitch != nil {
+			ccswitchModels := make(map[string]struct{})
+			for _, mapping := range routeCtx.CcSwitch.ModelMappings {
+				target := strings.TrimSpace(mapping.TargetModel)
+				if target != "" {
+					ccswitchModels[target] = struct{}{}
+				}
+			}
+			if dm := strings.TrimSpace(routeCtx.CcSwitch.DefaultModel); dm != "" {
+				ccswitchModels[dm] = struct{}{}
+			}
+			if len(ccswitchModels) > 0 {
+				var ccswitchFiltered []map[string]interface{}
+				for _, model := range resp.Data {
+					if id, ok := model["id"].(string); ok {
+						if _, exists := ccswitchModels[id]; exists {
+							ccswitchFiltered = append(ccswitchFiltered, model)
+						}
+					}
+				}
+				resp.Data = ccswitchFiltered
+			}
+		}
+
 		// Write filtered response
 		filteredJSON, err := json.Marshal(resp)
 		if err != nil {

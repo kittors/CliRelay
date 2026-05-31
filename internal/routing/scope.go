@@ -23,6 +23,7 @@ type PathRouteContext struct {
 type CcSwitchRouteContext struct {
 	ConfigID             string
 	ClientType           string
+	DefaultModel         string
 	RoutePath            string
 	EndpointPath         string
 	AllowedChannelGroups []string
