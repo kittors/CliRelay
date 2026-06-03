@@ -222,14 +222,17 @@ func ConvertClaudeResponseToOpenAIResponses(ctx context.Context, modelName strin
 			done := `{"type":"response.output_text.done","sequence_number":0,"item_id":"","output_index":0,"content_index":0,"text":"","logprobs":[]}`
 			done, _ = sjson.Set(done, "sequence_number", nextSeq())
 			done, _ = sjson.Set(done, "item_id", st.CurrentMsgID)
+			done, _ = sjson.Set(done, "text", st.TextBuf.String())
 			out = append(out, emitEvent("response.output_text.done", done))
 			partDone := `{"type":"response.content_part.done","sequence_number":0,"item_id":"","output_index":0,"content_index":0,"part":{"type":"output_text","annotations":[],"logprobs":[],"text":""}}`
 			partDone, _ = sjson.Set(partDone, "sequence_number", nextSeq())
 			partDone, _ = sjson.Set(partDone, "item_id", st.CurrentMsgID)
+			partDone, _ = sjson.Set(partDone, "part.text", st.TextBuf.String())
 			out = append(out, emitEvent("response.content_part.done", partDone))
 			final := `{"type":"response.output_item.done","sequence_number":0,"output_index":0,"item":{"id":"","type":"message","status":"completed","content":[{"type":"output_text","text":""}],"role":"assistant"}}`
 			final, _ = sjson.Set(final, "sequence_number", nextSeq())
 			final, _ = sjson.Set(final, "item.id", st.CurrentMsgID)
+			final, _ = sjson.Set(final, "item.content.0.text", st.TextBuf.String())
 			out = append(out, emitEvent("response.output_item.done", final))
 			st.InTextBlock = false
 		} else if st.InFuncBlock {
