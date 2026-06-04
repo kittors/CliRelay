@@ -592,7 +592,7 @@ func QueryStats(params LogQueryParams) (LogStats, error) {
 
 	var total, successCount, totalTokens, totalInputTokens, totalCachedTokens int64
 	var totalCost float64
-	statsSQL := "SELECT COUNT(*), COALESCE(SUM(CASE WHEN failed=0 THEN 1 ELSE 0 END),0), COALESCE(SUM(total_tokens),0), COALESCE(SUM(cost),0), COALESCE(SUM(input_tokens),0), COALESCE(SUM(cached_tokens),0) " +
+	statsSQL := "SELECT COUNT(*), COALESCE(SUM(CASE WHEN failed=0 THEN 1 ELSE 0 END),0), COALESCE(SUM(total_tokens),0), COALESCE(SUM(cost),0), COALESCE(SUM(CASE WHEN cached_tokens > input_tokens THEN input_tokens + cached_tokens ELSE input_tokens END),0), COALESCE(SUM(cached_tokens),0) " +
 		"FROM request_logs" + where
 	if err := db.QueryRow(statsSQL, args...).Scan(&total, &successCount, &totalTokens, &totalCost, &totalInputTokens, &totalCachedTokens); err != nil {
 		return LogStats{}, fmt.Errorf("usage: stats query: %w", err)
@@ -873,7 +873,11 @@ func QueryDashboardKPI(days int) (DashboardKPI, error) {
 		kpi.SuccessRate = float64(kpi.SuccessRequests) / float64(kpi.TotalRequests) * 100
 	}
 	if kpi.InputTokens > 0 {
-		kpi.CacheRate = float64(kpi.CachedTokens) / float64(kpi.InputTokens) * 100
+		effectiveInput := kpi.InputTokens
+			if kpi.CachedTokens > kpi.InputTokens {
+				effectiveInput = kpi.InputTokens + kpi.CachedTokens
+			}
+			kpi.CacheRate = float64(kpi.CachedTokens) / float64(effectiveInput) * 100
 	}
 
 	return kpi, nil
