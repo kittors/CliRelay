@@ -94,6 +94,25 @@ func (e *OpenCodeGoExecutor) Execute(ctx context.Context, auth *cliproxyauth.Aut
 	fallback := e.applyVisionFallback(auth, req, opts)
 	req = fallback.Request
 
+	// A3: If the current turn still has images and no vision fallback was applied,
+	// use the analyzer to generate text summaries. This prevents base64 image data
+	// from being sent to a text-only model that cannot process it.
+	if !fallback.Applied && vision.CurrentTurnHasImages(req.Payload) {
+		baseModel := thinking.ParseSuffix(req.Model).ModelName
+		if !opencodeGoSupportsNativeVision(baseModel) {
+			analyzer := e.newAnalyzer(auth)
+			if analyzer != nil {
+				a3Processor := vision.NewProcessor(analyzer)
+				a3Payload, a3Err := a3Processor.A3ProcessCurrentTurn(ctx, req.Payload, sessionKey, 0)
+				if a3Err == nil {
+					req.Payload = a3Payload
+				}
+			} else {
+				req.Payload, _ = vision.ReplaceCurrentTurnImages(req.Payload, "[Image Registry] 无可用的图片分析模型，无法生成图片摘要。")
+			}
+		}
+	}
+
 	// Inject cached reasoning_content for models that need it (e.g., DeepSeek thinking mode).
 	sessionID := opencodeGoSessionID(opts, auth)
 	if opencodeGoNeedsReasoningInjection(req.Model) && sessionID != "" {
@@ -152,6 +171,25 @@ func (e *OpenCodeGoExecutor) ExecuteStream(ctx context.Context, auth *cliproxyau
 	// vision model for direct image analysis.
 	fallback := e.applyVisionFallback(auth, req, opts)
 	req = fallback.Request
+
+	// A3: If the current turn still has images and no vision fallback was applied,
+	// use the analyzer to generate text summaries.
+	if !fallback.Applied && vision.CurrentTurnHasImages(req.Payload) {
+		baseModel := thinking.ParseSuffix(req.Model).ModelName
+		if !opencodeGoSupportsNativeVision(baseModel) {
+			analyzer := e.newAnalyzer(auth)
+			if analyzer != nil {
+				a3Processor := vision.NewProcessor(analyzer)
+				a3Payload, a3Err := a3Processor.A3ProcessCurrentTurn(ctx, req.Payload, sessionKey, 0)
+				if a3Err == nil {
+					req.Payload = a3Payload
+				}
+			} else {
+				req.Payload, _ = vision.ReplaceCurrentTurnImages(req.Payload, "[Image Registry] 无可用的图片分析模型，无法生成图片摘要。")
+			}
+		}
+	}
+
 	sessionID := opencodeGoSessionID(opts, auth)
 	if opencodeGoNeedsReasoningInjection(req.Model) && sessionID != "" {
 		req.Payload = opencodeGoInjectReasoningContentIntoPayload(req.Payload, req.Model, sessionID)
@@ -907,11 +945,79 @@ func (e *OpenCodeGoExecutor) requestLog(url string, req *http.Request, body []by
 
 func (e *OpenCodeGoExecutor) newAnalyzer(auth *cliproxyauth.Auth) *vision.OpenCodeGoAnalyzer {
 	apiKey := opencodeGoAPIKey(auth)
-	model := opencodeGoVisionFallbackModel(e.cfg, auth)
-	if model == "" {
-		model = "qwen3.5-plus"
+	model, ok := opencodeGoResolveAnalyzerModel(e.cfg, auth)
+	if !ok || model == "" {
+		return nil
 	}
 	return vision.NewOpenCodeGoAnalyzer(opencodeGoBaseURL, apiKey, model)
+}
+
+// opencodeGoResolveAnalyzerModel determines the model to use for the image
+// analyzer, respecting excluded_models from both auth attributes and config.
+// Returns (model, false) when no usable analyzer model is available.
+func opencodeGoResolveAnalyzerModel(cfg *config.Config, auth *cliproxyauth.Auth) (string, bool) {
+	model := opencodeGoVisionFallbackModel(cfg, auth)
+	if model != "" {
+		return model, true
+	}
+	// Check why the fallback model is empty:
+	if opencodeGoFallbackIsConfigured(cfg, auth) {
+		// Fallback was configured but excluded -- don't default to anything
+		return "", false
+	}
+	// No fallback configured -- use default if not excluded
+	defaultModel := "qwen3.5-plus"
+	if opencodeGoModelIsExcluded(defaultModel, cfg, auth) {
+		return "", false
+	}
+	return defaultModel, true
+}
+
+// opencodeGoFallbackIsConfigured returns true when a fallback model name
+// exists in config or auth attributes (regardless of exclusion).
+func opencodeGoFallbackIsConfigured(cfg *config.Config, auth *cliproxyauth.Auth) bool {
+	if auth == nil {
+		return false
+	}
+	if auth.Attributes != nil {
+		if strings.TrimSpace(auth.Attributes["vision_fallback_model"]) != "" {
+			return true
+		}
+	}
+	if cfg == nil {
+		return false
+	}
+	apiKey := opencodeGoAPIKey(auth)
+	if apiKey == "" {
+		return false
+	}
+	for i := range cfg.OpenCodeGoKey {
+		if strings.EqualFold(strings.TrimSpace(cfg.OpenCodeGoKey[i].APIKey), apiKey) {
+			return strings.TrimSpace(cfg.OpenCodeGoKey[i].VisionFallbackModel) != ""
+		}
+	}
+	return false
+}
+
+// opencodeGoModelIsExcluded checks if a model is excluded by either auth
+// attribute excluded_models or config ExcludedModels for this API key.
+func opencodeGoModelIsExcluded(model string, cfg *config.Config, auth *cliproxyauth.Auth) bool {
+	if auth != nil && auth.Attributes != nil {
+		if opencodeGoModelExcluded(model, auth.Attributes["excluded_models"]) {
+			return true
+		}
+	}
+	apiKey := opencodeGoAPIKey(auth)
+	if apiKey == "" || cfg == nil {
+		return false
+	}
+	for i := range cfg.OpenCodeGoKey {
+		if strings.EqualFold(strings.TrimSpace(cfg.OpenCodeGoKey[i].APIKey), apiKey) {
+			excluded := strings.Join(cfg.OpenCodeGoKey[i].ExcludedModels, ",")
+			return opencodeGoModelExcluded(model, excluded)
+		}
+	}
+	return false
 }
 
 func opencodeGoStripOrphanedToolCalls(payload []byte) []byte {

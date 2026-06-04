@@ -495,3 +495,263 @@ func TestProcessorResetsReachabilityPerRequest(t *testing.T) {
 		t.Fatalf("registry note should mark exactly one older image unavailable: %q", res.RegistryNote)
 	}
 }
+
+func TestProcessorPhase2NoImagesInPayload(t *testing.T) {
+	registry := newGlobalRegistry(DefaultGlobalConfig())
+	processor := &Processor{
+		registry:   registry,
+		analyzer:   fakeAnalyzer{},
+		maxEntries: DefaultGlobalConfig().MaxEntriesPerSession,
+	}
+
+	// First request: establish an image in the session store
+	payload1 := []byte(`{"messages":[{"role":"user","content":[{"type":"text","text":"first"},{"type":"image_url","image_url":{"url":"data:image/png;base64,QUJD"}}]}]}`)
+	res1, err := processor.Process(context.Background(), payload1, SessionKey("sess-phase2"), 1)
+	if err != nil {
+		t.Fatalf("first Process() error = %v", err)
+	}
+	if res1.ImagesFound != 1 {
+		t.Fatalf("expected 1 image in first request, got %d", res1.ImagesFound)
+	}
+
+	// Manually seed a summary so Phase 2 has something to inject
+	store := registry.GetSession("sess-phase2")
+	if store == nil {
+		t.Fatal("expected session store to exist")
+	}
+	store.UpdateEntry(ComputeHash("QUJD"), func(e *ImageEntry) {
+		e.Summary = ImageSummary{
+			Summary:    "Test UI design screenshot",
+			OCRHints:   []string{"Button: Submit", "Title: Welcome"},
+			Confidence: "high",
+		}
+	})
+
+	// Second request: pure text, no images -- Phase 2 should fire
+	payload2 := []byte(`{"messages":[{"role":"user","content":"Image #1 what was in it?"}]}`)
+	res2, err := processor.Process(context.Background(), payload2, SessionKey("sess-phase2"), 2)
+	if err != nil {
+		t.Fatalf("second Process() error = %v", err)
+	}
+	if res2.ImagesFound != 0 {
+		t.Fatalf("expected 0 images in second request, got %d", res2.ImagesFound)
+	}
+	if res2.RegistryNote == "" {
+		t.Fatal("Phase 2 should inject a registry note even when payload has no image parts")
+	}
+	if !strings.Contains(res2.RegistryNote, "Image #1") {
+		t.Fatalf("registry note should reference Image #1: %q", res2.RegistryNote)
+	}
+}
+
+func TestProcessorPhase2ExplicitReferenceNoImageData(t *testing.T) {
+	registry := newGlobalRegistry(DefaultGlobalConfig())
+	processor := &Processor{
+		registry:   registry,
+		analyzer:   fakeAnalyzer{},
+		maxEntries: DefaultGlobalConfig().MaxEntriesPerSession,
+	}
+
+	payload1 := []byte(`{"messages":[{"role":"user","content":[{"type":"text","text":"check this"},{"type":"image_url","image_url":{"url":"data:image/png;base64,WFla"}}]}]}`)
+	if _, err := processor.Process(context.Background(), payload1, SessionKey("sess-ref"), 1); err != nil {
+		t.Fatalf("first Process() error = %v", err)
+	}
+
+	store := registry.GetSession("sess-ref")
+	store.UpdateEntry(ComputeHash("WFla"), func(e *ImageEntry) {
+		e.Summary = ImageSummary{
+			Summary:    "Error log: connection timeout",
+			OCRHints:   []string{"Error: 503", "Service Unavailable"},
+			Confidence: "high",
+		}
+	})
+
+	// Explicit "Image #1" reference, no images in payload
+	payload2 := []byte(`{"messages":[{"role":"user","content":"Image #1 what error?"}]}`)
+	res2, err := processor.Process(context.Background(), payload2, SessionKey("sess-ref"), 2)
+	if err != nil {
+		t.Fatalf("second Process() error = %v", err)
+	}
+	if !strings.Contains(res2.RegistryNote, "Image #1") {
+		t.Fatalf("registry note should reference Image #1: %q", res2.RegistryNote)
+	}
+	if !strings.Contains(res2.RegistryNote, "connection timeout") {
+		t.Fatalf("registry note should include cached summary: %q", res2.RegistryNote)
+	}
+}
+
+func TestProcessorPhase2AmbiguityWithoutImages(t *testing.T) {
+	registry := newGlobalRegistry(DefaultGlobalConfig())
+	processor := &Processor{
+		registry:   registry,
+		analyzer:   fakeAnalyzer{},
+		maxEntries: DefaultGlobalConfig().MaxEntriesPerSession,
+	}
+
+	p1 := []byte(`{"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"data:image/png;base64,QUFB"}}]}]}`)
+	if _, err := processor.Process(context.Background(), p1, SessionKey("sess-ambig"), 1); err != nil {
+		t.Fatal(err)
+	}
+	p2 := []byte(`{"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"data:image/png;base64,QkJC"}}]}]}`)
+	if _, err := processor.Process(context.Background(), p2, SessionKey("sess-ambig"), 2); err != nil {
+		t.Fatal(err)
+	}
+	p3 := []byte(`{"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"data:image/png;base64,Q0ND"}}]}]}`)
+	if _, err := processor.Process(context.Background(), p3, SessionKey("sess-ambig"), 3); err != nil {
+		t.Fatal(err)
+	}
+
+	store := registry.GetSession("sess-ambig")
+	store.UpdateEntry(ComputeHash("QUFB"), func(e *ImageEntry) {
+		e.Summary = ImageSummary{Summary: "First image", Confidence: "high"}
+	})
+	store.UpdateEntry(ComputeHash("QkJC"), func(e *ImageEntry) {
+		e.Summary = ImageSummary{Summary: "Second image", Confidence: "high"}
+	})
+	store.UpdateEntry(ComputeHash("Q0ND"), func(e *ImageEntry) {
+		e.Summary = ImageSummary{Summary: "Third image", Confidence: "high"}
+	})
+
+	// Ambiguous question with 3+ cached images, no payload images
+	p4 := []byte(`{"messages":[{"role":"user","content":"detail?"}]}`)
+	res3, err := processor.Process(context.Background(), p4, SessionKey("sess-ambig"), 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(res3.RegistryNote, "未明确指向") {
+		t.Fatalf("Phase 2 should inject ambiguity note: %q", res3.RegistryNote)
+	}
+}
+
+func TestProcessorPhase2DoesNotFireWhenNoSession(t *testing.T) {
+	processor := &Processor{
+		registry:   newGlobalRegistry(DefaultGlobalConfig()),
+		analyzer:   fakeAnalyzer{},
+		maxEntries: DefaultGlobalConfig().MaxEntriesPerSession,
+	}
+
+	payload := []byte(`{"messages":[{"role":"user","content":"hello"}]}`)
+	res, err := processor.Process(context.Background(), payload, "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.RegistryNote != "" {
+		t.Fatalf("expected no registry note without session, got: %q", res.RegistryNote)
+	}
+	if string(res.Payload) != string(payload) {
+		t.Fatal("payload should be unchanged without session")
+	}
+}
+
+func TestA3ProcessCurrentTurnReplacesImage(t *testing.T) {
+	a3Resp := AnalyzeResponse{
+		Summary: ImageSummary{
+			Summary:    "A login form with username and password fields",
+			OCRHints:   []string{"Username:", "Password:"},
+			Confidence: "high",
+		},
+	}
+	processor := &Processor{
+		registry:   newGlobalRegistry(DefaultGlobalConfig()),
+		analyzer:   fakeAnalyzer{resp: a3Resp},
+		maxEntries: DefaultGlobalConfig().MaxEntriesPerSession,
+	}
+
+	payload := []byte(`{"messages":[{"role":"user","content":[{"type":"text","text":"what is this?"},{"type":"image_url","image_url":{"url":"data:image/png;base64,aGVsbG8="}}]}]}`)
+
+	modified, err := processor.A3ProcessCurrentTurn(context.Background(), payload, SessionKey("sess-a3"), 1)
+	if err != nil {
+		t.Fatalf("A3ProcessCurrentTurn() error = %v", err)
+	}
+
+	walk := WalkPayload(modified)
+	if len(walk.Parts) > 0 {
+		t.Fatal("A3 should replace all current-turn images, leaving no image parts")
+	}
+
+	modifiedStr := string(modified)
+	if !strings.Contains(modifiedStr, "login form") {
+		t.Fatalf("modified payload should contain analyzer summary: %s", modifiedStr)
+	}
+	if !strings.Contains(modifiedStr, "未直接查看原图") {
+		t.Fatalf("modified payload should contain degradation note: %s", modifiedStr)
+	}
+}
+
+func TestA3ProcessCurrentTurnWritesToRegistry(t *testing.T) {
+	a3Resp := AnalyzeResponse{
+		Summary: ImageSummary{
+			Summary:  "Code editor showing syntax highlighting",
+			OCRHints: []string{"function main()"},
+		},
+	}
+	processor := &Processor{
+		registry:   newGlobalRegistry(DefaultGlobalConfig()),
+		analyzer:   fakeAnalyzer{resp: a3Resp},
+		maxEntries: DefaultGlobalConfig().MaxEntriesPerSession,
+	}
+
+	payload := []byte(`{"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"data:image/png;base64,Y29kZQ=="}}]}]}`)
+
+	if _, err := processor.A3ProcessCurrentTurn(context.Background(), payload, SessionKey("sess-a3-store"), 1); err != nil {
+		t.Fatalf("A3ProcessCurrentTurn() error = %v", err)
+	}
+
+	store := processor.registry.GetSession("sess-a3-store")
+	if store == nil {
+		t.Fatal("expected session store to exist")
+	}
+	entries := store.AllEntries()
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 entry in session store, got %d", len(entries))
+	}
+	if entries[0].Summary.Summary != "Code editor showing syntax highlighting" {
+		t.Fatalf("expected cached summary, got: %q", entries[0].Summary.Summary)
+	}
+	if !entries[0].CurrentPayloadReachable {
+		t.Fatal("A3-processed image should be marked as reachable")
+	}
+}
+
+func TestA3ProcessCurrentTurnRemoteImage(t *testing.T) {
+	processor := &Processor{
+		registry:   newGlobalRegistry(DefaultGlobalConfig()),
+		analyzer:   fakeAnalyzer{},
+		maxEntries: DefaultGlobalConfig().MaxEntriesPerSession,
+	}
+
+	payload := []byte(`{"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"https://example.com/image.png"}}]}]}`)
+
+	modified, err := processor.A3ProcessCurrentTurn(context.Background(), payload, SessionKey("sess-remote"), 1)
+	if err != nil {
+		t.Fatalf("A3ProcessCurrentTurn() error = %v", err)
+	}
+
+	modifiedStr := string(modified)
+	if strings.Contains(modifiedStr, "https://example.com") {
+		t.Fatalf("remote URL should be removed: %s", modifiedStr)
+	}
+	if !strings.Contains(modifiedStr, "暂不支持远程") {
+		t.Fatalf("should contain remote image note: %s", modifiedStr)
+	}
+}
+
+func TestA3WithNoSessionStillReplacesImage(t *testing.T) {
+	processor := &Processor{
+		registry:   newGlobalRegistry(DefaultGlobalConfig()),
+		analyzer:   fakeAnalyzer{resp: AnalyzeResponse{Summary: ImageSummary{Summary: "terminal output"}}},
+		maxEntries: DefaultGlobalConfig().MaxEntriesPerSession,
+	}
+
+	payload := []byte(`{"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"data:image/png;base64,dGVybQ=="}}]}]}`)
+
+	modified, err := processor.A3ProcessCurrentTurn(context.Background(), payload, "", 1)
+	if err != nil {
+		t.Fatalf("A3ProcessCurrentTurn() error = %v", err)
+	}
+
+	walk := WalkPayload(modified)
+	if len(walk.Parts) > 0 {
+		t.Fatal("A3 should replace images even without a session key")
+	}
+}

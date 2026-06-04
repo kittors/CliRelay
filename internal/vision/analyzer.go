@@ -15,12 +15,16 @@ import (
 
 // AnalyzeRequest carries all context needed for image analysis.
 type AnalyzeRequest struct {
-	ImageData  string       // base64 data from current request
-	MIMEType   string       // "image/png", "image/jpeg", etc.
-	Existing   ImageSummary // previously accumulated summary (empty on first analysis)
+	Model      string       // target model for analysis (empty = analyzer default)
+	SessionKey SessionKey   // session key for registry tracking
 	Query      string       // user's current question (empty on first analysis)
-	IsFollowUp bool         // true if this is a follow-up analysis
+	Existing   ImageSummary // previously accumulated summary (empty on first analysis)
+	ImageData  string       // base64 data from current request
+	ImageURL   string       // remote URL if not inline
+	MIMEType   string       // "image/png", "image/jpeg", etc.
 	SourceKind ImageSourceKind
+	TurnIndex  int          // conversation turn index
+	IsFollowUp bool         // true if this is a follow-up analysis
 }
 
 // AnalyzeResponse contains the analysis result.
@@ -69,7 +73,11 @@ func (a *OpenCodeGoAnalyzer) Analyze(ctx context.Context, req AnalyzeRequest) (A
 		prompt = a.buildInitialPrompt()
 	}
 
-	body := a.buildRequestBody(prompt, req.ImageData, req.MIMEType)
+	model := a.model
+	if req.Model != "" {
+		model = req.Model
+	}
+	body := a.buildRequestBody(model, prompt, req.ImageData, req.MIMEType)
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
 		a.baseURL+"/chat/completions", bytes.NewReader(body))
@@ -129,7 +137,7 @@ Look at the original image again. Provide ONLY new or supplementary information 
 	)
 }
 
-func (a *OpenCodeGoAnalyzer) buildRequestBody(prompt, imageData, mimeType string) []byte {
+func (a *OpenCodeGoAnalyzer) buildRequestBody(model, prompt, imageData, mimeType string) []byte {
 	var mime string
 	switch {
 	case strings.Contains(mimeType, "png"):
@@ -147,7 +155,7 @@ func (a *OpenCodeGoAnalyzer) buildRequestBody(prompt, imageData, mimeType string
 	dataURL := "data:" + mime + ";base64," + imageData
 
 	body := map[string]any{
-		"model": a.model,
+		"model": model,
 		"messages": []map[string]any{
 			{
 				"role":    "system",

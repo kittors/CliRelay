@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"sync"
 	"time"
+
+	"golang.org/x/sync/singleflight"
 )
 
 // GlobalRegistry manages all session stores with resource limits and GC.
@@ -13,6 +15,7 @@ type GlobalRegistry struct {
 	sessions map[SessionKey]*SessionStore
 	config   GlobalConfig
 	done     chan struct{}
+	sfGroup  singleflight.Group
 }
 
 var global *GlobalRegistry
