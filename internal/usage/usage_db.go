@@ -590,11 +590,11 @@ func QueryStats(params LogQueryParams) (LogStats, error) {
 
 	where, args := buildWhereClause(params)
 
-	var total, successCount, totalTokens, cacheHitCount int64
+	var total, successCount, totalTokens, totalInputTokens, totalCachedTokens int64
 	var totalCost float64
-	statsSQL := "SELECT COUNT(*), COALESCE(SUM(CASE WHEN failed=0 THEN 1 ELSE 0 END),0), COALESCE(SUM(total_tokens),0), COALESCE(SUM(cost),0), COALESCE(SUM(CASE WHEN cached_tokens>0 THEN 1 ELSE 0 END),0) " +
+	statsSQL := "SELECT COUNT(*), COALESCE(SUM(CASE WHEN failed=0 THEN 1 ELSE 0 END),0), COALESCE(SUM(total_tokens),0), COALESCE(SUM(cost),0), COALESCE(SUM(input_tokens),0), COALESCE(SUM(cached_tokens),0) " +
 		"FROM request_logs" + where
-	if err := db.QueryRow(statsSQL, args...).Scan(&total, &successCount, &totalTokens, &totalCost, &cacheHitCount); err != nil {
+	if err := db.QueryRow(statsSQL, args...).Scan(&total, &successCount, &totalTokens, &totalCost, &totalInputTokens, &totalCachedTokens); err != nil {
 		return LogStats{}, fmt.Errorf("usage: stats query: %w", err)
 	}
 
@@ -604,8 +604,8 @@ func QueryStats(params LogQueryParams) (LogStats, error) {
 	}
 
 	var cacheRate float64
-	if total > 0 {
-		cacheRate = float64(cacheHitCount) / float64(total) * 100
+	if totalInputTokens > 0 {
+		cacheRate = float64(totalCachedTokens) / float64(totalInputTokens) * 100
 	}
 
 	return LogStats{
@@ -805,6 +805,7 @@ type DashboardKPI struct {
 	CachedTokens    int64   `json:"cached_tokens"`
 	TotalTokens     int64   `json:"total_tokens"`
 	TotalCost       float64 `json:"total_cost"`
+	CacheRate       float64 `json:"cache_rate"`
 }
 
 type DashboardTrendPoint struct {
@@ -870,6 +871,9 @@ func QueryDashboardKPI(days int) (DashboardKPI, error) {
 
 	if kpi.TotalRequests > 0 {
 		kpi.SuccessRate = float64(kpi.SuccessRequests) / float64(kpi.TotalRequests) * 100
+	}
+	if kpi.InputTokens > 0 {
+		kpi.CacheRate = float64(kpi.CachedTokens) / float64(kpi.InputTokens) * 100
 	}
 
 	return kpi, nil
