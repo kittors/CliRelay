@@ -404,8 +404,8 @@ func insertLog(apiKey, apiKeyName, model, source, channelName, authIndex string,
 		failedInt = 1
 	}
 
-	// Calculate cost based on model pricing
-	cost := CalculateCost(model, tokens.InputTokens, tokens.OutputTokens, tokens.CachedTokens)
+	// Calculate cost based on model pricing using semantic cache read/write
+	cost := CalculateCostV2(model, tokens)
 
 	// 插入 request log 的事务由 usage 存储层统一拥有，不从外部 HTTP 请求透传 context，
 	// 以避免请求取消把已经选定要持久化的审计记录中断在半途。

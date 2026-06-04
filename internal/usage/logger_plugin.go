@@ -230,11 +230,14 @@ type RequestDetail struct {
 
 // TokenStats captures the token usage breakdown for a request.
 type TokenStats struct {
-	InputTokens     int64 `json:"input_tokens"`
-	OutputTokens    int64 `json:"output_tokens"`
-	ReasoningTokens int64 `json:"reasoning_tokens"`
-	CachedTokens    int64 `json:"cached_tokens"`
-	TotalTokens     int64 `json:"total_tokens"`
+	InputTokens              int64 `json:"input_tokens"`
+	OutputTokens             int64 `json:"output_tokens"`
+	ReasoningTokens          int64 `json:"reasoning_tokens"`
+	CachedTokens             int64 `json:"cached_tokens"`
+	TotalTokens              int64 `json:"total_tokens"`
+	CacheReadTokens          int64 `json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens         int64 `json:"cache_write_tokens,omitempty"`
+	CacheReadIncludedInInput bool  `json:"-"`
 }
 
 // StatisticsSnapshot represents an immutable view of the aggregated metrics.
@@ -525,7 +528,7 @@ func dedupKey(apiName, modelName string, detail RequestDetail) string {
 	timestamp := detail.Timestamp.UTC().Format(time.RFC3339Nano)
 	tokens := normaliseTokenStats(detail.Tokens)
 	return fmt.Sprintf(
-		"%s|%s|%s|%s|%s|%t|%d|%d|%d|%d|%d",
+		"%s|%s|%s|%s|%s|%t|%d|%d|%d|%d|%d|%d|%d|%t",
 		apiName,
 		modelName,
 		timestamp,
@@ -537,6 +540,9 @@ func dedupKey(apiName, modelName string, detail RequestDetail) string {
 		tokens.ReasoningTokens,
 		tokens.CachedTokens,
 		tokens.TotalTokens,
+		tokens.CacheReadTokens,
+		tokens.CacheWriteTokens,
+		tokens.CacheReadIncludedInInput,
 	)
 }
 
@@ -584,17 +590,28 @@ const httpStatusBadRequest = 400
 
 func normaliseDetail(detail coreusage.Detail) TokenStats {
 	tokens := TokenStats{
-		InputTokens:     detail.InputTokens,
-		OutputTokens:    detail.OutputTokens,
-		ReasoningTokens: detail.ReasoningTokens,
-		CachedTokens:    detail.CachedTokens,
-		TotalTokens:     detail.TotalTokens,
+		InputTokens:              detail.InputTokens,
+		OutputTokens:             detail.OutputTokens,
+		ReasoningTokens:          detail.ReasoningTokens,
+		CachedTokens:             detail.CachedTokens,
+		TotalTokens:              detail.TotalTokens,
+		CacheReadTokens:          detail.CacheReadTokens,
+		CacheWriteTokens:         detail.CacheWriteTokens,
+		CacheReadIncludedInInput: detail.CacheReadIncludedInInput,
 	}
 	if tokens.TotalTokens == 0 {
 		tokens.TotalTokens = detail.InputTokens + detail.OutputTokens + detail.ReasoningTokens
 	}
 	if tokens.TotalTokens == 0 {
 		tokens.TotalTokens = detail.InputTokens + detail.OutputTokens + detail.ReasoningTokens + detail.CachedTokens
+	}
+	// Backfill legacy CachedTokens from new fields when legacy field is empty
+	if tokens.CachedTokens == 0 {
+		if tokens.CacheReadTokens > 0 {
+			tokens.CachedTokens = tokens.CacheReadTokens
+		} else if tokens.CacheWriteTokens > 0 {
+			tokens.CachedTokens = tokens.CacheWriteTokens
+		}
 	}
 	return tokens
 }
@@ -605,6 +622,13 @@ func normaliseTokenStats(tokens TokenStats) TokenStats {
 	}
 	if tokens.TotalTokens == 0 {
 		tokens.TotalTokens = tokens.InputTokens + tokens.OutputTokens + tokens.ReasoningTokens + tokens.CachedTokens
+	}
+	if tokens.CachedTokens == 0 {
+		if tokens.CacheReadTokens > 0 {
+			tokens.CachedTokens = tokens.CacheReadTokens
+		} else if tokens.CacheWriteTokens > 0 {
+			tokens.CachedTokens = tokens.CacheWriteTokens
+		}
 	}
 	return tokens
 }

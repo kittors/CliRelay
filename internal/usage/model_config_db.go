@@ -14,19 +14,21 @@ import (
 )
 
 type ModelConfigRow struct {
-	ModelID               string   `json:"model_id"`
-	OwnedBy               string   `json:"owned_by"`
-	Description           string   `json:"description"`
-	Enabled               bool     `json:"enabled"`
-	InputModalities       []string `json:"input_modalities,omitempty"`
-	OutputModalities      []string `json:"output_modalities,omitempty"`
-	PricingMode           string   `json:"pricing_mode"`
-	InputPricePerMillion  float64  `json:"input_price_per_million"`
-	OutputPricePerMillion float64  `json:"output_price_per_million"`
-	CachedPricePerMillion float64  `json:"cached_price_per_million"`
-	PricePerCall          float64  `json:"price_per_call"`
-	Source                string   `json:"source"`
-	UpdatedAt             string   `json:"updated_at"`
+	ModelID                 string   `json:"model_id"`
+	OwnedBy                 string   `json:"owned_by"`
+	Description             string   `json:"description"`
+	Enabled                 bool     `json:"enabled"`
+	InputModalities         []string `json:"input_modalities,omitempty"`
+	OutputModalities        []string `json:"output_modalities,omitempty"`
+	PricingMode             string   `json:"pricing_mode"`
+	InputPricePerMillion    float64  `json:"input_price_per_million"`
+	OutputPricePerMillion   float64  `json:"output_price_per_million"`
+	CachedPricePerMillion   float64  `json:"cached_price_per_million"`
+	CacheReadPricePerMillion  float64 `json:"cache_read_price_per_million,omitempty"`
+	CacheWritePricePerMillion float64 `json:"cache_write_price_per_million,omitempty"`
+	PricePerCall            float64  `json:"price_per_call"`
+	Source                  string   `json:"source"`
+	UpdatedAt               string   `json:"updated_at"`
 }
 
 type ModelOwnerPresetRow struct {
@@ -39,19 +41,21 @@ type ModelOwnerPresetRow struct {
 
 const createModelConfigTablesSQL = `
 CREATE TABLE IF NOT EXISTS model_configs (
-  model_id                 TEXT PRIMARY KEY,
-  owned_by                 TEXT NOT NULL DEFAULT '',
-  description              TEXT NOT NULL DEFAULT '',
-  enabled                  INTEGER NOT NULL DEFAULT 1,
-  input_modalities         TEXT NOT NULL DEFAULT '',
-  output_modalities        TEXT NOT NULL DEFAULT '',
-  pricing_mode             TEXT NOT NULL DEFAULT 'token',
-  input_price_per_million  REAL NOT NULL DEFAULT 0,
-  output_price_per_million REAL NOT NULL DEFAULT 0,
-  cached_price_per_million REAL NOT NULL DEFAULT 0,
-  price_per_call           REAL NOT NULL DEFAULT 0,
-  source                   TEXT NOT NULL DEFAULT 'user',
-  updated_at               DATETIME NOT NULL
+  model_id                      TEXT PRIMARY KEY,
+  owned_by                      TEXT NOT NULL DEFAULT '',
+  description                   TEXT NOT NULL DEFAULT '',
+  enabled                       INTEGER NOT NULL DEFAULT 1,
+  input_modalities              TEXT NOT NULL DEFAULT '',
+  output_modalities             TEXT NOT NULL DEFAULT '',
+  pricing_mode                  TEXT NOT NULL DEFAULT 'token',
+  input_price_per_million        REAL NOT NULL DEFAULT 0,
+  output_price_per_million       REAL NOT NULL DEFAULT 0,
+  cached_price_per_million       REAL NOT NULL DEFAULT 0,
+  cache_read_price_per_million   REAL NOT NULL DEFAULT 0,
+  cache_write_price_per_million  REAL NOT NULL DEFAULT 0,
+  price_per_call                 REAL NOT NULL DEFAULT 0,
+  source                        TEXT NOT NULL DEFAULT 'user',
+  updated_at                    DATETIME NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_model_configs_owned_by ON model_configs(owned_by);
@@ -160,6 +164,13 @@ func ensureModelConfigSchema(db *sql.DB) {
 	if !sqliteColumnExists(db, "model_configs", "output_modalities") {
 		if _, err := db.Exec("ALTER TABLE model_configs ADD COLUMN output_modalities TEXT NOT NULL DEFAULT ''"); err != nil {
 			log.Warnf("usage: add model config output_modalities column: %v", err)
+		}
+	}
+	for _, col := range []string{"cache_read_price_per_million", "cache_write_price_per_million"} {
+		if !sqliteColumnExists(db, "model_configs", col) {
+			if _, err := db.Exec(fmt.Sprintf("ALTER TABLE model_configs ADD COLUMN %s REAL NOT NULL DEFAULT 0", col)); err != nil {
+				log.Warnf("usage: add model config column %s: %v", col, err)
+			}
 		}
 	}
 }
@@ -393,7 +404,7 @@ func mergeLegacyPricingIntoModelConfigs(db *sql.DB) {
 
 func reloadModelConfigCache(db *sql.DB) {
 	rows, err := db.Query(
-		`SELECT model_id, owned_by, description, enabled, input_modalities, output_modalities, pricing_mode, input_price_per_million, output_price_per_million, cached_price_per_million, price_per_call, source, updated_at
+		`SELECT model_id, owned_by, description, enabled, input_modalities, output_modalities, pricing_mode, input_price_per_million, output_price_per_million, cached_price_per_million, cache_read_price_per_million, cache_write_price_per_million, price_per_call, source, updated_at
 		 FROM model_configs`,
 	)
 	if err != nil {
@@ -418,6 +429,8 @@ func reloadModelConfigCache(db *sql.DB) {
 			&row.InputPricePerMillion,
 			&row.OutputPricePerMillion,
 			&row.CachedPricePerMillion,
+			&row.CacheReadPricePerMillion,
+			&row.CacheWritePricePerMillion,
 			&row.PricePerCall,
 			&row.Source,
 			&row.UpdatedAt,
@@ -536,8 +549,8 @@ func UpsertModelConfig(row ModelConfigRow) error {
 	row.UpdatedAt = nowRFC3339()
 	_, err := db.Exec(
 		`INSERT INTO model_configs
-		 (model_id, owned_by, description, enabled, input_modalities, output_modalities, pricing_mode, input_price_per_million, output_price_per_million, cached_price_per_million, price_per_call, source, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 (model_id, owned_by, description, enabled, input_modalities, output_modalities, pricing_mode, input_price_per_million, output_price_per_million, cached_price_per_million, cache_read_price_per_million, cache_write_price_per_million, price_per_call, source, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(model_id) DO UPDATE SET
 		   owned_by = excluded.owned_by,
 		   description = excluded.description,
@@ -548,6 +561,8 @@ func UpsertModelConfig(row ModelConfigRow) error {
 		   input_price_per_million = excluded.input_price_per_million,
 		   output_price_per_million = excluded.output_price_per_million,
 		   cached_price_per_million = excluded.cached_price_per_million,
+		   cache_read_price_per_million = excluded.cache_read_price_per_million,
+		   cache_write_price_per_million = excluded.cache_write_price_per_million,
 		   price_per_call = excluded.price_per_call,
 		   source = excluded.source,
 		   updated_at = excluded.updated_at`,
@@ -561,6 +576,8 @@ func UpsertModelConfig(row ModelConfigRow) error {
 		row.InputPricePerMillion,
 		row.OutputPricePerMillion,
 		row.CachedPricePerMillion,
+		row.CacheReadPricePerMillion,
+		row.CacheWritePricePerMillion,
 		row.PricePerCall,
 		row.Source,
 		row.UpdatedAt,
@@ -569,7 +586,7 @@ func UpsertModelConfig(row ModelConfigRow) error {
 		return fmt.Errorf("usage: upsert model config: %w", err)
 	}
 	if row.PricingMode == "token" {
-		if err := UpsertModelPricing(row.ModelID, row.InputPricePerMillion, row.OutputPricePerMillion, row.CachedPricePerMillion); err != nil {
+		if err := UpsertModelPricingV2(row.ModelID, row.InputPricePerMillion, row.OutputPricePerMillion, row.CachedPricePerMillion, row.CacheReadPricePerMillion, row.CacheWritePricePerMillion); err != nil {
 			return err
 		}
 	} else if err := DeleteModelPricing(row.ModelID); err != nil {
