@@ -1,0 +1,123 @@
+{
+  "large_files": {
+    "allow_above_1200": [
+      {
+        "path": "internal/registry/model_definitions_static_data.go",
+        "max_lines": 1233,
+        "reason": "Static model definition data exception; keep out of business-logic large-file goals unless generation/storage changes."
+      }
+    ]
+  },
+  "sdk_internal_imports": {
+    "allow": {
+      "sdk/api/handlers/claude/ccswitch_model_mapping.go": [
+        "github.com/router-for-me/CLIProxyAPI/v6/internal/routing"
+      ],
+      "sdk/api/handlers/claude/code_handlers.go": [
+        "github.com/router-for-me/CLIProxyAPI/v6/internal/constant",
+        "github.com/router-for-me/CLIProxyAPI/v6/internal/interfaces",
+        "github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
+      ],
+      "sdk/api/handlers/gemini/gemini-cli_handlers.go": [
+        "github.com/router-for-me/CLIProxyAPI/v6/internal/api/bodyutil",
+        "github.com/router-for-me/CLIProxyAPI/v6/internal/constant",
+        "github.com/router-for-me/CLIProxyAPI/v6/internal/interfaces",
+        "github.com/router-for-me/CLIProxyAPI/v6/internal/util"
+      ],
+      "sdk/api/handlers/gemini/gemini_handlers.go": [
+        "github.com/router-for-me/CLIProxyAPI/v6/internal/constant",
+        "github.com/router-for-me/CLIProxyAPI/v6/internal/interfaces",
+        "github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
+      ],
+      "sdk/api/handlers/handlers.go": [
+        "github.com/router-for-me/CLIProxyAPI/v6/internal/api/bodyutil",
+        "github.com/router-for-me/CLIProxyAPI/v6/internal/interfaces",
+        "github.com/router-for-me/CLIProxyAPI/v6/internal/logging",
+        "github.com/router-for-me/CLIProxyAPI/v6/internal/registry",
+        "github.com/router-for-me/CLIProxyAPI/v6/internal/routing",
+        "github.com/router-for-me/CLIProxyAPI/v6/internal/thinking",
+        "github.com/router-for-me/CLIProxyAPI/v6/internal/util"
+      ],
+      "sdk/api/handlers/openai/openai_handlers.go": [
+        "github.com/router-for-me/CLIProxyAPI/v6/internal/constant",
+        "github.com/router-for-me/CLIProxyAPI/v6/internal/interfaces",
+        "github.com/router-for-me/CLIProxyAPI/v6/internal/registry",
+        "github.com/router-for-me/CLIProxyAPI/v6/internal/translator/openai/openai/responses"
+      ],
+      "sdk/api/handlers/openai/openai_images_handlers.go": [
+        "github.com/router-for-me/CLIProxyAPI/v6/internal/routing",
+        "github.com/router-for-me/CLIProxyAPI/v6/internal/util"
+      ],
+      "sdk/api/handlers/openai/openai_responses_handlers.go": [
+        "github.com/router-for-me/CLIProxyAPI/v6/internal/constant",
+        "github.com/router-for-me/CLIProxyAPI/v6/internal/interfaces",
+        "github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
+      ],
+      "sdk/api/handlers/openai/openai_responses_websocket.go": [
+        "github.com/router-for-me/CLIProxyAPI/v6/internal/interfaces",
+        "github.com/router-for-me/CLIProxyAPI/v6/internal/util"
+      ],
+      "sdk/auth/antigravity.go": [
+        "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/antigravity",
+        "github.com/router-for-me/CLIProxyAPI/v6/internal/browser",
+        "github.com/router-for-me/CLIProxyAPI/v6/internal/config",
+        "github.com/router-for-me/CLIProxyAPI/v6/internal/misc",
+        "github.com/router-for-me/CLIProxyAPI/v6/internal/util"
+      ],
+      "sdk/auth/claude.go": [
+        "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/claude",
+        "github.com/router-for-me/CLIProxyAPI/v6/internal/browser",
+        "github.com/router-for-me/CLIProxyAPI/v6/internal/config",
+        "github.com/router-for-me/CLIProxyAPI/v6/internal/misc",
+        "github.com/router-for-me/CLIProxyAPI/v6/internal/util"
+      ],
+      "sdk/auth/codex.go": [
+        "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/codex",
+        "github.com/router-for-me/CLIProxyAPI/v6/internal/browser",
+        "github.com/router-for-me/CLIProxyAPI/v6/internal/config",
+        "github.com/router-for-me/CLIProxyAPI/v6/internal/misc",
+        "github.com/router-for-me/CLIProxyAPI/v6/internal/util"
+      ],
+      "sdk/auth/codex_device.go": [
+        "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/codex",
+        "github.com/router-for-me/CLIProxyAPI/v6/internal/browser",
+        "github.com/router-for-me/CLIProxyAPI/v6/internal/config",
+        "github.com/router-for-me/CLIProxyAPI/v6/internal/util"
+      ],
+      "sdk/auth/filestore.go": [
+        "github.com/router-for-me/CLIProxyAPI/v6/internal/auth",
+        "github.com/router-for-me/CLIProxyAPI/v6/internal/util"
+      ],
+      "sdk/auth/gemini.go": [
+        "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/gemini",
+        "github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+      ],
+      "sdk/auth/iflow.go": [
+        "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/iflow",
+        "github.com/router-for-me/CLIProxyAPI/v6/internal/browser",
+        "github.com/router-for-me/CLIProxyAPI/v6/internal/config",
+        "github.com/router-for-me/CLIProxyAPI/v6/internal/misc",
+        "github.com/router-for-me/CLIProxyAPI/v6/internal/util"
+      ],
+      "sdk/auth/interfaces.go": [
+        "github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+      ],
+      "sdk/auth/kimi.go": [
+        "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/kimi",
+        "github.com/router-for-me/CLIProxyAPI/v6/internal/browser",
+        "github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+      ],
+      "sdk/auth/manager.go": [
+        "github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+      ],
+      "sdk/auth/qwen.go": [
+        "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/qwen",
+        "github.com/router-for-me/CLIProxyAPI/v6/internal/browser",
+        "github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+      ]
+    }
+  },
+  "management_persistence_calls": {
+    "allow": {}
+  }
+}
