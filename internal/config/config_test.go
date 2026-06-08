@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestLoadConfigDefaultsDisableControlPanel(t *testing.T) {
@@ -23,8 +24,32 @@ func TestLoadConfigDefaultsDisableControlPanel(t *testing.T) {
 	if cfg.RemoteManagement.DisableControlPanel {
 		t.Fatalf("DisableControlPanel = true, want false by default")
 	}
+	if cfg.MainAPIReadTimeout() != DefaultMainAPIReadTimeout {
+		t.Fatalf("MainAPIReadTimeout = %s, want %s", cfg.MainAPIReadTimeout(), DefaultMainAPIReadTimeout)
+	}
 	if cfg.RemoteManagement.PanelGitHubRepository != DefaultPanelGitHubRepository {
 		t.Fatalf("PanelGitHubRepository = %q, want %q", cfg.RemoteManagement.PanelGitHubRepository, DefaultPanelGitHubRepository)
+	}
+}
+
+func TestLoadConfigReadsMainAPIReadTimeoutOverride(t *testing.T) {
+	t.Parallel()
+
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(configPath, []byte("main-api-read-timeout-seconds: 240\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("LoadConfig returned error: %v", err)
+	}
+
+	if cfg.MainAPIReadTimeoutSeconds != 240 {
+		t.Fatalf("MainAPIReadTimeoutSeconds = %d, want 240", cfg.MainAPIReadTimeoutSeconds)
+	}
+	if cfg.MainAPIReadTimeout() != 240*time.Second {
+		t.Fatalf("MainAPIReadTimeout = %s, want %s", cfg.MainAPIReadTimeout(), 240*time.Second)
 	}
 }
 

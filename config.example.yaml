@@ -19,6 +19,12 @@ oauth-clients:
 # Server port
 port: 8317
 
+# Maximum time in seconds the main API server may spend reading request headers + body
+# from downstream clients before returning a timeout.
+# Increase this if clients send large JSON or multimodal payloads through slow Docker /
+# reverse-proxy links. Default is 120 seconds.
+main-api-read-timeout-seconds: 120
+
 # Project timezone (IANA name). Affects "today" boundaries and day-based aggregation in monitoring/usage pages.
 # Examples: "Asia/Shanghai", "UTC", "America/Los_Angeles"
 timezone: ""

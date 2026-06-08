@@ -2,9 +2,11 @@ package bodyutil
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -72,6 +74,17 @@ func IsTooLarge(err error) bool {
 	}
 	var maxBytesErr *http.MaxBytesError
 	return errors.As(err, &maxBytesErr)
+}
+
+func IsTimeout(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) || os.IsTimeout(err) {
+		return true
+	}
+	var timeoutErr interface{ Timeout() bool }
+	return errors.As(err, &timeoutErr) && timeoutErr.Timeout()
 }
 
 // LimitBodyMiddleware eagerly reads and restores request bodies with a hard limit.

@@ -4,6 +4,10 @@
 // debug settings, proxy configuration, and API keys.
 package config
 
+import "time"
+
+const DefaultMainAPIReadTimeout = 2 * time.Minute
+
 // Config represents the application's configuration, loaded from a YAML file.
 type Config struct {
 	SDKConfig `yaml:",inline"`
@@ -12,6 +16,11 @@ type Config struct {
 	Host string `yaml:"host" json:"-"`
 	// Port is the network port on which the API server will listen.
 	Port int `yaml:"port" json:"-"`
+
+	// MainAPIReadTimeoutSeconds controls how long the main API server may spend reading
+	// request headers and body from downstream clients before timing out.
+	// When unset or <= 0, DefaultMainAPIReadTimeout is used.
+	MainAPIReadTimeoutSeconds int `yaml:"main-api-read-timeout-seconds,omitempty" json:"main-api-read-timeout-seconds,omitempty"`
 
 	// Timezone configures the project's timezone (IANA name, e.g. "Asia/Shanghai").
 	// It affects "today" boundaries and day-based aggregation in monitoring/usage pages.
@@ -144,6 +153,13 @@ type Config struct {
 	Payload PayloadConfig `yaml:"payload" json:"payload"`
 
 	legacyMigrationPending bool `yaml:"-" json:"-"`
+}
+
+func (cfg *Config) MainAPIReadTimeout() time.Duration {
+	if cfg == nil || cfg.MainAPIReadTimeoutSeconds <= 0 {
+		return DefaultMainAPIReadTimeout
+	}
+	return time.Duration(cfg.MainAPIReadTimeoutSeconds) * time.Second
 }
 
 // ClaudeHeaderDefaults configures default header values injected into Claude API requests

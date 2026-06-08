@@ -74,17 +74,23 @@ func ReadJSONRequestBody(c *gin.Context) ([]byte, bool) {
 
 	status := http.StatusBadRequest
 	message := fmt.Sprintf("Invalid request: %v", err)
+	errType := "invalid_request_error"
 	code := ""
 	if bodyutil.IsTooLarge(err) {
 		status = http.StatusRequestEntityTooLarge
 		message = "Request body too large"
 		code = "request_body_too_large"
+	} else if bodyutil.IsTimeout(err) {
+		status = http.StatusRequestTimeout
+		message = "Request timed out while reading the request body"
+		errType = "request_timeout"
+		code = "request_timeout"
 	}
 
 	c.JSON(status, ErrorResponse{
 		Error: ErrorDetail{
 			Message: message,
-			Type:    "invalid_request_error",
+			Type:    errType,
 			Code:    code,
 		},
 	})
@@ -156,6 +162,9 @@ func BuildErrorResponseBody(status int, errText string) []byte {
 	case http.StatusNotFound:
 		errType = "invalid_request_error"
 		code = "model_not_found"
+	case http.StatusRequestTimeout:
+		errType = "request_timeout"
+		code = "request_timeout"
 	default:
 		if status >= http.StatusInternalServerError {
 			errType = "server_error"

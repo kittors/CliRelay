@@ -537,6 +537,21 @@ func TestNewServerSetsMainWriteTimeout(t *testing.T) {
 	if got := server.server.WriteTimeout; got != mainAPIServerWriteTimeout {
 		t.Fatalf("WriteTimeout = %s, want %s", got, mainAPIServerWriteTimeout)
 	}
+	if got := server.server.ReadTimeout; got != proxyconfig.DefaultMainAPIReadTimeout {
+		t.Fatalf("ReadTimeout = %s, want %s", got, proxyconfig.DefaultMainAPIReadTimeout)
+	}
+}
+
+func TestNewServerUsesConfiguredMainReadTimeout(t *testing.T) {
+	server := newTestServerWithConfig(t, func(cfg *proxyconfig.Config) {
+		cfg.MainAPIReadTimeoutSeconds = 240
+	})
+	if server.server == nil {
+		t.Fatal("expected http server to be initialized")
+	}
+	if got := server.server.ReadTimeout; got != 240*time.Second {
+		t.Fatalf("ReadTimeout = %s, want %s", got, 240*time.Second)
+	}
 }
 
 func TestOAuthCallbackRouteStillServesSuccessHTML(t *testing.T) {
