@@ -105,6 +105,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 
 	body = execCtx.ApplyPayloadConfig(body, originalTranslated)
 	body, _ = sjson.SetBytes(body, "model", execCtx.BaseModel)
+	body = sanitizeCodexResponsesRequest(body)
 	body, _ = sjson.SetBytes(body, "stream", true)
 	body, _ = sjson.DeleteBytes(body, "previous_response_id")
 	body, _ = sjson.DeleteBytes(body, "prompt_cache_retention")

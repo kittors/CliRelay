@@ -16,6 +16,17 @@ func ensureTranslatedCodexModel(body []byte, fallback string) []byte {
 	return body
 }
 
+func sanitizeCodexResponsesRequest(body []byte) []byte {
+	for _, field := range []string{
+		"max_output_tokens",
+		"max_completion_tokens",
+		"max_tokens",
+	} {
+		body, _ = sjson.DeleteBytes(body, field)
+	}
+	return body
+}
+
 func extractCodexResponsesOutputItemDone(payload []byte) ([]byte, string, bool) {
 	if gjson.GetBytes(payload, "type").String() != "response.output_item.done" {
 		return nil, "", false

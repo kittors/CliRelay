@@ -68,10 +68,12 @@ func TestConvertCodexResponseToOpenAINonStream_StripsReasoningSummary(t *testing
 	}
 }
 
-func TestConvertOpenAIRequestToCodex_MapsMaxCompletionTokens(t *testing.T) {
-	input := []byte(`{"model":"gpt-5.4","messages":[{"role":"user","content":"hi"}],"max_completion_tokens":1024}`)
+func TestConvertOpenAIRequestToCodex_StripsUnsupportedTokenLimitFields(t *testing.T) {
+	input := []byte(`{"model":"gpt-5.4","messages":[{"role":"user","content":"hi"}],"max_completion_tokens":1024,"max_tokens":2048}`)
 	got := ConvertOpenAIRequestToCodex("gpt-5.4", input, true)
-	if limit := gjson.GetBytes(got, "max_output_tokens").Int(); limit != 1024 {
-		t.Fatalf("max_output_tokens = %d, want 1024; payload=%s", limit, got)
+	for _, field := range []string{"max_output_tokens", "max_completion_tokens", "max_tokens"} {
+		if gjson.GetBytes(got, field).Exists() {
+			t.Fatalf("%s should be stripped for codex upstream; payload=%s", field, got)
+		}
 	}
 }

@@ -170,3 +170,48 @@ func TestCodexExecutorExecuteMergesResponsesImageOutputFromPriorSSEItem(t *testi
 		t.Fatalf("output.0.revised_prompt = %q, want %q; payload=%s", got, "cute fox icon", resp.Payload)
 	}
 }
+
+func TestCodexExecutorExecuteStripsUnsupportedTokenLimitFields(t *testing.T) {
+	var lastBody string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/backend-api/codex/responses" {
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		body, _ := io.ReadAll(r.Body)
+		lastBody = string(body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"object\":\"response\",\"created_at\":1710000002,\"status\":\"completed\",\"output\":[]}}\n\n"))
+	}))
+	defer server.Close()
+
+	executor := NewCodexExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{
+		ID:       "codex-auth-token-limits",
+		Provider: "codex",
+		Status:   cliproxyauth.StatusActive,
+		Attributes: map[string]string{
+			"base_url": server.URL + "/backend-api/codex",
+		},
+		Metadata: map[string]any{
+			"access_token": "token",
+			"account_id":   "account-1",
+		},
+	}
+
+	_, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "gpt-5.4",
+		Payload: []byte(`{"model":"gpt-5.4","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}],"max_output_tokens":1024,"max_completion_tokens":2048,"max_tokens":4096}`),
+		Format:  sdktranslator.FromString("codex"),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("codex"),
+	})
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+
+	for _, field := range []string{"max_output_tokens", "max_completion_tokens", "max_tokens"} {
+		if gjson.Get(lastBody, field).Exists() {
+			t.Fatalf("%s should be stripped before codex upstream call; body=%s", field, lastBody)
+		}
+	}
+}
