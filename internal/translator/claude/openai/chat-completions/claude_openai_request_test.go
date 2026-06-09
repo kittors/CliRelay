@@ -73,3 +73,16 @@ func TestConvertOpenAIRequestToClaude_AssistantReasoningContentWithToolCalls(t *
 		t.Fatalf("expected assistant content[2].type to be tool_use, got %q; body=%s", gotType, got)
 	}
 }
+
+func TestConvertOpenAIRequestToClaude_MapsMaxCompletionTokens(t *testing.T) {
+	input := []byte(`{
+		"model": "test-model",
+		"max_completion_tokens": 2048,
+		"messages": [{"role": "user", "content": "hi"}]
+	}`)
+
+	got := ConvertOpenAIRequestToClaude("test-model", input, false)
+	if limit := gjson.GetBytes(got, "max_tokens").Int(); limit != 2048 {
+		t.Fatalf("max_tokens = %d, want 2048; body=%s", limit, got)
+	}
+}

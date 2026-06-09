@@ -101,8 +101,10 @@ func ConvertOpenAIRequestToClaude(modelName string, inputRawJSON []byte, stream 
 	// Model mapping to specify which Claude Code model to use
 	out, _ = sjson.Set(out, "model", modelName)
 
-	// Max tokens configuration with fallback to default value
-	if maxTokens := root.Get("max_tokens"); maxTokens.Exists() {
+	// Max tokens configuration with fallback to the legacy max_tokens field.
+	if maxTokens := root.Get("max_completion_tokens"); maxTokens.Exists() {
+		out, _ = sjson.Set(out, "max_tokens", maxTokens.Int())
+	} else if maxTokens := root.Get("max_tokens"); maxTokens.Exists() {
 		out, _ = sjson.Set(out, "max_tokens", maxTokens.Int())
 	}
 

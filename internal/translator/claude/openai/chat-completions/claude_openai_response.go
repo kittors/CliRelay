@@ -65,9 +65,10 @@ func ConvertClaudeResponseToOpenAI(_ context.Context, modelName string, original
 
 	root := gjson.ParseBytes(rawJSON)
 	eventType := root.Get("type").String()
+	state := (*param).(*ConvertAnthropicResponseToOpenAIParams)
 
 	// Base OpenAI streaming response template
-	template := `{"id":"","object":"chat.completion.chunk","created":0,"model":"","choices":[{"index":0,"delta":{},"finish_reason":null}]}`
+	template := `{"id":"","object":"chat.completion.chunk","created":0,"model":"","choices":[{"index":0,"delta":{},"finish_reason":null}],"usage":null}`
 
 	// Set model
 	if modelName != "" {
@@ -75,30 +76,30 @@ func ConvertClaudeResponseToOpenAI(_ context.Context, modelName string, original
 	}
 
 	// Set response ID and creation time
-	if (*param).(*ConvertAnthropicResponseToOpenAIParams).ResponseID != "" {
-		template, _ = sjson.Set(template, "id", (*param).(*ConvertAnthropicResponseToOpenAIParams).ResponseID)
+	if state.ResponseID != "" {
+		template, _ = sjson.Set(template, "id", state.ResponseID)
 	}
-	if (*param).(*ConvertAnthropicResponseToOpenAIParams).CreatedAt > 0 {
-		template, _ = sjson.Set(template, "created", (*param).(*ConvertAnthropicResponseToOpenAIParams).CreatedAt)
+	if state.CreatedAt > 0 {
+		template, _ = sjson.Set(template, "created", state.CreatedAt)
 	}
 
 	switch eventType {
 	case "message_start":
 		// Initialize response with message metadata when a new message begins
 		if message := root.Get("message"); message.Exists() {
-			(*param).(*ConvertAnthropicResponseToOpenAIParams).ResponseID = message.Get("id").String()
-			(*param).(*ConvertAnthropicResponseToOpenAIParams).CreatedAt = time.Now().Unix()
+			state.ResponseID = message.Get("id").String()
+			state.CreatedAt = time.Now().Unix()
 
-			template, _ = sjson.Set(template, "id", (*param).(*ConvertAnthropicResponseToOpenAIParams).ResponseID)
+			template, _ = sjson.Set(template, "id", state.ResponseID)
 			template, _ = sjson.Set(template, "model", modelName)
-			template, _ = sjson.Set(template, "created", (*param).(*ConvertAnthropicResponseToOpenAIParams).CreatedAt)
+			template, _ = sjson.Set(template, "created", state.CreatedAt)
 
 			// Set initial role to assistant for the response
 			template, _ = sjson.Set(template, "choices.0.delta.role", "assistant")
 
 			// Initialize tool calls accumulator for tracking tool call progress
-			if (*param).(*ConvertAnthropicResponseToOpenAIParams).ToolCallsAccumulator == nil {
-				(*param).(*ConvertAnthropicResponseToOpenAIParams).ToolCallsAccumulator = make(map[int]*ToolCallAccumulator)
+			if state.ToolCallsAccumulator == nil {
+				state.ToolCallsAccumulator = make(map[int]*ToolCallAccumulator)
 			}
 		}
 		return []string{template}
@@ -114,11 +115,11 @@ func ConvertClaudeResponseToOpenAI(_ context.Context, modelName string, original
 				toolName := contentBlock.Get("name").String()
 				index := int(root.Get("index").Int())
 
-				if (*param).(*ConvertAnthropicResponseToOpenAIParams).ToolCallsAccumulator == nil {
-					(*param).(*ConvertAnthropicResponseToOpenAIParams).ToolCallsAccumulator = make(map[int]*ToolCallAccumulator)
+				if state.ToolCallsAccumulator == nil {
+					state.ToolCallsAccumulator = make(map[int]*ToolCallAccumulator)
 				}
 
-				(*param).(*ConvertAnthropicResponseToOpenAIParams).ToolCallsAccumulator[index] = &ToolCallAccumulator{
+				state.ToolCallsAccumulator[index] = &ToolCallAccumulator{
 					ID:   toolCallID,
 					Name: toolName,
 				}
@@ -143,17 +144,13 @@ func ConvertClaudeResponseToOpenAI(_ context.Context, modelName string, original
 					hasContent = true
 				}
 			case "thinking_delta":
-				// Accumulate reasoning/thinking content
-				if thinking := delta.Get("thinking"); thinking.Exists() {
-					template, _ = sjson.Set(template, "choices.0.delta.reasoning_content", thinking.String())
-					hasContent = true
-				}
+				return []string{}
 			case "input_json_delta":
 				// Tool use input delta - accumulate arguments for tool calls
 				if partialJSON := delta.Get("partial_json"); partialJSON.Exists() {
 					index := int(root.Get("index").Int())
-					if (*param).(*ConvertAnthropicResponseToOpenAIParams).ToolCallsAccumulator != nil {
-						if accumulator, exists := (*param).(*ConvertAnthropicResponseToOpenAIParams).ToolCallsAccumulator[index]; exists {
+					if state.ToolCallsAccumulator != nil {
+						if accumulator, exists := state.ToolCallsAccumulator[index]; exists {
 							accumulator.Arguments.WriteString(partialJSON.String())
 						}
 					}
@@ -171,8 +168,8 @@ func ConvertClaudeResponseToOpenAI(_ context.Context, modelName string, original
 	case "content_block_stop":
 		// End of content block - output complete tool call if it's a tool_use block
 		index := int(root.Get("index").Int())
-		if (*param).(*ConvertAnthropicResponseToOpenAIParams).ToolCallsAccumulator != nil {
-			if accumulator, exists := (*param).(*ConvertAnthropicResponseToOpenAIParams).ToolCallsAccumulator[index]; exists {
+		if state.ToolCallsAccumulator != nil {
+			if accumulator, exists := state.ToolCallsAccumulator[index]; exists {
 				// Build complete tool call with accumulated arguments
 				arguments := accumulator.Arguments.String()
 				if arguments == "" {
@@ -185,7 +182,7 @@ func ConvertClaudeResponseToOpenAI(_ context.Context, modelName string, original
 				template, _ = sjson.Set(template, "choices.0.delta.tool_calls.0.function.arguments", arguments)
 
 				// Clean up the accumulator for this index
-				delete((*param).(*ConvertAnthropicResponseToOpenAIParams).ToolCallsAccumulator, index)
+				delete(state.ToolCallsAccumulator, index)
 
 				return []string{template}
 			}
@@ -194,25 +191,23 @@ func ConvertClaudeResponseToOpenAI(_ context.Context, modelName string, original
 
 	case "message_delta":
 		// Handle message-level changes including stop reason and usage
+		var outputs []string
 		if delta := root.Get("delta"); delta.Exists() {
 			if stopReason := delta.Get("stop_reason"); stopReason.Exists() {
-				(*param).(*ConvertAnthropicResponseToOpenAIParams).FinishReason = mapAnthropicStopReasonToOpenAI(stopReason.String())
-				template, _ = sjson.Set(template, "choices.0.finish_reason", (*param).(*ConvertAnthropicResponseToOpenAIParams).FinishReason)
+				state.FinishReason = mapAnthropicStopReasonToOpenAI(stopReason.String())
+				template, _ = sjson.Set(template, "choices.0.finish_reason", state.FinishReason)
+				outputs = append(outputs, template)
 			}
 		}
 
-		// Handle usage information for token counts
-		if usage := root.Get("usage"); usage.Exists() {
-			inputTokens := usage.Get("input_tokens").Int()
-			outputTokens := usage.Get("output_tokens").Int()
-			cacheReadInputTokens := usage.Get("cache_read_input_tokens").Int()
-			cacheCreationInputTokens := usage.Get("cache_creation_input_tokens").Int()
-			template, _ = sjson.Set(template, "usage.prompt_tokens", inputTokens+cacheCreationInputTokens)
-			template, _ = sjson.Set(template, "usage.completion_tokens", outputTokens)
-			template, _ = sjson.Set(template, "usage.total_tokens", inputTokens+outputTokens)
-			template, _ = sjson.Set(template, "usage.prompt_tokens_details.cached_tokens", cacheReadInputTokens)
+		if includeUsageInClaudeChatStream(originalRequestRawJSON) {
+			if usage := root.Get("usage"); usage.Exists() {
+				if usageChunk := buildClaudeChatUsageChunk(state, modelName, usage); usageChunk != "" {
+					outputs = append(outputs, usageChunk)
+				}
+			}
 		}
-		return []string{template}
+		return outputs
 
 	case "message_stop":
 		// Final message event - no additional output needed
@@ -286,7 +281,6 @@ func ConvertClaudeResponseToOpenAINonStream(_ context.Context, _ string, origina
 	var createdAt int64
 	var stopReason string
 	var contentParts []string
-	var reasoningParts []string
 	toolCallsAccumulator := make(map[int]*ToolCallAccumulator)
 
 	for _, chunk := range chunks {
@@ -330,10 +324,6 @@ func ConvertClaudeResponseToOpenAINonStream(_ context.Context, _ string, origina
 						contentParts = append(contentParts, text.String())
 					}
 				case "thinking_delta":
-					// Accumulate reasoning/thinking content
-					if thinking := delta.Get("thinking"); thinking.Exists() {
-						reasoningParts = append(reasoningParts, thinking.String())
-					}
 				case "input_json_delta":
 					// Accumulate tool call arguments
 					if partialJSON := delta.Get("partial_json"); partialJSON.Exists() {
@@ -383,13 +373,6 @@ func ConvertClaudeResponseToOpenAINonStream(_ context.Context, _ string, origina
 	messageContent := strings.Join(contentParts, "")
 	out, _ = sjson.Set(out, "choices.0.message.content", messageContent)
 
-	// Add reasoning content if available (following OpenAI reasoning format)
-	if len(reasoningParts) > 0 {
-		reasoningContent := strings.Join(reasoningParts, "")
-		// Add reasoning as a separate field in the message
-		out, _ = sjson.Set(out, "choices.0.message.reasoning", reasoningContent)
-	}
-
 	// Set tool calls if any were accumulated during processing
 	if len(toolCallsAccumulator) > 0 {
 		toolCallsCount := 0
@@ -429,4 +412,35 @@ func ConvertClaudeResponseToOpenAINonStream(_ context.Context, _ string, origina
 	}
 
 	return out
+}
+
+func includeUsageInClaudeChatStream(originalRequestRawJSON []byte) bool {
+	return gjson.GetBytes(originalRequestRawJSON, "stream_options.include_usage").Bool()
+}
+
+func buildClaudeChatUsageChunk(state *ConvertAnthropicResponseToOpenAIParams, modelName string, usage gjson.Result) string {
+	if !usage.Exists() || !usage.IsObject() {
+		return ""
+	}
+	template := `{"id":"","object":"chat.completion.chunk","created":0,"model":"","choices":[],"usage":{}}`
+	if state != nil {
+		if state.ResponseID != "" {
+			template, _ = sjson.Set(template, "id", state.ResponseID)
+		}
+		if state.CreatedAt > 0 {
+			template, _ = sjson.Set(template, "created", state.CreatedAt)
+		}
+	}
+	if modelName != "" {
+		template, _ = sjson.Set(template, "model", modelName)
+	}
+	inputTokens := usage.Get("input_tokens").Int()
+	outputTokens := usage.Get("output_tokens").Int()
+	cacheReadInputTokens := usage.Get("cache_read_input_tokens").Int()
+	cacheCreationInputTokens := usage.Get("cache_creation_input_tokens").Int()
+	template, _ = sjson.Set(template, "usage.prompt_tokens", inputTokens+cacheCreationInputTokens)
+	template, _ = sjson.Set(template, "usage.completion_tokens", outputTokens)
+	template, _ = sjson.Set(template, "usage.total_tokens", inputTokens+outputTokens)
+	template, _ = sjson.Set(template, "usage.prompt_tokens_details.cached_tokens", cacheReadInputTokens)
+	return template
 }

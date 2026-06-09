@@ -24,6 +24,19 @@ var hopByHopHeaders = map[string]struct{}{
 	"Content-Encoding": {},
 }
 
+var blockedUpstreamHeaderPrefixes = []string{
+	"X-Codex-",
+	"X-Openai-Proxy-",
+	"Cf-",
+}
+
+var blockedUpstreamHeaders = map[string]struct{}{
+	"Alt-Svc":       {},
+	"Nel":           {},
+	"Report-To":     {},
+	"Server-Timing": {},
+}
+
 // FilterUpstreamHeaders returns a copy of src with hop-by-hop and security-sensitive
 // headers removed. Returns nil if src is nil or empty after filtering.
 func FilterUpstreamHeaders(src http.Header) http.Header {
@@ -34,7 +47,7 @@ func FilterUpstreamHeaders(src http.Header) http.Header {
 	dst := make(http.Header)
 	for key, values := range src {
 		canonicalKey := http.CanonicalHeaderKey(key)
-		if _, blocked := hopByHopHeaders[canonicalKey]; blocked {
+		if isBlockedUpstreamHeader(canonicalKey) {
 			continue
 		}
 		if _, scoped := connectionScoped[canonicalKey]; scoped {
@@ -77,4 +90,19 @@ func WriteUpstreamHeaders(dst http.Header, src http.Header) {
 			dst.Add(key, v)
 		}
 	}
+}
+
+func isBlockedUpstreamHeader(canonicalKey string) bool {
+	if _, blocked := hopByHopHeaders[canonicalKey]; blocked {
+		return true
+	}
+	if _, blocked := blockedUpstreamHeaders[canonicalKey]; blocked {
+		return true
+	}
+	for _, prefix := range blockedUpstreamHeaderPrefixes {
+		if strings.HasPrefix(canonicalKey, prefix) {
+			return true
+		}
+	}
+	return false
 }

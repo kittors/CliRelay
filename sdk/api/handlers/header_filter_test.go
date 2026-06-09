@@ -53,3 +53,25 @@ func TestFilterUpstreamHeaders_ReturnsNilWhenAllHeadersBlocked(t *testing.T) {
 		t.Fatalf("expected nil when all headers are filtered, got %#v", filtered)
 	}
 }
+
+func TestFilterUpstreamHeaders_RemovesProviderFingerprintHeaders(t *testing.T) {
+	src := http.Header{}
+	src.Set("X-Codex-Active-Limit", "premium")
+	src.Set("X-Openai-Proxy-Wasm", "v0.1")
+	src.Set("Cf-Ray", "trace")
+	src.Set("Server-Timing", "cfCacheStatus")
+	src.Set("X-Request-Id", "req-1")
+
+	filtered := FilterUpstreamHeaders(src)
+	if filtered == nil {
+		t.Fatalf("expected filtered headers, got nil")
+	}
+	for _, key := range []string{"X-Codex-Active-Limit", "X-Openai-Proxy-Wasm", "Cf-Ray", "Server-Timing"} {
+		if value := filtered.Get(key); value != "" {
+			t.Fatalf("expected %s to be removed, got %q", key, value)
+		}
+	}
+	if got := filtered.Get("X-Request-Id"); got != "req-1" {
+		t.Fatalf("expected X-Request-Id to be preserved, got %q", got)
+	}
+}
