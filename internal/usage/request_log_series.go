@@ -1,6 +1,7 @@
 package usage
 
 import (
+	"database/sql"
 	"fmt"
 	"strings"
 	"time"
@@ -125,7 +126,7 @@ func QueryAPIKeyDistribution(days int) ([]APIKeyDistributionPoint, error) {
 	               WHEN trim(coalesce(api_key_id, '')) <> '' THEN api_key_id
 	               ELSE 'raw:' || api_key
 	             END as logical_selector,
-	             MAX(NULLIF(trim(coalesce(api_key_id, '')), '')) as logical_id,
+	             COALESCE(MAX(NULLIF(trim(coalesce(api_key_id, '')), '')), '') as logical_id,
 	             MAX(api_key) as snapshot_key,
 	             COALESCE(NULLIF(MAX(api_key_name),''), '') as snapshot_name,
 	             COUNT(*) as reqs,
@@ -143,7 +144,7 @@ func QueryAPIKeyDistribution(days int) ([]APIKeyDistributionPoint, error) {
 	var result []APIKeyDistributionPoint
 	for rows.Next() {
 		var logicalSelector string
-		var logicalID string
+		var logicalID sql.NullString
 		var snapshotKey string
 		var snapshotName string
 		var p APIKeyDistributionPoint
@@ -152,7 +153,7 @@ func QueryAPIKeyDistribution(days int) ([]APIKeyDistributionPoint, error) {
 		}
 		p.APIKey = strings.TrimSpace(snapshotKey)
 		p.Name = strings.TrimSpace(snapshotName)
-		if row, ok := currentByID[strings.TrimSpace(logicalID)]; ok {
+		if row, ok := currentByID[trimNullString(logicalID)]; ok {
 			if trimmed := strings.TrimSpace(row.Key); trimmed != "" {
 				p.APIKey = trimmed
 			}

@@ -555,7 +555,7 @@ func queryDistinctAPIKeys(db *sql.DB, cutoff string) ([]string, map[string]strin
 				WHEN trim(coalesce(api_key_id, '')) <> '' THEN api_key_id
 				ELSE 'raw:' || api_key
 			END AS logical_selector,
-			MAX(NULLIF(trim(coalesce(api_key_id, '')), '')) AS logical_id,
+			COALESCE(MAX(NULLIF(trim(coalesce(api_key_id, '')), '')), '') AS logical_id,
 			MAX(api_key) AS snapshot_key,
 			COALESCE(NULLIF(MAX(api_key_name), ''), '') AS snapshot_name
 		FROM request_logs
@@ -573,7 +573,7 @@ func queryDistinctAPIKeys(db *sql.DB, cutoff string) ([]string, map[string]strin
 	seen := make(map[string]struct{})
 	for rows.Next() {
 		var logicalSelector string
-		var logicalID string
+		var logicalID sql.NullString
 		var snapshotKey string
 		var snapshotName string
 		if err := rows.Scan(&logicalSelector, &logicalID, &snapshotKey, &snapshotName); err != nil {
@@ -582,7 +582,7 @@ func queryDistinctAPIKeys(db *sql.DB, cutoff string) ([]string, map[string]strin
 
 		value := strings.TrimSpace(snapshotKey)
 		name := strings.TrimSpace(snapshotName)
-		if row, ok := currentByID[strings.TrimSpace(logicalID)]; ok {
+		if row, ok := currentByID[trimNullString(logicalID)]; ok {
 			if trimmed := strings.TrimSpace(row.Key); trimmed != "" {
 				value = trimmed
 			}
@@ -606,6 +606,13 @@ func queryDistinctAPIKeys(db *sql.DB, cutoff string) ([]string, map[string]strin
 		}
 	}
 	return values, names, rows.Err()
+}
+
+func trimNullString(value sql.NullString) string {
+	if !value.Valid {
+		return ""
+	}
+	return strings.TrimSpace(value.String)
 }
 
 func buildSingleAPIKeySelectorClause(selector string) (string, []interface{}) {

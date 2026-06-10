@@ -1108,6 +1108,51 @@ func TestBackfillRequestLogAPIKeyIDsUsesUniqueAPIKeyName(t *testing.T) {
 	}
 }
 
+func TestQueryAPIKeySelectorsHandleLegacyRowsWithoutAPIKeyID(t *testing.T) {
+	initTestUsageDB(t, config.RequestLogStorageConfig{})
+
+	db := getDB()
+	timestamp := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := db.Exec(
+		`INSERT INTO request_logs
+			(timestamp, api_key, api_key_name, model, source, channel_name, auth_index,
+			 failed, latency_ms, first_token_ms, input_tokens, output_tokens, reasoning_tokens, cached_tokens, total_tokens, cost)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		timestamp, "sk-legacy", "袁蔚", "gpt-test", "source", "channel", "auth-1",
+		0, 123, 45, 10, 20, 0, 0, 30, 0,
+	); err != nil {
+		t.Fatalf("insert legacy request_log: %v", err)
+	}
+
+	filters, err := QueryFilters(7)
+	if err != nil {
+		t.Fatalf("QueryFilters() error = %v", err)
+	}
+	if len(filters.APIKeys) != 1 || filters.APIKeys[0] != "sk-legacy" {
+		t.Fatalf("filters.APIKeys = %#v, want [sk-legacy]", filters.APIKeys)
+	}
+	if filters.APIKeyNames["sk-legacy"] != "袁蔚" {
+		t.Fatalf("filters.APIKeyNames[sk-legacy] = %q, want 袁蔚", filters.APIKeyNames["sk-legacy"])
+	}
+
+	dist, err := QueryAPIKeyDistribution(7)
+	if err != nil {
+		t.Fatalf("QueryAPIKeyDistribution() error = %v", err)
+	}
+	if len(dist) != 1 {
+		t.Fatalf("distribution len = %d, want 1: %#v", len(dist), dist)
+	}
+	if dist[0].APIKey != "sk-legacy" {
+		t.Fatalf("distribution api_key = %q, want sk-legacy", dist[0].APIKey)
+	}
+	if dist[0].Name != "袁蔚" {
+		t.Fatalf("distribution name = %q, want 袁蔚", dist[0].Name)
+	}
+	if dist[0].Requests != 1 || dist[0].Tokens != 30 {
+		t.Fatalf("distribution point = %#v, want one request and 30 tokens", dist[0])
+	}
+}
+
 func TestClearAllRequestLogsRemovesRequestLogTablesOnly(t *testing.T) {
 	initTestUsageDB(t, config.RequestLogStorageConfig{
 		StoreContent:           true,
