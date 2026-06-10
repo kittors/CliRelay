@@ -72,6 +72,56 @@ func uniqueAPIKeyIDByNameFromRows(rows []APIKeyRow) map[string]string {
 	return result
 }
 
+func uniqueRequestLogAPIKeyIDByKeyFromDB(db *sql.DB) map[string]string {
+	if db == nil {
+		return nil
+	}
+
+	rows, err := db.Query(`
+		SELECT api_key, api_key_id
+		FROM request_logs
+		WHERE trim(coalesce(api_key, '')) <> ''
+		  AND trim(coalesce(api_key_id, '')) <> ''
+	`)
+	if err != nil {
+		log.Warnf("usage: query unique request_log api_key_id by raw key failed: %v", err)
+		return nil
+	}
+	defer rows.Close()
+
+	conflicts := make(map[string]bool)
+	ids := make(map[string]string)
+	for rows.Next() {
+		var rawKey string
+		var rawID string
+		if err := rows.Scan(&rawKey, &rawID); err != nil {
+			log.Warnf("usage: scan request_log api_key identity row failed: %v", err)
+			return nil
+		}
+		key := strings.TrimSpace(rawKey)
+		id := strings.TrimSpace(rawID)
+		if key == "" || id == "" {
+			continue
+		}
+		if existing, ok := ids[key]; ok {
+			if existing != id {
+				conflicts[key] = true
+				continue
+			}
+		} else {
+			ids[key] = id
+		}
+	}
+
+	result := make(map[string]string)
+	for key, id := range ids {
+		if !conflicts[key] {
+			result[key] = id
+		}
+	}
+	return result
+}
+
 func backfillRequestLogAPIKeyIDs(db *sql.DB) {
 	if db == nil {
 		return
@@ -114,6 +164,26 @@ func backfillRequestLogAPIKeyIDs(db *sql.DB) {
 		}
 		if rows, rowsErr := result.RowsAffected(); rowsErr == nil && rows > 0 {
 			log.Infof("usage: backfilled api_key_id for %d request_logs by unique api_key_name=%q", rows, lowerName)
+		}
+	}
+
+	keyToID := uniqueRequestLogAPIKeyIDByKeyFromDB(db)
+	if len(keyToID) == 0 {
+		return
+	}
+	for rawKey, id := range keyToID {
+		result, err := db.Exec(`
+			UPDATE request_logs
+			SET api_key_id = ?
+			WHERE trim(coalesce(api_key_id, '')) = ''
+			  AND trim(coalesce(api_key, '')) = ?
+		`, id, rawKey)
+		if err != nil {
+			log.Warnf("usage: backfill request_logs api_key_id by historical raw key failed for %q: %v", rawKey, err)
+			continue
+		}
+		if rows, rowsErr := result.RowsAffected(); rowsErr == nil && rows > 0 {
+			log.Infof("usage: backfilled api_key_id for %d request_logs by historical raw api_key=%q", rows, rawKey)
 		}
 	}
 }

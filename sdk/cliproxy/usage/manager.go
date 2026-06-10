@@ -13,6 +13,8 @@ type Record struct {
 	Provider     string
 	Model        string
 	APIKey       string
+	APIKeyID     string
+	APIKeyName   string
 	AuthID       string
 	AuthIndex    string
 	Source       string

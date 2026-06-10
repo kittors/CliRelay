@@ -1,6 +1,7 @@
 package usage
 
 import (
+	"context"
 	"database/sql"
 	"math"
 	"path/filepath"
@@ -8,6 +9,7 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	coreusage "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/usage"
 )
 
 func makePseudoRandomText(size int) string {
@@ -1108,6 +1110,51 @@ func TestBackfillRequestLogAPIKeyIDsUsesUniqueAPIKeyName(t *testing.T) {
 	}
 }
 
+func TestBackfillRequestLogAPIKeyIDsUsesHistoricalRawKeyIdentity(t *testing.T) {
+	initTestUsageDB(t, config.RequestLogStorageConfig{})
+
+	if err := UpsertAPIKey(APIKeyRow{ID: "stable-key-1", Key: "sk-current", Name: "袁蔚"}); err != nil {
+		t.Fatalf("UpsertAPIKey(sk-current): %v", err)
+	}
+
+	db := getDB()
+	firstTS := time.Now().UTC().Add(-time.Minute).Format(time.RFC3339Nano)
+	secondTS := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := db.Exec(
+		`INSERT INTO request_logs
+			(timestamp, api_key, api_key_id, api_key_name, model, source, channel_name, auth_index,
+			 failed, latency_ms, first_token_ms, input_tokens, output_tokens, reasoning_tokens, cached_tokens, total_tokens, cost)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		firstTS, "sk-legacy", "stable-key-1", "袁蔚", "gpt-test", "source", "channel", "auth-1",
+		0, 123, 45, 10, 20, 0, 0, 30, 0,
+	); err != nil {
+		t.Fatalf("insert resolved request_log: %v", err)
+	}
+	if _, err := db.Exec(
+		`INSERT INTO request_logs
+			(timestamp, api_key, api_key_id, api_key_name, model, source, channel_name, auth_index,
+			 failed, latency_ms, first_token_ms, input_tokens, output_tokens, reasoning_tokens, cached_tokens, total_tokens, cost)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		secondTS, "sk-legacy", "", "", "gpt-test", "source", "channel", "auth-1",
+		0, 123, 45, 10, 20, 0, 0, 30, 0,
+	); err != nil {
+		t.Fatalf("insert orphan request_log: %v", err)
+	}
+
+	backfillRequestLogAPIKeyIDs(db)
+
+	var apiKeyID string
+	if err := db.QueryRow(
+		"SELECT api_key_id FROM request_logs WHERE api_key = ? AND timestamp = ?",
+		"sk-legacy", secondTS,
+	).Scan(&apiKeyID); err != nil {
+		t.Fatalf("query orphan api_key_id: %v", err)
+	}
+	if apiKeyID != "stable-key-1" {
+		t.Fatalf("orphan api_key_id = %q, want stable-key-1", apiKeyID)
+	}
+}
+
 func TestQueryAPIKeySelectorsHandleLegacyRowsWithoutAPIKeyID(t *testing.T) {
 	initTestUsageDB(t, config.RequestLogStorageConfig{})
 
@@ -1150,6 +1197,57 @@ func TestQueryAPIKeySelectorsHandleLegacyRowsWithoutAPIKeyID(t *testing.T) {
 	}
 	if dist[0].Requests != 1 || dist[0].Tokens != 30 {
 		t.Fatalf("distribution point = %#v, want one request and 30 tokens", dist[0])
+	}
+}
+
+func TestRequestStatisticsPersistsAPIKeyIdentitySnapshotAcrossRename(t *testing.T) {
+	initTestUsageDB(t, config.RequestLogStorageConfig{})
+
+	const stableID = "stable-key-1"
+	if err := UpsertAPIKey(APIKeyRow{ID: stableID, Key: "sk-old", Name: "袁蔚"}); err != nil {
+		t.Fatalf("UpsertAPIKey(sk-old): %v", err)
+	}
+	if err := UpdateAPIKeyByID(APIKeyRow{ID: stableID, Key: "sk-new", Name: "袁蔚"}); err != nil {
+		t.Fatalf("UpdateAPIKeyByID(sk-new): %v", err)
+	}
+
+	stats := NewRequestStatistics()
+	stats.Record(context.Background(), coreusage.Record{
+		APIKey:      "sk-old",
+		APIKeyID:    stableID,
+		APIKeyName:  "袁蔚",
+		Model:       "gpt-5.5",
+		Source:      "source",
+		ChannelName: "channel",
+		AuthIndex:   "auth-1",
+		RequestedAt: time.Now().UTC(),
+		Detail: coreusage.Detail{
+			InputTokens:  1,
+			OutputTokens: 2,
+			TotalTokens:  3,
+		},
+	})
+
+	filters, err := QueryFilters(7)
+	if err != nil {
+		t.Fatalf("QueryFilters() error = %v", err)
+	}
+	if len(filters.APIKeys) != 1 || filters.APIKeys[0] != "sk-new" {
+		t.Fatalf("filters.APIKeys = %#v, want [sk-new]", filters.APIKeys)
+	}
+	if filters.APIKeyNames["sk-new"] != "袁蔚" {
+		t.Fatalf("filters.APIKeyNames[sk-new] = %q, want 袁蔚", filters.APIKeyNames["sk-new"])
+	}
+
+	dist, err := QueryAPIKeyDistribution(7)
+	if err != nil {
+		t.Fatalf("QueryAPIKeyDistribution() error = %v", err)
+	}
+	if len(dist) != 1 || dist[0].APIKey != "sk-new" {
+		t.Fatalf("distribution = %#v, want one sk-new point", dist)
+	}
+	if dist[0].Name != "袁蔚" {
+		t.Fatalf("distribution name = %q, want 袁蔚", dist[0].Name)
 	}
 }
 

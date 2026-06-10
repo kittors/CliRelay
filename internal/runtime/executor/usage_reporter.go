@@ -9,8 +9,9 @@ import (
 	"sync"
 	"time"
 
+	internalusage "github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
-	"github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/usage"
+	coreusage "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/usage"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -22,6 +23,8 @@ type usageReporter struct {
 	authID      string
 	authIndex   string
 	apiKey      string
+	apiKeyID    string
+	apiKeyName  string
 	source      string
 	channelName string
 	requestedAt time.Time
@@ -45,6 +48,10 @@ func newUsageReporter(ctx context.Context, provider, model string, auth *cliprox
 		apiKey:      apiKey,
 		source:      resolveUsageSource(auth, apiKey),
 	}
+	if identity := internalusage.ResolveAPIKeyIdentity(apiKey); identity != nil {
+		reporter.apiKeyID = identity.ID
+		reporter.apiKeyName = identity.Name
+	}
 	if auth != nil {
 		reporter.authID = auth.ID
 		reporter.authIndex = auth.EnsureIndex()
@@ -53,11 +60,11 @@ func newUsageReporter(ctx context.Context, provider, model string, auth *cliprox
 	return reporter
 }
 
-func (r *usageReporter) publish(ctx context.Context, detail usage.Detail) {
+func (r *usageReporter) publish(ctx context.Context, detail coreusage.Detail) {
 	r.publishWithOutcome(ctx, detail, false)
 }
 
-func (r *usageReporter) publishWithContent(ctx context.Context, detail usage.Detail, inputContent, outputContent string) {
+func (r *usageReporter) publishWithContent(ctx context.Context, detail coreusage.Detail, inputContent, outputContent string) {
 	r.inputContent = inputContent
 	r.outputContent = outputContent
 	r.publishWithOutcome(ctx, detail, false)
@@ -106,7 +113,7 @@ func (r *usageReporter) appendOutputChunk(chunk []byte) {
 }
 
 func (r *usageReporter) publishFailure(ctx context.Context) {
-	r.publishWithOutcome(ctx, usage.Detail{}, true)
+	r.publishWithOutcome(ctx, coreusage.Detail{}, true)
 }
 
 // publishFailureWithContent records a failed request together with the
@@ -123,7 +130,7 @@ func (r *usageReporter) publishFailureWithContent(ctx context.Context, inputCont
 	r.inputContent = inputContent
 	r.outputContent = outputContent
 	r.contentMu.Unlock()
-	r.publishWithOutcome(ctx, usage.Detail{}, true)
+	r.publishWithOutcome(ctx, coreusage.Detail{}, true)
 }
 
 func (r *usageReporter) trackFailure(ctx context.Context, errPtr *error) {
@@ -190,7 +197,7 @@ func parseStructuredUpstreamBody(body string) any {
 	return body
 }
 
-func (r *usageReporter) publishWithOutcome(ctx context.Context, detail usage.Detail, failed bool) {
+func (r *usageReporter) publishWithOutcome(ctx context.Context, detail coreusage.Detail, failed bool) {
 	if r == nil {
 		return
 	}
@@ -210,12 +217,14 @@ func (r *usageReporter) publishWithOutcome(ctx context.Context, detail usage.Det
 			latencyMs = 0
 		}
 		firstTokenMs := firstTokenLatencyMsFromContext(ctx, r.requestedAt)
-		usage.PublishRecord(ctx, usage.Record{
+		coreusage.PublishRecord(ctx, coreusage.Record{
 			Provider:      r.provider,
 			Model:         r.model,
 			Source:        r.source,
 			ChannelName:   r.channelName,
 			APIKey:        r.apiKey,
+			APIKeyID:      r.apiKeyID,
+			APIKeyName:    r.apiKeyName,
 			AuthID:        r.authID,
 			AuthIndex:     r.authIndex,
 			RequestedAt:   r.requestedAt,
@@ -245,19 +254,21 @@ func (r *usageReporter) ensurePublished(ctx context.Context) {
 			latencyMs = 0
 		}
 		firstTokenMs := firstTokenLatencyMsFromContext(ctx, r.requestedAt)
-		usage.PublishRecord(ctx, usage.Record{
+		coreusage.PublishRecord(ctx, coreusage.Record{
 			Provider:      r.provider,
 			Model:         r.model,
 			Source:        r.source,
 			ChannelName:   r.channelName,
 			APIKey:        r.apiKey,
+			APIKeyID:      r.apiKeyID,
+			APIKeyName:    r.apiKeyName,
 			AuthID:        r.authID,
 			AuthIndex:     r.authIndex,
 			RequestedAt:   r.requestedAt,
 			LatencyMs:     latencyMs,
 			FirstTokenMs:  firstTokenMs,
 			Failed:        false,
-			Detail:        usage.Detail{},
+			Detail:        coreusage.Detail{},
 			InputContent:  inputContent,
 			OutputContent: outputContent,
 			DetailContent: buildRequestDetailContent(ctx),
