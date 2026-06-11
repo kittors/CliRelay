@@ -820,15 +820,22 @@ func TestGetAuthFileTrendUsesWeeklyResetCycleForRequestTotal(t *testing.T) {
 	}
 
 	var payload struct {
-		AuthIndex         string  `json:"auth_index"`
-		RequestTotal      int64   `json:"request_total"`
-		CycleRequestTotal int64   `json:"cycle_request_total"`
-		CycleCostTotal    float64 `json:"cycle_cost_total"`
-		CycleStart        string  `json:"cycle_start"`
+		AuthIndex         string   `json:"auth_index"`
+		RequestTotal      int64    `json:"request_total"`
+		CycleRequestTotal int64    `json:"cycle_request_total"`
+		CycleCostTotal    float64  `json:"cycle_cost_total"`
+		WeeklyQuotaUsed   *float64 `json:"weekly_quota_used_percent"`
+		CycleStart        string   `json:"cycle_start"`
 		DailyUsage        []struct {
-			Date     string `json:"date"`
-			Requests int64  `json:"requests"`
+			Date     string  `json:"date"`
+			Requests int64   `json:"requests"`
+			Cost     float64 `json:"cost"`
 		} `json:"daily_usage"`
+		HourlyUsage []struct {
+			Hour     string  `json:"hour"`
+			Requests int64   `json:"requests"`
+			Cost     float64 `json:"cost"`
+		} `json:"hourly_usage"`
 		QuotaSeries []struct {
 			QuotaKey      string `json:"quota_key"`
 			QuotaLabel    string `json:"quota_label"`
@@ -855,11 +862,28 @@ func TestGetAuthFileTrendUsesWeeklyResetCycleForRequestTotal(t *testing.T) {
 	if math.Abs(payload.CycleCostTotal-0.008) > 1e-12 {
 		t.Fatalf("cycle_cost_total = %v, want 0.008", payload.CycleCostTotal)
 	}
+	if payload.WeeklyQuotaUsed == nil || math.Abs(*payload.WeeklyQuotaUsed-7) > 1e-12 {
+		t.Fatalf("weekly_quota_used_percent = %v, want 7", payload.WeeklyQuotaUsed)
+	}
 	if payload.CycleStart != cycleStart.Format(time.RFC3339) {
 		t.Fatalf("cycle_start = %q, want %q", payload.CycleStart, cycleStart.Format(time.RFC3339))
 	}
 	if len(payload.DailyUsage) != 7 {
 		t.Fatalf("daily_usage len = %d, want 7", len(payload.DailyUsage))
+	}
+	var dailyCostTotal float64
+	for _, point := range payload.DailyUsage {
+		dailyCostTotal += point.Cost
+	}
+	if math.Abs(dailyCostTotal-0.013) > 1e-12 {
+		t.Fatalf("daily_usage cost total = %v, want 0.013", dailyCostTotal)
+	}
+	var hourlyCostTotal float64
+	for _, point := range payload.HourlyUsage {
+		hourlyCostTotal += point.Cost
+	}
+	if math.Abs(hourlyCostTotal-0.003) > 1e-12 {
+		t.Fatalf("hourly_usage cost total = %v, want 0.003", hourlyCostTotal)
 	}
 	if len(payload.QuotaSeries) != 1 {
 		t.Fatalf("quota_series len = %d, want 1", len(payload.QuotaSeries))

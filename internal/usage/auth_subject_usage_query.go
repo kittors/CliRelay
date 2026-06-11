@@ -8,9 +8,21 @@ import (
 )
 
 func QueryDailyCallsByAuthSubject(matcher AuthSubjectMatcher, days int) ([]DailyCountPoint, error) {
+	usagePoints, err := QueryDailyUsageByAuthSubject(matcher, days)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]DailyCountPoint, 0, len(usagePoints))
+	for _, point := range usagePoints {
+		result = append(result, DailyCountPoint{Date: point.Date, Requests: point.Requests})
+	}
+	return result, nil
+}
+
+func QueryDailyUsageByAuthSubject(matcher AuthSubjectMatcher, days int) ([]DailyUsagePoint, error) {
 	db := getDB()
 	if db == nil {
-		return []DailyCountPoint{}, nil
+		return []DailyUsagePoint{}, nil
 	}
 	if days < 1 {
 		days = 7
@@ -18,7 +30,7 @@ func QueryDailyCallsByAuthSubject(matcher AuthSubjectMatcher, days int) ([]Daily
 
 	matchSQL, matchArgs := buildAuthSubjectMatchClause(matcher, "source", "channel_name")
 	if matchSQL == "" {
-		return []DailyCountPoint{}, nil
+		return []DailyUsagePoint{}, nil
 	}
 
 	args := make([]interface{}, 0, len(matchArgs)+1)
@@ -26,35 +38,43 @@ func QueryDailyCallsByAuthSubject(matcher AuthSubjectMatcher, days int) ([]Daily
 	args = append(args, matchArgs...)
 
 	rows, err := db.Query(fmt.Sprintf(`
-		SELECT timestamp
+		SELECT timestamp, cost
 		FROM request_logs
 		WHERE timestamp >= ? AND (%s)
 		ORDER BY timestamp ASC
 	`, matchSQL), args...)
 	if err != nil {
-		return nil, fmt.Errorf("usage: daily calls by auth subject query: %w", err)
+		return nil, fmt.Errorf("usage: daily usage by auth subject query: %w", err)
 	}
 	defer rows.Close()
 
-	byDate := make(map[string]int64, days)
+	byDate := make(map[string]*DailyUsagePoint, days)
 	for rows.Next() {
 		var ts string
-		if err := rows.Scan(&ts); err != nil {
-			return nil, fmt.Errorf("usage: daily calls by auth subject scan: %w", err)
+		var cost float64
+		if err := rows.Scan(&ts, &cost); err != nil {
+			return nil, fmt.Errorf("usage: daily usage by auth subject scan: %w", err)
 		}
 		parsed, ok := parseStoredTime(ts)
 		if !ok {
 			continue
 		}
-		byDate[localDayKeyAt(parsed)]++
+		key := localDayKeyAt(parsed)
+		point := byDate[key]
+		if point == nil {
+			point = &DailyUsagePoint{Date: key}
+			byDate[key] = point
+		}
+		point.Requests++
+		point.Cost += cost
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
 
-	result := make([]DailyCountPoint, 0, len(byDate))
-	for date, requests := range byDate {
-		result = append(result, DailyCountPoint{Date: date, Requests: requests})
+	result := make([]DailyUsagePoint, 0, len(byDate))
+	for _, point := range byDate {
+		result = append(result, *point)
 	}
 	sort.Slice(result, func(i, j int) bool {
 		return result[i].Date < result[j].Date
@@ -63,9 +83,21 @@ func QueryDailyCallsByAuthSubject(matcher AuthSubjectMatcher, days int) ([]Daily
 }
 
 func QueryHourlyCallsByAuthSubject(matcher AuthSubjectMatcher, hours int) ([]HourlyCountPoint, error) {
+	usagePoints, err := QueryHourlyUsageByAuthSubject(matcher, hours)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]HourlyCountPoint, 0, len(usagePoints))
+	for _, point := range usagePoints {
+		result = append(result, HourlyCountPoint{Hour: point.Hour, Requests: point.Requests})
+	}
+	return result, nil
+}
+
+func QueryHourlyUsageByAuthSubject(matcher AuthSubjectMatcher, hours int) ([]HourlyUsagePoint, error) {
 	db := getDB()
 	if db == nil {
-		return []HourlyCountPoint{}, nil
+		return []HourlyUsagePoint{}, nil
 	}
 	if hours < 1 {
 		hours = 5
@@ -76,17 +108,17 @@ func QueryHourlyCallsByAuthSubject(matcher AuthSubjectMatcher, hours int) ([]Hou
 
 	matchSQL, matchArgs := buildAuthSubjectMatchClause(matcher, "source", "channel_name")
 	if matchSQL == "" {
-		return []HourlyCountPoint{}, nil
+		return []HourlyUsagePoint{}, nil
 	}
 
 	loc := getUsageLocation()
 	now := time.Now().In(loc).Truncate(time.Hour)
 	start := now.Add(-time.Duration(hours-1) * time.Hour)
-	buckets := make([]HourlyCountPoint, 0, hours)
-	byKey := make(map[string]*HourlyCountPoint, hours)
+	buckets := make([]HourlyUsagePoint, 0, hours)
+	byKey := make(map[string]*HourlyUsagePoint, hours)
 	for i := 0; i < hours; i++ {
 		key := start.Add(time.Duration(i) * time.Hour).Format("2006-01-02 15:00")
-		buckets = append(buckets, HourlyCountPoint{Hour: key})
+		buckets = append(buckets, HourlyUsagePoint{Hour: key})
 		byKey[key] = &buckets[len(buckets)-1]
 	}
 
@@ -95,19 +127,20 @@ func QueryHourlyCallsByAuthSubject(matcher AuthSubjectMatcher, hours int) ([]Hou
 	args = append(args, matchArgs...)
 
 	rows, err := db.Query(fmt.Sprintf(`
-		SELECT timestamp
+		SELECT timestamp, cost
 		FROM request_logs
 		WHERE timestamp >= ? AND (%s)
 	`, matchSQL), args...)
 	if err != nil {
-		return nil, fmt.Errorf("usage: hourly calls by auth subject query: %w", err)
+		return nil, fmt.Errorf("usage: hourly usage by auth subject query: %w", err)
 	}
 	defer rows.Close()
 
 	for rows.Next() {
 		var ts string
-		if err := rows.Scan(&ts); err != nil {
-			return nil, fmt.Errorf("usage: hourly calls by auth subject scan: %w", err)
+		var cost float64
+		if err := rows.Scan(&ts, &cost); err != nil {
+			return nil, fmt.Errorf("usage: hourly usage by auth subject scan: %w", err)
 		}
 		parsed, ok := parseStoredTime(ts)
 		if !ok {
@@ -116,6 +149,7 @@ func QueryHourlyCallsByAuthSubject(matcher AuthSubjectMatcher, hours int) ([]Hou
 		key := parsed.In(loc).Truncate(time.Hour).Format("2006-01-02 15:00")
 		if bucket := byKey[key]; bucket != nil {
 			bucket.Requests++
+			bucket.Cost += cost
 		}
 	}
 	return buckets, rows.Err()

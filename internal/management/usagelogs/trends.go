@@ -43,18 +43,18 @@ func (s *Service) AuthFileTrend(authIndex string, days int, hours int) (int, any
 	matcher := s.authSubjectMatcher(auth)
 	preferredWeeklyQuotaKeys := primaryWeeklyQuotaKeysForProvider(auth.Provider)
 
-	dailyRaw, err := usage.QueryDailyCallsByAuthSubject(matcher, days)
+	dailyRaw, err := usage.QueryDailyUsageByAuthSubject(matcher, days)
 	if err != nil {
 		return http.StatusInternalServerError, map[string]any{"error": err.Error()}
 	}
-	daily := fillDailyCountPoints(dailyRaw, days)
+	daily := fillDailyUsagePoints(dailyRaw, days)
 
-	hourly, err := usage.QueryHourlyCallsByAuthSubject(matcher, hours)
+	hourly, err := usage.QueryHourlyUsageByAuthSubject(matcher, hours)
 	if err != nil {
 		return http.StatusInternalServerError, map[string]any{"error": err.Error()}
 	}
 	if hourly == nil {
-		hourly = []usage.HourlyCountPoint{}
+		hourly = []usage.HourlyUsagePoint{}
 	}
 
 	cutoff := usage.CutoffStartUTC(days)
@@ -72,6 +72,7 @@ func (s *Service) AuthFileTrend(authIndex string, days int, hours int) (int, any
 	if series == nil {
 		series = []usage.QuotaSnapshotSeries{}
 	}
+	weeklyQuotaUsed := latestWeeklyQuotaUsedPercent(series, preferredWeeklyQuotaKeys...)
 
 	var cycleStart time.Time
 	if identity := usage.ResolveAuthSubjectIdentity(auth); identity != nil && identity.ID != "" {
@@ -114,6 +115,7 @@ func (s *Service) AuthFileTrend(authIndex string, days int, hours int) (int, any
 		RequestTotal:      requestTotal,
 		CycleRequestTotal: cycleRequestTotal,
 		CycleCostTotal:    cycleCostTotal,
+		WeeklyQuotaUsed:   weeklyQuotaUsed,
 		CycleKnown:        cycleKnown,
 		CycleStart:        cycleStartStr,
 		DailyUsage:        daily,
@@ -122,21 +124,81 @@ func (s *Service) AuthFileTrend(authIndex string, days int, hours int) (int, any
 	}
 }
 
-func fillDailyCountPoints(points []usage.DailyCountPoint, days int) []usage.DailyCountPoint {
+func fillDailyUsagePoints(points []usage.DailyUsagePoint, days int) []usage.DailyUsagePoint {
 	if days < 1 {
 		days = 7
 	}
-	byDate := make(map[string]int64, len(points))
+	byDate := make(map[string]usage.DailyUsagePoint, len(points))
 	for _, point := range points {
-		byDate[point.Date] += point.Requests
+		existing := byDate[point.Date]
+		existing.Date = point.Date
+		existing.Requests += point.Requests
+		existing.Cost += point.Cost
+		byDate[point.Date] = existing
 	}
 	start := usage.CutoffStartUTC(days)
-	result := make([]usage.DailyCountPoint, 0, days)
+	result := make([]usage.DailyUsagePoint, 0, days)
 	for i := 0; i < days; i++ {
 		date := usage.LocalDayKeyAt(start.AddDate(0, 0, i))
-		result = append(result, usage.DailyCountPoint{Date: date, Requests: byDate[date]})
+		point := byDate[date]
+		point.Date = date
+		result = append(result, point)
 	}
 	return result
+}
+
+func latestWeeklyQuotaUsedPercent(series []usage.QuotaSnapshotSeries, preferredQuotaKeys ...string) *float64 {
+	latest := latestWeeklyQuotaPercentPoint(series, preferredQuotaKeys...)
+	if latest == nil || latest.Percent == nil {
+		return nil
+	}
+	value := 100 - *latest.Percent
+	if value < 0 {
+		value = 0
+	}
+	if value > 100 {
+		value = 100
+	}
+	return &value
+}
+
+func latestWeeklyQuotaPercentPoint(series []usage.QuotaSnapshotSeries, preferredQuotaKeys ...string) *usage.QuotaSnapshotSeriesPoint {
+	point := latestWeeklyQuotaPercentPointStrict(series, preferredQuotaKeys...)
+	if point != nil {
+		return point
+	}
+	return latestWeeklyQuotaPercentPointStrict(series)
+}
+
+func latestWeeklyQuotaPercentPointStrict(series []usage.QuotaSnapshotSeries, preferredQuotaKeys ...string) *usage.QuotaSnapshotSeriesPoint {
+	preferred := make(map[string]struct{}, len(preferredQuotaKeys))
+	for _, quotaKey := range preferredQuotaKeys {
+		if trimmed := strings.TrimSpace(quotaKey); trimmed != "" {
+			preferred[trimmed] = struct{}{}
+		}
+	}
+	requiresPreferredKey := len(preferred) > 0
+	var latestPoint *usage.QuotaSnapshotSeriesPoint
+	for i := range series {
+		if series[i].WindowSeconds < 604800 {
+			continue
+		}
+		if requiresPreferredKey {
+			if _, ok := preferred[strings.TrimSpace(series[i].QuotaKey)]; !ok {
+				continue
+			}
+		}
+		for j := range series[i].Points {
+			point := &series[i].Points[j]
+			if point.Percent == nil {
+				continue
+			}
+			if latestPoint == nil || point.Timestamp.After(latestPoint.Timestamp) {
+				latestPoint = point
+			}
+		}
+	}
+	return latestPoint
 }
 
 func latestWeeklyQuotaCycleStart(series []usage.QuotaSnapshotSeries, preferredQuotaKeys ...string) (time.Time, bool) {

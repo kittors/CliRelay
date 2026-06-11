@@ -12,6 +12,12 @@ type DailyCountPoint struct {
 	Requests int64  `json:"requests"`
 }
 
+type DailyUsagePoint struct {
+	Date     string  `json:"date"`
+	Requests int64   `json:"requests"`
+	Cost     float64 `json:"cost"`
+}
+
 type DailyQuotaPoint struct {
 	Date    string   `json:"date"`
 	Percent *float64 `json:"percent"`
@@ -21,6 +27,12 @@ type DailyQuotaPoint struct {
 type HourlyCountPoint struct {
 	Hour     string `json:"hour"`
 	Requests int64  `json:"requests"`
+}
+
+type HourlyUsagePoint struct {
+	Hour     string  `json:"hour"`
+	Requests int64   `json:"requests"`
+	Cost     float64 `json:"cost"`
 }
 
 func QueryDailyCallsByAuthIndexes(authIndexes []string, days int) ([]DailyCountPoint, error) {
