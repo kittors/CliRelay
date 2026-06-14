@@ -10,6 +10,8 @@ func registerManagementAuthRoutes(group *gin.RouterGroup, h *managementhandlers.
 	group.GET("/auth-files/models", h.GetAuthFileModels)
 	group.GET("/model-definitions/:channel", h.GetStaticModelDefinitions)
 	group.GET("/image-generation/channels", h.ListImageGenerationChannels)
+	group.GET("/image-generation/size-presets", h.GetImageGenerationSizePresets)
+	group.PUT("/image-generation/size-presets", h.PutImageGenerationSizePresets)
 	group.POST("/image-generation/test", h.PostImageGenerationTest)
 	group.GET("/image-generation/test/:task_id", h.GetImageGenerationTestTask)
 	group.GET("/auth-files/download", h.DownloadAuthFile)

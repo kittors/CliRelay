@@ -436,6 +436,76 @@ func waitForImageGenerationTask(t *testing.T, h *Handler, taskID string, done fu
 	}
 }
 
+func TestImageGenerationSizePresetsReturnDefaults(t *testing.T) {
+	initManagementModelsTestDB(t)
+
+	h := &Handler{}
+	rec := performModelsRequest(http.MethodGet, "/image-generation/size-presets", nil, h.GetImageGenerationSizePresets)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var body struct {
+		Sizes []string `json:"sizes"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("Unmarshal response: %v", err)
+	}
+	want := []string{"1024x1024", "1792x1024", "1024x1792", "2560x1440", "2160x3840"}
+	if got := strings.Join(body.Sizes, ","); got != strings.Join(want, ",") {
+		t.Fatalf("sizes = %v, want %v", body.Sizes, want)
+	}
+}
+
+func TestImageGenerationSizePresetsPersistCustomSizes(t *testing.T) {
+	initManagementModelsTestDB(t)
+
+	h := &Handler{}
+	putRec := performModelsRequest(
+		http.MethodPut,
+		"/image-generation/size-presets",
+		[]byte(`{"sizes":["1024x1024","4096X2304","4096×2304","8192 * 4608"]}`),
+		h.PutImageGenerationSizePresets,
+	)
+	if putRec.Code != http.StatusOK {
+		t.Fatalf("PUT status = %d, want %d, body=%s", putRec.Code, http.StatusOK, putRec.Body.String())
+	}
+
+	getRec := performModelsRequest(http.MethodGet, "/image-generation/size-presets", nil, h.GetImageGenerationSizePresets)
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("GET status = %d, want %d, body=%s", getRec.Code, http.StatusOK, getRec.Body.String())
+	}
+	var body struct {
+		Sizes []string `json:"sizes"`
+	}
+	if err := json.Unmarshal(getRec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("Unmarshal response: %v", err)
+	}
+	want := []string{"1024x1024", "1792x1024", "1024x1792", "2560x1440", "2160x3840", "4096x2304", "8192x4608"}
+	if got := strings.Join(body.Sizes, ","); got != strings.Join(want, ",") {
+		t.Fatalf("sizes = %v, want %v", body.Sizes, want)
+	}
+}
+
+func TestImageGenerationSizePresetsRejectInvalidSize(t *testing.T) {
+	initManagementModelsTestDB(t)
+
+	h := &Handler{}
+	rec := performModelsRequest(
+		http.MethodPut,
+		"/image-generation/size-presets",
+		[]byte(`{"sizes":["0x1024"]}`),
+		h.PutImageGenerationSizePresets,
+	)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "invalid size") {
+		t.Fatalf("body = %s, want invalid size error", rec.Body.String())
+	}
+}
+
 func TestPostImageGenerationTestAcceptsMultipartImageEdits(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

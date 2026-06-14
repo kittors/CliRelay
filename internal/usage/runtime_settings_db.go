@@ -2,6 +2,7 @@ package usage
 
 import (
 	"database/sql"
+	"encoding/json"
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
@@ -40,6 +41,13 @@ func runtimeSettingsStore() sqlsettings.RuntimeSettingsStore {
 
 func UpsertRuntimeSetting(key string, value any) error {
 	return runtimeSettingsStore().Upsert(key, value)
+}
+
+func GetRuntimeSettingPayload(key string) (json.RawMessage, bool) {
+	if !ConfigStoreAvailable() {
+		return nil, false
+	}
+	return runtimeSettingsStore().Payload(key)
 }
 
 func PersistRuntimeSettingsFromConfig(cfg *config.Config) int {
