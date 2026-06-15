@@ -219,6 +219,198 @@ func TestModelConfigHandlersScopeFiltering(t *testing.T) {
 	}
 }
 
+func TestScopedModelsIncludeOwnerMappedConfiguredModels(t *testing.T) {
+	initManagementModelsTestDB(t)
+	cfg := &config.Config{
+		Routing: config.RoutingConfig{
+			ChannelGroups: []config.RoutingChannelGroup{
+				{
+					Name: "kimi+deepseek v4 flash",
+					Match: config.ChannelGroupMatch{
+						Channels: []string{"kimi-B", "opencode go"},
+					},
+				},
+			},
+		},
+	}
+	manager := coreauth.NewManager(nil, nil, nil)
+	manager.SetConfig(cfg)
+	if _, err := manager.Register(context.Background(), &coreauth.Auth{
+		ID:       "kimi-b",
+		Provider: "kimi",
+		Label:    "kimi-B",
+	}); err != nil {
+		t.Fatalf("Register kimi auth: %v", err)
+	}
+	if _, err := manager.Register(context.Background(), &coreauth.Auth{
+		ID:       "opencode-go",
+		Provider: "opencode-go",
+		Label:    "opencode go",
+	}); err != nil {
+		t.Fatalf("Register opencode auth: %v", err)
+	}
+	if err := usage.UpsertAuthGroupOwnerMapping(usage.AuthGroupOwnerMappingRow{
+		AuthGroup: "kimi",
+		Owner:     "kimi-code",
+	}); err != nil {
+		t.Fatalf("UpsertAuthGroupOwnerMapping: %v", err)
+	}
+	for _, row := range []usage.ModelConfigRow{
+		{ModelID: "kimi-k2.7", OwnedBy: "kimi-code", Description: "Kimi K2.7", Enabled: true, Source: "seed"},
+		{ModelID: "kimi-k2.7-code", OwnedBy: "kimi-code", Description: "Kimi K2.7 Code", Enabled: true, Source: "seed"},
+		{ModelID: "qwen3.5-plus", OwnedBy: "opencode", Description: "Qwen 3.5 Plus", Enabled: true, Source: "opencode-go"},
+		{ModelID: "kimi-disabled", OwnedBy: "kimi-code", Description: "Disabled Kimi", Enabled: false, Source: "seed"},
+		{ModelID: "other-owner", OwnedBy: "other", Description: "Other owner", Enabled: true, Source: "seed"},
+	} {
+		if err := usage.UpsertModelConfig(row); err != nil {
+			t.Fatalf("UpsertModelConfig(%s): %v", row.ModelID, err)
+		}
+	}
+	h := NewHandler(cfg, "", manager)
+
+	decodeIDs := func(rec *httptest.ResponseRecorder) map[string]struct{} {
+		t.Helper()
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())
+		}
+		var payload struct {
+			Data []struct {
+				ID string `json:"id"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+			t.Fatalf("unmarshal response: %v", err)
+		}
+		ids := make(map[string]struct{}, len(payload.Data))
+		for _, item := range payload.Data {
+			ids[item.ID] = struct{}{}
+		}
+		return ids
+	}
+
+	models := decodeIDs(performModelsRequest(
+		http.MethodGet,
+		"/models?allowed_channel_groups=kimi%2Bdeepseek+v4+flash",
+		nil,
+		h.Models().GetModels,
+	))
+	for _, id := range []string{"kimi-k2.7", "kimi-k2.7-code", "qwen3.5-plus"} {
+		if _, ok := models[id]; !ok {
+			t.Fatalf("/models missing owner-mapped configured model %q; ids=%v", id, models)
+		}
+	}
+	for _, id := range []string{"kimi-disabled", "other-owner"} {
+		if _, ok := models[id]; ok {
+			t.Fatalf("/models unexpectedly included %q; ids=%v", id, models)
+		}
+	}
+
+	availability := decodeIDs(performModelsRequest(
+		http.MethodGet,
+		"/models/configured-availability?allowed_channel_groups=kimi%2Bdeepseek+v4+flash",
+		nil,
+		h.Models().GetConfiguredModelAvailability,
+	))
+	for _, id := range []string{"kimi-k2.7", "kimi-k2.7-code", "qwen3.5-plus"} {
+		if _, ok := availability[id]; !ok {
+			t.Fatalf("/models/configured-availability missing owner-mapped configured model %q; ids=%v", id, availability)
+		}
+	}
+
+	channelScopedModels := decodeIDs(performModelsRequest(
+		http.MethodGet,
+		"/models?allowed_channels=kimi-B,opencode+go",
+		nil,
+		h.Models().GetModels,
+	))
+	for _, id := range []string{"kimi-k2.7", "kimi-k2.7-code", "qwen3.5-plus"} {
+		if _, ok := channelScopedModels[id]; !ok {
+			t.Fatalf("/models allowed_channels missing configured model %q; ids=%v", id, channelScopedModels)
+		}
+	}
+}
+
+func TestScopedModelsHonorChannelGroupAllowedModelsForConfiguredRows(t *testing.T) {
+	initManagementModelsTestDB(t)
+	cfg := &config.Config{
+		Routing: config.RoutingConfig{
+			ChannelGroups: []config.RoutingChannelGroup{
+				{
+					Name:          "kimi-limited",
+					AllowedModels: []string{"kimi-k2.7-code"},
+					Match: config.ChannelGroupMatch{
+						Channels: []string{"kimi-B"},
+					},
+				},
+			},
+		},
+	}
+	manager := coreauth.NewManager(nil, nil, nil)
+	manager.SetConfig(cfg)
+	if _, err := manager.Register(context.Background(), &coreauth.Auth{
+		ID:       "kimi-b-limited",
+		Provider: "kimi",
+		Label:    "kimi-B",
+	}); err != nil {
+		t.Fatalf("Register kimi auth: %v", err)
+	}
+	if err := usage.UpsertAuthGroupOwnerMapping(usage.AuthGroupOwnerMappingRow{
+		AuthGroup: "kimi",
+		Owner:     "kimi-code",
+	}); err != nil {
+		t.Fatalf("UpsertAuthGroupOwnerMapping: %v", err)
+	}
+	for _, row := range []usage.ModelConfigRow{
+		{ModelID: "kimi-k2.7", OwnedBy: "kimi-code", Description: "Kimi K2.7", Enabled: true, Source: "seed"},
+		{ModelID: "kimi-k2.7-code", OwnedBy: "kimi-code", Description: "Kimi K2.7 Code", Enabled: true, Source: "seed"},
+	} {
+		if err := usage.UpsertModelConfig(row); err != nil {
+			t.Fatalf("UpsertModelConfig(%s): %v", row.ModelID, err)
+		}
+	}
+	h := NewHandler(cfg, "", manager)
+	rec := performModelsRequest(
+		http.MethodGet,
+		"/models/configured-availability?allowed_channel_groups=kimi-limited",
+		nil,
+		h.Models().GetConfiguredModelAvailability,
+	)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	var payload struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+		ActiveMetadata []struct {
+			ID string `json:"id"`
+		} `json:"active_metadata"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	ids := make(map[string]struct{}, len(payload.Data))
+	for _, item := range payload.Data {
+		ids[item.ID] = struct{}{}
+	}
+	if _, ok := ids["kimi-k2.7-code"]; !ok {
+		t.Fatalf("expected allowed configured model in response; ids=%v", ids)
+	}
+	if _, ok := ids["kimi-k2.7"]; ok {
+		t.Fatalf("did not expect configured model outside group allowed-models; ids=%v", ids)
+	}
+	metadataIDs := make(map[string]struct{}, len(payload.ActiveMetadata))
+	for _, item := range payload.ActiveMetadata {
+		metadataIDs[item.ID] = struct{}{}
+	}
+	if _, ok := metadataIDs["kimi-k2.7-code"]; !ok {
+		t.Fatalf("expected allowed configured model metadata; ids=%v", metadataIDs)
+	}
+	if _, ok := metadataIDs["kimi-k2.7"]; ok {
+		t.Fatalf("did not expect metadata outside group allowed-models; ids=%v", metadataIDs)
+	}
+}
+
 func TestModelOwnerPresetHandlersReplacePresets(t *testing.T) {
 	initManagementModelsTestDB(t)
 	h := NewHandler(&config.Config{}, "", nil)
