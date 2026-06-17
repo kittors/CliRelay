@@ -57,6 +57,15 @@ func TestParseOpenAIUsageResponses(t *testing.T) {
 	}
 }
 
+func TestParseOpenAIResponseModel(t *testing.T) {
+	if got := parseOpenAIResponseModel([]byte(`{"model":"gpt-5.4","usage":{"total_tokens":1}}`)); got != "gpt-5.4" {
+		t.Fatalf("model = %q, want gpt-5.4", got)
+	}
+	if got := parseOpenAIStreamModel([]byte(`data: {"model":"gpt-5.4-mini-2026-03-17","usage":{"total_tokens":1}}`)); got != "gpt-5.4-mini-2026-03-17" {
+		t.Fatalf("stream model = %q, want gpt-5.4-mini-2026-03-17", got)
+	}
+}
+
 func TestUsageReporterSpillsLargeStreamingOutputToTempFile(t *testing.T) {
 	reporter := newUsageReporter(context.Background(), "provider", "model", nil)
 	chunk := bytes.Repeat([]byte("x"), usageReporterOutputMemoryLimit/2)

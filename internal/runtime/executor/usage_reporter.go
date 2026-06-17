@@ -74,6 +74,15 @@ func (r *usageReporter) publishWithContent(ctx context.Context, detail coreusage
 	r.publishWithOutcome(ctx, detail, false)
 }
 
+func (r *usageReporter) setModel(model string) {
+	if r == nil {
+		return
+	}
+	if model = strings.TrimSpace(model); model != "" {
+		r.model = model
+	}
+}
+
 // setInputContent stores the request payload for inclusion in usage records.
 // Call before starting the streaming goroutine.
 func (r *usageReporter) setInputContent(content string) {

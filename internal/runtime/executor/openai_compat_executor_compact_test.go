@@ -7,10 +7,12 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
+	cliproxyusage "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/usage"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v6/sdk/translator"
 	"github.com/tidwall/gjson"
 )
@@ -111,6 +113,45 @@ func TestOpenAICompatExecutorCompactPassthrough(t *testing.T) {
 	}
 	if string(resp.Payload) != `{"id":"resp_1","object":"response.compaction","usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3}}` {
 		t.Fatalf("payload = %s", string(resp.Payload))
+	}
+}
+
+func TestOpenAICompatExecutorUsageUsesUpstreamResponseModel(t *testing.T) {
+	usagePlugin := &usageCapturePlugin{records: make(chan cliproxyusage.Record, 4)}
+	cliproxyusage.RegisterPlugin(usagePlugin)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"resp_1","model":"gpt-5.4","usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3}}`))
+	}))
+	defer server.Close()
+
+	executor := NewOpenAICompatExecutor("openai-compatibility", &config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"base_url": server.URL + "/v1",
+		"api_key":  "test",
+	}}
+	_, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "codex-auto-review",
+		Payload: []byte(`{"model":"codex-auto-review","input":"ping"}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai-response"),
+		Alt:          "responses/compact",
+	})
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+
+	timer := time.After(time.Second)
+	for {
+		select {
+		case record := <-usagePlugin.records:
+			if record.Model == "gpt-5.4" {
+				return
+			}
+		case <-timer:
+			t.Fatal("timed out waiting for usage record with model gpt-5.4")
+		}
 	}
 }
 

@@ -165,6 +165,7 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 		return resp, err
 	}
 	recorder.AppendResponseChunk(body)
+	reporter.setModel(parseOpenAIResponseModel(body))
 	reporter.publishWithContent(execCtx.Context, parseOpenAIUsage(body), string(req.Payload), string(body))
 	// Ensure we at least record the request even if upstream doesn't return usage
 	reporter.ensurePublished(execCtx.Context)
@@ -271,6 +272,7 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 			line := scanner.Bytes()
 			recorder.AppendResponseChunk(line)
 			reporter.appendOutputChunk(line)
+			reporter.setModel(parseOpenAIStreamModel(line))
 			if detail, ok := parseOpenAIStreamUsage(line); ok {
 				reporter.publish(execCtx.Context, detail)
 			}

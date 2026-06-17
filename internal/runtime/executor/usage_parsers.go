@@ -1,6 +1,8 @@
 package executor
 
 import (
+	"strings"
+
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/usage"
 	"github.com/tidwall/gjson"
 )
@@ -61,6 +63,21 @@ func parseOpenAIUsage(data []byte) usage.Detail {
 		detail.ReasoningTokens = reasoning.Int()
 	}
 	return detail
+}
+
+func parseOpenAIResponseModel(data []byte) string {
+	if len(data) == 0 || !gjson.ValidBytes(data) {
+		return ""
+	}
+	return strings.TrimSpace(gjson.GetBytes(data, "model").String())
+}
+
+func parseOpenAIStreamModel(line []byte) string {
+	payload := jsonPayload(line)
+	if len(payload) == 0 || !gjson.ValidBytes(payload) {
+		return ""
+	}
+	return strings.TrimSpace(gjson.GetBytes(payload, "model").String())
 }
 
 func parseOpenAIStreamUsage(line []byte) (usage.Detail, bool) {
