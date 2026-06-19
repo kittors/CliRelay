@@ -41,6 +41,7 @@ type EntryPatch struct {
 	DailyLimit           *int      `json:"daily-limit"`
 	TotalQuota           *int      `json:"total-quota"`
 	SpendingLimit        *float64  `json:"spending-limit"`
+	DailySpendingLimit   *float64  `json:"daily-spending-limit"`
 	ConcurrencyLimit     *int      `json:"concurrency-limit"`
 	RPMLimit             *int      `json:"rpm-limit"`
 	TPMLimit             *int      `json:"tpm-limit"`
@@ -285,6 +286,9 @@ func (s *Service) PatchEntry(id *string, index *int, match *string, patch EntryP
 	}
 	if patch.SpendingLimit != nil {
 		entry.SpendingLimit = *patch.SpendingLimit
+	}
+	if patch.DailySpendingLimit != nil {
+		entry.DailySpendingLimit = *patch.DailySpendingLimit
 	}
 	if patch.ConcurrencyLimit != nil {
 		entry.ConcurrencyLimit = *patch.ConcurrencyLimit

@@ -65,7 +65,7 @@ func StartService(cfg *config.Config, configPath string, localPassword string) {
 	usage.ApplyStoredProxyPool(cfg)
 	settingsstore.MigrateRuntimeSettingsFromConfig(cfg, configPath)
 	settingsstore.ApplyStoredRuntimeSettings(cfg)
-	middleware.InitQuotaUsageFuncs(usage.CountTodayByKey, usage.CountTotalByKey, usage.QueryTotalCostByKey)
+	middleware.InitQuotaUsageFuncs(usage.CountTodayByKey, usage.CountTotalByKey, usage.QueryTotalCostByKey, usage.QueryTodayCostByKey)
 	usage.SetTokenUsageCallback(middleware.RecordTokenUsage)
 	usage.InitRedis(cfg.Redis)
 	defer usage.StopRedis()
@@ -137,7 +137,7 @@ func StartServiceBackground(cfg *config.Config, configPath string, localPassword
 	usage.ApplyStoredProxyPool(cfg)
 	settingsstore.MigrateRuntimeSettingsFromConfig(cfg, configPath)
 	settingsstore.ApplyStoredRuntimeSettings(cfg)
-	middleware.InitQuotaUsageFuncs(usage.CountTodayByKey, usage.CountTotalByKey, usage.QueryTotalCostByKey)
+	middleware.InitQuotaUsageFuncs(usage.CountTodayByKey, usage.CountTotalByKey, usage.QueryTotalCostByKey, usage.QueryTodayCostByKey)
 	usage.SetTokenUsageCallback(middleware.RecordTokenUsage)
 	usage.InitRedis(cfg.Redis)
 

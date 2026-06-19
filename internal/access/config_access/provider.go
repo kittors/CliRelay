@@ -53,6 +53,7 @@ func buildKeyConfigMap(cfg *sdkconfig.SDKConfig) map[string]keyConfig {
 			dailyLimit:           entry.DailyLimit,
 			totalQuota:           entry.TotalQuota,
 			spendingLimit:        entry.SpendingLimit,
+			dailySpendingLimit:   entry.DailySpendingLimit,
 			concurrencyLimit:     entry.ConcurrencyLimit,
 			rpmLimit:             entry.RPMLimit,
 			tpmLimit:             entry.TPMLimit,
@@ -78,6 +79,7 @@ func buildKeyConfigMap(cfg *sdkconfig.SDKConfig) map[string]keyConfig {
 			dailyLimit:           row.DailyLimit,
 			totalQuota:           row.TotalQuota,
 			spendingLimit:        row.SpendingLimit,
+			dailySpendingLimit:   row.DailySpendingLimit,
 			concurrencyLimit:     row.ConcurrencyLimit,
 			rpmLimit:             row.RPMLimit,
 			tpmLimit:             row.TPMLimit,
@@ -105,6 +107,7 @@ type keyConfig struct {
 	dailyLimit           int
 	totalQuota           int
 	spendingLimit        float64
+	dailySpendingLimit   float64
 	concurrencyLimit     int
 	rpmLimit             int
 	tpmLimit             int
@@ -198,6 +201,9 @@ func (p *provider) Authenticate(_ context.Context, r *http.Request) (*sdkaccess.
 			}
 			if kc.spendingLimit > 0 {
 				metadata["spending-limit"] = fmt.Sprintf("%f", kc.spendingLimit)
+			}
+			if kc.dailySpendingLimit > 0 {
+				metadata["daily-spending-limit"] = fmt.Sprintf("%f", kc.dailySpendingLimit)
 			}
 			if kc.systemPrompt != "" {
 				metadata["system-prompt"] = kc.systemPrompt

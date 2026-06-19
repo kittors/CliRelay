@@ -339,3 +339,37 @@ func TestAPIKeyToConfigEntry(t *testing.T) {
 		t.Errorf("AllowedChannels mismatch: %v", entry.AllowedChannels)
 	}
 }
+
+// TestAPIKeyDailySpendingLimitRoundTrip verifies the daily_spending_limit column
+// is persisted and read back correctly through Upsert / Get / UpdateByID.
+func TestAPIKeyDailySpendingLimitRoundTrip(t *testing.T) {
+	cleanup := setupTestDB(t)
+	defer cleanup()
+
+	entry := APIKeyRow{
+		Key:                "sk-daily-rt",
+		Name:               "Daily RT",
+		DailySpendingLimit: 123.45,
+	}
+	if err := UpsertAPIKey(entry); err != nil {
+		t.Fatalf("UpsertAPIKey: %v", err)
+	}
+
+	got := GetAPIKey("sk-daily-rt")
+	if got == nil {
+		t.Fatal("expected to find key")
+	}
+	if got.DailySpendingLimit != 123.45 {
+		t.Errorf("daily_spending_limit = %v, want 123.45", got.DailySpendingLimit)
+	}
+
+	// UpdateByID must persist a changed value too.
+	got.DailySpendingLimit = 0
+	if err := UpdateAPIKeyByID(*got); err != nil {
+		t.Fatalf("UpdateAPIKeyByID: %v", err)
+	}
+	updated := GetAPIKey("sk-daily-rt")
+	if updated == nil || updated.DailySpendingLimit != 0 {
+		t.Errorf("after update, daily_spending_limit = %v, want 0", updated.DailySpendingLimit)
+	}
+}

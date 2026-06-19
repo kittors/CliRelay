@@ -1,6 +1,9 @@
 package usage
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestCalculateCostDiscountsCachedInputSubset(t *testing.T) {
 	initModelConfigTestDB(t)
@@ -253,5 +256,47 @@ func TestCalculateCostV2FallbackLegacyWithModelPricingTable(t *testing.T) {
 	want := CalculateCost("legacy-table-model", 1000, 500, 800)
 	if cost != want {
 		t.Fatalf("cost = %.10f, want %.10f (legacy CalculateCost = %.10f)", cost, want, want)
+	}
+}
+
+// TestQueryTodayCostByKeyResetsDaily verifies that QueryTodayCostByKey only sums
+// cost accumulated since the start of today (project timezone), excluding older
+// rows. This is the data foundation for the daily-spending-limit, which resets
+// every day in contrast to the cumulative spending-limit (QueryTotalCostByKey).
+func TestQueryTodayCostByKeyResetsDaily(t *testing.T) {
+	cleanup := setupTestDB(t)
+	defer cleanup()
+
+	db := getDB()
+	// setupTestDB creates the minimal request_logs schema without the cost column.
+	migrateCostColumn(db)
+
+	insertRow := func(ts time.Time, cost float64) {
+		if _, err := db.Exec(
+			`INSERT INTO request_logs (timestamp, api_key, cost) VALUES (?, ?, ?)`,
+			ts.Format(time.RFC3339Nano), "sk-daily-spending", cost,
+		); err != nil {
+			t.Fatalf("insert request_log row: %v", err)
+		}
+	}
+
+	// One request logged earlier today, one logged two days ago.
+	insertRow(time.Now().UTC(), 30)
+	insertRow(time.Now().UTC().AddDate(0, 0, -2), 50)
+
+	todayCost, err := QueryTodayCostByKey("sk-daily-spending")
+	if err != nil {
+		t.Fatalf("QueryTodayCostByKey() error = %v", err)
+	}
+	if todayCost != 30 {
+		t.Errorf("today cost = %.2f, want 30 (daily window must exclude older rows)", todayCost)
+	}
+
+	totalCost, err := QueryTotalCostByKey("sk-daily-spending")
+	if err != nil {
+		t.Fatalf("QueryTotalCostByKey() error = %v", err)
+	}
+	if totalCost != 80 {
+		t.Errorf("total cost = %.2f, want 80 (cumulative across all days)", totalCost)
 	}
 }

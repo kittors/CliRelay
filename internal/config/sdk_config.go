@@ -123,6 +123,12 @@ type APIKeyEntry struct {
 	// total accumulated cost exceeds this limit.
 	SpendingLimit float64 `yaml:"spending-limit,omitempty" json:"spending-limit,omitempty"`
 
+	// DailySpendingLimit is the maximum allowed spending in US dollars per day. 0 means
+	// unlimited. Unlike SpendingLimit (which accumulates from key creation), this resets
+	// every day: when model pricing is configured, requests are rejected once the key's
+	// same-day accumulated cost exceeds this limit.
+	DailySpendingLimit float64 `yaml:"daily-spending-limit,omitempty" json:"daily-spending-limit,omitempty"`
+
 	// ConcurrencyLimit is the maximum number of concurrent requests. 0 means unlimited.
 	ConcurrencyLimit int `yaml:"concurrency-limit,omitempty" json:"concurrency-limit,omitempty"`
 

@@ -169,12 +169,13 @@ func QuotaMiddleware() gin.HandlerFunc {
 		rpmLimit := parseIntMetadata(metadata, "rpm-limit")
 		tpmLimit := parseIntMetadata(metadata, "tpm-limit")
 		spendingLimit := parseFloatMetadata(metadata, "spending-limit")
+		dailySpendingLimit := parseFloatMetadata(metadata, "daily-spending-limit")
 
 		// Cache limits for dashboard snapshot
 		UpdateKeyLimits(apiKey, rpmLimit, tpmLimit)
 
 		// No limits configured — skip all checks
-		if dailyLimit <= 0 && totalQuota <= 0 && rpmLimit <= 0 && tpmLimit <= 0 && spendingLimit <= 0 {
+		if dailyLimit <= 0 && totalQuota <= 0 && rpmLimit <= 0 && tpmLimit <= 0 && spendingLimit <= 0 && dailySpendingLimit <= 0 {
 			c.Next()
 			return
 		}
@@ -259,6 +260,23 @@ func QuotaMiddleware() gin.HandlerFunc {
 			}
 		}
 
+		// --- Daily spending limit check (from usage DB) ---
+		if dailySpendingLimit > 0 {
+			todayCost, err := queryTodayCostByKeyFunc(apiKey)
+			if err != nil {
+				log.Warnf("quota: failed to query today cost for key %s: %v", maskKey(apiKey), err)
+			} else if todayCost >= dailySpendingLimit {
+				c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{
+					"error": map[string]interface{}{
+						"message": fmt.Sprintf("daily spending limit ($%.2f) exceeded for this API key (today: $%.2f)", dailySpendingLimit, todayCost),
+						"type":    "rate_limit_exceeded",
+						"code":    "daily_spending_limit_exceeded",
+					},
+				})
+				return
+			}
+		}
+
 		c.Next()
 	}
 }
@@ -271,6 +289,7 @@ var (
 	countTodayByKeyFunc     = func(string) (int64, error) { return 0, nil }
 	countTotalByKeyFunc     = func(string) (int64, error) { return 0, nil }
 	queryTotalCostByKeyFunc = func(string) (float64, error) { return 0, nil }
+	queryTodayCostByKeyFunc = func(string) (float64, error) { return 0, nil }
 )
 
 // InitQuotaUsageFuncs injects the usage DB query functions into the middleware.
@@ -279,10 +298,12 @@ func InitQuotaUsageFuncs(
 	countToday func(string) (int64, error),
 	countTotal func(string) (int64, error),
 	totalCost func(string) (float64, error),
+	todayCost func(string) (float64, error),
 ) {
 	countTodayByKeyFunc = countToday
 	countTotalByKeyFunc = countTotal
 	queryTotalCostByKeyFunc = totalCost
+	queryTodayCostByKeyFunc = todayCost
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────

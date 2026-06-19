@@ -219,6 +219,8 @@ routing:
 #   - key: "sk-user-pro"
 #     name: "Pro User"
 #     allowed-channel-groups: ["pro"]
+#     daily-spending-limit: 100  # Max USD spend per day, resets daily (0 = unlimited). Requires model pricing.
+#     spending-limit: 500       # Max cumulative USD spend since key creation (0 = unlimited).
 #   - key: "sk-team-a"
 #     name: "Team A"
 #     allowed-channel-groups: ["team-a", "pro"]
