@@ -1635,6 +1635,70 @@ func TestRequestStatisticsPersistsAPIKeyIdentitySnapshotAcrossRename(t *testing.
 	}
 }
 
+func TestRequestStatisticsPersistsRequestLogWhenStatisticsDisabled(t *testing.T) {
+	initTestUsageDB(t, config.RequestLogStorageConfig{})
+	wasEnabled := StatisticsEnabled()
+	SetStatisticsEnabled(false)
+	t.Cleanup(func() { SetStatisticsEnabled(wasEnabled) })
+
+	stats := NewRequestStatistics()
+	stats.Record(context.Background(), coreusage.Record{
+		APIKey:      "sk-disabled-stats",
+		APIKeyName:  "Disabled Stats",
+		Model:       "glm-5.2",
+		Source:      "source",
+		ChannelName: "channel",
+		AuthIndex:   "auth-1",
+		RequestedAt: time.Now().UTC(),
+		Detail: coreusage.Detail{
+			InputTokens:  10,
+			OutputTokens: 5,
+			TotalTokens:  15,
+		},
+	})
+
+	snapshot := stats.Snapshot()
+	if snapshot.TotalRequests != 0 {
+		t.Fatalf("snapshot.TotalRequests = %d, want 0 when statistics disabled", snapshot.TotalRequests)
+	}
+
+	var count int
+	if err := getDB().QueryRow("SELECT COUNT(*) FROM request_logs WHERE api_key = ?", "sk-disabled-stats").Scan(&count); err != nil {
+		t.Fatalf("query persisted request log: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("persisted request log count = %d, want 1", count)
+	}
+}
+
+func TestInitDBDoesNotRunProviderEchoModelBackfill(t *testing.T) {
+	CloseDB()
+	dbPath := filepath.Join(t.TempDir(), "usage.db")
+	if err := InitDB(dbPath, config.RequestLogStorageConfig{}, time.UTC); err != nil {
+		t.Fatalf("initial InitDB() error = %v", err)
+	}
+	stopRequestLogMaintenance()
+
+	db := getDB()
+	id := insertProviderEchoRequestLog(t, db, "accounts/fireworks/models/glm-5p2", 100)
+	insertRequestLogContentRow(t, db, id, `{"model":"glm-5.2","messages":[]}`)
+	CloseDB()
+
+	if err := InitDB(dbPath, config.RequestLogStorageConfig{}, time.UTC); err != nil {
+		t.Fatalf("second InitDB() error = %v", err)
+	}
+	stopRequestLogMaintenance()
+	t.Cleanup(CloseDB)
+
+	var model string
+	if err := getDB().QueryRow("SELECT model FROM request_logs WHERE id = ?", id).Scan(&model); err != nil {
+		t.Fatalf("query provider echo row: %v", err)
+	}
+	if model != "accounts/fireworks/models/glm-5p2" {
+		t.Fatalf("model = %q, want InitDB to leave provider-echo history unchanged", model)
+	}
+}
+
 func TestClearAllRequestLogsRemovesRequestLogTablesOnly(t *testing.T) {
 	initTestUsageDB(t, config.RequestLogStorageConfig{
 		StoreContent:           true,

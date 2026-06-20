@@ -446,8 +446,6 @@ func InitDB(dbPath string, storageCfg config.RequestLogStorageConfig, loc *time.
 	initAPIKeysTable(db)
 	log.Debugf("usage: backfilling request log api_key_id values")
 	backfillRequestLogAPIKeyIDs(db)
-	log.Debugf("usage: backfilling request log provider-echo model values")
-	backfillRequestLogModelNames(db)
 	log.Debugf("usage: initializing api_key_permission_profiles table")
 	initAPIKeyPermissionProfilesTable(db)
 	log.Debugf("usage: initializing ccswitch_import_configs table")

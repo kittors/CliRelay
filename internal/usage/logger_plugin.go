@@ -53,15 +53,13 @@ type LoggerPlugin struct {
 func NewLoggerPlugin() *LoggerPlugin { return &LoggerPlugin{stats: defaultRequestStatistics} }
 
 // HandleUsage implements coreusage.Plugin.
-// It updates the in-memory statistics store whenever a usage record is received.
+// It persists request log metadata for every usage record and updates the
+// in-memory statistics store when usage statistics are enabled.
 //
 // Parameters:
 //   - ctx: The context for the usage record
 //   - record: The usage record to aggregate
 func (p *LoggerPlugin) HandleUsage(ctx context.Context, record coreusage.Record) {
-	if !statisticsEnabled.Load() {
-		return
-	}
 	if p == nil || p.stats == nil {
 		return
 	}
@@ -69,6 +67,7 @@ func (p *LoggerPlugin) HandleUsage(ctx context.Context, record coreusage.Record)
 }
 
 // SetStatisticsEnabled toggles whether in-memory statistics are recorded.
+// Request log metadata remains persisted even when aggregation is disabled.
 func SetStatisticsEnabled(enabled bool) { statisticsEnabled.Store(enabled) }
 
 // StatisticsEnabled reports the current recording state.
@@ -290,12 +289,10 @@ func NewRequestStatistics() *RequestStatistics {
 	}
 }
 
-// Record ingests a new usage record and updates the aggregates.
+// Record ingests a new usage record, persists the request log, and updates the
+// in-memory aggregates when usage statistics are enabled.
 func (s *RequestStatistics) Record(ctx context.Context, record coreusage.Record) {
 	if s == nil {
-		return
-	}
-	if !statisticsEnabled.Load() {
 		return
 	}
 	timestamp := record.RequestedAt
@@ -317,39 +314,42 @@ func (s *RequestStatistics) Record(ctx context.Context, record coreusage.Record)
 	if modelName == "" {
 		modelName = "unknown"
 	}
-	dayKey := timestamp.Format("2006-01-02")
-	hourKey := timestamp.Hour()
 
-	s.mu.Lock()
-	s.totalRequests++
-	if success {
-		s.successCount++
-	} else {
-		s.failureCount++
+	if statisticsEnabled.Load() {
+		dayKey := timestamp.Format("2006-01-02")
+		hourKey := timestamp.Hour()
+
+		s.mu.Lock()
+		s.totalRequests++
+		if success {
+			s.successCount++
+		} else {
+			s.failureCount++
+		}
+		s.totalTokens += totalTokens
+
+		stats, ok := s.apis[statsKey]
+		if !ok {
+			stats = &apiStats{Models: make(map[string]*modelStats)}
+			s.apis[statsKey] = stats
+		}
+		s.updateAPIStats(stats, modelName, RequestDetail{
+			Timestamp:    timestamp,
+			Source:       record.Source,
+			AuthIndex:    record.AuthIndex,
+			ChannelName:  record.ChannelName,
+			Tokens:       detail,
+			LatencyMs:    record.LatencyMs,
+			FirstTokenMs: record.FirstTokenMs,
+			Failed:       failed,
+		})
+
+		s.requestsByDay[dayKey]++
+		s.requestsByHour[hourKey]++
+		s.tokensByDay[dayKey] += totalTokens
+		s.tokensByHour[hourKey] += totalTokens
+		s.mu.Unlock()
 	}
-	s.totalTokens += totalTokens
-
-	stats, ok := s.apis[statsKey]
-	if !ok {
-		stats = &apiStats{Models: make(map[string]*modelStats)}
-		s.apis[statsKey] = stats
-	}
-	s.updateAPIStats(stats, modelName, RequestDetail{
-		Timestamp:    timestamp,
-		Source:       record.Source,
-		AuthIndex:    record.AuthIndex,
-		ChannelName:  record.ChannelName,
-		Tokens:       detail,
-		LatencyMs:    record.LatencyMs,
-		FirstTokenMs: record.FirstTokenMs,
-		Failed:       failed,
-	})
-
-	s.requestsByDay[dayKey]++
-	s.requestsByHour[hourKey]++
-	s.tokensByDay[dayKey] += totalTokens
-	s.tokensByHour[hourKey] += totalTokens
-	s.mu.Unlock()
 
 	// Persist request logs in the usage manager worker so SQLite writes stay
 	// serialized and do not spawn one goroutine per request.

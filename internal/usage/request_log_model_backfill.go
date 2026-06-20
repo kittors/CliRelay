@@ -28,6 +28,8 @@ const providerEchoModelPattern = "accounts/%/models/%"
 // the stored request body (request_log_content.input_content, or the legacy
 // request_logs.input_content fallback) and rewrites both the model and the cost (which
 // was zero because the echo string has no pricing entry).
+// This is intentionally not run from InitDB: historical content rows can be large or
+// damaged, and service startup must not depend on decompressing old request bodies.
 //
 // Rows whose stored request body has been cleared cannot be recovered: they are left
 // as-is and counted in a warning so the operator can decide what to do. The function is
