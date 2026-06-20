@@ -25,7 +25,9 @@ func QueryLogs(params LogQueryParams) (LogQueryResult, error) {
 		params.Days = 7
 	}
 
-	db := getDB()
+	// Read path: use the dedicated read-only pool so management log queries do not
+	// block on the single writer or maintenance ops (wal_checkpoint/VACUUM).
+	db := getReadDB()
 	if db == nil {
 		// Never return nil slices in JSON responses (nil slice => null in JSON).
 		return LogQueryResult{
@@ -42,6 +44,7 @@ func QueryLogs(params LogQueryParams) (LogQueryResult, error) {
 	var total int64
 	countSQL := "SELECT COUNT(*) FROM request_logs" + where
 	if err := db.QueryRow(countSQL, args...).Scan(&total); err != nil {
+		log.Warnf("usage: count query failed: %v", err)
 		return LogQueryResult{}, fmt.Errorf("usage: count query: %w", err)
 	}
 
@@ -58,6 +61,7 @@ func QueryLogs(params LogQueryParams) (LogQueryResult, error) {
 
 	rows, err := db.Query(querySQL, queryArgs...)
 	if err != nil {
+		log.Warnf("usage: query logs failed: %v", err)
 		return LogQueryResult{}, fmt.Errorf("usage: query logs: %w", err)
 	}
 	defer rows.Close()
@@ -73,6 +77,7 @@ func QueryLogs(params LogQueryParams) (LogQueryResult, error) {
 			&row.InputTokens, &row.OutputTokens, &row.ReasoningTokens,
 			&row.CachedTokens, &row.TotalTokens, &row.Cost, &hasContentInt,
 		); err != nil {
+			log.Warnf("usage: scan log row failed: %v", err)
 			return LogQueryResult{}, fmt.Errorf("usage: scan row: %w", err)
 		}
 		row.Timestamp, _ = time.Parse(time.RFC3339Nano, ts)
@@ -163,7 +168,7 @@ func QueryFilters(days int) (FilterOptions, error) {
 	if days < 1 {
 		days = 7
 	}
-	db := getDB()
+	db := getReadDB()
 	if db == nil {
 		// Ensure stable JSON shape: slices => [] (not null), maps => {} (not null).
 		return FilterOptions{
@@ -178,14 +183,17 @@ func QueryFilters(days int) (FilterOptions, error) {
 
 	keys, keyNames, err := queryDistinctAPIKeys(db, cutoff)
 	if err != nil {
+		log.Warnf("usage: query distinct api keys failed: %v", err)
 		return FilterOptions{}, err
 	}
 	models, err := queryDistinct(db, "model", cutoff)
 	if err != nil {
+		log.Warnf("usage: query distinct models failed: %v", err)
 		return FilterOptions{}, err
 	}
 	channels, err := queryDistinct(db, "channel_name", cutoff)
 	if err != nil {
+		log.Warnf("usage: query distinct channels failed: %v", err)
 		return FilterOptions{}, err
 	}
 
@@ -199,7 +207,7 @@ func QueryFilters(days int) (FilterOptions, error) {
 
 // QueryStats returns aggregated statistics over the filtered dataset.
 func QueryStats(params LogQueryParams) (LogStats, error) {
-	db := getDB()
+	db := getReadDB()
 	if db == nil {
 
 		return LogStats{CacheRate: 0}, nil
@@ -215,6 +223,7 @@ func QueryStats(params LogQueryParams) (LogStats, error) {
 	statsSQL := "SELECT COUNT(*), COALESCE(SUM(CASE WHEN failed=0 THEN 1 ELSE 0 END),0), COALESCE(SUM(total_tokens),0), COALESCE(SUM(cost),0), COALESCE(SUM(" + cacheRateEffectiveInputSQL + "),0), COALESCE(SUM(cached_tokens),0) " +
 		"FROM request_logs" + where
 	if err := db.QueryRow(statsSQL, args...).Scan(&total, &successCount, &totalTokens, &totalCost, &effectiveInputTokens, &totalCachedTokens); err != nil {
+		log.Warnf("usage: stats query failed: %v", err)
 		return LogStats{}, fmt.Errorf("usage: stats query: %w", err)
 	}
 
@@ -602,6 +611,7 @@ func queryDistinct(db *sql.DB, column, cutoff string) ([]string, error) {
 	q := fmt.Sprintf("SELECT DISTINCT %s FROM request_logs WHERE timestamp >= ? ORDER BY %s", column, column)
 	rows, err := db.Query(q, cutoff)
 	if err != nil {
+		log.Warnf("usage: distinct %s query failed: %v", column, err)
 		return nil, fmt.Errorf("usage: distinct %s: %w", column, err)
 	}
 	defer rows.Close()
@@ -610,6 +620,7 @@ func queryDistinct(db *sql.DB, column, cutoff string) ([]string, error) {
 	for rows.Next() {
 		var v string
 		if err := rows.Scan(&v); err != nil {
+			log.Warnf("usage: distinct %s scan failed: %v", column, err)
 			return nil, err
 		}
 		if v != "" {
@@ -636,6 +647,7 @@ func queryDistinctAPIKeys(db *sql.DB, cutoff string) ([]string, map[string]strin
 		ORDER BY logical_selector
 	`, cutoff)
 	if err != nil {
+		log.Warnf("usage: distinct api_key logical groups query failed: %v", err)
 		return nil, nil, fmt.Errorf("usage: distinct api_key logical groups: %w", err)
 	}
 	defer rows.Close()
@@ -649,6 +661,7 @@ func queryDistinctAPIKeys(db *sql.DB, cutoff string) ([]string, map[string]strin
 		var snapshotKey string
 		var snapshotName string
 		if err := rows.Scan(&logicalSelector, &logicalID, &snapshotKey, &snapshotName); err != nil {
+			log.Warnf("usage: distinct api_key scan failed: %v", err)
 			return nil, nil, err
 		}
 
@@ -700,7 +713,7 @@ func buildSingleAPIKeySelectorClause(selector string) (string, []interface{}) {
 
 // QueryModelsForKey returns the distinct models used by a specific API key within the time range.
 func QueryModelsForKey(apiKey string, days int) ([]string, error) {
-	db := getDB()
+	db := getReadDB()
 	if db == nil {
 		return make([]string, 0), nil
 	}
@@ -714,6 +727,7 @@ func QueryModelsForKey(apiKey string, days int) ([]string, error) {
 		args...,
 	)
 	if err != nil {
+		log.Warnf("usage: distinct models for key query failed: %v", err)
 		return nil, fmt.Errorf("usage: distinct models for key: %w", err)
 	}
 	defer rows.Close()
@@ -722,6 +736,7 @@ func QueryModelsForKey(apiKey string, days int) ([]string, error) {
 	for rows.Next() {
 		var v string
 		if err := rows.Scan(&v); err != nil {
+			log.Warnf("usage: distinct models for key scan failed: %v", err)
 			return nil, err
 		}
 		result = append(result, v)

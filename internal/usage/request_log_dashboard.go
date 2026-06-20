@@ -54,7 +54,7 @@ const dashboardThroughputBucketCount = 7
 // QueryDashboardKPI returns aggregated KPI data from SQLite for the dashboard.
 // This replaces the old in-memory snapshot-based counting which lost data on restart.
 func QueryDashboardKPI(days int) (DashboardKPI, error) {
-	db := getDB()
+	db := getReadDB()
 	if db == nil {
 		return DashboardKPI{}, nil
 	}
@@ -106,7 +106,7 @@ func QueryDashboardKPI(days int) (DashboardKPI, error) {
 // KPI trends follow the selected day range, while throughput always shows the
 // most recent 7 one-minute buckets.
 func QueryDashboardTrends(days int) (DashboardTrends, error) {
-	db := getDB()
+	db := getReadDB()
 	if db == nil {
 		return emptyDashboardTrends(days), nil
 	}
@@ -238,7 +238,7 @@ func buildRecentThroughputBucketsAt(now time.Time, loc *time.Location) []dashboa
 }
 
 func queryDashboardThroughputSeriesAt(now time.Time, loc *time.Location) ([]DashboardThroughputPoint, error) {
-	db := getDB()
+	db := getReadDB()
 	if db == nil {
 		return throughputSeriesFromBuckets(buildRecentThroughputBucketsAt(now, loc)), nil
 	}

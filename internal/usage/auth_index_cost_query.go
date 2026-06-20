@@ -7,7 +7,7 @@ import (
 )
 
 func QueryCostByAuthIndexSince(authIndex string, since time.Time) (float64, error) {
-	db := getDB()
+	db := getReadDB()
 	if db == nil {
 		return 0, nil
 	}

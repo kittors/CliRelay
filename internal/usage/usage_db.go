@@ -111,6 +111,7 @@ const systemRequestLogFilterValue = "__system__"
 
 var (
 	usageDB     *sql.DB
+	usageReadDB *sql.DB
 	usageDBMu   sync.Mutex
 	usageDBPath string
 	usageLoc    *time.Location
@@ -382,6 +383,32 @@ func InitDB(dbPath string, storageCfg config.RequestLogStorageConfig, loc *time.
 	} else {
 		log.Debugf("usage: journal_mode set (result: %v)", res)
 	}
+	// synchronous=NORMAL under WAL is safe (no corruption on power loss for
+	// committed txns) and reduces fsync contention between the writer and readers.
+	if _, err := db.Exec("PRAGMA synchronous = NORMAL"); err != nil {
+		log.Warnf("usage: failed to set synchronous=NORMAL: %v", err)
+	}
+
+	// Open a separate read-only connection pool so management reads (QueryLogs,
+	// QueryStats, QueryFilters, content queries) do not serialize behind the
+	// single writer or maintenance ops (wal_checkpoint/VACUUM). WAL mode allows
+	// concurrent readers alongside a writer, so reads stay responsive while inserts
+	// or maintenance hold the write connection. WAL is persisted on the DB file by
+	// the writer above, so the read-only handle opens in WAL mode automatically.
+	readDB, err := sql.Open("sqlite", "file:"+dbPath+"?mode=ro&_pragma=busy_timeout(5000)")
+	if err != nil {
+		_ = db.Close()
+		return fmt.Errorf("usage: open sqlite read-only handle: %w", err)
+	}
+	// Readers can run concurrently with each other and with the writer under WAL.
+	readDB.SetMaxOpenConns(4)
+	readDB.SetMaxIdleConns(2)
+	readDB.SetConnMaxLifetime(30 * time.Minute)
+	if err := readDB.PingContext(pingCtx); err != nil {
+		_ = db.Close()
+		_ = readDB.Close()
+		return fmt.Errorf("usage: ping sqlite read-only handle: %w", err)
+	}
 
 	log.Debugf("usage: creating tables")
 	if _, err := db.Exec(createTableSQL); err != nil {
@@ -390,6 +417,7 @@ func InitDB(dbPath string, storageCfg config.RequestLogStorageConfig, loc *time.
 	}
 
 	usageDB = db
+	usageReadDB = readDB
 	usageDBPath = dbPath
 	requestLogStorage = normalizeRequestLogStorageConfig(storageCfg)
 	log.Debugf("usage: running content column migration")
@@ -418,6 +446,8 @@ func InitDB(dbPath string, storageCfg config.RequestLogStorageConfig, loc *time.
 	initAPIKeysTable(db)
 	log.Debugf("usage: backfilling request log api_key_id values")
 	backfillRequestLogAPIKeyIDs(db)
+	log.Debugf("usage: backfilling request log provider-echo model values")
+	backfillRequestLogModelNames(db)
 	log.Debugf("usage: initializing api_key_permission_profiles table")
 	initAPIKeyPermissionProfilesTable(db)
 	log.Debugf("usage: initializing ccswitch_import_configs table")
@@ -442,9 +472,13 @@ func CloseDB() {
 	if usageDB != nil {
 		_ = usageDB.Close()
 		usageDB = nil
-		usageLoc = nil
-		log.Info("usage: SQLite database closed")
 	}
+	if usageReadDB != nil {
+		_ = usageReadDB.Close()
+		usageReadDB = nil
+	}
+	usageLoc = nil
+	log.Info("usage: SQLite database closed")
 }
 
 // InsertLog writes a single request log entry into the SQLite database.
@@ -603,6 +637,19 @@ func parseStoredTime(value string) (time.Time, bool) {
 func getDB() *sql.DB {
 	usageDBMu.Lock()
 	defer usageDBMu.Unlock()
+	return usageDB
+}
+
+// getReadDB returns the dedicated read-only connection pool used by management
+// read paths (QueryLogs/QueryStats/QueryFilters/content queries) so they do not
+// block on the single writer or maintenance ops. It falls back to the write
+// handle when no read pool is available, preserving correctness.
+func getReadDB() *sql.DB {
+	usageDBMu.Lock()
+	defer usageDBMu.Unlock()
+	if usageReadDB != nil {
+		return usageReadDB
+	}
 	return usageDB
 }
 

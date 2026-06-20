@@ -165,7 +165,12 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 		return resp, err
 	}
 	recorder.AppendResponseChunk(body)
-	reporter.setModel(parseOpenAIResponseModel(body))
+	// Preserve the clean, request-time model (ec.BaseModel) for the usage record.
+	// The upstream response's "model" field echoes a provider-internal path such as
+	// "accounts/fireworks/models/glm-5p2", which is not a valid model name for
+	// display, pricing lookup (CalculateCostV2) or filtering. All other executors
+	// (codex/claude/gemini/...) never override the reporter's model, so this keeps
+	// the OpenAI-compat path consistent with them.
 	reporter.publishWithContent(execCtx.Context, parseOpenAIUsage(body), string(req.Payload), string(body))
 	// Ensure we at least record the request even if upstream doesn't return usage
 	reporter.ensurePublished(execCtx.Context)
@@ -272,7 +277,10 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 			line := scanner.Bytes()
 			recorder.AppendResponseChunk(line)
 			reporter.appendOutputChunk(line)
-			reporter.setModel(parseOpenAIStreamModel(line))
+			// Intentionally do NOT call reporter.setModel(parseOpenAIStreamModel(line)).
+			// See the non-stream branch above: the upstream "model" echo is a
+			// provider-internal path (e.g. accounts/fireworks/models/glm-5p2) that
+			// must not override the clean request-time model used for logging/cost.
 			if detail, ok := parseOpenAIStreamUsage(line); ok {
 				reporter.publish(execCtx.Context, detail)
 			}

@@ -37,7 +37,7 @@ func normalizeLogContentPart(part string) (string, error) {
 
 // QueryLogContent retrieves the stored request/response content for a single log entry.
 func QueryLogContent(id int64) (LogContentResult, error) {
-	db := getDB()
+	db := getReadDB()
 	if db == nil {
 		return LogContentResult{}, fmt.Errorf("usage: database not initialised")
 	}
@@ -67,7 +67,7 @@ func QueryLogContent(id int64) (LogContentResult, error) {
 // QueryLogContentPart retrieves only one side (input/output) of the stored request/response content
 // for a single log entry. This avoids decompressing/transferring both blobs for the UI.
 func QueryLogContentPart(id int64, part string) (LogContentPartResult, error) {
-	db := getDB()
+	db := getReadDB()
 	if db == nil {
 		return LogContentPartResult{}, fmt.Errorf("usage: database not initialised")
 	}
@@ -124,7 +124,7 @@ func QueryLogContentPart(id int64, part string) (LogContentPartResult, error) {
 // QueryLogContentForKey retrieves log content for a single entry, but only if it belongs to the given API key.
 // This is used by the public endpoint to ensure users can only access their own logs.
 func QueryLogContentForKey(id int64, apiKey string) (LogContentResult, error) {
-	db := getDB()
+	db := getReadDB()
 	if db == nil {
 		return LogContentResult{}, fmt.Errorf("usage: database not initialised")
 	}
@@ -158,7 +158,7 @@ func QueryLogContentForKey(id int64, apiKey string) (LogContentResult, error) {
 // QueryLogContentPartForKey retrieves only one side (input/output) of the stored request/response content
 // for a single entry, but only if it belongs to the given API key.
 func QueryLogContentPartForKey(id int64, apiKey string, part string) (LogContentPartResult, error) {
-	db := getDB()
+	db := getReadDB()
 	if db == nil {
 		return LogContentPartResult{}, fmt.Errorf("usage: database not initialised")
 	}

@@ -116,13 +116,17 @@ func TestOpenAICompatExecutorCompactPassthrough(t *testing.T) {
 	}
 }
 
-func TestOpenAICompatExecutorUsageUsesUpstreamResponseModel(t *testing.T) {
+func TestOpenAICompatExecutorUsagePreservesRequestModelOverUpstreamEcho(t *testing.T) {
 	usagePlugin := &usageCapturePlugin{records: make(chan cliproxyusage.Record, 4)}
 	cliproxyusage.RegisterPlugin(usagePlugin)
 
+	// Upstream echoes a provider-internal model path (like Fireworks does for
+	// glm-5.2 -> "accounts/fireworks/models/glm-5p2"). The usage record must keep
+	// the clean request-time model, not the upstream echo, so display/cost/filter
+	// keep working. This guards against re-introducing the setModel override.
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"id":"resp_1","model":"gpt-5.4","usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3}}`))
+		_, _ = w.Write([]byte(`{"id":"resp_1","model":"accounts/fireworks/models/glm-5p2","usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3}}`))
 	}))
 	defer server.Close()
 
@@ -132,8 +136,8 @@ func TestOpenAICompatExecutorUsageUsesUpstreamResponseModel(t *testing.T) {
 		"api_key":  "test",
 	}}
 	_, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
-		Model:   "codex-auto-review",
-		Payload: []byte(`{"model":"codex-auto-review","input":"ping"}`),
+		Model:   "glm-5.2",
+		Payload: []byte(`{"model":"glm-5.2","input":"ping"}`),
 	}, cliproxyexecutor.Options{
 		SourceFormat: sdktranslator.FromString("openai-response"),
 		Alt:          "responses/compact",
@@ -146,11 +150,68 @@ func TestOpenAICompatExecutorUsageUsesUpstreamResponseModel(t *testing.T) {
 	for {
 		select {
 		case record := <-usagePlugin.records:
-			if record.Model == "gpt-5.4" {
+			if record.Model == "accounts/fireworks/models/glm-5p2" {
+				t.Fatalf("usage record model = upstream echo %q; must stay the clean request model", record.Model)
+			}
+			if record.Model == "glm-5.2" {
 				return
 			}
 		case <-timer:
-			t.Fatal("timed out waiting for usage record with model gpt-5.4")
+			t.Fatal("timed out waiting for usage record with clean model glm-5.2")
+		}
+	}
+}
+
+func TestOpenAICompatExecutorStreamUsagePreservesRequestModelOverUpstreamEcho(t *testing.T) {
+	usagePlugin := &usageCapturePlugin{records: make(chan cliproxyusage.Record, 4)}
+	cliproxyusage.RegisterPlugin(usagePlugin)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(strings.Join([]string{
+			`data: {"id":"chatcmpl-echo","object":"chat.completion.chunk","created":1,"model":"accounts/fireworks/models/glm-5p2","choices":[{"index":0,"delta":{"role":"assistant","content":"hi"},"finish_reason":null}]}`,
+			`data: {"id":"chatcmpl-echo","object":"chat.completion.chunk","created":1,"model":"accounts/fireworks/models/glm-5p2","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":5,"total_tokens":8}}`,
+			`data: [DONE]`,
+			``,
+		}, "\n\n")))
+	}))
+	defer server.Close()
+
+	executor := NewOpenAICompatExecutor("openai-compatibility", &config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"base_url": server.URL + "/v1",
+		"api_key":  "test",
+	}}
+	payload := []byte(`{"model":"glm-5.2","max_tokens":1024,"messages":[{"role":"user","content":"hi"}]}`)
+
+	result, err := executor.ExecuteStream(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "glm-5.2",
+		Payload: payload,
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai"),
+		Stream:       true,
+	})
+	if err != nil {
+		t.Fatalf("ExecuteStream error: %v", err)
+	}
+	for chunk := range result.Chunks {
+		if chunk.Err != nil {
+			t.Fatalf("stream chunk error: %v", chunk.Err)
+		}
+	}
+
+	timer := time.After(time.Second)
+	for {
+		select {
+		case record := <-usagePlugin.records:
+			if record.Model == "accounts/fireworks/models/glm-5p2" {
+				t.Fatalf("stream usage record model = upstream echo %q; must stay the clean request model", record.Model)
+			}
+			if record.Model == "glm-5.2" {
+				return
+			}
+		case <-timer:
+			t.Fatal("timed out waiting for stream usage record with clean model glm-5.2")
 		}
 	}
 }

@@ -74,6 +74,11 @@ func (r *usageReporter) publishWithContent(ctx context.Context, detail coreusage
 	r.publishWithOutcome(ctx, detail, false)
 }
 
+// setModel overrides the reporter's model. It is intentionally NOT called from
+// the OpenAI-compat executor: the upstream response's "model" field echoes a
+// provider-internal path (e.g. accounts/fireworks/models/glm-5p2) that must not
+// replace the clean request-time model used for logging and cost calculation.
+// It is retained for explicit callers that have a verified-clean model string.
 func (r *usageReporter) setModel(model string) {
 	if r == nil {
 		return

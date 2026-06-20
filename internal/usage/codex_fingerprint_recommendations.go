@@ -99,7 +99,7 @@ func QueryCodexFingerprintRecommendations(params CodexFingerprintRecommendationQ
 		Limit: params.Limit,
 	}
 
-	db := getDB()
+	db := getReadDB()
 	if db == nil {
 		return result, nil
 	}

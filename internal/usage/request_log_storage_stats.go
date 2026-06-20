@@ -11,7 +11,7 @@ import (
 // request_log_content and any legacy inline content not yet migrated out of
 // request_logs.
 func GetRequestLogStorageBytes() (int64, error) {
-	db := getDB()
+	db := getReadDB()
 	if db == nil {
 		return 0, nil
 	}
@@ -48,7 +48,7 @@ type ChannelLatency struct {
 // GetChannelAvgLatency returns average request latency grouped by source (channel)
 // for the last N days.
 func GetChannelAvgLatency(days int) ([]ChannelLatency, error) {
-	db := getDB()
+	db := getReadDB()
 	if db == nil {
 		return nil, fmt.Errorf("usage: database not initialised")
 	}
@@ -80,7 +80,7 @@ func GetChannelAvgLatency(days int) ([]ChannelLatency, error) {
 
 // CountTodayByKey returns the number of requests made by the given API key today (project timezone).
 func CountTodayByKey(apiKey string) (int64, error) {
-	db := getDB()
+	db := getReadDB()
 	if db == nil {
 		return 0, nil
 	}
@@ -99,7 +99,7 @@ func CountTodayByKey(apiKey string) (int64, error) {
 
 // CountTotalByKey returns the total number of requests made by the given API key.
 func CountTotalByKey(apiKey string) (int64, error) {
-	db := getDB()
+	db := getReadDB()
 	if db == nil {
 		return 0, nil
 	}
