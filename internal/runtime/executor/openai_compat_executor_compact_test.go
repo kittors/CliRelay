@@ -43,6 +43,10 @@ func TestOpenAICompatExecutorStreamAddsKimiReasoningForAssistantToolCalls(t *tes
 			{"role":"assistant","content":[
 				{"type":"tool_use","id":"Bash:3","name":"Bash","input":{"cmd":"pwd"}},
 				{"type":"tool_use","id":"Read:2","name":"Read","input":{"file_path":"README.md"}}
+			]},
+			{"role":"user","content":[
+				{"type":"tool_result","tool_use_id":"Bash:3","content":"cwd"},
+				{"type":"tool_result","tool_use_id":"Read:2","content":"readme"}
 			]}
 		],
 		"tools":[
@@ -70,6 +74,64 @@ func TestOpenAICompatExecutorStreamAddsKimiReasoningForAssistantToolCalls(t *tes
 	}
 	if reasoning.String() == "" {
 		t.Fatalf("messages.1.reasoning_content should not be empty")
+	}
+}
+
+func TestOpenAICompatExecutorNormalizesResponsesParallelToolCalls(t *testing.T) {
+	var gotPath string
+	var gotBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		body, _ := io.ReadAll(r.Body)
+		gotBody = body
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl_1","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+	}))
+	defer server.Close()
+
+	executor := NewOpenAICompatExecutor("openai-compatibility", &config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"base_url": server.URL + "/v1",
+		"api_key":  "test",
+	}}
+	payload := []byte(`{
+		"model":"deepseek-v4-flash",
+		"input":[
+			{"role":"user","content":[{"type":"input_text","text":"run checks"}]},
+			{"type":"function_call","call_id":"call_a","name":"exec_command","arguments":"{\"cmd\":\"pwd\"}"},
+			{"type":"function_call","call_id":"call_b","name":"exec_command","arguments":"{\"cmd\":\"ls\"}"},
+			{"type":"function_call_output","call_id":"call_a","output":"ok-a"},
+			{"type":"function_call_output","call_id":"call_b","output":"ok-b"},
+			{"role":"user","content":[{"type":"input_text","text":"continue"}]}
+		]
+	}`)
+
+	_, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "deepseek-v4-flash",
+		Payload: payload,
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai-response"),
+		Stream:       false,
+	})
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+	if gotPath != "/v1/chat/completions" {
+		t.Fatalf("path = %q, want %q", gotPath, "/v1/chat/completions")
+	}
+	messages := gjson.GetBytes(gotBody, "messages").Array()
+	if len(messages) != 5 {
+		t.Fatalf("messages len = %d, want 5: %s", len(messages), gotBody)
+	}
+	calls := messages[1].Get("tool_calls").Array()
+	if len(calls) != 2 {
+		t.Fatalf("assistant tool_calls len = %d, want 2: %s", len(calls), gotBody)
+	}
+	if got := messages[2].Get("tool_call_id").String(); got != "call_a" {
+		t.Fatalf("messages[2].tool_call_id = %q, want call_a: %s", got, gotBody)
+	}
+	if got := messages[3].Get("tool_call_id").String(); got != "call_b" {
+		t.Fatalf("messages[3].tool_call_id = %q, want call_b: %s", got, gotBody)
 	}
 }
 
