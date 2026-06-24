@@ -34,6 +34,67 @@ func TestExtractClaudeObservationFromRealClientHeaders(t *testing.T) {
 	}
 }
 
+func TestExtractCodexObservationFromDesktopUserAgent(t *testing.T) {
+	tests := []struct {
+		name string
+		ua   string
+	}{
+		{
+			name: "windows desktop",
+			ua:   "Codex Desktop/0.142.0 (Windows 10.0.26200; x86_64) unknown (Codex Desktop; 26.616.81150)",
+		},
+		{
+			name: "mac desktop",
+			ua:   "Codex Desktop/0.142.0 (Mac OS 26.5.1; arm64) unknown (Codex Desktop; 26.616.81150)",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			headers := http.Header{}
+			headers.Set("User-Agent", tt.ua)
+			headers.Set("Originator", "Codex Desktop")
+			headers.Set("OpenAI-Beta", "responses_websockets=2026-02-06")
+
+			obs, ok := ExtractObservation(LearnInput{
+				Provider:   ProviderCodex,
+				AccountKey: "acct",
+				Headers:    headers,
+				ObservedAt: time.Date(2026, 6, 24, 1, 2, 3, 0, time.UTC),
+			})
+			if !ok {
+				t.Fatal("ExtractObservation returned false")
+			}
+			if obs.ClientProduct != "codex" || obs.ClientVariant != "Codex Desktop" {
+				t.Fatalf("product/variant = %s/%s, want codex/Codex Desktop", obs.ClientProduct, obs.ClientVariant)
+			}
+			if obs.Version != "0.142.0" || obs.Fields[FieldCodexVersion] != "0.142.0" {
+				t.Fatalf("version fields = %s/%s, want 0.142.0", obs.Version, obs.Fields[FieldCodexVersion])
+			}
+		})
+	}
+}
+
+func TestExtractCodexObservationVersionHeaderOverridesUserAgentVersion(t *testing.T) {
+	headers := http.Header{}
+	headers.Set("User-Agent", "Codex Desktop/0.142.0 (Windows 10.0.26200; x86_64) unknown (Codex Desktop; 26.616.81150)")
+	headers.Set("Version", "0.143.1")
+	headers.Set("Originator", "Codex Desktop")
+
+	obs, ok := ExtractObservation(LearnInput{
+		Provider:   ProviderCodex,
+		AccountKey: "acct",
+		Headers:    headers,
+		ObservedAt: time.Date(2026, 6, 24, 1, 2, 3, 0, time.UTC),
+	})
+	if !ok {
+		t.Fatal("ExtractObservation returned false")
+	}
+	if obs.Version != "0.143.1" || obs.Fields[FieldCodexVersion] != "0.143.1" {
+		t.Fatalf("version fields = %s/%s, want Version header", obs.Version, obs.Fields[FieldCodexVersion])
+	}
+}
+
 func TestMergeObservationUpdatesOnlyNewerSameProductAndPreservesMissingFields(t *testing.T) {
 	existing := &LearnedRecord{
 		Provider:      ProviderClaude,
@@ -154,6 +215,49 @@ func TestResolveCodexUsesPresetBeforeBuiltinDefault(t *testing.T) {
 	}
 	if got := effective.Fields[FieldCodexWebsocketBeta].Source; got != FieldSourceBuiltinDefault {
 		t.Fatalf("websocket beta source = %q, want builtin_default", got)
+	}
+}
+
+func TestResolveCodexEffectiveVersionUsesFieldLevelPriority(t *testing.T) {
+	learned := &LearnedRecord{
+		Provider:   ProviderCodex,
+		AccountKey: "acct",
+		Fields: map[string]string{
+			FieldCodexVersion: "0.142.0",
+		},
+	}
+
+	fp, effective := ResolveCodex(config.CodexIdentityFingerprintConfig{
+		Enabled: true,
+		Version: "0.140.0",
+	}, learned)
+
+	if fp.Version != "0.142.0" {
+		t.Fatalf("resolved version = %q, want learned field", fp.Version)
+	}
+	if effective.Version != "0.142.0" {
+		t.Fatalf("effective version = %q, want learned field", effective.Version)
+	}
+	if got := effective.Fields[FieldCodexVersion].Source; got != FieldSourceLearned {
+		t.Fatalf("version source = %q, want learned", got)
+	}
+}
+
+func TestResolveClaudeEffectiveVersionFallsBackToPreset(t *testing.T) {
+	_, effective := ResolveClaude(config.ClaudeIdentityFingerprintConfig{
+		Enabled:    true,
+		CLIVersion: "2.1.170",
+	}, &LearnedRecord{
+		Provider:   ProviderClaude,
+		AccountKey: "acct",
+		Fields:     map[string]string{},
+	})
+
+	if effective.Version != "2.1.170" {
+		t.Fatalf("effective version = %q, want preset cli-version", effective.Version)
+	}
+	if got := effective.Fields[FieldClaudeCLIVersion].Source; got != FieldSourcePreset {
+		t.Fatalf("cli-version source = %q, want preset", got)
 	}
 }
 

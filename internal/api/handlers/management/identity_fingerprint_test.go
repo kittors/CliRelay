@@ -206,7 +206,7 @@ func TestListAuthFilesIncludesIdentityFingerprintSummary(t *testing.T) {
 	if !summary.Learned || summary.PrimarySource != "learned" || summary.Version != "2.1.170" {
 		t.Fatalf("summary learned/source/version = %+v", summary)
 	}
-	if summary.SourceCounts["learned"] != 1 || summary.SourceCounts["builtin_default"] == 0 {
+	if summary.SourceCounts["learned"] != 2 || summary.SourceCounts["builtin_default"] == 0 {
 		t.Fatalf("source counts = %#v, want learned and builtin_default fallback fields", summary.SourceCounts)
 	}
 }
@@ -306,6 +306,62 @@ func TestGetIdentityFingerprintAccountReturnsLearnedPresetAndBuiltinDefault(t *t
 	}
 	if payload.Learned.ObservedHeaders["Version"] != "0.125.0" {
 		t.Fatalf("observed headers = %#v", payload.Learned.ObservedHeaders)
+	}
+}
+
+func TestBuildIdentityFingerprintSummaryUsesCodexPresetVersionWhenLearnedVersionMissing(t *testing.T) {
+	learned := &identityfingerprint.LearnedRecord{
+		Provider:      identityfingerprint.ProviderCodex,
+		AccountKey:    "authsub_codex_desktop",
+		AuthSubjectID: "authsub_codex_desktop",
+		ClientProduct: "codex",
+		ClientVariant: "Codex Desktop",
+		Fields: map[string]string{
+			identityfingerprint.FieldUserAgent:       "Codex Desktop/0.142.0 (Windows 10.0.26200; x86_64) unknown (Codex Desktop; 26.616.81150)",
+			identityfingerprint.FieldCodexOriginator: "Codex Desktop",
+		},
+	}
+	_, effective := identityfingerprint.ResolveCodex(config.CodexIdentityFingerprintConfig{
+		Enabled: true,
+		Version: "0.140.0",
+	}, learned)
+
+	summary := buildIdentityFingerprintSummary(
+		identityfingerprint.ProviderCodex,
+		"authsub_codex_desktop",
+		"authsub_codex_desktop",
+		learned,
+		effective,
+	)
+
+	if summary.Version != "0.140.0" {
+		t.Fatalf("summary version = %q, want preset version fallback", summary.Version)
+	}
+}
+
+func TestBuildIdentityFingerprintSummaryUsesClaudeLearnedCLIVersion(t *testing.T) {
+	learned := &identityfingerprint.LearnedRecord{
+		Provider:      identityfingerprint.ProviderClaude,
+		AccountKey:    "authsub_claude_cli",
+		AuthSubjectID: "authsub_claude_cli",
+		ClientProduct: "claude-cli",
+		Fields: map[string]string{
+			identityfingerprint.FieldClaudeCLIVersion: "2.1.170",
+			identityfingerprint.FieldUserAgent:        "claude-cli/2.1.170 (external, cli)",
+		},
+	}
+	_, effective := identityfingerprint.ResolveClaude(config.ClaudeIdentityFingerprintConfig{Enabled: true}, learned)
+
+	summary := buildIdentityFingerprintSummary(
+		identityfingerprint.ProviderClaude,
+		"authsub_claude_cli",
+		"authsub_claude_cli",
+		learned,
+		effective,
+	)
+
+	if summary.Version != "2.1.170" {
+		t.Fatalf("summary version = %q, want learned cli-version", summary.Version)
 	}
 }
 

@@ -25,9 +25,10 @@ const (
 )
 
 var (
-	claudeUARe = regexp.MustCompile(`(?i)^claude-cli/([0-9]+(?:\.[0-9]+){0,3})\s+\(external,\s*([^)]+)\)`)
-	tokenVerRe = regexp.MustCompile(`(?i)^([a-z0-9_.-]*codex[a-z0-9_.-]*)/([0-9]+(?:\.[0-9]+){0,3})`)
-	geminiUARe = regexp.MustCompile(`(?i)^google-api-nodejs-client/([0-9]+(?:\.[0-9]+){0,3})`)
+	claudeUARe       = regexp.MustCompile(`(?i)^claude-cli/([0-9]+(?:\.[0-9]+){0,3})\s+\(external,\s*([^)]+)\)`)
+	codexDesktopUARe = regexp.MustCompile(`(?i)\bcodex\s+desktop/([0-9]+(?:\.[0-9]+){0,3})(?:[-+][a-z0-9_.-]+)?`)
+	tokenVerRe       = regexp.MustCompile(`(?i)\b([a-z0-9_.-]*codex[a-z0-9_.-]*)/([0-9]+(?:\.[0-9]+){0,3})(?:[-+][a-z0-9_.-]+)?`)
+	geminiUARe       = regexp.MustCompile(`(?i)^google-api-nodejs-client/([0-9]+(?:\.[0-9]+){0,3})`)
 )
 
 func ExtractObservation(input LearnInput) (Observation, bool) {
@@ -236,18 +237,19 @@ func codexProductVersion(ua string) (string, string) {
 	if ua == "" {
 		return "", ""
 	}
-	first := strings.Fields(ua)
-	if len(first) == 0 {
-		return "", ""
+
+	if matches := codexDesktopUARe.FindStringSubmatch(ua); len(matches) > 0 {
+		return "codex", matches[1]
 	}
-	matches := tokenVerRe.FindStringSubmatch(first[0])
-	if len(matches) == 0 {
-		if strings.Contains(strings.ToLower(ua), "codex") {
-			return "codex", ""
-		}
-		return "", ""
+
+	if matches := tokenVerRe.FindStringSubmatch(ua); len(matches) > 0 {
+		return strings.ToLower(matches[1]), matches[2]
 	}
-	return strings.ToLower(matches[1]), matches[2]
+
+	if strings.Contains(strings.ToLower(ua), "codex") {
+		return "codex", ""
+	}
+	return "", ""
 }
 
 func addHeaderField(fields map[string]string, headers http.Header, headerName, fieldName string) {

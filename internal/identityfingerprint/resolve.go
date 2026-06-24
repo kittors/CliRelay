@@ -16,7 +16,7 @@ func ResolveClaude(cfg config.ClaudeIdentityFingerprintConfig, learned *LearnedR
 		return value
 	}
 
-	cliVersion := pick(FieldClaudeCLIVersion, clean.CLIVersion, learnedField(learned, FieldClaudeCLIVersion), defaults.CLIVersion)
+	cliVersion := pick(FieldClaudeCLIVersion, clean.CLIVersion, learnedFieldOrVersion(learned, FieldClaudeCLIVersion), defaults.CLIVersion)
 	entrypoint := pick(FieldClaudeEntrypoint, clean.Entrypoint, learnedField(learned, FieldClaudeEntrypoint), defaults.Entrypoint)
 	userAgentDefault := config.BuildClaudeFingerprintUserAgent(cliVersion, entrypoint)
 	userAgent := pick(FieldUserAgent, clean.UserAgent, learnedField(learned, FieldUserAgent), userAgentDefault)
@@ -43,7 +43,9 @@ func ResolveClaude(cfg config.ClaudeIdentityFingerprintConfig, learned *LearnedR
 		DeviceID:                clean.DeviceID,
 		CustomHeaders:           clean.CustomHeaders,
 	}
-	return resolved, effective(ProviderClaude, clean.Enabled, learned, fields)
+	effective := effective(ProviderClaude, clean.Enabled, learned, fields)
+	effective.Version = cliVersion
+	return resolved, effective
 }
 
 func ResolveCodex(cfg config.CodexIdentityFingerprintConfig, learned *LearnedRecord) (config.CodexIdentityFingerprintConfig, EffectiveFingerprint) {
@@ -57,7 +59,7 @@ func ResolveCodex(cfg config.CodexIdentityFingerprintConfig, learned *LearnedRec
 	}
 
 	userAgent := pick(FieldUserAgent, clean.UserAgent, learnedField(learned, FieldUserAgent), defaults.UserAgent)
-	version := pick(FieldCodexVersion, clean.Version, learnedField(learned, FieldCodexVersion), defaults.Version)
+	version := pick(FieldCodexVersion, clean.Version, learnedFieldOrVersion(learned, FieldCodexVersion), defaults.Version)
 	originator := pick(FieldCodexOriginator, clean.Originator, learnedField(learned, FieldCodexOriginator), defaults.Originator)
 	websocketBeta := pick(FieldCodexWebsocketBeta, clean.WebsocketBeta, learnedField(learned, FieldCodexWebsocketBeta), defaults.WebsocketBeta)
 	betaFeatures := pick(FieldCodexBetaFeatures, clean.BetaFeatures, learnedField(learned, FieldCodexBetaFeatures), defaults.BetaFeatures)
@@ -77,7 +79,9 @@ func ResolveCodex(cfg config.CodexIdentityFingerprintConfig, learned *LearnedRec
 		SessionID:     clean.SessionID,
 		CustomHeaders: clean.CustomHeaders,
 	}
-	return resolved, effective(ProviderCodex, clean.Enabled, learned, fields)
+	effective := effective(ProviderCodex, clean.Enabled, learned, fields)
+	effective.Version = version
+	return resolved, effective
 }
 
 func ResolveGemini(cfg config.GeminiIdentityFingerprintConfig, learned *LearnedRecord) (config.GeminiIdentityFingerprintConfig, EffectiveFingerprint) {
@@ -115,6 +119,16 @@ func learnedField(record *LearnedRecord, field string) string {
 		return ""
 	}
 	return strings.TrimSpace(record.Fields[field])
+}
+
+func learnedFieldOrVersion(record *LearnedRecord, field string) string {
+	if value := learnedField(record, field); value != "" {
+		return value
+	}
+	if record == nil {
+		return ""
+	}
+	return strings.TrimSpace(record.Version)
 }
 
 func effective(provider Provider, enabled bool, learned *LearnedRecord, fields map[string]FieldValue) EffectiveFingerprint {

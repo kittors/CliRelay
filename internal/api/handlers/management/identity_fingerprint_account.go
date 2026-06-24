@@ -181,7 +181,7 @@ func buildIdentityFingerprintSummary(provider identityfingerprint.Provider, acco
 		EffectiveFields: sumIdentityFingerprintCounts(counts),
 		SourceCounts:    counts,
 		ClientProduct:   effective.ClientProduct,
-		Version:         effective.Version,
+		Version:         identityFingerprintSummaryVersion(provider, effective),
 	}
 	if learned != nil {
 		summary.ClientVariant = learned.ClientVariant
@@ -195,6 +195,27 @@ func buildIdentityFingerprintSummary(provider identityfingerprint.Provider, acco
 		}
 	}
 	return summary
+}
+
+func identityFingerprintSummaryVersion(provider identityfingerprint.Provider, effective identityfingerprint.EffectiveFingerprint) string {
+	switch provider {
+	case identityfingerprint.ProviderClaude:
+		if value := identityFingerprintEffectiveField(effective, identityfingerprint.FieldClaudeCLIVersion); value != "" {
+			return value
+		}
+	case identityfingerprint.ProviderCodex:
+		if value := identityFingerprintEffectiveField(effective, identityfingerprint.FieldCodexVersion); value != "" {
+			return value
+		}
+	}
+	return strings.TrimSpace(effective.Version)
+}
+
+func identityFingerprintEffectiveField(effective identityfingerprint.EffectiveFingerprint, field string) string {
+	if effective.Fields == nil {
+		return ""
+	}
+	return strings.TrimSpace(effective.Fields[field].Value)
 }
 
 func identityFingerprintSourceCounts(fields map[string]identityfingerprint.FieldValue) map[string]int {
