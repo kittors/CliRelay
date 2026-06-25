@@ -24,7 +24,7 @@ func TestRegisterManagementRouteTable(t *testing.T) {
 		routes[key] = route
 	}
 
-	if got, want := len(routes), 217; got != want {
+	if got, want := len(routes), 218; got != want {
 		t.Fatalf("route count = %d, want %d", got, want)
 	}
 
@@ -48,6 +48,7 @@ func TestRegisterManagementRouteTable(t *testing.T) {
 		"DELETE /v0/management/identity-fingerprint/learned",
 		"GET /v0/management/codex-oauth-admission",
 		"PUT /v0/management/codex-oauth-admission",
+		"POST /v0/management/quota/clear-status",
 		"POST /v0/management/oauth-callback",
 		"GET /v0/management/public/ping",
 		"GET /v0/management/public/usage/logs/:id/content",

@@ -60,6 +60,7 @@ func registerManagementSettingsRoutes(group *gin.RouterGroup, h *managementhandl
 	group.PUT("/quota-exceeded/switch-preview-model", h.PutSwitchPreviewModel)
 	group.PATCH("/quota-exceeded/switch-preview-model", h.PutSwitchPreviewModel)
 	group.POST("/quota/reconcile", h.PostQuotaReconcile)
+	group.POST("/quota/clear-status", h.PostQuotaClearStatus)
 }
 
 func registerManagementRuntimeTuningRoutes(group *gin.RouterGroup, h *managementhandlers.Handler) {

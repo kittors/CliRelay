@@ -190,3 +190,138 @@ func TestManagerReconcileQuota_UpdatesModelRecoverAt(t *testing.T) {
 		t.Fatalf("state.NextRetryAfter = %v, want earlier than %v", state.NextRetryAfter, oldNext)
 	}
 }
+
+func TestManagerClearQuotaStatus_ClearsAuthAndModelRuntimeQuota(t *testing.T) {
+	t.Parallel()
+
+	manager := NewManager(nil, nil, nil)
+	next := time.Now().Add(30 * time.Minute)
+	auth := &Auth{
+		ID:             "codex-auth",
+		Provider:       "codex",
+		Status:         StatusError,
+		StatusMessage:  "quota exhausted",
+		Unavailable:    true,
+		NextRetryAfter: next,
+		LastError:      &Error{Message: "quota exhausted", HTTPStatus: http.StatusTooManyRequests},
+		Quota: QuotaState{
+			Exceeded:      true,
+			Reason:        "quota",
+			NextRecoverAt: next,
+		},
+		ModelStates: map[string]*ModelState{
+			"gpt-5-codex": {
+				Status:         StatusError,
+				StatusMessage:  "quota exhausted",
+				Unavailable:    true,
+				NextRetryAfter: next,
+				LastError:      &Error{Message: "quota exhausted", HTTPStatus: http.StatusTooManyRequests},
+				Quota: QuotaState{
+					Exceeded:      true,
+					Reason:        "quota",
+					NextRecoverAt: next,
+				},
+			},
+		},
+	}
+	if _, err := manager.Register(context.Background(), auth); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+
+	changed, err := manager.ClearQuotaStatus(context.Background(), auth.ID)
+	if err != nil {
+		t.Fatalf("ClearQuotaStatus() error = %v", err)
+	}
+	if !changed {
+		t.Fatalf("ClearQuotaStatus() changed = false, want true")
+	}
+
+	updated, ok := manager.GetByID(auth.ID)
+	if !ok || updated == nil {
+		t.Fatalf("GetByID() missing auth")
+	}
+	if updated.Status != StatusActive {
+		t.Fatalf("auth.Status = %q, want %q", updated.Status, StatusActive)
+	}
+	if updated.StatusMessage != "" || updated.Unavailable || !updated.NextRetryAfter.IsZero() || updated.LastError != nil || updated.Quota != (QuotaState{}) {
+		t.Fatalf("auth quota runtime state was not cleared: %#v", updated)
+	}
+	state := updated.ModelStates["gpt-5-codex"]
+	if state == nil {
+		t.Fatalf("expected model state")
+	}
+	if state.Status != StatusActive {
+		t.Fatalf("state.Status = %q, want %q", state.Status, StatusActive)
+	}
+	if state.StatusMessage != "" || state.Unavailable || !state.NextRetryAfter.IsZero() || state.LastError != nil || state.Quota != (QuotaState{}) {
+		t.Fatalf("model quota runtime state was not cleared: %#v", state)
+	}
+}
+
+func TestManagerClearQuotaStatus_PreservesStatusDisabled(t *testing.T) {
+	t.Parallel()
+
+	manager := NewManager(nil, nil, nil)
+	next := time.Now().Add(30 * time.Minute)
+	auth := &Auth{
+		ID:             "disabled-auth",
+		Provider:       "codex",
+		Status:         StatusDisabled,
+		StatusMessage:  "manually disabled",
+		Disabled:       true,
+		Unavailable:    true,
+		NextRetryAfter: next,
+		LastError:      &Error{Message: "quota exhausted", HTTPStatus: http.StatusTooManyRequests},
+		Quota: QuotaState{
+			Exceeded:      true,
+			Reason:        "quota",
+			NextRecoverAt: next,
+		},
+		ModelStates: map[string]*ModelState{
+			"gpt-5-codex": {
+				Status:         StatusDisabled,
+				StatusMessage:  "model disabled",
+				Unavailable:    true,
+				NextRetryAfter: next,
+				LastError:      &Error{Message: "quota exhausted", HTTPStatus: http.StatusTooManyRequests},
+				Quota: QuotaState{
+					Exceeded:      true,
+					Reason:        "quota",
+					NextRecoverAt: next,
+				},
+			},
+		},
+	}
+	if _, err := manager.Register(context.Background(), auth); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+
+	changed, err := manager.ClearQuotaStatus(context.Background(), auth.ID)
+	if err != nil {
+		t.Fatalf("ClearQuotaStatus() error = %v", err)
+	}
+	if !changed {
+		t.Fatalf("ClearQuotaStatus() changed = false, want true")
+	}
+
+	updated, ok := manager.GetByID(auth.ID)
+	if !ok || updated == nil {
+		t.Fatalf("GetByID() missing auth")
+	}
+	if !updated.Disabled || updated.Status != StatusDisabled || updated.StatusMessage != "manually disabled" {
+		t.Fatalf("disabled auth status changed: disabled=%v status=%q message=%q", updated.Disabled, updated.Status, updated.StatusMessage)
+	}
+	if updated.Unavailable || !updated.NextRetryAfter.IsZero() || updated.LastError != nil || updated.Quota != (QuotaState{}) {
+		t.Fatalf("disabled auth quota runtime state was not cleared: %#v", updated)
+	}
+	state := updated.ModelStates["gpt-5-codex"]
+	if state == nil {
+		t.Fatalf("expected model state")
+	}
+	if state.Status != StatusDisabled || state.StatusMessage != "model disabled" {
+		t.Fatalf("disabled model status changed: status=%q message=%q", state.Status, state.StatusMessage)
+	}
+	if state.Unavailable || !state.NextRetryAfter.IsZero() || state.LastError != nil || state.Quota != (QuotaState{}) {
+		t.Fatalf("disabled model quota runtime state was not cleared: %#v", state)
+	}
+}
