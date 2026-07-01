@@ -57,3 +57,51 @@ func TestConfiguredAvailabilityIncludesModelSources(t *testing.T) {
 		t.Fatalf("source labels = %#v", labels)
 	}
 }
+
+func TestConfiguredAvailabilityIncludesClineAliasUpstreamModelID(t *testing.T) {
+	const modelID = "mimo-v2.5-pro"
+	const upstreamModelID = "cline-pass/mimo-v2.5-pro"
+	const clientID = "source-test-cline-alias"
+
+	modelRegistry := registry.GetGlobalRegistry()
+	modelRegistry.UnregisterClient(clientID)
+	t.Cleanup(func() {
+		modelRegistry.UnregisterClient(clientID)
+	})
+
+	modelRegistry.RegisterClient(clientID, "cline", []*registry.ModelInfo{{
+		ID:              modelID,
+		Object:          "model",
+		OwnedBy:         "cline",
+		Type:            "cline",
+		DisplayName:     upstreamModelID,
+		UpstreamModelID: upstreamModelID,
+		UserDefined:     true,
+	}})
+
+	manager := coreauth.NewManager(nil, nil, nil)
+	if _, err := manager.Register(context.Background(), &coreauth.Auth{ID: clientID, Provider: "cline", Label: "Cline", Status: coreauth.StatusActive}); err != nil {
+		t.Fatalf("register cline auth: %v", err)
+	}
+
+	result := New(&config.Config{}, manager).ConfiguredAvailability("", "")
+	data, ok := result["data"].([]map[string]any)
+	if !ok {
+		t.Fatalf("data = %#v, want []map[string]any", result["data"])
+	}
+
+	var sources []map[string]any
+	for _, item := range data {
+		if item["id"] == modelID {
+			sources, _ = item["sources"].([]map[string]any)
+			break
+		}
+	}
+	if len(sources) != 1 {
+		t.Fatalf("sources = %#v, want one cline source", sources)
+	}
+	source := sources[0]
+	if source["provider"] != "cline" || source["model_id"] != modelID || source["upstream_model_id"] != upstreamModelID {
+		t.Fatalf("source = %#v, want cline alias with upstream model id", source)
+	}
+}

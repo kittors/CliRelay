@@ -71,3 +71,49 @@ func TestServiceRun_RegistersModelsForLoadedAuths(t *testing.T) {
 		t.Fatal("expected codex models to be registered from loaded auths")
 	}
 }
+
+func TestLoadInitialState_RegistersConfigDerivedClineModels(t *testing.T) {
+	reg := GlobalModelRegistry()
+
+	cfg := &config.Config{
+		AuthDir: t.TempDir(),
+		Port:    0,
+		ClineKey: []config.ClineKey{{
+			APIKey: "cline-key",
+			Name:   "ClinePass",
+			Models: []config.ClineModel{{Name: "cline-pass/mimo-v2.5-pro", Alias: "mimo-v2.5-pro"}},
+		}},
+	}
+	manager := coreauth.NewManager(&startupStoreStub{}, &coreauth.RoundRobinSelector{}, nil)
+	service := &Service{
+		cfg:            cfg,
+		configPath:     "/tmp/config.yaml",
+		tokenProvider:  startupTokenProviderStub{},
+		apiKeyProvider: startupAPIKeyProviderStub{},
+		coreManager:    manager,
+	}
+
+	if err := service.loadInitialState(context.Background()); err != nil {
+		t.Fatalf("loadInitialState() error = %v", err)
+	}
+
+	var clineAuth *coreauth.Auth
+	for _, candidate := range manager.List() {
+		if candidate != nil && candidate.Provider == "cline" {
+			clineAuth = candidate
+			break
+		}
+	}
+	if clineAuth == nil {
+		t.Fatal("expected config-derived Cline auth")
+	}
+	t.Cleanup(func() { reg.UnregisterClient(clineAuth.ID) })
+
+	models := reg.GetModelsForClient(clineAuth.ID)
+	if len(models) != 1 || !hasModelID(models, "mimo-v2.5-pro") {
+		t.Fatalf("expected Cline alias model registered from config auth %+v, got %+v", clineAuth.Attributes, models)
+	}
+	if models[0].UpstreamModelID != "cline-pass/mimo-v2.5-pro" {
+		t.Fatalf("UpstreamModelID = %q, want cline-pass/mimo-v2.5-pro", models[0].UpstreamModelID)
+	}
+}

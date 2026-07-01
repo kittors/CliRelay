@@ -84,7 +84,7 @@ func (s *Service) registerModelsForAuth(ctx context.Context, a *coreauth.Auth) {
 	}
 	provider := strings.ToLower(strings.TrimSpace(a.Provider))
 	compatProviderKey, compatDisplayName, compatDetected := openAICompatInfoFromAuth(a)
-	if compatDetected {
+	if compatDetected && provider != "cline" {
 		provider = "openai-compatibility"
 	}
 	excluded := s.oauthExcludedModels(provider, authKind)
