@@ -488,6 +488,7 @@ func defaultModelConfigRows() []ModelConfigRow {
 		"qwen",
 		"iflow",
 		"kimi",
+		"cline",
 		"opencode-go",
 		"antigravity",
 	}

@@ -56,6 +56,14 @@ func TestInitDBSeedsDefaultModelConfigs(t *testing.T) {
 	if opencodeModel.OwnedBy != "opencode" || opencodeModel.Source != "seed" {
 		t.Fatalf("unexpected opencode-go seed model config: %+v", opencodeModel)
 	}
+
+	clineModel, ok := GetModelConfig("cline-pass/deepseek-v4-flash")
+	if !ok {
+		t.Fatal("expected cline-pass/deepseek-v4-flash to be seeded")
+	}
+	if clineModel.OwnedBy != "cline" || clineModel.Source != "seed" {
+		t.Fatalf("unexpected cline seed model config: %+v", clineModel)
+	}
 }
 
 func TestUpsertModelConfigAndPerCallCost(t *testing.T) {
