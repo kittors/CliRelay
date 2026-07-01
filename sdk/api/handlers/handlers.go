@@ -1054,7 +1054,7 @@ func (h *BaseAPIHandler) getRequestDetails(ctx context.Context, modelName string
 	baseModel := strings.TrimSpace(parsed.ModelName)
 	routeCtx := routeContextFromExecutionContext(ctx)
 	requestedPrefix, unprefixedModel := splitRequestedModelPrefix(baseModel)
-	if routeCtx != nil && routeCtx.Group != "" && requestedPrefix != "" && requestedPrefix != routeCtx.Group {
+	if routeCtx != nil && routeCtx.Group != "" && requestedPrefix != "" && requestedPrefix != routeCtx.Group && !internalrouting.IsCcSwitchMappedTargetModel(routeCtx, baseModel) {
 		return nil, "", &interfaces.ErrorMessage{
 			StatusCode: http.StatusBadRequest,
 			Error:      fmt.Errorf(`{"error":{"message":"model prefix conflicts with route group","type":"invalid_request_error","code":"model_prefix_conflict"}}`),

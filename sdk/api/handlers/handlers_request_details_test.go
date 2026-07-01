@@ -215,6 +215,48 @@ func TestGetRequestDetails_RouteGroupRejectsConflictingModelPrefix(t *testing.T)
 	}
 }
 
+func TestGetRequestDetails_CcSwitchMappedTargetModelAllowsProviderPrefix(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	modelRegistry := registry.GetGlobalRegistry()
+	now := time.Now().Unix()
+	modelRegistry.RegisterClient("test-request-details-ccswitch-target", "deepseek", []*registry.ModelInfo{
+		{ID: "cline-pass/deepseek-v4-flash", Created: now},
+	})
+	t.Cleanup(func() {
+		modelRegistry.UnregisterClient("test-request-details-ccswitch-target")
+	})
+
+	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, coreauth.NewManager(nil, nil, nil))
+	ginCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ginCtx.Set(internalrouting.GinPathRouteContextKey, &internalrouting.PathRouteContext{
+		RoutePath: "/group1/cs_test",
+		Group:     "group1",
+		Fallback:  "none",
+		CcSwitch: &internalrouting.CcSwitchRouteContext{
+			ClientType: "claude",
+			ModelMappings: []internalrouting.CcSwitchModelMapping{
+				{
+					RequestModel: "claude-sonnet-5",
+					TargetModel:  "cline-pass/deepseek-v4-flash",
+				},
+			},
+		},
+	})
+	ctx := context.WithValue(context.Background(), util.ContextKeyGin, ginCtx)
+
+	providers, model, errMsg := handler.getRequestDetails(ctx, "cline-pass/deepseek-v4-flash")
+	if errMsg != nil {
+		t.Fatalf("getRequestDetails() unexpected error = %v", errMsg)
+	}
+	if !reflect.DeepEqual(providers, []string{"deepseek"}) {
+		t.Fatalf("providers = %v, want [deepseek]", providers)
+	}
+	if model != "cline-pass/deepseek-v4-flash" {
+		t.Fatalf("model = %q, want cline-pass/deepseek-v4-flash", model)
+	}
+}
+
 func TestRequestExecutionMetadata_UsesPathRouteContextFromRequestContext(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
