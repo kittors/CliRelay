@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -50,6 +51,73 @@ func TestUpdaterRejectsRequestsWhenConfiguredTokenIsEmpty(t *testing.T) {
 
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestServeUpdaterStopsOnContextCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen failed: %v", err)
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- serveUpdater(ctx, updaterConfig{Token: "secret"}, listener)
+	}()
+
+	waitForUpdaterHealth(t, listener.Addr().String())
+	cancel()
+
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("serveUpdater returned error: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for updater shutdown")
+	}
+}
+
+func TestUpdaterCancelsRunnerOnServerContextCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	started := make(chan struct{})
+	done := make(chan error, 1)
+	server := newUpdaterServer(updaterConfig{
+		Token:   "secret",
+		Context: ctx,
+		Runner: func(ctx context.Context, _ string, _ string, _ string, _ string, _ updateReporter) error {
+			close(started)
+			<-ctx.Done()
+			done <- ctx.Err()
+			return ctx.Err()
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/update", strings.NewReader(`{"service":"clirelay"}`))
+	setUpdaterAuth(req)
+	rec := httptest.NewRecorder()
+
+	server.handleUpdate(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusAccepted, rec.Body.String())
+	}
+
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for runner start")
+	}
+
+	cancel()
+
+	select {
+	case err := <-done:
+		if err != context.Canceled {
+			t.Fatalf("runner context error = %v, want context canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for runner cancellation")
 	}
 }
 
@@ -389,4 +457,26 @@ func eventually(t *testing.T, timeout time.Duration, condition func() bool) {
 		return
 	}
 	t.Fatal("condition was not met before timeout")
+}
+
+func waitForUpdaterHealth(t *testing.T, addr string) {
+	t.Helper()
+	client := http.Client{Timeout: 100 * time.Millisecond}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		req, err := http.NewRequest(http.MethodGet, "http://"+addr+"/v1/health", nil)
+		if err != nil {
+			t.Fatalf("create health request: %v", err)
+		}
+		setUpdaterAuth(req)
+		resp, err := client.Do(req)
+		if err == nil {
+			_ = resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				return
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("updater health did not become ready")
 }

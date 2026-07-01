@@ -31,12 +31,12 @@ func TestWebsocketOriginAllowed_DeniesCrossHostOrigin(t *testing.T) {
 	}
 }
 
-func TestWebsocketOriginAllowed_UsesForwardedHost(t *testing.T) {
+func TestWebsocketOriginAllowed_DeniesForwardedHostSpoof(t *testing.T) {
 	r, _ := http.NewRequest(http.MethodGet, "http://internal.local/v1/ws", nil)
 	r.Host = "internal.local"
 	r.Header.Set("X-Forwarded-Host", "panel.example.com")
 	r.Header.Set("Origin", "https://panel.example.com")
-	if !WebsocketOriginAllowed(r) {
-		t.Fatal("expected Origin to be checked against X-Forwarded-Host")
+	if WebsocketOriginAllowed(r) {
+		t.Fatal("expected spoofed X-Forwarded-Host not to bypass Origin check")
 	}
 }

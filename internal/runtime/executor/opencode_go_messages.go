@@ -61,6 +61,7 @@ func (e *OpenCodeGoExecutor) executeMessages(ctx context.Context, auth *cliproxy
 	recorder.RecordRequest(url, http.MethodPost, httpReq.Header.Clone(), translated)
 
 	httpClient := execCtx.HTTPClient(0)
+	//nolint:bodyclose // success body is consumed and closed by the stream goroutine below.
 	httpResp, err := httpClient.Do(httpReq)
 	if err != nil {
 		recorder.RecordResponseError(err)
@@ -147,6 +148,7 @@ func (e *OpenCodeGoExecutor) executeMessagesStream(ctx context.Context, auth *cl
 	recorder.RecordRequest(url, http.MethodPost, httpReq.Header.Clone(), translated)
 
 	httpClient := execCtx.HTTPClient(0)
+	//nolint:bodyclose // success body is consumed and closed by the stream goroutine below.
 	httpResp, err := httpClient.Do(httpReq)
 	if err != nil {
 		recorder.RecordResponseError(err)

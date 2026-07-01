@@ -207,7 +207,10 @@ func TestCodexExecutorHttpRequestEnforcesAdmissionWithoutGinContext(t *testing.T
 	}
 	req.Header.Set("User-Agent", "curl/8.0")
 
-	_, err = NewCodexExecutor(&config.Config{}).HttpRequest(context.Background(), codexOAuthAdmissionTestAuth(true, nil), req)
+	resp, err := NewCodexExecutor(&config.Config{}).HttpRequest(context.Background(), codexOAuthAdmissionTestAuth(true, nil), req)
+	if resp != nil && resp.Body != nil {
+		_ = resp.Body.Close()
+	}
 	if err == nil {
 		t.Fatal("HttpRequest() error = nil, want admission denial")
 	}
@@ -272,7 +275,10 @@ func TestCodexExecutorHttpRequestPrefersGinContextHeaders(t *testing.T) {
 	}
 	req.Header.Set("User-Agent", "codex_cli_rs/0.130.0")
 
-	_, err = NewCodexExecutor(&config.Config{}).HttpRequest(ctx, codexOAuthAdmissionTestAuth(true, nil), req)
+	resp, err := NewCodexExecutor(&config.Config{}).HttpRequest(ctx, codexOAuthAdmissionTestAuth(true, nil), req)
+	if resp != nil && resp.Body != nil {
+		_ = resp.Body.Close()
+	}
 	if err == nil {
 		t.Fatal("HttpRequest() error = nil, want admission denial from Gin headers")
 	}

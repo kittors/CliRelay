@@ -40,11 +40,14 @@ func (ts *IFlowTokenStorage) SaveTokenToFile(authFilePath string) error {
 		return fmt.Errorf("iflow token: create directory failed: %w", err)
 	}
 
-	f, err := os.Create(authFilePath)
+	f, err := os.OpenFile(authFilePath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
 		return fmt.Errorf("iflow token: create file failed: %w", err)
 	}
 	defer func() { _ = f.Close() }()
+	if err = f.Chmod(0o600); err != nil {
+		return fmt.Errorf("iflow token: secure file permissions failed: %w", err)
+	}
 
 	// Merge metadata using helper
 	data, errMerge := misc.MergeMetadata(ts, ts.Metadata)

@@ -46,14 +46,6 @@ func WebsocketOriginAllowed(r *http.Request) bool {
 }
 
 func requestHost(r *http.Request) string {
-	// Prefer X-Forwarded-Host when present (common for reverse proxies).
-	if xf := strings.TrimSpace(r.Header.Get("X-Forwarded-Host")); xf != "" {
-		// Take the first host if multiple are present.
-		if idx := strings.IndexByte(xf, ','); idx >= 0 {
-			xf = xf[:idx]
-		}
-		return strings.TrimSpace(xf)
-	}
 	return strings.TrimSpace(r.Host)
 }
 

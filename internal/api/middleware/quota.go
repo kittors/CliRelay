@@ -88,6 +88,9 @@ func (w *tokenWindow) sum() int64 {
 var (
 	rpmTrackers sync.Map // map[string]*slidingWindow
 	tpmTrackers sync.Map // map[string]*tokenWindow
+
+	inFlightMu    sync.Mutex
+	inFlightByKey = map[string]int{}
 )
 
 func getRPMTracker(apiKey string) *slidingWindow {
@@ -166,6 +169,7 @@ func QuotaMiddleware() gin.HandlerFunc {
 		// Parse limits from metadata
 		dailyLimit := parseIntMetadata(metadata, "daily-limit")
 		totalQuota := parseIntMetadata(metadata, "total-quota")
+		concurrencyLimit := parseIntMetadata(metadata, "concurrency-limit")
 		rpmLimit := parseIntMetadata(metadata, "rpm-limit")
 		tpmLimit := parseIntMetadata(metadata, "tpm-limit")
 		spendingLimit := parseFloatMetadata(metadata, "spending-limit")
@@ -174,9 +178,24 @@ func QuotaMiddleware() gin.HandlerFunc {
 		UpdateKeyLimits(apiKey, rpmLimit, tpmLimit)
 
 		// No limits configured — skip all checks
-		if dailyLimit <= 0 && totalQuota <= 0 && rpmLimit <= 0 && tpmLimit <= 0 && spendingLimit <= 0 {
+		if dailyLimit <= 0 && totalQuota <= 0 && concurrencyLimit <= 0 && rpmLimit <= 0 && tpmLimit <= 0 && spendingLimit <= 0 {
 			c.Next()
 			return
+		}
+
+		if concurrencyLimit > 0 {
+			release, ok := acquireKeyConcurrency(apiKey, concurrencyLimit)
+			if !ok {
+				c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{
+					"error": map[string]interface{}{
+						"message": fmt.Sprintf("concurrency limit (%d in-flight requests) exceeded for this API key", concurrencyLimit),
+						"type":    "rate_limit_exceeded",
+						"code":    "concurrency_limit_exceeded",
+					},
+				})
+				return
+			}
+			defer release()
 		}
 
 		// --- RPM check (sliding window, in-memory) ---
@@ -297,6 +316,32 @@ func parseIntMetadata(metadata map[string]string, key string) int {
 		return 0
 	}
 	return n
+}
+
+func acquireKeyConcurrency(apiKey string, limit int) (func(), bool) {
+	if apiKey == "" || limit <= 0 {
+		return func() {}, true
+	}
+
+	inFlightMu.Lock()
+	defer inFlightMu.Unlock()
+
+	if inFlightByKey[apiKey] >= limit {
+		return nil, false
+	}
+	inFlightByKey[apiKey]++
+
+	return func() {
+		inFlightMu.Lock()
+		defer inFlightMu.Unlock()
+
+		current := inFlightByKey[apiKey]
+		if current <= 1 {
+			delete(inFlightByKey, apiKey)
+			return
+		}
+		inFlightByKey[apiKey] = current - 1
+	}, true
 }
 
 func maskKey(key string) string {

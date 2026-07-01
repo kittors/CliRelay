@@ -197,7 +197,10 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 			// Retry once with a fresh websocket connection. This is mainly to handle
 			// upstream closing the socket between sequential requests within the same
 			// execution session.
-			connRetry, _, errDialRetry := e.ensureUpstreamConn(execCtx.Context, auth, sess, authID, wsURL, wsHeaders)
+			connRetry, respRetry, errDialRetry := e.ensureUpstreamConn(execCtx.Context, auth, sess, authID, wsURL, wsHeaders) //nolint:bodyclose // failed handshake body is closed below; successful websocket response is owned by connRetry.
+			if errDialRetry != nil {
+				_ = websocketHandshakeBody(respRetry)
+			}
 			if errDialRetry == nil && connRetry != nil {
 				sess.connMu.Lock()
 				allowAppend = sess.connCreateSent
@@ -382,7 +385,10 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 			e.invalidateUpstreamConn(sess, conn, "send_error", errSend)
 
 			// Retry once with a new websocket connection for the same execution session.
-			connRetry, _, errDialRetry := e.ensureUpstreamConn(execCtx.Context, auth, sess, authID, wsURL, wsHeaders)
+			connRetry, respRetry, errDialRetry := e.ensureUpstreamConn(execCtx.Context, auth, sess, authID, wsURL, wsHeaders) //nolint:bodyclose // failed handshake body is closed below; successful websocket response is owned by connRetry.
+			if errDialRetry != nil {
+				_ = websocketHandshakeBody(respRetry)
+			}
 			if errDialRetry != nil || connRetry == nil {
 				recorder.RecordResponseError(errDialRetry)
 				sess.clearActive(readCh)

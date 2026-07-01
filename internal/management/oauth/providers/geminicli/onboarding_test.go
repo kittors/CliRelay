@@ -75,7 +75,7 @@ type sequenceTransport struct {
 }
 
 func (s *sequenceTransport) enqueue(fn func(*http.Request) *http.Response) {
-	s.steps = append(s.steps, fn)
+	s.steps = append(s.steps, fn) //nolint:bodyclose // RoundTrip hands the response to http.Client; tested code closes the body.
 }
 
 func (s *sequenceTransport) RoundTrip(req *http.Request) (*http.Response, error) {

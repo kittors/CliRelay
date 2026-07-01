@@ -92,7 +92,7 @@ func fetchCodexImageChatRequirements(ctx context.Context, client *http.Client, h
 		{"p": generateCodexImageRequirementsToken(headers.Get("User-Agent"))},
 	} {
 		body, _ := json.Marshal(payload)
-		resp, err := doCodexImageJSON(ctx, client, http.MethodPost, codexImageURL("/backend-api/sentinel/chat-requirements"), headers, body)
+		resp, err := doCodexImageJSON(ctx, client, http.MethodPost, codexImageURL("/backend-api/sentinel/chat-requirements"), headers, body) //nolint:bodyclose // readAndCloseCodexImageBody closes the body below.
 		if err != nil {
 			lastErr = err
 			continue
@@ -129,7 +129,7 @@ func initializeCodexImageConversation(ctx context.Context, client *http.Client, 
 		"system_hints":            []string{"picture_v2"},
 	}
 	body, _ := json.Marshal(payload)
-	resp, err := doCodexImageJSON(ctx, client, http.MethodPost, codexImageURL("/backend-api/conversation/init"), headers, body)
+	resp, err := doCodexImageJSON(ctx, client, http.MethodPost, codexImageURL("/backend-api/conversation/init"), headers, body) //nolint:bodyclose // readAndCloseCodexImageBody closes the body below.
 	if err != nil {
 		return err
 	}
@@ -177,7 +177,7 @@ func prepareCodexImageConversation(ctx context.Context, client *http.Client, hea
 		prepareHeaders.Set("openai-sentinel-proof-token", strings.TrimSpace(proofToken))
 	}
 	body, _ := json.Marshal(payload)
-	resp, err := doCodexImageJSON(ctx, client, http.MethodPost, codexImageURL("/backend-api/f/conversation/prepare"), prepareHeaders, body)
+	resp, err := doCodexImageJSON(ctx, client, http.MethodPost, codexImageURL("/backend-api/f/conversation/prepare"), prepareHeaders, body) //nolint:bodyclose // readAndCloseCodexImageBody closes the body below.
 	if err != nil {
 		return "", err
 	}
@@ -208,7 +208,7 @@ func uploadCodexImageFiles(ctx context.Context, client *http.Client, headers htt
 			"file_size": len(item.Data),
 			"use_case":  "multimodal",
 		})
-		resp, err := doCodexImageJSON(ctx, client, http.MethodPost, codexImageURL("/backend-api/files"), headers, payload)
+		resp, err := doCodexImageJSON(ctx, client, http.MethodPost, codexImageURL("/backend-api/files"), headers, payload) //nolint:bodyclose // readAndCloseCodexImageBody closes the body below.
 		if err != nil {
 			return nil, err
 		}
@@ -239,7 +239,7 @@ func uploadCodexImageFiles(ctx context.Context, client *http.Client, headers htt
 		putReq.Header.Set("x-ms-blob-type", "BlockBlob")
 		putReq.Header.Set("x-ms-version", "2020-04-08")
 		putReq.Header.Set("User-Agent", headers.Get("User-Agent"))
-		putResp, err := client.Do(putReq)
+		putResp, err := client.Do(putReq) //nolint:bodyclose // readAndCloseCodexImageBody closes the body below.
 		if err != nil {
 			return nil, err
 		}
@@ -252,7 +252,7 @@ func uploadCodexImageFiles(ctx context.Context, client *http.Client, headers htt
 		}
 
 		donePayload, _ := json.Marshal(map[string]any{})
-		doneResp, err := doCodexImageJSON(ctx, client, http.MethodPost, codexImageURL("/backend-api/files/"+created.FileID+"/uploaded"), headers, donePayload)
+		doneResp, err := doCodexImageJSON(ctx, client, http.MethodPost, codexImageURL("/backend-api/files/"+created.FileID+"/uploaded"), headers, donePayload) //nolint:bodyclose // readAndCloseCodexImageBody closes the body below.
 		if err != nil {
 			return nil, err
 		}

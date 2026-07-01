@@ -6,6 +6,8 @@ import (
 	"testing"
 )
 
+// These are configuration drift guard tests: they assert shipped workflow text,
+// not runtime behavior.
 func TestDeployWorkflowOnlyPublishesBackendBinary(t *testing.T) {
 	data, err := os.ReadFile(".github/workflows/deploy.yml")
 	if err != nil {

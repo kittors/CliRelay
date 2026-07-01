@@ -6,6 +6,8 @@ import (
 	"testing"
 )
 
+// These are configuration drift guard tests: they assert generated install
+// script text, not runtime behavior.
 func TestInstallEnvProvidesHostAbsoluteBindPaths(t *testing.T) {
 	data, err := os.ReadFile("install.sh")
 	if err != nil {

@@ -14,6 +14,10 @@ import (
 // setupRoutes configures the API routes for the server.
 // It defines the endpoints and associates them with their respective handlers.
 func (s *Server) setupRoutes() {
+	s.engine.GET("/healthz", func(c *gin.Context) {
+		c.Status(http.StatusNoContent)
+	})
+
 	s.engine.GET("/management.html", s.serveManagementControlPanel)
 	s.engine.GET("/manage", s.serveManagementControlPanel)
 	s.engine.GET("/manage/*filepath", s.serveManagementControlPanel)

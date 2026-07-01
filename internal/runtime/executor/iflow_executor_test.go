@@ -1,9 +1,16 @@
 package executor
 
 import (
+	"bytes"
+	"context"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/thinking"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
+	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	log "github.com/sirupsen/logrus"
 )
 
 func TestIFlowExecutorParseSuffix(t *testing.T) {
@@ -63,5 +70,38 @@ func TestPreserveReasoningContentInMessages(t *testing.T) {
 				t.Errorf("preserveReasoningContentInMessages() = %s, want %s", got, want)
 			}
 		})
+	}
+}
+
+func TestIFlowCookieRefreshLogsMaskedEmail(t *testing.T) {
+	var buf bytes.Buffer
+	previousOutput := log.StandardLogger().Out
+	previousLevel := log.GetLevel()
+	log.SetOutput(&buf)
+	log.SetLevel(log.DebugLevel)
+	t.Cleanup(func() {
+		log.SetOutput(previousOutput)
+		log.SetLevel(previousLevel)
+	})
+
+	email := "user@example.com"
+	auth := &cliproxyauth.Auth{Metadata: map[string]any{
+		"expired": time.Now().Add(72 * time.Hour).Format("2006-01-02 15:04"),
+	}}
+
+	gotAuth, err := (&IFlowExecutor{}).refreshCookieBased(context.Background(), auth, "BXAuth=secret;", email)
+	if err != nil {
+		t.Fatalf("refreshCookieBased returned error: %v", err)
+	}
+	if gotAuth != auth {
+		t.Fatalf("refreshCookieBased returned different auth when refresh was not needed")
+	}
+
+	got := buf.String()
+	if strings.Contains(got, email) {
+		t.Fatalf("refreshCookieBased log leaked full email: %s", got)
+	}
+	if masked := util.HideAPIKey(email); !strings.Contains(got, masked) {
+		t.Fatalf("refreshCookieBased log = %q, want masked email %q", got, masked)
 	}
 }

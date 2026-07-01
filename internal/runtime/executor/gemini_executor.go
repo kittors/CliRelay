@@ -155,6 +155,7 @@ func (e *GeminiExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 	recorder.RecordRequest(url, http.MethodPost, httpReq.Header.Clone(), body)
 
 	httpClient := execCtx.HTTPClient(0)
+	//nolint:bodyclose // success body is consumed and closed by the stream goroutine below.
 	httpResp, err := httpClient.Do(httpReq)
 	if err != nil {
 		recorder.RecordResponseError(err)
@@ -239,6 +240,7 @@ func (e *GeminiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	recorder.RecordRequest(url, http.MethodPost, httpReq.Header.Clone(), body)
 
 	httpClient := execCtx.HTTPClient(0)
+	//nolint:bodyclose // success body is consumed and closed by the stream goroutine below.
 	httpResp, err := httpClient.Do(httpReq)
 	if err != nil {
 		recorder.RecordResponseError(err)

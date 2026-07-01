@@ -165,7 +165,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	recorder := execCtx.Recorder()
 	recorder.RecordRequest(url, http.MethodPost, httpReq.Header.Clone(), body)
 	httpClient := execCtx.HTTPClient(0)
-	httpResp, err := httpClient.Do(httpReq)
+	httpResp, err := httpClient.Do(httpReq) //nolint:bodyclose // body is closed by the defer below.
 	if err != nil {
 		recorder.RecordResponseError(err)
 		reporter.publishFailureWithContent(execCtx.Context, string(req.Payload), err.Error())
@@ -266,6 +266,7 @@ func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.A
 	recorder := execCtx.Recorder()
 	recorder.RecordRequest(url, http.MethodPost, httpReq.Header.Clone(), body)
 	httpClient := execCtx.HTTPClient(0)
+	//nolint:bodyclose // body is closed by the defer below.
 	httpResp, err := httpClient.Do(httpReq)
 	if err != nil {
 		recorder.RecordResponseError(err)
@@ -348,6 +349,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	recorder := execCtx.Recorder()
 	recorder.RecordRequest(url, http.MethodPost, httpReq.Header.Clone(), body)
 	httpClient := execCtx.HTTPClient(0)
+	//nolint:bodyclose // success body is consumed and closed by the stream goroutine below.
 	httpResp, err := httpClient.Do(httpReq)
 	if err != nil {
 		recorder.RecordResponseError(err)

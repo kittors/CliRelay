@@ -119,6 +119,7 @@ func (e *IFlowExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	recorder.RecordRequest(endpoint, http.MethodPost, httpReq.Header.Clone(), translated)
 
 	httpClient := execCtx.HTTPClient(0)
+	//nolint:bodyclose // body is closed by the defer below.
 	httpResp, err := httpClient.Do(httpReq)
 	if err != nil {
 		recorder.RecordResponseError(err)
@@ -223,6 +224,7 @@ func (e *IFlowExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	recorder.RecordRequest(endpoint, http.MethodPost, httpReq.Header.Clone(), translated)
 
 	httpClient := execCtx.HTTPClient(0)
+	//nolint:bodyclose // success body is consumed and closed by the stream goroutine below.
 	httpResp, err := httpClient.Do(httpReq)
 	if err != nil {
 		recorder.RecordResponseError(err)
@@ -347,7 +349,8 @@ func (e *IFlowExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*
 
 // refreshCookieBased refreshes API key using browser cookie
 func (e *IFlowExecutor) refreshCookieBased(ctx context.Context, auth *cliproxyauth.Auth, cookie, email string) (*cliproxyauth.Auth, error) {
-	log.Debugf("iflow executor: checking refresh need for cookie-based API key for user: %s", email)
+	maskedEmail := util.HideAPIKey(email)
+	log.Debugf("iflow executor: checking refresh need for cookie-based API key for user: %s", maskedEmail)
 
 	// Get current expiry time from metadata
 	var currentExpire string
@@ -363,11 +366,11 @@ func (e *IFlowExecutor) refreshCookieBased(ctx context.Context, auth *cliproxyau
 		log.Warnf("iflow executor: failed to check refresh need: %v", err)
 		// If we can't check, continue with refresh anyway as a safety measure
 	} else if !needsRefresh {
-		log.Debugf("iflow executor: no refresh needed for user: %s", email)
+		log.Debugf("iflow executor: no refresh needed for user: %s", maskedEmail)
 		return auth, nil
 	}
 
-	log.Infof("iflow executor: refreshing cookie-based API key for user: %s", email)
+	log.Infof("iflow executor: refreshing cookie-based API key for user: %s", maskedEmail)
 
 	svc := iflowauth.NewIFlowAuth(e.cfg)
 	keyData, err := svc.RefreshAPIKey(ctx, cookie, email)

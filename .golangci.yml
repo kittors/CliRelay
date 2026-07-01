@@ -9,14 +9,17 @@ linters:
     - gosimple
     - ineffassign
     - staticcheck
+    - bodyclose
 
 issues:
-  exclude-dirs:
-    - internal/translator
   exclude-rules:
     # "alt" is a legacy cross-package context key also consumed by translator code.
     # We keep the string key for compatibility and suppress SA1029 for now.
     - path: internal/runtime/executor/.*
+      text: "SA1029"
+      linters:
+        - staticcheck
+    - path: internal/translator/.*_test\.go
       text: "SA1029"
       linters:
         - staticcheck

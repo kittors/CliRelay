@@ -218,6 +218,9 @@ Docker Compose is the recommended installation path for CliRelay. The included `
 git clone https://github.com/kittors/CliRelay.git
 cd CliRelay
 cp config.example.yaml config.yaml
+mkdir -p auths logs data
+# Linux bind mounts need write access for the non-root container user:
+# sudo chown -R 10001:10001 auths logs data
 docker compose up -d
 ```
 

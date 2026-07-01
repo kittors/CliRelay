@@ -264,7 +264,7 @@ func buildHTTPServer(cfg *config.Config, engine *gin.Engine) *http.Server {
 		Handler:           engine,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       readTimeout,
-		WriteTimeout:      mainAPIServerWriteTimeout,
+		WriteTimeout:      mainAPINonStreamingWriteTimeout,
 		IdleTimeout:       2 * time.Minute,
 		MaxHeaderBytes:    1 << 20,
 	}
