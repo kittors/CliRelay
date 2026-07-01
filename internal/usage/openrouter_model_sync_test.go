@@ -160,6 +160,58 @@ func TestSyncOpenRouterModelsPreservesImageGenerationCallPricingAndOutputModalit
 	}
 }
 
+func TestSyncOpenRouterModelsBackfillsImageGenerationDefaultCallPrice(t *testing.T) {
+	initModelConfigTestDB(t)
+
+	if err := UpsertModelConfig(ModelConfigRow{
+		ModelID:               "gpt-image-2",
+		OwnedBy:               "codex",
+		Description:           "Previously corrupted image model",
+		Enabled:               true,
+		PricingMode:           "token",
+		InputPricePerMillion:  5,
+		OutputPricePerMillion: 20,
+		PricePerCall:          0,
+		Source:                "seed",
+		InputModalities:       []string{"text"},
+		OutputModalities:      []string{"text"},
+	}); err != nil {
+		t.Fatalf("UpsertModelConfig() error = %v", err)
+	}
+
+	_, err := SyncOpenRouterModelList(context.Background(), []OpenRouterRemoteModel{
+		{
+			ID:          "openai/gpt-image-2",
+			Description: "Remote image model description",
+			Architecture: OpenRouterRemoteArchitecture{
+				InputModalities:  []string{"text"},
+				OutputModalities: []string{"text"},
+			},
+			Pricing: OpenRouterRemotePricing{
+				Prompt:     "0.000005",
+				Completion: "0.000020",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("SyncOpenRouterModelList() error = %v", err)
+	}
+
+	model, ok := GetModelConfig("gpt-image-2")
+	if !ok {
+		t.Fatal("expected gpt-image-2 config")
+	}
+	if model.PricingMode != "call" || model.PricePerCall != 0.04 {
+		t.Fatalf("expected gpt-image-2 default call pricing to be backfilled, got %+v", model)
+	}
+	if model.InputPricePerMillion != 0 || model.OutputPricePerMillion != 0 {
+		t.Fatalf("expected token pricing to be cleared, got %+v", model)
+	}
+	if !containsModality(model.OutputModalities, "image") || containsModality(model.OutputModalities, "text") {
+		t.Fatalf("expected image-only output modality, got %+v", model.OutputModalities)
+	}
+}
+
 func TestSyncOpenRouterModelsUpdatesExistingClinePassWrapperFromCanonicalModel(t *testing.T) {
 	initModelConfigTestDB(t)
 

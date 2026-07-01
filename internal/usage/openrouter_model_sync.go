@@ -457,13 +457,16 @@ func openRouterApplyImageGenerationSemantics(row *ModelConfigRow, model OpenRout
 	row.InputPricePerMillion = 0
 	row.OutputPricePerMillion = 0
 	row.CachedPricePerMillion = 0
-	if row.PricePerCall < 0 {
-		row.PricePerCall = 0
+	if row.PricePerCall <= 0 {
+		row.PricePerCall = openRouterDefaultImageGenerationPricePerCall(row.ModelID)
 	}
 
 	inputModalities, outputModalities := openRouterModelModalities(model)
 	row.InputModalities = unionModalities(row.InputModalities, inputModalities)
-	row.OutputModalities = unionModalities(row.OutputModalities, imageOutputModalities(outputModalities))
+	row.OutputModalities = unionModalities(
+		imageOutputModalities(row.OutputModalities),
+		imageOutputModalities(outputModalities),
+	)
 	if len(row.InputModalities) == 0 {
 		row.InputModalities = []string{"text"}
 	}
@@ -485,6 +488,15 @@ func openRouterIsImageGenerationRow(row ModelConfigRow) bool {
 		}
 	}
 	return false
+}
+
+func openRouterDefaultImageGenerationPricePerCall(modelID string) float64 {
+	switch strings.ToLower(strings.TrimSpace(modelID)) {
+	case "gpt-image-2":
+		return 0.04
+	default:
+		return 0
+	}
 }
 
 func imageOutputModalities(modalities []string) []string {
