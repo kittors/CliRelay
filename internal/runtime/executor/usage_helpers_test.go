@@ -67,7 +67,7 @@ func TestParseOpenAIResponseModel(t *testing.T) {
 }
 
 func TestUsageReporterSpillsLargeStreamingOutputToTempFile(t *testing.T) {
-	reporter := newUsageReporter(context.Background(), "provider", "model", nil)
+	reporter := newUsageReporter(context.Background(), "provider", "model", "", nil)
 	chunk := bytes.Repeat([]byte("x"), usageReporterOutputMemoryLimit/2)
 
 	reporter.appendOutputChunk(chunk)

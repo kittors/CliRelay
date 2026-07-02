@@ -9,11 +9,14 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
+	"os/signal"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -23,6 +26,7 @@ const (
 	defaultEnvFile       = ""
 	defaultTargetService = "clirelay"
 	updateCommandTimeout = 10 * time.Minute
+	shutdownTimeout      = 10 * time.Second
 	maxUpdateLogEntries  = 200
 )
 
@@ -43,6 +47,7 @@ type updaterConfig struct {
 	ProjectName    string
 	DefaultService string
 	Runner         composeRunner
+	Context        context.Context
 }
 
 type updaterServer struct {
@@ -57,6 +62,7 @@ type updaterServer struct {
 	status         updateStatusResponse
 	pullSkipped    bool
 	pullSkipLog    string
+	ctx            context.Context
 }
 
 type updateLogEntry struct {
@@ -95,7 +101,20 @@ type updateRequest struct {
 }
 
 func main() {
-	cfg := updaterConfig{
+	if err := run(); err != nil {
+		log.Print(err)
+		os.Exit(1)
+	}
+}
+
+func run() error {
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	return runUpdater(ctx, updaterConfigFromEnv())
+}
+
+func updaterConfigFromEnv() updaterConfig {
+	return updaterConfig{
 		Addr:           envOrDefault("CLIRELAY_UPDATER_ADDR", defaultListenAddr),
 		Token:          strings.TrimSpace(os.Getenv("CLIRELAY_UPDATER_TOKEN")),
 		ComposeFile:    envOrDefault("CLIRELAY_COMPOSE_FILE", defaultComposeFile),
@@ -104,6 +123,25 @@ func main() {
 		DefaultService: envOrDefault("CLIRELAY_TARGET_SERVICE", defaultTargetService),
 		Runner:         runComposeUpdate,
 	}
+}
+
+func runUpdater(ctx context.Context, cfg updaterConfig) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	addr := envOrDefaultValue(cfg.Addr, defaultListenAddr)
+	listener, err := net.Listen("tcp", addr)
+	if err != nil {
+		return fmt.Errorf("clirelay updater: listen on %s failed: %w", addr, err)
+	}
+	return serveUpdater(ctx, cfg, listener)
+}
+
+func serveUpdater(ctx context.Context, cfg updaterConfig, listener net.Listener) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	cfg.Context = ctx
 	server := newUpdaterServer(cfg)
 
 	mux := http.NewServeMux()
@@ -111,9 +149,34 @@ func main() {
 	mux.HandleFunc("/v1/status", server.handleStatus)
 	mux.HandleFunc("/v1/update", server.handleUpdate)
 
-	log.Printf("clirelay updater listening on %s", cfg.Addr)
-	if err := http.ListenAndServe(cfg.Addr, mux); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		log.Fatal(err)
+	httpServer := &http.Server{
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+		BaseContext: func(net.Listener) context.Context {
+			return ctx
+		},
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		log.Printf("clirelay updater listening on %s", listener.Addr())
+		if err := httpServer.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			errCh <- err
+			return
+		}
+		errCh <- nil
+	}()
+
+	select {
+	case <-ctx.Done():
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+		defer cancel()
+		if err := httpServer.Shutdown(shutdownCtx); err != nil {
+			return fmt.Errorf("clirelay updater: shutdown failed: %w", err)
+		}
+		return <-errCh
+	case err := <-errCh:
+		return err
 	}
 }
 
@@ -122,6 +185,10 @@ func newUpdaterServer(cfg updaterConfig) *updaterServer {
 	if runner == nil {
 		runner = runComposeUpdate
 	}
+	ctx := cfg.Context
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	return &updaterServer{
 		token:          strings.TrimSpace(cfg.Token),
 		composeFile:    envOrDefaultValue(cfg.ComposeFile, defaultComposeFile),
@@ -129,6 +196,7 @@ func newUpdaterServer(cfg updaterConfig) *updaterServer {
 		projectName:    strings.TrimSpace(cfg.ProjectName),
 		defaultService: envOrDefaultValue(cfg.DefaultService, defaultTargetService),
 		runner:         runner,
+		ctx:            ctx,
 		status: updateStatusResponse{
 			Status: "idle",
 			Stage:  "idle",
@@ -200,7 +268,7 @@ func (s *updaterServer) handleUpdate(w http.ResponseWriter, r *http.Request) {
 
 	runID := s.startUpdate(service, req)
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), updateCommandTimeout)
+		ctx, cancel := context.WithTimeout(s.context(), updateCommandTimeout)
 		defer cancel()
 		reporter := updaterRunReporter{server: s, runID: runID}
 		if err := s.runner(ctx, s.composeFile, s.envFile, s.projectName, service, reporter); err != nil {
@@ -219,6 +287,13 @@ func (s *updaterServer) handleUpdate(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	writeJSON(w, http.StatusAccepted, map[string]string{"status": "accepted", "service": service})
+}
+
+func (s *updaterServer) context() context.Context {
+	if s == nil || s.ctx == nil {
+		return context.Background()
+	}
+	return s.ctx
 }
 
 func persistRequestedImage(envFile string, image string, tag string) error {

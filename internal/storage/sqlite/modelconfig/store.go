@@ -139,6 +139,7 @@ func InitTables(db *sql.DB) {
 	ensureOpenRouterModelSyncStateSchema(db)
 	seedDefaultModelConfigRows(db)
 	mergeLegacyPricingIntoModelConfigs(db)
+	repairDefaultPerCallModelConfigRows(db)
 	reloadModelConfigCache(db)
 	reloadModelOwnerPresetCache(db)
 	reloadAuthGroupOwnerMappingCache(db)
@@ -488,6 +489,7 @@ func defaultModelConfigRows() []ModelConfigRow {
 		"qwen",
 		"iflow",
 		"kimi",
+		"cline",
 		"opencode-go",
 		"antigravity",
 	}
@@ -660,6 +662,53 @@ func mergeLegacyPricingIntoModelConfigs(db *sql.DB) {
 			row.cached,
 			now,
 		)
+	}
+}
+
+func repairDefaultPerCallModelConfigRows(db *sql.DB) {
+	now := nowRFC3339()
+	for _, row := range defaultModelConfigRows() {
+		if NormalizePricingMode(row.PricingMode) != "call" || row.PricePerCall <= 0 {
+			continue
+		}
+		inputModalities := encodeModelModalities(row.InputModalities)
+		outputModalities := encodeModelModalities(row.OutputModalities)
+		_, err := db.Exec(
+			`UPDATE model_configs
+			 SET input_modalities = ?,
+			     output_modalities = ?,
+			     pricing_mode = 'call',
+			     input_price_per_million = 0,
+			     output_price_per_million = 0,
+			     cached_price_per_million = 0,
+			     cache_read_price_per_million = 0,
+			     cache_write_price_per_million = 0,
+			     price_per_call = ?,
+			     updated_at = ?
+			 WHERE model_id = ?
+			   AND source IN ('seed', 'openrouter', 'legacy-pricing')
+			   AND (
+			     pricing_mode != 'call'
+			     OR input_price_per_million != 0
+			     OR output_price_per_million != 0
+			     OR cached_price_per_million != 0
+			     OR cache_read_price_per_million != 0
+			     OR cache_write_price_per_million != 0
+			     OR price_per_call <= 0
+			     OR input_modalities != ?
+			     OR output_modalities != ?
+			   )`,
+			inputModalities,
+			outputModalities,
+			row.PricePerCall,
+			now,
+			row.ModelID,
+			inputModalities,
+			outputModalities,
+		)
+		if err != nil {
+			log.Warnf("sqlite/modelconfig: repair default per-call model config %s: %v", row.ModelID, err)
+		}
 	}
 }
 

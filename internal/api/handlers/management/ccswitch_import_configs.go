@@ -14,6 +14,7 @@ func (h *Handler) GetCcSwitchImportConfigs(c *gin.Context) {
 	if items == nil {
 		items = []usage.CcSwitchImportConfigRow{}
 	}
+	items = usage.AttachCcSwitchCodexModelCatalogs(items)
 	c.JSON(http.StatusOK, gin.H{
 		"ccswitch-import-configs": items,
 		"items":                   items,

@@ -14,11 +14,13 @@ const (
 	RuntimeSettingClaudeKeys           = "claude-api-key"
 	RuntimeSettingBedrockKeys          = "bedrock-api-key"
 	RuntimeSettingOpenCodeGoKeys       = "opencode-go-api-key"
+	RuntimeSettingClineKeys            = "cline-api-key"
 	RuntimeSettingOpenAICompatibility  = "openai-compatibility"
 	RuntimeSettingVertexCompatKeys     = "vertex-api-key"
 	RuntimeSettingClaudeHeaderDefaults = "claude-header-defaults"
 	RuntimeSettingKimiHeaderDefaults   = "kimi-header-defaults"
 	RuntimeSettingIdentityFingerprint  = "identity-fingerprint"
+	RuntimeSettingCodexOAuthAdmission  = "codex-oauth-admission"
 	RuntimeSettingOAuthExcludedModels  = "oauth-excluded-models"
 	RuntimeSettingOAuthModelAlias      = "oauth-model-alias"
 	RuntimeSettingPayload              = "payload"
@@ -144,6 +146,28 @@ func Specs() []Spec {
 			},
 		},
 		{
+			Key: RuntimeSettingClineKeys,
+			Meaningful: func(cfg *config.Config) bool {
+				return len(cfg.ClineKey) > 0
+			},
+			Value: func(cfg *config.Config) any {
+				holder := &config.Config{ClineKey: append([]config.ClineKey(nil), cfg.ClineKey...)}
+				holder.SanitizeClineKeys()
+				return holder.ClineKey
+			},
+			Apply: func(cfg *config.Config, raw json.RawMessage) bool {
+				var value []config.ClineKey
+				if err := json.Unmarshal(raw, &value); err != nil {
+					log.Warnf("runtimeconfig: decode %s: %v", RuntimeSettingClineKeys, err)
+					return false
+				}
+				holder := &config.Config{ClineKey: value}
+				holder.SanitizeClineKeys()
+				cfg.ClineKey = holder.ClineKey
+				return true
+			},
+		},
+		{
 			Key: RuntimeSettingOpenAICompatibility,
 			Meaningful: func(cfg *config.Config) bool {
 				return len(cfg.OpenAICompatibility) > 0
@@ -248,12 +272,14 @@ func Specs() []Spec {
 			Key: RuntimeSettingIdentityFingerprint,
 			Meaningful: func(cfg *config.Config) bool {
 				return codexIdentityFingerprintMeaningful(cfg.IdentityFingerprint.Codex) ||
-					claudeIdentityFingerprintMeaningful(cfg.IdentityFingerprint.Claude)
+					claudeIdentityFingerprintMeaningful(cfg.IdentityFingerprint.Claude) ||
+					geminiIdentityFingerprintMeaningful(cfg.IdentityFingerprint.Gemini)
 			},
 			Value: func(cfg *config.Config) any {
 				return config.IdentityFingerprintConfig{
-					Codex:  config.NormalizeCodexIdentityFingerprint(cfg.IdentityFingerprint.Codex),
-					Claude: config.NormalizeClaudeIdentityFingerprint(cfg.IdentityFingerprint.Claude),
+					Codex:  config.CleanCodexIdentityFingerprint(cfg.IdentityFingerprint.Codex),
+					Claude: config.CleanClaudeIdentityFingerprint(cfg.IdentityFingerprint.Claude),
+					Gemini: config.CleanGeminiIdentityFingerprint(cfg.IdentityFingerprint.Gemini),
 				}
 			},
 			Apply: func(cfg *config.Config, raw json.RawMessage) bool {
@@ -262,9 +288,28 @@ func Specs() []Spec {
 					log.Warnf("runtimeconfig: decode %s: %v", RuntimeSettingIdentityFingerprint, err)
 					return false
 				}
-				value.Codex = config.NormalizeCodexIdentityFingerprint(value.Codex)
-				value.Claude = config.NormalizeClaudeIdentityFingerprint(value.Claude)
+				value.Codex = config.CleanCodexIdentityFingerprint(value.Codex)
+				value.Claude = config.CleanClaudeIdentityFingerprint(value.Claude)
+				value.Gemini = config.CleanGeminiIdentityFingerprint(value.Gemini)
 				cfg.IdentityFingerprint = value
+				return true
+			},
+		},
+		{
+			Key: RuntimeSettingCodexOAuthAdmission,
+			Meaningful: func(cfg *config.Config) bool {
+				return len(config.CleanCodexOAuthAdmission(cfg.CodexOAuthAdmission).AllowedClientPresets) > 0
+			},
+			Value: func(cfg *config.Config) any {
+				return config.CleanCodexOAuthAdmission(cfg.CodexOAuthAdmission)
+			},
+			Apply: func(cfg *config.Config, raw json.RawMessage) bool {
+				var value config.CodexOAuthAdmissionConfig
+				if err := json.Unmarshal(raw, &value); err != nil {
+					log.Warnf("runtimeconfig: decode %s: %v", RuntimeSettingCodexOAuthAdmission, err)
+					return false
+				}
+				cfg.CodexOAuthAdmission = config.CleanCodexOAuthAdmission(value)
 				return true
 			},
 		},
@@ -330,33 +375,40 @@ func Specs() []Spec {
 }
 
 func codexIdentityFingerprintMeaningful(fp config.CodexIdentityFingerprintConfig) bool {
-	normalized := config.NormalizeCodexIdentityFingerprint(fp)
-	defaults := config.DefaultCodexIdentityFingerprint()
-	if normalized.Enabled || strings.TrimSpace(normalized.SessionID) != "" || len(normalized.CustomHeaders) > 0 {
+	clean := config.CleanCodexIdentityFingerprint(fp)
+	if clean.Enabled || strings.TrimSpace(clean.SessionID) != "" || len(clean.CustomHeaders) > 0 {
 		return true
 	}
-	return normalized.UserAgent != defaults.UserAgent ||
-		normalized.Version != defaults.Version ||
-		normalized.Originator != defaults.Originator ||
-		normalized.WebsocketBeta != defaults.WebsocketBeta ||
-		normalized.SessionMode != defaults.SessionMode
+	return strings.TrimSpace(clean.UserAgent) != "" ||
+		strings.TrimSpace(clean.Version) != "" ||
+		strings.TrimSpace(clean.Originator) != "" ||
+		strings.TrimSpace(clean.WebsocketBeta) != "" ||
+		strings.TrimSpace(clean.SessionMode) != ""
 }
 
 func claudeIdentityFingerprintMeaningful(fp config.ClaudeIdentityFingerprintConfig) bool {
-	normalized := config.NormalizeClaudeIdentityFingerprint(fp)
-	defaults := config.DefaultClaudeIdentityFingerprint()
-	if normalized.Enabled || strings.TrimSpace(normalized.SessionID) != "" ||
-		strings.TrimSpace(normalized.DeviceID) != "" || len(normalized.CustomHeaders) > 0 {
+	clean := config.CleanClaudeIdentityFingerprint(fp)
+	if clean.Enabled || strings.TrimSpace(clean.SessionID) != "" ||
+		strings.TrimSpace(clean.DeviceID) != "" || len(clean.CustomHeaders) > 0 {
 		return true
 	}
-	return normalized.CLIVersion != defaults.CLIVersion ||
-		normalized.Entrypoint != defaults.Entrypoint ||
-		normalized.UserAgent != defaults.UserAgent ||
-		normalized.AnthropicBeta != defaults.AnthropicBeta ||
-		normalized.StainlessPackageVersion != defaults.StainlessPackageVersion ||
-		normalized.StainlessRuntimeVersion != defaults.StainlessRuntimeVersion ||
-		normalized.StainlessTimeout != defaults.StainlessTimeout ||
-		normalized.SessionMode != defaults.SessionMode
+	return strings.TrimSpace(clean.CLIVersion) != "" ||
+		strings.TrimSpace(clean.Entrypoint) != "" ||
+		strings.TrimSpace(clean.UserAgent) != "" ||
+		strings.TrimSpace(clean.AnthropicBeta) != "" ||
+		strings.TrimSpace(clean.StainlessPackageVersion) != "" ||
+		strings.TrimSpace(clean.StainlessRuntimeVersion) != "" ||
+		strings.TrimSpace(clean.StainlessTimeout) != "" ||
+		strings.TrimSpace(clean.SessionMode) != ""
+}
+
+func geminiIdentityFingerprintMeaningful(fp config.GeminiIdentityFingerprintConfig) bool {
+	clean := config.CleanGeminiIdentityFingerprint(fp)
+	return clean.Enabled ||
+		strings.TrimSpace(clean.UserAgent) != "" ||
+		strings.TrimSpace(clean.APIClient) != "" ||
+		strings.TrimSpace(clean.ClientMetadata) != "" ||
+		len(clean.CustomHeaders) > 0
 }
 
 func normalizeOAuthModelAliasSetting(entries map[string][]config.OAuthModelAlias) map[string][]config.OAuthModelAlias {

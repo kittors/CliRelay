@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"net/http"
 	"strings"
 	"time"
 )
@@ -36,6 +37,50 @@ type QuotaRecoveryProber interface {
 // ReconcileQuota forces an immediate quota reconciliation for the given auth entry.
 func (m *Manager) ReconcileQuota(ctx context.Context, id string) (bool, error) {
 	return m.probeQuotaRecovery(ctx, id, true)
+}
+
+// ClearQuotaStatus manually clears local quota/cooldown runtime state for an auth entry.
+func (m *Manager) ClearQuotaStatus(ctx context.Context, id string) (bool, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return false, nil
+	}
+
+	now := time.Now()
+	var (
+		updated         *Auth
+		recoveredModels []string
+	)
+
+	m.mu.Lock()
+	current, ok := m.auths[id]
+	if !ok || current == nil {
+		delete(m.quotaProbeAfter, id)
+		m.mu.Unlock()
+		return false, nil
+	}
+
+	changed, models := clearQuotaStatusForAuth(current, now)
+	recoveredModels = models
+	delete(m.quotaProbeAfter, id)
+	if changed {
+		current.UpdatedAt = now
+		updated = current.Clone()
+		m.auths[id] = current
+	}
+	m.mu.Unlock()
+
+	if updated != nil {
+		if errPersist := m.persist(ctx, updated); errPersist != nil {
+			return true, errPersist
+		}
+		m.hook.OnAuthUpdated(ctx, updated.Clone())
+	}
+	m.resumeRecoveredQuotaModels(id, recoveredModels)
+	return updated != nil, nil
 }
 
 func (m *Manager) checkQuotaRecoveries(ctx context.Context, snapshot []*Auth, now time.Time) {
@@ -246,6 +291,36 @@ func applyQuotaProbeResult(auth *Auth, result *QuotaProbeResult, now time.Time) 
 	return changed, nil
 }
 
+func clearQuotaStatusForAuth(auth *Auth, now time.Time) (bool, []string) {
+	if auth == nil {
+		return false, nil
+	}
+
+	authHadQuotaRuntime := hasQuotaRuntimeState(auth.StatusMessage, auth.LastError, auth.Unavailable, auth.NextRetryAfter, auth.Quota)
+	var changed bool
+	recoveredModels := make([]string, 0, len(auth.ModelStates))
+	for modelID, state := range auth.ModelStates {
+		if clearQuotaModelRuntimeState(state, now) {
+			changed = true
+			recoveredModels = append(recoveredModels, modelID)
+		}
+	}
+
+	if len(auth.ModelStates) > 0 {
+		beforeUnavailable := auth.Unavailable
+		beforeNextRetry := auth.NextRetryAfter
+		beforeQuota := auth.Quota
+		updateAggregatedAvailability(auth, now)
+		if auth.Unavailable != beforeUnavailable || !auth.NextRetryAfter.Equal(beforeNextRetry) || auth.Quota != beforeQuota {
+			changed = true
+		}
+	}
+	if clearQuotaAuthRuntimeState(auth, now, authHadQuotaRuntime) {
+		changed = true
+	}
+	return changed, recoveredModels
+}
+
 func normalizeQuotaProbeModels(in map[string]QuotaProbeModelResult) map[string]QuotaProbeModelResult {
 	if len(in) == 0 {
 		return nil
@@ -335,6 +410,27 @@ func clearQuotaModelState(state *ModelState, now time.Time) bool {
 	return changed
 }
 
+func clearQuotaModelRuntimeState(state *ModelState, now time.Time) bool {
+	if state == nil || !hasQuotaRuntimeState(state.StatusMessage, state.LastError, state.Unavailable, state.NextRetryAfter, state.Quota) {
+		return false
+	}
+	preserveDisabled := state.Status == StatusDisabled
+	changed := state.Unavailable || !state.NextRetryAfter.IsZero() || state.LastError != nil || state.Quota != (QuotaState{})
+	state.Unavailable = false
+	state.NextRetryAfter = time.Time{}
+	state.LastError = nil
+	state.Quota = QuotaState{}
+	if !preserveDisabled {
+		if state.Status != StatusActive || state.StatusMessage != "" {
+			changed = true
+		}
+		state.Status = StatusActive
+		state.StatusMessage = ""
+	}
+	state.UpdatedAt = now
+	return changed
+}
+
 func updateQuotaModelRecoverAt(state *ModelState, next time.Time, now time.Time) bool {
 	if state == nil || next.IsZero() {
 		return false
@@ -362,6 +458,44 @@ func clearQuotaAuthState(auth *Auth, now time.Time) bool {
 	auth.Quota = QuotaState{}
 	auth.UpdatedAt = now
 	return changed
+}
+
+func clearQuotaAuthRuntimeState(auth *Auth, now time.Time, force bool) bool {
+	if auth == nil || (!force && !hasQuotaRuntimeState(auth.StatusMessage, auth.LastError, auth.Unavailable, auth.NextRetryAfter, auth.Quota)) {
+		return false
+	}
+	preserveDisabled := auth.Status == StatusDisabled
+	changed := auth.Unavailable || !auth.NextRetryAfter.IsZero() || auth.LastError != nil || auth.Quota != (QuotaState{})
+	auth.Unavailable = false
+	auth.NextRetryAfter = time.Time{}
+	auth.LastError = nil
+	auth.Quota = QuotaState{}
+	if !preserveDisabled {
+		if auth.Status != StatusActive || auth.StatusMessage != "" {
+			changed = true
+		}
+		auth.Status = StatusActive
+		auth.StatusMessage = ""
+	}
+	auth.UpdatedAt = now
+	return changed
+}
+
+func hasQuotaRuntimeState(statusMessage string, lastError *Error, unavailable bool, nextRetryAfter time.Time, quota QuotaState) bool {
+	if quota != (QuotaState{}) || unavailable || !nextRetryAfter.IsZero() {
+		return true
+	}
+	if lastError != nil {
+		if lastError.HTTPStatus == http.StatusTooManyRequests {
+			return true
+		}
+		text := strings.ToLower(strings.TrimSpace(lastError.Code + " " + lastError.Message))
+		if strings.Contains(text, "quota") || strings.Contains(text, "rate limit") || strings.Contains(text, "429") || strings.Contains(text, "cooldown") {
+			return true
+		}
+	}
+	text := strings.ToLower(strings.TrimSpace(statusMessage))
+	return strings.Contains(text, "quota") || strings.Contains(text, "rate limit") || strings.Contains(text, "429") || strings.Contains(text, "cooldown")
 }
 
 func updateQuotaAuthRecoverAt(auth *Auth, next time.Time, now time.Time) bool {

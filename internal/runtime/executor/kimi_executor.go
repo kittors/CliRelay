@@ -117,6 +117,7 @@ func (e *KimiExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 	recorder.RecordRequest(url, http.MethodPost, httpReq.Header.Clone(), translated)
 
 	httpClient := execCtx.HTTPClient(0)
+	//nolint:bodyclose // success body is consumed and closed by the stream goroutine below.
 	httpResp, err := httpClient.Do(httpReq)
 	if err != nil {
 		recorder.RecordResponseError(err)
@@ -218,6 +219,7 @@ func (e *KimiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 	recorder.RecordRequest(url, http.MethodPost, httpReq.Header.Clone(), translated)
 
 	httpClient := execCtx.HTTPClient(0)
+	//nolint:bodyclose // success body is consumed and closed by the stream goroutine below.
 	httpResp, err := httpClient.Do(httpReq)
 	if err != nil {
 		recorder.RecordResponseError(err)

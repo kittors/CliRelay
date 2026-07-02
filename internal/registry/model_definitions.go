@@ -22,6 +22,7 @@ import (
 //   - iflow
 //   - kimi
 //   - opencode-go
+//   - cline
 //   - antigravity (returns static overrides only)
 func GetStaticModelDefinitionsByChannel(channel string) []*ModelInfo {
 	key := strings.ToLower(strings.TrimSpace(channel))
@@ -48,6 +49,8 @@ func GetStaticModelDefinitionsByChannel(channel string) []*ModelInfo {
 		return GetKimiModels()
 	case "opencode-go":
 		return GetOpenCodeGoModels()
+	case "cline":
+		return GetClineModels()
 	case "antigravity":
 		cfg := GetAntigravityModelConfig()
 		if len(cfg) == 0 {
@@ -95,6 +98,7 @@ func LookupStaticModelInfo(modelID string) *ModelInfo {
 		GetIFlowModels(),
 		GetKimiModels(),
 		GetOpenCodeGoModels(),
+		GetClineModels(),
 	}
 	for _, models := range allModels {
 		for _, m := range models {

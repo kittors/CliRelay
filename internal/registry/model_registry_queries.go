@@ -13,9 +13,10 @@ import (
 // - Non-goals: client registration reconciliation and quota/suspension mutation.
 
 type ModelClientSource struct {
-	ClientID string `json:"client_id"`
-	Provider string `json:"provider"`
-	ModelID  string `json:"model_id"`
+	ClientID        string `json:"client_id"`
+	Provider        string `json:"provider"`
+	ModelID         string `json:"model_id"`
+	UpstreamModelID string `json:"upstream_model_id,omitempty"`
 }
 
 // GetAvailableModels returns all models that have at least one available client.
@@ -273,15 +274,22 @@ func (r *ModelRegistry) GetModelClientSources(modelID string) []ModelClientSourc
 			if registeredID == "" || strings.ToLower(registeredID) != target {
 				continue
 			}
-			key := clientID + "\x00" + provider + "\x00" + registeredID
+			upstreamModelID := ""
+			if clientInfos := r.clientModelInfos[clientID]; clientInfos != nil {
+				if info := clientInfos[registeredID]; info != nil {
+					upstreamModelID = strings.TrimSpace(info.UpstreamModelID)
+				}
+			}
+			key := clientID + "\x00" + provider + "\x00" + registeredID + "\x00" + upstreamModelID
 			if _, exists := seen[key]; exists {
 				continue
 			}
 			seen[key] = struct{}{}
 			out = append(out, ModelClientSource{
-				ClientID: clientID,
-				Provider: provider,
-				ModelID:  registeredID,
+				ClientID:        clientID,
+				Provider:        provider,
+				ModelID:         registeredID,
+				UpstreamModelID: upstreamModelID,
 			})
 		}
 	}

@@ -138,6 +138,14 @@ func collectKnownChannelsWithPolicy(cfg *config.Config, auths []*coreauth.Auth, 
 				return nil, err
 			}
 		}
+		for _, entry := range cfg.ClineKey {
+			if strings.TrimSpace(entry.APIKey) == "" {
+				continue
+			}
+			if err := addKnownChannelWithPolicy(known, entry.Name, entry.Name, "Cline API key config", failOnConflict); err != nil {
+				return nil, err
+			}
+		}
 		for _, entry := range cfg.OpenAICompatibility {
 			if strings.TrimSpace(entry.BaseURL) == "" {
 				continue

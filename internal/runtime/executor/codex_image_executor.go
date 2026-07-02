@@ -136,6 +136,9 @@ func (e *CodexExecutor) executeImageGeneration(ctx context.Context, auth *clipro
 	inputForLog := sanitizeCodexImageRequestForLog(req.Payload)
 	reporter.setInputContent(inputForLog)
 	defer reporter.trackFailure(execCtx.Context, &err)
+	if errAdmission := enforceCodexClientAdmission(execCtx.Context, e.cfg, auth); errAdmission != nil {
+		return cliproxyexecutor.Response{}, errAdmission
+	}
 	apiKey, _ := codexCreds(auth)
 	if strings.TrimSpace(apiKey) == "" {
 		return cliproxyexecutor.Response{}, statusErr{code: http.StatusUnauthorized, msg: "codex image generation requires a Codex OAuth access token"}

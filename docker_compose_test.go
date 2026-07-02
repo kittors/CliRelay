@@ -6,6 +6,8 @@ import (
 	"testing"
 )
 
+// These are configuration drift guard tests: they assert shipped compose text,
+// not runtime behavior.
 func TestRepositoryComposeUsesProjectDirForDefaultDataMounts(t *testing.T) {
 	data, err := os.ReadFile("docker-compose.yml")
 	if err != nil {
@@ -15,7 +17,7 @@ func TestRepositoryComposeUsesProjectDirForDefaultDataMounts(t *testing.T) {
 
 	for _, want := range []string{
 		"${CLI_PROXY_CONFIG_PATH:-${CLIRELAY_PROJECT_DIR:-${PWD:-.}}/config.yaml}:/CLIProxyAPI/config.yaml",
-		"${CLI_PROXY_AUTH_PATH:-${CLIRELAY_PROJECT_DIR:-${PWD:-.}}/auths}:${AUTH_PATH:-/root/.cli-proxy-api}",
+		"${CLI_PROXY_AUTH_PATH:-${CLIRELAY_PROJECT_DIR:-${PWD:-.}}/auths}:${AUTH_PATH:-/CLIProxyAPI/auths}",
 		"${CLI_PROXY_LOG_PATH:-${CLIRELAY_PROJECT_DIR:-${PWD:-.}}/logs}:/CLIProxyAPI/logs",
 		"${CLI_PROXY_DATA_PATH:-${CLIRELAY_PROJECT_DIR:-${PWD:-.}}/data}:/CLIProxyAPI/data",
 	} {
@@ -32,9 +34,25 @@ func TestRepositoryComposePassesContainerAuthPath(t *testing.T) {
 	}
 	content := string(data)
 
-	want := "AUTH_PATH: ${AUTH_PATH:-/root/.cli-proxy-api}"
+	want := "AUTH_PATH: ${AUTH_PATH:-/CLIProxyAPI/auths}"
 	if !strings.Contains(content, want) {
 		t.Fatalf("docker-compose.yml missing %q", want)
+	}
+}
+
+func TestRepositoryComposeRequiresUpdaterToken(t *testing.T) {
+	data, err := os.ReadFile("docker-compose.yml")
+	if err != nil {
+		t.Fatalf("read docker-compose.yml: %v", err)
+	}
+	content := string(data)
+
+	want := "CLIRELAY_UPDATER_TOKEN: ${CLIRELAY_UPDATER_TOKEN:?CLIRELAY_UPDATER_TOKEN is required for updater sidecar}"
+	if got := strings.Count(content, want); got != 2 {
+		t.Fatalf("docker-compose.yml has %d required updater token entries, want 2", got)
+	}
+	if strings.Contains(content, "CLIRELAY_UPDATER_TOKEN: ${CLIRELAY_UPDATER_TOKEN:-}") {
+		t.Fatal("docker-compose.yml still allows an empty updater token")
 	}
 }
 

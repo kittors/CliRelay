@@ -61,7 +61,7 @@ func (e *GeminiCLIExecutor) PrepareRequest(req *http.Request, auth *cliproxyauth
 		return statusErr{code: http.StatusUnauthorized, msg: "missing access token"}
 	}
 	req.Header.Set("Authorization", "Bearer "+tok.AccessToken)
-	applyGeminiCLIHeaders(req)
+	applyGeminiCLIHeaders(req, e.cfg, auth)
 	return nil
 }
 
@@ -202,7 +202,7 @@ func (e *GeminiCLIExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth
 		}
 		reqHTTP.Header.Set("Content-Type", "application/json")
 		reqHTTP.Header.Set("Authorization", "Bearer "+tok.AccessToken)
-		applyGeminiCLIHeaders(reqHTTP)
+		applyGeminiCLIHeaders(reqHTTP, e.cfg, auth)
 		reqHTTP.Header.Set("Accept", "application/json")
 		recorder.RecordRequest(url, http.MethodPost, reqHTTP.Header.Clone(), payload)
 
@@ -329,7 +329,7 @@ func (e *GeminiCLIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyaut
 		}
 		reqHTTP.Header.Set("Content-Type", "application/json")
 		reqHTTP.Header.Set("Authorization", "Bearer "+tok.AccessToken)
-		applyGeminiCLIHeaders(reqHTTP)
+		applyGeminiCLIHeaders(reqHTTP, e.cfg, auth)
 		reqHTTP.Header.Set("Accept", "text/event-stream")
 		recorder.RecordRequest(url, http.MethodPost, reqHTTP.Header.Clone(), payload)
 
@@ -497,7 +497,7 @@ func (e *GeminiCLIExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.
 		}
 		reqHTTP.Header.Set("Content-Type", "application/json")
 		reqHTTP.Header.Set("Authorization", "Bearer "+tok.AccessToken)
-		applyGeminiCLIHeaders(reqHTTP)
+		applyGeminiCLIHeaders(reqHTTP, e.cfg, auth)
 		reqHTTP.Header.Set("Accept", "application/json")
 		recorder.RecordRequest(url, http.MethodPost, reqHTTP.Header.Clone(), payload)
 

@@ -200,6 +200,56 @@ func TestWalkPayloadResponses(t *testing.T) {
 	}
 }
 
+func TestWalkPayloadResponsesFunctionCallOutputCurrentImage(t *testing.T) {
+	payload := []byte(`{
+		"model": "deepseek-v4-flash",
+		"input": [
+			{"role": "user", "content": [{"type": "input_text", "text": "inspect this screenshot"}]},
+			{"type": "function_call", "call_id": "call_1", "name": "get_app_state", "arguments": "{}"},
+			{"type": "function_call_output", "call_id": "call_1", "output": [{"type": "input_image", "image_url": "data:image/png;base64,iVBORw0KGgo="}]}
+		]
+	}`)
+
+	walk := WalkPayload(payload)
+	if len(walk.Parts) != 1 {
+		t.Fatalf("expected 1 image part, got %d", len(walk.Parts))
+	}
+	if !walk.Parts[0].IsCurrent {
+		t.Fatal("expected function_call_output image after latest user to be current")
+	}
+	if !walk.CurrentImages || walk.HistoricalOnly {
+		t.Fatalf("current flags = CurrentImages:%v HistoricalOnly:%v, want current only", walk.CurrentImages, walk.HistoricalOnly)
+	}
+	if walk.Parts[0].Path != "input.2.output.0" {
+		t.Fatalf("path = %q, want input.2.output.0", walk.Parts[0].Path)
+	}
+	if walk.Parts[0].Data != "iVBORw0KGgo=" {
+		t.Fatalf("data = %q, want iVBORw0KGgo=", walk.Parts[0].Data)
+	}
+}
+
+func TestWalkPayloadResponsesFunctionCallOutputBeforeLatestUserIsHistorical(t *testing.T) {
+	payload := []byte(`{
+		"model": "deepseek-v4-flash",
+		"input": [
+			{"role": "user", "content": [{"type": "input_text", "text": "inspect this screenshot"}]},
+			{"type": "function_call_output", "call_id": "call_1", "output": [{"type": "input_image", "image_url": "data:image/png;base64,oldImage="}]},
+			{"role": "user", "content": [{"type": "input_text", "text": "now answer a normal text question"}]}
+		]
+	}`)
+
+	walk := WalkPayload(payload)
+	if len(walk.Parts) != 1 {
+		t.Fatalf("expected 1 image part, got %d", len(walk.Parts))
+	}
+	if walk.Parts[0].IsCurrent {
+		t.Fatal("expected function_call_output image before latest user to be historical")
+	}
+	if !walk.HistoricalOnly {
+		t.Fatal("expected HistoricalOnly to be true")
+	}
+}
+
 func TestWalkPayloadHistorical(t *testing.T) {
 	payload := []byte(`{
 		"model": "deepseek-v4-flash",

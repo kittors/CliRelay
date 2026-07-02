@@ -175,7 +175,7 @@ func (h *Handler) GetPublicCcSwitchImportConfigs(c *gin.Context) {
 	filtered := make([]usage.CcSwitchImportConfigRow, 0, len(configs))
 	for _, cfg := range configs {
 		if ccSwitchImportConfigMatchesAPIKeyPermissions(cfg, &effective) {
-			filtered = append(filtered, cfg)
+			filtered = append(filtered, usage.AttachCcSwitchCodexModelCatalog(cfg))
 		}
 	}
 

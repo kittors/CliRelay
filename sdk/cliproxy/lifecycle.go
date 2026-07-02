@@ -76,11 +76,15 @@ func (s *Service) loadInitialState(ctx context.Context) error {
 		return err
 	}
 
+	s.applyDBBackedRuntimeSettings(s.cfg)
 	s.applyRetryConfig(s.cfg)
 	if s.coreManager != nil {
+		s.coreManager.SetConfig(s.cfg)
+		s.coreManager.SetOAuthModelAlias(s.cfg.OAuthModelAlias)
 		if errLoad := s.coreManager.Load(ctx); errLoad != nil {
 			log.Warnf("failed to load auth store: %v", errLoad)
 		}
+		s.syncConfigDerivedAuths(s.cfg)
 		for _, auth := range s.coreManager.List() {
 			if auth == nil || auth.ID == "" {
 				continue

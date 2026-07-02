@@ -18,19 +18,21 @@ import (
 const usageReporterOutputMemoryLimit = 256 * 1024
 
 type usageReporter struct {
-	provider      string
-	model         string
-	authID        string
-	authIndex     string
-	authSubjectID string
-	apiKey        string
-	apiKeyID      string
-	apiKeyName    string
-	source        string
-	channelName   string
-	requestedAt   time.Time
-	once          sync.Once
-	contentMu     sync.Mutex
+	provider            string
+	model               string
+	upstreamModel       string
+	visionFallbackModel string
+	authID              string
+	authIndex           string
+	authSubjectID       string
+	apiKey              string
+	apiKeyID            string
+	apiKeyName          string
+	source              string
+	channelName         string
+	requestedAt         time.Time
+	once                sync.Once
+	contentMu           sync.Mutex
 
 	// Content captured for log detail viewer
 	inputContent  string
@@ -40,14 +42,15 @@ type usageReporter struct {
 	outputPath    string
 }
 
-func newUsageReporter(ctx context.Context, provider, model string, auth *cliproxyauth.Auth) *usageReporter {
+func newUsageReporter(ctx context.Context, provider, model, upstreamModel string, auth *cliproxyauth.Auth) *usageReporter {
 	apiKey := apiKeyFromContext(ctx)
 	reporter := &usageReporter{
-		provider:    provider,
-		model:       model,
-		requestedAt: time.Now(),
-		apiKey:      apiKey,
-		source:      resolveUsageSource(auth, apiKey),
+		provider:      provider,
+		model:         model,
+		upstreamModel: upstreamModel,
+		requestedAt:   time.Now(),
+		apiKey:        apiKey,
+		source:        resolveUsageSource(auth, apiKey),
 	}
 	if identity := internalusage.ResolveAPIKeyIdentity(apiKey); identity != nil {
 		reporter.apiKeyID = identity.ID
@@ -74,12 +77,35 @@ func (r *usageReporter) publishWithContent(ctx context.Context, detail coreusage
 	r.publishWithOutcome(ctx, detail, false)
 }
 
+// setModel overrides the reporter's model. It is intentionally NOT called from
+// the OpenAI-compat executor: the upstream response's "model" field echoes a
+// provider-internal path (e.g. accounts/fireworks/models/glm-5p2) that must not
+// replace the clean request-time model used for logging and cost calculation.
+// It is retained for explicit callers that have a verified-clean model string.
 func (r *usageReporter) setModel(model string) {
 	if r == nil {
 		return
 	}
 	if model = strings.TrimSpace(model); model != "" {
 		r.model = model
+	}
+}
+
+func (r *usageReporter) setUpstreamModel(model string) {
+	if r == nil {
+		return
+	}
+	if model = strings.TrimSpace(model); model != "" {
+		r.upstreamModel = model
+	}
+}
+
+func (r *usageReporter) setVisionFallbackModel(model string) {
+	if r == nil {
+		return
+	}
+	if model = strings.TrimSpace(model); model != "" {
+		r.visionFallbackModel = model
 	}
 }
 
@@ -231,24 +257,26 @@ func (r *usageReporter) publishWithOutcome(ctx context.Context, detail coreusage
 		}
 		firstTokenMs := firstTokenLatencyMsFromContext(ctx, r.requestedAt)
 		coreusage.PublishRecord(ctx, coreusage.Record{
-			Provider:      r.provider,
-			Model:         r.model,
-			Source:        r.source,
-			ChannelName:   r.channelName,
-			APIKey:        r.apiKey,
-			APIKeyID:      r.apiKeyID,
-			APIKeyName:    r.apiKeyName,
-			AuthID:        r.authID,
-			AuthIndex:     r.authIndex,
-			AuthSubjectID: r.authSubjectID,
-			RequestedAt:   r.requestedAt,
-			LatencyMs:     latencyMs,
-			FirstTokenMs:  firstTokenMs,
-			Failed:        failed,
-			Detail:        detail,
-			InputContent:  inputContent,
-			OutputContent: outputContent,
-			DetailContent: buildRequestDetailContent(ctx),
+			Provider:            r.provider,
+			Model:               r.model,
+			UpstreamModel:       r.upstreamModel,
+			VisionFallbackModel: r.visionFallbackModel,
+			Source:              r.source,
+			ChannelName:         r.channelName,
+			APIKey:              r.apiKey,
+			APIKeyID:            r.apiKeyID,
+			APIKeyName:          r.apiKeyName,
+			AuthID:              r.authID,
+			AuthIndex:           r.authIndex,
+			AuthSubjectID:       r.authSubjectID,
+			RequestedAt:         r.requestedAt,
+			LatencyMs:           latencyMs,
+			FirstTokenMs:        firstTokenMs,
+			Failed:              failed,
+			Detail:              detail,
+			InputContent:        inputContent,
+			OutputContent:       outputContent,
+			DetailContent:       buildRequestDetailContent(ctx),
 		})
 	})
 }
@@ -269,24 +297,26 @@ func (r *usageReporter) ensurePublished(ctx context.Context) {
 		}
 		firstTokenMs := firstTokenLatencyMsFromContext(ctx, r.requestedAt)
 		coreusage.PublishRecord(ctx, coreusage.Record{
-			Provider:      r.provider,
-			Model:         r.model,
-			Source:        r.source,
-			ChannelName:   r.channelName,
-			APIKey:        r.apiKey,
-			APIKeyID:      r.apiKeyID,
-			APIKeyName:    r.apiKeyName,
-			AuthID:        r.authID,
-			AuthIndex:     r.authIndex,
-			AuthSubjectID: r.authSubjectID,
-			RequestedAt:   r.requestedAt,
-			LatencyMs:     latencyMs,
-			FirstTokenMs:  firstTokenMs,
-			Failed:        false,
-			Detail:        coreusage.Detail{},
-			InputContent:  inputContent,
-			OutputContent: outputContent,
-			DetailContent: buildRequestDetailContent(ctx),
+			Provider:            r.provider,
+			Model:               r.model,
+			UpstreamModel:       r.upstreamModel,
+			VisionFallbackModel: r.visionFallbackModel,
+			Source:              r.source,
+			ChannelName:         r.channelName,
+			APIKey:              r.apiKey,
+			APIKeyID:            r.apiKeyID,
+			APIKeyName:          r.apiKeyName,
+			AuthID:              r.authID,
+			AuthIndex:           r.authIndex,
+			AuthSubjectID:       r.authSubjectID,
+			RequestedAt:         r.requestedAt,
+			LatencyMs:           latencyMs,
+			FirstTokenMs:        firstTokenMs,
+			Failed:              false,
+			Detail:              coreusage.Detail{},
+			InputContent:        inputContent,
+			OutputContent:       outputContent,
+			DetailContent:       buildRequestDetailContent(ctx),
 		})
 	})
 }

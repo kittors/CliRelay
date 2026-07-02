@@ -72,6 +72,24 @@ func retryAfterFromError(err error) *time.Duration {
 	return new(*retryAfter)
 }
 
+func headersFromError(err error) http.Header {
+	if err == nil {
+		return nil
+	}
+	type headerProvider interface {
+		Headers() http.Header
+	}
+	var hp headerProvider
+	if errors.As(err, &hp) && hp != nil {
+		headers := hp.Headers()
+		if len(headers) == 0 {
+			return nil
+		}
+		return headers.Clone()
+	}
+	return nil
+}
+
 func statusCodeFromResult(err *Error) int {
 	if err == nil {
 		return 0

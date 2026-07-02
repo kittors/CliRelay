@@ -107,6 +107,9 @@ type Result struct {
 	Success bool
 	// RetryAfter carries a provider supplied retry hint (e.g. 429 retryDelay).
 	RetryAfter *time.Duration
+	// Headers carries upstream response headers used for provider-specific
+	// runtime health decisions such as Anthropic rate-limit windows.
+	Headers http.Header
 	// Error describes the failure when Success is false.
 	Error *Error
 }

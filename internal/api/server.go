@@ -23,9 +23,9 @@ import (
 )
 
 const (
-	// Main API requests can legitimately spend several minutes waiting on upstream model execution.
+	// Non-streaming API responses should not keep a downstream connection occupied for minutes.
 	// Long-lived SSE and websocket routes explicitly clear this deadline before streaming/upgrading.
-	mainAPIServerWriteTimeout = 10 * time.Minute
+	mainAPINonStreamingWriteTimeout = 60 * time.Second
 )
 
 // Server represents the main API server.

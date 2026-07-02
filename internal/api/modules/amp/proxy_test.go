@@ -145,6 +145,7 @@ func TestModifyResponse_GzipScenarios(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			resp := mkResp(tc.status, tc.header, tc.body)
+			t.Cleanup(func() { _ = resp.Body.Close() })
 			if err := proxy.ModifyResponse(resp); err != nil {
 				t.Fatalf("ModifyResponse error: %v", err)
 			}
@@ -176,6 +177,7 @@ func TestModifyResponse_UpdatesContentLengthHeader(t *testing.T) {
 	resp := mkResp(200, http.Header{
 		"Content-Length": []string{fmt.Sprintf("%d", len(gzipped))}, // Compressed size
 	}, gzipped)
+	t.Cleanup(func() { _ = resp.Body.Close() })
 
 	if err := proxy.ModifyResponse(resp); err != nil {
 		t.Fatalf("ModifyResponse error: %v", err)
@@ -211,6 +213,7 @@ func TestModifyResponse_SkipsStreamingResponses(t *testing.T) {
 
 	t.Run("sse_skips_decompression", func(t *testing.T) {
 		resp := mkResp(200, http.Header{"Content-Type": []string{"text/event-stream"}}, gzipped)
+		t.Cleanup(func() { _ = resp.Body.Close() })
 		if err := proxy.ModifyResponse(resp); err != nil {
 			t.Fatalf("ModifyResponse error: %v", err)
 		}
@@ -234,6 +237,7 @@ func TestModifyResponse_DecompressesChunkedJSON(t *testing.T) {
 	t.Run("chunked_json_decompresses", func(t *testing.T) {
 		// Chunked JSON responses (like thread APIs) should be decompressed
 		resp := mkResp(200, http.Header{"Transfer-Encoding": []string{"chunked"}}, gzipped)
+		t.Cleanup(func() { _ = resp.Body.Close() })
 		if err := proxy.ModifyResponse(resp); err != nil {
 			t.Fatalf("ModifyResponse error: %v", err)
 		}

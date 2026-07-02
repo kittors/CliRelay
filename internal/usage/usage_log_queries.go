@@ -7,7 +7,7 @@ import (
 
 // QueryLogRowByID returns a single request log row by primary key.
 func QueryLogRowByID(id int64) (LogRow, error) {
-	db := getDB()
+	db := getReadDB()
 	if db == nil {
 		return LogRow{}, fmt.Errorf("usage: database not initialised")
 	}

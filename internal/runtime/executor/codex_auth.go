@@ -27,8 +27,8 @@ func applyCodexHeaders(r *http.Request, cfg *config.Config, auth *cliproxyauth.A
 		ginHeaders = ginCtx.Request.Header
 	}
 
-	fp, fingerprintEnabled := codexIdentityFingerprint(cfg)
-	if ginHeaders != nil {
+	fp, fingerprintEnabled := codexIdentityFingerprint(cfg, auth, r.Context())
+	if ginHeaders != nil && !fingerprintEnabled {
 		// Align with upstream: if the client sent Codex beta features, preserve them.
 		if v := strings.TrimSpace(ginHeaders.Get("X-Codex-Beta-Features")); v != "" {
 			r.Header.Set("X-Codex-Beta-Features", v)
@@ -91,7 +91,7 @@ func applyCodexHeaders(r *http.Request, cfg *config.Config, auth *cliproxyauth.A
 	util.ApplyCustomHeadersFromAttrs(r, attrs)
 	if fingerprintEnabled {
 		applyCodexIdentityFingerprintHeaders(r.Header, fp, false)
-		if originatorFromClient == "" && !isAPIKey {
+		if !isAPIKey {
 			r.Header.Set("Originator", fp.Originator)
 		}
 	}

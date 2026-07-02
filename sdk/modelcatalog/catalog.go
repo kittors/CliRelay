@@ -16,6 +16,7 @@ type ModelInfo struct {
 	OwnedBy                    string           `json:"owned_by"`
 	Type                       string           `json:"type"`
 	DisplayName                string           `json:"display_name,omitempty"`
+	UpstreamModelID            string           `json:"upstream_model_id,omitempty"`
 	Name                       string           `json:"name,omitempty"`
 	Version                    string           `json:"version,omitempty"`
 	Description                string           `json:"description,omitempty"`

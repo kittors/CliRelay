@@ -56,6 +56,72 @@ func TestInitDBSeedsDefaultModelConfigs(t *testing.T) {
 	if opencodeModel.OwnedBy != "opencode" || opencodeModel.Source != "seed" {
 		t.Fatalf("unexpected opencode-go seed model config: %+v", opencodeModel)
 	}
+
+	clineModel, ok := GetModelConfig("cline-pass/deepseek-v4-flash")
+	if !ok {
+		t.Fatal("expected cline-pass/deepseek-v4-flash to be seeded")
+	}
+	if clineModel.OwnedBy != "cline" || clineModel.Source != "seed" {
+		t.Fatalf("unexpected cline seed model config: %+v", clineModel)
+	}
+}
+
+func TestInitDBRepairsCorruptedSeedImageModelConfig(t *testing.T) {
+	CloseDB()
+	dbPath := filepath.Join(t.TempDir(), "usage.db")
+	if err := InitDB(dbPath, config.RequestLogStorageConfig{}, time.UTC); err != nil {
+		t.Fatalf("InitDB() error = %v", err)
+	}
+	CloseDB()
+
+	seedDB, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open seed db: %v", err)
+	}
+	seedDB.SetMaxOpenConns(1)
+	if _, err := seedDB.Exec(
+		`UPDATE model_configs
+		 SET pricing_mode = 'token',
+		     input_price_per_million = 5,
+		     output_price_per_million = 20,
+		     cached_price_per_million = 1,
+		     cache_read_price_per_million = 2,
+		     cache_write_price_per_million = 3,
+		     price_per_call = 0,
+		     input_modalities = '["text","image"]',
+		     output_modalities = '["text"]'
+		 WHERE model_id = 'gpt-image-2'`,
+	); err != nil {
+		t.Fatalf("corrupt gpt-image-2 seed row: %v", err)
+	}
+	if err := seedDB.Close(); err != nil {
+		t.Fatalf("close seed db: %v", err)
+	}
+
+	if err := InitDB(dbPath, config.RequestLogStorageConfig{}, time.UTC); err != nil {
+		t.Fatalf("InitDB() error = %v", err)
+	}
+	t.Cleanup(CloseDB)
+
+	imageModel, ok := GetModelConfig("gpt-image-2")
+	if !ok {
+		t.Fatal("expected gpt-image-2 to remain configured")
+	}
+	if imageModel.PricingMode != "call" || imageModel.PricePerCall != 0.04 {
+		t.Fatalf("expected gpt-image-2 call pricing to be repaired, got %+v", imageModel)
+	}
+	if imageModel.InputPricePerMillion != 0 || imageModel.OutputPricePerMillion != 0 || imageModel.CachedPricePerMillion != 0 {
+		t.Fatalf("expected token pricing to be cleared, got %+v", imageModel)
+	}
+	if imageModel.CacheReadPricePerMillion != 0 || imageModel.CacheWritePricePerMillion != 0 {
+		t.Fatalf("expected cache token pricing to be cleared, got %+v", imageModel)
+	}
+	if len(imageModel.InputModalities) != 1 || imageModel.InputModalities[0] != "text" {
+		t.Fatalf("expected text input modality, got %+v", imageModel.InputModalities)
+	}
+	if len(imageModel.OutputModalities) != 1 || imageModel.OutputModalities[0] != "image" {
+		t.Fatalf("expected image-only output modality, got %+v", imageModel.OutputModalities)
+	}
 }
 
 func TestUpsertModelConfigAndPerCallCost(t *testing.T) {

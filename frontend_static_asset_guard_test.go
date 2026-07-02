@@ -6,6 +6,8 @@ import (
 	"testing"
 )
 
+// These are configuration drift guard tests: they assert repository hygiene
+// markers, not runtime behavior.
 func TestRepositoryDoesNotVendorManagementPanelBuildOutput(t *testing.T) {
 	for _, path := range []string{
 		"assets",

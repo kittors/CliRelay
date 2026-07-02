@@ -11,6 +11,7 @@ type runtimeConfigSnapshot struct {
 	GeminiKey           []runtimeAPIKeyModelConfig
 	ClaudeKey           []runtimeAPIKeyModelConfig
 	CodexKey            []runtimeAPIKeyModelConfig
+	ClineKey            []runtimeAPIKeyModelConfig
 	BedrockKey          []runtimeBedrockKeyConfig
 	VertexCompatAPIKey  []runtimeAPIKeyModelConfig
 	OpenAICompatibility []runtimeOpenAICompatibilityConfig
@@ -96,6 +97,7 @@ func newRuntimeConfigSnapshot(cfg *sdkconfig.Config) *runtimeConfigSnapshot {
 		GeminiKey:           cloneRuntimeAPIKeyModelConfigs(cfg.GeminiKey),
 		ClaudeKey:           cloneRuntimeAPIKeyModelConfigs(cfg.ClaudeKey),
 		CodexKey:            cloneRuntimeAPIKeyModelConfigs(cfg.CodexKey),
+		ClineKey:            cloneRuntimeClineModelConfigs(cfg.ClineKey),
 		BedrockKey:          cloneRuntimeBedrockKeyConfigs(cfg.BedrockKey),
 		VertexCompatAPIKey:  cloneRuntimeAPIKeyModelConfigs(cfg.VertexCompatAPIKey),
 		OpenAICompatibility: cloneRuntimeOpenAICompatibilityConfigs(cfg.OpenAICompatibility),
@@ -160,6 +162,21 @@ func cloneRuntimeAPIKeyModelConfigs[T interface {
 	return out
 }
 
+func cloneRuntimeClineModelConfigs(entries []sdkconfig.ClineKey) []runtimeAPIKeyModelConfig {
+	if len(entries) == 0 {
+		return nil
+	}
+	out := make([]runtimeAPIKeyModelConfig, 0, len(entries))
+	for i := range entries {
+		out = append(out, runtimeAPIKeyModelConfig{
+			APIKey:  entries[i].APIKey,
+			BaseURL: entries[i].BaseURL,
+			Models:  cloneRuntimeModelAliasEntries(entries[i].Models),
+		})
+	}
+	return out
+}
+
 func modelsForRuntimeConfigEntry[T any](entry T) []runtimeModelAliasEntry {
 	switch typed := any(entry).(type) {
 	case sdkconfig.GeminiKey:
@@ -167,6 +184,8 @@ func modelsForRuntimeConfigEntry[T any](entry T) []runtimeModelAliasEntry {
 	case sdkconfig.ClaudeKey:
 		return cloneRuntimeModelAliasEntries(typed.Models)
 	case sdkconfig.CodexKey:
+		return cloneRuntimeModelAliasEntries(typed.Models)
+	case sdkconfig.ClineKey:
 		return cloneRuntimeModelAliasEntries(typed.Models)
 	case sdkconfig.VertexCompatKey:
 		return cloneRuntimeModelAliasEntries(typed.Models)

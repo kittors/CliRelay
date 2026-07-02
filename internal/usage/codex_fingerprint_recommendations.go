@@ -99,7 +99,7 @@ func QueryCodexFingerprintRecommendations(params CodexFingerprintRecommendationQ
 		Limit: params.Limit,
 	}
 
-	db := getDB()
+	db := getReadDB()
 	if db == nil {
 		return result, nil
 	}
@@ -358,14 +358,14 @@ func codexFingerprintCandidateFromHeaders(headers http.Header) (codexFingerprint
 		recommended.WebsocketBeta = openAIBeta
 	}
 	if codexBetaFeatures != "" {
-		recommended.CustomHeaders["X-Codex-Beta-Features"] = codexBetaFeatures
+		recommended.BetaFeatures = codexBetaFeatures
 	}
 
 	if !looksLikeCodexHeaders(headers, userAgent, originator, codexBetaFeatures, openAIBeta) {
 		return codexFingerprintParsedCandidate{}, false
 	}
 	if recommended.UserAgent == "" && recommended.Version == "" && recommended.Originator == "" &&
-		recommended.WebsocketBeta == "" && len(recommended.CustomHeaders) == 0 {
+		recommended.WebsocketBeta == "" && recommended.BetaFeatures == "" && len(recommended.CustomHeaders) == 0 {
 		return codexFingerprintParsedCandidate{}, false
 	}
 

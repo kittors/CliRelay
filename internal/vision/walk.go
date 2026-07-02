@@ -10,6 +10,7 @@ type ImagePart struct {
 	ArrayName string // "messages" or "input"
 	MsgIdx    int    // index in the array
 	PartIdx   int    // index in the content array
+	Path      string // path to the image part or data URL string
 	Type      string // original type ("image_url" / "input_image" / "image")
 	Data      string // base64 data (may be empty for remote URLs)
 	RemoteURL string // remote URL if not inline
@@ -66,6 +67,9 @@ func (r *WalkResult) walkArray(payload []byte, arrayName string, items []gjson.R
 
 	for i, item := range items {
 		if item.Get("role").String() != "user" {
+			if arrayName == "input" && isFunctionOutputItem(item) {
+				r.walkFunctionOutputItem(payload, arrayName, i, item, i > lastUserIdx)
+			}
 			continue
 		}
 		isCurrent := (i == lastUserIdx)
@@ -101,6 +105,7 @@ func (r *WalkResult) walkMessage(payload []byte, arrayName string, msgIdx int, m
 				ArrayName: arrayName,
 				MsgIdx:    msgIdx,
 				PartIdx:   0,
+				Path:      arrayName + "." + indexStr(msgIdx) + ".content",
 				Type:      "text",
 				Data:      text,
 				IsCurrent: isCurrent,
@@ -110,6 +115,10 @@ func (r *WalkResult) walkMessage(payload []byte, arrayName string, msgIdx int, m
 }
 
 func (r *WalkResult) walkContentPart(payload []byte, arrayName string, msgIdx, pIdx int, part gjson.Result, isCurrent bool) {
+	r.walkContentPartAtPath(payload, arrayName, msgIdx, pIdx, part, isCurrent, arrayName+"."+indexStr(msgIdx)+".content."+indexStr(pIdx))
+}
+
+func (r *WalkResult) walkContentPartAtPath(payload []byte, arrayName string, msgIdx, pIdx int, part gjson.Result, isCurrent bool, path string) {
 	partType := part.Get("type").String()
 	if !isImageType(partType) && !part.Get("image_url").Exists() {
 		return
@@ -119,6 +128,7 @@ func (r *WalkResult) walkContentPart(payload []byte, arrayName string, msgIdx, p
 		ArrayName: arrayName,
 		MsgIdx:    msgIdx,
 		PartIdx:   pIdx,
+		Path:      path,
 		Type:      partType,
 		IsCurrent: isCurrent,
 	}
@@ -152,6 +162,56 @@ func (r *WalkResult) walkContentPart(payload []byte, arrayName string, msgIdx, p
 	r.Parts = append(r.Parts, ip)
 }
 
+func (r *WalkResult) walkFunctionOutputItem(payload []byte, arrayName string, msgIdx int, item gjson.Result, isCurrent bool) {
+	for _, field := range []string{"output", "content"} {
+		value := item.Get(field)
+		if !value.Exists() {
+			continue
+		}
+		r.walkFunctionOutputValue(payload, arrayName, msgIdx, value, isCurrent, arrayName+"."+indexStr(msgIdx)+"."+field)
+	}
+}
+
+func (r *WalkResult) walkFunctionOutputValue(payload []byte, arrayName string, msgIdx int, value gjson.Result, isCurrent bool, path string) {
+	if value.IsArray() {
+		for i, child := range value.Array() {
+			r.walkFunctionOutputValue(payload, arrayName, msgIdx, child, isCurrent, path+"."+indexStr(i))
+		}
+		return
+	}
+	if value.IsObject() {
+		partType := value.Get("type").String()
+		if isImageType(partType) || value.Get("image_url").Exists() {
+			r.walkContentPartAtPath(payload, arrayName, msgIdx, 0, value, isCurrent, path)
+			return
+		}
+		for key, child := range value.Map() {
+			r.walkFunctionOutputValue(payload, arrayName, msgIdx, child, isCurrent, path+"."+key)
+		}
+		return
+	}
+	text := value.String()
+	if hasDataImagePrefix(text) {
+		r.Parts = append(r.Parts, ImagePart{
+			ArrayName: arrayName,
+			MsgIdx:    msgIdx,
+			PartIdx:   0,
+			Path:      path,
+			Type:      "text",
+			Data:      text,
+			IsCurrent: isCurrent,
+		})
+	}
+}
+
+func isFunctionOutputItem(item gjson.Result) bool {
+	switch item.Get("type").String() {
+	case "function_call_output", "computer_call_output":
+		return true
+	}
+	return false
+}
+
 // ReplaceImagePart replaces an image content part with a text placeholder,
 // using the array type to determine the correct content type field name.
 func ReplaceImagePart(payload []byte, ip ImagePart, placeholderText string) ([]byte, error) {
@@ -168,6 +228,14 @@ func ReplaceImagePartEx(payload []byte, ip ImagePart, placeholderText string, ar
 	contentField := "text" // Responses API input_text uses "text" as field name
 
 	dataPath := ip.ArrayName + "." + indexStr(ip.MsgIdx) + ".content." + indexStr(ip.PartIdx)
+	if ip.Path != "" {
+		dataPath = ip.Path
+	}
+
+	current := gjson.GetBytes(payload, dataPath)
+	if current.Exists() && current.Type == gjson.String {
+		return sjson.SetBytes(payload, dataPath, placeholderText)
+	}
 
 	payload, err := sjson.SetBytes(payload, dataPath+".type", contentType)
 	if err != nil {

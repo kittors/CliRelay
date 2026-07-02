@@ -166,6 +166,7 @@ func (s cooldownService) applySuccessLocked(auth *Auth, result Result, now time.
 	if auth == nil {
 		return
 	}
+	markClaudeOAuthHealthSuccessLocked(auth, result, now)
 	if result.Model != "" {
 		state := ensureModelState(auth, result.Model)
 		if activeModelQuotaCooldown(state, now) {
@@ -195,6 +196,9 @@ func (s cooldownService) applySuccessLocked(auth *Auth, result Result, now time.
 
 func (s cooldownService) applyFailureLocked(auth *Auth, result Result, now time.Time, effects *resultStateEffects) {
 	if auth == nil {
+		return
+	}
+	if applyClaudeOAuthFailureLocked(auth, result, now, effects) {
 		return
 	}
 	if result.Model != "" {

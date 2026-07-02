@@ -44,6 +44,11 @@ func registerManagementProviderRoutes(group *gin.RouterGroup, h *managementhandl
 	group.DELETE("/opencode-go-api-key", keys.DeleteOpenCodeGoKey)
 	group.POST("/opencode-go-api-key/usage", h.QueryOpenCodeGoUsage)
 
+	group.GET("/cline-api-key", keys.GetClineKeys)
+	group.PUT("/cline-api-key", keys.PutClineKeys)
+	group.PATCH("/cline-api-key", keys.PatchClineKey)
+	group.DELETE("/cline-api-key", keys.DeleteClineKey)
+
 	group.GET("/codex-api-key", keys.GetCodexKeys)
 	group.PUT("/codex-api-key", keys.PutCodexKeys)
 	group.PATCH("/codex-api-key", keys.PatchCodexKey)

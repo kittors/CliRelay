@@ -135,7 +135,7 @@ func buildCodexResponsesWebsocketURL(httpURL string) (string, error) {
 	return parsed.String(), nil
 }
 
-func applyCodexPromptCacheHeaders(from sdktranslator.Format, req cliproxyexecutor.Request, rawJSON []byte) ([]byte, http.Header) {
+func applyCodexPromptCacheHeaders(auth *cliproxyauth.Auth, from sdktranslator.Format, req cliproxyexecutor.Request, rawJSON []byte) ([]byte, http.Header) {
 	headers := http.Header{}
 	if len(rawJSON) == 0 {
 		return rawJSON, headers
@@ -145,7 +145,7 @@ func applyCodexPromptCacheHeaders(from sdktranslator.Format, req cliproxyexecuto
 	if from == "claude" {
 		userIDResult := gjson.GetBytes(req.Payload, "metadata.user_id")
 		if userIDResult.Exists() {
-			key := fmt.Sprintf("%s-%s", req.Model, userIDResult.String())
+			key := codexPromptCacheMapKey(auth, req.Model, userIDResult.String())
 			if cached, ok := getCodexCache(key); ok {
 				cache = cached
 			} else {
@@ -158,7 +158,7 @@ func applyCodexPromptCacheHeaders(from sdktranslator.Format, req cliproxyexecuto
 		}
 	} else if from == "openai-response" {
 		if promptCacheKey := gjson.GetBytes(req.Payload, "prompt_cache_key"); promptCacheKey.Exists() {
-			cache.ID = promptCacheKey.String()
+			cache.ID = codexAccountScopedExplicitSessionID(auth, promptCacheKey.String())
 		}
 	}
 
@@ -184,7 +184,7 @@ func applyCodexWebsocketHeaders(ctx context.Context, headers http.Header, cfg *c
 		ginHeaders = ginCtx.Request.Header
 	}
 
-	fp, fingerprintEnabled := codexIdentityFingerprint(cfg)
+	fp, fingerprintEnabled := codexIdentityFingerprint(cfg, auth, ctx)
 	if fingerprintEnabled {
 		applyCodexIdentityFingerprintHeaders(headers, fp, true)
 	} else {
@@ -250,7 +250,7 @@ func applyCodexWebsocketHeaders(ctx context.Context, headers http.Header, cfg *c
 	util.ApplyCustomHeadersFromAttrs(&http.Request{Header: headers}, attrs)
 	if fingerprintEnabled {
 		applyCodexIdentityFingerprintHeaders(headers, fp, true)
-		if originatorFromClient == "" && !isAPIKey {
+		if !isAPIKey {
 			headers.Set("Originator", fp.Originator)
 		}
 	}

@@ -340,6 +340,166 @@ func (s *Service) deleteOpenCodeGoKeyByIndex(index int) {
 	s.cfg.SanitizeOpenCodeGoKeys()
 }
 
+type ClinePatch struct {
+	APIKey         *string              `json:"api-key"`
+	Name           *string              `json:"name"`
+	Priority       *int                 `json:"priority"`
+	Prefix         *string              `json:"prefix"`
+	BaseURL        *string              `json:"base-url"`
+	ProxyURL       *string              `json:"proxy-url"`
+	ProxyID        *string              `json:"proxy-id"`
+	Headers        *map[string]string   `json:"headers"`
+	Models         *[]config.ClineModel `json:"models"`
+	ExcludedModels *[]string            `json:"excluded-models"`
+	VisionFallback *string              `json:"vision-fallback-model"`
+}
+
+func (s *Service) ClineKeys() []config.ClineKey {
+	if s == nil || s.cfg == nil {
+		return nil
+	}
+	return NormalizedClineKeyEntries(s.cfg.ClineKey)
+}
+
+func (s *Service) ReplaceClineKeys(entries []config.ClineKey) error {
+	if s == nil || s.cfg == nil {
+		return nil
+	}
+	filtered := make([]config.ClineKey, 0, len(entries))
+	for i := range entries {
+		NormalizeClineKey(&entries[i])
+		if strings.TrimSpace(entries[i].APIKey) != "" {
+			filtered = append(filtered, entries[i])
+		}
+	}
+	prev := append([]config.ClineKey(nil), s.cfg.ClineKey...)
+	s.cfg.ClineKey = filtered
+	s.cfg.SanitizeClineKeys()
+	if err := s.runValidator(); err != nil {
+		s.cfg.ClineKey = prev
+		return err
+	}
+	return nil
+}
+
+func (s *Service) PatchClineKey(index *int, apiKey *string, name *string, patch ClinePatch) error {
+	if s == nil || s.cfg == nil {
+		return ErrItemNotFound
+	}
+	targetIndex := -1
+	if index != nil && *index >= 0 && *index < len(s.cfg.ClineKey) {
+		targetIndex = *index
+	}
+	if targetIndex == -1 && apiKey != nil {
+		match := strings.TrimSpace(*apiKey)
+		for i := range s.cfg.ClineKey {
+			if s.cfg.ClineKey[i].APIKey == match {
+				targetIndex = i
+				break
+			}
+		}
+	}
+	if targetIndex == -1 && name != nil {
+		match := strings.TrimSpace(*name)
+		for i := range s.cfg.ClineKey {
+			if s.cfg.ClineKey[i].Name == match {
+				targetIndex = i
+				break
+			}
+		}
+	}
+	if targetIndex == -1 {
+		return ErrItemNotFound
+	}
+
+	entry := s.cfg.ClineKey[targetIndex]
+	if patch.APIKey != nil {
+		entry.APIKey = strings.TrimSpace(*patch.APIKey)
+	}
+	if patch.Name != nil {
+		entry.Name = strings.TrimSpace(*patch.Name)
+	}
+	if patch.Priority != nil {
+		entry.Priority = *patch.Priority
+	}
+	if patch.Prefix != nil {
+		entry.Prefix = strings.TrimSpace(*patch.Prefix)
+	}
+	if patch.BaseURL != nil {
+		entry.BaseURL = strings.TrimSpace(*patch.BaseURL)
+	}
+	if patch.ProxyURL != nil {
+		entry.ProxyURL = strings.TrimSpace(*patch.ProxyURL)
+	}
+	if patch.ProxyID != nil {
+		entry.ProxyID = strings.TrimSpace(*patch.ProxyID)
+	}
+	if patch.Headers != nil {
+		entry.Headers = config.NormalizeHeaders(*patch.Headers)
+	}
+	if patch.Models != nil {
+		entry.Models = append([]config.ClineModel(nil), (*patch.Models)...)
+	}
+	if patch.ExcludedModels != nil {
+		entry.ExcludedModels = config.NormalizeExcludedModels(*patch.ExcludedModels)
+	}
+	if patch.VisionFallback != nil {
+		entry.VisionFallbackModel = strings.TrimSpace(*patch.VisionFallback)
+	}
+	NormalizeClineKey(&entry)
+	if entry.APIKey == "" {
+		s.deleteClineKeyByIndex(targetIndex)
+		return nil
+	}
+	prev := append([]config.ClineKey(nil), s.cfg.ClineKey...)
+	s.cfg.ClineKey[targetIndex] = entry
+	s.cfg.SanitizeClineKeys()
+	if err := s.runValidator(); err != nil {
+		s.cfg.ClineKey = prev
+		return err
+	}
+	return nil
+}
+
+func (s *Service) DeleteClineKeyByAPIKey(apiKey string) bool {
+	return s.deleteClineKeys(func(entry config.ClineKey) bool { return entry.APIKey == apiKey })
+}
+
+func (s *Service) DeleteClineKeyByName(name string) bool {
+	return s.deleteClineKeys(func(entry config.ClineKey) bool { return entry.Name == name })
+}
+
+func (s *Service) DeleteClineKeyByIndex(index int) bool {
+	if s == nil || s.cfg == nil || index < 0 || index >= len(s.cfg.ClineKey) {
+		return false
+	}
+	s.deleteClineKeyByIndex(index)
+	return true
+}
+
+func (s *Service) deleteClineKeys(match func(config.ClineKey) bool) bool {
+	if s == nil || s.cfg == nil {
+		return false
+	}
+	out := make([]config.ClineKey, 0, len(s.cfg.ClineKey))
+	for _, entry := range s.cfg.ClineKey {
+		if !match(entry) {
+			out = append(out, entry)
+		}
+	}
+	if len(out) == len(s.cfg.ClineKey) {
+		return false
+	}
+	s.cfg.ClineKey = out
+	s.cfg.SanitizeClineKeys()
+	return true
+}
+
+func (s *Service) deleteClineKeyByIndex(index int) {
+	s.cfg.ClineKey = append(s.cfg.ClineKey[:index], s.cfg.ClineKey[index+1:]...)
+	s.cfg.SanitizeClineKeys()
+}
+
 func NormalizeBedrockKey(entry *config.BedrockKey) {
 	if entry == nil {
 		return
@@ -402,6 +562,37 @@ func NormalizedOpenCodeGoKeyEntries(entries []config.OpenCodeGoKey) []config.Ope
 	for i := range entries {
 		out[i] = entries[i]
 		NormalizeOpenCodeGoKey(&out[i])
+	}
+	return out
+}
+
+func NormalizeClineKey(entry *config.ClineKey) {
+	if entry == nil {
+		return
+	}
+	entry.Name = strings.TrimSpace(entry.Name)
+	entry.APIKey = strings.TrimSpace(entry.APIKey)
+	entry.Prefix = strings.TrimSpace(entry.Prefix)
+	entry.BaseURL = strings.TrimSuffix(strings.TrimSpace(entry.BaseURL), "/")
+	if entry.BaseURL == "" {
+		entry.BaseURL = config.DefaultClineBaseURL
+	}
+	entry.ProxyURL = strings.TrimSpace(entry.ProxyURL)
+	entry.ProxyID = strings.TrimSpace(entry.ProxyID)
+	entry.Headers = config.NormalizeHeaders(entry.Headers)
+	entry.Models = config.NormalizeClineModels(entry.Models)
+	entry.ExcludedModels = config.NormalizeExcludedModels(entry.ExcludedModels)
+	entry.VisionFallbackModel = strings.TrimSpace(entry.VisionFallbackModel)
+}
+
+func NormalizedClineKeyEntries(entries []config.ClineKey) []config.ClineKey {
+	if len(entries) == 0 {
+		return nil
+	}
+	out := make([]config.ClineKey, len(entries))
+	for i := range entries {
+		out[i] = entries[i]
+		NormalizeClineKey(&out[i])
 	}
 	return out
 }

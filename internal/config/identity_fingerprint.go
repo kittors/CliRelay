@@ -9,21 +9,27 @@ const (
 	DefaultCodexFingerprintVersion       = ""
 	DefaultCodexFingerprintOriginator    = "codex-tui"
 	DefaultCodexFingerprintWebsocketBeta = "responses_websockets=2026-02-06"
+	DefaultCodexFingerprintBetaFeatures  = ""
 	DefaultCodexFingerprintSessionMode   = "per-request"
 
-	DefaultClaudeFingerprintCLIVersion              = "2.1.88"
+	DefaultClaudeFingerprintCLIVersion              = "2.1.161"
 	DefaultClaudeFingerprintEntrypoint              = "cli"
-	DefaultClaudeFingerprintAnthropicBeta           = "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,redact-thinking-2026-02-12,context-management-2025-06-27,prompt-caching-scope-2026-01-05,advanced-tool-use-2025-11-20,effort-2025-11-24"
-	DefaultClaudeFingerprintStainlessPackageVersion = "0.74.0"
-	DefaultClaudeFingerprintStainlessRuntimeVersion = "v22.13.0"
+	DefaultClaudeFingerprintAnthropicBeta           = "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,prompt-caching-scope-2026-01-05,effort-2025-11-24,context-management-2025-06-27,extended-cache-ttl-2025-04-11"
+	DefaultClaudeFingerprintStainlessPackageVersion = "0.94.0"
+	DefaultClaudeFingerprintStainlessRuntimeVersion = "v24.3.0"
 	DefaultClaudeFingerprintStainlessTimeout        = "600"
 	DefaultClaudeFingerprintSessionMode             = "per-request"
+
+	DefaultGeminiFingerprintUserAgent      = "google-api-nodejs-client/9.15.1"
+	DefaultGeminiFingerprintAPIClient      = "gl-node/22.17.0"
+	DefaultGeminiFingerprintClientMetadata = "ideType=IDE_UNSPECIFIED,platform=PLATFORM_UNSPECIFIED,pluginType=GEMINI"
 )
 
 // IdentityFingerprintConfig groups provider-specific upstream identity settings.
 type IdentityFingerprintConfig struct {
 	Codex  CodexIdentityFingerprintConfig  `yaml:"codex,omitempty" json:"codex,omitempty"`
 	Claude ClaudeIdentityFingerprintConfig `yaml:"claude,omitempty" json:"claude,omitempty"`
+	Gemini GeminiIdentityFingerprintConfig `yaml:"gemini,omitempty" json:"gemini,omitempty"`
 }
 
 // CodexIdentityFingerprintConfig configures Codex upstream identity headers.
@@ -33,6 +39,7 @@ type CodexIdentityFingerprintConfig struct {
 	Version       string            `yaml:"version,omitempty" json:"version,omitempty"`
 	Originator    string            `yaml:"originator,omitempty" json:"originator,omitempty"`
 	WebsocketBeta string            `yaml:"websocket-beta,omitempty" json:"websocket-beta,omitempty"`
+	BetaFeatures  string            `yaml:"x-codex-beta-features,omitempty" json:"x-codex-beta-features,omitempty"`
 	SessionMode   string            `yaml:"session-mode,omitempty" json:"session-mode,omitempty"`
 	SessionID     string            `yaml:"session-id,omitempty" json:"session-id,omitempty"`
 	CustomHeaders map[string]string `yaml:"custom-headers,omitempty" json:"custom-headers,omitempty"`
@@ -46,6 +53,7 @@ func DefaultCodexIdentityFingerprint() CodexIdentityFingerprintConfig {
 		Version:       DefaultCodexFingerprintVersion,
 		Originator:    DefaultCodexFingerprintOriginator,
 		WebsocketBeta: DefaultCodexFingerprintWebsocketBeta,
+		BetaFeatures:  DefaultCodexFingerprintBetaFeatures,
 		SessionMode:   DefaultCodexFingerprintSessionMode,
 		CustomHeaders: map[string]string{},
 	}
@@ -67,6 +75,15 @@ type ClaudeIdentityFingerprintConfig struct {
 	CustomHeaders           map[string]string `yaml:"custom-headers,omitempty" json:"custom-headers,omitempty"`
 }
 
+// GeminiIdentityFingerprintConfig configures Gemini CLI upstream identity headers.
+type GeminiIdentityFingerprintConfig struct {
+	Enabled        bool              `yaml:"enabled" json:"enabled"`
+	UserAgent      string            `yaml:"user-agent,omitempty" json:"user-agent,omitempty"`
+	APIClient      string            `yaml:"x-goog-api-client,omitempty" json:"x-goog-api-client,omitempty"`
+	ClientMetadata string            `yaml:"client-metadata,omitempty" json:"client-metadata,omitempty"`
+	CustomHeaders  map[string]string `yaml:"custom-headers,omitempty" json:"custom-headers,omitempty"`
+}
+
 // DefaultClaudeIdentityFingerprint returns the recommended Claude Code identity template.
 func DefaultClaudeIdentityFingerprint() ClaudeIdentityFingerprintConfig {
 	cliVersion := DefaultClaudeFingerprintCLIVersion
@@ -85,25 +102,31 @@ func DefaultClaudeIdentityFingerprint() ClaudeIdentityFingerprintConfig {
 	}
 }
 
+// DefaultGeminiIdentityFingerprint returns the recommended Gemini CLI identity template.
+func DefaultGeminiIdentityFingerprint() GeminiIdentityFingerprintConfig {
+	return GeminiIdentityFingerprintConfig{
+		Enabled:        false,
+		UserAgent:      DefaultGeminiFingerprintUserAgent,
+		APIClient:      DefaultGeminiFingerprintAPIClient,
+		ClientMetadata: DefaultGeminiFingerprintClientMetadata,
+		CustomHeaders:  map[string]string{},
+	}
+}
+
 // SanitizeIdentityFingerprint normalizes provider identity fingerprint config.
 func (cfg *Config) SanitizeIdentityFingerprint() {
 	if cfg == nil {
 		return
 	}
-	cfg.IdentityFingerprint.Codex = NormalizeCodexIdentityFingerprint(cfg.IdentityFingerprint.Codex)
-	cfg.IdentityFingerprint.Claude = NormalizeClaudeIdentityFingerprint(cfg.IdentityFingerprint.Claude)
+	cfg.IdentityFingerprint.Codex = CleanCodexIdentityFingerprint(cfg.IdentityFingerprint.Codex)
+	cfg.IdentityFingerprint.Claude = CleanClaudeIdentityFingerprint(cfg.IdentityFingerprint.Claude)
+	cfg.IdentityFingerprint.Gemini = CleanGeminiIdentityFingerprint(cfg.IdentityFingerprint.Gemini)
 }
 
 // NormalizeCodexIdentityFingerprint trims user input and applies safe defaults
 // for fields that participate in Codex upstream identity.
 func NormalizeCodexIdentityFingerprint(in CodexIdentityFingerprintConfig) CodexIdentityFingerprintConfig {
-	out := in
-	out.UserAgent = strings.TrimSpace(out.UserAgent)
-	out.Version = strings.TrimSpace(out.Version)
-	out.Originator = strings.TrimSpace(out.Originator)
-	out.WebsocketBeta = strings.TrimSpace(out.WebsocketBeta)
-	out.SessionMode = strings.TrimSpace(strings.ToLower(out.SessionMode))
-	out.SessionID = strings.TrimSpace(out.SessionID)
+	out := CleanCodexIdentityFingerprint(in)
 
 	if out.UserAgent == "" {
 		out.UserAgent = DefaultCodexFingerprintUserAgent
@@ -117,6 +140,9 @@ func NormalizeCodexIdentityFingerprint(in CodexIdentityFingerprintConfig) CodexI
 	if out.WebsocketBeta == "" {
 		out.WebsocketBeta = DefaultCodexFingerprintWebsocketBeta
 	}
+	if out.BetaFeatures == "" {
+		out.BetaFeatures = DefaultCodexFingerprintBetaFeatures
+	}
 	if out.SessionMode == "" {
 		out.SessionMode = DefaultCodexFingerprintSessionMode
 	}
@@ -124,20 +150,24 @@ func NormalizeCodexIdentityFingerprint(in CodexIdentityFingerprintConfig) CodexI
 		out.SessionMode = DefaultCodexFingerprintSessionMode
 	}
 
-	if len(out.CustomHeaders) > 0 {
-		cleaned := make(map[string]string, len(out.CustomHeaders))
-		for key, value := range out.CustomHeaders {
-			key = strings.TrimSpace(key)
-			value = strings.TrimSpace(value)
-			if key == "" || value == "" {
-				continue
-			}
-			cleaned[key] = value
-		}
-		out.CustomHeaders = cleaned
-	} else {
-		out.CustomHeaders = map[string]string{}
+	return out
+}
+
+// CleanCodexIdentityFingerprint trims explicit overrides while preserving empty fields
+// as "automatic learning" markers.
+func CleanCodexIdentityFingerprint(in CodexIdentityFingerprintConfig) CodexIdentityFingerprintConfig {
+	out := in
+	out.UserAgent = strings.TrimSpace(out.UserAgent)
+	out.Version = strings.TrimSpace(out.Version)
+	out.Originator = strings.TrimSpace(out.Originator)
+	out.WebsocketBeta = strings.TrimSpace(out.WebsocketBeta)
+	out.BetaFeatures = strings.TrimSpace(out.BetaFeatures)
+	out.SessionMode = strings.TrimSpace(strings.ToLower(out.SessionMode))
+	out.SessionID = strings.TrimSpace(out.SessionID)
+	if out.SessionMode != "" && out.SessionMode != "server-stable" && out.SessionMode != "fixed" && out.SessionMode != "per-request" {
+		out.SessionMode = DefaultCodexFingerprintSessionMode
 	}
+	out.CustomHeaders = cleanIdentityFingerprintHeaders(out.CustomHeaders)
 	return out
 }
 
@@ -158,17 +188,7 @@ func BuildClaudeFingerprintUserAgent(cliVersion, entrypoint string) string {
 // NormalizeClaudeIdentityFingerprint trims user input and applies safe defaults
 // for fields that participate in Claude Code-style Anthropic OAuth identity.
 func NormalizeClaudeIdentityFingerprint(in ClaudeIdentityFingerprintConfig) ClaudeIdentityFingerprintConfig {
-	out := in
-	out.CLIVersion = strings.TrimSpace(out.CLIVersion)
-	out.Entrypoint = strings.TrimSpace(out.Entrypoint)
-	out.UserAgent = strings.TrimSpace(out.UserAgent)
-	out.AnthropicBeta = strings.TrimSpace(out.AnthropicBeta)
-	out.StainlessPackageVersion = strings.TrimSpace(out.StainlessPackageVersion)
-	out.StainlessRuntimeVersion = strings.TrimSpace(out.StainlessRuntimeVersion)
-	out.StainlessTimeout = strings.TrimSpace(out.StainlessTimeout)
-	out.SessionMode = strings.TrimSpace(strings.ToLower(out.SessionMode))
-	out.SessionID = strings.TrimSpace(out.SessionID)
-	out.DeviceID = strings.TrimSpace(out.DeviceID)
+	out := CleanClaudeIdentityFingerprint(in)
 
 	if out.CLIVersion == "" {
 		out.CLIVersion = DefaultClaudeFingerprintCLIVersion
@@ -198,19 +218,69 @@ func NormalizeClaudeIdentityFingerprint(in ClaudeIdentityFingerprintConfig) Clau
 		out.SessionMode = DefaultClaudeFingerprintSessionMode
 	}
 
-	if len(out.CustomHeaders) > 0 {
-		cleaned := make(map[string]string, len(out.CustomHeaders))
-		for key, value := range out.CustomHeaders {
-			key = strings.TrimSpace(key)
-			value = strings.TrimSpace(value)
-			if key == "" || value == "" {
-				continue
-			}
-			cleaned[key] = value
+	return out
+}
+
+// CleanClaudeIdentityFingerprint trims explicit overrides while preserving empty fields
+// as "automatic learning" markers.
+func CleanClaudeIdentityFingerprint(in ClaudeIdentityFingerprintConfig) ClaudeIdentityFingerprintConfig {
+	out := in
+	out.CLIVersion = strings.TrimSpace(out.CLIVersion)
+	out.Entrypoint = strings.TrimSpace(out.Entrypoint)
+	out.UserAgent = strings.TrimSpace(out.UserAgent)
+	out.AnthropicBeta = strings.TrimSpace(out.AnthropicBeta)
+	out.StainlessPackageVersion = strings.TrimSpace(out.StainlessPackageVersion)
+	out.StainlessRuntimeVersion = strings.TrimSpace(out.StainlessRuntimeVersion)
+	out.StainlessTimeout = strings.TrimSpace(out.StainlessTimeout)
+	out.SessionMode = strings.TrimSpace(strings.ToLower(out.SessionMode))
+	out.SessionID = strings.TrimSpace(out.SessionID)
+	out.DeviceID = strings.TrimSpace(out.DeviceID)
+	if out.SessionMode != "" && out.SessionMode != "server-stable" && out.SessionMode != "fixed" && out.SessionMode != "per-request" {
+		out.SessionMode = DefaultClaudeFingerprintSessionMode
+	}
+	out.CustomHeaders = cleanIdentityFingerprintHeaders(out.CustomHeaders)
+	return out
+}
+
+// NormalizeGeminiIdentityFingerprint trims user input and applies safe defaults
+// for fields that participate in Gemini CLI upstream identity.
+func NormalizeGeminiIdentityFingerprint(in GeminiIdentityFingerprintConfig) GeminiIdentityFingerprintConfig {
+	out := CleanGeminiIdentityFingerprint(in)
+	if out.UserAgent == "" {
+		out.UserAgent = DefaultGeminiFingerprintUserAgent
+	}
+	if out.APIClient == "" {
+		out.APIClient = DefaultGeminiFingerprintAPIClient
+	}
+	if out.ClientMetadata == "" {
+		out.ClientMetadata = DefaultGeminiFingerprintClientMetadata
+	}
+	return out
+}
+
+// CleanGeminiIdentityFingerprint trims explicit overrides while preserving empty fields
+// as "automatic learning" markers.
+func CleanGeminiIdentityFingerprint(in GeminiIdentityFingerprintConfig) GeminiIdentityFingerprintConfig {
+	out := in
+	out.UserAgent = strings.TrimSpace(out.UserAgent)
+	out.APIClient = strings.TrimSpace(out.APIClient)
+	out.ClientMetadata = strings.TrimSpace(out.ClientMetadata)
+	out.CustomHeaders = cleanIdentityFingerprintHeaders(out.CustomHeaders)
+	return out
+}
+
+func cleanIdentityFingerprintHeaders(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return map[string]string{}
+	}
+	out := make(map[string]string, len(in))
+	for key, value := range in {
+		key = strings.TrimSpace(key)
+		value = strings.TrimSpace(value)
+		if key == "" || value == "" {
+			continue
 		}
-		out.CustomHeaders = cleaned
-	} else {
-		out.CustomHeaders = map[string]string{}
+		out[key] = value
 	}
 	return out
 }

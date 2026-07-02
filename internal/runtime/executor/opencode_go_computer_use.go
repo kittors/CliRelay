@@ -197,17 +197,38 @@ var mcpComputerUseFunctions = []map[string]any{
 	},
 }
 
-// opencodeGoInjectComputerUseTools checks whether the request payload already
-// carries mcp__computer_use__ function definitions.  When they are missing
-// (which is the case for DeepSeek models routed through /v1/messages), it
-// injects them so the model sees Computer Use as regular function tools.
+var mcpNodeReplJSFunction = map[string]any{
+	"type": "function",
+	"function": map[string]any{
+		"name":        "mcp__node_repl__js",
+		"description": "Run JavaScript in a persistent Node-backed kernel with top-level await. This is the bridge used by the Browser and Chrome plugins.",
+		"strict":      false,
+		"parameters": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"code":       map[string]any{"type": "string", "description": "JavaScript source to execute in the persistent Node-backed kernel."},
+				"timeout_ms": map[string]any{"type": "integer", "description": "Optional execution timeout in milliseconds. Defaults to 30000."},
+				"title":      map[string]any{"type": "string", "description": "Short user-facing description of what this code block is doing."},
+			},
+			"required":             []string{"code"},
+			"additionalProperties": false,
+		},
+	},
+}
+
+var mcpCodexToolBridgeFunctions = append(append([]map[string]any{}, mcpComputerUseFunctions...), mcpNodeReplJSFunction)
+
+// opencodeGoInjectCodexToolBridgeTools checks whether the request payload
+// already carries concrete Codex ecosystem MCP function definitions. When they
+// are missing, it injects them so non-native models see Computer Use, Browser,
+// and Chrome capabilities as regular function tools.
 //
 // The function detects whether existing tools are in OpenAI Chat Completions
 // format ({"type":"function","function":{"name":"..."}}) or Claude /v1/messages
 // format ({"name":"...","description":"...","input_schema":{...}}) and injects
 // in the same format to prevent the translator from producing empty function
 // names when the payload format differs from the injection format.
-func opencodeGoInjectComputerUseTools(payload []byte) []byte {
+func opencodeGoInjectCodexToolBridgeTools(payload []byte) []byte {
 	if len(payload) == 0 || !gjson.ValidBytes(payload) {
 		return payload
 	}
@@ -220,28 +241,36 @@ func opencodeGoInjectComputerUseTools(payload []byte) []byte {
 
 	toolArray := tools.Array()
 
-	// Detect format from the first tool's structure.
+	// Detect format from the first concrete tool's structure.
 	//   1. OpenAI Chat Completions: {"function":{"name":"..."}}
 	//   2. Claude /v1/messages:     {"name":"...","input_schema":{...}} (no "function" key, no "type"="function")
 	//   3. Responses API:           {"type":"function","name":"...","parameters":{...}} (no "function" key but has "type"="function")
 	isClaudeFormat := false
 	isResponsesAPIFormat := false
-	firstTool := toolArray[0]
-	if firstTool.Get("function").Exists() {
-		// #1: OpenAI Chat Completions format
-		isClaudeFormat = false
-		isResponsesAPIFormat = false
-	} else if firstTool.Get("type").String() == "function" && firstTool.Get("name").Exists() {
-		// #3: Responses API format - has top-level "type"="function" and "name"
-		isClaudeFormat = false
-		isResponsesAPIFormat = true
-	} else if firstTool.Get("name").Exists() {
-		// #2: Claude format - only has top-level "name" (no "type"="function")
-		isClaudeFormat = true
-		isResponsesAPIFormat = false
+	for _, tool := range toolArray {
+		if tool.Get("function").Exists() {
+			// #1: OpenAI Chat Completions format
+			isClaudeFormat = false
+			isResponsesAPIFormat = false
+			break
+		} else if tool.Get("type").String() == "function" && tool.Get("name").Exists() {
+			// #3: Responses API format - has top-level "type"="function" and "name"
+			isClaudeFormat = false
+			isResponsesAPIFormat = true
+			break
+		} else if tool.Get("type").String() == "namespace" {
+			// Codex Responses API namespace tools need expansion for OpenAI-compatible upstreams.
+			isClaudeFormat = false
+			isResponsesAPIFormat = true
+		} else if tool.Get("name").Exists() {
+			// #2: Claude format - only has top-level "name" (no "type"="function")
+			isClaudeFormat = true
+			isResponsesAPIFormat = false
+			break
+		}
 	}
 
-	// If Computer Use tools are already present, do nothing.
+	existingNames := map[string]struct{}{}
 	for _, tool := range toolArray {
 		var name string
 		if isClaudeFormat {
@@ -251,25 +280,36 @@ func opencodeGoInjectComputerUseTools(payload []byte) []byte {
 		} else {
 			name = tool.Get("function.name").String()
 		}
-		if strings.HasPrefix(name, "mcp__computer_use__") {
-			return payload
-		}
-		// Also check Responses API format (type=namespace).
-		if tool.Get("type").String() == "namespace" &&
-			strings.EqualFold(tool.Get("name").String(), "mcp__computer_use__") {
-			return payload
+		if name != "" {
+			existingNames[name] = struct{}{}
 		}
 	}
 
-	// Inject each Computer Use function tool into the tools array.
+	missingFunctions := make([]map[string]any, 0, len(mcpCodexToolBridgeFunctions))
+	for _, fn := range mcpCodexToolBridgeFunctions {
+		name, _, _, ok := opencodeGoBridgeFunctionParts(fn)
+		if !ok {
+			continue
+		}
+		if _, exists := existingNames[name]; exists {
+			continue
+		}
+		missingFunctions = append(missingFunctions, fn)
+	}
+	if len(missingFunctions) == 0 {
+		return payload
+	}
+
+	// Inject each missing Codex bridge function tool into the tools array.
 	startIdx := len(toolArray)
 
 	if isClaudeFormat {
 		// Inject in Claude /v1/messages format.
-		for i, fn := range mcpComputerUseFunctions {
-			name := fn["function"].(map[string]any)["name"].(string)
-			desc := fn["function"].(map[string]any)["description"].(string)
-			params := fn["function"].(map[string]any)["parameters"]
+		for i, fn := range missingFunctions {
+			name, desc, params, ok := opencodeGoBridgeFunctionParts(fn)
+			if !ok {
+				continue
+			}
 
 			claudeTool := fmt.Sprintf(`{"name":"%s","description":"","input_schema":null}`, name)
 			claudeTool, _ = sjson.Set(claudeTool, "description", desc)
@@ -288,10 +328,11 @@ func opencodeGoInjectComputerUseTools(payload []byte) []byte {
 		}
 	} else if isResponsesAPIFormat {
 		// Inject in Responses API format: {"type":"function","name":"...","description":"...","parameters":{...}}
-		for i, fn := range mcpComputerUseFunctions {
-			name := fn["function"].(map[string]any)["name"].(string)
-			desc := fn["function"].(map[string]any)["description"].(string)
-			params := fn["function"].(map[string]any)["parameters"]
+		for i, fn := range missingFunctions {
+			name, desc, params, ok := opencodeGoBridgeFunctionParts(fn)
+			if !ok {
+				continue
+			}
 
 			respTool := fmt.Sprintf(`{"type":"function","name":"%s","description":"","parameters":null}`, name)
 			respTool, _ = sjson.Set(respTool, "description", desc)
@@ -310,7 +351,7 @@ func opencodeGoInjectComputerUseTools(payload []byte) []byte {
 		}
 	} else {
 		// Inject in OpenAI Chat Completions format (original behavior).
-		for i, fn := range mcpComputerUseFunctions {
+		for i, fn := range missingFunctions {
 			path := fmt.Sprintf("tools.%d", startIdx+i)
 			var err error
 			payload, err = sjson.SetBytes(payload, path, fn)
@@ -321,6 +362,20 @@ func opencodeGoInjectComputerUseTools(payload []byte) []byte {
 	}
 
 	return payload
+}
+
+func opencodeGoBridgeFunctionParts(fn map[string]any) (string, string, any, bool) {
+	fnMap, ok := fn["function"].(map[string]any)
+	if !ok {
+		return "", "", nil, false
+	}
+	name, ok := fnMap["name"].(string)
+	if !ok || strings.TrimSpace(name) == "" {
+		return "", "", nil, false
+	}
+	desc, _ := fnMap["description"].(string)
+	params, ok := fnMap["parameters"]
+	return name, desc, params, ok
 }
 
 // opencodeGoStripScreenshots removes base64 image data from tool result messages

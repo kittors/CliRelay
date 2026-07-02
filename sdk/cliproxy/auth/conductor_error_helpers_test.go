@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"fmt"
 	"net/http"
 	"testing"
 )
@@ -10,6 +11,7 @@ type statusQuotaErrorStub struct {
 	status       int
 	quotaWindow  string
 	quotaMinutes int
+	headers      http.Header
 }
 
 func (e *statusQuotaErrorStub) Error() string {
@@ -22,6 +24,13 @@ func (e *statusQuotaErrorStub) StatusCode() int {
 
 func (e *statusQuotaErrorStub) QuotaWindow() (string, int) {
 	return e.quotaWindow, e.quotaMinutes
+}
+
+func (e *statusQuotaErrorStub) Headers() http.Header {
+	if e.headers == nil {
+		return nil
+	}
+	return e.headers.Clone()
 }
 
 func TestErrorFromExecution_ExtractsStatusAndQuotaWindow(t *testing.T) {
@@ -46,6 +55,44 @@ func TestErrorFromExecution_ExtractsStatusAndQuotaWindow(t *testing.T) {
 	}
 	if got.QuotaWindow != "5h" || got.QuotaWindowMinutes != 300 {
 		t.Fatalf("QuotaWindow = %q/%d, want 5h/300", got.QuotaWindow, got.QuotaWindowMinutes)
+	}
+}
+
+func TestHeadersFromError_ClonesHeaders(t *testing.T) {
+	t.Parallel()
+
+	err := &statusQuotaErrorStub{
+		message: "quota exceeded",
+		status:  http.StatusTooManyRequests,
+		headers: http.Header{
+			"Anthropic-Ratelimit-Unified-5h-Status": []string{"rejected"},
+		},
+	}
+
+	got := headersFromError(err)
+	if got.Get("Anthropic-Ratelimit-Unified-5h-Status") != "rejected" {
+		t.Fatalf("headersFromError() = %#v, want rate-limit header", got)
+	}
+	got.Set("Anthropic-Ratelimit-Unified-5h-Status", "mutated")
+	if err.headers.Get("Anthropic-Ratelimit-Unified-5h-Status") != "rejected" {
+		t.Fatalf("source headers mutated to %q", err.headers.Get("Anthropic-Ratelimit-Unified-5h-Status"))
+	}
+}
+
+func TestHeadersFromError_ExtractsHeadersFromWrappedError(t *testing.T) {
+	t.Parallel()
+
+	err := fmt.Errorf("upstream wrapper: %w", &statusQuotaErrorStub{
+		message: "quota exceeded",
+		status:  http.StatusTooManyRequests,
+		headers: http.Header{
+			"Anthropic-Ratelimit-Unified-7d-Status": []string{"rejected"},
+		},
+	})
+
+	got := headersFromError(err)
+	if got.Get("Anthropic-Ratelimit-Unified-7d-Status") != "rejected" {
+		t.Fatalf("headersFromError() = %#v, want wrapped rate-limit header", got)
 	}
 }
 

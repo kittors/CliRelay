@@ -104,6 +104,18 @@ func newTestServerWithConfig(t *testing.T, configure func(*proxyconfig.Config)) 
 	return NewServer(cfg, authManager, accessManager, configPath)
 }
 
+func TestHealthzReturnsNoContent(t *testing.T) {
+	server := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	rr := httptest.NewRecorder()
+	server.engine.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d; body=%s", rr.Code, http.StatusNoContent, rr.Body.String())
+	}
+}
+
 func TestAmpProviderModelRoutes(t *testing.T) {
 	testCases := []struct {
 		name         string
@@ -581,13 +593,13 @@ func TestGroupedV1RouteUnknownGroupReturnsNotFound(t *testing.T) {
 	}
 }
 
-func TestNewServerSetsMainWriteTimeout(t *testing.T) {
+func TestNewServerSetsMainNonStreamingWriteTimeout(t *testing.T) {
 	server := newTestServer(t)
 	if server.server == nil {
 		t.Fatal("expected http server to be initialized")
 	}
-	if got := server.server.WriteTimeout; got != mainAPIServerWriteTimeout {
-		t.Fatalf("WriteTimeout = %s, want %s", got, mainAPIServerWriteTimeout)
+	if got := server.server.WriteTimeout; got != mainAPINonStreamingWriteTimeout {
+		t.Fatalf("WriteTimeout = %s, want %s", got, mainAPINonStreamingWriteTimeout)
 	}
 	if got := server.server.ReadTimeout; got != proxyconfig.DefaultMainAPIReadTimeout {
 		t.Fatalf("ReadTimeout = %s, want %s", got, proxyconfig.DefaultMainAPIReadTimeout)
@@ -691,6 +703,24 @@ func TestGetContextWithCancelClearsWriteDeadlineForStreamingRequests(t *testing.
 	}
 }
 
+func TestGetContextWithCancelKeepsWriteDeadlineForNonStreamingRequests(t *testing.T) {
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"test-model"}`))
+	req.Header.Set("Content-Type", "application/json")
+	c.Request = req
+	tracking := &deadlineTrackingWriter{ResponseWriter: c.Writer}
+	c.Writer = tracking
+
+	handler := &sdkhandlers.BaseAPIHandler{Cfg: &sdkconfig.SDKConfig{}}
+	_, cancelHandler := handler.GetContextWithCancel(nil, c, c.Request.Context())
+	cancelHandler()
+
+	if tracking.sawZeroDeadline() {
+		t.Fatal("expected non-streaming request to keep the server write deadline")
+	}
+}
+
 func TestAttachWebsocketRouteClearsWriteDeadlineBeforeServingHandler(t *testing.T) {
 	server := newTestServer(t)
 
@@ -772,8 +802,27 @@ func TestCORSMiddlewareAllowsConfiguredOrigin(t *testing.T) {
 	}
 }
 
-func TestCORSMiddlewareAllowsChromeExtensionOriginByDefault(t *testing.T) {
+func TestCORSMiddlewareRejectsUnconfiguredChromeExtensionOrigin(t *testing.T) {
 	server := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodOptions, "/v1/models", nil)
+	req.Header.Set("Origin", "chrome-extension://abcdefghijklmnop")
+
+	rr := httptest.NewRecorder()
+	server.engine.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d; body=%s", rr.Code, http.StatusForbidden, rr.Body.String())
+	}
+	if got := rr.Header().Get("Access-Control-Allow-Origin"); got != "" {
+		t.Fatalf("Access-Control-Allow-Origin = %q, want empty", got)
+	}
+}
+
+func TestCORSMiddlewareAllowsConfiguredChromeExtensionOrigin(t *testing.T) {
+	server := newTestServerWithConfig(t, func(cfg *proxyconfig.Config) {
+		cfg.CORSAllowOrigins = []string{"chrome-extension://abcdefghijklmnop"}
+	})
 
 	req := httptest.NewRequest(http.MethodOptions, "/v1/models", nil)
 	req.Header.Set("Origin", "chrome-extension://abcdefghijklmnop")

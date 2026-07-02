@@ -20,7 +20,7 @@ func QueryDailyCallsByAuthSubject(matcher AuthSubjectMatcher, days int) ([]Daily
 }
 
 func QueryDailyUsageByAuthSubject(matcher AuthSubjectMatcher, days int) ([]DailyUsagePoint, error) {
-	db := getDB()
+	db := getReadDB()
 	if db == nil {
 		return []DailyUsagePoint{}, nil
 	}
@@ -95,7 +95,7 @@ func QueryHourlyCallsByAuthSubject(matcher AuthSubjectMatcher, hours int) ([]Hou
 }
 
 func QueryHourlyUsageByAuthSubject(matcher AuthSubjectMatcher, hours int) ([]HourlyUsagePoint, error) {
-	db := getDB()
+	db := getReadDB()
 	if db == nil {
 		return []HourlyUsagePoint{}, nil
 	}
@@ -160,7 +160,7 @@ func QueryRequestCountByAuthSubjectSince(matcher AuthSubjectMatcher, since time.
 }
 
 func QueryCostByAuthSubjectSince(matcher AuthSubjectMatcher, since time.Time) (float64, error) {
-	db := getDB()
+	db := getReadDB()
 	if db == nil {
 		return 0, nil
 	}
@@ -187,7 +187,7 @@ func QueryCostByAuthSubjectSince(matcher AuthSubjectMatcher, since time.Time) (f
 }
 
 func queryCountByAuthSubjectSince(matcher AuthSubjectMatcher, since time.Time, aggregate string) (int64, error) {
-	db := getDB()
+	db := getReadDB()
 	if db == nil {
 		return 0, nil
 	}

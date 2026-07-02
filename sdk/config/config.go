@@ -33,6 +33,8 @@ type BedrockKey = bridgeconfig.BedrockKey
 type BedrockModel = bridgeconfig.BedrockModel
 type OpenCodeGoKey = bridgeconfig.OpenCodeGoKey
 type OpenCodeGoModel = bridgeconfig.OpenCodeGoModel
+type ClineKey = bridgeconfig.ClineKey
+type ClineModel = bridgeconfig.ClineModel
 type VertexCompatKey = bridgeconfig.VertexCompatKey
 type VertexCompatModel = bridgeconfig.VertexCompatModel
 type OpenAICompatibility = bridgeconfig.OpenAICompatibility
@@ -44,6 +46,7 @@ type TLS = bridgeconfig.TLSConfig
 const (
 	DefaultPanelGitHubRepository = bridgeconfig.DefaultPanelGitHubRepository
 	DefaultBedrockRegion         = bridgeconfig.DefaultBedrockRegion
+	DefaultClineBaseURL          = bridgeconfig.DefaultClineBaseURL
 	DefaultPprofAddr             = bridgeconfig.DefaultPprofAddr
 )
 

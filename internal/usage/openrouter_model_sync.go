@@ -119,6 +119,9 @@ func SyncOpenRouterModelList(ctx context.Context, models []OpenRouterRemoteModel
 			if err := openRouterSyncExistingAliasRows(modelID, model, owner, legacyModelIDs); err != nil {
 				return result, err
 			}
+			if err := openRouterSyncExistingWrapperRows(modelID, model); err != nil {
+				return result, err
+			}
 			result.Updated++
 			continue
 		}
@@ -128,6 +131,9 @@ func SyncOpenRouterModelList(ctx context.Context, models []OpenRouterRemoteModel
 		}
 		if migrated {
 			if err := openRouterSyncExistingAliasRows(modelID, model, owner, legacyModelIDs); err != nil {
+				return result, err
+			}
+			if err := openRouterSyncExistingWrapperRows(modelID, model); err != nil {
 				return result, err
 			}
 			result.Updated++
@@ -146,10 +152,14 @@ func SyncOpenRouterModelList(ctx context.Context, models []OpenRouterRemoteModel
 			Source:                openRouterModelSource,
 		}
 		row.InputModalities, row.OutputModalities = openRouterModelModalities(model)
+		openRouterApplyImageGenerationSemantics(&row, model)
 		if err := UpsertModelConfig(row); err != nil {
 			return result, fmt.Errorf("sync openrouter model %s: %w", modelID, err)
 		}
 		if err := openRouterSyncExistingAliasRows(modelID, model, owner, legacyModelIDs); err != nil {
+			return result, err
+		}
+		if err := openRouterSyncExistingWrapperRows(modelID, model); err != nil {
 			return result, err
 		}
 		result.Added++
@@ -415,6 +425,16 @@ func openRouterApplyModelSync(row *ModelConfigRow, model OpenRouterRemoteModel, 
 	if description := openRouterModelDescription(model); description != "" && openRouterShouldSyncDescription(*row) {
 		row.Description = description
 	}
+	openRouterApplyModelSyncValues(row, model)
+}
+
+func openRouterApplyModelSyncValues(row *ModelConfigRow, model OpenRouterRemoteModel) {
+	if row == nil {
+		return
+	}
+	if openRouterApplyImageGenerationSemantics(row, model) {
+		return
+	}
 	row.PricingMode = "token"
 	row.InputPricePerMillion = openRouterPricePerMillion(model.Pricing.Prompt)
 	row.OutputPricePerMillion = openRouterPricePerMillion(model.Pricing.Completion)
@@ -427,6 +447,65 @@ func openRouterApplyModelSync(row *ModelConfigRow, model OpenRouterRemoteModel, 
 	if len(outputModalities) > 0 {
 		row.OutputModalities = outputModalities
 	}
+}
+
+func openRouterApplyImageGenerationSemantics(row *ModelConfigRow, model OpenRouterRemoteModel) bool {
+	if row == nil || !openRouterIsImageGenerationRow(*row) {
+		return false
+	}
+	row.PricingMode = "call"
+	row.InputPricePerMillion = 0
+	row.OutputPricePerMillion = 0
+	row.CachedPricePerMillion = 0
+	if row.PricePerCall <= 0 {
+		row.PricePerCall = openRouterDefaultImageGenerationPricePerCall(row.ModelID)
+	}
+
+	inputModalities, outputModalities := openRouterModelModalities(model)
+	row.InputModalities = unionModalities(row.InputModalities, inputModalities)
+	row.OutputModalities = unionModalities(
+		imageOutputModalities(row.OutputModalities),
+		imageOutputModalities(outputModalities),
+	)
+	if len(row.InputModalities) == 0 {
+		row.InputModalities = []string{"text"}
+	}
+	row.OutputModalities = unionModalities(row.OutputModalities, []string{"image"})
+	return true
+}
+
+func openRouterIsImageGenerationRow(row ModelConfigRow) bool {
+	modelID := strings.ToLower(strings.TrimSpace(row.ModelID))
+	if strings.HasPrefix(modelID, "gpt-image-") {
+		return true
+	}
+	if strings.EqualFold(strings.TrimSpace(row.PricingMode), "call") {
+		return true
+	}
+	for _, modality := range row.OutputModalities {
+		if strings.EqualFold(strings.TrimSpace(modality), "image") {
+			return true
+		}
+	}
+	return false
+}
+
+func openRouterDefaultImageGenerationPricePerCall(modelID string) float64 {
+	switch strings.ToLower(strings.TrimSpace(modelID)) {
+	case "gpt-image-2":
+		return 0.04
+	default:
+		return 0
+	}
+}
+
+func imageOutputModalities(modalities []string) []string {
+	for _, modality := range modalities {
+		if strings.EqualFold(strings.TrimSpace(modality), "image") {
+			return []string{"image"}
+		}
+	}
+	return nil
 }
 
 func openRouterShouldSyncDescription(row ModelConfigRow) bool {
@@ -496,6 +575,32 @@ func openRouterSyncExistingAliasRows(baseModelID string, model OpenRouterRemoteM
 	return nil
 }
 
+func openRouterSyncExistingWrapperRows(baseModelID string, model OpenRouterRemoteModel) error {
+	for _, wrapperID := range openRouterWrapperModelIDs(baseModelID) {
+		existing, exists := GetModelConfig(wrapperID)
+		if !exists {
+			continue
+		}
+		existing.OwnedBy = "cline"
+		if description := openRouterModelDescription(model); description != "" && openRouterShouldSyncDescription(existing) {
+			existing.Description = description
+		}
+		openRouterApplyModelSyncValues(&existing, model)
+		if err := UpsertModelConfig(existing); err != nil {
+			return fmt.Errorf("sync openrouter model wrapper %s: %w", wrapperID, err)
+		}
+	}
+	return nil
+}
+
+func openRouterWrapperModelIDs(baseModelID string) []string {
+	baseModelID = strings.TrimSpace(baseModelID)
+	if baseModelID == "" || strings.Contains(baseModelID, "/") {
+		return nil
+	}
+	return []string{"cline-pass/" + baseModelID}
+}
+
 func openRouterStaticBaseModelRow(modelID string) (ModelConfigRow, bool) {
 	modelID = strings.TrimSpace(modelID)
 	if modelID == "" {
@@ -561,6 +666,7 @@ func openRouterMergeVariantGroups(models []OpenRouterRemoteModel) error {
 				continue
 			}
 		}
+		imageGenerationBase := openRouterIsImageGenerationRow(baseModel)
 		// Aggregate: highest prices, best description, most complete modalities.
 		bestInputPrice := baseModel.InputPricePerMillion
 		bestOutputPrice := baseModel.OutputPricePerMillion
@@ -589,15 +695,19 @@ func openRouterMergeVariantGroups(models []OpenRouterRemoteModel) error {
 			}
 			inMod, outMod := openRouterModelModalities(e.model)
 			bestModalities.input = unionModalities(bestModalities.input, inMod)
-			bestModalities.output = unionModalities(bestModalities.output, outMod)
+			if imageGenerationBase {
+				bestModalities.output = unionModalities(bestModalities.output, imageOutputModalities(outMod))
+			} else {
+				bestModalities.output = unionModalities(bestModalities.output, outMod)
+			}
 		}
 
 		// Apply the merged data back to the base model.
 		updated := false
 
-		if bestInputPrice != baseModel.InputPricePerMillion ||
+		if !imageGenerationBase && (bestInputPrice != baseModel.InputPricePerMillion ||
 			bestOutputPrice != baseModel.OutputPricePerMillion ||
-			bestCachedPrice != baseModel.CachedPricePerMillion {
+			bestCachedPrice != baseModel.CachedPricePerMillion) {
 			baseModel.PricingMode = "token"
 			baseModel.InputPricePerMillion = bestInputPrice
 			baseModel.OutputPricePerMillion = bestOutputPrice

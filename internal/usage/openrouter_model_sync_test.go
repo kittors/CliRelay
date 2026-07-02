@@ -106,6 +106,173 @@ func TestSyncOpenRouterModelsUpdatesExistingUserModelPricingOnly(t *testing.T) {
 	}
 }
 
+func TestSyncOpenRouterModelsPreservesImageGenerationCallPricingAndOutputModality(t *testing.T) {
+	initModelConfigTestDB(t)
+
+	before, ok := GetModelConfig("gpt-image-2")
+	if !ok {
+		t.Fatal("expected gpt-image-2 seed config")
+	}
+	if before.PricingMode != "call" || before.PricePerCall <= 0 {
+		t.Fatalf("expected seeded gpt-image-2 call pricing, got %+v", before)
+	}
+
+	result, err := SyncOpenRouterModelList(context.Background(), []OpenRouterRemoteModel{
+		{
+			ID:          "openai/gpt-image-2",
+			Description: "Remote image model description",
+			Architecture: OpenRouterRemoteArchitecture{
+				Modality:         "text->text",
+				InputModalities:  []string{"text"},
+				OutputModalities: []string{"text"},
+			},
+			Pricing: OpenRouterRemotePricing{
+				Prompt:     "0.000005",
+				Completion: "0.000020",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("SyncOpenRouterModelList() error = %v", err)
+	}
+	if result.Seen != 1 || result.Added != 0 || result.Updated != 1 || result.Skipped != 0 {
+		t.Fatalf("unexpected sync result: %+v", result)
+	}
+
+	after, ok := GetModelConfig("gpt-image-2")
+	if !ok {
+		t.Fatal("expected gpt-image-2 to remain configured")
+	}
+	if after.PricingMode != "call" || after.PricePerCall != before.PricePerCall {
+		t.Fatalf("image generation pricing should remain per-call, before=%+v after=%+v", before, after)
+	}
+	if after.InputPricePerMillion != 0 || after.OutputPricePerMillion != 0 || after.CachedPricePerMillion != 0 {
+		t.Fatalf("image generation model should not be converted to token pricing: %+v", after)
+	}
+	if !containsModality(after.OutputModalities, "image") {
+		t.Fatalf("image generation model should keep image output modality: %+v", after.OutputModalities)
+	}
+	if containsModality(after.OutputModalities, "text") {
+		t.Fatalf("image generation model should not inherit misleading text output modality: %+v", after.OutputModalities)
+	}
+	if cost := CalculateCost("gpt-image-2", 1_000_000, 1_000_000, 0); cost != before.PricePerCall {
+		t.Fatalf("expected CalculateCost to use per-call pricing %v, got %v", before.PricePerCall, cost)
+	}
+}
+
+func TestSyncOpenRouterModelsBackfillsImageGenerationDefaultCallPrice(t *testing.T) {
+	initModelConfigTestDB(t)
+
+	if err := UpsertModelConfig(ModelConfigRow{
+		ModelID:               "gpt-image-2",
+		OwnedBy:               "codex",
+		Description:           "Previously corrupted image model",
+		Enabled:               true,
+		PricingMode:           "token",
+		InputPricePerMillion:  5,
+		OutputPricePerMillion: 20,
+		PricePerCall:          0,
+		Source:                "seed",
+		InputModalities:       []string{"text"},
+		OutputModalities:      []string{"text"},
+	}); err != nil {
+		t.Fatalf("UpsertModelConfig() error = %v", err)
+	}
+
+	_, err := SyncOpenRouterModelList(context.Background(), []OpenRouterRemoteModel{
+		{
+			ID:          "openai/gpt-image-2",
+			Description: "Remote image model description",
+			Architecture: OpenRouterRemoteArchitecture{
+				InputModalities:  []string{"text"},
+				OutputModalities: []string{"text"},
+			},
+			Pricing: OpenRouterRemotePricing{
+				Prompt:     "0.000005",
+				Completion: "0.000020",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("SyncOpenRouterModelList() error = %v", err)
+	}
+
+	model, ok := GetModelConfig("gpt-image-2")
+	if !ok {
+		t.Fatal("expected gpt-image-2 config")
+	}
+	if model.PricingMode != "call" || model.PricePerCall != 0.04 {
+		t.Fatalf("expected gpt-image-2 default call pricing to be backfilled, got %+v", model)
+	}
+	if model.InputPricePerMillion != 0 || model.OutputPricePerMillion != 0 {
+		t.Fatalf("expected token pricing to be cleared, got %+v", model)
+	}
+	if !containsModality(model.OutputModalities, "image") || containsModality(model.OutputModalities, "text") {
+		t.Fatalf("expected image-only output modality, got %+v", model.OutputModalities)
+	}
+}
+
+func TestSyncOpenRouterModelsUpdatesExistingClinePassWrapperFromCanonicalModel(t *testing.T) {
+	initModelConfigTestDB(t)
+
+	if err := UpsertModelConfig(ModelConfigRow{
+		ModelID:     "cline-pass/deepseek-v4-flash",
+		OwnedBy:     "cline",
+		Description: "",
+		Enabled:     true,
+		PricingMode: "token",
+		Source:      "seed",
+		InputModalities: []string{
+			"text",
+		},
+		OutputModalities: []string{
+			"text",
+		},
+	}); err != nil {
+		t.Fatalf("UpsertModelConfig() error = %v", err)
+	}
+
+	result, err := SyncOpenRouterModelList(context.Background(), []OpenRouterRemoteModel{
+		{
+			ID:          "deepseek/deepseek-v4-flash",
+			Description: "DeepSeek V4 Flash from OpenRouter",
+			Architecture: OpenRouterRemoteArchitecture{
+				Modality:         "text+image->text",
+				InputModalities:  []string{"text", "image"},
+				OutputModalities: []string{"text"},
+			},
+			Pricing: OpenRouterRemotePricing{
+				Prompt:         "0.0000003",
+				Completion:     "0.0000012",
+				InputCacheRead: "0.00000003",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("SyncOpenRouterModelList() error = %v", err)
+	}
+	if result.Seen != 1 || result.Skipped != 0 {
+		t.Fatalf("unexpected sync result: %+v", result)
+	}
+
+	model, ok := GetModelConfig("cline-pass/deepseek-v4-flash")
+	if !ok {
+		t.Fatal("expected existing cline-pass wrapper to remain configured")
+	}
+	if model.OwnedBy != "cline" || model.Source != "seed" {
+		t.Fatalf("cline wrapper identity should be preserved: %+v", model)
+	}
+	if model.Description != "DeepSeek V4 Flash from OpenRouter" {
+		t.Fatalf("cline wrapper should inherit remote description, got %q", model.Description)
+	}
+	if model.InputPricePerMillion != 0.3 || model.OutputPricePerMillion != 1.2 || model.CachedPricePerMillion != 0.03 {
+		t.Fatalf("cline wrapper should inherit canonical pricing: %+v", model)
+	}
+	if strings.Join(model.InputModalities, ",") != "text,image" || strings.Join(model.OutputModalities, ",") != "text" {
+		t.Fatalf("cline wrapper should inherit canonical modalities: %+v -> %+v", model.InputModalities, model.OutputModalities)
+	}
+}
+
 func TestSyncOpenRouterModelsUpdatesExistingOpenRouterDescription(t *testing.T) {
 	initModelConfigTestDB(t)
 
@@ -1023,4 +1190,13 @@ func TestUnionModalities(t *testing.T) {
 			}
 		})
 	}
+}
+
+func containsModality(modalities []string, expected string) bool {
+	for _, modality := range modalities {
+		if strings.EqualFold(strings.TrimSpace(modality), expected) {
+			return true
+		}
+	}
+	return false
 }

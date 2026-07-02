@@ -108,6 +108,7 @@ func TestAPIKeyModelAlias_MultipleProviders(t *testing.T) {
 		GeminiKey: []internalconfig.GeminiKey{{APIKey: "gemini-key", Models: []internalconfig.GeminiModel{{Name: "gemini-2.5-pro", Alias: "gp"}}}},
 		ClaudeKey: []internalconfig.ClaudeKey{{APIKey: "claude-key", Models: []internalconfig.ClaudeModel{{Name: "claude-sonnet-4", Alias: "cs4"}}}},
 		CodexKey:  []internalconfig.CodexKey{{APIKey: "codex-key", Models: []internalconfig.CodexModel{{Name: "o3", Alias: "o"}}}},
+		ClineKey:  []internalconfig.ClineKey{{APIKey: "cline-key", Models: []internalconfig.ClineModel{{Name: "cline-pass/mimo-v2.5-pro", Alias: "mimo-v2.5-pro"}}}},
 		BedrockKey: []internalconfig.BedrockKey{
 			{AuthMode: "sigv4", AccessKeyID: "AKIA", SecretAccessKey: "SECRET", Models: []internalconfig.BedrockModel{{Name: "claude-sonnet-4-5", Alias: "aws-sonnet"}}},
 		},
@@ -120,6 +121,7 @@ func TestAPIKeyModelAlias_MultipleProviders(t *testing.T) {
 	_, _ = mgr.Register(ctx, &Auth{ID: "gemini-auth", Provider: "gemini", Attributes: map[string]string{"api_key": "gemini-key"}})
 	_, _ = mgr.Register(ctx, &Auth{ID: "claude-auth", Provider: "claude", Attributes: map[string]string{"api_key": "claude-key"}})
 	_, _ = mgr.Register(ctx, &Auth{ID: "codex-auth", Provider: "codex", Attributes: map[string]string{"api_key": "codex-key"}})
+	_, _ = mgr.Register(ctx, &Auth{ID: "cline-auth", Provider: "cline", Attributes: map[string]string{"api_key": "cline-key"}})
 	_, _ = mgr.Register(ctx, &Auth{ID: "bedrock-auth", Provider: "bedrock", Attributes: map[string]string{"auth_mode": "sigv4", "api_key": "AKIA", "access_key_id": "AKIA"}})
 
 	tests := []struct {
@@ -128,6 +130,7 @@ func TestAPIKeyModelAlias_MultipleProviders(t *testing.T) {
 		{"gemini-auth", "gp", "gemini-2.5-pro"},
 		{"claude-auth", "cs4", "claude-sonnet-4"},
 		{"codex-auth", "o", "o3"},
+		{"cline-auth", "mimo-v2.5-pro", "cline-pass/mimo-v2.5-pro"},
 		{"bedrock-auth", "aws-sonnet", "claude-sonnet-4-5"},
 	}
 

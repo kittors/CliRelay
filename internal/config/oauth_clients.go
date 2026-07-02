@@ -11,13 +11,13 @@ const (
 
 	// GeminiCLIOAuthClientID and GeminiCLIOAuthClientSecret are the OAuth
 	// client credentials published by Google's Gemini CLI for Code Assist login.
-	GeminiCLIOAuthClientID     = "681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com"
-	GeminiCLIOAuthClientSecret = "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"
+	GeminiCLIOAuthClientID     = "681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com" // #nosec G101 -- upstream-published OAuth client ID, overridable by config/env.
+	GeminiCLIOAuthClientSecret = "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"                                      // #nosec G101 -- upstream-published OAuth client secret, overridable by config/env.
 
 	// AntigravityOAuthClientID and AntigravityOAuthClientSecret are the OAuth
 	// client credentials used by Antigravity for Google Code Assist login.
-	AntigravityOAuthClientID     = "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com"
-	AntigravityOAuthClientSecret = "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"
+	AntigravityOAuthClientID     = "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com" // #nosec G101 -- upstream-published OAuth client ID, overridable by config/env.
+	AntigravityOAuthClientSecret = "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"                                       // #nosec G101 -- upstream-published OAuth client secret, overridable by config/env.
 
 	EnvGeminiOAuthClientID     = "CLIRELAY_GEMINI_OAUTH_CLIENT_ID"
 	EnvGeminiOAuthClientSecret = "CLIRELAY_GEMINI_OAUTH_CLIENT_SECRET"

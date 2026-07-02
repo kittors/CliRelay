@@ -36,7 +36,7 @@ type HourlyUsagePoint struct {
 }
 
 func QueryDailyCallsByAuthIndexes(authIndexes []string, days int) ([]DailyCountPoint, error) {
-	db := getDB()
+	db := getReadDB()
 	if db == nil {
 		return []DailyCountPoint{}, nil
 	}
@@ -112,7 +112,7 @@ func QueryDailyCallsByAuthIndexes(authIndexes []string, days int) ([]DailyCountP
 }
 
 func QueryHourlyCallsByAuthIndex(authIndex string, hours int) ([]HourlyCountPoint, error) {
-	db := getDB()
+	db := getReadDB()
 	if db == nil {
 		return []HourlyCountPoint{}, nil
 	}
@@ -166,7 +166,7 @@ func QueryHourlyCallsByAuthIndex(authIndex string, hours int) ([]HourlyCountPoin
 }
 
 func QueryRequestCountByAuthIndexSince(authIndex string, since time.Time) (int64, error) {
-	db := getDB()
+	db := getReadDB()
 	if db == nil {
 		return 0, nil
 	}

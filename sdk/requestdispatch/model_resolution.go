@@ -30,7 +30,7 @@ func ResolveRequestDetails(ctx context.Context, modelName string) (providers []s
 	baseModel := strings.TrimSpace(parsed.ModelName)
 	routeCtx := routeContextFromExecutionContext(ctx)
 	requestedPrefix, unprefixedModel := splitRequestedModelPrefix(baseModel)
-	if routeCtx != nil && routeCtx.Group != "" && requestedPrefix != "" && requestedPrefix != routeCtx.Group {
+	if routeCtx != nil && routeCtx.Group != "" && requestedPrefix != "" && requestedPrefix != routeCtx.Group && !sdkrouting.IsCcSwitchMappedTargetModel(routeCtx, baseModel) {
 		return nil, "", &sdklogging.ErrorMessage{
 			StatusCode: http.StatusBadRequest,
 			Error: fmt.Errorf(

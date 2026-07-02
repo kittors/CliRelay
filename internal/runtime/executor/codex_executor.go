@@ -60,6 +60,9 @@ func (e *CodexExecutor) HttpRequest(ctx context.Context, auth *cliproxyauth.Auth
 		ctx = req.Context()
 	}
 	httpReq := req.WithContext(ctx)
+	if errAdmission := enforceCodexClientAdmissionForRequest(ctx, e.cfg, auth, httpReq); errAdmission != nil {
+		return nil, errAdmission
+	}
 	if err := e.PrepareRequest(httpReq, auth); err != nil {
 		return nil, err
 	}
@@ -122,6 +125,10 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	reporter := execCtx.Reporter()
 	defer reporter.trackFailure(execCtx.Context, &err)
 
+	if errAdmission := enforceCodexClientAdmission(execCtx.Context, e.cfg, auth); errAdmission != nil {
+		return resp, errAdmission
+	}
+
 	apiKey, baseURL := codexCreds(auth)
 	if baseURL == "" {
 		baseURL = "https://chatgpt.com/backend-api/codex"
@@ -150,7 +157,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	}
 
 	url := strings.TrimSuffix(baseURL, "/") + "/responses"
-	httpReq, err := e.cacheHelper(execCtx.Context, execCtx.SourceFormat, url, req, body)
+	httpReq, err := e.cacheHelper(execCtx.Context, auth, execCtx.SourceFormat, url, req, body)
 	if err != nil {
 		return resp, err
 	}
@@ -158,7 +165,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	recorder := execCtx.Recorder()
 	recorder.RecordRequest(url, http.MethodPost, httpReq.Header.Clone(), body)
 	httpClient := execCtx.HTTPClient(0)
-	httpResp, err := httpClient.Do(httpReq)
+	httpResp, err := httpClient.Do(httpReq) //nolint:bodyclose // body is closed by the defer below.
 	if err != nil {
 		recorder.RecordResponseError(err)
 		reporter.publishFailureWithContent(execCtx.Context, string(req.Payload), err.Error())
@@ -228,6 +235,10 @@ func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.A
 	reporter := execCtx.Reporter()
 	defer reporter.trackFailure(execCtx.Context, &err)
 
+	if errAdmission := enforceCodexClientAdmission(execCtx.Context, e.cfg, auth); errAdmission != nil {
+		return resp, errAdmission
+	}
+
 	apiKey, baseURL := codexCreds(auth)
 	if baseURL == "" {
 		baseURL = "https://chatgpt.com/backend-api/codex"
@@ -247,7 +258,7 @@ func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.A
 	body, _ = sjson.DeleteBytes(body, "stream")
 
 	url := strings.TrimSuffix(baseURL, "/") + "/responses/compact"
-	httpReq, err := e.cacheHelper(execCtx.Context, execCtx.SourceFormat, url, req, body)
+	httpReq, err := e.cacheHelper(execCtx.Context, auth, execCtx.SourceFormat, url, req, body)
 	if err != nil {
 		return resp, err
 	}
@@ -255,6 +266,7 @@ func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.A
 	recorder := execCtx.Recorder()
 	recorder.RecordRequest(url, http.MethodPost, httpReq.Header.Clone(), body)
 	httpClient := execCtx.HTTPClient(0)
+	//nolint:bodyclose // body is closed by the defer below.
 	httpResp, err := httpClient.Do(httpReq)
 	if err != nil {
 		recorder.RecordResponseError(err)
@@ -300,6 +312,10 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	reporter := execCtx.Reporter()
 	defer reporter.trackFailure(execCtx.Context, &err)
 
+	if errAdmission := enforceCodexClientAdmission(execCtx.Context, e.cfg, auth); errAdmission != nil {
+		return nil, errAdmission
+	}
+
 	apiKey, baseURL := codexCreds(auth)
 	if baseURL == "" {
 		baseURL = "https://chatgpt.com/backend-api/codex"
@@ -325,7 +341,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	}
 
 	url := strings.TrimSuffix(baseURL, "/") + "/responses"
-	httpReq, err := e.cacheHelper(execCtx.Context, execCtx.SourceFormat, url, req, body)
+	httpReq, err := e.cacheHelper(execCtx.Context, auth, execCtx.SourceFormat, url, req, body)
 	if err != nil {
 		return nil, err
 	}
@@ -333,6 +349,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	recorder := execCtx.Recorder()
 	recorder.RecordRequest(url, http.MethodPost, httpReq.Header.Clone(), body)
 	httpClient := execCtx.HTTPClient(0)
+	//nolint:bodyclose // success body is consumed and closed by the stream goroutine below.
 	httpResp, err := httpClient.Do(httpReq)
 	if err != nil {
 		recorder.RecordResponseError(err)
@@ -476,12 +493,12 @@ func (e *CodexExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*
 	return auth, nil
 }
 
-func (e *CodexExecutor) cacheHelper(ctx context.Context, from sdktranslator.Format, url string, req cliproxyexecutor.Request, rawJSON []byte) (*http.Request, error) {
+func (e *CodexExecutor) cacheHelper(ctx context.Context, auth *cliproxyauth.Auth, from sdktranslator.Format, url string, req cliproxyexecutor.Request, rawJSON []byte) (*http.Request, error) {
 	var cache codexCache
 	if from == "claude" {
 		userIDResult := gjson.GetBytes(req.Payload, "metadata.user_id")
 		if userIDResult.Exists() {
-			key := fmt.Sprintf("%s-%s", req.Model, userIDResult.String())
+			key := codexPromptCacheMapKey(auth, req.Model, userIDResult.String())
 			var ok bool
 			if cache, ok = getCodexCache(key); !ok {
 				cache = codexCache{
@@ -494,7 +511,7 @@ func (e *CodexExecutor) cacheHelper(ctx context.Context, from sdktranslator.Form
 	} else if from == "openai-response" {
 		promptCacheKey := gjson.GetBytes(req.Payload, "prompt_cache_key")
 		if promptCacheKey.Exists() {
-			cache.ID = promptCacheKey.String()
+			cache.ID = codexAccountScopedExplicitSessionID(auth, promptCacheKey.String())
 		}
 	}
 

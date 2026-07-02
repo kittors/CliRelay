@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/codexadmission"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 )
 
@@ -222,6 +223,95 @@ func TestApplyFieldPatchRejectsInvalidSubscriptionExpiration(t *testing.T) {
 	_, err := ApplyFieldPatch(auth, FieldPatch{SubscriptionExpiresAt: &expiresAt}, FieldPatchOptions{})
 	if err == nil || err.Error() != "subscription_expires_at must be a valid time" {
 		t.Fatalf("ApplyFieldPatch() error = %v, want invalid expiration", err)
+	}
+}
+
+func TestApplyFieldPatchUpdatesCodexOAuthAdmission(t *testing.T) {
+	now := time.Date(2026, 6, 24, 10, 0, 0, 0, time.UTC)
+	enabled := true
+	allowedClients := []string{" claude_code ", "CLAUDE_CODE"}
+	auth := &coreauth.Auth{
+		ID:       "codex-oauth",
+		Provider: "codex",
+		Metadata: map[string]any{
+			"email": "codex@example.com",
+		},
+	}
+
+	_, err := ApplyFieldPatch(auth, FieldPatch{
+		CodexCLIOnly:               &enabled,
+		CodexCLIOnlyAllowedClients: &allowedClients,
+	}, FieldPatchOptions{Now: now})
+	if err != nil {
+		t.Fatalf("ApplyFieldPatch() error = %v", err)
+	}
+	if got, _ := auth.Metadata["codex_cli_only"].(bool); !got {
+		t.Fatalf("codex_cli_only = %#v, want true", auth.Metadata["codex_cli_only"])
+	}
+	gotAllowed, ok := auth.Metadata["codex_cli_only_allowed_clients"].([]string)
+	if !ok {
+		t.Fatalf("codex_cli_only_allowed_clients = %#v, want []string", auth.Metadata["codex_cli_only_allowed_clients"])
+	}
+	if len(gotAllowed) != 1 || gotAllowed[0] != codexadmission.AllowedClientClaudeCode {
+		t.Fatalf("allowed clients = %#v, want [claude_code]", gotAllowed)
+	}
+	if !auth.UpdatedAt.Equal(now) {
+		t.Fatalf("UpdatedAt = %v, want %v", auth.UpdatedAt, now)
+	}
+}
+
+func TestApplyFieldPatchClearsCodexOAuthAllowedClients(t *testing.T) {
+	allowedClients := []string{}
+	auth := &coreauth.Auth{
+		ID:       "codex-oauth",
+		Provider: "codex",
+		Metadata: map[string]any{
+			"codex_cli_only_allowed_clients": []string{codexadmission.AllowedClientClaudeCode},
+		},
+	}
+
+	_, err := ApplyFieldPatch(auth, FieldPatch{
+		CodexCLIOnlyAllowedClients: &allowedClients,
+	}, FieldPatchOptions{})
+	if err != nil {
+		t.Fatalf("ApplyFieldPatch() error = %v", err)
+	}
+	if _, ok := auth.Metadata["codex_cli_only_allowed_clients"]; ok {
+		t.Fatalf("codex_cli_only_allowed_clients still present: %#v", auth.Metadata)
+	}
+}
+
+func TestApplyFieldPatchRejectsCodexOAuthAdmissionForAPIKeyAuth(t *testing.T) {
+	enabled := true
+	auth := &coreauth.Auth{
+		ID:       "codex-api-key",
+		Provider: "codex",
+		Attributes: map[string]string{
+			"api_key": "sk-test",
+		},
+	}
+
+	_, err := ApplyFieldPatch(auth, FieldPatch{CodexCLIOnly: &enabled}, FieldPatchOptions{})
+	if err == nil || !strings.Contains(err.Error(), "only supported for Codex OAuth") {
+		t.Fatalf("ApplyFieldPatch() error = %v, want Codex OAuth restriction", err)
+	}
+}
+
+func TestApplyFieldPatchRejectsUnknownCodexAllowedClientPreset(t *testing.T) {
+	allowedClients := []string{"unknown_client"}
+	auth := &coreauth.Auth{
+		ID:       "codex-oauth",
+		Provider: "codex",
+		Metadata: map[string]any{
+			"email": "codex@example.com",
+		},
+	}
+
+	_, err := ApplyFieldPatch(auth, FieldPatch{
+		CodexCLIOnlyAllowedClients: &allowedClients,
+	}, FieldPatchOptions{})
+	if err == nil || !strings.Contains(err.Error(), "unknown codex allowed client preset") {
+		t.Fatalf("ApplyFieldPatch() error = %v, want unknown preset error", err)
 	}
 }
 

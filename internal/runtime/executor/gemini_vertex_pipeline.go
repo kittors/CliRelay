@@ -111,6 +111,7 @@ func (e *GeminiVertexExecutor) executeVertexNonStream(
 	recorder := execCtx.Recorder()
 	recorder.RecordRequest(url, http.MethodPost, httpReq.Header.Clone(), body)
 
+	//nolint:bodyclose // body is closed by the defer below.
 	httpResp, err := execCtx.HTTPClient(0).Do(httpReq)
 	if err != nil {
 		recorder.RecordResponseError(err)
@@ -169,6 +170,7 @@ func (e *GeminiVertexExecutor) executeVertexStream(
 	recorder := execCtx.Recorder()
 	recorder.RecordRequest(url, http.MethodPost, httpReq.Header.Clone(), body)
 
+	//nolint:bodyclose // success body is consumed and closed by the stream goroutine below.
 	httpResp, err := execCtx.HTTPClient(0).Do(httpReq)
 	if err != nil {
 		recorder.RecordResponseError(err)

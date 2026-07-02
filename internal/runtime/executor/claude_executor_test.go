@@ -374,15 +374,15 @@ func TestClaudeExecutorAppliesClaudeIdentityFingerprint(t *testing.T) {
 	if got := gotHeaders.Get("User-Agent"); got != "claude-cli/2.1.88 (external, cli)" {
 		t.Fatalf("User-Agent = %q, want Claude Code fingerprint", got)
 	}
-	if got := gotHeaders.Get("Anthropic-Beta"); !strings.Contains(got, "redact-thinking-2026-02-12") ||
+	if got := gotHeaders.Get("Anthropic-Beta"); !strings.Contains(got, "extended-cache-ttl-2025-04-11") ||
 		!strings.Contains(got, "oauth-2025-04-20") {
 		t.Fatalf("Anthropic-Beta = %q, want Claude Code OAuth betas", got)
 	}
-	if got := gotHeaders.Get("X-Stainless-Package-Version"); got != "0.74.0" {
-		t.Fatalf("X-Stainless-Package-Version = %q, want 0.74.0", got)
+	if got := gotHeaders.Get("X-Stainless-Package-Version"); got != "0.94.0" {
+		t.Fatalf("X-Stainless-Package-Version = %q, want 0.94.0", got)
 	}
-	if got := gotHeaders.Get("X-Stainless-Runtime-Version"); got != "v22.13.0" {
-		t.Fatalf("X-Stainless-Runtime-Version = %q, want v22.13.0", got)
+	if got := gotHeaders.Get("X-Stainless-Runtime-Version"); got != "v24.3.0" {
+		t.Fatalf("X-Stainless-Runtime-Version = %q, want v24.3.0", got)
 	}
 	if got := gotHeaders.Get("X-Claude-Code-Session-Id"); got != "session-fixed-123" {
 		t.Fatalf("X-Claude-Code-Session-Id = %q, want fixed session", got)

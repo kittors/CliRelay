@@ -33,8 +33,11 @@ func connectManagerClient(t *testing.T, mgr *Manager) (*websocket.Conn, func()) 
 	t.Helper()
 
 	server := httptest.NewServer(mgr.Handler())
-	conn, _, err := websocket.DefaultDialer.Dial(wsURLFromHTTP(server.URL, mgr.Path()), nil)
+	conn, resp, err := websocket.DefaultDialer.Dial(wsURLFromHTTP(server.URL, mgr.Path()), nil)
 	if err != nil {
+		if resp != nil && resp.Body != nil {
+			_ = resp.Body.Close()
+		}
 		server.Close()
 		t.Fatalf("dial websocket: %v", err)
 	}

@@ -93,27 +93,30 @@ func (s *Service) BuildUpdateCheck(ctx context.Context) (*CheckResponse, error) 
 			dockerPublishMessage = err.Error()
 		}
 	}
+	updaterHealth := CheckUpdaterHealth(ctx, cfg)
 
 	resp := &CheckResponse{
-		Enabled:           cfg.AutoUpdate.Enabled,
-		CurrentVersion:    currentVersion,
-		CurrentCommit:     currentCommit,
-		CurrentUIVersion:  currentUIVersion,
-		CurrentUICommit:   currentUICommit,
-		BuildDate:         s.depsCurrentBuildDate(),
-		TargetChannel:     channel,
-		LatestVersion:     latestVersion,
-		LatestCommit:      latestCommit,
-		LatestCommitURL:   latestCommitURL,
-		LatestUIVersion:   latestUIVersion,
-		LatestUICommit:    latestUICommit,
-		LatestUICommitURL: latestUICommitURL,
-		DockerImage:       cfg.AutoUpdate.DockerImage,
-		DockerTag:         DockerTagForChannel(channel, branch.SHA),
-		ReleaseNotes:      releaseNotes,
-		ReleaseURL:        strings.TrimSpace(release.HTMLURL),
-		UpdateAvailable:   cfg.AutoUpdate.Enabled && rawUpdateAvailable && dockerPublishReady,
-		UpdaterAvailable:  CheckUpdaterAvailable(ctx, cfg),
+		Enabled:              cfg.AutoUpdate.Enabled,
+		CurrentVersion:       currentVersion,
+		CurrentCommit:        currentCommit,
+		CurrentUIVersion:     currentUIVersion,
+		CurrentUICommit:      currentUICommit,
+		BuildDate:            s.depsCurrentBuildDate(),
+		TargetChannel:        channel,
+		LatestVersion:        latestVersion,
+		LatestCommit:         latestCommit,
+		LatestCommitURL:      latestCommitURL,
+		LatestUIVersion:      latestUIVersion,
+		LatestUICommit:       latestUICommit,
+		LatestUICommitURL:    latestUICommitURL,
+		DockerImage:          cfg.AutoUpdate.DockerImage,
+		DockerTag:            DockerTagForChannel(channel, branch.SHA),
+		ReleaseNotes:         releaseNotes,
+		ReleaseURL:           strings.TrimSpace(release.HTMLURL),
+		UpdateAvailable:      cfg.AutoUpdate.Enabled && rawUpdateAvailable && dockerPublishReady,
+		UpdaterAvailable:     updaterHealth.Available,
+		UpdaterHealthStatus:  updaterHealth.Status,
+		UpdaterHealthMessage: updaterHealth.Message,
 	}
 	if !resp.Enabled {
 		resp.Message = "auto update disabled"
@@ -137,18 +140,21 @@ func (s *Service) BuildCurrentUpdateState(ctx context.Context) *CheckResponse {
 	}
 
 	currentUIVersion, currentUICommit := s.CurrentFrontendState()
+	updaterHealth := CheckUpdaterHealth(ctx, cfg)
 
 	return &CheckResponse{
-		Enabled:          cfg.AutoUpdate.Enabled,
-		CurrentVersion:   CurrentUpdateDisplayVersion(s.deps.CurrentVersion),
-		CurrentCommit:    strings.TrimSpace(s.deps.CurrentCommit),
-		CurrentUIVersion: currentUIVersion,
-		CurrentUICommit:  currentUICommit,
-		BuildDate:        s.depsCurrentBuildDate(),
-		TargetChannel:    channel,
-		DockerImage:      cfg.AutoUpdate.DockerImage,
-		DockerTag:        DockerTagForChannel(channel, ""),
-		UpdaterAvailable: CheckUpdaterAvailable(ctx, cfg),
+		Enabled:              cfg.AutoUpdate.Enabled,
+		CurrentVersion:       CurrentUpdateDisplayVersion(s.deps.CurrentVersion),
+		CurrentCommit:        strings.TrimSpace(s.deps.CurrentCommit),
+		CurrentUIVersion:     currentUIVersion,
+		CurrentUICommit:      currentUICommit,
+		BuildDate:            s.depsCurrentBuildDate(),
+		TargetChannel:        channel,
+		DockerImage:          cfg.AutoUpdate.DockerImage,
+		DockerTag:            DockerTagForChannel(channel, ""),
+		UpdaterAvailable:     updaterHealth.Available,
+		UpdaterHealthStatus:  updaterHealth.Status,
+		UpdaterHealthMessage: updaterHealth.Message,
 	}
 }
 

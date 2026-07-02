@@ -10,21 +10,23 @@ import (
 
 // Record contains the usage statistics captured for a single provider request.
 type Record struct {
-	Provider      string
-	Model         string
-	APIKey        string
-	APIKeyID      string
-	APIKeyName    string
-	AuthID        string
-	AuthIndex     string
-	AuthSubjectID string
-	Source        string
-	ChannelName   string
-	RequestedAt   time.Time
-	LatencyMs     int64
-	FirstTokenMs  int64
-	Failed        bool
-	Detail        Detail
+	Provider            string
+	Model               string
+	UpstreamModel       string
+	VisionFallbackModel string
+	APIKey              string
+	APIKeyID            string
+	APIKeyName          string
+	AuthID              string
+	AuthIndex           string
+	AuthSubjectID       string
+	Source              string
+	ChannelName         string
+	RequestedAt         time.Time
+	LatencyMs           int64
+	FirstTokenMs        int64
+	Failed              bool
+	Detail              Detail
 
 	// Optional: request/response content for log detail viewer.
 	// These are stored in SQLite when non-empty and can be retrieved via the

@@ -631,6 +631,58 @@ func TestBuildCurrentUpdateStateDoesNotQueryGitHub(t *testing.T) {
 	}
 }
 
+func TestBuildCurrentUpdateStateReportsMissingUpdaterToken(t *testing.T) {
+	t.Setenv("CLIRELAY_UPDATER_URL", "http://127.0.0.1:1")
+	t.Setenv("CLIRELAY_UPDATER_TOKEN", "")
+
+	handler := &Handler{cfg: &config.Config{}}
+	resp := handler.buildCurrentUpdateState(context.Background())
+	if resp.UpdaterAvailable {
+		t.Fatal("UpdaterAvailable = true, want false when updater token is missing")
+	}
+	if resp.UpdaterHealthStatus != "token_missing" {
+		t.Fatalf("UpdaterHealthStatus = %q, want token_missing", resp.UpdaterHealthStatus)
+	}
+	if !strings.Contains(resp.UpdaterHealthMessage, "token") {
+		t.Fatalf("UpdaterHealthMessage = %q, want token context", resp.UpdaterHealthMessage)
+	}
+}
+
+func TestBuildCurrentUpdateStateReportsUpdaterAuthFailure(t *testing.T) {
+	origDefaultClient := http.DefaultClient
+	t.Cleanup(func() {
+		http.DefaultClient = origDefaultClient
+	})
+	http.DefaultClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Path != "/v1/health" {
+			t.Fatalf("path = %q, want /v1/health", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer test-token" {
+			t.Fatalf("Authorization = %q, want Bearer test-token", got)
+		}
+		return &http.Response{
+			StatusCode: http.StatusUnauthorized,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader("unauthorized")),
+			Request:    r,
+		}, nil
+	})}
+	t.Setenv("CLIRELAY_UPDATER_URL", "http://updater.local")
+	t.Setenv("CLIRELAY_UPDATER_TOKEN", "test-token")
+
+	handler := &Handler{cfg: &config.Config{}}
+	resp := handler.buildCurrentUpdateState(context.Background())
+	if resp.UpdaterAvailable {
+		t.Fatal("UpdaterAvailable = true, want false when updater rejects health auth")
+	}
+	if resp.UpdaterHealthStatus != "auth_failed" {
+		t.Fatalf("UpdaterHealthStatus = %q, want auth_failed", resp.UpdaterHealthStatus)
+	}
+	if !strings.Contains(resp.UpdaterHealthMessage, "token") {
+		t.Fatalf("UpdaterHealthMessage = %q, want token context", resp.UpdaterHealthMessage)
+	}
+}
+
 func TestFetchUpdateProgressProxiesUpdaterStatus(t *testing.T) {
 	updater := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/status" {

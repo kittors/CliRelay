@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/codexadmission"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 )
 
@@ -68,6 +69,96 @@ func TestBuildEntryAllowsRuntimeOnlyAuthWithoutPath(t *testing.T) {
 	}
 	if source, _ := entry["source"].(string); source != "memory" {
 		t.Fatalf("source = %q, want memory", source)
+	}
+}
+
+func TestBuildEntryIncludesSanitizedClaudeOAuthHealth(t *testing.T) {
+	auth := &coreauth.Auth{
+		ID:       "claude-oauth",
+		Provider: "claude",
+		Attributes: map[string]string{
+			"runtime_only": "true",
+		},
+		Metadata: map[string]any{
+			"email":         "claude@example.com",
+			"access_token":  "metadata-access-token",
+			"refresh_token": "metadata-refresh-token",
+			coreauth.ClaudeOAuthHealthMetadataKey: map[string]any{
+				"status":        "refresh_pending",
+				"access_token":  "health-access-token",
+				"refresh_token": "health-refresh-token",
+				"windows": map[string]any{
+					"five_hour": map[string]any{
+						"status":      "rejected",
+						"exceeded":    true,
+						"secret":      "hidden",
+						"utilization": 1.02,
+					},
+				},
+			},
+		},
+	}
+
+	entry := BuildEntry(auth, EntryOptions{})
+	if entry == nil {
+		t.Fatal("expected entry")
+	}
+	health, ok := entry["claude_oauth_health"].(map[string]any)
+	if !ok {
+		t.Fatalf("claude_oauth_health = %#v, want map", entry["claude_oauth_health"])
+	}
+	if health["status"] != "refresh_pending" {
+		t.Fatalf("health.status = %v, want refresh_pending", health["status"])
+	}
+	if _, ok := health["access_token"]; ok {
+		t.Fatalf("health leaked access_token: %#v", health)
+	}
+	windows, _ := health["windows"].(map[string]any)
+	fiveHour, _ := windows["five_hour"].(map[string]any)
+	if fiveHour["utilization"] != 1.02 || fiveHour["secret"] != nil {
+		t.Fatalf("five_hour = %#v, want utilization without secret", fiveHour)
+	}
+}
+
+func TestBuildEntryIncludesCodexOAuthAdmissionPayload(t *testing.T) {
+	auth := &coreauth.Auth{
+		ID:       "codex-oauth",
+		Provider: "codex",
+		Attributes: map[string]string{
+			"runtime_only": "true",
+		},
+		Metadata: map[string]any{
+			"codex_cli_only":                 true,
+			"codex_cli_only_allowed_clients": []string{"unknown", codexadmission.AllowedClientClaudeCode},
+			"email":                          "codex@example.com",
+		},
+	}
+
+	entry := BuildEntry(auth, EntryOptions{})
+	if entry == nil {
+		t.Fatal("expected entry")
+	}
+	if got, _ := entry["codex_cli_only"].(bool); !got {
+		t.Fatalf("codex_cli_only = %#v, want true", entry["codex_cli_only"])
+	}
+	legacyAllowed, ok := entry["codex_cli_only_allowed_clients"].([]string)
+	if !ok || len(legacyAllowed) != 1 || legacyAllowed[0] != codexadmission.AllowedClientClaudeCode {
+		t.Fatalf("legacy allowed clients = %#v, want [claude_code]", entry["codex_cli_only_allowed_clients"])
+	}
+	admission, ok := entry["codex_oauth_admission"].(map[string]any)
+	if !ok {
+		t.Fatalf("codex_oauth_admission = %#v, want map", entry["codex_oauth_admission"])
+	}
+	if enabled, _ := admission["enabled"].(bool); !enabled {
+		t.Fatalf("admission.enabled = %#v, want true", admission["enabled"])
+	}
+	allowed, ok := admission["allowed_clients"].([]string)
+	if !ok || len(allowed) != 1 || allowed[0] != codexadmission.AllowedClientClaudeCode {
+		t.Fatalf("admission.allowed_clients = %#v, want [claude_code]", admission["allowed_clients"])
+	}
+	available, ok := admission["available_allowed_clients"].([]codexadmission.AllowedClientPresetInfo)
+	if !ok || len(available) == 0 || available[0].ID != codexadmission.AllowedClientClaudeCode {
+		t.Fatalf("admission.available_allowed_clients = %#v, want claude_code preset info", admission["available_allowed_clients"])
 	}
 }
 

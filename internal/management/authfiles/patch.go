@@ -5,24 +5,27 @@ import (
 	"strings"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/codexadmission"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 )
 
 // FieldPatch carries editable auth-file fields from the management API into
 // the authfiles use case layer.
 type FieldPatch struct {
-	Name                  string    `json:"name"`
-	Label                 *string   `json:"label"`
-	CustomTags            *[]string `json:"custom_tags"`
-	HiddenDefaultTags     *[]string `json:"hidden_default_tags"`
-	DisplayTags           *[]string `json:"display_tags"`
-	Prefix                *string   `json:"prefix"`
-	ProxyURL              *string   `json:"proxy_url"`
-	ProxyID               *string   `json:"proxy_id"`
-	Priority              *int      `json:"priority"`
-	SubscriptionStartedAt *string   `json:"subscription_started_at"`
-	SubscriptionPeriod    *string   `json:"subscription_period"`
-	SubscriptionExpiresAt *string   `json:"subscription_expires_at"`
+	Name                       string    `json:"name"`
+	Label                      *string   `json:"label"`
+	CustomTags                 *[]string `json:"custom_tags"`
+	HiddenDefaultTags          *[]string `json:"hidden_default_tags"`
+	DisplayTags                *[]string `json:"display_tags"`
+	Prefix                     *string   `json:"prefix"`
+	ProxyURL                   *string   `json:"proxy_url"`
+	ProxyID                    *string   `json:"proxy_id"`
+	Priority                   *int      `json:"priority"`
+	SubscriptionStartedAt      *string   `json:"subscription_started_at"`
+	SubscriptionPeriod         *string   `json:"subscription_period"`
+	SubscriptionExpiresAt      *string   `json:"subscription_expires_at"`
+	CodexCLIOnly               *bool     `json:"codex_cli_only"`
+	CodexCLIOnlyAllowedClients *[]string `json:"codex_cli_only_allowed_clients"`
 }
 
 type FieldPatchOptions struct {
@@ -213,6 +216,30 @@ func ApplyFieldPatch(auth *coreauth.Auth, patch FieldPatch, opts FieldPatchOptio
 			DeleteSubscriptionPeriodMetadata(metadata)
 			DeleteSubscriptionExpirationMetadata(metadata)
 			metadata["subscription_expires_at"] = ts.UTC().Format(time.RFC3339)
+		}
+		changed = true
+	}
+	if patch.CodexCLIOnly != nil {
+		if err := ensureCodexOAuthAdmissionEditable(auth); err != nil {
+			return result, err
+		}
+		metadata := ensureMetadata(auth)
+		metadata["codex_cli_only"] = *patch.CodexCLIOnly
+		changed = true
+	}
+	if patch.CodexCLIOnlyAllowedClients != nil {
+		if err := ensureCodexOAuthAdmissionEditable(auth); err != nil {
+			return result, err
+		}
+		allowedClients, errNormalize := codexadmission.NormalizeAllowedClientPresets(*patch.CodexCLIOnlyAllowedClients)
+		if errNormalize != nil {
+			return result, errNormalize
+		}
+		metadata := ensureMetadata(auth)
+		if len(allowedClients) == 0 {
+			delete(metadata, "codex_cli_only_allowed_clients")
+		} else {
+			metadata["codex_cli_only_allowed_clients"] = allowedClients
 		}
 		changed = true
 	}

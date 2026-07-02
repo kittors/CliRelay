@@ -353,7 +353,7 @@ func pollCodexImageConversation(ctx context.Context, client *http.Client, header
 			}
 			return nil, timeoutErr
 		}
-		resp, err := doCodexImageJSON(ctx, client, http.MethodGet, codexImageURL("/backend-api/conversation/"+conversationID), headers, nil)
+		resp, err := doCodexImageJSON(ctx, client, http.MethodGet, codexImageURL("/backend-api/conversation/"+conversationID), headers, nil) //nolint:bodyclose // readAndCloseCodexImageBody closes the body below.
 		if err != nil {
 			if timeoutErr := codexImagePollTimeoutError(ctx, startedAt, deadline, conversationID); timeoutErr != nil {
 				return nil, timeoutErr
@@ -624,7 +624,7 @@ func fetchCodexImageDownloadURL(ctx context.Context, client *http.Client, header
 	default:
 		return "", fmt.Errorf("unsupported image pointer: %s", pointer)
 	}
-	resp, err := doCodexImageJSON(ctx, client, http.MethodGet, url, headers, nil)
+	resp, err := doCodexImageJSON(ctx, client, http.MethodGet, url, headers, nil) //nolint:bodyclose // readAndCloseCodexImageBody closes the body below.
 	if err != nil {
 		return "", err
 	}

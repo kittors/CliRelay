@@ -27,6 +27,8 @@ type ModelInfo struct {
 	Type string `json:"type"`
 	// DisplayName is the human-readable name for the model
 	DisplayName string `json:"display_name,omitempty"`
+	// UpstreamModelID is the provider-native model ID used after alias resolution.
+	UpstreamModelID string `json:"upstream_model_id,omitempty"`
 	// Name is used for Gemini-style model names
 	Name string `json:"name,omitempty"`
 	// Version is the model version

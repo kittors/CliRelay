@@ -62,6 +62,19 @@ func PathRouteContextFromContext(ctx context.Context) *PathRouteContext {
 	return clonePathRouteContext(route)
 }
 
+func IsCcSwitchMappedTargetModel(route *PathRouteContext, modelName string) bool {
+	modelName = strings.TrimSpace(modelName)
+	if route == nil || route.CcSwitch == nil || modelName == "" {
+		return false
+	}
+	for _, mapping := range route.CcSwitch.ModelMappings {
+		if strings.TrimSpace(mapping.TargetModel) == modelName {
+			return true
+		}
+	}
+	return false
+}
+
 func clonePathRouteContext(route *PathRouteContext) *PathRouteContext {
 	if route == nil {
 		return nil

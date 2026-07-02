@@ -84,7 +84,7 @@ func (s *Service) registerModelsForAuth(ctx context.Context, a *coreauth.Auth) {
 	}
 	provider := strings.ToLower(strings.TrimSpace(a.Provider))
 	compatProviderKey, compatDisplayName, compatDetected := openAICompatInfoFromAuth(a)
-	if compatDetected {
+	if compatDetected && provider != "cline" {
 		provider = "openai-compatibility"
 	}
 	excluded := s.oauthExcludedModels(provider, authKind)
@@ -154,6 +154,16 @@ func (s *Service) registerModelsForAuth(ctx context.Context, a *coreauth.Auth) {
 		if entry := s.resolveConfigOpenCodeGoKey(a); entry != nil && authKind == "apikey" {
 			if len(entry.Models) > 0 {
 				models = buildOpenCodeGoConfigModels(entry, staticModels)
+			}
+			excluded = entry.ExcludedModels
+		}
+		models = applyExcludedModels(models, excluded)
+	case "cline":
+		staticModels := sdkmodelcatalog.StaticModelDefinitionsByChannel("cline")
+		models = staticModels
+		if entry := s.resolveConfigClineKey(a); entry != nil && authKind == "apikey" {
+			if len(entry.Models) > 0 {
+				models = buildClineConfigModels(entry, staticModels)
 			}
 			excluded = entry.ExcludedModels
 		}

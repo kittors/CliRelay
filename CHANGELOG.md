@@ -1,21 +1,26 @@
 # CHANGELOG
 
-## Unreleased
+## v0.4.6 - OAuth Identity Fingerprints and Updater Diagnostics - 2026-06-25
 
-### Codex auth metadata and startup registration
+### Highlights
 
-- persisted Codex `plan_type` into runtime auth metadata during both CLI/device login and management OAuth login flows
-- preserved Codex `account_id` explicitly in runtime auth metadata for downstream request handling
-- backfilled Codex `plan_type` from legacy `id_token` metadata when older auth files do not store it explicitly
-- registered loaded auths during service startup so executors and model visibility are available immediately after boot
-- preserved Codex free-tier model routing without forcing tier-based model downgrades or synthetic excluded-model lists
+- added account-level OAuth identity fingerprint learning and detail APIs for Claude, Codex, Gemini, and Kimi-compatible runtime flows
+- added Codex OAuth client admission presets so OAuth auth files can restrict upstream access to recognized client identities
+- added Claude OAuth health tracking and quota reconciliation helpers for clearer auth-file status reporting
+- made updater sidecar token configuration explicit and returned health diagnostics instead of a generic unavailable state
+- added quota status clear endpoints for auth-file quota and cooldown recovery workflows
+- normalized OpenAI-compatible chat tool-call history and routed OpenCode Go tool-output images through vision fallback handling
+- made issue triage automation command-driven for safer maintainer control
 
-### Verification and tests
+### Compatibility and upgrade notes
 
-- added auth metadata coverage test for Codex plan/account persistence
-- added watcher synthesis coverage for Codex `plan_type` backfill and free-tier pass-through behavior
-- added service startup registration coverage for loaded auth records
+- direct Docker Compose deployments must provide a non-empty `CLIRELAY_UPDATER_TOKEN` shared by the API and updater sidecar
+- existing identity-fingerprint configuration remains compatible; learned account records are added through runtime observation
+- Codex OAuth admission uses fixed named presets rather than user-supplied matching rules
+- the quota status clear endpoint is intended for management recovery flows and does not change normal quota accounting
 
-### Notes
+### Verification
 
-- this change is aimed at Codex OAuth / ChatGPT-account free-tier behavior, not standard OpenAI API-key billing flows
+- `rtk go test ./...`
+- `rtk git diff --check`
+- PR checks for the merged `dev` pull requests

@@ -9,6 +9,7 @@ import (
 	"github.com/gin-gonic/gin"
 	managementusagelogs "github.com/router-for-me/CLIProxyAPI/v6/internal/management/usagelogs"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
+	log "github.com/sirupsen/logrus"
 )
 
 const authFileGroupTrendCacheTTL = 30 * time.Second
@@ -83,6 +84,7 @@ func (h *UsageLogsHandler) GetUsageLogs(c *gin.Context) {
 		MatchNoChannels: queryBool(c, "channels_empty"),
 	})
 	if err != nil {
+		log.Warnf("management usage logs: get usage logs failed: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -93,6 +95,7 @@ func (h *UsageLogsHandler) DeleteUsageLogs(c *gin.Context) {
 	if c.Request.ContentLength == 0 {
 		result, err := h.service().ClearAllRequestLogs()
 		if err != nil {
+			log.Warnf("management usage logs: clear all request logs failed: %v", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
@@ -150,6 +153,7 @@ func (h *UsageLogsHandler) GetPublicUsageLogs(c *gin.Context) {
 		Days:   req.Days,
 	})
 	if err != nil {
+		log.Warnf("management usage logs: public usage logs failed: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -169,6 +173,7 @@ func (h *UsageLogsHandler) GetPublicUsageChartData(c *gin.Context) {
 	}
 	payload, err := h.service().PublicChartData(req.APIKey, req.Days)
 	if err != nil {
+		log.Warnf("management usage logs: public chart data failed: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -198,6 +203,7 @@ func (h *UsageLogsHandler) GetPublicLogContent(c *gin.Context) {
 func (h *UsageLogsHandler) GetUsageChartData(c *gin.Context) {
 	payload, err := h.service().UsageChartData(strings.TrimSpace(c.Query("api_key")), intQueryDefault(c, "days", 7))
 	if err != nil {
+		log.Warnf("management usage logs: usage chart data failed: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -213,6 +219,7 @@ func (h *UsageLogsHandler) GetEntityUsageStats(c *gin.Context) {
 		queryStringList(c, "source"),
 	)
 	if err != nil {
+		log.Warnf("management usage logs: entity usage stats failed: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -286,6 +293,7 @@ func (h *UsageLogsHandler) GetAuthFileGroupTrend(c *gin.Context) {
 
 	payload, err := h.service().AuthFileGroupTrend(group, days)
 	if err != nil {
+		log.Warnf("management usage logs: auth file group trend failed: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}

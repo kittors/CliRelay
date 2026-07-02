@@ -18,19 +18,21 @@ type CcSwitchModelMappingRow struct {
 }
 
 type CcSwitchImportConfigRow struct {
-	ID                   string                    `json:"id"`
-	ClientType           string                    `json:"client-type"`
-	ProviderName         string                    `json:"provider-name"`
-	Note                 string                    `json:"note"`
-	DefaultModel         string                    `json:"default-model"`
-	ModelMappings        []CcSwitchModelMappingRow `json:"model-mappings"`
-	AllowedChannelGroups []string                  `json:"allowed-channel-groups"`
-	RoutePath            string                    `json:"route-path,omitempty"`
-	EndpointPath         string                    `json:"endpoint-path"`
-	UsageAutoInterval    int                       `json:"usage-auto-interval"`
-	APIKeyField          string                    `json:"api-key-field,omitempty"`
-	CreatedAt            string                    `json:"created-at,omitempty"`
-	UpdatedAt            string                    `json:"updated-at,omitempty"`
+	ID                        string                     `json:"id"`
+	ClientType                string                     `json:"client-type"`
+	ProviderName              string                     `json:"provider-name"`
+	Note                      string                     `json:"note"`
+	DefaultModel              string                     `json:"default-model"`
+	ModelMappings             []CcSwitchModelMappingRow  `json:"model-mappings"`
+	AllowedChannelGroups      []string                   `json:"allowed-channel-groups"`
+	RoutePath                 string                     `json:"route-path,omitempty"`
+	EndpointPath              string                     `json:"endpoint-path"`
+	UsageAutoInterval         int                        `json:"usage-auto-interval"`
+	APIKeyField               string                     `json:"api-key-field,omitempty"`
+	CodexModelCatalogFilename string                     `json:"codex-model-catalog-filename,omitempty"`
+	CodexModelCatalog         *CcSwitchCodexModelCatalog `json:"codex-model-catalog,omitempty"`
+	CreatedAt                 string                     `json:"created-at,omitempty"`
+	UpdatedAt                 string                     `json:"updated-at,omitempty"`
 }
 
 const createCcSwitchImportConfigsTableSQL = `

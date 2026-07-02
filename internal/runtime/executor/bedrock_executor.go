@@ -193,7 +193,7 @@ func (e *BedrockExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.
 	}
 
 	recorder := execCtx.Recorder()
-	httpResp, err := e.doBedrockRequest(execCtx, mappedModel, true, body)
+	httpResp, err := e.doBedrockRequest(execCtx, mappedModel, true, body) //nolint:bodyclose // success body is consumed and closed by the stream goroutine below.
 	if err != nil {
 		reporter.publishFailureWithContent(execCtx.Context, string(req.Payload), err.Error())
 		return nil, err

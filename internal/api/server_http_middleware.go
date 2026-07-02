@@ -2,7 +2,6 @@ package api
 
 import (
 	"net/http"
-	"net/url"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -81,10 +80,6 @@ func resolveAllowedCORSOrigin(r *http.Request, cfg *config.Config) string {
 		return origin
 	}
 
-	if isChromeExtensionOrigin(origin) {
-		return origin
-	}
-
 	if cfg == nil {
 		return ""
 	}
@@ -94,22 +89,6 @@ func resolveAllowedCORSOrigin(r *http.Request, cfg *config.Config) string {
 		}
 	}
 	return ""
-}
-
-func isChromeExtensionOrigin(origin string) bool {
-	trimmed := strings.TrimSpace(origin)
-	if trimmed == "" {
-		return false
-	}
-
-	parsed, err := url.Parse(trimmed)
-	if err != nil || parsed == nil {
-		return false
-	}
-	if !strings.EqualFold(parsed.Scheme, "chrome-extension") {
-		return false
-	}
-	return strings.TrimSpace(parsed.Host) != ""
 }
 
 func versionHeaderMiddleware(configFilePath string) gin.HandlerFunc {

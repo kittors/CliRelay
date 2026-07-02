@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/codexadmission"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	managementauthfiles "github.com/router-for-me/CLIProxyAPI/v6/internal/management/authfiles"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
@@ -93,6 +94,60 @@ func TestPatchAuthFileFieldsUpdatesOAuthChannelLabel(t *testing.T) {
 	}
 	if got, _ := updated.Metadata["label"].(string); got != "Team Alpha" {
 		t.Fatalf("metadata label = %q, want %q", got, "Team Alpha")
+	}
+}
+
+func TestPatchAuthFileFieldsUpdatesCodexOAuthAdmission(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	store := &memoryAuthStore{}
+	manager := coreauth.NewManager(store, nil, nil)
+	_, err := manager.Register(context.Background(), &coreauth.Auth{
+		ID:       "codex-oauth-1",
+		FileName: "codex-oauth-1.json",
+		Provider: "codex",
+		Metadata: map[string]any{
+			"email": "codex@example.com",
+		},
+	})
+	if err != nil {
+		t.Fatalf("register auth: %v", err)
+	}
+
+	h := &Handler{
+		cfg:         &config.Config{},
+		authManager: manager,
+	}
+
+	body, err := json.Marshal(map[string]any{
+		"name":                           "codex-oauth-1.json",
+		"codex_cli_only":                 true,
+		"codex_cli_only_allowed_clients": []string{"claude_code", "CLAUDE_CODE"},
+	})
+	if err != nil {
+		t.Fatalf("marshal body: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPatch, "/auth-files/fields", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	h.PatchAuthFileFields(c)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d, body=%s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+	updated, ok := manager.GetByID("codex-oauth-1")
+	if !ok || updated == nil {
+		t.Fatal("expected updated auth")
+	}
+	if got, _ := updated.Metadata["codex_cli_only"].(bool); !got {
+		t.Fatalf("codex_cli_only = %#v, want true", updated.Metadata["codex_cli_only"])
+	}
+	allowed, ok := updated.Metadata["codex_cli_only_allowed_clients"].([]string)
+	if !ok || len(allowed) != 1 || allowed[0] != codexadmission.AllowedClientClaudeCode {
+		t.Fatalf("allowed clients = %#v, want [claude_code]", updated.Metadata["codex_cli_only_allowed_clients"])
 	}
 }
 

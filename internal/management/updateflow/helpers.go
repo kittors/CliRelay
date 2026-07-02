@@ -161,21 +161,50 @@ func JoinURLPath(base string, path string) string {
 }
 
 func CheckUpdaterAvailable(ctx context.Context, cfg *config.Config) bool {
+	return CheckUpdaterHealth(ctx, cfg).Available
+}
+
+func CheckUpdaterHealth(ctx context.Context, cfg *config.Config) UpdaterHealth {
+	token := UpdaterToken()
+	if token == "" {
+		return UpdaterHealth{
+			Status:  UpdaterHealthStatusTokenMissing,
+			Message: "updater token is not configured",
+		}
+	}
+
 	ctx, cancel := context.WithTimeout(ctx, UpdaterHealthTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, JoinURLPath(ResolveUpdaterURL(cfg), "/v1/health"), nil)
 	if err != nil {
-		return false
+		return UpdaterHealth{
+			Status:  UpdaterHealthStatusRequestInvalid,
+			Message: "updater health request could not be created",
+		}
 	}
-	if token := UpdaterToken(); token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
+	req.Header.Set("Authorization", "Bearer "+token)
+
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return false
+		return UpdaterHealth{
+			Status:  UpdaterHealthStatusUnreachable,
+			Message: "updater health request failed: " + err.Error(),
+		}
 	}
 	defer resp.Body.Close()
-	return resp.StatusCode >= 200 && resp.StatusCode < 300
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return UpdaterHealth{Available: true, Status: UpdaterHealthStatusOK}
+	}
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		return UpdaterHealth{
+			Status:  UpdaterHealthStatusAuthFailed,
+			Message: "updater token is missing or does not match",
+		}
+	}
+	return UpdaterHealth{
+		Status:  UpdaterHealthStatusBadStatus,
+		Message: fmt.Sprintf("updater health returned HTTP %d", resp.StatusCode),
+	}
 }
 
 func FetchBranchCommit(ctx context.Context, client *http.Client, repo string, channel string) (BranchCommitInfo, error) {

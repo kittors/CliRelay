@@ -58,6 +58,34 @@ func TestExecutionContextUsesOriginalRequestAndRequestedModel(t *testing.T) {
 	}
 }
 
+func TestExecutionContextReporterKeepsVisionFallbackSeparateFromModelMapping(t *testing.T) {
+	ctx := contextWithVisionFallbackLog(context.Background(), "alias-model", "real-model", "vision-model")
+	req := cliproxyexecutor.Request{
+		Model:   "vision-model",
+		Payload: []byte(`{"messages":[]}`),
+	}
+	execCtx := newExecutionContext(
+		ctx,
+		"openai-compatibility",
+		&config.Config{},
+		nil,
+		req,
+		cliproxyexecutor.Options{SourceFormat: sdktranslator.FromString("openai")},
+		ExecutionOptions{TargetFormat: sdktranslator.FromString("openai")},
+	)
+
+	reporter := execCtx.Reporter()
+	if reporter.model != "alias-model" {
+		t.Fatalf("reporter.model = %q, want alias-model", reporter.model)
+	}
+	if reporter.upstreamModel != "real-model" {
+		t.Fatalf("reporter.upstreamModel = %q, want real-model", reporter.upstreamModel)
+	}
+	if reporter.visionFallbackModel != "vision-model" {
+		t.Fatalf("reporter.visionFallbackModel = %q, want vision-model", reporter.visionFallbackModel)
+	}
+}
+
 func TestExecutionContextApplyPayloadConfigUsesProtocolOverride(t *testing.T) {
 	cfg := &config.Config{
 		Payload: config.PayloadConfig{

@@ -78,8 +78,11 @@ func TestQueryCodexFingerprintRecommendationsAggregatesStableHeaders(t *testing.
 	if item.Recommended.SessionID != "" {
 		t.Fatalf("Recommended.SessionID = %q, want empty", item.Recommended.SessionID)
 	}
-	if got := item.Recommended.CustomHeaders["X-Codex-Beta-Features"]; got != "exec_command_v2" {
-		t.Fatalf("X-Codex-Beta-Features = %q, want exec_command_v2", got)
+	if item.Recommended.BetaFeatures != "exec_command_v2" {
+		t.Fatalf("Recommended.BetaFeatures = %q, want exec_command_v2", item.Recommended.BetaFeatures)
+	}
+	if _, exists := item.Recommended.CustomHeaders["X-Codex-Beta-Features"]; exists {
+		t.Fatalf("X-Codex-Beta-Features must be recommended as a managed field, not a custom header")
 	}
 	if _, exists := item.Recommended.CustomHeaders["X-Codex-Turn-Metadata"]; exists {
 		t.Fatalf("turn metadata must not be recommended as a fixed custom header")

@@ -110,6 +110,46 @@ func TestOpenCodeGoExecutorUsesVisionFallbackForImageRequests(t *testing.T) {
 	}
 }
 
+func TestOpenCodeGoExecutorUsesVisionFallbackForResponsesFunctionCallOutputImage(t *testing.T) {
+	var gotBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl_tool_vision","object":"chat.completion","created":1,"model":"qwen3.5-plus","choices":[{"index":0,"message":{"role":"assistant","content":"tool vision ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":1,"total_tokens":3}}`))
+	}))
+	defer server.Close()
+
+	oldBaseURL := opencodeGoBaseURL
+	opencodeGoBaseURL = server.URL + "/zen/go/v1"
+	t.Cleanup(func() { opencodeGoBaseURL = oldBaseURL })
+
+	exec := NewOpenCodeGoExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{
+		Attributes: map[string]string{
+			"api_key":               "test-key",
+			"vision_fallback_model": "qwen3.5-plus",
+		},
+	}
+	payload := []byte(`{"model":"deepseek-v4-flash","input":[{"role":"user","content":[{"type":"input_text","text":"inspect this screenshot"}]},{"type":"function_call","call_id":"call_1","name":"get_app_state","arguments":"{}"},{"type":"function_call_output","call_id":"call_1","output":[{"type":"input_image","image_url":"data:image/png;base64,aGVsbG8="}]}]}`)
+	resp, err := exec.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "deepseek-v4-flash",
+		Payload: payload,
+	}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatOpenAIResponse})
+	if err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+
+	if gotModel := gjson.GetBytes(gotBody, "model").String(); gotModel != "qwen3.5-plus" {
+		t.Fatalf("upstream model = %q, want qwen3.5-plus; body=%s", gotModel, string(gotBody))
+	}
+	if gotModel := gjson.GetBytes(resp.Payload, "model").String(); gotModel != "deepseek-v4-flash" {
+		t.Fatalf("response model = %q, want deepseek-v4-flash; payload=%s", gotModel, string(resp.Payload))
+	}
+	if gotText := gjson.GetBytes(resp.Payload, "output.0.content.0.text").String(); gotText != "tool vision ok" {
+		t.Fatalf("response text = %q, want tool vision ok; payload=%s", gotText, string(resp.Payload))
+	}
+}
+
 func TestOpenCodeGoExecutorUsesConfiguredNonQwenVisionFallback(t *testing.T) {
 	var gotBody []byte
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

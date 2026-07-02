@@ -164,6 +164,9 @@ func (s refreshService) shouldRefresh(auth *Auth, now time.Time) bool {
 	if evaluator, ok := auth.Runtime.(RefreshEvaluator); ok && evaluator != nil {
 		return evaluator.ShouldRefresh(now, auth)
 	}
+	if claudeOAuthRefreshPending(auth) {
+		return true
+	}
 
 	lastRefresh := auth.LastRefreshedAt
 	if lastRefresh.IsZero() {
@@ -303,6 +306,7 @@ func (s refreshService) applyRefreshSuccess(ctx context.Context, auth *Auth, clo
 	updated.NextRefreshAfter = time.Time{}
 	updated.LastError = nil
 	updated.UpdatedAt = now
+	markClaudeOAuthHealthRefreshSuccessLocked(updated, now)
 	_, _ = s.manager.Update(ctx, updated)
 }
 

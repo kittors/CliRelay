@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/identityfingerprint"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -29,11 +31,13 @@ type claudeFingerprintUserID struct {
 	SessionID   string `json:"session_id"`
 }
 
-func claudeIdentityFingerprint(cfg *config.Config) (config.ClaudeIdentityFingerprintConfig, bool) {
+func claudeIdentityFingerprint(cfg *config.Config, auth *cliproxyauth.Auth, ctx context.Context) (config.ClaudeIdentityFingerprintConfig, bool) {
 	if cfg == nil || !cfg.IdentityFingerprint.Claude.Enabled {
 		return config.ClaudeIdentityFingerprintConfig{}, false
 	}
-	return config.NormalizeClaudeIdentityFingerprint(cfg.IdentityFingerprint.Claude), true
+	learned := observeRuntimeIdentityFingerprint(identityfingerprint.ProviderClaude, auth, ctx)
+	resolved, _ := identityfingerprint.ResolveClaude(cfg.IdentityFingerprint.Claude, learned)
+	return resolved, true
 }
 
 func claudeServerStableSessionID() string {

@@ -77,13 +77,16 @@ FROM alpine:3.22.0
 
 RUN apk add --no-cache tzdata ca-certificates docker-cli docker-cli-compose
 
-RUN mkdir -p /CLIProxyAPI/panel
+RUN addgroup -S -g 10001 clirelay \
+  && adduser -S -D -H -u 10001 -h /CLIProxyAPI -s /sbin/nologin -G clirelay clirelay \
+  && mkdir -p /CLIProxyAPI/panel /CLIProxyAPI/auths /CLIProxyAPI/logs /CLIProxyAPI/data \
+  && chown -R clirelay:clirelay /CLIProxyAPI
 
-COPY --from=backend-builder /app/CLIProxyAPI /CLIProxyAPI/CLIProxyAPI
-COPY --from=backend-builder /app/clirelay-updater /CLIProxyAPI/clirelay-updater
-COPY --from=frontend-builder /frontend/dist/ /CLIProxyAPI/panel/
+COPY --from=backend-builder --chown=clirelay:clirelay /app/CLIProxyAPI /CLIProxyAPI/CLIProxyAPI
+COPY --from=backend-builder --chown=clirelay:clirelay /app/clirelay-updater /CLIProxyAPI/clirelay-updater
+COPY --from=frontend-builder --chown=clirelay:clirelay /frontend/dist/ /CLIProxyAPI/panel/
 
-COPY config.example.yaml /CLIProxyAPI/config.example.yaml
+COPY --chown=clirelay:clirelay config.example.yaml /CLIProxyAPI/config.example.yaml
 
 WORKDIR /CLIProxyAPI
 
@@ -91,8 +94,14 @@ EXPOSE 8317
 
 ENV TZ=Asia/Shanghai \
     MANAGEMENT_PANEL_DIR=/CLIProxyAPI/panel \
+    AUTH_PATH=/CLIProxyAPI/auths \
     CLIRELAY_LOCALE=zh
 
 RUN cp /usr/share/zoneinfo/${TZ} /etc/localtime && echo "${TZ}" > /etc/timezone
+
+USER clirelay
+
+HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
+  CMD wget -q -T 2 -O /dev/null http://127.0.0.1:8317/healthz
 
 CMD ["./CLIProxyAPI"]

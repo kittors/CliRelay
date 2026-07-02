@@ -37,6 +37,8 @@ func (m *Manager) applyAPIKeyModelAlias(auth *Auth, requestedModel string) strin
 		upstreamModel = resolveUpstreamModelForClaudeAPIKey(cfg, auth, requestedModel)
 	case "codex":
 		upstreamModel = resolveUpstreamModelForCodexAPIKey(cfg, auth, requestedModel)
+	case "cline":
+		upstreamModel = resolveUpstreamModelForClineAPIKey(cfg, auth, requestedModel)
 	case "bedrock":
 		upstreamModel = resolveUpstreamModelForBedrockAPIKey(cfg, auth, requestedModel)
 	case "vertex":
@@ -119,6 +121,13 @@ func resolveCodexAPIKeyConfig(cfg *runtimeConfigSnapshot, auth *Auth) *runtimeAP
 		return nil
 	}
 	return resolveAPIKeyConfig(cfg.CodexKey, auth)
+}
+
+func resolveClineAPIKeyConfig(cfg *runtimeConfigSnapshot, auth *Auth) *runtimeAPIKeyModelConfig {
+	if cfg == nil {
+		return nil
+	}
+	return resolveAPIKeyConfig(cfg.ClineKey, auth)
 }
 
 func resolveBedrockAPIKeyConfig(cfg *runtimeConfigSnapshot, auth *Auth) *runtimeBedrockKeyConfig {
@@ -205,6 +214,14 @@ func resolveUpstreamModelForClaudeAPIKey(cfg *runtimeConfigSnapshot, auth *Auth,
 
 func resolveUpstreamModelForCodexAPIKey(cfg *runtimeConfigSnapshot, auth *Auth, requestedModel string) string {
 	entry := resolveCodexAPIKeyConfig(cfg, auth)
+	if entry == nil {
+		return ""
+	}
+	return resolveModelAliasFromConfigModels(requestedModel, asModelAliasEntries(entry.Models))
+}
+
+func resolveUpstreamModelForClineAPIKey(cfg *runtimeConfigSnapshot, auth *Auth, requestedModel string) string {
+	entry := resolveClineAPIKeyConfig(cfg, auth)
 	if entry == nil {
 		return ""
 	}

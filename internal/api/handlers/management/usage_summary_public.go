@@ -9,6 +9,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/api/bodyutil"
 	apikeysettings "github.com/router-for-me/CLIProxyAPI/v6/internal/management/settings/apikey"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
+	log "github.com/sirupsen/logrus"
 )
 
 type usageSummaryResponse struct {
@@ -55,6 +56,7 @@ func (h *Handler) GetPublicUsageSummary(c *gin.Context) {
 
 	stats, err := usage.QueryStats(usage.LogQueryParams{APIKey: apiKey, Days: 1})
 	if err != nil {
+		log.Warnf("management usage logs: public usage summary query failed: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to query usage summary"})
 		return
 	}

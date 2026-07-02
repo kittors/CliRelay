@@ -18,16 +18,17 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// Unit: opencodeGoInjectComputerUseTools
+// Unit: opencodeGoInjectCodexToolBridgeTools
 // ---------------------------------------------------------------------------
 
-func TestInjectComputerUseTools_AddsWhenMissing(t *testing.T) {
+func TestInjectCodexToolBridgeTools_AddsWhenMissing(t *testing.T) {
 	payload := []byte(`{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function","function":{"name":"existing_tool"}}]}`)
-	got := opencodeGoInjectComputerUseTools(payload)
+	got := opencodeGoInjectCodexToolBridgeTools(payload)
 
 	tools := gjson.GetBytes(got, "tools").Array()
 	foundExisting := false
 	foundComputerUse := false
+	foundNodeRepl := false
 	for _, tool := range tools {
 		name := tool.Get("function.name").String()
 		if name == "existing_tool" {
@@ -36,6 +37,9 @@ func TestInjectComputerUseTools_AddsWhenMissing(t *testing.T) {
 		if name == "mcp__computer_use__click" {
 			foundComputerUse = true
 		}
+		if name == "mcp__node_repl__js" {
+			foundNodeRepl = true
+		}
 	}
 	if !foundExisting {
 		t.Error("original tool 'existing_tool' was removed")
@@ -43,33 +47,48 @@ func TestInjectComputerUseTools_AddsWhenMissing(t *testing.T) {
 	if !foundComputerUse {
 		t.Error("mcp__computer_use__click was not injected")
 	}
-	if len(tools) != 11 {
-		t.Errorf("expected 11 tools (1 existing + 10 CU), got %d", len(tools))
+	if !foundNodeRepl {
+		t.Error("mcp__node_repl__js was not injected")
+	}
+	if len(tools) != 12 {
+		t.Errorf("expected 12 tools (1 existing + 10 CU + node_repl js), got %d", len(tools))
 	}
 }
 
-func TestInjectComputerUseTools_SkipsWhenAlreadyPresent(t *testing.T) {
-	payload := []byte(`{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function","function":{"name":"mcp__computer_use__click"}}]}`)
-	got := opencodeGoInjectComputerUseTools(payload)
+func TestInjectCodexToolBridgeTools_DoesNotDuplicateExistingFunctions(t *testing.T) {
+	payload := []byte(`{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function","function":{"name":"mcp__computer_use__click"}},{"type":"function","function":{"name":"mcp__node_repl__js"}}]}`)
+	got := opencodeGoInjectCodexToolBridgeTools(payload)
 
-	tools := gjson.GetBytes(got, "tools").Array()
-	if len(tools) != 1 {
-		t.Errorf("expected 1 tool (skip injection since CU already present), got %d", len(tools))
+	clickCount := 0
+	nodeReplCount := 0
+	for _, tool := range gjson.GetBytes(got, "tools").Array() {
+		switch tool.Get("function.name").String() {
+		case "mcp__computer_use__click":
+			clickCount++
+		case "mcp__node_repl__js":
+			nodeReplCount++
+		}
+	}
+	if clickCount != 1 {
+		t.Errorf("expected one mcp__computer_use__click, got %d", clickCount)
+	}
+	if nodeReplCount != 1 {
+		t.Errorf("expected one mcp__node_repl__js, got %d", nodeReplCount)
 	}
 }
 
-func TestInjectComputerUseTools_SkipsNoTools(t *testing.T) {
+func TestInjectCodexToolBridgeTools_SkipsNoTools(t *testing.T) {
 	payload := []byte(`{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"hi"}]}`)
-	got := opencodeGoInjectComputerUseTools(payload)
+	got := opencodeGoInjectCodexToolBridgeTools(payload)
 
 	if gjson.GetBytes(got, "tools").Exists() {
 		t.Error("should not add tools array when none existed")
 	}
 }
 
-func TestInjectComputerUseTools_EmptyTools(t *testing.T) {
+func TestInjectCodexToolBridgeTools_EmptyTools(t *testing.T) {
 	payload := []byte(`{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"hi"}],"tools":[]}`)
-	got := opencodeGoInjectComputerUseTools(payload)
+	got := opencodeGoInjectCodexToolBridgeTools(payload)
 
 	tools := gjson.GetBytes(got, "tools").Array()
 	if len(tools) != 0 {
@@ -77,33 +96,46 @@ func TestInjectComputerUseTools_EmptyTools(t *testing.T) {
 	}
 }
 
-func TestInjectComputerUseTools_InvalidJSON(t *testing.T) {
-	got := opencodeGoInjectComputerUseTools([]byte(`not json`))
+func TestInjectCodexToolBridgeTools_InvalidJSON(t *testing.T) {
+	got := opencodeGoInjectCodexToolBridgeTools([]byte(`not json`))
 	if string(got) != "not json" {
 		t.Error("should return original payload unchanged for invalid JSON")
 	}
 }
 
-func TestInjectComputerUseTools_NilPayload(t *testing.T) {
-	got := opencodeGoInjectComputerUseTools(nil)
+func TestInjectCodexToolBridgeTools_NilPayload(t *testing.T) {
+	got := opencodeGoInjectCodexToolBridgeTools(nil)
 	if got != nil {
 		t.Error("should return nil for nil payload")
 	}
 }
 
-func TestInjectComputerUseTools_SkipsNamespaceAlreadyPresent(t *testing.T) {
+func TestInjectCodexToolBridgeTools_ExpandsNamespaceTools(t *testing.T) {
 	payload := []byte(`{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"hi"}],"tools":[{"type":"namespace","name":"mcp__computer_use__"}]}`)
-	got := opencodeGoInjectComputerUseTools(payload)
+	got := opencodeGoInjectCodexToolBridgeTools(payload)
 
 	tools := gjson.GetBytes(got, "tools").Array()
-	if len(tools) != 1 {
-		t.Errorf("expected 1 tool (skip injection due to existing namespace), got %d", len(tools))
+	foundComputerUse := false
+	foundNodeRepl := false
+	for _, tool := range tools {
+		switch tool.Get("name").String() {
+		case "mcp__computer_use__click":
+			foundComputerUse = true
+		case "mcp__node_repl__js":
+			foundNodeRepl = true
+		}
+	}
+	if !foundComputerUse {
+		t.Errorf("namespace tool was not expanded to mcp__computer_use__click; body=%s", string(got))
+	}
+	if !foundNodeRepl {
+		t.Errorf("namespace tool did not receive mcp__node_repl__js bridge; body=%s", string(got))
 	}
 }
 
-func TestInjectComputerUseTools_PreservesModelAndMessages(t *testing.T) {
+func TestInjectCodexToolBridgeTools_PreservesModelAndMessages(t *testing.T) {
 	payload := []byte(`{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"test"}],"tools":[{"type":"function","function":{"name":"foo"}}]}`)
-	got := opencodeGoInjectComputerUseTools(payload)
+	got := opencodeGoInjectCodexToolBridgeTools(payload)
 
 	if model := gjson.GetBytes(got, "model").String(); model != "deepseek-v4-flash" {
 		t.Errorf("model changed, got %q", model)
@@ -173,11 +205,24 @@ func TestComputerUseFunctions_Count(t *testing.T) {
 	}
 }
 
+func TestNodeReplJSFunction_ValidDefinition(t *testing.T) {
+	name, _, params, ok := opencodeGoBridgeFunctionParts(mcpNodeReplJSFunction)
+	if !ok {
+		t.Fatal("mcpNodeReplJSFunction is not a valid bridge function")
+	}
+	if name != "mcp__node_repl__js" {
+		t.Fatalf("unexpected node repl function name %q", name)
+	}
+	if required := gjson.Get(mustMarshalJSON(t, params), "required.0").String(); required != "code" {
+		t.Fatalf("expected node repl js to require code, got %q", required)
+	}
+}
+
 // ---------------------------------------------------------------------------
-// Integration: Execute with Computer Use injection (DeepSeek models)
+// Integration: Execute with Codex tool bridge injection
 // ---------------------------------------------------------------------------
 
-func TestOpenCodeGoExecutorInjectsComputerUseTools(t *testing.T) {
+func TestOpenCodeGoExecutorInjectsCodexToolBridgeTools(t *testing.T) {
 	var gotBody []byte
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotBody, _ = io.ReadAll(r.Body)
@@ -202,14 +247,18 @@ func TestOpenCodeGoExecutorInjectsComputerUseTools(t *testing.T) {
 		t.Fatalf("Execute error: %v", err)
 	}
 
-	// Verify upstream body has Computer Use tools injected
+	// Verify upstream body has Codex bridge tools injected
 	tools := gjson.GetBytes(gotBody, "tools").Array()
 	hasCU := false
+	hasNodeRepl := false
 	hasExisting := false
 	for _, tool := range tools {
 		name := tool.Get("function.name").String()
 		if name == "mcp__computer_use__get_app_state" {
 			hasCU = true
+		}
+		if name == "mcp__node_repl__js" {
+			hasNodeRepl = true
 		}
 		if name == "existing_tool" {
 			hasExisting = true
@@ -221,9 +270,12 @@ func TestOpenCodeGoExecutorInjectsComputerUseTools(t *testing.T) {
 	if !hasCU {
 		t.Errorf("upstream body missing mcp__computer_use__ tools; body=%s", string(gotBody))
 	}
+	if !hasNodeRepl {
+		t.Errorf("upstream body missing mcp__node_repl__js; body=%s", string(gotBody))
+	}
 }
 
-func TestOpenCodeGoExecutorDoesNotInjectForNonDeepSeek(t *testing.T) {
+func TestOpenCodeGoExecutorInjectsBridgeForNonDeepSeekOpenCodeGoModel(t *testing.T) {
 	var gotBody []byte
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotBody, _ = io.ReadAll(r.Body)
@@ -248,21 +300,75 @@ func TestOpenCodeGoExecutorDoesNotInjectForNonDeepSeek(t *testing.T) {
 		t.Fatalf("Execute error: %v", err)
 	}
 
-	// Non-deepseek model should NOT get CU tools
+	// Non-DeepSeek OpenCode-Go models should still get the generic Codex bridge.
 	tools := gjson.GetBytes(gotBody, "tools").Array()
+	hasCU := false
+	hasNodeRepl := false
 	for _, tool := range tools {
 		name := tool.Get("function.name").String()
 		if hasPrefix(name, "mcp__computer_use__") {
-			t.Errorf("non-deepseek model should not get CU tools; found %q", name)
+			hasCU = true
 		}
+		if name == "mcp__node_repl__js" {
+			hasNodeRepl = true
+		}
+	}
+	if !hasCU {
+		t.Errorf("non-deepseek opencode-go model should get Computer Use bridge tools; body=%s", string(gotBody))
+	}
+	if !hasNodeRepl {
+		t.Errorf("non-deepseek opencode-go model should get node_repl js bridge; body=%s", string(gotBody))
+	}
+}
+
+func TestOpenAICompatExecutorInjectsCodexToolBridgeTools(t *testing.T) {
+	var gotBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl_bridge","object":"chat.completion","created":1,"model":"third-party-model","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+	}))
+	defer server.Close()
+
+	exec := NewOpenAICompatExecutor("openai-compatibility", &config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"base_url": server.URL + "/v1",
+		"api_key":  "test-key",
+	}}
+	payload := []byte(`{"model":"third-party-model","messages":[{"role":"user","content":"use browser"}],"tools":[{"type":"function","function":{"name":"existing_tool"}}]}`)
+
+	_, err := exec.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "third-party-model",
+		Payload: payload,
+	}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatOpenAI})
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+
+	hasCU := false
+	hasNodeRepl := false
+	for _, tool := range gjson.GetBytes(gotBody, "tools").Array() {
+		name := tool.Get("function.name").String()
+		if hasPrefix(name, "mcp__computer_use__") {
+			hasCU = true
+		}
+		if name == "mcp__node_repl__js" {
+			hasNodeRepl = true
+		}
+	}
+	if !hasCU {
+		t.Errorf("openai-compatible executor should get Computer Use bridge tools; body=%s", string(gotBody))
+	}
+	if !hasNodeRepl {
+		t.Errorf("openai-compatible executor should get node_repl js bridge; body=%s", string(gotBody))
 	}
 }
 
 // ---------------------------------------------------------------------------
-// Integration: ExecuteStream with Computer Use injection
+// Integration: ExecuteStream with Codex tool bridge injection
 // ---------------------------------------------------------------------------
 
-func TestOpenCodeGoExecutorStreamInjectsComputerUseTools(t *testing.T) {
+func TestOpenCodeGoExecutorStreamInjectsCodexToolBridgeTools(t *testing.T) {
 	var gotBody []byte
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotBody, _ = io.ReadAll(r.Body)
@@ -294,16 +400,23 @@ func TestOpenCodeGoExecutorStreamInjectsComputerUseTools(t *testing.T) {
 		}
 	}
 
-	// Verify upstream body has Computer Use tools
+	// Verify upstream body has Codex bridge tools
 	hasCU := false
+	hasNodeRepl := false
 	for _, tool := range gjson.GetBytes(gotBody, "tools").Array() {
-		if hasPrefix(tool.Get("function.name").String(), "mcp__computer_use__") {
+		name := tool.Get("function.name").String()
+		if hasPrefix(name, "mcp__computer_use__") {
 			hasCU = true
-			break
+		}
+		if name == "mcp__node_repl__js" {
+			hasNodeRepl = true
 		}
 	}
 	if !hasCU {
 		t.Errorf("stream request missing mcp__computer_use__ tools; body=%s", string(gotBody))
+	}
+	if !hasNodeRepl {
+		t.Errorf("stream request missing mcp__node_repl__js; body=%s", string(gotBody))
 	}
 }
 
@@ -313,4 +426,13 @@ func TestOpenCodeGoExecutorStreamInjectsComputerUseTools(t *testing.T) {
 
 func hasPrefix(s, prefix string) bool {
 	return len(s) >= len(prefix) && s[:len(prefix)] == prefix
+}
+
+func mustMarshalJSON(t *testing.T, v any) string {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatalf("failed to marshal JSON: %v", err)
+	}
+	return string(b)
 }

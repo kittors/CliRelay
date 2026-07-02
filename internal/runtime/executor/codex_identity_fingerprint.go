@@ -1,12 +1,15 @@
 package executor
 
 import (
+	"context"
 	"net/http"
 	"strings"
 	"sync"
 
 	"github.com/google/uuid"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/identityfingerprint"
+	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 )
 
 var (
@@ -21,11 +24,13 @@ func codexServerStableSessionID() string {
 	return codexServerSessionID
 }
 
-func codexIdentityFingerprint(cfg *config.Config) (config.CodexIdentityFingerprintConfig, bool) {
+func codexIdentityFingerprint(cfg *config.Config, auth *cliproxyauth.Auth, ctx context.Context) (config.CodexIdentityFingerprintConfig, bool) {
 	if cfg == nil || !cfg.IdentityFingerprint.Codex.Enabled {
 		return config.CodexIdentityFingerprintConfig{}, false
 	}
-	return config.NormalizeCodexIdentityFingerprint(cfg.IdentityFingerprint.Codex), true
+	learned := observeRuntimeIdentityFingerprint(identityfingerprint.ProviderCodex, auth, ctx)
+	resolved, _ := identityfingerprint.ResolveCodex(cfg.IdentityFingerprint.Codex, learned)
+	return resolved, true
 }
 
 func codexFingerprintSessionID(fp config.CodexIdentityFingerprintConfig) string {
@@ -61,6 +66,9 @@ func applyCodexIdentityFingerprintHeaders(headers http.Header, fp config.CodexId
 			headers.Set("OpenAI-Beta", fp.WebsocketBeta)
 		}
 	}
+	if strings.TrimSpace(fp.BetaFeatures) != "" {
+		headers.Set("X-Codex-Beta-Features", fp.BetaFeatures)
+	}
 	for key, value := range fp.CustomHeaders {
 		key = strings.TrimSpace(key)
 		value = strings.TrimSpace(value)
@@ -74,7 +82,7 @@ func applyCodexIdentityFingerprintHeaders(headers http.Header, fp config.CodexId
 func isCodexFingerprintRuntimeBlockedHeader(key string) bool {
 	switch strings.ToLower(strings.TrimSpace(key)) {
 	case "authorization", "content-type", "accept", "connection", "chatgpt-account-id",
-		"user-agent", "version", "session_id", "session-id", "originator", "openai-beta":
+		"user-agent", "version", "session_id", "session-id", "originator", "openai-beta", "x-codex-beta-features":
 		return true
 	default:
 		return false

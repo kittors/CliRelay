@@ -20,6 +20,10 @@ func PathRouteContextFromContext(ctx context.Context) *PathRouteContext {
 	return sdkrouting.PathRouteContextFromContext(ctx)
 }
 
+func IsCcSwitchMappedTargetModel(route *PathRouteContext, modelName string) bool {
+	return sdkrouting.IsCcSwitchMappedTargetModel(route, modelName)
+}
+
 func NormalizeGroupName(value string) string {
 	return sdkrouting.NormalizeGroupName(value)
 }

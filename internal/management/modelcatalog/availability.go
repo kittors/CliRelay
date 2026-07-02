@@ -464,7 +464,8 @@ func (s *Service) modelSourceEntries(
 		if label == "" {
 			label = clientID
 		}
-		key := provider + "\x00" + channel + "\x00" + label + "\x00" + source + "\x00" + clientID
+		upstreamModelID := strings.TrimSpace(raw.UpstreamModelID)
+		key := provider + "\x00" + channel + "\x00" + label + "\x00" + source + "\x00" + clientID + "\x00" + upstreamModelID
 		if _, exists := seen[key]; exists {
 			continue
 		}
@@ -475,6 +476,9 @@ func (s *Service) modelSourceEntries(
 			"provider":  provider,
 			"client_id": clientID,
 			"model_id":  strings.TrimSpace(raw.ModelID),
+		}
+		if upstreamModelID != "" {
+			entry["upstream_model_id"] = upstreamModelID
 		}
 		if channel != "" {
 			entry["channel"] = channel

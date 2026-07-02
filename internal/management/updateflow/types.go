@@ -13,27 +13,44 @@ const (
 	GitHubUserAgent       = "CLIProxyAPI"
 )
 
+const (
+	UpdaterHealthStatusOK             = "ok"
+	UpdaterHealthStatusTokenMissing   = "token_missing"
+	UpdaterHealthStatusAuthFailed     = "auth_failed"
+	UpdaterHealthStatusUnreachable    = "unreachable"
+	UpdaterHealthStatusBadStatus      = "bad_status"
+	UpdaterHealthStatusRequestInvalid = "request_invalid"
+)
+
+type UpdaterHealth struct {
+	Available bool
+	Status    string
+	Message   string
+}
+
 type CheckResponse struct {
-	Enabled           bool   `json:"enabled"`
-	CurrentVersion    string `json:"current_version"`
-	CurrentCommit     string `json:"current_commit"`
-	CurrentUIVersion  string `json:"current_ui_version,omitempty"`
-	CurrentUICommit   string `json:"current_ui_commit,omitempty"`
-	BuildDate         string `json:"build_date"`
-	TargetChannel     string `json:"target_channel"`
-	LatestVersion     string `json:"latest_version"`
-	LatestCommit      string `json:"latest_commit"`
-	LatestCommitURL   string `json:"latest_commit_url,omitempty"`
-	LatestUIVersion   string `json:"latest_ui_version,omitempty"`
-	LatestUICommit    string `json:"latest_ui_commit,omitempty"`
-	LatestUICommitURL string `json:"latest_ui_commit_url,omitempty"`
-	DockerImage       string `json:"docker_image"`
-	DockerTag         string `json:"docker_tag"`
-	ReleaseNotes      string `json:"release_notes,omitempty"`
-	ReleaseURL        string `json:"release_url,omitempty"`
-	UpdateAvailable   bool   `json:"update_available"`
-	UpdaterAvailable  bool   `json:"updater_available"`
-	Message           string `json:"message,omitempty"`
+	Enabled              bool   `json:"enabled"`
+	CurrentVersion       string `json:"current_version"`
+	CurrentCommit        string `json:"current_commit"`
+	CurrentUIVersion     string `json:"current_ui_version,omitempty"`
+	CurrentUICommit      string `json:"current_ui_commit,omitempty"`
+	BuildDate            string `json:"build_date"`
+	TargetChannel        string `json:"target_channel"`
+	LatestVersion        string `json:"latest_version"`
+	LatestCommit         string `json:"latest_commit"`
+	LatestCommitURL      string `json:"latest_commit_url,omitempty"`
+	LatestUIVersion      string `json:"latest_ui_version,omitempty"`
+	LatestUICommit       string `json:"latest_ui_commit,omitempty"`
+	LatestUICommitURL    string `json:"latest_ui_commit_url,omitempty"`
+	DockerImage          string `json:"docker_image"`
+	DockerTag            string `json:"docker_tag"`
+	ReleaseNotes         string `json:"release_notes,omitempty"`
+	ReleaseURL           string `json:"release_url,omitempty"`
+	UpdateAvailable      bool   `json:"update_available"`
+	UpdaterAvailable     bool   `json:"updater_available"`
+	UpdaterHealthStatus  string `json:"updater_health_status,omitempty"`
+	UpdaterHealthMessage string `json:"updater_health_message,omitempty"`
+	Message              string `json:"message,omitempty"`
 }
 
 type ProgressLogEntry struct {

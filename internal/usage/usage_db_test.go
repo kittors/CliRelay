@@ -482,6 +482,50 @@ func TestQueryLogsSupportsExplicitEmptyMultiSelectFilters(t *testing.T) {
 	}
 }
 
+func TestQueryLogsReturnsVisionFallbackModelSeparately(t *testing.T) {
+	initTestUsageDB(t, config.RequestLogStorageConfig{})
+
+	now := time.Now().UTC()
+	InsertLogWithDetailsIdentitySubjectUpstreamVision(
+		"sk-live-123",
+		"key-1",
+		"subject-1",
+		"Primary",
+		"alias-model",
+		"real-model",
+		"vision-model",
+		"codex",
+		"Codex",
+		"auth-1",
+		false,
+		now,
+		140,
+		14,
+		TokenStats{InputTokens: 1, OutputTokens: 1, TotalTokens: 2},
+		"",
+		"",
+		"",
+	)
+
+	result, err := QueryLogs(LogQueryParams{Page: 1, Size: 10, Days: 1})
+	if err != nil {
+		t.Fatalf("QueryLogs() error = %v", err)
+	}
+	if len(result.Items) != 1 {
+		t.Fatalf("items = %d, want 1", len(result.Items))
+	}
+	row := result.Items[0]
+	if row.Model != "alias-model" {
+		t.Fatalf("Model = %q, want alias-model", row.Model)
+	}
+	if row.UpstreamModel != "real-model" {
+		t.Fatalf("UpstreamModel = %q, want real-model", row.UpstreamModel)
+	}
+	if row.VisionFallbackModel != "vision-model" {
+		t.Fatalf("VisionFallbackModel = %q, want vision-model", row.VisionFallbackModel)
+	}
+}
+
 func TestQueryLogContentKeepsMissingFailedOutputEmpty(t *testing.T) {
 	initTestUsageDB(t, config.RequestLogStorageConfig{
 		StoreContent:           true,
@@ -612,7 +656,7 @@ func TestInitDBMigratesFirstTokenAndStreamingColumns(t *testing.T) {
 		if err := rows.Scan(&cid, &name, &dataType, &notNull, &defaultValue, &pk); err != nil {
 			t.Fatalf("scan table info: %v", err)
 		}
-		if name == "first_token_ms" || name == "streaming" {
+		if name == "first_token_ms" || name == "streaming" || name == "vision_fallback_model" {
 			found[name] = true
 		}
 	}
@@ -621,6 +665,9 @@ func TestInitDBMigratesFirstTokenAndStreamingColumns(t *testing.T) {
 	}
 	if !found["streaming"] {
 		t.Fatalf("expected streaming column to exist after InitDB migration")
+	}
+	if !found["vision_fallback_model"] {
+		t.Fatalf("expected vision_fallback_model column to exist after InitDB migration")
 	}
 }
 
@@ -1632,6 +1679,70 @@ func TestRequestStatisticsPersistsAPIKeyIdentitySnapshotAcrossRename(t *testing.
 	}
 	if dist[0].Name != "袁蔚" {
 		t.Fatalf("distribution name = %q, want 袁蔚", dist[0].Name)
+	}
+}
+
+func TestRequestStatisticsPersistsRequestLogWhenStatisticsDisabled(t *testing.T) {
+	initTestUsageDB(t, config.RequestLogStorageConfig{})
+	wasEnabled := StatisticsEnabled()
+	SetStatisticsEnabled(false)
+	t.Cleanup(func() { SetStatisticsEnabled(wasEnabled) })
+
+	stats := NewRequestStatistics()
+	stats.Record(context.Background(), coreusage.Record{
+		APIKey:      "sk-disabled-stats",
+		APIKeyName:  "Disabled Stats",
+		Model:       "glm-5.2",
+		Source:      "source",
+		ChannelName: "channel",
+		AuthIndex:   "auth-1",
+		RequestedAt: time.Now().UTC(),
+		Detail: coreusage.Detail{
+			InputTokens:  10,
+			OutputTokens: 5,
+			TotalTokens:  15,
+		},
+	})
+
+	snapshot := stats.Snapshot()
+	if snapshot.TotalRequests != 0 {
+		t.Fatalf("snapshot.TotalRequests = %d, want 0 when statistics disabled", snapshot.TotalRequests)
+	}
+
+	var count int
+	if err := getDB().QueryRow("SELECT COUNT(*) FROM request_logs WHERE api_key = ?", "sk-disabled-stats").Scan(&count); err != nil {
+		t.Fatalf("query persisted request log: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("persisted request log count = %d, want 1", count)
+	}
+}
+
+func TestInitDBDoesNotRunProviderEchoModelBackfill(t *testing.T) {
+	CloseDB()
+	dbPath := filepath.Join(t.TempDir(), "usage.db")
+	if err := InitDB(dbPath, config.RequestLogStorageConfig{}, time.UTC); err != nil {
+		t.Fatalf("initial InitDB() error = %v", err)
+	}
+	stopRequestLogMaintenance()
+
+	db := getDB()
+	id := insertProviderEchoRequestLog(t, db, "accounts/fireworks/models/glm-5p2", 100)
+	insertRequestLogContentRow(t, db, id, `{"model":"glm-5.2","messages":[]}`)
+	CloseDB()
+
+	if err := InitDB(dbPath, config.RequestLogStorageConfig{}, time.UTC); err != nil {
+		t.Fatalf("second InitDB() error = %v", err)
+	}
+	stopRequestLogMaintenance()
+	t.Cleanup(CloseDB)
+
+	var model string
+	if err := getDB().QueryRow("SELECT model FROM request_logs WHERE id = ?", id).Scan(&model); err != nil {
+		t.Fatalf("query provider echo row: %v", err)
+	}
+	if model != "accounts/fireworks/models/glm-5p2" {
+		t.Fatalf("model = %q, want InitDB to leave provider-echo history unchanged", model)
 	}
 }
 

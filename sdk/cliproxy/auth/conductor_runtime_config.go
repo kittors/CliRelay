@@ -102,6 +102,10 @@ func (m *Manager) rebuildAPIKeyModelAliasLocked(cfg *runtimeConfigSnapshot) {
 			if entry := resolveCodexAPIKeyConfig(cfg, auth); entry != nil {
 				compileAPIKeyModelAliasForModels(byAlias, entry.Models)
 			}
+		case "cline":
+			if entry := resolveClineAPIKeyConfig(cfg, auth); entry != nil {
+				compileAPIKeyModelAliasForModels(byAlias, entry.Models)
+			}
 		case "bedrock":
 			if entry := resolveBedrockAPIKeyConfig(cfg, auth); entry != nil {
 				compileAPIKeyModelAliasForModels(byAlias, entry.Models)

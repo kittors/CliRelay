@@ -60,6 +60,36 @@ func (h *Handler) PostQuotaReconcile(c *gin.Context) {
 	})
 }
 
+func (h *Handler) PostQuotaClearStatus(c *gin.Context) {
+	if h == nil || h.authManager == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "auth manager unavailable"})
+		return
+	}
+
+	var body quotaReconcileRequest
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		return
+	}
+
+	authIndex := firstNonEmptyString(body.AuthIndexSnake, body.AuthIndexCamel, body.AuthIndexPascal)
+	auth := h.authByIndex(authIndex)
+	if auth == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "auth not found"})
+		return
+	}
+
+	changed, err := h.authManager.ClearQuotaStatus(c.Request.Context(), auth.ID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"status":  "ok",
+		"changed": changed,
+	})
+}
+
 type quotaSnapshotRequest struct {
 	AuthIndexSnake   *string                     `json:"auth_index"`
 	AuthIndexCamel   *string                     `json:"authIndex"`

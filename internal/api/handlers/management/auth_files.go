@@ -26,11 +26,13 @@ func (h *Handler) ListAuthFiles(c *gin.Context) {
 		h.listAuthFilesFromDisk(c)
 		return
 	}
-	files := managementauthfiles.ListEntries(h.authManager.List(), managementauthfiles.EntryOptions{
+	auths := h.authManager.List()
+	files := managementauthfiles.ListEntries(auths, managementauthfiles.EntryOptions{
 		OnStatError: func(path string, err error) {
 			log.WithError(err).Warnf("failed to stat auth file %s", path)
 		},
 	})
+	h.enrichAuthFileIdentityFingerprintSummaries(files, auths)
 	c.JSON(200, gin.H{"files": files})
 }
 

@@ -176,6 +176,9 @@ func buildConfigModels[T modelEntry](
 			DisplayName: display,
 			UserDefined: true,
 		}
+		if name != "" && !strings.EqualFold(name, alias) {
+			info.UpstreamModelID = name
+		}
 		if resolveThinking != nil && name != "" {
 			info.Thinking = resolveThinking(name)
 		}
@@ -328,6 +331,17 @@ func buildOpenCodeGoConfigModels(entry *config.OpenCodeGoKey, staticModels []*Mo
 	if entry == nil || len(entry.Models) == 0 {
 		return nil
 	}
+	return buildNamedConfigModels(entry.Models, staticModels, "opencode", "opencode-go")
+}
+
+func buildClineConfigModels(entry *config.ClineKey, staticModels []*ModelInfo) []*ModelInfo {
+	if entry == nil || len(entry.Models) == 0 {
+		return nil
+	}
+	return buildConfigModels(entry.Models, "cline", "cline", nil)
+}
+
+func buildNamedConfigModels[T interface{ GetName() string }](models []T, staticModels []*ModelInfo, ownedBy, modelType string) []*ModelInfo {
 	staticByID := make(map[string]*ModelInfo, len(staticModels))
 	for _, model := range staticModels {
 		if model == nil {
@@ -339,10 +353,10 @@ func buildOpenCodeGoConfigModels(entry *config.OpenCodeGoKey, staticModels []*Mo
 	}
 
 	now := time.Now().Unix()
-	seen := make(map[string]struct{}, len(entry.Models))
-	out := make([]*ModelInfo, 0, len(entry.Models))
-	for i := range entry.Models {
-		name := strings.TrimSpace(entry.Models[i].Name)
+	seen := make(map[string]struct{}, len(models))
+	out := make([]*ModelInfo, 0, len(models))
+	for i := range models {
+		name := strings.TrimSpace(models[i].GetName())
 		if name == "" {
 			continue
 		}
@@ -362,8 +376,8 @@ func buildOpenCodeGoConfigModels(entry *config.OpenCodeGoKey, staticModels []*Mo
 			ID:          name,
 			Object:      "model",
 			Created:     now,
-			OwnedBy:     "opencode",
-			Type:        "opencode-go",
+			OwnedBy:     ownedBy,
+			Type:        modelType,
 			DisplayName: name,
 			UserDefined: true,
 		})

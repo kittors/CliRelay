@@ -25,6 +25,9 @@ identity-fingerprint:
     enabled: true
     cli-version: 2.1.88
     entrypoint: cli
+codex-oauth-admission:
+  allowed-clients:
+    - claude_code
 oauth-model-alias:
   antigravity:
     - name: rev19-uic3-1p
@@ -47,15 +50,17 @@ debug: true
 		OAuthModelAlias: map[string][]config.OAuthModelAlias{
 			"antigravity": {{Name: "rev19-uic3-1p", Alias: "gemini-2.5-computer-use-preview-10-2025"}},
 		},
+		CodexOAuthAdmission: config.CodexOAuthAdmissionConfig{AllowedClientPresets: []string{"claude_code"}},
 	}
 
-	if migrated := MigrateRuntimeSettingsFromConfig(cfg, configPath); migrated != 3 {
-		t.Fatalf("MigrateRuntimeSettingsFromConfig = %d, want 3", migrated)
+	if migrated := MigrateRuntimeSettingsFromConfig(cfg, configPath); migrated != 4 {
+		t.Fatalf("MigrateRuntimeSettingsFromConfig = %d, want 4", migrated)
 	}
 
 	cfg.KimiHeaderDefaults = config.KimiHeaderDefaults{}
 	cfg.IdentityFingerprint = config.IdentityFingerprintConfig{}
 	cfg.OAuthModelAlias = nil
+	cfg.CodexOAuthAdmission = config.CodexOAuthAdmissionConfig{}
 	if !ApplyStoredRuntimeSettings(cfg) {
 		t.Fatal("ApplyStoredRuntimeSettings returned false")
 	}
@@ -65,18 +70,23 @@ debug: true
 	if !cfg.IdentityFingerprint.Codex.Enabled || cfg.IdentityFingerprint.Codex.UserAgent != "codex_cli_rs/0.125.0" {
 		t.Fatalf("IdentityFingerprint.Codex = %#v", cfg.IdentityFingerprint.Codex)
 	}
-	if !cfg.IdentityFingerprint.Claude.Enabled || cfg.IdentityFingerprint.Claude.UserAgent != "claude-cli/2.1.88 (external, cli)" {
+	if !cfg.IdentityFingerprint.Claude.Enabled || cfg.IdentityFingerprint.Claude.UserAgent != "" ||
+		cfg.IdentityFingerprint.Claude.CLIVersion != "2.1.88" ||
+		cfg.IdentityFingerprint.Claude.Entrypoint != "cli" {
 		t.Fatalf("IdentityFingerprint.Claude = %#v", cfg.IdentityFingerprint.Claude)
 	}
 	if got := cfg.OAuthModelAlias["antigravity"]; len(got) != 1 || got[0].Alias != "gemini-2.5-computer-use-preview-10-2025" {
 		t.Fatalf("OAuthModelAlias = %#v", cfg.OAuthModelAlias)
+	}
+	if got := cfg.CodexOAuthAdmission.AllowedClientPresets; len(got) != 1 || got[0] != "claude_code" {
+		t.Fatalf("CodexOAuthAdmission = %#v, want [claude_code]", cfg.CodexOAuthAdmission)
 	}
 
 	data, err := os.ReadFile(configPath)
 	if err != nil {
 		t.Fatalf("read config: %v", err)
 	}
-	for _, forbidden := range []string{"kimi-header-defaults:", "identity-fingerprint:", "oauth-model-alias:"} {
+	for _, forbidden := range []string{"kimi-header-defaults:", "identity-fingerprint:", "codex-oauth-admission:", "oauth-model-alias:"} {
 		if strings.Contains(string(data), forbidden) {
 			t.Fatalf("%s should be removed from YAML after migration:\n%s", forbidden, string(data))
 		}

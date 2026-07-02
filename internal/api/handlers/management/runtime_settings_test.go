@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/codexadmission"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	settingsstore "github.com/router-for-me/CLIProxyAPI/v6/internal/management/settings/store"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
@@ -46,7 +47,9 @@ func TestPutIdentityFingerprintPersistsToSQLite(t *testing.T) {
 	if !stored.IdentityFingerprint.Codex.Enabled || stored.IdentityFingerprint.Codex.UserAgent != "codex_cli_rs/0.125.0" {
 		t.Fatalf("stored identity fingerprint = %#v", stored.IdentityFingerprint.Codex)
 	}
-	if !stored.IdentityFingerprint.Claude.Enabled || stored.IdentityFingerprint.Claude.UserAgent != "claude-cli/2.1.88 (external, cli)" ||
+	if !stored.IdentityFingerprint.Claude.Enabled || stored.IdentityFingerprint.Claude.UserAgent != "" ||
+		stored.IdentityFingerprint.Claude.CLIVersion != "2.1.88" ||
+		stored.IdentityFingerprint.Claude.Entrypoint != "cli" ||
 		stored.IdentityFingerprint.Claude.SessionMode != "server-stable" {
 		t.Fatalf("stored claude identity fingerprint = %#v", stored.IdentityFingerprint.Claude)
 	}
@@ -93,6 +96,91 @@ func TestPutIdentityFingerprintFailsWhenRuntimeSettingCannotPersist(t *testing.T
 	}
 	if h.cfg.IdentityFingerprint.Codex.Enabled || h.cfg.IdentityFingerprint.Codex.UserAgent != "codex_cli_rs/old" {
 		t.Fatalf("identity fingerprint should be rolled back after persist failure, got %#v", h.cfg.IdentityFingerprint.Codex)
+	}
+}
+
+func TestPutCodexOAuthAdmissionPersistsToSQLite(t *testing.T) {
+	initManagementModelsTestDB(t)
+
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(configPath, []byte("codex-oauth-admission:\n  allowed-clients:\n    - stale\nlogging-to-file: true\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	h := NewHandler(&config.Config{LoggingToFile: true}, configPath, nil)
+
+	rec := performModelsRequest(http.MethodPut, "/codex-oauth-admission", []byte(`{
+		"allowed_clients": ["claude_code", "CLAUDE_CODE"]
+	}`), h.PutCodexOAuthAdmission)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PutCodexOAuthAdmission status = %d body = %s", rec.Code, rec.Body.String())
+	}
+
+	var stored config.Config
+	if !settingsstore.ApplyStoredRuntimeSettings(&stored) {
+		t.Fatal("ApplyStoredRuntimeSettings returned false")
+	}
+	got := stored.CodexOAuthAdmission.AllowedClientPresets
+	if len(got) != 1 || got[0] != codexadmission.AllowedClientClaudeCode {
+		t.Fatalf("stored codex oauth admission = %#v, want [claude_code]", stored.CodexOAuthAdmission)
+	}
+
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	if strings.Contains(string(data), "codex-oauth-admission:") {
+		t.Fatalf("codex-oauth-admission should be removed from YAML after DB write:\n%s", string(data))
+	}
+	if !strings.Contains(string(data), "logging-to-file: true") {
+		t.Fatalf("ordinary config should remain in YAML:\n%s", string(data))
+	}
+}
+
+func TestPutCodexOAuthAdmissionRejectsUnknownPreset(t *testing.T) {
+	initManagementModelsTestDB(t)
+
+	h := NewHandler(&config.Config{}, filepath.Join(t.TempDir(), "config.yaml"), nil)
+	rec := performModelsRequest(http.MethodPut, "/codex-oauth-admission", []byte(`{
+		"allowed_clients": ["unknown_client"]
+	}`), h.PutCodexOAuthAdmission)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("PutCodexOAuthAdmission status = %d, want %d, body = %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+}
+
+func TestPutCodexOAuthAdmissionClearsStoredPresets(t *testing.T) {
+	initManagementModelsTestDB(t)
+
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	h := NewHandler(&config.Config{}, configPath, nil)
+
+	setRec := performModelsRequest(http.MethodPut, "/codex-oauth-admission", []byte(`{
+		"allowed_clients": ["claude_code"]
+	}`), h.PutCodexOAuthAdmission)
+	if setRec.Code != http.StatusOK {
+		t.Fatalf("initial PutCodexOAuthAdmission status = %d body = %s", setRec.Code, setRec.Body.String())
+	}
+
+	clearRec := performModelsRequest(http.MethodPut, "/codex-oauth-admission", []byte(`{
+		"allowed_clients": []
+	}`), h.PutCodexOAuthAdmission)
+	if clearRec.Code != http.StatusOK {
+		t.Fatalf("clear PutCodexOAuthAdmission status = %d body = %s", clearRec.Code, clearRec.Body.String())
+	}
+	if got := h.cfg.CodexOAuthAdmission.AllowedClientPresets; len(got) != 0 {
+		t.Fatalf("handler config CodexOAuthAdmission = %#v, want empty", h.cfg.CodexOAuthAdmission)
+	}
+
+	stored := config.Config{
+		CodexOAuthAdmission: config.CodexOAuthAdmissionConfig{
+			AllowedClientPresets: []string{codexadmission.AllowedClientClaudeCode},
+		},
+	}
+	if !settingsstore.ApplyStoredRuntimeSettings(&stored) {
+		t.Fatal("ApplyStoredRuntimeSettings returned false")
+	}
+	if got := stored.CodexOAuthAdmission.AllowedClientPresets; len(got) != 0 {
+		t.Fatalf("stored CodexOAuthAdmission = %#v, want empty", stored.CodexOAuthAdmission)
 	}
 }
 

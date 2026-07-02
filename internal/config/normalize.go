@@ -256,6 +256,67 @@ func NormalizeOpenCodeGoModels(models []OpenCodeGoModel) []OpenCodeGoModel {
 	return out
 }
 
+// SanitizeClineKeys deduplicates and normalizes Cline credentials.
+func (cfg *Config) SanitizeClineKeys() {
+	if cfg == nil || len(cfg.ClineKey) == 0 {
+		return
+	}
+	seen := make(map[string]struct{}, len(cfg.ClineKey))
+	out := make([]ClineKey, 0, len(cfg.ClineKey))
+	for i := range cfg.ClineKey {
+		entry := cfg.ClineKey[i]
+		entry.APIKey = strings.TrimSpace(entry.APIKey)
+		if entry.APIKey == "" {
+			continue
+		}
+		if _, exists := seen[entry.APIKey]; exists {
+			continue
+		}
+		seen[entry.APIKey] = struct{}{}
+		entry.Name = strings.TrimSpace(entry.Name)
+		entry.Prefix = normalizeModelPrefix(entry.Prefix)
+		entry.BaseURL = normalizeClineBaseURL(entry.BaseURL)
+		entry.ProxyURL = strings.TrimSpace(entry.ProxyURL)
+		entry.ProxyID = strings.TrimSpace(entry.ProxyID)
+		entry.Headers = NormalizeHeaders(entry.Headers)
+		entry.Models = NormalizeClineModels(entry.Models)
+		entry.ExcludedModels = NormalizeExcludedModels(entry.ExcludedModels)
+		entry.VisionFallbackModel = strings.TrimSpace(entry.VisionFallbackModel)
+		out = append(out, entry)
+	}
+	cfg.ClineKey = out
+}
+
+func NormalizeClineModels(models []ClineModel) []ClineModel {
+	if len(models) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(models))
+	out := make([]ClineModel, 0, len(models))
+	for i := range models {
+		name := strings.TrimSpace(models[i].Name)
+		if name == "" {
+			continue
+		}
+		alias := strings.TrimSpace(models[i].Alias)
+		key := strings.ToLower(name)
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, ClineModel{Name: name, Alias: alias})
+	}
+	return out
+}
+
+func normalizeClineBaseURL(baseURL string) string {
+	base := strings.TrimSpace(baseURL)
+	if base == "" {
+		return DefaultClineBaseURL
+	}
+	return strings.TrimSuffix(base, "/")
+}
+
 // SanitizeGeminiKeys deduplicates and normalizes Gemini credentials.
 func (cfg *Config) SanitizeGeminiKeys() {
 	if cfg == nil {
