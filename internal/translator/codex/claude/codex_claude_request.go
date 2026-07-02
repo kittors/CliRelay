@@ -65,6 +65,9 @@ func ConvertClaudeRequestToCodex(modelName string, inputRawJSON []byte, _ bool) 
 		for i := 0; i < len(messageResults); i++ {
 			messageResult := messageResults[i]
 			messageRole := messageResult.Get("role").String()
+			if strings.EqualFold(strings.TrimSpace(messageRole), "system") {
+				messageRole = "developer"
+			}
 
 			newMessage := func() string {
 				msg := `{"type": "message","role":"","content":[]}`
