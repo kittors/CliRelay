@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -17,6 +18,146 @@ import (
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
+
+// TestRebuildMidSystemMessagesToTopLevel 验证 system-role messages 会转换为顶层 system blocks。
+func TestRebuildMidSystemMessagesToTopLevel(t *testing.T) {
+	input := []byte(`{
+		"system": [{"type":"text","text":"existing system"}],
+		"messages": [
+			{"role":"system","content":"metadata system"},
+			{"role":"user","content":[{"type":"text","text":"hi"}]},
+			{"role":"SYSTEM","content":[
+				"array text",
+				{"type":"text","text":"block text"},
+				{"type":"image","source":{"type":"url","url":"https://example.com/image.png"}}
+			]},
+			{"role":"assistant","content":[{"type":"text","text":"hello"}]}
+		]
+	}`)
+
+	out := rebuildMidSystemMessagesToTopLevel(input)
+
+	if got := gjson.GetBytes(out, "messages.#").Int(); got != 2 {
+		t.Fatalf("messages count = %d, want 2; body=%s", got, string(out))
+	}
+	if got := gjson.GetBytes(out, "messages.0.role").String(); got != "user" {
+		t.Fatalf("messages.0.role = %q, want user", got)
+	}
+	if got := gjson.GetBytes(out, "messages.1.role").String(); got != "assistant" {
+		t.Fatalf("messages.1.role = %q, want assistant", got)
+	}
+	wantSystem := []string{"existing system", "metadata system", "array text", "block text"}
+	for i, want := range wantSystem {
+		path := fmt.Sprintf("system.%d.text", i)
+		if got := gjson.GetBytes(out, path).String(); got != want {
+			t.Fatalf("%s = %q, want %q; body=%s", path, got, want, string(out))
+		}
+	}
+}
+
+// TestClaudeExecutorRebuildsSystemMessagesForUpstreamRequests 验证所有 Claude 上游路径都会清理 system-role messages。
+func TestClaudeExecutorRebuildsSystemMessagesForUpstreamRequests(t *testing.T) {
+	for _, mode := range []string{"execute", "stream", "count_tokens"} {
+		t.Run(mode, func(t *testing.T) {
+			var gotBody []byte
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var wantPath string
+				if mode == "count_tokens" {
+					wantPath = "/v1/messages/count_tokens"
+				} else {
+					wantPath = "/v1/messages"
+				}
+				if r.URL.Path != wantPath {
+					t.Fatalf("path = %q, want %q", r.URL.Path, wantPath)
+				}
+				var err error
+				gotBody, err = io.ReadAll(r.Body)
+				if err != nil {
+					t.Fatalf("read request body: %v", err)
+				}
+				if mode == "stream" {
+					w.Header().Set("Content-Type", "text/event-stream")
+					_, _ = w.Write([]byte("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"))
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				if mode == "count_tokens" {
+					_, _ = w.Write([]byte(`{"input_tokens":1}`))
+					return
+				}
+				_, _ = w.Write([]byte(`{
+					"id":"msg_1",
+					"type":"message",
+					"model":"claude-3-5-sonnet",
+					"role":"assistant",
+					"content":[{"type":"text","text":"ok"}],
+					"usage":{"input_tokens":1,"output_tokens":1}
+				}`))
+			}))
+			defer server.Close()
+
+			executor := NewClaudeExecutor(&config.Config{})
+			auth := &cliproxyauth.Auth{Attributes: map[string]string{
+				"api_key":                   "key-123",
+				"base_url":                  server.URL,
+				"skip_anthropic_processing": "true",
+			}}
+			payload := []byte(`{
+				"model":"claude-3-5-sonnet",
+				"system":[{"type":"text","text":"existing system"}],
+				"messages":[
+					{"role":"system","content":"metadata system"},
+					{"role":"user","content":[{"type":"text","text":"hi"}]}
+				]
+			}`)
+			req := cliproxyexecutor.Request{Model: "claude-3-5-sonnet", Payload: payload}
+			opts := cliproxyexecutor.Options{SourceFormat: sdktranslator.FromString("claude")}
+
+			switch mode {
+			case "execute":
+				if _, err := executor.Execute(context.Background(), auth, req, opts); err != nil {
+					t.Fatalf("Execute error: %v", err)
+				}
+			case "stream":
+				result, err := executor.ExecuteStream(context.Background(), auth, req, opts)
+				if err != nil {
+					t.Fatalf("ExecuteStream error: %v", err)
+				}
+				for chunk := range result.Chunks {
+					if chunk.Err != nil {
+						t.Fatalf("stream chunk error: %v", chunk.Err)
+					}
+				}
+			case "count_tokens":
+				if _, err := executor.CountTokens(context.Background(), auth, req, opts); err != nil {
+					t.Fatalf("CountTokens error: %v", err)
+				}
+			}
+
+			messages := gjson.GetBytes(gotBody, "messages")
+			messages.ForEach(func(index, message gjson.Result) bool {
+				if strings.EqualFold(message.Get("role").String(), "system") {
+					t.Fatalf("messages.%d.role = system; body=%s", index.Int(), string(gotBody))
+				}
+				return true
+			})
+			foundExisting := false
+			foundMetadata := false
+			gjson.GetBytes(gotBody, "system").ForEach(func(_, part gjson.Result) bool {
+				switch part.Get("text").String() {
+				case "existing system":
+					foundExisting = true
+				case "metadata system":
+					foundMetadata = true
+				}
+				return true
+			})
+			if !foundExisting || !foundMetadata {
+				t.Fatalf("system blocks missing existing=%v metadata=%v; body=%s", foundExisting, foundMetadata, string(gotBody))
+			}
+		})
+	}
+}
 
 func TestApplyClaudeToolPrefix(t *testing.T) {
 	input := []byte(`{"tools":[{"name":"alpha"},{"name":"proxy_bravo"}],"tool_choice":{"type":"tool","name":"charlie"},"messages":[{"role":"assistant","content":[{"type":"tool_use","name":"delta","id":"t1","input":{}}]}]}`)

@@ -117,6 +117,7 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 	}
 
 	body = execCtx.ApplyPayloadConfig(body, originalTranslated)
+	body = rebuildMidSystemMessagesToTopLevel(body)
 
 	if !skipAnthropic {
 		// Disable thinking if tool_choice forces tool use (Anthropic API constraint)
@@ -252,6 +253,7 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	}
 
 	body = execCtx.ApplyPayloadConfig(body, originalTranslated)
+	body = rebuildMidSystemMessagesToTopLevel(body)
 
 	if !skipAnthropic {
 		// Disable thinking if tool_choice forces tool use (Anthropic API constraint)
@@ -398,6 +400,7 @@ func (e *ClaudeExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Aut
 	})
 	body, _ := execCtx.TranslateRequestPair(req.Payload)
 	body, _ = sjson.SetBytes(body, "model", execCtx.BaseModel)
+	body = rebuildMidSystemMessagesToTopLevel(body)
 
 	if !strings.HasPrefix(execCtx.BaseModel, "claude-3-5-haiku") {
 		body = checkSystemInstructions(body)
