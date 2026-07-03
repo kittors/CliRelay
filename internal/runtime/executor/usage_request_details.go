@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/diagnostics"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 )
@@ -78,6 +79,11 @@ func buildRequestDetailContent(ctx context.Context) string {
 	if timing := upstreamTimingFromContext(ginCtx); len(timing) > 0 {
 		detail["upstream_timing"] = timing
 	}
+	if diagnostic := diagnostics.FromGin(ginCtx); diagnostic != nil {
+		if snapshot := diagnostic.Snapshot(); !snapshot.IsZero() {
+			detail["diagnostic"] = snapshot
+		}
+	}
 
 	data, err := json.Marshal(detail)
 	if err != nil {
@@ -123,27 +129,7 @@ func requestLogEgressFromContext(ginCtx *gin.Context) map[string]any {
 	if !ok {
 		return nil
 	}
-
-	result := map[string]any{}
-	if route.RouteKind != "" {
-		result["route_kind"] = route.RouteKind
-	}
-	if route.ProxySource != "" {
-		result["proxy_source"] = route.ProxySource
-	}
-	if route.ProxyID != "" {
-		result["proxy_id"] = route.ProxyID
-	}
-	if route.ProxyName != "" {
-		result["proxy_name"] = route.ProxyName
-	}
-	if route.ProxyURLHost != "" {
-		result["proxy_url_host"] = route.ProxyURLHost
-	}
-	if len(result) == 0 {
-		return nil
-	}
-	return result
+	return requestLogEgressRouteMap(route)
 }
 
 func cloneHeaderValues(headers http.Header) map[string][]string {

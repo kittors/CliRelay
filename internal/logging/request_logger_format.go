@@ -2,6 +2,7 @@ package logging
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/buildinfo"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/diagnostics"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	log "github.com/sirupsen/logrus"
@@ -29,11 +31,12 @@ func (l *FileRequestLogger) writeNonStreamingLog(
 	decompressErr error,
 	requestTimestamp time.Time,
 	apiResponseTimestamp time.Time,
+	diagnostic diagnostics.Snapshot,
 ) error {
 	if requestTimestamp.IsZero() {
 		requestTimestamp = time.Now()
 	}
-	if errWrite := writeRequestInfoWithBody(w, url, method, requestHeaders, requestBody, requestBodyPath, requestTimestamp); errWrite != nil {
+	if errWrite := writeRequestInfoWithBody(w, url, method, requestHeaders, requestBody, requestBodyPath, requestTimestamp, diagnostic); errWrite != nil {
 		return errWrite
 	}
 	if errWrite := writeAPISection(w, "=== API REQUEST ===\n", "=== API REQUEST", apiRequest, time.Time{}); errWrite != nil {
@@ -55,6 +58,7 @@ func writeRequestInfoWithBody(
 	body []byte,
 	bodyPath string,
 	timestamp time.Time,
+	diagnostic diagnostics.Snapshot,
 ) error {
 	if _, errWrite := io.WriteString(w, "=== REQUEST INFO ===\n"); errWrite != nil {
 		return errWrite
@@ -65,6 +69,16 @@ func writeRequestInfoWithBody(
 	if _, errWrite := io.WriteString(w, fmt.Sprintf("URL: %s\n", url)); errWrite != nil {
 		return errWrite
 	}
+	if diagnostic.EffectiveURL != "" && diagnostic.EffectiveURL != url {
+		if _, errWrite := io.WriteString(w, fmt.Sprintf("Effective URL: %s\n", diagnostic.EffectiveURL)); errWrite != nil {
+			return errWrite
+		}
+	}
+	if diagnostic.RequestID != "" {
+		if _, errWrite := io.WriteString(w, fmt.Sprintf("Request ID: %s\n", diagnostic.RequestID)); errWrite != nil {
+			return errWrite
+		}
+	}
 	if _, errWrite := io.WriteString(w, fmt.Sprintf("Method: %s\n", method)); errWrite != nil {
 		return errWrite
 	}
@@ -73,6 +87,21 @@ func writeRequestInfoWithBody(
 	}
 	if _, errWrite := io.WriteString(w, "\n"); errWrite != nil {
 		return errWrite
+	}
+	if hasDiagnosticMetadata(diagnostic) {
+		if _, errWrite := io.WriteString(w, "=== DIAGNOSTIC METADATA ===\n"); errWrite != nil {
+			return errWrite
+		}
+		data, errJSON := json.MarshalIndent(diagnostic, "", "  ")
+		if errJSON != nil {
+			return errJSON
+		}
+		if _, errWrite := w.Write(data); errWrite != nil {
+			return errWrite
+		}
+		if _, errWrite := io.WriteString(w, "\n\n"); errWrite != nil {
+			return errWrite
+		}
 	}
 
 	if _, errWrite := io.WriteString(w, "=== HEADERS ===\n"); errWrite != nil {
@@ -112,6 +141,19 @@ func writeRequestInfoWithBody(
 		return errWrite
 	}
 	return nil
+}
+
+func hasDiagnosticMetadata(diagnostic diagnostics.Snapshot) bool {
+	return diagnostic.RequestID != "" ||
+		diagnostic.OriginalURL != "" ||
+		diagnostic.EffectiveURL != "" ||
+		diagnostic.Route != nil ||
+		diagnostic.Auth != nil ||
+		diagnostic.Quota != nil ||
+		diagnostic.Upstream != nil ||
+		diagnostic.Egress != nil ||
+		diagnostic.Response != nil ||
+		diagnostic.Body != nil
 }
 
 func writeAPISection(w io.Writer, sectionHeader string, sectionPrefix string, payload []byte, timestamp time.Time) error {

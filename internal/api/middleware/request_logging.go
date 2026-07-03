@@ -4,17 +4,23 @@
 package middleware
 
 import (
+	"context"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/api/bodyutil"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/diagnostics"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 )
 
 const maxErrorOnlyCapturedRequestBodyBytes int64 = 1 << 20 // 1 MiB
+
+const requestLoggingWrappedGinKey = "cliproxy.request_logging_wrapped"
+
+type requestLoggingWrappedContextKey struct{}
 
 // RequestLoggingMiddleware creates a Gin middleware that logs HTTP requests and responses.
 // It captures detailed information about the request and response, including headers and body,
@@ -34,6 +40,22 @@ func RequestLoggingMiddleware(logger logging.RequestLogger) gin.HandlerFunc {
 
 		path := c.Request.URL.Path
 		if !shouldLogRequest(path) {
+			c.Next()
+			return
+		}
+
+		requestID := ensureRequestLoggingRequestID(c)
+		diagnostic := diagnostics.EnsureGin(c, requestID)
+		if diagnostic != nil {
+			diagnostic.UpdateRequest(c.Request)
+		}
+
+		if wrapper := requestLoggingExistingWrapper(c); wrapper != nil {
+			c.Writer = wrapper
+			c.Next()
+			return
+		}
+		if requestLoggingAlreadyWrapped(c) {
 			c.Next()
 			return
 		}
@@ -59,6 +81,7 @@ func RequestLoggingMiddleware(logger logging.RequestLogger) gin.HandlerFunc {
 			wrapper.logOnErrorOnly = true
 		}
 		c.Writer = wrapper
+		markRequestLoggingWrapped(c, wrapper)
 
 		// Process the request
 		c.Next()
@@ -69,6 +92,57 @@ func RequestLoggingMiddleware(logger logging.RequestLogger) gin.HandlerFunc {
 			_ = c.Error(err)
 		}
 	}
+}
+
+func requestLoggingAlreadyWrapped(c *gin.Context) bool {
+	if c == nil {
+		return false
+	}
+	if _, exists := c.Get(requestLoggingWrappedGinKey); exists {
+		return true
+	}
+	if c.Request == nil {
+		return false
+	}
+	return c.Request.Context().Value(requestLoggingWrappedContextKey{}) != nil
+}
+
+func requestLoggingExistingWrapper(c *gin.Context) *ResponseWriterWrapper {
+	if c == nil {
+		return nil
+	}
+	if raw, exists := c.Get(requestLoggingWrappedGinKey); exists {
+		if wrapper, ok := raw.(*ResponseWriterWrapper); ok {
+			return wrapper
+		}
+	}
+	if c.Request == nil {
+		return nil
+	}
+	wrapper, _ := c.Request.Context().Value(requestLoggingWrappedContextKey{}).(*ResponseWriterWrapper)
+	return wrapper
+}
+
+func markRequestLoggingWrapped(c *gin.Context, wrapper *ResponseWriterWrapper) {
+	if c == nil {
+		return
+	}
+	c.Set(requestLoggingWrappedGinKey, wrapper)
+	if c.Request != nil {
+		c.Request = c.Request.WithContext(context.WithValue(c.Request.Context(), requestLoggingWrappedContextKey{}, wrapper))
+	}
+}
+
+func ensureRequestLoggingRequestID(c *gin.Context) string {
+	if existing := logging.GetGinRequestID(c); existing != "" {
+		return existing
+	}
+	requestID := logging.GenerateRequestID()
+	logging.SetGinRequestID(c, requestID)
+	if c != nil && c.Request != nil {
+		c.Request = c.Request.WithContext(logging.WithRequestID(c.Request.Context(), requestID))
+	}
+	return requestID
 }
 
 func shouldSkipMethodForRequestLogging(req *http.Request) bool {
@@ -117,6 +191,11 @@ func captureRequestInfo(c *gin.Context, captureBody bool) (*RequestInfo, error) 
 	url := c.Request.URL.Path
 	if maskedQuery != "" {
 		url += "?" + maskedQuery
+	}
+	if diagnostic := diagnostics.FromGin(c); diagnostic != nil {
+		if snapshot := diagnostic.Snapshot(); snapshot.OriginalURL != "" {
+			url = snapshot.OriginalURL
+		}
 	}
 
 	// Capture method

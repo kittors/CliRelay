@@ -5,7 +5,9 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/api/middleware"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/diagnostics"
 	internalrouting "github.com/router-for-me/CLIProxyAPI/v6/internal/routing"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/api/handlers/claude"
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/api/handlers/gemini"
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/api/handlers/openai"
@@ -107,8 +109,10 @@ func (s *Server) setupRoutes() {
 		c.Request.URL.Path = apiPath
 		if c.Request.URL.RawQuery != "" {
 			c.Request.RequestURI = apiPath + "?" + c.Request.URL.RawQuery
+			diagnostics.SetEffectiveURL(c, apiPath+"?"+util.MaskSensitiveQuery(c.Request.URL.RawQuery))
 		} else {
 			c.Request.RequestURI = apiPath
+			diagnostics.SetEffectiveURL(c, apiPath)
 		}
 		c.Status(http.StatusOK)
 		s.engine.HandleContext(c)

@@ -2,7 +2,9 @@ package management
 
 import (
 	"bufio"
+	"bytes"
 	"compress/gzip"
+	"encoding/json"
 	"fmt"
 	"io"
 	"math"
@@ -15,6 +17,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/diagnostics"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/logging"
 )
 
@@ -24,7 +27,24 @@ const (
 	maxLogLimit             = 20000
 	logScannerInitialBuffer = 64 * 1024
 	logScannerMaxBuffer     = 8 * 1024 * 1024
+	requestDiagnosticHeader = "=== DIAGNOSTIC METADATA ==="
+	maxErrorLogSummaryBytes = 256 * 1024
 )
+
+type errorLogSummary struct {
+	RequestID      string `json:"request_id,omitempty"`
+	Status         int    `json:"status,omitempty"`
+	ErrorCode      string `json:"error_code,omitempty"`
+	ErrorType      string `json:"error_type,omitempty"`
+	OriginalURL    string `json:"original_url,omitempty"`
+	EffectiveURL   string `json:"effective_url,omitempty"`
+	RouteGroup     string `json:"route_group,omitempty"`
+	RoutePath      string `json:"route_path,omitempty"`
+	Model          string `json:"model,omitempty"`
+	Provider       string `json:"provider,omitempty"`
+	UpstreamStatus int    `json:"upstream_status,omitempty"`
+	RejectedBy     string `json:"rejected_by,omitempty"`
+}
 
 // GetLogs returns log lines with optional incremental loading.
 func (h *Handler) GetLogs(c *gin.Context) {
@@ -187,9 +207,10 @@ func (h *Handler) GetRequestErrorLogs(c *gin.Context) {
 	}
 
 	type errorLog struct {
-		Name     string `json:"name"`
-		Size     int64  `json:"size"`
-		Modified int64  `json:"modified"`
+		Name string `json:"name"`
+		errorLogSummary
+		Size     int64 `json:"size"`
+		Modified int64 `json:"modified"`
 	}
 
 	files := make([]errorLog, 0, len(entries))
@@ -206,10 +227,12 @@ func (h *Handler) GetRequestErrorLogs(c *gin.Context) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to read log info for %s: %v", name, errInfo)})
 			return
 		}
+		summary := readErrorLogSummary(filepath.Join(dir, name))
 		files = append(files, errorLog{
-			Name:     name,
-			Size:     info.Size(),
-			Modified: info.ModTime().Unix(),
+			Name:            name,
+			errorLogSummary: summary,
+			Size:            info.Size(),
+			Modified:        info.ModTime().Unix(),
 		})
 	}
 
@@ -360,6 +383,151 @@ func (h *Handler) DownloadRequestErrorLog(c *gin.Context) {
 	}
 
 	c.FileAttachment(fullPath, name)
+}
+
+func readErrorLogSummary(path string) errorLogSummary {
+	file, err := os.Open(path)
+	if err != nil {
+		return errorLogSummary{}
+	}
+	defer func() { _ = file.Close() }()
+
+	data, err := io.ReadAll(io.LimitReader(file, maxErrorLogSummaryBytes))
+	if err != nil || len(data) == 0 {
+		return errorLogSummary{}
+	}
+
+	summary := parseLegacyErrorLogSummary(data)
+	if snapshot, ok := parseDiagnosticSnapshot(data); ok {
+		summary = mergeErrorLogSummary(summary, errorLogSummaryFromDiagnostic(snapshot))
+	}
+	return summary
+}
+
+func parseDiagnosticSnapshot(data []byte) (diagnostics.Snapshot, bool) {
+	idx := bytes.Index(data, []byte(requestDiagnosticHeader))
+	if idx < 0 {
+		return diagnostics.Snapshot{}, false
+	}
+	section := data[idx+len(requestDiagnosticHeader):]
+	section = bytes.TrimLeft(section, " \t\r\n")
+	if end := bytes.Index(section, []byte("\n=== ")); end >= 0 {
+		section = section[:end]
+	}
+	section = bytes.TrimSpace(section)
+	if len(section) == 0 {
+		return diagnostics.Snapshot{}, false
+	}
+	var snapshot diagnostics.Snapshot
+	if err := json.Unmarshal(section, &snapshot); err != nil {
+		return diagnostics.Snapshot{}, false
+	}
+	return snapshot, !snapshot.IsZero()
+}
+
+func errorLogSummaryFromDiagnostic(snapshot diagnostics.Snapshot) errorLogSummary {
+	summary := errorLogSummary{
+		RequestID:    snapshot.RequestID,
+		OriginalURL:  snapshot.OriginalURL,
+		EffectiveURL: snapshot.EffectiveURL,
+	}
+	if snapshot.Route != nil {
+		summary.RouteGroup = snapshot.Route.Group
+		summary.RoutePath = snapshot.Route.RoutePath
+		if snapshot.Route.CcSwitch != nil {
+			summary.Model = snapshot.Route.CcSwitch.DefaultModel
+		}
+	}
+	if snapshot.Auth != nil {
+		summary.Provider = snapshot.Auth.Provider
+	}
+	if snapshot.Quota != nil {
+		summary.RejectedBy = snapshot.Quota.RejectedBy
+		if summary.ErrorCode == "" {
+			summary.ErrorCode = snapshot.Quota.ErrorCode
+		}
+		if summary.ErrorType == "" {
+			summary.ErrorType = snapshot.Quota.ErrorType
+		}
+	}
+	if snapshot.Upstream != nil {
+		if snapshot.Upstream.Provider != "" {
+			summary.Provider = snapshot.Upstream.Provider
+		}
+		summary.UpstreamStatus = snapshot.Upstream.Status
+	}
+	if snapshot.Response != nil {
+		summary.Status = snapshot.Response.Status
+		summary.ErrorCode = snapshot.Response.ErrorCode
+		summary.ErrorType = snapshot.Response.ErrorType
+	}
+	if snapshot.Body != nil && snapshot.Body.Model != "" {
+		summary.Model = snapshot.Body.Model
+	}
+	return summary
+}
+
+func parseLegacyErrorLogSummary(data []byte) errorLogSummary {
+	summary := errorLogSummary{}
+	scanner := bufio.NewScanner(bytes.NewReader(data))
+	scanner.Buffer(make([]byte, 0, logScannerInitialBuffer), logScannerMaxBuffer)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		switch {
+		case strings.HasPrefix(line, "URL: "):
+			summary.OriginalURL = strings.TrimSpace(strings.TrimPrefix(line, "URL: "))
+		case strings.HasPrefix(line, "Effective URL: "):
+			summary.EffectiveURL = strings.TrimSpace(strings.TrimPrefix(line, "Effective URL: "))
+		case strings.HasPrefix(line, "Request ID: "):
+			summary.RequestID = strings.TrimSpace(strings.TrimPrefix(line, "Request ID: "))
+		case strings.HasPrefix(line, "Status: "):
+			status, err := strconv.Atoi(strings.TrimSpace(strings.TrimPrefix(line, "Status: ")))
+			if err == nil {
+				summary.Status = status
+			}
+		}
+	}
+	return summary
+}
+
+func mergeErrorLogSummary(base, override errorLogSummary) errorLogSummary {
+	if override.RequestID != "" {
+		base.RequestID = override.RequestID
+	}
+	if override.Status != 0 {
+		base.Status = override.Status
+	}
+	if override.ErrorCode != "" {
+		base.ErrorCode = override.ErrorCode
+	}
+	if override.ErrorType != "" {
+		base.ErrorType = override.ErrorType
+	}
+	if override.OriginalURL != "" {
+		base.OriginalURL = override.OriginalURL
+	}
+	if override.EffectiveURL != "" {
+		base.EffectiveURL = override.EffectiveURL
+	}
+	if override.RouteGroup != "" {
+		base.RouteGroup = override.RouteGroup
+	}
+	if override.RoutePath != "" {
+		base.RoutePath = override.RoutePath
+	}
+	if override.Model != "" {
+		base.Model = override.Model
+	}
+	if override.Provider != "" {
+		base.Provider = override.Provider
+	}
+	if override.UpstreamStatus != 0 {
+		base.UpstreamStatus = override.UpstreamStatus
+	}
+	if override.RejectedBy != "" {
+		base.RejectedBy = override.RejectedBy
+	}
+	return base
 }
 
 func (h *Handler) logDirectory() string {

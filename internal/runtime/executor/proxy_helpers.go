@@ -10,6 +10,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/diagnostics"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	sdkexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
@@ -155,6 +156,30 @@ func recordRequestLogEgressRoute(ctx context.Context, cfg *config.Config, auth *
 	}
 
 	ginCtx.Set(requestLogEgressRouteKey, route)
+	diagnostics.SetEgress(ginCtx, requestLogEgressRouteMap(route))
+}
+
+func requestLogEgressRouteMap(route requestLogEgressRoute) map[string]any {
+	result := map[string]any{}
+	if route.RouteKind != "" {
+		result["route_kind"] = route.RouteKind
+	}
+	if route.ProxySource != "" {
+		result["proxy_source"] = route.ProxySource
+	}
+	if route.ProxyID != "" {
+		result["proxy_id"] = route.ProxyID
+	}
+	if route.ProxyName != "" {
+		result["proxy_name"] = route.ProxyName
+	}
+	if route.ProxyURLHost != "" {
+		result["proxy_url_host"] = route.ProxyURLHost
+	}
+	if len(result) == 0 {
+		return nil
+	}
+	return result
 }
 
 func maskProxyURLHost(raw string) string {

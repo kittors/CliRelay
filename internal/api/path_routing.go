@@ -6,6 +6,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/diagnostics"
 	internalrouting "github.com/router-for-me/CLIProxyAPI/v6/internal/routing"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
@@ -16,6 +17,7 @@ func attachPathRouteContext(c *gin.Context, route *internalrouting.PathRouteCont
 		return
 	}
 	c.Set(internalrouting.GinPathRouteContextKey, route)
+	diagnostics.SetRoute(c, route)
 	if c.Request != nil {
 		c.Request = c.Request.WithContext(internalrouting.WithPathRouteContext(c.Request.Context(), route))
 	}
@@ -109,6 +111,7 @@ func abortChannelGroupRouteNotFound(c *gin.Context) {
 	if c == nil {
 		return
 	}
+	diagnostics.SetLocalError(c, http.StatusNotFound, "local_route", "route_group_unavailable", "invalid_request_error", "channel group route not found")
 	c.AbortWithStatusJSON(http.StatusNotFound, gin.H{
 		"error": map[string]any{
 			"message": "channel group route not found",
@@ -167,6 +170,7 @@ func channelGroupAuthorizationMiddleware() gin.HandlerFunc {
 			return
 		}
 
+		diagnostics.SetLocalError(c, http.StatusForbidden, "local_route", "channel_group_forbidden", "forbidden", "channel group is not allowed for this API key")
 		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
 			"error": map[string]any{
 				"message": "channel group is not allowed for this API key",

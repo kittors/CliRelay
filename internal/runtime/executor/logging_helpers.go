@@ -12,6 +12,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/diagnostics"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	log "github.com/sirupsen/logrus"
@@ -19,9 +20,10 @@ import (
 )
 
 const (
-	apiAttemptsKey = "API_UPSTREAM_ATTEMPTS"
-	apiRequestKey  = "API_REQUEST"
-	apiResponseKey = "API_RESPONSE"
+	apiAttemptsKey               = "API_UPSTREAM_ATTEMPTS"
+	apiDiagnosticAttemptCountKey = "API_UPSTREAM_DIAGNOSTIC_ATTEMPT_COUNT"
+	apiRequestKey                = "API_REQUEST"
+	apiResponseKey               = "API_RESPONSE"
 )
 
 // upstreamRequestLog captures the outbound upstream request details for logging.
@@ -51,11 +53,12 @@ type upstreamAttempt struct {
 
 // recordAPIRequest stores the upstream request metadata in Gin context for request logging.
 func recordAPIRequest(ctx context.Context, cfg *config.Config, info upstreamRequestLog) {
-	if !shouldCaptureAPIExchangeLog(cfg) {
-		return
-	}
 	ginCtx := ginContextFrom(ctx)
 	if ginCtx == nil {
+		return
+	}
+	diagnostics.SetUpstreamRequest(ctx, nextUpstreamDiagnosticAttempt(ginCtx), info.Provider, info.AuthID, info.AuthLabel, info.URL, info.Method)
+	if !shouldCaptureAPIExchangeLog(cfg) {
 		return
 	}
 
@@ -98,11 +101,12 @@ func recordAPIRequest(ctx context.Context, cfg *config.Config, info upstreamRequ
 
 // recordAPIResponseMetadata captures upstream response status/header information for the latest attempt.
 func recordAPIResponseMetadata(ctx context.Context, cfg *config.Config, status int, headers http.Header) {
-	if !shouldCaptureAPIExchangeLog(cfg) {
-		return
-	}
+	diagnostics.SetUpstreamResponse(ctx, status)
 	ginCtx := ginContextFrom(ctx)
 	if ginCtx == nil {
+		return
+	}
+	if !shouldCaptureAPIExchangeLog(cfg) {
 		return
 	}
 	attempts, attempt := ensureAttempt(ginCtx)
@@ -124,11 +128,15 @@ func recordAPIResponseMetadata(ctx context.Context, cfg *config.Config, status i
 
 // recordAPIResponseError adds an error entry for the latest attempt when no HTTP response is available.
 func recordAPIResponseError(ctx context.Context, cfg *config.Config, err error) {
-	if !shouldCaptureAPIExchangeLog(cfg) || err == nil {
+	if err == nil {
 		return
 	}
+	diagnostics.SetUpstreamError(ctx, err)
 	ginCtx := ginContextFrom(ctx)
 	if ginCtx == nil {
+		return
+	}
+	if !shouldCaptureAPIExchangeLog(cfg) {
 		return
 	}
 	attempts, attempt := ensureAttempt(ginCtx)
@@ -204,6 +212,24 @@ func getAttempts(ginCtx *gin.Context) []*upstreamAttempt {
 		}
 	}
 	return nil
+}
+
+func nextUpstreamDiagnosticAttempt(ginCtx *gin.Context) int {
+	if ginCtx == nil {
+		return 0
+	}
+	count := 0
+	if value, exists := ginCtx.Get(apiDiagnosticAttemptCountKey); exists {
+		switch v := value.(type) {
+		case int:
+			count = v
+		case int64:
+			count = int(v)
+		}
+	}
+	count++
+	ginCtx.Set(apiDiagnosticAttemptCountKey, count)
+	return count
 }
 
 func ensureAttempt(ginCtx *gin.Context) ([]*upstreamAttempt, *upstreamAttempt) {

@@ -13,6 +13,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/api/bodyutil"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/diagnostics"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/logging"
 )
@@ -203,6 +204,33 @@ func (l *captureRequestLogger) LogStreamingRequest(_ string, _ string, _ map[str
 
 func (l *captureRequestLogger) IsEnabled() bool { return true }
 
+type diagnosticRequestLogger struct {
+	url        string
+	requestID  string
+	statusCode int
+	calls      int
+	diagnostic diagnostics.Snapshot
+}
+
+func (l *diagnosticRequestLogger) LogRequest(string, string, map[string][]string, []byte, int, map[string][]string, []byte, []byte, []byte, []*interfaces.ErrorMessage, string, time.Time, time.Time) error {
+	return nil
+}
+
+func (l *diagnosticRequestLogger) LogRequestWithOptionsAndDiagnostics(url string, _ string, _ map[string][]string, _ []byte, statusCode int, _ map[string][]string, _ []byte, _ []byte, _ []byte, _ []*interfaces.ErrorMessage, _ bool, requestID string, _ time.Time, _ time.Time, diagnostic diagnostics.Snapshot) error {
+	l.calls++
+	l.url = url
+	l.requestID = requestID
+	l.statusCode = statusCode
+	l.diagnostic = diagnostic
+	return nil
+}
+
+func (l *diagnosticRequestLogger) LogStreamingRequest(string, string, map[string][]string, []byte, string) (logging.StreamingLogWriter, error) {
+	return stubStreamingLogWriter{}, nil
+}
+
+func (l *diagnosticRequestLogger) IsEnabled() bool { return false }
+
 func gzipBodyForRequestLoggingTest(t *testing.T, raw []byte) []byte {
 	t.Helper()
 	var buf bytes.Buffer
@@ -282,5 +310,65 @@ func TestRequestLoggingMiddlewareUsesCachedDecodedBody(t *testing.T) {
 	}
 	if string(logger.requestBody) != string(raw) {
 		t.Fatalf("logged request body = %s, want %s", logger.requestBody, raw)
+	}
+}
+
+func TestRequestLoggingMiddlewarePreservesOriginalURLAcrossRewrite(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	logger := &diagnosticRequestLogger{}
+	r := gin.New()
+	r.Use(RequestLoggingMiddleware(logger))
+	r.POST("/v1/responses", func(c *gin.Context) {
+		c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{
+			"error": map[string]any{
+				"message": "RPM limit (10 requests/min) exceeded for this API key",
+				"type":    "rate_limit_exceeded",
+				"code":    "rpm_limit_exceeded",
+			},
+		})
+	})
+	r.NoRoute(func(c *gin.Context) {
+		if _, rewritten := c.Get("test.rewritten"); rewritten {
+			c.AbortWithStatus(http.StatusNotFound)
+			return
+		}
+		c.Set("test.rewritten", true)
+		c.Request.URL.Path = "/v1/responses"
+		c.Request.RequestURI = "/v1/responses"
+		diagnostics.SetEffectiveURL(c, "/v1/responses")
+		r.HandleContext(c)
+		c.Abort()
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/deepseekv4flash-chatgpt/cs_3e13ca9880fc/v1/responses", strings.NewReader(`{"model":"deepseek","input":"hello"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want %d; body=%s", w.Code, http.StatusTooManyRequests, w.Body.String())
+	}
+	if logger.calls != 1 {
+		t.Fatalf("log calls = %d, want 1", logger.calls)
+	}
+	if logger.url != "/deepseekv4flash-chatgpt/cs_3e13ca9880fc/v1/responses" {
+		t.Fatalf("logged url = %q", logger.url)
+	}
+	if logger.requestID == "" {
+		t.Fatal("request ID should be generated for rewritten requests")
+	}
+	if logger.statusCode != http.StatusTooManyRequests {
+		t.Fatalf("logged status = %d, want %d", logger.statusCode, http.StatusTooManyRequests)
+	}
+	if logger.diagnostic.OriginalURL != "/deepseekv4flash-chatgpt/cs_3e13ca9880fc/v1/responses" {
+		t.Fatalf("diagnostic original URL = %q", logger.diagnostic.OriginalURL)
+	}
+	if logger.diagnostic.EffectiveURL != "/v1/responses" {
+		t.Fatalf("diagnostic effective URL = %q", logger.diagnostic.EffectiveURL)
+	}
+	if logger.diagnostic.Response == nil || logger.diagnostic.Response.ErrorCode != "rpm_limit_exceeded" {
+		t.Fatalf("diagnostic response = %#v", logger.diagnostic.Response)
 	}
 }

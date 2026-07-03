@@ -11,6 +11,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/api/bodyutil"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/diagnostics"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
@@ -299,6 +300,7 @@ func (w *ResponseWriterWrapper) Finalize(c *gin.Context) error {
 	}
 
 	hasAPIError := len(slicesAPIResponseError) > 0 || finalStatusCode >= http.StatusBadRequest
+	diagnostics.RecordResponse(c, finalStatusCode, w.body.Bytes())
 	forceLog := w.logOnErrorOnly && hasAPIError && !w.logger.IsEnabled()
 	if !w.logger.IsEnabled() && !forceLog {
 		return nil
@@ -426,6 +428,42 @@ func (w *ResponseWriterWrapper) hydrateRequestInfoBody(c *gin.Context) []byte {
 func (w *ResponseWriterWrapper) logRequest(requestBody []byte, statusCode int, headers map[string][]string, body []byte, apiRequestBody, apiResponseBody []byte, apiResponseTimestamp time.Time, apiResponseErrors []*interfaces.ErrorMessage, forceLog bool) error {
 	if w.requestInfo == nil {
 		return nil
+	}
+
+	if w.ginCtx != nil {
+		if forceLog && diagnostics.ShouldRedactErrorOnlyBody(w.ginCtx, statusCode) {
+			summary := diagnostics.RecordBody(w.ginCtx, requestBody, true, "local_4xx_error")
+			requestBody = diagnostics.FormatBodySummary(summary)
+		} else {
+			diagnostics.RecordBody(w.ginCtx, requestBody, false, "")
+		}
+	}
+
+	diagnosticSnapshot := diagnostics.Snapshot{}
+	if diagnostic := diagnostics.FromGin(w.ginCtx); diagnostic != nil {
+		diagnosticSnapshot = diagnostic.Snapshot()
+	}
+
+	if loggerWithDiagnostics, ok := w.logger.(interface {
+		LogRequestWithOptionsAndDiagnostics(string, string, map[string][]string, []byte, int, map[string][]string, []byte, []byte, []byte, []*interfaces.ErrorMessage, bool, string, time.Time, time.Time, diagnostics.Snapshot) error
+	}); ok {
+		return loggerWithDiagnostics.LogRequestWithOptionsAndDiagnostics(
+			w.requestInfo.URL,
+			w.requestInfo.Method,
+			w.requestInfo.Headers,
+			requestBody,
+			statusCode,
+			headers,
+			body,
+			apiRequestBody,
+			apiResponseBody,
+			apiResponseErrors,
+			forceLog,
+			w.requestInfo.RequestID,
+			w.requestInfo.Timestamp,
+			apiResponseTimestamp,
+			diagnosticSnapshot,
+		)
 	}
 
 	if loggerWithOptions, ok := w.logger.(interface {

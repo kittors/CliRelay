@@ -6,6 +6,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/diagnostics"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -157,7 +158,7 @@ func (w *FileStreamingLogWriter) asyncWriter() {
 }
 
 func (w *FileStreamingLogWriter) writeFinalLog(logFile *os.File) error {
-	if errWrite := writeRequestInfoWithBody(logFile, w.url, w.method, w.requestHeaders, nil, w.requestBodyPath, w.timestamp); errWrite != nil {
+	if errWrite := writeRequestInfoWithBody(logFile, w.url, w.method, w.requestHeaders, nil, w.requestBodyPath, w.timestamp, diagnostics.Snapshot{}); errWrite != nil {
 		return errWrite
 	}
 	if errWrite := writeAPISection(logFile, "=== API REQUEST ===\n", "=== API REQUEST", w.apiRequest, time.Time{}); errWrite != nil {

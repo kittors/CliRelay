@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/diagnostics"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/interfaces"
 	log "github.com/sirupsen/logrus"
 )
@@ -32,16 +33,20 @@ func (l *FileRequestLogger) SetErrorLogsMaxFiles(maxFiles int) {
 }
 
 func (l *FileRequestLogger) LogRequest(url, method string, requestHeaders map[string][]string, body []byte, statusCode int, responseHeaders map[string][]string, response, apiRequest, apiResponse []byte, apiResponseErrors []*interfaces.ErrorMessage, requestID string, requestTimestamp, apiResponseTimestamp time.Time) error {
-	return l.logRequest(url, method, requestHeaders, body, statusCode, responseHeaders, response, apiRequest, apiResponse, apiResponseErrors, false, requestID, requestTimestamp, apiResponseTimestamp)
+	return l.logRequest(url, method, requestHeaders, body, statusCode, responseHeaders, response, apiRequest, apiResponse, apiResponseErrors, false, requestID, requestTimestamp, apiResponseTimestamp, diagnostics.Snapshot{})
 }
 
 // LogRequestWithOptions keeps forced error-log writes available even when
 // regular request logging is disabled.
 func (l *FileRequestLogger) LogRequestWithOptions(url, method string, requestHeaders map[string][]string, body []byte, statusCode int, responseHeaders map[string][]string, response, apiRequest, apiResponse []byte, apiResponseErrors []*interfaces.ErrorMessage, force bool, requestID string, requestTimestamp, apiResponseTimestamp time.Time) error {
-	return l.logRequest(url, method, requestHeaders, body, statusCode, responseHeaders, response, apiRequest, apiResponse, apiResponseErrors, force, requestID, requestTimestamp, apiResponseTimestamp)
+	return l.logRequest(url, method, requestHeaders, body, statusCode, responseHeaders, response, apiRequest, apiResponse, apiResponseErrors, force, requestID, requestTimestamp, apiResponseTimestamp, diagnostics.Snapshot{})
 }
 
-func (l *FileRequestLogger) logRequest(url, method string, requestHeaders map[string][]string, body []byte, statusCode int, responseHeaders map[string][]string, response, apiRequest, apiResponse []byte, apiResponseErrors []*interfaces.ErrorMessage, force bool, requestID string, requestTimestamp, apiResponseTimestamp time.Time) error {
+func (l *FileRequestLogger) LogRequestWithOptionsAndDiagnostics(url, method string, requestHeaders map[string][]string, body []byte, statusCode int, responseHeaders map[string][]string, response, apiRequest, apiResponse []byte, apiResponseErrors []*interfaces.ErrorMessage, force bool, requestID string, requestTimestamp, apiResponseTimestamp time.Time, diagnostic diagnostics.Snapshot) error {
+	return l.logRequest(url, method, requestHeaders, body, statusCode, responseHeaders, response, apiRequest, apiResponse, apiResponseErrors, force, requestID, requestTimestamp, apiResponseTimestamp, diagnostic)
+}
+
+func (l *FileRequestLogger) logRequest(url, method string, requestHeaders map[string][]string, body []byte, statusCode int, responseHeaders map[string][]string, response, apiRequest, apiResponse []byte, apiResponseErrors []*interfaces.ErrorMessage, force bool, requestID string, requestTimestamp, apiResponseTimestamp time.Time, diagnostic diagnostics.Snapshot) error {
 	if !l.enabled && !force {
 		return nil
 	}
@@ -49,9 +54,14 @@ func (l *FileRequestLogger) logRequest(url, method string, requestHeaders map[st
 		return fmt.Errorf("failed to create logs directory: %w", errEnsure)
 	}
 
-	filename := l.generateFilename(url, requestID)
+	logURL := url
+	if diagnostic.OriginalURL != "" {
+		logURL = diagnostic.OriginalURL
+	}
+	filenameURL := logURL
+	filename := l.generateFilename(filenameURL, requestID)
 	if force && !l.enabled {
-		filename = l.generateErrorFilename(url, requestID)
+		filename = l.generateErrorFilename(filenameURL, requestID)
 	}
 	filePath := filepath.Join(l.logsDir, filename)
 
@@ -79,7 +89,7 @@ func (l *FileRequestLogger) logRequest(url, method string, requestHeaders map[st
 
 	writeErr := l.writeNonStreamingLog(
 		logFile,
-		url,
+		logURL,
 		method,
 		requestHeaders,
 		body,
@@ -93,6 +103,7 @@ func (l *FileRequestLogger) logRequest(url, method string, requestHeaders map[st
 		decompressErr,
 		requestTimestamp,
 		apiResponseTimestamp,
+		diagnostic,
 	)
 	if errClose := logFile.Close(); errClose != nil {
 		log.WithError(errClose).Warn("failed to close request log file")
