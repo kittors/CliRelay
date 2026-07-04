@@ -1928,6 +1928,58 @@ func TestClearRequestLogsClearsBodiesButKeepsRequestRows(t *testing.T) {
 	}
 }
 
+func TestQueryStatsAndHeatmapCountSessionsFromDetails(t *testing.T) {
+	initTestUsageDB(t, config.RequestLogStorageConfig{
+		StoreContent:           true,
+		ContentRetentionDays:   30,
+		CleanupIntervalMinutes: 1440,
+	})
+
+	today := time.Now().UTC()
+	yesterday := today.AddDate(0, 0, -1)
+	InsertLogWithDetails("sk-heatmap", "Heatmap", "gpt-5.4", "codex", "Codex", "auth-1", false, today, 10, 5, TokenStats{
+		InputTokens: 10, OutputTokens: 20, TotalTokens: 30,
+	}, "{}", "{}", `{"session_id":"session-a","request_id":"req-a1"}`)
+	InsertLogWithDetails("sk-heatmap", "Heatmap", "gpt-5.4", "codex", "Codex", "auth-1", false, today.Add(time.Minute), 10, 5, TokenStats{
+		InputTokens: 20, OutputTokens: 30, TotalTokens: 50,
+	}, "{}", "{}", `{"session_id":"session-a","request_id":"req-a2"}`)
+	InsertLogWithDetails("sk-heatmap", "Heatmap", "gpt-5.4", "codex", "Codex", "auth-1", false, yesterday, 10, 5, TokenStats{
+		InputTokens: 1, OutputTokens: 2, TotalTokens: 3,
+	}, "{}", "{}", `{"conversation_id":"session-b"}`)
+
+	stats, err := QueryStats(LogQueryParams{APIKey: "sk-heatmap", Days: 7})
+	if err != nil {
+		t.Fatalf("QueryStats() error = %v", err)
+	}
+	if stats.Total != 3 || stats.TotalTokens != 83 {
+		t.Fatalf("stats = %#v, want total=3 total_tokens=83", stats)
+	}
+	sessionCount, err := QuerySessionCount(LogQueryParams{APIKey: "sk-heatmap", Days: 7})
+	if err != nil {
+		t.Fatalf("QuerySessionCount() error = %v", err)
+	}
+	if sessionCount != 2 {
+		t.Fatalf("QuerySessionCount() = %d, want 2", sessionCount)
+	}
+
+	points, err := QueryDailyHeatmapSeries("sk-heatmap", 7)
+	if err != nil {
+		t.Fatalf("QueryDailyHeatmapSeries() error = %v", err)
+	}
+	byDate := make(map[string]DailyHeatmapPoint, len(points))
+	for _, point := range points {
+		byDate[point.Date] = point
+	}
+	todayPoint := byDate[LocalDayKeyAt(today)]
+	if todayPoint.Requests != 2 || todayPoint.Tokens != 80 || todayPoint.Sessions != 1 {
+		t.Fatalf("today heatmap point = %#v, want requests=2 tokens=80 sessions=1", todayPoint)
+	}
+	yesterdayPoint := byDate[LocalDayKeyAt(yesterday)]
+	if yesterdayPoint.Requests != 1 || yesterdayPoint.Tokens != 3 || yesterdayPoint.Sessions != 1 {
+		t.Fatalf("yesterday heatmap point = %#v, want requests=1 tokens=3 sessions=1", yesterdayPoint)
+	}
+}
+
 func TestClearRequestLogsAllowsNewContentAfterSizeCapCleanup(t *testing.T) {
 	initTestUsageDB(t, config.RequestLogStorageConfig{
 		StoreContent:           true,

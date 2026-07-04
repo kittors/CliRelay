@@ -2,6 +2,7 @@ package usage
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -14,6 +15,15 @@ type DailySeriesPoint struct {
 	FailedReq    int    `json:"failed_requests"`
 	InputTokens  int    `json:"input_tokens"`
 	OutputTokens int    `json:"output_tokens"`
+}
+
+// DailyHeatmapPoint holds one day of usage for the calendar heatmap.
+type DailyHeatmapPoint struct {
+	Date     string  `json:"date"`
+	Requests int64   `json:"requests"`
+	Sessions int64   `json:"sessions"`
+	Tokens   int64   `json:"tokens"`
+	Cost     float64 `json:"cost"`
 }
 
 // ModelDistributionPoint holds aggregated usage data for a single model.
@@ -61,6 +71,184 @@ func QueryDailySeries(apiKey string, days int) ([]DailySeriesPoint, error) {
 		result = append(result, p)
 	}
 	return result, rows.Err()
+}
+
+// QueryDailyHeatmapSeries returns sparse daily usage for the calendar heatmap.
+func QueryDailyHeatmapSeries(apiKey string, days int) ([]DailyHeatmapPoint, error) {
+	db := getReadDB()
+	if db == nil {
+		return nil, nil
+	}
+	if days < 1 {
+		days = 365
+	}
+
+	params := LogQueryParams{APIKey: apiKey, Days: days}
+	where, args := buildWhereClause(params)
+
+	q := `SELECT date(timestamp, 'localtime') as d,
+	             COUNT(*) as reqs,
+	             COALESCE(SUM(total_tokens),0),
+	             COALESCE(SUM(cost),0)
+	      FROM request_logs` + where + `
+	      GROUP BY d ORDER BY d`
+
+	rows, err := db.Query(q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("usage: daily heatmap query: %w", err)
+	}
+	defer rows.Close()
+
+	sessionsByDate, err := querySessionCountsByDate(params)
+	if err != nil {
+		return nil, err
+	}
+
+	var result []DailyHeatmapPoint
+	for rows.Next() {
+		var p DailyHeatmapPoint
+		if err := rows.Scan(&p.Date, &p.Requests, &p.Tokens, &p.Cost); err != nil {
+			return nil, fmt.Errorf("usage: daily heatmap scan: %w", err)
+		}
+		p.Sessions = sessionsByDate[p.Date]
+		result = append(result, p)
+	}
+	return result, rows.Err()
+}
+
+// QuerySessionCount returns the distinct count of session-like request detail IDs.
+func QuerySessionCount(params LogQueryParams) (int64, error) {
+	seenByDate, err := querySessionSetsByDate(params)
+	if err != nil {
+		return 0, err
+	}
+	seen := make(map[string]struct{})
+	for _, sessions := range seenByDate {
+		for sessionID := range sessions {
+			seen[sessionID] = struct{}{}
+		}
+	}
+	return int64(len(seen)), nil
+}
+
+func querySessionCountsByDate(params LogQueryParams) (map[string]int64, error) {
+	seenByDate, err := querySessionSetsByDate(params)
+	if err != nil {
+		return nil, err
+	}
+	counts := make(map[string]int64, len(seenByDate))
+	for dateKey, sessions := range seenByDate {
+		counts[dateKey] = int64(len(sessions))
+	}
+	return counts, nil
+}
+
+func querySessionSetsByDate(params LogQueryParams) (map[string]map[string]struct{}, error) {
+	db := getReadDB()
+	if db == nil {
+		return map[string]map[string]struct{}{}, nil
+	}
+	if params.Days < 1 {
+		params.Days = 7
+	}
+
+	where, args := buildWhereClause(params)
+	rows, err := db.Query(
+		`SELECT date(logs.timestamp, 'localtime'), content.compression, content.detail_content
+		   FROM (SELECT id, timestamp FROM request_logs`+where+`) logs
+		   JOIN request_log_content content ON content.log_id = logs.id
+		  WHERE length(content.detail_content) > 0`,
+		args...,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("usage: session details query: %w", err)
+	}
+	defer rows.Close()
+
+	seenByDate := make(map[string]map[string]struct{})
+	for rows.Next() {
+		var dateKey, compression string
+		var compressed []byte
+		if err := rows.Scan(&dateKey, &compression, &compressed); err != nil {
+			return nil, fmt.Errorf("usage: session details scan: %w", err)
+		}
+		detail, err := decompressLogContent(compression, compressed)
+		if err != nil {
+			return nil, err
+		}
+		sessionID := extractSessionIDFromDetails(detail)
+		if sessionID == "" {
+			continue
+		}
+		if seenByDate[dateKey] == nil {
+			seenByDate[dateKey] = make(map[string]struct{})
+		}
+		seenByDate[dateKey][sessionID] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return seenByDate, nil
+}
+
+func extractSessionIDFromDetails(detail string) string {
+	if strings.TrimSpace(detail) == "" {
+		return ""
+	}
+	var payload any
+	if err := json.Unmarshal([]byte(detail), &payload); err != nil {
+		return ""
+	}
+	bestRank := 99
+	bestValue := ""
+	var walk func(any, string)
+	walk = func(value any, key string) {
+		rank := sessionDetailKeyRank(key)
+		if rank < bestRank {
+			if text := sessionDetailString(value); text != "" {
+				bestRank = rank
+				bestValue = text
+			}
+		}
+		switch typed := value.(type) {
+		case map[string]any:
+			for childKey, childValue := range typed {
+				walk(childValue, childKey)
+			}
+		case []any:
+			for _, childValue := range typed {
+				walk(childValue, "")
+			}
+		}
+	}
+	walk(payload, "")
+	return bestValue
+}
+
+func sessionDetailKeyRank(key string) int {
+	normalized := strings.NewReplacer("-", "_", " ", "_").Replace(strings.ToLower(strings.TrimSpace(key)))
+	switch normalized {
+	case "session_id", "sessionid":
+		return 0
+	case "conversation_id", "conversationid":
+		return 1
+	default:
+		return 99
+	}
+}
+
+func sessionDetailString(value any) string {
+	switch typed := value.(type) {
+	case string:
+		return strings.TrimSpace(typed)
+	case []any:
+		for _, item := range typed {
+			if text, ok := item.(string); ok && strings.TrimSpace(text) != "" {
+				return strings.TrimSpace(text)
+			}
+		}
+	}
+	return ""
 }
 
 // QueryModelDistribution returns request count and token usage grouped by model for a given API key.

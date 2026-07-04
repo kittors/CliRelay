@@ -80,11 +80,12 @@ type FilterOptions struct {
 
 // LogStats holds aggregated stats over the filtered result set.
 type LogStats struct {
-	Total       int64   `json:"total"`
-	SuccessRate float64 `json:"success_rate"`
-	TotalTokens int64   `json:"total_tokens"`
-	TotalCost   float64 `json:"total_cost"`
-	CacheRate   float64 `json:"cache_rate"`
+	Total         int64   `json:"total"`
+	SuccessRate   float64 `json:"success_rate"`
+	TotalTokens   int64   `json:"total_tokens"`
+	TotalSessions int64   `json:"total_sessions"`
+	TotalCost     float64 `json:"total_cost"`
+	CacheRate     float64 `json:"cache_rate"`
 }
 
 const cacheRateEffectiveInputSQL = "CASE WHEN cached_tokens > input_tokens THEN input_tokens + cached_tokens ELSE input_tokens END"

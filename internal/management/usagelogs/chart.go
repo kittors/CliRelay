@@ -23,9 +23,22 @@ func (s *Service) PublicChartData(apiKey string, days int) (map[string]any, erro
 	if err != nil {
 		return nil, err
 	}
+	stats.TotalSessions, err = usage.QuerySessionCount(usage.LogQueryParams{APIKey: apiKey, Days: days})
+	if err != nil {
+		return nil, err
+	}
+
+	heatmap, err := usage.QueryDailyHeatmapSeries(apiKey, 365)
+	if err != nil {
+		return nil, err
+	}
+	if heatmap == nil {
+		heatmap = []usage.DailyHeatmapPoint{}
+	}
 
 	return map[string]any{
 		"daily_series":       daily,
+		"heatmap_series":     heatmap,
 		"model_distribution": models,
 		"stats":              stats,
 		"api_key_name":       s.publicAPIKeyName(apiKey),
