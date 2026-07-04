@@ -149,7 +149,7 @@ find_host_nginx_conf() {
 		echo "$NGINX_CONF"
 		return
 	fi
-	grep -Rsl "$DOMAIN" /etc/nginx/conf.d /etc/nginx/sites-enabled /etc/nginx/sites-available 2>/dev/null | head -n1 || true
+	grep -Rsl "$DOMAIN" /etc/nginx/conf.d /etc/nginx/sites-enabled /etc/nginx/sites-available 2>/dev/null | grep -v '\.bak\.' | head -n1 || true
 }
 
 find_container_nginx_conf() {
@@ -159,7 +159,7 @@ find_container_nginx_conf() {
 	if ! docker inspect "$NGINX_CONTAINER" >/dev/null 2>&1; then
 		return
 	fi
-	docker exec "$NGINX_CONTAINER" sh -c "grep -Rsl '$DOMAIN' /etc/nginx/conf.d /etc/nginx/sites-enabled /etc/nginx/sites-available 2>/dev/null | head -n1" || true
+	docker exec "$NGINX_CONTAINER" sh -c "grep -Rsl '$DOMAIN' /etc/nginx/conf.d /etc/nginx/sites-enabled /etc/nginx/sites-available 2>/dev/null | grep -v '\\.bak\\.' | head -n1" || true
 }
 
 nginx_mode="host"

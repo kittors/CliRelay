@@ -89,6 +89,7 @@ func TestBlueGreenDeployScriptSyntaxAndGuards(t *testing.T) {
 		`docker exec "$NGINX_CONTAINER" nginx -t`,
 		`nginx -t`,
 		`DRAIN_SECONDS`,
+		`grep -v '\.bak\.'`,
 	} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("deploy script missing guard %q", want)
