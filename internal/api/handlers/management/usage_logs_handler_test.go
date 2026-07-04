@@ -1397,6 +1397,55 @@ func TestGetPublicUsageLogs_AcceptsPOSTBody(t *testing.T) {
 	}
 }
 
+func TestGetPublicUsageLogs_ReturnsCurrentAPIKeyName(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "usage.db")
+	if err := usage.InitDB(dbPath, config.RequestLogStorageConfig{}, time.UTC); err != nil {
+		t.Fatalf("InitDB: %v", err)
+	}
+	t.Cleanup(func() {
+		usage.CloseDB()
+		_ = os.Remove(dbPath)
+		_ = os.Remove(dbPath + "-wal")
+		_ = os.Remove(dbPath + "-shm")
+	})
+	if err := usage.UpsertAPIKey(usage.APIKeyRow{Key: "sk-test", Name: "Primary"}); err != nil {
+		t.Fatalf("UpsertAPIKey: %v", err)
+	}
+
+	h := &Handler{
+		cfg: &config.Config{},
+	}
+
+	body := []byte(`{"api_key":"sk-test","days":7,"page":1,"size":50}`)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(
+		http.MethodPost,
+		"/v0/management/public/usage/logs",
+		bytes.NewReader(body),
+	)
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	h.UsageLogs().GetPublicUsageLogs(c)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d, body=%s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	var payload struct {
+		APIKeyName string `json:"api_key_name"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if payload.APIKeyName != "Primary" {
+		t.Fatalf("api_key_name = %q, want Primary", payload.APIKeyName)
+	}
+}
+
 func TestGetPublicUsageLogs_DoesNotReadAPIKeyFromQuery(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

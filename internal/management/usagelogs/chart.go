@@ -28,6 +28,7 @@ func (s *Service) PublicChartData(apiKey string, days int) (map[string]any, erro
 		"daily_series":       daily,
 		"model_distribution": models,
 		"stats":              stats,
+		"api_key_name":       s.publicAPIKeyName(apiKey),
 	}, nil
 }
 

@@ -206,7 +206,11 @@ func (s *Service) PublicUsageLogs(input PublicLogQueryInput) (map[string]any, er
 		return nil, err
 	}
 
+	apiKeyName := s.publicAPIKeyName(input.APIKey)
 	for i := range result.Items {
+		if apiKeyName == "" {
+			apiKeyName = strings.TrimSpace(result.Items[i].APIKeyName)
+		}
 		result.Items[i].Source = ""
 		result.Items[i].AuthIndex = ""
 		result.Items[i].ChannelName = ""
@@ -220,15 +224,24 @@ func (s *Service) PublicUsageLogs(input PublicLogQueryInput) (map[string]any, er
 	}
 
 	return map[string]any{
-		"items": result.Items,
-		"total": result.Total,
-		"page":  result.Page,
-		"size":  result.Size,
-		"stats": stats,
+		"items":        result.Items,
+		"total":        result.Total,
+		"page":         result.Page,
+		"size":         result.Size,
+		"stats":        stats,
+		"api_key_name": apiKeyName,
 		"filters": map[string]any{
 			"models": models,
 		},
 	}, nil
+}
+
+func (s *Service) publicAPIKeyName(apiKey string) string {
+	row := apikeysettings.NewService(nil).GetRow(apiKey)
+	if row == nil {
+		return ""
+	}
+	return strings.TrimSpace(row.Name)
 }
 
 func (s *Service) buildNameMaps() (keyNameMap, channelNameMap, authIndexChannelMap map[string]string, ambiguousAuthIndexChannelMap map[string][]string) {
