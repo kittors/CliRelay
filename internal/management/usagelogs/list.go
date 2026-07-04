@@ -76,7 +76,7 @@ func (s *Service) ManagementLogs(input ManagementLogQueryInput) (map[string]any,
 	if err != nil {
 		return nil, err
 	}
-	filters, err := usage.QueryFilters(params.Days)
+	filters, err := usage.QueryFiltersForLogs(params)
 	if err != nil {
 		return nil, err
 	}
@@ -154,6 +154,9 @@ func (s *Service) ManagementLogs(input ManagementLogQueryInput) (map[string]any,
 	}
 	if filters.Channels == nil {
 		filters.Channels = make([]string, 0)
+	}
+	if filters.Statuses == nil {
+		filters.Statuses = make([]string, 0)
 	}
 	if filters.APIKeyNames == nil {
 		filters.APIKeyNames = make(map[string]string)

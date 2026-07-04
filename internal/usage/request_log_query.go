@@ -165,9 +165,13 @@ func hydrateStreamingFromContent(db *sql.DB, items []LogRow) {
 
 // QueryFilters returns the distinct API keys and models within the time range.
 func QueryFilters(days int) (FilterOptions, error) {
-	if days < 1 {
-		days = 7
-	}
+	return QueryFiltersForLogs(LogQueryParams{Days: days})
+}
+
+// QueryFiltersForLogs returns candidate filter values constrained by the
+// current request-log query. Each facet ignores its own selection so users can
+// widen that facet without resetting every filter first.
+func QueryFiltersForLogs(params LogQueryParams) (FilterOptions, error) {
 	db := getReadDB()
 	if db == nil {
 		// Ensure stable JSON shape: slices => [] (not null), maps => {} (not null).
@@ -176,24 +180,29 @@ func QueryFilters(days int) (FilterOptions, error) {
 			APIKeyNames: make(map[string]string),
 			Models:      make([]string, 0),
 			Channels:    make([]string, 0),
+			Statuses:    make([]string, 0),
 		}, nil
 	}
 
-	cutoff := CutoffStartUTC(days).Format(time.RFC3339)
-
-	keys, keyNames, err := queryDistinctAPIKeys(db, cutoff)
+	params = normalizeLogQueryParams(params)
+	keys, keyNames, err := queryDistinctAPIKeys(db, params.withoutFacet("api_key"))
 	if err != nil {
 		log.Warnf("usage: query distinct api keys failed: %v", err)
 		return FilterOptions{}, err
 	}
-	models, err := queryDistinct(db, "model", cutoff)
+	models, err := queryDistinct(db, "model", params.withoutFacet("model"))
 	if err != nil {
 		log.Warnf("usage: query distinct models failed: %v", err)
 		return FilterOptions{}, err
 	}
-	channels, err := queryDistinct(db, "channel_name", cutoff)
+	channels, err := queryDistinct(db, "channel_name", params.withoutFacet("channel"))
 	if err != nil {
 		log.Warnf("usage: query distinct channels failed: %v", err)
+		return FilterOptions{}, err
+	}
+	statuses, err := queryDistinctStatuses(db, params.withoutFacet("status"))
+	if err != nil {
+		log.Warnf("usage: query distinct statuses failed: %v", err)
 		return FilterOptions{}, err
 	}
 
@@ -202,7 +211,33 @@ func QueryFilters(days int) (FilterOptions, error) {
 		APIKeyNames: keyNames,
 		Models:      models,
 		Channels:    channels,
+		Statuses:    statuses,
 	}, nil
+}
+
+func (params LogQueryParams) withoutFacet(facet string) LogQueryParams {
+	params.Page = 0
+	params.Size = 0
+	switch facet {
+	case "api_key":
+		params.APIKey = ""
+		params.APIKeys = nil
+		params.MatchNoAPIKeys = false
+	case "model":
+		params.Model = ""
+		params.Models = nil
+		params.MatchNoModels = false
+	case "channel":
+		params.AuthIndexes = nil
+		params.ChannelNames = nil
+		params.AuthIndexChannelNames = nil
+		params.MatchNoChannels = false
+	case "status":
+		params.Status = ""
+		params.Statuses = nil
+		params.MatchNoStatuses = false
+	}
+	return params
 }
 
 // QueryStats returns aggregated statistics over the filtered dataset.
@@ -607,9 +642,10 @@ func buildWhereClause(params LogQueryParams) (string, []interface{}) {
 	return " WHERE " + strings.Join(conditions, " AND "), args
 }
 
-func queryDistinct(db *sql.DB, column, cutoff string) ([]string, error) {
-	q := fmt.Sprintf("SELECT DISTINCT %s FROM request_logs WHERE timestamp >= ? ORDER BY %s", column, column)
-	rows, err := db.Query(q, cutoff)
+func queryDistinct(db *sql.DB, column string, params LogQueryParams) ([]string, error) {
+	where, args := buildWhereClause(params)
+	q := fmt.Sprintf("SELECT DISTINCT %s FROM request_logs%s ORDER BY %s", column, where, column)
+	rows, err := db.Query(q, args...)
 	if err != nil {
 		log.Warnf("usage: distinct %s query failed: %v", column, err)
 		return nil, fmt.Errorf("usage: distinct %s: %w", column, err)
@@ -630,8 +666,37 @@ func queryDistinct(db *sql.DB, column, cutoff string) ([]string, error) {
 	return result, nil
 }
 
-func queryDistinctAPIKeys(db *sql.DB, cutoff string) ([]string, map[string]string, error) {
+func queryDistinctStatuses(db *sql.DB, params LogQueryParams) ([]string, error) {
+	where, args := buildWhereClause(params)
+	rows, err := db.Query("SELECT DISTINCT failed FROM request_logs"+where+" ORDER BY failed", args...)
+	if err != nil {
+		return nil, fmt.Errorf("usage: distinct statuses: %w", err)
+	}
+	defer rows.Close()
+
+	result := make([]string, 0, 2)
+	for rows.Next() {
+		var failed int
+		if err := rows.Scan(&failed); err != nil {
+			return nil, err
+		}
+		if failed == 0 {
+			result = append(result, "success")
+		} else {
+			result = append(result, "failed")
+		}
+	}
+	return result, rows.Err()
+}
+
+func queryDistinctAPIKeys(db *sql.DB, params LogQueryParams) ([]string, map[string]string, error) {
 	currentByID := currentAPIKeyRowsByID()
+	where, args := buildWhereClause(params)
+	if where == "" {
+		where = " WHERE api_key != ''"
+	} else {
+		where += " AND api_key != ''"
+	}
 	rows, err := db.Query(`
 		SELECT
 			CASE
@@ -642,10 +707,10 @@ func queryDistinctAPIKeys(db *sql.DB, cutoff string) ([]string, map[string]strin
 			MAX(api_key) AS snapshot_key,
 			COALESCE(NULLIF(MAX(api_key_name), ''), '') AS snapshot_name
 		FROM request_logs
-		WHERE timestamp >= ? AND api_key != ''
+		`+where+`
 		GROUP BY logical_selector
 		ORDER BY logical_selector
-	`, cutoff)
+	`, args...)
 	if err != nil {
 		log.Warnf("usage: distinct api_key logical groups query failed: %v", err)
 		return nil, nil, fmt.Errorf("usage: distinct api_key logical groups: %w", err)

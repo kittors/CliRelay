@@ -75,6 +75,7 @@ type FilterOptions struct {
 	APIKeyNames map[string]string `json:"api_key_names"`
 	Models      []string          `json:"models"`
 	Channels    []string          `json:"channels"`
+	Statuses    []string          `json:"statuses"`
 }
 
 // LogStats holds aggregated stats over the filtered result set.

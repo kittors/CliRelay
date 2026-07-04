@@ -115,7 +115,7 @@ func TestQueryDistinctErrorIsLogged(t *testing.T) {
 		t.Fatalf("close memory db: %v", err)
 	}
 
-	_, err = queryDistinct(closedDB, "model", time.Now().UTC().Format(time.RFC3339))
+	_, err = queryDistinct(closedDB, "model", LogQueryParams{Days: 7})
 	if err == nil {
 		t.Fatal("expected queryDistinct to error against a closed handle")
 	}

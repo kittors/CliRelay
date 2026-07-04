@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"math"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -1628,6 +1629,50 @@ func TestQueryAPIKeySelectorsHandleLegacyRowsWithoutAPIKeyID(t *testing.T) {
 	}
 	if dist[0].Requests != 1 || dist[0].Tokens != 30 {
 		t.Fatalf("distribution point = %#v, want one request and 30 tokens", dist[0])
+	}
+}
+
+func TestQueryFiltersForLogsLinksFilterFacets(t *testing.T) {
+	initTestUsageDB(t, config.RequestLogStorageConfig{})
+
+	now := time.Now().UTC()
+	InsertLog("sk-a", "A", "glm-5.2", "source-a", "OpenCode", "auth-a", false, now, 1, 1, TokenStats{TotalTokens: 1}, "", "")
+	InsertLog("sk-b", "B", "gpt-4.1", "source-b", "Codex", "auth-b", false, now, 1, 1, TokenStats{TotalTokens: 1}, "", "")
+	InsertLog("sk-c", "C", "glm-5.2", "source-c", "Anthropic", "auth-c", true, now, 1, 1, TokenStats{TotalTokens: 1}, "", "")
+
+	filters, err := QueryFiltersForLogs(LogQueryParams{Days: 7, Models: []string{"glm-5.2"}})
+	if err != nil {
+		t.Fatalf("QueryFiltersForLogs() error = %v", err)
+	}
+	if !slices.Equal(filters.APIKeys, []string{"sk-a", "sk-c"}) {
+		t.Fatalf("filters.APIKeys = %#v, want [sk-a sk-c]", filters.APIKeys)
+	}
+	if !slices.Equal(filters.Channels, []string{"Anthropic", "OpenCode"}) {
+		t.Fatalf("filters.Channels = %#v, want [Anthropic OpenCode]", filters.Channels)
+	}
+	if !slices.Equal(filters.Models, []string{"glm-5.2", "gpt-4.1"}) {
+		t.Fatalf("filters.Models = %#v, want own facet to stay expandable", filters.Models)
+	}
+	if !slices.Equal(filters.Statuses, []string{"success", "failed"}) {
+		t.Fatalf("filters.Statuses = %#v, want [success failed]", filters.Statuses)
+	}
+
+	filters, err = QueryFiltersForLogs(LogQueryParams{
+		Days:    7,
+		APIKeys: []string{"sk-a"},
+		Models:  []string{"glm-5.2"},
+	})
+	if err != nil {
+		t.Fatalf("QueryFiltersForLogs(api key + model) error = %v", err)
+	}
+	if !slices.Equal(filters.APIKeys, []string{"sk-a", "sk-c"}) {
+		t.Fatalf("filters.APIKeys = %#v, want model-compatible keys", filters.APIKeys)
+	}
+	if !slices.Equal(filters.Models, []string{"glm-5.2"}) {
+		t.Fatalf("filters.Models = %#v, want key-compatible models", filters.Models)
+	}
+	if !slices.Equal(filters.Statuses, []string{"success"}) {
+		t.Fatalf("filters.Statuses = %#v, want key-compatible statuses", filters.Statuses)
 	}
 }
 
