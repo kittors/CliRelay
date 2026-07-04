@@ -5,6 +5,7 @@ SERVICE_NAME="${SERVICE_NAME:-clirelay2}"
 BASE_DIR="${BASE_DIR:-/opt/clirelay2}"
 TEMP_BIN="${TEMP_BIN:-${BASE_DIR}/cli-proxy-api-new}"
 DOMAIN="${DOMAIN:-relay.07230805.xyz}"
+NGINX_CONTAINER="${NGINX_CONTAINER:-nginx}"
 PORT_A="${PORT_A:-8318}"
 PORT_B="${PORT_B:-8319}"
 DRAIN_SECONDS="${DRAIN_SECONDS:-35}"
@@ -125,7 +126,17 @@ client_max_body_size 2000m;
 EOF
 }
 
-find_nginx_conf() {
+ensure_docker_body_size_conf() {
+	if ! command -v docker >/dev/null 2>&1 || ! docker inspect "$NGINX_CONTAINER" >/dev/null 2>&1; then
+		return 0
+	fi
+	docker exec -i "$NGINX_CONTAINER" sh -c 'mkdir -p /etc/nginx/conf.d && cat > /etc/nginx/conf.d/90-clirelay-body-size.conf' <<'EOF'
+# Managed by CliRelay GitHub Actions deploy workflow
+client_max_body_size 2000m;
+EOF
+}
+
+find_host_nginx_conf() {
 	if [ -n "${NGINX_CONF:-}" ]; then
 		echo "$NGINX_CONF"
 		return
@@ -133,25 +144,54 @@ find_nginx_conf() {
 	grep -Rsl "$DOMAIN" /etc/nginx/conf.d /etc/nginx/sites-enabled /etc/nginx/sites-available 2>/dev/null | head -n1
 }
 
-nginx_conf="$(find_nginx_conf)"
-[ -n "$nginx_conf" ] || fail "nginx config for ${DOMAIN} not found; set NGINX_CONF"
-[ -f "$nginx_conf" ] || fail "nginx config not found: $nginx_conf"
+find_docker_nginx_conf() {
+	if ! command -v docker >/dev/null 2>&1 || ! docker inspect "$NGINX_CONTAINER" >/dev/null 2>&1; then
+		return
+	fi
+	docker exec "$NGINX_CONTAINER" sh -c 'grep -Rsl "$1" /etc/nginx/conf.d /etc/nginx/sites-enabled /etc/nginx/sites-available 2>/dev/null | head -n1' sh "$DOMAIN"
+}
 
-ensure_body_size_conf
+nginx_mode="host"
+nginx_conf="$(find_host_nginx_conf)"
+if [ -z "$nginx_conf" ]; then
+	nginx_mode="docker"
+	nginx_conf="$(find_docker_nginx_conf)"
+fi
+[ -n "$nginx_conf" ] || fail "nginx config for ${DOMAIN} not found on host or docker container ${NGINX_CONTAINER}; set NGINX_CONF"
+
 backup="${nginx_conf}.bak.$(date +%Y%m%d_%H%M%S)"
-cp "$nginx_conf" "$backup"
-if ! grep -Eq ":${active_port}\\b" "$nginx_conf"; then
-	fail "nginx config $nginx_conf does not reference active port ${active_port}"
-fi
-# Replace only the active backend port, leaving the existing nginx layout untouched.
-perl -0pi -e "s/:${active_port}\\b/:${next_port}/g" "$nginx_conf"
+if [ "$nginx_mode" = "host" ]; then
+	[ -f "$nginx_conf" ] || fail "nginx config not found: $nginx_conf"
+	ensure_body_size_conf
+	cp "$nginx_conf" "$backup"
+	if ! grep -Eq ":${active_port}\\b" "$nginx_conf"; then
+		fail "nginx config $nginx_conf does not reference active port ${active_port}"
+	fi
+	# Replace only the active backend port, leaving the existing nginx layout untouched.
+	perl -0pi -e "s/:${active_port}\\b/:${next_port}/g" "$nginx_conf"
 
-if ! nginx -t; then
-	cp "$backup" "$nginx_conf"
-	nginx -t || true
-	fail "nginx config test failed; reverted $nginx_conf"
+	if ! nginx -t; then
+		cp "$backup" "$nginx_conf"
+		nginx -t || true
+		fail "nginx config test failed; reverted $nginx_conf"
+	fi
+	nginx -s reload || systemctl reload nginx
+else
+	ensure_docker_body_size_conf
+	docker exec "$NGINX_CONTAINER" test -f "$nginx_conf" || fail "docker nginx config not found: $nginx_conf"
+	docker exec "$NGINX_CONTAINER" cp "$nginx_conf" "$backup"
+	if ! docker exec "$NGINX_CONTAINER" sh -c 'grep -Eq ":$1\\b" "$2"' sh "$active_port" "$nginx_conf"; then
+		fail "docker nginx config $nginx_conf does not reference active port ${active_port}"
+	fi
+	docker exec "$NGINX_CONTAINER" sh -c 'active="$1"; next="$2"; conf="$3"; perl -0pi -e "s/:${active}\\b/:${next}/g" "$conf"' sh "$active_port" "$next_port" "$nginx_conf"
+
+	if ! docker exec "$NGINX_CONTAINER" nginx -t; then
+		docker exec "$NGINX_CONTAINER" cp "$backup" "$nginx_conf"
+		docker exec "$NGINX_CONTAINER" nginx -t || true
+		fail "docker nginx config test failed; reverted $nginx_conf"
+	fi
+	docker exec "$NGINX_CONTAINER" nginx -s reload
 fi
-nginx -s reload || systemctl reload nginx
 
 echo "$next_port" > "$ACTIVE_PORT_FILE"
 cutover_done=1
