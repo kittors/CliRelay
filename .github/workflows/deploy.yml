@@ -40,18 +40,18 @@ jobs:
               -X 'github.com/router-for-me/CLIProxyAPI/v6/internal/buildinfo.BuildDate=${BUILD_DATE}'" \
             -o cli-proxy-api-new ./cmd/server/
 
-      - name: Upload binary (as temp name)
+      - name: Upload binary and deploy script
         uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.SERVER_HOST }}
           port: ${{ secrets.SERVER_PORT }}
           username: root
           key: ${{ secrets.SSH_PRIVATE_KEY }}
-          source: "cli-proxy-api-new"
+          source: "cli-proxy-api-new,scripts/deploy-blue-green.sh"
           target: "/opt/clirelay2/"
           overwrite: true
 
-      - name: Stop, swap, and restart
+      - name: Blue-green deploy
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.SERVER_HOST }}
@@ -59,63 +59,4 @@ jobs:
           username: root
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
-            SERVICE_BIN="$(systemctl show -p ExecStart --value clirelay2 | sed -nE 's/.*path=([^ ;]+).*/\1/p' | head -n1)"
-            if [ -z "$SERVICE_BIN" ]; then
-              if [ -x /opt/clirelay2/clirelay2 ]; then
-                SERVICE_BIN="/opt/clirelay2/clirelay2"
-              else
-                SERVICE_BIN="/opt/clirelay2/cli-proxy-api"
-              fi
-            fi
-            SERVICE_DIR="$(dirname "$SERVICE_BIN")"
-            SERVICE_NAME="$(basename "$SERVICE_BIN")"
-            TEMP_BIN="/opt/clirelay2/cli-proxy-api-new"
-            if [ ! -f "$TEMP_BIN" ]; then
-              echo "uploaded temp binary not found: $TEMP_BIN"
-              exit 1
-            fi
-            cd "$SERVICE_DIR"
-            echo "Service binary: $SERVICE_BIN"
-            # Stop via systemd
-            systemctl stop clirelay2 2>/dev/null || true
-            sleep 1
-            # Kill any stray processes
-            PIDS=$(pgrep -f "^${SERVICE_BIN}$" 2>/dev/null) || true
-            if [ -n "$PIDS" ]; then
-              kill $PIDS 2>/dev/null || true
-              sleep 2
-            fi
-            # Backup current binary
-            if [ -f "$SERVICE_NAME" ]; then
-              cp "$SERVICE_NAME" "${SERVICE_NAME}.bak.$(date +%Y%m%d_%H%M%S)"
-            fi
-            # Swap in new binary
-            mv "$TEMP_BIN" "$SERVICE_NAME"
-            chmod +x "$SERVICE_NAME"
-            # Clean up old backups, keep last 3
-            ls -1t "${SERVICE_NAME}.bak."* 2>/dev/null | tail -n +4 | xargs -r rm -f
-            # Ensure Nginx can accept large request bodies (Codex /v1/responses payload can be large).
-            if [ -d /etc/nginx ]; then
-              BODY_SIZE_CONF="/etc/nginx/conf.d/90-clirelay-body-size.conf"
-              mkdir -p "$(dirname "$BODY_SIZE_CONF")"
-              cat > "$BODY_SIZE_CONF" <<'EOF'
-            # Managed by CliRelay GitHub Actions deploy workflow
-            client_max_body_size 2000m;
-            EOF
-              if command -v nginx >/dev/null 2>&1; then
-                nginx -t
-                nginx -s reload || systemctl reload nginx || systemctl restart nginx
-              else
-                systemctl reload nginx || systemctl restart nginx
-              fi
-            else
-              echo "/etc/nginx not found; skip client_max_body_size tuning"
-            fi
-            # Start service
-            systemctl start clirelay2
-            sleep 3
-            systemctl is-active clirelay2
-            if ! grep -a -q "${{ github.sha }}" "$SERVICE_BIN"; then
-              echo "deployed binary does not contain expected commit SHA"
-              exit 1
-            fi
+            COMMIT_SHA="${{ github.sha }}" bash /opt/clirelay2/scripts/deploy-blue-green.sh

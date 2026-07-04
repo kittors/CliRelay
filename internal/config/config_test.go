@@ -194,6 +194,23 @@ func TestLoadConfigAllowsAuthPathEnvOverride(t *testing.T) {
 	}
 }
 
+func TestLoadConfigAllowsPortEnvOverride(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(configPath, []byte("port: 8318\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	t.Setenv(EnvPort, "8319")
+
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("LoadConfig returned error: %v", err)
+	}
+
+	if cfg.Port != 8319 {
+		t.Fatalf("Port = %d, want CLIRELAY_PORT override", cfg.Port)
+	}
+}
+
 func TestLoadConfigDefaultsAutoUpdateEnabled(t *testing.T) {
 	t.Parallel()
 

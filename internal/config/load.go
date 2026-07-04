@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"syscall"
 
@@ -220,5 +221,13 @@ func (cfg *Config) ApplyEnvOverrides() {
 	}
 	if authPath := strings.TrimSpace(os.Getenv(EnvAuthPath)); authPath != "" {
 		cfg.AuthDir = authPath
+	}
+	for _, key := range []string{EnvPort, EnvLegacyPort} {
+		if rawPort := strings.TrimSpace(os.Getenv(key)); rawPort != "" {
+			if port, err := strconv.Atoi(rawPort); err == nil && port > 0 {
+				cfg.Port = port
+			}
+			return
+		}
 	}
 }

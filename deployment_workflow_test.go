@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"os/exec"
 	"strings"
 	"testing"
 )
@@ -16,8 +17,9 @@ func TestDeployWorkflowOnlyPublishesBackendBinary(t *testing.T) {
 	content := string(data)
 
 	for _, want := range []string{
-		`Upload binary (as temp name)`,
-		`source: "cli-proxy-api-new"`,
+		`Upload binary and deploy script`,
+		`source: "cli-proxy-api-new,scripts/deploy-blue-green.sh"`,
+		`scripts/deploy-blue-green.sh`,
 		`target: "/opt/clirelay2/"`,
 	} {
 		if !strings.Contains(content, want) {
@@ -35,6 +37,57 @@ func TestDeployWorkflowOnlyPublishesBackendBinary(t *testing.T) {
 	} {
 		if strings.Contains(content, forbidden) {
 			t.Fatalf("backend deploy workflow must not publish frontend panel assets, found %q", forbidden)
+		}
+	}
+}
+
+func TestDeployWorkflowUsesBlueGreenDeployment(t *testing.T) {
+	data, err := os.ReadFile(".github/workflows/deploy.yml")
+	if err != nil {
+		t.Fatalf("read deploy workflow: %v", err)
+	}
+	content := string(data)
+
+	for _, want := range []string{
+		`Blue-green deploy`,
+		`COMMIT_SHA="${{ github.sha }}" bash /opt/clirelay2/scripts/deploy-blue-green.sh`,
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("deploy workflow missing blue-green marker %q", want)
+		}
+	}
+
+	for _, forbidden := range []string{
+		`systemctl stop clirelay2`,
+		`systemctl start clirelay2`,
+		`Stop, swap, and restart`,
+	} {
+		if strings.Contains(content, forbidden) {
+			t.Fatalf("deploy workflow still has outage-prone restart marker %q", forbidden)
+		}
+	}
+}
+
+func TestBlueGreenDeployScriptSyntaxAndGuards(t *testing.T) {
+	cmd := exec.Command("bash", "-n", "scripts/deploy-blue-green.sh")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("deploy script syntax failed: %v\n%s", err, out)
+	}
+
+	data, err := os.ReadFile("scripts/deploy-blue-green.sh")
+	if err != nil {
+		t.Fatalf("read deploy script: %v", err)
+	}
+	content := string(data)
+	for _, want := range []string{
+		`/healthz`,
+		`CLIRELAY_PORT=`,
+		`.active-port`,
+		`nginx -t`,
+		`DRAIN_SECONDS`,
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("deploy script missing guard %q", want)
 		}
 	}
 }
