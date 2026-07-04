@@ -469,6 +469,17 @@ func backfillRequestLogContentSessionIDs(db *sql.DB) {
 	log.Infof("usage: backfilled request log session_id values: %d/%d", len(updates), scanned)
 }
 
+func startRequestLogContentSessionIDBackfill(db *sql.DB) {
+	if db == nil {
+		return
+	}
+	requestLogMaintenanceWG.Add(1)
+	go func() {
+		defer requestLogMaintenanceWG.Done()
+		backfillRequestLogContentSessionIDs(db)
+	}()
+}
+
 // InitDB opens (or creates) the SQLite database at the given path and creates
 // the request_logs table if it doesn't exist.
 func InitDB(dbPath string, storageCfg config.RequestLogStorageConfig, loc *time.Location) error {
@@ -581,8 +592,6 @@ func InitDB(dbPath string, storageCfg config.RequestLogStorageConfig, loc *time.
 	migrateRequestLogContentSessionIDColumn(db)
 	log.Debugf("usage: ensuring request log detail indexes")
 	ensureRequestLogDetailIndexes(db)
-	log.Debugf("usage: backfilling request log content session_id values")
-	backfillRequestLogContentSessionIDs(db)
 	log.Debugf("usage: initializing pricing table")
 	initPricingTable(db)
 	log.Debugf("usage: initializing model config tables")
@@ -604,6 +613,8 @@ func InitDB(dbPath string, storageCfg config.RequestLogStorageConfig, loc *time.
 	log.Debugf("usage: initializing identity_fingerprints table")
 	initIdentityFingerprintsTable(db)
 	startRequestLogMaintenance(db)
+	log.Debugf("usage: scheduling request log content session_id backfill")
+	startRequestLogContentSessionIDBackfill(db)
 	log.Infof("usage: SQLite database initialised at %s", dbPath)
 	return nil
 }
