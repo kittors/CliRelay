@@ -2011,6 +2011,14 @@ func TestQueryStatsAndHeatmapCountSessionsFromDetails(t *testing.T) {
 		InputTokens: 1, OutputTokens: 2, TotalTokens: 3,
 	}, "{}", "{}", `{"conversation_id":"session-b"}`)
 
+	var storedSessions int
+	if err := getDB().QueryRow("SELECT COUNT(*) FROM request_log_content WHERE session_id <> ''").Scan(&storedSessions); err != nil {
+		t.Fatalf("count stored session_id rows: %v", err)
+	}
+	if storedSessions != 3 {
+		t.Fatalf("stored session_id rows = %d, want 3", storedSessions)
+	}
+
 	stats, err := QueryStats(LogQueryParams{APIKey: "sk-heatmap", Days: 7})
 	if err != nil {
 		t.Fatalf("QueryStats() error = %v", err)
@@ -2062,6 +2070,17 @@ func TestQueryStatsAndHeatmapCountSessionsFromDetails(t *testing.T) {
 	}
 	if chartHeatmap[LocalDayKeyAt(today)].Sessions != 1 || chartHeatmap[LocalDayKeyAt(yesterday)].Sessions != 1 {
 		t.Fatalf("public chart heatmap = %#v, want sessions by day populated", chartHeatmap)
+	}
+
+	if _, err := ClearRequestLogs(ClearRequestLogsOptions{ClearDetailContent: true}); err != nil {
+		t.Fatalf("ClearRequestLogs(details) error = %v", err)
+	}
+	sessionCount, err = QuerySessionCount(LogQueryParams{APIKey: "sk-heatmap", Days: 7})
+	if err != nil {
+		t.Fatalf("QuerySessionCount() after detail cleanup error = %v", err)
+	}
+	if sessionCount != 0 {
+		t.Fatalf("QuerySessionCount() after detail cleanup = %d, want 0", sessionCount)
 	}
 }
 

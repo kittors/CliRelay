@@ -256,6 +256,7 @@ func insertLogContentTx(tx *sql.Tx, logID int64, timestamp time.Time, inputConte
 	if tx == nil || logID < 1 || (!requestLogStorage.StoreContent) {
 		return nil
 	}
+	sessionID := extractSessionIDFromDetails(detailContent)
 
 	inputCompressed, err := compressLogContent(inputContent)
 	if err != nil {
@@ -278,20 +279,22 @@ func insertLogContentTx(tx *sql.Tx, logID int64, timestamp time.Time, inputConte
 	}
 
 	_, err = tx.Exec(
-		`INSERT INTO request_log_content (log_id, timestamp, compression, input_content, output_content, detail_content)
-		 VALUES (?, ?, ?, ?, ?, ?)
+		`INSERT INTO request_log_content (log_id, timestamp, compression, input_content, output_content, detail_content, session_id)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(log_id) DO UPDATE SET
 		   timestamp = excluded.timestamp,
 		   compression = excluded.compression,
 		   input_content = excluded.input_content,
 		   output_content = excluded.output_content,
-		   detail_content = excluded.detail_content`,
+		   detail_content = excluded.detail_content,
+		   session_id = excluded.session_id`,
 		logID,
 		timestamp.UTC().Format(time.RFC3339Nano),
 		requestLogContentCompression,
 		inputCompressed,
 		outputCompressed,
 		detailCompressed,
+		sessionID,
 	)
 	if err != nil {
 		return fmt.Errorf("usage: insert compressed content: %w", err)

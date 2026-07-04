@@ -2,11 +2,12 @@ package usage
 
 import (
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/tidwall/gjson"
 )
 
 // DailySeriesPoint holds one day of aggregated usage data.
@@ -354,29 +355,24 @@ func querySessionSetsByDate(params LogQueryParams) (map[string]map[string]struct
 
 	where, args := buildWhereClause(params)
 	rows, err := db.Query(
-		`SELECT date(logs.timestamp, 'localtime'), content.compression, content.detail_content
+		`SELECT date(logs.timestamp, 'localtime'), content.session_id
 		   FROM (SELECT id, timestamp FROM request_logs`+where+`) logs
 		   JOIN request_log_content content ON content.log_id = logs.id
-		  WHERE length(content.detail_content) > 0`,
+		  WHERE content.session_id <> ''`,
 		args...,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("usage: session details query: %w", err)
+		return nil, fmt.Errorf("usage: session query: %w", err)
 	}
 	defer rows.Close()
 
 	seenByDate := make(map[string]map[string]struct{})
 	for rows.Next() {
-		var dateKey, compression string
-		var compressed []byte
-		if err := rows.Scan(&dateKey, &compression, &compressed); err != nil {
-			return nil, fmt.Errorf("usage: session details scan: %w", err)
+		var dateKey, sessionID string
+		if err := rows.Scan(&dateKey, &sessionID); err != nil {
+			return nil, fmt.Errorf("usage: session scan: %w", err)
 		}
-		detail, err := decompressLogContent(compression, compressed)
-		if err != nil {
-			return nil, err
-		}
-		sessionID := extractSessionIDFromDetails(detail)
+		sessionID = strings.TrimSpace(sessionID)
 		if sessionID == "" {
 			continue
 		}
@@ -395,14 +391,14 @@ func extractSessionIDFromDetails(detail string) string {
 	if strings.TrimSpace(detail) == "" {
 		return ""
 	}
-	var payload any
-	if err := json.Unmarshal([]byte(detail), &payload); err != nil {
+	payload := gjson.Parse(detail)
+	if !payload.Exists() {
 		return ""
 	}
 	bestRank := 99
 	bestValue := ""
-	var walk func(any, string)
-	walk = func(value any, key string) {
+	var walk func(gjson.Result, string)
+	walk = func(value gjson.Result, key string) {
 		rank := sessionDetailKeyRank(key)
 		if rank < bestRank {
 			if text := sessionDetailString(value); text != "" {
@@ -410,19 +406,35 @@ func extractSessionIDFromDetails(detail string) string {
 				bestValue = text
 			}
 		}
-		switch typed := value.(type) {
-		case map[string]any:
-			for childKey, childValue := range typed {
-				walk(childValue, childKey)
-			}
-		case []any:
-			for _, childValue := range typed {
-				walk(childValue, "")
-			}
+		if bestRank == 0 {
+			return
+		}
+		if value.Type == gjson.JSON {
+			value.ForEach(func(childKey, childValue gjson.Result) bool {
+				walk(childValue, childKey.String())
+				return bestRank != 0
+			})
 		}
 	}
 	walk(payload, "")
 	return bestValue
+}
+
+func sessionDetailString(value gjson.Result) string {
+	if value.Type == gjson.String {
+		return strings.TrimSpace(value.String())
+	}
+	if value.IsArray() {
+		result := ""
+		value.ForEach(func(_, item gjson.Result) bool {
+			if item.Type == gjson.String {
+				result = strings.TrimSpace(item.String())
+			}
+			return result == ""
+		})
+		return result
+	}
+	return ""
 }
 
 func sessionDetailKeyRank(key string) int {
@@ -435,20 +447,6 @@ func sessionDetailKeyRank(key string) int {
 	default:
 		return 99
 	}
-}
-
-func sessionDetailString(value any) string {
-	switch typed := value.(type) {
-	case string:
-		return strings.TrimSpace(typed)
-	case []any:
-		for _, item := range typed {
-			if text, ok := item.(string); ok && strings.TrimSpace(text) != "" {
-				return strings.TrimSpace(text)
-			}
-		}
-	}
-	return ""
 }
 
 // QueryModelDistribution returns request count and token usage grouped by model for a given API key.

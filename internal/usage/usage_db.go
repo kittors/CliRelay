@@ -154,6 +154,7 @@ CREATE TABLE IF NOT EXISTS request_log_content (
   input_content    BLOB NOT NULL DEFAULT X'',
   output_content   BLOB NOT NULL DEFAULT X'',
   detail_content   BLOB NOT NULL DEFAULT X'',
+  session_id       TEXT NOT NULL DEFAULT '',
   FOREIGN KEY(log_id) REFERENCES request_logs(id) ON DELETE CASCADE
 );
 
@@ -362,6 +363,15 @@ func migrateRequestLogDetailColumn(db *sql.DB) {
 	}
 }
 
+func migrateRequestLogContentSessionIDColumn(db *sql.DB) {
+	_, err := db.Exec("ALTER TABLE request_log_content ADD COLUMN session_id TEXT NOT NULL DEFAULT ''")
+	if err != nil {
+		if !strings.Contains(err.Error(), "duplicate") {
+			log.Warnf("usage: migrate column session_id: %v", err)
+		}
+	}
+}
+
 func ensureRequestLogDetailIndexes(db *sql.DB) {
 	if _, err := db.Exec(`
 		CREATE INDEX IF NOT EXISTS idx_log_content_detail_timestamp
@@ -370,6 +380,93 @@ func ensureRequestLogDetailIndexes(db *sql.DB) {
 	`); err != nil {
 		log.Warnf("usage: create idx_log_content_detail_timestamp: %v", err)
 	}
+	if _, err := db.Exec(`
+		CREATE INDEX IF NOT EXISTS idx_log_content_session_timestamp
+		ON request_log_content(session_id, timestamp DESC)
+		WHERE session_id <> ''
+	`); err != nil {
+		log.Warnf("usage: create idx_log_content_session_timestamp: %v", err)
+	}
+}
+
+func backfillRequestLogContentSessionIDs(db *sql.DB) {
+	rows, err := db.Query(`
+		SELECT log_id, compression, detail_content
+		  FROM request_log_content
+		 WHERE session_id = ''
+		   AND length(detail_content) > 0
+	`)
+	if err != nil {
+		log.Warnf("usage: query request log session_id backfill rows: %v", err)
+		return
+	}
+
+	type update struct {
+		logID     int64
+		sessionID string
+	}
+	updates := make([]update, 0)
+	var scanned int64
+	for rows.Next() {
+		var logID int64
+		var compression string
+		var compressed []byte
+		if err := rows.Scan(&logID, &compression, &compressed); err != nil {
+			_ = rows.Close()
+			log.Warnf("usage: scan request log session_id backfill row: %v", err)
+			return
+		}
+		scanned++
+		detail, err := decompressLogContent(compression, compressed)
+		if err != nil {
+			log.Warnf("usage: decompress request log session_id backfill row %d: %v", logID, err)
+			continue
+		}
+		if sessionID := extractSessionIDFromDetails(detail); sessionID != "" {
+			updates = append(updates, update{logID: logID, sessionID: sessionID})
+		}
+	}
+	if err := rows.Close(); err != nil {
+		log.Warnf("usage: close request log session_id backfill rows: %v", err)
+		return
+	}
+	if err := rows.Err(); err != nil {
+		log.Warnf("usage: iterate request log session_id backfill rows: %v", err)
+		return
+	}
+	if len(updates) == 0 {
+		return
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		log.Warnf("usage: begin request log session_id backfill: %v", err)
+		return
+	}
+	stmt, err := tx.Prepare("UPDATE request_log_content SET session_id = ? WHERE log_id = ?")
+	if err != nil {
+		_ = tx.Rollback()
+		log.Warnf("usage: prepare request log session_id backfill: %v", err)
+		return
+	}
+	for _, update := range updates {
+		if _, err := stmt.Exec(update.sessionID, update.logID); err != nil {
+			_ = stmt.Close()
+			_ = tx.Rollback()
+			log.Warnf("usage: update request log session_id backfill row %d: %v", update.logID, err)
+			return
+		}
+	}
+	if err := stmt.Close(); err != nil {
+		_ = tx.Rollback()
+		log.Warnf("usage: close request log session_id backfill statement: %v", err)
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		log.Warnf("usage: commit request log session_id backfill: %v", err)
+		return
+	}
+	log.Infof("usage: backfilled request log session_id values: %d/%d", len(updates), scanned)
 }
 
 // InitDB opens (or creates) the SQLite database at the given path and creates
@@ -480,8 +577,12 @@ func InitDB(dbPath string, storageCfg config.RequestLogStorageConfig, loc *time.
 	migrateStreamingColumn(db)
 	log.Debugf("usage: running request log detail column migration")
 	migrateRequestLogDetailColumn(db)
+	log.Debugf("usage: running request log content session_id column migration")
+	migrateRequestLogContentSessionIDColumn(db)
 	log.Debugf("usage: ensuring request log detail indexes")
 	ensureRequestLogDetailIndexes(db)
+	log.Debugf("usage: backfilling request log content session_id values")
+	backfillRequestLogContentSessionIDs(db)
 	log.Debugf("usage: initializing pricing table")
 	initPricingTable(db)
 	log.Debugf("usage: initializing model config tables")

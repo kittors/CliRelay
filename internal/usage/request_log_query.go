@@ -400,7 +400,7 @@ func ClearRequestLogs(options ClearRequestLogsOptions) (ClearRequestLogsResult, 
 
 		if options.ClearDetailContent {
 			detailResult, err := tx.Exec(
-				"UPDATE request_log_content SET detail_content = X'' WHERE length(detail_content) > 0",
+				"UPDATE request_log_content SET detail_content = X'', session_id = '' WHERE length(detail_content) > 0 OR session_id <> ''",
 			)
 			if err != nil {
 				return ClearRequestLogsResult{}, fmt.Errorf("usage: clear request_log_content details: %w", err)
@@ -412,7 +412,7 @@ func ClearRequestLogs(options ClearRequestLogsOptions) (ClearRequestLogsResult, 
 		}
 
 		deleteEmptyRowsResult, err := tx.Exec(
-			"DELETE FROM request_log_content WHERE length(input_content) = 0 AND length(output_content) = 0 AND length(detail_content) = 0",
+			"DELETE FROM request_log_content WHERE length(input_content) = 0 AND length(output_content) = 0 AND length(detail_content) = 0 AND session_id = ''",
 		)
 		if err != nil {
 			return ClearRequestLogsResult{}, fmt.Errorf("usage: delete empty request_log_content rows: %w", err)
