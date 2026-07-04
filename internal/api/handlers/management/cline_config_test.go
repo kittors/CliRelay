@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -80,5 +81,32 @@ func TestClineKeyManagementPutGetPatchDelete(t *testing.T) {
 	}
 	if len(h.cfg.ClineKey) != 0 {
 		t.Fatalf("ClineKey after DELETE = %+v", h.cfg.ClineKey)
+	}
+}
+
+func TestClineKeyManagementRejectsBareModels(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(configPath, []byte("{}\n"), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	h := &Handler{
+		cfg:            &config.Config{ClineKey: []config.ClineKey{{APIKey: "existing"}}},
+		configFilePath: configPath,
+	}
+
+	putBody := []byte(`[{"api-key":"cline-key","models":[{"name":"glm-5.2"}]}]`)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPut, "/v0/management/cline-api-key", bytes.NewReader(putBody))
+	h.ProviderKeys().PutClineKeys(c)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("PUT status = %d body=%s, want 400", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "cline models contains invalid model") {
+		t.Fatalf("PUT body = %s, want invalid model error", w.Body.String())
+	}
+	if got := h.cfg.ClineKey; len(got) != 1 || got[0].APIKey != "existing" {
+		t.Fatalf("ClineKey after rejected PUT = %+v, want unchanged existing entry", got)
 	}
 }

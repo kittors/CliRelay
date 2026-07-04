@@ -206,6 +206,9 @@ func (s *Service) ReplaceOpenCodeGoKeys(entries []config.OpenCodeGoKey) error {
 	for i := range entries {
 		NormalizeOpenCodeGoKey(&entries[i])
 		if strings.TrimSpace(entries[i].APIKey) != "" {
+			if err := validateOpenCodeGoKeyModels(entries[i]); err != nil {
+				return err
+			}
 			filtered = append(filtered, entries[i])
 		}
 	}
@@ -291,6 +294,9 @@ func (s *Service) PatchOpenCodeGoKey(index *int, apiKey *string, name *string, p
 		s.deleteOpenCodeGoKeyByIndex(targetIndex)
 		return nil
 	}
+	if err := validateOpenCodeGoKeyModels(entry); err != nil {
+		return err
+	}
 	prev := append([]config.OpenCodeGoKey(nil), s.cfg.OpenCodeGoKey...)
 	s.cfg.OpenCodeGoKey[targetIndex] = entry
 	s.cfg.SanitizeOpenCodeGoKeys()
@@ -369,6 +375,9 @@ func (s *Service) ReplaceClineKeys(entries []config.ClineKey) error {
 	for i := range entries {
 		NormalizeClineKey(&entries[i])
 		if strings.TrimSpace(entries[i].APIKey) != "" {
+			if err := validateClineKeyModels(entries[i]); err != nil {
+				return err
+			}
 			filtered = append(filtered, entries[i])
 		}
 	}
@@ -450,6 +459,9 @@ func (s *Service) PatchClineKey(index *int, apiKey *string, name *string, patch 
 	if entry.APIKey == "" {
 		s.deleteClineKeyByIndex(targetIndex)
 		return nil
+	}
+	if err := validateClineKeyModels(entry); err != nil {
+		return err
 	}
 	prev := append([]config.ClineKey(nil), s.cfg.ClineKey...)
 	s.cfg.ClineKey[targetIndex] = entry
