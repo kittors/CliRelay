@@ -7,6 +7,7 @@ package gemini
 import (
 	"bytes"
 	"fmt"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -53,7 +54,7 @@ func (h *GeminiCLIAPIHandler) Models() []map[string]any {
 // CLIHandler handles CLI-specific requests for Gemini API operations.
 // It restricts access to localhost only and routes requests to appropriate internal handlers.
 func (h *GeminiCLIAPIHandler) CLIHandler(c *gin.Context) {
-	if !strings.HasPrefix(c.Request.RemoteAddr, "127.0.0.1:") {
+	if !isLocalGeminiCLIRequest(c.Request) {
 		c.JSON(http.StatusForbidden, handlers.ErrorResponse{
 			Error: handlers.ErrorDetail{
 				Message: "CLI reply only allow local access",
@@ -151,6 +152,84 @@ func (h *GeminiCLIAPIHandler) CLIHandler(c *gin.Context) {
 		_, _ = c.Writer.Write(output)
 		c.Set("API_RESPONSE", output)
 	}
+}
+
+func isLocalGeminiCLIRequest(req *http.Request) bool {
+	if req == nil {
+		return false
+	}
+	remoteIP := net.ParseIP(util.RemoteAddrIP(req.RemoteAddr))
+	if remoteIP == nil || !remoteIP.IsLoopback() {
+		return false
+	}
+	forwardedIPs, ok := geminiCLIForwardedIPs(req.Header)
+	if !ok {
+		return false
+	}
+	for _, ip := range forwardedIPs {
+		if ip == nil || !ip.IsLoopback() {
+			return false
+		}
+	}
+	return true
+}
+
+func geminiCLIForwardedIPs(headers http.Header) ([]net.IP, bool) {
+	var ips []net.IP
+	for _, header := range []string{"CF-Connecting-IP", "True-Client-IP", "X-Real-IP", "X-Forwarded-For"} {
+		for _, value := range headers.Values(header) {
+			for _, candidate := range strings.Split(value, ",") {
+				if strings.TrimSpace(candidate) == "" {
+					continue
+				}
+				ip := parseGeminiCLINetworkIP(candidate)
+				if ip == nil {
+					return nil, false
+				}
+				ips = append(ips, ip)
+			}
+		}
+	}
+
+	for _, value := range headers.Values("Forwarded") {
+		for _, entry := range strings.Split(value, ",") {
+			for _, part := range strings.Split(entry, ";") {
+				key, rawValue, ok := strings.Cut(part, "=")
+				if !ok || !strings.EqualFold(strings.TrimSpace(key), "for") {
+					continue
+				}
+				if strings.TrimSpace(rawValue) == "" {
+					continue
+				}
+				ip := parseGeminiCLINetworkIP(rawValue)
+				if ip == nil {
+					return nil, false
+				}
+				ips = append(ips, ip)
+			}
+		}
+	}
+	return ips, true
+}
+
+func parseGeminiCLINetworkIP(candidate string) net.IP {
+	candidate = strings.TrimSpace(candidate)
+	if candidate == "" {
+		return nil
+	}
+	candidate = strings.Trim(candidate, `"`)
+	if candidate == "" || strings.EqualFold(candidate, "unknown") {
+		return nil
+	}
+	if strings.HasPrefix(candidate, "[") && strings.Contains(candidate, "]") {
+		end := strings.Index(candidate, "]")
+		if end >= 0 {
+			candidate = candidate[1:end]
+		}
+	} else if host, _, err := net.SplitHostPort(candidate); err == nil {
+		candidate = host
+	}
+	return net.ParseIP(strings.TrimSpace(candidate))
 }
 
 // handleInternalStreamGenerateContent handles streaming content generation requests.
