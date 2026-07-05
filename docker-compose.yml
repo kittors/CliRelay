@@ -21,7 +21,7 @@ services:
       CLIRELAY_LOCALE: ${CLIRELAY_LOCALE:-zh}
       CLIRELAY_UPDATE_CHANNEL: ${CLIRELAY_UPDATE_CHANNEL:-main}
       CLIRELAY_UPDATER_URL: ${CLIRELAY_UPDATER_URL:-http://clirelay-updater:8320}
-      CLIRELAY_UPDATER_TOKEN: ${CLIRELAY_UPDATER_TOKEN:?CLIRELAY_UPDATER_TOKEN is required for updater sidecar}
+      CLIRELAY_UPDATER_TOKEN: ${CLIRELAY_UPDATER_TOKEN:-clirelay-local-updater}
       CLIRELAY_TARGET_SERVICE: ${CLIRELAY_TARGET_SERVICE:-cli-proxy-api}
       CLIRELAY_POSTGRES_DSN: ${CLIRELAY_POSTGRES_DSN:-postgres://${CLIRELAY_POSTGRES_USER:-cliproxy}:${CLIRELAY_POSTGRES_PASSWORD:-cliproxy}@postgres:5432/${CLIRELAY_POSTGRES_DB:-cliproxy}?sslmode=disable}
       CLIRELAY_REDIS_ENABLE: ${CLIRELAY_REDIS_ENABLE:-true}
@@ -57,7 +57,7 @@ services:
     command: ["./clirelay-updater"]
     user: "0:0"
     environment:
-      CLIRELAY_UPDATER_TOKEN: ${CLIRELAY_UPDATER_TOKEN:?CLIRELAY_UPDATER_TOKEN is required for updater sidecar}
+      CLIRELAY_UPDATER_TOKEN: ${CLIRELAY_UPDATER_TOKEN:-clirelay-local-updater}
       CLIRELAY_PROJECT_DIR: ${CLIRELAY_PROJECT_DIR:-${PWD:-.}}
       CLIRELAY_COMPOSE_FILE: ${CLIRELAY_PROJECT_DIR:-${PWD:-.}}/docker-compose.yml
       CLIRELAY_ENV_FILE: ${CLIRELAY_ENV_FILE:-${CLIRELAY_PROJECT_DIR:-${PWD:-.}}/.env}

@@ -63,7 +63,9 @@ Compose starts PostgreSQL 15 and Redis 7, waits for their health checks, then th
 - `./usage.db`
 - `./logs/usage.db`
 
-If no legacy SQLite file exists, the container starts normally with PostgreSQL. If a legacy SQLite file exists, `CLIRELAY_POSTGRES_DSN` is required. The script runs read-only SQLite inventory, PostgreSQL import dry-run, then apply import by default. Set `CLIRELAY_SQLITE_AUTO_IMPORT=false` to stop after dry-run, or `CLIRELAY_SQLITE_AUTO_MIGRATE=false` to skip the startup migration hook.
+If no legacy SQLite file exists, the container starts normally with PostgreSQL. If a legacy SQLite file exists, the Docker Compose path provides `CLIRELAY_POSTGRES_DSN` automatically; non-Compose deployments must set it explicitly. The script runs read-only SQLite inventory, PostgreSQL import dry-run, then apply import by default. Set `CLIRELAY_SQLITE_AUTO_IMPORT=false` to stop after dry-run, or `CLIRELAY_SQLITE_AUTO_MIGRATE=false` to skip the startup migration hook.
+
+For old Docker deployments with a SQLite-only compose file, the online updater upgrades `docker-compose.yml` and `.env` first, adding PostgreSQL/Redis services and generated defaults, then runs the full compose update. If the old deployment mounted files in a way that prevents the updater from writing them, replace `docker-compose.yml` with the latest repository version and run `docker compose up -d` once.
 
 SQLite is never deleted, moved, or written by this migration path. PostgreSQL records a source fingerprint in `sqlite_import_runs` after a successful apply. Repeated container starts skip an already imported SQLite source, and PostgreSQL advisory locking ensures concurrent starts do not import the same source twice.
 

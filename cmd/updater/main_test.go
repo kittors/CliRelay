@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 func setUpdaterAuth(req *http.Request) {
@@ -179,6 +181,42 @@ func TestUpdaterPersistsRequestedImageBeforeComposeUpdate(t *testing.T) {
 	case <-called:
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for runner")
+	}
+}
+
+func TestPersistRequestedImageCreatesMissingEnvFile(t *testing.T) {
+	envFile := filepath.Join(t.TempDir(), ".env")
+
+	if err := persistRequestedImage(context.Background(), envFile, "ghcr.io/kittors/clirelay", "latest"); err != nil {
+		t.Fatalf("persistRequestedImage failed: %v", err)
+	}
+
+	data, err := os.ReadFile(envFile)
+	if err != nil {
+		t.Fatalf("read env file: %v", err)
+	}
+	if string(data) != "CLI_PROXY_IMAGE=ghcr.io/kittors/clirelay:latest\n" {
+		t.Fatalf("env file content = %q, want requested image", string(data))
+	}
+}
+
+func TestPersistRequestedImageAddsMissingImageEntry(t *testing.T) {
+	envFile := filepath.Join(t.TempDir(), ".env")
+	if err := os.WriteFile(envFile, []byte("OTHER=value\n"), 0o600); err != nil {
+		t.Fatalf("write env file: %v", err)
+	}
+
+	if err := persistRequestedImage(context.Background(), envFile, "ghcr.io/kittors/clirelay", "latest"); err != nil {
+		t.Fatalf("persistRequestedImage failed: %v", err)
+	}
+
+	data, err := os.ReadFile(envFile)
+	if err != nil {
+		t.Fatalf("read env file: %v", err)
+	}
+	content := string(data)
+	if !strings.Contains(content, "OTHER=value\n") || !strings.Contains(content, "CLI_PROXY_IMAGE=ghcr.io/kittors/clirelay:latest\n") {
+		t.Fatalf("env file content = %q, want existing value and requested image", content)
 	}
 }
 
@@ -481,19 +519,181 @@ func TestRunComposeUpdateStartsFullComposeStack(t *testing.T) {
 	}
 }
 
-func TestRunComposeUpdateRejectsLegacySQLiteComposeWithoutRuntimeStack(t *testing.T) {
+func TestRunComposeUpdateUsesEnvFileNextToComposeWhenUnset(t *testing.T) {
 	dir := t.TempDir()
+	logPath := filepath.Join(dir, "docker.log")
+	dockerPath := filepath.Join(dir, "docker")
+	composePath := filepath.Join(dir, "docker-compose.yml")
+	inferredEnvPath := filepath.Join(dir, ".env")
+	if err := os.WriteFile(dockerPath, []byte("#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$COMPOSE_LOG\"\n"), 0o755); err != nil {
+		t.Fatalf("write fake docker: %v", err)
+	}
+	if err := os.WriteFile(composePath, []byte("services:\n  clirelay:\n    image: clirelay\n  postgres:\n    image: postgres:15-alpine\n  redis:\n    image: redis:7-alpine\n"), 0o644); err != nil {
+		t.Fatalf("write compose: %v", err)
+	}
+	if err := os.WriteFile(inferredEnvPath, []byte("CLI_PROXY_IMAGE=clirelay\n"), 0o644); err != nil {
+		t.Fatalf("write inferred env: %v", err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("COMPOSE_LOG", logPath)
+
+	err := runComposeUpdate(context.Background(), composePath, "", "cliproxy", "clirelay", updaterRunReporter{})
+	if err != nil {
+		t.Fatalf("runComposeUpdate failed: %v", err)
+	}
+
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read compose log: %v", err)
+	}
+	got := strings.Split(strings.TrimSpace(string(data)), "\n")
+	want := []string{
+		"compose --project-name cliproxy --env-file " + inferredEnvPath + " -f " + composePath + " pull clirelay",
+		"compose --project-name cliproxy --env-file " + inferredEnvPath + " -f " + composePath + " up -d --remove-orphans",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("compose commands = %#v, want %#v", got, want)
+	}
+}
+
+func TestRunComposeUpdateUpgradesLegacySQLiteComposeWithRuntimeStack(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "docker.log")
+	dockerPath := filepath.Join(dir, "docker")
 	composePath := filepath.Join(dir, "docker-compose.yml")
 	envPath := filepath.Join(dir, ".env")
+	if err := os.WriteFile(dockerPath, []byte("#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$COMPOSE_LOG\"\n"), 0o755); err != nil {
+		t.Fatalf("write fake docker: %v", err)
+	}
 	if err := os.WriteFile(composePath, []byte("services:\n  clirelay:\n    image: clirelay\n"), 0o644); err != nil {
 		t.Fatalf("write compose: %v", err)
 	}
 	if err := os.WriteFile(envPath, []byte("CLI_PROXY_IMAGE=clirelay\n"), 0o644); err != nil {
 		t.Fatalf("write env: %v", err)
 	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("COMPOSE_LOG", logPath)
+
 	err := runComposeUpdate(context.Background(), composePath, envPath, "cliproxy", "clirelay", updaterRunReporter{})
-	if err == nil || !strings.Contains(err.Error(), "runtime data stack is missing PostgreSQL/Redis") {
-		t.Fatalf("runComposeUpdate error = %v, want runtime data stack guard", err)
+	if err != nil {
+		t.Fatalf("runComposeUpdate failed: %v", err)
+	}
+
+	composeData, err := os.ReadFile(composePath)
+	if err != nil {
+		t.Fatalf("read upgraded compose: %v", err)
+	}
+	composeText := string(composeData)
+	for _, want := range []string{
+		"postgres:",
+		"redis:",
+		"clirelay-updater:",
+		"CLIRELAY_POSTGRES_DSN",
+		"CLIRELAY_REDIS_ENABLE",
+	} {
+		if !strings.Contains(composeText, want) {
+			t.Fatalf("upgraded compose missing %q:\n%s", want, composeText)
+		}
+	}
+
+	envData, err := os.ReadFile(envPath)
+	if err != nil {
+		t.Fatalf("read upgraded env: %v", err)
+	}
+	envText := string(envData)
+	for _, want := range []string{
+		"CLIRELAY_POSTGRES_DSN=postgres://",
+		"CLIRELAY_REDIS_ENABLE=true",
+		"CLIRELAY_TARGET_SERVICE=clirelay",
+	} {
+		if !strings.Contains(envText, want) {
+			t.Fatalf("upgraded env missing %q:\n%s", want, envText)
+		}
+	}
+
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read compose log: %v", err)
+	}
+	got := strings.Split(strings.TrimSpace(string(data)), "\n")
+	want := []string{
+		"compose --project-name cliproxy --env-file " + envPath + " -f " + composePath + " pull clirelay",
+		"compose --project-name cliproxy --env-file " + envPath + " -f " + composePath + " up -d --remove-orphans",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("compose commands = %#v, want %#v", got, want)
+	}
+}
+
+func TestUpgradeComposeRuntimeStackPreservesListEnvironment(t *testing.T) {
+	upgraded, _, err := upgradeComposeRuntimeStack(`
+services:
+  clirelay:
+    image: ghcr.io/kittors/clirelay:dev
+    environment:
+      - AUTH_PATH=/root/.cli-proxy-api
+      - LEGACY_FLAG=1
+`, "/opt/clirelay", "clirelay")
+	if err != nil {
+		t.Fatalf("upgradeComposeRuntimeStack failed: %v", err)
+	}
+
+	var doc map[string]any
+	if err := yaml.Unmarshal([]byte(upgraded), &doc); err != nil {
+		t.Fatalf("parse upgraded compose: %v", err)
+	}
+	services, ok := stringMap(doc["services"])
+	if !ok {
+		t.Fatalf("services not found in upgraded compose:\n%s", upgraded)
+	}
+	clirelay, ok := stringMap(services["clirelay"])
+	if !ok {
+		t.Fatalf("clirelay service not found in upgraded compose:\n%s", upgraded)
+	}
+	env, ok := stringMap(clirelay["environment"])
+	if !ok {
+		t.Fatalf("clirelay environment is not a map:\n%s", upgraded)
+	}
+	for key, want := range map[string]any{
+		"AUTH_PATH":               "/root/.cli-proxy-api",
+		"LEGACY_FLAG":             "1",
+		"CLIRELAY_REDIS_ENABLE":   "${CLIRELAY_REDIS_ENABLE:-true}",
+		"CLIRELAY_POSTGRES_DSN":   "${CLIRELAY_POSTGRES_DSN:-postgres://${CLIRELAY_POSTGRES_USER:-cliproxy}:${CLIRELAY_POSTGRES_PASSWORD:-cliproxy}@postgres:5432/${CLIRELAY_POSTGRES_DB:-cliproxy}?sslmode=disable}",
+		"CLIRELAY_TARGET_SERVICE": "${CLIRELAY_TARGET_SERVICE:-clirelay}",
+		"CLIRELAY_UPDATER_URL":    "${CLIRELAY_UPDATER_URL:-http://clirelay-updater:8320}",
+		"CLIRELAY_UPDATER_TOKEN":  "${CLIRELAY_UPDATER_TOKEN:?CLIRELAY_UPDATER_TOKEN is required for updater sidecar}",
+		"CLIRELAY_REDIS_PASSWORD": "${CLIRELAY_REDIS_PASSWORD:-}",
+		"CLIRELAY_REDIS_DB":       "${CLIRELAY_REDIS_DB:-0}",
+		"CLIRELAY_REDIS_ADDR":     "${CLIRELAY_REDIS_ADDR:-redis:6379}",
+	} {
+		if env[key] != want {
+			t.Fatalf("environment[%s] = %v, want %v", key, env[key], want)
+		}
+	}
+}
+
+func TestHostPathForMountedPathFindsExactReadOnlyFileMount(t *testing.T) {
+	source, rel, dirMount, ok := hostPathForMountedPath("/opt/clirelay/docker-compose.yml", []dockerMount{
+		{Source: "/srv/clirelay/docker-compose.yml", Destination: "/opt/clirelay/docker-compose.yml", RW: false},
+	})
+	if !ok {
+		t.Fatal("hostPathForMountedPath did not find exact file mount")
+	}
+	if source != "/srv/clirelay/docker-compose.yml" || rel != "" || dirMount {
+		t.Fatalf("source=%q rel=%q dirMount=%v", source, rel, dirMount)
+	}
+}
+
+func TestHostPathForMountedPathFindsParentDirectoryMount(t *testing.T) {
+	source, rel, dirMount, ok := hostPathForMountedPath("/opt/clirelay/docker-compose.yml", []dockerMount{
+		{Source: "/srv", Destination: "/opt", RW: true},
+		{Source: "/srv/clirelay", Destination: "/opt/clirelay", RW: true},
+	})
+	if !ok {
+		t.Fatal("hostPathForMountedPath did not find directory mount")
+	}
+	if source != "/srv/clirelay" || rel != "docker-compose.yml" || !dirMount {
+		t.Fatalf("source=%q rel=%q dirMount=%v", source, rel, dirMount)
 	}
 }
 

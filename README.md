@@ -30,6 +30,8 @@
 
 CliRelay turns AI CLI subscriptions, OAuth credentials, API keys, and compatible upstream services into one managed API layer. It proxies Claude Code, Gemini CLI, OpenAI Codex, Amp CLI, OpenAI-compatible clients, and other AI coding tools through a unified endpoint, then adds routing groups, failover, request logging, quota control, model pricing, image-generation support, API-key self-service, online updates, `/manage` web hosting, and terminal management workflows around that traffic.
 
+The current runtime data stack is PostgreSQL 15+, Redis 7+, and Ent ORM. PostgreSQL is the source of truth for runtime data; Redis is used for cache, locks, limits, queues, and rebuildable state. SQLite is legacy-only and is supported as an import source during migration.
+
 ```
 ┌───────────────────────┐         ┌──────────────┐         ┌────────────────────┐
 │   AI Coding Tools     │         │              │         │  Upstream Providers │
@@ -212,7 +214,7 @@ The gallery below uses the latest supplied screenshots, covering the current end
 
 ### 🐳 Install With Docker Compose
 
-Docker Compose is the recommended installation path for CliRelay. The included `docker-compose.yml` uses the published `ghcr.io/kittors/clirelay:latest` image by default and starts both the API service and updater sidecar.
+Docker Compose is the recommended installation path for CliRelay. The included `docker-compose.yml` starts CliRelay, PostgreSQL 15, Redis 7, and the updater sidecar. A `.env` file is optional for local use; the compose file has working defaults. For production, set your own `CLIRELAY_UPDATER_TOKEN`, `CLIRELAY_POSTGRES_PASSWORD`, and bind paths.
 
 ```bash
 git clone https://github.com/kittors/CliRelay.git
@@ -260,9 +262,13 @@ auto-update:
   channel: dev
 ```
 
-### 🗄️ Enabling Data Persistence
+### 🗄️ Runtime Data Stack
 
-CliRelay uses PostgreSQL 15+ as the runtime primary database and Redis 7+ for cache, locks, limits, queues, and rebuildable snapshots. The bundled Docker Compose file starts both services and injects container-local connection settings through environment variables.
+CliRelay uses PostgreSQL 15+ as the runtime primary database through Ent ORM. Redis 7+ is intentionally limited to cache, locks, limits, queues, and rebuildable snapshots. The bundled Docker Compose file starts both services and injects container-local connection settings automatically.
+
+For old Docker deployments that still have a SQLite-only compose file, update from `/manage/system` can upgrade `docker-compose.yml` and `.env` before it runs `docker compose up -d --remove-orphans`. The updater adds PostgreSQL/Redis services, keeps the existing application service, writes missing generated settings, and then lets the container entrypoint import the legacy SQLite database. SQLite is left in place.
+
+If the updater cannot write the deployment files because the old container was mounted without access to the project directory, replace `docker-compose.yml` with the latest one from this repository and run `docker compose up -d` once. After that, future online updates can update the compose file automatically.
 
 For non-Compose deployments:
 1. Provision PostgreSQL 15+ and Redis 7+.

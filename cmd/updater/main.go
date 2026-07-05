@@ -3,7 +3,9 @@ package main
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
 	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,10 +16,13 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 const (
@@ -98,6 +103,13 @@ type updateRequest struct {
 	UIVersion string `json:"ui_version"`
 	UICommit  string `json:"ui_commit"`
 	Channel   string `json:"channel"`
+}
+
+type dockerMount struct {
+	Type        string `json:"Type"`
+	Source      string `json:"Source"`
+	Destination string `json:"Destination"`
+	RW          bool   `json:"RW"`
 }
 
 func main() {
@@ -251,7 +263,11 @@ func (s *updaterServer) handleUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := persistRequestedImage(s.envFile, req.Image, req.Tag); err != nil {
+	envFile := s.envFile
+	if strings.TrimSpace(envFile) == "" && strings.TrimSpace(s.composeFile) != "" {
+		envFile = filepath.Join(filepath.Dir(s.composeFile), ".env")
+	}
+	if err := persistRequestedImage(s.context(), envFile, req.Image, req.Tag); err != nil {
 		if errors.Is(err, errRequestedImageNotAllowed) {
 			message := err.Error()
 			log.Print(message)
@@ -296,7 +312,7 @@ func (s *updaterServer) context() context.Context {
 	return s.ctx
 }
 
-func persistRequestedImage(envFile string, image string, tag string) error {
+func persistRequestedImage(ctx context.Context, envFile string, image string, tag string) error {
 	imageRef := requestedImageRef(image, tag)
 	if imageRef == "" {
 		if strings.TrimSpace(image) == "" && strings.TrimSpace(tag) == "" {
@@ -310,7 +326,7 @@ func persistRequestedImage(envFile string, image string, tag string) error {
 
 	data, err := os.ReadFile(envFile)
 	if os.IsNotExist(err) {
-		return fmt.Errorf("%w: missing configured CLI_PROXY_IMAGE", errRequestedImageNotAllowed)
+		return writeDeploymentFile(ctx, envFile, []byte("CLI_PROXY_IMAGE="+imageRef+"\n"), 0o600, updaterRunReporter{})
 	}
 	if err != nil {
 		return err
@@ -320,7 +336,8 @@ func persistRequestedImage(envFile string, image string, tag string) error {
 	configuredRepo := imageRepository(configuredImageRef(lines))
 	requestedRepo := imageRepository(imageRef)
 	if configuredRepo == "" {
-		return fmt.Errorf("%w: missing configured CLI_PROXY_IMAGE", errRequestedImageNotAllowed)
+		lines = append(lines, "CLI_PROXY_IMAGE="+imageRef)
+		return writeDeploymentFile(ctx, envFile, []byte(strings.Join(lines, "\n")+"\n"), 0o600, updaterRunReporter{})
 	}
 	if requestedRepo != configuredRepo {
 		return fmt.Errorf("%w: %s does not match %s", errRequestedImageNotAllowed, requestedRepo, configuredRepo)
@@ -339,7 +356,7 @@ func persistRequestedImage(envFile string, image string, tag string) error {
 		lines = append(lines, line)
 	}
 	content := strings.Join(lines, "\n") + "\n"
-	return os.WriteFile(envFile, []byte(content), 0o600)
+	return writeDeploymentFile(ctx, envFile, []byte(content), 0o600, updaterRunReporter{})
 }
 
 func configuredImageRef(lines []string) string {
@@ -551,9 +568,11 @@ func (r updaterRunReporter) Log(stream string, message string) {
 }
 
 func runComposeUpdate(ctx context.Context, composeFile string, envFile string, projectName string, service string, reporter updateReporter) error {
-	if err := ensureRuntimeDataStackConfig(composeFile, envFile); err != nil {
+	preparedEnvFile, err := ensureRuntimeDataStackConfig(ctx, composeFile, envFile, service, reporter)
+	if err != nil {
 		return err
 	}
+	envFile = preparedEnvFile
 	reporter.Stage("pulling", "pulling target image")
 	if err := runDockerCompose(ctx, composeFile, envFile, projectName, reporter, "pull", service); err != nil {
 		return err
@@ -566,33 +585,327 @@ func runComposeUpdate(ctx context.Context, composeFile string, envFile string, p
 	return nil
 }
 
-func ensureRuntimeDataStackConfig(composeFile string, envFile string) error {
+func ensureRuntimeDataStackConfig(ctx context.Context, composeFile string, envFile string, service string, reporter updateReporter) (string, error) {
 	composeData, err := os.ReadFile(composeFile)
 	if strings.TrimSpace(composeFile) == "" || os.IsNotExist(err) {
-		return nil
+		return envFile, nil
 	}
 	if err != nil {
-		return fmt.Errorf("read docker compose file: %w", err)
+		return envFile, fmt.Errorf("read docker compose file: %w", err)
+	}
+	if strings.TrimSpace(envFile) == "" {
+		envFile = filepath.Join(filepath.Dir(composeFile), ".env")
 	}
 	composeText := string(composeData)
 	if hasComposeService(composeText, "postgres") && hasComposeService(composeText, "redis") {
-		return nil
+		return envFile, nil
 	}
 
-	envData, err := os.ReadFile(envFile)
-	if strings.TrimSpace(envFile) == "" || os.IsNotExist(err) {
-		return fmt.Errorf("docker compose runtime data stack is missing PostgreSQL/Redis services; run install.sh update or update docker-compose.yml before using online update")
-	}
+	reporter.Stage("preparing", "upgrading docker compose runtime data stack")
+	nextCompose, appImage, err := upgradeComposeRuntimeStack(composeText, filepath.Dir(composeFile), service)
 	if err != nil {
+		return envFile, err
+	}
+	if err := ensureRuntimeEnvFile(ctx, envFile, filepath.Dir(composeFile), service, appImage, reporter); err != nil {
+		return envFile, err
+	}
+	if err := writeDeploymentFile(ctx, composeFile, []byte(nextCompose), 0o644, reporter); err != nil {
+		return envFile, fmt.Errorf("upgrade docker-compose.yml for PostgreSQL/Redis runtime stack: %w", err)
+	}
+	reporter.Log("stdout", "docker-compose.yml upgraded with PostgreSQL/Redis runtime services")
+	return envFile, nil
+}
+
+func upgradeComposeRuntimeStack(composeText string, projectDir string, service string) (string, string, error) {
+	var doc map[string]any
+	if err := yaml.Unmarshal([]byte(composeText), &doc); err != nil {
+		return "", "", fmt.Errorf("parse docker compose file: %w", err)
+	}
+	services, ok := stringMap(doc["services"])
+	if !ok {
+		return "", "", fmt.Errorf("docker compose file has no services section")
+	}
+	targetName := strings.TrimSpace(service)
+	if _, ok := services[targetName]; !ok {
+		targetName = firstApplicationService(services)
+	}
+	if targetName == "" {
+		return "", "", fmt.Errorf("docker compose file has no CliRelay service to upgrade")
+	}
+	target, ok := stringMap(services[targetName])
+	if !ok {
+		target = map[string]any{}
+		services[targetName] = target
+	}
+	appImage := stringValue(target["image"])
+	if appImage == "" {
+		appImage = "ghcr.io/kittors/clirelay:latest"
+	}
+	target["image"] = "${CLI_PROXY_IMAGE:-" + appImage + "}"
+	target["environment"] = mergeEnv(target["environment"], map[string]any{
+		"CLIRELAY_POSTGRES_DSN":   "${CLIRELAY_POSTGRES_DSN:-postgres://${CLIRELAY_POSTGRES_USER:-cliproxy}:${CLIRELAY_POSTGRES_PASSWORD:-cliproxy}@postgres:5432/${CLIRELAY_POSTGRES_DB:-cliproxy}?sslmode=disable}",
+		"CLIRELAY_REDIS_ENABLE":   "${CLIRELAY_REDIS_ENABLE:-true}",
+		"CLIRELAY_REDIS_ADDR":     "${CLIRELAY_REDIS_ADDR:-redis:6379}",
+		"CLIRELAY_REDIS_PASSWORD": "${CLIRELAY_REDIS_PASSWORD:-}",
+		"CLIRELAY_REDIS_DB":       "${CLIRELAY_REDIS_DB:-0}",
+		"CLIRELAY_TARGET_SERVICE": "${CLIRELAY_TARGET_SERVICE:-" + targetName + "}",
+		"CLIRELAY_UPDATER_URL":    "${CLIRELAY_UPDATER_URL:-http://clirelay-updater:8320}",
+		"CLIRELAY_UPDATER_TOKEN":  "${CLIRELAY_UPDATER_TOKEN:?CLIRELAY_UPDATER_TOKEN is required for updater sidecar}",
+	})
+	target["depends_on"] = map[string]any{
+		"postgres": map[string]any{"condition": "service_healthy"},
+		"redis":    map[string]any{"condition": "service_healthy"},
+	}
+	services["postgres"] = postgresComposeService()
+	services["redis"] = redisComposeService()
+	services["clirelay-updater"] = updaterComposeService(projectDir, targetName, appImage)
+
+	out, err := yaml.Marshal(doc)
+	if err != nil {
+		return "", "", fmt.Errorf("render upgraded docker compose file: %w", err)
+	}
+	return string(out), appImage, nil
+}
+
+func firstApplicationService(services map[string]any) string {
+	for name := range services {
+		if name != "postgres" && name != "redis" && !strings.Contains(name, "updater") {
+			return name
+		}
+	}
+	return ""
+}
+
+func postgresComposeService() map[string]any {
+	return map[string]any{
+		"image": "postgres:15-alpine",
+		"environment": map[string]any{
+			"POSTGRES_DB":       "${CLIRELAY_POSTGRES_DB:-cliproxy}",
+			"POSTGRES_USER":     "${CLIRELAY_POSTGRES_USER:-cliproxy}",
+			"POSTGRES_PASSWORD": "${CLIRELAY_POSTGRES_PASSWORD:-cliproxy}",
+		},
+		"volumes": []any{"${CLIRELAY_POSTGRES_DATA_PATH:-${CLIRELAY_PROJECT_DIR:-${PWD:-.}}/postgres-data}:/var/lib/postgresql/data"},
+		"healthcheck": map[string]any{
+			"test":     []any{"CMD-SHELL", "pg_isready -U ${CLIRELAY_POSTGRES_USER:-cliproxy} -d ${CLIRELAY_POSTGRES_DB:-cliproxy}"},
+			"interval": "5s",
+			"timeout":  "5s",
+			"retries":  20,
+		},
+		"restart": "unless-stopped",
+	}
+}
+
+func redisComposeService() map[string]any {
+	return map[string]any{
+		"image":   "redis:7-alpine",
+		"command": []any{"redis-server", "--appendonly", "yes"},
+		"volumes": []any{"${CLIRELAY_REDIS_DATA_PATH:-${CLIRELAY_PROJECT_DIR:-${PWD:-.}}/redis-data}:/data"},
+		"healthcheck": map[string]any{
+			"test":     []any{"CMD", "redis-cli", "ping"},
+			"interval": "5s",
+			"timeout":  "5s",
+			"retries":  20,
+		},
+		"restart": "unless-stopped",
+	}
+}
+
+func updaterComposeService(projectDir string, targetService string, image string) map[string]any {
+	return map[string]any{
+		"image":   "${CLI_PROXY_IMAGE:-" + image + "}",
+		"command": []any{"./clirelay-updater"},
+		"user":    "0:0",
+		"environment": map[string]any{
+			"CLIRELAY_UPDATER_TOKEN":        "${CLIRELAY_UPDATER_TOKEN:?CLIRELAY_UPDATER_TOKEN is required for updater sidecar}",
+			"CLIRELAY_PROJECT_DIR":          "${CLIRELAY_PROJECT_DIR:-" + projectDir + "}",
+			"CLIRELAY_COMPOSE_FILE":         "${CLIRELAY_PROJECT_DIR:-" + projectDir + "}/docker-compose.yml",
+			"CLIRELAY_ENV_FILE":             "${CLIRELAY_ENV_FILE:-${CLIRELAY_PROJECT_DIR:-" + projectDir + "}/.env}",
+			"CLIRELAY_COMPOSE_PROJECT_NAME": "${CLIRELAY_COMPOSE_PROJECT_NAME:-}",
+			"CLIRELAY_TARGET_SERVICE":       "${CLIRELAY_TARGET_SERVICE:-" + targetService + "}",
+		},
+		"volumes": []any{
+			"/var/run/docker.sock:/var/run/docker.sock",
+			".:${CLIRELAY_PROJECT_DIR:-" + projectDir + "}",
+		},
+		"restart": "unless-stopped",
+	}
+}
+
+func mergeEnv(existing any, values map[string]any) map[string]any {
+	merged := map[string]any{}
+	if current, ok := stringMap(existing); ok {
+		for k, v := range current {
+			merged[k] = v
+		}
+	} else if current, ok := existing.([]any); ok {
+		for _, item := range current {
+			key, value, ok := strings.Cut(stringValue(item), "=")
+			if ok && strings.TrimSpace(key) != "" {
+				merged[strings.TrimSpace(key)] = value
+			}
+		}
+	}
+	for k, v := range values {
+		merged[k] = v
+	}
+	return merged
+}
+
+func stringMap(value any) (map[string]any, bool) {
+	out, ok := value.(map[string]any)
+	return out, ok
+}
+
+func stringValue(value any) string {
+	if text, ok := value.(string); ok {
+		return strings.TrimSpace(text)
+	}
+	return ""
+}
+
+func ensureRuntimeEnvFile(ctx context.Context, envFile string, projectDir string, service string, image string, reporter updateReporter) error {
+	data, err := os.ReadFile(envFile)
+	if err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("read docker env file: %w", err)
 	}
-	envText := string(envData)
-	if strings.Contains(envText, "CLIRELAY_POSTGRES_DSN=") &&
-		strings.Contains(envText, "CLIRELAY_REDIS_ENABLE=true") &&
-		strings.Contains(envText, "CLIRELAY_REDIS_ADDR=") {
-		return nil
+	lines := splitEnvLines(string(data))
+	values := envValues(lines)
+	setEnvDefault(&lines, values, "CLI_PROXY_IMAGE", image)
+	setEnvDefault(&lines, values, "CLIRELAY_PROJECT_DIR", projectDir)
+	setEnvDefault(&lines, values, "CLIRELAY_TARGET_SERVICE", service)
+	setEnvDefault(&lines, values, "CLIRELAY_COMPOSE_PROJECT_NAME", filepath.Base(projectDir))
+	setEnvDefault(&lines, values, "CLIRELAY_UPDATER_TOKEN", envOrDefault("CLIRELAY_UPDATER_TOKEN", randomHex(16)))
+	setEnvDefault(&lines, values, "CLIRELAY_POSTGRES_DB", "cliproxy")
+	setEnvDefault(&lines, values, "CLIRELAY_POSTGRES_USER", "cliproxy")
+	setEnvDefault(&lines, values, "CLIRELAY_POSTGRES_PASSWORD", randomHex(16))
+	db := envOrDefaultValue(values["CLIRELAY_POSTGRES_DB"], "cliproxy")
+	user := envOrDefaultValue(values["CLIRELAY_POSTGRES_USER"], "cliproxy")
+	pass := envOrDefaultValue(values["CLIRELAY_POSTGRES_PASSWORD"], "cliproxy")
+	setEnvDefault(&lines, values, "CLIRELAY_POSTGRES_DSN", "postgres://"+user+":"+pass+"@postgres:5432/"+db+"?sslmode=disable")
+	setEnvDefault(&lines, values, "CLIRELAY_POSTGRES_DATA_PATH", filepath.Join(projectDir, "postgres-data"))
+	setEnvDefault(&lines, values, "CLIRELAY_REDIS_ENABLE", "true")
+	setEnvDefault(&lines, values, "CLIRELAY_REDIS_ADDR", "redis:6379")
+	setEnvDefault(&lines, values, "CLIRELAY_REDIS_DB", "0")
+	setEnvDefault(&lines, values, "CLIRELAY_REDIS_DATA_PATH", filepath.Join(projectDir, "redis-data"))
+	content := strings.Join(lines, "\n") + "\n"
+	if err := writeDeploymentFile(ctx, envFile, []byte(content), 0o600, reporter); err != nil {
+		return fmt.Errorf("write docker env file: %w", err)
 	}
-	return fmt.Errorf("docker compose runtime data stack is missing PostgreSQL/Redis services; run install.sh update or update docker-compose.yml before using online update")
+	return nil
+}
+
+func envValues(lines []string) map[string]string {
+	values := map[string]string{}
+	for _, line := range lines {
+		key, value, ok := strings.Cut(line, "=")
+		if ok {
+			values[strings.TrimSpace(key)] = strings.Trim(strings.TrimSpace(value), `"'`)
+		}
+	}
+	return values
+}
+
+func setEnvDefault(lines *[]string, values map[string]string, key string, value string) {
+	if strings.TrimSpace(values[key]) != "" {
+		return
+	}
+	*lines = append(*lines, key+"="+value)
+	values[key] = value
+}
+
+func randomHex(bytes int) string {
+	buf := make([]byte, bytes)
+	if _, err := rand.Read(buf); err != nil {
+		return fmt.Sprintf("%d", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(buf)
+}
+
+func writeDeploymentFile(ctx context.Context, path string, data []byte, mode os.FileMode, reporter updateReporter) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	if err := os.WriteFile(path, data, mode); err == nil {
+		return nil
+	} else if fallbackErr := writeDeploymentFileViaDocker(ctx, path, data, mode, reporter); fallbackErr != nil {
+		return fmt.Errorf("%v; docker fallback failed: %w", err, fallbackErr)
+	}
+	return nil
+}
+
+func writeDeploymentFileViaDocker(ctx context.Context, path string, data []byte, mode os.FileMode, reporter updateReporter) error {
+	containerID, err := os.Hostname()
+	if err != nil || strings.TrimSpace(containerID) == "" {
+		return fmt.Errorf("detect updater container id: %w", err)
+	}
+	image, err := dockerInspect(ctx, containerID, "{{.Config.Image}}")
+	if err != nil {
+		return err
+	}
+	mountsJSON, err := dockerInspect(ctx, containerID, "{{json .Mounts}}")
+	if err != nil {
+		return err
+	}
+	var mounts []dockerMount
+	if err := json.Unmarshal([]byte(mountsJSON), &mounts); err != nil {
+		return fmt.Errorf("parse updater container mounts: %w", err)
+	}
+	source, rel, dirMount, ok := hostPathForMountedPath(path, mounts)
+	if !ok {
+		return fmt.Errorf("no writable host mount found for %s", path)
+	}
+	reporter.Log("stdout", "direct write failed; updating deployment file through docker mount fallback")
+	modeText := fmt.Sprintf("%#o", mode.Perm())
+	var cmd *exec.Cmd
+	if dirMount {
+		script := `set -eu; target="/host/$TARGET_REL"; mkdir -p "$(dirname "$target")"; cat > "$target"; chmod "$TARGET_MODE" "$target"`
+		cmd = exec.CommandContext(ctx, "docker", "run", "--rm", "-i", "-e", "TARGET_REL="+rel, "-e", "TARGET_MODE="+modeText, "-v", source+":/host", strings.TrimSpace(image), "sh", "-c", script)
+	} else {
+		script := `set -eu; cat > /target; chmod "$TARGET_MODE" /target`
+		cmd = exec.CommandContext(ctx, "docker", "run", "--rm", "-i", "-e", "TARGET_MODE="+modeText, "-v", source+":/target", strings.TrimSpace(image), "sh", "-c", script)
+	}
+	cmd.Stdin = strings.NewReader(string(data))
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("docker helper write failed: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+func dockerInspect(ctx context.Context, containerID string, format string) (string, error) {
+	cmd := exec.CommandContext(ctx, "docker", "inspect", "--format", format, containerID)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("docker inspect updater container failed: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+func hostPathForMountedPath(path string, mounts []dockerMount) (string, string, bool, bool) {
+	cleanPath := filepath.Clean(path)
+	var best dockerMount
+	bestLen := -1
+	for _, mount := range mounts {
+		if strings.TrimSpace(mount.Source) == "" || strings.TrimSpace(mount.Destination) == "" {
+			continue
+		}
+		dest := filepath.Clean(mount.Destination)
+		if cleanPath == dest {
+			return mount.Source, "", false, true
+		}
+		if strings.HasPrefix(cleanPath, dest+string(os.PathSeparator)) && len(dest) > bestLen {
+			best = mount
+			bestLen = len(dest)
+		}
+	}
+	if bestLen < 0 {
+		return "", "", false, false
+	}
+	rel, err := filepath.Rel(filepath.Clean(best.Destination), cleanPath)
+	if err != nil || strings.HasPrefix(rel, "..") {
+		return "", "", false, false
+	}
+	return best.Source, rel, true, true
 }
 
 func hasComposeService(content string, service string) bool {

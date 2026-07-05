@@ -591,8 +591,7 @@ services:
       CLIRELAY_TARGET_SERVICE: ${CLIRELAY_TARGET_SERVICE}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - ./docker-compose.yml:${CLIRELAY_INSTALL_DIR}/docker-compose.yml:ro
-      - ./.env:${CLIRELAY_INSTALL_DIR}/.env
+      - .:${CLIRELAY_INSTALL_DIR}
     restart: unless-stopped
 
   postgres:

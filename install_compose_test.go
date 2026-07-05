@@ -69,8 +69,7 @@ func TestInstallComposeMirrorsDeploymentFilesAtHostPathInUpdater(t *testing.T) {
 	for _, want := range []string{
 		"CLIRELAY_COMPOSE_FILE: ${CLIRELAY_INSTALL_DIR}/docker-compose.yml",
 		"CLIRELAY_ENV_FILE: ${CLIRELAY_INSTALL_DIR}/.env",
-		"./docker-compose.yml:${CLIRELAY_INSTALL_DIR}/docker-compose.yml:ro",
-		"./.env:${CLIRELAY_INSTALL_DIR}/.env",
+		".:${CLIRELAY_INSTALL_DIR}",
 	} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("install.sh generated updater compose missing %q", want)
@@ -82,6 +81,7 @@ func TestInstallComposeMirrorsDeploymentFilesAtHostPathInUpdater(t *testing.T) {
 		"CLIRELAY_ENV_FILE: /workspace/.env",
 		"./docker-compose.yml:/workspace/docker-compose.yml:ro",
 		"./.env:/workspace/.env",
+		"./docker-compose.yml:${CLIRELAY_INSTALL_DIR}/docker-compose.yml:ro",
 	} {
 		if strings.Contains(content, forbidden) {
 			t.Fatalf("install.sh generated updater compose still contains /workspace mapping %q", forbidden)
