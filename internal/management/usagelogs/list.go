@@ -92,24 +92,8 @@ func (s *Service) ManagementLogs(input ManagementLogQueryInput) (map[string]any,
 				item.APIKeyName = name
 			}
 		}
-		if item.ChannelName != "" {
-			if name, ok := authIndexChannelMap[item.AuthIndex]; ok && strings.TrimSpace(name) != "" {
-				if _, legacy := channelNameMap[item.ChannelName]; legacy || containsFold(ambiguousAuthIndexChannelMap[item.AuthIndex], item.ChannelName) {
-					item.ChannelName = name
-					continue
-				}
-			}
-			if name, ok := channelNameMap[item.ChannelName]; ok && strings.TrimSpace(name) != "" {
-				item.ChannelName = name
-			}
-			continue
-		}
-		if name, ok := authIndexChannelMap[item.AuthIndex]; ok && strings.TrimSpace(name) != "" {
-			item.ChannelName = name
-			continue
-		}
-		if name, ok := channelNameMap[item.Source]; ok {
-			item.ChannelName = name
+		if channelName := displayChannelNameForLog(*item, channelNameMap, authIndexChannelMap, ambiguousAuthIndexChannelMap); channelName != "" {
+			item.ChannelName = channelName
 		}
 	}
 
@@ -188,6 +172,7 @@ func (s *Service) ClearRequestLogs(options usage.ClearRequestLogsOptions) (int, 
 }
 
 func (s *Service) PublicUsageLogs(input PublicLogQueryInput) (map[string]any, error) {
+	_, channelNameMap, authIndexChannelMap, ambiguousAuthIndexChannelMap := s.buildNameMaps()
 	params := usage.LogQueryParams{
 		Page:   input.Page,
 		Size:   input.Size,
@@ -211,9 +196,10 @@ func (s *Service) PublicUsageLogs(input PublicLogQueryInput) (map[string]any, er
 		if apiKeyName == "" {
 			apiKeyName = strings.TrimSpace(result.Items[i].APIKeyName)
 		}
+		channelName := displayChannelNameForLog(result.Items[i], channelNameMap, authIndexChannelMap, ambiguousAuthIndexChannelMap)
 		result.Items[i].Source = ""
 		result.Items[i].AuthIndex = ""
-		result.Items[i].ChannelName = ""
+		result.Items[i].ChannelName = channelName
 		result.Items[i].APIKey = ""
 		result.Items[i].APIKeyName = ""
 	}
@@ -242,6 +228,27 @@ func (s *Service) publicAPIKeyName(apiKey string) string {
 		return ""
 	}
 	return strings.TrimSpace(row.Name)
+}
+
+func displayChannelNameForLog(item usage.LogRow, channelNameMap, authIndexChannelMap map[string]string, ambiguousAuthIndexChannelMap map[string][]string) string {
+	if channel := strings.TrimSpace(item.ChannelName); channel != "" {
+		if name, ok := authIndexChannelMap[item.AuthIndex]; ok && strings.TrimSpace(name) != "" {
+			if _, legacy := channelNameMap[channel]; legacy || containsFold(ambiguousAuthIndexChannelMap[item.AuthIndex], channel) {
+				return strings.TrimSpace(name)
+			}
+		}
+		if name, ok := channelNameMap[channel]; ok && strings.TrimSpace(name) != "" {
+			return strings.TrimSpace(name)
+		}
+		return channel
+	}
+	if name, ok := authIndexChannelMap[item.AuthIndex]; ok && strings.TrimSpace(name) != "" {
+		return strings.TrimSpace(name)
+	}
+	if name, ok := channelNameMap[item.Source]; ok {
+		return strings.TrimSpace(name)
+	}
+	return ""
 }
 
 func (s *Service) buildNameMaps() (keyNameMap, channelNameMap, authIndexChannelMap map[string]string, ambiguousAuthIndexChannelMap map[string][]string) {

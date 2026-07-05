@@ -1446,6 +1446,86 @@ func TestGetPublicUsageLogs_ReturnsCurrentAPIKeyName(t *testing.T) {
 	}
 }
 
+func TestGetPublicUsageLogs_ReturnsChannelNameWithoutSensitiveFields(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "usage.db")
+	if err := usage.InitDB(dbPath, config.RequestLogStorageConfig{}, time.UTC); err != nil {
+		t.Fatalf("InitDB: %v", err)
+	}
+	t.Cleanup(func() {
+		usage.CloseDB()
+		_ = os.Remove(dbPath)
+		_ = os.Remove(dbPath + "-wal")
+		_ = os.Remove(dbPath + "-shm")
+	})
+
+	store := &memoryAuthStore{}
+	manager := coreauth.NewManager(store, nil, nil)
+	auth, err := manager.Register(context.Background(), &coreauth.Auth{
+		ID:       "public-lookup-auth",
+		FileName: "codex-test.json",
+		Provider: "codex",
+		Label:    "Codex 主渠道",
+		Metadata: map[string]any{"email": "owner@example.com"},
+	})
+	if err != nil {
+		t.Fatalf("register auth: %v", err)
+	}
+
+	usage.InsertLog(
+		"sk-test", "Primary", "gpt-5.5", "owner@example.com", "owner@example.com", auth.Index,
+		false, time.Now().UTC(), 123, 45,
+		usage.TokenStats{InputTokens: 1, OutputTokens: 2, TotalTokens: 3},
+		"", "",
+	)
+
+	h := &Handler{
+		cfg:         &config.Config{},
+		authManager: manager,
+	}
+
+	body := []byte(`{"api_key":"sk-test","days":7,"page":1,"size":50}`)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(
+		http.MethodPost,
+		"/v0/management/public/usage/logs",
+		bytes.NewReader(body),
+	)
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	h.UsageLogs().GetPublicUsageLogs(c)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d, body=%s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	var payload struct {
+		Items []struct {
+			APIKey      string `json:"api_key"`
+			APIKeyName  string `json:"api_key_name"`
+			Source      string `json:"source"`
+			AuthIndex   string `json:"auth_index"`
+			ChannelName string `json:"channel_name"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if len(payload.Items) != 1 {
+		t.Fatalf("expected 1 item, got %d", len(payload.Items))
+	}
+	item := payload.Items[0]
+	if item.ChannelName != "Codex 主渠道" {
+		t.Fatalf("channel_name = %q, want Codex 主渠道", item.ChannelName)
+	}
+	if item.APIKey != "" || item.APIKeyName != "" || item.Source != "" || item.AuthIndex != "" {
+		t.Fatalf("sensitive fields not scrubbed: %+v", item)
+	}
+}
+
 func TestGetPublicUsageLogs_DoesNotReadAPIKeyFromQuery(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
