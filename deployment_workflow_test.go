@@ -18,10 +18,8 @@ func TestDeployWorkflowOnlyPublishesBackendBinary(t *testing.T) {
 
 	for _, want := range []string{
 		`Upload binary and deploy script`,
-		`source: "cli-proxy-api-new,scripts/deploy-blue-green.sh,scripts/migrate-sqlite-to-postgres.sh,scripts/prepare-runtime-data-stack.sh"`,
+		`source: "cli-proxy-api-new,scripts/deploy-blue-green.sh"`,
 		`scripts/deploy-blue-green.sh`,
-		`scripts/migrate-sqlite-to-postgres.sh`,
-		`scripts/prepare-runtime-data-stack.sh`,
 		`target: "/opt/clirelay2/"`,
 	} {
 		if !strings.Contains(content, want) {
@@ -32,6 +30,8 @@ func TestDeployWorkflowOnlyPublishesBackendBinary(t *testing.T) {
 	for _, forbidden := range []string{
 		`Upload panel assets`,
 		`source: "manage.html,management.html,assets"`,
+		`scripts/migrate-sqlite-to-postgres.sh`,
+		`scripts/prepare-runtime-data-stack.sh`,
 		`PANEL_SRC=`,
 		`PANEL_DIR=`,
 		`relay-panel`,
@@ -75,10 +75,6 @@ func TestBlueGreenDeployScriptSyntaxAndGuards(t *testing.T) {
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("deploy script syntax failed: %v\n%s", err, out)
 	}
-	cmd = exec.Command("bash", "-n", "scripts/prepare-runtime-data-stack.sh")
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("runtime data stack script syntax failed: %v\n%s", err, out)
-	}
 
 	data, err := os.ReadFile("scripts/deploy-blue-green.sh")
 	if err != nil {
@@ -100,6 +96,17 @@ func TestBlueGreenDeployScriptSyntaxAndGuards(t *testing.T) {
 	} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("deploy script missing guard %q", want)
+		}
+	}
+	for _, forbidden := range []string{
+		`migrate-sqlite-to-postgres.sh`,
+		`Legacy SQLite`,
+		`stop_active_units_for_migration`,
+		`CLIRELAY_SQLITE_PATH`,
+		`usage.db`,
+	} {
+		if strings.Contains(content, forbidden) {
+			t.Fatalf("deploy script must not run legacy SQLite migration during blue-green deploy, found %q", forbidden)
 		}
 	}
 }

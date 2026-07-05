@@ -56,7 +56,7 @@ jobs:
           port: ${{ secrets.SERVER_PORT }}
           username: root
           key: ${{ secrets.SSH_PRIVATE_KEY }}
-          source: "cli-proxy-api-new,scripts/deploy-blue-green.sh,scripts/migrate-sqlite-to-postgres.sh,scripts/prepare-runtime-data-stack.sh"
+          source: "cli-proxy-api-new,scripts/deploy-blue-green.sh"
           target: "/opt/clirelay2/"
           overwrite: true
 

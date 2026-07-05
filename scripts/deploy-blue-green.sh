@@ -91,49 +91,15 @@ esac
 next_unit="${SERVICE_NAME}-${next_port}"
 next_bin="${BASE_DIR}/${next_unit}"
 cutover_done=0
-stopped_units_for_migration=""
 # If anything fails before nginx is switched, stop the candidate slot and keep the old service live.
 cleanup_failed_deploy() {
 	status=$?
 	if [ "$status" -ne 0 ] && [ "$cutover_done" -ne 1 ]; then
 		systemctl disable --now "$next_unit" >/dev/null 2>&1 || true
-		for unit in $stopped_units_for_migration; do
-			systemctl start "$unit" >/dev/null 2>&1 || true
-		done
 	fi
 	exit "$status"
 }
 trap cleanup_failed_deploy EXIT
-
-find_legacy_sqlite() {
-	if [ -n "${CLIRELAY_SQLITE_PATH:-}" ] && [ -f "$CLIRELAY_SQLITE_PATH" ]; then
-		echo "$CLIRELAY_SQLITE_PATH"
-		return
-	fi
-	for candidate in \
-		"${BASE_DIR}/data/usage.db" \
-		"${BASE_DIR}/usage.db" \
-		"${BASE_DIR}/logs/usage.db" \
-		"${working_dir}/data/usage.db" \
-		"${working_dir}/usage.db" \
-		"${working_dir}/logs/usage.db"
-	do
-		if [ -f "$candidate" ]; then
-			echo "$candidate"
-			return
-		fi
-	done
-	return 0
-}
-
-stop_active_units_for_migration() {
-	for unit in "$SERVICE_NAME" "${SERVICE_NAME}-${active_port}"; do
-		if systemctl is-active --quiet "$unit"; then
-			systemctl stop "$unit"
-			stopped_units_for_migration="${stopped_units_for_migration} ${unit}"
-		fi
-	done
-}
 
 available_mb="$(awk '/MemAvailable:/ {print int($2 / 1024); exit}' /proc/meminfo 2>/dev/null || true)"
 if [ -n "$available_mb" ] && [ "$available_mb" -lt "$MIN_AVAILABLE_MB" ]; then
@@ -152,28 +118,6 @@ working_dir="${working_dir:-$service_dir}"
 environment="$(read_service_property Environment)"
 user="$(read_service_property User)"
 group="$(read_service_property Group)"
-
-migration_script="${BASE_DIR}/scripts/migrate-sqlite-to-postgres.sh"
-legacy_sqlite="$(find_legacy_sqlite)"
-if [ -f "$migration_script" ]; then
-	chmod +x "$migration_script" 2>/dev/null || true
-	if [ -n "$legacy_sqlite" ]; then
-		echo "Legacy SQLite found at ${legacy_sqlite}; stopping active slot for lossless final import"
-		stop_active_units_for_migration
-		CLIRELAY_BIN="$next_bin" \
-			CLIRELAY_POSTGRES_DSN="$postgres_dsn" \
-			CLIRELAY_SQLITE_PATH="$legacy_sqlite" \
-			"$migration_script" "$legacy_sqlite"
-	else
-		CLIRELAY_BIN="$next_bin" \
-			CLIRELAY_POSTGRES_DSN="$postgres_dsn" \
-			"$migration_script"
-	fi
-elif [ -n "$legacy_sqlite" ]; then
-	fail "legacy SQLite found at ${legacy_sqlite}, but migration script is missing: ${migration_script}"
-else
-	echo "SQLite migration script not found at ${migration_script}; skipping legacy SQLite import hook"
-fi
 
 unit_file="/etc/systemd/system/${next_unit}.service"
 {
