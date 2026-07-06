@@ -128,6 +128,23 @@ func TestImportSQLiteDryRunAndApply(t *testing.T) {
 	}
 }
 
+func TestNormalizeImportValuesCoalescesLegacyNullContent(t *testing.T) {
+	columns := []string{"log_id", "input_content", "output_content", "detail_content", "session_id"}
+	values := []any{int64(7), nil, nil, nil, nil}
+
+	normalizeImportValues("request_log_content", columns, values)
+
+	for _, idx := range []int{1, 2, 3} {
+		got, ok := values[idx].([]byte)
+		if !ok || len(got) != 0 {
+			t.Fatalf("values[%d] = %#v, want empty []byte", idx, values[idx])
+		}
+	}
+	if values[4] != "" {
+		t.Fatalf("session_id = %#v, want empty string", values[4])
+	}
+}
+
 func TestImportSQLiteApplyUsesPostgresLockAndCompletionMarker(t *testing.T) {
 	dsn := os.Getenv("CLIRELAY_POSTGRES_TEST_DSN")
 	if dsn == "" {

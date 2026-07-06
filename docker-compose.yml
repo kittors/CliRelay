@@ -33,6 +33,7 @@ services:
     #   - .env
     environment:
       DEPLOY: ${DEPLOY:-}
+      CLIRELAY_SQLITE_AUTO_MIGRATE: "false"
       CLIRELAY_LOCALE: ${CLIRELAY_LOCALE:-zh}
       CLIRELAY_UPDATE_CHANNEL: ${CLIRELAY_UPDATE_CHANNEL:-main}
       AUTH_PATH: ${AUTH_PATH:-/CLIProxyAPI/auths}
@@ -55,11 +56,41 @@ services:
     depends_on:
       clirelay-init:
         condition: service_completed_successfully
+      clirelay-migrate:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
     restart: unless-stopped
+
+  clirelay-migrate:
+    image: ${CLI_PROXY_IMAGE:-ghcr.io/kittors/clirelay:latest}
+    pull_policy: ${CLI_PROXY_PULL_POLICY:-always}
+    command: ["migrate-sqlite-to-postgres.sh"]
+    entrypoint: ["sh", "-c", "set -a; . /clirelay-deploy/.env; set +a; exec docker-entrypoint.sh \"$@\"", "--"]
+    environment:
+      DEPLOY: ${DEPLOY:-}
+      CLIRELAY_LOCALE: ${CLIRELAY_LOCALE:-zh}
+      CLIRELAY_UPDATE_CHANNEL: ${CLIRELAY_UPDATE_CHANNEL:-main}
+      AUTH_PATH: ${AUTH_PATH:-/CLIProxyAPI/auths}
+      LANG: ${CLIRELAY_LANG:-C.UTF-8}
+      LANGUAGE: ${CLIRELAY_LANGUAGE:-en_US:en}
+      LC_ALL: ${CLIRELAY_LANG:-C.UTF-8}
+    volumes:
+      - ${CLI_PROXY_CONFIG_PATH:-${CLIRELAY_PROJECT_DIR:-${PWD:-.}}/config.yaml}:/CLIProxyAPI/config.yaml
+      - ${CLI_PROXY_AUTH_PATH:-${CLIRELAY_PROJECT_DIR:-${PWD:-.}}/auths}:${AUTH_PATH:-/CLIProxyAPI/auths}
+      - ${CLI_PROXY_LOG_PATH:-${CLIRELAY_PROJECT_DIR:-${PWD:-.}}/logs}:/CLIProxyAPI/logs
+      - ${CLI_PROXY_DATA_PATH:-${CLIRELAY_PROJECT_DIR:-${PWD:-.}}/data}:/CLIProxyAPI/data
+      - ${CLIRELAY_PROJECT_DIR:-${PWD:-.}}:/clirelay-deploy
+    depends_on:
+      clirelay-init:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: "no"
 
   clirelay-updater:
     image: ${CLI_PROXY_IMAGE:-ghcr.io/kittors/clirelay:latest}

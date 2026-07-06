@@ -160,6 +160,7 @@ func main() {
 			SQLitePath:  sqliteImportPath,
 			PostgresDSN: dsn,
 			DryRun:      sqliteImportDryRun,
+			Progress:    os.Stderr,
 		}); err != nil {
 			log.Errorf("sqlite import failed: %v", err)
 			os.Exit(1)

@@ -24,6 +24,7 @@ type ImportOptions struct {
 	PostgresDSN string
 	DryRun      bool
 	Now         time.Time
+	Progress    io.Writer
 }
 
 type ImportReport struct {
@@ -140,14 +141,20 @@ func Import(ctx context.Context, opts ImportOptions) (ImportReport, error) {
 		sourceColumns[table.Name] = table.Columns
 	}
 	report := ImportReport{SQLitePath: inventory.Path, ScannedAt: now.UTC(), DryRun: opts.DryRun, SourceFingerprint: sourceFingerprint}
-	for _, table := range runtimeImportTables {
+	for i, table := range runtimeImportTables {
 		srcCols, ok := sourceColumns[table]
 		if !ok {
 			continue
 		}
+		reportImportProgress(opts.Progress, "sqlite import progress: table %d/%d %s", i+1, len(runtimeImportTables), table)
 		row, err := importTable(ctx, src, dst, table, srcCols, opts.DryRun)
 		if err != nil {
 			return ImportReport{}, err
+		}
+		if opts.DryRun {
+			reportImportProgress(opts.Progress, "sqlite import progress: table %s dry-run source_rows=%d target_rows=%d planned_inserts=%d", table, row.SourceRows, row.TargetRows, row.PlannedInserts)
+		} else {
+			reportImportProgress(opts.Progress, "sqlite import progress: table %s inserted_rows=%d target_rows=%d", table, row.InsertedRows, row.TargetRows)
 		}
 		report.Tables = append(report.Tables, row)
 	}
@@ -415,6 +422,7 @@ func copyRows(ctx context.Context, src, dst *sql.DB, table string, columns []str
 			_ = tx.Rollback()
 			return 0, fmt.Errorf("sqlite import: scan %s: %w", table, err)
 		}
+		normalizeImportValues(table, columns, values)
 		result, err := tx.ExecContext(ctx, insertSQL, values...)
 		if err != nil {
 			_ = tx.Rollback()
@@ -443,6 +451,40 @@ func copyRows(ctx context.Context, src, dst *sql.DB, table string, columns []str
 		return 0, fmt.Errorf("sqlite import: commit %s: %w", table, err)
 	}
 	return inserted, nil
+}
+
+var importNullDefaults = map[string]map[string]any{
+	"request_logs": {
+		"input_content":  "",
+		"output_content": "",
+	},
+	"request_log_content": {
+		"input_content":  []byte{},
+		"output_content": []byte{},
+		"detail_content": []byte{},
+		"session_id":     "",
+	},
+}
+
+func normalizeImportValues(table string, columns []string, values []any) {
+	defaults := importNullDefaults[table]
+	if len(defaults) == 0 {
+		return
+	}
+	for i, column := range columns {
+		if values[i] == nil {
+			if value, ok := defaults[column]; ok {
+				values[i] = value
+			}
+		}
+	}
+}
+
+func reportImportProgress(out io.Writer, format string, args ...any) {
+	if out == nil {
+		return
+	}
+	_, _ = fmt.Fprintf(out, format+"\n", args...)
 }
 
 func resetPostgresSequence(ctx context.Context, db *sql.DB, table, column string) error {

@@ -264,7 +264,7 @@ auto-update:
 
 CliRelay uses PostgreSQL 15+ as the runtime primary database through Ent ORM. Redis 7+ is intentionally limited to cache, locks, limits, queues, and rebuildable snapshots. The bundled Docker Compose file starts both services and injects container-local connection settings automatically through the generated `.env`.
 
-For old Docker deployments that still have a SQLite-only compose file, update from `/manage/system` can upgrade `docker-compose.yml` and `.env` before it runs `docker compose up -d --remove-orphans`. The updater adds the `clirelay-init`, PostgreSQL, Redis, and updater services, keeps the existing application service, writes missing generated settings, and then lets the container entrypoint import the legacy SQLite database. SQLite is left in place.
+For old Docker deployments that still have a SQLite-only compose file, update from `/manage/system` can upgrade `docker-compose.yml` and `.env` before it restarts the application container. The updater adds the `clirelay-init`, `clirelay-migrate`, PostgreSQL, Redis, and updater services, keeps the existing application service running, starts PostgreSQL/Redis, streams the SQLite migration progress, and only recreates the application container after migration succeeds. SQLite is left in place.
 
 If the updater cannot write the deployment files because the old container was mounted without access to the project directory, replace `docker-compose.yml` with the latest one from this repository and run `docker compose up -d` once. After that, future online updates can update the compose file automatically.
 

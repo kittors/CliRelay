@@ -577,6 +577,16 @@ func runComposeUpdate(ctx context.Context, composeFile string, envFile string, p
 	if err := runDockerCompose(ctx, composeFile, envFile, projectName, reporter, "pull", service); err != nil {
 		return err
 	}
+	if composeFileHasService(composeFile, "clirelay-migrate") {
+		reporter.Stage("migrating", "starting PostgreSQL/Redis before SQLite migration")
+		if err := runDockerCompose(ctx, composeFile, envFile, projectName, reporter, "up", "-d", "postgres", "redis"); err != nil {
+			return err
+		}
+		reporter.Stage("migrating", "migrating legacy SQLite data before restarting service")
+		if err := runDockerCompose(ctx, composeFile, envFile, projectName, reporter, "run", "--rm", "clirelay-migrate"); err != nil {
+			return err
+		}
+	}
 	reporter.Stage("restarting", "restarting service container")
 	if err := runDockerCompose(ctx, composeFile, envFile, projectName, reporter, "up", "-d", "--remove-orphans"); err != nil {
 		return err
@@ -598,7 +608,7 @@ func ensureRuntimeDataStackConfig(ctx context.Context, composeFile string, envFi
 	}
 	projectDir := deploymentProjectDir(ctx, composeFile)
 	composeText := string(composeData)
-	if hasComposeService(composeText, "postgres") && hasComposeService(composeText, "redis") && hasComposeService(composeText, "clirelay-init") {
+	if hasComposeService(composeText, "postgres") && hasComposeService(composeText, "redis") && hasComposeService(composeText, "clirelay-init") && hasComposeService(composeText, "clirelay-migrate") {
 		if err := ensureRuntimeEnvFile(ctx, envFile, projectDir, service, composeAppImage(composeText, service), reporter); err != nil {
 			return envFile, err
 		}
@@ -650,20 +660,24 @@ func upgradeComposeRuntimeStack(composeText string, projectDir string, service s
 	if !hasComposeCommand(target["command"]) {
 		target["command"] = []any{"./CLIProxyAPI"}
 	}
-	target["environment"] = withoutEnvKeys(target["environment"], runtimeStackEnvKeys()...)
+	targetEnv := withoutEnvKeys(target["environment"], runtimeStackEnvKeys()...)
+	targetEnv["CLIRELAY_SQLITE_AUTO_MIGRATE"] = "false"
+	target["environment"] = targetEnv
 	target["volumes"] = appendVolume(target["volumes"], "${CLIRELAY_PROJECT_DIR:-"+projectDir+"}:/clirelay-deploy")
 	targetNetworks := target["networks"]
 	target["depends_on"] = map[string]any{
-		"clirelay-init": map[string]any{"condition": "service_completed_successfully"},
-		"postgres":      map[string]any{"condition": "service_healthy"},
-		"redis":         map[string]any{"condition": "service_healthy"},
+		"clirelay-init":    map[string]any{"condition": "service_completed_successfully"},
+		"clirelay-migrate": map[string]any{"condition": "service_completed_successfully"},
+		"postgres":         map[string]any{"condition": "service_healthy"},
+		"redis":            map[string]any{"condition": "service_healthy"},
 	}
 	services["clirelay-init"] = initComposeService(projectDir, targetName, appImage)
+	services["clirelay-migrate"] = migrateComposeService(target, appImage)
 	services["postgres"] = postgresComposeService()
 	services["redis"] = redisComposeService()
 	services["clirelay-updater"] = updaterComposeService(projectDir, targetName, appImage)
 	if targetNetworks != nil {
-		for _, name := range []string{"clirelay-init", "postgres", "redis", "clirelay-updater"} {
+		for _, name := range []string{"clirelay-init", "clirelay-migrate", "postgres", "redis", "clirelay-updater"} {
 			if generated, ok := stringMap(services[name]); ok {
 				generated["networks"] = targetNetworks
 			}

@@ -512,6 +512,8 @@ func TestRunComposeUpdateStartsFullComposeStack(t *testing.T) {
 	got := strings.Split(strings.TrimSpace(string(data)), "\n")
 	want := []string{
 		"compose --project-name cliproxy --env-file " + envPath + " -f " + composePath + " pull clirelay",
+		"compose --project-name cliproxy --env-file " + envPath + " -f " + composePath + " up -d postgres redis",
+		"compose --project-name cliproxy --env-file " + envPath + " -f " + composePath + " run --rm clirelay-migrate",
 		"compose --project-name cliproxy --env-file " + envPath + " -f " + composePath + " up -d --remove-orphans",
 	}
 	if !reflect.DeepEqual(got, want) {
@@ -549,6 +551,8 @@ func TestRunComposeUpdateUsesEnvFileNextToComposeWhenUnset(t *testing.T) {
 	got := strings.Split(strings.TrimSpace(string(data)), "\n")
 	want := []string{
 		"compose --project-name cliproxy --env-file " + inferredEnvPath + " -f " + composePath + " pull clirelay",
+		"compose --project-name cliproxy --env-file " + inferredEnvPath + " -f " + composePath + " up -d postgres redis",
+		"compose --project-name cliproxy --env-file " + inferredEnvPath + " -f " + composePath + " run --rm clirelay-migrate",
 		"compose --project-name cliproxy --env-file " + inferredEnvPath + " -f " + composePath + " up -d --remove-orphans",
 	}
 	if !reflect.DeepEqual(got, want) {
@@ -586,6 +590,7 @@ func TestRunComposeUpdateUpgradesLegacySQLiteComposeWithRuntimeStack(t *testing.
 	composeText := string(composeData)
 	for _, want := range []string{
 		"clirelay-init:",
+		"clirelay-migrate:",
 		"postgres:",
 		"redis:",
 		"clirelay-updater:",
@@ -627,6 +632,8 @@ func TestRunComposeUpdateUpgradesLegacySQLiteComposeWithRuntimeStack(t *testing.
 	got := strings.Split(strings.TrimSpace(string(data)), "\n")
 	want := []string{
 		"compose --project-name cliproxy --env-file " + envPath + " -f " + composePath + " pull clirelay",
+		"compose --project-name cliproxy --env-file " + envPath + " -f " + composePath + " up -d postgres redis",
+		"compose --project-name cliproxy --env-file " + envPath + " -f " + composePath + " run --rm clirelay-migrate",
 		"compose --project-name cliproxy --env-file " + envPath + " -f " + composePath + " up -d --remove-orphans",
 	}
 	if !reflect.DeepEqual(got, want) {
@@ -676,6 +683,9 @@ services:
 			t.Fatalf("environment still contains generated runtime key %s: %#v", forbidden, env)
 		}
 	}
+	if env["CLIRELAY_SQLITE_AUTO_MIGRATE"] != "false" {
+		t.Fatalf("clirelay must skip startup SQLite migration, environment = %#v", env)
+	}
 	if got := clirelay["entrypoint"]; got == nil {
 		t.Fatalf("clirelay service missing source-env entrypoint:\n%s", upgraded)
 	}
@@ -686,10 +696,17 @@ services:
 	if !ok || !containsAnyString(volumes, "${CLIRELAY_PROJECT_DIR:-/opt/clirelay}:/clirelay-deploy") {
 		t.Fatalf("clirelay service missing /clirelay-deploy volume: %#v\n%s", clirelay["volumes"], upgraded)
 	}
-	for _, name := range []string{"clirelay-init", "postgres", "redis", "clirelay-updater"} {
+	for _, name := range []string{"clirelay-init", "clirelay-migrate", "postgres", "redis", "clirelay-updater"} {
 		if _, ok := services[name]; !ok {
 			t.Fatalf("upgraded compose missing service %s:\n%s", name, upgraded)
 		}
+	}
+	migrate, ok := stringMap(services["clirelay-migrate"])
+	if !ok {
+		t.Fatalf("clirelay-migrate service not found:\n%s", upgraded)
+	}
+	if !reflect.DeepEqual(migrate["command"], []any{"migrate-sqlite-to-postgres.sh"}) {
+		t.Fatalf("clirelay-migrate command = %#v, want migrate script\n%s", migrate["command"], upgraded)
 	}
 }
 
@@ -721,7 +738,7 @@ networks:
 		t.Fatalf("target service missing:\n%s", upgraded)
 	}
 	wantNetworks := target["networks"]
-	for _, name := range []string{"postgres", "redis", "clirelay-updater"} {
+	for _, name := range []string{"postgres", "redis", "clirelay-migrate", "clirelay-updater"} {
 		service, ok := stringMap(services[name])
 		if !ok {
 			t.Fatalf("service %s missing:\n%s", name, upgraded)
@@ -762,7 +779,7 @@ func TestEnsureRuntimeDataStackConfigUpgradesStackWithoutInitService(t *testing.
 		t.Fatalf("read compose: %v", err)
 	}
 	upgraded := string(upgradedData)
-	for _, want := range []string{"clirelay-init:", "/clirelay-deploy/.env", "service_completed_successfully"} {
+	for _, want := range []string{"clirelay-init:", "clirelay-migrate:", "/clirelay-deploy/.env", "service_completed_successfully"} {
 		if !strings.Contains(upgraded, want) {
 			t.Fatalf("compose missing %q:\n%s", want, upgraded)
 		}
