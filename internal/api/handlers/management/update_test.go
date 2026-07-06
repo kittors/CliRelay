@@ -692,7 +692,7 @@ func TestFetchUpdateProgressProxiesUpdaterStatus(t *testing.T) {
 			t.Fatalf("Authorization = %q, want Bearer test-token", got)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"status":"running","stage":"pulling","target_version":"dev-abcdef1","logs":[{"timestamp":"2026-04-20T07:30:01Z","stream":"stdout","message":"docker compose pull clirelay"}]}`))
+		_, _ = w.Write([]byte(`{"status":"running","stage":"migrating","progress_percent":86,"target_version":"dev-abcdef1","migration":{"phase":"applying","target_database":"PostgreSQL","table":"request_logs","table_index":16,"table_total":17,"inserted_rows":2,"target_rows":167648},"logs":[{"timestamp":"2026-04-20T07:30:01Z","stream":"stdout","message":"docker compose pull clirelay"}]}`))
 	}))
 	t.Cleanup(updater.Close)
 	t.Setenv("CLIRELAY_UPDATER_URL", updater.URL)
@@ -706,8 +706,14 @@ func TestFetchUpdateProgressProxiesUpdaterStatus(t *testing.T) {
 	if progress.Status != "running" {
 		t.Fatalf("Status = %q, want running", progress.Status)
 	}
-	if progress.Stage != "pulling" {
-		t.Fatalf("Stage = %q, want pulling", progress.Stage)
+	if progress.Stage != "migrating" {
+		t.Fatalf("Stage = %q, want migrating", progress.Stage)
+	}
+	if progress.ProgressPercent != 86 {
+		t.Fatalf("ProgressPercent = %d, want 86", progress.ProgressPercent)
+	}
+	if progress.Migration == nil || progress.Migration.Table != "request_logs" || progress.Migration.TargetRows != 167648 {
+		t.Fatalf("Migration = %+v, want migration details", progress.Migration)
 	}
 	if progress.TargetVersion != "dev-abcdef1" {
 		t.Fatalf("TargetVersion = %q, want dev-abcdef1", progress.TargetVersion)

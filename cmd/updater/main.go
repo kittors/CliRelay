@@ -80,6 +80,8 @@ type updateStatusResponse struct {
 	Status          string           `json:"status"`
 	Stage           string           `json:"stage"`
 	Message         string           `json:"message,omitempty"`
+	ProgressPercent int              `json:"progress_percent,omitempty"`
+	Migration       *migrationStatus `json:"migration,omitempty"`
 	Service         string           `json:"service,omitempty"`
 	TargetImage     string           `json:"target_image,omitempty"`
 	TargetTag       string           `json:"target_tag,omitempty"`
@@ -443,6 +445,7 @@ func (s *updaterServer) startUpdate(service string, req updateRequest) uint64 {
 		Status:          "running",
 		Stage:           "preparing",
 		Message:         "preparing update",
+		ProgressPercent: 5,
 		Service:         service,
 		TargetImage:     strings.TrimSpace(req.Image),
 		TargetTag:       strings.TrimSpace(req.Tag),
@@ -467,6 +470,7 @@ func (s *updaterServer) setStatus(status string, message string) {
 	s.status.Status = strings.TrimSpace(status)
 	s.status.Stage = strings.TrimSpace(status)
 	s.status.Message = strings.TrimSpace(message)
+	s.status.ProgressPercent = progressPercentForStage(status)
 	s.status.UpdatedAt = now
 	if status == "failed" || status == "completed" {
 		s.status.FinishedAt = now
@@ -490,6 +494,7 @@ func (s *updaterServer) appendLog(runID uint64, stream string, message string) {
 		}
 	}
 	s.status.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	s.updateProgressFromLog(trimmed)
 	s.status.Logs = append(s.status.Logs, updateLogEntry{
 		Timestamp: s.status.UpdatedAt,
 		Stream:    strings.TrimSpace(stream),
@@ -508,6 +513,8 @@ func (s *updaterServer) updateStage(runID uint64, stage string, message string) 
 	}
 	s.status.Stage = strings.TrimSpace(stage)
 	s.status.Message = strings.TrimSpace(message)
+	s.status.ProgressPercent = progressPercentForStage(stage)
+	s.updateProgressFromStage(stage, message)
 	s.status.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 }
 
@@ -521,6 +528,7 @@ func (s *updaterServer) finishUpdate(runID uint64, status string, stage string, 
 	s.status.Status = strings.TrimSpace(status)
 	s.status.Stage = strings.TrimSpace(stage)
 	s.status.Message = strings.TrimSpace(message)
+	s.status.ProgressPercent = progressPercentForStage(stage)
 	s.status.UpdatedAt = now
 	s.status.FinishedAt = now
 }
@@ -529,23 +537,14 @@ func (s *updaterServer) snapshot() updateStatusResponse {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	snapshot := s.status
+	if s.status.Migration != nil {
+		migration := *s.status.Migration
+		snapshot.Migration = &migration
+	}
 	if len(s.status.Logs) > 0 {
 		snapshot.Logs = append([]updateLogEntry(nil), s.status.Logs...)
 	}
 	return snapshot
-}
-
-func (s *updaterServer) pullSkipFailure(runID uint64) (string, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if runID != s.runID || !s.pullSkipped {
-		return "", false
-	}
-	message := "docker compose pull skipped the target service; check pull policy and image refresh settings"
-	if strings.TrimSpace(s.pullSkipLog) != "" {
-		message += ": " + strings.TrimSpace(s.pullSkipLog)
-	}
-	return message, true
 }
 
 type updaterRunReporter struct {
@@ -586,9 +585,10 @@ func runComposeUpdate(ctx context.Context, composeFile string, envFile string, p
 		if err := runDockerCompose(ctx, composeFile, envFile, projectName, reporter, "run", "--rm", "clirelay-migrate"); err != nil {
 			return err
 		}
+		reporter.Stage("migrating", "finishing SQLite migration before service restart")
 	}
-	reporter.Stage("restarting", "restarting service container")
-	if err := runDockerCompose(ctx, composeFile, envFile, projectName, reporter, "up", "-d", "--remove-orphans"); err != nil {
+	reporter.Stage("restarting", "recreating service container without restarting dependencies")
+	if err := runDockerCompose(ctx, composeFile, envFile, projectName, reporter, "up", "-d", "--no-deps", "--remove-orphans", service); err != nil {
 		return err
 	}
 	reporter.Stage("verifying", "docker update commands completed")

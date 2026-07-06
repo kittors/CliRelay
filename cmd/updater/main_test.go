@@ -409,6 +409,40 @@ func TestUpdaterStatusExposesTargetStageAndLogs(t *testing.T) {
 	close(releaseRunner)
 }
 
+func TestUpdaterStatusParsesSQLiteMigrationProgress(t *testing.T) {
+	server := newUpdaterServer(updaterConfig{Token: "secret"})
+	runID := server.startUpdate("cli-proxy-api", updateRequest{})
+
+	reporter := updaterRunReporter{server: server, runID: runID}
+	reporter.Stage("migrating", "migrating legacy SQLite data before restarting service")
+	reporter.Log("stderr", "clirelay sqlite migration: applying SQLite import into PostgreSQL")
+	reporter.Log("stderr", "clirelay-migrate  | sqlite import progress: table 16/17 request_logs")
+	reporter.Log("stderr", "clirelay-migrate  | sqlite import progress: table request_logs inserted_rows=2 target_rows=167648")
+
+	payload := server.snapshot()
+	if payload.Stage != "migrating" {
+		t.Fatalf("Stage = %q, want migrating", payload.Stage)
+	}
+	if payload.ProgressPercent < 86 {
+		t.Fatalf("ProgressPercent = %d, want table-based progress", payload.ProgressPercent)
+	}
+	if payload.Migration == nil {
+		t.Fatal("Migration = nil, want migration detail")
+	}
+	if payload.Migration.TargetDatabase != "PostgreSQL" {
+		t.Fatalf("TargetDatabase = %q, want PostgreSQL", payload.Migration.TargetDatabase)
+	}
+	if payload.Migration.Phase != "applying" {
+		t.Fatalf("Phase = %q, want applying", payload.Migration.Phase)
+	}
+	if payload.Migration.Table != "request_logs" || payload.Migration.TableIndex != 16 || payload.Migration.TableTotal != 17 {
+		t.Fatalf("Migration table = %+v, want request_logs 16/17", payload.Migration)
+	}
+	if payload.Migration.InsertedRows != 2 || payload.Migration.TargetRows != 167648 {
+		t.Fatalf("Migration rows = %+v, want inserted/target rows", payload.Migration)
+	}
+}
+
 func TestUpdaterFailsWhenComposePullSkipsTargetService(t *testing.T) {
 	called := make(chan struct{}, 1)
 	envFile := filepath.Join(t.TempDir(), ".env")
@@ -482,7 +516,7 @@ func TestBuildComposeArgsIncludesProjectName(t *testing.T) {
 	}
 }
 
-func TestRunComposeUpdateStartsFullComposeStack(t *testing.T) {
+func TestRunComposeUpdateRecreatesOnlyTargetService(t *testing.T) {
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "docker.log")
 	dockerPath := filepath.Join(dir, "docker")
@@ -514,7 +548,7 @@ func TestRunComposeUpdateStartsFullComposeStack(t *testing.T) {
 		"compose --project-name cliproxy --env-file " + envPath + " -f " + composePath + " pull clirelay",
 		"compose --project-name cliproxy --env-file " + envPath + " -f " + composePath + " up -d postgres redis",
 		"compose --project-name cliproxy --env-file " + envPath + " -f " + composePath + " run --rm clirelay-migrate",
-		"compose --project-name cliproxy --env-file " + envPath + " -f " + composePath + " up -d --remove-orphans",
+		"compose --project-name cliproxy --env-file " + envPath + " -f " + composePath + " up -d --no-deps --remove-orphans clirelay",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("compose commands = %#v, want %#v", got, want)
@@ -553,7 +587,7 @@ func TestRunComposeUpdateUsesEnvFileNextToComposeWhenUnset(t *testing.T) {
 		"compose --project-name cliproxy --env-file " + inferredEnvPath + " -f " + composePath + " pull clirelay",
 		"compose --project-name cliproxy --env-file " + inferredEnvPath + " -f " + composePath + " up -d postgres redis",
 		"compose --project-name cliproxy --env-file " + inferredEnvPath + " -f " + composePath + " run --rm clirelay-migrate",
-		"compose --project-name cliproxy --env-file " + inferredEnvPath + " -f " + composePath + " up -d --remove-orphans",
+		"compose --project-name cliproxy --env-file " + inferredEnvPath + " -f " + composePath + " up -d --no-deps --remove-orphans clirelay",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("compose commands = %#v, want %#v", got, want)
@@ -634,7 +668,7 @@ func TestRunComposeUpdateUpgradesLegacySQLiteComposeWithRuntimeStack(t *testing.
 		"compose --project-name cliproxy --env-file " + envPath + " -f " + composePath + " pull clirelay",
 		"compose --project-name cliproxy --env-file " + envPath + " -f " + composePath + " up -d postgres redis",
 		"compose --project-name cliproxy --env-file " + envPath + " -f " + composePath + " run --rm clirelay-migrate",
-		"compose --project-name cliproxy --env-file " + envPath + " -f " + composePath + " up -d --remove-orphans",
+		"compose --project-name cliproxy --env-file " + envPath + " -f " + composePath + " up -d --no-deps --remove-orphans clirelay",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("compose commands = %#v, want %#v", got, want)

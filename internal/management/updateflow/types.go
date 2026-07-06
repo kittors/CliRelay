@@ -63,6 +63,8 @@ type ProgressResponse struct {
 	Status          string             `json:"status"`
 	Stage           string             `json:"stage"`
 	Message         string             `json:"message,omitempty"`
+	ProgressPercent int                `json:"progress_percent,omitempty"`
+	Migration       *MigrationProgress `json:"migration,omitempty"`
 	Service         string             `json:"service,omitempty"`
 	TargetImage     string             `json:"target_image,omitempty"`
 	TargetTag       string             `json:"target_tag,omitempty"`
@@ -75,6 +77,17 @@ type ProgressResponse struct {
 	UpdatedAt       string             `json:"updated_at,omitempty"`
 	FinishedAt      string             `json:"finished_at,omitempty"`
 	Logs            []ProgressLogEntry `json:"logs,omitempty"`
+}
+
+type MigrationProgress struct {
+	Phase          string `json:"phase,omitempty"`
+	TargetDatabase string `json:"target_database,omitempty"`
+	Table          string `json:"table,omitempty"`
+	TableIndex     int    `json:"table_index,omitempty"`
+	TableTotal     int    `json:"table_total,omitempty"`
+	InsertedRows   int64  `json:"inserted_rows,omitempty"`
+	TargetRows     int64  `json:"target_rows,omitempty"`
+	PlannedInserts int64  `json:"planned_inserts,omitempty"`
 }
 
 type GitCommitActor struct {
