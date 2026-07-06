@@ -581,11 +581,11 @@ func runComposeUpdate(ctx context.Context, composeFile string, envFile string, p
 		if err := runDockerCompose(ctx, composeFile, envFile, projectName, reporter, "up", "-d", "postgres", "redis"); err != nil {
 			return err
 		}
-		reporter.Stage("migrating", "migrating legacy SQLite data before restarting service")
+		reporter.Stage("migrating", "checking legacy SQLite migration before service restart")
 		if err := runDockerCompose(ctx, composeFile, envFile, projectName, reporter, "run", "--rm", "clirelay-migrate"); err != nil {
 			return err
 		}
-		reporter.Stage("migrating", "finishing SQLite migration before service restart")
+		reporter.Stage("migrating", "legacy SQLite migration check finished before service restart")
 	}
 	reporter.Stage("restarting", "recreating service container without restarting dependencies")
 	if err := runDockerCompose(ctx, composeFile, envFile, projectName, reporter, "up", "-d", "--no-deps", "--remove-orphans", service); err != nil {

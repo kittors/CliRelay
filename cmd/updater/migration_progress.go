@@ -9,6 +9,7 @@ import (
 type migrationStatus struct {
 	Phase          string `json:"phase,omitempty"`
 	TargetDatabase string `json:"target_database,omitempty"`
+	SkipReason     string `json:"skip_reason,omitempty"`
 	Table          string `json:"table,omitempty"`
 	TableIndex     int    `json:"table_index,omitempty"`
 	TableTotal     int    `json:"table_total,omitempty"`
@@ -26,10 +27,15 @@ func (s *updaterServer) updateProgressFromStage(stage string, message string) {
 		case "starting PostgreSQL/Redis before SQLite migration":
 			migration.Phase = "starting_runtime"
 			s.status.ProgressPercent = maxInt(s.status.ProgressPercent, 35)
-		case "migrating legacy SQLite data before restarting service":
-			migration.Phase = "preparing"
+		case "checking legacy SQLite migration before service restart":
+			migration.Phase = "checking"
 			s.status.ProgressPercent = maxInt(s.status.ProgressPercent, 40)
-		case "finishing SQLite migration before service restart":
+		case "legacy SQLite migration check finished before service restart", "finishing SQLite migration before service restart":
+			if migration.Phase == "skipped" {
+				s.status.Message = migrationSkippedMessage(migration.SkipReason)
+				s.status.ProgressPercent = maxInt(s.status.ProgressPercent, 90)
+				return
+			}
 			migration.Phase = "finalizing"
 			s.status.ProgressPercent = maxInt(s.status.ProgressPercent, 90)
 		}
@@ -41,10 +47,46 @@ func (s *updaterServer) updateProgressFromStage(stage string, message string) {
 }
 
 func (s *updaterServer) updateProgressFromLog(message string) {
+	if strings.Contains(message, "clirelay sqlite migration: disabled by CLIRELAY_SQLITE_AUTO_MIGRATE") {
+		migration := s.ensureMigrationStatus()
+		migration.Phase = "skipped"
+		migration.SkipReason = "disabled"
+		migration.TargetDatabase = "PostgreSQL"
+		s.status.Message = "legacy SQLite migration skipped because auto-migration is disabled"
+		s.status.ProgressPercent = maxInt(s.status.ProgressPercent, 88)
+		return
+	}
+	if strings.Contains(message, "clirelay sqlite migration: no legacy usage.db found") {
+		migration := s.ensureMigrationStatus()
+		migration.Phase = "skipped"
+		migration.SkipReason = "no_legacy_sqlite"
+		migration.TargetDatabase = "PostgreSQL"
+		s.status.Message = "no legacy SQLite database found; continuing with PostgreSQL runtime data"
+		s.status.ProgressPercent = maxInt(s.status.ProgressPercent, 88)
+		return
+	}
+	if strings.Contains(message, "clirelay sqlite migration: apply disabled by CLIRELAY_SQLITE_AUTO_IMPORT") {
+		migration := s.ensureMigrationStatus()
+		migration.Phase = "skipped"
+		migration.SkipReason = "import_disabled"
+		migration.TargetDatabase = "PostgreSQL"
+		s.status.Message = "SQLite import dry-run complete; apply is disabled"
+		s.status.ProgressPercent = maxInt(s.status.ProgressPercent, 88)
+		return
+	}
+	if strings.Contains(message, "clirelay sqlite migration: legacy SQLite found at ") {
+		migration := s.ensureMigrationStatus()
+		migration.Phase = "preparing"
+		migration.TargetDatabase = "PostgreSQL"
+		s.status.Message = "legacy SQLite database found; preparing PostgreSQL import"
+		s.status.ProgressPercent = maxInt(s.status.ProgressPercent, 42)
+		return
+	}
 	if strings.Contains(message, "clirelay sqlite migration: running read-only SQLite inventory") {
 		migration := s.ensureMigrationStatus()
 		migration.Phase = "inventory"
 		migration.TargetDatabase = "PostgreSQL"
+		s.status.Message = "running SQLite inventory before PostgreSQL import"
 		s.status.ProgressPercent = maxInt(s.status.ProgressPercent, 44)
 		return
 	}
@@ -52,6 +94,7 @@ func (s *updaterServer) updateProgressFromLog(message string) {
 		migration := s.ensureMigrationStatus()
 		migration.Phase = "dry_run"
 		migration.TargetDatabase = "PostgreSQL"
+		s.status.Message = "running PostgreSQL import dry-run"
 		s.status.ProgressPercent = maxInt(s.status.ProgressPercent, 54)
 		return
 	}
@@ -59,6 +102,7 @@ func (s *updaterServer) updateProgressFromLog(message string) {
 		migration := s.ensureMigrationStatus()
 		migration.Phase = "applying"
 		migration.TargetDatabase = "PostgreSQL"
+		s.status.Message = "applying legacy SQLite data into PostgreSQL"
 		s.status.ProgressPercent = maxInt(s.status.ProgressPercent, 62)
 		return
 	}
@@ -66,6 +110,7 @@ func (s *updaterServer) updateProgressFromLog(message string) {
 		migration := s.ensureMigrationStatus()
 		migration.Phase = "finalizing"
 		migration.TargetDatabase = "PostgreSQL"
+		s.status.Message = "legacy SQLite migration complete; preparing service restart"
 		s.status.ProgressPercent = maxInt(s.status.ProgressPercent, 90)
 		return
 	}
@@ -79,6 +124,19 @@ func (s *updaterServer) ensureMigrationStatus() *migrationStatus {
 		s.status.Migration = &migrationStatus{TargetDatabase: "PostgreSQL"}
 	}
 	return s.status.Migration
+}
+
+func migrationSkippedMessage(reason string) string {
+	switch reason {
+	case "disabled":
+		return "legacy SQLite migration skipped because auto-migration is disabled"
+	case "no_legacy_sqlite":
+		return "no legacy SQLite database found; continuing with PostgreSQL runtime data"
+	case "import_disabled":
+		return "SQLite import dry-run complete; apply is disabled"
+	default:
+		return "legacy SQLite migration check finished before service restart"
+	}
 }
 
 func (s *updaterServer) updateSQLiteTableProgress(message string) {
@@ -95,7 +153,7 @@ func (s *updaterServer) updateSQLiteTableProgress(message string) {
 		migration.TableIndex = index
 		migration.TableTotal = total
 		migration.Table = strings.TrimSpace(table)
-		if migration.Phase == "" || migration.Phase == "preparing" || migration.Phase == "dry_run" {
+		if migration.Phase == "" || migration.Phase == "checking" || migration.Phase == "preparing" || migration.Phase == "dry_run" {
 			migration.Phase = "applying"
 		}
 		s.status.ProgressPercent = maxInt(s.status.ProgressPercent, migrationTablePercent(index, total))
@@ -128,7 +186,7 @@ func (s *updaterServer) updateSQLiteTableProgress(message string) {
 	}
 	if strings.Contains(text, "dry-run") {
 		migration.Phase = "dry_run"
-	} else if migration.Phase == "" || migration.Phase == "preparing" || migration.Phase == "dry_run" {
+	} else if migration.Phase == "" || migration.Phase == "checking" || migration.Phase == "preparing" || migration.Phase == "dry_run" {
 		migration.Phase = "applying"
 	}
 }
