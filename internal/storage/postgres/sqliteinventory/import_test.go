@@ -1,10 +1,12 @@
 package sqliteinventory
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -353,8 +355,12 @@ func TestImportSQLiteUsesSingleSourceSnapshot(t *testing.T) {
 	for _, table := range inventory.Tables {
 		sourceColumns[table.Name] = table.Columns
 	}
-	if _, err := importTable(ctx, srcTx, pgDB, "request_logs", sourceColumns["request_logs"], false); err != nil {
+	var progress bytes.Buffer
+	if _, err := importTable(ctx, srcTx, pgDB, "request_logs", sourceColumns["request_logs"], false, &progress); err != nil {
 		t.Fatalf("import request_logs: %v", err)
+	}
+	if !strings.Contains(progress.String(), "sqlite import progress: table request_logs inserted_rows=1 target_rows=1") {
+		t.Fatalf("progress log = %q, want request_logs row progress", progress.String())
 	}
 
 	writer, err := sql.Open("sqlite", sqlitePath)
@@ -371,7 +377,7 @@ func TestImportSQLiteUsesSingleSourceSnapshot(t *testing.T) {
 		t.Fatalf("write concurrent sqlite rows: %v", err)
 	}
 
-	if _, err := importTable(ctx, srcTx, pgDB, "request_log_content", sourceColumns["request_log_content"], false); err != nil {
+	if _, err := importTable(ctx, srcTx, pgDB, "request_log_content", sourceColumns["request_log_content"], false, nil); err != nil {
 		t.Fatalf("import request_log_content: %v", err)
 	}
 	var count int

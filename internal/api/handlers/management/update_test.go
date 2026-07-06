@@ -710,7 +710,7 @@ func TestFetchUpdateProgressProxiesUpdaterStatus(t *testing.T) {
 		t.Fatalf("Stage = %q, want migrating", progress.Stage)
 	}
 	if progress.ProgressPercent != 86 {
-		t.Fatalf("ProgressPercent = %d, want 86", progress.ProgressPercent)
+		t.Fatalf("ProgressPercent = %.2f, want 86", progress.ProgressPercent)
 	}
 	if progress.Migration == nil || progress.Migration.Table != "request_logs" || progress.Migration.TargetRows != 167648 {
 		t.Fatalf("Migration = %+v, want migration details", progress.Migration)
@@ -720,6 +720,25 @@ func TestFetchUpdateProgressProxiesUpdaterStatus(t *testing.T) {
 	}
 	if len(progress.Logs) != 1 || progress.Logs[0].Message != "docker compose pull clirelay" {
 		t.Fatalf("Logs = %+v, want updater log entry", progress.Logs)
+	}
+}
+
+func TestFetchUpdateProgressProxiesMigrationSkipReason(t *testing.T) {
+	updater := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"running","stage":"migrating","progress_percent":88,"message":"no legacy SQLite database found; continuing with PostgreSQL runtime data","migration":{"phase":"skipped","target_database":"PostgreSQL","skip_reason":"no_legacy_sqlite"}}`))
+	}))
+	t.Cleanup(updater.Close)
+	t.Setenv("CLIRELAY_UPDATER_URL", updater.URL)
+	t.Setenv("CLIRELAY_UPDATER_TOKEN", "test-token")
+
+	handler := &Handler{cfg: &config.Config{}}
+	progress, err := handler.fetchUpdateProgress(context.Background())
+	if err != nil {
+		t.Fatalf("fetchUpdateProgress() error = %v, want nil", err)
+	}
+	if progress.Migration == nil || progress.Migration.SkipReason != "no_legacy_sqlite" {
+		t.Fatalf("Migration = %+v, want proxied skip reason", progress.Migration)
 	}
 }
 

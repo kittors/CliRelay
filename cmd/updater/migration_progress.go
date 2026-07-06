@@ -24,25 +24,25 @@ func (s *updaterServer) updateProgressFromStage(stage string, message string) {
 		migration := s.ensureMigrationStatus()
 		migration.TargetDatabase = "PostgreSQL"
 		switch strings.TrimSpace(message) {
-		case "starting PostgreSQL/Redis before SQLite migration":
+		case "starting PostgreSQL/Redis before SQLite migration", "starting PostgreSQL/Redis before data migration check":
 			migration.Phase = "starting_runtime"
-			s.status.ProgressPercent = maxInt(s.status.ProgressPercent, 35)
+			s.status.ProgressPercent = maxFloat(s.status.ProgressPercent, 35)
 		case "checking legacy SQLite migration before service restart":
 			migration.Phase = "checking"
-			s.status.ProgressPercent = maxInt(s.status.ProgressPercent, 40)
+			s.status.ProgressPercent = maxFloat(s.status.ProgressPercent, 40)
 		case "legacy SQLite migration check finished before service restart", "finishing SQLite migration before service restart":
 			if migration.Phase == "skipped" {
 				s.status.Message = migrationSkippedMessage(migration.SkipReason)
-				s.status.ProgressPercent = maxInt(s.status.ProgressPercent, 90)
+				s.status.ProgressPercent = maxFloat(s.status.ProgressPercent, 90)
 				return
 			}
 			migration.Phase = "finalizing"
-			s.status.ProgressPercent = maxInt(s.status.ProgressPercent, 90)
+			s.status.ProgressPercent = maxFloat(s.status.ProgressPercent, 90)
 		}
 	case "restarting":
-		s.status.ProgressPercent = maxInt(s.status.ProgressPercent, 92)
+		s.status.ProgressPercent = maxFloat(s.status.ProgressPercent, 92)
 	case "verifying":
-		s.status.ProgressPercent = maxInt(s.status.ProgressPercent, 97)
+		s.status.ProgressPercent = maxFloat(s.status.ProgressPercent, 97)
 	}
 }
 
@@ -53,7 +53,7 @@ func (s *updaterServer) updateProgressFromLog(message string) {
 		migration.SkipReason = "disabled"
 		migration.TargetDatabase = "PostgreSQL"
 		s.status.Message = "legacy SQLite migration skipped because auto-migration is disabled"
-		s.status.ProgressPercent = maxInt(s.status.ProgressPercent, 88)
+		s.status.ProgressPercent = maxFloat(s.status.ProgressPercent, 88)
 		return
 	}
 	if strings.Contains(message, "clirelay sqlite migration: no legacy usage.db found") {
@@ -62,7 +62,7 @@ func (s *updaterServer) updateProgressFromLog(message string) {
 		migration.SkipReason = "no_legacy_sqlite"
 		migration.TargetDatabase = "PostgreSQL"
 		s.status.Message = "no legacy SQLite database found; continuing with PostgreSQL runtime data"
-		s.status.ProgressPercent = maxInt(s.status.ProgressPercent, 88)
+		s.status.ProgressPercent = maxFloat(s.status.ProgressPercent, 88)
 		return
 	}
 	if strings.Contains(message, "clirelay sqlite migration: apply disabled by CLIRELAY_SQLITE_AUTO_IMPORT") {
@@ -71,7 +71,7 @@ func (s *updaterServer) updateProgressFromLog(message string) {
 		migration.SkipReason = "import_disabled"
 		migration.TargetDatabase = "PostgreSQL"
 		s.status.Message = "SQLite import dry-run complete; apply is disabled"
-		s.status.ProgressPercent = maxInt(s.status.ProgressPercent, 88)
+		s.status.ProgressPercent = maxFloat(s.status.ProgressPercent, 88)
 		return
 	}
 	if strings.Contains(message, "clirelay sqlite migration: legacy SQLite found at ") {
@@ -79,7 +79,7 @@ func (s *updaterServer) updateProgressFromLog(message string) {
 		migration.Phase = "preparing"
 		migration.TargetDatabase = "PostgreSQL"
 		s.status.Message = "legacy SQLite database found; preparing PostgreSQL import"
-		s.status.ProgressPercent = maxInt(s.status.ProgressPercent, 42)
+		s.status.ProgressPercent = maxFloat(s.status.ProgressPercent, 42)
 		return
 	}
 	if strings.Contains(message, "clirelay sqlite migration: running read-only SQLite inventory") {
@@ -87,7 +87,7 @@ func (s *updaterServer) updateProgressFromLog(message string) {
 		migration.Phase = "inventory"
 		migration.TargetDatabase = "PostgreSQL"
 		s.status.Message = "running SQLite inventory before PostgreSQL import"
-		s.status.ProgressPercent = maxInt(s.status.ProgressPercent, 44)
+		s.status.ProgressPercent = maxFloat(s.status.ProgressPercent, 44)
 		return
 	}
 	if strings.Contains(message, "clirelay sqlite migration: running PostgreSQL import dry-run") {
@@ -95,7 +95,7 @@ func (s *updaterServer) updateProgressFromLog(message string) {
 		migration.Phase = "dry_run"
 		migration.TargetDatabase = "PostgreSQL"
 		s.status.Message = "running PostgreSQL import dry-run"
-		s.status.ProgressPercent = maxInt(s.status.ProgressPercent, 54)
+		s.status.ProgressPercent = maxFloat(s.status.ProgressPercent, 54)
 		return
 	}
 	if strings.Contains(message, "clirelay sqlite migration: applying SQLite import into PostgreSQL") {
@@ -103,7 +103,7 @@ func (s *updaterServer) updateProgressFromLog(message string) {
 		migration.Phase = "applying"
 		migration.TargetDatabase = "PostgreSQL"
 		s.status.Message = "applying legacy SQLite data into PostgreSQL"
-		s.status.ProgressPercent = maxInt(s.status.ProgressPercent, 62)
+		s.status.ProgressPercent = maxFloat(s.status.ProgressPercent, 62)
 		return
 	}
 	if strings.Contains(message, "clirelay sqlite migration: migration complete") {
@@ -111,7 +111,7 @@ func (s *updaterServer) updateProgressFromLog(message string) {
 		migration.Phase = "finalizing"
 		migration.TargetDatabase = "PostgreSQL"
 		s.status.Message = "legacy SQLite migration complete; preparing service restart"
-		s.status.ProgressPercent = maxInt(s.status.ProgressPercent, 90)
+		s.status.ProgressPercent = maxFloat(s.status.ProgressPercent, 90)
 		return
 	}
 	if strings.Contains(message, "sqlite import progress: table ") {
@@ -156,7 +156,7 @@ func (s *updaterServer) updateSQLiteTableProgress(message string) {
 		if migration.Phase == "" || migration.Phase == "checking" || migration.Phase == "preparing" || migration.Phase == "dry_run" {
 			migration.Phase = "applying"
 		}
-		s.status.ProgressPercent = maxInt(s.status.ProgressPercent, migrationTablePercent(index, total))
+		s.status.ProgressPercent = maxFloat(s.status.ProgressPercent, migrationTableStartPercent(index, total))
 		return
 	}
 	fields := strings.Fields(text)
@@ -184,6 +184,17 @@ func (s *updaterServer) updateSQLiteTableProgress(message string) {
 			}
 		}
 	}
+	if migration.TableIndex > 0 && migration.TableTotal > 0 && migration.TargetRows > 0 {
+		s.status.ProgressPercent = maxFloat(
+			s.status.ProgressPercent,
+			migrationTableRowPercent(
+				migration.TableIndex,
+				migration.TableTotal,
+				migration.InsertedRows,
+				migration.TargetRows,
+			),
+		)
+	}
 	if strings.Contains(text, "dry-run") {
 		migration.Phase = "dry_run"
 	} else if migration.Phase == "" || migration.Phase == "checking" || migration.Phase == "preparing" || migration.Phase == "dry_run" {
@@ -191,7 +202,7 @@ func (s *updaterServer) updateSQLiteTableProgress(message string) {
 	}
 }
 
-func progressPercentForStage(stage string) int {
+func progressPercentForStage(stage string) float64 {
 	switch strings.TrimSpace(stage) {
 	case "idle":
 		return 0
@@ -212,17 +223,35 @@ func progressPercentForStage(stage string) int {
 	}
 }
 
-func migrationTablePercent(index int, total int) int {
+func migrationTableStartPercent(index int, total int) float64 {
 	if index <= 0 || total <= 0 {
 		return 62
 	}
 	if index > total {
 		index = total
 	}
-	return 62 + (index * 26 / total)
+	return 62 + (float64(index-1) * 26 / float64(total))
 }
 
-func maxInt(left int, right int) int {
+func migrationTableRowPercent(index int, total int, inserted int64, target int64) float64 {
+	if index <= 0 || total <= 0 || target <= 0 {
+		return migrationTableStartPercent(index, total)
+	}
+	if index > total {
+		index = total
+	}
+	if inserted < 0 {
+		inserted = 0
+	}
+	if inserted > target {
+		inserted = target
+	}
+	completed := float64(index - 1)
+	fraction := float64(inserted) / float64(target)
+	return 62 + ((completed + fraction) * 26 / float64(total))
+}
+
+func maxFloat(left float64, right float64) float64 {
 	if left > right {
 		return left
 	}

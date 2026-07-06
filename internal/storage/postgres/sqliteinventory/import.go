@@ -160,7 +160,7 @@ func Import(ctx context.Context, opts ImportOptions) (ImportReport, error) {
 			continue
 		}
 		reportImportProgress(opts.Progress, "sqlite import progress: table %d/%d %s", i+1, len(runtimeImportTables), table)
-		row, err := importTable(ctx, srcTx, dst, table, srcCols, opts.DryRun)
+		row, err := importTable(ctx, srcTx, dst, table, srcCols, opts.DryRun, opts.Progress)
 		if err != nil {
 			return ImportReport{}, err
 		}
@@ -255,7 +255,7 @@ func markImportCompleted(ctx context.Context, db *sql.DB, sourceFingerprint, sql
 	return nil
 }
 
-func importTable(ctx context.Context, src queryer, dst *sql.DB, table string, srcCols []string, dryRun bool) (ImportTableReport, error) {
+func importTable(ctx context.Context, src queryer, dst *sql.DB, table string, srcCols []string, dryRun bool, progress io.Writer) (ImportTableReport, error) {
 	dstCols, err := postgresColumns(ctx, dst, table)
 	if err != nil {
 		return ImportTableReport{}, err
@@ -294,7 +294,7 @@ func importTable(ctx context.Context, src queryer, dst *sql.DB, table string, sr
 	if dryRun || sourceRows == 0 {
 		return row, nil
 	}
-	inserted, err := copyRows(ctx, src, dst, table, columns, orderBy)
+	inserted, err := copyRows(ctx, src, dst, table, columns, orderBy, sourceRows, progress)
 	if err != nil {
 		return ImportTableReport{}, err
 	}
@@ -401,7 +401,7 @@ func checksumRows(ctx context.Context, db queryer, table string, columns []strin
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
-func copyRows(ctx context.Context, src queryer, dst *sql.DB, table string, columns []string, orderBy string) (int64, error) {
+func copyRows(ctx context.Context, src queryer, dst *sql.DB, table string, columns []string, orderBy string, plannedRows int64, progress io.Writer) (int64, error) {
 	query := fmt.Sprintf("SELECT %s FROM %s ORDER BY %s", quotedList(columns), quoteIdent(table), orderBy)
 	rows, err := src.QueryContext(ctx, query)
 	if err != nil {
@@ -449,6 +449,7 @@ func copyRows(ctx context.Context, src queryer, dst *sql.DB, table string, colum
 			if err := commit(); err != nil {
 				return 0, fmt.Errorf("sqlite import: commit %s: %w", table, err)
 			}
+			reportImportProgress(progress, "sqlite import progress: table %s inserted_rows=%d target_rows=%d", table, inserted, plannedRows)
 			tx, err = dst.BeginTx(ctx, nil)
 			if err != nil {
 				return 0, fmt.Errorf("sqlite import: begin %s: %w", table, err)
@@ -463,6 +464,7 @@ func copyRows(ctx context.Context, src queryer, dst *sql.DB, table string, colum
 	if err := commit(); err != nil {
 		return 0, fmt.Errorf("sqlite import: commit %s: %w", table, err)
 	}
+	reportImportProgress(progress, "sqlite import progress: table %s inserted_rows=%d target_rows=%d", table, inserted, plannedRows)
 	return inserted, nil
 }
 

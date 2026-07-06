@@ -63,7 +63,7 @@ type ProgressResponse struct {
 	Status          string             `json:"status"`
 	Stage           string             `json:"stage"`
 	Message         string             `json:"message,omitempty"`
-	ProgressPercent int                `json:"progress_percent,omitempty"`
+	ProgressPercent float64            `json:"progress_percent,omitempty"`
 	Migration       *MigrationProgress `json:"migration,omitempty"`
 	Service         string             `json:"service,omitempty"`
 	TargetImage     string             `json:"target_image,omitempty"`
@@ -82,6 +82,7 @@ type ProgressResponse struct {
 type MigrationProgress struct {
 	Phase          string `json:"phase,omitempty"`
 	TargetDatabase string `json:"target_database,omitempty"`
+	SkipReason     string `json:"skip_reason,omitempty"`
 	Table          string `json:"table,omitempty"`
 	TableIndex     int    `json:"table_index,omitempty"`
 	TableTotal     int    `json:"table_total,omitempty"`

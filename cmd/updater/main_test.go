@@ -424,8 +424,8 @@ func TestUpdaterStatusParsesSQLiteMigrationProgress(t *testing.T) {
 	if payload.Stage != "migrating" {
 		t.Fatalf("Stage = %q, want migrating", payload.Stage)
 	}
-	if payload.ProgressPercent < 86 {
-		t.Fatalf("ProgressPercent = %d, want table-based progress", payload.ProgressPercent)
+	if payload.ProgressPercent < 84 || payload.ProgressPercent >= 86 {
+		t.Fatalf("ProgressPercent = %.2f, want row-based progress inside table 16/17", payload.ProgressPercent)
 	}
 	if payload.Migration == nil {
 		t.Fatal("Migration = nil, want migration detail")
@@ -441,6 +441,12 @@ func TestUpdaterStatusParsesSQLiteMigrationProgress(t *testing.T) {
 	}
 	if payload.Migration.InsertedRows != 2 || payload.Migration.TargetRows != 167648 {
 		t.Fatalf("Migration rows = %+v, want inserted/target rows", payload.Migration)
+	}
+
+	reporter.Log("stderr", "clirelay-migrate  | sqlite import progress: table request_logs inserted_rows=167648 target_rows=167648")
+	payload = server.snapshot()
+	if payload.ProgressPercent <= 86 || payload.ProgressPercent >= 89 {
+		t.Fatalf("ProgressPercent = %.2f, want row progress near completed table 16/17", payload.ProgressPercent)
 	}
 }
 
@@ -464,7 +470,7 @@ func TestUpdaterStatusMarksSQLiteMigrationSkipped(t *testing.T) {
 		t.Fatalf("Migration = %+v, want skipped disabled", payload.Migration)
 	}
 	if payload.ProgressPercent < 88 {
-		t.Fatalf("ProgressPercent = %d, want skip progress near restart", payload.ProgressPercent)
+		t.Fatalf("ProgressPercent = %.2f, want skip progress near restart", payload.ProgressPercent)
 	}
 }
 
