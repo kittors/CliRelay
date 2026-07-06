@@ -89,6 +89,7 @@ COPY --from=frontend-builder --chown=clirelay:clirelay /frontend/dist/ /CLIProxy
 COPY --chown=clirelay:clirelay config.example.yaml /CLIProxyAPI/config.example.yaml
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 COPY scripts/migrate-sqlite-to-postgres.sh /usr/local/bin/migrate-sqlite-to-postgres.sh
+COPY scripts/init-compose-env.sh /usr/local/bin/clirelay-init-env
 
 WORKDIR /CLIProxyAPI
 
@@ -99,7 +100,7 @@ ENV TZ=Asia/Shanghai \
     AUTH_PATH=/CLIProxyAPI/auths \
     CLIRELAY_LOCALE=zh
 
-RUN chmod +x /usr/local/bin/docker-entrypoint.sh /usr/local/bin/migrate-sqlite-to-postgres.sh \
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh /usr/local/bin/migrate-sqlite-to-postgres.sh /usr/local/bin/clirelay-init-env \
   && cp /usr/share/zoneinfo/${TZ} /etc/localtime \
   && echo "${TZ}" > /etc/timezone
 

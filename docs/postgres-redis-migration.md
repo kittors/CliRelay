@@ -4,7 +4,7 @@ CliRelay now uses PostgreSQL 15+ as the runtime primary database. Redis 7+ is us
 
 ## Configure
 
-For Docker Compose, the bundled `docker-compose.yml` starts `postgres:15-alpine` and `redis:7-alpine`. The application container receives:
+For Docker Compose, the bundled `docker-compose.yml` starts `clirelay-init`, `postgres:15-alpine`, and `redis:7-alpine`. A pre-existing `.env` is optional. On the first `docker compose up -d`, `clirelay-init` creates `.env`, preserves existing values, generates missing secrets, and creates `config.yaml` from `config.example.yaml` if it is missing. The application container then sources `.env` at startup and receives:
 
 - `CLIRELAY_POSTGRES_DSN`
 - `CLIRELAY_REDIS_ENABLE`
@@ -54,7 +54,7 @@ For Docker Compose deployments, the default path is:
 docker compose up -d
 ```
 
-Compose starts PostgreSQL 15 and Redis 7, waits for their health checks, then the CliRelay entrypoint runs `scripts/migrate-sqlite-to-postgres.sh` before starting the API server. The script looks for a legacy SQLite database in these paths unless `CLIRELAY_SQLITE_PATH` is set:
+Compose first runs `clirelay-init`, then starts PostgreSQL 15 and Redis 7, waits for their health checks, and finally the CliRelay entrypoint runs `scripts/migrate-sqlite-to-postgres.sh` before starting the API server. The script looks for a legacy SQLite database in these paths unless `CLIRELAY_SQLITE_PATH` is set:
 
 - `/CLIProxyAPI/data/usage.db`
 - `/CLIProxyAPI/usage.db`
@@ -65,7 +65,7 @@ Compose starts PostgreSQL 15 and Redis 7, waits for their health checks, then th
 
 If no legacy SQLite file exists, the container starts normally with PostgreSQL. If a legacy SQLite file exists, the Docker Compose path provides `CLIRELAY_POSTGRES_DSN` automatically; non-Compose deployments must set it explicitly. The script runs read-only SQLite inventory, PostgreSQL import dry-run, then apply import by default. Set `CLIRELAY_SQLITE_AUTO_IMPORT=false` to stop after dry-run, or `CLIRELAY_SQLITE_AUTO_MIGRATE=false` to skip the startup migration hook.
 
-For old Docker deployments with a SQLite-only compose file, the online updater upgrades `docker-compose.yml` and `.env` first, adding PostgreSQL/Redis services and generated defaults, then runs the full compose update. If the old deployment mounted files in a way that prevents the updater from writing them, replace `docker-compose.yml` with the latest repository version and run `docker compose up -d` once.
+For old Docker deployments with a SQLite-only compose file, the online updater upgrades `docker-compose.yml` and `.env` first, adding `clirelay-init`, PostgreSQL, Redis, and generated defaults, then runs the full compose update. If the old deployment mounted files in a way that prevents the updater from writing them, replace `docker-compose.yml` with the latest repository version and run `docker compose up -d` once.
 
 SQLite is never deleted, moved, or written by this migration path. PostgreSQL records a source fingerprint in `sqlite_import_runs` after a successful apply. Repeated container starts skip an already imported SQLite source, and PostgreSQL advisory locking ensures concurrent starts do not import the same source twice.
 

@@ -1,4 +1,18 @@
 services:
+  clirelay-init:
+    image: ${CLI_PROXY_IMAGE:-ghcr.io/kittors/clirelay:latest}
+    pull_policy: ${CLI_PROXY_PULL_POLICY:-always}
+    command: ["clirelay-init-env"]
+    environment:
+      CLI_PROXY_IMAGE: ${CLI_PROXY_IMAGE:-ghcr.io/kittors/clirelay:latest}
+      CLIRELAY_PROJECT_DIR: ${CLIRELAY_PROJECT_DIR:-${PWD:-.}}
+      CLIRELAY_ENV_FILE: /clirelay-deploy/.env
+      CLIRELAY_COMPOSE_PROJECT_NAME: ${CLIRELAY_COMPOSE_PROJECT_NAME:-clirelay}
+      CLIRELAY_TARGET_SERVICE: ${CLIRELAY_TARGET_SERVICE:-cli-proxy-api}
+    volumes:
+      - ${CLIRELAY_PROJECT_DIR:-${PWD:-.}}:/clirelay-deploy
+    restart: "no"
+
   cli-proxy-api:
     image: ${CLI_PROXY_IMAGE:-ghcr.io/kittors/clirelay:latest}
     pull_policy: ${CLI_PROXY_PULL_POLICY:-always}
@@ -14,20 +28,13 @@ services:
         FRONTEND_REF: ${FRONTEND_REF:-main}
         FRONTEND_COMMIT: ${FRONTEND_COMMIT:-}
     container_name: cli-proxy-api
+    entrypoint: ["sh", "-c", "set -a; . /clirelay-deploy/.env; set +a; exec docker-entrypoint.sh ./CLIProxyAPI"]
     # env_file:
     #   - .env
     environment:
       DEPLOY: ${DEPLOY:-}
       CLIRELAY_LOCALE: ${CLIRELAY_LOCALE:-zh}
       CLIRELAY_UPDATE_CHANNEL: ${CLIRELAY_UPDATE_CHANNEL:-main}
-      CLIRELAY_UPDATER_URL: ${CLIRELAY_UPDATER_URL:-http://clirelay-updater:8320}
-      CLIRELAY_UPDATER_TOKEN: ${CLIRELAY_UPDATER_TOKEN:-clirelay-local-updater}
-      CLIRELAY_TARGET_SERVICE: ${CLIRELAY_TARGET_SERVICE:-cli-proxy-api}
-      CLIRELAY_POSTGRES_DSN: ${CLIRELAY_POSTGRES_DSN:-postgres://${CLIRELAY_POSTGRES_USER:-cliproxy}:${CLIRELAY_POSTGRES_PASSWORD:-cliproxy}@postgres:5432/${CLIRELAY_POSTGRES_DB:-cliproxy}?sslmode=disable}
-      CLIRELAY_REDIS_ENABLE: ${CLIRELAY_REDIS_ENABLE:-true}
-      CLIRELAY_REDIS_ADDR: ${CLIRELAY_REDIS_ADDR:-redis:6379}
-      CLIRELAY_REDIS_PASSWORD: ${CLIRELAY_REDIS_PASSWORD:-}
-      CLIRELAY_REDIS_DB: ${CLIRELAY_REDIS_DB:-0}
       AUTH_PATH: ${AUTH_PATH:-/CLIProxyAPI/auths}
       LANG: ${CLIRELAY_LANG:-C.UTF-8}
       LANGUAGE: ${CLIRELAY_LANGUAGE:-en_US:en}
@@ -44,7 +51,10 @@ services:
       - ${CLI_PROXY_AUTH_PATH:-${CLIRELAY_PROJECT_DIR:-${PWD:-.}}/auths}:${AUTH_PATH:-/CLIProxyAPI/auths}
       - ${CLI_PROXY_LOG_PATH:-${CLIRELAY_PROJECT_DIR:-${PWD:-.}}/logs}:/CLIProxyAPI/logs
       - ${CLI_PROXY_DATA_PATH:-${CLIRELAY_PROJECT_DIR:-${PWD:-.}}/data}:/CLIProxyAPI/data
+      - ${CLIRELAY_PROJECT_DIR:-${PWD:-.}}:/clirelay-deploy
     depends_on:
+      clirelay-init:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       redis:
@@ -55,9 +65,9 @@ services:
     image: ${CLI_PROXY_IMAGE:-ghcr.io/kittors/clirelay:latest}
     pull_policy: ${CLI_PROXY_PULL_POLICY:-always}
     command: ["./clirelay-updater"]
+    entrypoint: ["sh", "-c", "set -a; . /clirelay-deploy/.env; set +a; exec docker-entrypoint.sh ./clirelay-updater"]
     user: "0:0"
     environment:
-      CLIRELAY_UPDATER_TOKEN: ${CLIRELAY_UPDATER_TOKEN:-clirelay-local-updater}
       CLIRELAY_PROJECT_DIR: ${CLIRELAY_PROJECT_DIR:-${PWD:-.}}
       CLIRELAY_COMPOSE_FILE: ${CLIRELAY_PROJECT_DIR:-${PWD:-.}}/docker-compose.yml
       CLIRELAY_ENV_FILE: ${CLIRELAY_ENV_FILE:-${CLIRELAY_PROJECT_DIR:-${PWD:-.}}/.env}
@@ -66,22 +76,27 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ${CLIRELAY_PROJECT_DIR:-${PWD:-.}}:${CLIRELAY_PROJECT_DIR:-${PWD:-.}}
+      - ${CLIRELAY_PROJECT_DIR:-${PWD:-.}}:/clirelay-deploy
       - ${CLI_PROXY_CONFIG_PATH:-${CLIRELAY_PROJECT_DIR:-${PWD:-.}}/config.yaml}:/CLIProxyAPI/config.yaml
+    depends_on:
+      clirelay-init:
+        condition: service_completed_successfully
     restart: unless-stopped
 
   postgres:
     image: postgres:15-alpine
-    environment:
-      POSTGRES_DB: ${CLIRELAY_POSTGRES_DB:-cliproxy}
-      POSTGRES_USER: ${CLIRELAY_POSTGRES_USER:-cliproxy}
-      POSTGRES_PASSWORD: ${CLIRELAY_POSTGRES_PASSWORD:-cliproxy}
+    entrypoint: ["sh", "-c", "set -a; . /clirelay-deploy/.env; set +a; export POSTGRES_DB=\"$$CLIRELAY_POSTGRES_DB\" POSTGRES_USER=\"$$CLIRELAY_POSTGRES_USER\" POSTGRES_PASSWORD=\"$$CLIRELAY_POSTGRES_PASSWORD\"; exec docker-entrypoint.sh postgres"]
     volumes:
       - ${CLIRELAY_POSTGRES_DATA_PATH:-${CLIRELAY_PROJECT_DIR:-${PWD:-.}}/postgres-data}:/var/lib/postgresql/data
+      - ${CLIRELAY_PROJECT_DIR:-${PWD:-.}}:/clirelay-deploy
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${CLIRELAY_POSTGRES_USER:-cliproxy} -d ${CLIRELAY_POSTGRES_DB:-cliproxy}"]
+      test: ["CMD-SHELL", ". /clirelay-deploy/.env; pg_isready -U \"$$CLIRELAY_POSTGRES_USER\" -d \"$$CLIRELAY_POSTGRES_DB\""]
       interval: 5s
       timeout: 5s
       retries: 20
+    depends_on:
+      clirelay-init:
+        condition: service_completed_successfully
     restart: unless-stopped
 
   redis:
@@ -94,4 +109,7 @@ services:
       interval: 5s
       timeout: 5s
       retries: 20
+    depends_on:
+      clirelay-init:
+        condition: service_completed_successfully
     restart: unless-stopped

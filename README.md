@@ -214,19 +214,17 @@ The gallery below uses the latest supplied screenshots, covering the current end
 
 ### 🐳 Install With Docker Compose
 
-Docker Compose is the recommended installation path for CliRelay. The included `docker-compose.yml` starts CliRelay, PostgreSQL 15, Redis 7, and the updater sidecar. A `.env` file is optional for local use; the compose file has working defaults. For production, set your own `CLIRELAY_UPDATER_TOKEN`, `CLIRELAY_POSTGRES_PASSWORD`, and bind paths.
+Docker Compose is the recommended installation path for CliRelay. The included `docker-compose.yml` starts CliRelay, PostgreSQL 15, Redis 7, and the updater sidecar. A `.env` file is optional: the `clirelay-init` service creates it on the first `docker compose up -d`, generates missing secrets such as `CLIRELAY_UPDATER_TOKEN` and `CLIRELAY_POSTGRES_PASSWORD`, preserves existing values, and creates `config.yaml` from `config.example.yaml` if it is missing. For production, pre-create `.env` only when you want to pin your own secrets or bind paths.
 
 ```bash
 git clone https://github.com/kittors/CliRelay.git
 cd CliRelay
-cp config.example.yaml config.yaml
-mkdir -p auths logs data postgres-data redis-data
 # Linux bind mounts need write access for the non-root container user:
 # sudo chown -R 10001:10001 auths logs data
 docker compose up -d
 ```
 
-Edit `config.yaml` to add your API keys or OAuth credentials, then restart the service:
+After the first start, edit the generated `config.yaml` to add your API keys or OAuth credentials, then restart the service:
 
 ```bash
 docker compose restart cli-proxy-api
@@ -264,9 +262,9 @@ auto-update:
 
 ### 🗄️ Runtime Data Stack
 
-CliRelay uses PostgreSQL 15+ as the runtime primary database through Ent ORM. Redis 7+ is intentionally limited to cache, locks, limits, queues, and rebuildable snapshots. The bundled Docker Compose file starts both services and injects container-local connection settings automatically.
+CliRelay uses PostgreSQL 15+ as the runtime primary database through Ent ORM. Redis 7+ is intentionally limited to cache, locks, limits, queues, and rebuildable snapshots. The bundled Docker Compose file starts both services and injects container-local connection settings automatically through the generated `.env`.
 
-For old Docker deployments that still have a SQLite-only compose file, update from `/manage/system` can upgrade `docker-compose.yml` and `.env` before it runs `docker compose up -d --remove-orphans`. The updater adds PostgreSQL/Redis services, keeps the existing application service, writes missing generated settings, and then lets the container entrypoint import the legacy SQLite database. SQLite is left in place.
+For old Docker deployments that still have a SQLite-only compose file, update from `/manage/system` can upgrade `docker-compose.yml` and `.env` before it runs `docker compose up -d --remove-orphans`. The updater adds the `clirelay-init`, PostgreSQL, Redis, and updater services, keeps the existing application service, writes missing generated settings, and then lets the container entrypoint import the legacy SQLite database. SQLite is left in place.
 
 If the updater cannot write the deployment files because the old container was mounted without access to the project directory, replace `docker-compose.yml` with the latest one from this repository and run `docker compose up -d` once. After that, future online updates can update the compose file automatically.
 

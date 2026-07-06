@@ -585,14 +585,23 @@ func TestRunComposeUpdateUpgradesLegacySQLiteComposeWithRuntimeStack(t *testing.
 	}
 	composeText := string(composeData)
 	for _, want := range []string{
+		"clirelay-init:",
 		"postgres:",
 		"redis:",
 		"clirelay-updater:",
-		"CLIRELAY_POSTGRES_DSN",
-		"CLIRELAY_REDIS_ENABLE",
+		"/clirelay-deploy/.env",
+		"service_completed_successfully",
 	} {
 		if !strings.Contains(composeText, want) {
 			t.Fatalf("upgraded compose missing %q:\n%s", want, composeText)
+		}
+	}
+	for _, forbidden := range []string{
+		"CLIRELAY_UPDATER_TOKEN is required",
+		"POSTGRES_PASSWORD: ${CLIRELAY_POSTGRES_PASSWORD:-cliproxy}",
+	} {
+		if strings.Contains(composeText, forbidden) {
+			t.Fatalf("upgraded compose still contains blocking fallback %q:\n%s", forbidden, composeText)
 		}
 	}
 
@@ -655,21 +664,88 @@ services:
 		t.Fatalf("clirelay environment is not a map:\n%s", upgraded)
 	}
 	for key, want := range map[string]any{
-		"AUTH_PATH":               "/root/.cli-proxy-api",
-		"LEGACY_FLAG":             "1",
-		"CLIRELAY_REDIS_ENABLE":   "${CLIRELAY_REDIS_ENABLE:-true}",
-		"CLIRELAY_POSTGRES_DSN":   "${CLIRELAY_POSTGRES_DSN:-postgres://${CLIRELAY_POSTGRES_USER:-cliproxy}:${CLIRELAY_POSTGRES_PASSWORD:-cliproxy}@postgres:5432/${CLIRELAY_POSTGRES_DB:-cliproxy}?sslmode=disable}",
-		"CLIRELAY_TARGET_SERVICE": "${CLIRELAY_TARGET_SERVICE:-clirelay}",
-		"CLIRELAY_UPDATER_URL":    "${CLIRELAY_UPDATER_URL:-http://clirelay-updater:8320}",
-		"CLIRELAY_UPDATER_TOKEN":  "${CLIRELAY_UPDATER_TOKEN:?CLIRELAY_UPDATER_TOKEN is required for updater sidecar}",
-		"CLIRELAY_REDIS_PASSWORD": "${CLIRELAY_REDIS_PASSWORD:-}",
-		"CLIRELAY_REDIS_DB":       "${CLIRELAY_REDIS_DB:-0}",
-		"CLIRELAY_REDIS_ADDR":     "${CLIRELAY_REDIS_ADDR:-redis:6379}",
+		"AUTH_PATH":   "/root/.cli-proxy-api",
+		"LEGACY_FLAG": "1",
 	} {
 		if env[key] != want {
 			t.Fatalf("environment[%s] = %v, want %v", key, env[key], want)
 		}
 	}
+	for _, forbidden := range runtimeStackEnvKeys() {
+		if _, ok := env[forbidden]; ok {
+			t.Fatalf("environment still contains generated runtime key %s: %#v", forbidden, env)
+		}
+	}
+	if got := clirelay["entrypoint"]; got == nil {
+		t.Fatalf("clirelay service missing source-env entrypoint:\n%s", upgraded)
+	}
+	volumes, ok := clirelay["volumes"].([]any)
+	if !ok || !containsAnyString(volumes, "${CLIRELAY_PROJECT_DIR:-/opt/clirelay}:/clirelay-deploy") {
+		t.Fatalf("clirelay service missing /clirelay-deploy volume: %#v\n%s", clirelay["volumes"], upgraded)
+	}
+	for _, name := range []string{"clirelay-init", "postgres", "redis", "clirelay-updater"} {
+		if _, ok := services[name]; !ok {
+			t.Fatalf("upgraded compose missing service %s:\n%s", name, upgraded)
+		}
+	}
+}
+
+func TestEnsureRuntimeDataStackConfigUpgradesStackWithoutInitService(t *testing.T) {
+	dir := t.TempDir()
+	composePath := filepath.Join(dir, "docker-compose.yml")
+	envPath := filepath.Join(dir, ".env")
+	composeText := `services:
+  clirelay:
+    image: ghcr.io/kittors/clirelay:dev
+    environment:
+      CLIRELAY_UPDATER_TOKEN: ${CLIRELAY_UPDATER_TOKEN:?CLIRELAY_UPDATER_TOKEN is required for updater sidecar}
+  postgres:
+    image: postgres:15-alpine
+  redis:
+    image: redis:7-alpine
+`
+	if err := os.WriteFile(composePath, []byte(composeText), 0o644); err != nil {
+		t.Fatalf("write compose: %v", err)
+	}
+
+	prepared, err := ensureRuntimeDataStackConfig(context.Background(), composePath, envPath, "clirelay", updaterRunReporter{})
+	if err != nil {
+		t.Fatalf("ensureRuntimeDataStackConfig failed: %v", err)
+	}
+	if prepared != envPath {
+		t.Fatalf("prepared env path = %q, want %q", prepared, envPath)
+	}
+	upgradedData, err := os.ReadFile(composePath)
+	if err != nil {
+		t.Fatalf("read compose: %v", err)
+	}
+	upgraded := string(upgradedData)
+	for _, want := range []string{"clirelay-init:", "/clirelay-deploy/.env", "service_completed_successfully"} {
+		if !strings.Contains(upgraded, want) {
+			t.Fatalf("compose missing %q:\n%s", want, upgraded)
+		}
+	}
+	if strings.Contains(upgraded, "CLIRELAY_UPDATER_TOKEN is required") {
+		t.Fatalf("compose still requires updater token:\n%s", upgraded)
+	}
+	envData, err := os.ReadFile(envPath)
+	if err != nil {
+		t.Fatalf("read env: %v", err)
+	}
+	for _, want := range []string{"CLIRELAY_UPDATER_TOKEN=", "CLIRELAY_POSTGRES_DSN=postgres://", "CLIRELAY_REDIS_ENABLE=true"} {
+		if !strings.Contains(string(envData), want) {
+			t.Fatalf("env missing %q:\n%s", want, envData)
+		}
+	}
+}
+
+func containsAnyString(items []any, want string) bool {
+	for _, item := range items {
+		if stringValue(item) == want {
+			return true
+		}
+	}
+	return false
 }
 
 func TestHostPathForMountedPathFindsExactReadOnlyFileMount(t *testing.T) {

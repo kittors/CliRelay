@@ -597,7 +597,10 @@ func ensureRuntimeDataStackConfig(ctx context.Context, composeFile string, envFi
 		envFile = filepath.Join(filepath.Dir(composeFile), ".env")
 	}
 	composeText := string(composeData)
-	if hasComposeService(composeText, "postgres") && hasComposeService(composeText, "redis") {
+	if hasComposeService(composeText, "postgres") && hasComposeService(composeText, "redis") && hasComposeService(composeText, "clirelay-init") {
+		if err := ensureRuntimeEnvFile(ctx, envFile, filepath.Dir(composeFile), service, composeAppImage(composeText, service), reporter); err != nil {
+			return envFile, err
+		}
 		return envFile, nil
 	}
 
@@ -642,20 +645,15 @@ func upgradeComposeRuntimeStack(composeText string, projectDir string, service s
 		appImage = "ghcr.io/kittors/clirelay:latest"
 	}
 	target["image"] = "${CLI_PROXY_IMAGE:-" + appImage + "}"
-	target["environment"] = mergeEnv(target["environment"], map[string]any{
-		"CLIRELAY_POSTGRES_DSN":   "${CLIRELAY_POSTGRES_DSN:-postgres://${CLIRELAY_POSTGRES_USER:-cliproxy}:${CLIRELAY_POSTGRES_PASSWORD:-cliproxy}@postgres:5432/${CLIRELAY_POSTGRES_DB:-cliproxy}?sslmode=disable}",
-		"CLIRELAY_REDIS_ENABLE":   "${CLIRELAY_REDIS_ENABLE:-true}",
-		"CLIRELAY_REDIS_ADDR":     "${CLIRELAY_REDIS_ADDR:-redis:6379}",
-		"CLIRELAY_REDIS_PASSWORD": "${CLIRELAY_REDIS_PASSWORD:-}",
-		"CLIRELAY_REDIS_DB":       "${CLIRELAY_REDIS_DB:-0}",
-		"CLIRELAY_TARGET_SERVICE": "${CLIRELAY_TARGET_SERVICE:-" + targetName + "}",
-		"CLIRELAY_UPDATER_URL":    "${CLIRELAY_UPDATER_URL:-http://clirelay-updater:8320}",
-		"CLIRELAY_UPDATER_TOKEN":  "${CLIRELAY_UPDATER_TOKEN:?CLIRELAY_UPDATER_TOKEN is required for updater sidecar}",
-	})
+	target["entrypoint"] = sourceEnvEntrypoint()
+	target["environment"] = withoutEnvKeys(target["environment"], runtimeStackEnvKeys()...)
+	target["volumes"] = appendVolume(target["volumes"], "${CLIRELAY_PROJECT_DIR:-"+projectDir+"}:/clirelay-deploy")
 	target["depends_on"] = map[string]any{
-		"postgres": map[string]any{"condition": "service_healthy"},
-		"redis":    map[string]any{"condition": "service_healthy"},
+		"clirelay-init": map[string]any{"condition": "service_completed_successfully"},
+		"postgres":      map[string]any{"condition": "service_healthy"},
+		"redis":         map[string]any{"condition": "service_healthy"},
 	}
+	services["clirelay-init"] = initComposeService(projectDir, targetName, appImage)
 	services["postgres"] = postgresComposeService()
 	services["redis"] = redisComposeService()
 	services["clirelay-updater"] = updaterComposeService(projectDir, targetName, appImage)
@@ -667,29 +665,68 @@ func upgradeComposeRuntimeStack(composeText string, projectDir string, service s
 	return string(out), appImage, nil
 }
 
+func composeAppImage(composeText string, service string) string {
+	var doc map[string]any
+	if err := yaml.Unmarshal([]byte(composeText), &doc); err != nil {
+		return "ghcr.io/kittors/clirelay:latest"
+	}
+	services, ok := stringMap(doc["services"])
+	if !ok {
+		return "ghcr.io/kittors/clirelay:latest"
+	}
+	targetName := strings.TrimSpace(service)
+	if _, ok := services[targetName]; !ok {
+		targetName = firstApplicationService(services)
+	}
+	if target, ok := stringMap(services[targetName]); ok {
+		if image := stringValue(target["image"]); image != "" {
+			return image
+		}
+	}
+	return "ghcr.io/kittors/clirelay:latest"
+}
+
 func firstApplicationService(services map[string]any) string {
 	for name := range services {
-		if name != "postgres" && name != "redis" && !strings.Contains(name, "updater") {
+		if name != "postgres" && name != "redis" && name != "clirelay-init" && !strings.Contains(name, "updater") {
 			return name
 		}
 	}
 	return ""
 }
 
+func initComposeService(projectDir string, targetService string, image string) map[string]any {
+	return map[string]any{
+		"image":   "${CLI_PROXY_IMAGE:-" + image + "}",
+		"command": []any{"clirelay-init-env"},
+		"environment": map[string]any{
+			"CLI_PROXY_IMAGE":               "${CLI_PROXY_IMAGE:-" + image + "}",
+			"CLIRELAY_PROJECT_DIR":          "${CLIRELAY_PROJECT_DIR:-" + projectDir + "}",
+			"CLIRELAY_ENV_FILE":             "/clirelay-deploy/.env",
+			"CLIRELAY_COMPOSE_PROJECT_NAME": "${CLIRELAY_COMPOSE_PROJECT_NAME:-" + filepath.Base(projectDir) + "}",
+			"CLIRELAY_TARGET_SERVICE":       "${CLIRELAY_TARGET_SERVICE:-" + targetService + "}",
+		},
+		"volumes": []any{"${CLIRELAY_PROJECT_DIR:-" + projectDir + "}:/clirelay-deploy"},
+		"restart": "no",
+	}
+}
+
 func postgresComposeService() map[string]any {
 	return map[string]any{
-		"image": "postgres:15-alpine",
-		"environment": map[string]any{
-			"POSTGRES_DB":       "${CLIRELAY_POSTGRES_DB:-cliproxy}",
-			"POSTGRES_USER":     "${CLIRELAY_POSTGRES_USER:-cliproxy}",
-			"POSTGRES_PASSWORD": "${CLIRELAY_POSTGRES_PASSWORD:-cliproxy}",
+		"image":      "postgres:15-alpine",
+		"entrypoint": []any{"sh", "-c", "set -a; . /clirelay-deploy/.env; set +a; export POSTGRES_DB=\"$$CLIRELAY_POSTGRES_DB\" POSTGRES_USER=\"$$CLIRELAY_POSTGRES_USER\" POSTGRES_PASSWORD=\"$$CLIRELAY_POSTGRES_PASSWORD\"; exec docker-entrypoint.sh postgres"},
+		"volumes": []any{
+			"${CLIRELAY_POSTGRES_DATA_PATH:-${CLIRELAY_PROJECT_DIR:-${PWD:-.}}/postgres-data}:/var/lib/postgresql/data",
+			"${CLIRELAY_PROJECT_DIR:-${PWD:-.}}:/clirelay-deploy",
 		},
-		"volumes": []any{"${CLIRELAY_POSTGRES_DATA_PATH:-${CLIRELAY_PROJECT_DIR:-${PWD:-.}}/postgres-data}:/var/lib/postgresql/data"},
 		"healthcheck": map[string]any{
-			"test":     []any{"CMD-SHELL", "pg_isready -U ${CLIRELAY_POSTGRES_USER:-cliproxy} -d ${CLIRELAY_POSTGRES_DB:-cliproxy}"},
+			"test":     []any{"CMD-SHELL", ". /clirelay-deploy/.env; pg_isready -U \"$$CLIRELAY_POSTGRES_USER\" -d \"$$CLIRELAY_POSTGRES_DB\""},
 			"interval": "5s",
 			"timeout":  "5s",
 			"retries":  20,
+		},
+		"depends_on": map[string]any{
+			"clirelay-init": map[string]any{"condition": "service_completed_successfully"},
 		},
 		"restart": "unless-stopped",
 	}
@@ -706,17 +743,20 @@ func redisComposeService() map[string]any {
 			"timeout":  "5s",
 			"retries":  20,
 		},
+		"depends_on": map[string]any{
+			"clirelay-init": map[string]any{"condition": "service_completed_successfully"},
+		},
 		"restart": "unless-stopped",
 	}
 }
 
 func updaterComposeService(projectDir string, targetService string, image string) map[string]any {
 	return map[string]any{
-		"image":   "${CLI_PROXY_IMAGE:-" + image + "}",
-		"command": []any{"./clirelay-updater"},
-		"user":    "0:0",
+		"image":      "${CLI_PROXY_IMAGE:-" + image + "}",
+		"command":    []any{"./clirelay-updater"},
+		"entrypoint": []any{"sh", "-c", "set -a; . /clirelay-deploy/.env; set +a; exec docker-entrypoint.sh ./clirelay-updater"},
+		"user":       "0:0",
 		"environment": map[string]any{
-			"CLIRELAY_UPDATER_TOKEN":        "${CLIRELAY_UPDATER_TOKEN:?CLIRELAY_UPDATER_TOKEN is required for updater sidecar}",
 			"CLIRELAY_PROJECT_DIR":          "${CLIRELAY_PROJECT_DIR:-" + projectDir + "}",
 			"CLIRELAY_COMPOSE_FILE":         "${CLIRELAY_PROJECT_DIR:-" + projectDir + "}/docker-compose.yml",
 			"CLIRELAY_ENV_FILE":             "${CLIRELAY_ENV_FILE:-${CLIRELAY_PROJECT_DIR:-" + projectDir + "}/.env}",
@@ -725,10 +765,39 @@ func updaterComposeService(projectDir string, targetService string, image string
 		},
 		"volumes": []any{
 			"/var/run/docker.sock:/var/run/docker.sock",
-			".:${CLIRELAY_PROJECT_DIR:-" + projectDir + "}",
+			"${CLIRELAY_PROJECT_DIR:-" + projectDir + "}:${CLIRELAY_PROJECT_DIR:-" + projectDir + "}",
+			"${CLIRELAY_PROJECT_DIR:-" + projectDir + "}:/clirelay-deploy",
+		},
+		"depends_on": map[string]any{
+			"clirelay-init": map[string]any{"condition": "service_completed_successfully"},
 		},
 		"restart": "unless-stopped",
 	}
+}
+
+func sourceEnvEntrypoint() []any {
+	return []any{"sh", "-c", "set -a; . /clirelay-deploy/.env; set +a; exec docker-entrypoint.sh \"$@\"", "--"}
+}
+
+func runtimeStackEnvKeys() []string {
+	return []string{
+		"CLIRELAY_POSTGRES_DSN",
+		"CLIRELAY_REDIS_ENABLE",
+		"CLIRELAY_REDIS_ADDR",
+		"CLIRELAY_REDIS_PASSWORD",
+		"CLIRELAY_REDIS_DB",
+		"CLIRELAY_TARGET_SERVICE",
+		"CLIRELAY_UPDATER_URL",
+		"CLIRELAY_UPDATER_TOKEN",
+	}
+}
+
+func withoutEnvKeys(existing any, keys ...string) map[string]any {
+	env := mergeEnv(existing, nil)
+	for _, key := range keys {
+		delete(env, key)
+	}
+	return env
 }
 
 func mergeEnv(existing any, values map[string]any) map[string]any {
@@ -749,6 +818,23 @@ func mergeEnv(existing any, values map[string]any) map[string]any {
 		merged[k] = v
 	}
 	return merged
+}
+
+func appendVolume(existing any, volume string) []any {
+	var volumes []any
+	if current, ok := existing.([]any); ok {
+		volumes = append(volumes, current...)
+	} else if current, ok := existing.([]string); ok {
+		for _, item := range current {
+			volumes = append(volumes, item)
+		}
+	}
+	for _, item := range volumes {
+		if stringValue(item) == volume {
+			return volumes
+		}
+	}
+	return append(volumes, volume)
 }
 
 func stringMap(value any) (map[string]any, bool) {
