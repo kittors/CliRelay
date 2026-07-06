@@ -14,7 +14,8 @@ func migrateComposeService(target map[string]any, image string) map[string]any {
 			"postgres":      map[string]any{"condition": "service_healthy"},
 			"redis":         map[string]any{"condition": "service_healthy"},
 		},
-		"restart": "no",
+		"healthcheck": map[string]any{"disable": true},
+		"restart":     "no",
 	}
 }
 

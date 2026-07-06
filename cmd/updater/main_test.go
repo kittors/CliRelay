@@ -708,6 +708,16 @@ services:
 	if !reflect.DeepEqual(migrate["command"], []any{"migrate-sqlite-to-postgres.sh"}) {
 		t.Fatalf("clirelay-migrate command = %#v, want migrate script\n%s", migrate["command"], upgraded)
 	}
+	for _, name := range []string{"clirelay-init", "clirelay-migrate", "clirelay-updater"} {
+		service, ok := stringMap(services[name])
+		if !ok {
+			t.Fatalf("%s service not found:\n%s", name, upgraded)
+		}
+		healthcheck, ok := stringMap(service["healthcheck"])
+		if !ok || healthcheck["disable"] != true {
+			t.Fatalf("%s healthcheck = %#v, want disabled\n%s", name, service["healthcheck"], upgraded)
+		}
+	}
 }
 
 func TestUpgradeComposeRuntimeStackKeepsGeneratedServicesOnTargetNetwork(t *testing.T) {

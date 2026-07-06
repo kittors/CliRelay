@@ -732,8 +732,9 @@ func initComposeService(projectDir string, targetService string, image string) m
 			"CLIRELAY_COMPOSE_PROJECT_NAME": "${CLIRELAY_COMPOSE_PROJECT_NAME:-" + filepath.Base(projectDir) + "}",
 			"CLIRELAY_TARGET_SERVICE":       "${CLIRELAY_TARGET_SERVICE:-" + targetService + "}",
 		},
-		"volumes": []any{"${CLIRELAY_PROJECT_DIR:-" + projectDir + "}:/clirelay-deploy"},
-		"restart": "no",
+		"volumes":     []any{"${CLIRELAY_PROJECT_DIR:-" + projectDir + "}:/clirelay-deploy"},
+		"healthcheck": map[string]any{"disable": true},
+		"restart":     "no",
 	}
 }
 
@@ -797,7 +798,8 @@ func updaterComposeService(projectDir string, targetService string, image string
 		"depends_on": map[string]any{
 			"clirelay-init": map[string]any{"condition": "service_completed_successfully"},
 		},
-		"restart": "unless-stopped",
+		"healthcheck": map[string]any{"disable": true},
+		"restart":     "unless-stopped",
 	}
 }
 

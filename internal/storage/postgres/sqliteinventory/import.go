@@ -472,11 +472,25 @@ func normalizeImportValues(table string, columns []string, values []any) {
 		return
 	}
 	for i, column := range columns {
-		if values[i] == nil {
+		if isImportNull(values[i]) {
 			if value, ok := defaults[column]; ok {
 				values[i] = value
 			}
 		}
+	}
+}
+
+func isImportNull(value any) bool {
+	if value == nil {
+		return true
+	}
+	switch v := value.(type) {
+	case []byte:
+		return v == nil
+	case sql.RawBytes:
+		return v == nil
+	default:
+		return false
 	}
 }
 

@@ -68,18 +68,22 @@ func TestImportSQLiteDryRunAndApply(t *testing.T) {
 			log_id INTEGER PRIMARY KEY,
 			timestamp DATETIME NOT NULL,
 			compression TEXT NOT NULL DEFAULT 'zstd',
-			input_content BLOB NOT NULL DEFAULT X'',
-			output_content BLOB NOT NULL DEFAULT X'',
-			detail_content BLOB NOT NULL DEFAULT X''
+			input_content BLOB,
+			output_content BLOB,
+			detail_content BLOB
 		);
 		INSERT INTO api_key_permission_profiles (id, name, allowed_models)
 		VALUES ('profile-fixture', 'Fixture', '["gpt-test"]');
 		INSERT INTO api_keys (key, id, name, allowed_models)
 		VALUES ('fixture-key-a', 'key-a', 'Key A', '["gpt-test"]');
 		INSERT INTO request_logs (id, timestamp, api_key, api_key_id, model, failed, total_tokens)
-		VALUES (7, '2026-07-05T01:00:00Z', 'fixture-key-a', 'key-a', 'gpt-test', 0, 11);
+		VALUES
+			(7, '2026-07-05T01:00:00Z', 'fixture-key-a', 'key-a', 'gpt-test', 0, 11),
+			(8, '2026-07-05T01:01:00Z', 'fixture-key-a', 'key-a', 'gpt-test', 0, 12);
 		INSERT INTO request_log_content (log_id, timestamp, input_content, output_content, detail_content)
-		VALUES (7, '2026-07-05T01:00:00Z', X'7B7D', X'7B226F6B223A747275657D', X'7B2264657461696C223A747275657D');
+		VALUES
+			(7, '2026-07-05T01:00:00Z', X'7B7D', NULL, X'7B2264657461696C223A747275657D'),
+			(8, '2026-07-05T01:01:00Z', X'7B7D', X'', X'7B2264657461696C223A747275657D');
 	`); err != nil {
 		t.Fatalf("seed sqlite: %v", err)
 	}
@@ -100,7 +104,7 @@ func TestImportSQLiteDryRunAndApply(t *testing.T) {
 	if !dryRun.DryRun || findImportTable(dryRun.Tables, "request_logs") == nil {
 		t.Fatalf("dry-run report = %#v", dryRun)
 	}
-	if got := findImportTable(dryRun.Tables, "request_logs"); got.SourceRows != 1 || got.TargetRows != 0 || got.SourceChecksum == "" {
+	if got := findImportTable(dryRun.Tables, "request_logs"); got.SourceRows != 2 || got.TargetRows != 0 || got.SourceChecksum == "" {
 		t.Fatalf("request_logs dry-run = %#v", got)
 	}
 
@@ -109,7 +113,7 @@ func TestImportSQLiteDryRunAndApply(t *testing.T) {
 	if err != nil {
 		t.Fatalf("apply import: %v", err)
 	}
-	if got := findImportTable(applied.Tables, "request_logs"); got == nil || got.InsertedRows != 1 || !got.SequenceReset {
+	if got := findImportTable(applied.Tables, "request_logs"); got == nil || got.InsertedRows != 2 || !got.SequenceReset {
 		t.Fatalf("request_logs applied = %#v", got)
 	}
 	var count int
@@ -118,6 +122,29 @@ func TestImportSQLiteDryRunAndApply(t *testing.T) {
 	}
 	if count != 1 {
 		t.Fatalf("imported request log count = %d", count)
+	}
+	rows, err := pgDB.Query("SELECT log_id, output_content FROM request_log_content WHERE log_id IN (7, 8) ORDER BY log_id")
+	if err != nil {
+		t.Fatalf("read imported request log content: %v", err)
+	}
+	defer rows.Close()
+	var gotContentRows int
+	for rows.Next() {
+		var logID int64
+		var outputContent []byte
+		if err := rows.Scan(&logID, &outputContent); err != nil {
+			t.Fatalf("scan imported request log content: %v", err)
+		}
+		if outputContent == nil || len(outputContent) != 0 {
+			t.Fatalf("log_id %d output_content = %#v, want non-nil empty bytes", logID, outputContent)
+		}
+		gotContentRows++
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate imported request log content: %v", err)
+	}
+	if gotContentRows != 2 {
+		t.Fatalf("imported request log content rows = %d, want 2", gotContentRows)
 	}
 	second, err := Import(ctx, opts)
 	if err != nil {
@@ -130,7 +157,7 @@ func TestImportSQLiteDryRunAndApply(t *testing.T) {
 
 func TestNormalizeImportValuesCoalescesLegacyNullContent(t *testing.T) {
 	columns := []string{"log_id", "input_content", "output_content", "detail_content", "session_id"}
-	values := []any{int64(7), nil, nil, nil, nil}
+	values := []any{int64(7), []byte(nil), nil, sql.RawBytes(nil), nil}
 
 	normalizeImportValues("request_log_content", columns, values)
 
