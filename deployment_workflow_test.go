@@ -113,7 +113,6 @@ func TestBlueGreenDeployScriptSyntaxAndGuards(t *testing.T) {
 
 func TestReleaseAndDeployWorkflowsRejectVendoredPanelAssets(t *testing.T) {
 	for _, path := range []string{
-		".github/workflows/pr-test-build.yml",
 		".github/workflows/deploy.yml",
 		".github/workflows/docker-image.yml",
 		".github/workflows/docker-publish.yml",
@@ -126,5 +125,20 @@ func TestReleaseAndDeployWorkflowsRejectVendoredPanelAssets(t *testing.T) {
 		if !strings.Contains(string(data), `./scripts/ensure-no-vendored-panel-assets.sh`) {
 			t.Fatalf("%s must reject committed frontend panel build output", path)
 		}
+	}
+
+	data, err := os.ReadFile(".github/workflows/pr-test-build.yml")
+	if err != nil {
+		t.Fatalf("read PR workflow: %v", err)
+	}
+	if !strings.Contains(string(data), `./scripts/ci-pr.sh`) {
+		t.Fatalf("PR workflow must use the shared PR check script")
+	}
+	data, err = os.ReadFile("scripts/ci-pr.sh")
+	if err != nil {
+		t.Fatalf("read PR check script: %v", err)
+	}
+	if !strings.Contains(string(data), `./scripts/ensure-no-vendored-panel-assets.sh`) {
+		t.Fatalf("PR check script must reject committed frontend panel build output")
 	}
 }
