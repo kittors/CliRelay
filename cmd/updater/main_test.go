@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -181,6 +182,56 @@ func TestUpdaterPersistsRequestedImageBeforeComposeUpdate(t *testing.T) {
 	case <-called:
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for runner")
+	}
+}
+
+func TestUpdaterRestoresRequestedImageAfterRunnerFailure(t *testing.T) {
+	envFile := filepath.Join(t.TempDir(), ".env")
+	if err := os.WriteFile(envFile, []byte("CLI_PROXY_IMAGE=ghcr.io/kittors/clirelay:latest\nOTHER=value\n"), 0o600); err != nil {
+		t.Fatalf("write env file: %v", err)
+	}
+
+	called := make(chan struct{}, 1)
+	server := newUpdaterServer(updaterConfig{
+		Token:   "secret",
+		EnvFile: envFile,
+		Runner: func(_ context.Context, _ string, _ string, _ string, _ string, _ updateReporter) error {
+			called <- struct{}{}
+			return errors.New("compose failed")
+		},
+	})
+
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/v1/update",
+		strings.NewReader(`{"service":"cli-proxy-api","image":"ghcr.io/kittors/clirelay","tag":"dev"}`),
+	)
+	setUpdaterAuth(req)
+	rec := httptest.NewRecorder()
+
+	server.handleUpdate(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusAccepted, rec.Body.String())
+	}
+	select {
+	case <-called:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for runner")
+	}
+	eventually(t, time.Second, func() bool {
+		return server.snapshot().Status == "failed"
+	})
+
+	data, err := os.ReadFile(envFile)
+	if err != nil {
+		t.Fatalf("read env file: %v", err)
+	}
+	content := string(data)
+	if !strings.Contains(content, "CLI_PROXY_IMAGE=ghcr.io/kittors/clirelay:latest\n") || strings.Contains(content, "CLI_PROXY_IMAGE=ghcr.io/kittors/clirelay:dev\n") {
+		t.Fatalf("env file content = %q, want previous image restored", content)
+	}
+	if !strings.Contains(content, "OTHER=value\n") {
+		t.Fatalf("env file content = %q, want unrelated values preserved", content)
 	}
 }
 
@@ -522,6 +573,13 @@ func TestUpdaterFailsWhenComposePullSkipsTargetService(t *testing.T) {
 	}
 	if !strings.Contains(payload.Message, "pull skipped") {
 		t.Fatalf("Message = %q, want pull skipped hint", payload.Message)
+	}
+	data, err := os.ReadFile(envFile)
+	if err != nil {
+		t.Fatalf("read env file: %v", err)
+	}
+	if string(data) != "CLI_PROXY_IMAGE=ghcr.io/kittors/clirelay:old\n" {
+		t.Fatalf("env file content = %q, want previous image restored", string(data))
 	}
 }
 

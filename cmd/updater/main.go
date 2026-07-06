@@ -269,6 +269,7 @@ func (s *updaterServer) handleUpdate(w http.ResponseWriter, r *http.Request) {
 	if strings.TrimSpace(envFile) == "" && strings.TrimSpace(s.composeFile) != "" {
 		envFile = filepath.Join(filepath.Dir(s.composeFile), ".env")
 	}
+	previousImage := configuredImageInFile(envFile)
 	if err := persistRequestedImage(s.context(), envFile, req.Image, req.Tag); err != nil {
 		if errors.Is(err, errRequestedImageNotAllowed) {
 			message := err.Error()
@@ -290,12 +291,14 @@ func (s *updaterServer) handleUpdate(w http.ResponseWriter, r *http.Request) {
 		defer cancel()
 		reporter := updaterRunReporter{server: s, runID: runID}
 		if err := s.runner(ctx, s.composeFile, s.envFile, s.projectName, service, reporter); err != nil {
+			err = restoreRequestedImage(ctx, envFile, previousImage, reporter, err)
 			log.Printf("compose update failed: %v", err)
 			reporter.Stage("failed", err.Error())
 			s.finishUpdate(runID, "failed", "failed", err.Error())
 			return
 		}
 		if message, skipped := s.pullSkipFailure(runID); skipped {
+			message = restoreRequestedImage(ctx, envFile, previousImage, reporter, errors.New(message)).Error()
 			reporter.Stage("failed", message)
 			s.finishUpdate(runID, "failed", "failed", message)
 			return

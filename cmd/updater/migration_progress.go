@@ -153,9 +153,10 @@ func (s *updaterServer) updateSQLiteTableProgress(message string) {
 		migration.TableIndex = index
 		migration.TableTotal = total
 		migration.Table = strings.TrimSpace(table)
-		if migration.Phase == "" || migration.Phase == "checking" || migration.Phase == "preparing" || migration.Phase == "dry_run" {
+		if migration.Phase == "" || migration.Phase == "checking" || migration.Phase == "preparing" {
 			migration.Phase = "applying"
 		}
+		s.status.Message = "applying legacy SQLite data into PostgreSQL"
 		s.status.ProgressPercent = maxFloat(s.status.ProgressPercent, migrationTableStartPercent(index, total))
 		return
 	}
@@ -199,6 +200,9 @@ func (s *updaterServer) updateSQLiteTableProgress(message string) {
 		migration.Phase = "dry_run"
 	} else if migration.Phase == "" || migration.Phase == "checking" || migration.Phase == "preparing" || migration.Phase == "dry_run" {
 		migration.Phase = "applying"
+	}
+	if migration.Phase == "applying" {
+		s.status.Message = "applying legacy SQLite data into PostgreSQL"
 	}
 }
 
