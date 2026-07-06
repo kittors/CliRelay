@@ -679,6 +679,9 @@ services:
 	if got := clirelay["entrypoint"]; got == nil {
 		t.Fatalf("clirelay service missing source-env entrypoint:\n%s", upgraded)
 	}
+	if !reflect.DeepEqual(clirelay["command"], []any{"./CLIProxyAPI"}) {
+		t.Fatalf("clirelay command = %#v, want ./CLIProxyAPI\n%s", clirelay["command"], upgraded)
+	}
 	volumes, ok := clirelay["volumes"].([]any)
 	if !ok || !containsAnyString(volumes, "${CLIRELAY_PROJECT_DIR:-/opt/clirelay}:/clirelay-deploy") {
 		t.Fatalf("clirelay service missing /clirelay-deploy volume: %#v\n%s", clirelay["volumes"], upgraded)
@@ -775,6 +778,49 @@ func TestEnsureRuntimeDataStackConfigUpgradesStackWithoutInitService(t *testing.
 		if !strings.Contains(string(envData), want) {
 			t.Fatalf("env missing %q:\n%s", want, envData)
 		}
+	}
+}
+
+func TestEnsureRuntimeEnvFileReplacesWorkspaceProjectDir(t *testing.T) {
+	envPath := filepath.Join(t.TempDir(), ".env")
+	if err := os.WriteFile(envPath, []byte(strings.Join([]string{
+		"CLIRELAY_PROJECT_DIR=/workspace",
+		"CLIRELAY_POSTGRES_DATA_PATH=/workspace/postgres-data",
+		"CLIRELAY_REDIS_DATA_PATH=/workspace/redis-data",
+		"",
+	}, "\n")), 0o600); err != nil {
+		t.Fatalf("write env: %v", err)
+	}
+
+	if err := ensureRuntimeEnvFile(context.Background(), envPath, "/root/cliproxy", "cli-proxy-api", "ghcr.io/kittors/clirelay:dev", updaterRunReporter{}); err != nil {
+		t.Fatalf("ensureRuntimeEnvFile failed: %v", err)
+	}
+
+	data, err := os.ReadFile(envPath)
+	if err != nil {
+		t.Fatalf("read env: %v", err)
+	}
+	content := string(data)
+	for _, want := range []string{
+		"CLIRELAY_PROJECT_DIR=/root/cliproxy\n",
+		"CLIRELAY_POSTGRES_DATA_PATH=/root/cliproxy/postgres-data\n",
+		"CLIRELAY_REDIS_DATA_PATH=/root/cliproxy/redis-data\n",
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("env missing %q:\n%s", want, content)
+		}
+	}
+}
+
+func TestProjectDirFromMountsMapsWorkspaceFileMountToHostDir(t *testing.T) {
+	projectDir, ok := projectDirFromMounts("/workspace/docker-compose.yml", []dockerMount{
+		{Source: "/root/cliproxy/docker-compose.yml", Destination: "/workspace/docker-compose.yml", RW: false},
+	})
+	if !ok {
+		t.Fatal("projectDirFromMounts did not resolve file mount")
+	}
+	if projectDir != "/root/cliproxy" {
+		t.Fatalf("projectDir = %q, want /root/cliproxy", projectDir)
 	}
 }
 

@@ -596,20 +596,21 @@ func ensureRuntimeDataStackConfig(ctx context.Context, composeFile string, envFi
 	if strings.TrimSpace(envFile) == "" {
 		envFile = filepath.Join(filepath.Dir(composeFile), ".env")
 	}
+	projectDir := deploymentProjectDir(ctx, composeFile)
 	composeText := string(composeData)
 	if hasComposeService(composeText, "postgres") && hasComposeService(composeText, "redis") && hasComposeService(composeText, "clirelay-init") {
-		if err := ensureRuntimeEnvFile(ctx, envFile, filepath.Dir(composeFile), service, composeAppImage(composeText, service), reporter); err != nil {
+		if err := ensureRuntimeEnvFile(ctx, envFile, projectDir, service, composeAppImage(composeText, service), reporter); err != nil {
 			return envFile, err
 		}
 		return envFile, nil
 	}
 
 	reporter.Stage("preparing", "upgrading docker compose runtime data stack")
-	nextCompose, appImage, err := upgradeComposeRuntimeStack(composeText, filepath.Dir(composeFile), service)
+	nextCompose, appImage, err := upgradeComposeRuntimeStack(composeText, projectDir, service)
 	if err != nil {
 		return envFile, err
 	}
-	if err := ensureRuntimeEnvFile(ctx, envFile, filepath.Dir(composeFile), service, appImage, reporter); err != nil {
+	if err := ensureRuntimeEnvFile(ctx, envFile, projectDir, service, appImage, reporter); err != nil {
 		return envFile, err
 	}
 	if err := writeDeploymentFile(ctx, composeFile, []byte(nextCompose), 0o644, reporter); err != nil {
@@ -646,6 +647,9 @@ func upgradeComposeRuntimeStack(composeText string, projectDir string, service s
 	}
 	target["image"] = "${CLI_PROXY_IMAGE:-" + appImage + "}"
 	target["entrypoint"] = sourceEnvEntrypoint()
+	if !hasComposeCommand(target["command"]) {
+		target["command"] = []any{"./CLIProxyAPI"}
+	}
 	target["environment"] = withoutEnvKeys(target["environment"], runtimeStackEnvKeys()...)
 	target["volumes"] = appendVolume(target["volumes"], "${CLIRELAY_PROJECT_DIR:-"+projectDir+"}:/clirelay-deploy")
 	targetNetworks := target["networks"]
@@ -787,6 +791,57 @@ func sourceEnvEntrypoint() []any {
 	return []any{"sh", "-c", "set -a; . /clirelay-deploy/.env; set +a; exec docker-entrypoint.sh \"$@\"", "--"}
 }
 
+func hasComposeCommand(value any) bool {
+	if strings.TrimSpace(stringValue(value)) != "" {
+		return true
+	}
+	if items, ok := value.([]any); ok {
+		return len(items) > 0
+	}
+	if items, ok := value.([]string); ok {
+		return len(items) > 0
+	}
+	return false
+}
+
+func deploymentProjectDir(ctx context.Context, composeFile string) string {
+	projectDir := filepath.Dir(composeFile)
+	if !strings.HasPrefix(filepath.Clean(composeFile), "/workspace"+string(os.PathSeparator)) {
+		return projectDir
+	}
+	if hostDir, ok := hostProjectDirForMountedPath(ctx, composeFile); ok {
+		return hostDir
+	}
+	return projectDir
+}
+
+func hostProjectDirForMountedPath(ctx context.Context, path string) (string, bool) {
+	containerID, err := os.Hostname()
+	if err != nil || strings.TrimSpace(containerID) == "" {
+		return "", false
+	}
+	mountsJSON, err := dockerInspect(ctx, containerID, "{{json .Mounts}}")
+	if err != nil {
+		return "", false
+	}
+	var mounts []dockerMount
+	if err := json.Unmarshal([]byte(mountsJSON), &mounts); err != nil {
+		return "", false
+	}
+	return projectDirFromMounts(path, mounts)
+}
+
+func projectDirFromMounts(path string, mounts []dockerMount) (string, bool) {
+	source, rel, dirMount, ok := hostPathForMountedPath(path, mounts)
+	if !ok {
+		return "", false
+	}
+	if !dirMount {
+		return filepath.Dir(source), true
+	}
+	return filepath.Dir(filepath.Join(source, rel)), true
+}
+
 func runtimeStackEnvKeys() []string {
 	return []string{
 		"CLIRELAY_POSTGRES_DSN",
@@ -865,7 +920,7 @@ func ensureRuntimeEnvFile(ctx context.Context, envFile string, projectDir string
 	lines := splitEnvLines(string(data))
 	values := envValues(lines)
 	setEnvDefault(&lines, values, "CLI_PROXY_IMAGE", image)
-	setEnvDefault(&lines, values, "CLIRELAY_PROJECT_DIR", projectDir)
+	setEnvDefaultOrReplaceWorkspace(&lines, values, "CLIRELAY_PROJECT_DIR", projectDir)
 	setEnvDefault(&lines, values, "CLIRELAY_TARGET_SERVICE", service)
 	setEnvDefault(&lines, values, "CLIRELAY_COMPOSE_PROJECT_NAME", filepath.Base(projectDir))
 	setEnvDefault(&lines, values, "CLIRELAY_UPDATER_TOKEN", envOrDefault("CLIRELAY_UPDATER_TOKEN", randomHex(16)))
@@ -876,11 +931,11 @@ func ensureRuntimeEnvFile(ctx context.Context, envFile string, projectDir string
 	user := envOrDefaultValue(values["CLIRELAY_POSTGRES_USER"], "cliproxy")
 	pass := envOrDefaultValue(values["CLIRELAY_POSTGRES_PASSWORD"], "cliproxy")
 	setEnvDefault(&lines, values, "CLIRELAY_POSTGRES_DSN", "postgres://"+user+":"+pass+"@postgres:5432/"+db+"?sslmode=disable")
-	setEnvDefault(&lines, values, "CLIRELAY_POSTGRES_DATA_PATH", filepath.Join(projectDir, "postgres-data"))
+	setEnvDefaultOrReplaceWorkspace(&lines, values, "CLIRELAY_POSTGRES_DATA_PATH", filepath.Join(projectDir, "postgres-data"))
 	setEnvDefault(&lines, values, "CLIRELAY_REDIS_ENABLE", "true")
 	setEnvDefault(&lines, values, "CLIRELAY_REDIS_ADDR", "redis:6379")
 	setEnvDefault(&lines, values, "CLIRELAY_REDIS_DB", "0")
-	setEnvDefault(&lines, values, "CLIRELAY_REDIS_DATA_PATH", filepath.Join(projectDir, "redis-data"))
+	setEnvDefaultOrReplaceWorkspace(&lines, values, "CLIRELAY_REDIS_DATA_PATH", filepath.Join(projectDir, "redis-data"))
 	content := strings.Join(lines, "\n") + "\n"
 	if err := writeDeploymentFile(ctx, envFile, []byte(content), 0o600, reporter); err != nil {
 		return fmt.Errorf("write docker env file: %w", err)
@@ -905,6 +960,27 @@ func setEnvDefault(lines *[]string, values map[string]string, key string, value 
 	}
 	*lines = append(*lines, key+"="+value)
 	values[key] = value
+}
+
+func setEnvDefaultOrReplaceWorkspace(lines *[]string, values map[string]string, key string, value string) {
+	if existing := strings.TrimSpace(values[key]); existing != "" && !isWorkspacePath(existing) {
+		return
+	}
+	for i, line := range *lines {
+		currentKey, _, ok := strings.Cut(line, "=")
+		if ok && strings.TrimSpace(currentKey) == key {
+			(*lines)[i] = key + "=" + value
+			values[key] = value
+			return
+		}
+	}
+	*lines = append(*lines, key+"="+value)
+	values[key] = value
+}
+
+func isWorkspacePath(value string) bool {
+	clean := filepath.Clean(value)
+	return clean == "/workspace" || strings.HasPrefix(clean, "/workspace"+string(os.PathSeparator))
 }
 
 func randomHex(bytes int) string {
