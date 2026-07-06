@@ -648,6 +648,7 @@ func upgradeComposeRuntimeStack(composeText string, projectDir string, service s
 	target["entrypoint"] = sourceEnvEntrypoint()
 	target["environment"] = withoutEnvKeys(target["environment"], runtimeStackEnvKeys()...)
 	target["volumes"] = appendVolume(target["volumes"], "${CLIRELAY_PROJECT_DIR:-"+projectDir+"}:/clirelay-deploy")
+	targetNetworks := target["networks"]
 	target["depends_on"] = map[string]any{
 		"clirelay-init": map[string]any{"condition": "service_completed_successfully"},
 		"postgres":      map[string]any{"condition": "service_healthy"},
@@ -657,6 +658,13 @@ func upgradeComposeRuntimeStack(composeText string, projectDir string, service s
 	services["postgres"] = postgresComposeService()
 	services["redis"] = redisComposeService()
 	services["clirelay-updater"] = updaterComposeService(projectDir, targetName, appImage)
+	if targetNetworks != nil {
+		for _, name := range []string{"clirelay-init", "postgres", "redis", "clirelay-updater"} {
+			if generated, ok := stringMap(services[name]); ok {
+				generated["networks"] = targetNetworks
+			}
+		}
+	}
 
 	out, err := yaml.Marshal(doc)
 	if err != nil {

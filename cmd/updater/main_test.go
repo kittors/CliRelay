@@ -690,6 +690,45 @@ services:
 	}
 }
 
+func TestUpgradeComposeRuntimeStackKeepsGeneratedServicesOnTargetNetwork(t *testing.T) {
+	upgraded, _, err := upgradeComposeRuntimeStack(`
+services:
+  cli-proxy-api:
+    image: ghcr.io/kittors/clirelay:dev
+    networks:
+      - clirelay
+networks:
+  clirelay:
+    name: clirelay
+`, "/root/cliproxy", "cli-proxy-api")
+	if err != nil {
+		t.Fatalf("upgradeComposeRuntimeStack failed: %v", err)
+	}
+
+	var doc map[string]any
+	if err := yaml.Unmarshal([]byte(upgraded), &doc); err != nil {
+		t.Fatalf("parse upgraded compose: %v", err)
+	}
+	services, ok := stringMap(doc["services"])
+	if !ok {
+		t.Fatalf("services not found in upgraded compose:\n%s", upgraded)
+	}
+	target, ok := stringMap(services["cli-proxy-api"])
+	if !ok {
+		t.Fatalf("target service missing:\n%s", upgraded)
+	}
+	wantNetworks := target["networks"]
+	for _, name := range []string{"postgres", "redis", "clirelay-updater"} {
+		service, ok := stringMap(services[name])
+		if !ok {
+			t.Fatalf("service %s missing:\n%s", name, upgraded)
+		}
+		if !reflect.DeepEqual(service["networks"], wantNetworks) {
+			t.Fatalf("%s networks = %#v, want %#v\n%s", name, service["networks"], wantNetworks, upgraded)
+		}
+	}
+}
+
 func TestEnsureRuntimeDataStackConfigUpgradesStackWithoutInitService(t *testing.T) {
 	dir := t.TempDir()
 	composePath := filepath.Join(dir, "docker-compose.yml")
