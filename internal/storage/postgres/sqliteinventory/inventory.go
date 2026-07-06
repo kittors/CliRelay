@@ -40,6 +40,11 @@ type Options struct {
 	Now  time.Time
 }
 
+type queryer interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
 var identifierRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 func WriteJSON(ctx context.Context, out io.Writer, opts Options) error {
@@ -73,23 +78,27 @@ func Collect(ctx context.Context, opts Options) (Inventory, error) {
 	if err := db.PingContext(ctx); err != nil {
 		return Inventory{}, fmt.Errorf("sqlite inventory: ping read-only: %w", err)
 	}
-	tables, err := listTables(ctx, db)
+	return collectFromQuerier(ctx, abs, now, db)
+}
+
+func collectFromQuerier(ctx context.Context, path string, now time.Time, q queryer) (Inventory, error) {
+	tables, err := listTables(ctx, q)
 	if err != nil {
 		return Inventory{}, err
 	}
 	stats := make([]TableStats, 0, len(tables))
 	for _, table := range tables {
-		row, err := tableStats(ctx, db, table)
+		row, err := tableStats(ctx, q, table)
 		if err != nil {
 			return Inventory{}, err
 		}
 		stats = append(stats, row)
 	}
-	return Inventory{Path: abs, ScannedAt: now.UTC(), Tables: stats}, nil
+	return Inventory{Path: path, ScannedAt: now.UTC(), Tables: stats}, nil
 }
 
-func listTables(ctx context.Context, db *sql.DB) ([]string, error) {
-	rows, err := db.QueryContext(ctx, `
+func listTables(ctx context.Context, q queryer) ([]string, error) {
+	rows, err := q.QueryContext(ctx, `
 		SELECT name
 		  FROM sqlite_master
 		 WHERE type = 'table'
@@ -116,8 +125,8 @@ func listTables(ctx context.Context, db *sql.DB) ([]string, error) {
 	return tables, nil
 }
 
-func tableStats(ctx context.Context, db *sql.DB, table string) (TableStats, error) {
-	columns, err := tableColumns(ctx, db, table)
+func tableStats(ctx context.Context, q queryer, table string) (TableStats, error) {
+	columns, err := tableColumns(ctx, q, table)
 	if err != nil {
 		return TableStats{}, err
 	}
@@ -127,12 +136,12 @@ func tableStats(ctx context.Context, db *sql.DB, table string) (TableStats, erro
 		DryRunOnly: true,
 	}
 	quotedTable := quoteIdent(table)
-	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM "+quotedTable).Scan(&stat.RowCount); err != nil {
+	if err := q.QueryRowContext(ctx, "SELECT COUNT(*) FROM "+quotedTable).Scan(&stat.RowCount); err != nil {
 		return TableStats{}, fmt.Errorf("sqlite inventory: count %s: %w", table, err)
 	}
-	if hasColumn(columns, "id") && numericIDColumn(ctx, db, quotedTable) {
+	if hasColumn(columns, "id") && numericIDColumn(ctx, q, quotedTable) {
 		var minID, maxID sql.NullInt64
-		if err := db.QueryRowContext(ctx, "SELECT MIN(id), MAX(id) FROM "+quotedTable).Scan(&minID, &maxID); err != nil {
+		if err := q.QueryRowContext(ctx, "SELECT MIN(id), MAX(id) FROM "+quotedTable).Scan(&minID, &maxID); err != nil {
 			return TableStats{}, fmt.Errorf("sqlite inventory: id range %s: %w", table, err)
 		}
 		if minID.Valid {
@@ -146,13 +155,13 @@ func tableStats(ctx context.Context, db *sql.DB, table string) (TableStats, erro
 	if timeColumn != "" {
 		var minTime, maxTime sql.NullString
 		query := fmt.Sprintf("SELECT MIN(%s), MAX(%s) FROM %s", quoteIdent(timeColumn), quoteIdent(timeColumn), quotedTable)
-		if err := db.QueryRowContext(ctx, query).Scan(&minTime, &maxTime); err != nil {
+		if err := q.QueryRowContext(ctx, query).Scan(&minTime, &maxTime); err != nil {
 			return TableStats{}, fmt.Errorf("sqlite inventory: time range %s: %w", table, err)
 		}
 		stat.MinTime = minTime.String
 		stat.MaxTime = maxTime.String
 	}
-	checksum, err := tableChecksum(ctx, db, table, columns)
+	checksum, err := tableChecksum(ctx, q, table, columns)
 	if err != nil {
 		return TableStats{}, err
 	}
@@ -160,11 +169,11 @@ func tableStats(ctx context.Context, db *sql.DB, table string) (TableStats, erro
 	return stat, nil
 }
 
-func tableColumns(ctx context.Context, db *sql.DB, table string) ([]string, error) {
+func tableColumns(ctx context.Context, q queryer, table string) ([]string, error) {
 	if !validIdentifier(table) {
 		return nil, fmt.Errorf("sqlite inventory: invalid table name %q", table)
 	}
-	rows, err := db.QueryContext(ctx, "PRAGMA table_info("+quoteIdent(table)+")")
+	rows, err := q.QueryContext(ctx, "PRAGMA table_info("+quoteIdent(table)+")")
 	if err != nil {
 		return nil, fmt.Errorf("sqlite inventory: columns %s: %w", table, err)
 	}
@@ -189,7 +198,7 @@ func tableColumns(ctx context.Context, db *sql.DB, table string) ([]string, erro
 	return columns, nil
 }
 
-func tableChecksum(ctx context.Context, db *sql.DB, table string, columns []string) (string, error) {
+func tableChecksum(ctx context.Context, q queryer, table string, columns []string) (string, error) {
 	if len(columns) == 0 {
 		return "", nil
 	}
@@ -198,7 +207,7 @@ func tableChecksum(ctx context.Context, db *sql.DB, table string, columns []stri
 		quotedColumns = append(quotedColumns, quoteIdent(column))
 	}
 	query := fmt.Sprintf("SELECT %s FROM %s ORDER BY rowid", strings.Join(quotedColumns, ","), quoteIdent(table))
-	rows, err := db.QueryContext(ctx, query)
+	rows, err := q.QueryContext(ctx, query)
 	if err != nil {
 		return "", fmt.Errorf("sqlite inventory: checksum query %s: %w", table, err)
 	}
@@ -245,10 +254,10 @@ func hasColumn(columns []string, name string) bool {
 	return false
 }
 
-func numericIDColumn(ctx context.Context, db *sql.DB, quotedTable string) bool {
+func numericIDColumn(ctx context.Context, q queryer, quotedTable string) bool {
 	var typ sql.NullString
 	query := "SELECT typeof(id) FROM " + quotedTable + " WHERE id IS NOT NULL LIMIT 1"
-	if err := db.QueryRowContext(ctx, query).Scan(&typ); err != nil {
+	if err := q.QueryRowContext(ctx, query).Scan(&typ); err != nil {
 		return false
 	}
 	return typ.String == "integer"

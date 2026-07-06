@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -93,20 +94,32 @@ func Import(ctx context.Context, opts ImportOptions) (ImportReport, error) {
 	if postgresDSN == "" {
 		return ImportReport{}, fmt.Errorf("sqlite import: postgres dsn is required")
 	}
-	inventory, err := Collect(ctx, Options{Path: sqlitePath, Now: opts.Now})
+	sqlitePath, err := filepath.Abs(sqlitePath)
 	if err != nil {
-		return ImportReport{}, err
+		return ImportReport{}, fmt.Errorf("sqlite import: absolute path: %w", err)
 	}
-	sourceFingerprint := importSourceFingerprint(inventory)
-	now := opts.Now
-	if now.IsZero() {
-		now = time.Now().UTC()
-	}
-	src, err := sql.Open("sqlite", "file:"+inventory.Path+"?mode=ro&_pragma=busy_timeout(5000)")
+	src, err := sql.Open("sqlite", "file:"+sqlitePath+"?mode=ro&_pragma=busy_timeout(5000)")
 	if err != nil {
 		return ImportReport{}, fmt.Errorf("sqlite import: open sqlite read-only: %w", err)
 	}
 	defer src.Close()
+	if err := src.PingContext(ctx); err != nil {
+		return ImportReport{}, fmt.Errorf("sqlite import: ping sqlite read-only: %w", err)
+	}
+	srcTx, err := src.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return ImportReport{}, fmt.Errorf("sqlite import: begin sqlite snapshot: %w", err)
+	}
+	defer func() { _ = srcTx.Rollback() }()
+	now := opts.Now
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	inventory, err := collectFromQuerier(ctx, sqlitePath, now, srcTx)
+	if err != nil {
+		return ImportReport{}, err
+	}
+	sourceFingerprint := importSourceFingerprint(inventory)
 	dst, err := postgresstore.OpenRuntimeDB(ctx, config.PostgresConfig{DSN: postgresDSN, MaxOpenConns: 4, MaxIdleConns: 1})
 	if err != nil {
 		return ImportReport{}, err
@@ -147,7 +160,7 @@ func Import(ctx context.Context, opts ImportOptions) (ImportReport, error) {
 			continue
 		}
 		reportImportProgress(opts.Progress, "sqlite import progress: table %d/%d %s", i+1, len(runtimeImportTables), table)
-		row, err := importTable(ctx, src, dst, table, srcCols, opts.DryRun)
+		row, err := importTable(ctx, srcTx, dst, table, srcCols, opts.DryRun)
 		if err != nil {
 			return ImportReport{}, err
 		}
@@ -242,7 +255,7 @@ func markImportCompleted(ctx context.Context, db *sql.DB, sourceFingerprint, sql
 	return nil
 }
 
-func importTable(ctx context.Context, src, dst *sql.DB, table string, srcCols []string, dryRun bool) (ImportTableReport, error) {
+func importTable(ctx context.Context, src queryer, dst *sql.DB, table string, srcCols []string, dryRun bool) (ImportTableReport, error) {
 	dstCols, err := postgresColumns(ctx, dst, table)
 	if err != nil {
 		return ImportTableReport{}, err
@@ -351,7 +364,7 @@ func intersectColumns(source, target []string) []string {
 	return columns
 }
 
-func countRows(ctx context.Context, db *sql.DB, table string) (int64, error) {
+func countRows(ctx context.Context, db queryer, table string) (int64, error) {
 	var count int64
 	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM "+quoteIdent(table)).Scan(&count); err != nil {
 		return 0, fmt.Errorf("sqlite import: count %s: %w", table, err)
@@ -359,7 +372,7 @@ func countRows(ctx context.Context, db *sql.DB, table string) (int64, error) {
 	return count, nil
 }
 
-func checksumRows(ctx context.Context, db *sql.DB, table string, columns []string, orderBy string) (string, error) {
+func checksumRows(ctx context.Context, db queryer, table string, columns []string, orderBy string) (string, error) {
 	query := fmt.Sprintf("SELECT %s FROM %s ORDER BY %s", quotedList(columns), quoteIdent(table), orderBy)
 	rows, err := db.QueryContext(ctx, query)
 	if err != nil {
@@ -388,7 +401,7 @@ func checksumRows(ctx context.Context, db *sql.DB, table string, columns []strin
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
-func copyRows(ctx context.Context, src, dst *sql.DB, table string, columns []string, orderBy string) (int64, error) {
+func copyRows(ctx context.Context, src queryer, dst *sql.DB, table string, columns []string, orderBy string) (int64, error) {
 	query := fmt.Sprintf("SELECT %s FROM %s ORDER BY %s", quotedList(columns), quoteIdent(table), orderBy)
 	rows, err := src.QueryContext(ctx, query)
 	if err != nil {

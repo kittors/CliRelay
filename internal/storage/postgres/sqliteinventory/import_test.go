@@ -279,6 +279,110 @@ func TestImportSQLiteApplyUsesPostgresLockAndCompletionMarker(t *testing.T) {
 	}
 }
 
+func TestImportSQLiteUsesSingleSourceSnapshot(t *testing.T) {
+	dsn := os.Getenv("CLIRELAY_POSTGRES_TEST_DSN")
+	if dsn == "" {
+		t.Skip("CLIRELAY_POSTGRES_TEST_DSN is not set")
+	}
+	ctx := context.Background()
+	pgDB, err := postgresstore.OpenRuntimeDB(ctx, config.PostgresConfig{DSN: dsn, MaxOpenConns: 4, MaxIdleConns: 1})
+	if err != nil {
+		t.Fatalf("open postgres: %v", err)
+	}
+	defer pgDB.Close()
+	if _, err := pgDB.Exec(`
+		DROP TABLE IF EXISTS sqlite_import_runs;
+		TRUNCATE
+			request_log_content,
+			request_logs
+		RESTART IDENTITY CASCADE
+	`); err != nil {
+		t.Fatalf("reset postgres: %v", err)
+	}
+
+	sqlitePath := filepath.Join(t.TempDir(), "usage.db")
+	sqliteDB, err := sql.Open("sqlite", sqlitePath)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	if _, err := sqliteDB.Exec(`
+		PRAGMA journal_mode = WAL;
+		CREATE TABLE request_logs (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			timestamp DATETIME NOT NULL,
+			api_key TEXT NOT NULL,
+			api_key_id TEXT NOT NULL DEFAULT '',
+			model TEXT NOT NULL DEFAULT '',
+			failed INTEGER NOT NULL DEFAULT 0,
+			total_tokens INTEGER NOT NULL DEFAULT 0
+		);
+		CREATE TABLE request_log_content (
+			log_id INTEGER PRIMARY KEY,
+			timestamp DATETIME NOT NULL,
+			compression TEXT NOT NULL DEFAULT 'zstd',
+			input_content BLOB NOT NULL DEFAULT X'',
+			output_content BLOB NOT NULL DEFAULT X'',
+			detail_content BLOB NOT NULL DEFAULT X''
+		);
+		INSERT INTO request_logs (id, timestamp, api_key, api_key_id, model, failed, total_tokens)
+		VALUES (1, '2026-07-05T01:00:00Z', 'fixture-key-a', 'key-a', 'gpt-test', 0, 11);
+		INSERT INTO request_log_content (log_id, timestamp, input_content, output_content, detail_content)
+		VALUES (1, '2026-07-05T01:00:00Z', X'7B7D', X'7B226F6B223A747275657D', X'7B2264657461696C223A747275657D');
+	`); err != nil {
+		t.Fatalf("seed sqlite: %v", err)
+	}
+	if err := sqliteDB.Close(); err != nil {
+		t.Fatalf("close sqlite: %v", err)
+	}
+
+	src, err := sql.Open("sqlite", "file:"+sqlitePath+"?mode=ro&_pragma=busy_timeout(5000)")
+	if err != nil {
+		t.Fatalf("open source snapshot: %v", err)
+	}
+	defer src.Close()
+	srcTx, err := src.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		t.Fatalf("begin source snapshot: %v", err)
+	}
+	defer func() { _ = srcTx.Rollback() }()
+	inventory, err := collectFromQuerier(ctx, sqlitePath, time.Date(2026, 7, 5, 6, 0, 0, 0, time.UTC), srcTx)
+	if err != nil {
+		t.Fatalf("collect inventory: %v", err)
+	}
+	sourceColumns := make(map[string][]string, len(inventory.Tables))
+	for _, table := range inventory.Tables {
+		sourceColumns[table.Name] = table.Columns
+	}
+	if _, err := importTable(ctx, srcTx, pgDB, "request_logs", sourceColumns["request_logs"], false); err != nil {
+		t.Fatalf("import request_logs: %v", err)
+	}
+
+	writer, err := sql.Open("sqlite", sqlitePath)
+	if err != nil {
+		t.Fatalf("open sqlite writer: %v", err)
+	}
+	defer writer.Close()
+	if _, err := writer.Exec(`
+		INSERT INTO request_logs (id, timestamp, api_key, api_key_id, model, failed, total_tokens)
+		VALUES (2, '2026-07-05T01:01:00Z', 'fixture-key-b', 'key-b', 'gpt-test', 0, 22);
+		INSERT INTO request_log_content (log_id, timestamp, input_content, output_content, detail_content)
+		VALUES (2, '2026-07-05T01:01:00Z', X'7B7D', X'7B7D', X'7B7D');
+	`); err != nil {
+		t.Fatalf("write concurrent sqlite rows: %v", err)
+	}
+
+	if _, err := importTable(ctx, srcTx, pgDB, "request_log_content", sourceColumns["request_log_content"], false); err != nil {
+		t.Fatalf("import request_log_content: %v", err)
+	}
+	var count int
+	if err := pgDB.QueryRow("SELECT COUNT(*) FROM request_log_content").Scan(&count); err != nil {
+		t.Fatalf("count imported content: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("imported content rows = %d, want snapshot row only", count)
+	}
+}
+
 func findImportTable(rows []ImportTableReport, name string) *ImportTableReport {
 	for i := range rows {
 		if rows[i].Name == name {
