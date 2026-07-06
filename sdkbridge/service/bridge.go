@@ -71,7 +71,7 @@ func NewDefaultAuthManager() *sdkAuth.Manager {
 	return internalserviceapp.NewDefaultAuthManager()
 }
 
-func BuildAPIKeyClients(cfg *config.Config) (int, int, int, int, int, int, int) {
+func BuildAPIKeyClients(cfg *config.Config) (int, int, int, int, int, int, int, int) {
 	return internalserviceapp.BuildAPIKeyClients(cfg)
 }
 

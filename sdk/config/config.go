@@ -35,6 +35,8 @@ type OpenCodeGoKey = bridgeconfig.OpenCodeGoKey
 type OpenCodeGoModel = bridgeconfig.OpenCodeGoModel
 type ClineKey = bridgeconfig.ClineKey
 type ClineModel = bridgeconfig.ClineModel
+type OllamaCloudKey = bridgeconfig.OllamaCloudKey
+type OllamaCloudModel = bridgeconfig.OllamaCloudModel
 type VertexCompatKey = bridgeconfig.VertexCompatKey
 type VertexCompatModel = bridgeconfig.VertexCompatModel
 type OpenAICompatibility = bridgeconfig.OpenAICompatibility
@@ -47,6 +49,7 @@ const (
 	DefaultPanelGitHubRepository = bridgeconfig.DefaultPanelGitHubRepository
 	DefaultBedrockRegion         = bridgeconfig.DefaultBedrockRegion
 	DefaultClineBaseURL          = bridgeconfig.DefaultClineBaseURL
+	DefaultOllamaCloudBaseURL    = bridgeconfig.DefaultOllamaCloudBaseURL
 	DefaultPprofAddr             = bridgeconfig.DefaultPprofAddr
 )
 

@@ -55,8 +55,8 @@ func (w *Watcher) reloadClients(rescanAuth bool, affectedOAuthProviders []string
 		w.clientsMutex.Unlock()
 	}
 
-	geminiAPIKeyCount, vertexCompatAPIKeyCount, claudeAPIKeyCount, codexAPIKeyCount, bedrockAPIKeyCount, openCodeGoAPIKeyCount, openAICompatCount := BuildAPIKeyClients(cfg)
-	totalAPIKeyClients := geminiAPIKeyCount + vertexCompatAPIKeyCount + claudeAPIKeyCount + codexAPIKeyCount + bedrockAPIKeyCount + openCodeGoAPIKeyCount + openAICompatCount
+	geminiAPIKeyCount, vertexCompatAPIKeyCount, claudeAPIKeyCount, codexAPIKeyCount, bedrockAPIKeyCount, openCodeGoAPIKeyCount, ollamaCloudAPIKeyCount, openAICompatCount := BuildAPIKeyClients(cfg)
+	totalAPIKeyClients := geminiAPIKeyCount + vertexCompatAPIKeyCount + claudeAPIKeyCount + codexAPIKeyCount + bedrockAPIKeyCount + openCodeGoAPIKeyCount + ollamaCloudAPIKeyCount + openAICompatCount
 	log.Debugf("loaded %d API key clients", totalAPIKeyClients)
 
 	var authFileCount int
@@ -244,17 +244,18 @@ func (w *Watcher) loadFileClients(cfg *config.Config) int {
 	return authFileCount
 }
 
-func BuildAPIKeyClients(cfg *config.Config) (int, int, int, int, int, int, int) {
+func BuildAPIKeyClients(cfg *config.Config) (int, int, int, int, int, int, int, int) {
 	geminiAPIKeyCount := 0
 	vertexCompatAPIKeyCount := 0
 	claudeAPIKeyCount := 0
 	codexAPIKeyCount := 0
 	bedrockAPIKeyCount := 0
 	openCodeGoAPIKeyCount := 0
+	ollamaCloudAPIKeyCount := 0
 	openAICompatCount := 0
 
 	if cfg == nil {
-		return 0, 0, 0, 0, 0, 0, 0
+		return 0, 0, 0, 0, 0, 0, 0, 0
 	}
 	if len(cfg.GeminiKey) > 0 {
 		geminiAPIKeyCount += len(cfg.GeminiKey)
@@ -274,6 +275,9 @@ func BuildAPIKeyClients(cfg *config.Config) (int, int, int, int, int, int, int) 
 	if len(cfg.OpenCodeGoKey) > 0 {
 		openCodeGoAPIKeyCount += len(cfg.OpenCodeGoKey)
 	}
+	if len(cfg.OllamaCloudKey) > 0 {
+		ollamaCloudAPIKeyCount += len(cfg.OllamaCloudKey)
+	}
 	if len(cfg.OpenAICompatibility) > 0 {
 		for _, compatConfig := range cfg.OpenAICompatibility {
 			if compatConfig.Disabled {
@@ -282,7 +286,7 @@ func BuildAPIKeyClients(cfg *config.Config) (int, int, int, int, int, int, int) 
 			openAICompatCount += len(compatConfig.APIKeyEntries)
 		}
 	}
-	return geminiAPIKeyCount, vertexCompatAPIKeyCount, claudeAPIKeyCount, codexAPIKeyCount, bedrockAPIKeyCount, openCodeGoAPIKeyCount, openAICompatCount
+	return geminiAPIKeyCount, vertexCompatAPIKeyCount, claudeAPIKeyCount, codexAPIKeyCount, bedrockAPIKeyCount, openCodeGoAPIKeyCount, ollamaCloudAPIKeyCount, openAICompatCount
 }
 
 func (w *Watcher) persistConfigAsync() {

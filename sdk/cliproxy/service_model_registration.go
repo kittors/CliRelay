@@ -168,6 +168,16 @@ func (s *Service) registerModelsForAuth(ctx context.Context, a *coreauth.Auth) {
 			excluded = entry.ExcludedModels
 		}
 		models = applyExcludedModels(models, excluded)
+	case "ollama-cloud":
+		staticModels := sdkmodelcatalog.StaticModelDefinitionsByChannel("ollama-cloud")
+		models = staticModels
+		if entry := s.resolveConfigOllamaCloudKey(a); entry != nil && authKind == "apikey" {
+			if len(entry.Models) > 0 {
+				models = buildOllamaCloudConfigModels(entry, staticModels)
+			}
+			excluded = entry.ExcludedModels
+		}
+		models = applyExcludedModels(models, excluded)
 	case "codex":
 		models = sdkmodelcatalog.StaticModelDefinitionsByChannel("codex")
 		if entry := s.resolveConfigCodexKey(a); entry != nil {

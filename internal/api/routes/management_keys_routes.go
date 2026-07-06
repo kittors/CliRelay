@@ -49,6 +49,11 @@ func registerManagementProviderRoutes(group *gin.RouterGroup, h *managementhandl
 	group.PATCH("/cline-api-key", keys.PatchClineKey)
 	group.DELETE("/cline-api-key", keys.DeleteClineKey)
 
+	group.GET("/ollama-cloud-api-key", keys.GetOllamaCloudKeys)
+	group.PUT("/ollama-cloud-api-key", keys.PutOllamaCloudKeys)
+	group.PATCH("/ollama-cloud-api-key", keys.PatchOllamaCloudKey)
+	group.DELETE("/ollama-cloud-api-key", keys.DeleteOllamaCloudKey)
+
 	group.GET("/codex-api-key", keys.GetCodexKeys)
 	group.PUT("/codex-api-key", keys.PutCodexKeys)
 	group.PATCH("/codex-api-key", keys.PatchCodexKey)

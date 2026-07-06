@@ -1187,3 +1187,17 @@ func GetClineModels() []*ModelInfo {
 	}
 	return models
 }
+
+// GetOllamaCloudModels returns Ollama Cloud model definitions documented by Ollama.
+func GetOllamaCloudModels() []*ModelInfo {
+	return []*ModelInfo{
+		{
+			ID:          "gpt-oss:120b",
+			Object:      "model",
+			Created:     1781751220,
+			OwnedBy:     "ollama",
+			Type:        "ollama-cloud",
+			DisplayName: "GPT OSS 120B",
+		},
+	}
+}

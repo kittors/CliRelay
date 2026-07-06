@@ -33,7 +33,7 @@ func newDefaultAuthManager() *sdkAuth.Manager {
 	return serviceapp.NewDefaultAuthManager()
 }
 
-func buildAPIKeyClients(cfg *config.Config) (int, int, int, int, int, int, int) {
+func buildAPIKeyClients(cfg *config.Config) (int, int, int, int, int, int, int, int) {
 	return serviceapp.BuildAPIKeyClients(cfg)
 }
 

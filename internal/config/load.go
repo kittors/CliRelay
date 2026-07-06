@@ -118,6 +118,7 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	cfg.SanitizeClaudeKeys()
 	cfg.SanitizeOpenCodeGoKeys()
 	cfg.SanitizeClineKeys()
+	cfg.SanitizeOllamaCloudKeys()
 	cfg.SanitizeGeminiKeys()
 	cfg.SanitizeProxyWarmup()
 

@@ -173,6 +173,35 @@ func (s *Service) resolveConfigClineKey(auth *coreauth.Auth) *config.ClineKey {
 	return nil
 }
 
+func (s *Service) resolveConfigOllamaCloudKey(auth *coreauth.Auth) *config.OllamaCloudKey {
+	if auth == nil || s.cfg == nil {
+		return nil
+	}
+	var attrKey, attrBase string
+	if auth.Attributes != nil {
+		attrKey = strings.TrimSpace(auth.Attributes["api_key"])
+		attrBase = strings.TrimSpace(auth.Attributes["base_url"])
+	}
+	for i := range s.cfg.OllamaCloudKey {
+		entry := &s.cfg.OllamaCloudKey[i]
+		cfgKey := strings.TrimSpace(entry.APIKey)
+		cfgBase := strings.TrimSpace(entry.BaseURL)
+		if cfgBase == "" {
+			cfgBase = config.DefaultOllamaCloudBaseURL
+		}
+		if attrKey != "" && strings.EqualFold(cfgKey, attrKey) {
+			if attrBase == "" || strings.EqualFold(cfgBase, attrBase) {
+				return entry
+			}
+			continue
+		}
+		if attrKey == "" && attrBase != "" && strings.EqualFold(cfgBase, attrBase) {
+			return entry
+		}
+	}
+	return nil
+}
+
 func (s *Service) resolveConfigVertexCompatKey(auth *coreauth.Auth) *config.VertexCompatKey {
 	if auth == nil || s.cfg == nil {
 		return nil

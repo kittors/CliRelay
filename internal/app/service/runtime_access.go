@@ -45,7 +45,7 @@ func ConfigureServiceAccess(cfg *config.Config, accessManager *sdkaccess.Manager
 	accessManager.SetProviders(sdkaccess.RegisteredProviders())
 }
 
-func BuildAPIKeyClients(cfg *config.Config) (int, int, int, int, int, int, int) {
+func BuildAPIKeyClients(cfg *config.Config) (int, int, int, int, int, int, int, int) {
 	return watcher.BuildAPIKeyClients(cfg)
 }
 

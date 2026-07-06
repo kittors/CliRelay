@@ -67,6 +67,9 @@ type APIKeyClientResult struct {
 	// OpenCodeGoKeyCount is the number of OpenCode Go API keys loaded
 	OpenCodeGoKeyCount int
 
+	// OllamaCloudKeyCount is the number of Ollama Cloud API keys loaded
+	OllamaCloudKeyCount int
+
 	// OpenAICompatCount is the number of OpenAI compatibility API keys loaded
 	OpenAICompatCount int
 }

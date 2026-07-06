@@ -317,6 +317,67 @@ func normalizeClineBaseURL(baseURL string) string {
 	return strings.TrimSuffix(base, "/")
 }
 
+// SanitizeOllamaCloudKeys deduplicates and normalizes Ollama Cloud credentials.
+func (cfg *Config) SanitizeOllamaCloudKeys() {
+	if cfg == nil || len(cfg.OllamaCloudKey) == 0 {
+		return
+	}
+	seen := make(map[string]struct{}, len(cfg.OllamaCloudKey))
+	out := make([]OllamaCloudKey, 0, len(cfg.OllamaCloudKey))
+	for i := range cfg.OllamaCloudKey {
+		entry := cfg.OllamaCloudKey[i]
+		entry.APIKey = strings.TrimSpace(entry.APIKey)
+		if entry.APIKey == "" {
+			continue
+		}
+		entry.BaseURL = normalizeOllamaCloudBaseURL(entry.BaseURL)
+		seenKey := entry.APIKey + "\x00" + entry.BaseURL
+		if _, exists := seen[seenKey]; exists {
+			continue
+		}
+		seen[seenKey] = struct{}{}
+		entry.Name = strings.TrimSpace(entry.Name)
+		entry.Prefix = normalizeModelPrefix(entry.Prefix)
+		entry.ProxyURL = strings.TrimSpace(entry.ProxyURL)
+		entry.ProxyID = strings.TrimSpace(entry.ProxyID)
+		entry.Headers = NormalizeHeaders(entry.Headers)
+		entry.Models = NormalizeOllamaCloudModels(entry.Models)
+		entry.ExcludedModels = NormalizeExcludedModels(entry.ExcludedModels)
+		out = append(out, entry)
+	}
+	cfg.OllamaCloudKey = out
+}
+
+func NormalizeOllamaCloudModels(models []OllamaCloudModel) []OllamaCloudModel {
+	if len(models) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(models))
+	out := make([]OllamaCloudModel, 0, len(models))
+	for i := range models {
+		name := strings.TrimSpace(models[i].Name)
+		if name == "" {
+			continue
+		}
+		alias := strings.TrimSpace(models[i].Alias)
+		key := strings.ToLower(name)
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, OllamaCloudModel{Name: name, Alias: alias})
+	}
+	return out
+}
+
+func normalizeOllamaCloudBaseURL(baseURL string) string {
+	base := strings.TrimSpace(baseURL)
+	if base == "" {
+		return DefaultOllamaCloudBaseURL
+	}
+	return strings.TrimSuffix(base, "/")
+}
+
 // SanitizeGeminiKeys deduplicates and normalizes Gemini credentials.
 func (cfg *Config) SanitizeGeminiKeys() {
 	if cfg == nil {

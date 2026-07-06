@@ -25,7 +25,7 @@ func TestRegisterManagementRouteTable(t *testing.T) {
 		routes[key] = route
 	}
 
-	if got, want := len(routes), 222; got != want {
+	if got, want := len(routes), 226; got != want {
 		t.Fatalf("route count = %d, want %d", got, want)
 	}
 	if got, want := sortedRouteKeys(routes), expectedManagementRoutes(); !slices.Equal(got, want) {
@@ -48,6 +48,10 @@ func TestRegisterManagementRouteTable(t *testing.T) {
 		"PUT /v0/management/cline-api-key",
 		"PATCH /v0/management/cline-api-key",
 		"DELETE /v0/management/cline-api-key",
+		"GET /v0/management/ollama-cloud-api-key",
+		"PUT /v0/management/ollama-cloud-api-key",
+		"PATCH /v0/management/ollama-cloud-api-key",
+		"DELETE /v0/management/ollama-cloud-api-key",
 		"GET /v0/management/auth-files/models",
 		"GET /v0/management/image-generation/size-presets",
 		"PUT /v0/management/image-generation/size-presets",
@@ -111,6 +115,7 @@ func expectedManagementRoutes() []string {
 		"DELETE /v0/management/model-configs/*id",
 		"DELETE /v0/management/oauth-excluded-models",
 		"DELETE /v0/management/oauth-model-alias",
+		"DELETE /v0/management/ollama-cloud-api-key",
 		"DELETE /v0/management/opencode-go-api-key",
 		"DELETE /v0/management/openai-compatibility",
 		"DELETE /v0/management/proxy-url",
@@ -174,6 +179,7 @@ func expectedManagementRoutes() []string {
 		"GET /v0/management/models/configured-availability",
 		"GET /v0/management/oauth-excluded-models",
 		"GET /v0/management/oauth-model-alias",
+		"GET /v0/management/ollama-cloud-api-key",
 		"GET /v0/management/opencode-go-api-key",
 		"GET /v0/management/openai-compatibility",
 		"GET /v0/management/proxy-pool",
@@ -237,6 +243,7 @@ func expectedManagementRoutes() []string {
 		"PATCH /v0/management/max-retry-interval",
 		"PATCH /v0/management/oauth-excluded-models",
 		"PATCH /v0/management/oauth-model-alias",
+		"PATCH /v0/management/ollama-cloud-api-key",
 		"PATCH /v0/management/opencode-go-api-key",
 		"PATCH /v0/management/openai-compatibility",
 		"PATCH /v0/management/proxy-pool/:id",
@@ -303,6 +310,7 @@ func expectedManagementRoutes() []string {
 		"PUT /v0/management/model-pricing",
 		"PUT /v0/management/oauth-excluded-models",
 		"PUT /v0/management/oauth-model-alias",
+		"PUT /v0/management/ollama-cloud-api-key",
 		"PUT /v0/management/opencode-go-api-key",
 		"PUT /v0/management/openai-compatibility",
 		"PUT /v0/management/proxy-pool",

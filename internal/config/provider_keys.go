@@ -314,3 +314,46 @@ type ClineModel struct {
 
 func (m ClineModel) GetName() string  { return m.Name }
 func (m ClineModel) GetAlias() string { return m.Alias }
+
+const DefaultOllamaCloudBaseURL = "https://ollama.com"
+
+// OllamaCloudKey represents an Ollama Cloud API key.
+type OllamaCloudKey struct {
+	APIKey string `yaml:"api-key" json:"api-key"`
+
+	// Name is a human-readable label for this channel.
+	Name string `yaml:"name,omitempty" json:"name,omitempty"`
+
+	// Priority controls selection preference when multiple credentials match.
+	// Higher values are preferred; defaults to 0.
+	Priority int `yaml:"priority,omitempty" json:"priority,omitempty"`
+
+	// Prefix optionally namespaces models for this credential.
+	Prefix string `yaml:"prefix,omitempty" json:"prefix,omitempty"`
+
+	// BaseURL is the Ollama API host. Defaults to DefaultOllamaCloudBaseURL.
+	BaseURL string `yaml:"base-url,omitempty" json:"base-url,omitempty"`
+
+	// ProxyURL overrides the global proxy setting for this API key if provided.
+	ProxyURL string `yaml:"proxy-url,omitempty" json:"proxy-url,omitempty"`
+
+	// ProxyID references a reusable proxy-pool entry. When valid, it takes precedence over ProxyURL.
+	ProxyID string `yaml:"proxy-id,omitempty" json:"proxy-id,omitempty"`
+
+	// Models defines upstream Ollama model IDs and optional client-facing aliases.
+	Models []OllamaCloudModel `yaml:"models,omitempty" json:"models,omitempty"`
+
+	// Headers optionally adds extra HTTP headers for requests sent with this key.
+	Headers map[string]string `yaml:"headers,omitempty" json:"headers,omitempty"`
+
+	// ExcludedModels lists model IDs that should be excluded for this provider.
+	ExcludedModels []string `yaml:"excluded-models,omitempty" json:"excluded-models,omitempty"`
+}
+
+type OllamaCloudModel struct {
+	Name  string `yaml:"name" json:"name"`
+	Alias string `yaml:"alias,omitempty" json:"alias,omitempty"`
+}
+
+func (m OllamaCloudModel) GetName() string  { return m.Name }
+func (m OllamaCloudModel) GetAlias() string { return m.Alias }

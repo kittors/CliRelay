@@ -11,7 +11,7 @@ import (
 )
 
 // ConfigSynthesizer generates Auth entries from configuration API keys.
-// It handles Gemini, Claude, Bedrock, Codex, OpenCode Go, Cline, OpenAI-compat, and Vertex-compat providers.
+// It handles Gemini, Claude, Bedrock, Codex, OpenCode Go, Cline, Ollama Cloud, OpenAI-compat, and Vertex-compat providers.
 type ConfigSynthesizer struct{}
 
 // NewConfigSynthesizer creates a new ConfigSynthesizer instance.
@@ -38,6 +38,8 @@ func (s *ConfigSynthesizer) Synthesize(ctx *SynthesisContext) ([]*coreauth.Auth,
 	out = append(out, s.synthesizeOpenCodeGoKeys(ctx)...)
 	// Cline API Keys
 	out = append(out, s.synthesizeClineKeys(ctx)...)
+	// Ollama Cloud API Keys
+	out = append(out, s.synthesizeOllamaCloudKeys(ctx)...)
 	// OpenAI-compat
 	out = append(out, s.synthesizeOpenAICompat(ctx)...)
 	// Vertex-compat
@@ -404,6 +406,64 @@ func (s *ConfigSynthesizer) synthesizeClineKeys(ctx *SynthesisContext) []*coreau
 		a := &coreauth.Auth{
 			ID:         id,
 			Provider:   "cline",
+			Label:      label,
+			Prefix:     prefix,
+			Status:     coreauth.StatusActive,
+			ProxyURL:   proxyURL,
+			ProxyID:    proxyID,
+			Attributes: attrs,
+			CreatedAt:  now,
+			UpdatedAt:  now,
+		}
+		ApplyAuthExcludedModelsMeta(a, cfg, entry.ExcludedModels, "apikey")
+		ApplyDisableAllModelsState(a, entry.ExcludedModels)
+		out = append(out, a)
+	}
+	return out
+}
+
+// synthesizeOllamaCloudKeys creates Auth entries for Ollama Cloud API keys.
+func (s *ConfigSynthesizer) synthesizeOllamaCloudKeys(ctx *SynthesisContext) []*coreauth.Auth {
+	cfg := ctx.Config
+	now := ctx.Now
+	idGen := ctx.IDGenerator
+
+	out := make([]*coreauth.Auth, 0, len(cfg.OllamaCloudKey))
+	for i := range cfg.OllamaCloudKey {
+		entry := cfg.OllamaCloudKey[i]
+		key := strings.TrimSpace(entry.APIKey)
+		if key == "" {
+			continue
+		}
+		prefix := strings.TrimSpace(entry.Prefix)
+		base := strings.TrimSpace(entry.BaseURL)
+		if base == "" {
+			base = config.DefaultOllamaCloudBaseURL
+		}
+		base = strings.TrimSuffix(base, "/")
+		proxyURL := strings.TrimSpace(entry.ProxyURL)
+		proxyID := strings.TrimSpace(entry.ProxyID)
+		id, token := idGen.Next("ollama-cloud:apikey", key, base, proxyURL)
+		attrs := map[string]string{
+			"source":       fmt.Sprintf("config:ollama-cloud[%s]", token),
+			"api_key":      key,
+			"base_url":     base,
+			"provider_key": "ollama-cloud",
+		}
+		if entry.Priority != 0 {
+			attrs["priority"] = strconv.Itoa(entry.Priority)
+		}
+		if hash := diff.ComputeOllamaCloudModelsHash(entry.Models); hash != "" {
+			attrs["models_hash"] = hash
+		}
+		addConfigHeadersToAttrs(entry.Headers, attrs)
+		label := strings.TrimSpace(entry.Name)
+		if label == "" {
+			label = "ollama-cloud-apikey"
+		}
+		a := &coreauth.Auth{
+			ID:         id,
+			Provider:   "ollama-cloud",
 			Label:      label,
 			Prefix:     prefix,
 			Status:     coreauth.StatusActive,

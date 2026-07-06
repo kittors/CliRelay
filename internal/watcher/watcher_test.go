@@ -73,14 +73,17 @@ func TestBuildAPIKeyClientsCounts(t *testing.T) {
 			{AuthMode: "sigv4", AccessKeyID: "AKIA", SecretAccessKey: "SECRET"},
 		},
 		OpenCodeGoKey: []config.OpenCodeGoKey{{APIKey: "go1"}},
+		OllamaCloudKey: []config.OllamaCloudKey{
+			{APIKey: "ollama1"},
+		},
 		OpenAICompatibility: []config.OpenAICompatibility{
 			{APIKeyEntries: []config.OpenAICompatibilityAPIKey{{APIKey: "o1"}, {APIKey: "o2"}}},
 		},
 	}
 
-	gemini, vertex, claude, codex, bedrock, opencodeGo, compat := BuildAPIKeyClients(cfg)
-	if gemini != 2 || vertex != 1 || claude != 1 || codex != 2 || bedrock != 2 || opencodeGo != 1 || compat != 2 {
-		t.Fatalf("unexpected counts: %d %d %d %d %d %d %d", gemini, vertex, claude, codex, bedrock, opencodeGo, compat)
+	gemini, vertex, claude, codex, bedrock, opencodeGo, ollamaCloud, compat := BuildAPIKeyClients(cfg)
+	if gemini != 2 || vertex != 1 || claude != 1 || codex != 2 || bedrock != 2 || opencodeGo != 1 || ollamaCloud != 1 || compat != 2 {
+		t.Fatalf("unexpected counts: %d %d %d %d %d %d %d %d", gemini, vertex, claude, codex, bedrock, opencodeGo, ollamaCloud, compat)
 	}
 }
 

@@ -94,6 +94,8 @@ func syncConfigDerivedAuthModels(cfg *config.Config, auth *coreauth.Auth) {
 	switch strings.ToLower(strings.TrimSpace(auth.Provider)) {
 	case "opencode-go":
 		syncOpenCodeGoConfigAuthModels(reg, cfg, auth)
+	case "ollama-cloud":
+		syncOllamaCloudConfigAuthModels(reg, cfg, auth)
 	}
 }
 
@@ -163,6 +165,89 @@ func buildOpenCodeGoConfigModels(models []config.OpenCodeGoModel, staticModels [
 			Created:     now,
 			OwnedBy:     "opencode",
 			Type:        "opencode-go",
+			DisplayName: name,
+			UserDefined: true,
+		})
+	}
+	return out
+}
+
+func syncOllamaCloudConfigAuthModels(reg sdkmodelcatalog.Registry, cfg *config.Config, auth *coreauth.Auth) {
+	entry := resolveConfigOllamaCloudKey(cfg, auth)
+	if entry == nil {
+		reg.UnregisterClient(auth.ID)
+		return
+	}
+	models := sdkmodelcatalog.StaticModelDefinitionsByChannel("ollama-cloud")
+	if len(entry.Models) > 0 {
+		models = buildOllamaCloudConfigModels(entry.Models, models)
+	}
+	models = applyConfigModelExclusions(models, entry.ExcludedModels)
+	reg.RegisterClient(auth.ID, "ollama-cloud", applyConfigModelPrefixes(models, auth.Prefix, cfg.ForceModelPrefix))
+}
+
+func resolveConfigOllamaCloudKey(cfg *config.Config, auth *coreauth.Auth) *config.OllamaCloudKey {
+	if cfg == nil || auth == nil || auth.Attributes == nil {
+		return nil
+	}
+	attrKey := strings.TrimSpace(auth.Attributes["api_key"])
+	attrBase := strings.TrimSpace(auth.Attributes["base_url"])
+	if attrKey == "" {
+		return nil
+	}
+	for i := range cfg.OllamaCloudKey {
+		entry := &cfg.OllamaCloudKey[i]
+		cfgBase := strings.TrimSpace(entry.BaseURL)
+		if cfgBase == "" {
+			cfgBase = config.DefaultOllamaCloudBaseURL
+		}
+		if strings.EqualFold(strings.TrimSpace(entry.APIKey), attrKey) && (attrBase == "" || strings.EqualFold(cfgBase, attrBase)) {
+			return entry
+		}
+	}
+	return nil
+}
+
+func buildOllamaCloudConfigModels(models []config.OllamaCloudModel, staticModels []*sdkmodelcatalog.ModelInfo) []*sdkmodelcatalog.ModelInfo {
+	staticByID := make(map[string]*sdkmodelcatalog.ModelInfo, len(staticModels))
+	for _, model := range staticModels {
+		if model == nil {
+			continue
+		}
+		if id := strings.ToLower(strings.TrimSpace(model.ID)); id != "" {
+			staticByID[id] = model
+		}
+	}
+
+	now := time.Now().Unix()
+	seen := make(map[string]struct{}, len(models))
+	out := make([]*sdkmodelcatalog.ModelInfo, 0, len(models))
+	for i := range models {
+		name := strings.TrimSpace(models[i].Name)
+		alias := strings.TrimSpace(models[i].Alias)
+		if alias == "" {
+			alias = name
+		}
+		if alias == "" {
+			continue
+		}
+		key := strings.ToLower(alias)
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		if model := staticByID[strings.ToLower(name)]; model != nil && strings.EqualFold(name, alias) {
+			clone := *model
+			clone.UserDefined = true
+			out = append(out, &clone)
+			continue
+		}
+		out = append(out, &sdkmodelcatalog.ModelInfo{
+			ID:          alias,
+			Object:      "model",
+			Created:     now,
+			OwnedBy:     "ollama",
+			Type:        "ollama-cloud",
 			DisplayName: name,
 			UserDefined: true,
 		})
@@ -326,6 +411,8 @@ func RegisterExecutorForAuth(coreManager *coreauth.Manager, cfg *config.Config, 
 		coreManager.RegisterExecutor(executor.NewBedrockExecutor(cfg))
 	case "opencode-go":
 		coreManager.RegisterExecutor(executor.NewOpenCodeGoExecutor(cfg))
+	case "ollama-cloud":
+		coreManager.RegisterExecutor(executor.NewOllamaCloudExecutor(cfg))
 	case "qwen":
 		coreManager.RegisterExecutor(executor.NewQwenExecutor(cfg))
 	case "iflow":

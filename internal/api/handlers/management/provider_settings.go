@@ -407,6 +407,84 @@ func (h *ProviderKeysHandler) DeleteClineKey(c *gin.Context) {
 	c.JSON(400, gin.H{"error": "missing api-key, name, or index"})
 }
 
+// ollama-cloud-api-key: []OllamaCloudKey
+func (h *ProviderKeysHandler) GetOllamaCloudKeys(c *gin.Context) {
+	c.JSON(200, gin.H{"ollama-cloud-api-key": providerSettingsService(h).OllamaCloudKeys()})
+}
+
+func (h *ProviderKeysHandler) PutOllamaCloudKeys(c *gin.Context) {
+	data, err := c.GetRawData()
+	if err != nil {
+		c.JSON(400, gin.H{"error": "failed to read body"})
+		return
+	}
+	var arr []config.OllamaCloudKey
+	if err = json.Unmarshal(data, &arr); err != nil {
+		var obj struct {
+			Items []config.OllamaCloudKey `json:"items"`
+		}
+		if err2 := json.Unmarshal(data, &obj); err2 != nil || len(obj.Items) == 0 {
+			c.JSON(400, gin.H{"error": "invalid body"})
+			return
+		}
+		arr = obj.Items
+	}
+	if err := providerSettingsService(h).ReplaceOllamaCloudKeys(arr); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	h.persist(c)
+}
+
+func (h *ProviderKeysHandler) PatchOllamaCloudKey(c *gin.Context) {
+	var body struct {
+		APIKey *string                            `json:"api-key"`
+		Name   *string                            `json:"name"`
+		Index  *int                               `json:"index"`
+		Value  *providersettings.OllamaCloudPatch `json:"value"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil || body.Value == nil {
+		c.JSON(400, gin.H{"error": "invalid body"})
+		return
+	}
+	if err := providerSettingsService(h).PatchOllamaCloudKey(body.Index, body.APIKey, body.Name, *body.Value); err != nil {
+		if errors.Is(err, providersettings.ErrItemNotFound) {
+			c.JSON(404, gin.H{"error": "item not found"})
+			return
+		}
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	h.persist(c)
+}
+
+func (h *ProviderKeysHandler) DeleteOllamaCloudKey(c *gin.Context) {
+	if apiKey := strings.TrimSpace(c.Query("api-key")); apiKey != "" {
+		if providerSettingsService(h).DeleteOllamaCloudKeyByAPIKey(apiKey) {
+			h.persist(c)
+			return
+		}
+		c.JSON(404, gin.H{"error": "item not found"})
+		return
+	}
+	if name := strings.TrimSpace(c.Query("name")); name != "" {
+		if providerSettingsService(h).DeleteOllamaCloudKeyByName(name) {
+			h.persist(c)
+			return
+		}
+		c.JSON(404, gin.H{"error": "item not found"})
+		return
+	}
+	if idxStr := c.Query("index"); idxStr != "" {
+		var idx int
+		if _, err := fmt.Sscanf(idxStr, "%d", &idx); err == nil && providerSettingsService(h).DeleteOllamaCloudKeyByIndex(idx) {
+			h.persist(c)
+			return
+		}
+	}
+	c.JSON(400, gin.H{"error": "missing api-key, name, or index"})
+}
+
 // openai-compatibility: []OpenAICompatibility
 func (h *ProviderKeysHandler) GetOpenAICompat(c *gin.Context) {
 	c.JSON(200, gin.H{"openai-compatibility": providerSettingsService(h).OpenAICompatibility()})

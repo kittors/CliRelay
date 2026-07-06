@@ -32,6 +32,10 @@ type BedrockKey = coreconfig.BedrockKey
 type BedrockModel = coreconfig.BedrockModel
 type OpenCodeGoKey = coreconfig.OpenCodeGoKey
 type OpenCodeGoModel = coreconfig.OpenCodeGoModel
+type ClineKey = coreconfig.ClineKey
+type ClineModel = coreconfig.ClineModel
+type OllamaCloudKey = coreconfig.OllamaCloudKey
+type OllamaCloudModel = coreconfig.OllamaCloudModel
 type VertexCompatKey = coreconfig.VertexCompatKey
 type VertexCompatModel = coreconfig.VertexCompatModel
 type OpenAICompatibility = coreconfig.OpenAICompatibility
@@ -43,6 +47,8 @@ type TLS = coreconfig.TLSConfig
 const (
 	DefaultPanelGitHubRepository = coreconfig.DefaultPanelGitHubRepository
 	DefaultBedrockRegion         = coreconfig.DefaultBedrockRegion
+	DefaultClineBaseURL          = coreconfig.DefaultClineBaseURL
+	DefaultOllamaCloudBaseURL    = coreconfig.DefaultOllamaCloudBaseURL
 )
 
 func LoadConfig(configFile string) (*Config, error) { return coreconfig.LoadConfig(configFile) }

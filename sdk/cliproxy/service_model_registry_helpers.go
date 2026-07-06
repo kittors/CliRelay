@@ -341,6 +341,13 @@ func buildClineConfigModels(entry *config.ClineKey, staticModels []*ModelInfo) [
 	return buildConfigModels(entry.Models, "cline", "cline", nil)
 }
 
+func buildOllamaCloudConfigModels(entry *config.OllamaCloudKey, staticModels []*ModelInfo) []*ModelInfo {
+	if entry == nil || len(entry.Models) == 0 {
+		return nil
+	}
+	return buildNamedConfigModels(entry.Models, staticModels, "ollama", "ollama-cloud")
+}
+
 func buildNamedConfigModels[T interface{ GetName() string }](models []T, staticModels []*ModelInfo, ownedBy, modelType string) []*ModelInfo {
 	staticByID := make(map[string]*ModelInfo, len(staticModels))
 	for _, model := range staticModels {
