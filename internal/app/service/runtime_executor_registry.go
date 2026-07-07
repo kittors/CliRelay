@@ -111,8 +111,8 @@ func syncDynamicConfigAuthModels(reg sdkmodelcatalog.Registry, cfg *config.Confi
 			reg.UnregisterClient(auth.ID)
 			return
 		}
-		if len(entry.Models) > 0 {
-			models = buildNamedConfigModels(entry.Models, staticModels, ownedBy, provider)
+		if cleanModels := filterNamedConfigModels(entry.Models, isNotClinePassConfigModelID); len(cleanModels) > 0 {
+			models = buildNamedConfigModels(cleanModels, staticModels, ownedBy, provider)
 		}
 		excluded = entry.ExcludedModels
 	case "cline":
@@ -121,8 +121,8 @@ func syncDynamicConfigAuthModels(reg sdkmodelcatalog.Registry, cfg *config.Confi
 			reg.UnregisterClient(auth.ID)
 			return
 		}
-		if len(entry.Models) > 0 {
-			models = buildNamedConfigModels(entry.Models, staticModels, ownedBy, provider)
+		if cleanModels := filterNamedConfigModels(entry.Models, isClinePassConfigModelID); len(cleanModels) > 0 {
+			models = buildNamedConfigModels(cleanModels, staticModels, ownedBy, provider)
 		}
 		excluded = entry.ExcludedModels
 	case "ollama-cloud":
@@ -132,8 +132,8 @@ func syncDynamicConfigAuthModels(reg sdkmodelcatalog.Registry, cfg *config.Confi
 			reg.UnregisterClient(auth.ID)
 			return
 		}
-		if len(entry.Models) > 0 {
-			models = buildNamedConfigModels(entry.Models, staticModels, ownedBy, provider)
+		if cleanModels := filterNamedConfigModels(entry.Models, isNotClinePassConfigModelID); len(cleanModels) > 0 {
+			models = buildNamedConfigModels(cleanModels, staticModels, ownedBy, provider)
 		}
 		excluded = entry.ExcludedModels
 	default:
@@ -209,6 +209,28 @@ func resolveConfigOllamaCloudKey(cfg *config.Config, auth *coreauth.Auth) *confi
 type namedConfigModel interface {
 	GetName() string
 	GetAlias() string
+}
+
+func filterNamedConfigModels[T namedConfigModel](models []T, keep func(string) bool) []T {
+	if len(models) == 0 {
+		return nil
+	}
+	out := make([]T, 0, len(models))
+	for _, model := range models {
+		if keep(model.GetName()) {
+			out = append(out, model)
+		}
+	}
+	return out
+}
+
+func isClinePassConfigModelID(model string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "cline-pass/")
+}
+
+func isNotClinePassConfigModelID(model string) bool {
+	model = strings.TrimSpace(model)
+	return model != "" && !isClinePassConfigModelID(model)
 }
 
 func buildNamedConfigModels[T namedConfigModel](models []T, staticModels []*sdkmodelcatalog.ModelInfo, ownedBy, modelType string) []*sdkmodelcatalog.ModelInfo {
