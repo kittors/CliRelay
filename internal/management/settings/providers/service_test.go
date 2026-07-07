@@ -606,6 +606,51 @@ func TestClineKeysRejectNonClinePassModelsButAllowCrossProviderFallback(t *testi
 	}
 }
 
+func TestModelAccessProviderPatchDisabledAndClearExcludedModels(t *testing.T) {
+	cfg := &config.Config{
+		OpenCodeGoKey: []config.OpenCodeGoKey{{
+			APIKey:         "sk-opencode",
+			ExcludedModels: []string{"*"},
+			Models:         []config.OpenCodeGoModel{{Name: "qwen3.5-plus"}},
+		}},
+		ClineKey: []config.ClineKey{{
+			APIKey:         "sk-cline",
+			ExcludedModels: []string{"*"},
+			Models:         []config.ClineModel{{Name: "cline-pass/glm-5.2"}},
+		}},
+		OllamaCloudKey: []config.OllamaCloudKey{{
+			APIKey:         "sk-ollama",
+			ExcludedModels: []string{"*"},
+			Models:         []config.OllamaCloudModel{{Name: "gpt-oss:120b"}},
+		}},
+	}
+	svc := NewService(cfg, nil)
+	index := 0
+	disabled := true
+	clearExcluded := []string{}
+
+	if err := svc.PatchOpenCodeGoKey(&index, nil, nil, OpenCodeGoPatch{Disabled: &disabled, ExcludedModels: &clearExcluded}); err != nil {
+		t.Fatalf("PatchOpenCodeGoKey() error = %v, want nil", err)
+	}
+	if got := cfg.OpenCodeGoKey[0]; !got.Disabled || len(got.ExcludedModels) != 0 {
+		t.Fatalf("OpenCodeGoKey after patch = %#v, want disabled with cleared excluded models", got)
+	}
+
+	if err := svc.PatchClineKey(&index, nil, nil, ClinePatch{Disabled: &disabled, ExcludedModels: &clearExcluded}); err != nil {
+		t.Fatalf("PatchClineKey() error = %v, want nil", err)
+	}
+	if got := cfg.ClineKey[0]; !got.Disabled || len(got.ExcludedModels) != 0 {
+		t.Fatalf("ClineKey after patch = %#v, want disabled with cleared excluded models", got)
+	}
+
+	if err := svc.PatchOllamaCloudKey(&index, nil, nil, OllamaCloudPatch{Disabled: &disabled, ExcludedModels: &clearExcluded}); err != nil {
+		t.Fatalf("PatchOllamaCloudKey() error = %v, want nil", err)
+	}
+	if got := cfg.OllamaCloudKey[0]; !got.Disabled || len(got.ExcludedModels) != 0 {
+		t.Fatalf("OllamaCloudKey after patch = %#v, want disabled with cleared excluded models", got)
+	}
+}
+
 func stringPtr(value string) *string {
 	return &value
 }

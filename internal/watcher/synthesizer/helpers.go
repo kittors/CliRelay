@@ -118,6 +118,15 @@ func ApplyDisableAllModelsState(auth *coreauth.Auth, excludedModels []string) {
 	}
 }
 
+func ApplyConfigDisabledState(auth *coreauth.Auth, disabled bool) {
+	if auth == nil || !disabled {
+		return
+	}
+	auth.Disabled = true
+	auth.Status = coreauth.StatusDisabled
+	auth.StatusMessage = "disabled via config"
+}
+
 // addConfigHeadersToAttrs adds header configuration to auth attributes.
 // Headers are prefixed with "header:" in the attributes map.
 func addConfigHeadersToAttrs(headers map[string]string, attrs map[string]string) {

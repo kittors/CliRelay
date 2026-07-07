@@ -230,6 +230,9 @@ type OpenCodeGoKey struct {
 	// Name is a human-readable label for this channel.
 	Name string `yaml:"name,omitempty" json:"name,omitempty"`
 
+	// Disabled prevents this credential from serving requests without changing its model allowlist.
+	Disabled bool `yaml:"disabled,omitempty" json:"disabled,omitempty"`
+
 	// Priority controls selection preference when multiple credentials match.
 	// Higher values are preferred; defaults to 0.
 	Priority int `yaml:"priority,omitempty" json:"priority,omitempty"`
@@ -280,6 +283,9 @@ type ClineKey struct {
 	// Name is a human-readable label for this channel.
 	Name string `yaml:"name,omitempty" json:"name,omitempty"`
 
+	// Disabled prevents this credential from serving requests without changing its model allowlist.
+	Disabled bool `yaml:"disabled,omitempty" json:"disabled,omitempty"`
+
 	// Priority controls selection preference when multiple credentials match.
 	Priority int `yaml:"priority,omitempty" json:"priority,omitempty"`
 
@@ -324,6 +330,9 @@ type OllamaCloudKey struct {
 
 	// Name is a human-readable label for this channel.
 	Name string `yaml:"name,omitempty" json:"name,omitempty"`
+
+	// Disabled prevents this credential from serving requests without changing its model allowlist.
+	Disabled bool `yaml:"disabled,omitempty" json:"disabled,omitempty"`
 
 	// Priority controls selection preference when multiple credentials match.
 	// Higher values are preferred; defaults to 0.

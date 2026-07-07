@@ -357,7 +357,7 @@ func (s *ConfigSynthesizer) synthesizeOpenCodeGoKeys(ctx *SynthesisContext) []*c
 			UpdatedAt:  now,
 		}
 		ApplyAuthExcludedModelsMeta(a, cfg, entry.ExcludedModels, "apikey")
-		ApplyDisableAllModelsState(a, entry.ExcludedModels)
+		ApplyConfigDisabledState(a, entry.Disabled)
 		out = append(out, a)
 	}
 	return out
@@ -419,7 +419,7 @@ func (s *ConfigSynthesizer) synthesizeClineKeys(ctx *SynthesisContext) []*coreau
 			UpdatedAt:  now,
 		}
 		ApplyAuthExcludedModelsMeta(a, cfg, entry.ExcludedModels, "apikey")
-		ApplyDisableAllModelsState(a, entry.ExcludedModels)
+		ApplyConfigDisabledState(a, entry.Disabled)
 		out = append(out, a)
 	}
 	return out
@@ -481,7 +481,7 @@ func (s *ConfigSynthesizer) synthesizeOllamaCloudKeys(ctx *SynthesisContext) []*
 			UpdatedAt:  now,
 		}
 		ApplyAuthExcludedModelsMeta(a, cfg, entry.ExcludedModels, "apikey")
-		ApplyDisableAllModelsState(a, entry.ExcludedModels)
+		ApplyConfigDisabledState(a, entry.Disabled)
 		out = append(out, a)
 	}
 	return out

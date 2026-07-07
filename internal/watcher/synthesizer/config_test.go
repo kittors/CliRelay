@@ -266,6 +266,73 @@ func TestConfigSynthesizer_ClaudeKeyDisableAllModelsMarksAuthDisabled(t *testing
 	}
 }
 
+func TestConfigSynthesizer_ModelAccessWildcardDoesNotDisableAuth(t *testing.T) {
+	synth := NewConfigSynthesizer()
+	ctx := &SynthesisContext{
+		Config: &config.Config{
+			OpenCodeGoKey: []config.OpenCodeGoKey{{
+				APIKey:         "sk-opencode",
+				ExcludedModels: []string{"*"},
+				Models:         []config.OpenCodeGoModel{{Name: "qwen3.5-plus"}},
+			}},
+			ClineKey: []config.ClineKey{{
+				APIKey:         "sk-cline",
+				ExcludedModels: []string{"*"},
+				Models:         []config.ClineModel{{Name: "cline-pass/glm-5.2"}},
+			}},
+			OllamaCloudKey: []config.OllamaCloudKey{{
+				APIKey:         "sk-ollama",
+				ExcludedModels: []string{"*"},
+				Models:         []config.OllamaCloudModel{{Name: "gpt-oss:120b"}},
+			}},
+		},
+		Now:         time.Now(),
+		IDGenerator: NewStableIDGenerator(),
+	}
+
+	auths, err := synth.Synthesize(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(auths) != 3 {
+		t.Fatalf("expected 3 auths, got %d", len(auths))
+	}
+	for _, auth := range auths {
+		if auth.Disabled || auth.Status != coreauth.StatusActive {
+			t.Fatalf("%s disabled=%t status=%s, want active auth", auth.Provider, auth.Disabled, auth.Status)
+		}
+		if auth.Attributes["excluded_models"] != "*" {
+			t.Fatalf("%s excluded_models = %q, want wildcard metadata", auth.Provider, auth.Attributes["excluded_models"])
+		}
+	}
+}
+
+func TestConfigSynthesizer_ModelAccessDisabledFieldDisablesAuth(t *testing.T) {
+	synth := NewConfigSynthesizer()
+	ctx := &SynthesisContext{
+		Config: &config.Config{
+			OpenCodeGoKey:  []config.OpenCodeGoKey{{APIKey: "sk-opencode", Disabled: true}},
+			ClineKey:       []config.ClineKey{{APIKey: "sk-cline", Disabled: true}},
+			OllamaCloudKey: []config.OllamaCloudKey{{APIKey: "sk-ollama", Disabled: true}},
+		},
+		Now:         time.Now(),
+		IDGenerator: NewStableIDGenerator(),
+	}
+
+	auths, err := synth.Synthesize(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(auths) != 3 {
+		t.Fatalf("expected 3 auths, got %d", len(auths))
+	}
+	for _, auth := range auths {
+		if !auth.Disabled || auth.Status != coreauth.StatusDisabled || auth.StatusMessage != "disabled via config" {
+			t.Fatalf("%s disabled=%t status=%s message=%q, want config-disabled auth", auth.Provider, auth.Disabled, auth.Status, auth.StatusMessage)
+		}
+	}
+}
+
 func TestConfigSynthesizer_CodexKeys(t *testing.T) {
 	synth := NewConfigSynthesizer()
 	ctx := &SynthesisContext{

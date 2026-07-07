@@ -181,6 +181,7 @@ func (s *Service) deleteBedrockKeys(match func(config.BedrockKey) bool) bool {
 type OpenCodeGoPatch struct {
 	APIKey         *string                   `json:"api-key"`
 	Name           *string                   `json:"name"`
+	Disabled       *bool                     `json:"disabled"`
 	Priority       *int                      `json:"priority"`
 	Prefix         *string                   `json:"prefix"`
 	ProxyURL       *string                   `json:"proxy-url"`
@@ -263,6 +264,9 @@ func (s *Service) PatchOpenCodeGoKey(index *int, apiKey *string, name *string, p
 	}
 	if patch.Name != nil {
 		entry.Name = strings.TrimSpace(*patch.Name)
+	}
+	if patch.Disabled != nil {
+		entry.Disabled = *patch.Disabled
 	}
 	if patch.Priority != nil {
 		entry.Priority = *patch.Priority
@@ -353,6 +357,7 @@ func (s *Service) deleteOpenCodeGoKeyByIndex(index int) {
 type ClinePatch struct {
 	APIKey         *string              `json:"api-key"`
 	Name           *string              `json:"name"`
+	Disabled       *bool                `json:"disabled"`
 	Priority       *int                 `json:"priority"`
 	Prefix         *string              `json:"prefix"`
 	BaseURL        *string              `json:"base-url"`
@@ -434,6 +439,9 @@ func (s *Service) PatchClineKey(index *int, apiKey *string, name *string, patch 
 	}
 	if patch.Name != nil {
 		entry.Name = strings.TrimSpace(*patch.Name)
+	}
+	if patch.Disabled != nil {
+		entry.Disabled = *patch.Disabled
 	}
 	if patch.Priority != nil {
 		entry.Priority = *patch.Priority
@@ -521,6 +529,7 @@ func (s *Service) deleteClineKeyByIndex(index int) {
 type OllamaCloudPatch struct {
 	APIKey         *string                    `json:"api-key"`
 	Name           *string                    `json:"name"`
+	Disabled       *bool                      `json:"disabled"`
 	Priority       *int                       `json:"priority"`
 	Prefix         *string                    `json:"prefix"`
 	BaseURL        *string                    `json:"base-url"`
@@ -602,6 +611,9 @@ func (s *Service) PatchOllamaCloudKey(index *int, apiKey *string, name *string, 
 	}
 	if patch.Name != nil {
 		entry.Name = strings.TrimSpace(*patch.Name)
+	}
+	if patch.Disabled != nil {
+		entry.Disabled = *patch.Disabled
 	}
 	if patch.Priority != nil {
 		entry.Priority = *patch.Priority
