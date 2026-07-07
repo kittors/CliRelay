@@ -35,7 +35,7 @@ func TestClineKeyManagementPutGetPatchDelete(t *testing.T) {
 	if len(h.cfg.ClineKey[0].Models) != 1 || h.cfg.ClineKey[0].Models[0].Name != "cline-pass/glm-5.2" {
 		t.Fatalf("ClineKey models after PUT = %+v, want sanitized model", h.cfg.ClineKey[0].Models)
 	}
-	if len(h.cfg.ClineKey[0].ExcludedModels) != 1 || h.cfg.ClineKey[0].ExcludedModels[0] != "cline-pass/minimax-m3" {
+	if len(h.cfg.ClineKey[0].ExcludedModels) != 0 {
 		t.Fatalf("ClineKey excluded models after PUT = %+v", h.cfg.ClineKey[0].ExcludedModels)
 	}
 	if h.cfg.ClineKey[0].VisionFallbackModel != "cline-pass/mimo-v2.5-pro" {
@@ -50,7 +50,7 @@ func TestClineKeyManagementPutGetPatchDelete(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("PATCH status = %d body=%s", w.Code, w.Body.String())
 	}
-	if h.cfg.ClineKey[0].Name != "secondary" || h.cfg.ClineKey[0].BaseURL != config.DefaultClineBaseURL || len(h.cfg.ClineKey[0].Models) != 1 || h.cfg.ClineKey[0].Models[0].Name != "cline-pass/qwen3.7-max" || len(h.cfg.ClineKey[0].ExcludedModels) != 2 || h.cfg.ClineKey[0].ExcludedModels[0] != "cline-pass/deepseek-v4-flash" || h.cfg.ClineKey[0].ExcludedModels[1] != "*" || h.cfg.ClineKey[0].VisionFallbackModel != "cline-pass/qwen3.7-vl" {
+	if h.cfg.ClineKey[0].Name != "secondary" || h.cfg.ClineKey[0].BaseURL != config.DefaultClineBaseURL || len(h.cfg.ClineKey[0].Models) != 1 || h.cfg.ClineKey[0].Models[0].Name != "cline-pass/qwen3.7-max" || len(h.cfg.ClineKey[0].ExcludedModels) != 1 || h.cfg.ClineKey[0].ExcludedModels[0] != "*" || h.cfg.ClineKey[0].VisionFallbackModel != "cline-pass/qwen3.7-vl" {
 		t.Fatalf("ClineKey after PATCH = %+v", h.cfg.ClineKey[0])
 	}
 
@@ -67,7 +67,7 @@ func TestClineKeyManagementPutGetPatchDelete(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &getBody); err != nil {
 		t.Fatalf("decode GET body: %v", err)
 	}
-	if len(getBody.Items) != 1 || getBody.Items[0].Name != "secondary" || getBody.Items[0].BaseURL != config.DefaultClineBaseURL || len(getBody.Items[0].Models) != 1 || getBody.Items[0].Models[0].Name != "cline-pass/qwen3.7-max" || len(getBody.Items[0].ExcludedModels) != 2 || getBody.Items[0].ExcludedModels[0] != "cline-pass/deepseek-v4-flash" || getBody.Items[0].ExcludedModels[1] != "*" || getBody.Items[0].VisionFallbackModel != "cline-pass/qwen3.7-vl" {
+	if len(getBody.Items) != 1 || getBody.Items[0].Name != "secondary" || getBody.Items[0].BaseURL != config.DefaultClineBaseURL || len(getBody.Items[0].Models) != 1 || getBody.Items[0].Models[0].Name != "cline-pass/qwen3.7-max" || len(getBody.Items[0].ExcludedModels) != 1 || getBody.Items[0].ExcludedModels[0] != "*" || getBody.Items[0].VisionFallbackModel != "cline-pass/qwen3.7-vl" {
 		t.Fatalf("GET body = %+v", getBody)
 	}
 

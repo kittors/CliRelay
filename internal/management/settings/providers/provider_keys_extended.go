@@ -730,11 +730,7 @@ func NormalizeOpenCodeGoKey(entry *config.OpenCodeGoKey) {
 	entry.ProxyID = strings.TrimSpace(entry.ProxyID)
 	entry.Headers = config.NormalizeHeaders(entry.Headers)
 	entry.Models = config.NormalizeOpenCodeGoModels(entry.Models)
-	entry.ExcludedModels = config.NormalizeExcludedModels(entry.ExcludedModels)
-	entry.ExcludedModels = config.NormalizeExcludedModelsForConfiguredModels(
-		entry.ExcludedModels,
-		openCodeGoModelNames(entry.Models),
-	)
+	entry.ExcludedModels = config.NormalizeProviderModelAccessExcludedModels(entry.ExcludedModels)
 	entry.VisionFallbackModel = strings.TrimSpace(entry.VisionFallbackModel)
 	if workspaceID, err := normalizeOpenCodeGoWorkspaceID(entry.WorkspaceID); err == nil {
 		entry.WorkspaceID = workspaceID
@@ -771,11 +767,7 @@ func NormalizeClineKey(entry *config.ClineKey) {
 	entry.ProxyID = strings.TrimSpace(entry.ProxyID)
 	entry.Headers = config.NormalizeHeaders(entry.Headers)
 	entry.Models = config.NormalizeClineModels(entry.Models)
-	entry.ExcludedModels = config.NormalizeExcludedModels(entry.ExcludedModels)
-	entry.ExcludedModels = config.NormalizeExcludedModelsForConfiguredModels(
-		entry.ExcludedModels,
-		clineModelNames(entry.Models),
-	)
+	entry.ExcludedModels = config.NormalizeProviderModelAccessExcludedModels(entry.ExcludedModels)
 	entry.VisionFallbackModel = strings.TrimSpace(entry.VisionFallbackModel)
 }
 
@@ -806,11 +798,7 @@ func NormalizeOllamaCloudKey(entry *config.OllamaCloudKey) {
 	entry.ProxyID = strings.TrimSpace(entry.ProxyID)
 	entry.Headers = config.NormalizeHeaders(entry.Headers)
 	entry.Models = config.NormalizeOllamaCloudModels(entry.Models)
-	entry.ExcludedModels = config.NormalizeExcludedModels(entry.ExcludedModels)
-	entry.ExcludedModels = config.NormalizeExcludedModelsForConfiguredModels(
-		entry.ExcludedModels,
-		ollamaCloudModelNames(entry.Models),
-	)
+	entry.ExcludedModels = config.NormalizeProviderModelAccessExcludedModels(entry.ExcludedModels)
 	entry.VisionFallbackModel = strings.TrimSpace(entry.VisionFallbackModel)
 }
 
@@ -824,30 +812,6 @@ func NormalizedOllamaCloudKeyEntries(entries []config.OllamaCloudKey) []config.O
 		NormalizeOllamaCloudKey(&out[i])
 	}
 	return out
-}
-
-func openCodeGoModelNames(models []config.OpenCodeGoModel) []string {
-	names := make([]string, 0, len(models))
-	for _, model := range models {
-		names = append(names, model.Name)
-	}
-	return names
-}
-
-func clineModelNames(models []config.ClineModel) []string {
-	names := make([]string, 0, len(models))
-	for _, model := range models {
-		names = append(names, model.Name)
-	}
-	return names
-}
-
-func ollamaCloudModelNames(models []config.OllamaCloudModel) []string {
-	names := make([]string, 0, len(models))
-	for _, model := range models {
-		names = append(names, model.Name)
-	}
-	return names
 }
 
 func normalizeOpenCodeGoWorkspaceID(raw string) (string, error) {

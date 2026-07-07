@@ -19,7 +19,7 @@ func TestSanitizeOllamaCloudKeysPreservesModels(t *testing.T) {
 	if len(got.Models) != 1 || got.Models[0].Name != "gpt-oss:120b" {
 		t.Fatalf("models = %#v, want normalized per-key models", got.Models)
 	}
-	if len(got.ExcludedModels) != 2 || got.ExcludedModels[0] != "gpt-oss:20b" || got.ExcludedModels[1] != "*" {
-		t.Fatalf("excluded models = %#v, want normalized exclusions", got.ExcludedModels)
+	if len(got.ExcludedModels) != 1 || got.ExcludedModels[0] != "*" {
+		t.Fatalf("excluded models = %#v, want disable-all marker only", got.ExcludedModels)
 	}
 }

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/openaicompat"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/thinking"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
@@ -189,18 +190,19 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 		return resp, err
 	}
 	recorder.AppendResponseChunk(body)
+	responseBody := unwrapOpenAICompatProviderEnvelope(body)
 	// Preserve the clean, request-time model (ec.BaseModel) for the usage record.
 	// The upstream response's "model" field echoes a provider-internal path such as
 	// "accounts/fireworks/models/glm-5p2", which is not a valid model name for
 	// display, pricing lookup (CalculateCostV2) or filtering. All other executors
 	// (codex/claude/gemini/...) never override the reporter's model, so this keeps
 	// the OpenAI-compat path consistent with them.
-	reporter.publishWithContent(execCtx.Context, parseOpenAIUsage(body), string(req.Payload), string(body))
+	reporter.publishWithContent(execCtx.Context, parseOpenAIUsage(responseBody), string(req.Payload), string(responseBody))
 	// Ensure we at least record the request even if upstream doesn't return usage
 	reporter.ensurePublished(execCtx.Context)
 	// Translate response back to source format when needed
 	var param any
-	out := sdktranslator.TranslateNonStream(execCtx.Context, to, execCtx.SourceFormat, req.Model, opts.OriginalRequest, translated, body, &param)
+	out := sdktranslator.TranslateNonStream(execCtx.Context, to, execCtx.SourceFormat, req.Model, opts.OriginalRequest, translated, responseBody, &param)
 	resp = cliproxyexecutor.Response{Payload: []byte(out), Headers: httpResp.Header.Clone()}
 	if fallback.Applied {
 		resp.Payload = opencodeGoRewriteFallbackResponseModel(resp.Payload, fallback.OriginalModel)
@@ -331,10 +333,11 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 			// See the non-stream branch above: the upstream "model" echo is a
 			// provider-internal path (e.g. accounts/fireworks/models/glm-5p2) that
 			// must not override the clean request-time model used for logging/cost.
-			if detail, ok := parseOpenAIStreamUsage(line); ok {
+			lineForTranslation := unwrapOpenAICompatProviderEnvelopeSSELine(line)
+			if detail, ok := parseOpenAIStreamUsage(lineForTranslation); ok {
 				lastUsage = detail
 				hasUsage = true
-				if len(pendingResponsesCompleted) > 0 && isOpenAIStreamUsageOnly(line) {
+				if len(pendingResponsesCompleted) > 0 && isOpenAIStreamUsageOnly(lineForTranslation) {
 					out <- cliproxyexecutor.StreamChunk{Payload: patchResponsesCompletedUsage(pendingResponsesCompleted, lastUsage)}
 					pendingResponsesCompleted = nil
 				}
@@ -349,9 +352,9 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 
 			// OpenAI-compatible streams are SSE: lines typically prefixed with "data: ".
 			// Pass through translator; it yields one or more chunks for the target schema.
-			chunks := sdktranslator.TranslateStream(execCtx.Context, to, execCtx.SourceFormat, req.Model, opts.OriginalRequest, translated, bytes.Clone(line), &param)
+			chunks := sdktranslator.TranslateStream(execCtx.Context, to, execCtx.SourceFormat, req.Model, opts.OriginalRequest, translated, bytes.Clone(lineForTranslation), &param)
 			for i := range chunks {
-				if shouldHoldResponsesCompleted(execCtx.SourceFormat, line, []byte(chunks[i])) {
+				if shouldHoldResponsesCompleted(execCtx.SourceFormat, lineForTranslation, []byte(chunks[i])) {
 					pendingResponsesCompleted = []byte(chunks[i])
 					continue
 				}
@@ -380,6 +383,32 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 		result = opencodeGoRewriteFallbackStreamResult(result, fallback.OriginalModel)
 	}
 	return result, nil
+}
+
+func unwrapOpenAICompatProviderEnvelope(body []byte) []byte {
+	root := openaicompat.ParseResponseRoot(body)
+	if root.Raw == "" || root.Raw == string(body) {
+		return body
+	}
+	return []byte(root.Raw)
+}
+
+func unwrapOpenAICompatProviderEnvelopeSSELine(line []byte) []byte {
+	if !bytes.HasPrefix(line, []byte("data:")) {
+		return line
+	}
+	payload := bytes.TrimSpace(line[5:])
+	if len(payload) == 0 || bytes.Equal(payload, []byte("[DONE]")) {
+		return line
+	}
+	unwrapped := unwrapOpenAICompatProviderEnvelope(payload)
+	if bytes.Equal(unwrapped, payload) {
+		return line
+	}
+	out := make([]byte, 0, len("data: ")+len(unwrapped))
+	out = append(out, "data: "...)
+	out = append(out, unwrapped...)
+	return out
 }
 
 func shouldHoldResponsesCompleted(sourceFormat sdktranslator.Format, line, chunk []byte) bool {

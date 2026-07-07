@@ -118,7 +118,7 @@ func TestSyncDynamicConfigAuthModelsFiltersProviderDirtyModels(t *testing.T) {
 	}
 }
 
-func TestSyncDynamicConfigAuthModelsFallsBackWhenOnlyDirtyModelsRemain(t *testing.T) {
+func TestSyncDynamicConfigAuthModelsUnregistersWhenOnlyDirtyModelsRemain(t *testing.T) {
 	reg := &testModelRegistry{}
 	syncDynamicConfigAuthModels(reg, &config.Config{
 		OpenCodeGoKey: []config.OpenCodeGoKey{{
@@ -131,11 +131,8 @@ func TestSyncDynamicConfigAuthModelsFallsBackWhenOnlyDirtyModelsRemain(t *testin
 		Attributes: map[string]string{"api_key": "go-key"},
 	})
 
-	if !hasSDKModelID(reg.models, "deepseek-v4-flash") {
-		t.Fatalf("registered models = %+v, want OpenCode Go defaults", reg.models)
-	}
-	if hasSDKModelID(reg.models, "cline-pass/glm-5.2") {
-		t.Fatalf("registered dirty fallback model in %+v", reg.models)
+	if !reg.unregistered {
+		t.Fatalf("registered models = %+v, want unregister", reg.models)
 	}
 }
 

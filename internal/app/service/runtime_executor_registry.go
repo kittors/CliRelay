@@ -111,20 +111,20 @@ func syncDynamicConfigAuthModels(reg sdkmodelcatalog.Registry, cfg *config.Confi
 			reg.UnregisterClient(auth.ID)
 			return
 		}
-		if cleanModels := filterNamedConfigModels(entry.Models, isNotClinePassConfigModelID); len(cleanModels) > 0 {
-			models = buildNamedConfigModels(cleanModels, staticModels, ownedBy, provider)
+		if len(entry.Models) > 0 {
+			models = buildNamedConfigModels(filterNamedConfigModels(entry.Models, isNotClinePassConfigModelID), staticModels, ownedBy, provider)
 		}
-		excluded = entry.ExcludedModels
+		excluded = providerModelAccessExcludedModels(entry.ExcludedModels)
 	case "cline":
 		entry := resolveConfigClineKey(cfg, auth)
 		if entry == nil {
 			reg.UnregisterClient(auth.ID)
 			return
 		}
-		if cleanModels := filterNamedConfigModels(entry.Models, isClinePassConfigModelID); len(cleanModels) > 0 {
-			models = buildNamedConfigModels(cleanModels, staticModels, ownedBy, provider)
+		if len(entry.Models) > 0 {
+			models = buildNamedConfigModels(filterNamedConfigModels(entry.Models, isClinePassConfigModelID), staticModels, ownedBy, provider)
 		}
-		excluded = entry.ExcludedModels
+		excluded = providerModelAccessExcludedModels(entry.ExcludedModels)
 	case "ollama-cloud":
 		ownedBy = "ollama"
 		entry := resolveConfigOllamaCloudKey(cfg, auth)
@@ -132,10 +132,10 @@ func syncDynamicConfigAuthModels(reg sdkmodelcatalog.Registry, cfg *config.Confi
 			reg.UnregisterClient(auth.ID)
 			return
 		}
-		if cleanModels := filterNamedConfigModels(entry.Models, isNotClinePassConfigModelID); len(cleanModels) > 0 {
-			models = buildNamedConfigModels(cleanModels, staticModels, ownedBy, provider)
+		if len(entry.Models) > 0 {
+			models = buildNamedConfigModels(filterNamedConfigModels(entry.Models, isNotClinePassConfigModelID), staticModels, ownedBy, provider)
 		}
-		excluded = entry.ExcludedModels
+		excluded = providerModelAccessExcludedModels(entry.ExcludedModels)
 	default:
 		reg.UnregisterClient(auth.ID)
 		return
@@ -146,6 +146,15 @@ func syncDynamicConfigAuthModels(reg sdkmodelcatalog.Registry, cfg *config.Confi
 		return
 	}
 	reg.RegisterClient(auth.ID, provider, applyConfigModelPrefixes(models, auth.Prefix, cfg.ForceModelPrefix))
+}
+
+func providerModelAccessExcludedModels(excluded []string) []string {
+	for _, model := range excluded {
+		if strings.TrimSpace(model) == "*" {
+			return []string{"*"}
+		}
+	}
+	return nil
 }
 
 func resolveConfigOpenCodeGoKey(cfg *config.Config, auth *coreauth.Auth) *config.OpenCodeGoKey {
