@@ -11,6 +11,8 @@ import (
 
 var openCodeGoServerIDPattern = regexp.MustCompile(`(?i)^[a-f0-9]{64}$`)
 
+var ErrProviderAPIKeyRequired = errors.New("api-key is required")
+
 type BedrockKeyPatch struct {
 	Name            *string                `json:"name"`
 	Priority        *int                   `json:"priority"`
@@ -212,6 +214,9 @@ func (s *Service) ReplaceOpenCodeGoKeys(entries []config.OpenCodeGoKey) error {
 			filtered = append(filtered, entries[i])
 		}
 	}
+	if len(entries) > 0 && len(filtered) == 0 {
+		return ErrProviderAPIKeyRequired
+	}
 	prev := append([]config.OpenCodeGoKey(nil), s.cfg.OpenCodeGoKey...)
 	s.cfg.OpenCodeGoKey = filtered
 	s.cfg.SanitizeOpenCodeGoKeys()
@@ -291,8 +296,7 @@ func (s *Service) PatchOpenCodeGoKey(index *int, apiKey *string, name *string, p
 	}
 	NormalizeOpenCodeGoKey(&entry)
 	if entry.APIKey == "" {
-		s.deleteOpenCodeGoKeyByIndex(targetIndex)
-		return nil
+		return ErrProviderAPIKeyRequired
 	}
 	if err := validateOpenCodeGoKeyModels(entry); err != nil {
 		return err
@@ -381,6 +385,9 @@ func (s *Service) ReplaceClineKeys(entries []config.ClineKey) error {
 			filtered = append(filtered, entries[i])
 		}
 	}
+	if len(entries) > 0 && len(filtered) == 0 {
+		return ErrProviderAPIKeyRequired
+	}
 	prev := append([]config.ClineKey(nil), s.cfg.ClineKey...)
 	s.cfg.ClineKey = filtered
 	s.cfg.SanitizeClineKeys()
@@ -457,8 +464,7 @@ func (s *Service) PatchClineKey(index *int, apiKey *string, name *string, patch 
 	}
 	NormalizeClineKey(&entry)
 	if entry.APIKey == "" {
-		s.deleteClineKeyByIndex(targetIndex)
-		return nil
+		return ErrProviderAPIKeyRequired
 	}
 	if err := validateClineKeyModels(entry); err != nil {
 		return err
@@ -547,6 +553,9 @@ func (s *Service) ReplaceOllamaCloudKeys(entries []config.OllamaCloudKey) error 
 			filtered = append(filtered, entries[i])
 		}
 	}
+	if len(entries) > 0 && len(filtered) == 0 {
+		return ErrProviderAPIKeyRequired
+	}
 	prev := append([]config.OllamaCloudKey(nil), s.cfg.OllamaCloudKey...)
 	s.cfg.OllamaCloudKey = filtered
 	s.cfg.SanitizeOllamaCloudKeys()
@@ -623,8 +632,7 @@ func (s *Service) PatchOllamaCloudKey(index *int, apiKey *string, name *string, 
 	}
 	NormalizeOllamaCloudKey(&entry)
 	if entry.APIKey == "" {
-		s.deleteOllamaCloudKeyByIndex(targetIndex)
-		return nil
+		return ErrProviderAPIKeyRequired
 	}
 	if err := validateOllamaCloudKeyModels(entry); err != nil {
 		return err

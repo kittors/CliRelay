@@ -415,6 +415,114 @@ func TestOpenCodeGoKeysKeepPerKeyModels(t *testing.T) {
 	}
 }
 
+func TestExtendedProviderReplaceRejectsNonEmptyPayloadWithoutAPIKeys(t *testing.T) {
+	t.Run("opencode go", func(t *testing.T) {
+		cfg := &config.Config{OpenCodeGoKey: []config.OpenCodeGoKey{{APIKey: "existing"}}}
+		svc := NewService(cfg, nil)
+
+		err := svc.ReplaceOpenCodeGoKeys([]config.OpenCodeGoKey{{Name: "empty"}})
+		if !errors.Is(err, ErrProviderAPIKeyRequired) {
+			t.Fatalf("ReplaceOpenCodeGoKeys() error = %v, want api-key required", err)
+		}
+		if got := cfg.OpenCodeGoKey; len(got) != 1 || got[0].APIKey != "existing" {
+			t.Fatalf("OpenCodeGoKey after rejected replace = %#v, want unchanged", got)
+		}
+
+		if err := svc.ReplaceOpenCodeGoKeys(nil); err != nil {
+			t.Fatalf("ReplaceOpenCodeGoKeys(nil) error = %v, want nil", err)
+		}
+		if len(cfg.OpenCodeGoKey) != 0 {
+			t.Fatalf("OpenCodeGoKey after explicit clear = %#v, want empty", cfg.OpenCodeGoKey)
+		}
+	})
+
+	t.Run("cline", func(t *testing.T) {
+		cfg := &config.Config{ClineKey: []config.ClineKey{{APIKey: "existing"}}}
+		svc := NewService(cfg, nil)
+
+		err := svc.ReplaceClineKeys([]config.ClineKey{{Name: "empty"}})
+		if !errors.Is(err, ErrProviderAPIKeyRequired) {
+			t.Fatalf("ReplaceClineKeys() error = %v, want api-key required", err)
+		}
+		if got := cfg.ClineKey; len(got) != 1 || got[0].APIKey != "existing" {
+			t.Fatalf("ClineKey after rejected replace = %#v, want unchanged", got)
+		}
+
+		if err := svc.ReplaceClineKeys(nil); err != nil {
+			t.Fatalf("ReplaceClineKeys(nil) error = %v, want nil", err)
+		}
+		if len(cfg.ClineKey) != 0 {
+			t.Fatalf("ClineKey after explicit clear = %#v, want empty", cfg.ClineKey)
+		}
+	})
+
+	t.Run("ollama cloud", func(t *testing.T) {
+		cfg := &config.Config{OllamaCloudKey: []config.OllamaCloudKey{{APIKey: "existing"}}}
+		svc := NewService(cfg, nil)
+
+		err := svc.ReplaceOllamaCloudKeys([]config.OllamaCloudKey{{Name: "empty"}})
+		if !errors.Is(err, ErrProviderAPIKeyRequired) {
+			t.Fatalf("ReplaceOllamaCloudKeys() error = %v, want api-key required", err)
+		}
+		if got := cfg.OllamaCloudKey; len(got) != 1 || got[0].APIKey != "existing" {
+			t.Fatalf("OllamaCloudKey after rejected replace = %#v, want unchanged", got)
+		}
+
+		if err := svc.ReplaceOllamaCloudKeys(nil); err != nil {
+			t.Fatalf("ReplaceOllamaCloudKeys(nil) error = %v, want nil", err)
+		}
+		if len(cfg.OllamaCloudKey) != 0 {
+			t.Fatalf("OllamaCloudKey after explicit clear = %#v, want empty", cfg.OllamaCloudKey)
+		}
+	})
+}
+
+func TestExtendedProviderPatchRejectsEmptyAPIKeyWithoutDeleting(t *testing.T) {
+	empty := " "
+
+	t.Run("opencode go", func(t *testing.T) {
+		cfg := &config.Config{OpenCodeGoKey: []config.OpenCodeGoKey{{APIKey: "existing", Name: "go"}}}
+		svc := NewService(cfg, nil)
+		index := 0
+
+		err := svc.PatchOpenCodeGoKey(&index, nil, nil, OpenCodeGoPatch{APIKey: &empty})
+		if !errors.Is(err, ErrProviderAPIKeyRequired) {
+			t.Fatalf("PatchOpenCodeGoKey() error = %v, want api-key required", err)
+		}
+		if got := cfg.OpenCodeGoKey; len(got) != 1 || got[0].APIKey != "existing" {
+			t.Fatalf("OpenCodeGoKey after rejected patch = %#v, want unchanged", got)
+		}
+	})
+
+	t.Run("cline", func(t *testing.T) {
+		cfg := &config.Config{ClineKey: []config.ClineKey{{APIKey: "existing", Name: "cline"}}}
+		svc := NewService(cfg, nil)
+		index := 0
+
+		err := svc.PatchClineKey(&index, nil, nil, ClinePatch{APIKey: &empty})
+		if !errors.Is(err, ErrProviderAPIKeyRequired) {
+			t.Fatalf("PatchClineKey() error = %v, want api-key required", err)
+		}
+		if got := cfg.ClineKey; len(got) != 1 || got[0].APIKey != "existing" {
+			t.Fatalf("ClineKey after rejected patch = %#v, want unchanged", got)
+		}
+	})
+
+	t.Run("ollama cloud", func(t *testing.T) {
+		cfg := &config.Config{OllamaCloudKey: []config.OllamaCloudKey{{APIKey: "existing", Name: "ollama"}}}
+		svc := NewService(cfg, nil)
+		index := 0
+
+		err := svc.PatchOllamaCloudKey(&index, nil, nil, OllamaCloudPatch{APIKey: &empty})
+		if !errors.Is(err, ErrProviderAPIKeyRequired) {
+			t.Fatalf("PatchOllamaCloudKey() error = %v, want api-key required", err)
+		}
+		if got := cfg.OllamaCloudKey; len(got) != 1 || got[0].APIKey != "existing" {
+			t.Fatalf("OllamaCloudKey after rejected patch = %#v, want unchanged", got)
+		}
+	})
+}
+
 func TestClineKeysRejectNonClinePassModelsButAllowCrossProviderFallback(t *testing.T) {
 	cfg := &config.Config{
 		ClineKey: []config.ClineKey{{
