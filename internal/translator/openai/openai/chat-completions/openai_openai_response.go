@@ -8,6 +8,8 @@ package chat_completions
 import (
 	"bytes"
 	"context"
+
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/openaicompat"
 )
 
 // ConvertOpenAIResponseToOpenAI translates a single chunk of a streaming response from the
@@ -31,6 +33,9 @@ func ConvertOpenAIResponseToOpenAI(_ context.Context, _ string, originalRequestR
 	if bytes.Equal(rawJSON, []byte("[DONE]")) {
 		return []string{}
 	}
+	if root := openaicompat.ParseResponseRoot(rawJSON); root.Raw != "" {
+		return []string{root.Raw}
+	}
 	return []string{string(rawJSON)}
 }
 
@@ -48,5 +53,8 @@ func ConvertOpenAIResponseToOpenAI(_ context.Context, _ string, originalRequestR
 // Returns:
 //   - string: An OpenAI-compatible JSON response containing all message content and metadata
 func ConvertOpenAIResponseToOpenAINonStream(ctx context.Context, modelName string, originalRequestRawJSON, requestRawJSON, rawJSON []byte, param *any) string {
+	if root := openaicompat.ParseResponseRoot(rawJSON); root.Raw != "" {
+		return root.Raw
+	}
 	return string(rawJSON)
 }
