@@ -107,6 +107,43 @@ func TestRegisterModelsForAuth_ClineUsesPerKeyModels(t *testing.T) {
 	}
 }
 
+func TestRegisterModelsForAuth_ClineFiltersDirtyNonClinePassModels(t *testing.T) {
+	service := &Service{cfg: &config.Config{
+		ClineKey: []config.ClineKey{{
+			APIKey: "cline-key-dirty",
+			Models: []config.ClineModel{
+				{Name: "glm-5.2"},
+				{Name: "cline-pass/qwen3.7-max"},
+			},
+		}},
+	}}
+	auth := &coreauth.Auth{
+		ID:       "cline-auth-dirty-models",
+		Provider: "cline",
+		Status:   coreauth.StatusActive,
+		Attributes: map[string]string{
+			"auth_kind": "apikey",
+			"api_key":   "cline-key-dirty",
+		},
+	}
+
+	registry := GlobalModelRegistry()
+	registry.UnregisterClient(auth.ID)
+	t.Cleanup(func() {
+		registry.UnregisterClient(auth.ID)
+	})
+
+	service.registerModelsForAuth(context.Background(), auth)
+
+	models := registry.GetModelsForClient(auth.ID)
+	if len(models) != 1 || !hasModelID(models, "cline-pass/qwen3.7-max") {
+		t.Fatalf("expected only valid ClinePass model after dirty filtering, got %+v", models)
+	}
+	if hasModelID(models, "glm-5.2") {
+		t.Fatalf("dirty non-ClinePass model should not be registered for Cline; got %+v", models)
+	}
+}
+
 func TestRegisterModelsForAuth_ClineUsesPerKeyAlias(t *testing.T) {
 	service := &Service{cfg: &config.Config{
 		ClineKey: []config.ClineKey{{

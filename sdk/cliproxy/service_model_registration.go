@@ -152,7 +152,9 @@ func (s *Service) registerModelsForAuth(ctx context.Context, a *coreauth.Auth) {
 		models = sdkmodelcatalog.StaticModelDefinitionsByChannel("opencode-go")
 		if entry := s.resolveConfigOpenCodeGoKey(a); entry != nil && authKind == "apikey" {
 			if len(entry.Models) > 0 {
-				models = buildOpenCodeGoConfigModels(entry)
+				if configuredModels := buildOpenCodeGoConfigModels(entry); len(configuredModels) > 0 {
+					models = configuredModels
+				}
 			}
 			excluded = entry.ExcludedModels
 		}
@@ -161,7 +163,9 @@ func (s *Service) registerModelsForAuth(ctx context.Context, a *coreauth.Auth) {
 		models = sdkmodelcatalog.StaticModelDefinitionsByChannel("cline")
 		if entry := s.resolveConfigClineKey(a); entry != nil && authKind == "apikey" {
 			if len(entry.Models) > 0 {
-				models = buildClineConfigModels(entry)
+				if configuredModels := buildClineConfigModels(entry); len(configuredModels) > 0 {
+					models = configuredModels
+				}
 			}
 			excluded = entry.ExcludedModels
 		}
@@ -170,7 +174,9 @@ func (s *Service) registerModelsForAuth(ctx context.Context, a *coreauth.Auth) {
 		models = sdkmodelcatalog.StaticModelDefinitionsByChannel("ollama-cloud")
 		if entry := s.resolveConfigOllamaCloudKey(a); entry != nil && authKind == "apikey" {
 			if len(entry.Models) > 0 {
-				models = buildOllamaCloudConfigModels(entry)
+				if configuredModels := buildOllamaCloudConfigModels(entry); len(configuredModels) > 0 {
+					models = configuredModels
+				}
 			}
 			excluded = entry.ExcludedModels
 		}

@@ -187,6 +187,23 @@ func buildConfigModels[T modelEntry](
 	return out
 }
 
+func filterConfigModels[T modelEntry](models []T, keep func(string) bool) []T {
+	if len(models) == 0 {
+		return nil
+	}
+	out := make([]T, 0, len(models))
+	for _, model := range models {
+		if keep(model.GetName()) {
+			out = append(out, model)
+		}
+	}
+	return out
+}
+
+func isClinePassConfigModelID(model string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "cline-pass/")
+}
+
 func buildVertexCompatConfigModels(
 	entry *config.VertexCompatKey,
 	resolveThinking staticThinkingResolver,
@@ -331,21 +348,28 @@ func buildOpenCodeGoConfigModels(entry *config.OpenCodeGoKey) []*ModelInfo {
 	if entry == nil || len(entry.Models) == 0 {
 		return nil
 	}
-	return buildConfigModels(entry.Models, "opencode", "opencode-go", nil)
+	models := filterConfigModels(entry.Models, func(name string) bool {
+		return !isClinePassConfigModelID(name)
+	})
+	return buildConfigModels(models, "opencode", "opencode-go", nil)
 }
 
 func buildClineConfigModels(entry *config.ClineKey) []*ModelInfo {
 	if entry == nil || len(entry.Models) == 0 {
 		return nil
 	}
-	return buildConfigModels(entry.Models, "cline", "cline", nil)
+	models := filterConfigModels(entry.Models, isClinePassConfigModelID)
+	return buildConfigModels(models, "cline", "cline", nil)
 }
 
 func buildOllamaCloudConfigModels(entry *config.OllamaCloudKey) []*ModelInfo {
 	if entry == nil || len(entry.Models) == 0 {
 		return nil
 	}
-	return buildConfigModels(entry.Models, "ollama", "ollama-cloud", nil)
+	models := filterConfigModels(entry.Models, func(name string) bool {
+		return !isClinePassConfigModelID(name)
+	})
+	return buildConfigModels(models, "ollama", "ollama-cloud", nil)
 }
 
 func rewriteModelInfoName(name, oldID, newID string) string {
