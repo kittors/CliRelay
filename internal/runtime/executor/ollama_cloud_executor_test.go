@@ -18,15 +18,17 @@ import (
 
 func TestOllamaCloudExecutorRoutesChatToOpenAICompatibleV1(t *testing.T) {
 	var gotPath string
+	var gotBody []byte
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
+		gotBody, _ = io.ReadAll(r.Body)
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"id":"chatcmpl_1","object":"chat.completion","created":1,"model":"gpt-oss:120b","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+		_, _ = w.Write([]byte(`{"model":"gpt-oss:120b","created_at":"2026-07-07T00:00:00Z","message":{"role":"assistant","content":"ok"},"done":true,"done_reason":"stop","prompt_eval_count":1,"eval_count":1}`))
 	}))
 	defer server.Close()
 
 	exec := NewOllamaCloudExecutor(&config.Config{})
-	auth := &cliproxyauth.Auth{Attributes: map[string]string{"api_key": "test-key", "base_url": server.URL}}
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{"api_key": "test-key", "base_url": server.URL + "/v1"}}
 	resp, err := exec.Execute(context.Background(), auth, cliproxyexecutor.Request{
 		Model:   "gpt-oss:120b",
 		Payload: []byte(`{"model":"gpt-oss:120b","messages":[{"role":"user","content":"hi"}]}`),
@@ -34,22 +36,44 @@ func TestOllamaCloudExecutorRoutesChatToOpenAICompatibleV1(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Execute returned error: %v", err)
 	}
-	if gotPath != "/v1/chat/completions" {
-		t.Fatalf("path = %q, want /v1/chat/completions", gotPath)
+	if gotPath != "/api/chat" {
+		t.Fatalf("path = %q, want /api/chat", gotPath)
+	}
+	if got := gjson.GetBytes(gotBody, "keep_alive").String(); got != ollamaCloudNativeKeepAlive {
+		t.Fatalf("keep_alive = %q, want %q; body=%s", got, ollamaCloudNativeKeepAlive, gotBody)
 	}
 	if gotText := gjson.GetBytes(resp.Payload, "choices.0.message.content").String(); gotText != "ok" {
 		t.Fatalf("response text = %q, want ok; payload=%s", gotText, string(resp.Payload))
 	}
 }
 
-func TestOllamaCloudExecutorRoutesResponsesToOfficialEndpoint(t *testing.T) {
+func TestOllamaCloudNativeCacheKeyScopesExplicitPromptKey(t *testing.T) {
+	source := []byte(`{"model":"glm-5.2","prompt_cache_key":"shared-session","input":"hi"}`)
+	authA := &cliproxyauth.Auth{ID: "ollama-cloud:one"}
+	authB := &cliproxyauth.Auth{ID: "ollama-cloud:two"}
+
+	keyA := ollamaNativeCacheKey(authA, "glm-5.2", source, nil, cliproxyexecutor.Options{})
+	keyB := ollamaNativeCacheKey(authB, "glm-5.2", source, nil, cliproxyexecutor.Options{})
+
+	if keyA == "" || keyB == "" {
+		t.Fatalf("cache keys must be present: %q / %q", keyA, keyB)
+	}
+	if keyA == keyB {
+		t.Fatalf("cache key not isolated by auth: %q", keyA)
+	}
+	if strings.Contains(keyA, "shared-session") || strings.Contains(keyB, "shared-session") {
+		t.Fatalf("cache key leaked raw prompt key: %q / %q", keyA, keyB)
+	}
+}
+
+func TestOllamaCloudExecutorRoutesResponsesToNativeChat(t *testing.T) {
 	var gotPath string
 	var gotBody []byte
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
 		gotBody, _ = io.ReadAll(r.Body)
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"id":"resp_1","object":"response","created_at":1,"model":"gpt-oss:120b","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`))
+		_, _ = w.Write([]byte(`{"model":"gpt-oss:120b","created_at":"2026-07-07T00:00:00Z","message":{"role":"assistant","content":"ok"},"done":true,"done_reason":"stop","prompt_eval_count":1,"eval_count":1}`))
 	}))
 	defer server.Close()
 
@@ -62,56 +86,67 @@ func TestOllamaCloudExecutorRoutesResponsesToOfficialEndpoint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Execute returned error: %v", err)
 	}
-	if gotPath != "/v1/responses" {
-		t.Fatalf("path = %q, want /v1/responses", gotPath)
+	if gotPath != "/api/chat" {
+		t.Fatalf("path = %q, want /api/chat", gotPath)
 	}
 	if gotModel := gjson.GetBytes(gotBody, "model").String(); gotModel != "gpt-oss:120b" {
 		t.Fatalf("upstream model = %q, want gpt-oss:120b; body=%s", gotModel, string(gotBody))
+	}
+	if gjson.GetBytes(gotBody, "prompt_cache_key").Exists() {
+		t.Fatalf("native Ollama body must not forward OpenAI prompt_cache_key: %s", gotBody)
 	}
 	if gotText := gjson.GetBytes(resp.Payload, "output.0.content.0.text").String(); gotText != "ok" {
 		t.Fatalf("response text = %q, want ok; payload=%s", gotText, string(resp.Payload))
 	}
 }
 
-func TestOllamaCloudExecutorResponsesAddsSessionPromptCacheKey(t *testing.T) {
-	var gotBody []byte
+func TestOllamaCloudExecutorNativeResponsesReportsEstimatedCacheHit(t *testing.T) {
+	calls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotBody, _ = io.ReadAll(r.Body)
+		calls++
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"id":"resp_1","object":"response","created_at":1,"model":"glm-5.2","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":10,"input_tokens_details":{"cached_tokens":3},"output_tokens":1,"total_tokens":11}}`))
+		_, _ = w.Write([]byte(`{"model":"glm-5.2","created_at":"2026-07-07T00:00:00Z","message":{"role":"assistant","content":"ok"},"done":true,"done_reason":"stop","prompt_eval_count":1000,"eval_count":1}`))
 	}))
 	defer server.Close()
 
 	exec := NewOllamaCloudExecutor(&config.Config{})
 	auth := &cliproxyauth.Auth{ID: "ollama-cloud:apikey:one", Attributes: map[string]string{"api_key": "test-key", "base_url": server.URL}}
-	_, err := exec.Execute(context.Background(), auth, cliproxyexecutor.Request{
-		Model:   "glm-5.2",
-		Payload: []byte(`{"model":"glm-5.2","input":"hi"}`),
-	}, cliproxyexecutor.Options{
+	longPrompt := strings.Repeat("cached-prefix ", 500)
+	opts := cliproxyexecutor.Options{
 		SourceFormat: sdktranslator.FormatOpenAIResponse,
 		Metadata: map[string]any{
 			cliproxyexecutor.SessionStickyMetadataKey: "header:x-session-id:session-1",
 		},
-	})
+	}
+	_, err := exec.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "glm-5.2",
+		Payload: []byte(`{"model":"glm-5.2","input":"` + longPrompt + `"}`),
+	}, opts)
 	if err != nil {
 		t.Fatalf("Execute returned error: %v", err)
 	}
-	key := gjson.GetBytes(gotBody, "prompt_cache_key").String()
-	if key == "" {
-		t.Fatalf("prompt_cache_key missing in upstream body: %s", gotBody)
+	resp, err := exec.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "glm-5.2",
+		Payload: []byte(`{"model":"glm-5.2","input":"` + longPrompt + ` plus one more turn"}`),
+	}, opts)
+	if err != nil {
+		t.Fatalf("Execute returned error: %v", err)
 	}
-	if strings.Contains(key, "session-1") {
-		t.Fatalf("prompt_cache_key leaked raw session: %q", key)
+	if calls != 2 {
+		t.Fatalf("server calls = %d, want 2", calls)
+	}
+	if got := gjson.GetBytes(resp.Payload, "usage.input_tokens_details.cached_tokens").Int(); got <= 0 {
+		t.Fatalf("cached_tokens = %d, want positive cache estimate; payload=%s", got, resp.Payload)
 	}
 }
 
-func TestOllamaCloudExecutorStreamsResponsesFromOfficialEndpoint(t *testing.T) {
+func TestOllamaCloudExecutorStreamsResponsesFromNativeChat(t *testing.T) {
 	var gotPath string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
-		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = w.Write([]byte("event: response.created\n"))
-		_, _ = w.Write([]byte(`data: {"type":"response.created","response":{"id":"resp_1"}}` + "\n\n"))
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		_, _ = w.Write([]byte(`{"model":"gpt-oss:120b","message":{"role":"assistant","content":"ok"},"done":false}` + "\n"))
+		_, _ = w.Write([]byte(`{"model":"gpt-oss:120b","message":{"role":"assistant","content":""},"done":true,"done_reason":"stop","prompt_eval_count":1,"eval_count":1}` + "\n"))
 	}))
 	defer server.Close()
 
@@ -131,11 +166,11 @@ func TestOllamaCloudExecutorStreamsResponsesFromOfficialEndpoint(t *testing.T) {
 		}
 		chunks.Write(chunk.Payload)
 	}
-	if gotPath != "/v1/responses" {
-		t.Fatalf("path = %q, want /v1/responses", gotPath)
+	if gotPath != "/api/chat" {
+		t.Fatalf("path = %q, want /api/chat", gotPath)
 	}
-	if got := chunks.String(); got != "event: response.created\n"+`data: {"type":"response.created","response":{"id":"resp_1"}}`+"\n\n" {
-		t.Fatalf("stream payload = %q", got)
+	if got := chunks.String(); !strings.Contains(got, "response.completed") || !strings.Contains(got, "ok") {
+		t.Fatalf("stream payload = %q, want responses stream with ok completion", got)
 	}
 }
 

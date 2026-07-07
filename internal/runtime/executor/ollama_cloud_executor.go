@@ -61,6 +61,9 @@ func (e *OllamaCloudExecutor) HttpRequest(ctx context.Context, auth *cliproxyaut
 }
 
 func (e *OllamaCloudExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+	if opts.Alt != "responses/compact" && (opts.SourceFormat == sdktranslator.FormatOpenAIResponse || opts.SourceFormat == sdktranslator.FormatOpenAI) {
+		return e.executeNativeChat(ctx, auth, req, opts)
+	}
 	if opts.Alt != "responses/compact" {
 		switch opts.SourceFormat {
 		case sdktranslator.FormatOpenAIResponse:
@@ -73,6 +76,9 @@ func (e *OllamaCloudExecutor) Execute(ctx context.Context, auth *cliproxyauth.Au
 }
 
 func (e *OllamaCloudExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
+	if opts.Alt != "responses/compact" && (opts.SourceFormat == sdktranslator.FormatOpenAIResponse || opts.SourceFormat == sdktranslator.FormatOpenAI) {
+		return e.executeNativeChatStream(ctx, auth, req, opts)
+	}
 	if opts.Alt != "responses/compact" {
 		switch opts.SourceFormat {
 		case sdktranslator.FormatOpenAIResponse:
