@@ -341,7 +341,7 @@ func TestOpenCodeGoKeysReplacePatchDeleteAndRollback(t *testing.T) {
 	if len(cfg.OpenCodeGoKey) != 1 {
 		t.Fatalf("OpenCodeGoKey len = %d, want 1", len(cfg.OpenCodeGoKey))
 	}
-	if got := cfg.OpenCodeGoKey[0]; got.APIKey != "go-key" || got.Prefix != "team" || got.WorkspaceID != "wrk_123" || got.AuthCookie != "auth-token" {
+	if got := cfg.OpenCodeGoKey[0]; got.APIKey != "go-key" || got.Prefix != "team" || got.VisionFallbackModel != "qwen3.5-plus" || got.WorkspaceID != "wrk_123" || got.AuthCookie != "auth-token" {
 		t.Fatalf("normalized opencode go key = %#v", got)
 	}
 
@@ -361,7 +361,7 @@ func TestOpenCodeGoKeysReplacePatchDeleteAndRollback(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PatchOpenCodeGoKey() error = %v, want nil", err)
 	}
-	if got := cfg.OpenCodeGoKey[0]; got.Name != "secondary" || !reflect.DeepEqual(got.ExcludedModels, []string{"minimax-m2.5"}) || got.VisionFallbackModel != "" || got.WorkspaceID != "wrk_456" || got.AuthCookie != "auth-next" {
+	if got := cfg.OpenCodeGoKey[0]; got.Name != "secondary" || !reflect.DeepEqual(got.ExcludedModels, []string{"minimax-m2.5"}) || got.VisionFallbackModel != "qwen3.6-plus" || got.WorkspaceID != "wrk_456" || got.AuthCookie != "auth-next" {
 		t.Fatalf("patched opencode go key = %#v", got)
 	}
 
@@ -387,15 +387,15 @@ func TestOpenCodeGoKeysDropPerKeyModels(t *testing.T) {
 	err := svc.ReplaceOpenCodeGoKeys([]config.OpenCodeGoKey{{
 		APIKey: "go-key",
 		Models: []config.OpenCodeGoModel{{
-			Name: " cline-pass/glm-5.2 ",
+			Name: " glm-5.2 ",
 		}},
 		ExcludedModels:      []string{"minimax-m2.5", "*"},
-		VisionFallbackModel: "cline-pass/mimo-v2.5-pro",
+		VisionFallbackModel: "qwen3.5-plus",
 	}})
 	if err != nil {
 		t.Fatalf("ReplaceOpenCodeGoKeys() error = %v, want nil", err)
 	}
-	if got := cfg.OpenCodeGoKey; len(got) != 1 || got[0].APIKey != "go-key" || len(got[0].Models) != 0 || got[0].VisionFallbackModel != "" || !reflect.DeepEqual(got[0].ExcludedModels, []string{"minimax-m2.5", "*"}) {
+	if got := cfg.OpenCodeGoKey; len(got) != 1 || got[0].APIKey != "go-key" || len(got[0].Models) != 0 || got[0].VisionFallbackModel != "qwen3.5-plus" || !reflect.DeepEqual(got[0].ExcludedModels, []string{"minimax-m2.5", "*"}) {
 		t.Fatalf("OpenCodeGoKey after replace = %#v, want sanitized entry", got)
 	}
 
@@ -410,7 +410,7 @@ func TestOpenCodeGoKeysDropPerKeyModels(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PatchOpenCodeGoKey(valid models) error = %v, want nil", err)
 	}
-	if got := cfg.OpenCodeGoKey[0]; len(got.Models) != 0 || !reflect.DeepEqual(got.ExcludedModels, []string{"*", "minimax-m2.5"}) || got.VisionFallbackModel != "" {
+	if got := cfg.OpenCodeGoKey[0]; len(got.Models) != 0 || !reflect.DeepEqual(got.ExcludedModels, []string{"*", "minimax-m2.5"}) || got.VisionFallbackModel != "qwen3.5-plus" {
 		t.Fatalf("OpenCodeGoKey after valid patch = %#v", got)
 	}
 }
@@ -437,7 +437,7 @@ func TestClineKeysDropPerKeyModels(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReplaceClineKeys() error = %v, want nil", err)
 	}
-	if got := cfg.ClineKey; len(got) != 1 || got[0].APIKey != "cline-key" || len(got[0].Models) != 0 || got[0].VisionFallbackModel != "" || !reflect.DeepEqual(got[0].ExcludedModels, []string{"cline-pass/minimax-m3", "*"}) {
+	if got := cfg.ClineKey; len(got) != 1 || got[0].APIKey != "cline-key" || len(got[0].Models) != 0 || got[0].VisionFallbackModel != "cline-pass/mimo-v2.5-pro" || !reflect.DeepEqual(got[0].ExcludedModels, []string{"cline-pass/minimax-m3", "*"}) {
 		t.Fatalf("ClineKey after replace = %#v, want sanitized entry", got)
 	}
 
@@ -452,7 +452,7 @@ func TestClineKeysDropPerKeyModels(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PatchClineKey(valid models) error = %v, want nil", err)
 	}
-	if got := cfg.ClineKey[0]; len(got.Models) != 0 || !reflect.DeepEqual(got.ExcludedModels, []string{"*", "cline-pass/minimax-m3"}) || got.VisionFallbackModel != "" {
+	if got := cfg.ClineKey[0]; len(got.Models) != 0 || !reflect.DeepEqual(got.ExcludedModels, []string{"*", "cline-pass/minimax-m3"}) || got.VisionFallbackModel != "cline-pass/mimo-v2.5-pro" {
 		t.Fatalf("ClineKey after valid patch = %#v", got)
 	}
 }

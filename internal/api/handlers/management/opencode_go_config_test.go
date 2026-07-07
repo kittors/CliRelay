@@ -29,7 +29,7 @@ func TestOpenCodeGoKeyManagementPutGetPatchDelete(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("PUT status = %d body=%s", w.Code, w.Body.String())
 	}
-	if len(h.cfg.OpenCodeGoKey) != 1 || h.cfg.OpenCodeGoKey[0].APIKey != "go-key" || h.cfg.OpenCodeGoKey[0].Prefix != "team" || h.cfg.OpenCodeGoKey[0].VisionFallbackModel != "" || len(h.cfg.OpenCodeGoKey[0].Models) != 0 || len(h.cfg.OpenCodeGoKey[0].ExcludedModels) != 2 || h.cfg.OpenCodeGoKey[0].ExcludedModels[0] != "minimax-m2.5" || h.cfg.OpenCodeGoKey[0].ExcludedModels[1] != "*" || h.cfg.OpenCodeGoKey[0].WorkspaceID != "wrk_123" || h.cfg.OpenCodeGoKey[0].AuthCookie != "auth-token" {
+	if len(h.cfg.OpenCodeGoKey) != 1 || h.cfg.OpenCodeGoKey[0].APIKey != "go-key" || h.cfg.OpenCodeGoKey[0].Prefix != "team" || h.cfg.OpenCodeGoKey[0].VisionFallbackModel != "qwen3.5-plus" || len(h.cfg.OpenCodeGoKey[0].Models) != 0 || len(h.cfg.OpenCodeGoKey[0].ExcludedModels) != 2 || h.cfg.OpenCodeGoKey[0].ExcludedModels[0] != "minimax-m2.5" || h.cfg.OpenCodeGoKey[0].ExcludedModels[1] != "*" || h.cfg.OpenCodeGoKey[0].WorkspaceID != "wrk_123" || h.cfg.OpenCodeGoKey[0].AuthCookie != "auth-token" {
 		t.Fatalf("OpenCodeGoKey after PUT = %+v", h.cfg.OpenCodeGoKey)
 	}
 
@@ -41,7 +41,7 @@ func TestOpenCodeGoKeyManagementPutGetPatchDelete(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("PATCH status = %d body=%s", w.Code, w.Body.String())
 	}
-	if h.cfg.OpenCodeGoKey[0].Name != "secondary" || len(h.cfg.OpenCodeGoKey[0].ExcludedModels) != 1 || h.cfg.OpenCodeGoKey[0].ExcludedModels[0] != "minimax-m2.5" || h.cfg.OpenCodeGoKey[0].VisionFallbackModel != "" || len(h.cfg.OpenCodeGoKey[0].Models) != 0 || h.cfg.OpenCodeGoKey[0].WorkspaceID != "wrk_456" || h.cfg.OpenCodeGoKey[0].AuthCookie != "auth-next" {
+	if h.cfg.OpenCodeGoKey[0].Name != "secondary" || len(h.cfg.OpenCodeGoKey[0].ExcludedModels) != 1 || h.cfg.OpenCodeGoKey[0].ExcludedModels[0] != "minimax-m2.5" || h.cfg.OpenCodeGoKey[0].VisionFallbackModel != "qwen3.6-plus" || len(h.cfg.OpenCodeGoKey[0].Models) != 0 || h.cfg.OpenCodeGoKey[0].WorkspaceID != "wrk_456" || h.cfg.OpenCodeGoKey[0].AuthCookie != "auth-next" {
 		t.Fatalf("OpenCodeGoKey after PATCH = %+v", h.cfg.OpenCodeGoKey[0])
 	}
 
@@ -58,7 +58,7 @@ func TestOpenCodeGoKeyManagementPutGetPatchDelete(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &getBody); err != nil {
 		t.Fatalf("decode GET body: %v", err)
 	}
-	if len(getBody.Items) != 1 || getBody.Items[0].Name != "secondary" || getBody.Items[0].VisionFallbackModel != "" || len(getBody.Items[0].Models) != 0 || len(getBody.Items[0].ExcludedModels) != 1 || getBody.Items[0].ExcludedModels[0] != "minimax-m2.5" || getBody.Items[0].WorkspaceID != "wrk_456" || getBody.Items[0].AuthCookie != "auth-next" {
+	if len(getBody.Items) != 1 || getBody.Items[0].Name != "secondary" || getBody.Items[0].VisionFallbackModel != "qwen3.6-plus" || len(getBody.Items[0].Models) != 0 || len(getBody.Items[0].ExcludedModels) != 1 || getBody.Items[0].ExcludedModels[0] != "minimax-m2.5" || getBody.Items[0].WorkspaceID != "wrk_456" || getBody.Items[0].AuthCookie != "auth-next" {
 		t.Fatalf("GET body = %+v", getBody)
 	}
 
@@ -85,7 +85,7 @@ func TestOpenCodeGoKeyManagementDropsPerKeyModels(t *testing.T) {
 		configFilePath: configPath,
 	}
 
-	putBody := []byte(`[{"api-key":"go-key","models":[{"name":"cline-pass/glm-5.2"}],"excluded-models":["minimax-m2.5","*"],"vision-fallback-model":"cline-pass/mimo-v2.5-pro"}]`)
+	putBody := []byte(`[{"api-key":"go-key","models":[{"name":"glm-5.2"}],"excluded-models":["minimax-m2.5","*"],"vision-fallback-model":"qwen3.5-plus"}]`)
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest(http.MethodPut, "/v0/management/opencode-go-api-key", bytes.NewReader(putBody))
@@ -93,7 +93,7 @@ func TestOpenCodeGoKeyManagementDropsPerKeyModels(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("PUT status = %d body=%s", w.Code, w.Body.String())
 	}
-	if got := h.cfg.OpenCodeGoKey; len(got) != 1 || got[0].APIKey != "go-key" || len(got[0].Models) != 0 || got[0].VisionFallbackModel != "" || len(got[0].ExcludedModels) != 2 || got[0].ExcludedModels[0] != "minimax-m2.5" || got[0].ExcludedModels[1] != "*" {
+	if got := h.cfg.OpenCodeGoKey; len(got) != 1 || got[0].APIKey != "go-key" || len(got[0].Models) != 0 || got[0].VisionFallbackModel != "qwen3.5-plus" || len(got[0].ExcludedModels) != 2 || got[0].ExcludedModels[0] != "minimax-m2.5" || got[0].ExcludedModels[1] != "*" {
 		t.Fatalf("OpenCodeGoKey after PUT = %+v, want sanitized entry", got)
 	}
 }

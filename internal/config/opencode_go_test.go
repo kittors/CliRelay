@@ -53,8 +53,8 @@ opencode-go-api-key:
 	if len(got.Models) != 0 {
 		t.Fatalf("models = %#v, want nil", got.Models)
 	}
-	if got.VisionFallbackModel != "" {
-		t.Fatalf("vision fallback model = %q, want empty", got.VisionFallbackModel)
+	if got.VisionFallbackModel != "qwen3.5-plus" {
+		t.Fatalf("vision fallback model = %q, want qwen3.5-plus", got.VisionFallbackModel)
 	}
 }
 
@@ -79,8 +79,8 @@ func TestSanitizeOpenCodeGoKeysDropsEmptyAndDeduplicates(t *testing.T) {
 	if cfg.OpenCodeGoKey[1].Headers["X-Trace"] != "on" {
 		t.Fatalf("headers = %#v, want normalized header", cfg.OpenCodeGoKey[1].Headers)
 	}
-	if cfg.OpenCodeGoKey[1].VisionFallbackModel != "" {
-		t.Fatalf("vision fallback model = %q, want empty", cfg.OpenCodeGoKey[1].VisionFallbackModel)
+	if cfg.OpenCodeGoKey[1].VisionFallbackModel != "qwen3.6-plus" {
+		t.Fatalf("vision fallback model = %q, want qwen3.6-plus", cfg.OpenCodeGoKey[1].VisionFallbackModel)
 	}
 	if len(cfg.OpenCodeGoKey[1].Models) != 0 {
 		t.Fatalf("models = %#v, want nil", cfg.OpenCodeGoKey[1].Models)

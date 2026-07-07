@@ -227,7 +227,7 @@ func (cfg *Config) SanitizeOpenCodeGoKeys() {
 		entry.Headers = NormalizeHeaders(entry.Headers)
 		entry.Models = nil
 		entry.ExcludedModels = NormalizeExcludedModels(entry.ExcludedModels)
-		entry.VisionFallbackModel = ""
+		entry.VisionFallbackModel = strings.TrimSpace(entry.VisionFallbackModel)
 		entry.WorkspaceID = strings.TrimSpace(entry.WorkspaceID)
 		entry.AuthCookie = strings.TrimSpace(entry.AuthCookie)
 		out = append(out, entry)
@@ -281,7 +281,7 @@ func (cfg *Config) SanitizeClineKeys() {
 		entry.Headers = NormalizeHeaders(entry.Headers)
 		entry.Models = nil
 		entry.ExcludedModels = NormalizeExcludedModels(entry.ExcludedModels)
-		entry.VisionFallbackModel = ""
+		entry.VisionFallbackModel = strings.TrimSpace(entry.VisionFallbackModel)
 		out = append(out, entry)
 	}
 	cfg.ClineKey = out
