@@ -84,7 +84,9 @@ func (s *Service) registerModelsForAuth(ctx context.Context, a *coreauth.Auth) {
 	}
 	provider := strings.ToLower(strings.TrimSpace(a.Provider))
 	compatProviderKey, compatDisplayName, compatDetected := openAICompatInfoFromAuth(a)
-	if compatDetected && provider != "cline" {
+	// Cline and Ollama Cloud use OpenAI-compatible transport metadata to pick
+	// executors, but their model lists are owned by their native config blocks.
+	if compatDetected && provider != "cline" && provider != "ollama-cloud" {
 		provider = "openai-compatibility"
 	}
 	excluded := s.oauthExcludedModels(provider, authKind)
