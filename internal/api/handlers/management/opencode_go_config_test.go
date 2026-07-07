@@ -29,7 +29,7 @@ func TestOpenCodeGoKeyManagementPutGetPatchDelete(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("PUT status = %d body=%s", w.Code, w.Body.String())
 	}
-	if len(h.cfg.OpenCodeGoKey) != 1 || h.cfg.OpenCodeGoKey[0].APIKey != "go-key" || h.cfg.OpenCodeGoKey[0].Prefix != "team" || h.cfg.OpenCodeGoKey[0].VisionFallbackModel != "qwen3.5-plus" || len(h.cfg.OpenCodeGoKey[0].Models) != 1 || h.cfg.OpenCodeGoKey[0].Models[0].Name != "qwen3.5-plus" || len(h.cfg.OpenCodeGoKey[0].ExcludedModels) != 1 || h.cfg.OpenCodeGoKey[0].ExcludedModels[0] != "*" || h.cfg.OpenCodeGoKey[0].WorkspaceID != "wrk_123" || h.cfg.OpenCodeGoKey[0].AuthCookie != "auth-token" {
+	if len(h.cfg.OpenCodeGoKey) != 1 || h.cfg.OpenCodeGoKey[0].APIKey != "go-key" || h.cfg.OpenCodeGoKey[0].Prefix != "team" || h.cfg.OpenCodeGoKey[0].VisionFallbackModel != "qwen3.5-plus" || len(h.cfg.OpenCodeGoKey[0].Models) != 0 || len(h.cfg.OpenCodeGoKey[0].ExcludedModels) != 1 || h.cfg.OpenCodeGoKey[0].ExcludedModels[0] != "*" || h.cfg.OpenCodeGoKey[0].WorkspaceID != "wrk_123" || h.cfg.OpenCodeGoKey[0].AuthCookie != "auth-token" {
 		t.Fatalf("OpenCodeGoKey after PUT = %+v", h.cfg.OpenCodeGoKey)
 	}
 
@@ -45,6 +45,18 @@ func TestOpenCodeGoKeyManagementPutGetPatchDelete(t *testing.T) {
 		t.Fatalf("OpenCodeGoKey after PATCH = %+v", h.cfg.OpenCodeGoKey[0])
 	}
 
+	patchBody = []byte(`{"index":0,"value":{"excluded-models":["*"]}}`)
+	w = httptest.NewRecorder()
+	c, _ = gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPatch, "/v0/management/opencode-go-api-key", bytes.NewReader(patchBody))
+	h.ProviderKeys().PatchOpenCodeGoKey(c)
+	if w.Code != http.StatusOK {
+		t.Fatalf("PATCH disable all status = %d body=%s", w.Code, w.Body.String())
+	}
+	if len(h.cfg.OpenCodeGoKey[0].Models) != 0 || len(h.cfg.OpenCodeGoKey[0].ExcludedModels) != 1 || h.cfg.OpenCodeGoKey[0].ExcludedModels[0] != "*" {
+		t.Fatalf("OpenCodeGoKey after disable-all PATCH = %+v", h.cfg.OpenCodeGoKey[0])
+	}
+
 	w = httptest.NewRecorder()
 	c, _ = gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest(http.MethodGet, "/v0/management/opencode-go-api-key", nil)
@@ -58,7 +70,7 @@ func TestOpenCodeGoKeyManagementPutGetPatchDelete(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &getBody); err != nil {
 		t.Fatalf("decode GET body: %v", err)
 	}
-	if len(getBody.Items) != 1 || getBody.Items[0].Name != "secondary" || getBody.Items[0].VisionFallbackModel != "qwen3.6-plus" || len(getBody.Items[0].Models) != 1 || getBody.Items[0].Models[0].Name != "qwen3.7-max" || len(getBody.Items[0].ExcludedModels) != 0 || getBody.Items[0].WorkspaceID != "wrk_456" || getBody.Items[0].AuthCookie != "auth-next" {
+	if len(getBody.Items) != 1 || getBody.Items[0].Name != "secondary" || getBody.Items[0].VisionFallbackModel != "qwen3.6-plus" || len(getBody.Items[0].Models) != 0 || len(getBody.Items[0].ExcludedModels) != 1 || getBody.Items[0].ExcludedModels[0] != "*" || getBody.Items[0].WorkspaceID != "wrk_456" || getBody.Items[0].AuthCookie != "auth-next" {
 		t.Fatalf("GET body = %+v", getBody)
 	}
 
@@ -93,7 +105,7 @@ func TestOpenCodeGoKeyManagementKeepsPerKeyModels(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("PUT status = %d body=%s", w.Code, w.Body.String())
 	}
-	if got := h.cfg.OpenCodeGoKey; len(got) != 1 || got[0].APIKey != "go-key" || len(got[0].Models) != 1 || got[0].Models[0].Name != "glm-5.2" || got[0].VisionFallbackModel != "qwen3.5-plus" || len(got[0].ExcludedModels) != 1 || got[0].ExcludedModels[0] != "*" {
+	if got := h.cfg.OpenCodeGoKey; len(got) != 1 || got[0].APIKey != "go-key" || len(got[0].Models) != 0 || got[0].VisionFallbackModel != "qwen3.5-plus" || len(got[0].ExcludedModels) != 1 || got[0].ExcludedModels[0] != "*" {
 		t.Fatalf("OpenCodeGoKey after PUT = %+v, want sanitized entry", got)
 	}
 }

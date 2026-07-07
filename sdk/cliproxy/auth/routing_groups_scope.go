@@ -274,7 +274,7 @@ func candidateSupportsModel(cfg *runtimeConfigSnapshot, registryRef ModelRegistr
 		return true
 	}
 	if len(registryRef.GetModelsForClient(auth.ID)) == 0 {
-		return true
+		return !authHasDisableAllModelsRule(auth)
 	}
 	if registryRef.ClientSupportsModel(auth.ID, modelID) {
 		return true
@@ -306,6 +306,20 @@ func candidateSupportsModel(cfg *runtimeConfigSnapshot, registryRef ModelRegistr
 		}
 		if registryRef.ClientSupportsModel(auth.ID, group+"/"+modelID) {
 			return true
+		}
+	}
+	return false
+}
+
+func authHasDisableAllModelsRule(auth *Auth) bool {
+	if auth == nil || auth.Attributes == nil {
+		return false
+	}
+	for _, key := range []string{"excluded_models", "excluded-models"} {
+		for _, raw := range strings.Split(auth.Attributes[key], ",") {
+			if strings.TrimSpace(raw) == "*" {
+				return true
+			}
 		}
 	}
 	return false

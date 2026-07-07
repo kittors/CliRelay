@@ -56,6 +56,9 @@ func TestManagementProviderConfigSaveUpdatesConfiguredAvailability(t *testing.T)
 		"value":{"excluded-models":["*"]}
 	}`)
 	assertAvailabilityMissingModel(t, server, managementKey, "gpt-oss:120b")
+	if server.handlers.AuthManager.CanServeModelWithScopes("gpt-oss:120b", nil, nil, "") {
+		t.Fatal("expected disabled Ollama Cloud model access not to serve gpt-oss:120b")
+	}
 }
 
 func putProviderConfig(t *testing.T, server *Server, managementKey, path, body string) {

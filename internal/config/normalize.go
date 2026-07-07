@@ -227,6 +227,9 @@ func (cfg *Config) SanitizeOpenCodeGoKeys() {
 		entry.Headers = NormalizeHeaders(entry.Headers)
 		entry.Models = NormalizeOpenCodeGoModels(entry.Models)
 		entry.ExcludedModels = NormalizeProviderModelAccessExcludedModels(entry.ExcludedModels)
+		if IsProviderModelAccessDisabledAll(entry.ExcludedModels) {
+			entry.Models = nil
+		}
 		entry.VisionFallbackModel = strings.TrimSpace(entry.VisionFallbackModel)
 		entry.WorkspaceID = strings.TrimSpace(entry.WorkspaceID)
 		entry.AuthCookie = strings.TrimSpace(entry.AuthCookie)
@@ -282,6 +285,9 @@ func (cfg *Config) SanitizeClineKeys() {
 		entry.Headers = NormalizeHeaders(entry.Headers)
 		entry.Models = NormalizeClineModels(entry.Models)
 		entry.ExcludedModels = NormalizeProviderModelAccessExcludedModels(entry.ExcludedModels)
+		if IsProviderModelAccessDisabledAll(entry.ExcludedModels) {
+			entry.Models = nil
+		}
 		entry.VisionFallbackModel = strings.TrimSpace(entry.VisionFallbackModel)
 		out = append(out, entry)
 	}
@@ -344,6 +350,9 @@ func (cfg *Config) SanitizeOllamaCloudKeys() {
 		entry.Headers = NormalizeHeaders(entry.Headers)
 		entry.Models = NormalizeOllamaCloudModels(entry.Models)
 		entry.ExcludedModels = NormalizeProviderModelAccessExcludedModels(entry.ExcludedModels)
+		if IsProviderModelAccessDisabledAll(entry.ExcludedModels) {
+			entry.Models = nil
+		}
 		entry.VisionFallbackModel = strings.TrimSpace(entry.VisionFallbackModel)
 		out = append(out, entry)
 	}
@@ -525,6 +534,16 @@ func NormalizeProviderModelAccessExcludedModels(models []string) []string {
 		}
 	}
 	return nil
+}
+
+// IsProviderModelAccessDisabledAll reports whether a dynamic provider has no allowed models.
+func IsProviderModelAccessDisabledAll(models []string) bool {
+	for _, model := range models {
+		if strings.TrimSpace(model) == "*" {
+			return true
+		}
+	}
+	return false
 }
 
 // NormalizeOAuthExcludedModels cleans provider -> excluded models mappings by normalizing provider keys

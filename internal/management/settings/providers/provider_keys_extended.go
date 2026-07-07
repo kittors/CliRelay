@@ -760,6 +760,9 @@ func NormalizedOpenCodeGoKeyEntries(entries []config.OpenCodeGoKey) []config.Ope
 	for i := range entries {
 		out[i] = entries[i]
 		NormalizeOpenCodeGoKey(&out[i])
+		if config.IsProviderModelAccessDisabledAll(out[i].ExcludedModels) {
+			out[i].Models = nil
+		}
 	}
 	return out
 }
@@ -791,6 +794,9 @@ func NormalizedClineKeyEntries(entries []config.ClineKey) []config.ClineKey {
 	for i := range entries {
 		out[i] = entries[i]
 		NormalizeClineKey(&out[i])
+		if config.IsProviderModelAccessDisabledAll(out[i].ExcludedModels) {
+			out[i].Models = nil
+		}
 	}
 	return out
 }
@@ -822,6 +828,9 @@ func NormalizedOllamaCloudKeyEntries(entries []config.OllamaCloudKey) []config.O
 	for i := range entries {
 		out[i] = entries[i]
 		NormalizeOllamaCloudKey(&out[i])
+		if config.IsProviderModelAccessDisabledAll(out[i].ExcludedModels) {
+			out[i].Models = nil
+		}
 	}
 	return out
 }

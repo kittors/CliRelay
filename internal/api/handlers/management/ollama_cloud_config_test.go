@@ -50,7 +50,7 @@ func TestOllamaCloudKeyManagementPutGetPatchDelete(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("PATCH status = %d body=%s", w.Code, w.Body.String())
 	}
-	if h.cfg.OllamaCloudKey[0].Name != "secondary" || h.cfg.OllamaCloudKey[0].BaseURL != config.DefaultOllamaCloudBaseURL || len(h.cfg.OllamaCloudKey[0].Models) != 1 || h.cfg.OllamaCloudKey[0].Models[0].Name != "gpt-oss:20b" || len(h.cfg.OllamaCloudKey[0].ExcludedModels) != 1 || h.cfg.OllamaCloudKey[0].ExcludedModels[0] != "*" || h.cfg.OllamaCloudKey[0].VisionFallbackModel != "gpt-oss:20b" {
+	if h.cfg.OllamaCloudKey[0].Name != "secondary" || h.cfg.OllamaCloudKey[0].BaseURL != config.DefaultOllamaCloudBaseURL || len(h.cfg.OllamaCloudKey[0].Models) != 0 || len(h.cfg.OllamaCloudKey[0].ExcludedModels) != 1 || h.cfg.OllamaCloudKey[0].ExcludedModels[0] != "*" || h.cfg.OllamaCloudKey[0].VisionFallbackModel != "gpt-oss:20b" {
 		t.Fatalf("OllamaCloudKey after PATCH = %+v", h.cfg.OllamaCloudKey[0])
 	}
 
@@ -67,7 +67,7 @@ func TestOllamaCloudKeyManagementPutGetPatchDelete(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &getBody); err != nil {
 		t.Fatalf("decode GET body: %v", err)
 	}
-	if len(getBody.Items) != 1 || getBody.Items[0].Name != "secondary" || getBody.Items[0].BaseURL != config.DefaultOllamaCloudBaseURL || len(getBody.Items[0].Models) != 1 || getBody.Items[0].Models[0].Name != "gpt-oss:20b" || len(getBody.Items[0].ExcludedModels) != 1 || getBody.Items[0].ExcludedModels[0] != "*" || getBody.Items[0].VisionFallbackModel != "gpt-oss:20b" {
+	if len(getBody.Items) != 1 || getBody.Items[0].Name != "secondary" || getBody.Items[0].BaseURL != config.DefaultOllamaCloudBaseURL || len(getBody.Items[0].Models) != 0 || len(getBody.Items[0].ExcludedModels) != 1 || getBody.Items[0].ExcludedModels[0] != "*" || getBody.Items[0].VisionFallbackModel != "gpt-oss:20b" {
 		t.Fatalf("GET body = %+v", getBody)
 	}
 

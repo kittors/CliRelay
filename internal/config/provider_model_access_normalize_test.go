@@ -35,3 +35,37 @@ func TestSanitizeProviderModelAccessRemovesConfiguredModelExclusions(t *testing.
 		t.Fatalf("Ollama Cloud excluded models = %#v, want empty", cfg.OllamaCloudKey[0].ExcludedModels)
 	}
 }
+
+func TestSanitizeProviderModelAccessClearsModelsWhenAllAccessDisabled(t *testing.T) {
+	cfg := &Config{
+		OpenCodeGoKey: []OpenCodeGoKey{{
+			APIKey:         "go-key",
+			Models:         []OpenCodeGoModel{{Name: "qwen3.7-max"}},
+			ExcludedModels: []string{"*"},
+		}},
+		ClineKey: []ClineKey{{
+			APIKey:         "cline-key",
+			Models:         []ClineModel{{Name: "cline-pass/qwen3.7-max"}},
+			ExcludedModels: []string{"*"},
+		}},
+		OllamaCloudKey: []OllamaCloudKey{{
+			APIKey:         "ollama-key",
+			Models:         []OllamaCloudModel{{Name: "gpt-oss:120b"}},
+			ExcludedModels: []string{"*"},
+		}},
+	}
+
+	cfg.SanitizeOpenCodeGoKeys()
+	cfg.SanitizeClineKeys()
+	cfg.SanitizeOllamaCloudKeys()
+
+	if len(cfg.OpenCodeGoKey[0].Models) != 0 {
+		t.Fatalf("OpenCode Go models = %#v, want empty", cfg.OpenCodeGoKey[0].Models)
+	}
+	if len(cfg.ClineKey[0].Models) != 0 {
+		t.Fatalf("ClinePass models = %#v, want empty", cfg.ClineKey[0].Models)
+	}
+	if len(cfg.OllamaCloudKey[0].Models) != 0 {
+		t.Fatalf("Ollama Cloud models = %#v, want empty", cfg.OllamaCloudKey[0].Models)
+	}
+}

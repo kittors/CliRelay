@@ -2,7 +2,7 @@ package config
 
 import "testing"
 
-func TestSanitizeOllamaCloudKeysPreservesModels(t *testing.T) {
+func TestSanitizeOllamaCloudKeysClearsModelsWhenAllAccessDisabled(t *testing.T) {
 	cfg := &Config{OllamaCloudKey: []OllamaCloudKey{{
 		APIKey:         " sk-ollama ",
 		BaseURL:        "https://ollama.com/",
@@ -16,8 +16,8 @@ func TestSanitizeOllamaCloudKeysPreservesModels(t *testing.T) {
 		t.Fatalf("keys len = %d", len(cfg.OllamaCloudKey))
 	}
 	got := cfg.OllamaCloudKey[0]
-	if len(got.Models) != 1 || got.Models[0].Name != "gpt-oss:120b" {
-		t.Fatalf("models = %#v, want normalized per-key models", got.Models)
+	if len(got.Models) != 0 {
+		t.Fatalf("models = %#v, want empty when all model access is disabled", got.Models)
 	}
 	if len(got.ExcludedModels) != 1 || got.ExcludedModels[0] != "*" {
 		t.Fatalf("excluded models = %#v, want disable-all marker only", got.ExcludedModels)

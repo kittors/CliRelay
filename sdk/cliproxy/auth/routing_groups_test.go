@@ -95,6 +95,24 @@ func TestCanServeModelWithScopesHonorsGroupAllowedModels(t *testing.T) {
 	}
 }
 
+func TestCanServeModelWithScopesHonorsDisableAllModelsMetadata(t *testing.T) {
+	t.Parallel()
+
+	manager := NewManager(nil, nil, nil)
+	manager.SetConfig(&internalconfig.Config{})
+	if _, err := manager.Register(context.Background(), &Auth{
+		ID:         "model-access-disabled-auth",
+		Provider:   "opencode-go",
+		Attributes: map[string]string{"excluded_models": "*"},
+	}); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+
+	if manager.CanServeModelWithScopes("qwen3.7-max", nil, nil, "") {
+		t.Fatal("expected excluded_models=* auth not to serve any model")
+	}
+}
+
 func TestAuthGroupsMatchesLegacyOAuthEmailAfterRename(t *testing.T) {
 	t.Parallel()
 
