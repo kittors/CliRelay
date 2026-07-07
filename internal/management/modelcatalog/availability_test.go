@@ -171,6 +171,32 @@ func TestDefaultMappedOwnerRowsReplaceProviderModelWhenConfigRowExists(t *testin
 	}
 }
 
+func TestDefaultMappedOwnerRowsSkipConfigRowWithoutRuntimeSource(t *testing.T) {
+	const modelID = "gpt-5.6-sol"
+
+	ownerMappings := map[string]string{"codex": "codex"}
+	ownerKeys := map[string]bool{"codex": true}
+	rows := []usage.ModelConfigRow{{
+		ModelID: modelID,
+		OwnedBy: "codex",
+		Enabled: true,
+		Source:  "seed",
+	}}
+
+	got := withDefaultMappedOwnerRows(
+		registry.GetGlobalRegistry(),
+		nil,
+		rows,
+		ownerKeys,
+		map[string]bool{modelID: true},
+		map[string]*coreauth.Auth{},
+		ownerMappings,
+	)
+	if len(got) != 0 {
+		t.Fatalf("models = %#v, want unserviceable mapped-owner config row hidden", got)
+	}
+}
+
 func TestModelSourceEntriesKeepMappedProviderSourceForRetainedRegistryModel(t *testing.T) {
 	const modelID = "glm-5.2"
 	const clientID = "source-test-ollama-cloud-source"

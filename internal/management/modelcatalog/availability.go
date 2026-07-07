@@ -369,6 +369,9 @@ func withDefaultMappedOwnerRows(
 		if key == "" {
 			continue
 		}
+		if !mappedOwnerRowHasRuntimeSource(modelRegistry, row) {
+			continue
+		}
 		if _, exists := seen[key]; exists {
 			continue
 		}
@@ -376,6 +379,13 @@ func withDefaultMappedOwnerRows(
 		out = append(out, modelConfigRowAsOpenAIModel(row))
 	}
 	return out
+}
+
+func mappedOwnerRowHasRuntimeSource(modelRegistry *registry.ModelRegistry, row usage.ModelConfigRow) bool {
+	if modelRegistry == nil {
+		return false
+	}
+	return len(modelRegistry.GetModelClientSources(row.ModelID)) > 0
 }
 
 func mappedOwnerRowModelKeys(rows []usage.ModelConfigRow, ownerKeys map[string]bool) map[string]bool {
