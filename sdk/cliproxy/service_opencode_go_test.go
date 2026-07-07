@@ -148,7 +148,7 @@ func TestRegisterModelsForAuth_OpenCodeGoFiltersDirtyClinePassModels(t *testing.
 	}
 }
 
-func TestRegisterModelsForAuth_OpenCodeGoFallsBackWhenOnlyDirtyModelsRemain(t *testing.T) {
+func TestRegisterModelsForAuth_OpenCodeGoUnregistersWhenOnlyDirtyModelsRemain(t *testing.T) {
 	service := &Service{cfg: &config.Config{
 		OpenCodeGoKey: []config.OpenCodeGoKey{{
 			APIKey: "go-key-only-dirty",
@@ -176,7 +176,7 @@ func TestRegisterModelsForAuth_OpenCodeGoFallsBackWhenOnlyDirtyModelsRemain(t *t
 	service.registerModelsForAuth(context.Background(), auth)
 
 	models := registry.GetModelsForClient(auth.ID)
-	if !hasModelID(models, "deepseek-v4-flash") || hasModelID(models, "cline-pass/glm-5.2") {
-		t.Fatalf("expected OpenCode Go defaults after all dirty models were filtered, got %+v", models)
+	if len(models) != 0 {
+		t.Fatalf("expected no OpenCode Go models after all dirty models were filtered, got %+v", models)
 	}
 }

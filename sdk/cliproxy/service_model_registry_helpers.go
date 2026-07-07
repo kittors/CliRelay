@@ -43,6 +43,15 @@ func applyExcludedModels(models []*ModelInfo, excluded []string) []*ModelInfo {
 	return filtered
 }
 
+func providerModelAccessExcludedModels(excluded []string) []string {
+	for _, model := range excluded {
+		if strings.TrimSpace(model) == "*" {
+			return []string{"*"}
+		}
+	}
+	return nil
+}
+
 func applyModelPrefixes(models []*ModelInfo, prefix string, forceModelPrefix bool) []*ModelInfo {
 	trimmedPrefix := strings.TrimSpace(prefix)
 	if trimmedPrefix == "" || len(models) == 0 {

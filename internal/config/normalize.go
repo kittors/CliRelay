@@ -226,8 +226,7 @@ func (cfg *Config) SanitizeOpenCodeGoKeys() {
 		entry.ProxyID = strings.TrimSpace(entry.ProxyID)
 		entry.Headers = NormalizeHeaders(entry.Headers)
 		entry.Models = NormalizeOpenCodeGoModels(entry.Models)
-		entry.ExcludedModels = NormalizeExcludedModels(entry.ExcludedModels)
-		entry.ExcludedModels = removeConfiguredOpenCodeGoModelExclusions(entry.ExcludedModels, entry.Models)
+		entry.ExcludedModels = NormalizeProviderModelAccessExcludedModels(entry.ExcludedModels)
 		entry.VisionFallbackModel = strings.TrimSpace(entry.VisionFallbackModel)
 		entry.WorkspaceID = strings.TrimSpace(entry.WorkspaceID)
 		entry.AuthCookie = strings.TrimSpace(entry.AuthCookie)
@@ -282,8 +281,7 @@ func (cfg *Config) SanitizeClineKeys() {
 		entry.ProxyID = strings.TrimSpace(entry.ProxyID)
 		entry.Headers = NormalizeHeaders(entry.Headers)
 		entry.Models = NormalizeClineModels(entry.Models)
-		entry.ExcludedModels = NormalizeExcludedModels(entry.ExcludedModels)
-		entry.ExcludedModels = removeConfiguredClineModelExclusions(entry.ExcludedModels, entry.Models)
+		entry.ExcludedModels = NormalizeProviderModelAccessExcludedModels(entry.ExcludedModels)
 		entry.VisionFallbackModel = strings.TrimSpace(entry.VisionFallbackModel)
 		out = append(out, entry)
 	}
@@ -345,8 +343,7 @@ func (cfg *Config) SanitizeOllamaCloudKeys() {
 		entry.ProxyID = strings.TrimSpace(entry.ProxyID)
 		entry.Headers = NormalizeHeaders(entry.Headers)
 		entry.Models = NormalizeOllamaCloudModels(entry.Models)
-		entry.ExcludedModels = NormalizeExcludedModels(entry.ExcludedModels)
-		entry.ExcludedModels = removeConfiguredOllamaCloudModelExclusions(entry.ExcludedModels, entry.Models)
+		entry.ExcludedModels = NormalizeProviderModelAccessExcludedModels(entry.ExcludedModels)
 		entry.VisionFallbackModel = strings.TrimSpace(entry.VisionFallbackModel)
 		out = append(out, entry)
 	}
@@ -373,30 +370,6 @@ func NormalizeOllamaCloudModels(models []OllamaCloudModel) []OllamaCloudModel {
 		out = append(out, OllamaCloudModel{Name: name, Alias: alias})
 	}
 	return out
-}
-
-func removeConfiguredOpenCodeGoModelExclusions(excluded []string, models []OpenCodeGoModel) []string {
-	names := make([]string, 0, len(models))
-	for _, model := range models {
-		names = append(names, model.Name)
-	}
-	return NormalizeExcludedModelsForConfiguredModels(excluded, names)
-}
-
-func removeConfiguredClineModelExclusions(excluded []string, models []ClineModel) []string {
-	names := make([]string, 0, len(models))
-	for _, model := range models {
-		names = append(names, model.Name)
-	}
-	return NormalizeExcludedModelsForConfiguredModels(excluded, names)
-}
-
-func removeConfiguredOllamaCloudModelExclusions(excluded []string, models []OllamaCloudModel) []string {
-	names := make([]string, 0, len(models))
-	for _, model := range models {
-		names = append(names, model.Name)
-	}
-	return NormalizeExcludedModelsForConfiguredModels(excluded, names)
 }
 
 // NormalizeExcludedModelsForConfiguredModels repairs legacy data where every
@@ -540,6 +513,18 @@ func NormalizeExcludedModels(models []string) []string {
 		return nil
 	}
 	return out
+}
+
+// NormalizeProviderModelAccessExcludedModels keeps only the existing disable-all
+// marker. OpenCode Go, ClinePass and Ollama Cloud use `models` as the per-model
+// allowlist; single-model exclusions are legacy dirty data.
+func NormalizeProviderModelAccessExcludedModels(models []string) []string {
+	for _, model := range NormalizeExcludedModels(models) {
+		if model == "*" {
+			return []string{"*"}
+		}
+	}
+	return nil
 }
 
 // NormalizeOAuthExcludedModels cleans provider -> excluded models mappings by normalizing provider keys

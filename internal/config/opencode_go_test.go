@@ -47,7 +47,7 @@ opencode-go-api-key:
 	if got.Headers["X-Test"] != "yes" {
 		t.Fatalf("headers = %#v, want normalized X-Test", got.Headers)
 	}
-	if len(got.ExcludedModels) != 2 || got.ExcludedModels[0] != "deepseek-v4-pro" || got.ExcludedModels[1] != "*" {
+	if len(got.ExcludedModels) != 1 || got.ExcludedModels[0] != "*" {
 		t.Fatalf("excluded models = %#v", got.ExcludedModels)
 	}
 	if len(got.Models) != 2 || got.Models[0].Name != "qwen3.7-max" || got.Models[1].Name != "kimi-k2.7-code" {
@@ -85,8 +85,8 @@ func TestSanitizeOpenCodeGoKeysDropsEmptyAndDeduplicates(t *testing.T) {
 	if len(cfg.OpenCodeGoKey[1].Models) != 1 || cfg.OpenCodeGoKey[1].Models[0].Name != "glm-5.2" {
 		t.Fatalf("models = %#v, want normalized unique model", cfg.OpenCodeGoKey[1].Models)
 	}
-	if len(cfg.OpenCodeGoKey[1].ExcludedModels) != 2 || cfg.OpenCodeGoKey[1].ExcludedModels[0] != "glm-5.2" || cfg.OpenCodeGoKey[1].ExcludedModels[1] != "*" {
-		t.Fatalf("excluded models = %#v, want normalized exclusions", cfg.OpenCodeGoKey[1].ExcludedModels)
+	if len(cfg.OpenCodeGoKey[1].ExcludedModels) != 1 || cfg.OpenCodeGoKey[1].ExcludedModels[0] != "*" {
+		t.Fatalf("excluded models = %#v, want disable-all marker only", cfg.OpenCodeGoKey[1].ExcludedModels)
 	}
 	if cfg.OpenCodeGoKey[1].WorkspaceID != "wrk_123" || cfg.OpenCodeGoKey[1].AuthCookie != "auth-token" {
 		t.Fatalf("usage fields not normalized: %+v", cfg.OpenCodeGoKey[1])

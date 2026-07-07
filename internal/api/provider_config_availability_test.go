@@ -53,7 +53,7 @@ func TestManagementProviderConfigSaveUpdatesConfiguredAvailability(t *testing.T)
 
 	patchProviderConfig(t, server, managementKey, "/v0/management/ollama-cloud-api-key", `{
 		"index":0,
-		"value":{"excluded-models":["gpt-oss:120b"]}
+		"value":{"excluded-models":["*"]}
 	}`)
 	assertAvailabilityMissingModel(t, server, managementKey, "gpt-oss:120b")
 }
