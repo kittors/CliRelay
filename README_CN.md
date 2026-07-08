@@ -262,7 +262,7 @@ auto-update:
 
 CliRelay 通过 Ent ORM 使用 PostgreSQL 15+ 作为运行时主数据库。Redis 7+ 只负责缓存、锁、限流、队列和可重建快照。仓库内的 Docker Compose 会自动启动这两个服务，并通过生成的 `.env` 注入容器内连接地址。
 
-如果旧 Docker 部署还停留在 SQLite-only compose，在 `/manage/system` 里触发在线更新时，updater 会先升级 `docker-compose.yml` 和 `.env`，但不会立刻重启业务容器。升级会补上 `clirelay-init`、`clirelay-migrate`、PostgreSQL、Redis 和 updater 服务，保留原应用服务继续运行，先启动 PostgreSQL/Redis，实时输出 SQLite 迁移进度，并且只在迁移成功后才重建业务容器。SQLite 文件会原样保留。
+如果旧 Docker 部署还停留在 SQLite-only compose，在 `/manage/system` 里触发在线更新时，updater 会先升级 `docker-compose.yml` 和 `.env`，补上 `clirelay-init`、PostgreSQL、Redis 和 updater 服务，然后启动 PostgreSQL/Redis 并重建业务容器。SQLite 文件会原样保留；如确实需要导入旧库，请使用下面的手工迁移命令。
 
 如果旧容器因为挂载方式太老，导致 updater 无法写回部署文件，请先把 `docker-compose.yml` 替换成仓库最新版，再执行一次 `docker compose up -d`。完成后，后续在线更新就可以自动更新 compose 文件。
 
