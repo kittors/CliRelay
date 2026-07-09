@@ -163,8 +163,18 @@ func createAuthForChannel(channel string) *Auth {
 		return &Auth{Provider: "iflow"}
 	case "kimi":
 		return &Auth{Provider: "kimi"}
+	case "xai":
+		return &Auth{Provider: "xai", Attributes: map[string]string{"auth_kind": "oauth"}}
 	default:
 		return &Auth{Provider: channel}
+	}
+}
+
+func TestOAuthModelAliasChannel_XAI(t *testing.T) {
+	t.Parallel()
+
+	if got := OAuthModelAliasChannel("xai", "oauth"); got != "xai" {
+		t.Fatalf("OAuthModelAliasChannel() = %q, want %q", got, "xai")
 	}
 }
 
@@ -215,5 +225,27 @@ func TestApplyOAuthModelAlias_BuiltInCodexAutoReview(t *testing.T) {
 	resolvedModel := mgr.applyOAuthModelAlias(auth, "codex-auto-review")
 	if resolvedModel != "gpt-5.5" {
 		t.Errorf("applyOAuthModelAlias() model = %q, want %q", resolvedModel, "gpt-5.5")
+	}
+}
+
+func TestApplyOAuthModelAlias_BuiltInXAIGrokBuild(t *testing.T) {
+	t.Parallel()
+
+	mgr := NewManager(nil, nil, nil)
+	mgr.SetConfig(&internalconfig.Config{})
+
+	auth := &Auth{
+		ID:       "xai-oauth",
+		Provider: "xai",
+		Attributes: map[string]string{
+			"auth_kind": "oauth",
+		},
+	}
+
+	if got := mgr.applyOAuthModelAlias(auth, "grok-build"); got != "grok-build-0.1" {
+		t.Fatalf("applyOAuthModelAlias() = %q, want grok-build-0.1", got)
+	}
+	if got := mgr.applyOAuthModelAlias(auth, "grok-build(high)"); got != "grok-build-0.1(high)" {
+		t.Fatalf("applyOAuthModelAlias() with suffix = %q, want grok-build-0.1(high)", got)
 	}
 }

@@ -403,6 +403,10 @@ func FetchAntigravityModels(ctx context.Context, auth *coreauth.Auth, cfg *confi
 	return executor.FetchAntigravityModels(ctx, auth, cfg)
 }
 
+func FetchXAIModels(ctx context.Context, auth *coreauth.Auth, cfg *config.Config) []*sdkmodelcatalog.ModelInfo {
+	return executor.FetchXAIModels(ctx, auth, cfg)
+}
+
 func RegisterExecutorForAuth(coreManager *coreauth.Manager, cfg *config.Config, auth *coreauth.Auth, forceReplace bool, gateway WebsocketGateway) {
 	if coreManager == nil || auth == nil {
 		return

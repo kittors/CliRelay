@@ -95,6 +95,10 @@ func FetchAntigravityModels(ctx context.Context, auth *coreauth.Auth, cfg *confi
 	return internalserviceapp.FetchAntigravityModels(ctx, auth, cfg)
 }
 
+func FetchXAIModels(ctx context.Context, auth *coreauth.Auth, cfg *config.Config) []*sdkmodelcatalog.ModelInfo {
+	return internalserviceapp.FetchXAIModels(ctx, auth, cfg)
+}
+
 func RegisterExecutorForAuth(coreManager *coreauth.Manager, cfg *config.Config, auth *coreauth.Auth, forceReplace bool, gateway WebsocketGateway) {
 	internalserviceapp.RegisterExecutorForAuth(coreManager, cfg, auth, forceReplace, gateway)
 }
