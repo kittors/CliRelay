@@ -35,14 +35,7 @@ func (e *XAIExecutor) PrepareRequest(req *http.Request, auth *cliproxyauth.Auth)
 		return nil
 	}
 	token, _ := xaiCreds(auth)
-	if strings.TrimSpace(token) != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
-	var attrs map[string]string
-	if auth != nil {
-		attrs = auth.Attributes
-	}
-	util.ApplyCustomHeadersFromAttrs(req, attrs)
+	applyXAIHeaders(req, e.cfg, auth, token, false)
 	return nil
 }
 
@@ -81,7 +74,7 @@ func (e *XAIExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req 
 	if err != nil {
 		return resp, err
 	}
-	applyXAIHeaders(httpReq, auth, token, true)
+	applyXAIHeaders(httpReq, e.cfg, auth, token, true)
 	recorder := execCtx.Recorder()
 	recorder.RecordRequest(endpoint, http.MethodPost, httpReq.Header.Clone(), body)
 
@@ -174,7 +167,7 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 	if err != nil {
 		return nil, err
 	}
-	applyXAIHeaders(httpReq, auth, token, true)
+	applyXAIHeaders(httpReq, e.cfg, auth, token, true)
 	recorder := execCtx.Recorder()
 	recorder.RecordRequest(endpoint, http.MethodPost, httpReq.Header.Clone(), body)
 
@@ -382,7 +375,7 @@ func xaiCreds(auth *cliproxyauth.Auth) (token, baseURL string) {
 	return token, baseURL
 }
 
-func applyXAIHeaders(r *http.Request, auth *cliproxyauth.Auth, token string, stream bool) {
+func applyXAIHeaders(r *http.Request, cfg *config.Config, auth *cliproxyauth.Auth, token string, stream bool) {
 	r.Header.Set("Content-Type", "application/json")
 	if strings.TrimSpace(token) != "" {
 		r.Header.Set("Authorization", "Bearer "+token)
@@ -398,6 +391,9 @@ func applyXAIHeaders(r *http.Request, auth *cliproxyauth.Auth, token string, str
 		attrs = auth.Attributes
 	}
 	util.ApplyCustomHeadersFromAttrs(r, attrs)
+	if fp, ok := xaiIdentityFingerprint(cfg, auth, r.Context()); ok {
+		applyXAIIdentityFingerprintHeaders(r.Header, fp)
+	}
 }
 
 func xaiMetadataString(meta map[string]any, key string) string {

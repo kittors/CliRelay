@@ -104,6 +104,29 @@ func ResolveGemini(cfg config.GeminiIdentityFingerprintConfig, learned *LearnedR
 	return resolved, effective(ProviderGemini, clean.Enabled, learned, fields)
 }
 
+func ResolveXAI(cfg config.XAIIdentityFingerprintConfig, learned *LearnedRecord) (config.XAIIdentityFingerprintConfig, EffectiveFingerprint) {
+	clean := config.CleanXAIIdentityFingerprint(cfg)
+	defaults := config.DefaultXAIIdentityFingerprint()
+	fields := make(map[string]FieldValue)
+	pick := func(field, preset, learnedValue, defaultValue string) string {
+		value, source := pickField(preset, learnedValue, defaultValue)
+		fields[field] = FieldValue{Value: value, Source: source}
+		return value
+	}
+
+	resolved := config.XAIIdentityFingerprintConfig{
+		Enabled:            clean.Enabled,
+		UserAgent:          pick(FieldUserAgent, clean.UserAgent, learnedField(learned, FieldUserAgent), defaults.UserAgent),
+		GrokConversationID: pick(FieldXAIGrokConversationID, clean.GrokConversationID, learnedField(learned, FieldXAIGrokConversationID), defaults.GrokConversationID),
+		CustomHeaders:      clean.CustomHeaders,
+	}
+	effective := effective(ProviderXAI, clean.Enabled, learned, fields)
+	if learned != nil {
+		effective.Version = strings.TrimSpace(learned.Version)
+	}
+	return resolved, effective
+}
+
 func pickField(preset, learned, fallback string) (string, FieldSource) {
 	if value := strings.TrimSpace(learned); value != "" {
 		return value, FieldSourceLearned

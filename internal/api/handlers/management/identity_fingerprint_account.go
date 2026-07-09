@@ -40,7 +40,7 @@ type identityFingerprintAccountDetail struct {
 func (h *Handler) GetIdentityFingerprintAccount(c *gin.Context) {
 	provider, ok := normalizeIdentityFingerprintProvider(c.Query("provider"))
 	if !ok {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "provider must be one of claude, codex, gemini"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "provider must be one of claude, codex, gemini, xai"})
 		return
 	}
 	accountKey := strings.TrimSpace(c.Query("account_key"))
@@ -141,6 +141,7 @@ func (h *Handler) currentIdentityFingerprintConfig() config.IdentityFingerprintC
 	current.Codex = config.CleanCodexIdentityFingerprint(current.Codex)
 	current.Claude = config.CleanClaudeIdentityFingerprint(current.Claude)
 	current.Gemini = config.CleanGeminiIdentityFingerprint(current.Gemini)
+	current.XAI = config.CleanXAIIdentityFingerprint(current.XAI)
 	return current
 }
 
@@ -155,6 +156,9 @@ func resolveIdentityFingerprint(current config.IdentityFingerprintConfig, provid
 	case identityfingerprint.ProviderGemini:
 		_, effective := identityfingerprint.ResolveGemini(current.Gemini, learned)
 		return effective, current.Gemini, config.DefaultGeminiIdentityFingerprint()
+	case identityfingerprint.ProviderXAI:
+		_, effective := identityfingerprint.ResolveXAI(current.XAI, learned)
+		return effective, current.XAI, config.DefaultXAIIdentityFingerprint()
 	default:
 		return identityfingerprint.EffectiveFingerprint{}, nil, nil
 	}
@@ -207,6 +211,8 @@ func identityFingerprintSummaryVersion(provider identityfingerprint.Provider, ef
 		if value := identityFingerprintEffectiveField(effective, identityfingerprint.FieldCodexVersion); value != "" {
 			return value
 		}
+	case identityfingerprint.ProviderXAI:
+		return strings.TrimSpace(effective.Version)
 	}
 	return strings.TrimSpace(effective.Version)
 }
@@ -284,6 +290,8 @@ func normalizeIdentityFingerprintProvider(value string) (identityfingerprint.Pro
 		return identityfingerprint.ProviderCodex, true
 	case string(identityfingerprint.ProviderGemini), "google":
 		return identityfingerprint.ProviderGemini, true
+	case string(identityfingerprint.ProviderXAI), "grok":
+		return identityfingerprint.ProviderXAI, true
 	default:
 		return "", false
 	}

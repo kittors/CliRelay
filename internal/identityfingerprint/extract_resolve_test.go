@@ -95,6 +95,28 @@ func TestExtractCodexObservationVersionHeaderOverridesUserAgentVersion(t *testin
 	}
 }
 
+func TestExtractXAIObservationFromGrokHeaders(t *testing.T) {
+	headers := http.Header{}
+	headers.Set("User-Agent", "grok-cli/0.3.1 (darwin arm64)")
+	headers.Set("X-Grok-Conv-Id", "conv-123")
+
+	obs, ok := ExtractObservation(LearnInput{
+		Provider:   ProviderXAI,
+		AccountKey: "acct",
+		Headers:    headers,
+		ObservedAt: time.Date(2026, 7, 9, 1, 2, 3, 0, time.UTC),
+	})
+	if !ok {
+		t.Fatal("ExtractObservation returned false")
+	}
+	if obs.ClientProduct != "grok-cli" || obs.Version != "0.3.1" {
+		t.Fatalf("product/version = %s/%s, want grok-cli/0.3.1", obs.ClientProduct, obs.Version)
+	}
+	if got := obs.Fields[FieldXAIGrokConversationID]; got != "conv-123" {
+		t.Fatalf("x-grok-conv-id = %q, want conv-123", got)
+	}
+}
+
 func TestMergeObservationUpdatesOnlyNewerSameProductAndPreservesMissingFields(t *testing.T) {
 	existing := &LearnedRecord{
 		Provider:      ProviderClaude,
@@ -278,5 +300,29 @@ func TestResolveGeminiUsesLearnedWhenPresetEmpty(t *testing.T) {
 	}
 	if got := effective.Fields[FieldGeminiClientMetadata].Source; got != FieldSourceLearned {
 		t.Fatalf("metadata source = %q, want learned", got)
+	}
+}
+
+func TestResolveXAIUsesLearnedWhenPresetEmpty(t *testing.T) {
+	learned := &LearnedRecord{
+		Provider:      ProviderXAI,
+		AccountKey:    "acct",
+		ClientProduct: "grok-cli",
+		Version:       "0.3.1",
+		Fields: map[string]string{
+			FieldUserAgent:             "grok-cli/0.3.1 (darwin arm64)",
+			FieldXAIGrokConversationID: "conv-123",
+		},
+	}
+
+	fp, effective := ResolveXAI(config.XAIIdentityFingerprintConfig{Enabled: true}, learned)
+	if fp.UserAgent != "grok-cli/0.3.1 (darwin arm64)" || fp.GrokConversationID != "conv-123" {
+		t.Fatalf("resolved xAI fingerprint = %#v, want learned fields", fp)
+	}
+	if effective.Version != "0.3.1" {
+		t.Fatalf("effective version = %q, want learned version", effective.Version)
+	}
+	if got := effective.Fields[FieldUserAgent].Source; got != FieldSourceLearned {
+		t.Fatalf("User-Agent source = %q, want learned", got)
 	}
 }

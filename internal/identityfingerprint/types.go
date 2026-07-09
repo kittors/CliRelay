@@ -8,6 +8,7 @@ const (
 	ProviderClaude Provider = "claude"
 	ProviderCodex  Provider = "codex"
 	ProviderGemini Provider = "gemini"
+	ProviderXAI    Provider = "xai"
 )
 
 type FieldSource string

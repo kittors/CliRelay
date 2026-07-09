@@ -35,6 +35,7 @@ func (h *Handler) GetIdentityFingerprint(c *gin.Context) {
 			Codex:  config.DefaultCodexIdentityFingerprint(),
 			Claude: config.DefaultClaudeIdentityFingerprint(),
 			Gemini: config.DefaultGeminiIdentityFingerprint(),
+			XAI:    config.DefaultXAIIdentityFingerprint(),
 		},
 		Learned:   learned,
 		Effective: effective,
@@ -42,6 +43,7 @@ func (h *Handler) GetIdentityFingerprint(c *gin.Context) {
 			"claude": {Enabled: current.Claude.Enabled, LearnedCount: len(learned["claude"])},
 			"codex":  {Enabled: current.Codex.Enabled, LearnedCount: len(learned["codex"])},
 			"gemini": {Enabled: current.Gemini.Enabled, LearnedCount: len(learned["gemini"])},
+			"xai":    {Enabled: current.XAI.Enabled, LearnedCount: len(learned["xai"])},
 		},
 	})
 }
@@ -56,6 +58,7 @@ func (h *Handler) PutIdentityFingerprint(c *gin.Context) {
 	body.Codex = config.CleanCodexIdentityFingerprint(body.Codex)
 	body.Claude = config.CleanClaudeIdentityFingerprint(body.Claude)
 	body.Gemini = config.CleanGeminiIdentityFingerprint(body.Gemini)
+	body.XAI = config.CleanXAIIdentityFingerprint(body.XAI)
 	if err := validateCodexIdentityFingerprint(body.Codex); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -65,6 +68,10 @@ func (h *Handler) PutIdentityFingerprint(c *gin.Context) {
 		return
 	}
 	if err := validateGeminiIdentityFingerprint(body.Gemini); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if err := validateXAIIdentityFingerprint(body.XAI); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
@@ -125,13 +132,15 @@ func (h *Handler) identityFingerprintState(current config.IdentityFingerprintCon
 		"claude": {},
 		"codex":  {},
 		"gemini": {},
+		"xai":    {},
 	}
 	effective := map[string][]identityfingerprint.EffectiveFingerprint{
 		"claude": {},
 		"codex":  {},
 		"gemini": {},
+		"xai":    {},
 	}
-	for _, provider := range []identityfingerprint.Provider{identityfingerprint.ProviderClaude, identityfingerprint.ProviderCodex, identityfingerprint.ProviderGemini} {
+	for _, provider := range []identityfingerprint.Provider{identityfingerprint.ProviderClaude, identityfingerprint.ProviderCodex, identityfingerprint.ProviderGemini, identityfingerprint.ProviderXAI} {
 		records, err := usage.ListIdentityFingerprints(provider, 200)
 		if err != nil {
 			continue
@@ -149,6 +158,9 @@ func (h *Handler) identityFingerprintState(current config.IdentityFingerprintCon
 				effective[key] = append(effective[key], eff)
 			case identityfingerprint.ProviderGemini:
 				_, eff := identityfingerprint.ResolveGemini(current.Gemini, &record)
+				effective[key] = append(effective[key], eff)
+			case identityfingerprint.ProviderXAI:
+				_, eff := identityfingerprint.ResolveXAI(current.XAI, &record)
 				effective[key] = append(effective[key], eff)
 			}
 		}
@@ -232,6 +244,29 @@ func validateGeminiIdentityFingerprint(fp config.GeminiIdentityFingerprintConfig
 	return nil
 }
 
+func validateXAIIdentityFingerprint(fp config.XAIIdentityFingerprintConfig) error {
+	if containsHeaderLineBreak(fp.UserAgent) || containsHeaderLineBreak(fp.GrokConversationID) {
+		return fmt.Errorf("identity fingerprint fields must not contain line breaks")
+	}
+	for key, value := range fp.CustomHeaders {
+		key = strings.TrimSpace(key)
+		value = strings.TrimSpace(value)
+		if key == "" {
+			return fmt.Errorf("custom header name cannot be empty")
+		}
+		if !isHTTPHeaderToken(key) {
+			return fmt.Errorf("invalid custom header name: %s", key)
+		}
+		if isIdentityFingerprintBlockedHeader(key) || isXAIIdentityFingerprintBlockedHeader(key) {
+			return fmt.Errorf("custom header %s is managed by the system", key)
+		}
+		if containsHeaderLineBreak(value) {
+			return fmt.Errorf("custom header %s must not contain line breaks", key)
+		}
+	}
+	return nil
+}
+
 func containsHeaderLineBreak(value string) bool {
 	return strings.ContainsAny(value, "\r\n")
 }
@@ -263,6 +298,15 @@ func isClaudeIdentityFingerprintBlockedHeader(key string) bool {
 func isGeminiIdentityFingerprintBlockedHeader(key string) bool {
 	switch strings.ToLower(strings.TrimSpace(key)) {
 	case "x-goog-api-client", "client-metadata":
+		return true
+	default:
+		return false
+	}
+}
+
+func isXAIIdentityFingerprintBlockedHeader(key string) bool {
+	switch strings.ToLower(strings.TrimSpace(key)) {
+	case "x-grok-conv-id":
 		return true
 	default:
 		return false

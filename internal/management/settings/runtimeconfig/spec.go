@@ -296,13 +296,15 @@ func Specs() []Spec {
 			Meaningful: func(cfg *config.Config) bool {
 				return codexIdentityFingerprintMeaningful(cfg.IdentityFingerprint.Codex) ||
 					claudeIdentityFingerprintMeaningful(cfg.IdentityFingerprint.Claude) ||
-					geminiIdentityFingerprintMeaningful(cfg.IdentityFingerprint.Gemini)
+					geminiIdentityFingerprintMeaningful(cfg.IdentityFingerprint.Gemini) ||
+					xaiIdentityFingerprintMeaningful(cfg.IdentityFingerprint.XAI)
 			},
 			Value: func(cfg *config.Config) any {
 				return config.IdentityFingerprintConfig{
 					Codex:  config.CleanCodexIdentityFingerprint(cfg.IdentityFingerprint.Codex),
 					Claude: config.CleanClaudeIdentityFingerprint(cfg.IdentityFingerprint.Claude),
 					Gemini: config.CleanGeminiIdentityFingerprint(cfg.IdentityFingerprint.Gemini),
+					XAI:    config.CleanXAIIdentityFingerprint(cfg.IdentityFingerprint.XAI),
 				}
 			},
 			Apply: func(cfg *config.Config, raw json.RawMessage) bool {
@@ -314,6 +316,7 @@ func Specs() []Spec {
 				value.Codex = config.CleanCodexIdentityFingerprint(value.Codex)
 				value.Claude = config.CleanClaudeIdentityFingerprint(value.Claude)
 				value.Gemini = config.CleanGeminiIdentityFingerprint(value.Gemini)
+				value.XAI = config.CleanXAIIdentityFingerprint(value.XAI)
 				cfg.IdentityFingerprint = value
 				return true
 			},
@@ -431,6 +434,14 @@ func geminiIdentityFingerprintMeaningful(fp config.GeminiIdentityFingerprintConf
 		strings.TrimSpace(clean.UserAgent) != "" ||
 		strings.TrimSpace(clean.APIClient) != "" ||
 		strings.TrimSpace(clean.ClientMetadata) != "" ||
+		len(clean.CustomHeaders) > 0
+}
+
+func xaiIdentityFingerprintMeaningful(fp config.XAIIdentityFingerprintConfig) bool {
+	clean := config.CleanXAIIdentityFingerprint(fp)
+	return clean.Enabled ||
+		strings.TrimSpace(clean.UserAgent) != "" ||
+		strings.TrimSpace(clean.GrokConversationID) != "" ||
 		len(clean.CustomHeaders) > 0
 }
 
