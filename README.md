@@ -28,7 +28,7 @@
 
 > **✨ Heavily enhanced fork of the [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) project** — rebuilt with a production-grade management layer, web control panel hosting, and a terminal TUI for day-2 operations.
 
-CliRelay turns AI CLI subscriptions, OAuth credentials, API keys, and compatible upstream services into one managed API layer. It proxies Claude Code, Gemini CLI, OpenAI Codex, Amp CLI, OpenAI-compatible clients, and other AI coding tools through a unified endpoint, then adds routing groups, failover, request logging, quota control, model pricing, image-generation support, API-key self-service, online updates, `/manage` web hosting, and terminal management workflows around that traffic.
+CliRelay turns AI CLI subscriptions, OAuth credentials, API keys, and compatible upstream services into one managed API layer. It proxies Claude Code, Gemini CLI, OpenAI Codex, Qwen, iFlow, Kimi, Antigravity, xAI/Grok, OpenCode Go, ClinePass, Ollama Cloud, Bedrock, Amp, Vertex, OpenAI-compatible clients, and other AI coding tools through a unified endpoint, then adds routing groups, failover, request logging, quota control, model pricing, image-generation support, API-key self-service, online updates, `/manage` web hosting, and terminal management workflows around that traffic.
 
 The current runtime data stack is PostgreSQL 15+, Redis 7+, and Ent ORM. PostgreSQL is the source of truth for runtime data; Redis is used for cache, locks, limits, queues, and rebuildable state. SQLite is legacy-only and is supported as an import source during migration.
 
@@ -39,10 +39,10 @@ The current runtime data stack is PostgreSQL 15+, Redis 7+, and Ent ORM. Postgre
 │  Claude Code          │ ──────▶ │   CliRelay   │ ──────▶ │  OpenAI / Codex    │
 │  Gemini CLI           │         │   :8317      │ ──────▶ │  Anthropic Claude  │
 │  OpenAI Codex         │         │              │ ──────▶ │  Qwen / iFlow      │
-│  Amp CLI / IDE        │         │              │ ──────▶ │  Antigravity       │
-│  Any OAI-compatible   │         └──────────────┘         │  Vertex / OpenAI   │
-└───────────────────────┘                                  │  iFlow / Qwen /    │
-                                                           │  Kimi / Claude     │
+│  Amp CLI / IDE        │         │              │ ──────▶ │  Antigravity/xAI   │
+│  Any OAI-compatible   │         └──────────────┘         │  Vertex / Bedrock  │
+└───────────────────────┘                                  │  OpenCode/Cline    │
+                                                           │  Ollama / Amp      │
                                                            └────────────────────┘
 ```
 
@@ -52,7 +52,7 @@ The current runtime data stack is PostgreSQL 15+, Redis 7+, and Ent ORM. Postgre
 
 | Feature | Description |
 |:--------|:------------|
-| 🌐 **Unified Endpoint** | One `http://localhost:8317` fronts Gemini, Claude, Codex, Qwen, iFlow, Antigravity, Vertex-compatible endpoints, OpenAI-compatible upstreams, and Amp integration |
+| 🌐 **Unified Endpoint** | One `http://localhost:8317` fronts Gemini, Claude, Codex, Qwen, iFlow, Kimi, Antigravity, xAI/Grok, Vertex, Bedrock, OpenCode Go, ClinePass, Ollama Cloud, OpenAI-compatible upstreams, and Amp integration |
 | ⚖️ **Smart Load Balancing** | Round-robin or fill-first scheduling across multiple API keys for the same provider |
 | 🧭 **Group & Path Routing** | Bind channels into groups, restrict API keys to allowed groups, and expose custom path namespaces for teams or workloads |
 | 🔄 **Auto Failover** | Automatically switches to backup channels when quotas are exhausted or errors occur |
@@ -86,7 +86,7 @@ The current runtime data stack is PostgreSQL 15+, Redis 7+, and Ent ORM. Postgre
 
 | Feature | Description |
 |:--------|:------------|
-| 📋 **Multi-Tab Config** | Manage channels organized by provider type: Gemini, Claude, Codex, Vertex, OpenAI Compatible, Ampcode |
+| 📋 **Multi-Tab Config** | Manage channels organized by provider type: Gemini, Claude, Codex, OpenCode Go, ClinePass, Ollama Cloud, Vertex, Bedrock, OpenAI Compatible, and Ampcode |
 | 🏷️ **Channel Naming** | Each channel can have a custom name, notes, proxy URL, custom headers, and model alias mappings |
 | 🧩 **Reusable Proxy Pool** | Maintain outbound proxy entries once and attach them to OAuth/auth channels when needed |
 | ⏱️ **Latency Tracking** | Average latency (`latency_ms`) tracked per channel with visual indicators |
@@ -99,7 +99,7 @@ The current runtime data stack is PostgreSQL 15+, Redis 7+, and Ent ORM. Postgre
 
 | Feature | Description |
 |:--------|:------------|
-| 🔐 **OAuth Support** | Native OAuth flows for Gemini, Claude, Codex, Qwen, iFlow, Antigravity, and Kimi, plus device/browser/cookie variants where supported |
+| 🔐 **OAuth Support** | Native OAuth flows for Gemini, Claude, Codex, Qwen, iFlow, Antigravity, Kimi, and xAI/Grok, plus device/browser/cookie variants where supported |
 | 🪪 **Identity Fingerprints** | Centralize upstream identity metadata so providers receive consistent client fingerprints |
 | 🔒 **TLS Handling** | Configurable TLS settings for upstream communication |
 | 🏠 **Panel Isolation** | Management panel access controlled independently with admin password |
@@ -125,73 +125,72 @@ The current runtime data stack is PostgreSQL 15+, Redis 7+, and Ent ORM. Postgre
 | 🗃️ **Pluggable Auth/Config Backends** | Local files by default, with optional PostgreSQL, Git, or S3-compatible object storage backends for config/auth persistence |
 | 📦 **Config Snapshots** | Import/export entire system configuration as JSON for backup and migration |
 
+## 🛠️ Runtime & Tech Stack
+
+| Layer | Technology |
+|:------|:-----------|
+| Runtime | Go 1.26, Gin, Docker Compose |
+| Data | PostgreSQL 15+ via Ent ORM, Redis 7+ for rebuildable runtime state |
+| Auth / Config Storage | Local files, PostgreSQL, Git, or S3-compatible object storage |
+| Proxy Core | OpenAI Chat Completions / Responses, Anthropic Messages, Gemini, provider-specific executors, SSE and WebSocket paths |
+| Operations | Bubble Tea / Lipgloss TUI, `/manage` web panel hosting, updater sidecar |
+| Observability | PostgreSQL request logs, compressed message bodies, live logs, system stats WebSocket |
+
 ## 📸 Management Panel Preview
 
 CliRelay can expose a built-in web control panel at `/manage`. The server can host bundled SPA assets or fall back to synced management assets from the configured panel repository.
 
 The gallery below uses the latest supplied screenshots, covering the current end-to-end management workflow.
 
-### Dashboard, Locale & Theme
+### Dashboard & Monitoring
 
-| Home overview | Operations overview |
-| :------------ | :------------------ |
-| <img src="docs/images/readme-showcase/home-overview-1.png" width="100%" alt="CliRelay dashboard overview" /> | <img src="docs/images/readme-showcase/home-overview-2.png" width="100%" alt="CliRelay operations dashboard" /> |
+| Dashboard overview | System health |
+| :----------------- | :------------ |
+| <img src="docs/images/readme-showcase/dashboard-overview.png" width="100%" alt="CliRelay dashboard overview" /> | <img src="docs/images/readme-showcase/dashboard-health.png" width="100%" alt="CliRelay health score and system monitor" /> |
 
-| Chinese / English interface | Dark mode |
-| :-------------------------- | :-------- |
-| <img src="docs/images/readme-showcase/home-i18n.png" width="100%" alt="Chinese and English management panel locale" /> | <img src="docs/images/readme-showcase/dark-mode.png" width="100%" alt="Management panel dark mode" /> |
+| Traffic trend | Monitor summary |
+| :------------ | :-------------- |
+| <img src="docs/images/readme-showcase/dashboard-traffic.png" width="100%" alt="CliRelay traffic trend chart" /> | <img src="docs/images/readme-showcase/monitor-summary.png" width="100%" alt="Monitor center summary charts" /> |
 
-### Monitoring, Logs & Self-Service
+| Monitor breakdown | Request logs |
+| :---------------- | :----------- |
+| <img src="docs/images/readme-showcase/monitor-breakdown.png" width="100%" alt="Monitor center model and API key breakdown" /> | <img src="docs/images/readme-showcase/request-logs.png" width="100%" alt="Request log table with filters" /> |
 
-| Monitor center | Request logs |
-| :------------- | :----------- |
-| <img src="docs/images/readme-showcase/monitor-center.png" width="100%" alt="Monitor center charts and request metrics" /> | <img src="docs/images/readme-showcase/request-logs.png" width="100%" alt="Request log table with filters" /> |
+| Request details | Public API key lookup |
+| :-------------- | :-------------------- |
+| <img src="docs/images/readme-showcase/request-details.png" width="100%" alt="Request details viewer" /> | <img src="docs/images/readme-showcase/api-key-lookup.png" width="100%" alt="Public API key lookup page" /> |
 
-| Request details | Log query system |
-| :-------------- | :--------------- |
-| <img src="docs/images/readme-showcase/request-details.png" width="100%" alt="Request details viewer" /> | <img src="docs/images/readme-showcase/log-query-system.png" width="100%" alt="Log query system" /> |
+### Providers, Auth & Access
 
-| API key lookup |
-| :------------- |
-| <img src="docs/images/readme-showcase/api-key-lookup.png" width="100%" alt="Public API key lookup page" /> |
+| OpenCode Go auth files | Claude auth file controls |
+| :--------------------- | :------------------------ |
+| <img src="docs/images/readme-showcase/auth-files-opencode-go.png" width="100%" alt="OpenCode Go auth file management" /> | <img src="docs/images/readme-showcase/auth-files-claude.png" width="100%" alt="Claude auth file management" /> |
 
-### Auth, Identity & Access
+| Claude OAuth health | API keys |
+| :------------------ | :------- |
+| <img src="docs/images/readme-showcase/auth-files-claude-oauth.png" width="100%" alt="Claude OAuth health and account state" /> | <img src="docs/images/readme-showcase/api-keys.png" width="100%" alt="API key management table" /> |
 
-| Unified OAuth management | Identity fingerprints |
-| :----------------------- | :-------------------- |
-| <img src="docs/images/readme-showcase/oauth-management.png" width="100%" alt="Unified OAuth management" /> | <img src="docs/images/readme-showcase/identity-fingerprint-management.png" width="100%" alt="Identity fingerprint management" /> |
+| API key permissions | Proxy pool |
+| :------------------ | :--------- |
+| <img src="docs/images/readme-showcase/api-key-permissions.png" width="100%" alt="API key permission profiles" /> | <img src="docs/images/readme-showcase/proxy-pool.png" width="100%" alt="Reusable proxy pool management" /> |
 
-| Team permissions | OAuth proxy assignment |
-| :--------------- | :--------------------- |
-| <img src="docs/images/readme-showcase/team-permissions.png" width="100%" alt="Team API key assignment and permissions" /> | <img src="docs/images/readme-showcase/proxy-config-for-oauth.png" width="100%" alt="Proxy configuration assigned to OAuth auth records" /> |
+### Routing, Models & Configuration
 
-### Channels, Routing & Configuration
+| CC Switch import | Image generation |
+| :--------------- | :--------------- |
+| <img src="docs/images/readme-showcase/cc-switch-import.png" width="100%" alt="CC Switch import settings" /> | <img src="docs/images/readme-showcase/image-generation.png" width="100%" alt="Image generation channel configuration" /> |
 
-| Multi-channel API setup | Group routing and custom paths |
-| :---------------------- | :----------------------------- |
-| <img src="docs/images/readme-showcase/multi-channel-api-add.png" width="100%" alt="Add multiple API channels" /> | <img src="docs/images/readme-showcase/group-routing-custom-path.png" width="100%" alt="Channel group routing and custom path configuration" /> |
+| Channel groups | Model catalog |
+| :------------- | :------------ |
+| <img src="docs/images/readme-showcase/channel-groups.png" width="100%" alt="Channel group routing and custom path configuration" /> | <img src="docs/images/readme-showcase/models.png" width="100%" alt="Model catalog and pricing management" /> |
 
-| Visual config | Upstream debug passthrough |
-| :------------ | :------------------------- |
-| <img src="docs/images/readme-showcase/visual-config.png" width="100%" alt="Visual configuration editor" /> | <img src="docs/images/readme-showcase/upstream-debug-passthrough.png" width="100%" alt="Debug passthrough content sent to upstream" /> |
+| Runtime config | System information |
+| :------------- | :----------------- |
+| <img src="docs/images/readme-showcase/config.png" width="100%" alt="Runtime configuration editor" /> | <img src="docs/images/readme-showcase/system-info.png" width="100%" alt="System information page" /> |
 
-| CC Switch import |
-| :--------------- |
-| <img src="docs/images/readme-showcase/cc-switch-import.png" width="100%" alt="Configurable CC Switch import" /> |
-
-### Models, Image Generation & Updates
-
-| OpenRouter model sync | Custom model maintenance |
-| :-------------------- | :----------------------- |
-| <img src="docs/images/readme-showcase/model-openrouter-sync.png" width="100%" alt="OpenRouter model ID and pricing sync" /> | <img src="docs/images/readme-showcase/custom-model-maintenance.png" width="100%" alt="Custom model maintenance" /> |
-
-| Image generation config | Online update flow |
-| :---------------------- | :----------------- |
-| <img src="docs/images/readme-showcase/image-generation-config.png" width="100%" alt="Image generation configuration" /> | <img src="docs/images/readme-showcase/online-update.png" width="100%" alt="Online update mechanism" /> |
-
-| System information |
-| :----------------- |
-| <img src="docs/images/readme-showcase/system-info.png" width="100%" alt="System information page" /> |
+| Runtime logs |
+| :----------- |
+| <img src="docs/images/readme-showcase/live-logs.png" width="100%" alt="Runtime logs viewer" /> |
 
 > 🔗 The runtime panel source is configurable via `remote-management.panel-github-repository`. The default repository is [kittors/codeProxy](https://github.com/kittors/codeProxy).
 
@@ -205,8 +204,13 @@ The gallery below uses the latest supplied screenshots, covering the current end
 | Qwen | OAuth | Qwen Code style login flow |
 | iFlow / GLM | OAuth + Cookie | Supports iFlow routing and related model families |
 | Kimi | OAuth | Browser-based login flow |
+| xAI / Grok | OAuth | Grok CLI-compatible OAuth and quota metadata |
 | Antigravity | OAuth | Dedicated OAuth channel with model backfill support |
 | Vertex-compatible endpoints | API Key | Custom base URL, headers, aliases, exclusions |
+| AWS Bedrock | API Key / SigV4 | Region-aware Bedrock Runtime access with Claude model aliases |
+| OpenCode Go | API Key | Fixed OpenCode Go upstream with usage query and vision fallback support |
+| ClinePass | API Key | OpenAI-compatible ClinePass routing with model-access controls |
+| Ollama Cloud | API Key | OpenAI-compatible Ollama Cloud routing with model-access controls |
 | OpenAI-compatible upstreams | API Key | OpenRouter, Grok-compatible endpoints, and custom providers |
 | Amp integration | Upstream API key + mappings | Direct Amp upstream fallback or mapped local routing |
 
