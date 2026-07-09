@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -137,6 +138,12 @@ var (
 	usageDriver string
 	usageLoc    *time.Location
 )
+
+// DatabaseStats summarizes the active runtime database for management telemetry.
+type DatabaseStats struct {
+	Driver    string
+	SizeBytes int64
+}
 
 const createTableSQL = `
 CREATE TABLE IF NOT EXISTS request_logs (
@@ -668,7 +675,7 @@ func initOpenedDBLocked(db, readDB *sql.DB, dbPath, driver string, storageCfg co
 	return nil
 }
 
-// CloseDB closes the SQLite database gracefully.
+// CloseDB closes the runtime database gracefully.
 func CloseDB() {
 	usageDBMu.Lock()
 	defer usageDBMu.Unlock()
@@ -687,7 +694,7 @@ func CloseDB() {
 	log.Info("usage: database closed")
 }
 
-// InsertLog writes a single request log entry into the SQLite database.
+// InsertLog writes a single request log entry into the runtime database.
 // It is safe to call concurrently.
 func InsertLog(apiKey, apiKeyName, model, source, channelName, authIndex string,
 	failed bool, timestamp time.Time, latencyMs, firstTokenMs int64, tokens TokenStats,
@@ -928,9 +935,64 @@ func getUsageLocation() *time.Location {
 	return usageLoc
 }
 
-// GetDBPath returns the file path of the SQLite database, or empty if not initialised.
+// GetDBPath returns the SQLite database file path, or empty for non-file databases.
 func GetDBPath() string {
 	usageDBMu.Lock()
 	defer usageDBMu.Unlock()
+	if usageDriver != "sqlite" {
+		return ""
+	}
 	return usageDBPath
+}
+
+// GetDatabaseStats returns runtime database engine and size telemetry.
+func GetDatabaseStats() (DatabaseStats, error) {
+	usageDBMu.Lock()
+	driver := usageDriver
+	path := usageDBPath
+	db := usageReadDB
+	if db == nil {
+		db = usageDB
+	}
+	usageDBMu.Unlock()
+
+	stats := DatabaseStats{Driver: driver}
+	switch driver {
+	case "postgres":
+		if db == nil {
+			return stats, nil
+		}
+		var size sql.NullInt64
+		if err := db.QueryRow("SELECT pg_database_size(current_database())").Scan(&size); err != nil {
+			return stats, fmt.Errorf("usage: query postgres database size: %w", err)
+		}
+		if size.Valid {
+			stats.SizeBytes = size.Int64
+		}
+	case "sqlite":
+		size, err := sqliteDatabaseSizeBytes(path)
+		if err != nil {
+			return stats, err
+		}
+		stats.SizeBytes = size
+	}
+	return stats, nil
+}
+
+func sqliteDatabaseSizeBytes(path string) (int64, error) {
+	if strings.TrimSpace(path) == "" {
+		return 0, nil
+	}
+	var size int64
+	for _, candidate := range []string{path, path + "-wal", path + "-shm"} {
+		info, err := os.Stat(candidate)
+		if err == nil {
+			size += info.Size()
+			continue
+		}
+		if !os.IsNotExist(err) {
+			return 0, fmt.Errorf("usage: stat sqlite database file %s: %w", candidate, err)
+		}
+	}
+	return size, nil
 }

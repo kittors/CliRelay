@@ -33,6 +33,19 @@ func TestPostgresRuntimeDataStackIntegration(t *testing.T) {
 	if db == nil {
 		t.Fatal("postgres db is nil")
 	}
+	dbStats, err := GetDatabaseStats()
+	if err != nil {
+		t.Fatalf("GetDatabaseStats() error = %v", err)
+	}
+	if dbStats.Driver != "postgres" {
+		t.Fatalf("GetDatabaseStats().Driver = %q, want postgres", dbStats.Driver)
+	}
+	if dbStats.SizeBytes <= 0 {
+		t.Fatalf("GetDatabaseStats().SizeBytes = %d, want > 0", dbStats.SizeBytes)
+	}
+	if dbPath := GetDBPath(); dbPath != "" {
+		t.Fatalf("GetDBPath() = %q, want empty for postgres", dbPath)
+	}
 	if _, err := db.Exec(`
 		TRUNCATE
 			request_log_content,

@@ -22,9 +22,10 @@ import (
 // SystemStats is the JSON payload pushed via WebSocket and returned by HTTP.
 type SystemStats struct {
 	// Database
-	DBSizeBytes int64 `json:"db_size_bytes"`
+	DBSizeBytes int64  `json:"db_size_bytes"`
+	DBEngine    string `json:"db_engine"`
 
-	// Request log body storage inside SQLite.
+	// Request log body storage inside the runtime database.
 	LogContentStoreBytes int64 `json:"log_content_store_bytes"`
 
 	// Log directory size on disk.
@@ -92,18 +93,11 @@ func (h *Handler) collectSystemStats() SystemStats {
 	runtime.ReadMemStats(&m)
 	stats.GoHeapBytes = m.HeapAlloc
 
-	// ── DB file size ──
-	dbPath := usage.GetDBPath()
-	if dbPath != "" {
-		if info, err := os.Stat(dbPath); err == nil {
-			stats.DBSizeBytes = info.Size()
-		}
-		// Also check WAL and SHM files
-		for _, suffix := range []string{"-wal", "-shm"} {
-			if info, err := os.Stat(dbPath + suffix); err == nil {
-				stats.DBSizeBytes += info.Size()
-			}
-		}
+	dbStats, err := usage.GetDatabaseStats()
+	stats.DBEngine = dbStats.Driver
+	stats.DBSizeBytes = dbStats.SizeBytes
+	if err != nil {
+		log.Warnf("system-stats: failed to query database stats: %v", err)
 	}
 	if contentBytes, err := usage.GetRequestLogStorageBytes(); err == nil {
 		stats.LogContentStoreBytes = contentBytes

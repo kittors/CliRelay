@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"math"
+	"os"
 	"path/filepath"
 	"slices"
 	"testing"
@@ -33,6 +34,30 @@ func initTestUsageDB(t *testing.T, cfg config.RequestLogStorageConfig) {
 	}
 	stopRequestLogMaintenance()
 	t.Cleanup(CloseDB)
+}
+
+func TestSQLiteDatabaseSizeBytesIncludesWALAndSHM(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "usage.db")
+	files := map[string]string{
+		dbPath:          "database",
+		dbPath + "-wal": "wal",
+		dbPath + "-shm": "shm",
+	}
+	var want int64
+	for path, content := range files {
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatalf("write %s: %v", path, err)
+		}
+		want += int64(len(content))
+	}
+
+	got, err := sqliteDatabaseSizeBytes(dbPath)
+	if err != nil {
+		t.Fatalf("sqliteDatabaseSizeBytes() error = %v", err)
+	}
+	if got != want {
+		t.Fatalf("sqliteDatabaseSizeBytes() = %d, want %d", got, want)
+	}
 }
 
 func TestCutoffStartUTCAtUsesProjectTimezoneForDayBoundaries(t *testing.T) {
