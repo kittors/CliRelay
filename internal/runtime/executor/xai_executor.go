@@ -391,6 +391,7 @@ func applyXAIHeaders(r *http.Request, cfg *config.Config, auth *cliproxyauth.Aut
 		attrs = auth.Attributes
 	}
 	util.ApplyCustomHeadersFromAttrs(r, attrs)
+	applyXAIPassthroughHeaders(r.Header, identityFingerprintHeadersFromContext(r.Context()))
 	if fp, ok := xaiIdentityFingerprint(cfg, auth, r.Context()); ok {
 		applyXAIIdentityFingerprintHeaders(r.Header, fp)
 	}

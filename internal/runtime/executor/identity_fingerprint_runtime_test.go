@@ -384,27 +384,41 @@ func TestXAIHeadersReplayLearnedFingerprintWithoutInboundHeaders(t *testing.T) {
 		},
 	}
 	inbound := http.Header{}
-	inbound.Set("User-Agent", "grok-cli/0.3.1 (darwin arm64)")
+	inbound.Set("User-Agent", "grok-shell/0.2.93 (macos; aarch64)")
+	inbound.Set("X-Grok-Client-Identifier", "grok-shell")
+	inbound.Set("X-Grok-Client-Version", "0.2.93")
 	inbound.Set("X-Grok-Conv-Id", "conv-123")
 	ctx := contextWithInboundHeaders(http.MethodPost, "/v1/responses", inbound)
 
 	req := httptest.NewRequest(http.MethodPost, "https://api.x.ai/v1/responses", nil)
 	req = req.WithContext(ctx)
 	applyXAIHeaders(req, cfg, auth, "xai-token", true)
-	if got := req.Header.Get("User-Agent"); got != "grok-cli/0.3.1 (darwin arm64)" {
+	if got := req.Header.Get("User-Agent"); got != "grok-shell/0.2.93 (macos; aarch64)" {
 		t.Fatalf("User-Agent = %q, want learned xAI UA", got)
 	}
+	if got := req.Header.Get("X-Grok-Client-Identifier"); got != "grok-shell" {
+		t.Fatalf("X-Grok-Client-Identifier = %q, want learned xAI client identifier", got)
+	}
+	if got := req.Header.Get("X-Grok-Client-Version"); got != "0.2.93" {
+		t.Fatalf("X-Grok-Client-Version = %q, want learned xAI client version", got)
+	}
 	if got := req.Header.Get("X-Grok-Conv-Id"); got != "conv-123" {
-		t.Fatalf("X-Grok-Conv-Id = %q, want learned xAI conversation id", got)
+		t.Fatalf("X-Grok-Conv-Id = %q, want passthrough xAI conversation id", got)
 	}
 
 	replayReq := httptest.NewRequest(http.MethodPost, "https://api.x.ai/v1/responses", nil)
 	applyXAIHeaders(replayReq, cfg, auth, "xai-token", true)
-	if got := replayReq.Header.Get("User-Agent"); got != "grok-cli/0.3.1 (darwin arm64)" {
+	if got := replayReq.Header.Get("User-Agent"); got != "grok-shell/0.2.93 (macos; aarch64)" {
 		t.Fatalf("replayed User-Agent = %q, want stored learned xAI UA", got)
 	}
-	if got := replayReq.Header.Get("X-Grok-Conv-Id"); got != "conv-123" {
-		t.Fatalf("replayed X-Grok-Conv-Id = %q, want stored learned xAI conversation id", got)
+	if got := replayReq.Header.Get("X-Grok-Client-Identifier"); got != "grok-shell" {
+		t.Fatalf("replayed X-Grok-Client-Identifier = %q, want stored learned xAI client identifier", got)
+	}
+	if got := replayReq.Header.Get("X-Grok-Client-Version"); got != "0.2.93" {
+		t.Fatalf("replayed X-Grok-Client-Version = %q, want stored learned xAI client version", got)
+	}
+	if got := replayReq.Header.Get("X-Grok-Conv-Id"); got != "" {
+		t.Fatalf("replayed X-Grok-Conv-Id = %q, want dynamic value omitted without inbound header", got)
 	}
 }
 

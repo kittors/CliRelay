@@ -23,6 +23,8 @@ const (
 	FieldGeminiAPIClient        = "x-goog-api-client"
 	FieldGeminiClientMetadata   = "client-metadata"
 	FieldXAIGrokConversationID  = "x-grok-conv-id"
+	FieldXAIClientIdentifier    = "x-grok-client-identifier"
+	FieldXAIClientVersion       = "x-grok-client-version"
 )
 
 var (
@@ -173,10 +175,14 @@ func extractGeminiObservation(input LearnInput, headers http.Header, observedAt 
 
 func extractXAIObservation(input LearnInput, headers http.Header, observedAt time.Time) (Observation, bool) {
 	ua := strings.TrimSpace(headers.Get("User-Agent"))
-	grokConversationID := strings.TrimSpace(headers.Get("X-Grok-Conv-Id"))
+	clientIdentifier := strings.TrimSpace(headers.Get("X-Grok-Client-Identifier"))
+	clientVersion := strings.TrimSpace(headers.Get("X-Grok-Client-Version"))
 	product, version := xaiProductVersion(ua)
-	if product == "" && grokConversationID != "" {
-		product = "grok-cli"
+	if product == "" && clientIdentifier != "" {
+		product = clientIdentifier
+	}
+	if version == "" {
+		version = clientVersion
 	}
 	if product == "" {
 		return Observation{}, false
@@ -185,8 +191,11 @@ func extractXAIObservation(input LearnInput, headers http.Header, observedAt tim
 	if ua != "" {
 		fields[FieldUserAgent] = ua
 	}
-	if grokConversationID != "" {
-		fields[FieldXAIGrokConversationID] = grokConversationID
+	if clientIdentifier != "" {
+		fields[FieldXAIClientIdentifier] = clientIdentifier
+	}
+	if clientVersion != "" {
+		fields[FieldXAIClientVersion] = clientVersion
 	}
 	if len(fields) == 0 {
 		return Observation{}, false
@@ -199,7 +208,7 @@ func extractXAIObservation(input LearnInput, headers http.Header, observedAt tim
 		ClientVariant:   "cli",
 		Version:         version,
 		Fields:          fields,
-		ObservedHeaders: observedHeaders(headers, []string{"User-Agent", "X-Grok-Conv-Id"}),
+		ObservedHeaders: observedHeaders(headers, []string{"User-Agent", "X-Grok-Client-Identifier", "X-Grok-Client-Version"}),
 		ObservedAt:      observedAt.UTC(),
 	}, true
 }

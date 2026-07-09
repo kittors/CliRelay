@@ -245,7 +245,10 @@ func validateGeminiIdentityFingerprint(fp config.GeminiIdentityFingerprintConfig
 }
 
 func validateXAIIdentityFingerprint(fp config.XAIIdentityFingerprintConfig) error {
-	if containsHeaderLineBreak(fp.UserAgent) || containsHeaderLineBreak(fp.GrokConversationID) {
+	if containsHeaderLineBreak(fp.UserAgent) ||
+		containsHeaderLineBreak(fp.ClientIdentifier) ||
+		containsHeaderLineBreak(fp.ClientVersion) ||
+		containsHeaderLineBreak(fp.GrokConversationID) {
 		return fmt.Errorf("identity fingerprint fields must not contain line breaks")
 	}
 	for key, value := range fp.CustomHeaders {
@@ -306,7 +309,7 @@ func isGeminiIdentityFingerprintBlockedHeader(key string) bool {
 
 func isXAIIdentityFingerprintBlockedHeader(key string) bool {
 	switch strings.ToLower(strings.TrimSpace(key)) {
-	case "x-grok-conv-id":
+	case "x-grok-client-identifier", "x-grok-client-version", "x-grok-conv-id":
 		return true
 	default:
 		return false

@@ -23,6 +23,10 @@ const (
 	DefaultGeminiFingerprintUserAgent      = "google-api-nodejs-client/9.15.1"
 	DefaultGeminiFingerprintAPIClient      = "gl-node/22.17.0"
 	DefaultGeminiFingerprintClientMetadata = "ideType=IDE_UNSPECIFIED,platform=PLATFORM_UNSPECIFIED,pluginType=GEMINI"
+
+	DefaultXAIFingerprintUserAgent        = "grok-shell/0.2.93 (macos; aarch64)"
+	DefaultXAIFingerprintClientIdentifier = "grok-shell"
+	DefaultXAIFingerprintClientVersion    = "0.2.93"
 )
 
 // IdentityFingerprintConfig groups provider-specific upstream identity settings.
@@ -89,6 +93,8 @@ type GeminiIdentityFingerprintConfig struct {
 type XAIIdentityFingerprintConfig struct {
 	Enabled            bool              `yaml:"enabled" json:"enabled"`
 	UserAgent          string            `yaml:"user-agent,omitempty" json:"user-agent,omitempty"`
+	ClientIdentifier   string            `yaml:"x-grok-client-identifier,omitempty" json:"x-grok-client-identifier,omitempty"`
+	ClientVersion      string            `yaml:"x-grok-client-version,omitempty" json:"x-grok-client-version,omitempty"`
 	GrokConversationID string            `yaml:"x-grok-conv-id,omitempty" json:"x-grok-conv-id,omitempty"`
 	CustomHeaders      map[string]string `yaml:"custom-headers,omitempty" json:"custom-headers,omitempty"`
 }
@@ -125,8 +131,11 @@ func DefaultGeminiIdentityFingerprint() GeminiIdentityFingerprintConfig {
 // DefaultXAIIdentityFingerprint returns the conservative Grok identity template.
 func DefaultXAIIdentityFingerprint() XAIIdentityFingerprintConfig {
 	return XAIIdentityFingerprintConfig{
-		Enabled:       false,
-		CustomHeaders: map[string]string{},
+		Enabled:          false,
+		UserAgent:        DefaultXAIFingerprintUserAgent,
+		ClientIdentifier: DefaultXAIFingerprintClientIdentifier,
+		ClientVersion:    DefaultXAIFingerprintClientVersion,
+		CustomHeaders:    map[string]string{},
 	}
 }
 
@@ -288,7 +297,7 @@ func CleanGeminiIdentityFingerprint(in GeminiIdentityFingerprintConfig) GeminiId
 }
 
 // NormalizeXAIIdentityFingerprint trims user input while preserving empty fields
-// as "automatic learning" markers. xAI has no stable public CLI defaults here.
+// as "automatic learning" markers.
 func NormalizeXAIIdentityFingerprint(in XAIIdentityFingerprintConfig) XAIIdentityFingerprintConfig {
 	return CleanXAIIdentityFingerprint(in)
 }
@@ -297,6 +306,8 @@ func NormalizeXAIIdentityFingerprint(in XAIIdentityFingerprintConfig) XAIIdentit
 func CleanXAIIdentityFingerprint(in XAIIdentityFingerprintConfig) XAIIdentityFingerprintConfig {
 	out := in
 	out.UserAgent = strings.TrimSpace(out.UserAgent)
+	out.ClientIdentifier = strings.TrimSpace(out.ClientIdentifier)
+	out.ClientVersion = strings.TrimSpace(out.ClientVersion)
 	out.GrokConversationID = strings.TrimSpace(out.GrokConversationID)
 	out.CustomHeaders = cleanIdentityFingerprintHeaders(out.CustomHeaders)
 	return out

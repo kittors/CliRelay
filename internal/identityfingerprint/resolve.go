@@ -117,12 +117,14 @@ func ResolveXAI(cfg config.XAIIdentityFingerprintConfig, learned *LearnedRecord)
 	resolved := config.XAIIdentityFingerprintConfig{
 		Enabled:            clean.Enabled,
 		UserAgent:          pick(FieldUserAgent, clean.UserAgent, learnedField(learned, FieldUserAgent), defaults.UserAgent),
-		GrokConversationID: pick(FieldXAIGrokConversationID, clean.GrokConversationID, learnedField(learned, FieldXAIGrokConversationID), defaults.GrokConversationID),
+		ClientIdentifier:   pick(FieldXAIClientIdentifier, clean.ClientIdentifier, learnedField(learned, FieldXAIClientIdentifier), defaults.ClientIdentifier),
+		ClientVersion:      pick(FieldXAIClientVersion, clean.ClientVersion, learnedFieldOrVersion(learned, FieldXAIClientVersion), defaults.ClientVersion),
+		GrokConversationID: strings.TrimSpace(clean.GrokConversationID),
 		CustomHeaders:      clean.CustomHeaders,
 	}
 	effective := effective(ProviderXAI, clean.Enabled, learned, fields)
-	if learned != nil {
-		effective.Version = strings.TrimSpace(learned.Version)
+	if value := strings.TrimSpace(resolved.ClientVersion); value != "" {
+		effective.Version = value
 	}
 	return resolved, effective
 }

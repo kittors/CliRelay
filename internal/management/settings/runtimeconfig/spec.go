@@ -441,6 +441,8 @@ func xaiIdentityFingerprintMeaningful(fp config.XAIIdentityFingerprintConfig) bo
 	clean := config.CleanXAIIdentityFingerprint(fp)
 	return clean.Enabled ||
 		strings.TrimSpace(clean.UserAgent) != "" ||
+		strings.TrimSpace(clean.ClientIdentifier) != "" ||
+		strings.TrimSpace(clean.ClientVersion) != "" ||
 		strings.TrimSpace(clean.GrokConversationID) != "" ||
 		len(clean.CustomHeaders) > 0
 }

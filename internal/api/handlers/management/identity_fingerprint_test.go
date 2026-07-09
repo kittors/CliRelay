@@ -309,6 +309,72 @@ func TestGetIdentityFingerprintAccountReturnsLearnedPresetAndBuiltinDefault(t *t
 	}
 }
 
+func TestGetIdentityFingerprintAccountReturnsXAIBuiltinDefaultFields(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	dbPath := filepath.Join(t.TempDir(), "usage.db")
+	if err := usage.InitDB(dbPath, config.RequestLogStorageConfig{
+		StoreContent:           true,
+		ContentRetentionDays:   30,
+		CleanupIntervalMinutes: 1440,
+	}, time.UTC); err != nil {
+		t.Fatalf("InitDB: %v", err)
+	}
+	t.Cleanup(usage.CloseDB)
+
+	h := &Handler{cfg: &config.Config{IdentityFingerprint: config.IdentityFingerprintConfig{
+		XAI: config.XAIIdentityFingerprintConfig{Enabled: true},
+	}}}
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodGet, "/identity-fingerprint/account?provider=xai&account_key=authsub_xai_test", nil)
+
+	h.GetIdentityFingerprintAccount(c)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var payload struct {
+		Summary struct {
+			PrimarySource   string         `json:"primary_source"`
+			SourceCounts    map[string]int `json:"source_counts"`
+			EffectiveFields int            `json:"effective_fields"`
+			Learned         bool           `json:"learned"`
+			Version         string         `json:"version"`
+		} `json:"summary"`
+		Effective struct {
+			Fields map[string]struct {
+				Value  string `json:"value"`
+				Source string `json:"source"`
+			} `json:"fields"`
+		} `json:"effective"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if payload.Summary.Learned {
+		t.Fatalf("summary learned = true, want false")
+	}
+	if payload.Summary.PrimarySource != "builtin_default" || payload.Summary.EffectiveFields != 3 {
+		t.Fatalf("summary = %+v, want three builtin default fields", payload.Summary)
+	}
+	if payload.Summary.Version != config.DefaultXAIFingerprintClientVersion {
+		t.Fatalf("summary version = %q, want %q", payload.Summary.Version, config.DefaultXAIFingerprintClientVersion)
+	}
+	if payload.Summary.SourceCounts["builtin_default"] != 3 {
+		t.Fatalf("source counts = %#v, want three builtin default fields", payload.Summary.SourceCounts)
+	}
+	if got := payload.Effective.Fields[identityfingerprint.FieldUserAgent]; got.Value != config.DefaultXAIFingerprintUserAgent || got.Source != "builtin_default" {
+		t.Fatalf("user-agent field = %+v, want xAI builtin default", got)
+	}
+	if got := payload.Effective.Fields[identityfingerprint.FieldXAIClientIdentifier]; got.Value != config.DefaultXAIFingerprintClientIdentifier || got.Source != "builtin_default" {
+		t.Fatalf("client identifier field = %+v, want xAI builtin default", got)
+	}
+	if got := payload.Effective.Fields[identityfingerprint.FieldXAIClientVersion]; got.Value != config.DefaultXAIFingerprintClientVersion || got.Source != "builtin_default" {
+		t.Fatalf("client version field = %+v, want xAI builtin default", got)
+	}
+}
+
 func TestBuildIdentityFingerprintSummaryUsesCodexPresetVersionWhenLearnedVersionMissing(t *testing.T) {
 	learned := &identityfingerprint.LearnedRecord{
 		Provider:      identityfingerprint.ProviderCodex,
