@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/identityfingerprint"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/management/settings/runtimeconfig"
 	settingsstore "github.com/router-for-me/CLIProxyAPI/v6/internal/management/settings/store"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 )
@@ -31,14 +32,9 @@ func (h *Handler) GetIdentityFingerprint(c *gin.Context) {
 	learned, effective := h.identityFingerprintState(current)
 	c.JSON(http.StatusOK, identityFingerprintResponse{
 		IdentityFingerprint: current,
-		Defaults: config.IdentityFingerprintConfig{
-			Codex:  config.DefaultCodexIdentityFingerprint(),
-			Claude: config.DefaultClaudeIdentityFingerprint(),
-			Gemini: config.DefaultGeminiIdentityFingerprint(),
-			XAI:    config.DefaultXAIIdentityFingerprint(),
-		},
-		Learned:   learned,
-		Effective: effective,
+		Defaults:            config.DefaultIdentityFingerprintConfig(),
+		Learned:             learned,
+		Effective:           effective,
 		Status: map[string]identityFingerprintProviderStatus{
 			"claude": {Enabled: current.Claude.Enabled, LearnedCount: len(learned["claude"])},
 			"codex":  {Enabled: current.Codex.Enabled, LearnedCount: len(learned["codex"])},
@@ -55,10 +51,7 @@ func (h *Handler) PutIdentityFingerprint(c *gin.Context) {
 		return
 	}
 
-	body.Codex = config.CleanCodexIdentityFingerprint(body.Codex)
-	body.Claude = config.CleanClaudeIdentityFingerprint(body.Claude)
-	body.Gemini = config.CleanGeminiIdentityFingerprint(body.Gemini)
-	body.XAI = config.CleanXAIIdentityFingerprint(body.XAI)
+	body = config.NormalizeIdentityFingerprintConfig(body)
 	if err := validateCodexIdentityFingerprint(body.Codex); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -90,7 +83,7 @@ func (h *Handler) PutIdentityFingerprint(c *gin.Context) {
 	h.cfg.IdentityFingerprint = body
 	h.mu.Unlock()
 
-	if !h.persistRuntimeSetting(c, settingsstore.RuntimeSettingIdentityFingerprint, body) {
+	if !h.persistRuntimeSetting(c, settingsstore.RuntimeSettingIdentityFingerprint, runtimeconfig.IdentityFingerprintRuntimeSettingValue(body)) {
 		h.mu.Lock()
 		if h.cfg != nil {
 			h.cfg.IdentityFingerprint = previous

@@ -1,6 +1,11 @@
 package config
 
-import "strings"
+import (
+	"encoding/json"
+	"strings"
+
+	"gopkg.in/yaml.v3"
+)
 
 const (
 	// Defaults are intentionally aligned with upstream CLIProxyAPI's codex-tui behavior.
@@ -48,12 +53,13 @@ type CodexIdentityFingerprintConfig struct {
 	SessionMode   string            `yaml:"session-mode,omitempty" json:"session-mode,omitempty"`
 	SessionID     string            `yaml:"session-id,omitempty" json:"session-id,omitempty"`
 	CustomHeaders map[string]string `yaml:"custom-headers,omitempty" json:"custom-headers,omitempty"`
+	enabledSet    bool
 }
 
 // DefaultCodexIdentityFingerprint returns the recommended Codex identity template.
 func DefaultCodexIdentityFingerprint() CodexIdentityFingerprintConfig {
 	return CodexIdentityFingerprintConfig{
-		Enabled:       false,
+		Enabled:       true,
 		UserAgent:     DefaultCodexFingerprintUserAgent,
 		Version:       DefaultCodexFingerprintVersion,
 		Originator:    DefaultCodexFingerprintOriginator,
@@ -78,6 +84,7 @@ type ClaudeIdentityFingerprintConfig struct {
 	SessionID               string            `yaml:"session-id,omitempty" json:"session-id,omitempty"`
 	DeviceID                string            `yaml:"device-id,omitempty" json:"device-id,omitempty"`
 	CustomHeaders           map[string]string `yaml:"custom-headers,omitempty" json:"custom-headers,omitempty"`
+	enabledSet              bool
 }
 
 // GeminiIdentityFingerprintConfig configures Gemini CLI upstream identity headers.
@@ -87,6 +94,7 @@ type GeminiIdentityFingerprintConfig struct {
 	APIClient      string            `yaml:"x-goog-api-client,omitempty" json:"x-goog-api-client,omitempty"`
 	ClientMetadata string            `yaml:"client-metadata,omitempty" json:"client-metadata,omitempty"`
 	CustomHeaders  map[string]string `yaml:"custom-headers,omitempty" json:"custom-headers,omitempty"`
+	enabledSet     bool
 }
 
 // XAIIdentityFingerprintConfig configures Grok/xAI upstream identity headers.
@@ -97,6 +105,7 @@ type XAIIdentityFingerprintConfig struct {
 	ClientVersion      string            `yaml:"x-grok-client-version,omitempty" json:"x-grok-client-version,omitempty"`
 	GrokConversationID string            `yaml:"x-grok-conv-id,omitempty" json:"x-grok-conv-id,omitempty"`
 	CustomHeaders      map[string]string `yaml:"custom-headers,omitempty" json:"custom-headers,omitempty"`
+	enabledSet         bool
 }
 
 // DefaultClaudeIdentityFingerprint returns the recommended Claude Code identity template.
@@ -104,7 +113,7 @@ func DefaultClaudeIdentityFingerprint() ClaudeIdentityFingerprintConfig {
 	cliVersion := DefaultClaudeFingerprintCLIVersion
 	entrypoint := DefaultClaudeFingerprintEntrypoint
 	return ClaudeIdentityFingerprintConfig{
-		Enabled:                 false,
+		Enabled:                 true,
 		CLIVersion:              cliVersion,
 		Entrypoint:              entrypoint,
 		UserAgent:               BuildClaudeFingerprintUserAgent(cliVersion, entrypoint),
@@ -120,7 +129,7 @@ func DefaultClaudeIdentityFingerprint() ClaudeIdentityFingerprintConfig {
 // DefaultGeminiIdentityFingerprint returns the recommended Gemini CLI identity template.
 func DefaultGeminiIdentityFingerprint() GeminiIdentityFingerprintConfig {
 	return GeminiIdentityFingerprintConfig{
-		Enabled:        false,
+		Enabled:        true,
 		UserAgent:      DefaultGeminiFingerprintUserAgent,
 		APIClient:      DefaultGeminiFingerprintAPIClient,
 		ClientMetadata: DefaultGeminiFingerprintClientMetadata,
@@ -131,11 +140,22 @@ func DefaultGeminiIdentityFingerprint() GeminiIdentityFingerprintConfig {
 // DefaultXAIIdentityFingerprint returns the conservative Grok identity template.
 func DefaultXAIIdentityFingerprint() XAIIdentityFingerprintConfig {
 	return XAIIdentityFingerprintConfig{
-		Enabled:          false,
+		Enabled:          true,
 		UserAgent:        DefaultXAIFingerprintUserAgent,
 		ClientIdentifier: DefaultXAIFingerprintClientIdentifier,
 		ClientVersion:    DefaultXAIFingerprintClientVersion,
 		CustomHeaders:    map[string]string{},
+	}
+}
+
+// DefaultIdentityFingerprintConfig returns provider templates exposed to the
+// management UI and used as builtin fallbacks by resolvers.
+func DefaultIdentityFingerprintConfig() IdentityFingerprintConfig {
+	return IdentityFingerprintConfig{
+		Codex:  DefaultCodexIdentityFingerprint(),
+		Claude: DefaultClaudeIdentityFingerprint(),
+		Gemini: DefaultGeminiIdentityFingerprint(),
+		XAI:    DefaultXAIIdentityFingerprint(),
 	}
 }
 
@@ -144,16 +164,55 @@ func (cfg *Config) SanitizeIdentityFingerprint() {
 	if cfg == nil {
 		return
 	}
-	cfg.IdentityFingerprint.Codex = CleanCodexIdentityFingerprint(cfg.IdentityFingerprint.Codex)
-	cfg.IdentityFingerprint.Claude = CleanClaudeIdentityFingerprint(cfg.IdentityFingerprint.Claude)
-	cfg.IdentityFingerprint.Gemini = CleanGeminiIdentityFingerprint(cfg.IdentityFingerprint.Gemini)
-	cfg.IdentityFingerprint.XAI = CleanXAIIdentityFingerprint(cfg.IdentityFingerprint.XAI)
+	cfg.IdentityFingerprint = NormalizeIdentityFingerprintConfig(cfg.IdentityFingerprint)
+}
+
+// CleanIdentityFingerprintConfig trims provider identity fingerprint config
+// without changing explicit enablement.
+func CleanIdentityFingerprintConfig(in IdentityFingerprintConfig) IdentityFingerprintConfig {
+	return IdentityFingerprintConfig{
+		Codex:  CleanCodexIdentityFingerprint(in.Codex),
+		Claude: CleanClaudeIdentityFingerprint(in.Claude),
+		Gemini: CleanGeminiIdentityFingerprint(in.Gemini),
+		XAI:    CleanXAIIdentityFingerprint(in.XAI),
+	}
+}
+
+// NormalizeIdentityFingerprintConfig trims providers and enables them by
+// default unless the input explicitly supplied enabled: false.
+func NormalizeIdentityFingerprintConfig(in IdentityFingerprintConfig) IdentityFingerprintConfig {
+	out := CleanIdentityFingerprintConfig(in)
+	out.Codex = defaultCodexIdentityFingerprintEnabled(out.Codex)
+	out.Claude = defaultClaudeIdentityFingerprintEnabled(out.Claude)
+	out.Gemini = defaultGeminiIdentityFingerprintEnabled(out.Gemini)
+	out.XAI = defaultXAIIdentityFingerprintEnabled(out.XAI)
+	return out
+}
+
+// NormalizeLegacyIdentityFingerprintRuntimeConfig treats old runtime payloads
+// that stored the previous empty disabled defaults as absent provider config.
+func NormalizeLegacyIdentityFingerprintRuntimeConfig(in IdentityFingerprintConfig) IdentityFingerprintConfig {
+	out := CleanIdentityFingerprintConfig(in)
+	if codexLegacyDefaultDisabled(out.Codex) {
+		out.Codex.enabledSet = false
+	}
+	if claudeLegacyDefaultDisabled(out.Claude) {
+		out.Claude.enabledSet = false
+	}
+	if geminiLegacyDefaultDisabled(out.Gemini) {
+		out.Gemini.enabledSet = false
+	}
+	if xaiLegacyDefaultDisabled(out.XAI) {
+		out.XAI.enabledSet = false
+	}
+	return NormalizeIdentityFingerprintConfig(out)
 }
 
 // NormalizeCodexIdentityFingerprint trims user input and applies safe defaults
 // for fields that participate in Codex upstream identity.
 func NormalizeCodexIdentityFingerprint(in CodexIdentityFingerprintConfig) CodexIdentityFingerprintConfig {
 	out := CleanCodexIdentityFingerprint(in)
+	out = defaultCodexIdentityFingerprintEnabled(out)
 
 	if out.UserAgent == "" {
 		out.UserAgent = DefaultCodexFingerprintUserAgent
@@ -216,6 +275,7 @@ func BuildClaudeFingerprintUserAgent(cliVersion, entrypoint string) string {
 // for fields that participate in Claude Code-style Anthropic OAuth identity.
 func NormalizeClaudeIdentityFingerprint(in ClaudeIdentityFingerprintConfig) ClaudeIdentityFingerprintConfig {
 	out := CleanClaudeIdentityFingerprint(in)
+	out = defaultClaudeIdentityFingerprintEnabled(out)
 
 	if out.CLIVersion == "" {
 		out.CLIVersion = DefaultClaudeFingerprintCLIVersion
@@ -273,6 +333,7 @@ func CleanClaudeIdentityFingerprint(in ClaudeIdentityFingerprintConfig) ClaudeId
 // for fields that participate in Gemini CLI upstream identity.
 func NormalizeGeminiIdentityFingerprint(in GeminiIdentityFingerprintConfig) GeminiIdentityFingerprintConfig {
 	out := CleanGeminiIdentityFingerprint(in)
+	out = defaultGeminiIdentityFingerprintEnabled(out)
 	if out.UserAgent == "" {
 		out.UserAgent = DefaultGeminiFingerprintUserAgent
 	}
@@ -299,7 +360,7 @@ func CleanGeminiIdentityFingerprint(in GeminiIdentityFingerprintConfig) GeminiId
 // NormalizeXAIIdentityFingerprint trims user input while preserving empty fields
 // as "automatic learning" markers.
 func NormalizeXAIIdentityFingerprint(in XAIIdentityFingerprintConfig) XAIIdentityFingerprintConfig {
-	return CleanXAIIdentityFingerprint(in)
+	return defaultXAIIdentityFingerprintEnabled(CleanXAIIdentityFingerprint(in))
 }
 
 // CleanXAIIdentityFingerprint trims explicit overrides while preserving empty fields.
@@ -327,4 +388,195 @@ func cleanIdentityFingerprintHeaders(in map[string]string) map[string]string {
 		out[key] = value
 	}
 	return out
+}
+
+func defaultCodexIdentityFingerprintEnabled(in CodexIdentityFingerprintConfig) CodexIdentityFingerprintConfig {
+	if !in.enabledSet {
+		in.Enabled = true
+	}
+	return in
+}
+
+func defaultClaudeIdentityFingerprintEnabled(in ClaudeIdentityFingerprintConfig) ClaudeIdentityFingerprintConfig {
+	if !in.enabledSet {
+		in.Enabled = true
+	}
+	return in
+}
+
+func defaultGeminiIdentityFingerprintEnabled(in GeminiIdentityFingerprintConfig) GeminiIdentityFingerprintConfig {
+	if !in.enabledSet {
+		in.Enabled = true
+	}
+	return in
+}
+
+func defaultXAIIdentityFingerprintEnabled(in XAIIdentityFingerprintConfig) XAIIdentityFingerprintConfig {
+	if !in.enabledSet {
+		in.Enabled = true
+	}
+	return in
+}
+
+func codexLegacyDefaultDisabled(fp CodexIdentityFingerprintConfig) bool {
+	if fp.Enabled || strings.TrimSpace(fp.SessionID) != "" || len(fp.CustomHeaders) > 0 {
+		return false
+	}
+	defaults := DefaultCodexIdentityFingerprint()
+	return emptyOrEqual(fp.UserAgent, defaults.UserAgent) &&
+		emptyOrEqual(fp.Version, defaults.Version) &&
+		emptyOrEqual(fp.Originator, defaults.Originator) &&
+		emptyOrEqual(fp.WebsocketBeta, defaults.WebsocketBeta) &&
+		emptyOrEqual(fp.BetaFeatures, defaults.BetaFeatures) &&
+		emptyOrEqual(fp.SessionMode, defaults.SessionMode)
+}
+
+func claudeLegacyDefaultDisabled(fp ClaudeIdentityFingerprintConfig) bool {
+	if fp.Enabled || strings.TrimSpace(fp.SessionID) != "" ||
+		strings.TrimSpace(fp.DeviceID) != "" || len(fp.CustomHeaders) > 0 {
+		return false
+	}
+	defaults := DefaultClaudeIdentityFingerprint()
+	return emptyOrEqual(fp.CLIVersion, defaults.CLIVersion) &&
+		emptyOrEqual(fp.Entrypoint, defaults.Entrypoint) &&
+		emptyOrEqual(fp.UserAgent, defaults.UserAgent) &&
+		emptyOrEqual(fp.AnthropicBeta, defaults.AnthropicBeta) &&
+		emptyOrEqual(fp.StainlessPackageVersion, defaults.StainlessPackageVersion) &&
+		emptyOrEqual(fp.StainlessRuntimeVersion, defaults.StainlessRuntimeVersion) &&
+		emptyOrEqual(fp.StainlessTimeout, defaults.StainlessTimeout) &&
+		emptyOrEqual(fp.SessionMode, defaults.SessionMode)
+}
+
+func geminiLegacyDefaultDisabled(fp GeminiIdentityFingerprintConfig) bool {
+	if fp.Enabled || len(fp.CustomHeaders) > 0 {
+		return false
+	}
+	defaults := DefaultGeminiIdentityFingerprint()
+	return emptyOrEqual(fp.UserAgent, defaults.UserAgent) &&
+		emptyOrEqual(fp.APIClient, defaults.APIClient) &&
+		emptyOrEqual(fp.ClientMetadata, defaults.ClientMetadata)
+}
+
+func xaiLegacyDefaultDisabled(fp XAIIdentityFingerprintConfig) bool {
+	if fp.Enabled || strings.TrimSpace(fp.GrokConversationID) != "" || len(fp.CustomHeaders) > 0 {
+		return false
+	}
+	defaults := DefaultXAIIdentityFingerprint()
+	return emptyOrEqual(fp.UserAgent, defaults.UserAgent) &&
+		emptyOrEqual(fp.ClientIdentifier, defaults.ClientIdentifier) &&
+		emptyOrEqual(fp.ClientVersion, defaults.ClientVersion)
+}
+
+func emptyOrEqual(value, expected string) bool {
+	value = strings.TrimSpace(value)
+	return value == "" || value == strings.TrimSpace(expected)
+}
+
+func (fp *CodexIdentityFingerprintConfig) UnmarshalJSON(data []byte) error {
+	type alias CodexIdentityFingerprintConfig
+	var out alias
+	if err := json.Unmarshal(data, &out); err != nil {
+		return err
+	}
+	*fp = CodexIdentityFingerprintConfig(out)
+	fp.enabledSet = jsonObjectHasKey(data, "enabled")
+	return nil
+}
+
+func (fp *ClaudeIdentityFingerprintConfig) UnmarshalJSON(data []byte) error {
+	type alias ClaudeIdentityFingerprintConfig
+	var out alias
+	if err := json.Unmarshal(data, &out); err != nil {
+		return err
+	}
+	*fp = ClaudeIdentityFingerprintConfig(out)
+	fp.enabledSet = jsonObjectHasKey(data, "enabled")
+	return nil
+}
+
+func (fp *GeminiIdentityFingerprintConfig) UnmarshalJSON(data []byte) error {
+	type alias GeminiIdentityFingerprintConfig
+	var out alias
+	if err := json.Unmarshal(data, &out); err != nil {
+		return err
+	}
+	*fp = GeminiIdentityFingerprintConfig(out)
+	fp.enabledSet = jsonObjectHasKey(data, "enabled")
+	return nil
+}
+
+func (fp *XAIIdentityFingerprintConfig) UnmarshalJSON(data []byte) error {
+	type alias XAIIdentityFingerprintConfig
+	var out alias
+	if err := json.Unmarshal(data, &out); err != nil {
+		return err
+	}
+	*fp = XAIIdentityFingerprintConfig(out)
+	fp.enabledSet = jsonObjectHasKey(data, "enabled")
+	return nil
+}
+
+func (fp *CodexIdentityFingerprintConfig) UnmarshalYAML(value *yaml.Node) error {
+	type alias CodexIdentityFingerprintConfig
+	var out alias
+	if err := value.Decode(&out); err != nil {
+		return err
+	}
+	*fp = CodexIdentityFingerprintConfig(out)
+	fp.enabledSet = yamlMappingHasKey(value, "enabled")
+	return nil
+}
+
+func (fp *ClaudeIdentityFingerprintConfig) UnmarshalYAML(value *yaml.Node) error {
+	type alias ClaudeIdentityFingerprintConfig
+	var out alias
+	if err := value.Decode(&out); err != nil {
+		return err
+	}
+	*fp = ClaudeIdentityFingerprintConfig(out)
+	fp.enabledSet = yamlMappingHasKey(value, "enabled")
+	return nil
+}
+
+func (fp *GeminiIdentityFingerprintConfig) UnmarshalYAML(value *yaml.Node) error {
+	type alias GeminiIdentityFingerprintConfig
+	var out alias
+	if err := value.Decode(&out); err != nil {
+		return err
+	}
+	*fp = GeminiIdentityFingerprintConfig(out)
+	fp.enabledSet = yamlMappingHasKey(value, "enabled")
+	return nil
+}
+
+func (fp *XAIIdentityFingerprintConfig) UnmarshalYAML(value *yaml.Node) error {
+	type alias XAIIdentityFingerprintConfig
+	var out alias
+	if err := value.Decode(&out); err != nil {
+		return err
+	}
+	*fp = XAIIdentityFingerprintConfig(out)
+	fp.enabledSet = yamlMappingHasKey(value, "enabled")
+	return nil
+}
+
+func jsonObjectHasKey(data []byte, key string) bool {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return false
+	}
+	_, ok := fields[key]
+	return ok
+}
+
+func yamlMappingHasKey(node *yaml.Node, key string) bool {
+	if node == nil || node.Kind != yaml.MappingNode {
+		return false
+	}
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		if node.Content[i] != nil && strings.TrimSpace(node.Content[i].Value) == key {
+			return true
+		}
+	}
+	return false
 }

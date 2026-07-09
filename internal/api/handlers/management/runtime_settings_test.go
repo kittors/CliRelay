@@ -53,6 +53,16 @@ func TestPutIdentityFingerprintPersistsToSQLite(t *testing.T) {
 		stored.IdentityFingerprint.Claude.SessionMode != "server-stable" {
 		t.Fatalf("stored claude identity fingerprint = %#v", stored.IdentityFingerprint.Claude)
 	}
+	if !stored.IdentityFingerprint.Gemini.Enabled {
+		t.Fatalf("stored gemini identity fingerprint = %#v, want enabled by default", stored.IdentityFingerprint.Gemini)
+	}
+	if !stored.IdentityFingerprint.XAI.Enabled {
+		t.Fatalf("stored xai identity fingerprint = %#v, want enabled by default", stored.IdentityFingerprint.XAI)
+	}
+	payload, ok := settingsstore.GetRuntimeSettingPayload(settingsstore.RuntimeSettingIdentityFingerprint)
+	if !ok || !strings.Contains(string(payload), `"runtime-setting-version":2`) {
+		t.Fatalf("identity fingerprint runtime payload = %s, want versioned payload", string(payload))
+	}
 
 	data, err := os.ReadFile(configPath)
 	if err != nil {

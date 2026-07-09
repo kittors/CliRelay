@@ -300,23 +300,14 @@ func Specs() []Spec {
 					xaiIdentityFingerprintMeaningful(cfg.IdentityFingerprint.XAI)
 			},
 			Value: func(cfg *config.Config) any {
-				return config.IdentityFingerprintConfig{
-					Codex:  config.CleanCodexIdentityFingerprint(cfg.IdentityFingerprint.Codex),
-					Claude: config.CleanClaudeIdentityFingerprint(cfg.IdentityFingerprint.Claude),
-					Gemini: config.CleanGeminiIdentityFingerprint(cfg.IdentityFingerprint.Gemini),
-					XAI:    config.CleanXAIIdentityFingerprint(cfg.IdentityFingerprint.XAI),
-				}
+				return IdentityFingerprintRuntimeSettingValue(cfg.IdentityFingerprint)
 			},
 			Apply: func(cfg *config.Config, raw json.RawMessage) bool {
-				var value config.IdentityFingerprintConfig
-				if err := json.Unmarshal(raw, &value); err != nil {
+				value, err := identityFingerprintRuntimeSettingConfig(raw)
+				if err != nil {
 					log.Warnf("runtimeconfig: decode %s: %v", RuntimeSettingIdentityFingerprint, err)
 					return false
 				}
-				value.Codex = config.CleanCodexIdentityFingerprint(value.Codex)
-				value.Claude = config.CleanClaudeIdentityFingerprint(value.Claude)
-				value.Gemini = config.CleanGeminiIdentityFingerprint(value.Gemini)
-				value.XAI = config.CleanXAIIdentityFingerprint(value.XAI)
 				cfg.IdentityFingerprint = value
 				return true
 			},
@@ -445,6 +436,44 @@ func xaiIdentityFingerprintMeaningful(fp config.XAIIdentityFingerprintConfig) bo
 		strings.TrimSpace(clean.ClientVersion) != "" ||
 		strings.TrimSpace(clean.GrokConversationID) != "" ||
 		len(clean.CustomHeaders) > 0
+}
+
+const identityFingerprintRuntimeSettingVersion = 2
+
+type identityFingerprintRuntimePayload struct {
+	RuntimeSettingVersion int                                    `json:"runtime-setting-version,omitempty"`
+	Codex                 config.CodexIdentityFingerprintConfig  `json:"codex,omitempty"`
+	Claude                config.ClaudeIdentityFingerprintConfig `json:"claude,omitempty"`
+	Gemini                config.GeminiIdentityFingerprintConfig `json:"gemini,omitempty"`
+	XAI                   config.XAIIdentityFingerprintConfig    `json:"xai,omitempty"`
+}
+
+func IdentityFingerprintRuntimeSettingValue(value config.IdentityFingerprintConfig) any {
+	normalized := config.NormalizeIdentityFingerprintConfig(value)
+	return identityFingerprintRuntimePayload{
+		RuntimeSettingVersion: identityFingerprintRuntimeSettingVersion,
+		Codex:                 normalized.Codex,
+		Claude:                normalized.Claude,
+		Gemini:                normalized.Gemini,
+		XAI:                   normalized.XAI,
+	}
+}
+
+func identityFingerprintRuntimeSettingConfig(raw json.RawMessage) (config.IdentityFingerprintConfig, error) {
+	var payload identityFingerprintRuntimePayload
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return config.IdentityFingerprintConfig{}, err
+	}
+	value := config.IdentityFingerprintConfig{
+		Codex:  payload.Codex,
+		Claude: payload.Claude,
+		Gemini: payload.Gemini,
+		XAI:    payload.XAI,
+	}
+	if payload.RuntimeSettingVersion >= identityFingerprintRuntimeSettingVersion {
+		return config.NormalizeIdentityFingerprintConfig(value), nil
+	}
+	return config.NormalizeLegacyIdentityFingerprintRuntimeConfig(value), nil
 }
 
 func normalizeOAuthModelAliasSetting(entries map[string][]config.OAuthModelAlias) map[string][]config.OAuthModelAlias {

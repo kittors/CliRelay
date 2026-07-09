@@ -271,6 +271,12 @@ func TestLoadConfigDefaultsAutoUpdateEnabled(t *testing.T) {
 	if cfg.AutoUpdate.UpdaterURL != DefaultAutoUpdateUpdaterURL {
 		t.Fatalf("AutoUpdate.UpdaterURL = %q, want %q", cfg.AutoUpdate.UpdaterURL, DefaultAutoUpdateUpdaterURL)
 	}
+	if !cfg.IdentityFingerprint.Codex.Enabled ||
+		!cfg.IdentityFingerprint.Claude.Enabled ||
+		!cfg.IdentityFingerprint.Gemini.Enabled ||
+		!cfg.IdentityFingerprint.XAI.Enabled {
+		t.Fatalf("IdentityFingerprint = %#v, want all providers enabled by default", cfg.IdentityFingerprint)
+	}
 }
 
 func TestLoadConfigReadsDisabledAutoUpdate(t *testing.T) {
@@ -308,6 +314,34 @@ auto-update:
 	}
 	if cfg.AutoUpdate.UpdaterURL != "http://updater.local:8320" {
 		t.Fatalf("AutoUpdate.UpdaterURL = %q, want http://updater.local:8320", cfg.AutoUpdate.UpdaterURL)
+	}
+}
+
+func TestLoadConfigIdentityFingerprintDefaultsAndExplicitDisabled(t *testing.T) {
+	t.Parallel()
+
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	content := []byte(`port: 8317
+identity-fingerprint:
+  xai:
+    enabled: false
+`)
+	if err := os.WriteFile(configPath, content, 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("LoadConfig returned error: %v", err)
+	}
+
+	if !cfg.IdentityFingerprint.Codex.Enabled ||
+		!cfg.IdentityFingerprint.Claude.Enabled ||
+		!cfg.IdentityFingerprint.Gemini.Enabled {
+		t.Fatalf("IdentityFingerprint = %#v, want omitted providers enabled by default", cfg.IdentityFingerprint)
+	}
+	if cfg.IdentityFingerprint.XAI.Enabled {
+		t.Fatalf("XAI.Enabled = true, want explicit false from config")
 	}
 }
 

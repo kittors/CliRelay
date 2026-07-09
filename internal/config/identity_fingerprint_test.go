@@ -1,14 +1,17 @@
 package config
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+)
 
 func TestDefaultCodexIdentityFingerprintUsesCurrentVersionAndDynamicSessions(t *testing.T) {
 	t.Parallel()
 
 	got := DefaultCodexIdentityFingerprint()
 
-	if got.Enabled {
-		t.Fatalf("Enabled = true, want false by default")
+	if !got.Enabled {
+		t.Fatalf("Enabled = false, want true by default")
 	}
 	if got.Version != "" {
 		t.Fatalf("Version = %q, want empty (codex-tui does not require Version)", got.Version)
@@ -26,6 +29,9 @@ func TestNormalizeCodexIdentityFingerprintAppliesCurrentDefaults(t *testing.T) {
 
 	got := NormalizeCodexIdentityFingerprint(CodexIdentityFingerprintConfig{})
 
+	if !got.Enabled {
+		t.Fatalf("Enabled = false, want true by default")
+	}
 	if got.Version != "" {
 		t.Fatalf("Version = %q, want empty (codex-tui does not require Version)", got.Version)
 	}
@@ -69,8 +75,8 @@ func TestDefaultClaudeIdentityFingerprintMirrorsClaudeCode(t *testing.T) {
 
 	got := DefaultClaudeIdentityFingerprint()
 
-	if got.Enabled {
-		t.Fatalf("Enabled = true, want false by default")
+	if !got.Enabled {
+		t.Fatalf("Enabled = false, want true by default")
 	}
 	if got.CLIVersion != "2.1.161" {
 		t.Fatalf("CLIVersion = %q, want 2.1.161", got.CLIVersion)
@@ -158,8 +164,8 @@ func TestDefaultGeminiIdentityFingerprint(t *testing.T) {
 
 	got := DefaultGeminiIdentityFingerprint()
 
-	if got.Enabled {
-		t.Fatal("Enabled = true, want false by default")
+	if !got.Enabled {
+		t.Fatal("Enabled = false, want true by default")
 	}
 	if got.UserAgent != "google-api-nodejs-client/9.15.1" {
 		t.Fatalf("UserAgent = %q, want Gemini CLI default", got.UserAgent)
@@ -169,5 +175,59 @@ func TestDefaultGeminiIdentityFingerprint(t *testing.T) {
 	}
 	if got.ClientMetadata != "ideType=IDE_UNSPECIFIED,platform=PLATFORM_UNSPECIFIED,pluginType=GEMINI" {
 		t.Fatalf("ClientMetadata = %q, want Gemini CLI metadata", got.ClientMetadata)
+	}
+}
+
+func TestDefaultXAIIdentityFingerprint(t *testing.T) {
+	t.Parallel()
+
+	got := DefaultXAIIdentityFingerprint()
+
+	if !got.Enabled {
+		t.Fatal("Enabled = false, want true by default")
+	}
+	if got.UserAgent != "grok-shell/0.2.93 (macos; aarch64)" {
+		t.Fatalf("UserAgent = %q, want Grok shell default", got.UserAgent)
+	}
+	if got.ClientIdentifier != "grok-shell" {
+		t.Fatalf("ClientIdentifier = %q, want grok-shell", got.ClientIdentifier)
+	}
+	if got.ClientVersion != "0.2.93" {
+		t.Fatalf("ClientVersion = %q, want 0.2.93", got.ClientVersion)
+	}
+}
+
+func TestSanitizeIdentityFingerprintDefaultsProvidersEnabled(t *testing.T) {
+	t.Parallel()
+
+	cfg := &Config{}
+	cfg.SanitizeIdentityFingerprint()
+
+	if !cfg.IdentityFingerprint.Codex.Enabled ||
+		!cfg.IdentityFingerprint.Claude.Enabled ||
+		!cfg.IdentityFingerprint.Gemini.Enabled ||
+		!cfg.IdentityFingerprint.XAI.Enabled {
+		t.Fatalf("IdentityFingerprint = %#v, want all providers enabled by default", cfg.IdentityFingerprint)
+	}
+}
+
+func TestNormalizeIdentityFingerprintConfigPreservesExplicitDisabledProvider(t *testing.T) {
+	t.Parallel()
+
+	var cfg IdentityFingerprintConfig
+	if err := json.Unmarshal([]byte(`{"xai":{"enabled":false},"gemini":{}}`), &cfg); err != nil {
+		t.Fatalf("Unmarshal identity fingerprint: %v", err)
+	}
+
+	got := NormalizeIdentityFingerprintConfig(cfg)
+
+	if got.XAI.Enabled {
+		t.Fatalf("XAI.Enabled = true, want explicit false preserved")
+	}
+	if !got.Gemini.Enabled {
+		t.Fatalf("Gemini.Enabled = false, want missing enabled to default true")
+	}
+	if !got.Codex.Enabled || !got.Claude.Enabled {
+		t.Fatalf("IdentityFingerprint = %#v, want omitted providers enabled by default", got)
 	}
 }

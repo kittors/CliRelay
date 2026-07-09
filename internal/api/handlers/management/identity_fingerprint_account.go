@@ -138,11 +138,7 @@ func (h *Handler) currentIdentityFingerprintConfig() config.IdentityFingerprintC
 		}
 		h.mu.Unlock()
 	}
-	current.Codex = config.CleanCodexIdentityFingerprint(current.Codex)
-	current.Claude = config.CleanClaudeIdentityFingerprint(current.Claude)
-	current.Gemini = config.CleanGeminiIdentityFingerprint(current.Gemini)
-	current.XAI = config.CleanXAIIdentityFingerprint(current.XAI)
-	return current
+	return config.NormalizeIdentityFingerprintConfig(current)
 }
 
 func resolveIdentityFingerprint(current config.IdentityFingerprintConfig, provider identityfingerprint.Provider, learned *identityfingerprint.LearnedRecord) (identityfingerprint.EffectiveFingerprint, any, any) {
