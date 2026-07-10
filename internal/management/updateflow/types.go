@@ -3,14 +3,15 @@ package updateflow
 import "time"
 
 const (
-	UpdateHTTPTimeout     = 10 * time.Second
-	UpdaterHealthTimeout  = 2 * time.Second
-	UpdaterTokenEnv       = "CLIRELAY_UPDATER_TOKEN"
-	GitHubTokenEnv        = "CLIRELAY_GITHUB_TOKEN"
-	AutoUpdateChannelEnv  = "CLIRELAY_UPDATE_CHANNEL"
-	DefaultUpdaterService = "clirelay"
-	DockerPublishWorkflow = "docker-publish.yml"
-	GitHubUserAgent       = "CLIProxyAPI"
+	UpdateHTTPTimeout       = 10 * time.Second
+	UpdaterHealthTimeout    = 2 * time.Second
+	UpdateStreamDialTimeout = 3 * time.Second
+	UpdaterTokenEnv         = "CLIRELAY_UPDATER_TOKEN"
+	GitHubTokenEnv          = "CLIRELAY_GITHUB_TOKEN"
+	AutoUpdateChannelEnv    = "CLIRELAY_UPDATE_CHANNEL"
+	DefaultUpdaterService   = "clirelay"
+	DockerPublishWorkflow   = "docker-publish.yml"
+	GitHubUserAgent         = "CLIProxyAPI"
 )
 
 const (

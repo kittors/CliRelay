@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -218,7 +219,16 @@ func (s *Service) OpenProgressStream(ctx context.Context, lastEventID string) (*
 	if id := strings.TrimSpace(lastEventID); id != "" {
 		req.Header.Set("Last-Event-ID", id)
 	}
-	resp, err := (&http.Client{}).Do(req)
+	client := &http.Client{
+		Transport: &http.Transport{
+			DialContext: (&net.Dialer{
+				Timeout:   UpdateStreamDialTimeout,
+				KeepAlive: 30 * time.Second,
+			}).DialContext,
+			ResponseHeaderTimeout: UpdateStreamDialTimeout,
+		},
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}

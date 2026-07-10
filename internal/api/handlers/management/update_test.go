@@ -800,6 +800,34 @@ func TestStreamUpdateProgressProxiesUpdaterSSE(t *testing.T) {
 	}
 }
 
+func TestStreamUpdateProgressTimesOutWhenUpdaterDoesNotStartStream(t *testing.T) {
+	updater := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/events" {
+			t.Fatalf("path = %q, want /v1/events", r.URL.Path)
+		}
+		time.Sleep(4 * time.Second)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"status\":\"idle\"}\n\n")
+	}))
+	t.Cleanup(updater.Close)
+	t.Setenv("CLIRELAY_UPDATER_URL", updater.URL)
+	t.Setenv("CLIRELAY_UPDATER_TOKEN", "test-token")
+
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/v0/management/update/events", nil)
+	started := time.Now()
+	(&Handler{cfg: &config.Config{}}).StreamUpdateProgress(ctx)
+
+	if elapsed := time.Since(started); elapsed > 3500*time.Millisecond {
+		t.Fatalf("StreamUpdateProgress elapsed = %s, want fast timeout", elapsed)
+	}
+	if recorder.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func branchCommitAt(sha string, at time.Time) branchCommitInfo {
 	info := branchCommitInfo{SHA: sha}
 	info.Commit.Committer.Date = at
