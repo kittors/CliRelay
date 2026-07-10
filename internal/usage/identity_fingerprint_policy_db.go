@@ -94,7 +94,6 @@ func SaveIdentityFingerprintAccountPolicy(policy identityfingerprint.AccountPoli
 	if err := tx.Commit(); err != nil {
 		return identityfingerprint.AccountPolicy{}, err
 	}
-	notifyIdentityFingerprintInvalidated(policy.Provider, policy.AccountKey)
 	return policy, nil
 }
 
@@ -145,9 +144,6 @@ func DeleteIdentityFingerprintProfileAndRepairPolicy(provider identityfingerprin
 	}
 	if err := tx.Commit(); err != nil {
 		return 0, identityfingerprint.AccountPolicy{}, err
-	}
-	if deleted > 0 {
-		notifyIdentityFingerprintInvalidated(provider, accountKey)
 	}
 	return deleted, policy, nil
 }

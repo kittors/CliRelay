@@ -12,8 +12,6 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-const identityFingerprintLastSeenMinInterval = 5 * time.Minute
-
 const createIdentityFingerprintsTableSQL = `
 CREATE TABLE IF NOT EXISTS identity_fingerprints (
   provider          TEXT NOT NULL,
@@ -96,24 +94,12 @@ func ObserveIdentityFingerprint(input identityfingerprint.LearnInput) (*identity
 		}
 		return result.Record, result, nil
 	}
-	if existing != nil && !identityfingerprint.MergeObservationChangedExceptLastSeen(existing, result.Record) &&
-		result.Record.LastSeenAt.Sub(existing.LastSeenAt) < identityFingerprintLastSeenMinInterval {
-		if err := tx.Commit(); err != nil {
-			return existing, result, err
-		}
-		return existing, identityfingerprint.MergeResult{
-			Record:  existing,
-			Changed: false,
-			Reason:  "unchanged_recently_seen",
-		}, nil
-	}
 	if err := upsertIdentityFingerprintWith(tx, result.Record); err != nil {
 		return existing, result, err
 	}
 	if err := tx.Commit(); err != nil {
 		return existing, result, err
 	}
-	notifyIdentityFingerprintInvalidated(result.Record.Provider, result.Record.AccountKey)
 	return result.Record, result, nil
 }
 
@@ -253,11 +239,7 @@ func UpsertIdentityFingerprint(record *identityfingerprint.LearnedRecord) error 
 	if db == nil || record == nil {
 		return nil
 	}
-	if err := upsertIdentityFingerprintWith(db, record); err != nil {
-		return err
-	}
-	notifyIdentityFingerprintInvalidated(record.Provider, record.AccountKey)
-	return nil
+	return upsertIdentityFingerprintWith(db, record)
 }
 
 func upsertIdentityFingerprintWith(execer fingerprintExecer, record *identityfingerprint.LearnedRecord) error {
@@ -316,11 +298,7 @@ func DeleteIdentityFingerprint(provider identityfingerprint.Provider, accountKey
 	if err != nil {
 		return 0, err
 	}
-	deleted, err := res.RowsAffected()
-	if err == nil && deleted > 0 {
-		notifyIdentityFingerprintInvalidated(provider, accountKey)
-	}
-	return deleted, err
+	return res.RowsAffected()
 }
 
 func DeleteIdentityFingerprintProfile(provider identityfingerprint.Provider, accountKey, profileKey string) (int64, error) {
@@ -338,11 +316,7 @@ func DeleteIdentityFingerprintProfile(provider identityfingerprint.Provider, acc
 	if err != nil {
 		return 0, err
 	}
-	deleted, err := res.RowsAffected()
-	if err == nil && deleted > 0 {
-		notifyIdentityFingerprintInvalidated(provider, accountKey)
-	}
-	return deleted, err
+	return res.RowsAffected()
 }
 
 type fingerprintScanner interface {
