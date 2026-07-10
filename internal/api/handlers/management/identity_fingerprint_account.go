@@ -1,7 +1,6 @@
 package management
 
 import (
-	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -23,8 +22,6 @@ type identityFingerprintAccountSummary struct {
 	LearnedFields   int            `json:"learned_fields"`
 	EffectiveFields int            `json:"effective_fields"`
 	SourceCounts    map[string]int `json:"source_counts"`
-	ProfileKey      string         `json:"profile_key,omitempty"`
-	ProfileFamily   string         `json:"profile_family,omitempty"`
 	ClientProduct   string         `json:"client_product,omitempty"`
 	ClientVariant   string         `json:"client_variant,omitempty"`
 	Version         string         `json:"version,omitempty"`
@@ -32,24 +29,12 @@ type identityFingerprintAccountSummary struct {
 	LastSeenAt      *time.Time     `json:"last_seen_at,omitempty"`
 }
 
-type identityFingerprintProfileDetail struct {
-	Summary              identityFingerprintAccountSummary        `json:"summary"`
-	Effective            identityfingerprint.EffectiveFingerprint `json:"effective"`
-	Learned              *identityfingerprint.LearnedRecord       `json:"learned,omitempty"`
-	Selectable           bool                                     `json:"selectable"`
-	SelectionBlockReason string                                   `json:"selection_block_reason,omitempty"`
-}
-
 type identityFingerprintAccountDetail struct {
-	Summary            identityFingerprintAccountSummary        `json:"summary"`
-	Effective          identityfingerprint.EffectiveFingerprint `json:"effective"`
-	Learned            *identityfingerprint.LearnedRecord       `json:"learned,omitempty"`
-	Profiles           []identityFingerprintProfileDetail       `json:"profiles"`
-	Policy             identityfingerprint.AccountPolicy        `json:"policy"`
-	SelectedProfileKey string                                   `json:"selected_profile_key,omitempty"`
-	SelectionReason    string                                   `json:"selection_reason"`
-	Preset             any                                      `json:"preset"`
-	BuiltinDefault     any                                      `json:"builtin_default"`
+	Summary        identityFingerprintAccountSummary        `json:"summary"`
+	Effective      identityfingerprint.EffectiveFingerprint `json:"effective"`
+	Learned        *identityfingerprint.LearnedRecord       `json:"learned,omitempty"`
+	Preset         any                                      `json:"preset"`
+	BuiltinDefault any                                      `json:"builtin_default"`
 }
 
 func (h *Handler) GetIdentityFingerprintAccount(c *gin.Context) {
@@ -71,109 +56,17 @@ func (h *Handler) GetIdentityFingerprintAccount(c *gin.Context) {
 	c.JSON(http.StatusOK, detail)
 }
 
-type identityFingerprintAccountPolicyRequest struct {
-	Provider         string `json:"provider"`
-	AccountKey       string `json:"account_key"`
-	Strategy         string `json:"strategy"`
-	ActiveProfileKey string `json:"active_profile_key"`
-	Revision         int64  `json:"revision"`
-}
-
-func (h *Handler) PutIdentityFingerprintAccountPolicy(c *gin.Context) {
-	var body identityFingerprintAccountPolicyRequest
-	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
-		return
-	}
-	provider, ok := normalizeIdentityFingerprintProvider(body.Provider)
-	if !ok || provider != identityfingerprint.ProviderCodex {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "account identity selection is only supported for codex"})
-		return
-	}
-	accountKey := strings.TrimSpace(body.AccountKey)
-	if accountKey == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "account_key is required"})
-		return
-	}
-	strategy := identityfingerprint.AccountStrategy(strings.TrimSpace(body.Strategy))
-	activeProfileKey := strings.TrimSpace(body.ActiveProfileKey)
-	switch strategy {
-	case identityfingerprint.AccountStrategyCLIPreferred:
-		if activeProfileKey != "" {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "active_profile_key must be empty for cli_preferred"})
-			return
-		}
-	case identityfingerprint.AccountStrategyActiveProfile:
-		if activeProfileKey == "" {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "active_profile_key is required for active_profile"})
-			return
-		}
-	default:
-		c.JSON(http.StatusBadRequest, gin.H{"error": "strategy must be cli_preferred or active_profile"})
-		return
-	}
-	policy, err := usage.SaveIdentityFingerprintAccountPolicy(identityfingerprint.AccountPolicy{
-		Provider:         provider,
-		AccountKey:       accountKey,
-		Strategy:         strategy,
-		ActiveProfileKey: activeProfileKey,
-	}, body.Revision)
-	if err != nil {
-		switch {
-		case errors.Is(err, usage.ErrIdentityFingerprintPolicyConflict):
-			c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
-		case errors.Is(err, usage.ErrIdentityFingerprintProfileMissing),
-			errors.Is(err, usage.ErrIdentityFingerprintProfileNotSelectable):
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		default:
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		}
-		return
-	}
-	detail, err := h.identityFingerprintAccountDetail(provider, accountKey, "")
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	detail.Policy = policy
-	c.JSON(http.StatusOK, detail)
-}
-
-func (h *Handler) DeleteIdentityFingerprintAccountProfile(c *gin.Context) {
-	provider, ok := normalizeIdentityFingerprintProvider(c.Query("provider"))
-	if !ok || provider != identityfingerprint.ProviderCodex {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "account identity profiles are only supported for codex"})
-		return
-	}
-	accountKey := strings.TrimSpace(c.Query("account_key"))
-	profileKey := strings.TrimSpace(c.Query("profile_key"))
-	if accountKey == "" || profileKey == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "account_key and profile_key are required"})
-		return
-	}
-	deleted, _, err := usage.DeleteIdentityFingerprintProfileAndRepairPolicy(provider, accountKey, profileKey)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	detail, err := h.identityFingerprintAccountDetail(provider, accountKey, "")
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{"deleted": deleted, "detail": detail})
-}
-
 func (h *Handler) enrichAuthFileIdentityFingerprintSummaries(files []map[string]any, auths []*coreauth.Auth) {
 	if len(files) == 0 || len(auths) == 0 {
 		return
 	}
+	current := h.currentIdentityFingerprintConfig()
 	summaries := make(map[string]identityFingerprintAccountSummary, len(auths))
 	for _, auth := range auths {
 		if auth == nil {
 			continue
 		}
-		summary := h.identityFingerprintSummaryForAuth(auth)
+		summary := h.identityFingerprintSummaryForAuth(current, auth)
 		if summary == nil {
 			continue
 		}
@@ -192,7 +85,7 @@ func (h *Handler) enrichAuthFileIdentityFingerprintSummaries(files []map[string]
 	}
 }
 
-func (h *Handler) identityFingerprintSummaryForAuth(auth *coreauth.Auth) *identityFingerprintAccountSummary {
+func (h *Handler) identityFingerprintSummaryForAuth(current config.IdentityFingerprintConfig, auth *coreauth.Auth) *identityFingerprintAccountSummary {
 	provider, ok := normalizeIdentityFingerprintProvider("")
 	if auth != nil {
 		provider, ok = normalizeIdentityFingerprintProvider(auth.Provider)
@@ -204,71 +97,20 @@ func (h *Handler) identityFingerprintSummaryForAuth(auth *coreauth.Auth) *identi
 	if accountKey == "" {
 		return nil
 	}
-	detail, err := h.identityFingerprintAccountDetail(provider, accountKey, authSubjectID)
+	learned, err := usage.GetIdentityFingerprint(provider, accountKey)
 	if err != nil {
 		return nil
 	}
-	return &detail.Summary
+	effective, _, _ := resolveIdentityFingerprint(current, provider, learned)
+	effective.AccountKey = accountKey
+	if effective.AuthSubjectID == "" {
+		effective.AuthSubjectID = authSubjectID
+	}
+	return buildIdentityFingerprintSummary(provider, accountKey, authSubjectID, learned, effective)
 }
 
 func (h *Handler) identityFingerprintAccountDetail(provider identityfingerprint.Provider, accountKey, authSubjectID string) (identityFingerprintAccountDetail, error) {
 	current := h.currentIdentityFingerprintConfig()
-	if provider == identityfingerprint.ProviderCodex {
-		records, err := usage.ListIdentityFingerprintProfiles(provider, accountKey)
-		if err != nil {
-			return identityFingerprintAccountDetail{}, err
-		}
-		policy, err := usage.GetIdentityFingerprintAccountPolicy(provider, accountKey)
-		if err != nil {
-			return identityFingerprintAccountDetail{}, err
-		}
-		selection := identityfingerprint.SelectCodexProfile(records, policy)
-		profiles := make([]identityFingerprintProfileDetail, 0, len(records))
-		for i := range records {
-			record := records[i]
-			_, effective := identityfingerprint.ResolveCodexProfile(current.Codex, &record)
-			effective.AccountKey = accountKey
-			if effective.AuthSubjectID == "" {
-				effective.AuthSubjectID = authSubjectID
-			}
-			selectable, blockReason := identityfingerprint.CodexProfileOutboundEligibility(&record)
-			profiles = append(profiles, identityFingerprintProfileDetail{
-				Summary:              *buildIdentityFingerprintSummary(provider, accountKey, effective.AuthSubjectID, &record, effective),
-				Effective:            effective,
-				Learned:              &record,
-				Selectable:           selectable,
-				SelectionBlockReason: blockReason,
-			})
-		}
-		var learned *identityfingerprint.LearnedRecord
-		var effective identityfingerprint.EffectiveFingerprint
-		if selection.Profile != nil {
-			learned = selection.Profile
-			_, effective = identityfingerprint.ResolveCodexProfile(current.Codex, learned)
-		} else {
-			_, effective = identityfingerprint.ResolveCodexSafeFallback(current.Codex)
-		}
-		effective.AccountKey = accountKey
-		if effective.AuthSubjectID == "" {
-			effective.AuthSubjectID = authSubjectID
-		}
-		selectedProfileKey := ""
-		if learned != nil {
-			selectedProfileKey = learned.ProfileKey
-		}
-		return identityFingerprintAccountDetail{
-			Summary:            *buildIdentityFingerprintSummary(provider, accountKey, effective.AuthSubjectID, learned, effective),
-			Effective:          effective,
-			Learned:            learned,
-			Profiles:           profiles,
-			Policy:             selection.Policy,
-			SelectedProfileKey: selectedProfileKey,
-			SelectionReason:    selection.Reason,
-			Preset:             current.Codex,
-			BuiltinDefault:     config.DefaultCodexIdentityFingerprint(),
-		}, nil
-	}
-
 	learned, err := usage.GetIdentityFingerprint(provider, accountKey)
 	if err != nil {
 		return identityFingerprintAccountDetail{}, err
@@ -278,24 +120,12 @@ func (h *Handler) identityFingerprintAccountDetail(provider identityfingerprint.
 	if effective.AuthSubjectID == "" {
 		effective.AuthSubjectID = authSubjectID
 	}
-	profiles := make([]identityFingerprintProfileDetail, 0, 1)
-	if learned != nil {
-		profiles = append(profiles, identityFingerprintProfileDetail{
-			Summary:    *buildIdentityFingerprintSummary(provider, accountKey, effective.AuthSubjectID, learned, effective),
-			Effective:  effective,
-			Learned:    learned,
-			Selectable: true,
-		})
-	}
 	return identityFingerprintAccountDetail{
-		Summary:         *buildIdentityFingerprintSummary(provider, accountKey, effective.AuthSubjectID, learned, effective),
-		Effective:       effective,
-		Learned:         learned,
-		Profiles:        profiles,
-		Policy:          identityfingerprint.NormalizeAccountPolicy(provider, accountKey, identityfingerprint.AccountPolicy{}),
-		SelectionReason: "single_profile",
-		Preset:          preset,
-		BuiltinDefault:  builtinDefault,
+		Summary:        *buildIdentityFingerprintSummary(provider, accountKey, effective.AuthSubjectID, learned, effective),
+		Effective:      effective,
+		Learned:        learned,
+		Preset:         preset,
+		BuiltinDefault: builtinDefault,
 	}, nil
 }
 
@@ -350,8 +180,6 @@ func buildIdentityFingerprintSummary(provider identityfingerprint.Provider, acco
 		LearnedFields:   learnedFields,
 		EffectiveFields: sumIdentityFingerprintCounts(counts),
 		SourceCounts:    counts,
-		ProfileKey:      effective.ProfileKey,
-		ProfileFamily:   effective.ProfileFamily,
 		ClientProduct:   effective.ClientProduct,
 		Version:         identityFingerprintSummaryVersion(provider, effective),
 	}

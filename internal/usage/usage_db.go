@@ -919,12 +919,6 @@ func getDB() *sql.DB {
 	return usageDB
 }
 
-func currentUsageDriver() string {
-	usageDBMu.Lock()
-	defer usageDBMu.Unlock()
-	return usageDriver
-}
-
 // getReadDB returns the dedicated read-only connection pool used by management
 // read paths (QueryLogs/QueryStats/QueryFilters/content queries) so they do not
 // block on the single writer or maintenance ops. It falls back to the write

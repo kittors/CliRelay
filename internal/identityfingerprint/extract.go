@@ -77,7 +77,6 @@ func extractClaudeObservation(input LearnInput, headers http.Header, observedAt 
 	return Observation{
 		Provider:        ProviderClaude,
 		AccountKey:      strings.TrimSpace(input.AccountKey),
-		ProfileKey:      ProfileKeyDefault,
 		AuthSubjectID:   strings.TrimSpace(input.AuthSubjectID),
 		ClientProduct:   "claude-cli",
 		ClientVariant:   entrypoint,
@@ -92,12 +91,8 @@ func extractCodexObservation(input LearnInput, headers http.Header, observedAt t
 	ua := strings.TrimSpace(headers.Get("User-Agent"))
 	originator := strings.TrimSpace(headers.Get("Originator"))
 	product, uaVersion := codexProductVersion(ua)
-	profileKey, profileFamily, profileOK := CodexProfileKey(ua, originator)
-	if !profileOK {
-		return Observation{}, false
-	}
-	if product == "" {
-		product = profileKey
+	if product == "" && strings.Contains(strings.ToLower(originator), "codex") {
+		product = strings.ToLower(originator)
 	}
 	version := strings.TrimSpace(headers.Get("Version"))
 	if version == "" {
@@ -126,8 +121,6 @@ func extractCodexObservation(input LearnInput, headers http.Header, observedAt t
 	return Observation{
 		Provider:        ProviderCodex,
 		AccountKey:      strings.TrimSpace(input.AccountKey),
-		ProfileKey:      profileKey,
-		ProfileFamily:   profileFamily,
 		AuthSubjectID:   strings.TrimSpace(input.AuthSubjectID),
 		ClientProduct:   product,
 		ClientVariant:   originator,
@@ -170,7 +163,6 @@ func extractGeminiObservation(input LearnInput, headers http.Header, observedAt 
 	return Observation{
 		Provider:        ProviderGemini,
 		AccountKey:      strings.TrimSpace(input.AccountKey),
-		ProfileKey:      ProfileKeyDefault,
 		AuthSubjectID:   strings.TrimSpace(input.AuthSubjectID),
 		ClientProduct:   product,
 		ClientVariant:   "cli",
@@ -211,7 +203,6 @@ func extractXAIObservation(input LearnInput, headers http.Header, observedAt tim
 	return Observation{
 		Provider:        ProviderXAI,
 		AccountKey:      strings.TrimSpace(input.AccountKey),
-		ProfileKey:      ProfileKeyDefault,
 		AuthSubjectID:   strings.TrimSpace(input.AuthSubjectID),
 		ClientProduct:   product,
 		ClientVariant:   "cli",
@@ -234,15 +225,9 @@ func MergeObservation(existing *LearnedRecord, obs Observation) MergeResult {
 		now = time.Now().UTC()
 	}
 	if existing == nil {
-		profileKey := strings.TrimSpace(obs.ProfileKey)
-		if profileKey == "" {
-			profileKey = DefaultProfileKey(obs.Provider)
-		}
 		record := &LearnedRecord{
 			Provider:        obs.Provider,
 			AccountKey:      strings.TrimSpace(obs.AccountKey),
-			ProfileKey:      profileKey,
-			ProfileFamily:   strings.TrimSpace(obs.ProfileFamily),
 			AuthSubjectID:   strings.TrimSpace(obs.AuthSubjectID),
 			ClientProduct:   strings.TrimSpace(obs.ClientProduct),
 			ClientVariant:   strings.TrimSpace(obs.ClientVariant),
@@ -257,27 +242,20 @@ func MergeObservation(existing *LearnedRecord, obs Observation) MergeResult {
 	}
 
 	record := cloneRecord(existing)
-	profileKey := strings.TrimSpace(obs.ProfileKey)
-	if profileKey == "" {
-		profileKey = DefaultProfileKey(obs.Provider)
-	}
-	if existingKey := strings.TrimSpace(record.ProfileKey); existingKey != "" && existingKey != profileKey {
-		return MergeResult{Record: existing, Reason: "different_profile"}
-	}
-	record.ProfileKey = profileKey
-	if strings.TrimSpace(obs.ProfileFamily) != "" {
-		record.ProfileFamily = strings.TrimSpace(obs.ProfileFamily)
-	}
 	record.LastSeenAt = now.UTC()
+	if strings.TrimSpace(record.ClientProduct) != "" && strings.TrimSpace(obs.ClientProduct) != "" &&
+		!strings.EqualFold(record.ClientProduct, obs.ClientProduct) {
+		return MergeResult{Record: record, Changed: true, Reason: "different_product_last_seen"}
+	}
+	if strings.TrimSpace(record.ClientProduct) == "" {
+		record.ClientProduct = strings.TrimSpace(obs.ClientProduct)
+	}
 	if strings.TrimSpace(record.AuthSubjectID) == "" {
 		record.AuthSubjectID = strings.TrimSpace(obs.AuthSubjectID)
 	}
 	if strings.TrimSpace(record.Version) != "" && strings.TrimSpace(obs.Version) != "" &&
-		isNewerVersion(record.Version, obs.Version) {
-		return MergeResult{Record: record, Changed: true, Reason: "older_version_last_seen"}
-	}
-	if strings.TrimSpace(obs.ClientProduct) != "" {
-		record.ClientProduct = strings.TrimSpace(obs.ClientProduct)
+		!isNewerVersion(obs.Version, record.Version) {
+		return MergeResult{Record: record, Changed: true, Reason: "not_newer_last_seen"}
 	}
 	if strings.TrimSpace(obs.Version) != "" {
 		record.Version = strings.TrimSpace(obs.Version)
@@ -297,7 +275,7 @@ func MergeObservation(existing *LearnedRecord, obs Observation) MergeResult {
 	}
 	record.ObservedHeaders = cloneStringMap(obs.ObservedHeaders)
 	record.UpdatedAt = now.UTC()
-	return MergeResult{Record: record, Changed: true, Reason: "merged_profile"}
+	return MergeResult{Record: record, Changed: true, Reason: "merged_newer_version"}
 }
 
 func codexProductVersion(ua string) (string, string) {

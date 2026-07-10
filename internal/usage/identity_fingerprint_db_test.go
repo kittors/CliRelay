@@ -60,8 +60,8 @@ func TestObserveIdentityFingerprintLearnsAndMergesClaudeAccount(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ObserveIdentityFingerprint older returned error: %v", err)
 	}
-	if result.Reason != "older_version_last_seen" {
-		t.Fatalf("older merge reason = %q, want older_version_last_seen", result.Reason)
+	if result.Reason != "not_newer_last_seen" {
+		t.Fatalf("older merge reason = %q, want not_newer_last_seen", result.Reason)
 	}
 	if record.Fields[identityfingerprint.FieldUserAgent] != "claude-cli/2.1.170 (external, cli)" {
 		t.Fatalf("older observation should not replace User-Agent, got %q", record.Fields[identityfingerprint.FieldUserAgent])
@@ -84,8 +84,8 @@ func TestObserveIdentityFingerprintLearnsAndMergesClaudeAccount(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ObserveIdentityFingerprint newer returned error: %v", err)
 	}
-	if result.Reason != "merged_profile" {
-		t.Fatalf("newer merge reason = %q, want merged_profile", result.Reason)
+	if result.Reason != "merged_newer_version" {
+		t.Fatalf("newer merge reason = %q, want merged_newer_version", result.Reason)
 	}
 	if record.Version != "2.1.180" {
 		t.Fatalf("Version = %q, want newer version", record.Version)
@@ -117,63 +117,53 @@ func TestObserveIdentityFingerprintLearnsAndMergesClaudeAccount(t *testing.T) {
 	}
 }
 
-func TestObserveIdentityFingerprintKeepsCodexProfilesSeparate(t *testing.T) {
+func TestObserveIdentityFingerprintKeepsCodexAccountProductStable(t *testing.T) {
 	initTestUsageDB(t, config.RequestLogStorageConfig{})
 
 	accountKey := "codex-account"
-	cliHeaders := http.Header{}
-	cliHeaders.Set("User-Agent", "codex_cli_rs/0.130.0 (Mac OS 26.3.1; arm64) iTerm.app/3.6.9")
-	cliHeaders.Set("Version", "0.130.0")
-	cliHeaders.Set("Originator", "codex_cli_rs")
-	cliHeaders.Set("OpenAI-Beta", "responses_websockets=2026-02-06")
-	cliHeaders.Set("X-Codex-Beta-Features", "compact_mode")
+	headers := http.Header{}
+	headers.Set("User-Agent", "codex_cli_rs/0.130.0 (Mac OS 26.3.1; arm64) iTerm.app/3.6.9")
+	headers.Set("Version", "0.130.0")
+	headers.Set("Originator", "codex_cli_rs")
+	headers.Set("OpenAI-Beta", "responses_websockets=2026-02-06")
+	headers.Set("X-Codex-Beta-Features", "compact_mode")
 
-	cliRecord, result, err := ObserveIdentityFingerprint(identityfingerprint.LearnInput{
+	record, result, err := ObserveIdentityFingerprint(identityfingerprint.LearnInput{
 		Provider:      identityfingerprint.ProviderCodex,
 		AccountKey:    accountKey,
 		AuthSubjectID: "subject-codex",
-		Headers:       cliHeaders,
+		Headers:       headers,
 		ObservedAt:    time.Date(2026, 6, 23, 2, 0, 0, 0, time.UTC),
 	})
 	if err != nil {
 		t.Fatalf("ObserveIdentityFingerprint returned error: %v", err)
 	}
-	if result.Reason != "created" || cliRecord.ProfileKey != "codex_cli_rs" {
-		t.Fatalf("merge result = %+v, record = %#v, want CLI profile created", result, cliRecord)
+	if result.Reason != "created" || record.ClientProduct != "codex_cli_rs" {
+		t.Fatalf("merge result = %+v, product = %q, want codex_cli_rs created", result, record.ClientProduct)
+	}
+	if record.Fields[identityfingerprint.FieldCodexBetaFeatures] != "compact_mode" {
+		t.Fatalf("X-Codex-Beta-Features = %q, want learned", record.Fields[identityfingerprint.FieldCodexBetaFeatures])
 	}
 
-	desktopHeaders := http.Header{}
-	desktopHeaders.Set("User-Agent", "Codex Desktop/0.144.0-alpha.4 (Mac OS 26.5.2; arm64) unknown (Codex Desktop; 26.707.31123)")
-	desktopHeaders.Set("Version", "0.144.0")
-	desktopHeaders.Set("Originator", "Codex Desktop")
-	desktopHeaders.Set("X-Codex-Beta-Features", "remote_compaction_v2")
-	desktopRecord, result, err := ObserveIdentityFingerprint(identityfingerprint.LearnInput{
+	differentProductHeaders := http.Header{}
+	differentProductHeaders.Set("User-Agent", "codex_other/9.0.0")
+	differentProductHeaders.Set("Version", "9.0.0")
+	differentProductHeaders.Set("Originator", "codex_other")
+	record, result, err = ObserveIdentityFingerprint(identityfingerprint.LearnInput{
 		Provider:      identityfingerprint.ProviderCodex,
 		AccountKey:    accountKey,
 		AuthSubjectID: "subject-codex",
-		Headers:       desktopHeaders,
+		Headers:       differentProductHeaders,
 		ObservedAt:    time.Date(2026, 6, 23, 3, 0, 0, 0, time.UTC),
 	})
 	if err != nil {
-		t.Fatalf("ObserveIdentityFingerprint desktop returned error: %v", err)
+		t.Fatalf("ObserveIdentityFingerprint different product returned error: %v", err)
 	}
-	if result.Reason != "created" || desktopRecord.ProfileKey != identityfingerprint.ProfileKeyCodexDesktop {
-		t.Fatalf("desktop merge result = %+v, record = %#v, want Desktop profile created", result, desktopRecord)
+	if result.Reason != "different_product_last_seen" {
+		t.Fatalf("different product reason = %q, want different_product_last_seen", result.Reason)
 	}
-
-	profiles, err := ListIdentityFingerprintProfiles(identityfingerprint.ProviderCodex, accountKey)
-	if err != nil {
-		t.Fatalf("ListIdentityFingerprintProfiles returned error: %v", err)
-	}
-	if len(profiles) != 2 {
-		t.Fatalf("profiles = %#v, want two isolated Codex profiles", profiles)
-	}
-	storedCLI, err := GetIdentityFingerprintProfile(identityfingerprint.ProviderCodex, accountKey, "codex_cli_rs")
-	if err != nil {
-		t.Fatalf("GetIdentityFingerprintProfile CLI returned error: %v", err)
-	}
-	if storedCLI == nil || storedCLI.Fields[identityfingerprint.FieldUserAgent] != cliHeaders.Get("User-Agent") {
-		t.Fatalf("stored CLI profile = %#v, want original CLI identity", storedCLI)
+	if record.ClientProduct != "codex_cli_rs" || record.Fields[identityfingerprint.FieldUserAgent] != headers.Get("User-Agent") {
+		t.Fatalf("different product should not replace stable fields, got %#v", record)
 	}
 }
 

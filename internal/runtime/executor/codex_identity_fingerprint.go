@@ -9,9 +9,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/identityfingerprint"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
-	log "github.com/sirupsen/logrus"
 )
 
 var (
@@ -30,31 +28,8 @@ func codexIdentityFingerprint(cfg *config.Config, auth *cliproxyauth.Auth, ctx c
 	if cfg == nil || !cfg.IdentityFingerprint.Codex.Enabled {
 		return config.CodexIdentityFingerprintConfig{}, false
 	}
-	if !isCodexOAuthAdmissionAuth(auth) {
-		resolved, _ := identityfingerprint.ResolveCodexSafeFallback(cfg.IdentityFingerprint.Codex)
-		return resolved, true
-	}
-
-	// Learning happens before selection so the first trusted request for a new
-	// client variant can immediately use its own complete identity bundle.
-	_ = observeRuntimeIdentityFingerprint(identityfingerprint.ProviderCodex, auth, ctx)
-	accountKey, _ := identityFingerprintAccount(auth)
-	profiles, err := usage.ListIdentityFingerprintProfiles(identityfingerprint.ProviderCodex, accountKey)
-	if err != nil {
-		log.WithError(err).Warn("identity fingerprint: list Codex profiles")
-		resolved, _ := identityfingerprint.ResolveCodexSafeFallback(cfg.IdentityFingerprint.Codex)
-		return resolved, true
-	}
-	policy, err := usage.GetIdentityFingerprintAccountPolicy(identityfingerprint.ProviderCodex, accountKey)
-	if err != nil {
-		log.WithError(err).Warn("identity fingerprint: load Codex account policy")
-	}
-	selection := identityfingerprint.SelectCodexProfile(profiles, policy)
-	if selection.Profile != nil {
-		resolved, _ := identityfingerprint.ResolveCodexProfile(cfg.IdentityFingerprint.Codex, selection.Profile)
-		return resolved, true
-	}
-	resolved, _ := identityfingerprint.ResolveCodexSafeFallback(cfg.IdentityFingerprint.Codex)
+	learned := observeRuntimeIdentityFingerprint(identityfingerprint.ProviderCodex, auth, ctx)
+	resolved, _ := identityfingerprint.ResolveCodex(cfg.IdentityFingerprint.Codex, learned)
 	return resolved, true
 }
 
@@ -75,12 +50,6 @@ func codexFingerprintSessionID(fp config.CodexIdentityFingerprintConfig) string 
 func applyCodexIdentityFingerprintHeaders(headers http.Header, fp config.CodexIdentityFingerprintConfig, websocket bool) {
 	if headers == nil {
 		return
-	}
-	// Product identity headers are an atomic bundle. Clear any values copied
-	// from the inbound request or an earlier layer before applying the selected
-	// profile so an absent field cannot leak in from another identity.
-	for _, key := range []string{"Version", "User-Agent", "OpenAI-Beta", "X-Codex-Beta-Features"} {
-		headers.Del(key)
 	}
 	// Follow upstream codex-tui behavior: only send headers when values are non-empty.
 	if strings.TrimSpace(fp.Version) != "" {

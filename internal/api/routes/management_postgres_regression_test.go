@@ -217,7 +217,6 @@ func truncatePostgresManagementTables(t *testing.T, dsn string) {
 			proxy_pool,
 			routing_config,
 			runtime_settings,
-			identity_fingerprint_account_policies,
 			identity_fingerprints,
 			ccswitch_import_configs
 		RESTART IDENTITY CASCADE
