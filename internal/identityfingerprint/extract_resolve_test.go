@@ -153,7 +153,7 @@ func TestMergeObservationUpdatesOnlyNewerSameProductAndPreservesMissingFields(t 
 	}
 
 	result := MergeObservation(existing, obs)
-	if !result.Changed || result.Reason != "merged_newer_version" {
+	if !result.Changed || result.Reason != "merged_profile" {
 		t.Fatalf("merge result = %+v, want newer merge", result)
 	}
 	if got := result.Record.Fields[FieldClaudeStainlessRuntime]; got != "v24.3.0" {
@@ -164,10 +164,11 @@ func TestMergeObservationUpdatesOnlyNewerSameProductAndPreservesMissingFields(t 
 	}
 }
 
-func TestMergeObservationIgnoresDifferentProduct(t *testing.T) {
+func TestMergeObservationRejectsDifferentProfile(t *testing.T) {
 	existing := &LearnedRecord{
 		Provider:      ProviderCodex,
 		AccountKey:    "acct",
+		ProfileKey:    "codex-tui",
 		ClientProduct: "codex-tui",
 		Version:       "0.118.0",
 		Fields: map[string]string{
@@ -177,17 +178,18 @@ func TestMergeObservationIgnoresDifferentProduct(t *testing.T) {
 	obs := Observation{
 		Provider:      ProviderCodex,
 		AccountKey:    "acct",
-		ClientProduct: "curl",
-		Version:       "9.0.0",
+		ProfileKey:    ProfileKeyCodexDesktop,
+		ClientProduct: "codex",
+		Version:       "0.144.0",
 		Fields: map[string]string{
-			FieldUserAgent: "curl/9.0.0",
+			FieldUserAgent: "Codex Desktop/0.144.0 (Mac OS 26.5; arm64)",
 		},
 		ObservedAt: time.Now().UTC(),
 	}
 
 	result := MergeObservation(existing, obs)
-	if result.Reason != "different_product_last_seen" {
-		t.Fatalf("reason = %q, want different_product_last_seen", result.Reason)
+	if result.Reason != "different_profile" || result.Changed {
+		t.Fatalf("result = %+v, want unchanged different_profile", result)
 	}
 	if got := result.Record.Fields[FieldUserAgent]; got != "codex-tui/0.118.0 (Mac OS 26.3.1; arm64)" {
 		t.Fatalf("User-Agent = %q, want existing record preserved", got)

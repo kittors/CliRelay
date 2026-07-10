@@ -25,7 +25,7 @@ func TestApplyCodexHeadersIdentityFingerprintOverridesClientHeaders(t *testing.T
 		IdentityFingerprint: config.IdentityFingerprintConfig{
 			Codex: config.CodexIdentityFingerprintConfig{
 				Enabled:       true,
-				UserAgent:     "codex_cli_rs/test",
+				UserAgent:     "codex_cli_rs/9.9.9",
 				Version:       "9.9.9",
 				Originator:    "codex_cli_rs",
 				WebsocketBeta: "responses_websockets=test",
@@ -37,7 +37,7 @@ func TestApplyCodexHeadersIdentityFingerprintOverridesClientHeaders(t *testing.T
 
 	applyCodexHeaders(req, cfg, nil, "token", true)
 
-	if got := req.Header.Get("User-Agent"); got != "codex_cli_rs/test" {
+	if got := req.Header.Get("User-Agent"); got != "codex_cli_rs/9.9.9" {
 		t.Fatalf("User-Agent = %q, want fingerprint value", got)
 	}
 	if got := req.Header.Get("Version"); got != "9.9.9" {
@@ -45,6 +45,29 @@ func TestApplyCodexHeadersIdentityFingerprintOverridesClientHeaders(t *testing.T
 	}
 	if got := req.Header.Get("Session_id"); got != "server-session" {
 		t.Fatalf("Session_id = %q, want fingerprint value", got)
+	}
+}
+
+func TestApplyCodexIdentityFingerprintHeadersClearsUnselectedIdentityFields(t *testing.T) {
+	headers := http.Header{}
+	headers.Set("Version", "desktop-version")
+	headers.Set("User-Agent", "Codex Desktop/0.144.0")
+	headers.Set("OpenAI-Beta", "responses_websockets=desktop")
+	headers.Set("X-Codex-Beta-Features", "desktop_only")
+
+	applyCodexIdentityFingerprintHeaders(headers, config.CodexIdentityFingerprintConfig{
+		Enabled:    true,
+		UserAgent:  "codex_cli_rs/0.144.1",
+		Originator: "codex_cli_rs",
+	}, false)
+
+	if got := headers.Get("User-Agent"); got != "codex_cli_rs/0.144.1" {
+		t.Fatalf("User-Agent = %q, want selected CLI profile", got)
+	}
+	for _, key := range []string{"Version", "OpenAI-Beta", "X-Codex-Beta-Features"} {
+		if got := headers.Get(key); got != "" {
+			t.Fatalf("%s leaked from unselected identity: %q", key, got)
+		}
 	}
 }
 
@@ -82,7 +105,7 @@ func TestApplyCodexWebsocketHeadersIdentityFingerprintOverridesClientHeaders(t *
 		IdentityFingerprint: config.IdentityFingerprintConfig{
 			Codex: config.CodexIdentityFingerprintConfig{
 				Enabled:       true,
-				UserAgent:     "codex_cli_rs/test",
+				UserAgent:     "codex_cli_rs/9.9.9",
 				Version:       "9.9.9",
 				Originator:    "codex_cli_rs",
 				WebsocketBeta: "responses_websockets=test",

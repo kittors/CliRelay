@@ -13,6 +13,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/storage/postgres/ent/authsubjectquotacycle"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/storage/postgres/ent/ccswitchimportconfig"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/storage/postgres/ent/identityfingerprint"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/storage/postgres/ent/identityfingerprintaccountpolicy"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/storage/postgres/ent/modelconfig"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/storage/postgres/ent/modelopenroutersyncstate"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/storage/postgres/ent/modelownerpreset"
@@ -241,42 +242,64 @@ func init() {
 	ccswitchimportconfig.DefaultUpdatedAt = ccswitchimportconfigDescUpdatedAt.Default.(string)
 	identityfingerprintFields := schema.IdentityFingerprint{}.Fields()
 	_ = identityfingerprintFields
+	// identityfingerprintDescProfileKey is the schema descriptor for profile_key field.
+	identityfingerprintDescProfileKey := identityfingerprintFields[2].Descriptor()
+	// identityfingerprint.DefaultProfileKey holds the default value on creation for the profile_key field.
+	identityfingerprint.DefaultProfileKey = identityfingerprintDescProfileKey.Default.(string)
 	// identityfingerprintDescAuthSubjectID is the schema descriptor for auth_subject_id field.
-	identityfingerprintDescAuthSubjectID := identityfingerprintFields[2].Descriptor()
+	identityfingerprintDescAuthSubjectID := identityfingerprintFields[3].Descriptor()
 	// identityfingerprint.DefaultAuthSubjectID holds the default value on creation for the auth_subject_id field.
 	identityfingerprint.DefaultAuthSubjectID = identityfingerprintDescAuthSubjectID.Default.(string)
 	// identityfingerprintDescClientProduct is the schema descriptor for client_product field.
-	identityfingerprintDescClientProduct := identityfingerprintFields[3].Descriptor()
+	identityfingerprintDescClientProduct := identityfingerprintFields[4].Descriptor()
 	// identityfingerprint.DefaultClientProduct holds the default value on creation for the client_product field.
 	identityfingerprint.DefaultClientProduct = identityfingerprintDescClientProduct.Default.(string)
 	// identityfingerprintDescClientVariant is the schema descriptor for client_variant field.
-	identityfingerprintDescClientVariant := identityfingerprintFields[4].Descriptor()
+	identityfingerprintDescClientVariant := identityfingerprintFields[5].Descriptor()
 	// identityfingerprint.DefaultClientVariant holds the default value on creation for the client_variant field.
 	identityfingerprint.DefaultClientVariant = identityfingerprintDescClientVariant.Default.(string)
 	// identityfingerprintDescVersion is the schema descriptor for version field.
-	identityfingerprintDescVersion := identityfingerprintFields[5].Descriptor()
+	identityfingerprintDescVersion := identityfingerprintFields[6].Descriptor()
 	// identityfingerprint.DefaultVersion holds the default value on creation for the version field.
 	identityfingerprint.DefaultVersion = identityfingerprintDescVersion.Default.(string)
 	// identityfingerprintDescFieldsJSON is the schema descriptor for fields_json field.
-	identityfingerprintDescFieldsJSON := identityfingerprintFields[6].Descriptor()
+	identityfingerprintDescFieldsJSON := identityfingerprintFields[7].Descriptor()
 	// identityfingerprint.DefaultFieldsJSON holds the default value on creation for the fields_json field.
 	identityfingerprint.DefaultFieldsJSON = identityfingerprintDescFieldsJSON.Default.(string)
 	// identityfingerprintDescObservedHeadersJSON is the schema descriptor for observed_headers_json field.
-	identityfingerprintDescObservedHeadersJSON := identityfingerprintFields[7].Descriptor()
+	identityfingerprintDescObservedHeadersJSON := identityfingerprintFields[8].Descriptor()
 	// identityfingerprint.DefaultObservedHeadersJSON holds the default value on creation for the observed_headers_json field.
 	identityfingerprint.DefaultObservedHeadersJSON = identityfingerprintDescObservedHeadersJSON.Default.(string)
 	// identityfingerprintDescCreatedAt is the schema descriptor for created_at field.
-	identityfingerprintDescCreatedAt := identityfingerprintFields[8].Descriptor()
+	identityfingerprintDescCreatedAt := identityfingerprintFields[9].Descriptor()
 	// identityfingerprint.DefaultCreatedAt holds the default value on creation for the created_at field.
 	identityfingerprint.DefaultCreatedAt = identityfingerprintDescCreatedAt.Default.(string)
 	// identityfingerprintDescUpdatedAt is the schema descriptor for updated_at field.
-	identityfingerprintDescUpdatedAt := identityfingerprintFields[9].Descriptor()
+	identityfingerprintDescUpdatedAt := identityfingerprintFields[10].Descriptor()
 	// identityfingerprint.DefaultUpdatedAt holds the default value on creation for the updated_at field.
 	identityfingerprint.DefaultUpdatedAt = identityfingerprintDescUpdatedAt.Default.(string)
 	// identityfingerprintDescLastSeenAt is the schema descriptor for last_seen_at field.
-	identityfingerprintDescLastSeenAt := identityfingerprintFields[10].Descriptor()
+	identityfingerprintDescLastSeenAt := identityfingerprintFields[11].Descriptor()
 	// identityfingerprint.DefaultLastSeenAt holds the default value on creation for the last_seen_at field.
 	identityfingerprint.DefaultLastSeenAt = identityfingerprintDescLastSeenAt.Default.(string)
+	identityfingerprintaccountpolicyFields := schema.IdentityFingerprintAccountPolicy{}.Fields()
+	_ = identityfingerprintaccountpolicyFields
+	// identityfingerprintaccountpolicyDescStrategy is the schema descriptor for strategy field.
+	identityfingerprintaccountpolicyDescStrategy := identityfingerprintaccountpolicyFields[2].Descriptor()
+	// identityfingerprintaccountpolicy.DefaultStrategy holds the default value on creation for the strategy field.
+	identityfingerprintaccountpolicy.DefaultStrategy = identityfingerprintaccountpolicyDescStrategy.Default.(string)
+	// identityfingerprintaccountpolicyDescActiveProfileKey is the schema descriptor for active_profile_key field.
+	identityfingerprintaccountpolicyDescActiveProfileKey := identityfingerprintaccountpolicyFields[3].Descriptor()
+	// identityfingerprintaccountpolicy.DefaultActiveProfileKey holds the default value on creation for the active_profile_key field.
+	identityfingerprintaccountpolicy.DefaultActiveProfileKey = identityfingerprintaccountpolicyDescActiveProfileKey.Default.(string)
+	// identityfingerprintaccountpolicyDescRevision is the schema descriptor for revision field.
+	identityfingerprintaccountpolicyDescRevision := identityfingerprintaccountpolicyFields[4].Descriptor()
+	// identityfingerprintaccountpolicy.DefaultRevision holds the default value on creation for the revision field.
+	identityfingerprintaccountpolicy.DefaultRevision = identityfingerprintaccountpolicyDescRevision.Default.(int64)
+	// identityfingerprintaccountpolicyDescUpdatedAt is the schema descriptor for updated_at field.
+	identityfingerprintaccountpolicyDescUpdatedAt := identityfingerprintaccountpolicyFields[5].Descriptor()
+	// identityfingerprintaccountpolicy.DefaultUpdatedAt holds the default value on creation for the updated_at field.
+	identityfingerprintaccountpolicy.DefaultUpdatedAt = identityfingerprintaccountpolicyDescUpdatedAt.Default.(string)
 	modelconfigFields := schema.ModelConfig{}.Fields()
 	_ = modelconfigFields
 	// modelconfigDescOwnedBy is the schema descriptor for owned_by field.

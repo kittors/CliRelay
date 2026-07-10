@@ -62,6 +62,11 @@ func AccountKey(v string) predicate.IdentityFingerprint {
 	return predicate.IdentityFingerprint(sql.FieldEQ(FieldAccountKey, v))
 }
 
+// ProfileKey applies equality check predicate on the "profile_key" field. It's identical to ProfileKeyEQ.
+func ProfileKey(v string) predicate.IdentityFingerprint {
+	return predicate.IdentityFingerprint(sql.FieldEQ(FieldProfileKey, v))
+}
+
 // AuthSubjectID applies equality check predicate on the "auth_subject_id" field. It's identical to AuthSubjectIDEQ.
 func AuthSubjectID(v string) predicate.IdentityFingerprint {
 	return predicate.IdentityFingerprint(sql.FieldEQ(FieldAuthSubjectID, v))
@@ -235,6 +240,71 @@ func AccountKeyEqualFold(v string) predicate.IdentityFingerprint {
 // AccountKeyContainsFold applies the ContainsFold predicate on the "account_key" field.
 func AccountKeyContainsFold(v string) predicate.IdentityFingerprint {
 	return predicate.IdentityFingerprint(sql.FieldContainsFold(FieldAccountKey, v))
+}
+
+// ProfileKeyEQ applies the EQ predicate on the "profile_key" field.
+func ProfileKeyEQ(v string) predicate.IdentityFingerprint {
+	return predicate.IdentityFingerprint(sql.FieldEQ(FieldProfileKey, v))
+}
+
+// ProfileKeyNEQ applies the NEQ predicate on the "profile_key" field.
+func ProfileKeyNEQ(v string) predicate.IdentityFingerprint {
+	return predicate.IdentityFingerprint(sql.FieldNEQ(FieldProfileKey, v))
+}
+
+// ProfileKeyIn applies the In predicate on the "profile_key" field.
+func ProfileKeyIn(vs ...string) predicate.IdentityFingerprint {
+	return predicate.IdentityFingerprint(sql.FieldIn(FieldProfileKey, vs...))
+}
+
+// ProfileKeyNotIn applies the NotIn predicate on the "profile_key" field.
+func ProfileKeyNotIn(vs ...string) predicate.IdentityFingerprint {
+	return predicate.IdentityFingerprint(sql.FieldNotIn(FieldProfileKey, vs...))
+}
+
+// ProfileKeyGT applies the GT predicate on the "profile_key" field.
+func ProfileKeyGT(v string) predicate.IdentityFingerprint {
+	return predicate.IdentityFingerprint(sql.FieldGT(FieldProfileKey, v))
+}
+
+// ProfileKeyGTE applies the GTE predicate on the "profile_key" field.
+func ProfileKeyGTE(v string) predicate.IdentityFingerprint {
+	return predicate.IdentityFingerprint(sql.FieldGTE(FieldProfileKey, v))
+}
+
+// ProfileKeyLT applies the LT predicate on the "profile_key" field.
+func ProfileKeyLT(v string) predicate.IdentityFingerprint {
+	return predicate.IdentityFingerprint(sql.FieldLT(FieldProfileKey, v))
+}
+
+// ProfileKeyLTE applies the LTE predicate on the "profile_key" field.
+func ProfileKeyLTE(v string) predicate.IdentityFingerprint {
+	return predicate.IdentityFingerprint(sql.FieldLTE(FieldProfileKey, v))
+}
+
+// ProfileKeyContains applies the Contains predicate on the "profile_key" field.
+func ProfileKeyContains(v string) predicate.IdentityFingerprint {
+	return predicate.IdentityFingerprint(sql.FieldContains(FieldProfileKey, v))
+}
+
+// ProfileKeyHasPrefix applies the HasPrefix predicate on the "profile_key" field.
+func ProfileKeyHasPrefix(v string) predicate.IdentityFingerprint {
+	return predicate.IdentityFingerprint(sql.FieldHasPrefix(FieldProfileKey, v))
+}
+
+// ProfileKeyHasSuffix applies the HasSuffix predicate on the "profile_key" field.
+func ProfileKeyHasSuffix(v string) predicate.IdentityFingerprint {
+	return predicate.IdentityFingerprint(sql.FieldHasSuffix(FieldProfileKey, v))
+}
+
+// ProfileKeyEqualFold applies the EqualFold predicate on the "profile_key" field.
+func ProfileKeyEqualFold(v string) predicate.IdentityFingerprint {
+	return predicate.IdentityFingerprint(sql.FieldEqualFold(FieldProfileKey, v))
+}
+
+// ProfileKeyContainsFold applies the ContainsFold predicate on the "profile_key" field.
+func ProfileKeyContainsFold(v string) predicate.IdentityFingerprint {
+	return predicate.IdentityFingerprint(sql.FieldContainsFold(FieldProfileKey, v))
 }
 
 // AuthSubjectIDEQ applies the EQ predicate on the "auth_subject_id" field.

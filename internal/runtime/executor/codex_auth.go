@@ -92,7 +92,11 @@ func applyCodexHeaders(r *http.Request, cfg *config.Config, auth *cliproxyauth.A
 	if fingerprintEnabled {
 		applyCodexIdentityFingerprintHeaders(r.Header, fp, false)
 		if !isAPIKey {
-			r.Header.Set("Originator", fp.Originator)
+			if originator := strings.TrimSpace(fp.Originator); originator != "" {
+				r.Header.Set("Originator", originator)
+			} else {
+				r.Header.Del("Originator")
+			}
 		}
 	}
 }

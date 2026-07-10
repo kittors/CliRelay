@@ -30,6 +30,9 @@ type CcSwitchImportConfig func(*sql.Selector)
 // IdentityFingerprint is the predicate function for identityfingerprint builders.
 type IdentityFingerprint func(*sql.Selector)
 
+// IdentityFingerprintAccountPolicy is the predicate function for identityfingerprintaccountpolicy builders.
+type IdentityFingerprintAccountPolicy func(*sql.Selector)
+
 // ModelConfig is the predicate function for modelconfig builders.
 type ModelConfig func(*sql.Selector)
 

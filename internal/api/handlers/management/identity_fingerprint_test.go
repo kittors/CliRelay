@@ -1,6 +1,7 @@
 package management
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -292,8 +293,8 @@ func TestGetIdentityFingerprintAccountReturnsLearnedPresetAndBuiltinDefault(t *t
 	if got := payload.Effective.Fields[identityfingerprint.FieldUserAgent]; got.Value != "codex-tui/0.125.0 (Mac OS 26.5; arm64)" || got.Source != "learned" {
 		t.Fatalf("user-agent field = %+v, want learned Codex client", got)
 	}
-	if got := payload.Effective.Fields[identityfingerprint.FieldCodexWebsocketBeta]; got.Value != "responses_websockets=2026-02-06" || got.Source != "preset" {
-		t.Fatalf("websocket beta field = %+v, want preset fallback", got)
+	if got, ok := payload.Effective.Fields[identityfingerprint.FieldCodexWebsocketBeta]; ok && got.Value != "" {
+		t.Fatalf("websocket beta field mixed from account preset: %+v", got)
 	}
 	if payload.Summary.PrimarySource != "learned" || payload.Summary.LearnedFields != 3 {
 		t.Fatalf("summary = %+v, want learned primary with three learned fields", payload.Summary)
@@ -375,6 +376,15 @@ func TestGetIdentityFingerprintAccountReturnsXAIBuiltinDefaultFields(t *testing.
 	}
 }
 
+func TestValidateCodexIdentityFingerprintRejectsMixedBundle(t *testing.T) {
+	err := validateCodexIdentityFingerprint(config.CodexIdentityFingerprintConfig{
+		Enabled: true, UserAgent: "codex_cli_rs/0.144.1", Originator: "Codex Desktop",
+	})
+	if err == nil {
+		t.Fatal("mixed Codex user-agent and originator must be rejected")
+	}
+}
+
 func TestBuildIdentityFingerprintSummaryUsesCodexPresetVersionWhenLearnedVersionMissing(t *testing.T) {
 	learned := &identityfingerprint.LearnedRecord{
 		Provider:      identityfingerprint.ProviderCodex,
@@ -433,4 +443,103 @@ func TestBuildIdentityFingerprintSummaryUsesClaudeLearnedCLIVersion(t *testing.T
 
 func writeTestAuthFile(path string) error {
 	return os.WriteFile(path, []byte(`{"type":"claude"}`), 0o600)
+}
+
+func TestCodexIdentityFingerprintAccountProfilesAndPolicy(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	if err := usage.InitDB(filepath.Join(t.TempDir(), "usage.db"), config.RequestLogStorageConfig{}, time.UTC); err != nil {
+		t.Fatalf("InitDB: %v", err)
+	}
+	t.Cleanup(usage.CloseDB)
+
+	accountKey := "codex-account-profiles"
+	now := time.Now().UTC()
+	for _, record := range []*identityfingerprint.LearnedRecord{
+		{
+			Provider:      identityfingerprint.ProviderCodex,
+			AccountKey:    accountKey,
+			ProfileKey:    "codex_cli_rs",
+			ProfileFamily: identityfingerprint.ProfileFamilyCLI,
+			ClientProduct: "codex_cli_rs",
+			ClientVariant: "codex_cli_rs",
+			Version:       "0.144.1",
+			Fields: map[string]string{
+				identityfingerprint.FieldUserAgent:       "codex_cli_rs/0.144.1 (Mac OS 26.5.2; arm64) unknown",
+				identityfingerprint.FieldCodexOriginator: "codex_cli_rs",
+				identityfingerprint.FieldCodexVersion:    "0.144.1",
+			},
+			CreatedAt: now.Add(-time.Hour), UpdatedAt: now.Add(-time.Hour), LastSeenAt: now.Add(-time.Hour),
+		},
+		{
+			Provider:      identityfingerprint.ProviderCodex,
+			AccountKey:    accountKey,
+			ProfileKey:    identityfingerprint.ProfileKeyCodexDesktop,
+			ProfileFamily: identityfingerprint.ProfileFamilyDesktop,
+			ClientProduct: "codex",
+			ClientVariant: "Codex Desktop",
+			Version:       "0.144.0",
+			Fields: map[string]string{
+				identityfingerprint.FieldUserAgent:         "Codex Desktop/0.144.0-alpha.4",
+				identityfingerprint.FieldCodexOriginator:   "Codex Desktop",
+				identityfingerprint.FieldCodexVersion:      "0.144.0",
+				identityfingerprint.FieldCodexBetaFeatures: "remote_compaction_v2",
+			},
+			CreatedAt: now, UpdatedAt: now, LastSeenAt: now,
+		},
+	} {
+		if err := usage.UpsertIdentityFingerprint(record); err != nil {
+			t.Fatalf("UpsertIdentityFingerprint(%s): %v", record.ProfileKey, err)
+		}
+	}
+
+	h := &Handler{cfg: &config.Config{IdentityFingerprint: config.IdentityFingerprintConfig{
+		Codex: config.CodexIdentityFingerprintConfig{
+			Enabled:      true,
+			UserAgent:    "Codex Desktop/global-preset",
+			Originator:   "Codex Desktop",
+			Version:      "9.9.9",
+			BetaFeatures: "desktop_global_beta",
+		},
+	}}}
+	getRec := httptest.NewRecorder()
+	getCtx, _ := gin.CreateTestContext(getRec)
+	getCtx.Request = httptest.NewRequest(http.MethodGet, "/identity-fingerprint/account?provider=codex&account_key="+accountKey, nil)
+	h.GetIdentityFingerprintAccount(getCtx)
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("GET status=%d body=%s", getRec.Code, getRec.Body.String())
+	}
+	var detail identityFingerprintAccountDetail
+	if err := json.Unmarshal(getRec.Body.Bytes(), &detail); err != nil {
+		t.Fatalf("unmarshal GET detail: %v", err)
+	}
+	if len(detail.Profiles) != 2 || detail.SelectedProfileKey != "codex_cli_rs" || detail.SelectionReason != "cli_preferred" {
+		t.Fatalf("GET detail = %+v", detail)
+	}
+	for _, profile := range detail.Profiles {
+		if !profile.Selectable || profile.SelectionBlockReason != "" {
+			t.Fatalf("coherent profile marked unavailable: %+v", profile)
+		}
+	}
+	if got := detail.Effective.Fields[identityfingerprint.FieldCodexBetaFeatures].Value; got != "" {
+		t.Fatalf("CLI effective beta mixed from Desktop preset: %q", got)
+	}
+
+	body := []byte(`{"provider":"codex","account_key":"` + accountKey + `","strategy":"active_profile","active_profile_key":"codex_desktop","revision":0}`)
+	putRec := httptest.NewRecorder()
+	putCtx, _ := gin.CreateTestContext(putRec)
+	putCtx.Request = httptest.NewRequest(http.MethodPut, "/identity-fingerprint/account/policy", bytes.NewReader(body))
+	putCtx.Request.Header.Set("Content-Type", "application/json")
+	h.PutIdentityFingerprintAccountPolicy(putCtx)
+	if putRec.Code != http.StatusOK {
+		t.Fatalf("PUT status=%d body=%s", putRec.Code, putRec.Body.String())
+	}
+	if err := json.Unmarshal(putRec.Body.Bytes(), &detail); err != nil {
+		t.Fatalf("unmarshal PUT detail: %v", err)
+	}
+	if detail.SelectedProfileKey != identityfingerprint.ProfileKeyCodexDesktop || detail.Policy.Strategy != identityfingerprint.AccountStrategyActiveProfile {
+		t.Fatalf("PUT detail = %+v", detail)
+	}
+	if got := detail.Effective.Fields[identityfingerprint.FieldUserAgent].Value; got != "Codex Desktop/0.144.0-alpha.4" {
+		t.Fatalf("active Desktop User-Agent = %q", got)
+	}
 }

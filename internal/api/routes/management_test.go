@@ -25,7 +25,7 @@ func TestRegisterManagementRouteTable(t *testing.T) {
 		routes[key] = route
 	}
 
-	if got, want := len(routes), 230; got != want {
+	if got, want := len(routes), 232; got != want {
 		t.Fatalf("route count = %d, want %d", got, want)
 	}
 	if got, want := sortedRouteKeys(routes), expectedManagementRoutes(); !slices.Equal(got, want) {
@@ -58,7 +58,10 @@ func TestRegisterManagementRouteTable(t *testing.T) {
 		"GET /v0/management/image-generation/size-presets",
 		"PUT /v0/management/image-generation/size-presets",
 		"GET /v0/management/identity-fingerprint/account",
+		"PUT /v0/management/identity-fingerprint/account/policy",
+		"DELETE /v0/management/identity-fingerprint/account/profile",
 		"GET /v0/management/identity-fingerprint/codex/recommendations",
+		"DELETE /v0/management/identity-fingerprint/account/profile",
 		"DELETE /v0/management/identity-fingerprint/learned",
 		"GET /v0/management/codex-oauth-admission",
 		"PUT /v0/management/codex-oauth-admission",
@@ -112,6 +115,7 @@ func expectedManagementRoutes() []string {
 		"DELETE /v0/management/cline-api-key",
 		"DELETE /v0/management/codex-api-key",
 		"DELETE /v0/management/gemini-api-key",
+		"DELETE /v0/management/identity-fingerprint/account/profile",
 		"DELETE /v0/management/identity-fingerprint/learned",
 		"DELETE /v0/management/logs",
 		"DELETE /v0/management/model-configs/*id",
@@ -306,6 +310,7 @@ func expectedManagementRoutes() []string {
 		"PUT /v0/management/force-model-prefix",
 		"PUT /v0/management/gemini-api-key",
 		"PUT /v0/management/identity-fingerprint",
+		"PUT /v0/management/identity-fingerprint/account/policy",
 		"PUT /v0/management/image-generation/size-presets",
 		"PUT /v0/management/logging-to-file",
 		"PUT /v0/management/logs-max-total-size-mb",

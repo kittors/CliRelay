@@ -321,6 +321,7 @@ func (IdentityFingerprint) Fields() []ent.Field {
 	return []ent.Field{
 		field.String("provider"),
 		field.String("account_key"),
+		field.String("profile_key").Default("default"),
 		field.String("auth_subject_id").Default(""),
 		field.String("client_product").Default(""),
 		field.String("client_variant").Default(""),
@@ -333,7 +334,26 @@ func (IdentityFingerprint) Fields() []ent.Field {
 	}
 }
 func (IdentityFingerprint) Indexes() []ent.Index {
-	return []ent.Index{index.Fields("provider", "account_key").Unique(), index.Fields("provider", "last_seen_at")}
+	return []ent.Index{index.Fields("provider", "account_key", "profile_key").Unique(), index.Fields("provider", "last_seen_at"), index.Fields("provider", "account_key", "last_seen_at")}
+}
+
+type IdentityFingerprintAccountPolicy struct{ ent.Schema }
+
+func (IdentityFingerprintAccountPolicy) Annotations() []schema.Annotation {
+	return table("identity_fingerprint_account_policies")
+}
+func (IdentityFingerprintAccountPolicy) Fields() []ent.Field {
+	return []ent.Field{
+		field.String("provider"),
+		field.String("account_key"),
+		field.String("strategy").Default("cli_preferred"),
+		field.String("active_profile_key").Default(""),
+		field.Int64("revision").Default(1),
+		field.String("updated_at").Default(""),
+	}
+}
+func (IdentityFingerprintAccountPolicy) Indexes() []ent.Index {
+	return []ent.Index{index.Fields("provider", "account_key").Unique()}
 }
 
 type CcSwitchImportConfig struct{ ent.Schema }

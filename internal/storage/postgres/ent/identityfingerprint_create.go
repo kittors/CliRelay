@@ -31,6 +31,20 @@ func (_c *IdentityFingerprintCreate) SetAccountKey(v string) *IdentityFingerprin
 	return _c
 }
 
+// SetProfileKey sets the "profile_key" field.
+func (_c *IdentityFingerprintCreate) SetProfileKey(v string) *IdentityFingerprintCreate {
+	_c.mutation.SetProfileKey(v)
+	return _c
+}
+
+// SetNillableProfileKey sets the "profile_key" field if the given value is not nil.
+func (_c *IdentityFingerprintCreate) SetNillableProfileKey(v *string) *IdentityFingerprintCreate {
+	if v != nil {
+		_c.SetProfileKey(*v)
+	}
+	return _c
+}
+
 // SetAuthSubjectID sets the "auth_subject_id" field.
 func (_c *IdentityFingerprintCreate) SetAuthSubjectID(v string) *IdentityFingerprintCreate {
 	_c.mutation.SetAuthSubjectID(v)
@@ -192,6 +206,10 @@ func (_c *IdentityFingerprintCreate) ExecX(ctx context.Context) {
 
 // defaults sets the default values of the builder before save.
 func (_c *IdentityFingerprintCreate) defaults() {
+	if _, ok := _c.mutation.ProfileKey(); !ok {
+		v := identityfingerprint.DefaultProfileKey
+		_c.mutation.SetProfileKey(v)
+	}
 	if _, ok := _c.mutation.AuthSubjectID(); !ok {
 		v := identityfingerprint.DefaultAuthSubjectID
 		_c.mutation.SetAuthSubjectID(v)
@@ -237,6 +255,9 @@ func (_c *IdentityFingerprintCreate) check() error {
 	}
 	if _, ok := _c.mutation.AccountKey(); !ok {
 		return &ValidationError{Name: "account_key", err: errors.New(`ent: missing required field "IdentityFingerprint.account_key"`)}
+	}
+	if _, ok := _c.mutation.ProfileKey(); !ok {
+		return &ValidationError{Name: "profile_key", err: errors.New(`ent: missing required field "IdentityFingerprint.profile_key"`)}
 	}
 	if _, ok := _c.mutation.AuthSubjectID(); !ok {
 		return &ValidationError{Name: "auth_subject_id", err: errors.New(`ent: missing required field "IdentityFingerprint.auth_subject_id"`)}
@@ -298,6 +319,10 @@ func (_c *IdentityFingerprintCreate) createSpec() (*IdentityFingerprint, *sqlgra
 	if value, ok := _c.mutation.AccountKey(); ok {
 		_spec.SetField(identityfingerprint.FieldAccountKey, field.TypeString, value)
 		_node.AccountKey = value
+	}
+	if value, ok := _c.mutation.ProfileKey(); ok {
+		_spec.SetField(identityfingerprint.FieldProfileKey, field.TypeString, value)
+		_node.ProfileKey = value
 	}
 	if value, ok := _c.mutation.AuthSubjectID(); ok {
 		_spec.SetField(identityfingerprint.FieldAuthSubjectID, field.TypeString, value)

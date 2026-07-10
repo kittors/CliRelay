@@ -20,6 +20,8 @@ type IdentityFingerprint struct {
 	Provider string `json:"provider,omitempty"`
 	// AccountKey holds the value of the "account_key" field.
 	AccountKey string `json:"account_key,omitempty"`
+	// ProfileKey holds the value of the "profile_key" field.
+	ProfileKey string `json:"profile_key,omitempty"`
 	// AuthSubjectID holds the value of the "auth_subject_id" field.
 	AuthSubjectID string `json:"auth_subject_id,omitempty"`
 	// ClientProduct holds the value of the "client_product" field.
@@ -48,7 +50,7 @@ func (*IdentityFingerprint) scanValues(columns []string) ([]any, error) {
 		switch columns[i] {
 		case identityfingerprint.FieldID:
 			values[i] = new(sql.NullInt64)
-		case identityfingerprint.FieldProvider, identityfingerprint.FieldAccountKey, identityfingerprint.FieldAuthSubjectID, identityfingerprint.FieldClientProduct, identityfingerprint.FieldClientVariant, identityfingerprint.FieldVersion, identityfingerprint.FieldFieldsJSON, identityfingerprint.FieldObservedHeadersJSON, identityfingerprint.FieldCreatedAt, identityfingerprint.FieldUpdatedAt, identityfingerprint.FieldLastSeenAt:
+		case identityfingerprint.FieldProvider, identityfingerprint.FieldAccountKey, identityfingerprint.FieldProfileKey, identityfingerprint.FieldAuthSubjectID, identityfingerprint.FieldClientProduct, identityfingerprint.FieldClientVariant, identityfingerprint.FieldVersion, identityfingerprint.FieldFieldsJSON, identityfingerprint.FieldObservedHeadersJSON, identityfingerprint.FieldCreatedAt, identityfingerprint.FieldUpdatedAt, identityfingerprint.FieldLastSeenAt:
 			values[i] = new(sql.NullString)
 		default:
 			values[i] = new(sql.UnknownType)
@@ -82,6 +84,12 @@ func (_m *IdentityFingerprint) assignValues(columns []string, values []any) erro
 				return fmt.Errorf("unexpected type %T for field account_key", values[i])
 			} else if value.Valid {
 				_m.AccountKey = value.String
+			}
+		case identityfingerprint.FieldProfileKey:
+			if value, ok := values[i].(*sql.NullString); !ok {
+				return fmt.Errorf("unexpected type %T for field profile_key", values[i])
+			} else if value.Valid {
+				_m.ProfileKey = value.String
 			}
 		case identityfingerprint.FieldAuthSubjectID:
 			if value, ok := values[i].(*sql.NullString); !ok {
@@ -178,6 +186,9 @@ func (_m *IdentityFingerprint) String() string {
 	builder.WriteString(", ")
 	builder.WriteString("account_key=")
 	builder.WriteString(_m.AccountKey)
+	builder.WriteString(", ")
+	builder.WriteString("profile_key=")
+	builder.WriteString(_m.ProfileKey)
 	builder.WriteString(", ")
 	builder.WriteString("auth_subject_id=")
 	builder.WriteString(_m.AuthSubjectID)

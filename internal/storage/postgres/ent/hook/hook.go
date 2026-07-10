@@ -105,6 +105,18 @@ func (f IdentityFingerprintFunc) Mutate(ctx context.Context, m ent.Mutation) (en
 	return nil, fmt.Errorf("unexpected mutation type %T. expect *ent.IdentityFingerprintMutation", m)
 }
 
+// The IdentityFingerprintAccountPolicyFunc type is an adapter to allow the use of ordinary
+// function as IdentityFingerprintAccountPolicy mutator.
+type IdentityFingerprintAccountPolicyFunc func(context.Context, *ent.IdentityFingerprintAccountPolicyMutation) (ent.Value, error)
+
+// Mutate calls f(ctx, m).
+func (f IdentityFingerprintAccountPolicyFunc) Mutate(ctx context.Context, m ent.Mutation) (ent.Value, error) {
+	if mv, ok := m.(*ent.IdentityFingerprintAccountPolicyMutation); ok {
+		return f(ctx, mv)
+	}
+	return nil, fmt.Errorf("unexpected mutation type %T. expect *ent.IdentityFingerprintAccountPolicyMutation", m)
+}
+
 // The ModelConfigFunc type is an adapter to allow the use of ordinary
 // function as ModelConfig mutator.
 type ModelConfigFunc func(context.Context, *ent.ModelConfigMutation) (ent.Value, error)

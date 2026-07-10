@@ -3,6 +3,7 @@ package postgres
 func RuntimeMigrations() []Migration {
 	return []Migration{
 		{Version: "202607050001_runtime_schema", SQL: runtimeSchemaSQL},
+		{Version: "202607100001_identity_fingerprint_profiles", SQL: identityFingerprintProfilesSQL},
 	}
 }
 
@@ -257,4 +258,92 @@ CREATE TABLE IF NOT EXISTS ccswitch_import_configs (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_ccswitch_import_configs_route_path
   ON ccswitch_import_configs(route_path) WHERE route_path <> '';
+`
+
+const identityFingerprintProfilesSQL = `
+ALTER TABLE identity_fingerprints
+  ADD COLUMN IF NOT EXISTS profile_key TEXT NOT NULL DEFAULT 'default';
+
+WITH identity_signals AS (
+  SELECT provider, account_key,
+         lower(client_variant) AS variant,
+         lower(client_product) AS product,
+         lower(fields_json) AS fields,
+         (
+           lower(client_variant) LIKE '%desktop%'
+           OR lower(client_variant) IN ('codex_app', 'codex_chatgpt_desktop', 'codex_atlas')
+           OR lower(client_product) IN ('codex_app', 'codex_chatgpt_desktop', 'codex_atlas')
+           OR lower(fields_json) LIKE '%codex desktop%'
+           OR lower(fields_json) LIKE '%codex_app%'
+           OR lower(fields_json) LIKE '%codex_chatgpt_desktop%'
+           OR lower(fields_json) LIKE '%codex_atlas%'
+         ) AS desktop_signal,
+         (
+           lower(client_variant) IN ('codex_cli_rs', 'codex-tui', 'codex_tui', 'codex_exec', 'codex_vscode', 'codex_sdk_ts')
+           OR lower(client_product) IN ('codex_cli_rs', 'codex-tui', 'codex_tui', 'codex_exec', 'codex_vscode', 'codex_sdk_ts')
+           OR lower(fields_json) LIKE '%codex_cli_rs%'
+           OR lower(fields_json) LIKE '%codex-tui%'
+           OR lower(fields_json) LIKE '%codex_tui%'
+           OR lower(fields_json) LIKE '%codex_exec%'
+           OR lower(fields_json) LIKE '%codex_vscode%'
+           OR lower(fields_json) LIKE '%codex_sdk_ts%'
+         ) AS cli_signal
+    FROM identity_fingerprints
+)
+UPDATE identity_fingerprints AS target
+   SET profile_key = CASE
+     WHEN target.provider <> 'codex' THEN 'default'
+     -- Historical account-level rows can already contain CLI UA plus Desktop
+     -- Originator (or the reverse). Quarantine them instead of blessing the
+     -- mixed bundle as a selectable profile.
+     WHEN signals.desktop_signal AND signals.cli_signal THEN 'codex_quarantined'
+     WHEN signals.desktop_signal THEN
+       CASE
+         WHEN signals.variant IN ('codex_app', 'codex_chatgpt_desktop', 'codex_atlas') THEN signals.variant
+         WHEN signals.product IN ('codex_app', 'codex_chatgpt_desktop', 'codex_atlas') THEN signals.product
+         ELSE 'codex_desktop'
+       END
+     WHEN signals.cli_signal THEN
+       CASE
+         WHEN signals.variant IN ('codex_cli_rs', 'codex-tui', 'codex_exec', 'codex_vscode', 'codex_sdk_ts') THEN signals.variant
+         WHEN signals.variant = 'codex_tui' THEN 'codex-tui'
+         WHEN signals.product IN ('codex_cli_rs', 'codex-tui', 'codex_exec', 'codex_vscode', 'codex_sdk_ts') THEN signals.product
+         WHEN signals.product = 'codex_tui' THEN 'codex-tui'
+         WHEN signals.fields LIKE '%codex_cli_rs%' THEN 'codex_cli_rs'
+         WHEN signals.fields LIKE '%codex-tui%' OR signals.fields LIKE '%codex_tui%' THEN 'codex-tui'
+         WHEN signals.fields LIKE '%codex_exec%' THEN 'codex_exec'
+         WHEN signals.fields LIKE '%codex_vscode%' THEN 'codex_vscode'
+         WHEN signals.fields LIKE '%codex_sdk_ts%' THEN 'codex_sdk_ts'
+         ELSE 'codex_unknown'
+       END
+     ELSE 'codex_unknown'
+   END
+  FROM identity_signals AS signals
+ WHERE target.provider = signals.provider
+   AND target.account_key = signals.account_key;
+
+ALTER TABLE identity_fingerprints
+  DROP CONSTRAINT IF EXISTS identity_fingerprints_pkey;
+ALTER TABLE identity_fingerprints
+  ADD PRIMARY KEY (provider, account_key, profile_key);
+
+CREATE INDEX IF NOT EXISTS idx_identity_fingerprints_account_seen
+  ON identity_fingerprints(provider, account_key, last_seen_at DESC);
+
+CREATE TABLE IF NOT EXISTS identity_fingerprint_account_policies (
+  provider           TEXT NOT NULL,
+  account_key        TEXT NOT NULL,
+  strategy           TEXT NOT NULL DEFAULT 'cli_preferred',
+  active_profile_key TEXT NOT NULL DEFAULT '',
+  revision           BIGINT NOT NULL DEFAULT 1,
+  updated_at         TEXT NOT NULL DEFAULT '',
+  PRIMARY KEY (provider, account_key),
+  CONSTRAINT identity_fingerprint_account_policies_strategy_check
+    CHECK (strategy IN ('cli_preferred', 'active_profile')),
+  CONSTRAINT identity_fingerprint_account_policies_active_check
+    CHECK (
+      (strategy = 'active_profile' AND active_profile_key <> '')
+      OR (strategy = 'cli_preferred' AND active_profile_key = '')
+    )
+);
 `

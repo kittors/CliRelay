@@ -251,7 +251,11 @@ func applyCodexWebsocketHeaders(ctx context.Context, headers http.Header, cfg *c
 	if fingerprintEnabled {
 		applyCodexIdentityFingerprintHeaders(headers, fp, true)
 		if !isAPIKey {
-			headers.Set("Originator", fp.Originator)
+			if originator := strings.TrimSpace(fp.Originator); originator != "" {
+				headers.Set("Originator", originator)
+			} else {
+				headers.Del("Originator")
+			}
 		}
 	}
 	// Ensure UA remains absent even if custom headers attempted to set it.

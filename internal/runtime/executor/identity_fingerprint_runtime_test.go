@@ -273,6 +273,57 @@ func TestCodexHeadersReplayLearnedFingerprintWithoutInboundHeaders(t *testing.T)
 	}
 }
 
+func TestCodexFingerprintRepeatedRequestUsesHotPathCache(t *testing.T) {
+	initIdentityFingerprintRuntimeDB(t)
+
+	cfg := &config.Config{
+		IdentityFingerprint: config.IdentityFingerprintConfig{
+			Codex: config.CodexIdentityFingerprintConfig{Enabled: true},
+		},
+	}
+	auth := &cliproxyauth.Auth{
+		ID:       "codex-cache-auth",
+		Provider: "codex",
+		Metadata: map[string]any{
+			"access_token": "codex-token",
+			"account_id":   "codex-cache-account-id",
+		},
+	}
+	inbound := http.Header{}
+	inbound.Set("User-Agent", "codex_cli_rs/0.144.1 (Mac OS 26.5.2; arm64) iTerm.app/3.6.9")
+	inbound.Set("Version", "0.144.1")
+	inbound.Set("Originator", "codex_cli_rs")
+	ctx := contextWithInboundHeaders(http.MethodPost, "/v1/responses", inbound)
+
+	firstReq := httptest.NewRequest(http.MethodPost, "https://chatgpt.com/backend-api/codex/responses", nil)
+	firstReq = firstReq.WithContext(ctx)
+	applyCodexHeaders(firstReq, cfg, auth, "codex-token", false)
+
+	accountKey := authSubjectKey(t, auth)
+	firstRecord, err := usage.GetIdentityFingerprintProfile(identityfingerprint.ProviderCodex, accountKey, "codex_cli_rs")
+	if err != nil {
+		t.Fatalf("GetIdentityFingerprintProfile first returned error: %v", err)
+	}
+	if firstRecord == nil {
+		t.Fatal("first learned record is nil")
+	}
+
+	secondReq := httptest.NewRequest(http.MethodPost, "https://chatgpt.com/backend-api/codex/responses", nil)
+	secondReq = secondReq.WithContext(ctx)
+	applyCodexHeaders(secondReq, cfg, auth, "codex-token", false)
+
+	secondRecord, err := usage.GetIdentityFingerprintProfile(identityfingerprint.ProviderCodex, accountKey, "codex_cli_rs")
+	if err != nil {
+		t.Fatalf("GetIdentityFingerprintProfile second returned error: %v", err)
+	}
+	if secondRecord == nil {
+		t.Fatal("second learned record is nil")
+	}
+	if !secondRecord.LastSeenAt.Equal(firstRecord.LastSeenAt) {
+		t.Fatalf("LastSeenAt changed on repeated cached request: first=%s second=%s", firstRecord.LastSeenAt, secondRecord.LastSeenAt)
+	}
+}
+
 func TestCodexWebsocketHeadersReplayLearnedFingerprintWithoutInboundHeaders(t *testing.T) {
 	initIdentityFingerprintRuntimeDB(t)
 
@@ -429,4 +480,104 @@ func containsAll(value string, needles ...string) bool {
 		}
 	}
 	return true
+}
+
+func TestCodexHeadersUseOneSelectedProfileWithoutFieldMixing(t *testing.T) {
+	initIdentityFingerprintRuntimeDB(t)
+
+	cfg := &config.Config{IdentityFingerprint: config.IdentityFingerprintConfig{
+		Codex: config.CodexIdentityFingerprintConfig{
+			Enabled:       true,
+			UserAgent:     "Codex Desktop/global-preset",
+			Originator:    "Codex Desktop",
+			Version:       "9.9.9",
+			BetaFeatures:  "desktop_global_beta",
+			WebsocketBeta: "responses_websockets=desktop",
+		},
+	}}
+	auth := &cliproxyauth.Auth{
+		ID:       "codex-multi-profile-auth",
+		Provider: "codex",
+		Metadata: map[string]any{
+			"access_token": "codex-token",
+			"account_id":   "codex-multi-profile-account",
+		},
+	}
+	accountKey := authSubjectKey(t, auth)
+	now := time.Now().UTC()
+	for _, record := range []*identityfingerprint.LearnedRecord{
+		{
+			Provider:      identityfingerprint.ProviderCodex,
+			AccountKey:    accountKey,
+			ProfileKey:    "codex_cli_rs",
+			ProfileFamily: identityfingerprint.ProfileFamilyCLI,
+			ClientProduct: "codex_cli_rs",
+			ClientVariant: "codex_cli_rs",
+			Version:       "0.144.1",
+			Fields: map[string]string{
+				identityfingerprint.FieldUserAgent:       "codex_cli_rs/0.144.1 (Mac OS 26.5.2; arm64) unknown",
+				identityfingerprint.FieldCodexOriginator: "codex_cli_rs",
+				identityfingerprint.FieldCodexVersion:    "0.144.1",
+			},
+			CreatedAt: now.Add(-time.Hour), UpdatedAt: now.Add(-time.Hour), LastSeenAt: now.Add(-time.Hour),
+		},
+		{
+			Provider:      identityfingerprint.ProviderCodex,
+			AccountKey:    accountKey,
+			ProfileKey:    identityfingerprint.ProfileKeyCodexDesktop,
+			ProfileFamily: identityfingerprint.ProfileFamilyDesktop,
+			ClientProduct: "codex",
+			ClientVariant: "Codex Desktop",
+			Version:       "0.144.0",
+			Fields: map[string]string{
+				identityfingerprint.FieldUserAgent:         "Codex Desktop/0.144.0-alpha.4 (Mac OS 26.5.2; arm64)",
+				identityfingerprint.FieldCodexOriginator:   "Codex Desktop",
+				identityfingerprint.FieldCodexVersion:      "0.144.0",
+				identityfingerprint.FieldCodexBetaFeatures: "remote_compaction_v2",
+			},
+			CreatedAt: now, UpdatedAt: now, LastSeenAt: now,
+		},
+	} {
+		if err := usage.UpsertIdentityFingerprint(record); err != nil {
+			t.Fatalf("UpsertIdentityFingerprint(%s): %v", record.ProfileKey, err)
+		}
+	}
+
+	cliReq := httptest.NewRequest(http.MethodPost, "https://chatgpt.com/backend-api/codex/responses", nil)
+	applyCodexHeaders(cliReq, cfg, auth, "codex-token", false)
+	if got := cliReq.Header.Get("User-Agent"); got != "codex_cli_rs/0.144.1 (Mac OS 26.5.2; arm64) unknown" {
+		t.Fatalf("CLI preferred User-Agent = %q", got)
+	}
+	if got := cliReq.Header.Get("Originator"); got != "codex_cli_rs" {
+		t.Fatalf("CLI preferred Originator = %q", got)
+	}
+	if got := cliReq.Header.Get("Version"); got != "0.144.1" {
+		t.Fatalf("CLI preferred Version = %q", got)
+	}
+	if got := cliReq.Header.Get("X-Codex-Beta-Features"); got != "" {
+		t.Fatalf("CLI profile mixed Desktop beta = %q", got)
+	}
+
+	if _, err := usage.SaveIdentityFingerprintAccountPolicy(identityfingerprint.AccountPolicy{
+		Provider:         identityfingerprint.ProviderCodex,
+		AccountKey:       accountKey,
+		Strategy:         identityfingerprint.AccountStrategyActiveProfile,
+		ActiveProfileKey: identityfingerprint.ProfileKeyCodexDesktop,
+	}, 0); err != nil {
+		t.Fatalf("SaveIdentityFingerprintAccountPolicy: %v", err)
+	}
+	desktopReq := httptest.NewRequest(http.MethodPost, "https://chatgpt.com/backend-api/codex/responses", nil)
+	applyCodexHeaders(desktopReq, cfg, auth, "codex-token", false)
+	if got := desktopReq.Header.Get("User-Agent"); got != "Codex Desktop/0.144.0-alpha.4 (Mac OS 26.5.2; arm64)" {
+		t.Fatalf("active Desktop User-Agent = %q", got)
+	}
+	if got := desktopReq.Header.Get("Originator"); got != "Codex Desktop" {
+		t.Fatalf("active Desktop Originator = %q", got)
+	}
+	if got := desktopReq.Header.Get("Version"); got != "0.144.0" {
+		t.Fatalf("active Desktop Version = %q", got)
+	}
+	if got := desktopReq.Header.Get("X-Codex-Beta-Features"); got != "remote_compaction_v2" {
+		t.Fatalf("active Desktop beta = %q", got)
+	}
 }

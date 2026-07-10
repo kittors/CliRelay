@@ -15,6 +15,8 @@ const (
 	FieldProvider = "provider"
 	// FieldAccountKey holds the string denoting the account_key field in the database.
 	FieldAccountKey = "account_key"
+	// FieldProfileKey holds the string denoting the profile_key field in the database.
+	FieldProfileKey = "profile_key"
 	// FieldAuthSubjectID holds the string denoting the auth_subject_id field in the database.
 	FieldAuthSubjectID = "auth_subject_id"
 	// FieldClientProduct holds the string denoting the client_product field in the database.
@@ -42,6 +44,7 @@ var Columns = []string{
 	FieldID,
 	FieldProvider,
 	FieldAccountKey,
+	FieldProfileKey,
 	FieldAuthSubjectID,
 	FieldClientProduct,
 	FieldClientVariant,
@@ -64,6 +67,8 @@ func ValidColumn(column string) bool {
 }
 
 var (
+	// DefaultProfileKey holds the default value on creation for the "profile_key" field.
+	DefaultProfileKey string
 	// DefaultAuthSubjectID holds the default value on creation for the "auth_subject_id" field.
 	DefaultAuthSubjectID string
 	// DefaultClientProduct holds the default value on creation for the "client_product" field.
@@ -100,6 +105,11 @@ func ByProvider(opts ...sql.OrderTermOption) OrderOption {
 // ByAccountKey orders the results by the account_key field.
 func ByAccountKey(opts ...sql.OrderTermOption) OrderOption {
 	return sql.OrderByField(FieldAccountKey, opts...).ToFunc()
+}
+
+// ByProfileKey orders the results by the profile_key field.
+func ByProfileKey(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldProfileKey, opts...).ToFunc()
 }
 
 // ByAuthSubjectID orders the results by the auth_subject_id field.

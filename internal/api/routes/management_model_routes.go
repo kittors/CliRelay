@@ -28,6 +28,8 @@ func registerManagementModelRoutes(group *gin.RouterGroup, h *managementhandlers
 	group.PUT("/routing-config", h.PutRoutingConfig)
 	group.GET("/identity-fingerprint", h.GetIdentityFingerprint)
 	group.GET("/identity-fingerprint/account", h.GetIdentityFingerprintAccount)
+	group.PUT("/identity-fingerprint/account/policy", h.PutIdentityFingerprintAccountPolicy)
+	group.DELETE("/identity-fingerprint/account/profile", h.DeleteIdentityFingerprintAccountProfile)
 	group.GET("/identity-fingerprint/codex/recommendations", h.GetCodexFingerprintRecommendations)
 	group.PUT("/identity-fingerprint", h.PutIdentityFingerprint)
 	group.DELETE("/identity-fingerprint/learned", h.DeleteIdentityFingerprintLearned)

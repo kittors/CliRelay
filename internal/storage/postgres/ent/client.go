@@ -22,6 +22,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/storage/postgres/ent/authsubjectquotacycle"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/storage/postgres/ent/ccswitchimportconfig"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/storage/postgres/ent/identityfingerprint"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/storage/postgres/ent/identityfingerprintaccountpolicy"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/storage/postgres/ent/modelconfig"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/storage/postgres/ent/modelopenroutersyncstate"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/storage/postgres/ent/modelownerpreset"
@@ -54,6 +55,8 @@ type Client struct {
 	CcSwitchImportConfig *CcSwitchImportConfigClient
 	// IdentityFingerprint is the client for interacting with the IdentityFingerprint builders.
 	IdentityFingerprint *IdentityFingerprintClient
+	// IdentityFingerprintAccountPolicy is the client for interacting with the IdentityFingerprintAccountPolicy builders.
+	IdentityFingerprintAccountPolicy *IdentityFingerprintAccountPolicyClient
 	// ModelConfig is the client for interacting with the ModelConfig builders.
 	ModelConfig *ModelConfigClient
 	// ModelOpenrouterSyncState is the client for interacting with the ModelOpenrouterSyncState builders.
@@ -91,6 +94,7 @@ func (c *Client) init() {
 	c.AuthSubjectQuotaCycle = NewAuthSubjectQuotaCycleClient(c.config)
 	c.CcSwitchImportConfig = NewCcSwitchImportConfigClient(c.config)
 	c.IdentityFingerprint = NewIdentityFingerprintClient(c.config)
+	c.IdentityFingerprintAccountPolicy = NewIdentityFingerprintAccountPolicyClient(c.config)
 	c.ModelConfig = NewModelConfigClient(c.config)
 	c.ModelOpenrouterSyncState = NewModelOpenrouterSyncStateClient(c.config)
 	c.ModelOwnerPreset = NewModelOwnerPresetClient(c.config)
@@ -190,25 +194,26 @@ func (c *Client) Tx(ctx context.Context) (*Tx, error) {
 	cfg := c.config
 	cfg.driver = tx
 	return &Tx{
-		ctx:                        ctx,
-		config:                     cfg,
-		APIKey:                     NewAPIKeyClient(cfg),
-		APIKeyPermissionProfile:    NewAPIKeyPermissionProfileClient(cfg),
-		AuthFileQuotaSnapshot:      NewAuthFileQuotaSnapshotClient(cfg),
-		AuthFileQuotaSnapshotPoint: NewAuthFileQuotaSnapshotPointClient(cfg),
-		AuthGroupModelOwnerMapping: NewAuthGroupModelOwnerMappingClient(cfg),
-		AuthSubjectQuotaCycle:      NewAuthSubjectQuotaCycleClient(cfg),
-		CcSwitchImportConfig:       NewCcSwitchImportConfigClient(cfg),
-		IdentityFingerprint:        NewIdentityFingerprintClient(cfg),
-		ModelConfig:                NewModelConfigClient(cfg),
-		ModelOpenrouterSyncState:   NewModelOpenrouterSyncStateClient(cfg),
-		ModelOwnerPreset:           NewModelOwnerPresetClient(cfg),
-		ModelPricing:               NewModelPricingClient(cfg),
-		ProxyPool:                  NewProxyPoolClient(cfg),
-		RequestLog:                 NewRequestLogClient(cfg),
-		RequestLogContent:          NewRequestLogContentClient(cfg),
-		RoutingConfig:              NewRoutingConfigClient(cfg),
-		RuntimeSetting:             NewRuntimeSettingClient(cfg),
+		ctx:                              ctx,
+		config:                           cfg,
+		APIKey:                           NewAPIKeyClient(cfg),
+		APIKeyPermissionProfile:          NewAPIKeyPermissionProfileClient(cfg),
+		AuthFileQuotaSnapshot:            NewAuthFileQuotaSnapshotClient(cfg),
+		AuthFileQuotaSnapshotPoint:       NewAuthFileQuotaSnapshotPointClient(cfg),
+		AuthGroupModelOwnerMapping:       NewAuthGroupModelOwnerMappingClient(cfg),
+		AuthSubjectQuotaCycle:            NewAuthSubjectQuotaCycleClient(cfg),
+		CcSwitchImportConfig:             NewCcSwitchImportConfigClient(cfg),
+		IdentityFingerprint:              NewIdentityFingerprintClient(cfg),
+		IdentityFingerprintAccountPolicy: NewIdentityFingerprintAccountPolicyClient(cfg),
+		ModelConfig:                      NewModelConfigClient(cfg),
+		ModelOpenrouterSyncState:         NewModelOpenrouterSyncStateClient(cfg),
+		ModelOwnerPreset:                 NewModelOwnerPresetClient(cfg),
+		ModelPricing:                     NewModelPricingClient(cfg),
+		ProxyPool:                        NewProxyPoolClient(cfg),
+		RequestLog:                       NewRequestLogClient(cfg),
+		RequestLogContent:                NewRequestLogContentClient(cfg),
+		RoutingConfig:                    NewRoutingConfigClient(cfg),
+		RuntimeSetting:                   NewRuntimeSettingClient(cfg),
 	}, nil
 }
 
@@ -226,25 +231,26 @@ func (c *Client) BeginTx(ctx context.Context, opts *sql.TxOptions) (*Tx, error) 
 	cfg := c.config
 	cfg.driver = &txDriver{tx: tx, drv: c.driver}
 	return &Tx{
-		ctx:                        ctx,
-		config:                     cfg,
-		APIKey:                     NewAPIKeyClient(cfg),
-		APIKeyPermissionProfile:    NewAPIKeyPermissionProfileClient(cfg),
-		AuthFileQuotaSnapshot:      NewAuthFileQuotaSnapshotClient(cfg),
-		AuthFileQuotaSnapshotPoint: NewAuthFileQuotaSnapshotPointClient(cfg),
-		AuthGroupModelOwnerMapping: NewAuthGroupModelOwnerMappingClient(cfg),
-		AuthSubjectQuotaCycle:      NewAuthSubjectQuotaCycleClient(cfg),
-		CcSwitchImportConfig:       NewCcSwitchImportConfigClient(cfg),
-		IdentityFingerprint:        NewIdentityFingerprintClient(cfg),
-		ModelConfig:                NewModelConfigClient(cfg),
-		ModelOpenrouterSyncState:   NewModelOpenrouterSyncStateClient(cfg),
-		ModelOwnerPreset:           NewModelOwnerPresetClient(cfg),
-		ModelPricing:               NewModelPricingClient(cfg),
-		ProxyPool:                  NewProxyPoolClient(cfg),
-		RequestLog:                 NewRequestLogClient(cfg),
-		RequestLogContent:          NewRequestLogContentClient(cfg),
-		RoutingConfig:              NewRoutingConfigClient(cfg),
-		RuntimeSetting:             NewRuntimeSettingClient(cfg),
+		ctx:                              ctx,
+		config:                           cfg,
+		APIKey:                           NewAPIKeyClient(cfg),
+		APIKeyPermissionProfile:          NewAPIKeyPermissionProfileClient(cfg),
+		AuthFileQuotaSnapshot:            NewAuthFileQuotaSnapshotClient(cfg),
+		AuthFileQuotaSnapshotPoint:       NewAuthFileQuotaSnapshotPointClient(cfg),
+		AuthGroupModelOwnerMapping:       NewAuthGroupModelOwnerMappingClient(cfg),
+		AuthSubjectQuotaCycle:            NewAuthSubjectQuotaCycleClient(cfg),
+		CcSwitchImportConfig:             NewCcSwitchImportConfigClient(cfg),
+		IdentityFingerprint:              NewIdentityFingerprintClient(cfg),
+		IdentityFingerprintAccountPolicy: NewIdentityFingerprintAccountPolicyClient(cfg),
+		ModelConfig:                      NewModelConfigClient(cfg),
+		ModelOpenrouterSyncState:         NewModelOpenrouterSyncStateClient(cfg),
+		ModelOwnerPreset:                 NewModelOwnerPresetClient(cfg),
+		ModelPricing:                     NewModelPricingClient(cfg),
+		ProxyPool:                        NewProxyPoolClient(cfg),
+		RequestLog:                       NewRequestLogClient(cfg),
+		RequestLogContent:                NewRequestLogContentClient(cfg),
+		RoutingConfig:                    NewRoutingConfigClient(cfg),
+		RuntimeSetting:                   NewRuntimeSettingClient(cfg),
 	}, nil
 }
 
@@ -277,9 +283,9 @@ func (c *Client) Use(hooks ...Hook) {
 		c.APIKey, c.APIKeyPermissionProfile, c.AuthFileQuotaSnapshot,
 		c.AuthFileQuotaSnapshotPoint, c.AuthGroupModelOwnerMapping,
 		c.AuthSubjectQuotaCycle, c.CcSwitchImportConfig, c.IdentityFingerprint,
-		c.ModelConfig, c.ModelOpenrouterSyncState, c.ModelOwnerPreset, c.ModelPricing,
-		c.ProxyPool, c.RequestLog, c.RequestLogContent, c.RoutingConfig,
-		c.RuntimeSetting,
+		c.IdentityFingerprintAccountPolicy, c.ModelConfig, c.ModelOpenrouterSyncState,
+		c.ModelOwnerPreset, c.ModelPricing, c.ProxyPool, c.RequestLog,
+		c.RequestLogContent, c.RoutingConfig, c.RuntimeSetting,
 	} {
 		n.Use(hooks...)
 	}
@@ -292,9 +298,9 @@ func (c *Client) Intercept(interceptors ...Interceptor) {
 		c.APIKey, c.APIKeyPermissionProfile, c.AuthFileQuotaSnapshot,
 		c.AuthFileQuotaSnapshotPoint, c.AuthGroupModelOwnerMapping,
 		c.AuthSubjectQuotaCycle, c.CcSwitchImportConfig, c.IdentityFingerprint,
-		c.ModelConfig, c.ModelOpenrouterSyncState, c.ModelOwnerPreset, c.ModelPricing,
-		c.ProxyPool, c.RequestLog, c.RequestLogContent, c.RoutingConfig,
-		c.RuntimeSetting,
+		c.IdentityFingerprintAccountPolicy, c.ModelConfig, c.ModelOpenrouterSyncState,
+		c.ModelOwnerPreset, c.ModelPricing, c.ProxyPool, c.RequestLog,
+		c.RequestLogContent, c.RoutingConfig, c.RuntimeSetting,
 	} {
 		n.Intercept(interceptors...)
 	}
@@ -319,6 +325,8 @@ func (c *Client) Mutate(ctx context.Context, m Mutation) (Value, error) {
 		return c.CcSwitchImportConfig.mutate(ctx, m)
 	case *IdentityFingerprintMutation:
 		return c.IdentityFingerprint.mutate(ctx, m)
+	case *IdentityFingerprintAccountPolicyMutation:
+		return c.IdentityFingerprintAccountPolicy.mutate(ctx, m)
 	case *ModelConfigMutation:
 		return c.ModelConfig.mutate(ctx, m)
 	case *ModelOpenrouterSyncStateMutation:
@@ -1403,6 +1411,139 @@ func (c *IdentityFingerprintClient) mutate(ctx context.Context, m *IdentityFinge
 		return (&IdentityFingerprintDelete{config: c.config, hooks: c.Hooks(), mutation: m}).Exec(ctx)
 	default:
 		return nil, fmt.Errorf("ent: unknown IdentityFingerprint mutation op: %q", m.Op())
+	}
+}
+
+// IdentityFingerprintAccountPolicyClient is a client for the IdentityFingerprintAccountPolicy schema.
+type IdentityFingerprintAccountPolicyClient struct {
+	config
+}
+
+// NewIdentityFingerprintAccountPolicyClient returns a client for the IdentityFingerprintAccountPolicy from the given config.
+func NewIdentityFingerprintAccountPolicyClient(c config) *IdentityFingerprintAccountPolicyClient {
+	return &IdentityFingerprintAccountPolicyClient{config: c}
+}
+
+// Use adds a list of mutation hooks to the hooks stack.
+// A call to `Use(f, g, h)` equals to `identityfingerprintaccountpolicy.Hooks(f(g(h())))`.
+func (c *IdentityFingerprintAccountPolicyClient) Use(hooks ...Hook) {
+	c.hooks.IdentityFingerprintAccountPolicy = append(c.hooks.IdentityFingerprintAccountPolicy, hooks...)
+}
+
+// Intercept adds a list of query interceptors to the interceptors stack.
+// A call to `Intercept(f, g, h)` equals to `identityfingerprintaccountpolicy.Intercept(f(g(h())))`.
+func (c *IdentityFingerprintAccountPolicyClient) Intercept(interceptors ...Interceptor) {
+	c.inters.IdentityFingerprintAccountPolicy = append(c.inters.IdentityFingerprintAccountPolicy, interceptors...)
+}
+
+// Create returns a builder for creating a IdentityFingerprintAccountPolicy entity.
+func (c *IdentityFingerprintAccountPolicyClient) Create() *IdentityFingerprintAccountPolicyCreate {
+	mutation := newIdentityFingerprintAccountPolicyMutation(c.config, OpCreate)
+	return &IdentityFingerprintAccountPolicyCreate{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// CreateBulk returns a builder for creating a bulk of IdentityFingerprintAccountPolicy entities.
+func (c *IdentityFingerprintAccountPolicyClient) CreateBulk(builders ...*IdentityFingerprintAccountPolicyCreate) *IdentityFingerprintAccountPolicyCreateBulk {
+	return &IdentityFingerprintAccountPolicyCreateBulk{config: c.config, builders: builders}
+}
+
+// MapCreateBulk creates a bulk creation builder from the given slice. For each item in the slice, the function creates
+// a builder and applies setFunc on it.
+func (c *IdentityFingerprintAccountPolicyClient) MapCreateBulk(slice any, setFunc func(*IdentityFingerprintAccountPolicyCreate, int)) *IdentityFingerprintAccountPolicyCreateBulk {
+	rv := reflect.ValueOf(slice)
+	if rv.Kind() != reflect.Slice {
+		return &IdentityFingerprintAccountPolicyCreateBulk{err: fmt.Errorf("calling to IdentityFingerprintAccountPolicyClient.MapCreateBulk with wrong type %T, need slice", slice)}
+	}
+	builders := make([]*IdentityFingerprintAccountPolicyCreate, rv.Len())
+	for i := 0; i < rv.Len(); i++ {
+		builders[i] = c.Create()
+		setFunc(builders[i], i)
+	}
+	return &IdentityFingerprintAccountPolicyCreateBulk{config: c.config, builders: builders}
+}
+
+// Update returns an update builder for IdentityFingerprintAccountPolicy.
+func (c *IdentityFingerprintAccountPolicyClient) Update() *IdentityFingerprintAccountPolicyUpdate {
+	mutation := newIdentityFingerprintAccountPolicyMutation(c.config, OpUpdate)
+	return &IdentityFingerprintAccountPolicyUpdate{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// UpdateOne returns an update builder for the given entity.
+func (c *IdentityFingerprintAccountPolicyClient) UpdateOne(_m *IdentityFingerprintAccountPolicy) *IdentityFingerprintAccountPolicyUpdateOne {
+	mutation := newIdentityFingerprintAccountPolicyMutation(c.config, OpUpdateOne, withIdentityFingerprintAccountPolicy(_m))
+	return &IdentityFingerprintAccountPolicyUpdateOne{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// UpdateOneID returns an update builder for the given id.
+func (c *IdentityFingerprintAccountPolicyClient) UpdateOneID(id int) *IdentityFingerprintAccountPolicyUpdateOne {
+	mutation := newIdentityFingerprintAccountPolicyMutation(c.config, OpUpdateOne, withIdentityFingerprintAccountPolicyID(id))
+	return &IdentityFingerprintAccountPolicyUpdateOne{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// Delete returns a delete builder for IdentityFingerprintAccountPolicy.
+func (c *IdentityFingerprintAccountPolicyClient) Delete() *IdentityFingerprintAccountPolicyDelete {
+	mutation := newIdentityFingerprintAccountPolicyMutation(c.config, OpDelete)
+	return &IdentityFingerprintAccountPolicyDelete{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// DeleteOne returns a builder for deleting the given entity.
+func (c *IdentityFingerprintAccountPolicyClient) DeleteOne(_m *IdentityFingerprintAccountPolicy) *IdentityFingerprintAccountPolicyDeleteOne {
+	return c.DeleteOneID(_m.ID)
+}
+
+// DeleteOneID returns a builder for deleting the given entity by its id.
+func (c *IdentityFingerprintAccountPolicyClient) DeleteOneID(id int) *IdentityFingerprintAccountPolicyDeleteOne {
+	builder := c.Delete().Where(identityfingerprintaccountpolicy.ID(id))
+	builder.mutation.id = &id
+	builder.mutation.op = OpDeleteOne
+	return &IdentityFingerprintAccountPolicyDeleteOne{builder}
+}
+
+// Query returns a query builder for IdentityFingerprintAccountPolicy.
+func (c *IdentityFingerprintAccountPolicyClient) Query() *IdentityFingerprintAccountPolicyQuery {
+	return &IdentityFingerprintAccountPolicyQuery{
+		config: c.config,
+		ctx:    &QueryContext{Type: TypeIdentityFingerprintAccountPolicy},
+		inters: c.Interceptors(),
+	}
+}
+
+// Get returns a IdentityFingerprintAccountPolicy entity by its id.
+func (c *IdentityFingerprintAccountPolicyClient) Get(ctx context.Context, id int) (*IdentityFingerprintAccountPolicy, error) {
+	return c.Query().Where(identityfingerprintaccountpolicy.ID(id)).Only(ctx)
+}
+
+// GetX is like Get, but panics if an error occurs.
+func (c *IdentityFingerprintAccountPolicyClient) GetX(ctx context.Context, id int) *IdentityFingerprintAccountPolicy {
+	obj, err := c.Get(ctx, id)
+	if err != nil {
+		panic(err)
+	}
+	return obj
+}
+
+// Hooks returns the client hooks.
+func (c *IdentityFingerprintAccountPolicyClient) Hooks() []Hook {
+	return c.hooks.IdentityFingerprintAccountPolicy
+}
+
+// Interceptors returns the client interceptors.
+func (c *IdentityFingerprintAccountPolicyClient) Interceptors() []Interceptor {
+	return c.inters.IdentityFingerprintAccountPolicy
+}
+
+func (c *IdentityFingerprintAccountPolicyClient) mutate(ctx context.Context, m *IdentityFingerprintAccountPolicyMutation) (Value, error) {
+	switch m.Op() {
+	case OpCreate:
+		return (&IdentityFingerprintAccountPolicyCreate{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpUpdate:
+		return (&IdentityFingerprintAccountPolicyUpdate{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpUpdateOne:
+		return (&IdentityFingerprintAccountPolicyUpdateOne{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpDelete, OpDeleteOne:
+		return (&IdentityFingerprintAccountPolicyDelete{config: c.config, hooks: c.Hooks(), mutation: m}).Exec(ctx)
+	default:
+		return nil, fmt.Errorf("ent: unknown IdentityFingerprintAccountPolicy mutation op: %q", m.Op())
 	}
 }
 
@@ -2608,15 +2749,17 @@ type (
 	hooks struct {
 		APIKey, APIKeyPermissionProfile, AuthFileQuotaSnapshot,
 		AuthFileQuotaSnapshotPoint, AuthGroupModelOwnerMapping, AuthSubjectQuotaCycle,
-		CcSwitchImportConfig, IdentityFingerprint, ModelConfig,
-		ModelOpenrouterSyncState, ModelOwnerPreset, ModelPricing, ProxyPool,
-		RequestLog, RequestLogContent, RoutingConfig, RuntimeSetting []ent.Hook
+		CcSwitchImportConfig, IdentityFingerprint, IdentityFingerprintAccountPolicy,
+		ModelConfig, ModelOpenrouterSyncState, ModelOwnerPreset, ModelPricing,
+		ProxyPool, RequestLog, RequestLogContent, RoutingConfig,
+		RuntimeSetting []ent.Hook
 	}
 	inters struct {
 		APIKey, APIKeyPermissionProfile, AuthFileQuotaSnapshot,
 		AuthFileQuotaSnapshotPoint, AuthGroupModelOwnerMapping, AuthSubjectQuotaCycle,
-		CcSwitchImportConfig, IdentityFingerprint, ModelConfig,
-		ModelOpenrouterSyncState, ModelOwnerPreset, ModelPricing, ProxyPool,
-		RequestLog, RequestLogContent, RoutingConfig, RuntimeSetting []ent.Interceptor
+		CcSwitchImportConfig, IdentityFingerprint, IdentityFingerprintAccountPolicy,
+		ModelConfig, ModelOpenrouterSyncState, ModelOwnerPreset, ModelPricing,
+		ProxyPool, RequestLog, RequestLogContent, RoutingConfig,
+		RuntimeSetting []ent.Interceptor
 	}
 )

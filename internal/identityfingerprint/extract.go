@@ -77,6 +77,7 @@ func extractClaudeObservation(input LearnInput, headers http.Header, observedAt 
 	return Observation{
 		Provider:        ProviderClaude,
 		AccountKey:      strings.TrimSpace(input.AccountKey),
+		ProfileKey:      ProfileKeyDefault,
 		AuthSubjectID:   strings.TrimSpace(input.AuthSubjectID),
 		ClientProduct:   "claude-cli",
 		ClientVariant:   entrypoint,
@@ -91,8 +92,12 @@ func extractCodexObservation(input LearnInput, headers http.Header, observedAt t
 	ua := strings.TrimSpace(headers.Get("User-Agent"))
 	originator := strings.TrimSpace(headers.Get("Originator"))
 	product, uaVersion := codexProductVersion(ua)
-	if product == "" && strings.Contains(strings.ToLower(originator), "codex") {
-		product = strings.ToLower(originator)
+	profileKey, profileFamily, profileOK := CodexProfileKey(ua, originator)
+	if !profileOK {
+		return Observation{}, false
+	}
+	if product == "" {
+		product = profileKey
 	}
 	version := strings.TrimSpace(headers.Get("Version"))
 	if version == "" {
@@ -121,6 +126,8 @@ func extractCodexObservation(input LearnInput, headers http.Header, observedAt t
 	return Observation{
 		Provider:        ProviderCodex,
 		AccountKey:      strings.TrimSpace(input.AccountKey),
+		ProfileKey:      profileKey,
+		ProfileFamily:   profileFamily,
 		AuthSubjectID:   strings.TrimSpace(input.AuthSubjectID),
 		ClientProduct:   product,
 		ClientVariant:   originator,
@@ -163,6 +170,7 @@ func extractGeminiObservation(input LearnInput, headers http.Header, observedAt 
 	return Observation{
 		Provider:        ProviderGemini,
 		AccountKey:      strings.TrimSpace(input.AccountKey),
+		ProfileKey:      ProfileKeyDefault,
 		AuthSubjectID:   strings.TrimSpace(input.AuthSubjectID),
 		ClientProduct:   product,
 		ClientVariant:   "cli",
@@ -203,6 +211,7 @@ func extractXAIObservation(input LearnInput, headers http.Header, observedAt tim
 	return Observation{
 		Provider:        ProviderXAI,
 		AccountKey:      strings.TrimSpace(input.AccountKey),
+		ProfileKey:      ProfileKeyDefault,
 		AuthSubjectID:   strings.TrimSpace(input.AuthSubjectID),
 		ClientProduct:   product,
 		ClientVariant:   "cli",
@@ -225,9 +234,15 @@ func MergeObservation(existing *LearnedRecord, obs Observation) MergeResult {
 		now = time.Now().UTC()
 	}
 	if existing == nil {
+		profileKey := strings.TrimSpace(obs.ProfileKey)
+		if profileKey == "" {
+			profileKey = DefaultProfileKey(obs.Provider)
+		}
 		record := &LearnedRecord{
 			Provider:        obs.Provider,
 			AccountKey:      strings.TrimSpace(obs.AccountKey),
+			ProfileKey:      profileKey,
+			ProfileFamily:   strings.TrimSpace(obs.ProfileFamily),
 			AuthSubjectID:   strings.TrimSpace(obs.AuthSubjectID),
 			ClientProduct:   strings.TrimSpace(obs.ClientProduct),
 			ClientVariant:   strings.TrimSpace(obs.ClientVariant),
@@ -242,20 +257,27 @@ func MergeObservation(existing *LearnedRecord, obs Observation) MergeResult {
 	}
 
 	record := cloneRecord(existing)
+	profileKey := strings.TrimSpace(obs.ProfileKey)
+	if profileKey == "" {
+		profileKey = DefaultProfileKey(obs.Provider)
+	}
+	if existingKey := strings.TrimSpace(record.ProfileKey); existingKey != "" && existingKey != profileKey {
+		return MergeResult{Record: existing, Reason: "different_profile"}
+	}
+	record.ProfileKey = profileKey
+	if strings.TrimSpace(obs.ProfileFamily) != "" {
+		record.ProfileFamily = strings.TrimSpace(obs.ProfileFamily)
+	}
 	record.LastSeenAt = now.UTC()
-	if strings.TrimSpace(record.ClientProduct) != "" && strings.TrimSpace(obs.ClientProduct) != "" &&
-		!strings.EqualFold(record.ClientProduct, obs.ClientProduct) {
-		return MergeResult{Record: record, Changed: true, Reason: "different_product_last_seen"}
-	}
-	if strings.TrimSpace(record.ClientProduct) == "" {
-		record.ClientProduct = strings.TrimSpace(obs.ClientProduct)
-	}
 	if strings.TrimSpace(record.AuthSubjectID) == "" {
 		record.AuthSubjectID = strings.TrimSpace(obs.AuthSubjectID)
 	}
 	if strings.TrimSpace(record.Version) != "" && strings.TrimSpace(obs.Version) != "" &&
-		!isNewerVersion(obs.Version, record.Version) {
-		return MergeResult{Record: record, Changed: true, Reason: "not_newer_last_seen"}
+		isNewerVersion(record.Version, obs.Version) {
+		return MergeResult{Record: record, Changed: true, Reason: "older_version_last_seen"}
+	}
+	if strings.TrimSpace(obs.ClientProduct) != "" {
+		record.ClientProduct = strings.TrimSpace(obs.ClientProduct)
 	}
 	if strings.TrimSpace(obs.Version) != "" {
 		record.Version = strings.TrimSpace(obs.Version)
@@ -275,7 +297,38 @@ func MergeObservation(existing *LearnedRecord, obs Observation) MergeResult {
 	}
 	record.ObservedHeaders = cloneStringMap(obs.ObservedHeaders)
 	record.UpdatedAt = now.UTC()
-	return MergeResult{Record: record, Changed: true, Reason: "merged_newer_version"}
+	return MergeResult{Record: record, Changed: true, Reason: "merged_profile"}
+}
+
+func MergeObservationChangedExceptLastSeen(existing, merged *LearnedRecord) bool {
+	if existing == nil || merged == nil {
+		return existing != merged
+	}
+	if existing.Provider != merged.Provider ||
+		strings.TrimSpace(existing.AccountKey) != strings.TrimSpace(merged.AccountKey) ||
+		strings.TrimSpace(existing.ProfileKey) != strings.TrimSpace(merged.ProfileKey) ||
+		strings.TrimSpace(existing.ProfileFamily) != strings.TrimSpace(merged.ProfileFamily) ||
+		strings.TrimSpace(existing.AuthSubjectID) != strings.TrimSpace(merged.AuthSubjectID) ||
+		strings.TrimSpace(existing.ClientProduct) != strings.TrimSpace(merged.ClientProduct) ||
+		strings.TrimSpace(existing.ClientVariant) != strings.TrimSpace(merged.ClientVariant) ||
+		strings.TrimSpace(existing.Version) != strings.TrimSpace(merged.Version) ||
+		!sameStringMap(existing.Fields, merged.Fields) ||
+		!sameStringMap(existing.ObservedHeaders, merged.ObservedHeaders) {
+		return true
+	}
+	return false
+}
+
+func sameStringMap(left, right map[string]string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for key, leftValue := range left {
+		if right[key] != leftValue {
+			return false
+		}
+	}
+	return true
 }
 
 func codexProductVersion(ua string) (string, string) {

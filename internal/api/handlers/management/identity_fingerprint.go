@@ -147,7 +147,7 @@ func (h *Handler) identityFingerprintState(current config.IdentityFingerprintCon
 				_, eff := identityfingerprint.ResolveClaude(current.Claude, &record)
 				effective[key] = append(effective[key], eff)
 			case identityfingerprint.ProviderCodex:
-				_, eff := identityfingerprint.ResolveCodex(current.Codex, &record)
+				_, eff := identityfingerprint.ResolveCodexProfile(current.Codex, &record)
 				effective[key] = append(effective[key], eff)
 			case identityfingerprint.ProviderGemini:
 				_, eff := identityfingerprint.ResolveGemini(current.Gemini, &record)
@@ -166,6 +166,11 @@ func validateCodexIdentityFingerprint(fp config.CodexIdentityFingerprintConfig) 
 		containsHeaderLineBreak(fp.Originator) || containsHeaderLineBreak(fp.WebsocketBeta) ||
 		containsHeaderLineBreak(fp.BetaFeatures) || containsHeaderLineBreak(fp.SessionID) {
 		return fmt.Errorf("identity fingerprint fields must not contain line breaks")
+	}
+	if fp.Enabled {
+		if _, _, ok := identityfingerprint.CodexProfileKey(fp.UserAgent, fp.Originator); !ok {
+			return fmt.Errorf("codex user-agent and originator must identify the same supported client profile")
+		}
 	}
 	for key, value := range fp.CustomHeaders {
 		key = strings.TrimSpace(key)

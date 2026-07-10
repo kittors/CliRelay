@@ -55,6 +55,20 @@ func (_u *IdentityFingerprintUpdate) SetNillableAccountKey(v *string) *IdentityF
 	return _u
 }
 
+// SetProfileKey sets the "profile_key" field.
+func (_u *IdentityFingerprintUpdate) SetProfileKey(v string) *IdentityFingerprintUpdate {
+	_u.mutation.SetProfileKey(v)
+	return _u
+}
+
+// SetNillableProfileKey sets the "profile_key" field if the given value is not nil.
+func (_u *IdentityFingerprintUpdate) SetNillableProfileKey(v *string) *IdentityFingerprintUpdate {
+	if v != nil {
+		_u.SetProfileKey(*v)
+	}
+	return _u
+}
+
 // SetAuthSubjectID sets the "auth_subject_id" field.
 func (_u *IdentityFingerprintUpdate) SetAuthSubjectID(v string) *IdentityFingerprintUpdate {
 	_u.mutation.SetAuthSubjectID(v)
@@ -228,6 +242,9 @@ func (_u *IdentityFingerprintUpdate) sqlSave(ctx context.Context) (_node int, er
 	if value, ok := _u.mutation.AccountKey(); ok {
 		_spec.SetField(identityfingerprint.FieldAccountKey, field.TypeString, value)
 	}
+	if value, ok := _u.mutation.ProfileKey(); ok {
+		_spec.SetField(identityfingerprint.FieldProfileKey, field.TypeString, value)
+	}
 	if value, ok := _u.mutation.AuthSubjectID(); ok {
 		_spec.SetField(identityfingerprint.FieldAuthSubjectID, field.TypeString, value)
 	}
@@ -299,6 +316,20 @@ func (_u *IdentityFingerprintUpdateOne) SetAccountKey(v string) *IdentityFingerp
 func (_u *IdentityFingerprintUpdateOne) SetNillableAccountKey(v *string) *IdentityFingerprintUpdateOne {
 	if v != nil {
 		_u.SetAccountKey(*v)
+	}
+	return _u
+}
+
+// SetProfileKey sets the "profile_key" field.
+func (_u *IdentityFingerprintUpdateOne) SetProfileKey(v string) *IdentityFingerprintUpdateOne {
+	_u.mutation.SetProfileKey(v)
+	return _u
+}
+
+// SetNillableProfileKey sets the "profile_key" field if the given value is not nil.
+func (_u *IdentityFingerprintUpdateOne) SetNillableProfileKey(v *string) *IdentityFingerprintUpdateOne {
+	if v != nil {
+		_u.SetProfileKey(*v)
 	}
 	return _u
 }
@@ -505,6 +536,9 @@ func (_u *IdentityFingerprintUpdateOne) sqlSave(ctx context.Context) (_node *Ide
 	}
 	if value, ok := _u.mutation.AccountKey(); ok {
 		_spec.SetField(identityfingerprint.FieldAccountKey, field.TypeString, value)
+	}
+	if value, ok := _u.mutation.ProfileKey(); ok {
+		_spec.SetField(identityfingerprint.FieldProfileKey, field.TypeString, value)
 	}
 	if value, ok := _u.mutation.AuthSubjectID(); ok {
 		_spec.SetField(identityfingerprint.FieldAuthSubjectID, field.TypeString, value)

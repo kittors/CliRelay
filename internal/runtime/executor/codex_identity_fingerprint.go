@@ -5,17 +5,43 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/identityfingerprint"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	log "github.com/sirupsen/logrus"
 )
 
 var (
 	codexServerSessionOnce sync.Once
 	codexServerSessionID   string
 )
+
+const codexIdentityFingerprintSelectionCacheTTL = 30 * time.Second
+
+type codexIdentityFingerprintSelectionEntry struct {
+	selection identityfingerprint.ProfileSelection
+	expiresAt time.Time
+}
+
+var codexIdentityFingerprintSelectionCache = struct {
+	sync.Mutex
+	entries map[string]codexIdentityFingerprintSelectionEntry
+}{
+	entries: map[string]codexIdentityFingerprintSelectionEntry{},
+}
+
+func init() {
+	usage.RegisterIdentityFingerprintInvalidationHook(func(provider identityfingerprint.Provider, accountKey string) {
+		if provider != identityfingerprint.ProviderCodex {
+			return
+		}
+		invalidateCachedCodexIdentityFingerprintSelection(accountKey)
+	})
+}
 
 func codexServerStableSessionID() string {
 	codexServerSessionOnce.Do(func() {
@@ -28,9 +54,89 @@ func codexIdentityFingerprint(cfg *config.Config, auth *cliproxyauth.Auth, ctx c
 	if cfg == nil || !cfg.IdentityFingerprint.Codex.Enabled {
 		return config.CodexIdentityFingerprintConfig{}, false
 	}
-	learned := observeRuntimeIdentityFingerprint(identityfingerprint.ProviderCodex, auth, ctx)
-	resolved, _ := identityfingerprint.ResolveCodex(cfg.IdentityFingerprint.Codex, learned)
+	if !isCodexOAuthAdmissionAuth(auth) {
+		resolved, _ := identityfingerprint.ResolveCodexSafeFallback(cfg.IdentityFingerprint.Codex)
+		return resolved, true
+	}
+
+	// Learning happens before selection so the first trusted request for a new
+	// client variant can immediately use its own complete identity bundle.
+	_ = observeRuntimeIdentityFingerprint(identityfingerprint.ProviderCodex, auth, ctx)
+	accountKey, _ := identityFingerprintAccount(auth)
+	if selection, ok := getCachedCodexIdentityFingerprintSelection(accountKey); ok {
+		if selection.Profile != nil {
+			resolved, _ := identityfingerprint.ResolveCodexProfile(cfg.IdentityFingerprint.Codex, selection.Profile)
+			return resolved, true
+		}
+		resolved, _ := identityfingerprint.ResolveCodexSafeFallback(cfg.IdentityFingerprint.Codex)
+		return resolved, true
+	}
+	profiles, err := usage.ListIdentityFingerprintProfiles(identityfingerprint.ProviderCodex, accountKey)
+	if err != nil {
+		log.WithError(err).Warn("identity fingerprint: list Codex profiles")
+		resolved, _ := identityfingerprint.ResolveCodexSafeFallback(cfg.IdentityFingerprint.Codex)
+		return resolved, true
+	}
+	policy, err := usage.GetIdentityFingerprintAccountPolicy(identityfingerprint.ProviderCodex, accountKey)
+	if err != nil {
+		log.WithError(err).Warn("identity fingerprint: load Codex account policy")
+	}
+	selection := identityfingerprint.SelectCodexProfile(profiles, policy)
+	setCachedCodexIdentityFingerprintSelection(accountKey, selection)
+	if selection.Profile != nil {
+		resolved, _ := identityfingerprint.ResolveCodexProfile(cfg.IdentityFingerprint.Codex, selection.Profile)
+		return resolved, true
+	}
+	resolved, _ := identityfingerprint.ResolveCodexSafeFallback(cfg.IdentityFingerprint.Codex)
 	return resolved, true
+}
+
+func getCachedCodexIdentityFingerprintSelection(accountKey string) (identityfingerprint.ProfileSelection, bool) {
+	accountKey = strings.TrimSpace(accountKey)
+	if accountKey == "" {
+		return identityfingerprint.ProfileSelection{}, false
+	}
+	now := time.Now()
+	codexIdentityFingerprintSelectionCache.Lock()
+	entry, ok := codexIdentityFingerprintSelectionCache.entries[accountKey]
+	if !ok || now.After(entry.expiresAt) {
+		if ok {
+			delete(codexIdentityFingerprintSelectionCache.entries, accountKey)
+		}
+		codexIdentityFingerprintSelectionCache.Unlock()
+		return identityfingerprint.ProfileSelection{}, false
+	}
+	selection := cloneCodexIdentityFingerprintSelection(entry.selection)
+	codexIdentityFingerprintSelectionCache.Unlock()
+	return selection, true
+}
+
+func setCachedCodexIdentityFingerprintSelection(accountKey string, selection identityfingerprint.ProfileSelection) {
+	accountKey = strings.TrimSpace(accountKey)
+	if accountKey == "" {
+		return
+	}
+	codexIdentityFingerprintSelectionCache.Lock()
+	codexIdentityFingerprintSelectionCache.entries[accountKey] = codexIdentityFingerprintSelectionEntry{
+		selection: cloneCodexIdentityFingerprintSelection(selection),
+		expiresAt: time.Now().Add(codexIdentityFingerprintSelectionCacheTTL),
+	}
+	codexIdentityFingerprintSelectionCache.Unlock()
+}
+
+func invalidateCachedCodexIdentityFingerprintSelection(accountKey string) {
+	accountKey = strings.TrimSpace(accountKey)
+	if accountKey == "" {
+		return
+	}
+	codexIdentityFingerprintSelectionCache.Lock()
+	delete(codexIdentityFingerprintSelectionCache.entries, accountKey)
+	codexIdentityFingerprintSelectionCache.Unlock()
+}
+
+func cloneCodexIdentityFingerprintSelection(selection identityfingerprint.ProfileSelection) identityfingerprint.ProfileSelection {
+	selection.Profile = cloneRuntimeIdentityFingerprintRecord(selection.Profile)
+	return selection
 }
 
 func codexFingerprintSessionID(fp config.CodexIdentityFingerprintConfig) string {
@@ -50,6 +156,12 @@ func codexFingerprintSessionID(fp config.CodexIdentityFingerprintConfig) string 
 func applyCodexIdentityFingerprintHeaders(headers http.Header, fp config.CodexIdentityFingerprintConfig, websocket bool) {
 	if headers == nil {
 		return
+	}
+	// Product identity headers are an atomic bundle. Clear any values copied
+	// from the inbound request or an earlier layer before applying the selected
+	// profile so an absent field cannot leak in from another identity.
+	for _, key := range []string{"Version", "User-Agent", "OpenAI-Beta", "X-Codex-Beta-Features"} {
+		headers.Del(key)
 	}
 	// Follow upstream codex-tui behavior: only send headers when values are non-empty.
 	if strings.TrimSpace(fp.Version) != "" {

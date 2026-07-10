@@ -212,6 +212,7 @@ var (
 		{Name: "id", Type: field.TypeInt, Increment: true},
 		{Name: "provider", Type: field.TypeString},
 		{Name: "account_key", Type: field.TypeString},
+		{Name: "profile_key", Type: field.TypeString, Default: "default"},
 		{Name: "auth_subject_id", Type: field.TypeString, Default: ""},
 		{Name: "client_product", Type: field.TypeString, Default: ""},
 		{Name: "client_variant", Type: field.TypeString, Default: ""},
@@ -229,14 +230,42 @@ var (
 		PrimaryKey: []*schema.Column{IdentityFingerprintsColumns[0]},
 		Indexes: []*schema.Index{
 			{
-				Name:    "identityfingerprint_provider_account_key",
+				Name:    "identityfingerprint_provider_account_key_profile_key",
 				Unique:  true,
-				Columns: []*schema.Column{IdentityFingerprintsColumns[1], IdentityFingerprintsColumns[2]},
+				Columns: []*schema.Column{IdentityFingerprintsColumns[1], IdentityFingerprintsColumns[2], IdentityFingerprintsColumns[3]},
 			},
 			{
 				Name:    "identityfingerprint_provider_last_seen_at",
 				Unique:  false,
-				Columns: []*schema.Column{IdentityFingerprintsColumns[1], IdentityFingerprintsColumns[11]},
+				Columns: []*schema.Column{IdentityFingerprintsColumns[1], IdentityFingerprintsColumns[12]},
+			},
+			{
+				Name:    "identityfingerprint_provider_account_key_last_seen_at",
+				Unique:  false,
+				Columns: []*schema.Column{IdentityFingerprintsColumns[1], IdentityFingerprintsColumns[2], IdentityFingerprintsColumns[12]},
+			},
+		},
+	}
+	// IdentityFingerprintAccountPoliciesColumns holds the columns for the "identity_fingerprint_account_policies" table.
+	IdentityFingerprintAccountPoliciesColumns = []*schema.Column{
+		{Name: "id", Type: field.TypeInt, Increment: true},
+		{Name: "provider", Type: field.TypeString},
+		{Name: "account_key", Type: field.TypeString},
+		{Name: "strategy", Type: field.TypeString, Default: "cli_preferred"},
+		{Name: "active_profile_key", Type: field.TypeString, Default: ""},
+		{Name: "revision", Type: field.TypeInt64, Default: 1},
+		{Name: "updated_at", Type: field.TypeString, Default: ""},
+	}
+	// IdentityFingerprintAccountPoliciesTable holds the schema information for the "identity_fingerprint_account_policies" table.
+	IdentityFingerprintAccountPoliciesTable = &schema.Table{
+		Name:       "identity_fingerprint_account_policies",
+		Columns:    IdentityFingerprintAccountPoliciesColumns,
+		PrimaryKey: []*schema.Column{IdentityFingerprintAccountPoliciesColumns[0]},
+		Indexes: []*schema.Index{
+			{
+				Name:    "identityfingerprintaccountpolicy_provider_account_key",
+				Unique:  true,
+				Columns: []*schema.Column{IdentityFingerprintAccountPoliciesColumns[1], IdentityFingerprintAccountPoliciesColumns[2]},
 			},
 		},
 	}
@@ -483,6 +512,7 @@ var (
 		AuthSubjectQuotaCyclesTable,
 		CcswitchImportConfigsTable,
 		IdentityFingerprintsTable,
+		IdentityFingerprintAccountPoliciesTable,
 		ModelConfigsTable,
 		ModelOpenrouterSyncStateTable,
 		ModelOwnerPresetsTable,
@@ -519,6 +549,9 @@ func init() {
 	}
 	IdentityFingerprintsTable.Annotation = &entsql.Annotation{
 		Table: "identity_fingerprints",
+	}
+	IdentityFingerprintAccountPoliciesTable.Annotation = &entsql.Annotation{
+		Table: "identity_fingerprint_account_policies",
 	}
 	ModelConfigsTable.Annotation = &entsql.Annotation{
 		Table: "model_configs",

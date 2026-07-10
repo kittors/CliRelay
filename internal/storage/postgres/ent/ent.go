@@ -20,6 +20,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/storage/postgres/ent/authsubjectquotacycle"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/storage/postgres/ent/ccswitchimportconfig"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/storage/postgres/ent/identityfingerprint"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/storage/postgres/ent/identityfingerprintaccountpolicy"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/storage/postgres/ent/modelconfig"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/storage/postgres/ent/modelopenroutersyncstate"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/storage/postgres/ent/modelownerpreset"
@@ -89,23 +90,24 @@ var (
 func checkColumn(t, c string) error {
 	initCheck.Do(func() {
 		columnCheck = sql.NewColumnCheck(map[string]func(string) bool{
-			apikey.Table:                     apikey.ValidColumn,
-			apikeypermissionprofile.Table:    apikeypermissionprofile.ValidColumn,
-			authfilequotasnapshot.Table:      authfilequotasnapshot.ValidColumn,
-			authfilequotasnapshotpoint.Table: authfilequotasnapshotpoint.ValidColumn,
-			authgroupmodelownermapping.Table: authgroupmodelownermapping.ValidColumn,
-			authsubjectquotacycle.Table:      authsubjectquotacycle.ValidColumn,
-			ccswitchimportconfig.Table:       ccswitchimportconfig.ValidColumn,
-			identityfingerprint.Table:        identityfingerprint.ValidColumn,
-			modelconfig.Table:                modelconfig.ValidColumn,
-			modelopenroutersyncstate.Table:   modelopenroutersyncstate.ValidColumn,
-			modelownerpreset.Table:           modelownerpreset.ValidColumn,
-			modelpricing.Table:               modelpricing.ValidColumn,
-			proxypool.Table:                  proxypool.ValidColumn,
-			requestlog.Table:                 requestlog.ValidColumn,
-			requestlogcontent.Table:          requestlogcontent.ValidColumn,
-			routingconfig.Table:              routingconfig.ValidColumn,
-			runtimesetting.Table:             runtimesetting.ValidColumn,
+			apikey.Table:                           apikey.ValidColumn,
+			apikeypermissionprofile.Table:          apikeypermissionprofile.ValidColumn,
+			authfilequotasnapshot.Table:            authfilequotasnapshot.ValidColumn,
+			authfilequotasnapshotpoint.Table:       authfilequotasnapshotpoint.ValidColumn,
+			authgroupmodelownermapping.Table:       authgroupmodelownermapping.ValidColumn,
+			authsubjectquotacycle.Table:            authsubjectquotacycle.ValidColumn,
+			ccswitchimportconfig.Table:             ccswitchimportconfig.ValidColumn,
+			identityfingerprint.Table:              identityfingerprint.ValidColumn,
+			identityfingerprintaccountpolicy.Table: identityfingerprintaccountpolicy.ValidColumn,
+			modelconfig.Table:                      modelconfig.ValidColumn,
+			modelopenroutersyncstate.Table:         modelopenroutersyncstate.ValidColumn,
+			modelownerpreset.Table:                 modelownerpreset.ValidColumn,
+			modelpricing.Table:                     modelpricing.ValidColumn,
+			proxypool.Table:                        proxypool.ValidColumn,
+			requestlog.Table:                       requestlog.ValidColumn,
+			requestlogcontent.Table:                requestlogcontent.ValidColumn,
+			routingconfig.Table:                    routingconfig.ValidColumn,
+			runtimesetting.Table:                   runtimesetting.ValidColumn,
 		})
 	})
 	return columnCheck(t, c)

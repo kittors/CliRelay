@@ -28,6 +28,8 @@ type Tx struct {
 	CcSwitchImportConfig *CcSwitchImportConfigClient
 	// IdentityFingerprint is the client for interacting with the IdentityFingerprint builders.
 	IdentityFingerprint *IdentityFingerprintClient
+	// IdentityFingerprintAccountPolicy is the client for interacting with the IdentityFingerprintAccountPolicy builders.
+	IdentityFingerprintAccountPolicy *IdentityFingerprintAccountPolicyClient
 	// ModelConfig is the client for interacting with the ModelConfig builders.
 	ModelConfig *ModelConfigClient
 	// ModelOpenrouterSyncState is the client for interacting with the ModelOpenrouterSyncState builders.
@@ -185,6 +187,7 @@ func (tx *Tx) init() {
 	tx.AuthSubjectQuotaCycle = NewAuthSubjectQuotaCycleClient(tx.config)
 	tx.CcSwitchImportConfig = NewCcSwitchImportConfigClient(tx.config)
 	tx.IdentityFingerprint = NewIdentityFingerprintClient(tx.config)
+	tx.IdentityFingerprintAccountPolicy = NewIdentityFingerprintAccountPolicyClient(tx.config)
 	tx.ModelConfig = NewModelConfigClient(tx.config)
 	tx.ModelOpenrouterSyncState = NewModelOpenrouterSyncStateClient(tx.config)
 	tx.ModelOwnerPreset = NewModelOwnerPresetClient(tx.config)
