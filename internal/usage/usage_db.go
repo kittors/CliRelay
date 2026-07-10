@@ -413,13 +413,21 @@ func ensureRequestLogDetailIndexes(db *sql.DB) {
 	}
 }
 
+const (
+	requestLogSessionBackfillMaxRows        = 50
+	requestLogSessionBackfillMaxContentSize = 1 << 20
+)
+
 func backfillRequestLogContentSessionIDs(db *sql.DB) {
 	rows, err := db.Query(`
 		SELECT log_id, compression, detail_content
 		  FROM request_log_content
 		 WHERE session_id = ''
 		   AND length(detail_content) > 0
-	`)
+		   AND length(detail_content) <= ?
+		 ORDER BY timestamp DESC
+		 LIMIT ?
+	`, requestLogSessionBackfillMaxContentSize, requestLogSessionBackfillMaxRows)
 	if err != nil {
 		log.Warnf("usage: query request log session_id backfill rows: %v", err)
 		return
@@ -497,11 +505,9 @@ func startRequestLogContentSessionIDBackfill(db *sql.DB) {
 	if db == nil {
 		return
 	}
-	requestLogMaintenanceWG.Add(1)
-	go func() {
-		defer requestLogMaintenanceWG.Done()
-		backfillRequestLogContentSessionIDs(db)
-	}()
+	// Historical detail_content can be very large; production databases have
+	// reached gigabytes here. New writes already populate session_id inline, so
+	// startup must not read/decompress old rows on the request-serving process.
 }
 
 // InitDB opens (or creates) the SQLite database at the given path and creates
@@ -669,7 +675,7 @@ func initOpenedDBLocked(db, readDB *sql.DB, dbPath, driver string, storageCfg co
 	log.Debugf("usage: initializing identity_fingerprints table")
 	initIdentityFingerprintsTable(db)
 	startRequestLogMaintenance(db)
-	log.Debugf("usage: scheduling request log content session_id backfill")
+	log.Debugf("usage: request log content session_id backfill disabled during startup")
 	startRequestLogContentSessionIDBackfill(db)
 	log.Infof("usage: %s database initialised at %s", driver, dbPath)
 	return nil

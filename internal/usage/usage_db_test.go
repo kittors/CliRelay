@@ -2111,6 +2111,41 @@ func TestQueryStatsAndHeatmapCountSessionsFromDetails(t *testing.T) {
 	}
 }
 
+func TestStartRequestLogContentSessionIDBackfillDoesNotScanHistoricalContent(t *testing.T) {
+	initTestUsageDB(t, config.RequestLogStorageConfig{
+		StoreContent:           true,
+		ContentRetentionDays:   30,
+		CleanupIntervalMinutes: 1440,
+	})
+
+	compressed, err := compressLogContent(`{"session_id":"historical-session"}`)
+	if err != nil {
+		t.Fatalf("compressLogContent() error = %v", err)
+	}
+	if _, err := getDB().Exec(
+		`INSERT INTO request_log_content (log_id, timestamp, compression, input_content, output_content, detail_content, session_id)
+		 VALUES (?, ?, ?, ?, ?, ?, '')`,
+		int64(9001),
+		time.Now().UTC().Format(time.RFC3339Nano),
+		requestLogContentCompression,
+		[]byte{},
+		[]byte{},
+		compressed,
+	); err != nil {
+		t.Fatalf("insert historical request_log_content: %v", err)
+	}
+
+	startRequestLogContentSessionIDBackfill(getDB())
+
+	var sessionID string
+	if err := getDB().QueryRow("SELECT session_id FROM request_log_content WHERE log_id = ?", int64(9001)).Scan(&sessionID); err != nil {
+		t.Fatalf("query session_id: %v", err)
+	}
+	if sessionID != "" {
+		t.Fatalf("session_id = %q, want unchanged empty historical value", sessionID)
+	}
+}
+
 func TestClearRequestLogsAllowsNewContentAfterSizeCapCleanup(t *testing.T) {
 	initTestUsageDB(t, config.RequestLogStorageConfig{
 		StoreContent:           true,
