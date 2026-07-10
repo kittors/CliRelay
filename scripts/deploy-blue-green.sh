@@ -11,6 +11,10 @@ DRAIN_SECONDS="${DRAIN_SECONDS:-35}"
 HEALTH_TIMEOUT_SECONDS="${HEALTH_TIMEOUT_SECONDS:-90}"
 MIN_AVAILABLE_MB="${MIN_AVAILABLE_MB:-512}"
 NGINX_CONTAINER="${NGINX_CONTAINER:-nginx}"
+SERVICE_CPU_QUOTA="${SERVICE_CPU_QUOTA:-170%}"
+SERVICE_MEMORY_HIGH="${SERVICE_MEMORY_HIGH:-1400M}"
+SERVICE_MEMORY_MAX="${SERVICE_MEMORY_MAX:-1600M}"
+SERVICE_TASKS_MAX="${SERVICE_TASKS_MAX:-512}"
 COMMIT_SHA="${COMMIT_SHA:?COMMIT_SHA is required}"
 ACTIVE_PORT_FILE="${BASE_DIR}/.active-port"
 
@@ -139,9 +143,14 @@ unit_file="/etc/systemd/system/${next_unit}.service"
 	echo "RestartSec=3"
 	echo "KillSignal=SIGTERM"
 	echo "TimeoutStopSec=45"
-	echo
-	echo "[Install]"
-	echo "WantedBy=multi-user.target"
+	[ -n "$SERVICE_CPU_QUOTA" ] && echo "CPUQuota=${SERVICE_CPU_QUOTA}"
+	[ -n "$SERVICE_MEMORY_HIGH" ] && echo "MemoryHigh=${SERVICE_MEMORY_HIGH}"
+	[ -n "$SERVICE_MEMORY_MAX" ] && echo "MemoryMax=${SERVICE_MEMORY_MAX}"
+	[ -n "$SERVICE_TASKS_MAX" ] && echo "TasksMax=${SERVICE_TASKS_MAX}"
+	echo "OOMPolicy=stop"
+		echo
+		echo "[Install]"
+		echo "WantedBy=multi-user.target"
 } > "$unit_file"
 
 systemctl daemon-reload
