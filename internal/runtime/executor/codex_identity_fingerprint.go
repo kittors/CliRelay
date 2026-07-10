@@ -22,6 +22,25 @@ var (
 
 const codexIdentityFingerprintSelectionCacheTTL = 30 * time.Second
 
+var (
+	runtimeListCodexIdentityFingerprintProfiles     = usage.ListIdentityFingerprintProfiles
+	runtimeGetCodexIdentityFingerprintAccountPolicy = usage.GetIdentityFingerprintAccountPolicy
+)
+
+func callRuntimeListCodexIdentityFingerprintProfiles(provider identityfingerprint.Provider, accountKey string) ([]identityfingerprint.LearnedRecord, error) {
+	runtimeIdentityFingerprintStoreFuncMu.RLock()
+	fn := runtimeListCodexIdentityFingerprintProfiles
+	runtimeIdentityFingerprintStoreFuncMu.RUnlock()
+	return fn(provider, accountKey)
+}
+
+func callRuntimeGetCodexIdentityFingerprintAccountPolicy(provider identityfingerprint.Provider, accountKey string) (identityfingerprint.AccountPolicy, error) {
+	runtimeIdentityFingerprintStoreFuncMu.RLock()
+	fn := runtimeGetCodexIdentityFingerprintAccountPolicy
+	runtimeIdentityFingerprintStoreFuncMu.RUnlock()
+	return fn(provider, accountKey)
+}
+
 type codexIdentityFingerprintSelectionEntry struct {
 	selection identityfingerprint.ProfileSelection
 	expiresAt time.Time
@@ -29,9 +48,11 @@ type codexIdentityFingerprintSelectionEntry struct {
 
 var codexIdentityFingerprintSelectionCache = struct {
 	sync.Mutex
-	entries map[string]codexIdentityFingerprintSelectionEntry
+	entries    map[string]codexIdentityFingerprintSelectionEntry
+	refreshing map[string]struct{}
 }{
-	entries: map[string]codexIdentityFingerprintSelectionEntry{},
+	entries:    map[string]codexIdentityFingerprintSelectionEntry{},
+	refreshing: map[string]struct{}{},
 }
 
 func init() {
@@ -61,7 +82,7 @@ func codexIdentityFingerprint(cfg *config.Config, auth *cliproxyauth.Auth, ctx c
 
 	// Learning happens before selection so the first trusted request for a new
 	// client variant can immediately use its own complete identity bundle.
-	_ = observeRuntimeIdentityFingerprint(identityfingerprint.ProviderCodex, auth, ctx)
+	observed := observeRuntimeIdentityFingerprint(identityfingerprint.ProviderCodex, auth, ctx)
 	accountKey, _ := identityFingerprintAccount(auth)
 	if selection, ok := getCachedCodexIdentityFingerprintSelection(accountKey); ok {
 		if selection.Profile != nil {
@@ -71,17 +92,8 @@ func codexIdentityFingerprint(cfg *config.Config, auth *cliproxyauth.Auth, ctx c
 		resolved, _ := identityfingerprint.ResolveCodexSafeFallback(cfg.IdentityFingerprint.Codex)
 		return resolved, true
 	}
-	profiles, err := usage.ListIdentityFingerprintProfiles(identityfingerprint.ProviderCodex, accountKey)
-	if err != nil {
-		log.WithError(err).Warn("identity fingerprint: list Codex profiles")
-		resolved, _ := identityfingerprint.ResolveCodexSafeFallback(cfg.IdentityFingerprint.Codex)
-		return resolved, true
-	}
-	policy, err := usage.GetIdentityFingerprintAccountPolicy(identityfingerprint.ProviderCodex, accountKey)
-	if err != nil {
-		log.WithError(err).Warn("identity fingerprint: load Codex account policy")
-	}
-	selection := identityfingerprint.SelectCodexProfile(profiles, policy)
+	scheduleCodexIdentityFingerprintSelectionRefresh(accountKey)
+	selection := codexIdentityFingerprintSelectionFromRuntimeCache(accountKey, observed)
 	setCachedCodexIdentityFingerprintSelection(accountKey, selection)
 	if selection.Profile != nil {
 		resolved, _ := identityfingerprint.ResolveCodexProfile(cfg.IdentityFingerprint.Codex, selection.Profile)
@@ -99,15 +111,16 @@ func getCachedCodexIdentityFingerprintSelection(accountKey string) (identityfing
 	now := time.Now()
 	codexIdentityFingerprintSelectionCache.Lock()
 	entry, ok := codexIdentityFingerprintSelectionCache.entries[accountKey]
-	if !ok || now.After(entry.expiresAt) {
-		if ok {
-			delete(codexIdentityFingerprintSelectionCache.entries, accountKey)
-		}
+	if !ok {
 		codexIdentityFingerprintSelectionCache.Unlock()
 		return identityfingerprint.ProfileSelection{}, false
 	}
+	stale := now.After(entry.expiresAt)
 	selection := cloneCodexIdentityFingerprintSelection(entry.selection)
 	codexIdentityFingerprintSelectionCache.Unlock()
+	if stale {
+		scheduleCodexIdentityFingerprintSelectionRefresh(accountKey)
+	}
 	return selection, true
 }
 
@@ -129,9 +142,69 @@ func invalidateCachedCodexIdentityFingerprintSelection(accountKey string) {
 	if accountKey == "" {
 		return
 	}
+	now := time.Now().Add(-time.Second)
 	codexIdentityFingerprintSelectionCache.Lock()
-	delete(codexIdentityFingerprintSelectionCache.entries, accountKey)
+	if entry, ok := codexIdentityFingerprintSelectionCache.entries[accountKey]; ok {
+		entry.expiresAt = now
+		codexIdentityFingerprintSelectionCache.entries[accountKey] = entry
+	}
 	codexIdentityFingerprintSelectionCache.Unlock()
+	scheduleCodexIdentityFingerprintSelectionRefresh(accountKey)
+}
+
+func scheduleCodexIdentityFingerprintSelectionRefresh(accountKey string) {
+	accountKey = strings.TrimSpace(accountKey)
+	if accountKey == "" {
+		return
+	}
+	codexIdentityFingerprintSelectionCache.Lock()
+	if _, ok := codexIdentityFingerprintSelectionCache.refreshing[accountKey]; ok {
+		codexIdentityFingerprintSelectionCache.Unlock()
+		return
+	}
+	codexIdentityFingerprintSelectionCache.refreshing[accountKey] = struct{}{}
+	codexIdentityFingerprintSelectionCache.Unlock()
+
+	go func() {
+		defer func() {
+			codexIdentityFingerprintSelectionCache.Lock()
+			delete(codexIdentityFingerprintSelectionCache.refreshing, accountKey)
+			codexIdentityFingerprintSelectionCache.Unlock()
+		}()
+		profiles, err := callRuntimeListCodexIdentityFingerprintProfiles(identityfingerprint.ProviderCodex, accountKey)
+		if err != nil {
+			log.WithError(err).Warn("identity fingerprint: list Codex profiles")
+			return
+		}
+		policy, err := callRuntimeGetCodexIdentityFingerprintAccountPolicy(identityfingerprint.ProviderCodex, accountKey)
+		if err != nil {
+			log.WithError(err).Warn("identity fingerprint: load Codex account policy")
+		}
+		selection := identityfingerprint.SelectCodexProfile(profiles, policy)
+		setCachedCodexIdentityFingerprintSelection(accountKey, selection)
+	}()
+}
+
+func codexIdentityFingerprintSelectionFromRuntimeCache(accountKey string, observed *identityfingerprint.LearnedRecord) identityfingerprint.ProfileSelection {
+	profiles := listCachedRuntimeIdentityFingerprintProfiles(identityfingerprint.ProviderCodex, accountKey)
+	if observed != nil {
+		profiles = upsertRuntimeCodexProfileSnapshot(profiles, observed)
+	}
+	policy := identityfingerprint.NormalizeAccountPolicy(identityfingerprint.ProviderCodex, accountKey, identityfingerprint.AccountPolicy{})
+	return identityfingerprint.SelectCodexProfile(profiles, policy)
+}
+
+func upsertRuntimeCodexProfileSnapshot(profiles []identityfingerprint.LearnedRecord, observed *identityfingerprint.LearnedRecord) []identityfingerprint.LearnedRecord {
+	if observed == nil || strings.TrimSpace(observed.ProfileKey) == "" {
+		return profiles
+	}
+	for i := range profiles {
+		if profiles[i].ProfileKey == observed.ProfileKey {
+			profiles[i] = *cloneRuntimeIdentityFingerprintRecord(observed)
+			return profiles
+		}
+	}
+	return append(profiles, *cloneRuntimeIdentityFingerprintRecord(observed))
 }
 
 func cloneCodexIdentityFingerprintSelection(selection identityfingerprint.ProfileSelection) identityfingerprint.ProfileSelection {

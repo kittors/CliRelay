@@ -8,6 +8,8 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -24,11 +26,52 @@ import (
 
 func initIdentityFingerprintRuntimeDB(t *testing.T) {
 	t.Helper()
+	resetIdentityFingerprintRuntimeStateForTest()
 	usage.CloseDB()
 	if err := usage.InitDB(filepath.Join(t.TempDir(), "usage.db"), config.RequestLogStorageConfig{}, time.UTC); err != nil {
 		t.Fatalf("usage.InitDB returned error: %v", err)
 	}
-	t.Cleanup(usage.CloseDB)
+	t.Cleanup(func() {
+		usage.CloseDB()
+		resetIdentityFingerprintRuntimeStateForTest()
+	})
+}
+
+func resetIdentityFingerprintRuntimeStateForTest() {
+	runtimeIdentityFingerprintCache.Lock()
+	runtimeIdentityFingerprintCache.records = map[string]identityFingerprintCacheEntry{}
+	runtimeIdentityFingerprintCache.Unlock()
+
+	runtimeIdentityFingerprintAsync.Lock()
+	runtimeIdentityFingerprintAsync.loads = map[string]struct{}{}
+	runtimeIdentityFingerprintAsync.persists = map[string]struct{}{}
+	runtimeIdentityFingerprintAsync.Unlock()
+
+	codexIdentityFingerprintSelectionCache.Lock()
+	codexIdentityFingerprintSelectionCache.entries = map[string]codexIdentityFingerprintSelectionEntry{}
+	codexIdentityFingerprintSelectionCache.refreshing = map[string]struct{}{}
+	codexIdentityFingerprintSelectionCache.Unlock()
+
+	runtimeIdentityFingerprintStoreFuncMu.Lock()
+	runtimeGetIdentityFingerprint = usage.GetIdentityFingerprint
+	runtimeObserveIdentityFingerprint = usage.ObserveIdentityFingerprint
+	runtimeListCodexIdentityFingerprintProfiles = usage.ListIdentityFingerprintProfiles
+	runtimeGetCodexIdentityFingerprintAccountPolicy = usage.GetIdentityFingerprintAccountPolicy
+	runtimeIdentityFingerprintStoreFuncMu.Unlock()
+}
+
+func eventually(t *testing.T, timeout time.Duration, check func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if check() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !check() {
+		t.Fatalf("condition was not met within %s", timeout)
+	}
 }
 
 func contextWithInboundHeaders(method, path string, headers http.Header) context.Context {
@@ -300,13 +343,15 @@ func TestCodexFingerprintRepeatedRequestUsesHotPathCache(t *testing.T) {
 	applyCodexHeaders(firstReq, cfg, auth, "codex-token", false)
 
 	accountKey := authSubjectKey(t, auth)
-	firstRecord, err := usage.GetIdentityFingerprintProfile(identityfingerprint.ProviderCodex, accountKey, "codex_cli_rs")
-	if err != nil {
-		t.Fatalf("GetIdentityFingerprintProfile first returned error: %v", err)
-	}
-	if firstRecord == nil {
-		t.Fatal("first learned record is nil")
-	}
+	var firstRecord *identityfingerprint.LearnedRecord
+	eventually(t, time.Second, func() bool {
+		var err error
+		firstRecord, err = usage.GetIdentityFingerprintProfile(identityfingerprint.ProviderCodex, accountKey, "codex_cli_rs")
+		if err != nil {
+			t.Fatalf("GetIdentityFingerprintProfile first returned error: %v", err)
+		}
+		return firstRecord != nil
+	})
 
 	secondReq := httptest.NewRequest(http.MethodPost, "https://chatgpt.com/backend-api/codex/responses", nil)
 	secondReq = secondReq.WithContext(ctx)
@@ -543,20 +588,14 @@ func TestCodexHeadersUseOneSelectedProfileWithoutFieldMixing(t *testing.T) {
 		}
 	}
 
-	cliReq := httptest.NewRequest(http.MethodPost, "https://chatgpt.com/backend-api/codex/responses", nil)
-	applyCodexHeaders(cliReq, cfg, auth, "codex-token", false)
-	if got := cliReq.Header.Get("User-Agent"); got != "codex_cli_rs/0.144.1 (Mac OS 26.5.2; arm64) unknown" {
-		t.Fatalf("CLI preferred User-Agent = %q", got)
-	}
-	if got := cliReq.Header.Get("Originator"); got != "codex_cli_rs" {
-		t.Fatalf("CLI preferred Originator = %q", got)
-	}
-	if got := cliReq.Header.Get("Version"); got != "0.144.1" {
-		t.Fatalf("CLI preferred Version = %q", got)
-	}
-	if got := cliReq.Header.Get("X-Codex-Beta-Features"); got != "" {
-		t.Fatalf("CLI profile mixed Desktop beta = %q", got)
-	}
+	eventually(t, time.Second, func() bool {
+		cliReq := httptest.NewRequest(http.MethodPost, "https://chatgpt.com/backend-api/codex/responses", nil)
+		applyCodexHeaders(cliReq, cfg, auth, "codex-token", false)
+		return cliReq.Header.Get("User-Agent") == "codex_cli_rs/0.144.1 (Mac OS 26.5.2; arm64) unknown" &&
+			cliReq.Header.Get("Originator") == "codex_cli_rs" &&
+			cliReq.Header.Get("Version") == "0.144.1" &&
+			cliReq.Header.Get("X-Codex-Beta-Features") == ""
+	})
 
 	if _, err := usage.SaveIdentityFingerprintAccountPolicy(identityfingerprint.AccountPolicy{
 		Provider:         identityfingerprint.ProviderCodex,
@@ -566,18 +605,275 @@ func TestCodexHeadersUseOneSelectedProfileWithoutFieldMixing(t *testing.T) {
 	}, 0); err != nil {
 		t.Fatalf("SaveIdentityFingerprintAccountPolicy: %v", err)
 	}
-	desktopReq := httptest.NewRequest(http.MethodPost, "https://chatgpt.com/backend-api/codex/responses", nil)
-	applyCodexHeaders(desktopReq, cfg, auth, "codex-token", false)
-	if got := desktopReq.Header.Get("User-Agent"); got != "Codex Desktop/0.144.0-alpha.4 (Mac OS 26.5.2; arm64)" {
-		t.Fatalf("active Desktop User-Agent = %q", got)
+	eventually(t, time.Second, func() bool {
+		desktopReq := httptest.NewRequest(http.MethodPost, "https://chatgpt.com/backend-api/codex/responses", nil)
+		applyCodexHeaders(desktopReq, cfg, auth, "codex-token", false)
+		return desktopReq.Header.Get("User-Agent") == "Codex Desktop/0.144.0-alpha.4 (Mac OS 26.5.2; arm64)" &&
+			desktopReq.Header.Get("Originator") == "Codex Desktop" &&
+			desktopReq.Header.Get("Version") == "0.144.0" &&
+			desktopReq.Header.Get("X-Codex-Beta-Features") == "remote_compaction_v2"
+	})
+}
+
+func TestCodexFingerprintHotPathDoesNotWaitForPersistentStore(t *testing.T) {
+	initIdentityFingerprintRuntimeDB(t)
+
+	cfg := &config.Config{
+		IdentityFingerprint: config.IdentityFingerprintConfig{
+			Codex: config.CodexIdentityFingerprintConfig{Enabled: true},
+		},
 	}
-	if got := desktopReq.Header.Get("Originator"); got != "Codex Desktop" {
-		t.Fatalf("active Desktop Originator = %q", got)
+	auth := &cliproxyauth.Auth{
+		ID:       "codex-nonblocking-auth",
+		Provider: "codex",
+		Metadata: map[string]any{
+			"access_token": "codex-token",
+			"account_id":   "codex-nonblocking-account-id",
+		},
 	}
-	if got := desktopReq.Header.Get("Version"); got != "0.144.0" {
-		t.Fatalf("active Desktop Version = %q", got)
+
+	release := make(chan struct{})
+	defer close(release)
+	var persistOnce sync.Once
+	var refreshOnce sync.Once
+	persistStarted := make(chan struct{})
+	refreshStarted := make(chan struct{})
+	runtimeIdentityFingerprintStoreFuncMu.Lock()
+	runtimeObserveIdentityFingerprint = func(input identityfingerprint.LearnInput) (*identityfingerprint.LearnedRecord, identityfingerprint.MergeResult, error) {
+		persistOnce.Do(func() { close(persistStarted) })
+		<-release
+		return nil, identityfingerprint.MergeResult{Reason: "blocked_test"}, nil
 	}
-	if got := desktopReq.Header.Get("X-Codex-Beta-Features"); got != "remote_compaction_v2" {
-		t.Fatalf("active Desktop beta = %q", got)
+	runtimeListCodexIdentityFingerprintProfiles = func(provider identityfingerprint.Provider, accountKey string) ([]identityfingerprint.LearnedRecord, error) {
+		refreshOnce.Do(func() { close(refreshStarted) })
+		<-release
+		return nil, nil
+	}
+	runtimeGetCodexIdentityFingerprintAccountPolicy = func(provider identityfingerprint.Provider, accountKey string) (identityfingerprint.AccountPolicy, error) {
+		<-release
+		return identityfingerprint.AccountPolicy{}, nil
+	}
+	runtimeIdentityFingerprintStoreFuncMu.Unlock()
+
+	inbound := http.Header{}
+	inbound.Set("User-Agent", "codex_cli_rs/0.150.0 (Mac OS 26.5.2; arm64) iTerm.app/3.6.9")
+	inbound.Set("Version", "0.150.0")
+	inbound.Set("Originator", "codex_cli_rs")
+	ctx := contextWithInboundHeaders(http.MethodPost, "/v1/responses", inbound)
+	req := httptest.NewRequest(http.MethodPost, "https://chatgpt.com/backend-api/codex/responses", nil).WithContext(ctx)
+
+	started := time.Now()
+	applyCodexHeaders(req, cfg, auth, "codex-token", false)
+	if elapsed := time.Since(started); elapsed > 50*time.Millisecond {
+		t.Fatalf("applyCodexHeaders waited for persistent store: elapsed=%s", elapsed)
+	}
+	if got := req.Header.Get("User-Agent"); got != "codex_cli_rs/0.150.0 (Mac OS 26.5.2; arm64) iTerm.app/3.6.9" {
+		t.Fatalf("User-Agent = %q, want inbound learned profile", got)
+	}
+	if got := req.Header.Get("Originator"); got != "codex_cli_rs" {
+		t.Fatalf("Originator = %q, want inbound originator", got)
+	}
+
+	select {
+	case <-persistStarted:
+	case <-time.After(time.Second):
+		t.Fatal("background persist did not start")
+	}
+	select {
+	case <-refreshStarted:
+	case <-time.After(time.Second):
+		t.Fatal("background selection refresh did not start")
+	}
+}
+
+func TestCodexSelectionUsesStaleCacheWhileRefreshIsBlocked(t *testing.T) {
+	initIdentityFingerprintRuntimeDB(t)
+
+	cfg := &config.Config{
+		IdentityFingerprint: config.IdentityFingerprintConfig{
+			Codex: config.CodexIdentityFingerprintConfig{Enabled: true},
+		},
+	}
+	auth := &cliproxyauth.Auth{
+		ID:       "codex-stale-auth",
+		Provider: "codex",
+		Metadata: map[string]any{
+			"access_token": "codex-token",
+			"account_id":   "codex-stale-account-id",
+		},
+	}
+	accountKey := authSubjectKey(t, auth)
+	profile := &identityfingerprint.LearnedRecord{
+		Provider:      identityfingerprint.ProviderCodex,
+		AccountKey:    accountKey,
+		ProfileKey:    "codex_cli_rs",
+		ProfileFamily: identityfingerprint.ProfileFamilyCLI,
+		ClientProduct: "codex_cli_rs",
+		ClientVariant: "codex_cli_rs",
+		Version:       "0.151.0",
+		Fields: map[string]string{
+			identityfingerprint.FieldUserAgent:       "codex_cli_rs/0.151.0 (Mac OS 26.5.2; arm64) cached",
+			identityfingerprint.FieldCodexOriginator: "codex_cli_rs",
+			identityfingerprint.FieldCodexVersion:    "0.151.0",
+		},
+		LastSeenAt: time.Now().UTC(),
+	}
+	setCachedCodexIdentityFingerprintSelection(accountKey, identityfingerprint.ProfileSelection{
+		Profile: profile,
+		Policy:  identityfingerprint.NormalizeAccountPolicy(identityfingerprint.ProviderCodex, accountKey, identityfingerprint.AccountPolicy{}),
+		Reason:  "test_stale",
+	})
+	codexIdentityFingerprintSelectionCache.Lock()
+	entry := codexIdentityFingerprintSelectionCache.entries[accountKey]
+	entry.expiresAt = time.Now().Add(-time.Second)
+	codexIdentityFingerprintSelectionCache.entries[accountKey] = entry
+	codexIdentityFingerprintSelectionCache.Unlock()
+
+	release := make(chan struct{})
+	defer close(release)
+	refreshStarted := make(chan struct{})
+	var refreshOnce sync.Once
+	runtimeIdentityFingerprintStoreFuncMu.Lock()
+	runtimeListCodexIdentityFingerprintProfiles = func(provider identityfingerprint.Provider, accountKey string) ([]identityfingerprint.LearnedRecord, error) {
+		refreshOnce.Do(func() { close(refreshStarted) })
+		<-release
+		return nil, nil
+	}
+	runtimeIdentityFingerprintStoreFuncMu.Unlock()
+
+	req := httptest.NewRequest(http.MethodPost, "https://chatgpt.com/backend-api/codex/responses", nil)
+	started := time.Now()
+	applyCodexHeaders(req, cfg, auth, "codex-token", false)
+	if elapsed := time.Since(started); elapsed > 50*time.Millisecond {
+		t.Fatalf("applyCodexHeaders waited for stale cache refresh: elapsed=%s", elapsed)
+	}
+	if got := req.Header.Get("User-Agent"); got != "codex_cli_rs/0.151.0 (Mac OS 26.5.2; arm64) cached" {
+		t.Fatalf("User-Agent = %q, want stale cached profile", got)
+	}
+	select {
+	case <-refreshStarted:
+	case <-time.After(time.Second):
+		t.Fatal("background stale refresh did not start")
+	}
+}
+
+func TestCodexFingerprintConcurrentRequestsShareAsyncStoreWork(t *testing.T) {
+	initIdentityFingerprintRuntimeDB(t)
+
+	cfg := &config.Config{
+		IdentityFingerprint: config.IdentityFingerprintConfig{
+			Codex: config.CodexIdentityFingerprintConfig{Enabled: true},
+		},
+	}
+	auth := &cliproxyauth.Auth{
+		ID:       "codex-concurrent-auth",
+		Provider: "codex",
+		Metadata: map[string]any{
+			"access_token": "codex-token",
+			"account_id":   "codex-concurrent-account-id",
+		},
+	}
+	release := make(chan struct{})
+	defer close(release)
+	var persistCalls atomic.Int32
+	var refreshCalls atomic.Int32
+	runtimeIdentityFingerprintStoreFuncMu.Lock()
+	runtimeObserveIdentityFingerprint = func(input identityfingerprint.LearnInput) (*identityfingerprint.LearnedRecord, identityfingerprint.MergeResult, error) {
+		persistCalls.Add(1)
+		<-release
+		return nil, identityfingerprint.MergeResult{Reason: "blocked_test"}, nil
+	}
+	runtimeListCodexIdentityFingerprintProfiles = func(provider identityfingerprint.Provider, accountKey string) ([]identityfingerprint.LearnedRecord, error) {
+		refreshCalls.Add(1)
+		<-release
+		return nil, nil
+	}
+	runtimeIdentityFingerprintStoreFuncMu.Unlock()
+
+	inbound := http.Header{}
+	inbound.Set("User-Agent", "codex_cli_rs/0.152.0 (Mac OS 26.5.2; arm64) iTerm.app/3.6.9")
+	inbound.Set("Version", "0.152.0")
+	inbound.Set("Originator", "codex_cli_rs")
+	ctx := contextWithInboundHeaders(http.MethodPost, "/v1/responses", inbound)
+
+	start := make(chan struct{})
+	done := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := 0; i < 64; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			req := httptest.NewRequest(http.MethodPost, "https://chatgpt.com/backend-api/codex/responses", nil).WithContext(ctx)
+			applyCodexHeaders(req, cfg, auth, "codex-token", false)
+			if got := req.Header.Get("User-Agent"); got != "codex_cli_rs/0.152.0 (Mac OS 26.5.2; arm64) iTerm.app/3.6.9" {
+				t.Errorf("User-Agent = %q", got)
+			}
+		}()
+	}
+	close(start)
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("concurrent Codex fingerprint requests blocked on persistent store")
+	}
+	eventually(t, time.Second, func() bool {
+		return persistCalls.Load() >= 1 && refreshCalls.Load() >= 1
+	})
+	if got := persistCalls.Load(); got != 1 {
+		t.Fatalf("persistent observe calls = %d, want 1", got)
+	}
+	if got := refreshCalls.Load(); got != 1 {
+		t.Fatalf("profile refresh calls = %d, want 1", got)
+	}
+}
+
+func BenchmarkCodexIdentityFingerprintHotPathCached(b *testing.B) {
+	resetIdentityFingerprintRuntimeStateForTest()
+	b.Cleanup(resetIdentityFingerprintRuntimeStateForTest)
+	runtimeIdentityFingerprintStoreFuncMu.Lock()
+	runtimeObserveIdentityFingerprint = func(input identityfingerprint.LearnInput) (*identityfingerprint.LearnedRecord, identityfingerprint.MergeResult, error) {
+		return nil, identityfingerprint.MergeResult{Reason: "benchmark_noop"}, nil
+	}
+	runtimeListCodexIdentityFingerprintProfiles = func(provider identityfingerprint.Provider, accountKey string) ([]identityfingerprint.LearnedRecord, error) {
+		return nil, nil
+	}
+	runtimeGetCodexIdentityFingerprintAccountPolicy = func(provider identityfingerprint.Provider, accountKey string) (identityfingerprint.AccountPolicy, error) {
+		return identityfingerprint.AccountPolicy{}, nil
+	}
+	runtimeIdentityFingerprintStoreFuncMu.Unlock()
+	cfg := &config.Config{
+		IdentityFingerprint: config.IdentityFingerprintConfig{
+			Codex: config.CodexIdentityFingerprintConfig{Enabled: true},
+		},
+	}
+	auth := &cliproxyauth.Auth{
+		ID:       "codex-benchmark-auth",
+		Provider: "codex",
+		Metadata: map[string]any{
+			"access_token": "codex-token",
+			"account_id":   "codex-benchmark-account-id",
+		},
+	}
+	inbound := http.Header{}
+	inbound.Set("User-Agent", "codex_cli_rs/0.153.0 (Mac OS 26.5.2; arm64) iTerm.app/3.6.9")
+	inbound.Set("Version", "0.153.0")
+	inbound.Set("Originator", "codex_cli_rs")
+	ctx := contextWithInboundHeaders(http.MethodPost, "/v1/responses", inbound)
+	warmup := httptest.NewRequest(http.MethodPost, "https://chatgpt.com/backend-api/codex/responses", nil).WithContext(ctx)
+	applyCodexHeaders(warmup, cfg, auth, "codex-token", false)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		req := httptest.NewRequest(http.MethodPost, "https://chatgpt.com/backend-api/codex/responses", nil).WithContext(ctx)
+		applyCodexHeaders(req, cfg, auth, "codex-token", false)
+		if req.Header.Get("User-Agent") == "" {
+			b.Fatal("missing User-Agent")
+		}
 	}
 }
