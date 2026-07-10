@@ -202,3 +202,59 @@ func TestObserveIdentityFingerprintLearnsGeminiCLIHeaders(t *testing.T) {
 		t.Fatalf("X-Goog-Api-Client = %q, want learned", record.Fields[identityfingerprint.FieldGeminiAPIClient])
 	}
 }
+
+func TestObserveIdentityFingerprintSkipsRecentUnchangedLastSeenWrite(t *testing.T) {
+	initTestUsageDB(t, config.RequestLogStorageConfig{})
+
+	accountKey := "codex-unchanged-account"
+	headers := http.Header{}
+	headers.Set("User-Agent", "codex_cli_rs/0.144.1 (Mac OS 26.5.2; arm64) iTerm.app/3.6.9")
+	headers.Set("Version", "0.144.1")
+	headers.Set("Originator", "codex_cli_rs")
+
+	firstSeen := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
+	record, result, err := ObserveIdentityFingerprint(identityfingerprint.LearnInput{
+		Provider:   identityfingerprint.ProviderCodex,
+		AccountKey: accountKey,
+		Headers:    headers,
+		ObservedAt: firstSeen,
+	})
+	if err != nil {
+		t.Fatalf("ObserveIdentityFingerprint first returned error: %v", err)
+	}
+	if result.Reason != "created" || record == nil {
+		t.Fatalf("first result = %+v, record=%#v, want created", result, record)
+	}
+
+	record, result, err = ObserveIdentityFingerprint(identityfingerprint.LearnInput{
+		Provider:   identityfingerprint.ProviderCodex,
+		AccountKey: accountKey,
+		Headers:    headers,
+		ObservedAt: firstSeen.Add(time.Minute),
+	})
+	if err != nil {
+		t.Fatalf("ObserveIdentityFingerprint repeated returned error: %v", err)
+	}
+	if result.Changed || result.Reason != "unchanged_recently_seen" {
+		t.Fatalf("repeated result = %+v, want unchanged_recently_seen without write", result)
+	}
+	if !record.LastSeenAt.Equal(firstSeen) {
+		t.Fatalf("LastSeenAt = %s, want original %s", record.LastSeenAt, firstSeen)
+	}
+
+	record, result, err = ObserveIdentityFingerprint(identityfingerprint.LearnInput{
+		Provider:   identityfingerprint.ProviderCodex,
+		AccountKey: accountKey,
+		Headers:    headers,
+		ObservedAt: firstSeen.Add(identityFingerprintLastSeenMinInterval + time.Second),
+	})
+	if err != nil {
+		t.Fatalf("ObserveIdentityFingerprint later returned error: %v", err)
+	}
+	if !result.Changed || result.Reason != "merged_profile" {
+		t.Fatalf("later result = %+v, want throttled window elapsed update", result)
+	}
+	if !record.LastSeenAt.After(firstSeen) {
+		t.Fatalf("LastSeenAt = %s, want refreshed after %s", record.LastSeenAt, firstSeen)
+	}
+}

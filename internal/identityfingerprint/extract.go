@@ -300,6 +300,37 @@ func MergeObservation(existing *LearnedRecord, obs Observation) MergeResult {
 	return MergeResult{Record: record, Changed: true, Reason: "merged_profile"}
 }
 
+func MergeObservationChangedExceptLastSeen(existing, merged *LearnedRecord) bool {
+	if existing == nil || merged == nil {
+		return existing != merged
+	}
+	if existing.Provider != merged.Provider ||
+		strings.TrimSpace(existing.AccountKey) != strings.TrimSpace(merged.AccountKey) ||
+		strings.TrimSpace(existing.ProfileKey) != strings.TrimSpace(merged.ProfileKey) ||
+		strings.TrimSpace(existing.ProfileFamily) != strings.TrimSpace(merged.ProfileFamily) ||
+		strings.TrimSpace(existing.AuthSubjectID) != strings.TrimSpace(merged.AuthSubjectID) ||
+		strings.TrimSpace(existing.ClientProduct) != strings.TrimSpace(merged.ClientProduct) ||
+		strings.TrimSpace(existing.ClientVariant) != strings.TrimSpace(merged.ClientVariant) ||
+		strings.TrimSpace(existing.Version) != strings.TrimSpace(merged.Version) ||
+		!sameStringMap(existing.Fields, merged.Fields) ||
+		!sameStringMap(existing.ObservedHeaders, merged.ObservedHeaders) {
+		return true
+	}
+	return false
+}
+
+func sameStringMap(left, right map[string]string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for key, leftValue := range left {
+		if right[key] != leftValue {
+			return false
+		}
+	}
+	return true
+}
+
 func codexProductVersion(ua string) (string, string) {
 	ua = strings.TrimSpace(ua)
 	if ua == "" {

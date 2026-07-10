@@ -273,6 +273,57 @@ func TestCodexHeadersReplayLearnedFingerprintWithoutInboundHeaders(t *testing.T)
 	}
 }
 
+func TestCodexFingerprintRepeatedRequestUsesHotPathCache(t *testing.T) {
+	initIdentityFingerprintRuntimeDB(t)
+
+	cfg := &config.Config{
+		IdentityFingerprint: config.IdentityFingerprintConfig{
+			Codex: config.CodexIdentityFingerprintConfig{Enabled: true},
+		},
+	}
+	auth := &cliproxyauth.Auth{
+		ID:       "codex-cache-auth",
+		Provider: "codex",
+		Metadata: map[string]any{
+			"access_token": "codex-token",
+			"account_id":   "codex-cache-account-id",
+		},
+	}
+	inbound := http.Header{}
+	inbound.Set("User-Agent", "codex_cli_rs/0.144.1 (Mac OS 26.5.2; arm64) iTerm.app/3.6.9")
+	inbound.Set("Version", "0.144.1")
+	inbound.Set("Originator", "codex_cli_rs")
+	ctx := contextWithInboundHeaders(http.MethodPost, "/v1/responses", inbound)
+
+	firstReq := httptest.NewRequest(http.MethodPost, "https://chatgpt.com/backend-api/codex/responses", nil)
+	firstReq = firstReq.WithContext(ctx)
+	applyCodexHeaders(firstReq, cfg, auth, "codex-token", false)
+
+	accountKey := authSubjectKey(t, auth)
+	firstRecord, err := usage.GetIdentityFingerprintProfile(identityfingerprint.ProviderCodex, accountKey, "codex_cli_rs")
+	if err != nil {
+		t.Fatalf("GetIdentityFingerprintProfile first returned error: %v", err)
+	}
+	if firstRecord == nil {
+		t.Fatal("first learned record is nil")
+	}
+
+	secondReq := httptest.NewRequest(http.MethodPost, "https://chatgpt.com/backend-api/codex/responses", nil)
+	secondReq = secondReq.WithContext(ctx)
+	applyCodexHeaders(secondReq, cfg, auth, "codex-token", false)
+
+	secondRecord, err := usage.GetIdentityFingerprintProfile(identityfingerprint.ProviderCodex, accountKey, "codex_cli_rs")
+	if err != nil {
+		t.Fatalf("GetIdentityFingerprintProfile second returned error: %v", err)
+	}
+	if secondRecord == nil {
+		t.Fatal("second learned record is nil")
+	}
+	if !secondRecord.LastSeenAt.Equal(firstRecord.LastSeenAt) {
+		t.Fatalf("LastSeenAt changed on repeated cached request: first=%s second=%s", firstRecord.LastSeenAt, secondRecord.LastSeenAt)
+	}
+}
+
 func TestCodexWebsocketHeadersReplayLearnedFingerprintWithoutInboundHeaders(t *testing.T) {
 	initIdentityFingerprintRuntimeDB(t)
 
