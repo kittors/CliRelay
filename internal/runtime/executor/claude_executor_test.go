@@ -18,6 +18,42 @@ import (
 	"github.com/tidwall/sjson"
 )
 
+func TestClaudeMessagesURL(t *testing.T) {
+	tests := []struct {
+		name     string
+		baseURL  string
+		endpoint string
+		want     string
+	}{
+		{
+			name:     "base without API version",
+			baseURL:  "https://api.example.com",
+			endpoint: "messages",
+			want:     "https://api.example.com/v1/messages?beta=true",
+		},
+		{
+			name:     "versioned global compatibility base",
+			baseURL:  "https://api.minimax.io/anthropic/v1",
+			endpoint: "messages",
+			want:     "https://api.minimax.io/anthropic/v1/messages?beta=true",
+		},
+		{
+			name:     "versioned regional compatibility base with trailing slash",
+			baseURL:  "https://api.minimaxi.com/anthropic/v1/",
+			endpoint: "/messages/count_tokens",
+			want:     "https://api.minimaxi.com/anthropic/v1/messages/count_tokens?beta=true",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := claudeMessagesURL(tt.baseURL, tt.endpoint); got != tt.want {
+				t.Fatalf("claudeMessagesURL() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestApplyClaudeToolPrefix(t *testing.T) {
 	input := []byte(`{"tools":[{"name":"alpha"},{"name":"proxy_bravo"}],"tool_choice":{"type":"tool","name":"charlie"},"messages":[{"role":"assistant","content":[{"type":"tool_use","name":"delta","id":"t1","input":{}}]}]}`)
 	out := applyClaudeToolPrefix(input, "proxy_")
