@@ -52,7 +52,12 @@ func TestDeployWorkflowUsesBlueGreenDeployment(t *testing.T) {
 
 	for _, want := range []string{
 		`Blue-green deploy`,
-		`COMMIT_SHA="${{ github.sha }}" bash /opt/clirelay2/scripts/deploy-blue-green.sh`,
+		`SERVICE_CPU_QUOTA="${{ vars.CLIRELAY_SERVICE_CPU_QUOTA || '170%' }}"`,
+		`SERVICE_MEMORY_HIGH="${{ vars.CLIRELAY_SERVICE_MEMORY_HIGH || '1400M' }}"`,
+		`SERVICE_MEMORY_MAX="${{ vars.CLIRELAY_SERVICE_MEMORY_MAX || '1600M' }}"`,
+		`SERVICE_TASKS_MAX="${{ vars.CLIRELAY_SERVICE_TASKS_MAX || '512' }}"`,
+		`COMMIT_SHA="${{ github.sha }}"`,
+		`bash /opt/clirelay2/scripts/deploy-blue-green.sh`,
 	} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("deploy workflow missing blue-green marker %q", want)
