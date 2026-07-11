@@ -17,6 +17,7 @@ SERVICE_MEMORY_MAX="${SERVICE_MEMORY_MAX:-1600M}"
 SERVICE_TASKS_MAX="${SERVICE_TASKS_MAX:-512}"
 COMMIT_SHA="${COMMIT_SHA:?COMMIT_SHA is required}"
 ACTIVE_PORT_FILE="${BASE_DIR}/.active-port"
+CLEANUP_SCRIPT="${CLEANUP_SCRIPT:-${BASE_DIR}/scripts/cleanup-drained-slot.sh}"
 
 fail() {
 	echo "$*" >&2
@@ -41,6 +42,7 @@ config_path="$(printf '%s\n' "$service_exec" | sed -nE 's/.* -config[= ]([^ ;]+)
 config_path="${config_path:-${service_dir}/config.yaml}"
 
 [ -f "$TEMP_BIN" ] || fail "uploaded temp binary not found: $TEMP_BIN"
+[ -f "$CLEANUP_SCRIPT" ] || fail "drain cleanup script not found: $CLEANUP_SCRIPT"
 [ -f "$config_path" ] || fail "config file not found: $config_path"
 
 read_config_scalar() {
@@ -259,14 +261,28 @@ fi
 
 echo "$next_port" > "$ACTIVE_PORT_FILE"
 cutover_done=1
-echo "CliRelay is serving on ${next_unit} (${next_port}); draining ${active_port} for ${DRAIN_SECONDS}s"
-sleep "$DRAIN_SECONDS"
 
-for old_unit in "$SERVICE_NAME" "${SERVICE_NAME}-${active_port}"; do
-	if [ "$old_unit" != "$next_unit" ]; then
-		systemctl disable --now "$old_unit" 2>/dev/null || systemctl stop "$old_unit" 2>/dev/null || true
-	fi
-done
-
-find "$BASE_DIR" -maxdepth 1 -type f -name "${SERVICE_NAME}-*" ! -name "$(basename "$next_bin")" -mtime +7 -delete 2>/dev/null || true
-echo "Deploy complete: ${next_unit}"
+cleanup_unit="${SERVICE_NAME}-drain-${active_port}-$(date +%s)"
+if systemd-run \
+	--unit="$cleanup_unit" \
+	--collect \
+	--on-active="${DRAIN_SECONDS}s" \
+	env \
+		SERVICE_NAME="$SERVICE_NAME" \
+		BASE_DIR="$BASE_DIR" \
+		PORT_A="$PORT_A" \
+		PORT_B="$PORT_B" \
+		ACTIVE_PORT_FILE="$ACTIVE_PORT_FILE" \
+		bash "$CLEANUP_SCRIPT" "$active_port" "$next_port"; then
+	echo "Deploy complete: ${next_unit} (${next_port}) is serving ${COMMIT_SHA}; ${active_port} will drain for ${DRAIN_SECONDS}s in ${cleanup_unit}."
+else
+	echo "Failed to schedule ${cleanup_unit}; draining ${active_port} synchronously." >&2
+	sleep "$DRAIN_SECONDS"
+	SERVICE_NAME="$SERVICE_NAME" \
+		BASE_DIR="$BASE_DIR" \
+		PORT_A="$PORT_A" \
+		PORT_B="$PORT_B" \
+		ACTIVE_PORT_FILE="$ACTIVE_PORT_FILE" \
+		bash "$CLEANUP_SCRIPT" "$active_port" "$next_port"
+	echo "Deploy complete after synchronous drain: ${next_unit} (${next_port}) is serving ${COMMIT_SHA}."
+fi

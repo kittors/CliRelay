@@ -3,11 +3,23 @@ name: Deploy CliRelay
 on:
   push:
     branches: [dev]
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
   workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+
+concurrency:
+  group: deploy-relay-backend
+  cancel-in-progress: false
 
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     env:
       SHOULD_DEPLOY: ${{ github.event_name == 'workflow_dispatch' || vars.CLIRELAY_DEV_AUTO_DEPLOY == 'true' }}
     steps:
@@ -19,6 +31,8 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.26.1'
+          cache: true
+          cache-dependency-path: go.sum
 
       - name: Build linux/amd64 binary
         env:
@@ -48,7 +62,7 @@ jobs:
           echo "Built dev binary, but server deploy is disabled."
           echo "Run this workflow manually or set repository variable CLIRELAY_DEV_AUTO_DEPLOY=true after the target server data stack is ready."
 
-      - name: Upload binary and deploy script
+      - name: Upload binary and deploy scripts
         if: env.SHOULD_DEPLOY == 'true'
         uses: appleboy/scp-action@v0.1.7
         with:
@@ -56,7 +70,7 @@ jobs:
           port: ${{ secrets.SERVER_PORT }}
           username: root
           key: ${{ secrets.SSH_PRIVATE_KEY }}
-          source: "cli-proxy-api-new,scripts/deploy-blue-green.sh"
+          source: "cli-proxy-api-new,scripts/deploy-blue-green.sh,scripts/cleanup-drained-slot.sh"
           target: "/opt/clirelay2/"
           overwrite: true
 
@@ -75,3 +89,14 @@ jobs:
             SERVICE_TASKS_MAX="${{ vars.CLIRELAY_SERVICE_TASKS_MAX || '512' }}" \
             COMMIT_SHA="${{ github.sha }}" \
             bash /opt/clirelay2/scripts/deploy-blue-green.sh
+
+      - name: Trigger dev Docker image build
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh workflow run docker-publish.yml \
+            --repo "${GITHUB_REPOSITORY}" \
+            --ref dev
+          echo "Triggered Docker image build after relay deployment completed."
