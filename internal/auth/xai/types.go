@@ -4,14 +4,17 @@ package xai
 import "time"
 
 const (
+	// DefaultAPIBaseURL is the official xAI API base URL.
 	DefaultAPIBaseURL = "https://api.x.ai/v1"
-	Issuer            = "https://auth.x.ai"
-	DiscoveryURL      = Issuer + "/.well-known/openid-configuration"
-	ClientID          = "b1a00492-073a-47ea-816f-4c329264a828"
-	Scope             = "openid profile email offline_access grok-cli:access api:access"
-	RedirectHost      = "127.0.0.1"
-	CallbackPort      = 56121
-	RedirectPath      = "/callback"
+	// CLIChatProxyBaseURL is the Grok Build/CLI endpoint for non-media HTTP chat.
+	CLIChatProxyBaseURL = "https://cli-chat-proxy.grok.com/v1"
+	Issuer              = "https://auth.x.ai"
+	DiscoveryURL        = Issuer + "/.well-known/openid-configuration"
+	ClientID            = "b1a00492-073a-47ea-816f-4c329264a828"
+	Scope               = "openid profile email offline_access grok-cli:access api:access"
+	RedirectHost        = "127.0.0.1"
+	CallbackPort        = 56121
+	RedirectPath        = "/callback"
 )
 
 var refreshLead = 5 * time.Minute

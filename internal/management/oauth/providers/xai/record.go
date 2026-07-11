@@ -1,6 +1,7 @@
 package xai
 
 import (
+	"strconv"
 	"strings"
 	"time"
 
@@ -8,7 +9,9 @@ import (
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 )
 
-func RecordFromTokenStorage(tokenStorage *internalxai.TokenStorage, now time.Time) *coreauth.Auth {
+const xaiUsingAPIKey = "using_api"
+
+func RecordFromTokenStorage(tokenStorage *internalxai.TokenStorage, now time.Time, usingAPI bool) *coreauth.Auth {
 	if tokenStorage == nil || strings.TrimSpace(tokenStorage.AccessToken) == "" {
 		return nil
 	}
@@ -22,14 +25,19 @@ func RecordFromTokenStorage(tokenStorage *internalxai.TokenStorage, now time.Tim
 		label = "xAI"
 	}
 
+	metadata := MetadataFromTokenStorage(tokenStorage, now)
+	metadata[xaiUsingAPIKey] = usingAPI
+	attributes := AttributesFromTokenStorage(tokenStorage)
+	attributes[xaiUsingAPIKey] = strconv.FormatBool(usingAPI)
+
 	return &coreauth.Auth{
 		ID:         fileName,
 		Provider:   "xai",
 		FileName:   fileName,
 		Label:      label,
 		Storage:    tokenStorage,
-		Metadata:   MetadataFromTokenStorage(tokenStorage, now),
-		Attributes: AttributesFromTokenStorage(tokenStorage),
+		Metadata:   metadata,
+		Attributes: attributes,
 	}
 }
 

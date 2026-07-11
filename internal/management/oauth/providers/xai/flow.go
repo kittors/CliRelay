@@ -52,6 +52,7 @@ type OAuthLoginOptions struct {
 	Auth                OAuthAuth
 	AuthDir             string
 	WebUI               bool
+	UsingAPI            bool
 	CallbackPort        int
 	CallbackWaitTimeout time.Duration
 	CallbackTarget      CallbackTargetFunc
@@ -180,7 +181,7 @@ func StartOAuthLogin(ctx context.Context, opts OAuthLoginOptions) (OAuthLoginRes
 			return
 		}
 		tokenStorage := auth.CreateTokenStorage(bundle)
-		record := RecordFromTokenStorage(tokenStorage, now())
+		record := RecordFromTokenStorage(tokenStorage, now(), opts.UsingAPI)
 		if record == nil {
 			log.Error("xai token exchange returned empty access token")
 			opts.Sessions.setError(state, "Failed to exchange token")

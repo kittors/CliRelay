@@ -266,6 +266,7 @@ func (h *Handler) RequestXAIToken(c *gin.Context) {
 	result, err := xaiprovider.StartOAuthLogin(ctx, xaiprovider.OAuthLoginOptions{
 		Config:              h.cfg,
 		WebUI:               isWebUIRequest(c),
+		UsingAPI:            queryBool(c, "using_api"),
 		CallbackTarget:      h.managementCallbackURL,
 		WaitCallback:        WaitOAuthCallbackFile,
 		CallbackWaitTimeout: oauthCallbackWaitTimeout,

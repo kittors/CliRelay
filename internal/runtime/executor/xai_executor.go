@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -19,6 +20,12 @@ import (
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
+)
+
+const (
+	xaiUsingAPIAttr    = "using_api"
+	xaiTokenAuthHeader = "X-XAI-Token-Auth"
+	xaiTokenAuthValue  = "xai-grok-cli"
 )
 
 // XAIExecutor executes Grok requests through xAI's Responses API.
@@ -65,16 +72,13 @@ func (e *XAIExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req 
 	reporter := execCtx.Reporter()
 	defer reporter.trackFailure(execCtx.Context, &err)
 
-	token, baseURL := xaiCreds(auth)
-	if baseURL == "" {
-		baseURL = xaiauth.DefaultAPIBaseURL
-	}
-	endpoint := strings.TrimSuffix(baseURL, "/") + "/responses"
+	token, _ := xaiCreds(auth)
+	endpoint := strings.TrimSuffix(xaiChatBaseURL(auth), "/") + "/responses"
 	httpReq, err := http.NewRequestWithContext(execCtx.Context, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return resp, err
 	}
-	applyXAIHeaders(httpReq, e.cfg, auth, token, true)
+	applyXAIChatHeaders(httpReq, e.cfg, auth, token, true)
 	recorder := execCtx.Recorder()
 	recorder.RecordRequest(endpoint, http.MethodPost, httpReq.Header.Clone(), body)
 
@@ -158,16 +162,13 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 	reporter := execCtx.Reporter()
 	defer reporter.trackFailure(execCtx.Context, &err)
 
-	token, baseURL := xaiCreds(auth)
-	if baseURL == "" {
-		baseURL = xaiauth.DefaultAPIBaseURL
-	}
-	endpoint := strings.TrimSuffix(baseURL, "/") + "/responses"
+	token, _ := xaiCreds(auth)
+	endpoint := strings.TrimSuffix(xaiChatBaseURL(auth), "/") + "/responses"
 	httpReq, err := http.NewRequestWithContext(execCtx.Context, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
-	applyXAIHeaders(httpReq, e.cfg, auth, token, true)
+	applyXAIChatHeaders(httpReq, e.cfg, auth, token, true)
 	recorder := execCtx.Recorder()
 	recorder.RecordRequest(endpoint, http.MethodPost, httpReq.Header.Clone(), body)
 
@@ -375,6 +376,56 @@ func xaiCreds(auth *cliproxyauth.Auth) (token, baseURL string) {
 	return token, baseURL
 }
 
+// xaiUsingAPI reports whether non-media HTTP chat should use the official API.
+// OAuth credentials default to Grok Build when using_api is not persisted yet.
+func xaiUsingAPI(auth *cliproxyauth.Auth) bool {
+	if auth == nil {
+		return true
+	}
+	if raw := strings.TrimSpace(auth.Attributes[xaiUsingAPIAttr]); raw != "" {
+		if usingAPI, err := strconv.ParseBool(raw); err == nil {
+			return usingAPI
+		}
+	}
+	if raw, ok := auth.Metadata[xaiUsingAPIAttr]; ok {
+		switch value := raw.(type) {
+		case bool:
+			return value
+		case string:
+			if usingAPI, err := strconv.ParseBool(strings.TrimSpace(value)); err == nil {
+				return usingAPI
+			}
+		}
+	}
+	if authKind := strings.TrimSpace(auth.Attributes["auth_kind"]); authKind != "" {
+		return !strings.EqualFold(authKind, "oauth")
+	}
+	return !strings.EqualFold(xaiMetadataString(auth.Metadata, "auth_kind"), "oauth")
+}
+
+// xaiChatBaseURL switches only Responses HTTP traffic. Model listing and generic
+// HTTP requests continue using the configured API base URL.
+func xaiChatBaseURL(auth *cliproxyauth.Auth) string {
+	_, baseURL := xaiCreds(auth)
+	if xaiUsingAPI(auth) {
+		if baseURL == "" {
+			return xaiauth.DefaultAPIBaseURL
+		}
+		return baseURL
+	}
+	if baseURL != "" && !xaiIsBaseURL(baseURL, xaiauth.DefaultAPIBaseURL) {
+		return baseURL
+	}
+	return xaiauth.CLIChatProxyBaseURL
+}
+
+func xaiIsBaseURL(baseURL, target string) bool {
+	normalize := func(value string) string {
+		return strings.TrimRight(strings.TrimSpace(value), "/")
+	}
+	return normalize(baseURL) == normalize(target)
+}
+
 func applyXAIHeaders(r *http.Request, cfg *config.Config, auth *cliproxyauth.Auth, token string, stream bool) {
 	r.Header.Set("Content-Type", "application/json")
 	if strings.TrimSpace(token) != "" {
@@ -395,6 +446,15 @@ func applyXAIHeaders(r *http.Request, cfg *config.Config, auth *cliproxyauth.Aut
 	if fp, ok := xaiIdentityFingerprint(cfg, auth, r.Context()); ok {
 		applyXAIIdentityFingerprintHeaders(r.Header, fp)
 	}
+}
+
+func applyXAIChatHeaders(r *http.Request, cfg *config.Config, auth *cliproxyauth.Auth, token string, stream bool) {
+	applyXAIHeaders(r, cfg, auth, token, stream)
+	if xaiUsingAPI(auth) || !xaiIsBaseURL(xaiChatBaseURL(auth), xaiauth.CLIChatProxyBaseURL) {
+		return
+	}
+	r.Header.Set(xaiTokenAuthHeader, xaiTokenAuthValue)
+	r.Header.Set("X-Grok-Client-Version", config.DefaultXAIFingerprintClientVersion)
 }
 
 func xaiMetadataString(meta map[string]any, key string) string {

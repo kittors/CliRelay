@@ -24,7 +24,7 @@ func TestRecordFromTokenStorageBuildsPersistableRecord(t *testing.T) {
 		TokenEndpoint: "https://auth.x.ai/token",
 	}
 
-	record := RecordFromTokenStorage(storage, now)
+	record := RecordFromTokenStorage(storage, now, true)
 	if record == nil {
 		t.Fatal("RecordFromTokenStorage() = nil")
 	}
@@ -36,6 +36,12 @@ func TestRecordFromTokenStorageBuildsPersistableRecord(t *testing.T) {
 	}
 	if got := record.Attributes["auth_kind"]; got != "oauth" {
 		t.Fatalf("attributes[auth_kind] = %q, want oauth", got)
+	}
+	if got := record.Attributes["using_api"]; got != "true" {
+		t.Fatalf("attributes[using_api] = %q, want true", got)
+	}
+	if got, ok := record.Metadata["using_api"].(bool); !ok || !got {
+		t.Fatalf("metadata[using_api] = %#v, want true", record.Metadata["using_api"])
 	}
 	for key, want := range map[string]string{
 		"type":           "xai",
@@ -62,10 +68,10 @@ func TestRecordFromTokenStorageBuildsPersistableRecord(t *testing.T) {
 }
 
 func TestRecordFromTokenStorageHandlesNilOrEmptyAccessToken(t *testing.T) {
-	if record := RecordFromTokenStorage(nil, time.Time{}); record != nil {
+	if record := RecordFromTokenStorage(nil, time.Time{}, false); record != nil {
 		t.Fatalf("RecordFromTokenStorage(nil) = %#v, want nil", record)
 	}
-	if record := RecordFromTokenStorage(&internalxai.TokenStorage{}, time.Time{}); record != nil {
+	if record := RecordFromTokenStorage(&internalxai.TokenStorage{}, time.Time{}, false); record != nil {
 		t.Fatalf("RecordFromTokenStorage(empty token) = %#v, want nil", record)
 	}
 }

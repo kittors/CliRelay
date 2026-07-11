@@ -118,6 +118,12 @@ func TestStartOAuthLoginStartsForwarderAndCompletesProvider(t *testing.T) {
 			if record == nil {
 				t.Fatal("record is nil")
 			}
+			if got := record.Attributes["using_api"]; got != "false" {
+				t.Fatalf("attributes[using_api] = %q, want false", got)
+			}
+			if got, ok := record.Metadata["using_api"].(bool); !ok || got {
+				t.Fatalf("metadata[using_api] = %#v, want false", record.Metadata["using_api"])
+			}
 			savedProvider = record.Provider
 			return "/tmp/xai.json", nil
 		},
