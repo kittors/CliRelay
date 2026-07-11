@@ -47,6 +47,7 @@ func (s *Server) UpdateClients(cfg *config.Config) {
 	s.applyRequestLoggerConfig(oldCfg, cfg)
 	s.applyProcessLoggingConfig(oldCfg, cfg)
 	s.applyUsageStatisticsConfig(oldCfg, cfg)
+	usage.SetRequestLogBodyStorageEnabled(cfg.RequestLogStorage.StoreContent)
 	s.applyAuthRuntimeConfig(oldCfg, cfg)
 	s.applyRequestBodyConfig(oldCfg, cfg)
 	s.applyRuntimeLogLevel(oldCfg, cfg)

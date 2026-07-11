@@ -294,7 +294,9 @@ func recordAPIRequest(ctx context.Context, cfg *config.Config, info upstreamRequ
 	builder.WriteString("\nHeaders:\n")
 	writeHeaders(builder, info.Headers)
 	builder.WriteString("\nBody:\n")
-	if len(info.Body) > 0 {
+	if !shouldCaptureAPIExchangeBody(cfg) {
+		builder.WriteString("<not stored>")
+	} else if len(info.Body) > 0 {
 		builder.Write(info.Body)
 	} else {
 		builder.WriteString("<empty>")
@@ -359,7 +361,7 @@ func recordAPIResponseError(ctx context.Context, cfg *config.Config, err error) 
 }
 
 func appendAPIResponseChunk(ctx context.Context, cfg *config.Config, chunk []byte) {
-	if !shouldCaptureAPIExchangeLog(cfg) {
+	if !shouldCaptureAPIExchangeBody(cfg) {
 		return
 	}
 	data := bytes.TrimSpace(chunk)
@@ -391,6 +393,10 @@ func appendAPIResponseChunk(ctx context.Context, cfg *config.Config, chunk []byt
 }
 
 func shouldCaptureAPIExchangeLog(cfg *config.Config) bool {
+	return cfg != nil
+}
+
+func shouldCaptureAPIExchangeBody(cfg *config.Config) bool {
 	return cfg != nil && (cfg.RequestLog || cfg.RequestLogStorage.StoreContent)
 }
 

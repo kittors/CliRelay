@@ -315,7 +315,7 @@ CLIRELAY_POSTGRES_DSN='postgres://user:pass@127.0.0.1:5432/cliproxy?sslmode=disa
 
 如果旧 Docker 部署仍是 SQLite-only compose，应先替换为仓库最新版 `docker-compose.yml` 并执行 `docker compose up -d postgres redis clirelay-updater`，再手工迁移数据。对于不支持 updater SSE 的旧 sidecar，需要额外执行一次 `docker compose up -d --force-recreate clirelay-updater`，之后的 OTA 才能使用新的实时进度与断线恢复协议。完整迁移边界见 [`docs/postgres-redis-migration.md`](docs/postgres-redis-migration.md)。
 
-如果你的请求量较大，可以在 `config.yaml` 中调整 `request-log-storage`。默认情况下，全文请求/响应正文会以压缩形式保留 30 天，并默认做了约 1GB（1024MB）的总量上限；而轻量级请求元数据可继续用于长期统计与筛选。将 `content-retention-days: 0` 设为永久保留全文；将 `store-content: false` 设为停止写入新的正文，同时保留已有历史全文；调整 `max-total-size-mb` 可设置正文存储体积上限，这样即使 retention 周期还没到，也会提前裁剪最老的全文正文。
+如果你的请求量较大，可以在 `config.yaml` 中调整 `request-log-storage`。全文请求/响应正文默认不保存；开启 `store-content` 后，正文会以压缩形式保留 30 天，并默认做约 1GB（1024MB）的总量上限，而轻量级请求元数据和请求详情仍可用于统计、筛选与排查。将 `content-retention-days: 0` 设为永久保留全文；在管理面板关闭正文存储时会同时清理已有输入与输出正文，但保留请求详情和请求记录；调整 `max-total-size-mb` 可让最老的全文在 retention 周期结束前提前裁剪。
 
 如果你需要非本地磁盘的配置/认证持久化，服务端还支持通过环境变量启用 PostgreSQL、Git 和 S3 兼容对象存储后端。
 

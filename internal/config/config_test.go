@@ -32,6 +32,23 @@ func TestLoadConfigDefaultsDisableControlPanel(t *testing.T) {
 	}
 }
 
+func TestLoadConfigDefaultsRequestLogBodyStorageDisabled(t *testing.T) {
+	t.Parallel()
+
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(configPath, []byte("port: 8317\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("LoadConfig returned error: %v", err)
+	}
+	if cfg.RequestLogStorage.StoreContent {
+		t.Fatal("RequestLogStorage.StoreContent = true, want false by default")
+	}
+}
+
 func TestLoadConfigReadsMainAPIReadTimeoutOverride(t *testing.T) {
 	t.Parallel()
 

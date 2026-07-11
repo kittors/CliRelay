@@ -42,6 +42,10 @@ func registerManagementSettingsRoutes(group *gin.RouterGroup, h *managementhandl
 	group.PUT("/usage-statistics-enabled", h.PutUsageStatisticsEnabled)
 	group.PATCH("/usage-statistics-enabled", h.PutUsageStatisticsEnabled)
 
+	group.GET("/request-log-storage/store-content", h.GetRequestLogBodyStorage)
+	group.PUT("/request-log-storage/store-content", h.PutRequestLogBodyStorage)
+	group.PATCH("/request-log-storage/store-content", h.PutRequestLogBodyStorage)
+
 	group.GET("/proxy-url", h.GetProxyURL)
 	group.PUT("/proxy-url", h.PutProxyURL)
 	group.PATCH("/proxy-url", h.PutProxyURL)

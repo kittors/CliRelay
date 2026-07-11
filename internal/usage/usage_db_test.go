@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -624,6 +625,41 @@ func TestQueryLogContentPartReturnsStoredRequestDetails(t *testing.T) {
 	}
 }
 
+func TestBodyStorageDisabledPreservesDetailsWithoutEmbeddedBodies(t *testing.T) {
+	initTestUsageDB(t, config.RequestLogStorageConfig{
+		StoreContent:           false,
+		ContentRetentionDays:   30,
+		CleanupIntervalMinutes: 1440,
+	})
+
+	details := `{"client":{"ip":"203.0.113.8"},"upstream":{"request_log":"=== API REQUEST 1 ===\nHeaders:\nX-Test: yes\nBody:\nsecret-request"},"response":{"upstream_log":"=== API RESPONSE 1 ===\nStatus: 200\nBody:\nsecret-response"}}`
+	InsertLogWithDetails("sk-test", "Primary", "gpt-test", "codex", "Codex", "auth-1", false, time.Now().UTC(), 100, 10, TokenStats{
+		InputTokens: 1, OutputTokens: 1, TotalTokens: 2,
+	}, `{"secret":"request"}`, `{"secret":"response"}`, details)
+
+	result, err := QueryLogs(LogQueryParams{Page: 1, Size: 10, Days: 1})
+	if err != nil || len(result.Items) != 1 {
+		t.Fatalf("QueryLogs() result=%+v error=%v", result, err)
+	}
+	input, err := QueryLogContentPart(result.Items[0].ID, "input")
+	if err != nil {
+		t.Fatalf("QueryLogContentPart(input) error = %v", err)
+	}
+	if input.Content != "" {
+		t.Fatalf("input content = %q, want empty", input.Content)
+	}
+	detail, err := QueryLogContentPart(result.Items[0].ID, "details")
+	if err != nil {
+		t.Fatalf("QueryLogContentPart(details) error = %v", err)
+	}
+	if !strings.Contains(detail.Content, "203.0.113.8") || !strings.Contains(detail.Content, "X-Test: yes") {
+		t.Fatalf("detail content lost diagnostic metadata: %q", detail.Content)
+	}
+	if strings.Contains(detail.Content, "secret-request") || strings.Contains(detail.Content, "secret-response") {
+		t.Fatalf("detail content retained request/response bodies: %q", detail.Content)
+	}
+}
+
 func TestInitDBMigratesFirstTokenAndStreamingColumns(t *testing.T) {
 	CloseDB()
 	dbPath := filepath.Join(t.TempDir(), "usage.db")
@@ -927,7 +963,7 @@ func TestQueryLogsMarksStreamingRequests(t *testing.T) {
 }
 
 func TestQueryLogsHydratesLegacyStreamingFlagFromContent(t *testing.T) {
-	initTestUsageDB(t, config.RequestLogStorageConfig{})
+	initTestUsageDB(t, config.RequestLogStorageConfig{StoreContent: true})
 
 	timestamp := time.Now().UTC()
 	InsertLog("sk-test", "", "gpt-test", "source", "channel", "auth-1", false, timestamp, 123, 45, TokenStats{
@@ -1271,20 +1307,11 @@ func TestMigrateLegacyContentBatchPreservesInlineContentWhenStorageDisabled(t *t
 	}
 }
 
-func TestCleanupExpiredLogContentSkipsWhenStorageDisabledOrRetentionUnlimited(t *testing.T) {
+func TestCleanupExpiredLogContentSkipsWhenRetentionUnlimited(t *testing.T) {
 	testCases := []struct {
 		name string
 		cfg  config.RequestLogStorageConfig
 	}{
-		{
-			name: "storage disabled",
-			cfg: config.RequestLogStorageConfig{
-				StoreContent:           false,
-				ContentRetentionDays:   30,
-				CleanupIntervalMinutes: 1440,
-				VacuumOnCleanup:        false,
-			},
-		},
 		{
 			name: "retention unlimited",
 			cfg: config.RequestLogStorageConfig{

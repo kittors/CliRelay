@@ -25,7 +25,7 @@ func TestRegisterManagementRouteTable(t *testing.T) {
 		routes[key] = route
 	}
 
-	if got, want := len(routes), 232; got != want {
+	if got, want := len(routes), 235; got != want {
 		t.Fatalf("route count = %d, want %d", got, want)
 	}
 	if got, want := sortedRouteKeys(routes), expectedManagementRoutes(); !slices.Equal(got, want) {
@@ -202,6 +202,7 @@ func expectedManagementRoutes() []string {
 		"GET /v0/management/request-error-logs",
 		"GET /v0/management/request-error-logs/:name",
 		"GET /v0/management/request-log",
+		"GET /v0/management/request-log-storage/store-content",
 		"GET /v0/management/request-log-by-id/:id",
 		"GET /v0/management/request-retry",
 		"GET /v0/management/routing-config",
@@ -259,6 +260,7 @@ func expectedManagementRoutes() []string {
 		"PATCH /v0/management/quota-exceeded/switch-preview-model",
 		"PATCH /v0/management/quota-exceeded/switch-project",
 		"PATCH /v0/management/request-log",
+		"PATCH /v0/management/request-log-storage/store-content",
 		"PATCH /v0/management/request-retry",
 		"PATCH /v0/management/routing/strategy",
 		"PATCH /v0/management/usage-statistics-enabled",
@@ -329,6 +331,7 @@ func expectedManagementRoutes() []string {
 		"PUT /v0/management/quota-exceeded/switch-preview-model",
 		"PUT /v0/management/quota-exceeded/switch-project",
 		"PUT /v0/management/request-log",
+		"PUT /v0/management/request-log-storage/store-content",
 		"PUT /v0/management/request-retry",
 		"PUT /v0/management/routing-config",
 		"PUT /v0/management/routing/strategy",

@@ -626,6 +626,7 @@ func initOpenedDBLocked(db, readDB *sql.DB, dbPath, driver string, storageCfg co
 	usageDBPath = dbPath
 	usageDriver = driver
 	requestLogStorage = normalizeRequestLogStorageConfig(storageCfg)
+	SetRequestLogBodyStorageEnabled(storageCfg.StoreContent)
 	if runSQLiteBootstrap {
 		log.Debugf("usage: running content column migration")
 		migrateContentColumns(db)
@@ -792,7 +793,7 @@ func insertLogIdentity(apiKey, apiKeyID, authSubjectID, apiKeyName, model, upstr
 		tokens.CachedTokens, tokens.TotalTokens, cost,
 	}
 
-	if requestLogStorage.StoreContent && (inputContent != "" || outputContent != "" || detailContent != "") {
+	if detailContent != "" || (RequestLogBodyStorageEnabled() && (inputContent != "" || outputContent != "")) {
 		var logID int64
 		if usageDriver == "postgres" {
 			if err := tx.QueryRow(insertSQL+" RETURNING id", insertArgs...).Scan(&logID); err != nil {

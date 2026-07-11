@@ -70,7 +70,7 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	cfg.RequestBody.ModelMaxMB = DefaultModelRequestBodyMB
 	cfg.RequestBody.DiskThresholdMB = DefaultRequestBodyDiskThresholdMB
 	cfg.UsageStatisticsEnabled = false
-	cfg.RequestLogStorage.StoreContent = true
+	cfg.RequestLogStorage.StoreContent = false
 	cfg.RequestLogStorage.ContentRetentionDays = 30
 	cfg.RequestLogStorage.CleanupIntervalMinutes = 1440
 	// Default cap for stored request/response bodies in usage.db.

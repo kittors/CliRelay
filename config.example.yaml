@@ -146,8 +146,9 @@ usage-statistics-enabled: false
 # Detailed request/response body retention settings for PostgreSQL request-log storage.
 request-log-storage:
   # When true, persist full request and response bodies in PostgreSQL.
-  # When false, stop writing new content while preserving existing stored content.
-  store-content: true
+  # When false, request details remain available but request/response bodies are not stored.
+  # Disabled by default to limit database growth.
+  store-content: false
 
   # Keep full request/response bodies for the last N days.
   # Set to 0 to retain full content indefinitely.
