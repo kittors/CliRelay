@@ -142,7 +142,7 @@ func triggerRequestLogCompaction() {
 	}
 }
 
-func startRequestLogMaintenance(db *sql.DB) {
+func startRequestLogMaintenance(db *sql.DB, driver string) {
 	stopRequestLogMaintenance()
 	if db == nil {
 		return
@@ -159,7 +159,7 @@ func startRequestLogMaintenance(db *sql.DB) {
 	// - 清理方式: cancel 后等待 requestLogMaintenanceWG，确保协程退出
 	go func() {
 		defer requestLogMaintenanceWG.Done()
-		runRequestLogMaintenancePass(db)
+		runRequestLogMaintenancePass(db, driver)
 
 		ticker := time.NewTicker(time.Duration(requestLogStorage.CleanupIntervalMinutes) * time.Minute)
 		defer ticker.Stop()
@@ -174,7 +174,7 @@ func startRequestLogMaintenance(db *sql.DB) {
 				// and reclaiming free pages when appropriate.
 				compactLogContentStorageInternal(db, false)
 			case <-ticker.C:
-				runRequestLogMaintenancePass(db)
+				runRequestLogMaintenancePass(db, driver)
 			}
 		}
 	}()
@@ -189,9 +189,15 @@ func stopRequestLogMaintenance() {
 	requestLogMaintenanceWakeup.Store((chan struct{})(nil))
 }
 
-func runRequestLogMaintenancePass(db *sql.DB) {
+func runRequestLogMaintenancePass(db *sql.DB, driver string) {
 	if db == nil {
 		return
+	}
+	if !RequestLogBodyStorageEnabled() {
+		if _, err := purgeStoredRequestBodies(db, driver); err != nil {
+			log.Errorf("usage: purge disabled request log body storage: %v", err)
+			return
+		}
 	}
 
 	// Refresh the running total periodically so size-cap enforcement stays fast

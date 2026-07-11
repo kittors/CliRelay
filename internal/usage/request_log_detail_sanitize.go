@@ -9,20 +9,26 @@ import (
 // request/response bodies cannot be retained indirectly in detail_content when
 // full body storage is disabled.
 func stripStoredRequestDetailBodies(raw string) string {
+	sanitized, _ := sanitizeStoredRequestDetailBodies(raw)
+	return sanitized
+}
+
+func sanitizeStoredRequestDetailBodies(raw string) (string, bool) {
 	if strings.TrimSpace(raw) == "" {
-		return raw
+		return raw, false
 	}
 	var detail map[string]any
 	if err := json.Unmarshal([]byte(raw), &detail); err != nil {
-		return ""
+		return "", true
 	}
 	stripExchangeField(detail, "upstream", "request_log")
 	stripExchangeField(detail, "response", "upstream_log")
 	data, err := json.Marshal(detail)
 	if err != nil {
-		return ""
+		return "", true
 	}
-	return string(data)
+	sanitized := string(data)
+	return sanitized, sanitized != raw
 }
 
 func stripExchangeField(detail map[string]any, section, field string) {

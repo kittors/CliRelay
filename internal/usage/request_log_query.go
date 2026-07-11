@@ -358,6 +358,10 @@ func ClearRequestLogs(options ClearRequestLogsOptions) (ClearRequestLogsResult, 
 	if db == nil {
 		return ClearRequestLogsResult{}, fmt.Errorf("usage: database not initialised")
 	}
+	return clearRequestLogs(db, options)
+}
+
+func clearRequestLogs(db *sql.DB, options ClearRequestLogsOptions) (ClearRequestLogsResult, error) {
 	options, err := normalizeClearRequestLogsOptions(options)
 	if err != nil {
 		return ClearRequestLogsResult{}, err

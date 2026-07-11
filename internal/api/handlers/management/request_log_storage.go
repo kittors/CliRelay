@@ -63,7 +63,7 @@ func (h *Handler) PutRequestLogBodyStorage(c *gin.Context) {
 
 	response := gin.H{"enabled": enabled}
 	if !enabled {
-		result, err := usage.ClearRequestLogs(usage.ClearRequestLogsOptions{ClearBodyContent: true})
+		result, err := usage.PurgeStoredRequestBodies()
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
 				"error":   "cleanup_failed",

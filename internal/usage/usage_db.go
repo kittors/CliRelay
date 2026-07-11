@@ -675,7 +675,7 @@ func initOpenedDBLocked(db, readDB *sql.DB, dbPath, driver string, storageCfg co
 	initRuntimeSettingsTable(db)
 	log.Debugf("usage: initializing identity_fingerprints table")
 	initIdentityFingerprintsTable(db)
-	startRequestLogMaintenance(db)
+	startRequestLogMaintenance(db, driver)
 	log.Debugf("usage: request log content session_id backfill disabled during startup")
 	startRequestLogContentSessionIDBackfill(db)
 	log.Infof("usage: %s database initialised at %s", driver, dbPath)
