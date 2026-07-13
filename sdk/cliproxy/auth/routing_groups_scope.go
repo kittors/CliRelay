@@ -262,12 +262,16 @@ func prepareCandidateForSelection(cfg *runtimeConfigSnapshot, auth *Auth, routeG
 }
 
 func candidateSupportsModel(cfg *runtimeConfigSnapshot, registryRef ModelRegistry, auth *Auth, modelID string, routeGroup string, allowedGroups map[string]struct{}) bool {
+	return candidateSupportsModelOpts(cfg, registryRef, auth, modelID, routeGroup, allowedGroups, ServeModelScopeOptions{})
+}
+
+func candidateSupportsModelOpts(cfg *runtimeConfigSnapshot, registryRef ModelRegistry, auth *Auth, modelID string, routeGroup string, allowedGroups map[string]struct{}, opts ServeModelScopeOptions) bool {
 	modelID = strings.TrimSpace(modelID)
 	if auth == nil || modelID == "" {
 		return false
 	}
 	groups := authGroups(cfg, auth)
-	if !modelAllowedByRoutingGroupScopes(cfg, modelID, groups, routeGroup, allowedGroups) {
+	if !opts.IgnoreGroupAllowedModels && !modelAllowedByRoutingGroupScopes(cfg, modelID, groups, routeGroup, allowedGroups) {
 		return false
 	}
 	if registryRef == nil {

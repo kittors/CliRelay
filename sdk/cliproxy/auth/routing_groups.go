@@ -64,11 +64,23 @@ func (m *Manager) KnownChannelGroupsForTenant(tenantID string) map[string]struct
 	return out
 }
 
+// ServeModelScopeOptions tunes CanServeModelWithScopes* for management UI paths.
+type ServeModelScopeOptions struct {
+	// IgnoreGroupAllowedModels skips channel-group AllowedModels checks so the
+	// channel-group editor can list every model the group's channels can serve,
+	// not only models already on the saved allow-list.
+	IgnoreGroupAllowedModels bool
+}
+
 // CanServeModelWithScopes reports whether at least one active auth can serve the model under the given restrictions.
 func (m *Manager) CanServeModelWithScopes(modelID string, allowedChannels, allowedGroups map[string]struct{}, routeGroup string) bool {
 	return m.CanServeModelWithScopesForTenant(defaultTenantID, modelID, allowedChannels, allowedGroups, routeGroup)
 }
 func (m *Manager) CanServeModelWithScopesForTenant(tenantID, modelID string, allowedChannels, allowedGroups map[string]struct{}, routeGroup string) bool {
+	return m.CanServeModelWithScopesForTenantOpts(tenantID, modelID, allowedChannels, allowedGroups, routeGroup, ServeModelScopeOptions{})
+}
+
+func (m *Manager) CanServeModelWithScopesForTenantOpts(tenantID, modelID string, allowedChannels, allowedGroups map[string]struct{}, routeGroup string, opts ServeModelScopeOptions) bool {
 	tenantID = normalizedTenantID(tenantID)
 	modelID = strings.TrimSpace(modelID)
 	if modelID == "" || m == nil {
@@ -93,7 +105,7 @@ func (m *Manager) CanServeModelWithScopesForTenant(tenantID, modelID string, all
 		if !authInRouteGroup(cfg, candidate, selectionRouteGroup) {
 			continue
 		}
-		if candidateSupportsModel(cfg, registryRef, candidate, modelID, selectionRouteGroup, allowedGroups) {
+		if candidateSupportsModelOpts(cfg, registryRef, candidate, modelID, selectionRouteGroup, allowedGroups, opts) {
 			return true
 		}
 	}

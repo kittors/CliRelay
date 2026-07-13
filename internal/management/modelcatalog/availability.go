@@ -14,6 +14,21 @@ import (
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 )
 
+// AvailabilityFilterOptions tunes management model listing for specific UI paths.
+type AvailabilityFilterOptions struct {
+	// IgnoreGroupAllowedModels skips channel-group AllowedModels filtering so the
+	// channel-group editor can show every model the group's channels can serve.
+	// Plaza/catalog leave this false so AllowedModels still control display.
+	IgnoreGroupAllowedModels bool
+}
+
+func firstAvailabilityFilterOptions(opts []AvailabilityFilterOptions) AvailabilityFilterOptions {
+	if len(opts) > 0 {
+		return opts[0]
+	}
+	return AvailabilityFilterOptions{}
+}
+
 // Availability contract:
 // - Owner: model availability query boundary.
 // - Responsibility: turn registry state plus stored capabilities into management-facing availability DTOs.
@@ -23,7 +38,8 @@ import (
 // Management surfaces (plaza, catalog) still need the same live list as the
 // auth-file models panel, so we merge the provider discovery cache here on
 // every read (auto-warm on miss).
-func (s *Service) ConfiguredAvailability(allowedChannelsRaw, allowedGroupsRaw string) map[string]any {
+func (s *Service) ConfiguredAvailability(allowedChannelsRaw, allowedGroupsRaw string, opts ...AvailabilityFilterOptions) map[string]any {
+	filterOpts := firstAvailabilityFilterOptions(opts)
 	modelRegistry := registry.GetGlobalRegistry()
 	authByID := s.authByID()
 	discoveryByProvider := s.sharedDiscoveryByProvider(false)
@@ -38,7 +54,7 @@ func (s *Service) ConfiguredAvailability(allowedChannelsRaw, allowedGroupsRaw st
 		authByID,
 		ownerMappings,
 	)
-	allModels := s.effectiveModels(baseModels, allowedChannelsRaw, allowedGroupsRaw)
+	allModels := s.effectiveModels(baseModels, allowedChannelsRaw, allowedGroupsRaw, filterOpts)
 	usesMappedOwners := false
 	var ownerKeys map[string]bool
 	if shouldUseDefaultMappedOwnerScope(allowedChannelsRaw, allowedGroupsRaw) {
@@ -52,11 +68,12 @@ func (s *Service) ConfiguredAvailability(allowedChannelsRaw, allowedGroupsRaw st
 	// drop stale rows again, then append the live discovery list.
 	allModels = dropStaticDiscoveryProviderModels(allModels, modelRegistry, discoveryByProvider, authByID, ownerMappings)
 	// Live discovery models skip CanServe (not registry-backed). Still honor the
-	// tenant channel-group allowed-models list so plaza/catalog match the editor.
-	allModels = s.filterModelsByRoutingAllowedModels(
-		appendSharedDiscoveryModels(allModels, discoveryByProvider),
-		allowedGroupsRaw,
-	)
+	// tenant channel-group allowed-models list so plaza/catalog match the editor,
+	// unless the channel-group editor asks for the full channel-servable set.
+	allModels = appendSharedDiscoveryModels(allModels, discoveryByProvider)
+	if !filterOpts.IgnoreGroupAllowedModels {
+		allModels = s.filterModelsByRoutingAllowedModels(allModels, allowedGroupsRaw)
+	}
 
 	allConfigRows := modelconfigsettings.ListAllConfigsForTenant(s.tenantID)
 	configByID := make(map[string]usage.ModelConfigRow, len(allConfigRows))
@@ -128,7 +145,8 @@ func (s *Service) ConfiguredAvailability(allowedChannelsRaw, allowedGroupsRaw st
 	}
 }
 
-func (s *Service) Models(allowedChannelsRaw, allowedGroupsRaw string) map[string]any {
+func (s *Service) Models(allowedChannelsRaw, allowedGroupsRaw string, opts ...AvailabilityFilterOptions) map[string]any {
+	filterOpts := firstAvailabilityFilterOptions(opts)
 	modelRegistry := registry.GetGlobalRegistry()
 	authByID := s.authByID()
 	discoveryByProvider := s.sharedDiscoveryByProvider(false)
@@ -140,12 +158,12 @@ func (s *Service) Models(allowedChannelsRaw, allowedGroupsRaw string) map[string
 		authByID,
 		ownerMappings,
 	)
-	allModels := s.effectiveModels(baseModels, allowedChannelsRaw, allowedGroupsRaw)
+	allModels := s.effectiveModels(baseModels, allowedChannelsRaw, allowedGroupsRaw, filterOpts)
 	allModels = dropStaticDiscoveryProviderModels(allModels, modelRegistry, discoveryByProvider, authByID, ownerMappings)
-	allModels = s.filterModelsByRoutingAllowedModels(
-		appendSharedDiscoveryModels(allModels, discoveryByProvider),
-		allowedGroupsRaw,
-	)
+	allModels = appendSharedDiscoveryModels(allModels, discoveryByProvider)
+	if !filterOpts.IgnoreGroupAllowedModels {
+		allModels = s.filterModelsByRoutingAllowedModels(allModels, allowedGroupsRaw)
+	}
 
 	pricingMap := usage.GetAllModelPricingForTenant(s.tenantID)
 	filteredModels := make([]map[string]any, len(allModels))
@@ -513,12 +531,12 @@ func registryModelInfoAsOpenAIModel(info *registry.ModelInfo) map[string]any {
 	return model
 }
 
-func (s *Service) effectiveModels(models []map[string]any, allowedChannelsRaw, allowedGroupsRaw string) []map[string]any {
-	filtered := s.filterModelsByScopes(models, allowedChannelsRaw, allowedGroupsRaw)
+func (s *Service) effectiveModels(models []map[string]any, allowedChannelsRaw, allowedGroupsRaw string, opts AvailabilityFilterOptions) []map[string]any {
+	filtered := s.filterModelsByScopes(models, allowedChannelsRaw, allowedGroupsRaw, opts)
 	return s.withScopedModelConfigRows(filtered, allowedChannelsRaw, allowedGroupsRaw)
 }
 
-func (s *Service) filterModelsByScopes(models []map[string]any, allowedChannelsRaw, allowedGroupsRaw string) []map[string]any {
+func (s *Service) filterModelsByScopes(models []map[string]any, allowedChannelsRaw, allowedGroupsRaw string, opts AvailabilityFilterOptions) []map[string]any {
 	allowedChannelsRaw = strings.TrimSpace(allowedChannelsRaw)
 	allowedGroups := internalrouting.ParseNormalizedSet(strings.TrimSpace(allowedGroupsRaw), internalrouting.NormalizeGroupName)
 	if s == nil || s.authManager == nil {
@@ -543,13 +561,16 @@ func (s *Service) filterModelsByScopes(models []map[string]any, allowedChannelsR
 		}
 	}
 
+	serveOpts := coreauth.ServeModelScopeOptions{
+		IgnoreGroupAllowedModels: opts.IgnoreGroupAllowedModels,
+	}
 	filtered := make([]map[string]any, 0, len(models))
 	for _, model := range models {
 		id, _ := model["id"].(string)
 		if id == "" {
 			continue
 		}
-		if s.authManager.CanServeModelWithScopesForTenant(s.tenantID, id, allowedChannels, allowedGroups, "") {
+		if s.authManager.CanServeModelWithScopesForTenantOpts(s.tenantID, id, allowedChannels, allowedGroups, "", serveOpts) {
 			filtered = append(filtered, model)
 		}
 	}

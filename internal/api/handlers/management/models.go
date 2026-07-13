@@ -68,12 +68,35 @@ func queryAlias(c *gin.Context, primary, fallback string) string {
 	return value
 }
 
+// queryIgnoreGroupAllowedModels is set by the channel-group editor so the picker
+// lists every model the group's channels can serve, not only the saved allow-list.
+// Plaza/catalog omit this flag and keep AllowedModels filtering.
+func queryIgnoreGroupAllowedModels(c *gin.Context) bool {
+	raw := strings.TrimSpace(queryAlias(c, "ignore_group_allowed_models", "ignore-group-allowed-models"))
+	if raw == "" {
+		return false
+	}
+	switch strings.ToLower(raw) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+func availabilityFilterOptionsFromQuery(c *gin.Context) modelcatalog.AvailabilityFilterOptions {
+	return modelcatalog.AvailabilityFilterOptions{
+		IgnoreGroupAllowedModels: queryIgnoreGroupAllowedModels(c),
+	}
+}
+
 // GetConfiguredModelAvailability returns the currently configured and serviceable
 // model IDs with pricing/metadata and active_metadata for owner/source filtering.
 func (h *ModelsHandler) GetConfiguredModelAvailability(c *gin.Context) {
 	c.JSON(http.StatusOK, h.service(c).ConfiguredAvailability(
 		queryAlias(c, "allowed_channels", "allowed-channels"),
 		queryAlias(c, "allowed_channel_groups", "allowed-channel-groups"),
+		availabilityFilterOptionsFromQuery(c),
 	))
 }
 
@@ -83,6 +106,7 @@ func (h *ModelsHandler) GetModels(c *gin.Context) {
 	c.JSON(http.StatusOK, h.service(c).Models(
 		queryAlias(c, "allowed_channels", "allowed-channels"),
 		queryAlias(c, "allowed_channel_groups", "allowed-channel-groups"),
+		availabilityFilterOptionsFromQuery(c),
 	))
 }
 

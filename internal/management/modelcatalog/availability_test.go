@@ -328,7 +328,7 @@ func TestFilterModelsByScopesAlwaysScopesToTenantWithoutChannelFilters(t *testin
 		{"id": systemModelID},
 		{"id": tenantModelID},
 	}
-	filtered := svc.filterModelsByScopes(models, "", "")
+	filtered := svc.filterModelsByScopes(models, "", "", AvailabilityFilterOptions{})
 	if len(filtered) != 1 || filtered[0]["id"] != tenantModelID {
 		t.Fatalf("filtered = %#v, want only tenant model", filtered)
 	}
@@ -524,4 +524,87 @@ func TestFilterModelsByRoutingAllowedModelsHonorsNamedGroup(t *testing.T) {
 	if len(filtered) != 1 || filtered[0]["id"] != "gpt-5" {
 		t.Fatalf("filtered = %#v, want only gpt-5", filtered)
 	}
+}
+
+func TestConfiguredAvailabilityIgnoreGroupAllowedModelsKeepsFullChannelSet(t *testing.T) {
+	// Channel-group editor must list every channel-servable model for checkbox
+	// selection, even when AllowedModels already restricts plaza/catalog.
+	// Use a non-discovery provider so registry rows are not stripped as static
+	// claude/codex/xai discovery placeholders.
+	const (
+		authID   = "editor-picker-auth"
+		tenantID = "bbbbbbbb-cccc-dddd-eeee-ffffffffffff"
+		modelA   = "editor-picker-model-a"
+		modelB   = "editor-picker-model-b"
+	)
+	modelRegistry := registry.GetGlobalRegistry()
+	modelRegistry.UnregisterClient(authID)
+	t.Cleanup(func() { modelRegistry.UnregisterClient(authID) })
+	modelRegistry.RegisterClient(authID, "opencode-go", []*registry.ModelInfo{
+		{ID: modelA, Object: "model", OwnedBy: "opencode"},
+		{ID: modelB, Object: "model", OwnedBy: "opencode"},
+	})
+
+	cfg := &config.Config{
+		Routing: config.RoutingConfig{
+			IncludeDefaultGroup: true,
+			ChannelGroups: []config.RoutingChannelGroup{
+				{
+					Name:          "default",
+					AllowedModels: []string{modelA},
+				},
+			},
+		},
+	}
+	manager := coreauth.NewManager(nil, nil, nil)
+	manager.SetConfigForTenant(tenantID, cfg)
+	if _, err := manager.Register(context.Background(), &coreauth.Auth{
+		ID: authID, TenantID: tenantID, Provider: "opencode-go", Status: coreauth.StatusActive,
+	}); err != nil {
+		t.Fatalf("register auth: %v", err)
+	}
+
+	svc := NewForTenant(tenantID, cfg, manager)
+
+	restricted := svc.ConfiguredAvailability("", "default")
+	restrictedIDs := configuredAvailabilityIDs(restricted)
+	if len(restrictedIDs) != 1 || restrictedIDs[0] != modelA {
+		t.Fatalf("restricted availability = %v, want only %s", restrictedIDs, modelA)
+	}
+
+	editor := svc.ConfiguredAvailability("", "default", AvailabilityFilterOptions{IgnoreGroupAllowedModels: true})
+	editorIDs := configuredAvailabilityIDs(editor)
+	if len(editorIDs) != 2 {
+		t.Fatalf("editor availability = %v, want both channel-servable models", editorIDs)
+	}
+	want := map[string]bool{modelA: true, modelB: true}
+	for _, id := range editorIDs {
+		if !want[id] {
+			t.Fatalf("editor availability unexpected id %q in %v", id, editorIDs)
+		}
+	}
+}
+
+func configuredAvailabilityIDs(result map[string]any) []string {
+	data, _ := result["data"].([]map[string]any)
+	if data == nil {
+		if raw, ok := result["data"].([]any); ok {
+			out := make([]string, 0, len(raw))
+			for _, item := range raw {
+				entry, _ := item.(map[string]any)
+				if id, _ := entry["id"].(string); id != "" {
+					out = append(out, id)
+				}
+			}
+			return out
+		}
+		return nil
+	}
+	out := make([]string, 0, len(data))
+	for _, entry := range data {
+		if id, _ := entry["id"].(string); id != "" {
+			out = append(out, id)
+		}
+	}
+	return out
 }
