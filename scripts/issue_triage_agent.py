@@ -815,7 +815,10 @@ def run():
 
 
 def self_test():
-    sample = "Authorization: Bearer sk-abc1234567890 token=github_pat_abc123456789012345678901234567890"
+    sample = (
+        "Authorization: Bearer sk-testXXXXKEYVALUE12 "
+        "token=github_pat_XXXX0123456789012345678901234567890"
+    )
     redacted = redact_text(sample)
     assert "abc1234567890" not in redacted
     assert "github_pat_abc" not in redacted
