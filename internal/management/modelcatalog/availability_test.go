@@ -492,6 +492,62 @@ func TestFilterModelsByRoutingAllowedModelsHonorsDefaultGroupList(t *testing.T) 
 	}
 }
 
+func TestPathAvailabilityFiltersLiveDiscoveryByDefaultAllowedModels(t *testing.T) {
+	// Path availability used to append xAI/codex/claude live discovery after
+	// CanServe without AllowedModels, so plaza/catalog re-introduced blocked
+	// models via path merge. Discovery rows must be filtered the same way.
+	// Use empty tenant so tenantRoutingConfig falls back to cfg.Routing (no DB).
+	const (
+		allowedModelID = "grok-4.5"
+		blockedModelID = "grok-composer-2.5-fast"
+		authID         = "path-allowed-xai-auth"
+	)
+	managementauthfiles.ResetDiscoveryCacheForTest()
+	t.Cleanup(managementauthfiles.ResetDiscoveryCacheForTest)
+	managementauthfiles.StoreDiscoveryCacheForTest("", "xai", []*registry.ModelInfo{
+		{ID: allowedModelID, Object: "model", OwnedBy: "xAI", Type: "xai"},
+		{ID: blockedModelID, Object: "model", OwnedBy: "xAI", Type: "xai"},
+	})
+
+	cfg := &config.Config{
+		Routing: config.RoutingConfig{
+			IncludeDefaultGroup: true,
+			ChannelGroups: []config.RoutingChannelGroup{
+				{
+					Name:          "default",
+					AllowedModels: []string{allowedModelID},
+				},
+			},
+		},
+	}
+	manager := coreauth.NewManager(nil, nil, nil)
+	manager.SetConfig(cfg)
+	if _, err := manager.Register(context.Background(), &coreauth.Auth{
+		ID: authID, Provider: "xai", Status: coreauth.StatusActive,
+	}); err != nil {
+		t.Fatalf("register xai auth: %v", err)
+	}
+
+	result := New(cfg, manager).PathAvailability()
+	// PathAvailability returns typed rows, not map[string]any.
+	rows, ok := result["data"].([]modelPathAvailabilityResponse)
+	if !ok {
+		t.Fatalf("data type = %T, want []modelPathAvailabilityResponse", result["data"])
+	}
+	ids := make(map[string]struct{}, len(rows))
+	for _, item := range rows {
+		if item.ID != "" {
+			ids[item.ID] = struct{}{}
+		}
+	}
+	if _, ok := ids[allowedModelID]; !ok {
+		t.Fatalf("path availability missing allowed model %q; ids=%v", allowedModelID, ids)
+	}
+	if _, ok := ids[blockedModelID]; ok {
+		t.Fatalf("path availability leaked blocked model %q; ids=%v", blockedModelID, ids)
+	}
+}
+
 func TestFilterModelsByRoutingAllowedModelsEmptyMeansUnrestricted(t *testing.T) {
 	svc := NewForTenant("", &config.Config{
 		Routing: config.RoutingConfig{

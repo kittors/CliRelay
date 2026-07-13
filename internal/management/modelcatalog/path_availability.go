@@ -34,9 +34,18 @@ func (s *Service) PathAvailability() map[string]any {
 		s.authGroupOwnerMappingMap(),
 	)
 	openaiModels = s.modelRootRouteScopedModels(openaiModels, routingConfig)
-	openaiModels = appendSharedDiscoveryModels(openaiModels, discoveryByProvider)
+	// Live discovery is not registry-backed, so CanServe cannot enforce
+	// channel-group AllowedModels for those rows. Filter after merge so plaza
+	// and catalog path enrichment match configured-availability.
+	openaiModels = s.filterModelsByRoutingAllowedModels(
+		appendSharedDiscoveryModels(openaiModels, discoveryByProvider),
+		"",
+	)
 	appendModelPaths(items, openaiModels, "/", rootOpenAICapabilities)
-	appendModelPaths(items, s.modelRootRouteScopedModels(modelRegistry.GetAvailableModels("gemini"), routingConfig), "/", rootGeminiCapabilities)
+	appendModelPaths(items, s.filterModelsByRoutingAllowedModels(
+		s.modelRootRouteScopedModels(modelRegistry.GetAvailableModels("gemini"), routingConfig),
+		"",
+	), "/", rootGeminiCapabilities)
 
 	routes := []modelPathRouteResponse{
 		{
@@ -58,8 +67,14 @@ func (s *Service) PathAvailability() map[string]any {
 			ReadOnly:     false,
 			Capabilities: capabilities,
 		})
-		appendModelPaths(items, s.modelPathRouteScopedModels(modelRegistry.GetAvailableModels("openai"), route.Group), route.Path, openAIV1Capabilities(route.Path))
-		appendModelPaths(items, s.modelPathRouteScopedModels(modelRegistry.GetAvailableModels("gemini"), route.Group), route.Path, geminiV1BetaCapabilities(route.Path))
+		appendModelPaths(items, s.filterModelsByRoutingAllowedModels(
+			s.modelPathRouteScopedModels(modelRegistry.GetAvailableModels("openai"), route.Group),
+			route.Group,
+		), route.Path, openAIV1Capabilities(route.Path))
+		appendModelPaths(items, s.filterModelsByRoutingAllowedModels(
+			s.modelPathRouteScopedModels(modelRegistry.GetAvailableModels("gemini"), route.Group),
+			route.Group,
+		), route.Path, geminiV1BetaCapabilities(route.Path))
 	}
 
 	return map[string]any{
