@@ -380,11 +380,14 @@ Rules:
 - For bug reports, include a concise investigation or likely fix direction if there is enough evidence.
 - For feature requests, include a concise implementation direction and any obvious scope split.
 - For questions, answer if possible; otherwise ask only for the missing facts.
-- Ordinary comments are not a reason to speak. The bot should comment only after a workflow_dispatch run or an explicit /bot command.
+- On issues opened/reopened (event issues), write a helpful first response: acknowledge the report, restate the problem briefly, give best-effort diagnosis or next steps, and ask only for still-missing facts. Set comment_required=true for opened/reopened unless the body is empty spam.
+- On issue edited events, set comment_required=false unless the edit materially changes classification and a short note is useful.
+- Ordinary comments are not a reason to speak. The bot should comment on issue_comment only after an explicit /bot command.
 - For issue_comment events, set comment_required=false unless a new reply would materially help.
 - For issue_comment events, do not repeat the initial triage request or ask generic reproduction/version/log questions that were already asked.
 - For issue_comment events from maintainers, owners, members, or collaborators, set comment_required=false unless the comment explicitly asks the triage agent to answer.
 - If the latest comment says the maintainer will fix, optimize, rename, adjust wording, or otherwise handle the issue, set comment_required=false.
+- Keep public replies concise (about 80-180 words). Prefer concrete next steps over generic templates.
 """.strip()
 
     return system, json.dumps(payload, ensure_ascii=False, indent=2)
@@ -461,7 +464,7 @@ def call_model(system, user_payload):
     if not api_key:
         raise RuntimeError("OPENAI_API_KEY is not set")
     base_url = os.environ.get("OPENAI_BASE_URL", "https://relay.07230805.xyz/v1").rstrip("/")
-    model = os.environ.get("OPENAI_MODEL", "deepseek-v4-flash")
+    model = os.environ.get("OPENAI_MODEL", "grok-4.5")
     data = {
         "model": model,
         "messages": [
@@ -469,7 +472,7 @@ def call_model(system, user_payload):
             {"role": "user", "content": user_payload},
         ],
         "temperature": 0.1,
-        "max_tokens": 1200,
+        "max_tokens": 1800,
     }
     request = urllib.request.Request(
         f"{base_url}/chat/completions",
@@ -549,19 +552,23 @@ def format_label_list(labels):
 
 def format_help_message(issue):
     target = "PR" if issue.get("pull_request") else "issue"
-    return f"""我是 CliProxy 的 issue/PR 助手。默认不会回复普通评论；只有看到明确的 `/bot ...` 指令才会行动。
+    return f"""我是 CliProxy 的 issue/PR 助手。
 
 当前对象：{target} `#{issue.get("number")}`
 
-可用指令：
-- `/bot help`：显示这份说明。
+自动行为：
+- 新 issue 打开时会自动分类标签并给出首响（可用 `bot:quiet` 关闭）。
+- PR 代码审查由独立的 PR review agent 负责（`/bot review`）。
+
+指令：
+- `/bot help`：显示这份说明（任何人）。
 - `/bot triage`：重新分析当前 issue/PR 并同步标签。维护者可用。
 - `/bot summarize`：总结当前状态、未决问题和下一步。维护者可用。
 - `/bot needs-info`：根据上下文生成需要补充的信息清单，并标记 `needs-info`。维护者可用。
-- `/bot quiet`：让本条 issue/PR 进入静默状态。维护者可用。
-- `/bot unquiet` 或 `/bot quiet off`：解除静默状态。维护者可用。
+- `/bot quiet`：本条 issue/PR 静默，不再自动回复。维护者可用。
+- `/bot unquiet` 或 `/bot quiet off`：解除静默。维护者可用。
 
-说明：PR 里的 `/bot summarize` 只基于标题、正文、标签和评论，不读取代码 diff。"""
+说明：普通评论默认不回复；PR 的 `/bot summarize` 不读代码 diff，代码审查请用 `/bot review`。"""
 
 
 def format_unknown_command(command, issue):
@@ -750,6 +757,21 @@ def run_issue_comment_command(repo, issue, token, source_comment):
     print(f"comment={result}")
 
 
+def should_auto_comment(event_name, event_action):
+    """Whether the agent should post a public reply for this issues/workflow event."""
+    auto_open = os.environ.get("TRIAGE_AUTO_COMMENT_ON_OPEN", "1").strip().lower() not in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }
+    if event_name == "workflow_dispatch":
+        return True
+    if event_name == "issues" and auto_open and event_action in {"opened", "reopened"}:
+        return True
+    return False
+
+
 def run():
     token = os.environ.get("GITHUB_TOKEN")
     repo = os.environ.get("GITHUB_REPOSITORY")
@@ -767,6 +789,8 @@ def run():
         return
 
     comments = fetch_comments(repo, issue["number"], token)
+    event_action = str(event.get("action") or os.environ.get("TRIAGE_EVENT_ACTION") or "")
+    comment_default = should_auto_comment(event_name, event_action)
     triage, _, _ = run_model_triage(
         repo,
         issue,
@@ -774,10 +798,15 @@ def run():
         comments,
         event_name,
         source_comment,
-        comment_default=event_name == "workflow_dispatch",
+        comment_default=comment_default,
     )
 
-    should_comment = event_name == "workflow_dispatch" and triage["comment_required"] and not has_label(issue, QUIET_LABEL)
+    should_comment = (
+        comment_default
+        and triage["comment_required"]
+        and bool(triage.get("comment"))
+        and not has_label(issue, QUIET_LABEL)
+    )
     if should_comment:
         result = upsert_comment(repo, issue, token, comments, triage["comment"], event_name, source_comment)
         print(f"comment={result}")
@@ -845,6 +874,14 @@ def self_test():
     assert command_allowed({"name": "help"}, {"author_association": "NONE", "user": {"type": "User"}})
     assert not command_allowed({"name": "triage"}, {"author_association": "CONTRIBUTOR", "user": {"type": "User"}})
     assert command_allowed({"name": "triage"}, {"author_association": "MEMBER", "user": {"type": "User"}})
+    os.environ["TRIAGE_AUTO_COMMENT_ON_OPEN"] = "1"
+    assert should_auto_comment("issues", "opened")
+    assert should_auto_comment("issues", "reopened")
+    assert not should_auto_comment("issues", "edited")
+    assert should_auto_comment("workflow_dispatch", "")
+    os.environ["TRIAGE_AUTO_COMMENT_ON_OPEN"] = "0"
+    assert not should_auto_comment("issues", "opened")
+    os.environ["TRIAGE_AUTO_COMMENT_ON_OPEN"] = "1"
 
     issue = {"number": 7, "title": "命名优化", "body": "", "labels": []}
     normal_comment = {
@@ -892,7 +929,7 @@ def self_test():
         globals()["upsert_comment"] = fake_upsert_comment
         globals()["call_model"] = fail_call_model
         run_issue_comment_command("owner/repo", issue, "token", help_comment)
-        assert "默认不会回复普通评论" in posted[-1]
+        assert "issue/PR 助手" in posted[-1]
 
         run_issue_comment_command("owner/repo", issue, "token", triage_comment)
         assert "需要仓库维护者执行" in posted[-1]
