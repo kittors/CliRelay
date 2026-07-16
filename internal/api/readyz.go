@@ -16,6 +16,15 @@ import (
 // handleReadyz reports whether this process is ready to receive traffic.
 // Unlike /healthz (liveness), readiness fails when required dependencies are unavailable.
 func (s *Server) handleReadyz(c *gin.Context) {
+	if s != nil && s.draining.Load() {
+		c.JSON(http.StatusServiceUnavailable, gin.H{
+			"status":          "not_ready",
+			"reason":          "draining",
+			"in_flight_count": s.inFlightRequests.Load(),
+		})
+		return
+	}
+
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 2*time.Second)
 	defer cancel()
 

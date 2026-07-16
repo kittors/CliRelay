@@ -24,6 +24,11 @@ if [ "$current_active_port" != "$expected_active_port" ]; then
 	exit 0
 fi
 
+if ! systemctl is-active --quiet "${SERVICE_NAME}-${expected_active_port}"; then
+	echo "Refusing to drain ${old_port}: expected active slot ${expected_active_port} is not running."
+	exit 1
+fi
+
 for old_unit in "$SERVICE_NAME" "${SERVICE_NAME}-${old_port}"; do
 	if [ "$old_unit" != "${SERVICE_NAME}-${expected_active_port}" ]; then
 		systemctl disable --now "$old_unit" 2>/dev/null || systemctl stop "$old_unit" 2>/dev/null || true

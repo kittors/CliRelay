@@ -86,6 +86,7 @@ func TestBlueGreenDeployScriptSyntaxAndGuards(t *testing.T) {
 	for _, path := range []string{
 		"scripts/deploy-blue-green.sh",
 		"scripts/cleanup-drained-slot.sh",
+		"scripts/reconcile-active-slot.sh",
 	} {
 		cmd := exec.Command("bash", "-n", path)
 		if out, err := cmd.CombinedOutput(); err != nil {
@@ -103,6 +104,7 @@ func TestBlueGreenDeployScriptSyntaxAndGuards(t *testing.T) {
 		`/healthz`,
 		`CLIRELAY_PORT=`,
 		`.active-port`,
+		`reconcile-active-slot.sh`,
 		`HEALTH_TIMEOUT_SECONDS`,
 		`SMOKE_TIMEOUT_SECONDS`,
 		`PUBLIC_BASE_URL`,
@@ -118,6 +120,7 @@ func TestBlueGreenDeployScriptSyntaxAndGuards(t *testing.T) {
 		`scripts/cleanup-drained-slot.sh`,
 		`grep -v '\.bak\.'`,
 		`SCRIPT_VERSION`,
+		`TimeoutStopSec=90`,
 	} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("deploy script missing guard %q", want)
@@ -143,13 +146,26 @@ func TestCleanupDrainedSlotStopsOnlyTheExpectedInactiveSlot(t *testing.T) {
 		t.Fatalf("create fake bin dir: %v", err)
 	}
 	logPath := tmp + "/systemctl.log"
-	fakeSystemctl := "#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >> \"$SYSTEMCTL_LOG\"\n"
+	activeUnitPath := tmp + "/active-unit"
+	fakeSystemctl := `#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$SYSTEMCTL_LOG"
+if [ "$1" = "is-active" ] && [ "$2" = "--quiet" ]; then
+  active="$(cat "$SYSTEMCTL_ACTIVE_UNIT" 2>/dev/null || true)"
+  if [ "${3:-}" = "$active" ]; then
+    exit 0
+  fi
+  exit 3
+fi
+`
 	if err := os.WriteFile(binDir+"/systemctl", []byte(fakeSystemctl), 0o755); err != nil {
 		t.Fatalf("write fake systemctl: %v", err)
 	}
 	activePortFile := tmp + "/.active-port"
 	if err := os.WriteFile(activePortFile, []byte("8319\n"), 0o644); err != nil {
 		t.Fatalf("write active port: %v", err)
+	}
+	if err := os.WriteFile(activeUnitPath, []byte("clirelay2-8319\n"), 0o644); err != nil {
+		t.Fatalf("write active unit: %v", err)
 	}
 
 	runCleanup := func() string {
@@ -158,6 +174,7 @@ func TestCleanupDrainedSlotStopsOnlyTheExpectedInactiveSlot(t *testing.T) {
 		cmd.Env = append(os.Environ(),
 			"PATH="+binDir+":"+os.Getenv("PATH"),
 			"SYSTEMCTL_LOG="+logPath,
+			"SYSTEMCTL_ACTIVE_UNIT="+activeUnitPath,
 			"BASE_DIR="+tmp,
 			"ACTIVE_PORT_FILE="+activePortFile,
 		)
@@ -191,6 +208,59 @@ func TestCleanupDrainedSlotStopsOnlyTheExpectedInactiveSlot(t *testing.T) {
 	}
 	if _, err := os.Stat(logPath); !os.IsNotExist(err) {
 		t.Fatalf("stale cleanup must not call systemctl, stat err = %v", err)
+	}
+}
+
+func TestReconcileActiveSlotRepairsStaleMarker(t *testing.T) {
+	tmp := t.TempDir()
+	binDir := tmp + "/bin"
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatalf("create fake bin dir: %v", err)
+	}
+	statePath := tmp + "/active-unit"
+	activePortFile := tmp + "/.active-port"
+	fakeSystemctl := `#!/usr/bin/env bash
+if [ "$1" = "is-active" ] && [ "$2" = "--quiet" ]; then
+  active="$(cat "$SYSTEMCTL_ACTIVE_UNIT" 2>/dev/null || true)"
+  if [ "${3:-}" = "$active" ]; then
+    exit 0
+  fi
+  exit 3
+fi
+exit 1
+`
+	if err := os.WriteFile(binDir+"/systemctl", []byte(fakeSystemctl), 0o755); err != nil {
+		t.Fatalf("write fake systemctl: %v", err)
+	}
+	if err := os.WriteFile(activePortFile, []byte("8318\n"), 0o644); err != nil {
+		t.Fatalf("write active port: %v", err)
+	}
+	if err := os.WriteFile(statePath, []byte("clirelay2-8319\n"), 0o644); err != nil {
+		t.Fatalf("write active unit: %v", err)
+	}
+
+	cmd := exec.Command("bash", "scripts/reconcile-active-slot.sh")
+	cmd.Env = append(os.Environ(),
+		"PATH="+binDir+":"+os.Getenv("PATH"),
+		"BASE_DIR="+tmp,
+		"ACTIVE_PORT_FILE="+activePortFile,
+		"SYSTEMCTL_ACTIVE_UNIT="+statePath,
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("reconcile active slot: %v\n%s", err, out)
+	}
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	got := strings.TrimSpace(lines[len(lines)-1])
+	if got != "8319" {
+		t.Fatalf("reconciled slot = %q, want 8319", got)
+	}
+	data, err := os.ReadFile(activePortFile)
+	if err != nil {
+		t.Fatalf("read active port file: %v", err)
+	}
+	if got := strings.TrimSpace(string(data)); got != "8319" {
+		t.Fatalf("active port file = %q, want 8319", got)
 	}
 }
 

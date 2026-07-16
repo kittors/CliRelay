@@ -13,6 +13,7 @@ STAGED="${IN}/cli-proxy-api-new"
 [ -f "$STAGED" ] || { echo "missing staged binary: $STAGED" >&2; exit 1; }
 [ -x "${SCRIPTS}/deploy-blue-green.sh" ] || { echo "root-managed deploy-blue-green.sh missing" >&2; exit 1; }
 [ -x "${SCRIPTS}/cleanup-drained-slot.sh" ] || { echo "root-managed cleanup-drained-slot.sh missing" >&2; exit 1; }
+[ -x "${SCRIPTS}/reconcile-active-slot.sh" ] || { echo "root-managed reconcile-active-slot.sh missing" >&2; exit 1; }
 
 # Validate commit marker on the staged file BEFORE touching slot binaries.
 COMMIT_SHA="${COMMIT_SHA:?COMMIT_SHA is required}"

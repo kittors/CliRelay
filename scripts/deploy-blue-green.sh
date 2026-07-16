@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # SCRIPT_VERSION must stay in sync with deploy gate expectations.
-SCRIPT_VERSION="${SCRIPT_VERSION:-2026.07.14}"
+SCRIPT_VERSION="${SCRIPT_VERSION:-2026.07.16}"
 set -euo pipefail
 
 SERVICE_NAME="${SERVICE_NAME:-clirelay2}"
@@ -22,6 +22,7 @@ SERVICE_TASKS_MAX="${SERVICE_TASKS_MAX:-512}"
 COMMIT_SHA="${COMMIT_SHA:?COMMIT_SHA is required}"
 ACTIVE_PORT_FILE="${BASE_DIR}/.active-port"
 CLEANUP_SCRIPT="${CLEANUP_SCRIPT:-${BASE_DIR}/scripts/cleanup-drained-slot.sh}"
+RECONCILE_SCRIPT="${RECONCILE_SCRIPT:-${BASE_DIR}/scripts/reconcile-active-slot.sh}"
 EXPECTED_SCRIPT_VERSION="${EXPECTED_SCRIPT_VERSION:-}"
 if [ -n "$EXPECTED_SCRIPT_VERSION" ] && [ "$SCRIPT_VERSION" != "$EXPECTED_SCRIPT_VERSION" ]; then
 	echo "deploy script version mismatch: have ${SCRIPT_VERSION}, want ${EXPECTED_SCRIPT_VERSION}" >&2
@@ -52,6 +53,7 @@ config_path="${config_path:-${service_dir}/config.yaml}"
 
 [ -f "$TEMP_BIN" ] || fail "uploaded temp binary not found: $TEMP_BIN"
 [ -f "$CLEANUP_SCRIPT" ] || fail "drain cleanup script not found: $CLEANUP_SCRIPT"
+[ -f "$RECONCILE_SCRIPT" ] || fail "active slot reconcile script not found: $RECONCILE_SCRIPT"
 [ -f "$config_path" ] || fail "config file not found: $config_path"
 
 read_config_scalar() {
@@ -95,7 +97,7 @@ case "${redis_enable,,}" in
 esac
 
 config_port="$(awk '/^port:[[:space:]]*[0-9]+/ {print $2; exit}' "$config_path" 2>/dev/null || true)"
-active_port="$(cat "$ACTIVE_PORT_FILE" 2>/dev/null || true)"
+active_port="$("$RECONCILE_SCRIPT")"
 active_port="${active_port:-${config_port:-$PORT_A}}"
 # Alternate between two local ports so nginx can cut over only after the new slot is healthy.
 case "$active_port" in
@@ -153,7 +155,7 @@ unit_file="/etc/systemd/system/${next_unit}.service"
 	echo "Restart=always"
 	echo "RestartSec=3"
 	echo "KillSignal=SIGTERM"
-	echo "TimeoutStopSec=45"
+	echo "TimeoutStopSec=90"
 	[ -n "$SERVICE_CPU_QUOTA" ] && echo "CPUQuota=${SERVICE_CPU_QUOTA}"
 	[ -n "$SERVICE_MEMORY_HIGH" ] && echo "MemoryHigh=${SERVICE_MEMORY_HIGH}"
 	[ -n "$SERVICE_MEMORY_MAX" ] && echo "MemoryMax=${SERVICE_MEMORY_MAX}"

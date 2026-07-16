@@ -143,6 +143,23 @@ func TestReadyzFailsWhenRedisEnabledButUnreachable(t *testing.T) {
 	}
 }
 
+func TestReadyzFailsWhenServerIsDraining(t *testing.T) {
+	server := newTestServer(t)
+	server.inFlightRequests.Store(3)
+	server.draining.Store(true)
+
+	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	rr := httptest.NewRecorder()
+	server.engine.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d; body=%s", rr.Code, http.StatusServiceUnavailable, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), `"reason":"draining"`) {
+		t.Fatalf("expected draining response, got body=%s", rr.Body.String())
+	}
+}
+
 func TestAmpProviderModelRoutes(t *testing.T) {
 	testCases := []struct {
 		name         string

@@ -94,6 +94,9 @@ type Server struct {
 	proxyWarmMu        sync.Mutex
 	proxyWarmManager   interface{ Stop() }
 	proxyWarmSignature string
+
+	draining         atomic.Bool
+	inFlightRequests atomic.Int64
 }
 
 // Start begins listening for and serving HTTP or HTTPS requests.
@@ -129,6 +132,9 @@ func (s *Server) Start() error {
 // active connections and closes the management handler before the HTTP server.
 func (s *Server) Stop(ctx context.Context) error {
 	log.Debug("Stopping API server...")
+	s.draining.Store(true)
+	s.server.SetKeepAlivesEnabled(false)
+	log.Infof("API server entering draining mode with %d in-flight request(s)", s.inFlightRequests.Load())
 
 	if s.keepAliveEnabled {
 		select {
@@ -144,6 +150,7 @@ func (s *Server) Stop(ctx context.Context) error {
 
 	// Shutdown the HTTP server.
 	if err := s.server.Shutdown(ctx); err != nil {
+		log.Errorf("API server shutdown timed out with %d in-flight request(s)", s.inFlightRequests.Load())
 		return fmt.Errorf("failed to shutdown HTTP server: %v", err)
 	}
 

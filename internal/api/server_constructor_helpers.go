@@ -129,6 +129,11 @@ func (s *Server) installDynamicMiddleware(configFilePath string) {
 	if s == nil || s.engine == nil {
 		return
 	}
+	s.engine.Use(func(c *gin.Context) {
+		s.inFlightRequests.Add(1)
+		defer s.inFlightRequests.Add(-1)
+		c.Next()
+	})
 	s.engine.Use(corsMiddleware(func() *config.Config {
 		if s.cfg != nil {
 			return s.cfg
