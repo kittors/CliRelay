@@ -11,6 +11,7 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/identityfingerprint"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/testutil/postgrestest"
 )
 
 func TestPostgresRuntimeDataStackIntegration(t *testing.T) {
@@ -18,6 +19,7 @@ func TestPostgresRuntimeDataStackIntegration(t *testing.T) {
 	if dsn == "" {
 		t.Skip("CLIRELAY_POSTGRES_TEST_DSN is not set")
 	}
+	postgrestest.LockSharedRuntimeDB(t, dsn)
 	CloseDB()
 	t.Cleanup(CloseDB)
 
@@ -137,6 +139,7 @@ func TestPostgresRuntimeDataStackConcurrencyConstraintsAndHotPaths(t *testing.T)
 	if dsn == "" {
 		t.Skip("CLIRELAY_POSTGRES_TEST_DSN is not set")
 	}
+	postgrestest.LockSharedRuntimeDB(t, dsn)
 	CloseDB()
 	t.Cleanup(CloseDB)
 

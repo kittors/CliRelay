@@ -10,6 +10,7 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	postgresstore "github.com/router-for-me/CLIProxyAPI/v6/internal/storage/postgres"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/testutil/postgrestest"
 )
 
 func TestPostgresIdentityLifecycle(t *testing.T) {
@@ -17,6 +18,7 @@ func TestPostgresIdentityLifecycle(t *testing.T) {
 	if dsn == "" {
 		t.Skip("CLIRELAY_POSTGRES_TEST_DSN is not set")
 	}
+	postgrestest.LockSharedRuntimeDB(t, dsn)
 	ctx := context.Background()
 	db, err := postgresstore.OpenRuntimeDB(ctx, config.PostgresConfig{DSN: dsn, MaxOpenConns: 4, MaxIdleConns: 1})
 	if err != nil {

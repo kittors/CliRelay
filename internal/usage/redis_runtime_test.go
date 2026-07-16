@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/testutil/postgrestest"
 )
 
 func TestRedisRuntimeLockAndQueue(t *testing.T) {
@@ -81,6 +82,7 @@ func TestRedisUnavailableDoesNotBlockPostgresCRUD(t *testing.T) {
 	if dsn == "" {
 		t.Skip("CLIRELAY_POSTGRES_TEST_DSN is not set")
 	}
+	postgrestest.LockSharedRuntimeDB(t, dsn)
 	CloseDB()
 	t.Cleanup(CloseDB)
 	if err := InitPostgres(config.PostgresConfig{DSN: dsn, MaxOpenConns: 4, MaxIdleConns: 1}, config.RequestLogStorageConfig{}, time.UTC); err != nil {

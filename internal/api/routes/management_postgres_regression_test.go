@@ -17,6 +17,7 @@ import (
 	managementhandlers "github.com/router-for-me/CLIProxyAPI/v6/internal/api/handlers/management"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	postgresstore "github.com/router-for-me/CLIProxyAPI/v6/internal/storage/postgres"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/testutil/postgrestest"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 )
 
@@ -146,6 +147,7 @@ func setupPostgresManagementClient(t *testing.T) postgresManagementClient {
 	if strings.TrimSpace(dsn) == "" {
 		t.Skip("CLIRELAY_POSTGRES_TEST_DSN is not set")
 	}
+	postgrestest.LockSharedRuntimeDB(t, dsn)
 
 	usage.CloseDB()
 	t.Cleanup(usage.CloseDB)

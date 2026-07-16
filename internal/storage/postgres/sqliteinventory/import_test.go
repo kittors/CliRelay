@@ -12,6 +12,7 @@ import (
 	"time"
 
 	postgresstore "github.com/router-for-me/CLIProxyAPI/v6/internal/storage/postgres"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/testutil/postgrestest"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	_ "modernc.org/sqlite"
@@ -22,6 +23,7 @@ func TestImportSQLiteDryRunAndApply(t *testing.T) {
 	if dsn == "" {
 		t.Skip("CLIRELAY_POSTGRES_TEST_DSN is not set")
 	}
+	postgrestest.LockSharedRuntimeDB(t, dsn)
 	ctx := context.Background()
 	pgDB, err := postgresstore.OpenRuntimeDB(ctx, config.PostgresConfig{DSN: dsn, MaxOpenConns: 4, MaxIdleConns: 1})
 	if err != nil {
@@ -179,6 +181,7 @@ func TestImportSQLiteApplyUsesPostgresLockAndCompletionMarker(t *testing.T) {
 	if dsn == "" {
 		t.Skip("CLIRELAY_POSTGRES_TEST_DSN is not set")
 	}
+	postgrestest.LockSharedRuntimeDB(t, dsn)
 	ctx := context.Background()
 	pgDB, err := postgresstore.OpenRuntimeDB(ctx, config.PostgresConfig{DSN: dsn, MaxOpenConns: 4, MaxIdleConns: 1})
 	if err != nil {
@@ -286,6 +289,7 @@ func TestImportSQLiteUsesSingleSourceSnapshot(t *testing.T) {
 	if dsn == "" {
 		t.Skip("CLIRELAY_POSTGRES_TEST_DSN is not set")
 	}
+	postgrestest.LockSharedRuntimeDB(t, dsn)
 	ctx := context.Background()
 	pgDB, err := postgresstore.OpenRuntimeDB(ctx, config.PostgresConfig{DSN: dsn, MaxOpenConns: 4, MaxIdleConns: 1})
 	if err != nil {
