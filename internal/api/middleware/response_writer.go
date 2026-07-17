@@ -167,6 +167,11 @@ func (w *ResponseWriterWrapper) WriteHeader(statusCode int) {
 	contentType := w.ResponseWriter.Header().Get("Content-Type")
 	w.isStreaming = w.detectStreaming(contentType)
 
+	// WriteHeader can run more than once (status rewrite / error path). Always
+	// tear down any existing stream spool first so request-body-*.tmp files are
+	// never orphaned when the final response is non-streaming.
+	w.closeStreamingLogWriter()
+
 	// If streaming, initialize streaming log writer
 	if w.isStreaming && w.logger.IsEnabled() {
 		requestBody := w.extractRequestBody(w.ginCtx)
@@ -302,41 +307,72 @@ func (w *ResponseWriterWrapper) Finalize(c *gin.Context) error {
 	hasAPIError := len(slicesAPIResponseError) > 0 || finalStatusCode >= http.StatusBadRequest
 	diagnostics.RecordResponse(c, finalStatusCode, w.body.Bytes())
 	forceLog := w.logOnErrorOnly && hasAPIError && !w.logger.IsEnabled()
+	// Stream writers create request-body-*.tmp / response-body-*.tmp as soon as
+	// WriteHeader runs. Always close them even when request-log is later disabled
+	// mid-request, otherwise the logs dir fills with orphaned spool files that
+	// historically bypassed logs-max-total-size-mb.
+	if w.streamWriter != nil {
+		return w.finalizeStreamingLog(c, forceLog)
+	}
 	if !w.logger.IsEnabled() && !forceLog {
 		return nil
 	}
 
-	if w.isStreaming && w.streamWriter != nil {
-		if w.chunkChannel != nil {
-			close(w.chunkChannel)
-			w.chunkChannel = nil
-		}
+	return w.logRequest(w.extractRequestBody(c), finalStatusCode, w.cloneHeaders(), w.body.Bytes(), w.extractAPIRequest(c), w.extractAPIResponse(c), w.extractAPIResponseTimestamp(c), slicesAPIResponseError, forceLog)
+}
 
-		if w.streamDone != nil {
-			<-w.streamDone
-			w.streamDone = nil
-		}
-
-		w.streamWriter.SetFirstChunkTimestamp(w.firstChunkTimestamp)
-
-		// Write API Request and Response to the streaming log before closing
-		apiRequest := w.extractAPIRequest(c)
-		if len(apiRequest) > 0 {
-			_ = w.streamWriter.WriteAPIRequest(apiRequest)
-		}
-		apiResponse := w.extractAPIResponse(c)
-		if len(apiResponse) > 0 {
-			_ = w.streamWriter.WriteAPIResponse(apiResponse)
-		}
-		if err := w.streamWriter.Close(); err != nil {
-			w.streamWriter = nil
-			return err
-		}
-		w.streamWriter = nil
+func (w *ResponseWriterWrapper) finalizeStreamingLog(c *gin.Context, forceLog bool) error {
+	writer := w.streamWriter
+	if writer == nil {
+		w.closeStreamingLogWriter()
 		return nil
 	}
 
-	return w.logRequest(w.extractRequestBody(c), finalStatusCode, w.cloneHeaders(), w.body.Bytes(), w.extractAPIRequest(c), w.extractAPIResponse(c), w.extractAPIResponseTimestamp(c), slicesAPIResponseError, forceLog)
+	// Drop spool temps without writing a final request log when logging is off.
+	if !w.logger.IsEnabled() && !forceLog {
+		w.closeStreamingLogWriter()
+		return nil
+	}
+
+	if w.chunkChannel != nil {
+		close(w.chunkChannel)
+		w.chunkChannel = nil
+	}
+	if w.streamDone != nil {
+		<-w.streamDone
+		w.streamDone = nil
+	}
+
+	w.streamWriter = nil
+	writer.SetFirstChunkTimestamp(w.firstChunkTimestamp)
+
+	apiRequest := w.extractAPIRequest(c)
+	if len(apiRequest) > 0 {
+		_ = writer.WriteAPIRequest(apiRequest)
+	}
+	apiResponse := w.extractAPIResponse(c)
+	if len(apiResponse) > 0 {
+		_ = writer.WriteAPIResponse(apiResponse)
+	}
+	return writer.Close()
+}
+
+func (w *ResponseWriterWrapper) closeStreamingLogWriter() {
+	if w == nil {
+		return
+	}
+	if w.chunkChannel != nil {
+		close(w.chunkChannel)
+		w.chunkChannel = nil
+	}
+	if w.streamDone != nil {
+		<-w.streamDone
+		w.streamDone = nil
+	}
+	if w.streamWriter != nil {
+		_ = w.streamWriter.Close()
+		w.streamWriter = nil
+	}
 }
 
 func (w *ResponseWriterWrapper) cloneHeaders() map[string][]string {

@@ -57,6 +57,53 @@ func TestEnforceLogDirSizeLimitSkipsProtected(t *testing.T) {
 	}
 }
 
+func TestEnforceLogDirSizeLimitCountsAndDeletesSpoolTemps(t *testing.T) {
+	dir := t.TempDir()
+
+	// Orphaned stream spool temps must count toward the cap and be deleted first.
+	writeLogFile(t, filepath.Join(dir, "request-body-aaaa.tmp"), 80, time.Unix(1, 0))
+	writeLogFile(t, filepath.Join(dir, "response-body-bbbb.tmp"), 80, time.Unix(2, 0))
+	writeLogFile(t, filepath.Join(dir, "request-abc.log"), 40, time.Unix(3, 0))
+	writeLogFile(t, filepath.Join(dir, "unrelated.tmp"), 200, time.Unix(0, 0))
+
+	deleted, err := enforceLogDirSizeLimit(dir, 50, "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if deleted < 2 {
+		t.Fatalf("expected at least 2 spool temps deleted, got %d", deleted)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "request-body-aaaa.tmp")); !os.IsNotExist(err) {
+		t.Fatalf("expected request-body temp removed, stat error: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "response-body-bbbb.tmp")); !os.IsNotExist(err) {
+		t.Fatalf("expected response-body temp removed, stat error: %v", err)
+	}
+	// Unrelated *.tmp files are not managed by the log dir cleaner.
+	if _, err := os.Stat(filepath.Join(dir, "unrelated.tmp")); err != nil {
+		t.Fatalf("expected unrelated.tmp to remain, stat error: %v", err)
+	}
+}
+
+func TestIsLogDirManagedFileName(t *testing.T) {
+	cases := map[string]bool{
+		"main.log":              true,
+		"main.log.gz":           true,
+		"v1-responses-x.log":    true,
+		"request-body-123.tmp":  true,
+		"response-body-456.tmp": true,
+		"REQUEST-BODY-789.TMP":  true,
+		"unrelated.tmp":         false,
+		"notes.txt":             false,
+		"":                      false,
+	}
+	for name, want := range cases {
+		if got := isLogDirManagedFileName(name); got != want {
+			t.Fatalf("isLogDirManagedFileName(%q)=%v want %v", name, got, want)
+		}
+	}
+}
+
 func writeLogFile(t *testing.T, path string, size int, modTime time.Time) {
 	t.Helper()
 
