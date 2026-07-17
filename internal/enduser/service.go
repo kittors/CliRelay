@@ -330,10 +330,46 @@ func (s *Service) ListUsers(ctx context.Context, actor identity.Principal, tenan
 		}
 		out = append(out, u)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	counts, err := s.apiKeyCountsByUser(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	for i := range out {
+		out[i].APIKeyCount = counts[out[i].ID]
+	}
+	return out, nil
+}
+
+func (s *Service) apiKeyCountsByUser(ctx context.Context, tenantID string) (map[string]int, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT end_user_id, COUNT(*) FROM api_keys
+		WHERE tenant_id = ? AND end_user_id IS NOT NULL
+		GROUP BY end_user_id
+	`, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make(map[string]int)
+	for rows.Next() {
+		var id string
+		var n int
+		if err := rows.Scan(&id, &n); err != nil {
+			return nil, err
+		}
+		out[id] = n
+	}
 	return out, rows.Err()
 }
 
 func (s *Service) uniqueUsername(ctx context.Context, tx *sql.Tx, _ string, base string) (string, error) {
+	return s.uniqueUsernameExcluding(ctx, tx, base, "")
+}
+
+func (s *Service) uniqueUsernameExcluding(ctx context.Context, tx *sql.Tx, base, excludeUserID string) (string, error) {
 	// Global unique usernames (portal login is not tenant-scoped).
 	base = NormalizeUsername(base)
 	if base == "" {
@@ -342,7 +378,12 @@ func (s *Service) uniqueUsername(ctx context.Context, tx *sql.Tx, _ string, base
 	candidate := base
 	for i := 2; i < 1000; i++ {
 		var n int
-		err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM end_users WHERE username_normalized = ?`, candidate).Scan(&n)
+		var err error
+		if excludeUserID != "" {
+			err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM end_users WHERE username_normalized = ? AND id <> ?`, candidate, excludeUserID).Scan(&n)
+		} else {
+			err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM end_users WHERE username_normalized = ?`, candidate).Scan(&n)
+		}
 		if err != nil {
 			return "", err
 		}
@@ -459,7 +500,7 @@ func (s *Service) CreateUser(ctx context.Context, actor identity.Principal, tena
 	return result, nil
 }
 
-func (s *Service) UpdateUser(ctx context.Context, actor identity.Principal, tenantID, userID string, displayName *string, status *string) (User, error) {
+func (s *Service) UpdateUser(ctx context.Context, actor identity.Principal, tenantID, userID string, username, displayName, password, status *string) (User, error) {
 	if !actor.Has("end_users.write") && !actor.PlatformAdmin {
 		return User{}, ErrPermissionDenied
 	}
@@ -472,8 +513,26 @@ func (s *Service) UpdateUser(ctx context.Context, actor identity.Principal, tena
 	if err := requireUUID(userID); err != nil {
 		return User{}, err
 	}
-	sets := make([]string, 0, 4)
-	args := make([]any, 0, 6)
+	sets := make([]string, 0, 8)
+	args := make([]any, 0, 10)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return User{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if username != nil {
+		base := NormalizeUsername(*username)
+		if base == "" {
+			return User{}, fmt.Errorf("%w: username required", ErrValidation)
+		}
+		uname, err := s.uniqueUsernameExcluding(ctx, tx, base, userID)
+		if err != nil {
+			return User{}, err
+		}
+		sets = append(sets, "username = ?", "username_normalized = ?")
+		args = append(args, uname, NormalizeUsername(uname))
+	}
 	if displayName != nil {
 		v := strings.TrimSpace(*displayName)
 		if v == "" || len(v) > 128 {
@@ -481,6 +540,15 @@ func (s *Service) UpdateUser(ctx context.Context, actor identity.Principal, tena
 		}
 		sets = append(sets, "display_name = ?")
 		args = append(args, v)
+	}
+	if password != nil && strings.TrimSpace(*password) != "" {
+		hash, err := HashPassword(*password)
+		if err != nil {
+			return User{}, err
+		}
+		sets = append(sets, "password_hash = ?", "must_change_password = false", "password_changed_at = now()",
+			"failed_login_count = 0", "lock_stage = 0", "locked_until = NULL")
+		args = append(args, hash)
 	}
 	if status != nil {
 		st := strings.TrimSpace(*status)
@@ -494,13 +562,9 @@ func (s *Service) UpdateUser(ctx context.Context, actor identity.Principal, tena
 		}
 	}
 	if len(sets) == 0 {
+		_ = tx.Rollback()
 		return s.GetUser(ctx, tenantID, userID)
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return User{}, err
-	}
-	defer func() { _ = tx.Rollback() }()
 
 	sets = append(sets, "updated_at = now()", "version = version + 1")
 	args = append(args, userID, tenantID)
@@ -511,6 +575,14 @@ func (s *Service) UpdateUser(ctx context.Context, actor identity.Principal, tena
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
 		return User{}, ErrNotFound
+	}
+	if password != nil && strings.TrimSpace(*password) != "" {
+		if _, err = tx.ExecContext(ctx, `
+			UPDATE end_user_sessions SET revoked_at = now(), revoke_reason = 'password_change'
+			WHERE end_user_id = ? AND revoked_at IS NULL
+		`, userID); err != nil {
+			return User{}, err
+		}
 	}
 	if status != nil && *status != "active" {
 		if _, err = tx.ExecContext(ctx, `
@@ -1155,9 +1227,13 @@ func isUnsupportedAdvisoryLockError(err error) bool {
 		strings.Contains(msg, "undefined function") && strings.Contains(msg, "pg_advisory")
 }
 
+// migrationDefaultPassword is the known initial password for one-shot key→user backfill.
+// Admins may change it later from the management UI.
+const migrationDefaultPassword = "password123"
+
 // BackfillFromAPIKeys is a one-shot migration: runs only when end_user_backfill_state is empty.
 // After success, marks done so deleted users / unbound keys are never re-created.
-// Each migrated user gets a unique random password + must_change_password; plaintext is not logged.
+// Username = pinyin/slug of key name; password = password123 (no forced change).
 func (s *Service) BackfillFromAPIKeys(ctx context.Context) (int, error) {
 	if s == nil || s.db == nil {
 		return 0, nil
@@ -1211,16 +1287,12 @@ func (s *Service) BackfillFromAPIKeys(ctx context.Context) (int, error) {
 	}
 	_ = rows.Close()
 
+	passwordHash, err := HashPassword(migrationDefaultPassword)
+	if err != nil {
+		return 0, err
+	}
 	created := 0
 	for _, item := range items {
-		plain, err := randomPassword()
-		if err != nil {
-			return created, err
-		}
-		passwordHash, err := bcrypt.GenerateFromPassword([]byte(plain), bcrypt.DefaultCost)
-		if err != nil {
-			return created, err
-		}
 		base := UsernameFromDisplay(item.name)
 		uname, err := s.uniqueUsername(ctx, tx, item.tenantID, base)
 		if err != nil {
@@ -1233,8 +1305,8 @@ func (s *Service) BackfillFromAPIKeys(ctx context.Context) (int, error) {
 		userID := uuid.NewString()
 		if _, err = tx.ExecContext(ctx, `
 			INSERT INTO end_users (id, tenant_id, username, username_normalized, display_name, password_hash, must_change_password)
-			VALUES (?, ?, ?, ?, ?, ?, true)
-		`, userID, item.tenantID, uname, NormalizeUsername(uname), display, string(passwordHash)); err != nil {
+			VALUES (?, ?, ?, ?, ?, ?, false)
+		`, userID, item.tenantID, uname, NormalizeUsername(uname), display, passwordHash); err != nil {
 			return created, err
 		}
 		if _, err = tx.ExecContext(ctx, `

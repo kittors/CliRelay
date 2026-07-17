@@ -112,14 +112,16 @@ func (h *Handler) PatchEndUser(c *gin.Context) {
 		return
 	}
 	var body struct {
+		Username    *string `json:"username"`
 		DisplayName *string `json:"display_name"`
+		Password    *string `json:"password"`
 		Status      *string `json:"status"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
 		return
 	}
-	user, err := svc.UpdateUser(c.Request.Context(), principal, effectiveTenantID(c), c.Param("id"), body.DisplayName, body.Status)
+	user, err := svc.UpdateUser(c.Request.Context(), principal, effectiveTenantID(c), c.Param("id"), body.Username, body.DisplayName, body.Password, body.Status)
 	if err != nil {
 		endUserError(c, err)
 		return

@@ -16,6 +16,8 @@ type User struct {
 	CreatedAt          time.Time  `json:"created_at"`
 	UpdatedAt          time.Time  `json:"updated_at"`
 	Version            int64      `json:"version"`
+	// APIKeyCount is filled on list; 0 means unknown/none.
+	APIKeyCount int `json:"api_key_count,omitempty"`
 }
 
 type APIKey struct {
