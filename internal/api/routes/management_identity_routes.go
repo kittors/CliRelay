@@ -15,9 +15,24 @@ func registerIdentityAuthRoutes(engine *gin.Engine, h *managementhandlers.Handle
 	auth := engine.Group("/v0/auth")
 	auth.Use(middlewares...)
 	auth.POST("/login", h.PostLogin)
+	auth.POST("/refresh", h.PostRefresh)
 	auth.POST("/logout", h.PostLogout)
 	auth.GET("/me", h.GetMe)
 	auth.PUT("/password", h.PutPassword)
+
+	portal := engine.Group("/v0/portal")
+	portal.Use(middlewares...)
+	portal.POST("/auth/login", h.PostPortalLogin)
+	portal.POST("/auth/refresh", h.PostPortalRefresh)
+	portal.POST("/auth/logout", h.PostPortalLogout)
+	portal.GET("/auth/me", h.GetPortalMe)
+	portal.PUT("/auth/password", h.PutPortalPassword)
+	portal.GET("/api-keys", h.GetPortalAPIKeys)
+	portal.POST("/api-keys", h.PostPortalAPIKey)
+	portal.GET("/api-keys/:id/secret", h.GetPortalAPIKeySecret)
+	portal.PATCH("/api-keys/:id", h.PatchPortalAPIKey)
+	portal.POST("/api-keys/:id/rotate", h.PostPortalAPIKeyRotate)
+	portal.DELETE("/api-keys/:id", h.DeletePortalAPIKey)
 }
 
 func registerManagementIdentityRoutes(group *gin.RouterGroup, h *managementhandlers.Handler) {
@@ -32,6 +47,14 @@ func registerManagementIdentityRoutes(group *gin.RouterGroup, h *managementhandl
 	group.DELETE("/users/:id", h.DeleteUser)
 	group.PUT("/users/:id/roles", h.PutUserRoles)
 	group.POST("/users/:id/reset-password", h.PostUserResetPassword)
+
+	group.GET("/end-users", h.GetEndUsers)
+	group.POST("/end-users", h.PostEndUser)
+	group.PATCH("/end-users/:id", h.PatchEndUser)
+	group.DELETE("/end-users/:id", h.DeleteEndUser)
+	group.POST("/end-users/:id/reset-password", h.PostEndUserResetPassword)
+	group.GET("/end-users/:id/api-keys", h.GetEndUserAPIKeys)
+	group.POST("/end-users/:id/api-keys", h.PostEndUserAPIKey)
 
 	group.GET("/menus", h.GetMenus)
 	group.POST("/menus", h.PostMenu)

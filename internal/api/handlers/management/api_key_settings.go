@@ -18,17 +18,21 @@ import (
 
 // refreshAPIKeyCache rebuilds the in-memory access provider cache from SQLite.
 // Must be called after every API key write operation.
-func (h *Handler) refreshAPIKeyCache() {
+// Returns error when live access manager update fails (fail-closed for callers that care).
+func (h *Handler) refreshAPIKeyCache() error {
 	if h == nil || h.cfg == nil {
-		return
+		return nil
 	}
 	// Always update the global provider registry (used during config reload and service bootstrap).
 	configaccess.Register(&h.cfg.SDKConfig)
 	// Also update the live access manager provider snapshot so changes take effect immediately
 	// without waiting for a full config reload.
 	if h.accessManager != nil {
-		_, _ = access.ApplyAccessProviders(h.accessManager, nil, h.cfg)
+		if _, err := access.ApplyAccessProviders(h.accessManager, nil, h.cfg); err != nil {
+			return err
+		}
 	}
+	return nil
 }
 
 func (h *Handler) apiKeySettings(c *gin.Context) *apikeysettings.Service {
@@ -94,7 +98,10 @@ func (h *Handler) PutAPIKeys(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	h.refreshAPIKeyCache()
+	if err := h.refreshAPIKeyCache(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
 	c.JSON(200, gin.H{"status": "ok"})
 }
 
@@ -111,7 +118,10 @@ func (h *Handler) PatchAPIKeys(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	h.refreshAPIKeyCache()
+	if err := h.refreshAPIKeyCache(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
 	c.JSON(200, gin.H{"status": "ok"})
 }
 
@@ -124,7 +134,10 @@ func (h *Handler) DeleteAPIKeys(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	h.refreshAPIKeyCache()
+	if err := h.refreshAPIKeyCache(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
 	c.JSON(200, gin.H{"status": "ok"})
 }
 
@@ -159,7 +172,10 @@ func (h *Handler) PutAPIKeyPermissionProfiles(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	h.refreshAPIKeyCache()
+	if err := h.refreshAPIKeyCache(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
 	c.JSON(200, gin.H{"status": "ok"})
 }
 
@@ -278,7 +294,10 @@ func (h *Handler) PutAPIKeyEntries(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	h.refreshAPIKeyCache()
+	if err := h.refreshAPIKeyCache(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
 	c.JSON(200, gin.H{"status": "ok"})
 }
 
@@ -308,7 +327,10 @@ func (h *Handler) PatchAPIKeyEntry(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	h.refreshAPIKeyCache()
+	if err := h.refreshAPIKeyCache(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
 	c.JSON(200, gin.H{"status": "ok"})
 }
 
@@ -336,7 +358,10 @@ func (h *Handler) DeleteAPIKeyEntry(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	h.refreshAPIKeyCache()
+	if err := h.refreshAPIKeyCache(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
 	c.JSON(200, gin.H{"status": "ok", "logs_deleted": result.LogsDeleted})
 }
 

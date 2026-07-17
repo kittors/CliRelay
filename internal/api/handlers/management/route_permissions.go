@@ -28,7 +28,12 @@ func permissionForManagementRequest(method, path string) string {
 		return "tenant.users.read"
 	case relative == "/users" && method == http.MethodPost:
 		return "tenant.users.create"
-	case strings.HasSuffix(relative, "/reset-password"):
+	case strings.HasPrefix(relative, "/end-users"):
+		if write {
+			return "end_users.write"
+		}
+		return "end_users.read"
+	case strings.HasSuffix(relative, "/reset-password") && strings.HasPrefix(relative, "/users/"):
 		return "tenant.users.reset_password"
 	case strings.HasSuffix(relative, "/roles") && strings.HasPrefix(relative, "/users/"):
 		return "tenant.users.assign_roles"

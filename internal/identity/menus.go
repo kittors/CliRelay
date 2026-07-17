@@ -92,6 +92,7 @@ var MenuCatalog = []MenuSeed{
 	// Stable code kept for role/menu bindings; path lives under /access as AI OAuth accounts.
 	{Code: "system.account-security", ParentCode: "group.access", Type: "menu", Path: "/access/ai-accounts", Component: "account-security", LabelKey: "shell.nav_ai_accounts", Icon: "key-round", PermissionCode: "auth_files.read", SortOrder: 20},
 	{Code: "access.api-keys", ParentCode: "group.access", Type: "menu", Path: "/access/api-keys", Component: "api-keys", LabelKey: "shell.nav_api_keys", Icon: "sparkles", PermissionCode: "api_keys.read", SortOrder: 30},
+	{Code: "access.end-users", ParentCode: "group.access", Type: "menu", Path: "/access/end-users", Component: "end-users", LabelKey: "shell.nav_end_users", Icon: "user-round", PermissionCode: "end_users.read", SortOrder: 35},
 	// Stable code kept; API Key permission profiles belong with client credentials.
 	{Code: "system.api-key-permissions", ParentCode: "group.access", Type: "menu", Path: "/access/api-key-permissions", Component: "api-key-permissions", LabelKey: "shell.nav_api_key_permissions", Icon: "shield-check", PermissionCode: "api_key_profiles.read", SortOrder: 40},
 	// Tenant-scoped: matches /ccswitch-import-configs API auth (routing.read/write).

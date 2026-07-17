@@ -7,10 +7,22 @@ import (
 
 func TestRuntimeMigrationsCoverCoreTables(t *testing.T) {
 	migrations := RuntimeMigrations()
-	if len(migrations) != 15 {
-		t.Fatalf("RuntimeMigrations len = %d, want 15", len(migrations))
+	if len(migrations) != 16 {
+		t.Fatalf("RuntimeMigrations len = %d, want 16", len(migrations))
 	}
-	// Latest: append-only daily spending reset history.
+	// Latest: end users + refresh tokens.
+	endUsersSQL := migrations[15].SQL
+	for _, fragment := range []string{
+		"CREATE TABLE IF NOT EXISTS end_users",
+		"end_user_sessions",
+		"access_token_ttl_seconds",
+		"end_users.read",
+	} {
+		if !strings.Contains(endUsersSQL, fragment) {
+			t.Fatalf("end users migration missing %q", fragment)
+		}
+	}
+	// Prior: append-only daily spending reset history.
 	resetEventsSQL := migrations[14].SQL
 	for _, fragment := range []string{
 		"CREATE TABLE IF NOT EXISTS api_key_daily_spending_reset_events",

@@ -196,7 +196,11 @@ func TestAPIKeyMigrationBackupUsesPrivatePermissions(t *testing.T) {
 	}
 	cfg := &config.Config{SDKConfig: config.SDKConfig{APIKeys: []string{"sk-test"}}}
 
-	if migrated := MigrateAPIKeysFromConfig(cfg, configPath); migrated != 1 {
+	migrated, err := MigrateAPIKeysFromConfig(cfg, configPath)
+	if err != nil {
+		t.Fatalf("MigrateAPIKeysFromConfig error = %v", err)
+	}
+	if migrated != 1 {
 		t.Fatalf("MigrateAPIKeysFromConfig = %d, want 1", migrated)
 	}
 	assertMigrationBackupMode(t, configPath+".pre-sqlite-migration", 0o600)

@@ -23,8 +23,87 @@ func RuntimeMigrations() []Migration {
 		{Version: "202607170001_profile_daily_spending_limit", SQL: profileDailySpendingLimitSQL},
 		// Append-only history of manual daily spending resets (who/when/amount).
 		{Version: "202607170002_api_key_daily_spending_reset_events", SQL: apiKeyDailySpendingResetEventsSQL},
+		// End-user portal accounts (isolated from admin users) + multi-key ownership + refresh tokens.
+		{Version: "202607170003_end_users_and_tokens", SQL: endUsersAndTokensSQL},
 	}
 }
+
+const endUsersAndTokensSQL = `
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS access_token_ttl_seconds INTEGER NOT NULL DEFAULT 43200;
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS refresh_token_ttl_seconds INTEGER NOT NULL DEFAULT 2592000;
+
+CREATE TABLE IF NOT EXISTS end_users (
+  id                    UUID PRIMARY KEY,
+  tenant_id             UUID NOT NULL REFERENCES tenants(id),
+  username              TEXT NOT NULL,
+  username_normalized   TEXT NOT NULL,
+  display_name          TEXT NOT NULL,
+  password_hash         TEXT NOT NULL,
+  status                TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'disabled', 'locked')),
+  must_change_password  BOOLEAN NOT NULL DEFAULT false,
+  password_changed_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  last_login_at         TIMESTAMPTZ,
+  failed_login_count    INTEGER NOT NULL DEFAULT 0,
+  lock_stage            INTEGER NOT NULL DEFAULT 0,
+  locked_until          TIMESTAMPTZ,
+  created_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+  version               BIGINT NOT NULL DEFAULT 1,
+  UNIQUE (username_normalized)
+);
+CREATE INDEX IF NOT EXISTS idx_end_users_tenant_status ON end_users(tenant_id, status);
+
+ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS end_user_id UUID REFERENCES end_users(id) ON DELETE SET NULL;
+ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS is_default BOOLEAN NOT NULL DEFAULT false;
+CREATE INDEX IF NOT EXISTS idx_api_keys_end_user ON api_keys(tenant_id, end_user_id);
+-- at most one default key per end user
+CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_one_default_per_user
+  ON api_keys(tenant_id, end_user_id) WHERE is_default = true AND end_user_id IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS end_user_backfill_state (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  done_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS end_user_sessions (
+  id                  UUID PRIMARY KEY,
+  end_user_id         UUID NOT NULL REFERENCES end_users(id) ON DELETE CASCADE,
+  tenant_id           UUID NOT NULL REFERENCES tenants(id),
+  access_token_hash   TEXT NOT NULL UNIQUE,
+  refresh_token_hash  TEXT NOT NULL UNIQUE,
+  access_expires_at   TIMESTAMPTZ NOT NULL,
+  refresh_expires_at  TIMESTAMPTZ NOT NULL,
+  created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+  last_seen_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+  revoked_at          TIMESTAMPTZ,
+  revoke_reason       TEXT NOT NULL DEFAULT '',
+  user_agent_hash     TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_end_user_sessions_user_active
+  ON end_user_sessions(end_user_id, revoked_at, refresh_expires_at);
+
+ALTER TABLE user_sessions ADD COLUMN IF NOT EXISTS refresh_token_hash TEXT;
+ALTER TABLE user_sessions ADD COLUMN IF NOT EXISTS refresh_expires_at TIMESTAMPTZ;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_user_sessions_refresh_token_hash
+  ON user_sessions(refresh_token_hash) WHERE refresh_token_hash IS NOT NULL AND refresh_token_hash <> '';
+
+INSERT INTO permissions (code, name, description, scope, resource, action, sensitive, sort_order, updated_at)
+VALUES
+  ('end_users.read', 'Read end users', 'List and view portal end users', 'tenant', 'end_users', 'read', true, 410, now()),
+  ('end_users.write', 'Write end users', 'Create, update, delete portal end users and their keys', 'tenant', 'end_users', 'write', true, 420, now())
+ON CONFLICT (code) DO NOTHING;
+
+INSERT INTO role_permissions (role_id, permission_code)
+SELECT r.id, p.code
+  FROM roles r
+  CROSS JOIN (VALUES ('end_users.read'), ('end_users.write')) AS p(code)
+ WHERE r.code IN ('tenant_admin', 'platform_super_admin')
+ON CONFLICT DO NOTHING;
+
+INSERT INTO menus (code, parent_code, menu_type, path, component, label_key, icon, permission_code, sort_order, visible, enabled, system_protected)
+VALUES ('access.end-users', 'group.access', 'menu', '/access/end-users', 'end-users', 'shell.nav_end_users', 'user-round', 'end_users.read', 35, true, true, true)
+ON CONFLICT (code) DO NOTHING;
+`
 
 const profileDailySpendingLimitSQL = `
 ALTER TABLE api_key_permission_profiles

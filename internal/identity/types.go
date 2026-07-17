@@ -9,17 +9,19 @@ const (
 )
 
 type Tenant struct {
-	ID              string     `json:"id"`
-	Slug            string     `json:"slug"`
-	Name            string     `json:"name"`
-	Type            string     `json:"type"`
-	Status          string     `json:"status"`
-	EffectiveStatus string     `json:"effective_status"`
-	ExpiresAt       *time.Time `json:"expires_at"`
-	Description     string     `json:"description"`
-	CreatedAt       time.Time  `json:"created_at"`
-	UpdatedAt       time.Time  `json:"updated_at"`
-	Version         int64      `json:"version"`
+	ID                     string     `json:"id"`
+	Slug                   string     `json:"slug"`
+	Name                   string     `json:"name"`
+	Type                   string     `json:"type"`
+	Status                 string     `json:"status"`
+	EffectiveStatus        string     `json:"effective_status"`
+	ExpiresAt              *time.Time `json:"expires_at"`
+	Description            string     `json:"description"`
+	AccessTokenTTLSeconds  int        `json:"access_token_ttl_seconds"`
+	RefreshTokenTTLSeconds int        `json:"refresh_token_ttl_seconds"`
+	CreatedAt              time.Time  `json:"created_at"`
+	UpdatedAt              time.Time  `json:"updated_at"`
+	Version                int64      `json:"version"`
 }
 
 type User struct {
@@ -68,10 +70,12 @@ func (p Principal) Has(permission string) bool {
 }
 
 type LoginResult struct {
-	AccessToken string    `json:"access_token"`
-	TokenType   string    `json:"token_type"`
-	ExpiresAt   time.Time `json:"expires_at"`
-	Principal   Principal `json:"principal"`
+	AccessToken      string    `json:"access_token"`
+	RefreshToken     string    `json:"refresh_token,omitempty"`
+	TokenType        string    `json:"token_type"`
+	ExpiresAt        time.Time `json:"expires_at"`
+	RefreshExpiresAt time.Time `json:"refresh_expires_at,omitempty"`
+	Principal        Principal `json:"principal"`
 }
 
 type AuditEvent struct {

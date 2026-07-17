@@ -245,13 +245,37 @@ func (s *Service) Bootstrap(ctx context.Context, initialPassword string) error {
 }
 
 func randomToken() (string, string, error) {
+	return randomPrefixedToken("cps_")
+}
+
+func randomPrefixedToken(prefix string) (string, string, error) {
 	raw := make([]byte, 32)
 	if _, err := rand.Read(raw); err != nil {
 		return "", "", err
 	}
-	token := "cps_" + base64.RawURLEncoding.EncodeToString(raw)
+	token := prefix + base64.RawURLEncoding.EncodeToString(raw)
 	sum := sha256.Sum256([]byte(token))
 	return token, hex.EncodeToString(sum[:]), nil
+}
+
+func (s *Service) tenantSessionTTL(ctx context.Context, tenantID string, remember bool) (access, refresh time.Duration) {
+	// Short access + long refresh. remember_me only keeps/extends refresh, never access.
+	access, refresh = 12*time.Hour, 30*24*time.Hour
+	if s == nil || s.db == nil {
+		return
+	}
+	var a, r sql.NullInt64
+	_ = s.db.QueryRowContext(ctx, `SELECT access_token_ttl_seconds, refresh_token_ttl_seconds FROM tenants WHERE id = ?`, tenantID).Scan(&a, &r)
+	if a.Valid && a.Int64 > 0 {
+		access = time.Duration(a.Int64) * time.Second
+	}
+	if r.Valid && r.Int64 > 0 {
+		refresh = time.Duration(r.Int64) * time.Second
+	}
+	if remember && refresh < 30*24*time.Hour {
+		refresh = 30 * 24 * time.Hour
+	}
+	return
 }
 
 func tokenHash(token string) string {
@@ -327,12 +351,15 @@ func (s *Service) Login(ctx context.Context, username, password string, remember
 	if err != nil {
 		return result, err
 	}
-	duration := 12 * time.Hour
-	if remember {
-		duration = 30 * 24 * time.Hour
+	refreshToken, refreshHash, err := randomPrefixedToken("cpr_adm_")
+	if err != nil {
+		return result, err
 	}
+	accessTTL, refreshTTL := s.tenantSessionTTL(ctx, tenant.ID, remember)
 	sessionID := uuid.NewString()
-	sessionExpiresAt := time.Now().UTC().Add(duration)
+	now := time.Now().UTC()
+	sessionExpiresAt := now.Add(accessTTL)
+	refreshExpiresAt := now.Add(refreshTTL)
 	uaSum := sha256.Sum256([]byte(userAgent))
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -340,9 +367,9 @@ func (s *Service) Login(ctx context.Context, username, password string, remember
 	}
 	defer func() { _ = tx.Rollback() }()
 	if _, err = tx.ExecContext(ctx, `
-		INSERT INTO user_sessions (id, user_id, tenant_id, token_hash, expires_at, user_agent_hash)
-		VALUES (?, ?, ?, ?, ?, ?)
-	`, sessionID, user.ID, tenant.ID, hash, sessionExpiresAt, hex.EncodeToString(uaSum[:])); err != nil {
+		INSERT INTO user_sessions (id, user_id, tenant_id, token_hash, expires_at, refresh_token_hash, refresh_expires_at, user_agent_hash)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	`, sessionID, user.ID, tenant.ID, hash, sessionExpiresAt, refreshHash, refreshExpiresAt, hex.EncodeToString(uaSum[:])); err != nil {
 		return result, err
 	}
 	if _, err = tx.ExecContext(ctx, `
@@ -360,9 +387,66 @@ func (s *Service) Login(ctx context.Context, username, password string, remember
 	if err != nil {
 		return result, err
 	}
-	result = LoginResult{AccessToken: token, TokenType: "Bearer", ExpiresAt: sessionExpiresAt, Principal: principal}
+	result = LoginResult{
+		AccessToken: token, RefreshToken: refreshToken, TokenType: "Bearer",
+		ExpiresAt: sessionExpiresAt, RefreshExpiresAt: refreshExpiresAt, Principal: principal,
+	}
 	s.RecordAudit(ctx, AuditEvent{TenantID: tenant.ID, ActorKind: "user_session", ActorUserID: user.ID, ActorSessionID: sessionID, Action: "auth.login", ResourceType: "session", ResourceID: sessionID, Result: "success"})
 	return result, nil
+}
+
+func (s *Service) RefreshSession(ctx context.Context, refreshToken string) (LoginResult, error) {
+	var result LoginResult
+	if s == nil || s.db == nil || !strings.HasPrefix(strings.TrimSpace(refreshToken), "cpr_adm_") {
+		return result, ErrSessionRevoked
+	}
+	var sessionID, userID, tenantID string
+	var refreshExp time.Time
+	var revoked sql.NullTime
+	err := s.db.QueryRowContext(ctx, `
+		SELECT id, user_id, tenant_id, refresh_expires_at, revoked_at
+		  FROM user_sessions WHERE refresh_token_hash = ?
+	`, tokenHash(refreshToken)).Scan(&sessionID, &userID, &tenantID, &refreshExp, &revoked)
+	if errors.Is(err, sql.ErrNoRows) {
+		return result, ErrSessionRevoked
+	}
+	if err != nil {
+		return result, err
+	}
+	if revoked.Valid || !refreshExp.After(time.Now()) {
+		return result, ErrSessionExpired
+	}
+	accessTTL, refreshTTL := s.tenantSessionTTL(ctx, tenantID, false)
+	accessPlain, accessHash, err := randomToken()
+	if err != nil {
+		return result, err
+	}
+	refreshPlain, refreshHash, err := randomPrefixedToken("cpr_adm_")
+	if err != nil {
+		return result, err
+	}
+	now := time.Now().UTC()
+	accessExp := now.Add(accessTTL)
+	newRefreshExp := now.Add(refreshTTL)
+	// Atomic consume: only one concurrent refresh of the same refresh token wins.
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE user_sessions SET token_hash = ?, expires_at = ?, refresh_token_hash = ?, refresh_expires_at = ?, last_seen_at = now()
+		WHERE id = ? AND refresh_token_hash = ? AND revoked_at IS NULL AND refresh_expires_at > now()
+	`, accessHash, accessExp, refreshHash, newRefreshExp, sessionID, tokenHash(refreshToken))
+	if err != nil {
+		return result, err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return result, ErrSessionRevoked
+	}
+	principal, err := s.loadPrincipal(ctx, userID, sessionID, accessExp, tenantID)
+	if err != nil {
+		return result, err
+	}
+	return LoginResult{
+		AccessToken: accessPlain, RefreshToken: refreshPlain, TokenType: "Bearer",
+		ExpiresAt: accessExp, RefreshExpiresAt: newRefreshExp, Principal: principal,
+	}, nil
 }
 
 func validateTenant(tenant Tenant, now time.Time) error {
@@ -563,14 +647,38 @@ func (s *Service) ChangePassword(ctx context.Context, principal Principal, curre
 func (s *Service) GetTenant(ctx context.Context, id string) (Tenant, error) {
 	var tenant Tenant
 	var expires sql.NullTime
-	err := s.db.QueryRowContext(ctx, `SELECT id, slug, name, type, status, expires_at, description, created_at, updated_at, version FROM tenants WHERE id = ?`, id).Scan(
+	var accessTTL, refreshTTL sql.NullInt64
+	err := s.db.QueryRowContext(ctx, `
+		SELECT id, slug, name, type, status, expires_at, description,
+		       COALESCE(access_token_ttl_seconds, 43200), COALESCE(refresh_token_ttl_seconds, 2592000),
+		       created_at, updated_at, version
+		  FROM tenants WHERE id = ?`, id).Scan(
 		&tenant.ID, &tenant.Slug, &tenant.Name, &tenant.Type, &tenant.Status, &expires,
-		&tenant.Description, &tenant.CreatedAt, &tenant.UpdatedAt, &tenant.Version)
+		&tenant.Description, &accessTTL, &refreshTTL, &tenant.CreatedAt, &tenant.UpdatedAt, &tenant.Version)
+	if err != nil {
+		// Fallback for DBs that have not yet applied TTL columns.
+		err2 := s.db.QueryRowContext(ctx, `SELECT id, slug, name, type, status, expires_at, description, created_at, updated_at, version FROM tenants WHERE id = ?`, id).Scan(
+			&tenant.ID, &tenant.Slug, &tenant.Name, &tenant.Type, &tenant.Status, &expires,
+			&tenant.Description, &tenant.CreatedAt, &tenant.UpdatedAt, &tenant.Version)
+		if err2 != nil {
+			return tenant, err
+		}
+		tenant.AccessTokenTTLSeconds = 43200
+		tenant.RefreshTokenTTLSeconds = 2592000
+	} else {
+		if accessTTL.Valid {
+			tenant.AccessTokenTTLSeconds = int(accessTTL.Int64)
+		} else {
+			tenant.AccessTokenTTLSeconds = 43200
+		}
+		if refreshTTL.Valid {
+			tenant.RefreshTokenTTLSeconds = int(refreshTTL.Int64)
+		} else {
+			tenant.RefreshTokenTTLSeconds = 2592000
+		}
+	}
 	if expires.Valid {
 		tenant.ExpiresAt = &expires.Time
-	}
-	if err != nil {
-		return tenant, err
 	}
 	tenant.EffectiveStatus = tenant.Status
 	if tenant.Status == "active" && tenant.Type != "system" && tenant.ExpiresAt != nil && !tenant.ExpiresAt.After(time.Now()) {
@@ -665,10 +773,10 @@ func (s *Service) CreateTenant(ctx context.Context, actor Principal, input Creat
 }
 
 func (s *Service) UpdateTenant(ctx context.Context, actor Principal, id, status string, expiresAt *time.Time, version int64) (Tenant, error) {
-	return s.UpdateTenantDetails(ctx, actor, id, nil, nil, status, expiresAt, version)
+	return s.UpdateTenantDetails(ctx, actor, id, nil, nil, status, expiresAt, nil, nil, version)
 }
 
-func (s *Service) UpdateTenantDetails(ctx context.Context, actor Principal, id string, name, description *string, status string, expiresAt *time.Time, version int64) (Tenant, error) {
+func (s *Service) UpdateTenantDetails(ctx context.Context, actor Principal, id string, name, description *string, status string, expiresAt *time.Time, accessTTL, refreshTTL *int, version int64) (Tenant, error) {
 	if !actor.Has("platform.tenants.update") {
 		return Tenant{}, ErrPermissionDenied
 	}
@@ -694,12 +802,22 @@ func (s *Service) UpdateTenantDetails(ctx context.Context, actor Principal, id s
 		}
 		descriptionValue = trimmed
 	}
+	if accessTTL != nil && (*accessTTL < 60 || *accessTTL > 30*24*3600) {
+		return Tenant{}, fmt.Errorf("%w: access_token_ttl_seconds out of range", ErrValidation)
+	}
+	if refreshTTL != nil && (*refreshTTL < 300 || *refreshTTL > 365*24*3600) {
+		return Tenant{}, fmt.Errorf("%w: refresh_token_ttl_seconds out of range", ErrValidation)
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return Tenant{}, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	res, err := tx.ExecContext(ctx, `UPDATE tenants SET name = COALESCE(NULLIF(?, ''), name), description = COALESCE(?, description), status = COALESCE(NULLIF(?, ''), status), expires_at = COALESCE(?, expires_at), updated_at = now(), version = version + 1 WHERE id = ? AND version = ?`, nameValue, descriptionValue, status, expiresAt, id, version)
+	res, err := tx.ExecContext(ctx, `UPDATE tenants SET name = COALESCE(NULLIF(?, ''), name), description = COALESCE(?, description), status = COALESCE(NULLIF(?, ''), status), expires_at = COALESCE(?, expires_at),
+		access_token_ttl_seconds = COALESCE(?, access_token_ttl_seconds),
+		refresh_token_ttl_seconds = COALESCE(?, refresh_token_ttl_seconds),
+		updated_at = now(), version = version + 1 WHERE id = ? AND version = ?`,
+		nameValue, descriptionValue, status, expiresAt, accessTTL, refreshTTL, id, version)
 	if err != nil {
 		return Tenant{}, err
 	}

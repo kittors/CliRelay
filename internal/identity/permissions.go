@@ -56,6 +56,8 @@ var PermissionCatalog = []PermissionSeed{
 	{Code: "auth_files.oauth", Name: "Start OAuth flows", Scope: "tenant", Resource: "auth_files", Action: "oauth", Sensitive: true},
 	{Code: "api_keys.read", Name: "Read API keys", Scope: "tenant", Resource: "api_keys", Action: "read", Sensitive: true},
 	{Code: "api_keys.write", Name: "Write API keys", Scope: "tenant", Resource: "api_keys", Action: "write", Sensitive: true},
+	{Code: "end_users.read", Name: "Read end users", Scope: "tenant", Resource: "end_users", Action: "read", Sensitive: true},
+	{Code: "end_users.write", Name: "Write end users", Scope: "tenant", Resource: "end_users", Action: "write", Sensitive: true},
 	{Code: "api_key_profiles.read", Name: "Read API key profiles", Scope: "tenant", Resource: "api_key_profiles", Action: "read"},
 	{Code: "api_key_profiles.write", Name: "Write API key profiles", Scope: "tenant", Resource: "api_key_profiles", Action: "write", Sensitive: true},
 	{Code: "models.read", Name: "Read models", Scope: "tenant", Resource: "models", Action: "read"},
@@ -102,6 +104,8 @@ func menuCodeForPermission(permission PermissionSeed) string {
 		return "system.account-security"
 	case "api_keys":
 		return "access.api-keys"
+	case "end_users":
+		return "access.end-users"
 	case "api_key_profiles":
 		return "system.api-key-permissions"
 	case "models":

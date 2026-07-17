@@ -67,7 +67,9 @@ func TestRefreshAPIKeyCacheUpdatesLiveAccessManager(t *testing.T) {
 
 	h := NewHandler(cfg, "", nil)
 	h.SetAccessManager(accessManager)
-	h.refreshAPIKeyCache()
+	if err := h.refreshAPIKeyCache(); err != nil {
+		t.Fatalf("refreshAPIKeyCache: %v", err)
+	}
 
 	res, authErr = accessManager.Authenticate(context.Background(), req)
 	if authErr != nil {

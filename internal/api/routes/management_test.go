@@ -26,7 +26,7 @@ func TestRegisterManagementRouteTable(t *testing.T) {
 		routes[key] = route
 	}
 
-	if got, want := len(routes), 267; got != want {
+	if got, want := len(routes), 286; got != want {
 		t.Fatalf("route count = %d, want %d", got, want)
 	}
 	if got, want := sortedRouteKeys(routes), expectedManagementRoutes(); !slices.Equal(got, want) {
@@ -178,7 +178,19 @@ func expectedManagementRoutes() []string {
 		"GET /v0/auth/me",
 		"POST /v0/auth/login",
 		"POST /v0/auth/logout",
+		"POST /v0/auth/refresh",
 		"PUT /v0/auth/password",
+		"GET /v0/portal/api-keys",
+		"POST /v0/portal/api-keys",
+		"GET /v0/portal/api-keys/:id/secret",
+		"PATCH /v0/portal/api-keys/:id",
+		"POST /v0/portal/api-keys/:id/rotate",
+		"DELETE /v0/portal/api-keys/:id",
+		"POST /v0/portal/auth/login",
+		"POST /v0/portal/auth/logout",
+		"GET /v0/portal/auth/me",
+		"PUT /v0/portal/auth/password",
+		"POST /v0/portal/auth/refresh",
 		"GET /v0/management/menus",
 		"POST /v0/management/menus",
 		"PATCH /v0/management/menus/:code",
@@ -198,6 +210,13 @@ func expectedManagementRoutes() []string {
 		"PATCH /v0/management/users/:id",
 		"DELETE /v0/management/users/:id",
 		"PUT /v0/management/users/:id/roles",
+		"GET /v0/management/end-users",
+		"POST /v0/management/end-users",
+		"PATCH /v0/management/end-users/:id",
+		"DELETE /v0/management/end-users/:id",
+		"POST /v0/management/end-users/:id/reset-password",
+		"GET /v0/management/end-users/:id/api-keys",
+		"POST /v0/management/end-users/:id/api-keys",
 		"GET /v0/management/audit-logs",
 		"GET /v0/management/audit-logs/:id",
 		"DELETE /v0/management/audit-logs/:id",

@@ -45,6 +45,8 @@ type APIKeyRow struct {
 	Key                  string   `json:"key"`
 	Name                 string   `json:"name,omitempty"`
 	Disabled             bool     `json:"disabled,omitempty"`
+	EndUserID            string   `json:"end_user_id,omitempty"`
+	IsDefault            bool     `json:"is_default,omitempty"`
 	PermissionProfileID  string   `json:"permission-profile-id,omitempty"`
 	DailyLimit           int      `json:"daily-limit,omitempty"`
 	TotalQuota           int      `json:"total-quota,omitempty"`
@@ -58,7 +60,7 @@ type APIKeyRow struct {
 	AllowedChannelGroups []string `json:"allowed-channel-groups,omitempty"`
 	SystemPrompt         string   `json:"system-prompt,omitempty"`
 	CreatedAt            string   `json:"created-at,omitempty"`
-	UpdatedAt            string   `json:"updated-at,omitempty"`
+	UpdatedAt            string   `json:"updated_at,omitempty"`
 }
 
 type PermissionProfileSnapshot struct {
@@ -192,7 +194,8 @@ func (s Store) ListAll() []APIKeyRow {
 
 	rows, err := s.db.Query(`SELECT tenant_id, key, name, disabled, id, daily_limit, total_quota,
 		permission_profile_id, spending_limit, daily_spending_limit, concurrency_limit, rpm_limit, tpm_limit,
-		allowed_models, allowed_channels, allowed_channel_groups, system_prompt, created_at, updated_at
+		allowed_models, allowed_channels, allowed_channel_groups, system_prompt, created_at, updated_at,
+		COALESCE(end_user_id, ''), COALESCE(is_default, 0)
 		FROM api_keys ORDER BY tenant_id ASC, created_at ASC`)
 	if err != nil {
 		log.Errorf("sqlite/apikey: list all api_keys: %v", err)
@@ -220,7 +223,8 @@ func (s Store) List() []APIKeyRow {
 
 	rows, err := s.db.Query(`SELECT key, name, disabled, id, daily_limit, total_quota,
 		permission_profile_id, spending_limit, daily_spending_limit, concurrency_limit, rpm_limit, tpm_limit,
-		allowed_models, allowed_channels, allowed_channel_groups, system_prompt, created_at, updated_at
+		allowed_models, allowed_channels, allowed_channel_groups, system_prompt, created_at, updated_at,
+		COALESCE(end_user_id, ''), COALESCE(is_default, 0)
 		FROM api_keys WHERE tenant_id = ? ORDER BY created_at ASC`, s.tenantID)
 	if err != nil {
 		log.Errorf("sqlite/apikey: list api_keys: %v", err)
@@ -247,7 +251,8 @@ func (s Store) Get(key string) *APIKeyRow {
 
 	row := s.db.QueryRow(`SELECT key, name, disabled, id, daily_limit, total_quota,
 		permission_profile_id, spending_limit, daily_spending_limit, concurrency_limit, rpm_limit, tpm_limit,
-		allowed_models, allowed_channels, allowed_channel_groups, system_prompt, created_at, updated_at
+		allowed_models, allowed_channels, allowed_channel_groups, system_prompt, created_at, updated_at,
+		COALESCE(end_user_id, ''), COALESCE(is_default, 0)
 		FROM api_keys WHERE tenant_id = ? AND key = ?`, s.tenantID, trimmed)
 	entry, ok := scanAPIKeyRow(row)
 	if !ok {
@@ -269,7 +274,8 @@ func (s Store) GetByID(id string) *APIKeyRow {
 
 	row := s.db.QueryRow(`SELECT key, name, disabled, id, daily_limit, total_quota,
 		permission_profile_id, spending_limit, daily_spending_limit, concurrency_limit, rpm_limit, tpm_limit,
-		allowed_models, allowed_channels, allowed_channel_groups, system_prompt, created_at, updated_at
+		allowed_models, allowed_channels, allowed_channel_groups, system_prompt, created_at, updated_at,
+		COALESCE(end_user_id, ''), COALESCE(is_default, 0)
 		FROM api_keys WHERE tenant_id = ? AND id = ?`, s.tenantID, trimmed)
 	entry, ok := scanAPIKeyRow(row)
 	if !ok {
@@ -305,11 +311,20 @@ func (s Store) Upsert(entry APIKeyRow) error {
 	if entry.Disabled {
 		disabledInt = 1
 	}
+	isDefaultInt := 0
+	if entry.IsDefault {
+		isDefaultInt = 1
+	}
+	var endUserID any
+	if strings.TrimSpace(entry.EndUserID) != "" {
+		endUserID = strings.TrimSpace(entry.EndUserID)
+	}
 
 	result, err := s.db.Exec(`INSERT INTO api_keys
 		(tenant_id, key, id, name, disabled, permission_profile_id, daily_limit, total_quota, spending_limit, daily_spending_limit,
-		 concurrency_limit, rpm_limit, tpm_limit, allowed_models, allowed_channels, allowed_channel_groups, system_prompt, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 concurrency_limit, rpm_limit, tpm_limit, allowed_models, allowed_channels, allowed_channel_groups, system_prompt, created_at, updated_at,
+		 end_user_id, is_default)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(key) DO UPDATE SET
 			id=excluded.id,
 			name=excluded.name, disabled=excluded.disabled,
@@ -320,6 +335,8 @@ func (s Store) Upsert(entry APIKeyRow) error {
 			allowed_models=excluded.allowed_models, allowed_channels=excluded.allowed_channels,
 			allowed_channel_groups=excluded.allowed_channel_groups,
 			system_prompt=excluded.system_prompt,
+			end_user_id=COALESCE(excluded.end_user_id, api_keys.end_user_id),
+			is_default=CASE WHEN excluded.end_user_id IS NOT NULL THEN excluded.is_default ELSE api_keys.is_default END,
 			updated_at=excluded.updated_at
 		WHERE api_keys.tenant_id = excluded.tenant_id`,
 		s.tenantID, entry.Key, entry.ID, entry.Name, disabledInt, entry.PermissionProfileID,
@@ -327,7 +344,7 @@ func (s Store) Upsert(entry APIKeyRow) error {
 		entry.ConcurrencyLimit, entry.RPMLimit, entry.TPMLimit,
 		mustJSONStringList(entry.AllowedModels), mustJSONStringList(entry.AllowedChannels),
 		mustJSONStringList(entry.AllowedChannelGroups), entry.SystemPrompt,
-		entry.CreatedAt, now,
+		entry.CreatedAt, now, endUserID, isDefaultInt,
 	)
 	if err != nil {
 		return err
@@ -380,47 +397,142 @@ func (s Store) UpdateByID(entry APIKeyRow) error {
 	return err
 }
 
-func (s Store) Delete(key string) error {
+func (s Store) deleteOwnedGuarded(where string, arg string) error {
 	if s.db == nil {
 		return fmt.Errorf("database not initialised")
 	}
-	trimmed := strings.TrimSpace(key)
-	if trimmed == "" {
+	arg = strings.TrimSpace(arg)
+	if arg == "" {
 		return fmt.Errorf("key is required")
 	}
-	_, err := s.db.Exec("DELETE FROM api_keys WHERE tenant_id = ? AND key = ?", s.tenantID, trimmed)
-	return err
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var endUserID sql.NullString
+	var keyID string
+	q := `SELECT id, end_user_id FROM api_keys WHERE tenant_id = ? AND ` + where + ` LIMIT 1`
+	if err = tx.QueryRow(q, s.tenantID, arg).Scan(&keyID, &endUserID); err != nil {
+		if err == sql.ErrNoRows {
+			return nil
+		}
+		return err
+	}
+	if endUserID.Valid && strings.TrimSpace(endUserID.String) != "" {
+		// Best-effort row lock on owner (Postgres); SQLite ignores unsupported syntax via fallback.
+		if _, err = tx.Exec(`SELECT id FROM end_users WHERE id = ? FOR UPDATE`, endUserID.String); err != nil {
+			msg := strings.ToLower(err.Error())
+			if !strings.Contains(msg, "syntax") && !strings.Contains(msg, "for update") {
+				return err
+			}
+		}
+		var n int
+		if err = tx.QueryRow(
+			`SELECT COUNT(*) FROM api_keys WHERE tenant_id = ? AND end_user_id = ?`,
+			s.tenantID, endUserID.String,
+		).Scan(&n); err != nil {
+			return err
+		}
+		if n <= 1 {
+			return fmt.Errorf("cannot delete last api key owned by an end user")
+		}
+	}
+	if _, err = tx.Exec(`DELETE FROM api_keys WHERE tenant_id = ? AND id = ?`, s.tenantID, keyID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s Store) Delete(key string) error {
+	return s.deleteOwnedGuarded("key = ?", key)
 }
 
 func (s Store) DeleteByID(id string) error {
-	if s.db == nil {
-		return fmt.Errorf("database not initialised")
-	}
-	trimmed := strings.TrimSpace(id)
-	if trimmed == "" {
-		return fmt.Errorf("id is required")
-	}
-	_, err := s.db.Exec("DELETE FROM api_keys WHERE tenant_id = ? AND id = ?", s.tenantID, trimmed)
-	return err
+	return s.deleteOwnedGuarded("id = ?", id)
 }
 
 func (s Store) ReplaceAll(entries []APIKeyRow) error {
 	if s.db == nil {
 		return fmt.Errorf("database not initialised")
 	}
-	existingIDsByKey := make(map[string]string)
+	// Preserve end-user ownership across full replace.
+	// Prefer stable id, then key text (admin may rename key secret while keeping id).
+	type ownership struct {
+		id        string
+		key       string
+		endUserID string
+		isDefault bool
+	}
+	byID := make(map[string]ownership)
+	byKey := make(map[string]ownership)
 	for _, row := range s.List() {
 		key := strings.TrimSpace(row.Key)
 		id := strings.TrimSpace(row.ID)
-		if key == "" || id == "" {
-			continue
+		own := ownership{
+			id:        id,
+			key:       key,
+			endUserID: strings.TrimSpace(row.EndUserID),
+			isDefault: row.IsDefault,
 		}
-		existingIDsByKey[key] = id
+		if id != "" {
+			byID[id] = own
+		}
+		if key != "" {
+			byKey[key] = own
+		}
 	}
 
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
+	}
+
+	// Ensure every previously-owned end user keeps at least one key after replace.
+	incomingIDs := make(map[string]struct{}, len(entries))
+	incomingKeys := make(map[string]struct{}, len(entries))
+	for _, entry := range entries {
+		if id := strings.TrimSpace(entry.ID); id != "" {
+			incomingIDs[id] = struct{}{}
+		}
+		if k := strings.TrimSpace(entry.Key); k != "" {
+			incomingKeys[k] = struct{}{}
+		}
+	}
+	ownedBefore := make(map[string][]ownership)
+	for _, prev := range byID {
+		if prev.endUserID == "" {
+			continue
+		}
+		ownedBefore[prev.endUserID] = append(ownedBefore[prev.endUserID], prev)
+	}
+	// also include key-only rows without id
+	for _, prev := range byKey {
+		if prev.endUserID == "" || prev.id != "" {
+			continue
+		}
+		ownedBefore[prev.endUserID] = append(ownedBefore[prev.endUserID], prev)
+	}
+	for endUserID, owns := range ownedBefore {
+		kept := 0
+		for _, prev := range owns {
+			if prev.id != "" {
+				if _, ok := incomingIDs[prev.id]; ok {
+					kept++
+					continue
+				}
+			}
+			if prev.key != "" {
+				if _, ok := incomingKeys[prev.key]; ok {
+					kept++
+				}
+			}
+		}
+		if kept < 1 {
+			_ = tx.Rollback()
+			return fmt.Errorf("cannot remove last api key for end user %s", endUserID)
+		}
 	}
 
 	if _, err := tx.Exec("DELETE FROM api_keys WHERE tenant_id = ?", s.tenantID); err != nil {
@@ -430,8 +542,9 @@ func (s Store) ReplaceAll(entries []APIKeyRow) error {
 
 	stmt, err := tx.Prepare(`INSERT INTO api_keys
 		(tenant_id, key, id, name, disabled, permission_profile_id, daily_limit, total_quota, spending_limit, daily_spending_limit,
-		 concurrency_limit, rpm_limit, tpm_limit, allowed_models, allowed_channels, allowed_channel_groups, system_prompt, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+		 concurrency_limit, rpm_limit, tpm_limit, allowed_models, allowed_channels, allowed_channel_groups, system_prompt, created_at, updated_at,
+		 end_user_id, is_default)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		_ = tx.Rollback()
 		return err
@@ -444,12 +557,22 @@ func (s Store) ReplaceAll(entries []APIKeyRow) error {
 		if entry.Key == "" {
 			continue
 		}
+		prev, ok := byID[entry.ID]
+		if !ok {
+			prev = byKey[entry.Key]
+		}
 		if entry.ID == "" {
-			if existingID := existingIDsByKey[entry.Key]; existingID != "" {
-				entry.ID = existingID
+			if prev.id != "" {
+				entry.ID = prev.id
 			} else {
 				entry.ID = uuid.NewString()
 			}
+		}
+		if entry.EndUserID == "" {
+			entry.EndUserID = prev.endUserID
+		}
+		if !entry.IsDefault {
+			entry.IsDefault = prev.isDefault
 		}
 		if entry.CreatedAt == "" {
 			entry.CreatedAt = now
@@ -458,13 +581,21 @@ func (s Store) ReplaceAll(entries []APIKeyRow) error {
 		if entry.Disabled {
 			disabledInt = 1
 		}
+		isDefaultInt := 0
+		if entry.IsDefault {
+			isDefaultInt = 1
+		}
+		var endUserID any
+		if entry.EndUserID != "" {
+			endUserID = entry.EndUserID
+		}
 		if _, err := stmt.Exec(
 			s.tenantID, entry.Key, entry.ID, entry.Name, disabledInt, entry.PermissionProfileID,
 			entry.DailyLimit, entry.TotalQuota, entry.SpendingLimit, entry.DailySpendingLimit,
 			entry.ConcurrencyLimit, entry.RPMLimit, entry.TPMLimit,
 			mustJSONStringList(entry.AllowedModels), mustJSONStringList(entry.AllowedChannels),
 			mustJSONStringList(entry.AllowedChannelGroups), entry.SystemPrompt,
-			entry.CreatedAt, now,
+			entry.CreatedAt, now, endUserID, isDefaultInt,
 		); err != nil {
 			_ = tx.Rollback()
 			return err
@@ -529,6 +660,8 @@ func migrateColumns(db *sql.DB) {
 		{name: "allowed_channels", definition: "TEXT NOT NULL DEFAULT '[]'"},
 		{name: "allowed_channel_groups", definition: "TEXT NOT NULL DEFAULT '[]'"},
 		{name: "daily_spending_limit", definition: "REAL NOT NULL DEFAULT 0"},
+		{name: "end_user_id", definition: "TEXT"},
+		{name: "is_default", definition: "INTEGER NOT NULL DEFAULT 0"},
 	} {
 		if _, err := db.Exec("ALTER TABLE api_keys ADD COLUMN " + col.name + " " + col.definition); err != nil {
 			if !strings.Contains(strings.ToLower(err.Error()), "duplicate") {
@@ -648,6 +781,7 @@ func normalizeRow(row APIKeyRow) APIKeyRow {
 	row.ID = strings.TrimSpace(row.ID)
 	row.Key = strings.TrimSpace(row.Key)
 	row.Name = strings.TrimSpace(row.Name)
+	row.EndUserID = strings.TrimSpace(row.EndUserID)
 	row.PermissionProfileID = strings.TrimSpace(row.PermissionProfileID)
 	row.SpendingLimit = normalizeWholeUSD(row.SpendingLimit)
 	row.DailySpendingLimit = normalizeWholeUSD(row.DailySpendingLimit)
@@ -682,6 +816,7 @@ func scanAPIKeyRows(rows *sql.Rows) []APIKeyRow {
 func scanAPIKeyRowWithTenant(row scanner) (*APIKeyRow, bool) {
 	var entry APIKeyRow
 	var disabledInt int
+	var isDefaultInt int
 	var modelsJSON string
 	var channelsJSON string
 	var channelGroupsJSON string
@@ -691,13 +826,14 @@ func scanAPIKeyRowWithTenant(row scanner) (*APIKeyRow, bool) {
 		&entry.DailyLimit, &entry.TotalQuota, &entry.PermissionProfileID, &entry.SpendingLimit,
 		&entry.DailySpendingLimit, &entry.ConcurrencyLimit, &entry.RPMLimit, &entry.TPMLimit,
 		&modelsJSON, &channelsJSON, &channelGroupsJSON, &entry.SystemPrompt,
-		&entry.CreatedAt, &entry.UpdatedAt,
+		&entry.CreatedAt, &entry.UpdatedAt, &entry.EndUserID, &isDefaultInt,
 	); err != nil {
 		if err != sql.ErrNoRows {
 			log.Warnf("sqlite/apikey: scan tenant api_keys row: %v", err)
 		}
 		return nil, false
 	}
+	entry.IsDefault = isDefaultInt != 0
 	decodeAPIKeyRow(&entry, disabledInt, modelsJSON, channelsJSON, channelGroupsJSON)
 	return &entry, true
 }
@@ -705,6 +841,7 @@ func scanAPIKeyRowWithTenant(row scanner) (*APIKeyRow, bool) {
 func scanAPIKeyRow(row scanner) (*APIKeyRow, bool) {
 	var entry APIKeyRow
 	var disabledInt int
+	var isDefaultInt int
 	var modelsJSON string
 	var channelsJSON string
 	var channelGroupsJSON string
@@ -714,13 +851,14 @@ func scanAPIKeyRow(row scanner) (*APIKeyRow, bool) {
 		&entry.DailyLimit, &entry.TotalQuota, &entry.PermissionProfileID, &entry.SpendingLimit,
 		&entry.DailySpendingLimit, &entry.ConcurrencyLimit, &entry.RPMLimit, &entry.TPMLimit,
 		&modelsJSON, &channelsJSON, &channelGroupsJSON, &entry.SystemPrompt,
-		&entry.CreatedAt, &entry.UpdatedAt,
+		&entry.CreatedAt, &entry.UpdatedAt, &entry.EndUserID, &isDefaultInt,
 	); err != nil {
 		if err != sql.ErrNoRows {
 			log.Warnf("sqlite/apikey: scan api_keys row: %v", err)
 		}
 		return nil, false
 	}
+	entry.IsDefault = isDefaultInt != 0
 	decodeAPIKeyRow(&entry, disabledInt, modelsJSON, channelsJSON, channelGroupsJSON)
 	return &entry, true
 }
@@ -728,6 +866,7 @@ func scanAPIKeyRow(row scanner) (*APIKeyRow, bool) {
 func decodeAPIKeyRow(entry *APIKeyRow, disabledInt int, modelsJSON, channelsJSON, channelGroupsJSON string) {
 	entry.Disabled = disabledInt != 0
 	entry.TenantID = strings.TrimSpace(entry.TenantID)
+	entry.EndUserID = strings.TrimSpace(entry.EndUserID)
 	entry.PermissionProfileID = strings.TrimSpace(entry.PermissionProfileID)
 	if modelsJSON != "" && modelsJSON != "[]" {
 		_ = json.Unmarshal([]byte(modelsJSON), &entry.AllowedModels)
