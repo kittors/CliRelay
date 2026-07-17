@@ -100,9 +100,9 @@ SELECT r.id, p.code
  WHERE r.code IN ('tenant_admin', 'platform_super_admin')
 ON CONFLICT DO NOTHING;
 
-INSERT INTO menus (code, parent_code, menu_type, path, component, label_key, icon, permission_code, sort_order, visible, enabled, system_protected)
-VALUES ('access.end-users', 'group.access', 'menu', '/access/end-users', 'end-users', 'shell.nav_end_users', 'user-round', 'end_users.read', 35, true, true, true)
-ON CONFLICT (code) DO NOTHING;
+-- Menu row is seeded from MenuCatalog (identity bootstrap), not here:
+-- parent group.access may be absent on partial upgrade baselines, which would
+-- fail menus_parent_code_fkey and leave the migration dirty.
 `
 
 const profileDailySpendingLimitSQL = `
