@@ -8,13 +8,24 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/enduser"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/identity"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 )
 
 func (h *Handler) endUserService() *enduser.Service {
 	if h == nil {
 		return nil
 	}
-	return enduser.Default()
+	if s := enduser.Default(); s != nil {
+		return s
+	}
+	// Tests / late wiring: fall back to runtime DB when SetDefault was not called.
+	db := usage.RuntimeDB()
+	if db == nil {
+		return nil
+	}
+	s := enduser.NewService(db)
+	enduser.SetDefault(s)
+	return s
 }
 
 func endUserError(c *gin.Context, err error) {

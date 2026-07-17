@@ -195,7 +195,7 @@ func (s Store) ListAll() []APIKeyRow {
 	rows, err := s.db.Query(`SELECT tenant_id, key, name, disabled, id, daily_limit, total_quota,
 		permission_profile_id, spending_limit, daily_spending_limit, concurrency_limit, rpm_limit, tpm_limit,
 		allowed_models, allowed_channels, allowed_channel_groups, system_prompt, created_at, updated_at,
-		COALESCE(end_user_id, ''), COALESCE(is_default, 0)
+		COALESCE(end_user_id, ''), is_default
 		FROM api_keys ORDER BY tenant_id ASC, created_at ASC`)
 	if err != nil {
 		log.Errorf("sqlite/apikey: list all api_keys: %v", err)
@@ -224,7 +224,7 @@ func (s Store) List() []APIKeyRow {
 	rows, err := s.db.Query(`SELECT key, name, disabled, id, daily_limit, total_quota,
 		permission_profile_id, spending_limit, daily_spending_limit, concurrency_limit, rpm_limit, tpm_limit,
 		allowed_models, allowed_channels, allowed_channel_groups, system_prompt, created_at, updated_at,
-		COALESCE(end_user_id, ''), COALESCE(is_default, 0)
+		COALESCE(end_user_id, ''), is_default
 		FROM api_keys WHERE tenant_id = ? ORDER BY created_at ASC`, s.tenantID)
 	if err != nil {
 		log.Errorf("sqlite/apikey: list api_keys: %v", err)
@@ -252,7 +252,7 @@ func (s Store) Get(key string) *APIKeyRow {
 	row := s.db.QueryRow(`SELECT key, name, disabled, id, daily_limit, total_quota,
 		permission_profile_id, spending_limit, daily_spending_limit, concurrency_limit, rpm_limit, tpm_limit,
 		allowed_models, allowed_channels, allowed_channel_groups, system_prompt, created_at, updated_at,
-		COALESCE(end_user_id, ''), COALESCE(is_default, 0)
+		COALESCE(end_user_id, ''), is_default
 		FROM api_keys WHERE tenant_id = ? AND key = ?`, s.tenantID, trimmed)
 	entry, ok := scanAPIKeyRow(row)
 	if !ok {
@@ -275,7 +275,7 @@ func (s Store) GetByID(id string) *APIKeyRow {
 	row := s.db.QueryRow(`SELECT key, name, disabled, id, daily_limit, total_quota,
 		permission_profile_id, spending_limit, daily_spending_limit, concurrency_limit, rpm_limit, tpm_limit,
 		allowed_models, allowed_channels, allowed_channel_groups, system_prompt, created_at, updated_at,
-		COALESCE(end_user_id, ''), COALESCE(is_default, 0)
+		COALESCE(end_user_id, ''), is_default
 		FROM api_keys WHERE tenant_id = ? AND id = ?`, s.tenantID, trimmed)
 	entry, ok := scanAPIKeyRow(row)
 	if !ok {
@@ -311,10 +311,8 @@ func (s Store) Upsert(entry APIKeyRow) error {
 	if entry.Disabled {
 		disabledInt = 1
 	}
-	isDefaultInt := 0
-	if entry.IsDefault {
-		isDefaultInt = 1
-	}
+	// Pass bool for is_default: Postgres column is BOOLEAN; SQLite accepts 0/1 via bool too.
+	isDefault := entry.IsDefault
 	var endUserID any
 	if strings.TrimSpace(entry.EndUserID) != "" {
 		endUserID = strings.TrimSpace(entry.EndUserID)
@@ -344,7 +342,7 @@ func (s Store) Upsert(entry APIKeyRow) error {
 		entry.ConcurrencyLimit, entry.RPMLimit, entry.TPMLimit,
 		mustJSONStringList(entry.AllowedModels), mustJSONStringList(entry.AllowedChannels),
 		mustJSONStringList(entry.AllowedChannelGroups), entry.SystemPrompt,
-		entry.CreatedAt, now, endUserID, isDefaultInt,
+		entry.CreatedAt, now, endUserID, isDefault,
 	)
 	if err != nil {
 		return err
@@ -581,10 +579,7 @@ func (s Store) ReplaceAll(entries []APIKeyRow) error {
 		if entry.Disabled {
 			disabledInt = 1
 		}
-		isDefaultInt := 0
-		if entry.IsDefault {
-			isDefaultInt = 1
-		}
+		isDefault := entry.IsDefault
 		var endUserID any
 		if entry.EndUserID != "" {
 			endUserID = entry.EndUserID
@@ -595,7 +590,7 @@ func (s Store) ReplaceAll(entries []APIKeyRow) error {
 			entry.ConcurrencyLimit, entry.RPMLimit, entry.TPMLimit,
 			mustJSONStringList(entry.AllowedModels), mustJSONStringList(entry.AllowedChannels),
 			mustJSONStringList(entry.AllowedChannelGroups), entry.SystemPrompt,
-			entry.CreatedAt, now, endUserID, isDefaultInt,
+			entry.CreatedAt, now, endUserID, isDefault,
 		); err != nil {
 			_ = tx.Rollback()
 			return err
@@ -816,7 +811,7 @@ func scanAPIKeyRows(rows *sql.Rows) []APIKeyRow {
 func scanAPIKeyRowWithTenant(row scanner) (*APIKeyRow, bool) {
 	var entry APIKeyRow
 	var disabledInt int
-	var isDefaultInt int
+	var isDefault any
 	var modelsJSON string
 	var channelsJSON string
 	var channelGroupsJSON string
@@ -826,14 +821,14 @@ func scanAPIKeyRowWithTenant(row scanner) (*APIKeyRow, bool) {
 		&entry.DailyLimit, &entry.TotalQuota, &entry.PermissionProfileID, &entry.SpendingLimit,
 		&entry.DailySpendingLimit, &entry.ConcurrencyLimit, &entry.RPMLimit, &entry.TPMLimit,
 		&modelsJSON, &channelsJSON, &channelGroupsJSON, &entry.SystemPrompt,
-		&entry.CreatedAt, &entry.UpdatedAt, &entry.EndUserID, &isDefaultInt,
+		&entry.CreatedAt, &entry.UpdatedAt, &entry.EndUserID, &isDefault,
 	); err != nil {
 		if err != sql.ErrNoRows {
 			log.Warnf("sqlite/apikey: scan tenant api_keys row: %v", err)
 		}
 		return nil, false
 	}
-	entry.IsDefault = isDefaultInt != 0
+	entry.IsDefault = boolish(isDefault)
 	decodeAPIKeyRow(&entry, disabledInt, modelsJSON, channelsJSON, channelGroupsJSON)
 	return &entry, true
 }
@@ -841,7 +836,7 @@ func scanAPIKeyRowWithTenant(row scanner) (*APIKeyRow, bool) {
 func scanAPIKeyRow(row scanner) (*APIKeyRow, bool) {
 	var entry APIKeyRow
 	var disabledInt int
-	var isDefaultInt int
+	var isDefault any
 	var modelsJSON string
 	var channelsJSON string
 	var channelGroupsJSON string
@@ -851,16 +846,39 @@ func scanAPIKeyRow(row scanner) (*APIKeyRow, bool) {
 		&entry.DailyLimit, &entry.TotalQuota, &entry.PermissionProfileID, &entry.SpendingLimit,
 		&entry.DailySpendingLimit, &entry.ConcurrencyLimit, &entry.RPMLimit, &entry.TPMLimit,
 		&modelsJSON, &channelsJSON, &channelGroupsJSON, &entry.SystemPrompt,
-		&entry.CreatedAt, &entry.UpdatedAt, &entry.EndUserID, &isDefaultInt,
+		&entry.CreatedAt, &entry.UpdatedAt, &entry.EndUserID, &isDefault,
 	); err != nil {
 		if err != sql.ErrNoRows {
 			log.Warnf("sqlite/apikey: scan api_keys row: %v", err)
 		}
 		return nil, false
 	}
-	entry.IsDefault = isDefaultInt != 0
+	entry.IsDefault = boolish(isDefault)
 	decodeAPIKeyRow(&entry, disabledInt, modelsJSON, channelsJSON, channelGroupsJSON)
 	return &entry, true
+}
+
+// boolish accepts Postgres bool and SQLite integer 0/1 for is_default.
+func boolish(v any) bool {
+	switch t := v.(type) {
+	case bool:
+		return t
+	case int64:
+		return t != 0
+	case int32:
+		return t != 0
+	case int:
+		return t != 0
+	case []byte:
+		if len(t) == 1 {
+			return t[0] != 0 && t[0] != '0'
+		}
+		return string(t) == "true" || string(t) == "t" || string(t) == "1"
+	case string:
+		return t == "true" || t == "t" || t == "1"
+	default:
+		return false
+	}
 }
 
 func decodeAPIKeyRow(entry *APIKeyRow, disabledInt int, modelsJSON, channelsJSON, channelGroupsJSON string) {
