@@ -953,4 +953,3 @@ func (s *Service) DeleteKey(ctx context.Context, tenantID, endUserID, keyID stri
 	}
 	return tx.Commit()
 }
-

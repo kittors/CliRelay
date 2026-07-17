@@ -271,4 +271,3 @@ func (s *Service) ChangePassword(ctx context.Context, user User, sessionID, curr
 	}
 	return tx.Commit()
 }
-
