@@ -68,7 +68,7 @@ func (h *Handler) GetEndUsers(c *gin.Context) {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "end user service unavailable"})
 		return
 	}
-	items, err := svc.ListUsers(c.Request.Context(), principal, principal.EffectiveTenant.ID)
+	items, err := svc.ListUsers(c.Request.Context(), principal, effectiveTenantID(c))
 	if err != nil {
 		endUserError(c, err)
 		return
@@ -92,7 +92,7 @@ func (h *Handler) PostEndUser(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
 		return
 	}
-	result, err := svc.CreateUser(c.Request.Context(), principal, principal.EffectiveTenant.ID, body.Username, body.DisplayName, body.Password)
+	result, err := svc.CreateUser(c.Request.Context(), principal, effectiveTenantID(c), body.Username, body.DisplayName, body.Password)
 	if err != nil {
 		endUserError(c, err)
 		return
@@ -119,7 +119,7 @@ func (h *Handler) PatchEndUser(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
 		return
 	}
-	user, err := svc.UpdateUser(c.Request.Context(), principal, principal.EffectiveTenant.ID, c.Param("id"), body.DisplayName, body.Status)
+	user, err := svc.UpdateUser(c.Request.Context(), principal, effectiveTenantID(c), c.Param("id"), body.DisplayName, body.Status)
 	if err != nil {
 		endUserError(c, err)
 		return
@@ -143,7 +143,7 @@ func (h *Handler) DeleteEndUser(c *gin.Context) {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "end user service unavailable"})
 		return
 	}
-	if err := svc.DeleteUser(c.Request.Context(), principal, principal.EffectiveTenant.ID, c.Param("id")); err != nil {
+	if err := svc.DeleteUser(c.Request.Context(), principal, effectiveTenantID(c), c.Param("id")); err != nil {
 		endUserError(c, err)
 		return
 	}
@@ -165,7 +165,7 @@ func (h *Handler) PostEndUserResetPassword(c *gin.Context) {
 		Password string `json:"password"`
 	}
 	_ = c.ShouldBindJSON(&body)
-	generated, err := svc.ResetPassword(c.Request.Context(), principal, principal.EffectiveTenant.ID, c.Param("id"), body.Password)
+	generated, err := svc.ResetPassword(c.Request.Context(), principal, effectiveTenantID(c), c.Param("id"), body.Password)
 	if err != nil {
 		endUserError(c, err)
 		return
@@ -184,7 +184,7 @@ func (h *Handler) GetEndUserAPIKeys(c *gin.Context) {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "end user service unavailable"})
 		return
 	}
-	items, err := svc.ListKeys(c.Request.Context(), principal.EffectiveTenant.ID, c.Param("id"))
+	items, err := svc.ListKeys(c.Request.Context(), effectiveTenantID(c), c.Param("id"))
 	if err != nil {
 		endUserError(c, err)
 		return
@@ -207,7 +207,7 @@ func (h *Handler) PostEndUserAPIKey(c *gin.Context) {
 		Name string `json:"name"`
 	}
 	_ = c.ShouldBindJSON(&body)
-	result, err := svc.CreateKey(c.Request.Context(), principal.EffectiveTenant.ID, c.Param("id"), body.Name)
+	result, err := svc.CreateKey(c.Request.Context(), effectiveTenantID(c), c.Param("id"), body.Name)
 	if err != nil {
 		endUserError(c, err)
 		return

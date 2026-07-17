@@ -260,6 +260,13 @@ func ensureActorTenantScope(actor identity.Principal, tenantID string) error {
 	return ErrTenantScope
 }
 
+func requireUUID(id string) error {
+	if _, err := uuid.Parse(strings.TrimSpace(id)); err != nil {
+		return ErrNotFound
+	}
+	return nil
+}
+
 func scanUser(scanner interface{ Scan(dest ...any) error }) (User, error) {
 	var u User
 	var lastLogin, lockedUntil sql.NullTime
@@ -286,8 +293,18 @@ const userSelect = `SELECT id, tenant_id, username, display_name, status, must_c
 	last_login_at, failed_login_count, lock_stage, locked_until, created_at, updated_at, version FROM end_users`
 
 func (s *Service) GetUser(ctx context.Context, tenantID, userID string) (User, error) {
+	if err := requireUUID(tenantID); err != nil {
+		return User{}, err
+	}
+	if err := requireUUID(userID); err != nil {
+		return User{}, err
+	}
 	row := s.db.QueryRowContext(ctx, userSelect+` WHERE tenant_id = ? AND id = ?`, tenantID, userID)
-	return scanUser(row)
+	u, err := scanUser(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return User{}, ErrNotFound
+	}
+	return u, err
 }
 
 func (s *Service) ListUsers(ctx context.Context, actor identity.Principal, tenantID string) ([]User, error) {
@@ -295,6 +312,9 @@ func (s *Service) ListUsers(ctx context.Context, actor identity.Principal, tenan
 		return nil, ErrPermissionDenied
 	}
 	if err := ensureActorTenantScope(actor, tenantID); err != nil {
+		return nil, err
+	}
+	if err := requireUUID(tenantID); err != nil {
 		return nil, err
 	}
 	rows, err := s.db.QueryContext(ctx, userSelect+` WHERE tenant_id = ? ORDER BY created_at DESC`, tenantID)
@@ -381,6 +401,9 @@ func (s *Service) CreateUser(ctx context.Context, actor identity.Principal, tena
 	if err := ensureActorTenantScope(actor, tenantID); err != nil {
 		return result, err
 	}
+	if err := requireUUID(tenantID); err != nil {
+		return result, err
+	}
 	displayName = strings.TrimSpace(displayName)
 	if displayName == "" || len(displayName) > 128 {
 		return result, fmt.Errorf("%w: display_name required", ErrValidation)
@@ -441,6 +464,12 @@ func (s *Service) UpdateUser(ctx context.Context, actor identity.Principal, tena
 		return User{}, ErrPermissionDenied
 	}
 	if err := ensureActorTenantScope(actor, tenantID); err != nil {
+		return User{}, err
+	}
+	if err := requireUUID(tenantID); err != nil {
+		return User{}, err
+	}
+	if err := requireUUID(userID); err != nil {
 		return User{}, err
 	}
 	sets := make([]string, 0, 4)
@@ -515,6 +544,12 @@ func (s *Service) ResetPassword(ctx context.Context, actor identity.Principal, t
 	if err := ensureActorTenantScope(actor, tenantID); err != nil {
 		return "", err
 	}
+	if err := requireUUID(tenantID); err != nil {
+		return "", err
+	}
+	if err := requireUUID(userID); err != nil {
+		return "", err
+	}
 	generated := ""
 	if strings.TrimSpace(password) == "" {
 		var err error
@@ -565,6 +600,12 @@ func (s *Service) DeleteUser(ctx context.Context, actor identity.Principal, tena
 	if err := ensureActorTenantScope(actor, tenantID); err != nil {
 		return err
 	}
+	if err := requireUUID(tenantID); err != nil {
+		return err
+	}
+	if err := requireUUID(userID); err != nil {
+		return err
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -612,8 +653,14 @@ func (s *Service) ResolveOwnedKeySecret(ctx context.Context, tenantID, endUserID
 }
 
 func (s *Service) ListKeys(ctx context.Context, tenantID, endUserID string) ([]APIKey, error) {
+	if err := requireUUID(tenantID); err != nil {
+		return nil, err
+	}
+	if err := requireUUID(endUserID); err != nil {
+		return nil, err
+	}
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, tenant_id, COALESCE(end_user_id::text, ''), key, name, disabled, COALESCE(is_default, false),
+		SELECT id, tenant_id, end_user_id, key, name, disabled, COALESCE(is_default, false),
 			COALESCE(created_at, ''), COALESCE(updated_at, '')
 		FROM api_keys WHERE tenant_id = ? AND end_user_id = ?
 		ORDER BY is_default DESC, created_at ASC
@@ -625,10 +672,14 @@ func (s *Service) ListKeys(ctx context.Context, tenantID, endUserID string) ([]A
 	out := make([]APIKey, 0)
 	for rows.Next() {
 		var k APIKey
+		var endUserID sql.NullString
 		var disabledInt int
 		var isDefault bool
-		if err := rows.Scan(&k.ID, &k.TenantID, &k.EndUserID, &k.Key, &k.Name, &disabledInt, &isDefault, &k.CreatedAt, &k.UpdatedAt); err != nil {
+		if err := rows.Scan(&k.ID, &k.TenantID, &endUserID, &k.Key, &k.Name, &disabledInt, &isDefault, &k.CreatedAt, &k.UpdatedAt); err != nil {
 			return nil, err
+		}
+		if endUserID.Valid {
+			k.EndUserID = endUserID.String
 		}
 		k.Disabled = disabledInt != 0
 		k.IsDefault = isDefault
@@ -641,6 +692,12 @@ func (s *Service) ListKeys(ctx context.Context, tenantID, endUserID string) ([]A
 
 func (s *Service) CreateKey(ctx context.Context, tenantID, endUserID, name string) (CreateKeyResult, error) {
 	var result CreateKeyResult
+	if err := requireUUID(tenantID); err != nil {
+		return result, err
+	}
+	if err := requireUUID(endUserID); err != nil {
+		return result, err
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return result, err

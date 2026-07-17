@@ -533,12 +533,15 @@ func (h *Handler) PutRolePermissions(c *gin.Context) {
 }
 
 func (h *Handler) setServicePrincipal(c *gin.Context) {
+	systemTenant := identity.Tenant{ID: identity.SystemTenantID, Name: "System", Slug: "system", Status: "active"}
 	principal := identity.Principal{
-		Kind:           "service_credential",
-		PlatformAdmin:  true,
-		Permissions:    map[string]bool{},
-		PermissionList: []string{"*"},
-		User:           identity.User{ID: identity.SystemUserID, TenantID: identity.SystemTenantID, Username: "admin", DisplayName: "Administrator", Status: "active"},
+		Kind:             "service_credential",
+		PlatformAdmin:    true,
+		Permissions:      map[string]bool{},
+		PermissionList:   []string{"*"},
+		User:             identity.User{ID: identity.SystemUserID, TenantID: identity.SystemTenantID, Username: "admin", DisplayName: "Administrator", Status: "active"},
+		HomeTenant:       systemTenant,
+		EffectiveTenant:  systemTenant,
 	}
 	if service := h.identity(); service != nil {
 		if tenant, err := service.GetTenant(c.Request.Context(), identity.SystemTenantID); err == nil {
