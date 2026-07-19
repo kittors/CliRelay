@@ -37,12 +37,13 @@ type ClearRequestLogsOptions struct {
 const systemRequestLogFilterValue = "__system__"
 
 var (
-	usageDB     *sql.DB
-	usageReadDB *sql.DB
-	usageDBMu   sync.Mutex
-	usageDBPath string
-	usageDriver string
-	usageLoc    *time.Location
+	usageDBLifecycleMu sync.Mutex
+	usageDB            *sql.DB
+	usageReadDB        *sql.DB
+	usageDBMu          sync.Mutex
+	usageDBPath        string
+	usageDriver        string
+	usageLoc           *time.Location
 )
 
 // DatabaseStats summarizes the active runtime database for management telemetry.
@@ -578,6 +579,9 @@ func startRequestLogContentSessionIDBackfill(db *sql.DB) {
 // InitDB opens (or creates) the SQLite database at the given path and creates
 // the request_logs table if it doesn't exist.
 func InitDB(dbPath string, storageCfg config.RequestLogStorageConfig, loc *time.Location) error {
+	usageDBLifecycleMu.Lock()
+	defer usageDBLifecycleMu.Unlock()
+
 	usageDBMu.Lock()
 	defer usageDBMu.Unlock()
 
@@ -655,6 +659,9 @@ func InitDB(dbPath string, storageCfg config.RequestLogStorageConfig, loc *time.
 }
 
 func InitPostgres(pgCfg config.PostgresConfig, storageCfg config.RequestLogStorageConfig, loc *time.Location) error {
+	usageDBLifecycleMu.Lock()
+	defer usageDBLifecycleMu.Unlock()
+
 	usageDBMu.Lock()
 	defer usageDBMu.Unlock()
 
@@ -769,20 +776,32 @@ func initOpenedDBLocked(db, readDB *sql.DB, dbPath, driver string, storageCfg co
 
 // CloseDB closes the runtime database gracefully.
 func CloseDB() {
-	usageDBMu.Lock()
-	defer usageDBMu.Unlock()
+	usageDBLifecycleMu.Lock()
+	defer usageDBLifecycleMu.Unlock()
 
+	// Maintenance and in-flight SQLite writes can read usageLoc under usageDBMu.
+	// Stop the worker, then detach the handles under the mutex before waiting for
+	// database/sql to drain them, otherwise shutdown can deadlock on that mutex.
 	stopRequestLogMaintenance()
-	if usageDB != nil {
-		_ = usageDB.Close()
-		usageDB = nil
+
+	usageDBMu.Lock()
+	db := usageDB
+	readDB := usageReadDB
+	usageDB = nil
+	usageReadDB = nil
+	usageDBMu.Unlock()
+
+	if db != nil {
+		_ = db.Close()
 	}
-	if usageReadDB != nil {
-		_ = usageReadDB.Close()
-		usageReadDB = nil
+	if readDB != nil && readDB != db {
+		_ = readDB.Close()
 	}
+
+	usageDBMu.Lock()
 	usageLoc = nil
 	usageDriver = ""
+	usageDBMu.Unlock()
 	log.Info("usage: database closed")
 }
 
