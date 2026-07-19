@@ -272,7 +272,7 @@ func compactLogContentStorageInternal(db *sql.DB, allowOptimize bool) {
 
 	didVacuum := false
 	now := time.Now()
-	if requestLogStorage.VacuumOnCleanup && shouldVacuum(stats) && vacuumAllowedNow(now) {
+	if currentRequestLogStorageConfig().VacuumOnCleanup && shouldVacuum(stats) && vacuumAllowedNow(now) {
 		freeBytes := reclaimableBytes(stats)
 		log.Infof("usage: reclaimable sqlite free space detected (freelist=%d pages, approx=%d bytes), running VACUUM", stats.FreeListCount, freeBytes)
 		if _, err := db.Exec("VACUUM"); err != nil {

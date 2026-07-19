@@ -426,3 +426,19 @@ func TestSaveConfigPreserveCommentsKeepsDisableControlPanelTrue(t *testing.T) {
 		t.Fatalf("saved config missing explicit true override:\n%s", rendered)
 	}
 }
+
+func TestLoadConfigDefaultsSystemStatsCacheToSixtySeconds(t *testing.T) {
+	t.Parallel()
+
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(configPath, []byte("port: 8317\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("LoadConfig returned error: %v", err)
+	}
+	if cfg.SystemStatsCacheSeconds != 60 {
+		t.Fatalf("SystemStatsCacheSeconds = %d, want 60", cfg.SystemStatsCacheSeconds)
+	}
+}

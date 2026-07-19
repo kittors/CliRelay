@@ -372,3 +372,42 @@ func TestRequestLoggingMiddlewarePreservesOriginalURLAcrossRewrite(t *testing.T)
 		t.Fatalf("diagnostic response = %#v", logger.diagnostic.Response)
 	}
 }
+
+func TestRequestLoggingDisabledSuccessSkipsHeaderAndResponseCapture(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	logger := &diagnosticRequestLogger{}
+	var wrapper *ResponseWriterWrapper
+	router := gin.New()
+	router.Use(RequestLoggingMiddleware(logger))
+	router.POST("/v1/responses", func(c *gin.Context) {
+		wrapper, _ = c.Writer.(*ResponseWriterWrapper)
+		c.Header("Content-Type", "text/event-stream")
+		c.Status(http.StatusOK)
+		_, _ = c.Writer.Write([]byte("data: ok\n\n"))
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"stream":true}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Test", "must-not-be-cloned-on-success")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if wrapper == nil {
+		t.Fatal("request logging wrapper was not installed")
+	}
+	if wrapper.requestInfo.Headers != nil {
+		t.Fatalf("successful error-only request captured headers: %#v", wrapper.requestInfo.Headers)
+	}
+	if wrapper.headersCaptured || wrapper.body.Len() != 0 {
+		t.Fatalf("successful stream captured response data: headers=%t body=%d", wrapper.headersCaptured, wrapper.body.Len())
+	}
+	if logger.calls != 0 {
+		t.Fatalf("error-only logger calls = %d, want 0", logger.calls)
+	}
+	if wrapper.firstChunkTimestamp.IsZero() {
+		t.Fatal("first-response timing was not preserved")
+	}
+}

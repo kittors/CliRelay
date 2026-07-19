@@ -17,6 +17,7 @@ import (
 )
 
 func TestAntigravityExecutePublishesUsageContent(t *testing.T) {
+	setUsageBodyCaptureForTest(t, true)
 	const input = `{"request":{"contents":[{"role":"user","parts":[{"text":"ag input marker"}]}]}}`
 	const output = `{"response":{"usageMetadata":{"promptTokenCount":2,"candidatesTokenCount":3,"totalTokenCount":5}}}`
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -51,6 +52,7 @@ func TestAntigravityExecutePublishesUsageContent(t *testing.T) {
 }
 
 func TestAntigravityExecuteStreamPublishesUsageContent(t *testing.T) {
+	setUsageBodyCaptureForTest(t, true)
 	const input = `{"request":{"contents":[{"role":"user","parts":[{"text":"ag stream marker"}]}]}}`
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != antigravityStreamPath {

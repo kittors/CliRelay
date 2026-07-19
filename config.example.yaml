@@ -143,6 +143,10 @@ error-logs-max-files: 10
 # When false, disable in-memory usage statistics aggregation
 usage-statistics-enabled: false
 
+# Cache expensive management system-stat fields (database sizes, log directory scan,
+# and channel latency) for this many seconds. CPU, memory, network, and concurrency stay live.
+system-stats-cache-seconds: 60
+
 # Detailed request/response body retention settings for PostgreSQL request-log storage.
 request-log-storage:
   # When true, persist full request and response bodies in PostgreSQL.

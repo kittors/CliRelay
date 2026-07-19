@@ -4,6 +4,7 @@
 package logging
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -28,6 +29,8 @@ var aiAPIPrefixes = []string{
 
 const skipGinLogKey = "__gin_skip_request_logging__"
 
+type ginRequestLoggingContextKey struct{}
+
 // GinLogrusLogger returns a Gin middleware handler that logs HTTP requests and responses
 // using logrus. It captures request details including method, path, status code, latency,
 // client IP, and any error messages. Request ID is generated for AI API and management
@@ -40,18 +43,19 @@ const skipGinLogKey = "__gin_skip_request_logging__"
 //   - gin.HandlerFunc: A middleware handler for request logging
 func GinLogrusLogger() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		if ginRequestLoggingActive(c) {
+			ensureGinRequestID(c)
+			c.Next()
+			return
+		}
+		c.Request = c.Request.WithContext(context.WithValue(c.Request.Context(), ginRequestLoggingContextKey{}, true))
+
 		start := time.Now()
 		path := c.Request.URL.Path
 		raw := util.MaskSensitiveQuery(c.Request.URL.RawQuery)
 
 		// AI API + management: attach request ID for log/audit correlation.
-		var requestID string
-		if shouldTrackRequestID(path) {
-			requestID = GenerateRequestID()
-			SetGinRequestID(c, requestID)
-			ctx := WithRequestID(c.Request.Context(), requestID)
-			c.Request = c.Request.WithContext(ctx)
-		}
+		requestID := ensureGinRequestID(c)
 
 		c.Next()
 
@@ -79,6 +83,9 @@ func GinLogrusLogger() gin.HandlerFunc {
 		errorMessage := c.Errors.ByType(gin.ErrorTypePrivate).String()
 
 		if requestID == "" {
+			requestID = GetGinRequestID(c)
+		}
+		if requestID == "" {
 			requestID = "--------"
 		}
 		logLine := fmt.Sprintf("%3d | %13v | %15s | %-7s \"%s\"", statusCode, latency, clientIP, method, path)
@@ -97,6 +104,30 @@ func GinLogrusLogger() gin.HandlerFunc {
 			entry.Info(logLine)
 		}
 	}
+}
+
+func ensureGinRequestID(c *gin.Context) string {
+	if c == nil || c.Request == nil {
+		return ""
+	}
+	if requestID := GetGinRequestID(c); requestID != "" {
+		return requestID
+	}
+	if !shouldTrackRequestID(c.Request.URL.Path) {
+		return ""
+	}
+	requestID := GenerateRequestID()
+	SetGinRequestID(c, requestID)
+	c.Request = c.Request.WithContext(WithRequestID(c.Request.Context(), requestID))
+	return requestID
+}
+
+func ginRequestLoggingActive(c *gin.Context) bool {
+	if c == nil || c.Request == nil {
+		return false
+	}
+	active, _ := c.Request.Context().Value(ginRequestLoggingContextKey{}).(bool)
+	return active
 }
 
 // isAIAPIPath checks if the given path is an AI API endpoint that should have request ID tracking.

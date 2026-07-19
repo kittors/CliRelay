@@ -14,8 +14,16 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	internalusage "github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 )
+
+func setUsageBodyCaptureForTest(t *testing.T, enabled bool) {
+	t.Helper()
+	previous := internalusage.RequestLogBodyStorageEnabled()
+	internalusage.SetRequestLogBodyStorageEnabled(enabled)
+	t.Cleanup(func() { internalusage.SetRequestLogBodyStorageEnabled(previous) })
+}
 
 func TestParseOpenAIUsageChatCompletions(t *testing.T) {
 	data := []byte(`{"usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3,"prompt_tokens_details":{"cached_tokens":4},"completion_tokens_details":{"reasoning_tokens":5}}}`)
@@ -84,6 +92,7 @@ func TestParseOpenAIResponseModel(t *testing.T) {
 }
 
 func TestUsageReporterSpillsLargeStreamingOutputToTempFile(t *testing.T) {
+	setUsageBodyCaptureForTest(t, true)
 	reporter := newUsageReporter(context.Background(), "provider", "model", "", nil)
 	chunk := bytes.Repeat([]byte("x"), usageReporterOutputMemoryLimit/2)
 
@@ -230,6 +239,7 @@ func TestFirstTokenLatencyMsFromContext(t *testing.T) {
 }
 
 func TestUsageReporterPreservesDirectContentBeforeSpilledChunks(t *testing.T) {
+	setUsageBodyCaptureForTest(t, true)
 	reporter := newUsageReporter(context.Background(), "provider", "model", "", nil)
 	chunk := bytes.Repeat([]byte("x"), usageReporterOutputMemoryLimit+1)
 	reporter.appendOutputChunk(chunk)
@@ -253,6 +263,7 @@ func TestUsageReporterPreservesDirectContentBeforeSpilledChunks(t *testing.T) {
 }
 
 func TestUsageReporterDefersLargeInputContent(t *testing.T) {
+	setUsageBodyCaptureForTest(t, true)
 	reporter := newUsageReporter(context.Background(), "provider", "model", "", nil)
 	input := strings.Repeat("i", usageReporterOutputMemoryLimit+1)
 	reporter.setInputContent(input)
@@ -268,6 +279,19 @@ func TestUsageReporterDefersLargeInputContent(t *testing.T) {
 	}
 	if string(data) != input {
 		t.Fatalf("deferred input content mismatch")
+	}
+}
+
+func TestUsageReporterPreservesStreamingClassificationWithoutBodyCapture(t *testing.T) {
+	setUsageBodyCaptureForTest(t, false)
+	reporter := newUsageReporter(context.Background(), "provider", "model", "", nil)
+	reporter.setInputContent(`{"model":"gpt-5.4","stream":true}`)
+
+	if !reporter.streamingRequest {
+		t.Fatal("streaming request classification should survive disabled body storage")
+	}
+	if reporter.inputContent != "" || reporter.inputPath != "" {
+		t.Fatal("request body must not be retained when body storage is disabled")
 	}
 }
 

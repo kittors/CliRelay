@@ -92,6 +92,11 @@ type Config struct {
 	// metadata is still persisted so monitoring/history pages keep working.
 	UsageStatisticsEnabled bool `yaml:"usage-statistics-enabled" json:"usage-statistics-enabled"`
 
+	// SystemStatsCacheSeconds controls how long expensive management system-stat
+	// fields (database sizes, log directory walk, latency aggregation) are cached.
+	// Lightweight CPU, memory, network and concurrency values remain live.
+	SystemStatsCacheSeconds int `yaml:"system-stats-cache-seconds" json:"system-stats-cache-seconds"`
+
 	// DisableCooling disables quota cooldown scheduling when true.
 	DisableCooling bool `yaml:"disable-cooling" json:"disable-cooling"`
 

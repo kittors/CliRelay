@@ -73,6 +73,72 @@ type SystemStats struct {
 	TotalTPM          int64                            `json:"total_tpm"`
 }
 
+type expensiveSystemStats struct {
+	DBSizeBytes          int64
+	DBEngine             string
+	LogContentStoreBytes int64
+	LogDirSizeBytes      int64
+	ChannelLatency       []usage.ChannelLatency
+}
+
+type systemStatsCacheEntry struct {
+	cachedAt time.Time
+	value    expensiveSystemStats
+}
+
+const defaultSystemStatsCacheSeconds = 60
+
+func (h *Handler) systemStatsCacheTTL() time.Duration {
+	seconds := defaultSystemStatsCacheSeconds
+	if h != nil {
+		h.mu.Lock()
+		if h.cfg != nil && h.cfg.SystemStatsCacheSeconds > 0 {
+			seconds = h.cfg.SystemStatsCacheSeconds
+		}
+		h.mu.Unlock()
+	}
+	return time.Duration(seconds) * time.Second
+}
+
+func (h *Handler) collectExpensiveSystemStats() expensiveSystemStats {
+	stats := expensiveSystemStats{}
+	dbStats, err := usage.GetDatabaseStats()
+	stats.DBEngine = dbStats.Driver
+	stats.DBSizeBytes = dbStats.SizeBytes
+	if err != nil {
+		log.Warnf("system-stats: failed to query database stats: %v", err)
+	}
+	if contentBytes, err := usage.GetRequestLogStorageBytes(); err == nil {
+		stats.LogContentStoreBytes = contentBytes
+	} else {
+		log.Warnf("system-stats: failed to query request log storage bytes: %v", err)
+	}
+	if h != nil && h.logDir != "" {
+		stats.LogDirSizeBytes = dirSize(h.logDir)
+	}
+	if latency, err := usage.GetChannelAvgLatency(7); err == nil {
+		stats.ChannelLatency = latency
+	}
+	return stats
+}
+
+func (h *Handler) cachedExpensiveSystemStats() expensiveSystemStats {
+	if h == nil {
+		return expensiveSystemStats{}
+	}
+	h.systemStatsCacheMu.Lock()
+	defer h.systemStatsCacheMu.Unlock()
+
+	now := time.Now()
+	ttl := h.systemStatsCacheTTL()
+	if !h.systemStatsCache.cachedAt.IsZero() && now.Sub(h.systemStatsCache.cachedAt) < ttl {
+		return h.systemStatsCache.value
+	}
+	value := h.collectExpensiveSystemStats()
+	h.systemStatsCache = systemStatsCacheEntry{cachedAt: now, value: value}
+	return value
+}
+
 // network baseline for rate calculation
 var (
 	netMu         sync.Mutex
@@ -93,23 +159,13 @@ func (h *Handler) collectSystemStats() SystemStats {
 	runtime.ReadMemStats(&m)
 	stats.GoHeapBytes = m.HeapAlloc
 
-	dbStats, err := usage.GetDatabaseStats()
-	stats.DBEngine = dbStats.Driver
-	stats.DBSizeBytes = dbStats.SizeBytes
-	if err != nil {
-		log.Warnf("system-stats: failed to query database stats: %v", err)
-	}
-	if contentBytes, err := usage.GetRequestLogStorageBytes(); err == nil {
-		stats.LogContentStoreBytes = contentBytes
-	} else {
-		log.Warnf("system-stats: failed to query request log storage bytes: %v", err)
-	}
-
-	// ── Log directory size ──
-	if h.logDir != "" {
-		stats.LogDirSizeBytes = dirSize(h.logDir)
-		stats.LogSizeBytes = stats.LogDirSizeBytes
-	}
+	expensive := h.cachedExpensiveSystemStats()
+	stats.DBEngine = expensive.DBEngine
+	stats.DBSizeBytes = expensive.DBSizeBytes
+	stats.LogContentStoreBytes = expensive.LogContentStoreBytes
+	stats.LogDirSizeBytes = expensive.LogDirSizeBytes
+	stats.LogSizeBytes = expensive.LogDirSizeBytes
+	stats.ChannelLatency = expensive.ChannelLatency
 
 	// ── Process CPU/Memory (gopsutil) ──
 	if proc, err := process.NewProcess(int32(os.Getpid())); err == nil {
@@ -163,11 +219,6 @@ func (h *Handler) collectSystemStats() SystemStats {
 		stats.DiskUsed = du.Used
 		stats.DiskFree = du.Free
 		stats.DiskPct = du.UsedPercent
-	}
-
-	// ── Channel latency (from DB) ──
-	if cl, err := usage.GetChannelAvgLatency(7); err == nil {
-		stats.ChannelLatency = cl
 	}
 
 	// ── Concurrency snapshot ──

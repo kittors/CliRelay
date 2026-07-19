@@ -690,8 +690,7 @@ func initOpenedDBLocked(db, readDB *sql.DB, dbPath, driver string, storageCfg co
 	usageReadDB = readDB
 	usageDBPath = dbPath
 	usageDriver = driver
-	requestLogStorage = normalizeRequestLogStorageConfig(storageCfg)
-	SetRequestLogBodyStorageEnabled(storageCfg.StoreContent)
+	ApplyRequestLogStorageConfig(storageCfg)
 	if runSQLiteBootstrap {
 		log.Debugf("usage: running tenant scope column migration")
 		migrateRequestLogTenantColumns(db)
@@ -792,42 +791,50 @@ func CloseDB() {
 func InsertLog(apiKey, apiKeyName, model, source, channelName, authIndex string,
 	failed bool, timestamp time.Time, latencyMs, firstTokenMs int64, tokens TokenStats,
 	inputContent, outputContent string) {
-	insertLogIdentity(apiKey, "", "", apiKeyName, model, "", "", source, channelName, authIndex, failed, timestamp, latencyMs, firstTokenMs, tokens, inputContent, outputContent, "")
+	insertLogIdentity(apiKey, "", "", apiKeyName, model, "", "", source, channelName, authIndex, failed, timestamp, latencyMs, firstTokenMs, tokens, inputContent, outputContent, "", isStreamingRequestContent(inputContent))
 }
 
 func InsertLogWithDetails(apiKey, apiKeyName, model, source, channelName, authIndex string,
 	failed bool, timestamp time.Time, latencyMs, firstTokenMs int64, tokens TokenStats,
 	inputContent, outputContent, detailContent string) {
-	insertLogIdentity(apiKey, "", "", apiKeyName, model, "", "", source, channelName, authIndex, failed, timestamp, latencyMs, firstTokenMs, tokens, inputContent, outputContent, detailContent)
+	insertLogIdentity(apiKey, "", "", apiKeyName, model, "", "", source, channelName, authIndex, failed, timestamp, latencyMs, firstTokenMs, tokens, inputContent, outputContent, detailContent, isStreamingRequestContent(inputContent))
 }
 
 func InsertLogWithDetailsIdentity(apiKey, apiKeyID, apiKeyName, model, source, channelName, authIndex string,
 	failed bool, timestamp time.Time, latencyMs, firstTokenMs int64, tokens TokenStats,
 	inputContent, outputContent, detailContent string) {
-	insertLogIdentity(apiKey, apiKeyID, "", apiKeyName, model, "", "", source, channelName, authIndex, failed, timestamp, latencyMs, firstTokenMs, tokens, inputContent, outputContent, detailContent)
+	insertLogIdentity(apiKey, apiKeyID, "", apiKeyName, model, "", "", source, channelName, authIndex, failed, timestamp, latencyMs, firstTokenMs, tokens, inputContent, outputContent, detailContent, isStreamingRequestContent(inputContent))
 }
 
 func InsertLogWithDetailsIdentitySubject(apiKey, apiKeyID, authSubjectID, apiKeyName, model, source, channelName, authIndex string,
 	failed bool, timestamp time.Time, latencyMs, firstTokenMs int64, tokens TokenStats,
 	inputContent, outputContent, detailContent string) {
-	insertLogIdentity(apiKey, apiKeyID, authSubjectID, apiKeyName, model, "", "", source, channelName, authIndex, failed, timestamp, latencyMs, firstTokenMs, tokens, inputContent, outputContent, detailContent)
+	insertLogIdentity(apiKey, apiKeyID, authSubjectID, apiKeyName, model, "", "", source, channelName, authIndex, failed, timestamp, latencyMs, firstTokenMs, tokens, inputContent, outputContent, detailContent, isStreamingRequestContent(inputContent))
 }
 
 func InsertLogWithDetailsIdentitySubjectUpstream(apiKey, apiKeyID, authSubjectID, apiKeyName, model, upstreamModel, source, channelName, authIndex string,
 	failed bool, timestamp time.Time, latencyMs, firstTokenMs int64, tokens TokenStats,
 	inputContent, outputContent, detailContent string) {
-	insertLogIdentity(apiKey, apiKeyID, authSubjectID, apiKeyName, model, upstreamModel, "", source, channelName, authIndex, failed, timestamp, latencyMs, firstTokenMs, tokens, inputContent, outputContent, detailContent)
+	insertLogIdentity(apiKey, apiKeyID, authSubjectID, apiKeyName, model, upstreamModel, "", source, channelName, authIndex, failed, timestamp, latencyMs, firstTokenMs, tokens, inputContent, outputContent, detailContent, isStreamingRequestContent(inputContent))
 }
 
 func InsertLogWithDetailsIdentitySubjectUpstreamVision(apiKey, apiKeyID, authSubjectID, apiKeyName, model, upstreamModel, visionFallbackModel, source, channelName, authIndex string,
 	failed bool, timestamp time.Time, latencyMs, firstTokenMs int64, tokens TokenStats,
 	inputContent, outputContent, detailContent string) {
-	insertLogIdentity(apiKey, apiKeyID, authSubjectID, apiKeyName, model, upstreamModel, visionFallbackModel, source, channelName, authIndex, failed, timestamp, latencyMs, firstTokenMs, tokens, inputContent, outputContent, detailContent)
+	insertLogIdentity(apiKey, apiKeyID, authSubjectID, apiKeyName, model, upstreamModel, visionFallbackModel, source, channelName, authIndex, failed, timestamp, latencyMs, firstTokenMs, tokens, inputContent, outputContent, detailContent, isStreamingRequestContent(inputContent))
+}
+
+// InsertLogWithDetailsIdentitySubjectUpstreamVisionStreaming persists an
+// explicit streaming classification even when request body storage is disabled.
+func InsertLogWithDetailsIdentitySubjectUpstreamVisionStreaming(apiKey, apiKeyID, authSubjectID, apiKeyName, model, upstreamModel, visionFallbackModel, source, channelName, authIndex string,
+	failed bool, timestamp time.Time, latencyMs, firstTokenMs int64, tokens TokenStats,
+	inputContent, outputContent, detailContent string, streaming bool) {
+	insertLogIdentity(apiKey, apiKeyID, authSubjectID, apiKeyName, model, upstreamModel, visionFallbackModel, source, channelName, authIndex, failed, timestamp, latencyMs, firstTokenMs, tokens, inputContent, outputContent, detailContent, streaming)
 }
 
 func insertLogIdentity(apiKey, apiKeyID, authSubjectID, apiKeyName, model, upstreamModel, visionFallbackModel, source, channelName, authIndex string,
 	failed bool, timestamp time.Time, latencyMs, firstTokenMs int64, tokens TokenStats,
-	inputContent, outputContent, detailContent string) {
+	inputContent, outputContent, detailContent string, streaming bool) {
 	db := getDB()
 	if db == nil {
 		return
@@ -838,7 +845,7 @@ func insertLogIdentity(apiKey, apiKeyID, authSubjectID, apiKeyName, model, upstr
 		failedInt = 1
 	}
 	streamingInt := 0
-	if isStreamingRequestContent(inputContent) {
+	if streaming {
 		streamingInt = 1
 	}
 

@@ -38,12 +38,7 @@ type requestLogStorageRuntime struct {
 }
 
 var (
-	requestLogStorage = requestLogStorageRuntime{
-		ContentRetentionDays:   30,
-		CleanupIntervalMinutes: 1440,
-		MaxTotalSizeMB:         1024,
-		VacuumOnCleanup:        true,
-	}
+	requestLogStorage atomic.Value // requestLogStorageRuntime
 
 	requestLogMaintenanceCancel context.CancelFunc
 	requestLogMaintenanceWG     sync.WaitGroup
@@ -74,14 +69,34 @@ var (
 )
 
 func init() {
+	requestLogStorage.Store(requestLogStorageRuntime{
+		ContentRetentionDays:   30,
+		CleanupIntervalMinutes: 1440,
+		MaxTotalSizeMB:         1024,
+		VacuumOnCleanup:        true,
+	})
 	requestLogContentBytes.Store(-1)
 	requestLogBodiesEnabled.Store(false)
 	// Initialize atomic.Value type so subsequent stores can use typed nil safely.
 	requestLogMaintenanceWakeup.Store((chan struct{})(nil))
 }
 
+func currentRequestLogStorageConfig() requestLogStorageRuntime {
+	value := requestLogStorage.Load()
+	if value == nil {
+		return requestLogStorageRuntime{
+			ContentRetentionDays:   30,
+			CleanupIntervalMinutes: 1440,
+			MaxTotalSizeMB:         1024,
+			VacuumOnCleanup:        true,
+		}
+	}
+	runtimeCfg, _ := value.(requestLogStorageRuntime)
+	return runtimeCfg
+}
+
 func contentRetentionUnlimited() bool {
-	return requestLogStorage.ContentRetentionDays <= 0
+	return currentRequestLogStorageConfig().ContentRetentionDays <= 0
 }
 
 // RequestLogBodyStorageEnabled reports whether full request and response bodies
@@ -94,6 +109,15 @@ func RequestLogBodyStorageEnabled() bool {
 // without requiring a process restart.
 func SetRequestLogBodyStorageEnabled(enabled bool) {
 	requestLogBodiesEnabled.Store(enabled)
+}
+
+// ApplyRequestLogStorageConfig applies the complete request-log body policy at
+// runtime. The maintenance loop reads the atomic snapshot on each pass, so YAML
+// changes do not require a process restart.
+func ApplyRequestLogStorageConfig(cfg config.RequestLogStorageConfig) {
+	requestLogStorage.Store(normalizeRequestLogStorageConfig(cfg))
+	SetRequestLogBodyStorageEnabled(cfg.StoreContent)
+	triggerRequestLogCompaction()
 }
 
 func normalizeRequestLogStorageConfig(cfg config.RequestLogStorageConfig) requestLogStorageRuntime {
@@ -116,10 +140,11 @@ func normalizeRequestLogStorageConfig(cfg config.RequestLogStorageConfig) reques
 }
 
 func maxLogContentBytes() int64 {
-	if requestLogStorage.MaxTotalSizeMB <= 0 {
+	runtimeCfg := currentRequestLogStorageConfig()
+	if runtimeCfg.MaxTotalSizeMB <= 0 {
 		return 0
 	}
-	return int64(requestLogStorage.MaxTotalSizeMB) * 1024 * 1024
+	return int64(runtimeCfg.MaxTotalSizeMB) * 1024 * 1024
 }
 
 func requestLogMaintenanceWakeupChan() chan struct{} {
@@ -161,19 +186,29 @@ func startRequestLogMaintenance(db *sql.DB, driver string) {
 		defer requestLogMaintenanceWG.Done()
 		runRequestLogMaintenancePass(db, driver)
 
-		ticker := time.NewTicker(time.Duration(requestLogStorage.CleanupIntervalMinutes) * time.Minute)
-		defer ticker.Stop()
-
 		for {
+			interval := time.Duration(currentRequestLogStorageConfig().CleanupIntervalMinutes) * time.Minute
+			timer := time.NewTimer(interval)
 			select {
 			case <-ctx.Done():
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
 				return
 			case <-wakeup:
-				// Compaction wakeup (triggered by size-cap pruning during inserts).
-				// Avoid running the full cleanup pass; this is mainly for shrinking WAL
-				// and reclaiming free pages when appropriate.
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
+				// Compaction/config wakeups should remain lightweight. The next
+				// timer is rebuilt from the latest runtime policy.
 				compactLogContentStorageInternal(db, false)
-			case <-ticker.C:
+			case <-timer.C:
 				runRequestLogMaintenancePass(db, driver)
 			}
 		}
@@ -472,7 +507,7 @@ func withinContentRetention(timestamp time.Time) bool {
 	if contentRetentionUnlimited() {
 		return true
 	}
-	cutoff := time.Now().UTC().AddDate(0, 0, -requestLogStorage.ContentRetentionDays)
+	cutoff := time.Now().UTC().AddDate(0, 0, -currentRequestLogStorageConfig().ContentRetentionDays)
 	return !timestamp.Before(cutoff)
 }
 
@@ -481,7 +516,7 @@ func cleanupExpiredLogContent(db *sql.DB) (int64, error) {
 		return 0, nil
 	}
 
-	cutoff := time.Now().UTC().AddDate(0, 0, -requestLogStorage.ContentRetentionDays).Format(time.RFC3339Nano)
+	cutoff := time.Now().UTC().AddDate(0, 0, -currentRequestLogStorageConfig().ContentRetentionDays).Format(time.RFC3339Nano)
 	result, err := db.Exec("DELETE FROM request_log_content WHERE timestamp < ?", cutoff)
 	if err != nil {
 		return 0, fmt.Errorf("usage: delete expired content: %w", err)

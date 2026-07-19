@@ -14,9 +14,10 @@ var requestLogBodyPurgeMu sync.Mutex
 
 type RequestLogBodyPurgeResult struct {
 	ClearRequestLogsResult
-	SanitizedDetailRows int64 `json:"sanitized_detail_rows"`
-	RemovedDetailBytes  int64 `json:"removed_detail_bytes"`
-	ReclaimedStorage    bool  `json:"reclaimed_storage"`
+	SanitizedDetailRows     int64 `json:"sanitized_detail_rows"`
+	RemovedDetailBytes      int64 `json:"removed_detail_bytes"`
+	ReclaimedStorage        bool  `json:"reclaimed_storage"`
+	PhysicalReclaimDeferred bool  `json:"physical_reclaim_deferred"`
 }
 
 type storedRequestDetailRow struct {
@@ -25,9 +26,9 @@ type storedRequestDetailRow struct {
 	Content     []byte
 }
 
-// PurgeStoredRequestBodies removes direct request/response bodies, strips bodies
-// embedded in historical request details, and rewrites the physical content
-// table when rows changed so PostgreSQL returns the freed space to the OS.
+// PurgeStoredRequestBodies removes direct request/response bodies and strips
+// bodies embedded in historical request details. It deliberately avoids blocking
+// physical rewrite operations such as PostgreSQL VACUUM FULL on the live API path.
 func PurgeStoredRequestBodies() (RequestLogBodyPurgeResult, error) {
 	usageDBMu.Lock()
 	db := usageDB
@@ -39,7 +40,7 @@ func PurgeStoredRequestBodies() (RequestLogBodyPurgeResult, error) {
 	return purgeStoredRequestBodies(db, driver)
 }
 
-func purgeStoredRequestBodies(db *sql.DB, driver string) (RequestLogBodyPurgeResult, error) {
+func purgeStoredRequestBodies(db *sql.DB, _ string) (RequestLogBodyPurgeResult, error) {
 	requestLogBodyPurgeMu.Lock()
 	defer requestLogBodyPurgeMu.Unlock()
 
@@ -60,20 +61,15 @@ func purgeStoredRequestBodies(db *sql.DB, driver string) (RequestLogBodyPurgeRes
 	refreshRequestLogContentBytes(db)
 
 	changed := result.ClearedBodyRows > 0 || result.ClearedLegacyRows > 0 || result.SanitizedDetailRows > 0
-	if changed {
-		if err = reclaimRequestLogContentStorage(db, driver); err != nil {
-			return result, err
-		}
-		result.ReclaimedStorage = true
-	}
+	result.PhysicalReclaimDeferred = changed
 
 	log.Infof(
-		"usage: purged request log bodies (body_rows=%d legacy_rows=%d sanitized_detail_rows=%d removed_detail_bytes=%d reclaimed=%t)",
+		"usage: purged request log bodies (body_rows=%d legacy_rows=%d sanitized_detail_rows=%d removed_detail_bytes=%d physical_reclaim_deferred=%t)",
 		result.ClearedBodyRows,
 		result.ClearedLegacyRows,
 		result.SanitizedDetailRows,
 		result.RemovedDetailBytes,
-		result.ReclaimedStorage,
+		result.PhysicalReclaimDeferred,
 	)
 	return result, nil
 }
@@ -153,18 +149,4 @@ func sanitizeHistoricalRequestDetails(db *sql.DB) (int64, int64, error) {
 		}
 	}
 	return sanitizedRows, removedBytes, nil
-}
-
-func reclaimRequestLogContentStorage(db *sql.DB, driver string) error {
-	switch driver {
-	case "postgres":
-		if _, err := db.Exec("VACUUM (FULL, ANALYZE) request_log_content"); err != nil {
-			return fmt.Errorf("usage: reclaim postgres request log content storage: %w", err)
-		}
-	case "sqlite":
-		if _, err := db.Exec("VACUUM"); err != nil {
-			return fmt.Errorf("usage: reclaim sqlite request log content storage: %w", err)
-		}
-	}
-	return nil
 }

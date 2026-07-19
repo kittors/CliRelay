@@ -71,7 +71,7 @@ func usageRequestMetadata(ctx context.Context) (identifier, requestID string, re
 	return identifier, requestID, responseStatus
 }
 
-func buildRequestDetailContent(ctx context.Context) string {
+func buildRequestDetailContent(ctx context.Context, includeBodies ...bool) string {
 	if ctx == nil {
 		return ""
 	}
@@ -81,8 +81,13 @@ func buildRequestDetailContent(ctx context.Context) string {
 	}
 
 	req := ginCtx.Request
-	apiRequest := logging.APIRequestSnapshot(ginCtx)
-	apiResponse := logging.APIResponseSnapshot(ginCtx)
+	includeExchangeBodies := len(includeBodies) == 0 || includeBodies[0]
+	var apiRequest any
+	var apiResponse any
+	if includeExchangeBodies {
+		apiRequest = logging.APIRequestSnapshot(ginCtx)
+		apiResponse = logging.APIResponseSnapshot(ginCtx)
+	}
 	clientIP, clientIPSource := requestLogClientIP(ginCtx, req)
 
 	detail := map[string]any{

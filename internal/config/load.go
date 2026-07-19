@@ -70,6 +70,7 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	cfg.RequestBody.ModelMaxMB = DefaultModelRequestBodyMB
 	cfg.RequestBody.DiskThresholdMB = DefaultRequestBodyDiskThresholdMB
 	cfg.UsageStatisticsEnabled = false
+	cfg.SystemStatsCacheSeconds = 60
 	cfg.RequestLogStorage.StoreContent = false
 	cfg.RequestLogStorage.ContentRetentionDays = 30
 	cfg.RequestLogStorage.CleanupIntervalMinutes = 1440
@@ -183,6 +184,9 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	}
 	if cfg.ErrorLogsMaxFiles < 0 {
 		cfg.ErrorLogsMaxFiles = 0
+	}
+	if cfg.SystemStatsCacheSeconds <= 0 {
+		cfg.SystemStatsCacheSeconds = 60
 	}
 	if cfg.Streaming.KeepAliveSeconds == 0 {
 		cfg.Streaming.KeepAliveSeconds = 15

@@ -63,6 +63,8 @@ type Handler struct {
 	accessManager        *sdkaccess.Manager
 	trendCacheMu         sync.Mutex
 	trendCache           map[string]trendCacheEntry
+	systemStatsCacheMu   sync.Mutex
+	systemStatsCache     systemStatsCacheEntry
 	imageGeneration      *imagegeneration.Service
 	identityService      *identity.Service
 	aiAccountStatus      *aiaccountstatus.Service

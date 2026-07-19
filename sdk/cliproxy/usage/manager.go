@@ -30,6 +30,7 @@ type Record struct {
 	APIIdentifier       string
 	RequestID           string
 	ResponseStatus      int
+	Streaming           bool
 	Detail              Detail
 
 	// Optional: request/response content for log detail viewer.

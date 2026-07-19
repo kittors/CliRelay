@@ -33,6 +33,7 @@ func (p *usageCapturePlugin) HandleUsage(ctx context.Context, record cliproxyusa
 }
 
 func TestCodexExecutorExecuteImageGeneration(t *testing.T) {
+	setUsageBodyCaptureForTest(t, true)
 	const pngBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+XgnUAAAAASUVORK5CYII="
 	pngBytes := []byte{
 		0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
@@ -691,6 +692,7 @@ func TestCodexExecutorExecuteImageGenerationReturnsResponsesFailedRateLimit(t *t
 }
 
 func TestUsageReporterTrackFailureStoresErrorContent(t *testing.T) {
+	setUsageBodyCaptureForTest(t, true)
 	const model = "gpt-image-failure-content"
 	usagePlugin := &usageCapturePlugin{records: make(chan cliproxyusage.Record, 8)}
 	cliproxyusage.RegisterPlugin(usagePlugin)

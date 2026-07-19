@@ -127,6 +127,50 @@ func TestGinLogrusLoggerAssignsRequestIDForManagementPaths(t *testing.T) {
 	}
 }
 
+func TestGinLogrusLoggerLogsNestedRouteRewriteOnce(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	var buf bytes.Buffer
+	originalOutput := log.StandardLogger().Out
+	defer log.SetOutput(originalOutput)
+	log.SetOutput(&buf)
+
+	engine := gin.New()
+	engine.Use(GinLogrusLogger())
+	engine.POST("/v1/responses", func(c *gin.Context) {
+		if GetGinRequestID(c) == "" {
+			t.Error("rewritten AI route should receive a request ID")
+		}
+		c.Status(http.StatusNoContent)
+	})
+	engine.NoRoute(func(c *gin.Context) {
+		if _, rewritten := c.Get("test.rewritten"); rewritten {
+			c.AbortWithStatus(http.StatusNotFound)
+			return
+		}
+		c.Set("test.rewritten", true)
+		c.Request.URL.Path = "/v1/responses"
+		c.Request.RequestURI = "/v1/responses"
+		engine.HandleContext(c)
+		c.Abort()
+	})
+
+	recorder := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/deepseek/group/v1/responses", nil)
+	engine.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusNoContent)
+	}
+	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("gin log lines = %d, want 1: %q", len(lines), buf.String())
+	}
+	if !strings.Contains(lines[0], "/deepseek/group/v1/responses") {
+		t.Fatalf("log line = %q, want original public path", lines[0])
+	}
+}
+
 func TestShouldTrackRequestID(t *testing.T) {
 	cases := []struct {
 		path string

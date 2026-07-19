@@ -9,7 +9,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 )
 
-func TestPurgeStoredRequestBodiesSanitizesDetailsAndReclaimsStorage(t *testing.T) {
+func TestPurgeStoredRequestBodiesSanitizesDetailsWithoutBlockingPhysicalRewrite(t *testing.T) {
 	initTestUsageDB(t, config.RequestLogStorageConfig{
 		StoreContent:           true,
 		ContentRetentionDays:   30,
@@ -30,7 +30,7 @@ func TestPurgeStoredRequestBodiesSanitizesDetailsAndReclaimsStorage(t *testing.T
 	if err != nil {
 		t.Fatalf("PurgeStoredRequestBodies() error = %v", err)
 	}
-	if result.ClearedBodyRows != 1 || result.SanitizedDetailRows != 1 || !result.ReclaimedStorage {
+	if result.ClearedBodyRows != 1 || result.SanitizedDetailRows != 1 || result.ReclaimedStorage || !result.PhysicalReclaimDeferred {
 		t.Fatalf("unexpected purge result: %+v", result)
 	}
 
