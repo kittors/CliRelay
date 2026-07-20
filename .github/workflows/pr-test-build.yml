@@ -6,6 +6,14 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: pr-test-build-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  GO_VERSION: '1.26.1'
+  GOLANGCI_LINT_VERSION: v1.64.5
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -31,7 +39,23 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.26.1'
+          go-version: ${{ env.GO_VERSION }}
           cache: true
+      # v1.64.5 release binaries were built with Go 1.24 and reject this repo's Go 1.26 target.
+      # Cache the fixed-version binary compiled by the configured toolchain instead.
+      - name: Cache golangci-lint
+        id: cache-golangci-lint
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/clirelay/golangci-lint/${{ env.GO_VERSION }}-${{ env.GOLANGCI_LINT_VERSION }}/golangci-lint
+          key: golangci-lint-${{ runner.os }}-${{ runner.arch }}-${{ env.GO_VERSION }}-${{ env.GOLANGCI_LINT_VERSION }}
+      - name: Install golangci-lint
+        if: steps.cache-golangci-lint.outputs.cache-hit != 'true'
+        run: |
+          tool_dir="$HOME/.cache/clirelay/golangci-lint/${GO_VERSION}-${GOLANGCI_LINT_VERSION}"
+          mkdir -p "$tool_dir"
+          GOBIN="$tool_dir" go install "github.com/golangci/golangci-lint/cmd/golangci-lint@${GOLANGCI_LINT_VERSION}"
       - name: PR checks
-        run: ./scripts/ci-pr.sh
+        run: |
+          export GOLANGCI_LINT_BIN="$HOME/.cache/clirelay/golangci-lint/${GO_VERSION}-${GOLANGCI_LINT_VERSION}/golangci-lint"
+          ./scripts/ci-pr.sh

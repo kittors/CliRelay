@@ -56,8 +56,32 @@ PY
 go vet ./...
 go test ./...
 
-go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.5
-"$(go env GOPATH)/bin/golangci-lint" run --config .golangci.yml
+required_golangci_lint_version="v1.64.5"
+golangci_lint_bin="${GOLANGCI_LINT_BIN:-}"
+if [ -z "${golangci_lint_bin}" ]; then
+  if command -v golangci-lint >/dev/null 2>&1; then
+    golangci_lint_bin="$(command -v golangci-lint)"
+  elif [ -x "$(go env GOPATH)/bin/golangci-lint" ]; then
+    golangci_lint_bin="$(go env GOPATH)/bin/golangci-lint"
+  else
+    echo "golangci-lint ${required_golangci_lint_version} is required." >&2
+    echo "Install it once with: go install github.com/golangci/golangci-lint/cmd/golangci-lint@${required_golangci_lint_version}" >&2
+    exit 1
+  fi
+fi
+
+if [ ! -x "${golangci_lint_bin}" ]; then
+  echo "golangci-lint is not executable: ${golangci_lint_bin}" >&2
+  exit 1
+fi
+
+golangci_lint_version="$("${golangci_lint_bin}" version)"
+if ! grep -Eq 'version v?1\.64\.5([[:space:]]|$)' <<<"${golangci_lint_version}"; then
+  echo "golangci-lint ${required_golangci_lint_version} is required; found: ${golangci_lint_version}" >&2
+  exit 1
+fi
+
+"${golangci_lint_bin}" run --config .golangci.yml
 
 trap 'rm -f test-output' EXIT
 go build -o test-output ./cmd/server
