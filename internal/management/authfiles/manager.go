@@ -8,6 +8,20 @@ import (
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 )
 
+// PublicFileName returns the tenant-local filename exposed by management APIs.
+// Auth IDs stay tenant-scoped (for example <tenant-id>/account.json), while
+// mutation endpoints intentionally accept only a single safe filename.
+func PublicFileName(auth *coreauth.Auth) string {
+	if auth == nil {
+		return ""
+	}
+	name := strings.TrimSpace(auth.FileName)
+	if name == "" {
+		name = strings.TrimSpace(auth.ID)
+	}
+	return singleFileBaseName(name)
+}
+
 func FindByNameOrID(manager *coreauth.Manager, name string) *coreauth.Auth {
 	return FindByNameOrIDForTenant(manager, "", name)
 }

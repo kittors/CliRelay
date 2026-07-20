@@ -57,6 +57,29 @@ func TestListEntriesBuildsAndSortsAuthEntries(t *testing.T) {
 	}
 }
 
+func TestBuildEntryUsesTenantLocalPublicName(t *testing.T) {
+	auth := &coreauth.Auth{
+		ID:       "00000000-0000-0000-0000-00000000000a/account.json",
+		TenantID: "00000000-0000-0000-0000-00000000000a",
+		FileName: "00000000-0000-0000-0000-00000000000a/account.json",
+		Provider: "codex",
+		Attributes: map[string]string{
+			"runtime_only": "true",
+		},
+	}
+
+	entry := BuildEntry(auth, EntryOptions{})
+	if entry == nil {
+		t.Fatal("expected entry")
+	}
+	if got := entry["id"]; got != auth.ID {
+		t.Fatalf("id = %v, want %q", got, auth.ID)
+	}
+	if got := entry["name"]; got != "account.json" {
+		t.Fatalf("name = %v, want account.json", got)
+	}
+}
+
 func TestBuildEntryAllowsRuntimeOnlyAuthWithoutPath(t *testing.T) {
 	auth := &coreauth.Auth{
 		ID:       "runtime",

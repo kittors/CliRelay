@@ -56,10 +56,7 @@ func BuildEntry(auth *coreauth.Auth, opts EntryOptions) map[string]any {
 	if path == "" && !runtimeOnly {
 		return nil
 	}
-	name := strings.TrimSpace(auth.FileName)
-	if name == "" {
-		name = auth.ID
-	}
+	name := PublicFileName(auth)
 	entry := map[string]any{
 		"id":             auth.ID,
 		"auth_index":     auth.Index,

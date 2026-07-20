@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
@@ -108,5 +109,79 @@ func TestDeleteServiceDeleteAllSkipsNonJSONAndCountsDeleted(t *testing.T) {
 	}
 	if _, ok := manager.GetByID("a.json"); ok {
 		t.Fatal("a.json still registered")
+	}
+}
+
+func TestDeleteServiceDeleteOneAllowsMissingMirrorForRegisteredAuth(t *testing.T) {
+	authDir := t.TempDir()
+	path := filepath.Join(authDir, "stale.json")
+	store := &managerStore{}
+	manager := coreauth.NewManager(store, nil, nil)
+	if _, err := manager.Register(context.Background(), &coreauth.Auth{
+		ID:       "stale.json",
+		FileName: "stale.json",
+		Provider: "codex",
+		Attributes: map[string]string{
+			"path": path,
+		},
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	result, err := (DeleteService{
+		AuthDir:    authDir,
+		Manager:    manager,
+		Repository: Repository{Store: store, BaseDir: authDir},
+	}).DeleteOne(context.Background(), "stale.json")
+	if err != nil {
+		t.Fatalf("DeleteOne() error = %v", err)
+	}
+	if result.Deleted != 1 {
+		t.Fatalf("Deleted = %d, want 1", result.Deleted)
+	}
+	if _, ok := manager.GetByID("stale.json"); ok {
+		t.Fatal("stale auth still registered")
+	}
+}
+
+func TestDeleteServiceDeleteOnePreservesDeletedResultWhenChannelCleanupFails(t *testing.T) {
+	authDir := t.TempDir()
+	path := filepath.Join(authDir, "codex.json")
+	if err := os.WriteFile(path, []byte(`{"type":"codex"}`), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	store := &managerStore{}
+	manager := coreauth.NewManager(store, nil, nil)
+	if _, err := manager.Register(context.Background(), &coreauth.Auth{
+		ID:       "codex.json",
+		FileName: "codex.json",
+		Provider: "codex",
+		Label:    "Team Codex",
+		Metadata: map[string]any{
+			"email": "codex@example.com",
+		},
+		Attributes: map[string]string{
+			"path": path,
+		},
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	result, err := (DeleteService{
+		AuthDir:    authDir,
+		Manager:    manager,
+		Repository: Repository{Store: store, BaseDir: authDir},
+		RemoveChannels: func([]string) error {
+			return errors.New("cleanup unavailable")
+		},
+	}).DeleteOne(context.Background(), "codex.json")
+	if err == nil || !strings.Contains(err.Error(), "cleanup unavailable") {
+		t.Fatalf("DeleteOne() error = %v, want cleanup warning", err)
+	}
+	if result.Deleted != 1 {
+		t.Fatalf("Deleted = %d, want 1", result.Deleted)
+	}
+	if _, ok := manager.GetByID("codex.json"); ok {
+		t.Fatal("auth should stay deleted despite cleanup warning")
 	}
 }

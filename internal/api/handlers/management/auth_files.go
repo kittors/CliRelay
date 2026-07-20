@@ -202,11 +202,16 @@ func (h *Handler) DeleteAuthFile(c *gin.Context) {
 	}
 	if managementauthfiles.IsDeleteAllValue(c.Query("all")) {
 		result, err := service.DeleteAll(ctx)
-		if err != nil {
+		if err != nil && result.Deleted == 0 {
 			c.JSON(500, gin.H{"error": err.Error()})
 			return
 		}
-		c.JSON(200, gin.H{"status": "ok", "deleted": result.Deleted})
+		payload := gin.H{"status": "ok", "deleted": result.Deleted}
+		if err != nil {
+			log.WithError(err).Warn("auth files deleted with cleanup warning")
+			payload["warning"] = err.Error()
+		}
+		c.JSON(200, payload)
 		return
 	}
 	name, errValidate := managementauthfiles.ValidateFileQueryName(c.Query("name"), false)
@@ -214,15 +219,21 @@ func (h *Handler) DeleteAuthFile(c *gin.Context) {
 		c.JSON(400, gin.H{"error": errValidate.Error()})
 		return
 	}
-	if _, err := service.DeleteOne(ctx, name); err != nil {
-		if errors.Is(err, managementauthfiles.ErrAuthFileNotFound) {
+	result, errDelete := service.DeleteOne(ctx, name)
+	if errDelete != nil && result.Deleted == 0 {
+		if errors.Is(errDelete, managementauthfiles.ErrAuthFileNotFound) {
 			c.JSON(404, gin.H{"error": "file not found"})
 		} else {
-			c.JSON(500, gin.H{"error": err.Error()})
+			c.JSON(500, gin.H{"error": errDelete.Error()})
 		}
 		return
 	}
-	c.JSON(200, gin.H{"status": "ok"})
+	payload := gin.H{"status": "ok", "deleted": result.Deleted}
+	if errDelete != nil {
+		log.WithError(errDelete).Warnf("auth file %s deleted with cleanup warning", name)
+		payload["warning"] = errDelete.Error()
+	}
+	c.JSON(200, payload)
 }
 
 func newAuthFileUploadService(h *Handler, c *gin.Context) managementauthfiles.UploadService {
