@@ -1,8 +1,12 @@
 package postgres
 
 import (
+	"context"
+	"database/sql"
 	"strings"
 	"testing"
+
+	_ "modernc.org/sqlite"
 )
 
 func TestRuntimeMigrationsCoverCoreTables(t *testing.T) {
@@ -225,5 +229,49 @@ func TestMigrationChecksumChangesWithSQL(t *testing.T) {
 	second := migrationChecksum("SELECT 2")
 	if first == second {
 		t.Fatal("migrationChecksum returned identical values for different SQL")
+	}
+}
+
+func TestApplyMigrationDirtyErrorIncludesRemediation(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("close sqlite db: %v", err)
+		}
+	})
+	if _, err := db.Exec(`
+		CREATE TABLE schema_migrations (
+			version TEXT PRIMARY KEY,
+			checksum TEXT NOT NULL,
+			dirty BOOLEAN NOT NULL
+		)
+	`); err != nil {
+		t.Fatal(err)
+	}
+	migration := Migration{Version: "202607210001_slow_ddl", SQL: "CREATE TABLE example (id INTEGER)"}
+	if _, err := db.Exec(
+		"INSERT INTO schema_migrations (version, checksum, dirty) VALUES (?, ?, true)",
+		migration.Version,
+		migrationChecksum(migration.SQL),
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	err = applyMigration(context.Background(), db, migration)
+	if err == nil {
+		t.Fatal("applyMigration() error = nil, want dirty migration error")
+	}
+	for _, fragment := range []string{
+		"migration 202607210001_slow_ddl is dirty",
+		"confirm whether the SQL committed",
+		"do not only clear dirty",
+		"do not automatically replay SQL",
+	} {
+		if !strings.Contains(err.Error(), fragment) {
+			t.Fatalf("applyMigration() error = %q, want %q", err, fragment)
+		}
 	}
 }

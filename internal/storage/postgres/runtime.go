@@ -13,7 +13,10 @@ import (
 	_ "github.com/router-for-me/CLIProxyAPI/v6/internal/storage/postgres/compatdriver"
 )
 
-const driverName = "pgxq"
+const (
+	driverName           = "pgxq"
+	runtimeDBPingTimeout = 30 * time.Second
+)
 
 type Migration struct {
 	Version string
@@ -21,6 +24,19 @@ type Migration struct {
 }
 
 func OpenRuntimeDB(ctx context.Context, cfg config.PostgresConfig) (*sql.DB, error) {
+	return openRuntimeDB(ctx, cfg, 0)
+}
+
+// OpenRuntimeDBWithMigrationTimeout opens the runtime database with separate
+// budgets for the connection ping and migration phases.
+func OpenRuntimeDBWithMigrationTimeout(ctx context.Context, cfg config.PostgresConfig, migrationTimeout time.Duration) (*sql.DB, error) {
+	if migrationTimeout <= 0 {
+		return nil, errors.New("postgres: migration timeout must be greater than zero")
+	}
+	return openRuntimeDB(ctx, cfg, migrationTimeout)
+}
+
+func openRuntimeDB(ctx context.Context, cfg config.PostgresConfig, migrationTimeout time.Duration) (*sql.DB, error) {
 	dsn := strings.TrimSpace(cfg.DSN)
 	if dsn == "" {
 		return nil, errors.New("postgres dsn is required")
@@ -36,11 +52,26 @@ func OpenRuntimeDB(ctx context.Context, cfg config.PostgresConfig) (*sql.DB, err
 		db.SetMaxIdleConns(cfg.MaxIdleConns)
 	}
 	db.SetConnMaxLifetime(30 * time.Minute)
-	if err := db.PingContext(ctx); err != nil {
+
+	pingCtx := ctx
+	cancelPing := func() {}
+	if migrationTimeout > 0 {
+		pingCtx, cancelPing = context.WithTimeout(ctx, runtimeDBPingTimeout)
+	}
+	if err := db.PingContext(pingCtx); err != nil {
+		cancelPing()
 		_ = db.Close()
 		return nil, fmt.Errorf("postgres: ping: %w", err)
 	}
-	if err := ApplyMigrations(ctx, db, RuntimeMigrations()); err != nil {
+	cancelPing()
+
+	migrationCtx := ctx
+	cancelMigrations := func() {}
+	if migrationTimeout > 0 {
+		migrationCtx, cancelMigrations = context.WithTimeout(ctx, migrationTimeout)
+	}
+	defer cancelMigrations()
+	if err := ApplyMigrations(migrationCtx, db, RuntimeMigrations()); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
@@ -81,7 +112,7 @@ func applyMigration(ctx context.Context, db *sql.DB, migration Migration) error 
 	err := db.QueryRowContext(ctx, `SELECT checksum, dirty FROM schema_migrations WHERE version = ?`, version).Scan(&existingChecksum, &dirty)
 	switch {
 	case err == nil && dirty:
-		return fmt.Errorf("postgres: migration %s is dirty", version)
+		return fmt.Errorf("postgres: migration %s is dirty; compare the database schema with this migration's SQL and confirm whether the SQL committed before changing schema_migrations; if it did not commit, apply the SQL before marking the row clean; do not only clear dirty, and do not automatically replay SQL while the commit state is uncertain", version)
 	case err == nil && existingChecksum != checksum:
 		return fmt.Errorf("postgres: migration %s checksum mismatch", version)
 	case err == nil:

@@ -658,7 +658,32 @@ func InitDB(dbPath string, storageCfg config.RequestLogStorageConfig, loc *time.
 	return initOpenedDBLocked(db, readDB, dbPath, "sqlite", storageCfg, loc, true)
 }
 
+const (
+	postgresMigrationTimeoutEnv     = "CLIRELAY_MIGRATION_TIMEOUT"
+	defaultPostgresMigrationTimeout = 30 * time.Second
+)
+
+func postgresMigrationTimeout() (time.Duration, error) {
+	raw, ok := os.LookupEnv(postgresMigrationTimeoutEnv)
+	if !ok {
+		return defaultPostgresMigrationTimeout, nil
+	}
+	timeout, err := time.ParseDuration(strings.TrimSpace(raw))
+	if err != nil {
+		return 0, fmt.Errorf("usage: invalid %s %q: %w", postgresMigrationTimeoutEnv, raw, err)
+	}
+	if timeout <= 0 {
+		return 0, fmt.Errorf("usage: invalid %s %q: duration must be greater than zero", postgresMigrationTimeoutEnv, raw)
+	}
+	return timeout, nil
+}
+
 func InitPostgres(pgCfg config.PostgresConfig, storageCfg config.RequestLogStorageConfig, loc *time.Location) error {
+	migrationTimeout, err := postgresMigrationTimeout()
+	if err != nil {
+		return err
+	}
+
 	usageDBLifecycleMu.Lock()
 	defer usageDBLifecycleMu.Unlock()
 
@@ -671,9 +696,7 @@ func InitPostgres(pgCfg config.PostgresConfig, storageCfg config.RequestLogStora
 	if loc == nil {
 		loc = time.Local
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	db, err := postgresstore.OpenRuntimeDB(ctx, pgCfg)
+	db, err := postgresstore.OpenRuntimeDBWithMigrationTimeout(context.Background(), pgCfg, migrationTimeout)
 	if err != nil {
 		return err
 	}
