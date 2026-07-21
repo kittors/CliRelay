@@ -593,6 +593,8 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - .:${CLIRELAY_INSTALL_DIR}
+    healthcheck:
+      disable: true
     restart: unless-stopped
 
   postgres:
