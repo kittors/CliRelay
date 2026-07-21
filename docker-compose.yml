@@ -82,6 +82,8 @@ services:
     depends_on:
       clirelay-init:
         condition: service_completed_successfully
+    healthcheck:
+      disable: true
     restart: unless-stopped
 
   postgres:

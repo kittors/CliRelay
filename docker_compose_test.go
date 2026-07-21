@@ -75,6 +75,12 @@ func TestRepositoryComposeMirrorsDeploymentFilesAtProjectDirInUpdater(t *testing
 		t.Fatalf("read docker-compose.yml: %v", err)
 	}
 	content := string(data)
+	updaterStart := strings.Index(content, "  clirelay-updater:\n")
+	updaterEnd := strings.Index(content, "\n  postgres:")
+	if updaterStart < 0 || updaterEnd <= updaterStart {
+		t.Fatal("docker-compose.yml missing clirelay-updater service block")
+	}
+	updater := content[updaterStart:updaterEnd]
 
 	for _, want := range []string{
 		"CLIRELAY_PROJECT_DIR: ${CLIRELAY_PROJECT_DIR:-${PWD:-.}}",
@@ -83,8 +89,9 @@ func TestRepositoryComposeMirrorsDeploymentFilesAtProjectDirInUpdater(t *testing
 		"CLIRELAY_UPDATER_STATE_FILE: ${CLIRELAY_UPDATER_STATE_FILE:-${CLIRELAY_PROJECT_DIR:-${PWD:-.}}/.clirelay-updater-status.json}",
 		"${CLIRELAY_PROJECT_DIR:-${PWD:-.}}:${CLIRELAY_PROJECT_DIR:-${PWD:-.}}",
 		"${CLI_PROXY_CONFIG_PATH:-${CLIRELAY_PROJECT_DIR:-${PWD:-.}}/config.yaml}:/CLIProxyAPI/config.yaml",
+		"healthcheck:\n      disable: true",
 	} {
-		if !strings.Contains(content, want) {
+		if !strings.Contains(updater, want) {
 			t.Fatalf("docker-compose.yml updater config missing %q", want)
 		}
 	}
