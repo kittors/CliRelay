@@ -76,6 +76,9 @@ func (s *Service) ManagementLogs(input ManagementLogQueryInput) (map[string]any,
 	if filters.APIKeyNames == nil {
 		filters.APIKeyNames = make(map[string]string, len(filters.APIKeys))
 	}
+	if filters.APIKeyCounts == nil {
+		filters.APIKeyCounts = make(map[string]int64, len(filters.APIKeys))
+	}
 	// Prefer account display names already resolved by queryDistinctAPIKeys.
 	// Only fill gaps from keyNameMap; never overwrite end-user labels with key names.
 	for _, key := range filters.APIKeys {
@@ -117,6 +120,9 @@ func (s *Service) ManagementLogs(input ManagementLogQueryInput) (map[string]any,
 	}
 	if filters.APIKeyNames == nil {
 		filters.APIKeyNames = make(map[string]string)
+	}
+	if filters.APIKeyCounts == nil {
+		filters.APIKeyCounts = make(map[string]int64)
 	}
 
 	return map[string]any{
@@ -199,10 +205,11 @@ func (s *Service) PublicUsageLogs(input PublicLogQueryInput) (map[string]any, er
 		return nil, err
 	}
 	// Restrict public key facet options to keys owned by the lookup subject.
-	filters.APIKeyIDs, filters.APIKeyIDNames = filterPublicAPIKeyIDOptions(
+	filters.APIKeyIDs, filters.APIKeyIDNames, filters.APIKeyIDCounts = filterPublicAPIKeyIDOptions(
 		allowedKeyIDs,
 		filters.APIKeyIDs,
 		filters.APIKeyIDNames,
+		filters.APIKeyIDCounts,
 	)
 
 	apiKeyName := s.publicAPIKeyName(input.APIKey)
@@ -281,6 +288,9 @@ func (s *Service) PublicUsageLogs(input PublicLogQueryInput) (map[string]any, er
 	if filters.APIKeyIDNames == nil {
 		filters.APIKeyIDNames = make(map[string]string)
 	}
+	if filters.APIKeyIDCounts == nil {
+		filters.APIKeyIDCounts = make(map[string]int64)
+	}
 
 	return map[string]any{
 		"items":        result.Items,
@@ -290,12 +300,13 @@ func (s *Service) PublicUsageLogs(input PublicLogQueryInput) (map[string]any, er
 		"stats":        stats,
 		"api_key_name": apiKeyName,
 		"filters": map[string]any{
-			"api_key_ids":      filters.APIKeyIDs,
-			"api_key_id_names": filters.APIKeyIDNames,
-			"models":           filters.Models,
-			"channels":         filters.Channels,
-			"channel_options":  filters.ChannelOptions,
-			"statuses":         filters.Statuses,
+			"api_key_ids":       filters.APIKeyIDs,
+			"api_key_id_names":  filters.APIKeyIDNames,
+			"api_key_id_counts": filters.APIKeyIDCounts,
+			"models":            filters.Models,
+			"channels":          filters.Channels,
+			"channel_options":   filters.ChannelOptions,
+			"statuses":          filters.Statuses,
 		},
 	}, nil
 }

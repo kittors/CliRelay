@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"reflect"
+	"slices"
 	"sort"
 	"testing"
 
@@ -535,5 +536,25 @@ func TestEnrichChannelFilterOptionsInfersProviderAuthTypeWithoutLiveMeta(t *test
 	orphanOpen := byValue["orphan-opencode"]
 	if orphanOpen.Provider != "opencode-go" || orphanOpen.AuthType != "api" {
 		t.Fatalf("orphan opencode = %#v, want opencode-go/api", orphanOpen)
+	}
+}
+
+func TestFilterPublicAPIKeyIDOptionsFiltersCountsWithNames(t *testing.T) {
+	allowed := map[string]struct{}{"key-a": {}, "key-b": {}}
+	ids, names, counts := filterPublicAPIKeyIDOptions(
+		allowed,
+		[]string{"key-a", "key-private", "key-b"},
+		map[string]string{"key-a": "Laptop", "key-private": "Hidden", "key-b": "Automation"},
+		map[string]int64{"key-a": 9, "key-private": 99, "key-b": 3},
+	)
+
+	if !slices.Equal(ids, []string{"key-a", "key-b"}) {
+		t.Fatalf("ids = %#v, want allowed ids only", ids)
+	}
+	if !reflect.DeepEqual(names, map[string]string{"key-a": "Laptop", "key-b": "Automation"}) {
+		t.Fatalf("names = %#v, want allowed names only", names)
+	}
+	if !reflect.DeepEqual(counts, map[string]int64{"key-a": 9, "key-b": 3}) {
+		t.Fatalf("counts = %#v, want allowed counts only", counts)
 	}
 }

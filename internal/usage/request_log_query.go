@@ -220,6 +220,10 @@ func QueryFiltersForLogs(params LogQueryParams) (FilterOptions, error) {
 		return FilterOptions{
 			APIKeys:        make([]string, 0),
 			APIKeyNames:    make(map[string]string),
+			APIKeyCounts:   make(map[string]int64),
+			APIKeyIDs:      make([]string, 0),
+			APIKeyIDNames:  make(map[string]string),
+			APIKeyIDCounts: make(map[string]int64),
 			Models:         make([]string, 0),
 			Channels:       make([]string, 0),
 			ChannelOptions: make([]ChannelFilterOption, 0),
@@ -228,12 +232,12 @@ func QueryFiltersForLogs(params LogQueryParams) (FilterOptions, error) {
 	}
 
 	params = normalizeLogQueryParams(params)
-	keys, keyNames, err := queryDistinctAPIKeys(db, params.withoutFacet("api_key"))
+	keys, keyNames, keyCounts, err := queryDistinctAPIKeys(db, params.withoutFacet("api_key"))
 	if err != nil {
 		log.Warnf("usage: query distinct api keys failed: %v", err)
 		return FilterOptions{}, err
 	}
-	keyIDs, keyIDNames, err := queryDistinctAPIKeyIDs(db, params.withoutFacet("api_key_id"))
+	keyIDs, keyIDNames, keyIDCounts, err := queryDistinctAPIKeyIDs(db, params.withoutFacet("api_key_id"))
 	if err != nil {
 		log.Warnf("usage: query distinct api key ids failed: %v", err)
 		return FilterOptions{}, err
@@ -275,8 +279,10 @@ func QueryFiltersForLogs(params LogQueryParams) (FilterOptions, error) {
 	return FilterOptions{
 		APIKeys:        keys,
 		APIKeyNames:    keyNames,
+		APIKeyCounts:   keyCounts,
 		APIKeyIDs:      keyIDs,
 		APIKeyIDNames:  keyIDNames,
+		APIKeyIDCounts: keyIDCounts,
 		Models:         models,
 		Channels:       channelNames,
 		ChannelOptions: channelRows,
