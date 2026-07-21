@@ -65,14 +65,21 @@ func TestInstallComposeMirrorsDeploymentFilesAtHostPathInUpdater(t *testing.T) {
 		t.Fatalf("read install.sh: %v", err)
 	}
 	content := string(data)
+	updaterStart := strings.Index(content, "  clirelay-updater:\n")
+	updaterEnd := strings.Index(content, "\n  postgres:")
+	if updaterStart < 0 || updaterEnd <= updaterStart {
+		t.Fatal("install.sh generated compose missing clirelay-updater service block")
+	}
+	updater := content[updaterStart:updaterEnd]
 
 	for _, want := range []string{
 		"CLIRELAY_COMPOSE_FILE: ${CLIRELAY_INSTALL_DIR}/docker-compose.yml",
 		"CLIRELAY_ENV_FILE: ${CLIRELAY_INSTALL_DIR}/.env",
 		"CLIRELAY_UPDATER_STATE_FILE: ${CLIRELAY_INSTALL_DIR}/.clirelay-updater-status.json",
 		".:${CLIRELAY_INSTALL_DIR}",
+		"healthcheck:\n      disable: true",
 	} {
-		if !strings.Contains(content, want) {
+		if !strings.Contains(updater, want) {
 			t.Fatalf("install.sh generated updater compose missing %q", want)
 		}
 	}
