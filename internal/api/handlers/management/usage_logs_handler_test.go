@@ -389,10 +389,11 @@ func TestGetUsageLogs_EmptyDB_DoesNotReturnNullSlices(t *testing.T) {
 	var payload struct {
 		Items   []any `json:"items"`
 		Filters struct {
-			APIKeys     []string          `json:"api_keys"`
-			APIKeyNames map[string]string `json:"api_key_names"`
-			Models      []string          `json:"models"`
-			Channels    []string          `json:"channels"`
+			APIKeys      []string          `json:"api_keys"`
+			APIKeyNames  map[string]string `json:"api_key_names"`
+			APIKeyCounts map[string]int64  `json:"api_key_counts"`
+			Models       []string          `json:"models"`
+			Channels     []string          `json:"channels"`
 		} `json:"filters"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
@@ -413,6 +414,9 @@ func TestGetUsageLogs_EmptyDB_DoesNotReturnNullSlices(t *testing.T) {
 	}
 	if payload.Filters.APIKeyNames == nil {
 		t.Fatalf("filters.api_key_names is null; expected {}")
+	}
+	if payload.Filters.APIKeyCounts == nil {
+		t.Fatalf("filters.api_key_counts is null; expected {}")
 	}
 }
 
@@ -2228,8 +2232,9 @@ func TestGetPublicUsageLogs_FiltersByAPIKeyIDs(t *testing.T) {
 			APIKeyOwnName string `json:"api_key_own_name"`
 		} `json:"items"`
 		Filters struct {
-			APIKeyIDs     []string          `json:"api_key_ids"`
-			APIKeyIDNames map[string]string `json:"api_key_id_names"`
+			APIKeyIDs      []string          `json:"api_key_ids"`
+			APIKeyIDNames  map[string]string `json:"api_key_id_names"`
+			APIKeyIDCounts map[string]int64  `json:"api_key_id_counts"`
 		} `json:"filters"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
@@ -2249,5 +2254,8 @@ func TestGetPublicUsageLogs_FiltersByAPIKeyIDs(t *testing.T) {
 	}
 	if payload.Filters.APIKeyIDNames[keyBID] != "Automation" {
 		t.Fatalf("filters.api_key_id_names[%s] = %q, want Automation", keyBID, payload.Filters.APIKeyIDNames[keyBID])
+	}
+	if payload.Filters.APIKeyIDCounts[keyAID] != 1 || payload.Filters.APIKeyIDCounts[keyBID] != 1 {
+		t.Fatalf("filters.api_key_id_counts = %#v, want one request per owned key", payload.Filters.APIKeyIDCounts)
 	}
 }

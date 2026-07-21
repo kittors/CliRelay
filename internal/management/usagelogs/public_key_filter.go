@@ -71,12 +71,14 @@ func filterPublicAPIKeyIDOptions(
 	allowed map[string]struct{},
 	ids []string,
 	names map[string]string,
-) ([]string, map[string]string) {
+	counts map[string]int64,
+) ([]string, map[string]string, map[string]int64) {
 	if len(allowed) == 0 {
-		return make([]string, 0), make(map[string]string)
+		return make([]string, 0), make(map[string]string), make(map[string]int64)
 	}
 	outIDs := make([]string, 0, len(ids))
 	outNames := make(map[string]string, len(ids))
+	outCounts := make(map[string]int64, len(ids))
 	for _, id := range ids {
 		id = strings.TrimSpace(id)
 		if id == "" {
@@ -89,6 +91,7 @@ func filterPublicAPIKeyIDOptions(
 		if name := strings.TrimSpace(names[id]); name != "" {
 			outNames[id] = name
 		}
+		outCounts[id] = counts[id]
 	}
-	return outIDs, outNames
+	return outIDs, outNames, outCounts
 }

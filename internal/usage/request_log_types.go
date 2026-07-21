@@ -71,12 +71,14 @@ type LogQueryResult struct {
 
 // FilterOptions holds the available filter values for the UI.
 type FilterOptions struct {
-	APIKeys     []string          `json:"api_keys"`
-	APIKeyNames map[string]string `json:"api_key_names"`
-	// APIKeyIDs / APIKeyIDNames are public-safe key facets keyed by stable id.
-	APIKeyIDs     []string          `json:"api_key_ids,omitempty"`
-	APIKeyIDNames map[string]string `json:"api_key_id_names,omitempty"`
-	Models        []string          `json:"models"`
+	APIKeys      []string          `json:"api_keys"`
+	APIKeyNames  map[string]string `json:"api_key_names"`
+	APIKeyCounts map[string]int64  `json:"api_key_counts"`
+	// APIKeyIDs / APIKeyIDNames / APIKeyIDCounts are public-safe key facets keyed by stable id.
+	APIKeyIDs      []string          `json:"api_key_ids,omitempty"`
+	APIKeyIDNames  map[string]string `json:"api_key_id_names,omitempty"`
+	APIKeyIDCounts map[string]int64  `json:"api_key_id_counts,omitempty"`
+	Models         []string          `json:"models"`
 	// Channels is a legacy plain-name list kept for older clients.
 	// Prefer ChannelOptions when both are present.
 	Channels       []string              `json:"channels"`

@@ -1827,6 +1827,9 @@ func TestQueryFiltersForLogsLinksFilterFacets(t *testing.T) {
 	if !slices.Equal(filters.APIKeys, []string{"sk-a", "sk-c"}) {
 		t.Fatalf("filters.APIKeys = %#v, want [sk-a sk-c]", filters.APIKeys)
 	}
+	if filters.APIKeyCounts["sk-a"] != 1 || filters.APIKeyCounts["sk-c"] != 1 {
+		t.Fatalf("filters.APIKeyCounts = %#v, want one matching request per key", filters.APIKeyCounts)
+	}
 	if !slices.Equal(filters.Channels, []string{"Anthropic", "OpenCode"}) {
 		t.Fatalf("filters.Channels = %#v, want [Anthropic OpenCode]", filters.Channels)
 	}
@@ -1938,6 +1941,12 @@ func TestQueryFiltersCollapsesOwnedKeysToOneAccountOption(t *testing.T) {
 	}
 	if filters.APIKeyNames["sk-kittors-default"] != "Kittors" {
 		t.Fatalf("filters.APIKeyNames[sk-kittors-default] = %q, want Kittors", filters.APIKeyNames["sk-kittors-default"])
+	}
+	if filters.APIKeyCounts["sk-kittors-default"] != 2 {
+		t.Fatalf("filters.APIKeyCounts[sk-kittors-default] = %d, want 2 account requests", filters.APIKeyCounts["sk-kittors-default"])
+	}
+	if filters.APIKeyCounts["sk-solo"] != 1 {
+		t.Fatalf("filters.APIKeyCounts[sk-solo] = %d, want 1", filters.APIKeyCounts["sk-solo"])
 	}
 	for _, name := range filters.APIKeyNames {
 		if name == "测试 key" {
@@ -2093,6 +2102,17 @@ func TestQueryAPIKeyDistributionMergesRawAndIDGroupsForSameKey(t *testing.T) {
 		t.Fatalf("UpsertAPIKey(other): %v", err)
 	}
 	InsertLogWithDetailsIdentity("sk-other", "other-id", "Other", "gpt-test", "source", "channel", "auth-2", false, now, 1, 1, TokenStats{TotalTokens: 5}, "", "", "")
+
+	filters, err := QueryFilters(7)
+	if err != nil {
+		t.Fatalf("QueryFilters() error = %v", err)
+	}
+	if filters.APIKeyCounts[rawKey] != 5 {
+		t.Fatalf("filters.APIKeyCounts[%s] = %d, want 5 merged requests", rawKey, filters.APIKeyCounts[rawKey])
+	}
+	if filters.APIKeyIDCounts[stableID] != 5 {
+		t.Fatalf("filters.APIKeyIDCounts[%s] = %d, want 5 merged requests", stableID, filters.APIKeyIDCounts[stableID])
+	}
 
 	dist, err := QueryAPIKeyDistribution(7)
 	if err != nil {
