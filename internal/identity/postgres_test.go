@@ -29,9 +29,13 @@ func TestPostgresBootstrapFreshAdminRequiresPassword(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err = NewService(db).Bootstrap(ctx, "")
+	service := NewService(db)
+	err = service.Bootstrap(ctx, "")
 	if !errors.Is(err, ErrValidation) {
-		t.Fatalf("Bootstrap() error = %v, want ErrValidation", err)
+		t.Errorf("Bootstrap() error = %v, want ErrValidation", err)
+	}
+	if err = service.Bootstrap(ctx, "bootstrap-password-123"); err != nil {
+		t.Fatalf("restore shared postgres identity fixture: %v", err)
 	}
 }
 
