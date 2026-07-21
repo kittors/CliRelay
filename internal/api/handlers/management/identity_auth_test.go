@@ -28,6 +28,7 @@ func TestPermissionForManagementRequest(t *testing.T) {
 		{http.MethodPut, "/v0/management/roles/r/users", "tenant.users.assign_roles"},
 		{http.MethodPatch, "/v0/management/end-users/eu/api-keys/key", "api_keys.write"},
 		{http.MethodPost, "/v0/management/end-users/eu/api-keys/key/rotate", "api_keys.write"},
+		{http.MethodGet, "/v0/management/end-users/eu/daily-spending/reset-history", "end_users.read"},
 		{http.MethodGet, "/v0/management/menus", "platform.menus.read"},
 		{http.MethodPost, "/v0/management/menus", "platform.menus.update"},
 		{http.MethodPatch, "/v0/management/menus/system.config", "platform.menus.update"},
@@ -72,6 +73,23 @@ func TestPermissionForManagementRequest(t *testing.T) {
 		if got := permissionForManagementRequest(test.method, test.path); got != test.want {
 			t.Errorf("permissionForManagementRequest(%s,%s)=%q want %q", test.method, test.path, got, test.want)
 		}
+	}
+}
+
+func TestEndUserResetHistoryPermissionAllowsReadOrWrite(t *testing.T) {
+	path := "/v0/management/end-users/eu/daily-spending/reset-history"
+	permission := permissionForManagementRequest(http.MethodGet, path)
+	for _, permissions := range []map[string]bool{
+		{"end_users.read": true},
+		{"end_users.write": true},
+	} {
+		principal := identity.Principal{Permissions: permissions}
+		if !principalHasManagementRequestPermission(principal, http.MethodGet, path, permission) {
+			t.Fatalf("permissions %#v should allow reset history", permissions)
+		}
+	}
+	if principalHasManagementRequestPermission(identity.Principal{}, http.MethodGet, path, permission) {
+		t.Fatal("principal without end-user permissions should not allow reset history")
 	}
 }
 

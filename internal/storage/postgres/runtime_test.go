@@ -7,10 +7,22 @@ import (
 
 func TestRuntimeMigrationsCoverCoreTables(t *testing.T) {
 	migrations := RuntimeMigrations()
-	if len(migrations) != 20 {
-		t.Fatalf("RuntimeMigrations len = %d, want 20", len(migrations))
+	if len(migrations) != 21 {
+		t.Fatalf("RuntimeMigrations len = %d, want 21", len(migrations))
 	}
-	// Latest: usage rollup buckets for stats/limits isolation from request_logs.
+	// Latest: append-only account-level daily spending reset history.
+	endUserResetEventsSQL := migrations[20].SQL
+	for _, fragment := range []string{
+		"CREATE TABLE IF NOT EXISTS end_user_daily_spending_reset_events",
+		"effective_used_before",
+		"raw_today_cost",
+		"actor_username",
+	} {
+		if !strings.Contains(endUserResetEventsSQL, fragment) {
+			t.Fatalf("end-user daily spending reset events migration missing %q", fragment)
+		}
+	}
+	// Prior: usage rollup buckets for stats/limits isolation from request_logs.
 	rollupSQL := migrations[18].SQL
 	for _, fragment := range []string{
 		"CREATE TABLE IF NOT EXISTS usage_rollup_buckets",

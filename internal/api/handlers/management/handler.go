@@ -428,7 +428,7 @@ func (h *Handler) authenticateSessionToken(c *gin.Context, token string) bool {
 		return false
 	}
 	permission := permissionForManagementRequest(c.Request.Method, c.Request.URL.Path)
-	if permission == "" || !principal.Has(permission) {
+	if !principalHasManagementRequestPermission(principal, c.Request.Method, c.Request.URL.Path, permission) {
 		h.recordManagementAudit(c, principal, "denied")
 		identityError(c, identity.ErrPermissionDenied)
 		return false

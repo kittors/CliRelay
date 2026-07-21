@@ -231,3 +231,88 @@ func containsString(values []string, want string) bool {
 	}
 	return false
 }
+
+func TestEndUserDailySpendingResetEventHistory(t *testing.T) {
+	setupEndUserAccountUsageTestDB(t)
+
+	tenantID := uuid.NewString()
+	endUserID := uuid.NewString()
+	otherUserID := uuid.NewString()
+	firstAt := time.Date(2026, time.July, 20, 8, 0, 0, 0, time.UTC)
+	secondAt := firstAt.Add(2 * time.Hour)
+	if err := InsertEndUserDailySpendingResetEvent(EndUserDailySpendingResetEvent{
+		TenantID:            tenantID,
+		EndUserID:           endUserID,
+		DayKey:              "2026-07-20",
+		ResetAt:             firstAt,
+		ActorUserID:         "actor-1",
+		ActorUsername:       "admin",
+		ActorKind:           "user",
+		CostBaseline:        12,
+		EffectiveUsedBefore: 7,
+		RawTodayCost:        12,
+	}); err != nil {
+		t.Fatalf("insert first event: %v", err)
+	}
+	if err := InsertEndUserDailySpendingResetEvent(EndUserDailySpendingResetEvent{
+		TenantID:            tenantID,
+		EndUserID:           endUserID,
+		DayKey:              "2026-07-20",
+		ResetAt:             secondAt,
+		EffectiveUsedBefore: 3,
+		RawTodayCost:        15,
+		CostBaseline:        15,
+	}); err != nil {
+		t.Fatalf("insert second event: %v", err)
+	}
+	if err := InsertEndUserDailySpendingResetEvent(EndUserDailySpendingResetEvent{
+		TenantID:  tenantID,
+		EndUserID: otherUserID,
+		ResetAt:   secondAt,
+	}); err != nil {
+		t.Fatalf("insert other-user event: %v", err)
+	}
+
+	count, err := CountEndUserDailySpendingResetEvents(tenantID, endUserID)
+	if err != nil {
+		t.Fatalf("count events: %v", err)
+	}
+	if count != 2 {
+		t.Fatalf("count = %d, want 2", count)
+	}
+	counts, err := ListEndUserDailySpendingResetEventCounts(tenantID, []string{endUserID, otherUserID, "missing", endUserID})
+	if err != nil {
+		t.Fatalf("list counts: %v", err)
+	}
+	if counts[endUserID] != 2 || counts[otherUserID] != 1 || counts["missing"] != 0 {
+		t.Fatalf("counts = %#v, want user=2 other=1 missing=0", counts)
+	}
+
+	events, err := ListEndUserDailySpendingResetEvents(tenantID, endUserID, 1)
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	if len(events) != 1 || events[0].ResetAt.UnixNano() != secondAt.UnixNano() || events[0].RawTodayCost != 15 {
+		t.Fatalf("events = %#v, want newest second event", events)
+	}
+
+	if err := DeleteEndUserDailySpendingResetEvents(tenantID, endUserID); err != nil {
+		t.Fatalf("delete events: %v", err)
+	}
+	count, err = CountEndUserDailySpendingResetEvents(tenantID, endUserID)
+	if err != nil {
+		t.Fatalf("count after delete: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("count after delete = %d, want 0", count)
+	}
+}
+
+func TestEnsureEndUserDailySpendingResetEventsTableSQLHasNoDATETIME(t *testing.T) {
+	if strings.Contains(strings.ToUpper(endUserDailySpendingResetEventsTableSQL), "DATETIME") {
+		t.Fatalf("bootstrap SQL must not use DATETIME: %s", endUserDailySpendingResetEventsTableSQL)
+	}
+	if !strings.Contains(strings.ToUpper(endUserDailySpendingResetEventsTableSQL), "TIMESTAMP") {
+		t.Fatalf("bootstrap SQL should use TIMESTAMP: %s", endUserDailySpendingResetEventsTableSQL)
+	}
+}

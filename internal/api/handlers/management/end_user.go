@@ -3,6 +3,7 @@ package management
 import (
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -82,6 +83,7 @@ func (h *Handler) GetEndUsers(c *gin.Context) {
 		byTenant[tid] = append(byTenant[tid], items[i].ID)
 	}
 	costs := map[string]float64{}
+	resetCounts := map[string]int{}
 	for tid, ids := range byTenant {
 		part, usageErr := usage.QueryTodayEffectiveCostsByEndUsersForTenant(tid, ids)
 		if usageErr != nil {
@@ -91,9 +93,18 @@ func (h *Handler) GetEndUsers(c *gin.Context) {
 		for id, used := range part {
 			costs[id] = used
 		}
+		countPart, usageErr := usage.ListEndUserDailySpendingResetEventCounts(tid, ids)
+		if usageErr != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": usageErr.Error()})
+			return
+		}
+		for id, count := range countPart {
+			resetCounts[id] = count
+		}
 	}
 	for i := range items {
 		items[i].DailySpendingUsed = costs[items[i].ID]
+		items[i].DailySpendingResetCount = resetCounts[items[i].ID]
 	}
 	c.JSON(http.StatusOK, gin.H{"items": items})
 }
@@ -254,12 +265,97 @@ func (h *Handler) PostEndUserDailySpendingReset(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	actorKind := "service_credential"
+	actorUserID := ""
+	actorUsername := ""
+	if kind := strings.TrimSpace(principal.Kind); kind != "" {
+		actorKind = kind
+	}
+	actorUserID = strings.TrimSpace(principal.User.ID)
+	actorUsername = strings.TrimSpace(principal.User.Username)
+	if actorUsername == "" {
+		actorUsername = strings.TrimSpace(principal.User.DisplayName)
+	}
+	if err := usage.InsertEndUserDailySpendingResetEvent(usage.EndUserDailySpendingResetEvent{
+		TenantID:            tenantID,
+		EndUserID:           user.ID,
+		CostBaseline:        rawToday,
+		EffectiveUsedBefore: usedBefore,
+		RawTodayCost:        rawToday,
+		ActorUserID:         actorUserID,
+		ActorUsername:       actorUsername,
+		ActorKind:           actorKind,
+	}); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	resetCount, err := usage.CountEndUserDailySpendingResetEvents(tenantID, user.ID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{
-		"status":                "ok",
-		"end_user_id":           user.ID,
-		"daily-spending-used":   0,
-		"effective-used-before": usedBefore,
-		"raw-today-cost":        rawToday,
+		"status":                     "ok",
+		"end_user_id":                user.ID,
+		"daily-spending-used":        0,
+		"daily-spending-reset-count": resetCount,
+		"effective-used-before":      usedBefore,
+		"raw-today-cost":             rawToday,
+	})
+}
+
+// GetEndUserDailySpendingResetHistory lists all-time manual reset events newest-first.
+func (h *Handler) GetEndUserDailySpendingResetHistory(c *gin.Context) {
+	principal, _ := principalFromContext(c)
+	if !principal.Has("end_users.read") && !principal.Has("end_users.write") && !principal.PlatformAdmin {
+		identityError(c, identity.ErrPermissionDenied)
+		return
+	}
+	svc := h.endUserService()
+	if svc == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "end user service unavailable"})
+		return
+	}
+	tenantID := effectiveTenantID(c)
+	user, err := svc.GetUser(c.Request.Context(), tenantID, c.Param("id"))
+	if err != nil {
+		endUserError(c, err)
+		return
+	}
+	limit := 100
+	if raw := strings.TrimSpace(c.Query("limit")); raw != "" {
+		if n, parseErr := strconv.Atoi(raw); parseErr == nil {
+			limit = n
+		}
+	}
+	events, err := usage.ListEndUserDailySpendingResetEvents(tenantID, user.ID, limit)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if events == nil {
+		events = []usage.EndUserDailySpendingResetEvent{}
+	}
+	total, err := usage.CountEndUserDailySpendingResetEvents(tenantID, user.ID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	rawToday, err := usage.QueryRawTodayCostByEndUserForTenant(tenantID, user.ID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	used, err := usage.QueryTodayEffectiveCostByEndUserForTenant(tenantID, user.ID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"items":               events,
+		"total":               total,
+		"raw-today-cost":      rawToday,
+		"daily-spending-used": used,
 	})
 }
 

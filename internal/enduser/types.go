@@ -20,6 +20,8 @@ type User struct {
 	APIKeyCount int `json:"api_key_count,omitempty"`
 	// DailySpendingUsed is the account-level effective spend for the current project day.
 	DailySpendingUsed float64 `json:"daily-spending-used"`
+	// DailySpendingResetCount is the number of persisted manual reset events.
+	DailySpendingResetCount int `json:"daily-spending-reset-count"`
 
 	// Account-level quota/permissions: shared by every API key under this user.
 	PermissionProfileID  string   `json:"permission-profile-id,omitempty"`

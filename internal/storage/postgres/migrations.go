@@ -33,6 +33,8 @@ func RuntimeMigrations() []Migration {
 		{Version: "202607200001_usage_rollup_buckets", SQL: usageRollupBucketsSQL},
 		// Shared physical AI-account subjects; credentials remain tenant-private bindings.
 		{Version: "202607200002_ai_account_shared_subjects", SQL: aiAccountSharedSubjectsSQL},
+		// Append-only history of manual account-level daily spending resets.
+		{Version: "202607210001_end_user_daily_spending_reset_events", SQL: endUserDailySpendingResetEventsSQL},
 	}
 }
 
@@ -104,6 +106,25 @@ CREATE TABLE IF NOT EXISTS end_user_daily_spending_resets (
 );
 CREATE INDEX IF NOT EXISTS idx_end_user_daily_spending_resets_day
   ON end_user_daily_spending_resets(tenant_id, day_key);
+`
+
+// BIGSERIAL for PG; SQLite bootstrap uses INTEGER PRIMARY KEY AUTOINCREMENT.
+const endUserDailySpendingResetEventsSQL = `
+CREATE TABLE IF NOT EXISTS end_user_daily_spending_reset_events (
+  id                     BIGSERIAL PRIMARY KEY,
+  tenant_id              UUID NOT NULL DEFAULT '00000000-0000-0000-0000-000000000001',
+  end_user_id            UUID NOT NULL,
+  day_key                TEXT NOT NULL DEFAULT '',
+  reset_at               TIMESTAMPTZ NOT NULL,
+  actor_user_id          TEXT NOT NULL DEFAULT '',
+  actor_username         TEXT NOT NULL DEFAULT '',
+  actor_kind             TEXT NOT NULL DEFAULT '',
+  cost_baseline          DOUBLE PRECISION NOT NULL DEFAULT 0,
+  effective_used_before  DOUBLE PRECISION NOT NULL DEFAULT 0,
+  raw_today_cost         DOUBLE PRECISION NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_end_user_daily_spending_reset_events_user
+  ON end_user_daily_spending_reset_events(tenant_id, end_user_id, reset_at DESC);
 `
 
 // Quota + permission template live on end_users so multiple keys share one pool.

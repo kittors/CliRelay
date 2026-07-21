@@ -3,6 +3,8 @@ package management
 import (
 	"net/http"
 	"strings"
+
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/identity"
 )
 
 // ManagementRequestPermission returns the RBAC permission for a management
@@ -10,6 +12,17 @@ import (
 // Exported so package routes can assert every registered route is mapped.
 func ManagementRequestPermission(method, path string) string {
 	return permissionForManagementRequest(method, path)
+}
+
+func principalHasManagementRequestPermission(principal identity.Principal, method, path, permission string) bool {
+	if permission != "" && principal.Has(permission) {
+		return true
+	}
+	relative := strings.TrimSuffix(strings.TrimPrefix(path, "/v0/management"), "/")
+	return (method == http.MethodGet || method == http.MethodHead) &&
+		strings.HasPrefix(relative, "/end-users/") &&
+		strings.HasSuffix(relative, "/daily-spending/reset-history") &&
+		principal.Has("end_users.write")
 }
 
 // permissionForManagementRequest maps a management HTTP method+path to a

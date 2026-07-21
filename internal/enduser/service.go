@@ -792,6 +792,16 @@ func (s *Service) DeleteUser(ctx context.Context, actor identity.Principal, tena
 	`, userID); err != nil {
 		return err
 	}
+	if _, err = tx.ExecContext(ctx, `
+		DELETE FROM end_user_daily_spending_resets WHERE tenant_id = ? AND end_user_id = ?
+	`, tenantID, userID); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `
+		DELETE FROM end_user_daily_spending_reset_events WHERE tenant_id = ? AND end_user_id = ?
+	`, tenantID, userID); err != nil {
+		return err
+	}
 	res, err := tx.ExecContext(ctx, `DELETE FROM end_users WHERE id = ? AND tenant_id = ?`, userID, tenantID)
 	if err != nil {
 		return err
