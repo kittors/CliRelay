@@ -309,6 +309,72 @@ func (h *Handler) PostEndUserAPIKey(c *gin.Context) {
 	c.JSON(http.StatusCreated, result)
 }
 
+func (h *Handler) PatchEndUserAPIKey(c *gin.Context) {
+	principal, _ := principalFromContext(c)
+	if !principal.Has("api_keys.write") && !principal.Has("end_users.write") && !principal.PlatformAdmin {
+		identityError(c, identity.ErrPermissionDenied)
+		return
+	}
+	svc := h.endUserService()
+	if svc == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "end user service unavailable"})
+		return
+	}
+	var body struct {
+		Name *string `json:"name"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil || body.Name == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		return
+	}
+	tenantID := effectiveTenantID(c)
+	userID := c.Param("id")
+	keyID := c.Param("key_id")
+	if err := svc.UpdateKeyName(c.Request.Context(), tenantID, userID, keyID, *body.Name); err != nil {
+		endUserError(c, err)
+		return
+	}
+	if err := h.refreshAPIKeyCache(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "cache_refresh_failed", "message": err.Error()}})
+		return
+	}
+	items, err := svc.ListKeys(c.Request.Context(), tenantID, userID)
+	if err != nil {
+		endUserError(c, err)
+		return
+	}
+	for _, item := range items {
+		if item.ID == keyID {
+			c.JSON(http.StatusOK, item)
+			return
+		}
+	}
+	endUserError(c, enduser.ErrNotFound)
+}
+
+func (h *Handler) PostEndUserAPIKeyRotate(c *gin.Context) {
+	principal, _ := principalFromContext(c)
+	if !principal.Has("api_keys.write") && !principal.Has("end_users.write") && !principal.PlatformAdmin {
+		identityError(c, identity.ErrPermissionDenied)
+		return
+	}
+	svc := h.endUserService()
+	if svc == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "end user service unavailable"})
+		return
+	}
+	result, err := svc.RotateKey(c.Request.Context(), effectiveTenantID(c), c.Param("id"), c.Param("key_id"))
+	if err != nil {
+		endUserError(c, err)
+		return
+	}
+	if err := h.refreshAPIKeyCache(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "cache_refresh_failed", "message": err.Error()}})
+		return
+	}
+	c.JSON(http.StatusOK, result)
+}
+
 func (h *Handler) DeleteEndUserAPIKey(c *gin.Context) {
 	principal, _ := principalFromContext(c)
 	if !principal.Has("end_users.write") && !principal.Has("api_keys.write") && !principal.PlatformAdmin {

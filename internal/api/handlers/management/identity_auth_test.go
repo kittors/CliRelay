@@ -26,6 +26,8 @@ func TestPermissionForManagementRequest(t *testing.T) {
 		{http.MethodGet, "/v0/management/users", "tenant.users.read"},
 		{http.MethodPut, "/v0/management/users/u/roles", "tenant.users.assign_roles"},
 		{http.MethodPut, "/v0/management/roles/r/users", "tenant.users.assign_roles"},
+		{http.MethodPatch, "/v0/management/end-users/eu/api-keys/key", "api_keys.write"},
+		{http.MethodPost, "/v0/management/end-users/eu/api-keys/key/rotate", "api_keys.write"},
 		{http.MethodGet, "/v0/management/menus", "platform.menus.read"},
 		{http.MethodPost, "/v0/management/menus", "platform.menus.update"},
 		{http.MethodPatch, "/v0/management/menus/system.config", "platform.menus.update"},

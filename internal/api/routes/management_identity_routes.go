@@ -56,6 +56,8 @@ func registerManagementIdentityRoutes(group *gin.RouterGroup, h *managementhandl
 	group.POST("/end-users/:id/daily-spending/reset", h.PostEndUserDailySpendingReset)
 	group.GET("/end-users/:id/api-keys", h.GetEndUserAPIKeys)
 	group.POST("/end-users/:id/api-keys", h.PostEndUserAPIKey)
+	group.PATCH("/end-users/:id/api-keys/:key_id", h.PatchEndUserAPIKey)
+	group.POST("/end-users/:id/api-keys/:key_id/rotate", h.PostEndUserAPIKeyRotate)
 	group.DELETE("/end-users/:id/api-keys/:key_id", h.DeleteEndUserAPIKey)
 	group.POST("/end-users/:id/api-keys/:key_id/default", h.PostEndUserAPIKeyDefault)
 
