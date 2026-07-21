@@ -13,6 +13,28 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/testutil/postgrestest"
 )
 
+func TestPostgresBootstrapFreshAdminRequiresPassword(t *testing.T) {
+	dsn := os.Getenv("CLIRELAY_POSTGRES_TEST_DSN")
+	if dsn == "" {
+		t.Skip("CLIRELAY_POSTGRES_TEST_DSN is not set")
+	}
+	postgrestest.LockSharedRuntimeDB(t, dsn)
+	ctx := context.Background()
+	db, err := postgresstore.OpenRuntimeDB(ctx, config.PostgresConfig{DSN: dsn, MaxOpenConns: 4, MaxIdleConns: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err = db.Exec(`TRUNCATE audit_logs,user_sessions,user_roles,role_permissions,menus,users,roles,permissions,tenants CASCADE`); err != nil {
+		t.Fatal(err)
+	}
+
+	err = NewService(db).Bootstrap(ctx, "")
+	if !errors.Is(err, ErrValidation) {
+		t.Fatalf("Bootstrap() error = %v, want ErrValidation", err)
+	}
+}
+
 func TestPostgresIdentityLifecycle(t *testing.T) {
 	dsn := os.Getenv("CLIRELAY_POSTGRES_TEST_DSN")
 	if dsn == "" {
@@ -31,6 +53,9 @@ func TestPostgresIdentityLifecycle(t *testing.T) {
 	service := NewService(db)
 	if err = service.Bootstrap(ctx, "bootstrap-password-123"); err != nil {
 		t.Fatal(err)
+	}
+	if err = service.Bootstrap(ctx, ""); err != nil {
+		t.Fatalf("bootstrap with existing admin and empty password: %v", err)
 	}
 	users, err := service.ListUsers(ctx, SystemTenantID)
 	if err != nil {

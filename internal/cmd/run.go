@@ -112,6 +112,35 @@ func StartServiceBackground(cfg *config.Config, configPath string, localPassword
 	return cancelFn, doneCh
 }
 
+type bootstrapAdminPassword struct {
+	value  string
+	source string
+}
+
+type identityBootstrapper interface {
+	Bootstrap(context.Context, string) error
+}
+
+func resolveBootstrapAdminPassword(cfg *config.Config) bootstrapAdminPassword {
+	if value := strings.TrimSpace(os.Getenv("CLIRELAY_ADMIN_PASSWORD")); value != "" {
+		return bootstrapAdminPassword{value: value, source: "CLIRELAY_ADMIN_PASSWORD"}
+	}
+	if value := strings.TrimSpace(os.Getenv("MANAGEMENT_PASSWORD")); value != "" {
+		return bootstrapAdminPassword{value: value, source: "MANAGEMENT_PASSWORD"}
+	}
+	return bootstrapAdminPassword{
+		value:  strings.TrimSpace(cfg.RemoteManagement.SecretKey),
+		source: "remote-management.secret-key",
+	}
+}
+
+func bootstrapIdentity(ctx context.Context, service identityBootstrapper, password bootstrapAdminPassword) error {
+	if err := service.Bootstrap(ctx, password.value); err != nil {
+		return fmt.Errorf("identity bootstrap using admin password from %s: %w", password.source, err)
+	}
+	return nil
+}
+
 func initializeRuntimeDataStack(cfg *config.Config, configPath string, loc *time.Location) error {
 	if cfg == nil {
 		return errors.New("config is nil")
@@ -119,18 +148,12 @@ func initializeRuntimeDataStack(cfg *config.Config, configPath string, loc *time
 	if err := usage.InitPostgres(cfg.Postgres, cfg.RequestLogStorage, loc); err != nil {
 		return err
 	}
-	bootstrapPassword := strings.TrimSpace(os.Getenv("CLIRELAY_ADMIN_PASSWORD"))
-	if bootstrapPassword == "" {
-		bootstrapPassword = strings.TrimSpace(os.Getenv("MANAGEMENT_PASSWORD"))
-	}
-	if bootstrapPassword == "" {
-		bootstrapPassword = strings.TrimSpace(cfg.RemoteManagement.SecretKey)
-	}
+	bootstrapPassword := resolveBootstrapAdminPassword(cfg)
 	identityService := identity.NewService(usage.RuntimeDB())
 	enduserService := enduser.NewService(usage.RuntimeDB())
 	enduser.SetDefault(enduserService)
-	if err := identityService.Bootstrap(context.Background(), bootstrapPassword); err != nil {
-		return fmt.Errorf("identity bootstrap: %w", err)
+	if err := bootstrapIdentity(context.Background(), identityService, bootstrapPassword); err != nil {
+		return err
 	}
 	identity.SetDefault(identityService)
 	// Import YAML keys first so one-shot end-user backfill can see them.

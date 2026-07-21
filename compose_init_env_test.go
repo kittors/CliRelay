@@ -29,6 +29,7 @@ func TestComposeInitEnvGeneratesMissingEnv(t *testing.T) {
 		"CLIRELAY_PROJECT_DIR",
 		"CLIRELAY_UPDATER_URL",
 		"CLIRELAY_UPDATER_TOKEN",
+		"CLIRELAY_ADMIN_PASSWORD",
 		"CLIRELAY_POSTGRES_PASSWORD",
 		"CLIRELAY_POSTGRES_DSN",
 		"CLIRELAY_REDIS_ENABLE",
@@ -44,6 +45,9 @@ func TestComposeInitEnvGeneratesMissingEnv(t *testing.T) {
 	if len(values["CLIRELAY_UPDATER_TOKEN"]) != 32 {
 		t.Fatalf("updater token length = %d, want 32", len(values["CLIRELAY_UPDATER_TOKEN"]))
 	}
+	if len(values["CLIRELAY_ADMIN_PASSWORD"]) != 32 {
+		t.Fatalf("admin password length = %d, want 32", len(values["CLIRELAY_ADMIN_PASSWORD"]))
+	}
 	if len(values["CLIRELAY_POSTGRES_PASSWORD"]) != 32 {
 		t.Fatalf("postgres password length = %d, want 32", len(values["CLIRELAY_POSTGRES_PASSWORD"]))
 	}
@@ -55,7 +59,7 @@ func TestComposeInitEnvGeneratesMissingEnv(t *testing.T) {
 func TestComposeInitEnvPreservesExistingValues(t *testing.T) {
 	dir := t.TempDir()
 	envFile := filepath.Join(dir, ".env")
-	if err := os.WriteFile(envFile, []byte("CLIRELAY_UPDATER_TOKEN=custom-token\nCLIRELAY_POSTGRES_PASSWORD=custom-pass\nCLIRELAY_POSTGRES_DB=customdb\n"), 0o600); err != nil {
+	if err := os.WriteFile(envFile, []byte("CLIRELAY_UPDATER_TOKEN=custom-token\nCLIRELAY_ADMIN_PASSWORD=custom-admin-password\nCLIRELAY_POSTGRES_PASSWORD=custom-pass\nCLIRELAY_POSTGRES_DB=customdb\n"), 0o600); err != nil {
 		t.Fatalf("write env file: %v", err)
 	}
 
@@ -72,6 +76,9 @@ func TestComposeInitEnvPreservesExistingValues(t *testing.T) {
 	values := readEnvFile(t, envFile)
 	if values["CLIRELAY_UPDATER_TOKEN"] != "custom-token" {
 		t.Fatalf("updater token = %q, want custom-token", values["CLIRELAY_UPDATER_TOKEN"])
+	}
+	if values["CLIRELAY_ADMIN_PASSWORD"] != "custom-admin-password" {
+		t.Fatalf("admin password = %q, want custom-admin-password", values["CLIRELAY_ADMIN_PASSWORD"])
 	}
 	if values["CLIRELAY_POSTGRES_PASSWORD"] != "custom-pass" {
 		t.Fatalf("postgres password = %q, want custom-pass", values["CLIRELAY_POSTGRES_PASSWORD"])

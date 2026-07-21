@@ -218,7 +218,7 @@ The gallery below uses the latest supplied screenshots, covering the current end
 
 ### 🐳 Install With Docker Compose
 
-Docker Compose is the recommended installation path for CliRelay. The included `docker-compose.yml` starts CliRelay, PostgreSQL 15, Redis 7, and the updater sidecar. A `.env` file is optional: the `clirelay-init` service creates it on the first `docker compose up -d`, generates missing secrets such as `CLIRELAY_UPDATER_TOKEN` and `CLIRELAY_POSTGRES_PASSWORD`, preserves existing values, and creates `config.yaml` from `config.example.yaml` if it is missing. For production, pre-create `.env` only when you want to pin your own secrets or bind paths.
+Docker Compose is the recommended installation path for CliRelay. The included `docker-compose.yml` starts CliRelay, PostgreSQL 15, Redis 7, and the updater sidecar. A `.env` file is optional: the `clirelay-init` service creates it on the first `docker compose up -d`, generates missing secrets such as `CLIRELAY_UPDATER_TOKEN`, `CLIRELAY_ADMIN_PASSWORD`, and `CLIRELAY_POSTGRES_PASSWORD`, preserves existing non-empty values, and creates `config.yaml` from `config.example.yaml` if it is missing. `CLIRELAY_ADMIN_PASSWORD` bootstraps the first `admin` user in an empty database; the init script generates a 32-character random value, or you can pre-set your own value of at least 12 characters. For production, pre-create `.env` only when you want to pin your own secrets or bind paths.
 
 ```bash
 git clone https://github.com/kittors/CliRelay.git
@@ -227,6 +227,8 @@ cd CliRelay
 # sudo chown -R 10001:10001 auths logs data
 docker compose up -d
 ```
+
+The application process runs as `10001:10001`. Ensure `config.yaml` is readable by that user; management-panel config saves also require write access. On Synology/DSM bind mounts, if the container entrypoint cannot apply `chown` because of the shared-folder ACL, fix the ACL/ownership on the host and restart `cli-proxy-api`.
 
 After the first start, edit the generated `config.yaml` to add your API keys or OAuth credentials, then restart the service:
 

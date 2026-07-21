@@ -56,9 +56,11 @@ set_default() {
 }
 
 updater_token="$(env_value CLIRELAY_UPDATER_TOKEN)"
+admin_password="$(env_value CLIRELAY_ADMIN_PASSWORD)"
 postgres_password="$(env_value CLIRELAY_POSTGRES_PASSWORD)"
 
 [ -n "$updater_token" ] || updater_token="$(rand_hex 16)"
+[ -n "$admin_password" ] || admin_password="$(rand_hex 16)"
 [ -n "$postgres_password" ] || postgres_password="$(rand_hex 16)"
 
 postgres_db="$(env_value CLIRELAY_POSTGRES_DB)"
@@ -75,6 +77,7 @@ set_default CLIRELAY_TARGET_SERVICE "${CLIRELAY_TARGET_SERVICE:-cli-proxy-api}"
 set_default CLIRELAY_COMPOSE_PROJECT_NAME "${CLIRELAY_COMPOSE_PROJECT_NAME:-clirelay}"
 set_default CLIRELAY_UPDATER_URL "http://clirelay-updater:8320"
 set_default CLIRELAY_UPDATER_TOKEN "$updater_token"
+set_default CLIRELAY_ADMIN_PASSWORD "$admin_password"
 set_default CLIRELAY_POSTGRES_DB "$postgres_db"
 set_default CLIRELAY_POSTGRES_USER "$postgres_user"
 set_default CLIRELAY_POSTGRES_PASSWORD "$postgres_password"
