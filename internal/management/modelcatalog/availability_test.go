@@ -2,7 +2,9 @@ package modelcatalog
 
 import (
 	"context"
+	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	managementauthfiles "github.com/router-for-me/CLIProxyAPI/v6/internal/management/authfiles"
@@ -10,6 +12,15 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 )
+
+func initModelCatalogTestDB(t *testing.T) {
+	t.Helper()
+	usage.CloseDB()
+	if err := usage.InitDB(filepath.Join(t.TempDir(), "usage.db"), config.RequestLogStorageConfig{}, time.UTC); err != nil {
+		t.Fatalf("InitDB() error = %v", err)
+	}
+	t.Cleanup(usage.CloseDB)
+}
 
 func TestConfiguredAvailabilityIncludesModelSources(t *testing.T) {
 	const modelID = "source-test-model"
@@ -415,6 +426,102 @@ func TestConfiguredAvailabilityReplacesStaticCodexWithDiscovery(t *testing.T) {
 	}
 }
 
+func TestMappedOwnerConfigKeepsModelMissingFromCodexDiscovery(t *testing.T) {
+	const (
+		imageModelID     = "gpt-image-2"
+		liveModelID      = "gpt-5.6-sol"
+		staleChatModelID = "gpt-static-chat-only"
+		codexClientID    = "mapped-owner-keep-codex"
+		groupName        = "codex-editor"
+	)
+
+	initModelCatalogTestDB(t)
+	managementauthfiles.ResetDiscoveryCacheForTest()
+	t.Cleanup(managementauthfiles.ResetDiscoveryCacheForTest)
+
+	imageConfig, ok := usage.GetModelConfig(imageModelID)
+	if !ok {
+		t.Fatalf("seed config missing %q", imageModelID)
+	}
+	imageConfig.OwnedBy = "codex"
+	imageConfig.Enabled = true
+	if err := usage.UpsertModelConfig(imageConfig); err != nil {
+		t.Fatalf("upsert image config: %v", err)
+	}
+	if err := usage.UpsertAuthGroupOwnerMapping(usage.AuthGroupOwnerMappingRow{
+		AuthGroup: "codex",
+		Owner:     "codex",
+	}); err != nil {
+		t.Fatalf("upsert codex owner mapping: %v", err)
+	}
+
+	modelRegistry := registry.GetGlobalRegistry()
+	modelRegistry.UnregisterClient(codexClientID)
+	t.Cleanup(func() { modelRegistry.UnregisterClient(codexClientID) })
+	modelRegistry.RegisterClient(codexClientID, "codex", []*registry.ModelInfo{
+		{ID: imageModelID, Object: "model", OwnedBy: "openai"},
+		{ID: liveModelID, Object: "model", OwnedBy: "openai"},
+		{ID: staleChatModelID, Object: "model", OwnedBy: "openai"},
+	})
+	managementauthfiles.StoreDiscoveryCacheForTest("", "codex", []*registry.ModelInfo{
+		{ID: liveModelID, Object: "model", OwnedBy: "openai"},
+	})
+
+	cfg := &config.Config{Routing: config.RoutingConfig{
+		ChannelGroups: []config.RoutingChannelGroup{{
+			Name:          groupName,
+			AllowedModels: []string{liveModelID},
+			Match: config.ChannelGroupMatch{
+				Channels: []string{"codex"},
+			},
+		}},
+	}}
+	manager := coreauth.NewManager(nil, nil, nil)
+	manager.SetConfig(cfg)
+	if _, err := manager.Register(context.Background(), &coreauth.Auth{
+		ID: codexClientID, Provider: "codex", Status: coreauth.StatusActive,
+	}); err != nil {
+		t.Fatalf("register codex auth: %v", err)
+	}
+
+	svc := New(cfg, manager)
+	availabilityIDs := configuredAvailabilityIDs(svc.ConfiguredAvailability("", ""))
+	if !containsModelID(availabilityIDs, imageModelID) {
+		t.Fatalf("configured availability missing management-authoritative model %q", imageModelID)
+	}
+	if containsModelID(availabilityIDs, staleChatModelID) {
+		t.Fatalf("configured availability kept static-only chat model %q; ids=%v", staleChatModelID, availabilityIDs)
+	}
+
+	modelIDs := configuredAvailabilityIDs(svc.Models("", groupName, AvailabilityFilterOptions{IgnoreGroupAllowedModels: true}))
+	if !containsModelID(modelIDs, imageModelID) {
+		t.Fatalf("scoped models with ignore missing management-authoritative model %q; ids=%v", imageModelID, modelIDs)
+	}
+	if containsModelID(modelIDs, staleChatModelID) {
+		t.Fatalf("scoped models with ignore kept static-only chat model %q; ids=%v", staleChatModelID, modelIDs)
+	}
+
+	pathRows, ok := svc.PathAvailability()["data"].([]modelPathAvailabilityResponse)
+	if !ok {
+		t.Fatalf("path availability data has unexpected type")
+	}
+	for _, row := range pathRows {
+		if row.ID == staleChatModelID {
+			t.Fatalf("path availability kept static-only chat model %q", staleChatModelID)
+		}
+		if row.ID != imageModelID {
+			continue
+		}
+		for _, path := range row.Paths {
+			if path.Family == "openai-v1-images" {
+				return
+			}
+		}
+		t.Fatalf("path availability model %q missing image capability: %#v", imageModelID, row.Paths)
+	}
+	t.Fatalf("path availability missing management-authoritative model %q", imageModelID)
+}
+
 func TestDropStaticDiscoveryProviderModelsDropsMappedOwnerLibrary(t *testing.T) {
 	const (
 		staleLibraryID = "gpt-5-stale-library"
@@ -450,6 +557,7 @@ func TestDropStaticDiscoveryProviderModelsDropsMappedOwnerLibrary(t *testing.T) 
 			codexClientID: {ID: codexClientID, Provider: "codex", Status: coreauth.StatusActive},
 		},
 		map[string]string{"codex": "openai"},
+		nil,
 	)
 	ids := make(map[string]struct{}, len(got))
 	for _, m := range got {
@@ -663,4 +771,13 @@ func configuredAvailabilityIDs(result map[string]any) []string {
 		}
 	}
 	return out
+}
+
+func containsModelID(ids []string, want string) bool {
+	for _, id := range ids {
+		if id == want {
+			return true
+		}
+	}
+	return false
 }

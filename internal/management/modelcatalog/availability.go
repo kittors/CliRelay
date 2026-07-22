@@ -47,12 +47,14 @@ func (s *Service) ConfiguredAvailability(allowedChannelsRaw, allowedGroupsRaw st
 	// Live discovery models are appended AFTER CanServe filtering because they
 	// are intentionally not RegisterClient-written into the runtime registry.
 	ownerMappings := s.authGroupOwnerMappingMap()
+	managementAuthoritativeModelKeys := s.managementAuthoritativeModelKeys()
 	baseModels := dropStaticDiscoveryProviderModels(
 		managementVisibleModels(modelRegistry),
 		modelRegistry,
 		discoveryByProvider,
 		authByID,
 		ownerMappings,
+		managementAuthoritativeModelKeys,
 	)
 	allModels := s.effectiveModels(baseModels, allowedChannelsRaw, allowedGroupsRaw, filterOpts)
 	usesMappedOwners := false
@@ -66,7 +68,7 @@ func (s *Service) ConfiguredAvailability(allowedChannelsRaw, allowedGroupsRaw st
 	}
 	// Mapped-owner config rows can re-introduce the full openai/anthropic library;
 	// drop stale rows again, then append the live discovery list.
-	allModels = dropStaticDiscoveryProviderModels(allModels, modelRegistry, discoveryByProvider, authByID, ownerMappings)
+	allModels = dropStaticDiscoveryProviderModels(allModels, modelRegistry, discoveryByProvider, authByID, ownerMappings, managementAuthoritativeModelKeys)
 	// Live discovery models skip CanServe (not registry-backed). Still honor the
 	// tenant channel-group allowed-models list so plaza/catalog match the editor,
 	// unless the channel-group editor asks for the full channel-servable set.
@@ -151,15 +153,17 @@ func (s *Service) Models(allowedChannelsRaw, allowedGroupsRaw string, opts ...Av
 	authByID := s.authByID()
 	discoveryByProvider := s.sharedDiscoveryByProvider(false)
 	ownerMappings := s.authGroupOwnerMappingMap()
+	managementAuthoritativeModelKeys := s.managementAuthoritativeModelKeys()
 	baseModels := dropStaticDiscoveryProviderModels(
 		managementVisibleModels(modelRegistry),
 		modelRegistry,
 		discoveryByProvider,
 		authByID,
 		ownerMappings,
+		managementAuthoritativeModelKeys,
 	)
 	allModels := s.effectiveModels(baseModels, allowedChannelsRaw, allowedGroupsRaw, filterOpts)
-	allModels = dropStaticDiscoveryProviderModels(allModels, modelRegistry, discoveryByProvider, authByID, ownerMappings)
+	allModels = dropStaticDiscoveryProviderModels(allModels, modelRegistry, discoveryByProvider, authByID, ownerMappings, managementAuthoritativeModelKeys)
 	allModels = appendSharedDiscoveryModels(allModels, discoveryByProvider)
 	if !filterOpts.IgnoreGroupAllowedModels {
 		allModels = s.filterModelsByRoutingAllowedModels(allModels, allowedGroupsRaw)
@@ -273,13 +277,15 @@ func discoveryModelIDSet(discoveryByProvider map[string][]*registry.ModelInfo) m
 //     from those providers, when the model is not on the live list and has no
 //     non-discovery runtime source (e.g. opencode-go).
 //
-// Models still served by other providers are kept.
+// Models still served by other providers are kept. Enabled owner-mapped config
+// rows are authoritative; manifest absence is not negative availability evidence.
 func dropStaticDiscoveryProviderModels(
 	models []map[string]any,
 	modelRegistry *registry.ModelRegistry,
 	discoveryByProvider map[string][]*registry.ModelInfo,
 	authByID map[string]*coreauth.Auth,
 	ownerMappings map[string]string,
+	managementAuthoritativeModelKeys map[string]bool,
 ) []map[string]any {
 	liveProviders := liveDiscoveryProviders(discoveryByProvider)
 	if len(liveProviders) == 0 {
@@ -294,7 +300,8 @@ func dropStaticDiscoveryProviderModels(
 		if key == "" {
 			continue
 		}
-		if _, onLive := discoveryIDs[key]; onLive {
+		_, onLive := discoveryIDs[key]
+		if onLive || managementAuthoritativeModelKeys[key] {
 			out = append(out, model)
 			continue
 		}

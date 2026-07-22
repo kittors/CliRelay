@@ -26,12 +26,14 @@ func (s *Service) PathAvailability() map[string]any {
 	rootGeminiCapabilities := geminiV1BetaCapabilities("/")
 	authByID := s.authByID()
 	discoveryByProvider := s.sharedDiscoveryByProvider(false)
+	managementAuthoritativeModelKeys := s.managementAuthoritativeModelKeys()
 	openaiModels := dropStaticDiscoveryProviderModels(
 		modelRegistry.GetAvailableModels("openai"),
 		modelRegistry,
 		discoveryByProvider,
 		authByID,
 		s.authGroupOwnerMappingMap(),
+		managementAuthoritativeModelKeys,
 	)
 	openaiModels = s.modelRootRouteScopedModels(openaiModels, routingConfig)
 	// Live discovery is not registry-backed, so CanServe cannot enforce
