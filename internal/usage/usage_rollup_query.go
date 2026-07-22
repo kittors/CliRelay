@@ -491,3 +491,55 @@ func queryRollupModelDistribution(filter rollupFilter) ([]ModelDistributionPoint
 	}
 	return out, rows.Err()
 }
+
+func queryRollupAPIKeyDistributionForEndUser(tenantID, endUserID string, days int) ([]PublicAPIKeyDistributionPoint, error) {
+	db := getReadDB()
+	if db == nil {
+		return []PublicAPIKeyDistributionPoint{}, nil
+	}
+	tenantID = normalizeTenantID(tenantID)
+	endUserID = strings.TrimSpace(endUserID)
+	if endUserID == "" {
+		return []PublicAPIKeyDistributionPoint{}, nil
+	}
+	if days < 1 {
+		days = 7
+	}
+
+	rows, err := db.Query(`
+		SELECT api_key_id,
+			COALESCE(SUM(request_count), 0),
+			COALESCE(SUM(total_tokens), 0)
+		FROM usage_rollup_buckets
+		WHERE tenant_id = ?
+		  AND bucket_kind = ?
+		  AND bucket_start >= ?
+		  AND end_user_id = ?
+		  AND trim(api_key_id) != ''
+		GROUP BY api_key_id
+		ORDER BY 2 DESC, api_key_id
+	`, tenantID, rollupBucketDay, dayBucketFromDays(days), endUserID)
+	if err != nil {
+		return nil, fmt.Errorf("usage: public rollup apikey distribution: %w", err)
+	}
+	defer rows.Close()
+
+	currentByID := currentAPIKeyRowsByIDForTenant(tenantID)
+	out := make([]PublicAPIKeyDistributionPoint, 0)
+	for rows.Next() {
+		var point PublicAPIKeyDistributionPoint
+		if err := rows.Scan(&point.APIKeyID, &point.Requests, &point.Tokens); err != nil {
+			return nil, fmt.Errorf("usage: public rollup apikey distribution scan: %w", err)
+		}
+		point.APIKeyID = strings.TrimSpace(point.APIKeyID)
+		if row, ok := currentByID[point.APIKeyID]; ok {
+			// Public charts use the key's own current name, never the owner display name.
+			point.Name = strings.TrimSpace(row.Name)
+		}
+		out = append(out, point)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}

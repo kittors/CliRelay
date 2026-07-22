@@ -9,10 +9,11 @@ func (s *Service) PublicChartData(apiKey string, days int) (map[string]any, erro
 	}
 
 	return map[string]any{
-		"daily_series":       chartData.DailySeries,
-		"heatmap_series":     chartData.HeatmapSeries,
-		"model_distribution": chartData.ModelDistribution,
-		"stats":              chartData.Stats,
+		"daily_series":         chartData.DailySeries,
+		"heatmap_series":       chartData.HeatmapSeries,
+		"model_distribution":   chartData.ModelDistribution,
+		"api_key_distribution": chartData.APIKeyDistribution,
+		"stats":                chartData.Stats,
 		// Key own name only — never end-user display name.
 		"api_key_name": s.publicAPIKeyName(apiKey),
 	}, nil
@@ -25,11 +26,12 @@ func (s *Service) PublicChartDataForEndUser(endUserID string, days int) (map[str
 	}
 
 	return map[string]any{
-		"daily_series":       chartData.DailySeries,
-		"heatmap_series":     chartData.HeatmapSeries,
-		"model_distribution": chartData.ModelDistribution,
-		"stats":              chartData.Stats,
-		"api_key_name":       usage.DisplayNameForEndUser(endUserID),
+		"daily_series":         chartData.DailySeries,
+		"heatmap_series":       chartData.HeatmapSeries,
+		"model_distribution":   chartData.ModelDistribution,
+		"api_key_distribution": chartData.APIKeyDistribution,
+		"stats":                chartData.Stats,
+		"api_key_name":         usage.DisplayNameForEndUser(endUserID),
 	}, nil
 }
 

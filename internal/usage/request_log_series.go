@@ -35,11 +35,20 @@ type ModelDistributionPoint struct {
 	Tokens   int64  `json:"tokens"`
 }
 
+// PublicAPIKeyDistributionPoint exposes stable per-key usage without secrets.
+type PublicAPIKeyDistributionPoint struct {
+	APIKeyID string `json:"api_key_id"`
+	Name     string `json:"name"`
+	Requests int64  `json:"requests"`
+	Tokens   int64  `json:"tokens"`
+}
+
 type PublicChartData struct {
-	DailySeries       []DailySeriesPoint
-	HeatmapSeries     []DailyHeatmapPoint
-	ModelDistribution []ModelDistributionPoint
-	Stats             LogStats
+	DailySeries        []DailySeriesPoint
+	HeatmapSeries      []DailyHeatmapPoint
+	ModelDistribution  []ModelDistributionPoint
+	APIKeyDistribution []PublicAPIKeyDistributionPoint
+	Stats              LogStats
 }
 
 // QueryPublicChartData aggregates the public API-key lookup charts in one indexed pass.
@@ -64,10 +73,11 @@ func QueryPublicChartDataForEndUser(tenantID, endUserID string, days int) (Publi
 func queryPublicChartData(params LogQueryParams, days int) (PublicChartData, error) {
 	if getReadDB() == nil {
 		return PublicChartData{
-			DailySeries:       []DailySeriesPoint{},
-			HeatmapSeries:     []DailyHeatmapPoint{},
-			ModelDistribution: []ModelDistributionPoint{},
-			Stats:             LogStats{CacheRate: 0},
+			DailySeries:        []DailySeriesPoint{},
+			HeatmapSeries:      []DailyHeatmapPoint{},
+			ModelDistribution:  []ModelDistributionPoint{},
+			APIKeyDistribution: []PublicAPIKeyDistributionPoint{},
+			Stats:              LogStats{CacheRate: 0},
 		}, nil
 	}
 	if days < 1 {
@@ -81,10 +91,11 @@ func queryPublicChartData(params LogQueryParams, days int) (PublicChartData, err
 	filter, ok := rollupIdentityFilter(params)
 	if !ok {
 		return PublicChartData{
-			DailySeries:       []DailySeriesPoint{},
-			HeatmapSeries:     []DailyHeatmapPoint{},
-			ModelDistribution: []ModelDistributionPoint{},
-			Stats:             LogStats{CacheRate: 0},
+			DailySeries:        []DailySeriesPoint{},
+			HeatmapSeries:      []DailyHeatmapPoint{},
+			ModelDistribution:  []ModelDistributionPoint{},
+			APIKeyDistribution: []PublicAPIKeyDistributionPoint{},
+			Stats:              LogStats{CacheRate: 0},
 		}, nil
 	}
 	filter.BucketKind = rollupBucketDay
@@ -139,6 +150,13 @@ func queryPublicChartData(params LogQueryParams, days int) (PublicChartData, err
 	if err != nil {
 		return PublicChartData{}, err
 	}
+	apiKeyDistribution := []PublicAPIKeyDistributionPoint{}
+	if filter.EndUserID != "" {
+		apiKeyDistribution, err = queryRollupAPIKeyDistributionForEndUser(tenantID, filter.EndUserID, days)
+		if err != nil {
+			return PublicChartData{}, err
+		}
+	}
 	if stats.Total > 0 {
 		stats.SuccessRate = float64(successCount) / float64(stats.Total) * 100
 	}
@@ -160,10 +178,11 @@ func queryPublicChartData(params LogQueryParams, days int) (PublicChartData, err
 		stats.TotalSessions = int64(len(totalSessions))
 	}
 	return PublicChartData{
-		DailySeries:       sortedDailySeries(dailyByDate),
-		HeatmapSeries:     sortedHeatmapSeries(heatmapByDate),
-		ModelDistribution: models,
-		Stats:             stats,
+		DailySeries:        sortedDailySeries(dailyByDate),
+		HeatmapSeries:      sortedHeatmapSeries(heatmapByDate),
+		ModelDistribution:  models,
+		APIKeyDistribution: apiKeyDistribution,
+		Stats:              stats,
 	}, nil
 }
 

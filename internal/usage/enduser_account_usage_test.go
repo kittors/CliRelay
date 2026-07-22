@@ -85,11 +85,14 @@ func TestEndUserAccountUsageAggregatesBusinessTenantKeysAndSurvivesRotate(t *tes
 	setupEndUserAccountUsageTestDB(t)
 
 	tenantID := uuid.NewString()
+	otherTenantID := uuid.NewString()
 	endUserID := uuid.NewString()
 	otherUserID := uuid.NewString()
 	keyAID := uuid.NewString()
 	keyBID := uuid.NewString()
 	otherKeyID := uuid.NewString()
+	crossTenantKeyID := uuid.NewString()
+	standaloneKeyID := uuid.NewString()
 	now := time.Now().UTC().Format(time.RFC3339)
 
 	if _, err := getDB().Exec(`INSERT INTO end_users (id, tenant_id, display_name) VALUES (?, ?, ?)`, endUserID, tenantID, "Zhang Bolun"); err != nil {
@@ -99,10 +102,16 @@ func TestEndUserAccountUsageAggregatesBusinessTenantKeysAndSurvivesRotate(t *tes
 		{ID: keyAID, Key: "sk-business-a", Name: "Automation", EndUserID: endUserID, CreatedAt: now, UpdatedAt: now},
 		{ID: keyBID, Key: "sk-business-b", Name: "Laptop", EndUserID: endUserID, CreatedAt: now, UpdatedAt: now},
 		{ID: otherKeyID, Key: "sk-business-other", Name: "Other", EndUserID: otherUserID, CreatedAt: now, UpdatedAt: now},
+		{ID: standaloneKeyID, Key: "sk-business-standalone", Name: "Standalone", CreatedAt: now, UpdatedAt: now},
 	} {
 		if err := UpsertAPIKeyForTenant(tenantID, row); err != nil {
 			t.Fatalf("UpsertAPIKeyForTenant(%s): %v", row.Key, err)
 		}
+	}
+	if err := UpsertAPIKeyForTenant(otherTenantID, APIKeyRow{
+		ID: crossTenantKeyID, Key: "sk-business-cross-tenant", Name: "Cross tenant", EndUserID: endUserID, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("UpsertAPIKeyForTenant(cross tenant): %v", err)
 	}
 
 	if row := GetAPIKey("sk-business-a"); row == nil || row.TenantID != tenantID || row.ID != keyAID {
@@ -121,6 +130,8 @@ func TestEndUserAccountUsageAggregatesBusinessTenantKeysAndSurvivesRotate(t *tes
 	insertEndUserAccountLog(t, tenantID, "sk-business-b", keyBID, "old snapshot", 2)
 	insertEndUserAccountLog(t, tenantID, "sk-business-b", "", "legacy snapshot", 3)
 	insertEndUserAccountLog(t, tenantID, "sk-business-other", otherKeyID, "other", 50)
+	insertEndUserAccountLog(t, tenantID, "sk-business-standalone", standaloneKeyID, "standalone", 60)
+	insertEndUserAccountLog(t, otherTenantID, "sk-business-cross-tenant", crossTenantKeyID, "cross tenant", 70)
 
 	params := LogQueryParams{TenantID: tenantID, EndUserID: endUserID, Page: 1, Size: 20, Days: 1}
 	result, err := QueryLogs(params)
@@ -152,9 +163,46 @@ func TestEndUserAccountUsageAggregatesBusinessTenantKeysAndSurvivesRotate(t *tes
 	if chart.Stats.Total != 3 || chart.Stats.TotalCost != 6 {
 		t.Fatalf("public chart stats = %+v, want total=3 cost=6", chart.Stats)
 	}
+	distributionByID := make(map[string]PublicAPIKeyDistributionPoint, len(chart.APIKeyDistribution))
+	for _, point := range chart.APIKeyDistribution {
+		distributionByID[point.APIKeyID] = point
+	}
+	if len(distributionByID) != 2 {
+		t.Fatalf("api key distribution = %+v, want exactly key A and key B", chart.APIKeyDistribution)
+	}
+	if point := distributionByID[keyAID]; point.Name != "Automation" || point.Requests != 1 || point.Tokens != 2 {
+		t.Fatalf("key A distribution = %+v, want own name and requests/tokens 1/2", point)
+	}
+	if point := distributionByID[keyBID]; point.Name != "Laptop" || point.Requests != 1 || point.Tokens != 2 {
+		t.Fatalf("key B distribution = %+v, want stable-id rollup only and requests/tokens 1/2", point)
+	}
+	if _, exists := distributionByID[otherKeyID]; exists {
+		t.Fatalf("api key distribution included other end user: %+v", chart.APIKeyDistribution)
+	}
+	if _, exists := distributionByID[crossTenantKeyID]; exists {
+		t.Fatalf("api key distribution included other tenant: %+v", chart.APIKeyDistribution)
+	}
+	if _, exists := distributionByID[standaloneKeyID]; exists {
+		t.Fatalf("api key distribution included standalone key: %+v", chart.APIKeyDistribution)
+	}
+
+	emptyChart, err := QueryPublicChartDataForEndUser(tenantID, uuid.NewString(), 7)
+	if err != nil {
+		t.Fatalf("QueryPublicChartDataForEndUser(empty): %v", err)
+	}
+	if emptyChart.APIKeyDistribution == nil || len(emptyChart.APIKeyDistribution) != 0 {
+		t.Fatalf("empty api key distribution = %#v, want non-nil []", emptyChart.APIKeyDistribution)
+	}
+	standaloneChart, err := QueryPublicChartData("sk-business-standalone", 7)
+	if err != nil {
+		t.Fatalf("QueryPublicChartData(standalone): %v", err)
+	}
+	if standaloneChart.APIKeyDistribution == nil || len(standaloneChart.APIKeyDistribution) != 0 {
+		t.Fatalf("standalone api key distribution = %#v, want non-nil []", standaloneChart.APIKeyDistribution)
+	}
 
 	// Rotate changes only the secret. Stable-id rows remain in the account selector.
-	if _, err := getDB().Exec(`UPDATE api_keys SET key = ?, updated_at = ? WHERE tenant_id = ? AND id = ?`, "sk-business-a-rotated", now, tenantID, keyAID); err != nil {
+	if _, err := getDB().Exec(`UPDATE api_keys SET key = ?, name = ?, updated_at = ? WHERE tenant_id = ? AND id = ?`, "sk-business-a-rotated", "Automation Renamed", now, tenantID, keyAID); err != nil {
 		t.Fatalf("rotate key A: %v", err)
 	}
 	if row := GetAPIKey("sk-business-a-rotated"); row == nil || row.ID != keyAID {
@@ -173,6 +221,13 @@ func TestEndUserAccountUsageAggregatesBusinessTenantKeysAndSurvivesRotate(t *tes
 	}
 	if rotatedChart.Stats.Total != 3 || rotatedChart.Stats.TotalCost != 6 {
 		t.Fatalf("chart after rotate = %+v, want total=3 cost=6", rotatedChart.Stats)
+	}
+	rotatedDistributionByID := make(map[string]PublicAPIKeyDistributionPoint, len(rotatedChart.APIKeyDistribution))
+	for _, point := range rotatedChart.APIKeyDistribution {
+		rotatedDistributionByID[point.APIKeyID] = point
+	}
+	if point := rotatedDistributionByID[keyAID]; point.Name != "Automation Renamed" || point.Requests != 1 || point.Tokens != 2 {
+		t.Fatalf("rotated key distribution = %+v, want stable history with current own name", point)
 	}
 }
 
