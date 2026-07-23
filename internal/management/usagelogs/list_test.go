@@ -515,6 +515,54 @@ func TestEnrichChannelFilterOptionsCollapsesHistoricalSubjectRekeyByAuthIndex(t 
 	}
 }
 
+func TestEnrichChannelFilterOptionsCollapsesHistoricalSubjectsByAuthIndexWithoutLiveMap(t *testing.T) {
+	t.Parallel()
+
+	authIndex := "14c5636b41002b25"
+	oldSubject := "authsub_4ca6f5185e367ab2"
+	newSubject := "authsub_9ebad60f7efd0b3c"
+	label := "GinofkFerraiuolo@hotmail.com"
+
+	options := []usage.ChannelFilterOption{
+		{Value: oldSubject, Label: label, AuthIndex: authIndex, AuthSubjectID: oldSubject},
+		{Value: newSubject, Label: label, AuthIndex: authIndex, AuthSubjectID: newSubject},
+	}
+
+	// The production hole has no live auth_index -> subject alias to choose a
+	// canonical subject. The shared auth_index must therefore become the stable
+	// option value so the next request matches both historical subject rows.
+	got := enrichChannelFilterOptions(options, nil, nil, nil, nil, nil, nil)
+	if len(got) != 1 {
+		t.Fatalf("options = %#v, want one auth-index option", got)
+	}
+	if got[0].Value != authIndex || got[0].AuthIndex != authIndex || got[0].AuthSubjectID != "" {
+		t.Fatalf("option = %#v, want auth index %q without a non-canonical subject", got[0], authIndex)
+	}
+
+	subjects, authIndexes, channelNames, _ := channelFilterSelectors(
+		[]string{got[0].Value},
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+	)
+	if len(subjects) != 0 || len(channelNames) != 0 {
+		t.Fatalf("subjects = %#v, channelNames = %#v, want auth-index-only filter", subjects, channelNames)
+	}
+	if !reflect.DeepEqual(authIndexes, []string{authIndex}) {
+		t.Fatalf("authIndexes = %#v, want [%s]", authIndexes, authIndex)
+	}
+	for _, row := range options {
+		if row.AuthIndex != authIndexes[0] {
+			t.Fatalf("historical subject %s was not covered by auth index %s", row.AuthSubjectID, authIndexes[0])
+		}
+	}
+}
+
 func TestEnrichChannelFilterOptionsInfersProviderAuthTypeWithoutLiveMeta(t *testing.T) {
 	t.Parallel()
 
