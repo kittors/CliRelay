@@ -139,6 +139,19 @@ func assertAIAccountSharedSubjectTables(t *testing.T, ctx context.Context, db *s
 			t.Fatalf("shared AI account table %s missing after upgrade", table)
 		}
 	}
+	var dataType string
+	if err := db.QueryRowContext(ctx, `
+		SELECT data_type
+		FROM information_schema.columns
+		WHERE table_schema = 'public'
+		  AND table_name = 'ai_account_subject_usage_buckets'
+		  AND column_name = 'total_tokens'
+	`).Scan(&dataType); err != nil {
+		t.Fatalf("shared AI account total_tokens column missing after upgrade: %v", err)
+	}
+	if dataType != "bigint" {
+		t.Fatalf("shared AI account total_tokens data_type = %q, want bigint", dataType)
+	}
 }
 
 // publishedBaselineMigrations returns migrations up to and including

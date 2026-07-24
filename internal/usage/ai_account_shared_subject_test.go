@@ -1,6 +1,7 @@
 package usage
 
 import (
+	"database/sql"
 	"math"
 	"path/filepath"
 	"testing"
@@ -24,6 +25,63 @@ func initSharedSubjectTestDB(t *testing.T) {
 		t.Fatalf("InitDB: %v", err)
 	}
 	t.Cleanup(CloseDB)
+}
+
+func TestInitDBAddsTotalTokensToExistingSharedUsageBuckets(t *testing.T) {
+	CloseDB()
+	dbPath := filepath.Join(t.TempDir(), "usage.db")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`
+		CREATE TABLE ai_account_subject_usage_buckets (
+			auth_subject_id TEXT NOT NULL,
+			bucket_kind TEXT NOT NULL,
+			bucket_start TEXT NOT NULL,
+			request_count INTEGER NOT NULL DEFAULT 0,
+			success_count INTEGER NOT NULL DEFAULT 0,
+			failure_count INTEGER NOT NULL DEFAULT 0,
+			cost_total REAL NOT NULL DEFAULT 0,
+			first_event_at DATETIME NOT NULL,
+			updated_at DATETIME NOT NULL,
+			PRIMARY KEY (auth_subject_id, bucket_kind, bucket_start)
+		)
+	`); err != nil {
+		_ = db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := InitDB(dbPath, config.RequestLogStorageConfig{}, time.UTC); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(CloseDB)
+
+	rows, err := getDB().Query(`PRAGMA table_info(ai_account_subject_usage_buckets)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	found := false
+	for rows.Next() {
+		var cid, notNull, primaryKey int
+		var name, columnType string
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			t.Fatal(err)
+		}
+		if name == "total_tokens" {
+			found = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if !found {
+		t.Fatal("total_tokens column missing after SQLite additive migration")
+	}
 }
 
 func sharedSubjectTestAuth(tenantID, authID, accountID, email string) *coreauth.Auth {
@@ -179,15 +237,15 @@ func TestRequestProjectionSharesUsageWithoutTouchingBindingAndSurvivesLogCleanup
 			t.Fatalf("UpsertAPIKeyForTenant(%s): %v", row.Key, err)
 		}
 	}
-	InsertLogWithDetailsIdentitySubject(keyA, "", identity.ID, "A", "gpt-5.4", "codex", "A", authA.EnsureIndex(), false, now, 10, 1, TokenStats{TotalTokens: 1}, "", "", "")
-	InsertLogWithDetailsIdentitySubject(keyB, "", identity.ID, "B", "gpt-5.4", "codex", "B", authB.EnsureIndex(), true, now.Add(time.Second), 10, 1, TokenStats{TotalTokens: 1}, "", "", "")
+	InsertLogWithDetailsIdentitySubject(keyA, "", identity.ID, "A", "gpt-5.4", "codex", "A", authA.EnsureIndex(), false, now, 10, 1, TokenStats{TotalTokens: 111}, "", "", "")
+	InsertLogWithDetailsIdentitySubject(keyB, "", identity.ID, "B", "gpt-5.4", "codex", "B", authB.EnsureIndex(), true, now.Add(time.Second), 10, 1, TokenStats{TotalTokens: 222}, "", "", "")
 
-	var dayRows, dayRequests int64
-	if err := getDB().QueryRow(`SELECT COUNT(*), COALESCE(SUM(request_count), 0) FROM ai_account_subject_usage_buckets WHERE auth_subject_id = ? AND bucket_kind = 'day'`, identity.ID).Scan(&dayRows, &dayRequests); err != nil {
+	var dayRows, dayRequests, dayTokens int64
+	if err := getDB().QueryRow(`SELECT COUNT(*), COALESCE(SUM(request_count), 0), COALESCE(SUM(total_tokens), 0) FROM ai_account_subject_usage_buckets WHERE auth_subject_id = ? AND bucket_kind = 'day'`, identity.ID).Scan(&dayRows, &dayRequests, &dayTokens); err != nil {
 		t.Fatal(err)
 	}
-	if dayRows != 1 || dayRequests != 2 {
-		t.Fatalf("day projection rows=%d requests=%d", dayRows, dayRequests)
+	if dayRows != 1 || dayRequests != 2 || dayTokens != 333 {
+		t.Fatalf("day projection rows=%d requests=%d tokens=%d", dayRows, dayRequests, dayTokens)
 	}
 	var legacyRows int64
 	if err := getDB().QueryRow(`SELECT COUNT(*) FROM auth_subject_usage_daily WHERE auth_subject_id = ?`, identity.ID).Scan(&legacyRows); err != nil {
@@ -217,7 +275,7 @@ func TestRequestProjectionSharesUsageWithoutTouchingBindingAndSurvivesLogCleanup
 		t.Fatal(err)
 	}
 	got := summaries[identity.ID]
-	if got.RequestTotal != 2 || got.SuccessTotal != 1 || got.FailureTotal != 1 || got.RequestTotal30d != 2 || got.CycleRequestTotal != 2 || !got.CycleKnown {
+	if got.RequestTotal != 2 || got.SuccessTotal != 1 || got.FailureTotal != 1 || got.RequestTotal30d != 2 || got.CycleRequestTotal != 2 || got.CycleTotalTokens != 333 || !got.CycleKnown {
 		t.Fatalf("shared usage=%+v", got)
 	}
 	if got.SuccessRate == nil || math.Abs(*got.SuccessRate-0.5) > 1e-9 {
@@ -246,7 +304,7 @@ func TestRequestProjectionSharesUsageWithoutTouchingBindingAndSurvivesLogCleanup
 		t.Fatal(err)
 	}
 	clean := afterCleanup[identity.ID]
-	if clean.RequestTotal != got.RequestTotal || clean.SuccessTotal != got.SuccessTotal || clean.FailureTotal != got.FailureTotal || clean.CycleRequestTotal != got.CycleRequestTotal {
+	if clean.RequestTotal != got.RequestTotal || clean.SuccessTotal != got.SuccessTotal || clean.FailureTotal != got.FailureTotal || clean.CycleRequestTotal != got.CycleRequestTotal || clean.CycleTotalTokens != got.CycleTotalTokens {
 		t.Fatalf("shared usage reset after request_logs cleanup: before=%+v after=%+v", got, clean)
 	}
 }
@@ -406,12 +464,17 @@ func TestProjectAIAccountSubjectUsageLoadsPrimaryCycleOnCacheMiss(t *testing.T) 
 		t.Fatal(err)
 	}
 	resetAIAccountSubjectCycleCache()
+	primaryStart := primaryReset.Add(-7 * 24 * time.Hour)
 
 	tx, err := getDB().Begin()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := projectAIAccountSubjectUsageTx(tx, identity.ID, false, 1.5, now); err != nil {
+	if err := projectAIAccountSubjectUsageTx(tx, identity.ID, false, 0.5, 111, primaryStart.Add(-time.Second)); err != nil {
+		_ = tx.Rollback()
+		t.Fatal(err)
+	}
+	if err := projectAIAccountSubjectUsageTx(tx, identity.ID, false, 1.5, 321, now); err != nil {
 		_ = tx.Rollback()
 		t.Fatal(err)
 	}
@@ -419,26 +482,121 @@ func TestProjectAIAccountSubjectUsageLoadsPrimaryCycleOnCacheMiss(t *testing.T) 
 		t.Fatal(err)
 	}
 
-	primaryStart := primaryReset.Add(-7 * 24 * time.Hour)
 	var bucketStart string
-	var requests int64
+	var requests, totalTokens int64
 	if err := getDB().QueryRow(`
-		SELECT bucket_start, request_count
+		SELECT bucket_start, request_count, total_tokens
 		FROM ai_account_subject_usage_buckets
 		WHERE auth_subject_id = ? AND bucket_kind = 'cycle'
-	`, identity.ID).Scan(&bucketStart, &requests); err != nil {
+	`, identity.ID).Scan(&bucketStart, &requests, &totalTokens); err != nil {
 		t.Fatal(err)
 	}
-	if bucketStart != formatAIAccountSubjectCycleBucketStart(primaryStart) || requests != 1 {
-		t.Fatalf("cycle bucket start=%q requests=%d want %q/1", bucketStart, requests, formatAIAccountSubjectCycleBucketStart(primaryStart))
+	if bucketStart != formatAIAccountSubjectCycleBucketStart(primaryStart) || requests != 1 || totalTokens != 321 {
+		t.Fatalf("cycle bucket start=%q requests=%d tokens=%d want %q/1/321", bucketStart, requests, totalTokens, formatAIAccountSubjectCycleBucketStart(primaryStart))
 	}
 	summaries, err := QueryAIAccountSubjectUsageSummaries([]string{identity.ID}, map[string]time.Time{identity.ID: primaryStart})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := summaries[identity.ID]; !got.CycleKnown || got.CycleRequestTotal != 1 {
+	if got := summaries[identity.ID]; !got.CycleKnown || got.CycleRequestTotal != 1 || got.CycleTotalTokens != 321 {
 		t.Fatalf("cycle summary=%+v", got)
 	}
+}
+
+func TestAIAccountSubjectUsageTokensBackfillUsesRollupsAndExactCycle(t *testing.T) {
+	initSharedSubjectTestDB(t)
+	auth := sharedSubjectTestAuth(sharedSubjectTenantA, "token-backfill", "acct-token-backfill", "tokens@example.com")
+	identity := ResolveAuthSubjectIdentity(auth)
+	if err := UpsertAIAccountTenantBinding(auth, identity); err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Now().UTC().Truncate(time.Second)
+	cycleStart := now.Add(-48 * time.Hour)
+	resetAt := cycleStart.Add(7 * 24 * time.Hour)
+	pct := 50.0
+	if err := RecordAIAccountSubjectQuotaPoints(identity.ID, "codex", []QuotaSnapshotPoint{{
+		RecordedAt: now, Provider: "codex", QuotaKey: "code_week", QuotaLabel: "Week",
+		Percent: &pct, ResetAt: &resetAt, WindowSeconds: 604800,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	beforeCycle := cycleStart.Add(-time.Hour)
+	insideCycle := cycleStart.Add(time.Hour)
+	for _, event := range []struct {
+		at     time.Time
+		tokens int64
+	}{{beforeCycle, 100}, {insideCycle, 200}} {
+		tx, err := getDB().Begin()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := projectUsageRollupTx(tx, rollupEvent{
+			TenantID: sharedSubjectTenantA, AuthSubjectID: identity.ID, At: event.at,
+			Tokens: TokenStats{TotalTokens: event.tokens},
+		}); err != nil {
+			_ = tx.Rollback()
+			t.Fatal(err)
+		}
+		if err := tx.Commit(); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := getDB().Exec(`
+			INSERT INTO request_logs (tenant_id, timestamp, auth_subject_id, total_tokens)
+			VALUES (?, ?, ?, ?)
+		`, sharedSubjectTenantA, event.at.Format(time.RFC3339Nano), identity.ID, event.tokens); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	assertTotals := func(wantDay, wantLifetime, wantCycle int64) {
+		t.Helper()
+		var day, lifetime, cycle int64
+		if err := getDB().QueryRow(`
+			SELECT COALESCE(SUM(total_tokens), 0)
+			FROM ai_account_subject_usage_buckets
+			WHERE auth_subject_id = ? AND bucket_kind = 'day'
+		`, identity.ID).Scan(&day); err != nil {
+			t.Fatal(err)
+		}
+		if err := getDB().QueryRow(`
+			SELECT total_tokens
+			FROM ai_account_subject_usage_buckets
+			WHERE auth_subject_id = ? AND bucket_kind = 'lifetime' AND bucket_start = '1970-01-01'
+		`, identity.ID).Scan(&lifetime); err != nil {
+			t.Fatal(err)
+		}
+		if err := getDB().QueryRow(`
+			SELECT total_tokens
+			FROM ai_account_subject_usage_buckets
+			WHERE auth_subject_id = ? AND bucket_kind = 'cycle' AND bucket_start = ?
+		`, identity.ID, formatAIAccountSubjectCycleBucketStart(cycleStart)).Scan(&cycle); err != nil {
+			t.Fatal(err)
+		}
+		if day != wantDay || lifetime != wantLifetime || cycle != wantCycle {
+			t.Fatalf("backfilled tokens day=%d lifetime=%d cycle=%d want %d/%d/%d", day, lifetime, cycle, wantDay, wantLifetime, wantCycle)
+		}
+	}
+
+	if err := RunAIAccountSubjectUsageTokensBackfillAtInit(); err != nil {
+		t.Fatal(err)
+	}
+	assertTotals(300, 300, 200)
+	if got := projectionMarkerValue(getDB(), aiAccountSubjectUsageTokensBackfillMarker); got != rollupMarkerDone {
+		t.Fatalf("token backfill marker=%q want %q", got, rollupMarkerDone)
+	}
+
+	if _, err := getDB().Exec(`UPDATE ai_account_subject_usage_buckets SET total_tokens = 999 WHERE auth_subject_id = ?`, identity.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := getDB().Exec(`DELETE FROM usage_projection_markers WHERE marker_key = ?`, aiAccountSubjectUsageTokensBackfillMarker); err != nil {
+		t.Fatal(err)
+	}
+	if err := RunAIAccountSubjectUsageTokensBackfillAtInit(); err != nil {
+		t.Fatal(err)
+	}
+	assertTotals(300, 300, 200)
 }
 
 func TestAIAccountBindingHookTracksAuthLifecycle(t *testing.T) {

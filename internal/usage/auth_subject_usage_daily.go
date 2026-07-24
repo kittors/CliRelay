@@ -25,6 +25,7 @@ type AuthSubjectUsageSummary struct {
 	FailureTotal30d   int64      `json:"failure_total_30d"`
 	CycleRequestTotal int64      `json:"cycle_request_total"`
 	CycleCostTotal    float64    `json:"cycle_cost_total"`
+	CycleTotalTokens  int64      `json:"cycle_total_tokens"`
 	CycleKnown        bool       `json:"cycle_known"`
 	CycleStart        string     `json:"cycle_start,omitempty"`
 	ProjectedSince    *time.Time `json:"projected_since,omitempty"`

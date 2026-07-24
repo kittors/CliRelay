@@ -146,7 +146,7 @@ func formatAIAccountSubjectCycleBucketStart(value time.Time) string {
 // projectAIAccountSubjectUsageTx is the request-hot B-layer projection. It only
 // uses the server-computed subject already captured by usageReporter; it never
 // reads or upserts the low-frequency tenant binding table.
-func projectAIAccountSubjectUsageTx(tx *sql.Tx, authSubjectID string, failed bool, cost float64, at time.Time) error {
+func projectAIAccountSubjectUsageTx(tx *sql.Tx, authSubjectID string, failed bool, cost float64, totalTokens int64, at time.Time) error {
 	if tx == nil {
 		return nil
 	}
@@ -181,18 +181,19 @@ func projectAIAccountSubjectUsageTx(tx *sql.Tx, authSubjectID string, failed boo
 	const upsert = `
 		INSERT INTO ai_account_subject_usage_buckets (
 			auth_subject_id, bucket_kind, bucket_start, request_count,
-			success_count, failure_count, cost_total, first_event_at, updated_at
-		) VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?)
+			success_count, failure_count, cost_total, total_tokens, first_event_at, updated_at
+		) VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(auth_subject_id, bucket_kind, bucket_start) DO UPDATE SET
 			request_count = ai_account_subject_usage_buckets.request_count + 1,
 			success_count = ai_account_subject_usage_buckets.success_count + excluded.success_count,
 			failure_count = ai_account_subject_usage_buckets.failure_count + excluded.failure_count,
 			cost_total = ai_account_subject_usage_buckets.cost_total + excluded.cost_total,
+			total_tokens = ai_account_subject_usage_buckets.total_tokens + excluded.total_tokens,
 			updated_at = excluded.updated_at
 	`
 	// The fixed day -> lifetime -> cycle order is shared by every writer.
 	for _, bucket := range buckets {
-		if _, err := tx.Exec(upsert, authSubjectID, bucket.kind, bucket.start, successInc, failureInc, cost, first, now); err != nil {
+		if _, err := tx.Exec(upsert, authSubjectID, bucket.kind, bucket.start, successInc, failureInc, cost, totalTokens, first, now); err != nil {
 			return fmt.Errorf("usage: project shared subject %s: %w", bucket.kind, err)
 		}
 	}
@@ -392,7 +393,7 @@ func QueryAIAccountSubjectUsageSummaries(subjectIDs []string, cycleStartBySubjec
 		cycleArgs = append(cycleArgs, start)
 	}
 	cycleRows, err := db.Query(`
-		SELECT auth_subject_id, bucket_start, request_count, cost_total, updated_at
+		SELECT auth_subject_id, bucket_start, request_count, cost_total, total_tokens, updated_at
 		FROM ai_account_subject_usage_buckets
 		WHERE bucket_kind = 'cycle'
 		  AND auth_subject_id IN (`+strings.TrimSuffix(strings.Repeat("?,", len(cycleIDs)), ",")+`)
@@ -403,10 +404,10 @@ func QueryAIAccountSubjectUsageSummaries(subjectIDs []string, cycleStartBySubjec
 	}
 	for cycleRows.Next() {
 		var id, bucketStart string
-		var req int64
+		var req, totalTokens int64
 		var cost float64
 		var updated sql.NullString
-		if err := cycleRows.Scan(&id, &bucketStart, &req, &cost, &updated); err != nil {
+		if err := cycleRows.Scan(&id, &bucketStart, &req, &cost, &totalTokens, &updated); err != nil {
 			cycleRows.Close()
 			return nil, err
 		}
@@ -415,7 +416,7 @@ func QueryAIAccountSubjectUsageSummaries(subjectIDs []string, cycleStartBySubjec
 			continue
 		}
 		s := out[id]
-		s.CycleRequestTotal, s.CycleCostTotal = req, cost
+		s.CycleRequestTotal, s.CycleCostTotal, s.CycleTotalTokens = req, cost, totalTokens
 		if t, ok := parseStoredTimeString(updated.String); ok && t.After(s.UpdatedAt) {
 			s.UpdatedAt = t
 		}

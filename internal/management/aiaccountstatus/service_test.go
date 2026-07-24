@@ -876,8 +876,8 @@ func TestListStatusNewTenantBindingReadsExistingSharedStatus(t *testing.T) {
 	defer admin.Close()
 	if _, err := admin.Exec(`
 		INSERT INTO ai_account_subject_usage_buckets
-			(auth_subject_id, bucket_kind, bucket_start, request_count, success_count, failure_count, cost_total, first_event_at, updated_at)
-		VALUES (?, 'cycle', ?, 1, 1, 0, 1, ?, ?)
+			(auth_subject_id, bucket_kind, bucket_start, request_count, success_count, failure_count, cost_total, total_tokens, first_event_at, updated_at)
+		VALUES (?, 'cycle', ?, 1, 1, 0, 1, 456, ?, ?)
 	`, identity.ID, cycleStart.Format(time.RFC3339Nano), cycleStart.Format(time.RFC3339Nano), checked.Format(time.RFC3339Nano)); err != nil {
 		t.Fatal(err)
 	}
@@ -913,7 +913,7 @@ func TestListStatusNewTenantBindingReadsExistingSharedStatus(t *testing.T) {
 	if item.CurrentTenantBindingCount != 1 || item.AuthIndex != authB.EnsureIndex() {
 		t.Fatalf("tenant B binding projection=%+v", item)
 	}
-	if !item.Usage.CycleKnown || item.Usage.CycleRequestTotal != 1 {
+	if !item.Usage.CycleKnown || item.Usage.CycleRequestTotal != 1 || item.Usage.CycleTotalTokens != 456 {
 		t.Fatalf("binding repair changed shared cycle usage: %+v", item.Usage)
 	}
 }

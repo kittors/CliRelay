@@ -93,6 +93,7 @@ CREATE TABLE IF NOT EXISTS ai_account_subject_usage_buckets (
   success_count INTEGER NOT NULL DEFAULT 0,
   failure_count INTEGER NOT NULL DEFAULT 0,
   cost_total REAL NOT NULL DEFAULT 0,
+  total_tokens INTEGER NOT NULL DEFAULT 0,
   first_event_at DATETIME NOT NULL,
   updated_at DATETIME NOT NULL,
   PRIMARY KEY (auth_subject_id, bucket_kind, bucket_start)
@@ -195,6 +196,8 @@ func ensureAIAccountSharedSubjectTables(db *sql.DB) error {
 		if _, err := db.Exec(aiAccountSharedSubjectTablesSQL); err != nil {
 			return fmt.Errorf("usage: ensure ai account shared subject tables: %w", err)
 		}
+		// Additive migration for SQLite databases created before cycle token projection.
+		_, _ = db.Exec(`ALTER TABLE ai_account_subject_usage_buckets ADD COLUMN total_tokens INTEGER NOT NULL DEFAULT 0`)
 	}
 	ensureUsageProjectionMarkerTable(db)
 	if err := setProjectionMarker(db, aiAccountSharedSchemaMarker, "done"); err != nil {

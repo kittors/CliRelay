@@ -320,7 +320,7 @@ func TestAIAccountSubjectDayProjectionUsesConfiguredTimezone(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := projectAIAccountSubjectUsageTx(tx, "sub-timezone", false, 1.25, at); err != nil {
+	if err := projectAIAccountSubjectUsageTx(tx, "sub-timezone", false, 1.25, 123, at); err != nil {
 		_ = tx.Rollback()
 		t.Fatal(err)
 	}

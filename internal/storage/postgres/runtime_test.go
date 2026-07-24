@@ -11,10 +11,20 @@ import (
 
 func TestRuntimeMigrationsCoverCoreTables(t *testing.T) {
 	migrations := RuntimeMigrations()
-	if len(migrations) != 22 {
-		t.Fatalf("RuntimeMigrations len = %d, want 22", len(migrations))
+	if len(migrations) != 23 {
+		t.Fatalf("RuntimeMigrations len = %d, want 23", len(migrations))
 	}
-	// Latest: fixed period spending columns.
+	// Latest: shared AI-account cycle token projection.
+	if migrations[22].Version != "202607240001_ai_account_subject_usage_tokens" {
+		t.Fatalf("latest migration version = %q", migrations[22].Version)
+	}
+	tokenSQL := migrations[22].SQL
+	for _, fragment := range []string{"ALTER TABLE ai_account_subject_usage_buckets", "total_tokens BIGINT NOT NULL DEFAULT 0"} {
+		if !strings.Contains(tokenSQL, fragment) {
+			t.Fatalf("AI account subject token migration missing %q", fragment)
+		}
+	}
+	// Prior: fixed period spending columns.
 	periodSQL := migrations[21].SQL
 	for _, fragment := range []string{"five_hour_spending_limit", "weekly_spending_limit", "monthly_spending_limit"} {
 		if !strings.Contains(periodSQL, fragment) {

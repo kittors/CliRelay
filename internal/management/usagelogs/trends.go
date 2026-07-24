@@ -72,9 +72,11 @@ func mergeAuthFileTrendShared(tenant, shared AuthFileTrendResponse) AuthFileTren
 	out := tenant
 	if shared.CycleRequestTotal > tenant.CycleRequestTotal ||
 		(shared.CycleRequestTotal == tenant.CycleRequestTotal && shared.CycleCostTotal > tenant.CycleCostTotal) ||
+		(shared.CycleRequestTotal == tenant.CycleRequestTotal && shared.CycleCostTotal == tenant.CycleCostTotal && shared.CycleTotalTokens > tenant.CycleTotalTokens) ||
 		(tenant.CycleRequestTotal == 0 && shared.RequestTotal > tenant.RequestTotal) {
 		out.CycleRequestTotal = shared.CycleRequestTotal
 		out.CycleCostTotal = shared.CycleCostTotal
+		out.CycleTotalTokens = shared.CycleTotalTokens
 		if shared.RequestTotal > tenant.RequestTotal {
 			out.RequestTotal = shared.RequestTotal
 		}
@@ -166,6 +168,7 @@ func (s *Service) authFileTrendFromSharedSubject(authIndex string, auth *coreaut
 	cycleKnown := !cycleStart.IsZero() || summary.CycleKnown
 	cycleRequestTotal := summary.CycleRequestTotal
 	cycleCostTotal := summary.CycleCostTotal
+	cycleTotalTokens := summary.CycleTotalTokens
 	cycleStartStr := ""
 	if !cycleStart.IsZero() {
 		cycleStartStr = cycleStart.UTC().Format(time.RFC3339)
@@ -180,6 +183,7 @@ func (s *Service) authFileTrendFromSharedSubject(authIndex string, auth *coreaut
 		RequestTotal:      requestTotal,
 		CycleRequestTotal: cycleRequestTotal,
 		CycleCostTotal:    cycleCostTotal,
+		CycleTotalTokens:  cycleTotalTokens,
 		WeeklyQuotaUsed:   weeklyQuotaUsed,
 		CycleKnown:        cycleKnown,
 		CycleStart:        cycleStartStr,
@@ -240,7 +244,7 @@ func (s *Service) authFileTrendFromTenantLogs(authIndex string, auth *coreauth.A
 		}
 	}
 
-	var cycleRequestTotal int64
+	var cycleRequestTotal, cycleTotalTokens int64
 	var cycleCostTotal float64
 	cycleKnown := !cycleStart.IsZero()
 	if cycleKnown {
@@ -249,6 +253,10 @@ func (s *Service) authFileTrendFromTenantLogs(authIndex string, auth *coreauth.A
 			return http.StatusInternalServerError, map[string]any{"error": err.Error()}
 		}
 		cycleCostTotal, err = usage.QueryCostByAuthSubjectSinceForTenant(s.tenantID, matcher, cycleStart)
+		if err != nil {
+			return http.StatusInternalServerError, map[string]any{"error": err.Error()}
+		}
+		cycleTotalTokens, err = usage.QueryTotalTokensByAuthSubjectSinceForTenant(s.tenantID, matcher, cycleStart)
 		if err != nil {
 			return http.StatusInternalServerError, map[string]any{"error": err.Error()}
 		}
@@ -265,6 +273,7 @@ func (s *Service) authFileTrendFromTenantLogs(authIndex string, auth *coreauth.A
 		RequestTotal:      requestTotal,
 		CycleRequestTotal: cycleRequestTotal,
 		CycleCostTotal:    cycleCostTotal,
+		CycleTotalTokens:  cycleTotalTokens,
 		WeeklyQuotaUsed:   weeklyQuotaUsed,
 		CycleKnown:        cycleKnown,
 		CycleStart:        cycleStartStr,

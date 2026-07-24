@@ -54,6 +54,7 @@ type AuthFileTrendResponse struct {
 	RequestTotal      int64                       `json:"request_total"`
 	CycleRequestTotal int64                       `json:"cycle_request_total"`
 	CycleCostTotal    float64                     `json:"cycle_cost_total"`
+	CycleTotalTokens  int64                       `json:"cycle_total_tokens"`
 	WeeklyQuotaUsed   *float64                    `json:"weekly_quota_used_percent"`
 	CycleKnown        bool                        `json:"cycle_known"`
 	CycleStart        string                      `json:"cycle_start"`

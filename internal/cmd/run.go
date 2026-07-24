@@ -203,8 +203,10 @@ type runtimeDataStackMaintenanceOps struct {
 func defaultRuntimeDataStackMaintenanceOps() runtimeDataStackMaintenanceOps {
 	return runtimeDataStackMaintenanceOps{
 		runAIAccountSharedSubjectBackfill: func() error {
-			_, err := usage.RunAIAccountSharedSubjectBackfillAtInit()
-			return err
+			if _, err := usage.RunAIAccountSharedSubjectBackfillAtInit(); err != nil {
+				return err
+			}
+			return usage.RunAIAccountSubjectUsageTokensBackfillAtInit()
 		},
 		scheduleUsageRollupCatchup: usage.ScheduleUsageRollupBlueGreenCatchup,
 	}

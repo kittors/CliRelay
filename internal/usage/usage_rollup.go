@@ -506,7 +506,7 @@ func commitLogWithProjections(tx *sql.Tx, ev rollupEvent) error {
 		return err
 	}
 	if ev.AuthSubjectID != "" {
-		if err := projectAIAccountSubjectUsageTx(tx, ev.AuthSubjectID, ev.Failed, ev.Cost, ev.At); err != nil {
+		if err := projectAIAccountSubjectUsageTx(tx, ev.AuthSubjectID, ev.Failed, ev.Cost, ev.Tokens.TotalTokens, ev.At); err != nil {
 			_ = tx.Rollback()
 			return fmt.Errorf("project shared auth subject usage: %w", err)
 		}

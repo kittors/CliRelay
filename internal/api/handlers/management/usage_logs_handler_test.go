@@ -874,6 +874,7 @@ func TestGetAuthFileTrendUsesWeeklyResetCycleForRequestTotal(t *testing.T) {
 		RequestTotal      int64    `json:"request_total"`
 		CycleRequestTotal int64    `json:"cycle_request_total"`
 		CycleCostTotal    float64  `json:"cycle_cost_total"`
+		CycleTotalTokens  int64    `json:"cycle_total_tokens"`
 		WeeklyQuotaUsed   *float64 `json:"weekly_quota_used_percent"`
 		CycleStart        string   `json:"cycle_start"`
 		DailyUsage        []struct {
@@ -911,6 +912,9 @@ func TestGetAuthFileTrendUsesWeeklyResetCycleForRequestTotal(t *testing.T) {
 	}
 	if math.Abs(payload.CycleCostTotal-0.008) > 1e-12 {
 		t.Fatalf("cycle_cost_total = %v, want 0.008", payload.CycleCostTotal)
+	}
+	if payload.CycleTotalTokens != 5000 {
+		t.Fatalf("cycle_total_tokens = %d, want 5000", payload.CycleTotalTokens)
 	}
 	if payload.WeeklyQuotaUsed == nil || math.Abs(*payload.WeeklyQuotaUsed-7) > 1e-12 {
 		t.Fatalf("weekly_quota_used_percent = %v, want 7", payload.WeeklyQuotaUsed)
@@ -1039,6 +1043,7 @@ func TestGetAuthFileTrendSharesCycleAcrossTenantsForStableAccountID(t *testing.T
 	var payload struct {
 		CycleRequestTotal int64    `json:"cycle_request_total"`
 		CycleCostTotal    float64  `json:"cycle_cost_total"`
+		CycleTotalTokens  int64    `json:"cycle_total_tokens"`
 		RequestTotal      int64    `json:"request_total"`
 		WeeklyQuotaUsed   *float64 `json:"weekly_quota_used_percent"`
 		CycleKnown        bool     `json:"cycle_known"`
@@ -1063,6 +1068,9 @@ func TestGetAuthFileTrendSharesCycleAcrossTenantsForStableAccountID(t *testing.T
 	}
 	if math.Abs(payload.CycleCostTotal-0.008) > 1e-12 {
 		t.Fatalf("tenant B cycle_cost_total=%v, want 0.008", payload.CycleCostTotal)
+	}
+	if payload.CycleTotalTokens != 5000 {
+		t.Fatalf("cycle_total_tokens = %d, want 5000", payload.CycleTotalTokens)
 	}
 	if payload.RequestTotal != 2 {
 		t.Fatalf("tenant B request_total=%d, want 2", payload.RequestTotal)
@@ -1175,6 +1183,7 @@ func TestGetAuthFileTrendKeepsWeeklyCycleAcrossCodexPlanRename(t *testing.T) {
 		RequestTotal      int64   `json:"request_total"`
 		CycleRequestTotal int64   `json:"cycle_request_total"`
 		CycleCostTotal    float64 `json:"cycle_cost_total"`
+		CycleTotalTokens  int64   `json:"cycle_total_tokens"`
 		CycleKnown        bool    `json:"cycle_known"`
 		CycleStart        string  `json:"cycle_start"`
 	}
@@ -1189,6 +1198,9 @@ func TestGetAuthFileTrendKeepsWeeklyCycleAcrossCodexPlanRename(t *testing.T) {
 	}
 	if math.Abs(payload.CycleCostTotal-0.008) > 1e-12 {
 		t.Fatalf("cycle_cost_total = %v, want 0.008", payload.CycleCostTotal)
+	}
+	if payload.CycleTotalTokens != 5000 {
+		t.Fatalf("cycle_total_tokens = %d, want 5000", payload.CycleTotalTokens)
 	}
 	if !payload.CycleKnown {
 		t.Fatalf("cycle_known = false, want true")

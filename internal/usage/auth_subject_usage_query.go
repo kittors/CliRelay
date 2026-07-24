@@ -187,7 +187,15 @@ func QueryRequestCountByAuthSubjectSince(matcher AuthSubjectMatcher, since time.
 }
 
 func QueryRequestCountByAuthSubjectSinceForTenant(tenantID string, matcher AuthSubjectMatcher, since time.Time) (int64, error) {
-	return queryCountByAuthSubjectSince(tenantID, matcher, since, "COUNT(*)")
+	return queryInt64ByAuthSubjectSince(tenantID, matcher, since, "COUNT(*)", "count")
+}
+
+func QueryTotalTokensByAuthSubjectSince(matcher AuthSubjectMatcher, since time.Time) (int64, error) {
+	return QueryTotalTokensByAuthSubjectSinceForTenant(systemTenantID, matcher, since)
+}
+
+func QueryTotalTokensByAuthSubjectSinceForTenant(tenantID string, matcher AuthSubjectMatcher, since time.Time) (int64, error) {
+	return queryInt64ByAuthSubjectSince(tenantID, matcher, since, "COALESCE(SUM(total_tokens), 0)", "total tokens")
 }
 
 func QueryCostByAuthSubjectSince(matcher AuthSubjectMatcher, since time.Time) (float64, error) {
@@ -222,7 +230,7 @@ func QueryCostByAuthSubjectSinceForTenant(tenantID string, matcher AuthSubjectMa
 	return total, nil
 }
 
-func queryCountByAuthSubjectSince(tenantID string, matcher AuthSubjectMatcher, since time.Time, aggregate string) (int64, error) {
+func queryInt64ByAuthSubjectSince(tenantID string, matcher AuthSubjectMatcher, since time.Time, aggregate, label string) (int64, error) {
 	db := getReadDB()
 	if db == nil {
 		return 0, nil
@@ -244,7 +252,7 @@ func queryCountByAuthSubjectSince(tenantID string, matcher AuthSubjectMatcher, s
 		WHERE tenant_id = ? AND timestamp >= ? AND (%s)
 	`, aggregate, matchSQL), args...).Scan(&total)
 	if err != nil {
-		return 0, fmt.Errorf("usage: request count by auth subject query: %w", err)
+		return 0, fmt.Errorf("usage: request %s by auth subject query: %w", label, err)
 	}
 	return total, nil
 }

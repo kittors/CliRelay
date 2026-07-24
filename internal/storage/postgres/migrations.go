@@ -36,8 +36,14 @@ func RuntimeMigrations() []Migration {
 		// Append-only history of manual account-level daily spending resets.
 		{Version: "202607210001_end_user_daily_spending_reset_events", SQL: endUserDailySpendingResetEventsSQL},
 		{Version: "202607220001_period_spending_limits", SQL: periodSpendingLimitsSQL},
+		{Version: "202607240001_ai_account_subject_usage_tokens", SQL: aiAccountSubjectUsageTokensSQL},
 	}
 }
+
+const aiAccountSubjectUsageTokensSQL = `
+ALTER TABLE ai_account_subject_usage_buckets
+ADD COLUMN IF NOT EXISTS total_tokens BIGINT NOT NULL DEFAULT 0;
+`
 
 const periodSpendingLimitsSQL = `
 ALTER TABLE api_key_permission_profiles ADD COLUMN IF NOT EXISTS five_hour_spending_limit DOUBLE PRECISION NOT NULL DEFAULT 0;
