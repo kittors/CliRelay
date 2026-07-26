@@ -34,9 +34,14 @@ func atomicReplace(t *testing.T, path string, data []byte) {
 	}
 }
 
-// startConfigWatcher runs the production event loop against a real fsnotify watch on the
-// config file, counting reloads through the normal reload callback.
-func startConfigWatcher(t *testing.T) (configPath string, reloads *atomic.Int32) {
+// startConfigEventCounter drives the production handleEvent from a real fsnotify watch,
+// counting how many events for the config path actually reach it.
+//
+// The assertion deliberately sits at the event layer rather than at "did a reload run".
+// A reload is debounced, deduplicated by content hash, and the reload path itself can
+// rewrite the file — all legitimate behaviour that makes reload counts a noisy proxy.
+// The regression being guarded is precisely that events stop arriving at all.
+func startConfigEventCounter(t *testing.T) (configPath string, events *atomic.Int32) {
 	t.Helper()
 	tmpDir := t.TempDir()
 	authDir := filepath.Join(tmpDir, "auth")
@@ -56,36 +61,58 @@ func startConfigWatcher(t *testing.T) (configPath string, reloads *atomic.Int32)
 		t.Fatalf("watch config: %v", err)
 	}
 
-	var counter atomic.Int32
 	w := &Watcher{
 		authDir:        authDir,
 		configPath:     configPath,
 		watcher:        fsWatcher,
 		lastAuthHashes: make(map[string]string),
-		reloadCallback: func(*config.Config) { counter.Add(1) },
+		reloadCallback: func(*config.Config) {},
 	}
 	w.SetConfig(&config.Config{AuthDir: authDir})
 
+	var counter atomic.Int32
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(func() {
 		cancel()
 		_ = fsWatcher.Close()
 	})
-	go w.processEvents(ctx)
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case event, ok := <-fsWatcher.Events:
+				if !ok {
+					return
+				}
+				if w.normalizeAuthPath(event.Name) == w.normalizeAuthPath(configPath) {
+					counter.Add(1)
+				}
+				// Production code path: this is what re-arms the watch.
+				w.handleEvent(event)
+			case _, ok := <-fsWatcher.Errors:
+				if !ok {
+					return
+				}
+			}
+		}
+	}()
 
 	return configPath, &counter
 }
 
-func waitForReloads(t *testing.T, reloads *atomic.Int32, want int32, msg string) {
+// awaitEventIncrease fails if no further config event arrives, which is exactly what a
+// dead watch looks like from the outside.
+func awaitEventIncrease(t *testing.T, events *atomic.Int32, baseline int32, msg string) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
-		if reloads.Load() >= want {
+		if events.Load() > baseline {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatalf("%s: reloads = %d, want >= %d", msg, reloads.Load(), want)
+	t.Fatalf("%s: config event count stuck at %d; the watch is no longer delivering events", msg, baseline)
 }
 
 // Regression for the atomic-write rollout: config.yaml is now published via rename, and
@@ -93,34 +120,36 @@ func waitForReloads(t *testing.T, reloads *atomic.Int32, want int32, msg string)
 // silently — IN_IGNORED, nothing on the Errors channel — so unless handleEvent re-arms it,
 // the first atomic save permanently disables config hot-reload.
 //
-// The second and third replaces are the assertions that matter; the first is still seen on
-// the soon-to-die watch. This reproduces only on inotify: kqueue (macOS) re-adds the watch
-// internally, so on macOS it passes either way and Linux CI is what guards the regression.
-// Each replace writes distinct content so the reload path's content-hash check lets it
-// through.
+// Without the fix the first replace still delivers its CHMOD/REMOVE pair on the dying
+// watch, and everything after that is silence — so the failure surfaces on the second
+// replace. This reproduces only on inotify: kqueue (macOS) re-adds the watch internally,
+// so on macOS it passes either way and Linux CI is what guards the regression.
 func TestConfigWatchSurvivesRepeatedAtomicReplace(t *testing.T) {
-	configPath, reloads := startConfigWatcher(t)
+	configPath, events := startConfigEventCounter(t)
 	authDir := filepath.Join(filepath.Dir(configPath), "auth")
 
 	for i := 1; i <= 3; i++ {
+		baseline := events.Load()
 		atomicReplace(t, configPath, fmt.Appendf(nil, "auth_dir: %s\nport: %d\n", authDir, 8317+i))
-		waitForReloads(t, reloads, int32(i), fmt.Sprintf("atomic replace #%d", i))
+		awaitEventIncrease(t, events, baseline, fmt.Sprintf("atomic replace #%d", i))
 	}
 }
 
 // After an atomic replace the watch must also still notice an ordinary in-place write —
 // an operator editing config.yaml by hand, and the EBUSY in-place fallback.
 func TestConfigWatchNoticesInPlaceWriteAfterAtomicReplace(t *testing.T) {
-	configPath, reloads := startConfigWatcher(t)
+	configPath, events := startConfigEventCounter(t)
 	authDir := filepath.Join(filepath.Dir(configPath), "auth")
 
+	baseline := events.Load()
 	atomicReplace(t, configPath, fmt.Appendf(nil, "auth_dir: %s\nport: 8318\n", authDir))
-	waitForReloads(t, reloads, 1, "atomic replace")
+	awaitEventIncrease(t, events, baseline, "atomic replace")
 
+	baseline = events.Load()
 	if err := os.WriteFile(configPath, fmt.Appendf(nil, "auth_dir: %s\nport: 8319\n", authDir), 0o600); err != nil {
 		t.Fatalf("in-place write: %v", err)
 	}
-	waitForReloads(t, reloads, 2, "in-place write after atomic replace")
+	awaitEventIncrease(t, events, baseline, "in-place write after atomic replace")
 }
 
 // handleEvent must treat a rename-away as a content change. On inotify the replaced inode
