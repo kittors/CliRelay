@@ -8,7 +8,6 @@ import (
 	"bytes"
 	"fmt"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -52,8 +51,19 @@ func (h *GeminiCLIAPIHandler) Models() []map[string]any {
 
 // CLIHandler handles CLI-specific requests for Gemini API operations.
 // It restricts access to localhost only and routes requests to appropriate internal handlers.
+//
+// This route carries no API key of its own (it is not registered under an authenticated
+// route group), so the local-origin check below is the only thing standing between a
+// caller and the server's Gemini credential pool. It must stay fail-closed.
 func (h *GeminiCLIAPIHandler) CLIHandler(c *gin.Context) {
-	if !strings.HasPrefix(c.Request.RemoteAddr, "127.0.0.1:") {
+	if !util.IsLocalOriginRequest(c.Request) {
+		// Logged because this endpoint is scanned for in the wild and a silent 403
+		// leaves operators with no signal that someone is probing it.
+		if relayHeader := util.RelayIndicationHeader(c.Request); relayHeader != "" {
+			log.Warnf("gemini cli: rejected non-local request from %s (relayed via %s header); configure trusted-proxies and keep /v1internal off public reverse proxies", c.Request.RemoteAddr, relayHeader)
+		} else {
+			log.Warnf("gemini cli: rejected non-local request from %s", c.Request.RemoteAddr)
+		}
 		c.JSON(http.StatusForbidden, handlers.ErrorResponse{
 			Error: handlers.ErrorDetail{
 				Message: "CLI reply only allow local access",

@@ -249,6 +249,153 @@ func TestMiddlewareIgnoresQuerySessionTokenOnNormalHTTP(t *testing.T) {
 	}
 }
 
+// newDefaultTrustProxyRouter mirrors the production engine for a deployment that left
+// trusted-proxies empty (the shipped default): configureTrustedProxies calls
+// SetTrustedProxies(nil), which makes gin's ClientIP fall back to RemoteAddr. That
+// fallback is what turned a same-host reverse proxy into a local-origin bypass.
+func newDefaultTrustProxyRouter(t *testing.T, h *Handler) *gin.Engine {
+	t.Helper()
+	router := gin.New()
+	if err := router.SetTrustedProxies(nil); err != nil {
+		t.Fatalf("SetTrustedProxies(nil): %v", err)
+	}
+	router.Use(h.Middleware())
+	router.GET("/v0/management/ping", func(c *gin.Context) {
+		c.String(http.StatusOK, "ok")
+	})
+	return router
+}
+
+// Same root cause as issue #517, on the management surface: with trusted-proxies unset
+// gin's ClientIP falls back to RemoteAddr, so a same-host reverse proxy made every
+// external request look local — which skipped the allow-remote gate entirely.
+func TestMiddlewareRejectsRelayedRequestWhenRemoteDisabled(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	const managementKey = "correct-management-key"
+	hashed, err := bcrypt.GenerateFromPassword([]byte(managementKey), bcrypt.DefaultCost)
+	if err != nil {
+		t.Fatalf("failed to hash test management key: %v", err)
+	}
+
+	h := NewHandlerWithoutConfigFilePath(&config.Config{
+		RemoteManagement: config.RemoteManagement{
+			AllowRemote: false,
+			SecretKey:   string(hashed),
+		},
+	}, nil)
+	defer h.Close()
+
+	router := newDefaultTrustProxyRouter(t, h)
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v0/management/ping", nil)
+	// The proxy is the TCP peer; the real client is external.
+	req.RemoteAddr = "127.0.0.1:4321"
+	req.Header.Set("X-Forwarded-For", "203.0.113.42")
+	req.Header.Set("Authorization", "Bearer "+managementKey)
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("relayed request status = %d, want %d; body=%s", rr.Code, http.StatusForbidden, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "remote management disabled") {
+		t.Fatalf("expected remote-management rejection, got body=%s", rr.Body.String())
+	}
+	// The hint must name a way out, otherwise operators just see a broken panel.
+	if !strings.Contains(rr.Body.String(), "trusted-proxies") {
+		t.Fatalf("expected remediation hint naming trusted-proxies, got body=%s", rr.Body.String())
+	}
+}
+
+// The local-password path is reachable without any remote secret, so it must not be
+// exposed to relayed requests.
+func TestMiddlewareRejectsRelayedRequestUsingLocalPassword(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	h := NewHandlerWithoutConfigFilePath(&config.Config{}, nil)
+	h.SetLocalPassword("local-management-password")
+	defer h.Close()
+
+	router := newDefaultTrustProxyRouter(t, h)
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v0/management/ping", nil)
+	req.RemoteAddr = "127.0.0.1:4321"
+	req.Header.Set("X-Forwarded-For", "203.0.113.42")
+	req.Header.Set("Authorization", "Bearer local-management-password")
+	router.ServeHTTP(rr, req)
+
+	if rr.Code == http.StatusOK {
+		t.Fatalf("relayed request authenticated with the local password; body=%s", rr.Body.String())
+	}
+}
+
+// Relayed requests must also be subject to the per-IP login throttle that the
+// localClient shortcut used to skip.
+func TestMiddlewareThrottlesRelayedFailedAttempts(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	hashed, err := bcrypt.GenerateFromPassword([]byte("correct-management-key"), bcrypt.DefaultCost)
+	if err != nil {
+		t.Fatalf("failed to hash test management key: %v", err)
+	}
+
+	h := NewHandlerWithoutConfigFilePath(&config.Config{
+		RemoteManagement: config.RemoteManagement{
+			AllowRemote: true,
+			SecretKey:   string(hashed),
+		},
+	}, nil)
+	defer h.Close()
+
+	router := newDefaultTrustProxyRouter(t, h)
+
+	newRelayedRequest := func() *http.Request {
+		req := httptest.NewRequest(http.MethodGet, "/v0/management/ping", nil)
+		req.RemoteAddr = "127.0.0.1:4321"
+		req.Header.Set("X-Forwarded-For", "203.0.113.42")
+		req.Header.Set("Authorization", "Bearer wrong-key")
+		return req
+	}
+
+	var banned bool
+	for i := 0; i < 12; i++ {
+		rr := httptest.NewRecorder()
+		router.ServeHTTP(rr, newRelayedRequest())
+		if rr.Code == http.StatusForbidden && strings.Contains(rr.Body.String(), "IP banned") {
+			banned = true
+			break
+		}
+	}
+	if !banned {
+		t.Fatal("relayed brute-force attempts were never throttled")
+	}
+}
+
+// A genuine local client (no relay headers) must keep working unchanged.
+func TestMiddlewareAllowsDirectLoopbackLocalPassword(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	h := NewHandlerWithoutConfigFilePath(&config.Config{}, nil)
+	h.SetLocalPassword("local-management-password")
+	defer h.Close()
+
+	router := newDefaultTrustProxyRouter(t, h)
+
+	for _, remoteAddr := range []string{"127.0.0.1:4321", "[::1]:4321"} {
+		rr := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/v0/management/ping", nil)
+		req.RemoteAddr = remoteAddr
+		req.Header.Set("Authorization", "Bearer local-management-password")
+		router.ServeHTTP(rr, req)
+
+		if rr.Code != http.StatusOK {
+			t.Fatalf("direct loopback %s status = %d, want %d; body=%s", remoteAddr, rr.Code, http.StatusOK, rr.Body.String())
+		}
+	}
+}
+
 func TestResolveSessionToken(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
