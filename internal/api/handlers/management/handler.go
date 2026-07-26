@@ -195,7 +195,13 @@ func (h *Handler) Middleware() gin.HandlerFunc {
 		}
 
 		clientIP := c.ClientIP()
-		localClient := clientIP == "127.0.0.1" || clientIP == "::1"
+		// A loopback ClientIP alone does not prove local origin. With trusted-proxies
+		// unset (the default) gin falls back to RemoteAddr, so behind a same-host
+		// reverse proxy every external request would report 127.0.0.1 and thereby skip
+		// the allow-remote gate, unlock the local-password path, and bypass the per-IP
+		// login throttle entirely. Require the direct peer to be loopback and no relay
+		// headers to be present as well.
+		localClient := (clientIP == "127.0.0.1" || clientIP == "::1") && util.IsLocalOriginRequest(c.Request)
 		cfg := h.cfg
 		var (
 			allowRemote bool
@@ -215,7 +221,14 @@ func (h *Handler) Middleware() gin.HandlerFunc {
 		clearFailures := func() {}
 		if !localClient {
 			if !allowRemote {
-				c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "remote management disabled"})
+				// Requests relayed by a local reverse proxy land here even though the TCP
+				// peer is loopback, so the hint names both ways out: open remote access, or
+				// declare the proxy so the real client IP is recovered.
+				message := "remote management disabled"
+				if relayHeader := util.RelayIndicationHeader(c.Request); relayHeader != "" {
+					message = "remote management disabled: request was relayed (" + relayHeader + " header present). Set remote-management.allow-remote=true, or add the proxy to trusted-proxies so the original client IP is used."
+				}
+				c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": message})
 				return
 			}
 
