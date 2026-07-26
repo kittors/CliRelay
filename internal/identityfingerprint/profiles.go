@@ -46,21 +46,62 @@ func CodexProfileKey(userAgent, originator string) (profileKey, family string, o
 	uaKey, uaFamily := classifyCodexUserAgent(userAgent)
 	originatorKey, originatorFamily := classifyCodexOriginator(originator)
 
-	// A present but unknown identity signal is not safe to merge into a known
-	// profile. Reject it instead of persisting a bundle with mismatched parts.
-	if (userAgent != "" && uaKey == "") || (originator != "" && originatorKey == "") {
-		return "", ProfileFamilyUnknown, false
-	}
-	if uaKey != "" && originatorKey != "" && uaKey != originatorKey {
+	// A present but unrecognisable User-Agent means the caller is not the client
+	// it claims to be, so nothing here can be trusted.
+	if userAgent != "" && uaKey == "" {
 		return "", ProfileFamilyUnknown, false
 	}
 	if originatorKey != "" {
+		if uaKey != "" && uaKey != originatorKey {
+			return "", ProfileFamilyUnknown, false
+		}
 		return originatorKey, originatorFamily, true
+	}
+	if originator != "" {
+		// OpenAI ships new Codex originators (codex_work_desktop, plain "Codex")
+		// faster than this allowlist can track. Dropping the whole observation
+		// left such accounts with no learned fingerprint at all — no last-seen,
+		// no fields, nothing for an operator to inspect. Record the variant under
+		// its own profile key instead: an unknown family is never selected for
+		// outbound spoofing (see CodexProfileOutboundEligibility), so observing
+		// it is safe while still surfacing the client in the UI.
+		if key := normalizeUnknownCodexToken(originator); key != "" {
+			return key, ProfileFamilyUnknown, true
+		}
+		return "", ProfileFamilyUnknown, false
 	}
 	if uaKey != "" {
 		return uaKey, uaFamily, true
 	}
 	return "", ProfileFamilyUnknown, false
+}
+
+// unknownCodexTokenMaxLen bounds the profile key derived from a client-supplied
+// Originator header.
+const unknownCodexTokenMaxLen = 40
+
+// normalizeUnknownCodexToken accepts an unrecognised Originator only when it
+// still looks like a Codex client id, and returns its canonical profile key.
+//
+// The header is caller-controlled and the result becomes part of a primary key,
+// so the shape is deliberately narrow: a "codex" prefix, a small character set
+// and a length cap. Without that, a client holding a valid API key could mint an
+// unbounded number of profile rows per account.
+func normalizeUnknownCodexToken(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if !strings.HasPrefix(value, "codex") || len(value) > unknownCodexTokenMaxLen {
+		return ""
+	}
+	for _, r := range value {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case r >= '0' && r <= '9':
+		case r == '_' || r == '-':
+		default:
+			return ""
+		}
+	}
+	return value
 }
 
 func CodexProfileFamily(profileKey string) string {

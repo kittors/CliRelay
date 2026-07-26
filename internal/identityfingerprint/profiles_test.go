@@ -1,6 +1,7 @@
 package identityfingerprint
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -190,5 +191,101 @@ func TestResolveCodexProfileNeverFillsFromAnotherProductPreset(t *testing.T) {
 	}
 	if effective.ProfileKey != "codex_cli_rs" || effective.ProfileFamily != ProfileFamilyCLI {
 		t.Fatalf("effective profile = %#v", effective)
+	}
+}
+
+// OpenAI ships new Codex originators faster than the allowlist tracks them.
+// Before this was handled, an unrecognised value made the whole observation be
+// dropped, so accounts running such a client learned nothing at all — no
+// fields, no last-seen. Both values below were taken from production logs.
+func TestCodexProfileKeyRecordsUnknownOriginatorAsOwnProfile(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		userAgent  string
+		originator string
+		wantKey    string
+	}{
+		{
+			name:       "work desktop variant",
+			userAgent:  "Codex Desktop/0.146.0-alpha.3.1 (Mac OS 26.5.1; arm64) unknown (Codex Desktop; 26.721.41059)",
+			originator: "codex_work_desktop",
+			wantKey:    "codex_work_desktop",
+		},
+		{
+			name:       "bare product name",
+			userAgent:  "Codex Desktop/0.146.0-alpha.3.1 (Mac OS 26.5.1; arm64)",
+			originator: "Codex",
+			wantKey:    "codex",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			key, family, ok := CodexProfileKey(tt.userAgent, tt.originator)
+			if !ok {
+				t.Fatal("ok = false, want the observation to be recorded")
+			}
+			if key != tt.wantKey {
+				t.Fatalf("profileKey = %q, want %q", key, tt.wantKey)
+			}
+			// Unknown family keeps the variant out of outbound selection: we
+			// observe the client without impersonating it.
+			if family != ProfileFamilyUnknown {
+				t.Fatalf("family = %q, want %q", family, ProfileFamilyUnknown)
+			}
+		})
+	}
+}
+
+func TestCodexProfileKeyRejectsUntrustworthyIdentity(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		userAgent  string
+		originator string
+	}{
+		// A non-Codex UA means the caller is not the client it claims to be.
+		{name: "spoofed user agent", userAgent: "curl/8.0", originator: "codex_cli_rs"},
+		{name: "unknown originator with foreign ua", userAgent: "curl/8.0", originator: "codex_work_desktop"},
+		// The header is caller-controlled and becomes part of a primary key.
+		{name: "non codex prefix", userAgent: "Codex Desktop/0.146.0 (Mac OS)", originator: "attacker_tool"},
+		{name: "unsafe characters", userAgent: "Codex Desktop/0.146.0 (Mac OS)", originator: "codex<script>"},
+		{name: "over length", userAgent: "Codex Desktop/0.146.0 (Mac OS)", originator: "codex_" + strings.Repeat("a", unknownCodexTokenMaxLen)},
+		// A known originator that contradicts the UA is still a conflict.
+		{name: "conflicting known pair", userAgent: "codex_vscode/0.146.0 (Mac OS)", originator: "codex_cli_rs"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, _, ok := CodexProfileKey(tt.userAgent, tt.originator); ok {
+				t.Fatal("ok = true, want the observation to be rejected")
+			}
+		})
+	}
+}
+
+// An unknown variant must never be picked for outbound spoofing, even when it
+// is the only profile the account has.
+func TestSelectCodexProfileSkipsUnknownFamilyVariant(t *testing.T) {
+	t.Parallel()
+
+	records := []LearnedRecord{{
+		Provider:      ProviderCodex,
+		AccountKey:    "acct",
+		ProfileKey:    "codex_work_desktop",
+		ProfileFamily: ProfileFamilyUnknown,
+		Fields: map[string]string{
+			FieldUserAgent:       "Codex Desktop/0.146.0-alpha.3.1 (Mac OS 26.5.1; arm64) unknown (Codex Desktop; 26.721.41059)",
+			FieldCodexOriginator: "codex_work_desktop",
+		},
+	}}
+
+	selection := SelectCodexProfile(records, AccountPolicy{})
+	if selection.Profile != nil {
+		t.Fatalf("selected %q for outbound use, want none", selection.Profile.ProfileKey)
+	}
+	if selection.Reason != "no_selectable_profile" {
+		t.Fatalf("reason = %q, want no_selectable_profile", selection.Reason)
 	}
 }
