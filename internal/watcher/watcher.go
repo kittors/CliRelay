@@ -76,6 +76,11 @@ const (
 	replaceCheckDelay        = 50 * time.Millisecond
 	configReloadDebounce     = 150 * time.Millisecond
 	authRemoveDebounceWindow = 1 * time.Second
+	// configRewatchAttempts and configRewatchDelay bound the retry used to re-arm the
+	// config watch when the path is momentarily absent (delete-then-create rather than
+	// a single rename).
+	configRewatchAttempts = 5
+	configRewatchDelay    = 50 * time.Millisecond
 )
 
 // NewWatcher creates a new file watcher instance

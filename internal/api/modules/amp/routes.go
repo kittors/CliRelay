@@ -3,13 +3,13 @@ package amp
 import (
 	"context"
 	"errors"
-	"net"
 	"net/http"
 	"net/http/httputil"
 	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/logging"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/api/handlers"
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/api/handlers/claude"
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/api/handlers/gemini"
@@ -58,30 +58,16 @@ func (m *AmpModule) localhostOnlyMiddleware() gin.HandlerFunc {
 			return
 		}
 
-		// Use actual TCP connection address (RemoteAddr) to prevent header spoofing
-		// This cannot be forged by X-Forwarded-For or other client-controlled headers
-		remoteAddr := c.Request.RemoteAddr
-
-		// RemoteAddr format is "IP:port" or "[IPv6]:port", extract just the IP
-		host, _, err := net.SplitHostPort(remoteAddr)
-		if err != nil {
-			// Try parsing as raw IP (shouldn't happen with standard HTTP, but be defensive)
-			host = remoteAddr
-		}
-
-		// Parse the IP to handle both IPv4 and IPv6
-		ip := net.ParseIP(host)
-		if ip == nil {
-			log.Warnf("amp management: invalid RemoteAddr %s, denying access", remoteAddr)
-			c.AbortWithStatusJSON(403, gin.H{
-				"error": "Access denied: management routes restricted to localhost",
-			})
-			return
-		}
-
-		// Check if IP is loopback (127.0.0.1 or ::1)
-		if !ip.IsLoopback() {
-			log.Warnf("amp management: non-localhost connection from %s attempted access, denying", remoteAddr)
+		// A loopback TCP peer is not by itself proof of local origin: behind a same-host
+		// reverse proxy every external request arrives from 127.0.0.1. util.IsLocalOriginRequest
+		// additionally requires that no relay header is present, and fails closed on
+		// addresses it cannot parse. See its doc comment for what still slips through.
+		if !util.IsLocalOriginRequest(c.Request) {
+			if relayHeader := util.RelayIndicationHeader(c.Request); relayHeader != "" {
+				log.Warnf("amp management: relayed request from %s (%s header present) is not local, denying", c.Request.RemoteAddr, relayHeader)
+			} else {
+				log.Warnf("amp management: non-localhost connection from %s attempted access, denying", c.Request.RemoteAddr)
+			}
 			c.AbortWithStatusJSON(403, gin.H{
 				"error": "Access denied: management routes restricted to localhost",
 			})

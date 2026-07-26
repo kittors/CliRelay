@@ -3,6 +3,7 @@ package util
 import (
 	"net"
 	"net/http"
+	"net/textproto"
 	"strings"
 )
 
@@ -66,7 +67,10 @@ func forwardedHeaderIP(headers http.Header) string {
 // only need to know that *some* relay handled the request, so headers that carry no
 // client IP (Via, X-Forwarded-Proto, CF-Ray) are just as conclusive as the ones that
 // do, and a header we fail to recognise is a bypass rather than a display glitch.
-var relayIndicationHeaders = []string{
+// Stored canonicalised so a future switch from Header.Values() to direct map indexing
+// cannot silently disable half the list: written literally, entries like "X-Real-IP" and
+// "CF-Ray" are not in textproto canonical form ("X-Real-Ip", "Cf-Ray").
+var relayIndicationHeaders = canonicalHeaderNames([]string{
 	"Forwarded",
 	"Via",
 	"X-Forwarded-For",
@@ -87,6 +91,14 @@ var relayIndicationHeaders = []string{
 	"X-Envoy-Internal",
 	"X-Azure-ClientIP",
 	"X-Azure-SocketIP",
+})
+
+func canonicalHeaderNames(names []string) []string {
+	out := make([]string, 0, len(names))
+	for _, name := range names {
+		out = append(out, textproto.CanonicalMIMEHeaderKey(name))
+	}
+	return out
 }
 
 // IsLocalOriginRequest reports whether req provably originates from this host, and is
@@ -98,10 +110,16 @@ var relayIndicationHeaders = []string{
 // loopback peer and the absence of any relay header, and fails closed on addresses it
 // cannot parse.
 //
-// Known limitation: a relay that rewrites nothing — nginx `stream`, HAProxy in TCP
-// mode, socat, an iptables DNAT rule, `cloudflared --url http://127.0.0.1:...` — is
-// indistinguishable from a local client at the HTTP layer. Endpoints that must hold
-// against those need their own credential, not just this check.
+// Known limitation: any relay that forwards a request without adding a header of its own
+// is indistinguishable from a local client at the HTTP layer. That covers more than L4
+// tunnels (nginx `stream`, HAProxy in TCP mode, socat, iptables DNAT, `cloudflared --url
+// http://127.0.0.1:...`) — notably, a bare nginx `proxy_pass` sets no forwarded headers
+// unless the operator adds proxy_set_header, so an ordinary L7 reverse proxy can also
+// slip through. A front-end vulnerable to request smuggling likewise lets an attacker
+// author the backend-bound bytes directly, with no operator misconfiguration needed.
+//
+// So this narrows the exposure, it does not close it. Endpoints that must hold against a
+// hostile network need their own credential rather than only this check.
 func IsLocalOriginRequest(req *http.Request) bool {
 	if req == nil {
 		return false

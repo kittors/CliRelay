@@ -222,11 +222,14 @@ func (h *Handler) Middleware() gin.HandlerFunc {
 		if !localClient {
 			if !allowRemote {
 				// Requests relayed by a local reverse proxy land here even though the TCP
-				// peer is loopback, so the hint names both ways out: open remote access, or
-				// declare the proxy so the real client IP is recovered.
+				// peer is loopback. allow-remote is the only advice that actually grants
+				// access: a relayed request is never treated as local, so trusted-proxies
+				// does not help on its own — it recovers the real client IP for the per-IP
+				// throttle, which is why it is named as an additional step rather than an
+				// alternative.
 				message := "remote management disabled"
 				if relayHeader := util.RelayIndicationHeader(c.Request); relayHeader != "" {
-					message = "remote management disabled: request was relayed (" + relayHeader + " header present). Set remote-management.allow-remote=true, or add the proxy to trusted-proxies so the original client IP is used."
+					message = "remote management disabled: request was relayed (" + relayHeader + " header present), so it is not treated as local. Set remote-management.allow-remote=true to allow it, and list the proxy in trusted-proxies so per-IP throttling sees the real client."
 				}
 				c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": message})
 				return

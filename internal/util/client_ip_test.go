@@ -3,6 +3,7 @@ package util
 import (
 	"net/http"
 	"net/http/httptest"
+	"net/textproto"
 	"testing"
 )
 
@@ -69,8 +70,10 @@ func TestIsLocalOriginRequestRejectsRelayedLoopbackPeers(t *testing.T) {
 		if IsLocalOriginRequest(req) {
 			t.Errorf("%s: %q: IsLocalOriginRequest() = true, want false", tc.header, tc.value)
 		}
-		if got := RelayIndicationHeader(req); got != tc.header {
-			t.Errorf("%s: RelayIndicationHeader() = %q, want %q", tc.header, got, tc.header)
+		// The reported name is the canonical form, which is what http.Header stores.
+		want := textproto.CanonicalMIMEHeaderKey(tc.header)
+		if got := RelayIndicationHeader(req); got != want {
+			t.Errorf("%s: RelayIndicationHeader() = %q, want %q", tc.header, got, want)
 		}
 	}
 }
@@ -95,5 +98,28 @@ func TestIsLocalOriginRequestRejectsNilRequest(t *testing.T) {
 	}
 	if got := RelayIndicationHeader(nil); got != "" {
 		t.Errorf("RelayIndicationHeader(nil) = %q, want empty", got)
+	}
+}
+
+// The list is stored canonicalised so a future switch from Header.Values() to direct map
+// indexing cannot silently disable the entries that are not written in canonical form.
+func TestRelayIndicationHeadersAreCanonical(t *testing.T) {
+	for _, header := range relayIndicationHeaders {
+		if canonical := textproto.CanonicalMIMEHeaderKey(header); canonical != header {
+			t.Errorf("relay header %q is not canonical, want %q", header, canonical)
+		}
+	}
+}
+
+// Direct map indexing must find every listed header, which is the property that makes the
+// list safe against that refactor.
+func TestRelayIndicationHeadersMatchDirectMapLookup(t *testing.T) {
+	for _, header := range relayIndicationHeaders {
+		req := httptest.NewRequest(http.MethodPost, "/v1internal:generateContent", nil)
+		req.RemoteAddr = "127.0.0.1:54321"
+		req.Header[header] = []string{"203.0.113.42"}
+		if IsLocalOriginRequest(req) {
+			t.Errorf("header %q set via direct map index did not mark the request as relayed", header)
+		}
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"fmt"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -49,6 +50,52 @@ func (h *GeminiCLIAPIHandler) Models() []map[string]any {
 	return make([]map[string]any, 0)
 }
 
+// geminiCLIRejectLogInterval throttles rejection logging. This endpoint is actively
+// scanned, and the attacker is rejected before the body is read, so an unthrottled
+// warning per request is a cheap way to fill the operator's disk.
+const geminiCLIRejectLogInterval = time.Minute
+
+var geminiCLIRejectLog struct {
+	mu         sync.Mutex
+	lastAt     time.Time
+	suppressed int64
+}
+
+// logRejectedGeminiCLIRequest reports rejected non-local access at most once per
+// interval, folding the suppressed count into the next line so a burst is still visible.
+//
+// It logs the forwarded client IP rather than only RemoteAddr: in the reverse-proxy case
+// this warning exists to diagnose, RemoteAddr is always the local proxy and identifies
+// nothing. The forwarded value is attacker-controlled, so it is labelled as claimed.
+func logRejectedGeminiCLIRequest(c *gin.Context) {
+	geminiCLIRejectLog.mu.Lock()
+	now := time.Now()
+	if !geminiCLIRejectLog.lastAt.IsZero() && now.Sub(geminiCLIRejectLog.lastAt) < geminiCLIRejectLogInterval {
+		geminiCLIRejectLog.suppressed++
+		geminiCLIRejectLog.mu.Unlock()
+		return
+	}
+	suppressed := geminiCLIRejectLog.suppressed
+	geminiCLIRejectLog.suppressed = 0
+	geminiCLIRejectLog.lastAt = now
+	geminiCLIRejectLog.mu.Unlock()
+
+	claimedIP, ipHeader := util.ForwardedClientIP(c.Request)
+	origin := "peer " + c.Request.RemoteAddr
+	if claimedIP != "" {
+		origin += ", claimed client " + claimedIP + " via " + ipHeader
+	}
+	detail := ""
+	if relayHeader := util.RelayIndicationHeader(c.Request); relayHeader != "" {
+		detail = " (relayed, " + relayHeader + " header present); keep /v1internal off public reverse proxies"
+	}
+	if suppressed > 0 {
+		log.Warnf("gemini cli: rejected non-local request from %s%s; %d similar rejection(s) suppressed in the last %s", origin, detail, suppressed, geminiCLIRejectLogInterval)
+		return
+	}
+	log.Warnf("gemini cli: rejected non-local request from %s%s", origin, detail)
+}
+
 // CLIHandler handles CLI-specific requests for Gemini API operations.
 // It restricts access to localhost only and routes requests to appropriate internal handlers.
 //
@@ -57,13 +104,7 @@ func (h *GeminiCLIAPIHandler) Models() []map[string]any {
 // caller and the server's Gemini credential pool. It must stay fail-closed.
 func (h *GeminiCLIAPIHandler) CLIHandler(c *gin.Context) {
 	if !util.IsLocalOriginRequest(c.Request) {
-		// Logged because this endpoint is scanned for in the wild and a silent 403
-		// leaves operators with no signal that someone is probing it.
-		if relayHeader := util.RelayIndicationHeader(c.Request); relayHeader != "" {
-			log.Warnf("gemini cli: rejected non-local request from %s (relayed via %s header); configure trusted-proxies and keep /v1internal off public reverse proxies", c.Request.RemoteAddr, relayHeader)
-		} else {
-			log.Warnf("gemini cli: rejected non-local request from %s", c.Request.RemoteAddr)
-		}
+		logRejectedGeminiCLIRequest(c)
 		c.JSON(http.StatusForbidden, handlers.ErrorResponse{
 			Error: handlers.ErrorDetail{
 				Message: "CLI reply only allow local access",
