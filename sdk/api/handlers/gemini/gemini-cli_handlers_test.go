@@ -5,8 +5,10 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
+	log "github.com/sirupsen/logrus"
 )
 
 // newCLITestRouter wires CLIHandler exactly as routes_public.go does: a single
@@ -92,3 +94,46 @@ func TestCLIHandlerAcceptsDirectLoopbackPeers(t *testing.T) {
 		})
 	}
 }
+
+// This endpoint is actively scanned and rejects before reading the body, so an
+// unthrottled warning per rejected request is a cheap way to fill an operator's disk.
+func TestRejectionLoggingIsThrottled(t *testing.T) {
+	var lines int
+	original := log.StandardLogger().Out
+	log.SetOutput(writerFunc(func(p []byte) (int, error) {
+		lines++
+		return len(p), nil
+	}))
+	t.Cleanup(func() { log.SetOutput(original) })
+
+	geminiCLIRejectLog.mu.Lock()
+	geminiCLIRejectLog.lastAt = time.Time{}
+	geminiCLIRejectLog.suppressed = 0
+	geminiCLIRejectLog.mu.Unlock()
+
+	router := newCLITestRouter()
+	for i := 0; i < 50; i++ {
+		rr := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/v1internal:generateContent", strings.NewReader(`{}`))
+		req.RemoteAddr = "127.0.0.1:54321"
+		req.Header.Set("X-Forwarded-For", "203.0.113.42")
+		router.ServeHTTP(rr, req)
+		if rr.Code != http.StatusForbidden {
+			t.Fatalf("request %d: status = %d, want 403", i, rr.Code)
+		}
+	}
+
+	if lines != 1 {
+		t.Fatalf("50 rejected requests produced %d log line(s), want 1", lines)
+	}
+	geminiCLIRejectLog.mu.Lock()
+	suppressed := geminiCLIRejectLog.suppressed
+	geminiCLIRejectLog.mu.Unlock()
+	if suppressed != 49 {
+		t.Fatalf("suppressed count = %d, want 49", suppressed)
+	}
+}
+
+type writerFunc func([]byte) (int, error)
+
+func (f writerFunc) Write(p []byte) (int, error) { return f(p) }
