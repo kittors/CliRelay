@@ -35,6 +35,16 @@ rand_hex() {
 	od -An -N "${1:-16}" -tx1 /dev/urandom | tr -d ' \n'
 }
 
+# rand_password generates a value the identity bootstrap will accept. Plain hex is not
+# enough: HashPassword requires an upper-case letter and a non-alphanumeric character,
+# so a hex-only secret makes first startup fail with "password must contain at least one
+# uppercase letter". The classes are prepended deterministically rather than drawn at
+# random so generation can never emit a value that fails validation; all of the entropy
+# still comes from the hex part.
+rand_password() {
+	printf 'Aa1!%s' "$(rand_hex "${1:-16}")"
+}
+
 append_env() {
 	key="$1"
 	value="$2"
@@ -60,7 +70,7 @@ admin_password="$(env_value CLIRELAY_ADMIN_PASSWORD)"
 postgres_password="$(env_value CLIRELAY_POSTGRES_PASSWORD)"
 
 [ -n "$updater_token" ] || updater_token="$(rand_hex 16)"
-[ -n "$admin_password" ] || admin_password="$(rand_hex 16)"
+[ -n "$admin_password" ] || admin_password="$(rand_password 16)"
 [ -n "$postgres_password" ] || postgres_password="$(rand_hex 16)"
 
 postgres_db="$(env_value CLIRELAY_POSTGRES_DB)"

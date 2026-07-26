@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/identity"
 )
 
 func TestComposeInitEnvGeneratesMissingEnv(t *testing.T) {
@@ -45,8 +47,11 @@ func TestComposeInitEnvGeneratesMissingEnv(t *testing.T) {
 	if len(values["CLIRELAY_UPDATER_TOKEN"]) != 32 {
 		t.Fatalf("updater token length = %d, want 32", len(values["CLIRELAY_UPDATER_TOKEN"]))
 	}
-	if len(values["CLIRELAY_ADMIN_PASSWORD"]) != 32 {
-		t.Fatalf("admin password length = %d, want 32", len(values["CLIRELAY_ADMIN_PASSWORD"]))
+	// The admin password carries 32 hex characters of entropy plus the character
+	// classes the identity bootstrap requires, so only the lower bound is asserted
+	// here; TestComposeInitEnvAdminPasswordPassesIdentityValidation checks usability.
+	if len(values["CLIRELAY_ADMIN_PASSWORD"]) < 32 {
+		t.Fatalf("admin password length = %d, want at least 32", len(values["CLIRELAY_ADMIN_PASSWORD"]))
 	}
 	if len(values["CLIRELAY_POSTGRES_PASSWORD"]) != 32 {
 		t.Fatalf("postgres password length = %d, want 32", len(values["CLIRELAY_POSTGRES_PASSWORD"]))
@@ -156,4 +161,31 @@ func readEnvFile(t *testing.T, path string) map[string]string {
 		}
 	}
 	return values
+}
+
+// Proves the generated admin password is actually usable: the compose bootstrap feeds
+// CLIRELAY_ADMIN_PASSWORD straight into identity.HashPassword on a fresh database, so a
+// value that fails its character-class checks makes first startup crash.
+func TestComposeInitEnvAdminPasswordPassesIdentityValidation(t *testing.T) {
+	dir := t.TempDir()
+	envFile := filepath.Join(dir, ".env")
+
+	cmd := exec.Command("sh", "scripts/init-compose-env.sh")
+	cmd.Env = append(os.Environ(),
+		"CLIRELAY_ENV_FILE="+envFile,
+		"CLIRELAY_PROJECT_DIR="+dir,
+		"CLI_PROXY_IMAGE=ghcr.io/kittors/clirelay:test",
+	)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("init script failed: %v\n%s", err, out)
+	}
+
+	values := readEnvFile(t, envFile)
+	password := values["CLIRELAY_ADMIN_PASSWORD"]
+	if password == "" {
+		t.Fatal("CLIRELAY_ADMIN_PASSWORD was not generated")
+	}
+	if _, err := identity.HashPassword(password); err != nil {
+		t.Fatalf("generated admin password %q is rejected by identity.HashPassword: %v", password, err)
+	}
 }

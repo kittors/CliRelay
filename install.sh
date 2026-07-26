@@ -175,6 +175,14 @@ rand_hex() {
     openssl rand -hex "$1" 2>/dev/null || head -c $(( $1 * 2 )) /dev/urandom | xxd -p | head -c $(( $1 * 2 ))
 }
 
+# rand_password generates a value the identity bootstrap will accept. Plain hex is not
+# enough: HashPassword requires an upper-case letter and a non-alphanumeric character.
+# The classes are prepended deterministically so generation can never emit a value that
+# fails validation; all of the entropy still comes from the hex part.
+rand_password() {
+    printf 'Aa1!%s' "$(rand_hex "${1:-16}")"
+}
+
 compose_cmd() {
     docker compose --env-file "${INSTALL_DIR}/.env" -f "${INSTALL_DIR}/docker-compose.yml" "$@"
 }
@@ -490,8 +498,12 @@ YAML
 }
 
 write_env() {
-    local updater_token postgres_db postgres_user postgres_password postgres_dsn postgres_data_path redis_addr redis_password redis_db redis_data_path
+    local updater_token admin_password postgres_db postgres_user postgres_password postgres_dsn postgres_data_path redis_addr redis_password redis_db redis_data_path
     updater_token="${CLIRELAY_UPDATER_TOKEN:-$(rand_hex 16)}"
+    # Without this the identity bootstrap falls back to remote-management.secret-key,
+    # which is empty in the generated config, so a fresh install cannot create its
+    # first admin and the container crash-loops on startup.
+    admin_password="${CLIRELAY_ADMIN_PASSWORD:-$(rand_password 16)}"
     postgres_db="${CLIRELAY_POSTGRES_DB:-cliproxy}"
     postgres_user="${CLIRELAY_POSTGRES_USER:-cliproxy}"
     postgres_password="${CLIRELAY_POSTGRES_PASSWORD:-$(rand_hex 16)}"
@@ -513,6 +525,7 @@ CLIRELAY_PORT=${CFG_PORT}
 CLIRELAY_UPDATE_CHANNEL=main
 CLIRELAY_UPDATER_URL=http://clirelay-updater:8320
 CLIRELAY_UPDATER_TOKEN=${updater_token}
+CLIRELAY_ADMIN_PASSWORD=${admin_password}
 CLIRELAY_TARGET_SERVICE=clirelay
 CLIRELAY_COMPOSE_PROJECT_NAME=$(basename "${INSTALL_DIR}")
 CLIRELAY_POSTGRES_DB=${postgres_db}
@@ -555,6 +568,7 @@ services:
       CLIRELAY_UPDATE_CHANNEL: ${CLIRELAY_UPDATE_CHANNEL}
       CLIRELAY_UPDATER_URL: ${CLIRELAY_UPDATER_URL}
       CLIRELAY_UPDATER_TOKEN: ${CLIRELAY_UPDATER_TOKEN}
+      CLIRELAY_ADMIN_PASSWORD: ${CLIRELAY_ADMIN_PASSWORD}
       CLIRELAY_TARGET_SERVICE: ${CLIRELAY_TARGET_SERVICE}
       CLIRELAY_POSTGRES_DSN: ${CLIRELAY_POSTGRES_DSN}
       CLIRELAY_REDIS_ENABLE: ${CLIRELAY_REDIS_ENABLE}
