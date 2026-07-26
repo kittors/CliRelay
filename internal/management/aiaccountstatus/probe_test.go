@@ -330,3 +330,66 @@ func TestFetchXAIBillingParallelPartialFailure(t *testing.T) {
 		t.Fatalf("weeklyBody=%q monthlyBody=%q", weeklyBody, monthlyBody)
 	}
 }
+
+func TestParseClaudeUsageScopedLimitsAndRoutines(t *testing.T) {
+	body := []byte(`{
+		"five_hour":{"utilization":10,"resets_at":"2026-07-16T12:00:00Z"},
+		"seven_day":{"utilization":40,"resets_at":"2026-07-20T12:00:00Z"},
+		"seven_day_routines":{"utilization":5,"resets_at":"2026-07-20T12:00:00Z"},
+		"limits":[
+			{"kind":"weekly_scoped","group":"weekly","percent":30,"resets_at":"2026-07-20T12:00:00Z","scope":{"model":{"id":"claude-opus-5","display_name":"Opus"}}},
+			{"kind":"weekly_scoped","group":"weekly","percent":80,"scope":{"model":{"id":"all-models","display_name":"All models"}}},
+			{"kind":"five_hour","group":"session","percent":10,"scope":{"model":{"id":"claude-opus-5","display_name":"Opus"}}}
+		]
+	}`)
+	items := parseClaudeUsage(body)
+	routines := quotaByKey(items, "seven_day_cowork")
+	if routines == nil || routines.Percent == nil || *routines.Percent != 95 {
+		t.Fatalf("routines=%+v", routines)
+	}
+	opus := quotaByKey(items, "weekly_scoped_claude-opus-5")
+	if opus == nil || opus.Percent == nil || *opus.Percent != 70 || opus.QuotaLabel != "claude_quota.model_weekly::Opus" || opus.ResetAt == nil {
+		t.Fatalf("opus=%+v", opus)
+	}
+	if quotaByKey(items, "weekly_scoped_all-models") != nil {
+		t.Fatal("all-models scope should be skipped")
+	}
+	if len(items) != 4 {
+		t.Fatalf("items=%+v", items)
+	}
+}
+
+func TestParseClaudeUsageScopedLimitSkippedWhenFlatWindowPresent(t *testing.T) {
+	body := []byte(`{
+		"seven_day_opus":{"utilization":20,"resets_at":"2026-07-20T12:00:00Z"},
+		"limits":[
+			{"kind":"weekly_scoped","group":"weekly","percent":30,"scope":{"model":{"id":"claude-opus-5","display_name":"Opus"}}}
+		]
+	}`)
+	items := parseClaudeUsage(body)
+	if len(items) != 1 || items[0].QuotaKey != "seven_day_opus" {
+		t.Fatalf("items=%+v", items)
+	}
+}
+
+func TestParseClaudePlanType(t *testing.T) {
+	cases := []struct {
+		body string
+		want string
+	}{
+		{`{"organization":{"organization_type":"claude_max","rate_limit_tier":"default_claude_max_20x"}}`, "max_20x"},
+		{`{"organization":{"organization_type":"claude_max","rate_limit_tier":"default_claude_max_5x"}}`, "max_5x"},
+		{`{"organization":{"organization_type":"claude_max","rate_limit_tier":"default_claude_max_1x"}}`, "max"},
+		{`{"organization":{"organization_type":"claude_pro","rate_limit_tier":"default_claude"}}`, "pro"},
+		{`{"organization":{"organization_type":"claude_enterprise","rate_limit_tier":"default_claude_max_20x"}}`, "enterprise"},
+		{`{"organization":{"organization_type":"claude_team"}}`, "team"},
+		{`{"account":{"has_claude_max":true}}`, "max"},
+		{`{"account":{"has_claude_pro":true}}`, "pro"},
+		{`{}`, ""},
+	}
+	for _, tc := range cases {
+		if got := parseClaudePlanType([]byte(tc.body)); got != tc.want {
+			t.Fatalf("body=%s got=%q want=%q", tc.body, got, tc.want)
+		}
+	}
+}
