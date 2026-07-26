@@ -146,9 +146,11 @@ func TestInstallEnvGeneratesBootstrapAdminPassword(t *testing.T) {
 	// Without a generated admin password the identity bootstrap falls back to the
 	// empty remote-management.secret-key and a fresh install crash-loops.
 	for _, want := range []string{
-		`admin_password="${CLIRELAY_ADMIN_PASSWORD:-$(rand_password 16)}"`,
+		`CFG_ADMIN_PASSWORD="$(resolve_admin_password)"`,
 		"CLIRELAY_ADMIN_PASSWORD=${admin_password}",
 		"CLIRELAY_ADMIN_PASSWORD: ${CLIRELAY_ADMIN_PASSWORD}",
+		// The generated credential has to be reported, or the operator cannot sign in.
+		"Panel login : admin /",
 	} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("install.sh missing %q", want)
@@ -211,4 +213,43 @@ func extractShellFunctions(t *testing.T, path string, names ...string) string {
 		out = append(out, strings.Join(lines[start:end+1], "\n"))
 	}
 	return strings.Join(out, "\n")
+}
+
+// The bootstrap admin password reuses the management secret when that secret satisfies
+// the identity policy, so the operator keeps the one credential they were shown. This
+// exercises the real shell functions rather than asserting on their source text.
+func TestInstallResolveAdminPasswordPrefersCompliantManagementSecret(t *testing.T) {
+	fns := extractShellFunctions(t, "install.sh", "rand_hex", "rand_password", "password_is_valid", "resolve_admin_password")
+
+	compliant := runShell(t, fns+"\nCFG_SECRET='MyStr0ng!Secret'\nresolve_admin_password")
+	if compliant != "MyStr0ng!Secret" {
+		t.Fatalf("compliant secret was not reused: %q", compliant)
+	}
+
+	generated := runShell(t, fns+"\nCFG_SECRET='weak'\nresolve_admin_password")
+	if generated == "weak" {
+		t.Fatal("a secret that fails the password policy was reused as the admin password")
+	}
+	if _, err := identity.HashPassword(generated); err != nil {
+		t.Fatalf("generated admin password %q is rejected: %v", generated, err)
+	}
+}
+
+// The auto-generated management secret doubles as the admin password, so it too must
+// satisfy the policy.
+func TestInstallGeneratedManagementSecretSatisfiesPasswordPolicy(t *testing.T) {
+	fns := extractShellFunctions(t, "install.sh", "rand_hex", "rand_password")
+	secret := runShell(t, fns+"\nrand_password 16")
+	if _, err := identity.HashPassword(secret); err != nil {
+		t.Fatalf("generated management secret %q is rejected as an admin password: %v", secret, err)
+	}
+}
+
+func runShell(t *testing.T, script string) string {
+	t.Helper()
+	out, err := exec.Command("bash", "-c", "set -euo pipefail\n"+script).Output()
+	if err != nil {
+		t.Fatalf("run shell snippet: %v", err)
+	}
+	return strings.TrimSpace(string(out))
 }

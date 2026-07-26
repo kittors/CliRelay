@@ -218,7 +218,7 @@ CliRelay 可以在 `/manage` 暴露内置 Web 控制面板。服务端既可以�
 
 ### 🐳 使用 Docker Compose 安装
 
-Docker Compose 是 CliRelay 推荐的安装方式。仓库内的 `docker-compose.yml` 会启动 CliRelay、PostgreSQL 15、Redis 7 和 updater sidecar。`.env` 不是必需的：首次执行 `docker compose up -d` 时，`clirelay-init` 会自动创建 `.env`，生成缺失的 `CLIRELAY_UPDATER_TOKEN`、`CLIRELAY_ADMIN_PASSWORD` 和 `CLIRELAY_POSTGRES_PASSWORD`，保留已有非空值，并在缺少 `config.yaml` 时从 `config.example.yaml` 创建一份。`CLIRELAY_ADMIN_PASSWORD` 用于空数据库首次创建 `admin`；初始化脚本会生成 32 个十六进制字符的安全随机值，你也可以提前在 `.env` 中设置不少于 12 个字符的自定义密码。生产环境只有在需要固定自己的密钥或挂载路径时，才需要提前写 `.env`。
+Docker Compose 是 CliRelay 推荐的安装方式。仓库内的 `docker-compose.yml` 会启动 CliRelay、PostgreSQL 15、Redis 7 和 updater sidecar。`.env` 不是必需的：首次执行 `docker compose up -d` 时，`clirelay-init` 会自动创建 `.env`，生成缺失的 `CLIRELAY_UPDATER_TOKEN`、`CLIRELAY_ADMIN_PASSWORD` 和 `CLIRELAY_POSTGRES_PASSWORD`，保留已有非空值，并在缺少 `config.yaml` 时从 `config.example.yaml` 创建一份。`CLIRELAY_ADMIN_PASSWORD` 用于空数据库首次创建 `admin`；初始化脚本会生成一个满足校验规则的随机值；你也可以提前在 `.env` 中自行设置，但必须不少于 12 个字符且同时包含大写字母、小写字母和非字母数字字符。不满足规则的预设值会在下次启动时被替换——否则 bootstrap 会拒绝它，容器起不来。生产环境只有在需要固定自己的密钥或挂载路径时，才需要提前写 `.env`。
 
 ```bash
 git clone https://github.com/kittors/CliRelay.git

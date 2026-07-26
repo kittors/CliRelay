@@ -34,6 +34,7 @@ INSTALL_DIR="${CLIRELAY_DIR:-$DEFAULT_INSTALL_DIR}"
 SCRIPT_LOCALE=""
 CFG_PORT="${DEFAULT_PORT}"
 CFG_SECRET=""
+CFG_ADMIN_PASSWORD=""
 CFG_API_KEY=""
 CFG_REMOTE="true"
 TZ_VALUE="${TZ:-Asia/Shanghai}"
@@ -181,6 +182,32 @@ rand_hex() {
 # fails validation; all of the entropy still comes from the hex part.
 rand_password() {
     printf 'Aa1!%s' "$(rand_hex "${1:-16}")"
+}
+
+# password_is_valid mirrors internal/identity.HashPassword: at least 12 characters with an
+# upper-case letter, a lower-case letter, and a non-alphanumeric character.
+password_is_valid() {
+    local value="$1"
+    [[ ${#value} -ge 12 ]] || return 1
+    [[ "$value" == *[[:upper:]]* ]] || return 1
+    [[ "$value" == *[[:lower:]]* ]] || return 1
+    [[ "$value" == *[^[:alnum:]]* ]] || return 1
+    return 0
+}
+
+# resolve_admin_password reuses the management secret as the bootstrap admin password when
+# it satisfies the identity policy, so the operator keeps the single credential they were
+# shown during setup. A secret that fails the policy can never create the admin account,
+# so a compliant one is generated instead — and reported at the end, otherwise the panel
+# would be unreachable with a password nobody has seen.
+resolve_admin_password() {
+    if [[ -n "${CLIRELAY_ADMIN_PASSWORD:-}" ]]; then
+        printf '%s' "${CLIRELAY_ADMIN_PASSWORD}"
+    elif password_is_valid "${CFG_SECRET}"; then
+        printf '%s' "${CFG_SECRET}"
+    else
+        rand_password 16
+    fi
 }
 
 compose_cmd() {
@@ -434,7 +461,9 @@ prompt_config() {
 
     CFG_SECRET="$(prompt_input "  $(echo -e "${C_CYAN}?${C_RESET}") ${secret_prompt}: " "")" || CFG_SECRET=""
     if [[ -z "$CFG_SECRET" ]]; then
-        CFG_SECRET="$(rand_hex 16)"
+        # rand_password rather than rand_hex: this value doubles as the bootstrap admin
+        # password, which must satisfy the identity character-class policy.
+        CFG_SECRET="$(rand_password 16)"
         if is_zh; then
             echo -e "  ${C_DIM}  已生成: ${CFG_SECRET}${C_RESET}"
         else
@@ -503,7 +532,8 @@ write_env() {
     # Without this the identity bootstrap falls back to remote-management.secret-key,
     # which is empty in the generated config, so a fresh install cannot create its
     # first admin and the container crash-loops on startup.
-    admin_password="${CLIRELAY_ADMIN_PASSWORD:-$(rand_password 16)}"
+    CFG_ADMIN_PASSWORD="$(resolve_admin_password)"
+    admin_password="${CFG_ADMIN_PASSWORD}"
     postgres_db="${CLIRELAY_POSTGRES_DB:-cliproxy}"
     postgres_user="${CLIRELAY_POSTGRES_USER:-cliproxy}"
     postgres_password="${CLIRELAY_POSTGRES_PASSWORD:-$(rand_hex 16)}"
@@ -863,6 +893,15 @@ show_result() {
     echo "  Locale      : ${SCRIPT_LOCALE}"
     echo "  API         : http://${public_ip}:${CFG_PORT}/v1/chat/completions"
     echo "  Panel       : http://${public_ip}:${CFG_PORT}/manage"
+    # The panel admin account is created from this value on first start; without printing
+    # it, an operator whose management secret failed the password policy has no way in.
+    if [[ -n "${CFG_ADMIN_PASSWORD}" ]]; then
+        if [[ "${CFG_ADMIN_PASSWORD}" == "${CFG_SECRET}" ]]; then
+            echo "  Panel login : admin / <the management key above>"
+        else
+            echo "  Panel login : admin / ${CFG_ADMIN_PASSWORD}"
+        fi
+    fi
     echo "  API /       : HTTP ${root_code}"
     echo "  Panel /manage: HTTP ${panel_code}"
     echo "  Helper      : ${HELPER_PATH}"

@@ -64,7 +64,7 @@ func TestComposeInitEnvGeneratesMissingEnv(t *testing.T) {
 func TestComposeInitEnvPreservesExistingValues(t *testing.T) {
 	dir := t.TempDir()
 	envFile := filepath.Join(dir, ".env")
-	if err := os.WriteFile(envFile, []byte("CLIRELAY_UPDATER_TOKEN=custom-token\nCLIRELAY_ADMIN_PASSWORD=custom-admin-password\nCLIRELAY_POSTGRES_PASSWORD=custom-pass\nCLIRELAY_POSTGRES_DB=customdb\n"), 0o600); err != nil {
+	if err := os.WriteFile(envFile, []byte("CLIRELAY_UPDATER_TOKEN=custom-token\nCLIRELAY_ADMIN_PASSWORD=Custom-Admin-Password1\nCLIRELAY_POSTGRES_PASSWORD=custom-pass\nCLIRELAY_POSTGRES_DB=customdb\n"), 0o600); err != nil {
 		t.Fatalf("write env file: %v", err)
 	}
 
@@ -82,8 +82,9 @@ func TestComposeInitEnvPreservesExistingValues(t *testing.T) {
 	if values["CLIRELAY_UPDATER_TOKEN"] != "custom-token" {
 		t.Fatalf("updater token = %q, want custom-token", values["CLIRELAY_UPDATER_TOKEN"])
 	}
-	if values["CLIRELAY_ADMIN_PASSWORD"] != "custom-admin-password" {
-		t.Fatalf("admin password = %q, want custom-admin-password", values["CLIRELAY_ADMIN_PASSWORD"])
+	// Policy-compliant, so the repair pass must leave it alone.
+	if values["CLIRELAY_ADMIN_PASSWORD"] != "Custom-Admin-Password1" {
+		t.Fatalf("admin password = %q, want Custom-Admin-Password1", values["CLIRELAY_ADMIN_PASSWORD"])
 	}
 	if values["CLIRELAY_POSTGRES_PASSWORD"] != "custom-pass" {
 		t.Fatalf("postgres password = %q, want custom-pass", values["CLIRELAY_POSTGRES_PASSWORD"])
@@ -187,5 +188,72 @@ func TestComposeInitEnvAdminPasswordPassesIdentityValidation(t *testing.T) {
 	}
 	if _, err := identity.HashPassword(password); err != nil {
 		t.Fatalf("generated admin password %q is rejected by identity.HashPassword: %v", password, err)
+	}
+}
+
+// The victims of the hex-only generator have an unusable password in .env and an empty
+// database, so their deployment has never started. Upgrading has to repair the value,
+// otherwise the fix reaches only fresh installs.
+func TestComposeInitEnvReplacesUnusableAdminPassword(t *testing.T) {
+	dir := t.TempDir()
+	envFile := filepath.Join(dir, ".env")
+	const legacyHexPassword = "e2ffab13c1cb4bf1a01e0c9a7e3f88cd"
+	if err := os.WriteFile(envFile, []byte("CLIRELAY_UPDATER_TOKEN=keep-me\nCLIRELAY_ADMIN_PASSWORD="+legacyHexPassword+"\n"), 0o600); err != nil {
+		t.Fatalf("seed .env: %v", err)
+	}
+
+	runComposeInitEnv(t, dir, envFile)
+
+	values := readEnvFile(t, envFile)
+	replaced := values["CLIRELAY_ADMIN_PASSWORD"]
+	if replaced == legacyHexPassword {
+		t.Fatal("unusable admin password was left in place")
+	}
+	if _, err := identity.HashPassword(replaced); err != nil {
+		t.Fatalf("replacement password %q is still rejected: %v", replaced, err)
+	}
+	if values["CLIRELAY_UPDATER_TOKEN"] != "keep-me" {
+		t.Fatalf("unrelated value was disturbed: %q", values["CLIRELAY_UPDATER_TOKEN"])
+	}
+
+	// The key must be rewritten in place, not appended a second time; a duplicate would
+	// leave the stale value winning depending on who parses the file.
+	data, err := os.ReadFile(envFile)
+	if err != nil {
+		t.Fatalf("read .env: %v", err)
+	}
+	if got := strings.Count(string(data), "CLIRELAY_ADMIN_PASSWORD="); got != 1 {
+		t.Fatalf("CLIRELAY_ADMIN_PASSWORD appears %d times, want 1:\n%s", got, string(data))
+	}
+}
+
+// A password that already satisfies the policy is the operator's choice and must survive.
+func TestComposeInitEnvKeepsUsableAdminPassword(t *testing.T) {
+	dir := t.TempDir()
+	envFile := filepath.Join(dir, ".env")
+	const chosen = "MyStr0ng!Password"
+	if err := os.WriteFile(envFile, []byte("CLIRELAY_ADMIN_PASSWORD="+chosen+"\n"), 0o600); err != nil {
+		t.Fatalf("seed .env: %v", err)
+	}
+
+	runComposeInitEnv(t, dir, envFile)
+	runComposeInitEnv(t, dir, envFile)
+
+	values := readEnvFile(t, envFile)
+	if values["CLIRELAY_ADMIN_PASSWORD"] != chosen {
+		t.Fatalf("admin password = %q, want %q", values["CLIRELAY_ADMIN_PASSWORD"], chosen)
+	}
+}
+
+func runComposeInitEnv(t *testing.T, dir, envFile string) {
+	t.Helper()
+	cmd := exec.Command("sh", "scripts/init-compose-env.sh")
+	cmd.Env = append(os.Environ(),
+		"CLIRELAY_ENV_FILE="+envFile,
+		"CLIRELAY_PROJECT_DIR="+dir,
+		"CLI_PROXY_IMAGE=ghcr.io/kittors/clirelay:test",
+	)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("init script failed: %v\n%s", err, out)
 	}
 }

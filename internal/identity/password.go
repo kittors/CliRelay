@@ -21,6 +21,12 @@ func HashPassword(password string) (string, error) {
 	if len(password) < 12 {
 		return "", fmt.Errorf("%w: password must contain at least 12 characters", ErrValidation)
 	}
+	// bcrypt refuses anything longer than 72 bytes. Reporting that as a validation error
+	// keeps it a 400 from the change-password endpoint; the raw bcrypt error is not
+	// wrapped in ErrValidation and would surface as a 500.
+	if len(password) > 72 {
+		return "", fmt.Errorf("%w: password must not exceed 72 bytes", ErrValidation)
+	}
 
 	hasUpper := false
 	hasLower := false

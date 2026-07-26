@@ -45,6 +45,18 @@ rand_password() {
 	printf 'Aa1!%s' "$(rand_hex "${1:-16}")"
 }
 
+# password_is_valid mirrors internal/identity.HashPassword: at least 12 characters, with
+# an upper-case letter, a lower-case letter, and a non-alphanumeric character. Uses shell
+# pattern matching rather than grep so it stays free of subprocesses and locale surprises.
+password_is_valid() {
+	value="$1"
+	[ "${#value}" -ge 12 ] || return 1
+	case "$value" in *[ABCDEFGHIJKLMNOPQRSTUVWXYZ]*) ;; *) return 1 ;; esac
+	case "$value" in *[abcdefghijklmnopqrstuvwxyz]*) ;; *) return 1 ;; esac
+	case "$value" in *[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789]*) ;; *) return 1 ;; esac
+	return 0
+}
+
 append_env() {
 	key="$1"
 	value="$2"
@@ -55,6 +67,16 @@ append_env() {
 		fi
 	fi
 	printf '%s=%s\n' "$key" "$value" >>"$env_file"
+}
+
+replace_env() {
+	key="$1"
+	value="$2"
+	tmp_file="${env_file}.tmp.$$"
+	grep -v "^[[:space:]]*${key}=" "$env_file" >"$tmp_file" 2>/dev/null || :
+	mv "$tmp_file" "$env_file"
+	chmod 600 "$env_file" 2>/dev/null || true
+	append_env "$key" "$value"
 }
 
 set_default() {
@@ -70,8 +92,19 @@ admin_password="$(env_value CLIRELAY_ADMIN_PASSWORD)"
 postgres_password="$(env_value CLIRELAY_POSTGRES_PASSWORD)"
 
 [ -n "$updater_token" ] || updater_token="$(rand_hex 16)"
-[ -n "$admin_password" ] || admin_password="$(rand_password 16)"
 [ -n "$postgres_password" ] || postgres_password="$(rand_hex 16)"
+
+# An existing admin password that fails the bootstrap policy is never a working
+# credential: bootstrap rejects it before the admin account exists, so the deployment has
+# been crash-looping rather than running. Rewriting it is therefore safe, and it is the
+# only way an install created by the earlier hex-only generator recovers on upgrade.
+admin_password_needs_rewrite=0
+if [ -n "$admin_password" ] && ! password_is_valid "$admin_password"; then
+	echo "clirelay-init: CLIRELAY_ADMIN_PASSWORD does not satisfy the bootstrap password policy; regenerating it" >&2
+	admin_password=""
+	admin_password_needs_rewrite=1
+fi
+[ -n "$admin_password" ] || admin_password="$(rand_password 16)"
 
 postgres_db="$(env_value CLIRELAY_POSTGRES_DB)"
 postgres_user="$(env_value CLIRELAY_POSTGRES_USER)"
@@ -87,7 +120,11 @@ set_default CLIRELAY_TARGET_SERVICE "${CLIRELAY_TARGET_SERVICE:-cli-proxy-api}"
 set_default CLIRELAY_COMPOSE_PROJECT_NAME "${CLIRELAY_COMPOSE_PROJECT_NAME:-clirelay}"
 set_default CLIRELAY_UPDATER_URL "http://clirelay-updater:8320"
 set_default CLIRELAY_UPDATER_TOKEN "$updater_token"
-set_default CLIRELAY_ADMIN_PASSWORD "$admin_password"
+if [ "$admin_password_needs_rewrite" = "1" ]; then
+	replace_env CLIRELAY_ADMIN_PASSWORD "$admin_password"
+else
+	set_default CLIRELAY_ADMIN_PASSWORD "$admin_password"
+fi
 set_default CLIRELAY_POSTGRES_DB "$postgres_db"
 set_default CLIRELAY_POSTGRES_USER "$postgres_user"
 set_default CLIRELAY_POSTGRES_PASSWORD "$postgres_password"
