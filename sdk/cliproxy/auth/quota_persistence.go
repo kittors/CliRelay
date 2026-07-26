@@ -34,7 +34,7 @@ func syncPersistedQuotaRuntime(auth *Auth) {
 		Quota:          auth.Quota,
 	}
 	for model, state := range auth.ModelStates {
-		if state == nil || !quotaNeedsConfirmedRecovery(state.Quota) {
+		if state == nil || !quotaRecoveryGateArmed(state.Quota) {
 			continue
 		}
 		if runtime.ModelStates == nil {
@@ -48,7 +48,7 @@ func syncPersistedQuotaRuntime(auth *Auth) {
 		}
 	}
 
-	if !quotaNeedsConfirmedRecovery(runtime.Quota) && len(runtime.ModelStates) == 0 {
+	if !quotaRecoveryGateArmed(runtime.Quota) && len(runtime.ModelStates) == 0 {
 		delete(auth.Metadata, persistedQuotaRuntimeMetadataKey)
 		return
 	}
@@ -71,11 +71,11 @@ func restorePersistedQuotaRuntime(auth *Auth) {
 	if err = json.Unmarshal(data, &runtime); err != nil {
 		return
 	}
-	if !quotaNeedsConfirmedRecovery(runtime.Quota) && len(runtime.ModelStates) == 0 {
+	if !quotaRecoveryGateArmed(runtime.Quota) && len(runtime.ModelStates) == 0 {
 		return
 	}
 
-	if quotaNeedsConfirmedRecovery(runtime.Quota) {
+	if quotaRecoveryGateArmed(runtime.Quota) {
 		auth.Quota = runtime.Quota
 		auth.NextRetryAfter = runtime.NextRetryAfter
 		auth.Unavailable = true
@@ -95,7 +95,7 @@ func restorePersistedQuotaRuntime(auth *Auth) {
 		auth.ModelStates = make(map[string]*ModelState, len(runtime.ModelStates))
 	}
 	for model, persisted := range runtime.ModelStates {
-		if !quotaNeedsConfirmedRecovery(persisted.Quota) {
+		if !quotaRecoveryGateArmed(persisted.Quota) {
 			continue
 		}
 		state := &ModelState{
@@ -114,4 +114,11 @@ func restorePersistedQuotaRuntime(auth *Auth) {
 		auth.ModelStates[model] = state
 	}
 	updateAggregatedAvailability(auth, time.Now())
+}
+
+// quotaRecoveryGateArmed reports whether a probe-confirmed quota gate exists at
+// all, ignoring its deadline. Persistence must not drop a gate just because its
+// deadline is close: expiry is re-evaluated against the clock on every check.
+func quotaRecoveryGateArmed(quota QuotaState) bool {
+	return quota.Exceeded && quota.RecoveryRequired
 }

@@ -169,11 +169,14 @@ func TestManagerMarkResult_XAI402BalanceExhaustedWithoutRetryUsesRecoveryGate(t 
 	if !state.Quota.Exceeded || state.Quota.Window != "week" {
 		t.Fatalf("quota = %#v, want week exceeded", state.Quota)
 	}
-	if !state.NextRetryAfter.IsZero() {
-		t.Fatalf("NextRetryAfter = %v, want zero without upstream reset", state.NextRetryAfter)
+	// Without an upstream reset the gate falls back to the declared window so a
+	// credential whose recovery probe never succeeds still returns to the pool.
+	wantDeadline := before.Add(10080 * time.Minute)
+	if state.NextRetryAfter.Before(wantDeadline.Add(-time.Minute)) || state.NextRetryAfter.After(wantDeadline.Add(time.Minute)) {
+		t.Fatalf("NextRetryAfter = %v, want ~%v (quota window fallback)", state.NextRetryAfter, wantDeadline)
 	}
-	if !state.Quota.NextRecoverAt.IsZero() {
-		t.Fatalf("NextRecoverAt = %v, want zero without upstream reset", state.Quota.NextRecoverAt)
+	if !state.Quota.NextRecoverAt.Equal(state.NextRetryAfter) {
+		t.Fatalf("NextRecoverAt = %v, want same as NextRetryAfter", state.Quota.NextRecoverAt)
 	}
 	if !got.Quota.Exceeded || !got.Quota.RecoveryRequired {
 		t.Fatalf("aggregated auth quota = %#v, want confirmed-recovery gate", got.Quota)
@@ -335,11 +338,12 @@ func TestApplyAuthFailureState_XAI402WithoutRetryUsesRecoveryGate(t *testing.T) 
 	if !auth.Quota.Exceeded || !auth.Quota.RecoveryRequired || auth.Quota.Window != "week" {
 		t.Fatalf("quota = %#v, want week exceeded", auth.Quota)
 	}
-	if !auth.NextRetryAfter.IsZero() {
-		t.Fatalf("NextRetryAfter = %v, want zero without upstream reset", auth.NextRetryAfter)
+	wantDeadline := now.Add(10080 * time.Minute)
+	if !auth.NextRetryAfter.Equal(wantDeadline) {
+		t.Fatalf("NextRetryAfter = %v, want %v (quota window fallback)", auth.NextRetryAfter, wantDeadline)
 	}
-	if !auth.Quota.NextRecoverAt.IsZero() {
-		t.Fatalf("NextRecoverAt = %v, want zero without upstream reset", auth.Quota.NextRecoverAt)
+	if !auth.Quota.NextRecoverAt.Equal(wantDeadline) {
+		t.Fatalf("NextRecoverAt = %v, want %v (quota window fallback)", auth.Quota.NextRecoverAt, wantDeadline)
 	}
 }
 

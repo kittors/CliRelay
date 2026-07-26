@@ -236,6 +236,15 @@ func (m *Manager) probeQuotaRecovery(ctx context.Context, id string, force bool)
 	return m.UpdateQuotaFromProbe(ctx, id, result)
 }
 
+func probeWindowFallbackCooldown(windowMinutes int) time.Duration {
+	if windowMinutes > 0 {
+		if window := time.Duration(windowMinutes) * time.Minute; window < quotaWindowMaxCooldown {
+			return window
+		}
+	}
+	return quotaWindowMaxCooldown
+}
+
 func applyQuotaProbeResult(auth *Auth, result *QuotaProbeResult, now time.Time) (bool, []string) {
 	if auth == nil || result == nil {
 		return false, nil
@@ -246,21 +255,28 @@ func applyQuotaProbeResult(auth *Auth, result *QuotaProbeResult, now time.Time) 
 	modelResults := normalizeQuotaProbeModels(result.Models)
 	authWide := QuotaProbeModelResult{Recovered: result.Recovered, NextRecoverAt: result.NextRecoverAt}
 	if result.WindowExhausted && !hasQuotaExceededModel(auth) {
+		// Upstream can report an exhausted window without a reset timestamp.
+		// Derive a deadline from the window length so the gate always expires;
+		// an open-ended gate can never be lifted once probing stops working.
+		recoverAt := result.NextRecoverAt
+		if recoverAt.IsZero() {
+			recoverAt = now.Add(probeWindowFallbackCooldown(result.WindowMinutes))
+		}
 		changed := !auth.Unavailable || auth.Status != StatusError || auth.StatusMessage != "quota exhausted" ||
-			!auth.NextRetryAfter.Equal(result.NextRecoverAt) || !auth.Quota.Exceeded || !auth.Quota.RecoveryRequired ||
+			!auth.NextRetryAfter.Equal(recoverAt) || !auth.Quota.Exceeded || !auth.Quota.RecoveryRequired ||
 			auth.Quota.Reason != "quota" || auth.Quota.Window != result.Window ||
-			auth.Quota.WindowMinutes != result.WindowMinutes || !auth.Quota.NextRecoverAt.Equal(result.NextRecoverAt)
+			auth.Quota.WindowMinutes != result.WindowMinutes || !auth.Quota.NextRecoverAt.Equal(recoverAt)
 		auth.Unavailable = true
 		auth.Status = StatusError
 		auth.StatusMessage = "quota exhausted"
-		auth.NextRetryAfter = result.NextRecoverAt
+		auth.NextRetryAfter = recoverAt
 		auth.Quota = QuotaState{
 			Exceeded:         true,
 			RecoveryRequired: true,
 			Reason:           "quota",
 			Window:           result.Window,
 			WindowMinutes:    result.WindowMinutes,
-			NextRecoverAt:    result.NextRecoverAt,
+			NextRecoverAt:    recoverAt,
 		}
 		auth.UpdatedAt = now
 		return changed, nil
@@ -445,6 +461,12 @@ func nextQuotaProbeTime(auth *Auth, now time.Time) time.Time {
 	if nextRecover.IsZero() {
 		return now.Add(quotaProbeMinInterval)
 	}
+	// A probe-confirmed gate keeps the credential out of rotation until the probe
+	// says otherwise, so keep polling promptly instead of scaling the interval to
+	// the (week-long) window deadline that only acts as a ceiling.
+	if quotaRecoveryGateArmed(auth.Quota) {
+		return now.Add(quotaProbeMinInterval)
+	}
 	remaining := nextRecover.Sub(now)
 	if remaining <= 0 {
 		return now.Add(quotaProbeMinInterval)
@@ -500,11 +522,17 @@ func updateQuotaModelRecoverAt(state *ModelState, next time.Time, now time.Time)
 		return false
 	}
 	if next.IsZero() {
-		if !quotaNeedsConfirmedRecovery(state.Quota) {
+		if !quotaRecoveryGateArmed(state.Quota) {
 			return false
 		}
-		changed := !state.Unavailable
+		// The probe answered "still exhausted" but gave no reset time. That is
+		// fresh evidence, so push the window deadline out instead of letting an
+		// already-elapsed one release the credential on the next pick.
+		deadline := now.Add(probeWindowFallbackCooldown(state.Quota.WindowMinutes))
+		changed := !state.Unavailable || !state.Quota.NextRecoverAt.Equal(deadline)
 		state.Unavailable = true
+		state.NextRetryAfter = deadline
+		state.Quota.NextRecoverAt = deadline
 		state.UpdatedAt = now
 		return changed
 	}
@@ -578,11 +606,16 @@ func updateQuotaAuthRecoverAt(auth *Auth, next time.Time, now time.Time) bool {
 		return false
 	}
 	if next.IsZero() {
-		if !quotaNeedsConfirmedRecovery(auth.Quota) {
+		if !quotaRecoveryGateArmed(auth.Quota) {
 			return false
 		}
-		changed := !auth.Unavailable
+		// See updateQuotaModelRecoverAt: a confirmed-still-exhausted probe
+		// without a reset time refreshes the window deadline.
+		deadline := now.Add(probeWindowFallbackCooldown(auth.Quota.WindowMinutes))
+		changed := !auth.Unavailable || !auth.Quota.NextRecoverAt.Equal(deadline)
 		auth.Unavailable = true
+		auth.NextRetryAfter = deadline
+		auth.Quota.NextRecoverAt = deadline
 		auth.UpdatedAt = now
 		return changed
 	}

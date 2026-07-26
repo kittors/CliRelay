@@ -7,7 +7,24 @@ import (
 	"github.com/tidwall/gjson"
 )
 
-func ExtractLastUserText(format sdktranslator.Format, payload []byte) string {
+// moderatableRoles are the request roles whose text the caller fully controls.
+// Assistant/model turns are excluded: they are upstream output being replayed,
+// and blocking them would break legitimate multi-turn conversations.
+var moderatableRoles = map[string]bool{
+	"user":      true,
+	"system":    true,
+	"developer": true,
+	"human":     true,
+}
+
+// ExtractModeratableText returns every caller-controlled text fragment in the
+// request, joined into a single string for moderation.
+//
+// It must cover the whole request, not just the newest turn: a client controls
+// the entire payload, so moderating only the last message lets an attacker put
+// banned text in an earlier turn (or in a system prompt) and append an empty or
+// image-only final message to slip past pre_block.
+func ExtractModeratableText(format sdktranslator.Format, payload []byte) string {
 	if len(payload) == 0 || !gjson.ValidBytes(payload) {
 		return ""
 	}
@@ -15,34 +32,34 @@ func ExtractLastUserText(format sdktranslator.Format, payload []byte) string {
 	switch format {
 	case sdktranslator.FormatOpenAIResponse:
 		collectResponsesInput(gjson.GetBytes(payload, "input"), &parts)
+		collectTextValue(gjson.GetBytes(payload, "instructions"), &parts, false)
 	case sdktranslator.FormatClaude:
-		collectLastRoleContent(gjson.GetBytes(payload, "messages"), "user", &parts, true)
+		// Claude carries the system prompt outside messages; it is caller-controlled too.
+		collectTextValue(gjson.GetBytes(payload, "system"), &parts, true)
+		collectRoleContent(gjson.GetBytes(payload, "messages"), &parts, true)
 	case sdktranslator.FormatGemini, sdktranslator.FormatGeminiCLI:
-		collectLastGeminiContent(gjson.GetBytes(payload, "contents"), &parts)
+		collectGeminiContent(gjson.GetBytes(payload, "systemInstruction"), &parts)
+		collectGeminiContents(gjson.GetBytes(payload, "contents"), &parts)
 	default:
-		collectLastRoleContent(gjson.GetBytes(payload, "messages"), "user", &parts, false)
-		if len(parts) == 0 {
-			prompt := gjson.GetBytes(payload, "prompt")
-			if prompt.Type == gjson.String {
-				addText(&parts, prompt.String(), false)
-			}
+		collectRoleContent(gjson.GetBytes(payload, "messages"), &parts, false)
+		// Image generation endpoints carry the prompt at the top level.
+		if prompt := gjson.GetBytes(payload, "prompt"); prompt.Type == gjson.String {
+			addText(&parts, prompt.String(), false)
 		}
 	}
 	return strings.Join(strings.Fields(strings.Join(parts, "\n")), " ")
 }
 
-func collectLastRoleContent(messages gjson.Result, role string, parts *[]string, skipSystemReminder bool) {
+func collectRoleContent(messages gjson.Result, parts *[]string, skipSystemReminder bool) {
 	if !messages.IsArray() {
 		return
 	}
-	items := messages.Array()
-	for i := len(items) - 1; i >= 0; i-- {
-		item := items[i]
-		if !strings.EqualFold(strings.TrimSpace(item.Get("role").String()), role) {
+	for _, item := range messages.Array() {
+		role := strings.ToLower(strings.TrimSpace(item.Get("role").String()))
+		if !moderatableRoles[role] {
 			continue
 		}
 		collectTextValue(item.Get("content"), parts, skipSystemReminder)
-		return
 	}
 }
 
@@ -53,47 +70,49 @@ func collectResponsesInput(input gjson.Result, parts *[]string) {
 	case input.Type == gjson.String:
 		addText(parts, input.String(), false)
 	case input.IsArray():
-		items := input.Array()
-		for i := len(items) - 1; i >= 0; i-- {
-			item := items[i]
-			role := strings.ToLower(strings.TrimSpace(item.Get("role").String()))
-			typeName := strings.ToLower(strings.TrimSpace(item.Get("type").String()))
-			if role != "user" && typeName != "input_text" {
-				continue
-			}
-			collectTextValue(item.Get("content"), parts, false)
-			if typeName == "input_text" || item.Get("text").Exists() {
-				collectTextValue(item, parts, false)
-			}
-			return
+		for _, item := range input.Array() {
+			collectResponsesInputItem(item, parts)
 		}
 	case input.IsObject():
-		role := strings.ToLower(strings.TrimSpace(input.Get("role").String()))
-		typeName := strings.ToLower(strings.TrimSpace(input.Get("type").String()))
-		if role == "user" || typeName == "input_text" {
-			collectTextValue(input.Get("content"), parts, false)
-			collectTextValue(input, parts, false)
-		}
+		collectResponsesInputItem(input, parts)
 	}
 }
 
-func collectLastGeminiContent(contents gjson.Result, parts *[]string) {
+func collectResponsesInputItem(item gjson.Result, parts *[]string) {
+	role := strings.ToLower(strings.TrimSpace(item.Get("role").String()))
+	typeName := strings.ToLower(strings.TrimSpace(item.Get("type").String()))
+	// Items without a role but typed input_text are caller input as well.
+	if !moderatableRoles[role] && typeName != "input_text" {
+		return
+	}
+	collectTextValue(item.Get("content"), parts, false)
+	if typeName == "input_text" || item.Get("text").Exists() {
+		collectTextValue(item, parts, false)
+	}
+}
+
+func collectGeminiContents(contents gjson.Result, parts *[]string) {
 	if !contents.IsArray() {
 		return
 	}
-	items := contents.Array()
-	for i := len(items) - 1; i >= 0; i-- {
-		item := items[i]
-		role := strings.ToLower(strings.TrimSpace(item.Get("role").String()))
-		if role != "" && role != "user" {
-			continue
-		}
-		if values := item.Get("parts"); values.IsArray() {
-			for _, part := range values.Array() {
-				addText(parts, part.Get("text").String(), false)
-			}
-		}
+	for _, item := range contents.Array() {
+		collectGeminiContent(item, parts)
+	}
+}
+
+func collectGeminiContent(content gjson.Result, parts *[]string) {
+	if !content.Exists() {
 		return
+	}
+	role := strings.ToLower(strings.TrimSpace(content.Get("role").String()))
+	// Gemini omits the role on single-turn and systemInstruction payloads.
+	if role != "" && !moderatableRoles[role] {
+		return
+	}
+	if values := content.Get("parts"); values.IsArray() {
+		for _, part := range values.Array() {
+			addText(parts, part.Get("text").String(), false)
+		}
 	}
 }
 
@@ -118,6 +137,7 @@ func collectTextValue(value gjson.Result, parts *[]string, skipSystemReminder bo
 
 func addText(parts *[]string, value string, skipSystemReminder bool) {
 	value = strings.TrimSpace(value)
+	// <system-reminder> blocks are client-injected boilerplate, not caller prose.
 	if value == "" || (skipSystemReminder && strings.HasPrefix(value, "<system-reminder>")) {
 		return
 	}

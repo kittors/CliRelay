@@ -179,7 +179,7 @@ func (s cooldownService) applySuccessLocked(auth *Auth, result Result, now time.
 	markClaudeOAuthHealthSuccessLocked(auth, result, now)
 	if result.Model != "" {
 		state := ensureModelState(auth, result.Model)
-		if activeModelQuotaCooldown(state, now) && !quotaNeedsConfirmedRecovery(state.Quota) {
+		if activeModelQuotaCooldown(state, now) && !quotaNeedsConfirmedRecovery(state.Quota, now) {
 			updateAggregatedAvailability(auth, now)
 			auth.UpdatedAt = now
 			return
@@ -196,7 +196,7 @@ func (s cooldownService) applySuccessLocked(auth *Auth, result Result, now time.
 		effects.clearModelQuota = true
 		return
 	}
-	if activeAuthQuotaCooldown(auth, now) && !quotaNeedsConfirmedRecovery(auth.Quota) {
+	if activeAuthQuotaCooldown(auth, now) && !quotaNeedsConfirmedRecovery(auth.Quota, now) {
 		updateAggregatedAvailability(auth, now)
 		auth.UpdatedAt = now
 		return

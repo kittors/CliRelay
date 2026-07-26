@@ -60,14 +60,18 @@ func applyAuthQuotaFailureState(auth *Auth, resultErr *Error, retryAfter *time.D
 	} else {
 		auth.StatusMessage = "quota exhausted"
 	}
+	disableCooling := quotaCooldownDisabledForAuth(auth)
 	auth.Quota.Exceeded = true
-	auth.Quota.RecoveryRequired = isXAIWeekBalanceExhaustedError(resultErr)
+	// disable_cooling is an explicit operator override of quota scheduling; the
+	// probe-confirmed gate must honour it too, otherwise the flag silently stops
+	// working for exactly the credentials that hit weekly exhaustion.
+	auth.Quota.RecoveryRequired = !disableCooling && isXAIWeekBalanceExhaustedError(resultErr)
 	auth.Quota.Reason = "quota"
 	if resultErr != nil {
 		auth.Quota.Window = resultErr.QuotaWindow
 		auth.Quota.WindowMinutes = resultErr.QuotaWindowMinutes
 	}
-	cooldown, nextLevel := quotaFailureCooldown(resultErr, retryAfter, auth.Quota.BackoffLevel, quotaCooldownDisabledForAuth(auth))
+	cooldown, nextLevel := quotaFailureCooldown(resultErr, retryAfter, auth.Quota.BackoffLevel, disableCooling)
 	var next time.Time
 	if cooldown > 0 {
 		next = now.Add(cooldown)
@@ -85,9 +89,26 @@ func quotaFailureCooldown(resultErr *Error, retryAfter *time.Duration, prevLevel
 		return 0, prevLevel
 	}
 	if isXAIWeekBalanceExhaustedError(resultErr) {
-		return 0, prevLevel
+		// Upstream reported weekly exhaustion without a reset time. Recovery is
+		// normally confirmed by the billing probe, but that probe can be
+		// permanently unavailable, so fall back to the declared quota window
+		// instead of leaving the credential without any retry deadline.
+		return quotaWindowFallbackCooldown(resultErr), prevLevel
 	}
 	return nextQuotaCooldown(prevLevel, false)
+}
+
+// quotaWindowMaxCooldown caps the fallback deadline for an exhausted quota
+// window; xAI's weekly window is the longest one we observe.
+const quotaWindowMaxCooldown = 7 * 24 * time.Hour
+
+func quotaWindowFallbackCooldown(resultErr *Error) time.Duration {
+	if resultErr != nil && resultErr.QuotaWindowMinutes > 0 {
+		if window := time.Duration(resultErr.QuotaWindowMinutes) * time.Minute; window < quotaWindowMaxCooldown {
+			return window
+		}
+	}
+	return quotaWindowMaxCooldown
 }
 
 func isXAIWeekBalanceExhaustedError(resultErr *Error) bool {

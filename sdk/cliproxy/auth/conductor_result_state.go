@@ -51,7 +51,7 @@ func updateAggregatedAvailability(auth *Auth, now time.Time) {
 		stateUnavailable := false
 		if state.Status == StatusDisabled {
 			stateUnavailable = true
-		} else if quotaNeedsConfirmedRecovery(state.Quota) {
+		} else if quotaNeedsConfirmedRecovery(state.Quota, now) {
 			stateUnavailable = true
 			state.Unavailable = true
 			if state.NextRetryAfter.After(now) && (earliestRetry.IsZero() || state.NextRetryAfter.Before(earliestRetry)) {
@@ -132,7 +132,7 @@ func activeQuotaCooldown(quota QuotaState, retryAfter time.Time, now time.Time) 
 	if !quota.Exceeded {
 		return false
 	}
-	if quotaNeedsConfirmedRecovery(quota) {
+	if quotaNeedsConfirmedRecovery(quota, now) {
 		return true
 	}
 	if !quota.NextRecoverAt.IsZero() {
@@ -141,8 +141,18 @@ func activeQuotaCooldown(quota QuotaState, retryAfter time.Time, now time.Time) 
 	return !retryAfter.IsZero() && retryAfter.After(now)
 }
 
-func quotaNeedsConfirmedRecovery(quota QuotaState) bool {
-	return quota.Exceeded && quota.RecoveryRequired
+// quotaNeedsConfirmedRecovery reports whether the credential must stay blocked
+// until a recovery probe confirms quota is back.
+//
+// The gate is always bounded by NextRecoverAt. Without that ceiling a credential
+// whose probe can never succeed — API-key mode xAI auths reject the Grok Build
+// billing probe outright, and the billing endpoint can simply be down — would be
+// blacklisted forever, because the selector never picks it again and only a
+// successful request could clear the flag. A zero or elapsed NextRecoverAt
+// therefore lets one request through; if quota really is still exhausted the
+// upstream 402 re-arms the gate with a fresh window.
+func quotaNeedsConfirmedRecovery(quota QuotaState, now time.Time) bool {
+	return quota.Exceeded && quota.RecoveryRequired && quota.NextRecoverAt.After(now)
 }
 
 func activeModelRuntimeState(state *ModelState, now time.Time) bool {
@@ -189,7 +199,7 @@ func hasModelError(auth *Auth, now time.Time) bool {
 			return true
 		}
 		if state.Status == StatusError {
-			if quotaNeedsConfirmedRecovery(state.Quota) || (state.Unavailable && (state.NextRetryAfter.IsZero() || state.NextRetryAfter.After(now))) {
+			if quotaNeedsConfirmedRecovery(state.Quota, now) || (state.Unavailable && (state.NextRetryAfter.IsZero() || state.NextRetryAfter.After(now))) {
 				return true
 			}
 		}

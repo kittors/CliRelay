@@ -306,7 +306,7 @@ func isAuthBlockedForModel(auth *Auth, model string, now time.Time) (bool, block
 	// requests by switching models during the same quota window.
 	if auth.Quota.Exceeded {
 		next := auth.Quota.NextRecoverAt
-		if quotaNeedsConfirmedRecovery(auth.Quota) || (!next.IsZero() && next.After(now)) {
+		if quotaNeedsConfirmedRecovery(auth.Quota, now) || (!next.IsZero() && next.After(now)) {
 			if auth.NextRetryAfter.After(now) && (next.IsZero() || auth.NextRetryAfter.Before(next)) {
 				next = auth.NextRetryAfter
 			}
@@ -330,7 +330,7 @@ func isAuthBlockedForModel(auth *Auth, model string, now time.Time) (bool, block
 				if state.Status == StatusDisabled {
 					return true, blockReasonDisabled, time.Time{}
 				}
-				if quotaNeedsConfirmedRecovery(state.Quota) {
+				if quotaNeedsConfirmedRecovery(state.Quota, now) {
 					next := state.Quota.NextRecoverAt
 					if state.NextRetryAfter.After(now) && (next.IsZero() || state.NextRetryAfter.Before(next)) {
 						next = state.NextRetryAfter

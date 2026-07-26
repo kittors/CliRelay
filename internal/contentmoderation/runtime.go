@@ -211,7 +211,7 @@ func (m *RuntimeModerator) Moderate(ctx context.Context, auth *coreauth.Auth, op
 		return coreauth.RequestModerationResult{}
 	}
 
-	input := ExtractLastUserText(opts.SourceFormat, opts.OriginalRequest)
+	input := ExtractModeratableText(opts.SourceFormat, opts.OriginalRequest)
 	if input == "" {
 		counters.allows.Add(1)
 		decision := Decision{Action: ActionAllow}
