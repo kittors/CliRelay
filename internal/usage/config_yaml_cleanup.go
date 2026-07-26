@@ -2,13 +2,10 @@ package usage
 
 import (
 	"bytes"
-	"errors"
-	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
-	"syscall"
 
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	log "github.com/sirupsen/logrus"
 	"gopkg.in/yaml.v3"
 )
@@ -115,10 +112,28 @@ func cleanRuntimeSettingsFromYAML(configFilePath string) {
 	}, "runtime_settings")
 }
 
+// cleanConfigKeysFromYAML strips the given root keys from config.yaml. It runs under
+// the shared config.yaml write lock: the cleanup is itself a read-modify-write cycle,
+// and it is triggered both directly after management saves and from the watcher reload
+// chain, so without the lock it can interleave with a management save and drop one
+// side's changes.
 func cleanConfigKeysFromYAML(configFilePath string, keysToRemove map[string]bool, label string) int {
 	if strings.TrimSpace(configFilePath) == "" || len(keysToRemove) == 0 {
 		return 0
 	}
+	removed := 0
+	err := config.WithConfigFileWriteLock(func() error {
+		removed = cleanConfigKeysFromYAMLLocked(configFilePath, keysToRemove, label)
+		return nil
+	})
+	if err != nil {
+		log.Warnf("usage: failed to acquire config write lock for %s cleanup: %v", label, err)
+		return 0
+	}
+	return removed
+}
+
+func cleanConfigKeysFromYAMLLocked(configFilePath string, keysToRemove map[string]bool, label string) int {
 	data, err := os.ReadFile(configFilePath)
 	if err != nil {
 		log.Warnf("usage: failed to read config for %s cleanup: %v", label, err)
@@ -161,11 +176,9 @@ func cleanConfigKeysFromYAML(configFilePath string, keysToRemove map[string]bool
 	return removed
 }
 
+// writeYAMLNodeAtomic encodes root and hands it to the shared atomic writer in
+// internal/config, so every config.yaml write goes through one implementation.
 func writeYAMLNodeAtomic(configFilePath string, root *yaml.Node) error {
-	return writeYAMLNodeAtomicWithRename(configFilePath, root, os.Rename)
-}
-
-func writeYAMLNodeAtomicWithRename(configFilePath string, root *yaml.Node, renameFile func(string, string) error) error {
 	var buf bytes.Buffer
 	enc := yaml.NewEncoder(&buf)
 	enc.SetIndent(2)
@@ -176,67 +189,5 @@ func writeYAMLNodeAtomicWithRename(configFilePath string, root *yaml.Node, renam
 	if err := enc.Close(); err != nil {
 		return err
 	}
-
-	mode := os.FileMode(0o600)
-	if info, err := os.Stat(configFilePath); err == nil {
-		mode = info.Mode().Perm()
-	}
-
-	dir := filepath.Dir(configFilePath)
-	base := filepath.Base(configFilePath)
-	tmp, err := os.CreateTemp(dir, "."+base+".tmp-*")
-	if err != nil {
-		return err
-	}
-	tmpPath := tmp.Name()
-	defer func() { _ = os.Remove(tmpPath) }()
-
-	if err := tmp.Chmod(mode); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if _, err := tmp.Write(buf.Bytes()); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Sync(); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	if renameFile == nil {
-		renameFile = os.Rename
-	}
-	if err := renameFile(tmpPath, configFilePath); err != nil {
-		if isAtomicYAMLReplaceUnsupported(err) {
-			if errFallback := writeYAMLFileInPlace(configFilePath, buf.Bytes(), mode); errFallback != nil {
-				return fmt.Errorf("atomic replace failed: %w; in-place write failed: %w", err, errFallback)
-			}
-			return nil
-		}
-		return err
-	}
-	return nil
-}
-
-func isAtomicYAMLReplaceUnsupported(err error) bool {
-	return errors.Is(err, syscall.EBUSY) || errors.Is(err, syscall.EXDEV)
-}
-
-func writeYAMLFileInPlace(path string, data []byte, mode os.FileMode) error {
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
-	if err != nil {
-		return err
-	}
-	if _, err := file.Write(data); err != nil {
-		_ = file.Close()
-		return err
-	}
-	if err := file.Sync(); err != nil {
-		_ = file.Close()
-		return err
-	}
-	return file.Close()
+	return config.WriteYAMLFileAtomic(configFilePath, buf.Bytes())
 }

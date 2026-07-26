@@ -5,11 +5,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	"gopkg.in/yaml.v3"
 	_ "modernc.org/sqlite"
 )
 
@@ -138,51 +136,6 @@ func TestCleanDBBackedConfigFromYAMLCleansPersistedSections(t *testing.T) {
 	}
 	if got := info.Mode().Perm(); got != 0o640 {
 		t.Fatalf("cleaned config mode = %o, want 640", got)
-	}
-}
-
-func TestWriteYAMLNodeAtomicFallsBackWhenRenameTargetBusy(t *testing.T) {
-	configPath := filepath.Join(t.TempDir(), "config.yaml")
-	if err := os.WriteFile(configPath, []byte("routing:\n  strategy: round-robin\n"), 0o640); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
-
-	var root yaml.Node
-	if err := yaml.Unmarshal([]byte("port: 8318\nlogging-to-file: true\n"), &root); err != nil {
-		t.Fatalf("parse yaml: %v", err)
-	}
-
-	renameCalled := false
-	err := writeYAMLNodeAtomicWithRename(configPath, &root, func(oldPath, newPath string) error {
-		renameCalled = true
-		if filepath.Dir(oldPath) != filepath.Dir(configPath) {
-			t.Fatalf("temp file dir = %s, want %s", filepath.Dir(oldPath), filepath.Dir(configPath))
-		}
-		if newPath != configPath {
-			t.Fatalf("rename target = %s, want %s", newPath, configPath)
-		}
-		return &os.LinkError{Op: "rename", Old: oldPath, New: newPath, Err: syscall.EBUSY}
-	})
-	if err != nil {
-		t.Fatalf("writeYAMLNodeAtomicWithRename returned error: %v", err)
-	}
-	if !renameCalled {
-		t.Fatal("rename was not attempted")
-	}
-
-	data, err := os.ReadFile(configPath)
-	if err != nil {
-		t.Fatalf("read config: %v", err)
-	}
-	if got := string(data); strings.Contains(got, "routing:") || !strings.Contains(got, "logging-to-file: true") {
-		t.Fatalf("config was not rewritten in place:\n%s", got)
-	}
-	info, err := os.Stat(configPath)
-	if err != nil {
-		t.Fatalf("stat config: %v", err)
-	}
-	if got := info.Mode().Perm(); got != 0o640 {
-		t.Fatalf("config mode = %o, want 640", got)
 	}
 }
 

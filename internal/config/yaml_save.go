@@ -10,7 +10,18 @@ import (
 
 // SaveConfigPreserveComments writes the config back to YAML while preserving existing comments
 // and key ordering by loading the original file into a yaml.Node tree and updating values in-place.
+//
+// The whole read-modify-write cycle runs under the config.yaml write lock: this function
+// re-reads the file to recover its comments, so an overlapping writer would otherwise
+// have its changes dropped, and before the switch to an atomic write two overlapping
+// calls could splice the file into unparseable YAML.
 func SaveConfigPreserveComments(configFile string, cfg *Config) error {
+	return WithConfigFileWriteLock(func() error {
+		return saveConfigPreserveCommentsLocked(configFile, cfg)
+	})
+}
+
+func saveConfigPreserveCommentsLocked(configFile string, cfg *Config) error {
 	persistCfg := cfg
 	data, err := os.ReadFile(configFile)
 	if err != nil {
@@ -54,11 +65,6 @@ func SaveConfigPreserveComments(configFile string, cfg *Config) error {
 	mergeMappingPreserve(original.Content[0], generated.Content[0])
 	normalizeCollectionNodeStyles(original.Content[0])
 
-	f, err := os.Create(configFile)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = f.Close() }()
 	var buf bytes.Buffer
 	enc := yaml.NewEncoder(&buf)
 	enc.SetIndent(2)
@@ -69,14 +75,18 @@ func SaveConfigPreserveComments(configFile string, cfg *Config) error {
 	if err = enc.Close(); err != nil {
 		return err
 	}
-	data = NormalizeCommentIndentation(buf.Bytes())
-	_, err = f.Write(data)
-	return err
+	return WriteYAMLFileAtomic(configFile, NormalizeCommentIndentation(buf.Bytes()))
 }
 
 // SaveConfigPreserveCommentsUpdateNestedScalar updates a nested scalar key path like ["a","b"]
 // while preserving comments and positions.
 func SaveConfigPreserveCommentsUpdateNestedScalar(configFile string, path []string, value string) error {
+	return WithConfigFileWriteLock(func() error {
+		return saveConfigPreserveCommentsUpdateNestedScalarLocked(configFile, path, value)
+	})
+}
+
+func saveConfigPreserveCommentsUpdateNestedScalarLocked(configFile string, path []string, value string) error {
 	data, err := os.ReadFile(configFile)
 	if err != nil {
 		return err
@@ -104,11 +114,6 @@ func SaveConfigPreserveCommentsUpdateNestedScalar(configFile string, path []stri
 			node = next
 		}
 	}
-	f, err := os.Create(configFile)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = f.Close() }()
 	var buf bytes.Buffer
 	enc := yaml.NewEncoder(&buf)
 	enc.SetIndent(2)
@@ -119,9 +124,7 @@ func SaveConfigPreserveCommentsUpdateNestedScalar(configFile string, path []stri
 	if err = enc.Close(); err != nil {
 		return err
 	}
-	data = NormalizeCommentIndentation(buf.Bytes())
-	_, err = f.Write(data)
-	return err
+	return WriteYAMLFileAtomic(configFile, NormalizeCommentIndentation(buf.Bytes()))
 }
 
 // NormalizeCommentIndentation removes indentation from standalone YAML comment lines to keep them left aligned.
