@@ -183,16 +183,11 @@ func identityError(c *gin.Context, err error) {
 func (h *Handler) PostLogin(c *gin.Context) {
 	clientIP := c.ClientIP()
 	now := time.Now()
-	h.attemptsMu.Lock()
-	attempt := h.failedAttempts[clientIP]
-	if attempt != nil && !attempt.blockedUntil.IsZero() && now.Before(attempt.blockedUntil) {
-		remaining := time.Until(attempt.blockedUntil).Round(time.Second)
-		h.attemptsMu.Unlock()
-		c.Header("Retry-After", retryAfterSecondsHeader(remaining))
+	if remaining := h.loginThrottle.blockedFor(clientIP, now); remaining > 0 {
+		c.Header("Retry-After", retryAfterSecondsHeader(remaining.Round(time.Second)))
 		c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{"error": gin.H{"code": "login_rate_limited", "message": "too many login attempts"}})
 		return
 	}
-	h.attemptsMu.Unlock()
 
 	var body struct {
 		Username   string `json:"username"`
@@ -210,25 +205,11 @@ func (h *Handler) PostLogin(c *gin.Context) {
 	}
 	result, err := service.Login(c.Request.Context(), body.Username, body.Password, body.RememberMe, c.GetHeader("User-Agent"))
 	if err != nil {
-		h.attemptsMu.Lock()
-		attempt = h.failedAttempts[clientIP]
-		if attempt == nil {
-			attempt = &attemptInfo{}
-			h.failedAttempts[clientIP] = attempt
-		}
-		attempt.count++
-		attempt.lastActivity = now
-		if attempt.count >= 5 {
-			attempt.blockedUntil = now.Add(30 * time.Minute)
-			attempt.count = 0
-		}
-		h.attemptsMu.Unlock()
+		h.loginThrottle.recordFailure(clientIP, now)
 		identityError(c, err)
 		return
 	}
-	h.attemptsMu.Lock()
-	delete(h.failedAttempts, clientIP)
-	h.attemptsMu.Unlock()
+	h.loginThrottle.recordSuccess(clientIP)
 	c.JSON(http.StatusOK, result)
 }
 

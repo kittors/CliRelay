@@ -106,7 +106,7 @@ def internal_dirs(files: list[Path], root: Path) -> tuple[set[str], set[str]]:
     return prod_dirs, test_dirs
 
 
-def scan() -> int:
+def scan(update_baseline: bool = False) -> int:
     root = repo_root()
     module_path = read_module_path(root)
     internal_import_prefix = f"{module_path}/internal/"
@@ -150,8 +150,43 @@ def scan() -> int:
                 notes.append(
                     f"{relative} is below allowlisted max {max_lines}; consider tightening the allowlist"
                 )
+    # Ratchet on the 800-line band: files already over it are frozen at their
+    # current size and may only shrink, and a new file crossing it fails. Before
+    # this, anything between 800 and 1200 lines could grow freely, which is how
+    # the current backlog of oversized files accumulated.
+    band_baseline = {
+        entry["path"]: int(entry["max_lines"])
+        for entry in allowlist.get("large_files", {}).get("baseline_above_800", [])
+    }
     for relative, lines in over_800:
-        warnings.append(f"{relative}: {lines} lines")
+        if relative in large_allowlist:
+            # Already governed by the stricter >1200 allowlist above.
+            continue
+        allowed = band_baseline.get(relative)
+        if allowed is None:
+            failures.append(
+                f"{relative} has {lines} lines, over the {WARNING_LINE_THRESHOLD} line limit, "
+                "and is not in the baseline. Split it, or record it with "
+                "scripts/check-backend-structure.py --update-baseline"
+            )
+        elif lines > allowed:
+            failures.append(
+                f"{relative} grew from baseline {allowed} to {lines} lines; "
+                "files over the limit may only shrink"
+            )
+        elif lines < allowed:
+            notes.append(
+                f"{relative} shrank from baseline {allowed} to {lines} lines; "
+                "run --update-baseline to lock in the improvement"
+            )
+    for relative in sorted(set(band_baseline) - {r for r, _ in over_800}):
+        notes.append(
+            f"{relative} is no longer over {WARNING_LINE_THRESHOLD} lines; "
+            "run --update-baseline to drop it from the baseline"
+        )
+
+    if update_baseline:
+        return write_band_baseline(root, allowlist, over_800, large_allowlist)
 
     sdk_allowlist: dict[str, list[str]] = allowlist.get("sdk_internal_imports", {}).get(
         "allow", {}
@@ -259,9 +294,28 @@ def scan() -> int:
     return 0
 
 
+def write_band_baseline(
+    root: Path,
+    allowlist: dict[str, Any],
+    over_800: list[tuple[str, int]],
+    large_allowlist: dict[str, Any],
+) -> int:
+    """Record every file currently over the warning threshold as the new floor."""
+    entries = [
+        {"path": relative, "max_lines": lines}
+        for relative, lines in sorted(over_800)
+        if relative not in large_allowlist
+    ]
+    allowlist.setdefault("large_files", {})["baseline_above_800"] = entries
+    path = root / ALLOWLIST_PATH
+    path.write_text(json.dumps(allowlist, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    print(f"\nBaseline updated: {len(entries)} file(s) over {WARNING_LINE_THRESHOLD} lines.")
+    return 0
+
+
 if __name__ == "__main__":
     try:
-        raise SystemExit(scan())
+        raise SystemExit(scan("--update-baseline" in sys.argv))
     except RuntimeError as exc:
         print(f"Backend structure scan failed: {exc}", file=sys.stderr)
         raise SystemExit(1)

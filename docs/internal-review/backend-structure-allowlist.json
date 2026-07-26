@@ -6,6 +6,80 @@
         "max_lines": 1321,
         "reason": "Static model definition data exception; keep out of business-logic large-file goals unless generation/storage changes."
       }
+    ],
+    "baseline_above_800": [
+      {
+        "path": "cmd/updater/main.go",
+        "max_lines": 1144
+      },
+      {
+        "path": "internal/api/handlers/management/end_user.go",
+        "max_lines": 912
+      },
+      {
+        "path": "internal/enduser/service.go",
+        "max_lines": 1189
+      },
+      {
+        "path": "internal/identity/service.go",
+        "max_lines": 1144
+      },
+      {
+        "path": "internal/management/aiaccountstatus/service.go",
+        "max_lines": 1066
+      },
+      {
+        "path": "internal/management/modelcatalog/availability.go",
+        "max_lines": 1188
+      },
+      {
+        "path": "internal/management/settings/providers/provider_keys_extended.go",
+        "max_lines": 900
+      },
+      {
+        "path": "internal/management/usagelogs/list.go",
+        "max_lines": 1198
+      },
+      {
+        "path": "internal/runtime/executor/codex_image_generation_bridge.go",
+        "max_lines": 1196
+      },
+      {
+        "path": "internal/runtime/executor/opencode_go_executor.go",
+        "max_lines": 817
+      },
+      {
+        "path": "internal/storage/postgres/migrations.go",
+        "max_lines": 1120
+      },
+      {
+        "path": "internal/storage/sqlite/apikey/store.go",
+        "max_lines": 1176
+      },
+      {
+        "path": "internal/storage/sqlite/modelconfig/store.go",
+        "max_lines": 952
+      },
+      {
+        "path": "internal/usage/ai_account_subject_store.go",
+        "max_lines": 1075
+      },
+      {
+        "path": "internal/usage/openrouter_model_sync.go",
+        "max_lines": 1062
+      },
+      {
+        "path": "internal/usage/request_log_query.go",
+        "max_lines": 1188
+      },
+      {
+        "path": "internal/usage/usage_db.go",
+        "max_lines": 1164
+      },
+      {
+        "path": "sdk/api/handlers/handlers.go",
+        "max_lines": 1033
+      }
     ]
   },
   "sdk_internal_imports": {

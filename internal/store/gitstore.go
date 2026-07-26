@@ -15,6 +15,7 @@ import (
 	"github.com/go-git/go-git/v6"
 	"github.com/go-git/go-git/v6/config"
 	"github.com/go-git/go-git/v6/plumbing"
+	"github.com/go-git/go-git/v6/plumbing/client"
 	"github.com/go-git/go-git/v6/plumbing/object"
 	"github.com/go-git/go-git/v6/plumbing/transport"
 	"github.com/go-git/go-git/v6/plumbing/transport/http"
@@ -114,14 +115,14 @@ func (s *GitTokenStore) EnsureRepository() error {
 	authDir := filepath.Join(repoDir, "auths")
 	configDir := filepath.Join(repoDir, "config")
 	gitDir := filepath.Join(repoDir, ".git")
-	authMethod := s.gitAuth()
+	clientOptions := s.gitClientOptions()
 	var initPaths []string
 	if _, err := os.Stat(gitDir); errors.Is(err, fs.ErrNotExist) {
 		if errMk := os.MkdirAll(repoDir, 0o700); errMk != nil {
 			s.dirLock.Unlock()
 			return fmt.Errorf("git token store: create repo dir: %w", errMk)
 		}
-		if _, errClone := git.PlainClone(repoDir, &git.CloneOptions{Auth: authMethod, URL: s.remote}); errClone != nil {
+		if _, errClone := git.PlainClone(repoDir, &git.CloneOptions{ClientOptions: clientOptions, URL: s.remote}); errClone != nil {
 			if errors.Is(errClone, transport.ErrEmptyRemoteRepository) {
 				_ = os.RemoveAll(gitDir)
 				repo, errInit := git.PlainInit(repoDir, false)
@@ -177,7 +178,7 @@ func (s *GitTokenStore) EnsureRepository() error {
 			s.dirLock.Unlock()
 			return fmt.Errorf("git token store: worktree: %w", errWorktree)
 		}
-		if errPull := worktree.Pull(&git.PullOptions{Auth: authMethod, RemoteName: "origin"}); errPull != nil {
+		if errPull := worktree.Pull(&git.PullOptions{ClientOptions: clientOptions, RemoteName: "origin"}); errPull != nil {
 			switch {
 			case errors.Is(errPull, git.NoErrAlreadyUpToDate),
 				errors.Is(errPull, git.ErrUnstagedChanges),
@@ -522,15 +523,19 @@ func (s *GitTokenStore) repoDirSnapshot() string {
 	return s.repoDir
 }
 
-func (s *GitTokenStore) gitAuth() transport.AuthMethod {
+// gitClientOptions builds the transport options for remote operations.
+// go-git v6 moved authentication off the per-operation Auth field and onto
+// transport client options, so credentials are configured once here.
+func (s *GitTokenStore) gitClientOptions() []client.Option {
 	if s.username == "" && s.password == "" {
 		return nil
 	}
 	user := s.username
 	if user == "" {
+		// Token-only remotes (GitHub PATs) still require a non-empty username.
 		user = "git"
 	}
-	return &http.BasicAuth{Username: user, Password: s.password}
+	return []client.Option{client.WithHTTPAuth(&http.BasicAuth{Username: user, Password: s.password})}
 }
 
 func (s *GitTokenStore) relativeToRepo(path string) (string, error) {
@@ -621,7 +626,7 @@ func (s *GitTokenStore) commitAndPushLocked(message string, relPaths ...string) 
 		return errRewrite
 	}
 	s.maybeRunGC(repo)
-	if err = repo.Push(&git.PushOptions{Auth: s.gitAuth(), Force: true}); err != nil {
+	if err = repo.Push(&git.PushOptions{ClientOptions: s.gitClientOptions(), Force: true}); err != nil {
 		if errors.Is(err, git.NoErrAlreadyUpToDate) {
 			return nil
 		}
