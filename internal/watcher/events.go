@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -64,6 +65,39 @@ func (w *Watcher) processEvents(ctx context.Context) {
 	}
 }
 
+// rewatchConfigFile re-arms the watch on the config path after an event that may have
+// replaced its inode. Adding an already-watched path is a no-op, so this is safe to call
+// on every config event.
+//
+// A rename-based replace publishes the new file before the old inode's watch is dropped,
+// so the first attempt normally succeeds. The bounded retry covers delete-then-create
+// sequences, where the path is briefly absent.
+func (w *Watcher) rewatchConfigFile() {
+	if w == nil || w.watcher == nil {
+		return
+	}
+	if err := w.watcher.Add(w.configPath); err == nil {
+		return
+	} else if errors.Is(err, fsnotify.ErrClosed) {
+		return
+	}
+	go func() {
+		for attempt := 0; attempt < configRewatchAttempts; attempt++ {
+			time.Sleep(configRewatchDelay)
+			err := w.watcher.Add(w.configPath)
+			if err == nil {
+				return
+			}
+			if errors.Is(err, fsnotify.ErrClosed) {
+				return
+			}
+		}
+		// Worth a warning rather than a debug line: hot-reload is silently inactive from
+		// here on, which is otherwise indistinguishable from "nothing changed".
+		log.Warnf("config watch for %s could not be re-established; configuration hot-reload is inactive until restart", w.configPath)
+	}()
+}
+
 func (w *Watcher) handleEvent(event fsnotify.Event) {
 	if event.Op&fsnotify.Create != 0 {
 		if info, err := os.Stat(event.Name); err == nil && info.IsDir() {
@@ -74,11 +108,18 @@ func (w *Watcher) handleEvent(event fsnotify.Event) {
 		}
 	}
 	// Filter only relevant events: config file or auth-dir JSON files.
-	configOps := fsnotify.Write | fsnotify.Create | fsnotify.Rename
+	//
+	// Remove belongs here because config.yaml is replaced atomically (temp file +
+	// rename). On inotify the watched inode sees CHMOD then REMOVE — never Write or
+	// Create — so without Remove the replacement would be dropped entirely. Chmod is
+	// watched too, but only to re-arm the watch: a bare permission change is not a
+	// content change and must not trigger a reload.
+	configOps := fsnotify.Write | fsnotify.Create | fsnotify.Rename | fsnotify.Remove
+	configWatchOps := configOps | fsnotify.Chmod
 	normalizedName := w.normalizeAuthPath(event.Name)
 	normalizedConfigPath := w.normalizeAuthPath(w.configPath)
 	normalizedAuthDir := w.normalizeAuthPath(w.authDir)
-	isConfigEvent := normalizedName == normalizedConfigPath && event.Op&configOps != 0
+	isConfigEvent := normalizedName == normalizedConfigPath && event.Op&configWatchOps != 0
 	authOps := fsnotify.Create | fsnotify.Write | fsnotify.Remove | fsnotify.Rename
 	isAuthJSON := strings.HasPrefix(normalizedName, normalizedAuthDir) && strings.HasSuffix(normalizedName, ".json") && event.Op&authOps != 0
 	if !isConfigEvent && !isAuthJSON {
@@ -92,7 +133,14 @@ func (w *Watcher) handleEvent(event fsnotify.Event) {
 	// Handle config file changes
 	if isConfigEvent {
 		log.Debugf("config file change details - operation: %s, timestamp: %s", event.Op.String(), now.Format("2006-01-02 15:04:05.000"))
-		w.scheduleConfigReload()
+		// An atomic replace points the path at a new inode, and inotify watches inodes:
+		// the old watch is dropped silently (IN_IGNORED, no error on the Errors channel),
+		// so every later change would go unnoticed. Re-arm before reloading, otherwise the
+		// first atomic save permanently kills config hot-reload on Linux.
+		w.rewatchConfigFile()
+		if event.Op&configOps != 0 {
+			w.scheduleConfigReload()
+		}
 		return
 	}
 

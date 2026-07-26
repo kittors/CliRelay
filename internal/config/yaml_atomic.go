@@ -68,6 +68,17 @@ func writeYAMLFileAtomicWithRename(path string, data []byte, renameFile func(str
 	base := filepath.Base(path)
 	tmp, err := os.CreateTemp(dir, "."+base+".tmp-*")
 	if err != nil {
+		// Creating the temp file needs a writable *directory*, while the previous
+		// in-place write only needed a writable file — so a deployment that keeps
+		// config.yaml writable inside a read-only directory would regress from "saves"
+		// to "always fails". Fall back rather than break it. This is a separate
+		// condition from the rename failures below: we never reach rename here.
+		if isDirectoryWriteDenied(err) {
+			if fallbackErr := writeFileInPlace(path, data, mode); fallbackErr != nil {
+				return fmt.Errorf("temp file creation failed: %w; in-place write failed: %w", err, fallbackErr)
+			}
+			return nil
+		}
 		return err
 	}
 	tmpPath := tmp.Name()
@@ -109,6 +120,13 @@ func writeYAMLFileAtomicWithRename(path string, data []byte, renameFile func(str
 
 func isAtomicReplaceUnsupported(err error) bool {
 	return errors.Is(err, syscall.EBUSY) || errors.Is(err, syscall.EXDEV)
+}
+
+// isDirectoryWriteDenied reports whether err means the target directory rejects new
+// files, in which case the temp-and-rename dance is impossible but an in-place write of
+// the existing file may still succeed.
+func isDirectoryWriteDenied(err error) bool {
+	return errors.Is(err, syscall.EACCES) || errors.Is(err, syscall.EPERM) || errors.Is(err, syscall.EROFS)
 }
 
 func writeFileInPlace(path string, data []byte, mode os.FileMode) error {

@@ -195,3 +195,32 @@ func TestWriteYAMLFileAtomicFallsBackWhenRenameUnsupported(t *testing.T) {
 		t.Fatalf("mode = %o, want 640", got)
 	}
 }
+
+// A read-only directory holding a writable config.yaml must keep saving: the previous
+// in-place write only needed a writable file, so failing here would turn an occasional
+// corruption into a permanent inability to save.
+func TestWriteYAMLFileAtomicFallsBackWhenDirectoryIsReadOnly(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(configPath, []byte("port: 8317\n"), 0o600); err != nil {
+		t.Fatalf("seed config: %v", err)
+	}
+	if err := os.Chmod(dir, 0o555); err != nil {
+		t.Fatalf("chmod dir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+
+	if err := WriteYAMLFileAtomic(configPath, []byte("port: 8318\n")); err != nil {
+		t.Fatalf("WriteYAMLFileAtomic in read-only dir: %v", err)
+	}
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	if string(data) != "port: 8318\n" {
+		t.Fatalf("config not updated: %q", string(data))
+	}
+}
