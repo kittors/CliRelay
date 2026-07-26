@@ -44,6 +44,16 @@ func (s *Server) managementAvailabilityMiddleware() gin.HandlerFunc {
 	}
 }
 
+// setPanelSecurityHeaders hardens management panel HTML responses.
+// frame-ancestors 'self' blocks cross-site clickjacking while still allowing
+// same-origin embed menus configured inside the panel itself.
+func setPanelSecurityHeaders(c *gin.Context) {
+	c.Header("X-Frame-Options", "SAMEORIGIN")
+	c.Header("Content-Security-Policy", "frame-ancestors 'self'")
+	c.Header("X-Content-Type-Options", "nosniff")
+	c.Header("Referrer-Policy", "no-referrer")
+}
+
 func (s *Server) serveManagementControlPanel(c *gin.Context) {
 	cfg := s.cfg
 	if cfg == nil || cfg.RemoteManagement.DisableControlPanel {
@@ -76,6 +86,7 @@ func (s *Server) serveManagementControlPanel(c *gin.Context) {
 				return
 			}
 		}
+		setPanelSecurityHeaders(c)
 		c.File(filePath)
 		return
 	}
@@ -100,6 +111,7 @@ func (s *Server) serveManagementControlPanel(c *gin.Context) {
 			return
 		}
 	}
+	setPanelSecurityHeaders(c)
 	c.Header("Cache-Control", "no-cache, no-store, must-revalidate")
 	c.File(htmlFile)
 }
