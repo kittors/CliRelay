@@ -55,25 +55,28 @@ func ConvertClaudeRequestToCodex(modelName string, inputRawJSON []byte, _ bool) 
 		inputBuf.WriteString(raw)
 	}
 
-	// Process system messages and convert them to input content format.
+	// Convert Claude's top-level system prompt to Responses API instructions.
+	// Do not emit system/developer messages inside input because the Codex
+	// ChatGPT OAuth upstream rejects them ("System messages are not allowed").
+	var instructionParts []string
 	systemsResult := rootResult.Get("system")
-	if systemsResult.IsArray() {
-		systemResults := systemsResult.Array()
-		message := `{"type":"message","role":"developer","content":[]}`
-		for i := 0; i < len(systemResults); i++ {
-			systemResult := systemResults[i]
-			systemTypeResult := systemResult.Get("type")
-			if systemTypeResult.String() == "text" {
-				message, _ = sjson.Set(message, fmt.Sprintf("content.%d.type", i), "input_text")
-				if textRaw := systemResult.Get("text").Raw; strings.HasPrefix(textRaw, `"`) {
-					message, _ = sjson.SetRaw(message, fmt.Sprintf("content.%d.text", i), textRaw)
-				} else {
-					message, _ = sjson.Set(message, fmt.Sprintf("content.%d.text", i), systemResult.Get("text").String())
-				}
+	switch {
+	case systemsResult.IsArray():
+		for _, systemResult := range systemsResult.Array() {
+			if systemResult.Get("type").String() != "text" {
+				continue
+			}
+			if text := systemResult.Get("text").String(); text != "" {
+				instructionParts = append(instructionParts, text)
 			}
 		}
-		appendInput(message)
+	case systemsResult.Type == gjson.String:
+		if text := systemsResult.String(); text != "" {
+			instructionParts = append(instructionParts, text)
+		}
 	}
+	// Note: instructions is assembled after the message loop below, because
+	// in-conversation system/developer messages are also folded into it.
 
 	// Build tool short-name map once for tool_use renames (avoid rescanning tools per call).
 	toolNameMap := buildReverseMapFromClaudeOriginalToShort(rawJSON)
@@ -86,6 +89,30 @@ func ConvertClaudeRequestToCodex(modelName string, inputRawJSON []byte, _ bool) 
 		for i := 0; i < len(messageResults); i++ {
 			messageResult := messageResults[i]
 			messageRole := messageResult.Get("role").String()
+
+			// Some clients (e.g. Claude Code Agent Teams) inject system/developer
+			// messages inside the messages array. The Codex ChatGPT OAuth upstream
+			// rejects those roles in input ("System messages are not allowed"), so
+			// fold their text into the top-level instructions instead of emitting
+			// them as input messages.
+			if messageRole == "system" || messageRole == "developer" {
+				roleContent := messageResult.Get("content")
+				if roleContent.IsArray() {
+					for _, part := range roleContent.Array() {
+						if part.Get("type").String() != "text" {
+							continue
+						}
+						if text := part.Get("text").String(); text != "" {
+							instructionParts = append(instructionParts, text)
+						}
+					}
+				} else if roleContent.Type == gjson.String {
+					if text := roleContent.String(); text != "" {
+						instructionParts = append(instructionParts, text)
+					}
+				}
+				continue
+			}
 
 			var contentBuf bytes.Buffer
 			contentFirst := true
@@ -207,6 +234,10 @@ func ConvertClaudeRequestToCodex(modelName string, inputRawJSON []byte, _ bool) 
 	}
 	inputBuf.WriteByte(']')
 
+	// Assemble instructions from top-level system plus any in-conversation
+	// system/developer messages collected during the loop above.
+	instructions := strings.Join(instructionParts, "\n\n")
+
 	// Convert tools declarations once.
 	// Codex rejects defer_loading without tools.tool_search; strip it on each tool
 	// fragment only — never N× sjson.DeleteBytes on the full multi-MB request.
@@ -295,7 +326,9 @@ func ConvertClaudeRequestToCodex(modelName string, inputRawJSON []byte, _ bool) 
 	out.Grow(inputBuf.Len() + toolsBuf.Len() + 512)
 	out.WriteString(`{"model":`)
 	out.Write(mustJSONString(modelName))
-	out.WriteString(`,"instructions":"","input":`)
+	out.WriteString(`,"instructions":`)
+	out.Write(mustJSONString(instructions))
+	out.WriteString(`,"input":`)
 	out.Write(inputBuf.Bytes())
 	if hasTools {
 		out.WriteString(`,"tools":`)
