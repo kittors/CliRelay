@@ -7,31 +7,21 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"time"
 
 	"github.com/gin-gonic/gin"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 )
 
-func TestPostQuotaClearStatusClearsAuthByIndex(t *testing.T) {
+func TestPostQuotaClearStatusClearsUnauthorizedAuthByIndex(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	manager := coreauth.NewManager(nil, nil, nil)
-	next := time.Now().Add(30 * time.Minute)
 	registered, err := manager.Register(context.Background(), &coreauth.Auth{
-		ID:             "codex-auth",
-		Provider:       "codex",
-		FileName:       "codex.json",
-		Status:         coreauth.StatusError,
-		StatusMessage:  "quota exhausted",
-		Unavailable:    true,
-		NextRetryAfter: next,
-		LastError:      &coreauth.Error{Message: "quota exhausted", HTTPStatus: http.StatusTooManyRequests},
-		Quota: coreauth.QuotaState{
-			Exceeded:      true,
-			Reason:        "quota",
-			NextRecoverAt: next,
-		},
+		ID:        "xai-auth",
+		Provider:  "xai",
+		FileName:  "xai.json",
+		Status:    coreauth.StatusError,
+		LastError: &coreauth.Error{HTTPStatus: http.StatusUnauthorized},
 	})
 	if err != nil {
 		t.Fatalf("Register() error = %v", err)
@@ -56,6 +46,15 @@ func TestPostQuotaClearStatusClearsAuthByIndex(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d; body=%s", rr.Code, http.StatusOK, rr.Body.String())
 	}
+	var response struct {
+		Changed bool `json:"changed"`
+	}
+	if err = json.Unmarshal(rr.Body.Bytes(), &response); err != nil {
+		t.Fatalf("Unmarshal(response) error = %v", err)
+	}
+	if !response.Changed {
+		t.Fatalf("response.changed = false, want true; body=%s", rr.Body.String())
+	}
 
 	updated, ok := manager.GetByID(registered.ID)
 	if !ok || updated == nil {
@@ -65,6 +64,6 @@ func TestPostQuotaClearStatusClearsAuthByIndex(t *testing.T) {
 		t.Fatalf("auth.Status = %q, want %q", updated.Status, coreauth.StatusActive)
 	}
 	if updated.StatusMessage != "" || updated.Unavailable || !updated.NextRetryAfter.IsZero() || updated.LastError != nil || updated.Quota != (coreauth.QuotaState{}) {
-		t.Fatalf("quota runtime state was not cleared: %#v", updated)
+		t.Fatalf("401 runtime state was not cleared: %#v", updated)
 	}
 }

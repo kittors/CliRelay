@@ -114,6 +114,40 @@ func markClaudeOAuthHealthRefreshSuccessLocked(auth *Auth, now time.Time) {
 	auth.Metadata[ClaudeOAuthHealthMetadataKey] = health
 }
 
+// clearClaudeOAuthRuntimeRestrictionLocked removes only scheduling state from
+// the Claude OAuth health projection. Historical diagnostics and quota-window
+// observations remain available, while refresh_pending/oauth_401 can no longer
+// keep an operator-cleared credential out of rotation.
+func clearClaudeOAuthRuntimeRestrictionLocked(auth *Auth, now time.Time) bool {
+	if auth == nil || auth.Metadata == nil {
+		return false
+	}
+	if _, ok := auth.Metadata[ClaudeOAuthHealthMetadataKey]; !ok {
+		return false
+	}
+
+	health := cloneClaudeOAuthHealth(auth)
+	changed := false
+	if status, _ := health["status"].(string); !strings.EqualFold(strings.TrimSpace(status), claudeOAuthHealthStatusActive) {
+		health["status"] = claudeOAuthHealthStatusActive
+		changed = true
+	}
+	if _, ok := health["temporary_unschedulable_until"]; ok {
+		delete(health, "temporary_unschedulable_until")
+		changed = true
+	}
+	if _, ok := health["temporary_unschedulable_reason"]; ok {
+		delete(health, "temporary_unschedulable_reason")
+		changed = true
+	}
+	if !changed {
+		return false
+	}
+	health["updated_at"] = formatClaudeOAuthHealthTime(now)
+	auth.Metadata[ClaudeOAuthHealthMetadataKey] = health
+	return true
+}
+
 func applyClaudeOAuthFailureLocked(auth *Auth, result Result, now time.Time, effects *resultStateEffects) bool {
 	if !isClaudeOAuthAuth(auth) {
 		return false

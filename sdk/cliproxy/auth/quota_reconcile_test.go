@@ -308,20 +308,168 @@ func TestManagerClearQuotaStatus_ClearsAuthAndModelRuntimeQuota(t *testing.T) {
 	}
 }
 
+func TestManagerClearQuotaStatus_ClearsUnauthorizedWithoutQuotaState(t *testing.T) {
+	t.Parallel()
+
+	manager := NewManager(nil, nil, nil)
+	now := time.Now()
+	auth := &Auth{
+		ID:               "xai-auth",
+		Provider:         "xai",
+		Status:           StatusError,
+		LastError:        &Error{HTTPStatus: http.StatusUnauthorized},
+		NextRefreshAfter: now.Add(10 * time.Minute),
+	}
+	if _, err := manager.Register(context.Background(), auth); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+
+	changed, err := manager.ClearQuotaStatus(context.Background(), auth.ID)
+	if err != nil {
+		t.Fatalf("ClearQuotaStatus() error = %v", err)
+	}
+	if !changed {
+		t.Fatal("ClearQuotaStatus() changed = false, want true for auth-level 401")
+	}
+
+	updated, ok := manager.GetByID(auth.ID)
+	if !ok || updated == nil {
+		t.Fatal("GetByID() missing auth")
+	}
+	if updated.Status != StatusActive || updated.StatusMessage != "" || updated.LastError != nil {
+		t.Fatalf("auth error state was not cleared: %#v", updated)
+	}
+	if updated.Unavailable || !updated.NextRetryAfter.IsZero() || !updated.NextRefreshAfter.IsZero() || updated.Quota != (QuotaState{}) {
+		t.Fatalf("auth retry state was not cleared: %#v", updated)
+	}
+	if blocked, reason, next := isAuthBlockedForModel(updated, "grok-4.5", time.Now()); blocked {
+		t.Fatalf("auth remains blocked after manual clear: reason=%v next=%v", reason, next)
+	}
+}
+
+func TestManagerClearQuotaStatus_ClearsModelUnauthorized(t *testing.T) {
+	t.Parallel()
+
+	manager := NewManager(nil, nil, nil)
+	next := time.Now().Add(30 * time.Minute)
+	auth := &Auth{
+		ID:             "xai-model-auth",
+		Provider:       "xai",
+		Status:         StatusError,
+		Unavailable:    true,
+		NextRetryAfter: next,
+		LastError:      &Error{HTTPStatus: http.StatusUnauthorized},
+		ModelStates: map[string]*ModelState{
+			"grok-4.5": {
+				Status:         StatusError,
+				Unavailable:    true,
+				NextRetryAfter: next,
+				LastError:      &Error{HTTPStatus: http.StatusUnauthorized},
+			},
+		},
+	}
+	if _, err := manager.Register(context.Background(), auth); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+
+	changed, err := manager.ClearQuotaStatus(context.Background(), auth.ID)
+	if err != nil {
+		t.Fatalf("ClearQuotaStatus() error = %v", err)
+	}
+	if !changed {
+		t.Fatal("ClearQuotaStatus() changed = false, want true for model-level 401")
+	}
+
+	updated, ok := manager.GetByID(auth.ID)
+	if !ok || updated == nil {
+		t.Fatal("GetByID() missing auth")
+	}
+	state := updated.ModelStates["grok-4.5"]
+	if state == nil {
+		t.Fatal("model state missing")
+	}
+	if state.Status != StatusActive || state.StatusMessage != "" || state.Unavailable || !state.NextRetryAfter.IsZero() || state.LastError != nil || state.Quota != (QuotaState{}) {
+		t.Fatalf("model 401 state was not cleared: %#v", state)
+	}
+	if blocked, reason, retryAt := isAuthBlockedForModel(updated, "grok-4.5", time.Now()); blocked {
+		t.Fatalf("model remains blocked after manual clear: reason=%v next=%v", reason, retryAt)
+	}
+}
+
+func TestManagerClearQuotaStatus_ClearsClaudeOAuthSchedulingMetadata(t *testing.T) {
+	t.Parallel()
+
+	manager := NewManager(nil, nil, nil)
+	now := time.Now()
+	auth := &Auth{
+		ID:             "claude-oauth",
+		Provider:       "claude",
+		Status:         StatusActive,
+		StatusMessage:  claudeOAuthRefreshPendingMessage,
+		Unavailable:    true,
+		NextRetryAfter: now.Add(claudeOAuth401Cooldown),
+		LastError:      &Error{HTTPStatus: http.StatusUnauthorized, Message: "invalid oauth token"},
+		Metadata: map[string]any{
+			"type":          "claude",
+			"access_token":  "access-token",
+			"refresh_token": "refresh-token",
+			ClaudeOAuthHealthMetadataKey: map[string]any{
+				"status":                         claudeOAuthHealthStatusRefreshPending,
+				"temporary_unschedulable_until":  formatClaudeOAuthHealthTime(now.Add(claudeOAuth401Cooldown)),
+				"temporary_unschedulable_reason": claudeOAuthReasonOAuth401,
+				"last_401_at":                    formatClaudeOAuthHealthTime(now),
+			},
+		},
+	}
+	if _, err := manager.Register(context.Background(), auth); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+
+	changed, err := manager.ClearQuotaStatus(context.Background(), auth.ID)
+	if err != nil {
+		t.Fatalf("ClearQuotaStatus() error = %v", err)
+	}
+	if !changed {
+		t.Fatal("ClearQuotaStatus() changed = false, want true for Claude OAuth metadata")
+	}
+
+	updated, ok := manager.GetByID(auth.ID)
+	if !ok || updated == nil {
+		t.Fatal("GetByID() missing auth")
+	}
+	health := cloneClaudeOAuthHealth(updated)
+	if health["status"] != claudeOAuthHealthStatusActive {
+		t.Fatalf("claude_oauth_health status = %#v, want active", health["status"])
+	}
+	if _, ok := health["temporary_unschedulable_until"]; ok {
+		t.Fatalf("temporary_unschedulable_until survived clear: %#v", health)
+	}
+	if _, ok := health["temporary_unschedulable_reason"]; ok {
+		t.Fatalf("temporary_unschedulable_reason survived clear: %#v", health)
+	}
+	if health["last_401_at"] == nil {
+		t.Fatalf("historical diagnostics were removed: %#v", health)
+	}
+	if claudeOAuthRefreshPending(updated) {
+		t.Fatalf("Claude OAuth refresh-pending side state still blocks scheduling: %#v", health)
+	}
+}
+
 func TestManagerClearQuotaStatus_PreservesStatusDisabled(t *testing.T) {
 	t.Parallel()
 
 	manager := NewManager(nil, nil, nil)
 	next := time.Now().Add(30 * time.Minute)
 	auth := &Auth{
-		ID:             "disabled-auth",
-		Provider:       "codex",
-		Status:         StatusDisabled,
-		StatusMessage:  "manually disabled",
-		Disabled:       true,
-		Unavailable:    true,
-		NextRetryAfter: next,
-		LastError:      &Error{Message: "quota exhausted", HTTPStatus: http.StatusTooManyRequests},
+		ID:               "disabled-auth",
+		Provider:         "codex",
+		Status:           StatusDisabled,
+		StatusMessage:    "manually disabled",
+		Disabled:         true,
+		Unavailable:      true,
+		NextRetryAfter:   next,
+		NextRefreshAfter: next,
+		LastError:        &Error{Message: "quota exhausted", HTTPStatus: http.StatusTooManyRequests},
 		Quota: QuotaState{
 			Exceeded:      true,
 			Reason:        "quota",
@@ -361,7 +509,7 @@ func TestManagerClearQuotaStatus_PreservesStatusDisabled(t *testing.T) {
 	if !updated.Disabled || updated.Status != StatusDisabled || updated.StatusMessage != "manually disabled" {
 		t.Fatalf("disabled auth status changed: disabled=%v status=%q message=%q", updated.Disabled, updated.Status, updated.StatusMessage)
 	}
-	if updated.Unavailable || !updated.NextRetryAfter.IsZero() || updated.LastError != nil || updated.Quota != (QuotaState{}) {
+	if updated.Unavailable || !updated.NextRetryAfter.IsZero() || !updated.NextRefreshAfter.IsZero() || updated.LastError != nil || updated.Quota != (QuotaState{}) {
 		t.Fatalf("disabled auth quota runtime state was not cleared: %#v", updated)
 	}
 	state := updated.ModelStates["gpt-5-codex"]
