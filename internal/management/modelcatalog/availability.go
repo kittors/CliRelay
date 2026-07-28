@@ -291,7 +291,7 @@ func dropStaticDiscoveryProviderModels(
 			continue
 		}
 		_, onLive := discoveryIDs[key]
-		if onLive || managementAuthoritativeModelKeys[key] {
+		if onLive || managementAuthoritativeModelKeys[key] || survivesDiscoveryPruning(key) {
 			out = append(out, model)
 			continue
 		}
