@@ -931,6 +931,73 @@ func TestCORSMiddlewareAllowsConfiguredChromeExtensionOrigin(t *testing.T) {
 	}
 }
 
+func TestCORSMiddlewareAllowsChromeExtensionWildcard(t *testing.T) {
+	tests := []struct {
+		name      string
+		allowlist []string
+		origin    string
+		wantCode  int
+		wantACAO  string
+	}{
+		{
+			name:      "chrome-extension://* allows real extension origin",
+			allowlist: []string{"chrome-extension://*"},
+			origin:    "chrome-extension://dnjfbdinlpcfefpheddgehgobcefxxxx",
+			wantCode:  http.StatusNoContent,
+			wantACAO:  "chrome-extension://dnjfbdinlpcfefpheddgehgobcefxxxx",
+		},
+		{
+			name:      "chrome-extension:* allows real extension origin",
+			allowlist: []string{"chrome-extension:*"},
+			origin:    "chrome-extension://abcdefghijklmnop",
+			wantCode:  http.StatusNoContent,
+			wantACAO:  "chrome-extension://abcdefghijklmnop",
+		},
+		{
+			name:      "wildcard does not allow https origins",
+			allowlist: []string{"chrome-extension://*"},
+			origin:    "https://evil.example",
+			wantCode:  http.StatusForbidden,
+			wantACAO:  "",
+		},
+		{
+			name:      "exact extension id still rejects other extensions",
+			allowlist: []string{"chrome-extension://abcdefghijklmnop"},
+			origin:    "chrome-extension://otheridotheridother",
+			wantCode:  http.StatusForbidden,
+			wantACAO:  "",
+		},
+		{
+			name:      "generic https://* is not a wildcard",
+			allowlist: []string{"https://*"},
+			origin:    "https://evil.example",
+			wantCode:  http.StatusForbidden,
+			wantACAO:  "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := newTestServerWithConfig(t, func(cfg *proxyconfig.Config) {
+				cfg.CORSAllowOrigins = append([]string(nil), tt.allowlist...)
+			})
+
+			req := httptest.NewRequest(http.MethodOptions, "/v1/models", nil)
+			req.Header.Set("Origin", tt.origin)
+
+			rr := httptest.NewRecorder()
+			server.engine.ServeHTTP(rr, req)
+
+			if rr.Code != tt.wantCode {
+				t.Fatalf("status = %d, want %d; body=%s", rr.Code, tt.wantCode, rr.Body.String())
+			}
+			if got := rr.Header().Get("Access-Control-Allow-Origin"); got != tt.wantACAO {
+				t.Fatalf("Access-Control-Allow-Origin = %q, want %q", got, tt.wantACAO)
+			}
+		})
+	}
+}
+
 func TestCORSMiddlewareUsesUpdatedCORSAllowOrigins(t *testing.T) {
 	server := newTestServer(t)
 

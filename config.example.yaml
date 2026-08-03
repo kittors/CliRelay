@@ -62,11 +62,16 @@ tls:
 
 # Explicit browser origins allowed to call API routes cross-origin.
 # Leave empty to disable cross-origin browser access by default.
-# Chrome extension origins (`chrome-extension://<extension-id>`) are allowed by default.
+# Same-host browser origins are always allowed. Everything else must be listed.
+# Chrome extensions are NOT allowed by default; add either a precise ID or the
+# controlled pattern chrome-extension://* (also accepts chrome-extension:*) to
+# allow any installed extension. Prefer precise IDs in production.
 # Examples:
 # cors-allow-origins:
 #   - "https://admin.example.com"
 #   - "http://localhost:5173"
+#   - "chrome-extension://abcdefghijklmnop"
+#   - "chrome-extension://*"
 cors-allow-origins: []
 
 # Reverse proxies whose X-Forwarded-For / X-Real-IP headers may be trusted.

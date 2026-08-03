@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -84,11 +85,44 @@ func resolveAllowedCORSOrigin(r *http.Request, cfg *config.Config) string {
 		return ""
 	}
 	for _, candidate := range cfg.CORSAllowOrigins {
-		if strings.EqualFold(strings.TrimSpace(candidate), origin) {
+		trimmed := strings.TrimSpace(candidate)
+		if trimmed == "" {
+			continue
+		}
+		if strings.EqualFold(trimmed, origin) {
+			return origin
+		}
+		// Explicit chrome-extension pattern only; not a general origin glob.
+		if isChromeExtensionWildcard(trimmed) && isChromeExtensionOrigin(origin) {
 			return origin
 		}
 	}
 	return ""
+}
+
+// isChromeExtensionWildcard reports whether a configured allowlist entry is the
+// controlled "any chrome extension" pattern. Only these exact forms match.
+func isChromeExtensionWildcard(candidate string) bool {
+	switch strings.ToLower(strings.TrimSpace(candidate)) {
+	case "chrome-extension://*", "chrome-extension:*":
+		return true
+	default:
+		return false
+	}
+}
+
+// isChromeExtensionOrigin reports a real browser extension Origin
+// (chrome-extension://<non-empty-id>), not a config pattern string.
+func isChromeExtensionOrigin(origin string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(origin))
+	if err != nil || parsed == nil {
+		return false
+	}
+	if !strings.EqualFold(parsed.Scheme, "chrome-extension") {
+		return false
+	}
+	host := strings.TrimSpace(parsed.Host)
+	return host != "" && host != "*"
 }
 
 func versionHeaderMiddleware(configFilePath string) gin.HandlerFunc {

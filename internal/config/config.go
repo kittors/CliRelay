@@ -49,6 +49,8 @@ type Config struct {
 
 	// CORSAllowOrigins defines the explicit browser origins allowed to call API routes cross-origin.
 	// Leave empty to disable cross-origin browser access by default.
+	// Entries are exact origin matches, except chrome-extension://* / chrome-extension:*
+	// which allow any real chrome-extension://<id> Origin.
 	CORSAllowOrigins []string `yaml:"cors-allow-origins" json:"cors-allow-origins"`
 
 	// TrustedProxies lists reverse proxy IPs or CIDRs whose forwarding headers may be trusted.
