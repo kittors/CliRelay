@@ -146,6 +146,28 @@ func ConvertClaudeRequestToCodex(modelName string, inputRawJSON []byte, _ bool) 
 				appendContentPart(part.String())
 			}
 
+			imageDataURL := func(imageResult gjson.Result) string {
+				sourceResult := imageResult.Get("source")
+				if !sourceResult.Exists() {
+					return ""
+				}
+				data := sourceResult.Get("data").String()
+				if data == "" {
+					data = sourceResult.Get("base64").String()
+				}
+				if data == "" {
+					return ""
+				}
+				mediaType := sourceResult.Get("media_type").String()
+				if mediaType == "" {
+					mediaType = sourceResult.Get("mime_type").String()
+				}
+				if mediaType == "" {
+					mediaType = "application/octet-stream"
+				}
+				return fmt.Sprintf("data:%s;base64,%s", mediaType, data)
+			}
+
 			messageContentsResult := messageResult.Get("content")
 			if messageContentsResult.IsArray() {
 				messageContentResults := messageContentsResult.Array()
@@ -157,23 +179,8 @@ func ConvertClaudeRequestToCodex(modelName string, inputRawJSON []byte, _ bool) 
 					case "text":
 						appendTextContentRaw(messageContentResult.Get("text").Raw)
 					case "image":
-						sourceResult := messageContentResult.Get("source")
-						if sourceResult.Exists() {
-							data := sourceResult.Get("data").String()
-							if data == "" {
-								data = sourceResult.Get("base64").String()
-							}
-							if data != "" {
-								mediaType := sourceResult.Get("media_type").String()
-								if mediaType == "" {
-									mediaType = sourceResult.Get("mime_type").String()
-								}
-								if mediaType == "" {
-									mediaType = "application/octet-stream"
-								}
-								dataURL := fmt.Sprintf("data:%s;base64,%s", mediaType, data)
-								appendImageContent(dataURL)
-							}
+						if dataURL := imageDataURL(messageContentResult); dataURL != "" {
+							appendImageContent(dataURL)
 						}
 					case "tool_use":
 						flushMessage()
@@ -192,9 +199,33 @@ func ConvertClaudeRequestToCodex(modelName string, inputRawJSON []byte, _ bool) 
 						appendInput(functionCallMessage)
 					case "tool_result":
 						flushMessage()
+						toolResultContent := messageContentResult.Get("content")
+						toolOutput := toolResultContent.String()
+						if toolResultContent.IsArray() {
+							var textParts []string
+							hasImage := false
+							for _, part := range toolResultContent.Array() {
+								switch part.Get("type").String() {
+								case "text":
+									if text := part.Get("text").String(); text != "" {
+										textParts = append(textParts, text)
+									}
+								case "image":
+									// 图片必须走视觉输入，不能作为函数输出文本传递。
+									if dataURL := imageDataURL(part); dataURL != "" {
+										appendImageContent(dataURL)
+										hasImage = true
+									}
+								}
+							}
+							toolOutput = strings.Join(textParts, "\n")
+							if toolOutput == "" && hasImage {
+								toolOutput = "[Image attached]"
+							}
+						}
 						functionCallOutputMessage := `{"type":"function_call_output"}`
 						functionCallOutputMessage, _ = sjson.Set(functionCallOutputMessage, "call_id", messageContentResult.Get("tool_use_id").String())
-						functionCallOutputMessage, _ = sjson.Set(functionCallOutputMessage, "output", messageContentResult.Get("content").String())
+						functionCallOutputMessage, _ = sjson.Set(functionCallOutputMessage, "output", toolOutput)
 						appendInput(functionCallOutputMessage)
 					}
 				}
