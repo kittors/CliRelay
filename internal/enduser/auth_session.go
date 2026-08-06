@@ -55,23 +55,26 @@ func (s *Service) Login(ctx context.Context, username, password, userAgent strin
 		return result, ErrLoginCooldowned
 	}
 	if bcrypt.CompareHashAndPassword([]byte(passwordHash), []byte(password)) != nil {
-		// Atomic increment to avoid lost updates under concurrent failures.
+		// Atomic increment to avoid lost updates under concurrent failures. The
+		// CASE restarts the count once the previous failure fell outside the
+		// window, so the stored value means "failures in the last 15 minutes"
+		// rather than "failures ever" — the latter locked accounts on mistypes
+		// spread across months.
 		var newCount int
 		_ = s.db.QueryRowContext(ctx, `
-			UPDATE end_users SET failed_login_count = failed_login_count + 1, updated_at = now()
+			UPDATE end_users
+			   SET failed_login_count = CASE
+			         WHEN last_failed_login_at IS NULL
+			           OR last_failed_login_at < now() - make_interval(secs => ?)
+			         THEN 1 ELSE failed_login_count + 1 END,
+			       last_failed_login_at = now(),
+			       updated_at = now()
 			WHERE id = ? RETURNING failed_login_count
-		`, u.ID).Scan(&newCount)
+		`, endUserFailureWindow.Seconds(), u.ID).Scan(&newCount)
 		if newCount == 0 {
 			newCount = u.FailedLoginCount + 1
 		}
-		stage, wait, permanent, apply := lockPenalty(newCount)
-		if apply && permanent {
-			_, _ = s.db.ExecContext(ctx, `
-				UPDATE end_users SET lock_stage = ?, status = 'locked', locked_until = NULL, updated_at = now()
-				WHERE id = ?
-			`, stage, u.ID)
-			return result, ErrAccountLocked
-		}
+		stage, wait, apply := lockPenalty(newCount)
 		if apply && wait > 0 {
 			until := time.Now().UTC().Add(wait)
 			_, _ = s.db.ExecContext(ctx, `
@@ -112,7 +115,8 @@ func (s *Service) Login(ctx context.Context, username, password, userAgent strin
 		return result, err
 	}
 	if _, err = tx.ExecContext(ctx, `
-		UPDATE end_users SET last_login_at = now(), failed_login_count = 0, lock_stage = 0, locked_until = NULL, updated_at = now()
+		UPDATE end_users SET last_login_at = now(), failed_login_count = 0, last_failed_login_at = NULL,
+		  lock_stage = 0, locked_until = NULL, updated_at = now()
 		WHERE id = ?
 	`, u.ID); err != nil {
 		return result, err
@@ -216,6 +220,14 @@ func (s *Service) Refresh(ctx context.Context, refreshToken, userAgent string) (
 	accessExp := now.Add(accessTTL)
 	newRefreshExp := now.Add(refreshTTL)
 	// Atomic consume: only one concurrent refresh of the same refresh token wins.
+	//
+	// This is still hard rotation with no grace window — the same defect the admin
+	// side just fixed (see internal/identity/session_refresh.go). The loser of a
+	// concurrent refresh, and any tab holding the previous token, gets
+	// ErrSessionRevoked and is signed out. Fixing it properly needs the portal's
+	// own per-token table plus a migration, which is out of scope here and tracked
+	// as a follow-up; do not paper over it by widening the WHERE clause, which
+	// would make a replayed token indistinguishable from a legitimate retry.
 	res, err := s.db.ExecContext(ctx, `
 		UPDATE end_user_sessions SET access_token_hash = ?, refresh_token_hash = ?,
 			access_expires_at = ?, refresh_expires_at = ?, last_seen_at = now()

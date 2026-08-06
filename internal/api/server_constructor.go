@@ -31,16 +31,35 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	return s
 }
 
+// wildcardProxyCIDRs trust every client's forwarding headers, which is
+// indistinguishable from having no protection at all: any client could then
+// choose its own throttle key and fill an arbitrary victim's bucket.
+var wildcardProxyCIDRs = map[string]struct{}{"0.0.0.0/0": {}, "::/0": {}, "0.0.0.0": {}, "::": {}}
+
+// sanitizeTrustedProxies trims the list and separates out the wildcard entries.
+func sanitizeTrustedProxies(in []string) (out []string, dropped []string) {
+	for _, proxy := range in {
+		trimmed := strings.TrimSpace(proxy)
+		if trimmed == "" {
+			continue
+		}
+		if _, wildcard := wildcardProxyCIDRs[trimmed]; wildcard {
+			dropped = append(dropped, trimmed)
+			continue
+		}
+		out = append(out, trimmed)
+	}
+	return out, dropped
+}
+
 func configureTrustedProxies(engine *gin.Engine, trustedProxies []string) {
 	if engine == nil {
 		return
 	}
 
-	proxies := make([]string, 0, len(trustedProxies))
-	for _, proxy := range trustedProxies {
-		if trimmed := strings.TrimSpace(proxy); trimmed != "" {
-			proxies = append(proxies, trimmed)
-		}
+	proxies, dropped := sanitizeTrustedProxies(trustedProxies)
+	for _, d := range dropped {
+		log.Errorf("trusted-proxies: refusing wildcard entry %q; it would trust every client's X-Forwarded-For and disable per-IP throttling. Entry dropped; list the actual proxy CIDR instead.", d)
 	}
 
 	if len(proxies) == 0 {
@@ -56,4 +75,21 @@ func configureTrustedProxies(engine *gin.Engine, trustedProxies []string) {
 			log.Warnf("failed to disable trusted proxies after configuration error: %v", fallbackErr)
 		}
 	}
+}
+
+// warnOnUntrustedProxyDeployment surfaces the single most common
+// misconfiguration: remote management behind a reverse proxy with no
+// trusted-proxies, where every user shares one throttle bucket.
+//
+// Warn and not fatal on purpose: refusing to start would turn an upgrade into an
+// outage for every existing deployment that has this shape today, which is a
+// larger incident than the degraded throttling it reports.
+func warnOnUntrustedProxyDeployment(cfg *config.Config) {
+	if cfg == nil || !cfg.RemoteManagement.AllowRemote {
+		return
+	}
+	if proxies, _ := sanitizeTrustedProxies(cfg.TrustedProxies); len(proxies) > 0 {
+		return
+	}
+	log.Warnf("remote management is enabled but trusted-proxies is empty. Behind a reverse proxy every client reports the proxy's address, so they all share one login-throttle bucket and per-IP hard bans are downgraded to soft rate limits. Set trusted-proxies to the proxy's CIDR (for example [\"127.0.0.1/32\"]) to restore per-client throttling.")
 }

@@ -221,26 +221,6 @@ func randomUserSlug() string {
 	return "user_" + hex.EncodeToString(raw)
 }
 
-// lockPenalty applies only when failedCount hits thresholds (5/10/15/20),
-// so intermediate failures during a stage do not re-extend cooldown.
-func lockPenalty(failedCount int) (stage int, wait time.Duration, permanent bool, apply bool) {
-	switch failedCount {
-	case 20:
-		return 4, 0, true, true
-	case 15:
-		return 3, 10 * time.Minute, false, true
-	case 10:
-		return 2, 5 * time.Minute, false, true
-	case 5:
-		return 1, 1 * time.Minute, false, true
-	default:
-		if failedCount > 20 {
-			return 4, 0, true, true
-		}
-		return 0, 0, false, false
-	}
-}
-
 func (s *Service) ensureTenantActive(ctx context.Context, tenantID string) error {
 	var status, tenantType string
 	var expires sql.NullTime

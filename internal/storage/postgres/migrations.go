@@ -38,6 +38,8 @@ func RuntimeMigrations() []Migration {
 		{Version: "202607220001_period_spending_limits", SQL: periodSpendingLimitsSQL},
 		{Version: "202607240001_ai_account_subject_usage_tokens", SQL: aiAccountSubjectUsageTokensSQL},
 		{Version: "202608030001_request_log_thinking_level", SQL: requestLogThinkingLevelSQL},
+		// Windowed lockout, remember-me persistence, and grace-window refresh rotation.
+		{Version: "202608060001_auth_session_hardening", SQL: authSessionHardeningSQL},
 	}
 }
 

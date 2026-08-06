@@ -48,6 +48,7 @@ func newServerEngine(cfg *config.Config, optionState *serverOptionConfig) *gin.E
 	}
 	if cfg != nil {
 		configureTrustedProxies(engine, cfg.TrustedProxies)
+		warnOnUntrustedProxyDeployment(cfg)
 	}
 	if optionState != nil && optionState.engineConfigurator != nil {
 		optionState.engineConfigurator(engine)

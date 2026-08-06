@@ -14,18 +14,15 @@ import (
 
 	"github.com/gin-gonic/gin"
 	serviceapp "github.com/router-for-me/CLIProxyAPI/v6/internal/app/service"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/buildinfo"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/identity"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/management/aiaccountstatus"
 	imagegeneration "github.com/router-for-me/CLIProxyAPI/v6/internal/management/imagegeneration"
 	settingsstore "github.com/router-for-me/CLIProxyAPI/v6/internal/management/settings/store"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v6/sdk/access"
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v6/sdk/auth"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
-	"golang.org/x/crypto/bcrypt"
 )
 
 // Handler aggregates config reference, persistence path and helpers.
@@ -68,7 +65,7 @@ func NewHandler(cfg *config.Config, configFilePath string, manager *coreauth.Man
 	h := &Handler{
 		cfg:                 cfg,
 		configFilePath:      configFilePath,
-		loginThrottle:       newLoginThrottle(),
+		loginThrottle:       newLoginThrottle(throttlePoliciesFromConfig(cfg)),
 		authManager:         manager,
 		usageStats:          usage.GetRequestStatistics(),
 		tokenStore:          sdkAuth.GetTokenStore(),
@@ -125,6 +122,10 @@ func (h *Handler) SetConfig(cfg *config.Config) {
 	// Recreate lazily so provider probes use the new proxy/TLS/runtime config.
 	h.aiAccountStatus = nil
 	h.mu.Unlock()
+	// Throttle thresholds are part of the reloadable config, so a limit raised in
+	// config.yaml has to take effect without a restart — otherwise the documented
+	// escape hatch for an over-tight limit is "restart the server".
+	h.loginThrottle.setPolicies(throttlePoliciesFromConfig(cfg))
 }
 
 // SetAuthManager updates the auth manager reference used by management endpoints.
@@ -173,160 +174,10 @@ func (h *Handler) SetPostAuthHook(hook coreauth.PostAuthHook) {
 }
 
 // Middleware enforces access control for management endpoints.
-// All requests (local and remote) require a valid management key.
-// Additionally, remote access requires allow-remote-management=true.
+// The implementation lives in middleware_auth.go, where the step order that
+// keeps the ban check ahead of every secret comparison is documented.
 func (h *Handler) Middleware() gin.HandlerFunc {
-
-	return func(c *gin.Context) {
-		c.Header("X-CPA-VERSION", buildinfo.Version)
-		c.Header("X-CPA-COMMIT", buildinfo.Commit)
-		c.Header("X-CPA-BUILD-DATE", buildinfo.BuildDate)
-		currentUIVersion, currentUICommit := h.currentFrontendState()
-		c.Header("X-CPA-UI-VERSION", currentUIVersion)
-		c.Header("X-CPA-UI-COMMIT", currentUICommit)
-
-		// Session tokens (cps_*) come from Authorization: Bearer on normal HTTP, or from
-		// ?token= on the system-stats WebSocket handshake (browsers cannot set WS headers).
-		// Resolve the session token before falling through to management-key auth so a
-		// valid user session is never bcrypt-compared against the remote management secret.
-		if token := resolveSessionToken(c); strings.HasPrefix(token, "cps_") {
-			_ = h.authenticateSessionToken(c, token)
-			return
-		}
-
-		clientIP := c.ClientIP()
-		// A loopback ClientIP alone does not prove local origin. With trusted-proxies
-		// unset (the default) gin falls back to RemoteAddr, so behind a same-host
-		// reverse proxy every external request would report 127.0.0.1 and thereby skip
-		// the allow-remote gate, unlock the local-password path, and bypass the per-IP
-		// login throttle entirely. Require the direct peer to be loopback and no relay
-		// headers to be present as well.
-		localClient := (clientIP == "127.0.0.1" || clientIP == "::1") && util.IsLocalOriginRequest(c.Request)
-		cfg := h.cfg
-		var (
-			allowRemote bool
-			secretHash  string
-		)
-		if cfg != nil {
-			allowRemote = cfg.RemoteManagement.AllowRemote
-			secretHash = cfg.RemoteManagement.SecretKey
-		}
-		if h.allowRemoteOverride {
-			allowRemote = true
-		}
-		envSecret := h.envSecret
-
-		fail := func() {}
-		isBanned := func() (time.Duration, bool) { return 0, false }
-		clearFailures := func() {}
-		if !localClient {
-			if !allowRemote {
-				// Requests relayed by a local reverse proxy land here even though the TCP
-				// peer is loopback. allow-remote is the only advice that actually grants
-				// access: a relayed request is never treated as local, so trusted-proxies
-				// does not help on its own — it recovers the real client IP for the per-IP
-				// throttle, which is why it is named as an additional step rather than an
-				// alternative.
-				message := "remote management disabled"
-				if relayHeader := util.RelayIndicationHeader(c.Request); relayHeader != "" {
-					message = "remote management disabled: request was relayed (" + relayHeader + " header present), so it is not treated as local. Set remote-management.allow-remote=true to allow it, and list the proxy in trusted-proxies so per-IP throttling sees the real client."
-				}
-				c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": message})
-				return
-			}
-
-			// Shares loginThrottle with PostLogin: both are password entry
-			// points, so failures against either must count toward the same
-			// per-IP budget.
-			isBanned = func() (time.Duration, bool) {
-				remaining := h.loginThrottle.blockedFor(clientIP, time.Now())
-				if remaining <= 0 {
-					return 0, false
-				}
-				return remaining.Round(time.Second), true
-			}
-
-			fail = func() { h.loginThrottle.recordFailure(clientIP, time.Now()) }
-
-			clearFailures = func() { h.loginThrottle.recordSuccess(clientIP) }
-		}
-		localPasswordConfigured := localClient && h.localPassword != ""
-		if secretHash == "" && envSecret == "" && !localPasswordConfigured {
-			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "remote management key not set"})
-			return
-		}
-
-		// Accept either Authorization: Bearer <key> or X-Management-Key
-		var provided string
-		if ah := c.GetHeader("Authorization"); ah != "" {
-			parts := strings.SplitN(ah, " ", 2)
-			if len(parts) == 2 && strings.ToLower(parts[0]) == "bearer" {
-				provided = parts[1]
-			} else {
-				provided = ah
-			}
-		}
-		if provided == "" {
-			provided = c.GetHeader("X-Management-Key")
-		}
-		// Fallback: ?token= query param is accepted only for WebSocket handshakes;
-		// normal HTTP requests must not carry credentials in URLs.
-		// Session tokens (cps_*) were already handled above; remaining query tokens are
-		// treated as management keys (legacy panel / service credential).
-		if provided == "" && shouldReadManagementTokenFromQuery(c) {
-			if queryToken := strings.TrimSpace(c.Query("token")); !strings.HasPrefix(queryToken, "cps_") {
-				provided = queryToken
-			}
-		}
-
-		if provided == "" {
-			if !localClient {
-				if remaining, banned := isBanned(); banned {
-					c.Header("Retry-After", retryAfterSecondsHeader(remaining))
-					c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": fmt.Sprintf("IP banned due to too many failed attempts. Try again in %s", remaining)})
-					return
-				}
-				fail()
-			}
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "missing management key"})
-			return
-		}
-
-		if localClient {
-			if lp := h.localPassword; lp != "" {
-				if util.ConstantTimeStringEqual(provided, lp) {
-					h.setServicePrincipal(c)
-					h.nextWithManagementAudit(c)
-					return
-				}
-			}
-		}
-
-		if envSecret != "" && util.ConstantTimeStringEqual(provided, envSecret) {
-			clearFailures()
-			h.setServicePrincipal(c)
-			h.nextWithManagementAudit(c)
-			return
-		}
-
-		if secretHash == "" || bcrypt.CompareHashAndPassword([]byte(secretHash), []byte(provided)) != nil {
-			if !localClient {
-				if remaining, banned := isBanned(); banned {
-					c.Header("Retry-After", retryAfterSecondsHeader(remaining))
-					c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": fmt.Sprintf("IP banned due to too many failed attempts. Try again in %s", remaining)})
-					return
-				}
-				fail()
-			}
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid management key"})
-			return
-		}
-
-		clearFailures()
-		h.setServicePrincipal(c)
-
-		h.nextWithManagementAudit(c)
-	}
+	return h.managementAuthMiddleware
 }
 
 // resolveSessionToken returns a user-session token for management auth.

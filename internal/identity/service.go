@@ -2,16 +2,13 @@ package identity
 
 import (
 	"context"
-	"crypto/rand"
-	"crypto/sha256"
 	"database/sql"
-	"encoding/base64"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -37,6 +34,9 @@ const dummyPasswordHash = "$2a$10$7EqJtq98hPqEX7fNZaFWoO5fKvR2qv4V5BfQWqHkVq3VP7
 
 type Service struct {
 	db *sql.DB
+	// policy is read on every login/refresh and replaced by config hot-reload, so
+	// it is swapped atomically rather than guarded by the package-level mutex.
+	policy atomic.Pointer[SessionPolicy]
 }
 
 var (
@@ -256,211 +256,6 @@ func (s *Service) Bootstrap(ctx context.Context, initialPassword string) error {
 	return nil
 }
 
-func randomToken() (string, string, error) {
-	return randomPrefixedToken("cps_")
-}
-
-func randomPrefixedToken(prefix string) (string, string, error) {
-	raw := make([]byte, 32)
-	if _, err := rand.Read(raw); err != nil {
-		return "", "", err
-	}
-	token := prefix + base64.RawURLEncoding.EncodeToString(raw)
-	sum := sha256.Sum256([]byte(token))
-	return token, hex.EncodeToString(sum[:]), nil
-}
-
-func (s *Service) tenantSessionTTL(ctx context.Context, tenantID string, remember bool) (access, refresh time.Duration) {
-	// Short access + long refresh. remember_me only keeps/extends refresh, never access.
-	access, refresh = 12*time.Hour, 30*24*time.Hour
-	if s == nil || s.db == nil {
-		return
-	}
-	var a, r sql.NullInt64
-	_ = s.db.QueryRowContext(ctx, `SELECT access_token_ttl_seconds, refresh_token_ttl_seconds FROM tenants WHERE id = ?`, tenantID).Scan(&a, &r)
-	if a.Valid && a.Int64 > 0 {
-		access = time.Duration(a.Int64) * time.Second
-	}
-	if r.Valid && r.Int64 > 0 {
-		refresh = time.Duration(r.Int64) * time.Second
-	}
-	if remember && refresh < 30*24*time.Hour {
-		refresh = 30 * 24 * time.Hour
-	}
-	return
-}
-
-func tokenHash(token string) string {
-	sum := sha256.Sum256([]byte(strings.TrimSpace(token)))
-	return hex.EncodeToString(sum[:])
-}
-
-func (s *Service) Login(ctx context.Context, username, password string, remember bool, userAgent string) (LoginResult, error) {
-	var result LoginResult
-	if s == nil || s.db == nil {
-		return result, ErrInvalidCredentials
-	}
-	normalized := NormalizeUsername(username)
-	var user User
-	var passwordHash, tenantStatus, tenantType string
-	var tenant Tenant
-	var expiresAt sql.NullTime
-	var lastLogin sql.NullTime
-	var lockedUntil sql.NullTime
-	err := s.db.QueryRowContext(ctx, `
-		SELECT u.id, u.tenant_id, u.username, u.display_name, u.password_hash, u.status,
-		       u.must_change_password, u.last_login_at, u.created_at, u.updated_at, u.version,
-		       u.locked_until,
-		       t.id, t.slug, t.name, t.type, t.status, t.expires_at, t.description,
-		       t.created_at, t.updated_at, t.version
-		  FROM users u JOIN tenants t ON t.id = u.tenant_id
-		 WHERE u.username_normalized = ?
-	`, normalized).Scan(
-		&user.ID, &user.TenantID, &user.Username, &user.DisplayName, &passwordHash, &user.Status,
-		&user.MustChangePassword, &lastLogin, &user.CreatedAt, &user.UpdatedAt, &user.Version,
-		&lockedUntil,
-		&tenant.ID, &tenant.Slug, &tenant.Name, &tenantType, &tenantStatus, &expiresAt, &tenant.Description,
-		&tenant.CreatedAt, &tenant.UpdatedAt, &tenant.Version,
-	)
-	if errors.Is(err, sql.ErrNoRows) {
-		_ = bcrypt.CompareHashAndPassword([]byte(dummyPasswordHash), []byte(password))
-		return result, ErrInvalidCredentials
-	}
-	if err != nil {
-		return result, fmt.Errorf("identity: login lookup: %w", err)
-	}
-	if bcrypt.CompareHashAndPassword([]byte(passwordHash), []byte(password)) != nil {
-		_, _ = s.db.ExecContext(ctx, `
-			UPDATE users
-			   SET failed_login_count = failed_login_count + 1,
-			       status = CASE WHEN failed_login_count + 1 >= 10 THEN 'locked' ELSE status END,
-			       locked_until = CASE WHEN failed_login_count + 1 >= 10 THEN now() + interval '15 minutes' ELSE locked_until END,
-			       updated_at = now()
-			 WHERE id = ?
-		`, user.ID)
-		s.RecordAudit(ctx, AuditEvent{TenantID: tenant.ID, ActorKind: "system", Action: "auth.login", ResourceType: "user", ResourceID: user.ID, Result: "denied"})
-		return result, ErrInvalidCredentials
-	}
-	if user.Status == "disabled" {
-		return result, ErrAccountDisabled
-	}
-	if user.Status == "locked" && (!lockedUntil.Valid || lockedUntil.Time.After(time.Now())) {
-		return result, ErrAccountLocked
-	}
-	tenant.Type = tenantType
-	tenant.Status = tenantStatus
-	if expiresAt.Valid {
-		tenant.ExpiresAt = &expiresAt.Time
-	}
-	if err = validateTenant(tenant, time.Now()); err != nil {
-		return result, err
-	}
-	if lastLogin.Valid {
-		user.LastLoginAt = &lastLogin.Time
-	}
-
-	token, hash, err := randomToken()
-	if err != nil {
-		return result, err
-	}
-	refreshToken, refreshHash, err := randomPrefixedToken("cpr_adm_")
-	if err != nil {
-		return result, err
-	}
-	accessTTL, refreshTTL := s.tenantSessionTTL(ctx, tenant.ID, remember)
-	sessionID := uuid.NewString()
-	now := time.Now().UTC()
-	sessionExpiresAt := now.Add(accessTTL)
-	refreshExpiresAt := now.Add(refreshTTL)
-	uaSum := sha256.Sum256([]byte(userAgent))
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return result, err
-	}
-	defer func() { _ = tx.Rollback() }()
-	if _, err = tx.ExecContext(ctx, `
-		INSERT INTO user_sessions (id, user_id, tenant_id, token_hash, expires_at, refresh_token_hash, refresh_expires_at, user_agent_hash)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-	`, sessionID, user.ID, tenant.ID, hash, sessionExpiresAt, refreshHash, refreshExpiresAt, hex.EncodeToString(uaSum[:])); err != nil {
-		return result, err
-	}
-	if _, err = tx.ExecContext(ctx, `
-		UPDATE users SET last_login_at = now(), failed_login_count = 0, locked_until = NULL,
-		  status = CASE WHEN status = 'locked' THEN 'active' ELSE status END, updated_at = now()
-		WHERE id = ?
-	`, user.ID); err != nil {
-		return result, err
-	}
-	if err = tx.Commit(); err != nil {
-		return result, err
-	}
-
-	principal, err := s.loadPrincipal(ctx, user.ID, sessionID, sessionExpiresAt, tenant.ID)
-	if err != nil {
-		return result, err
-	}
-	result = LoginResult{
-		AccessToken: token, RefreshToken: refreshToken, TokenType: "Bearer",
-		ExpiresAt: sessionExpiresAt, RefreshExpiresAt: refreshExpiresAt, Principal: principal,
-	}
-	s.RecordAudit(ctx, AuditEvent{TenantID: tenant.ID, ActorKind: "user_session", ActorUserID: user.ID, ActorSessionID: sessionID, Action: "auth.login", ResourceType: "session", ResourceID: sessionID, Result: "success"})
-	return result, nil
-}
-
-func (s *Service) RefreshSession(ctx context.Context, refreshToken string) (LoginResult, error) {
-	var result LoginResult
-	if s == nil || s.db == nil || !strings.HasPrefix(strings.TrimSpace(refreshToken), "cpr_adm_") {
-		return result, ErrSessionRevoked
-	}
-	var sessionID, userID, tenantID string
-	var refreshExp time.Time
-	var revoked sql.NullTime
-	err := s.db.QueryRowContext(ctx, `
-		SELECT id, user_id, tenant_id, refresh_expires_at, revoked_at
-		  FROM user_sessions WHERE refresh_token_hash = ?
-	`, tokenHash(refreshToken)).Scan(&sessionID, &userID, &tenantID, &refreshExp, &revoked)
-	if errors.Is(err, sql.ErrNoRows) {
-		return result, ErrSessionRevoked
-	}
-	if err != nil {
-		return result, err
-	}
-	if revoked.Valid || !refreshExp.After(time.Now()) {
-		return result, ErrSessionExpired
-	}
-	accessTTL, refreshTTL := s.tenantSessionTTL(ctx, tenantID, false)
-	accessPlain, accessHash, err := randomToken()
-	if err != nil {
-		return result, err
-	}
-	refreshPlain, refreshHash, err := randomPrefixedToken("cpr_adm_")
-	if err != nil {
-		return result, err
-	}
-	now := time.Now().UTC()
-	accessExp := now.Add(accessTTL)
-	newRefreshExp := now.Add(refreshTTL)
-	// Atomic consume: only one concurrent refresh of the same refresh token wins.
-	res, err := s.db.ExecContext(ctx, `
-		UPDATE user_sessions SET token_hash = ?, expires_at = ?, refresh_token_hash = ?, refresh_expires_at = ?, last_seen_at = now()
-		WHERE id = ? AND refresh_token_hash = ? AND revoked_at IS NULL AND refresh_expires_at > now()
-	`, accessHash, accessExp, refreshHash, newRefreshExp, sessionID, tokenHash(refreshToken))
-	if err != nil {
-		return result, err
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return result, ErrSessionRevoked
-	}
-	principal, err := s.loadPrincipal(ctx, userID, sessionID, accessExp, tenantID)
-	if err != nil {
-		return result, err
-	}
-	return LoginResult{
-		AccessToken: accessPlain, RefreshToken: refreshPlain, TokenType: "Bearer",
-		ExpiresAt: accessExp, RefreshExpiresAt: newRefreshExp, Principal: principal,
-	}, nil
-}
-
 func validateTenant(tenant Tenant, now time.Time) error {
 	if tenant.Status != "active" {
 		return ErrTenantSuspended
@@ -473,20 +268,13 @@ func validateTenant(tenant Tenant, now time.Time) error {
 
 func (s *Service) Authenticate(ctx context.Context, token, effectiveTenantID string) (Principal, error) {
 	var principal Principal
-	var userID, sessionID, homeTenantID string
-	var expiresAt time.Time
-	var revokedAt sql.NullTime
-	err := s.db.QueryRowContext(ctx, `
-		SELECT id, user_id, tenant_id, expires_at, revoked_at
-		  FROM user_sessions WHERE token_hash = ?
-	`, tokenHash(token)).Scan(&sessionID, &userID, &homeTenantID, &expiresAt, &revokedAt)
-	if errors.Is(err, sql.ErrNoRows) {
-		return principal, ErrSessionRevoked
-	}
+	session, err := s.lookupAccessSession(ctx, tokenHash(token))
 	if err != nil {
 		return principal, err
 	}
-	if revokedAt.Valid {
+	sessionID, userID, homeTenantID := session.sessionID, session.userID, session.tenantID
+	expiresAt := session.expiresAt
+	if session.revokedAt.Valid {
 		return principal, ErrSessionRevoked
 	}
 	if !expiresAt.After(time.Now()) {

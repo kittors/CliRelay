@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
@@ -34,32 +35,62 @@ func TestMiddlewareAllowsValidKeyAfterRemoteIPIsBanned(t *testing.T) {
 	}, nil)
 	defer h.Close()
 
+	// Hold the ban open for the whole test rather than sleeping it out. Arming it
+	// costs ten bcrypt comparisons, and under -race those run an order of
+	// magnitude slower, so any block short enough to keep the test fast also
+	// expires mid-setup and silently turns the X1 assertion into a no-op. The
+	// expiry half is driven by expireArmedBlocks instead of wall-clock time.
+	policies := defaultThrottlePolicies()
+	held := policies[scopeManagementKey]
+	held.Backoff = []time.Duration{time.Hour}
+	policies[scopeManagementKey] = held
+	h.loginThrottle.setPolicies(policies)
+
 	router := gin.New()
 	router.Use(h.Middleware())
 	router.GET("/v0/management/ping", func(c *gin.Context) {
 		c.String(http.StatusOK, "ok")
 	})
 
-	for i := 0; i < 5; i++ {
+	// Missing key attempts land in scopeUnauthenticated, which never hard-blocks
+	// (B2), so arming the scopeManagementKey ban requires actual wrong-credential
+	// attempts, not empty ones. defaultManagementKeyFailureLimit is 10, and the
+	// Nth failure itself trips the block, so only 9 attempts come back 401.
+	for i := 0; i < 9; i++ {
 		rr := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodGet, "/v0/management/ping", nil)
 		req.RemoteAddr = "203.0.113.10:4321"
+		req.Header.Set("Authorization", "Bearer wrong-key")
 		router.ServeHTTP(rr, req)
 		if rr.Code != http.StatusUnauthorized {
-			t.Fatalf("missing-key attempt %d status = %d, want %d; body=%s", i+1, rr.Code, http.StatusUnauthorized, rr.Body.String())
+			t.Fatalf("wrong-key attempt %d status = %d, want %d; body=%s", i+1, rr.Code, http.StatusUnauthorized, rr.Body.String())
 		}
 	}
 
 	rrBanned := httptest.NewRecorder()
 	reqBanned := httptest.NewRequest(http.MethodGet, "/v0/management/ping", nil)
 	reqBanned.RemoteAddr = "203.0.113.10:4321"
+	reqBanned.Header.Set("Authorization", "Bearer wrong-key")
 	router.ServeHTTP(rrBanned, reqBanned)
 	if rrBanned.Code != http.StatusForbidden {
-		t.Fatalf("banned missing-key status = %d, want %d; body=%s", rrBanned.Code, http.StatusForbidden, rrBanned.Body.String())
+		t.Fatalf("banned wrong-key status = %d, want %d; body=%s", rrBanned.Code, http.StatusForbidden, rrBanned.Body.String())
 	}
 	if !strings.Contains(rrBanned.Body.String(), "IP banned") {
 		t.Fatalf("expected IP banned response, got %s", rrBanned.Body.String())
 	}
+
+	// X1: the ban precheck runs before any credential comparison, so even the
+	// correct key is rejected while the block is still active.
+	rrDuringBan := httptest.NewRecorder()
+	reqDuringBan := httptest.NewRequest(http.MethodGet, "/v0/management/ping", nil)
+	reqDuringBan.RemoteAddr = "203.0.113.10:4321"
+	reqDuringBan.Header.Set("Authorization", "Bearer "+managementKey)
+	router.ServeHTTP(rrDuringBan, reqDuringBan)
+	if rrDuringBan.Code != http.StatusForbidden {
+		t.Fatalf("valid-key status during active ban = %d, want %d (ban precheck must precede credential comparison); body=%s", rrDuringBan.Code, http.StatusForbidden, rrDuringBan.Body.String())
+	}
+
+	expireArmedBlocks(h.loginThrottle)
 
 	rrValid := httptest.NewRecorder()
 	reqValid := httptest.NewRequest(http.MethodGet, "/v0/management/ping", nil)
@@ -67,7 +98,7 @@ func TestMiddlewareAllowsValidKeyAfterRemoteIPIsBanned(t *testing.T) {
 	reqValid.Header.Set("Authorization", "Bearer "+managementKey)
 	router.ServeHTTP(rrValid, reqValid)
 	if rrValid.Code != http.StatusOK {
-		t.Fatalf("valid-key status after ban = %d, want %d; body=%s", rrValid.Code, http.StatusOK, rrValid.Body.String())
+		t.Fatalf("valid-key status after ban expired = %d, want %d; body=%s", rrValid.Code, http.StatusOK, rrValid.Body.String())
 	}
 
 	rrAfterClear := httptest.NewRecorder()
@@ -359,16 +390,21 @@ func TestMiddlewareThrottlesRelayedFailedAttempts(t *testing.T) {
 		return req
 	}
 
-	var banned bool
-	for i := 0; i < 12; i++ {
+	// The relayed key is Shared (untrusted proxy), so applySharedKeyDowngrade forces
+	// HardBlock=false: it must be rate-limited (429), never hard-banned (403).
+	var throttled bool
+	for i := 0; i < 15; i++ {
 		rr := httptest.NewRecorder()
 		router.ServeHTTP(rr, newRelayedRequest())
-		if rr.Code == http.StatusForbidden && strings.Contains(rr.Body.String(), "IP banned") {
-			banned = true
+		if rr.Code == http.StatusForbidden {
+			t.Fatalf("relayed (shared-key) attempt %d hard-banned with 403; want soft 429 only, body=%s", i+1, rr.Body.String())
+		}
+		if rr.Code == http.StatusTooManyRequests && strings.Contains(rr.Body.String(), "too_many_requests") {
+			throttled = true
 			break
 		}
 	}
-	if !banned {
+	if !throttled {
 		t.Fatal("relayed brute-force attempts were never throttled")
 	}
 }

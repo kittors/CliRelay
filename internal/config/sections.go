@@ -46,6 +46,46 @@ type RemoteManagement struct {
 	// PanelGitHubRepository overrides the GitHub repository used to fetch the management panel asset.
 	// Accepts either a repository URL (https://github.com/org/repo) or an API releases endpoint.
 	PanelGitHubRepository string `yaml:"panel-github-repository"`
+	// Auth tunes login throttling and session token lifetimes.
+	// Zero values fall back to the built-in defaults documented per field.
+	Auth AuthHardening `yaml:"auth,omitempty"`
+}
+
+// AuthHardening groups login-throttle and session-rotation knobs. Every field is
+// zero-means-default so an absent block behaves exactly like the shipped defaults.
+type AuthHardening struct {
+	// LoginFailureWindowSeconds is the sliding window for counting login
+	// failures. Default 900. Counters outside the window are discarded.
+	LoginFailureWindowSeconds int `yaml:"login-failure-window-seconds,omitempty"`
+	// AccountFailureLimit arms a staged cooldown for one account. Default 5.
+	AccountFailureLimit int `yaml:"account-failure-limit,omitempty"`
+	// ManagementKeyFailureLimit arms a per-IP ban for wrong management keys. Default 10.
+	ManagementKeyFailureLimit int `yaml:"management-key-failure-limit,omitempty"`
+	// UnauthenticatedRequestLimit caps credential-less management requests per
+	// client per hour. Exceeding it returns 429; it never arms a credential ban.
+	// Default 300.
+	UnauthenticatedRequestLimit int `yaml:"unauthenticated-request-limit,omitempty"`
+	// FailureResetHours is the quiet period that clears counters and backoff
+	// escalation. Default 12.
+	FailureResetHours int `yaml:"failure-reset-hours,omitempty"`
+	// RefreshGraceSeconds keeps a just-rotated refresh token usable so retries
+	// and racing tabs do not lose the session. Default 30, clamped to 60.
+	// The admin panel's total refresh budget (lock wait + retries) is 23s and
+	// MUST stay below this value, or a legitimate retry lands outside the
+	// window and is treated as a replay, revoking the whole session.
+	RefreshGraceSeconds int `yaml:"refresh-grace-seconds,omitempty"`
+	// RefreshGraceMaxReuse caps replays of one rotated refresh token inside the
+	// grace window. Default 2.
+	RefreshGraceMaxReuse int `yaml:"refresh-grace-max-reuse,omitempty"`
+	// AccessTokenGraceSeconds keeps the previous access token valid after
+	// rotation so in-flight requests are not rejected. Default 60; must exceed
+	// the panel's 30s request timeout.
+	AccessTokenGraceSeconds int `yaml:"access-token-grace-seconds,omitempty"`
+	// AbsoluteRefreshTTLHours is the hard session ceiling; rotation never
+	// extends past login time plus this value. Default 1440 (60 days).
+	AbsoluteRefreshTTLHours int `yaml:"absolute-refresh-ttl-hours,omitempty"`
+	// SessionReaperIntervalMinutes controls expired token/session GC. Default 60.
+	SessionReaperIntervalMinutes int `yaml:"session-reaper-interval-minutes,omitempty"`
 }
 
 // AutoUpdateConfig holds Docker-first update check and sidecar settings.

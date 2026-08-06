@@ -30,15 +30,6 @@ func TestGenerateAPIKeyUniquenessSample(t *testing.T) {
 	}
 }
 
-func TestLockPenaltyIntermediate(t *testing.T) {
-	for _, n := range []int{1, 2, 3, 4, 6, 7, 8, 9, 11, 12, 16, 19} {
-		_, _, _, apply := lockPenalty(n)
-		if apply {
-			t.Fatalf("count %d should not apply stage lock", n)
-		}
-	}
-}
-
 func TestIsUnsupportedAdvisoryLockError(t *testing.T) {
 	if !isUnsupportedAdvisoryLockError(errors.New("no such function: pg_advisory_xact_lock")) {
 		t.Fatal("sqlite missing function should be unsupported")

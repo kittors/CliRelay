@@ -10,15 +10,15 @@
     "baseline_above_800": [
       {
         "path": "internal/api/handlers/management/end_user.go",
-        "max_lines": 912
+        "max_lines": 910
       },
       {
         "path": "internal/enduser/service.go",
-        "max_lines": 1189
+        "max_lines": 1169
       },
       {
         "path": "internal/identity/service.go",
-        "max_lines": 1144
+        "max_lines": 932
       },
       {
         "path": "internal/management/aiaccountstatus/service.go",
@@ -42,7 +42,7 @@
       },
       {
         "path": "internal/storage/postgres/migrations.go",
-        "max_lines": 1120
+        "max_lines": 1115
       },
       {
         "path": "internal/storage/sqlite/apikey/store.go",
@@ -66,7 +66,7 @@
       },
       {
         "path": "internal/usage/usage_db.go",
-        "max_lines": 1164
+        "max_lines": 1150
       },
       {
         "path": "sdk/api/handlers/handlers.go",

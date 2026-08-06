@@ -98,6 +98,37 @@ remote-management:
   # GitHub repository for the management control panel. Accepts a repository URL or releases API URL.
   panel-github-repository: "https://github.com/kittors/codeProxy"
 
+  # Login throttling and session token lifetimes. Every key is optional and
+  # zero-means-default, so leaving this block commented out keeps the shipped
+  # behaviour. Uncomment only the keys you actually want to override.
+  # auth:
+  #   # Sliding window (seconds) used to count login failures. Failures older
+  #   # than this are discarded, so a stale mistype never contributes to a lock.
+  #   login-failure-window-seconds: 900
+  #   # Failures within the window that arm a staged cooldown for one account.
+  #   account-failure-limit: 5
+  #   # Wrong management keys from one client IP that arm a per-IP ban.
+  #   management-key-failure-limit: 10
+  #   # Credential-less management requests allowed per client per hour. Over the
+  #   # limit returns 429; it never arms a credential ban.
+  #   unauthenticated-request-limit: 300
+  #   # Quiet period (hours) that clears failure counters and backoff escalation.
+  #   failure-reset-hours: 12
+  #   # How long a just-rotated refresh token stays usable so a retry or a second
+  #   # browser tab does not lose the session. Clamped to 60 seconds.
+  #   refresh-grace-seconds: 30
+  #   # How many times one rotated refresh token may be replayed inside the grace
+  #   # window before it is treated as a stolen-token replay.
+  #   refresh-grace-max-reuse: 2
+  #   # How long the previous access token stays valid after rotation, so
+  #   # in-flight requests are not rejected. Must exceed the panel request timeout.
+  #   access-token-grace-seconds: 60
+  #   # Hard session ceiling (hours). Rotation never extends past login time plus
+  #   # this value. 1440 hours is 60 days.
+  #   absolute-refresh-ttl-hours: 1440
+  #   # How often expired session tokens and revoked sessions are garbage collected.
+  #   session-reaper-interval-minutes: 60
+
 # Docker-first automatic update checks. The updater sidecar is installed by the
 # Docker Compose deployment path; non-Docker deployments can disable this.
 auto-update:

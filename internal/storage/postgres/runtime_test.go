@@ -11,12 +11,31 @@ import (
 
 func TestRuntimeMigrationsCoverCoreTables(t *testing.T) {
 	migrations := RuntimeMigrations()
-	if len(migrations) != 24 {
-		t.Fatalf("RuntimeMigrations len = %d, want 24", len(migrations))
+	if len(migrations) != 25 {
+		t.Fatalf("RuntimeMigrations len = %d, want 25", len(migrations))
 	}
-	// Latest: request-log thinking level metadata.
+	// Latest: windowed lockout state + per-token session rows for grace-window
+	// refresh rotation.
+	if migrations[24].Version != "202608060001_auth_session_hardening" {
+		t.Fatalf("latest migration version = %q", migrations[24].Version)
+	}
+	authSessionSQL := migrations[24].SQL
+	for _, fragment := range []string{
+		"CREATE TABLE IF NOT EXISTS user_session_tokens",
+		"last_failed_login_at TIMESTAMPTZ",
+		"remember_me BOOLEAN NOT NULL DEFAULT false",
+		"refresh_absolute_expires_at TIMESTAMPTZ",
+		// Mirroring live tokens into the new table is what keeps signed-in users
+		// from being logged out by the deploy itself.
+		"INSERT INTO user_session_tokens",
+	} {
+		if !strings.Contains(authSessionSQL, fragment) {
+			t.Fatalf("auth session hardening migration missing %q", fragment)
+		}
+	}
+	// Prior: request-log thinking level metadata.
 	if migrations[23].Version != "202608030001_request_log_thinking_level" {
-		t.Fatalf("latest migration version = %q", migrations[23].Version)
+		t.Fatalf("thinking level migration version = %q", migrations[23].Version)
 	}
 	thinkingSQL := migrations[23].SQL
 	for _, fragment := range []string{"ALTER TABLE request_logs", "thinking_level TEXT NOT NULL DEFAULT ''"} {

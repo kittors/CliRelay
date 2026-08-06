@@ -180,60 +180,6 @@ func identityError(c *gin.Context, err error) {
 	c.AbortWithStatusJSON(status, gin.H{"error": gin.H{"code": code, "message": err.Error()}})
 }
 
-func (h *Handler) PostLogin(c *gin.Context) {
-	clientIP := c.ClientIP()
-	now := time.Now()
-	if remaining := h.loginThrottle.blockedFor(clientIP, now); remaining > 0 {
-		c.Header("Retry-After", retryAfterSecondsHeader(remaining.Round(time.Second)))
-		c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{"error": gin.H{"code": "login_rate_limited", "message": "too many login attempts"}})
-		return
-	}
-
-	var body struct {
-		Username   string `json:"username"`
-		Password   string `json:"password"`
-		RememberMe bool   `json:"remember_me"`
-	}
-	if err := c.ShouldBindJSON(&body); err != nil || strings.TrimSpace(body.Username) == "" || body.Password == "" {
-		identityError(c, identity.ErrInvalidCredentials)
-		return
-	}
-	service := h.identity()
-	if service == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": gin.H{"code": "identity_unavailable", "message": "identity service unavailable"}})
-		return
-	}
-	result, err := service.Login(c.Request.Context(), body.Username, body.Password, body.RememberMe, c.GetHeader("User-Agent"))
-	if err != nil {
-		h.loginThrottle.recordFailure(clientIP, now)
-		identityError(c, err)
-		return
-	}
-	h.loginThrottle.recordSuccess(clientIP)
-	c.JSON(http.StatusOK, result)
-}
-
-func (h *Handler) PostRefresh(c *gin.Context) {
-	var body struct {
-		RefreshToken string `json:"refresh_token"`
-	}
-	if err := c.ShouldBindJSON(&body); err != nil || strings.TrimSpace(body.RefreshToken) == "" {
-		identityError(c, identity.ErrSessionRevoked)
-		return
-	}
-	service := h.identity()
-	if service == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": gin.H{"code": "identity_unavailable", "message": "identity service unavailable"}})
-		return
-	}
-	result, err := service.RefreshSession(c.Request.Context(), body.RefreshToken)
-	if err != nil {
-		identityError(c, err)
-		return
-	}
-	c.JSON(http.StatusOK, result)
-}
-
 func (h *Handler) authenticateUserRequest(c *gin.Context) (identity.Principal, bool) {
 	token := bearerToken(c)
 	if !strings.HasPrefix(token, "cps_") {
@@ -247,36 +193,6 @@ func (h *Handler) authenticateUserRequest(c *gin.Context) (identity.Principal, b
 	}
 	c.Set(managementPrincipalKey, principal)
 	return principal, true
-}
-
-func (h *Handler) GetMe(c *gin.Context) {
-	principal, ok := h.authenticateUserRequest(c)
-	if !ok {
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{"principal": principal})
-}
-
-func (h *Handler) PostLogout(c *gin.Context) {
-	principal, ok := h.authenticateUserRequest(c)
-	if !ok {
-		return
-	}
-	if err := h.identity().Logout(c.Request.Context(), principal.SessionID); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "logout_failed", "message": err.Error()}})
-		return
-	}
-	h.identity().RecordAudit(c.Request.Context(), identity.AuditEvent{
-		TenantID:       principal.HomeTenant.ID,
-		ActorKind:      principal.Kind,
-		ActorUserID:    principal.User.ID,
-		ActorSessionID: principal.SessionID,
-		Action:         "auth.logout",
-		ResourceType:   "session",
-		ResourceID:     principal.SessionID,
-		Result:         "success",
-	})
-	c.Status(http.StatusNoContent)
 }
 
 func (h *Handler) PutPassword(c *gin.Context) {

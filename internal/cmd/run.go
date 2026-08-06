@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -40,7 +41,7 @@ func StartService(cfg *config.Config, configPath string, localPassword string) {
 		return
 	}
 	usage.InitRedis(cfg.Redis)
-	defer usage.StopRedis()
+	defer stopRuntimeDataStack()
 
 	moderator := contentmoderation.NewRequestModerator(contentmoderation.NewStore(usage.RuntimeDB()), contentmoderation.NewEvaluator(nil))
 	contentmoderation.SetRuntime(moderator)
@@ -105,20 +106,50 @@ func StartServiceBackground(cfg *config.Config, configPath string, localPassword
 	service, err := builder.Build()
 	if err != nil {
 		log.Errorf("failed to build proxy service: %v", err)
-		usage.StopRedis()
+		stopRuntimeDataStack()
 		close(doneCh)
 		return cancelFn, doneCh
 	}
 
 	go func() {
 		defer close(doneCh)
-		defer usage.StopRedis()
+		defer stopRuntimeDataStack()
 		if err := service.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 			log.Errorf("proxy service exited with error: %v", err)
 		}
 	}()
 
 	return cancelFn, doneCh
+}
+
+// sessionReaperStop holds the identity session reaper's cancel function. The
+// reaper is started with the runtime data stack, so it has to be torn down with
+// it; a process that re-initialises the stack (tests, cloud-deploy reconfigure)
+// would otherwise leak one goroutine and one ticker per initialisation.
+var (
+	sessionReaperMu   sync.Mutex
+	sessionReaperStop func()
+)
+
+func startSessionReaper(service *identity.Service, interval time.Duration) {
+	sessionReaperMu.Lock()
+	defer sessionReaperMu.Unlock()
+	if sessionReaperStop != nil {
+		sessionReaperStop()
+	}
+	sessionReaperStop = service.StartSessionReaper(context.Background(), interval)
+}
+
+// stopRuntimeDataStack tears down everything initializeRuntimeDataStack started.
+func stopRuntimeDataStack() {
+	sessionReaperMu.Lock()
+	stop := sessionReaperStop
+	sessionReaperStop = nil
+	sessionReaperMu.Unlock()
+	if stop != nil {
+		stop()
+	}
+	usage.StopRedis()
 }
 
 type bootstrapAdminPassword struct {
@@ -165,6 +196,8 @@ func initializeRuntimeDataStack(cfg *config.Config, configPath string, loc *time
 		return err
 	}
 	identity.SetDefault(identityService)
+	identityService.SetSessionPolicy(identity.SessionPolicyFromConfig(cfg))
+	startSessionReaper(identityService, identity.SessionReaperIntervalFromConfig(cfg))
 	// Import YAML keys first so one-shot end-user backfill can see them.
 	if _, err := usage.MigrateAPIKeysFromConfig(cfg, configPath); err != nil {
 		return fmt.Errorf("migrate api keys from config: %w", err)
