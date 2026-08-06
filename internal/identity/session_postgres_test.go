@@ -16,8 +16,16 @@ import (
 
 const sessionTestPassword = "Bootstrap-Password-123!"
 
-// newSessionTestService brings up a clean identity schema on the shared test
+// newSessionTestService prepares an isolated identity fixture on the shared test
 // database and returns a bootstrapped service plus the admin user id.
+//
+// It resets state with targeted DELETEs rather than TRUNCATE on purpose. TRUNCATE
+// takes an ACCESS EXCLUSIVE lock on every table it touches and follows foreign
+// keys, so truncating tenants reaches api_keys, request_logs and the rest of the
+// usage catalog. The usage package's integration test truncates that same set in
+// a different order, and with these cases running dozens of times the two
+// eventually interleave into a lock cycle that Postgres resolves by killing one
+// of them. Row-level deletes touch only what this fixture actually owns.
 func newSessionTestService(t *testing.T) (*Service, *sql.DB, string) {
 	t.Helper()
 	dsn := os.Getenv("CLIRELAY_POSTGRES_TEST_DSN")
@@ -31,12 +39,27 @@ func newSessionTestService(t *testing.T) (*Service, *sql.DB, string) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	if _, err = db.Exec(`TRUNCATE audit_logs,user_session_tokens,user_sessions,user_roles,role_permissions,menus,users,roles,permissions,tenants CASCADE`); err != nil {
-		t.Fatal(err)
-	}
+
 	service := NewService(db)
+	// Bootstrap is idempotent and leaves an existing admin alone, so the tenant
+	// and role rows can simply be reused across cases.
 	if err = service.Bootstrap(ctx, sessionTestPassword); err != nil {
 		t.Fatal(err)
+	}
+	for _, stmt := range []string{
+		`DELETE FROM user_session_tokens`,
+		`DELETE FROM user_sessions`,
+		`DELETE FROM audit_logs WHERE actor_user_id = '` + SystemUserID + `'`,
+		// Undo whatever a previous case did to the admin's lockout state, and any
+		// administrative lock a case installed deliberately.
+		`UPDATE users SET status = 'active', failed_login_count = 0, last_failed_login_at = NULL,
+		   lock_stage = 0, locked_until = NULL WHERE id = '` + SystemUserID + `'`,
+		`UPDATE tenants SET access_token_ttl_seconds = 43200, refresh_token_ttl_seconds = 2592000
+		   WHERE id = '` + SystemTenantID + `'`,
+	} {
+		if _, err = db.ExecContext(ctx, stmt); err != nil {
+			t.Fatalf("reset identity fixture: %v", err)
+		}
 	}
 	return service, db, SystemUserID
 }
