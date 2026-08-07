@@ -11,13 +11,24 @@ import (
 
 func TestRuntimeMigrationsCoverCoreTables(t *testing.T) {
 	migrations := RuntimeMigrations()
-	if len(migrations) != 25 {
-		t.Fatalf("RuntimeMigrations len = %d, want 25", len(migrations))
+	if len(migrations) != 26 {
+		t.Fatalf("RuntimeMigrations len = %d, want 26", len(migrations))
 	}
-	// Latest: windowed lockout state + per-token session rows for grace-window
-	// refresh rotation.
+	// Latest: quota observation time, so a failing probe stops making stale quota
+	// look freshly checked.
+	if migrations[25].Version != "202608070001_ai_account_quota_observed_at" {
+		t.Fatalf("latest migration version = %q", migrations[25].Version)
+	}
+	for _, fragment := range []string{
+		"ADD COLUMN IF NOT EXISTS quota_observed_at TIMESTAMPTZ",
+		"FROM ai_account_subject_quota_points p",
+	} {
+		if !strings.Contains(migrations[25].SQL, fragment) {
+			t.Fatalf("quota observed_at migration missing %q", fragment)
+		}
+	}
 	if migrations[24].Version != "202608060001_auth_session_hardening" {
-		t.Fatalf("latest migration version = %q", migrations[24].Version)
+		t.Fatalf("auth session migration version = %q", migrations[24].Version)
 	}
 	authSessionSQL := migrations[24].SQL
 	for _, fragment := range []string{

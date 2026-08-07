@@ -2,7 +2,6 @@ package usage
 
 import (
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -79,6 +78,7 @@ CREATE TABLE IF NOT EXISTS ai_account_subject_status (
   reset_credit_count INTEGER,
   reset_credit_expirations TEXT NOT NULL DEFAULT '[]',
   upstream_checked_at DATETIME,
+  quota_observed_at DATETIME,
   version INTEGER NOT NULL DEFAULT 1,
   updated_at DATETIME NOT NULL,
   FOREIGN KEY (auth_subject_id) REFERENCES ai_account_subjects(auth_subject_id)
@@ -156,26 +156,6 @@ type AIAccountTenantBinding struct {
 	DeletedAt       *time.Time
 }
 
-type AIAccountSubjectStatusRecord struct {
-	AuthSubjectID          string
-	Provider               string
-	LastProbeState         string
-	HealthStatus           string
-	PlanType               string
-	SubscriptionStartedAt  *time.Time
-	SubscriptionExpiresAt  *time.Time
-	SubscriptionSource     string
-	RestrictionSummary     string
-	ErrorCode              string
-	ErrorSummary           string
-	Quotas                 []QuotaWindowDTO
-	ResetCreditCount       *int64
-	ResetCreditExpirations []string
-	UpstreamCheckedAt      *time.Time
-	Version                int64
-	UpdatedAt              time.Time
-}
-
 type AIAccountSharedBackfillReport struct {
 	Subjects               int64
 	Bindings               int64
@@ -198,6 +178,9 @@ func ensureAIAccountSharedSubjectTables(db *sql.DB) error {
 		}
 		// Additive migration for SQLite databases created before cycle token projection.
 		_, _ = db.Exec(`ALTER TABLE ai_account_subject_usage_buckets ADD COLUMN total_tokens INTEGER NOT NULL DEFAULT 0`)
+		// Additive migration for databases created before quota freshness tracking.
+		_, _ = db.Exec(`ALTER TABLE ai_account_subject_status ADD COLUMN quota_observed_at DATETIME`)
+		backfillSQLiteQuotaObservedAt(db)
 	}
 	ensureUsageProjectionMarkerTable(db)
 	if err := setProjectionMarker(db, aiAccountSharedSchemaMarker, "done"); err != nil {
@@ -438,159 +421,6 @@ func ListAIAccountSubjects(subjectIDs []string) (map[string]AIAccountSubjectReco
 			row.UpdatedAt = t
 		}
 		out[row.AuthSubjectID] = row
-	}
-	return out, rows.Err()
-}
-
-func UpsertAIAccountSubjectStatus(record AIAccountSubjectStatusRecord) error {
-	db := getDB()
-	if db == nil || strings.TrimSpace(record.AuthSubjectID) == "" {
-		return nil
-	}
-	if record.LastProbeState == "" {
-		record.LastProbeState = "idle"
-	}
-	if record.UpdatedAt.IsZero() {
-		record.UpdatedAt = time.Now().UTC()
-	}
-	if record.Version < 1 {
-		record.Version = 1
-	}
-	quotaJSON, err := json.Marshal(record.Quotas)
-	if err != nil {
-		return err
-	}
-	expJSON, err := json.Marshal(record.ResetCreditExpirations)
-	if err != nil {
-		return err
-	}
-	_, err = db.Exec(`
-		INSERT INTO ai_account_subject_status (
-			auth_subject_id, provider, last_probe_state, health_status, plan_type,
-			subscription_started_at, subscription_expires_at, subscription_source,
-			restriction_summary, error_code, error_summary, quota_json,
-			reset_credit_count, reset_credit_expirations, upstream_checked_at, version, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(auth_subject_id) DO UPDATE SET
-			provider = excluded.provider,
-			last_probe_state = excluded.last_probe_state,
-			health_status = excluded.health_status,
-			plan_type = excluded.plan_type,
-			subscription_started_at = CASE WHEN excluded.subscription_source <> ''
-				THEN excluded.subscription_started_at ELSE ai_account_subject_status.subscription_started_at END,
-			subscription_expires_at = CASE WHEN excluded.subscription_source <> ''
-				THEN excluded.subscription_expires_at ELSE ai_account_subject_status.subscription_expires_at END,
-			subscription_source = CASE WHEN excluded.subscription_source <> ''
-				THEN excluded.subscription_source ELSE ai_account_subject_status.subscription_source END,
-			restriction_summary = excluded.restriction_summary,
-			error_code = excluded.error_code,
-			error_summary = excluded.error_summary,
-			quota_json = excluded.quota_json,
-			reset_credit_count = excluded.reset_credit_count,
-			reset_credit_expirations = excluded.reset_credit_expirations,
-			upstream_checked_at = excluded.upstream_checked_at,
-			version = CASE WHEN excluded.version > ai_account_subject_status.version
-				THEN excluded.version ELSE ai_account_subject_status.version + 1 END,
-			updated_at = excluded.updated_at
-	`, record.AuthSubjectID, record.Provider, record.LastProbeState, record.HealthStatus, record.PlanType,
-		nullableTimeValue(record.SubscriptionStartedAt), nullableTimeValue(record.SubscriptionExpiresAt), record.SubscriptionSource,
-		record.RestrictionSummary, record.ErrorCode, record.ErrorSummary, string(quotaJSON), record.ResetCreditCount,
-		string(expJSON), nullableTimeValue(record.UpstreamCheckedAt), record.Version, record.UpdatedAt.UTC().Format(time.RFC3339Nano))
-	if err != nil {
-		return fmt.Errorf("usage: upsert shared ai account status: %w", err)
-	}
-	return nil
-}
-
-func UpdateAIAccountSubjectProbeFailure(subjectID, provider, errorCode, errorSummary string, checked time.Time) error {
-	db := getDB()
-	if db == nil || strings.TrimSpace(subjectID) == "" {
-		return nil
-	}
-	if checked.IsZero() {
-		checked = time.Now().UTC()
-	}
-	_, err := db.Exec(`
-		INSERT INTO ai_account_subject_status (
-			auth_subject_id, provider, last_probe_state, error_code, error_summary,
-			upstream_checked_at, version, updated_at
-		) VALUES (?, ?, 'error', ?, ?, ?, 1, ?)
-		ON CONFLICT(auth_subject_id) DO UPDATE SET
-			provider = excluded.provider,
-			last_probe_state = 'error',
-			error_code = excluded.error_code,
-			error_summary = excluded.error_summary,
-			upstream_checked_at = excluded.upstream_checked_at,
-			version = ai_account_subject_status.version + 1,
-			updated_at = excluded.updated_at
-	`, subjectID, provider, strings.TrimSpace(errorCode), sanitizeSharedStatusError(errorSummary),
-		checked.UTC().Format(time.RFC3339Nano), checked.UTC().Format(time.RFC3339Nano))
-	if err != nil {
-		return fmt.Errorf("usage: update shared ai account failure: %w", err)
-	}
-	return nil
-}
-
-func sanitizeSharedStatusError(value string) string {
-	value = strings.ToLower(strings.TrimSpace(value))
-	switch {
-	case strings.Contains(value, "timeout"), strings.Contains(value, "deadline"):
-		return "upstream status probe timed out"
-	case strings.Contains(value, "unauthorized"), strings.Contains(value, "http 401"):
-		return "upstream authorization failed"
-	case strings.Contains(value, "forbidden"), strings.Contains(value, "http 403"):
-		return "upstream access was denied"
-	default:
-		return "upstream status probe failed"
-	}
-}
-
-func ListAIAccountSubjectStatus(subjectIDs []string) ([]AIAccountSubjectStatusRecord, error) {
-	db := getReadDB()
-	ids := dedupeExactStrings(subjectIDs)
-	if db == nil || len(ids) == 0 {
-		return []AIAccountSubjectStatusRecord{}, nil
-	}
-	args := make([]any, 0, len(ids))
-	for _, id := range ids {
-		args = append(args, id)
-	}
-	rows, err := db.Query(`
-		SELECT auth_subject_id, provider, last_probe_state, health_status, plan_type,
-			subscription_started_at, subscription_expires_at, subscription_source,
-			restriction_summary, error_code, error_summary, quota_json,
-			reset_credit_count, reset_credit_expirations, upstream_checked_at, version, updated_at
-		FROM ai_account_subject_status
-		WHERE auth_subject_id IN (`+strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")+`)
-	`, args...)
-	if err != nil {
-		return nil, fmt.Errorf("usage: list shared ai account status: %w", err)
-	}
-	defer rows.Close()
-	out := make([]AIAccountSubjectStatusRecord, 0, len(ids))
-	for rows.Next() {
-		var row AIAccountSubjectStatusRecord
-		var started, expires, checked, updated sql.NullString
-		var reset sql.NullInt64
-		var quotaJSON, expJSON string
-		if err := rows.Scan(&row.AuthSubjectID, &row.Provider, &row.LastProbeState, &row.HealthStatus, &row.PlanType,
-			&started, &expires, &row.SubscriptionSource, &row.RestrictionSummary, &row.ErrorCode, &row.ErrorSummary,
-			&quotaJSON, &reset, &expJSON, &checked, &row.Version, &updated); err != nil {
-			return nil, err
-		}
-		row.SubscriptionStartedAt = parseNullableTime(started)
-		row.SubscriptionExpiresAt = parseNullableTime(expires)
-		row.UpstreamCheckedAt = parseNullableTime(checked)
-		row.Quotas = decodeQuotaWindows(quotaJSON)
-		row.ResetCreditExpirations = decodeStringSlice(expJSON)
-		if reset.Valid {
-			v := reset.Int64
-			row.ResetCreditCount = &v
-		}
-		if t, ok := parseStoredTimeString(updated.String); ok {
-			row.UpdatedAt = t
-		}
-		out = append(out, row)
 	}
 	return out, rows.Err()
 }

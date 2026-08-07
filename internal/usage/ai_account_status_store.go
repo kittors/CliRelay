@@ -19,6 +19,13 @@ type QuotaWindowDTO struct {
 	WindowSeconds int64      `json:"window_seconds,omitempty"`
 	Value         string     `json:"value,omitempty"`
 	Meta          string     `json:"meta,omitempty"`
+	// ObservedAt is when this specific window was last confirmed by the upstream.
+	// Upstreams routinely return only a subset of windows per probe (codex answers
+	// with just `rate_limit` or just `additional_rate_limits` in ~20% of probes), so
+	// windows carried forward by a merge keep their original timestamp instead of
+	// inheriting the probe time. Nil means "unknown" (pre-migration rows) and the
+	// row-level QuotaObservedAt is used as the fallback.
+	ObservedAt *time.Time `json:"observed_at,omitempty"`
 }
 
 // AIAccountStatusRecord is the persisted latest status for one tenant+auth_subject_id.

@@ -22,7 +22,7 @@
       },
       {
         "path": "internal/management/aiaccountstatus/service.go",
-        "max_lines": 1066
+        "max_lines": 1001
       },
       {
         "path": "internal/management/modelcatalog/availability.go",
@@ -42,7 +42,7 @@
       },
       {
         "path": "internal/storage/postgres/migrations.go",
-        "max_lines": 1115
+        "max_lines": 881
       },
       {
         "path": "internal/storage/sqlite/apikey/store.go",
@@ -54,7 +54,7 @@
       },
       {
         "path": "internal/usage/ai_account_subject_store.go",
-        "max_lines": 1075
+        "max_lines": 905
       },
       {
         "path": "internal/usage/openrouter_model_sync.go",

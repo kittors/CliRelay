@@ -77,10 +77,14 @@ type AccountStatusView struct {
 	SubscriptionExpiresAt     *time.Time                    `json:"subscription_expires_at,omitempty"`
 	SubscriptionSource        string                        `json:"subscription_source,omitempty"`
 	UpstreamCheckedAt         *time.Time                    `json:"upstream_checked_at,omitempty"`
-	UsageUpdatedAt            *time.Time                    `json:"usage_updated_at,omitempty"`
-	ExpiresAt                 *time.Time                    `json:"expires_at,omitempty"`
-	Version                   int64                         `json:"version"`
-	UpdatedAt                 *time.Time                    `json:"updated_at,omitempty"`
+	// QuotaObservedAt dates the quota payload itself. It lags UpstreamCheckedAt
+	// whenever probes are failing or returning partial window sets, which is what
+	// lets the panel mark quota values as stale instead of implying they are live.
+	QuotaObservedAt *time.Time `json:"quota_observed_at,omitempty"`
+	UsageUpdatedAt  *time.Time `json:"usage_updated_at,omitempty"`
+	ExpiresAt       *time.Time `json:"expires_at,omitempty"`
+	Version         int64      `json:"version"`
+	UpdatedAt       *time.Time `json:"updated_at,omitempty"`
 }
 
 type StatusListResponse struct {
