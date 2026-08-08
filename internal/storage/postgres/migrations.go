@@ -43,24 +43,11 @@ func RuntimeMigrations() []Migration {
 		// Separate "when did we last try" from "when was this quota actually observed",
 		// so a failing probe can no longer make stale quota look freshly checked.
 		{Version: "202608070001_ai_account_quota_observed_at", SQL: aiAccountQuotaObservedAtSQL},
+		// Retire audit rows written by the pre-fix policy that logged read traffic,
+		// and index created_at for the new retention pass.
+		{Version: "202608080001_audit_log_read_noise_cleanup", SQL: auditLogReadNoiseCleanupSQL},
 	}
 }
-
-const aiAccountQuotaObservedAtSQL = `
-ALTER TABLE ai_account_subject_status
-ADD COLUMN IF NOT EXISTS quota_observed_at TIMESTAMPTZ;
-
--- ai_account_subject_quota_points is only written after a successful probe, so its
--- newest row dates the stored payload correctly even for accounts that have been
--- failing for days (whose upstream_checked_at has moved far past the data it describes).
-UPDATE ai_account_subject_status s
-SET quota_observed_at = COALESCE(
-  (SELECT MAX(p.recorded_at) FROM ai_account_subject_quota_points p
-   WHERE p.auth_subject_id = s.auth_subject_id),
-  CASE WHEN s.last_probe_state = 'success' THEN s.upstream_checked_at END
-)
-WHERE s.quota_observed_at IS NULL AND s.quota_json <> '[]';
-`
 
 const aiAccountSubjectUsageTokensSQL = `
 ALTER TABLE ai_account_subject_usage_buckets

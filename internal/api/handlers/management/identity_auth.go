@@ -85,18 +85,34 @@ func (h *Handler) recordManagementAudit(c *gin.Context, principal identity.Princ
 	if result == "" {
 		switch status := c.Writer.Status(); {
 		case status < http.StatusBadRequest:
-			result = "success"
+			result = auditResultSuccess
 		case status == http.StatusUnauthorized || status == http.StatusForbidden:
-			result = "denied"
+			result = auditResultDenied
 		default:
-			result = "failed"
+			result = auditResultFailed
 		}
 	}
-	if result == "success" && isTenantGovernancePath(c.Request.URL.Path) {
+	if result == auditResultSuccess && isTenantGovernancePath(c.Request.URL.Path) {
 		return
 	}
-	if result == "success" && !write && !sensitiveRead {
+	if !shouldRecordManagementAudit(write, sensitiveRead, result) {
 		return
+	}
+	action := "management." + strings.ToLower(c.Request.Method)
+	// Reads that reach this point were refused, and a client polling a route it
+	// lacks permission for repeats that refusal indefinitely. Collapse the repeats
+	// into one row per window; writes are never collapsed because each one is a
+	// distinct attempt to change something.
+	var repeat map[string]any
+	if !write {
+		key := auditRepeatKey(principal.EffectiveTenant.ID, principal.Kind, principal.User.ID, action, resourceType, resourceID, result)
+		allowed, folded := h.auditRepeat.admit(key, time.Now())
+		if !allowed {
+			return
+		}
+		if folded > 0 {
+			repeat = auditRepeatNote(folded, auditRepeatWindow)
+		}
 	}
 	// Prefer middleware-assigned ID; fall back to generating one so audit rows stay correlatable
 	// even if request-id middleware skipped this path (e.g. older deployments / test routers).
@@ -114,37 +130,41 @@ func (h *Handler) recordManagementAudit(c *gin.Context, principal identity.Princ
 	routePath := strings.TrimPrefix(c.Request.URL.Path, "/v0/management")
 	handlerName := c.Request.Method + " " + routePath
 	permission := permissionForManagementRequest(c.Request.Method, c.Request.URL.Path)
+	changes := map[string]any{
+		"http": map[string]any{
+			"method": c.Request.Method,
+			"path":   c.Request.URL.Path,
+			"status": c.Writer.Status(),
+		},
+		"permission": permission,
+		// call_chain reconstructs the management request path for audit detail UI.
+		"call_chain": []map[string]any{
+			{"step": 1, "layer": "http", "name": c.Request.Method + " " + c.Request.URL.Path, "detail": "client request"},
+			{"step": 2, "layer": "middleware", "name": "management.auth", "detail": "session + RBAC"},
+			{"step": 3, "layer": "handler", "name": handlerName, "package": "internal/api/handlers/management"},
+			{"step": 4, "layer": "service", "name": "identity/management service", "resource": resourceType, "resource_id": resourceID},
+		},
+		"project_method": map[string]any{
+			"package":  "internal/api/handlers/management",
+			"handler":  handlerName,
+			"resource": resourceType,
+			"route":    routePath,
+		},
+	}
+	if repeat != nil {
+		changes["repeat"] = repeat
+	}
 	service.RecordAudit(c.Request.Context(), identity.AuditEvent{
 		TenantID:       principal.EffectiveTenant.ID,
 		ActorKind:      principal.Kind,
 		ActorUserID:    principal.User.ID,
 		ActorSessionID: principal.SessionID,
-		Action:         "management." + strings.ToLower(c.Request.Method),
+		Action:         action,
 		ResourceType:   resourceType,
 		ResourceID:     resourceID,
 		Result:         result,
 		RequestID:      requestID,
-		Changes: map[string]any{
-			"http": map[string]any{
-				"method": c.Request.Method,
-				"path":   c.Request.URL.Path,
-				"status": c.Writer.Status(),
-			},
-			"permission": permission,
-			// call_chain reconstructs the management request path for audit detail UI.
-			"call_chain": []map[string]any{
-				{"step": 1, "layer": "http", "name": c.Request.Method + " " + c.Request.URL.Path, "detail": "client request"},
-				{"step": 2, "layer": "middleware", "name": "management.auth", "detail": "session + RBAC"},
-				{"step": 3, "layer": "handler", "name": handlerName, "package": "internal/api/handlers/management"},
-				{"step": 4, "layer": "service", "name": "identity/management service", "resource": resourceType, "resource_id": resourceID},
-			},
-			"project_method": map[string]any{
-				"package":  "internal/api/handlers/management",
-				"handler":  handlerName,
-				"resource": resourceType,
-				"route":    routePath,
-			},
-		},
+		Changes:        changes,
 	})
 }
 

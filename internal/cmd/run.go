@@ -140,6 +140,23 @@ func startSessionReaper(service *identity.Service, interval time.Duration) {
 	sessionReaperStop = service.StartSessionReaper(context.Background(), interval)
 }
 
+// auditRetentionStop mirrors the session reaper's lifecycle: started with the
+// runtime data stack, so it has to be stopped with it or a re-initialisation
+// leaks a goroutine and a ticker.
+var (
+	auditRetentionMu   sync.Mutex
+	auditRetentionStop func()
+)
+
+func startAuditRetention(service *identity.Service, policy identity.AuditRetentionPolicy) {
+	auditRetentionMu.Lock()
+	defer auditRetentionMu.Unlock()
+	if auditRetentionStop != nil {
+		auditRetentionStop()
+	}
+	auditRetentionStop = service.StartAuditRetention(context.Background(), policy)
+}
+
 // stopRuntimeDataStack tears down everything initializeRuntimeDataStack started.
 func stopRuntimeDataStack() {
 	sessionReaperMu.Lock()
@@ -148,6 +165,13 @@ func stopRuntimeDataStack() {
 	sessionReaperMu.Unlock()
 	if stop != nil {
 		stop()
+	}
+	auditRetentionMu.Lock()
+	stopAudit := auditRetentionStop
+	auditRetentionStop = nil
+	auditRetentionMu.Unlock()
+	if stopAudit != nil {
+		stopAudit()
 	}
 	usage.StopRedis()
 }
@@ -198,6 +222,7 @@ func initializeRuntimeDataStack(cfg *config.Config, configPath string, loc *time
 	identity.SetDefault(identityService)
 	identityService.SetSessionPolicy(identity.SessionPolicyFromConfig(cfg))
 	startSessionReaper(identityService, identity.SessionReaperIntervalFromConfig(cfg))
+	startAuditRetention(identityService, identity.AuditRetentionPolicyFromConfig(cfg))
 	// Import YAML keys first so one-shot end-user backfill can see them.
 	if _, err := usage.MigrateAPIKeysFromConfig(cfg, configPath); err != nil {
 		return fmt.Errorf("migrate api keys from config: %w", err)

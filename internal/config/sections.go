@@ -86,6 +86,13 @@ type AuthHardening struct {
 	AbsoluteRefreshTTLHours int `yaml:"absolute-refresh-ttl-hours,omitempty"`
 	// SessionReaperIntervalMinutes controls expired token/session GC. Default 60.
 	SessionReaperIntervalMinutes int `yaml:"session-reaper-interval-minutes,omitempty"`
+	// AuditRetentionDays drops audit_logs rows older than this. Default 180.
+	// Negative disables the age limit and keeps rows until the row cap applies.
+	AuditRetentionDays int `yaml:"audit-retention-days,omitempty"`
+	// AuditMaxRows caps audit_logs; the oldest rows are pruned first. Default
+	// 200000. Negative disables the cap. It is a runaway guard, not a trim: with
+	// the audit write policy in place, normal use stays orders of magnitude below.
+	AuditMaxRows int `yaml:"audit-max-rows,omitempty"`
 }
 
 // AutoUpdateConfig holds Docker-first update check and sidecar settings.

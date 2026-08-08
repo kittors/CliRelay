@@ -31,6 +31,7 @@ type Handler struct {
 	configFilePath       string
 	mu                   sync.Mutex
 	loginThrottle        *loginThrottle
+	auditRepeat          *auditRepeatLimiter
 	authManager          *coreauth.Manager
 	usageStats           *usage.RequestStatistics
 	tokenStore           coreauth.Store
@@ -66,6 +67,7 @@ func NewHandler(cfg *config.Config, configFilePath string, manager *coreauth.Man
 		cfg:                 cfg,
 		configFilePath:      configFilePath,
 		loginThrottle:       newLoginThrottle(throttlePoliciesFromConfig(cfg)),
+		auditRepeat:         newAuditRepeatLimiter(auditRepeatWindow, auditRepeatIdleTTL),
 		authManager:         manager,
 		usageStats:          usage.GetRequestStatistics(),
 		tokenStore:          sdkAuth.GetTokenStore(),
