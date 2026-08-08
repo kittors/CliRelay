@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -17,6 +16,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/contentmoderation"
 	internalusage "github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
+	cliproxyusage "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/usage"
 )
 
 func setUsageBodyCaptureForTest(t *testing.T, enabled bool) {
@@ -80,6 +80,29 @@ func TestParseOpenAIUsageUnwrapsProviderDataEnvelope(t *testing.T) {
 	}
 }
 
+func TestParseCodexUsageAcceptsTopLevelUsage(t *testing.T) {
+	data := []byte(`{"type":"response.done","usage":{"input_tokens":4,"output_tokens":6,"total_tokens":10,"input_tokens_details":{"cached_tokens":2},"output_tokens_details":{"reasoning_tokens":3}}}`)
+	detail, ok := parseCodexUsage(data)
+	if !ok {
+		t.Fatal("parseCodexUsage() ok = false, want true")
+	}
+	if detail.InputTokens != 4 {
+		t.Fatalf("input tokens = %d, want %d", detail.InputTokens, 4)
+	}
+	if detail.OutputTokens != 6 {
+		t.Fatalf("output tokens = %d, want %d", detail.OutputTokens, 6)
+	}
+	if detail.TotalTokens != 10 {
+		t.Fatalf("total tokens = %d, want %d", detail.TotalTokens, 10)
+	}
+	if detail.CachedTokens != 2 {
+		t.Fatalf("cached tokens = %d, want %d", detail.CachedTokens, 2)
+	}
+	if detail.ReasoningTokens != 3 {
+		t.Fatalf("reasoning tokens = %d, want %d", detail.ReasoningTokens, 3)
+	}
+}
+
 func TestParseOpenAIResponseModel(t *testing.T) {
 	if got := parseOpenAIResponseModel([]byte(`{"model":"gpt-5.4","usage":{"total_tokens":1}}`)); got != "gpt-5.4" {
 		t.Fatalf("model = %q, want gpt-5.4", got)
@@ -125,19 +148,29 @@ func TestUsageReporterSpillsLargeStreamingOutputToTempFile(t *testing.T) {
 	}
 }
 
-func TestShouldSuppressUsageFailureForContextCanceled(t *testing.T) {
-	if !shouldSuppressUsageFailure(context.Canceled, "") {
-		t.Fatal("context.Canceled should not be published as a failed usage record")
-	}
-	wrapped := &urlErrorForTest{err: context.Canceled}
-	if !shouldSuppressUsageFailure(wrapped, "") {
-		t.Fatal("wrapped context.Canceled should not be published as a failed usage record")
-	}
-	if !shouldSuppressUsageFailure(nil, `Post "https://chatgpt.com/backend-api/codex/responses": context canceled`) {
-		t.Fatal("context canceled output text should not be published as a failed usage record")
-	}
-	if shouldSuppressUsageFailure(errors.New("upstream 500"), "") {
-		t.Fatal("ordinary upstream errors should still be published as failed usage records")
+func TestUsageReporterPublishesContextCanceledFailure(t *testing.T) {
+	usagePlugin := &usageCapturePlugin{records: make(chan cliproxyusage.Record, 8)}
+	cliproxyusage.RegisterPlugin(usagePlugin)
+
+	reporter := newUsageReporter(context.Background(), "gemini", "gemini-cancel-log-test", "gemini-cancel-log-test", nil)
+	err := context.Canceled
+	reporter.trackFailure(context.Background(), &err)
+
+	timer := time.NewTimer(2 * time.Second)
+	defer timer.Stop()
+	for {
+		select {
+		case record := <-usagePlugin.records:
+			if record.Provider != "gemini" || record.Model != "gemini-cancel-log-test" {
+				continue
+			}
+			if !record.Failed {
+				t.Fatal("context canceled usage record should be marked failed")
+			}
+			return
+		case <-timer.C:
+			t.Fatal("timed out waiting for context canceled usage record")
+		}
 	}
 }
 
