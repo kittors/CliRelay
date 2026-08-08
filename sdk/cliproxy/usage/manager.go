@@ -78,15 +78,14 @@ type queueItem struct {
 
 // Manager maintains a queue of usage records and delivers them to registered plugins.
 type Manager struct {
-	once     sync.Once
-	stopOnce sync.Once
-	cancel   context.CancelFunc
+	cancel context.CancelFunc
 
 	mu       sync.Mutex
 	cond     *sync.Cond
 	queue    []queueItem
 	capacity int
 	closed   bool
+	running  bool
 
 	pluginsMu sync.RWMutex
 	plugins   []Plugin
@@ -107,14 +106,22 @@ func (m *Manager) Start(ctx context.Context) {
 	if m == nil {
 		return
 	}
-	m.once.Do(func() {
-		if ctx == nil {
-			ctx = context.Background()
-		}
-		var workerCtx context.Context
-		workerCtx, m.cancel = context.WithCancel(ctx)
-		go m.run(workerCtx)
-	})
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	m.mu.Lock()
+	if m.running {
+		m.mu.Unlock()
+		return
+	}
+	var workerCtx context.Context
+	workerCtx, m.cancel = context.WithCancel(ctx)
+	m.closed = false
+	m.running = true
+	m.mu.Unlock()
+
+	go m.run(workerCtx)
 }
 
 // Stop stops the dispatcher and drains the queue.
@@ -122,15 +129,23 @@ func (m *Manager) Stop() {
 	if m == nil {
 		return
 	}
-	m.stopOnce.Do(func() {
-		if m.cancel != nil {
-			m.cancel()
-		}
-		m.mu.Lock()
+	m.mu.Lock()
+	if !m.running {
 		m.closed = true
 		m.mu.Unlock()
 		m.cond.Broadcast()
-	})
+		return
+	}
+	if m.cancel != nil {
+		m.cancel()
+		m.cancel = nil
+	}
+	m.closed = true
+	m.cond.Broadcast()
+	for m.running {
+		m.cond.Wait()
+	}
+	m.mu.Unlock()
 }
 
 // Register appends a plugin to the delivery list.
@@ -173,6 +188,9 @@ func (m *Manager) run(ctx context.Context) {
 			m.cond.Wait()
 		}
 		if len(m.queue) == 0 && m.closed {
+			m.running = false
+			m.cancel = nil
+			m.cond.Broadcast()
 			m.mu.Unlock()
 			return
 		}

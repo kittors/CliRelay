@@ -128,3 +128,33 @@ func TestManagerDoesNotRetainRequestContext(t *testing.T) {
 	}
 	manager.Stop()
 }
+
+func TestManagerRestartsAfterStop(t *testing.T) {
+	manager := NewManager(2)
+	plugin := &observingPlugin{seen: make(chan Record, 2)}
+	manager.Register(plugin)
+
+	manager.Publish(context.Background(), Record{Model: "before-stop"})
+	select {
+	case record := <-plugin.seen:
+		if record.Model != "before-stop" {
+			t.Fatalf("first record model = %q, want before-stop", record.Model)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("plugin did not receive first record")
+	}
+
+	manager.Stop()
+	manager.Start(context.Background())
+	manager.Publish(context.Background(), Record{Model: "after-restart"})
+
+	select {
+	case record := <-plugin.seen:
+		if record.Model != "after-restart" {
+			t.Fatalf("restarted record model = %q, want after-restart", record.Model)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("plugin did not receive record after manager restart")
+	}
+	manager.Stop()
+}
