@@ -1,12 +1,8 @@
 package contentmoderation
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
-	"fmt"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 )
@@ -15,6 +11,7 @@ const (
 	ActionAllow        = "allow"
 	ActionKeywordBlock = "keyword_block"
 	ActionAPIBlock     = "api_block"
+	ActionGuardBlock   = "guard_block"
 	ActionAPIError     = "api_error"
 )
 
@@ -26,8 +23,31 @@ type Decision struct {
 	HighestScore    float64            `json:"highest_score,omitempty"`
 	CategoryScores  map[string]float64 `json:"category_scores"`
 	Thresholds      map[string]float64 `json:"thresholds"`
-	LatencyMS       int64              `json:"latency_ms"`
-	ModerationError string             `json:"moderation_error,omitempty"`
+	// Safety, Categories and MatchedScanners come from guard backends that
+	// classify into labels instead of per-category scores.
+	Safety          string   `json:"safety,omitempty"`
+	Categories      []string `json:"categories,omitempty"`
+	MatchedScanners []string `json:"matched_scanners,omitempty"`
+	LatencyMS       int64    `json:"latency_ms"`
+	ModerationError string   `json:"moderation_error,omitempty"`
+}
+
+// backendResult is one moderation upstream's verdict, normalized across the
+// score-based and label-based backends.
+type backendResult struct {
+	Scores            map[string]float64
+	Safety            string
+	Categories        []string
+	MatchedScanners   []string
+	UnknownCategories []string
+	Block             bool
+}
+
+// moderationBackend is the pluggable upstream behind a profile. Implementations
+// own their wire protocol and their own block decision; the evaluator owns the
+// surrounding policy (mode, keywords, fail-open) that is identical for all.
+type moderationBackend interface {
+	Check(ctx context.Context, profile Profile, input string) (backendResult, error)
 }
 
 type Evaluator struct {
@@ -39,6 +59,13 @@ func NewEvaluator(client *http.Client) *Evaluator {
 		client = http.DefaultClient
 	}
 	return &Evaluator{httpClient: client}
+}
+
+func (e *Evaluator) backendFor(profile Profile) moderationBackend {
+	if profile.Backend == BackendQwen3Guard {
+		return &qwen3GuardBackend{httpClient: e.httpClient}
+	}
+	return &openaiModerationsBackend{httpClient: e.httpClient}
 }
 
 func (e *Evaluator) Evaluate(ctx context.Context, profile Profile, input string) Decision {
@@ -59,25 +86,32 @@ func (e *Evaluator) Evaluate(ctx context.Context, profile Profile, input string)
 		return decision
 	}
 	start := time.Now()
-	scores, err := e.callModeration(ctx, profile, input)
+	result, err := e.backendFor(profile).Check(ctx, profile, input)
 	decision.LatencyMS = time.Since(start).Milliseconds()
 	if err != nil {
+		// Fail open: a broken moderation dependency must not take traffic down.
 		decision.Action = ActionAPIError
 		decision.ModerationError = err.Error()
 		return decision
 	}
-	decision.CategoryScores = scores
-	for category, score := range scores {
+	if result.Scores != nil {
+		decision.CategoryScores = result.Scores
+	}
+	decision.Safety = result.Safety
+	decision.Categories = result.Categories
+	decision.MatchedScanners = result.MatchedScanners
+	for category, score := range decision.CategoryScores {
 		if decision.HighestCategory == "" || score > decision.HighestScore {
 			decision.HighestCategory = category
 			decision.HighestScore = score
 		}
-		if threshold, ok := decision.Thresholds[category]; ok && score >= threshold {
-			decision.WouldBlock = true
-		}
 	}
-	if decision.WouldBlock {
+	if result.Block {
+		decision.WouldBlock = true
 		decision.Action = ActionAPIBlock
+		if profile.Backend == BackendQwen3Guard {
+			decision.Action = ActionGuardBlock
+		}
 	}
 	return decision
 }
@@ -91,47 +125,4 @@ func matchKeyword(input string, keywords []string) (string, bool) {
 		}
 	}
 	return "", false
-}
-
-func (e *Evaluator) callModeration(ctx context.Context, profile Profile, input string) (map[string]float64, error) {
-	endpoint, err := url.JoinPath(strings.TrimRight(profile.BaseURL, "/"), "v1/moderations")
-	if err != nil {
-		return nil, fmt.Errorf("invalid moderation base URL: %w", err)
-	}
-	payload, err := json.Marshal(struct {
-		Model string `json:"model"`
-		Input string `json:"input"`
-	}{Model: profile.Model, Input: input})
-	if err != nil {
-		return nil, fmt.Errorf("encode moderation request: %w", err)
-	}
-	timeout := time.Duration(profile.TimeoutMS) * time.Millisecond
-	requestCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	req, err := http.NewRequestWithContext(requestCtx, http.MethodPost, endpoint, bytes.NewReader(payload))
-	if err != nil {
-		return nil, fmt.Errorf("create moderation request: %w", err)
-	}
-	req.Header.Set("Authorization", "Bearer "+profile.APIKeySecret)
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := e.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("moderation request failed: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("moderation API returned status %d", resp.StatusCode)
-	}
-	var result struct {
-		Results []struct {
-			CategoryScores map[string]float64 `json:"category_scores"`
-		} `json:"results"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, fmt.Errorf("decode moderation response: %w", err)
-	}
-	if len(result.Results) == 0 || result.Results[0].CategoryScores == nil {
-		return nil, fmt.Errorf("moderation response missing category scores")
-	}
-	return result.Results[0].CategoryScores, nil
 }

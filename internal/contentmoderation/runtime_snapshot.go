@@ -16,6 +16,7 @@ type RuntimeSnapshot struct {
 	ProfileID        string   `json:"profile_id"`
 	ProfileName      string   `json:"profile_name"`
 	ProfileVersion   int64    `json:"profile_version"`
+	Backend          string   `json:"backend,omitempty"`
 	ResolutionSource string   `json:"resolution_source"`
 	ChannelType      string   `json:"channel_type"`
 	ChannelID        string   `json:"channel_id"`
@@ -24,10 +25,14 @@ type RuntimeSnapshot struct {
 	MatchedKeyword   string   `json:"matched_keyword,omitempty"`
 	HighestCategory  string   `json:"highest_category,omitempty"`
 	HighestScore     *float64 `json:"highest_score,omitempty"`
-	LatencyMS        int64    `json:"latency_ms"`
-	CacheHit         bool     `json:"cache_hit"`
-	ErrorClass       string   `json:"error_class,omitempty"`
-	ModerationError  string   `json:"moderation_error,omitempty"`
+	// Safety and MatchedScanners describe a guard verdict; a guard can block
+	// without an enabled category, so they are recorded independently.
+	Safety          string   `json:"safety,omitempty"`
+	MatchedScanners []string `json:"matched_scanners,omitempty"`
+	LatencyMS       int64    `json:"latency_ms"`
+	CacheHit        bool     `json:"cache_hit"`
+	ErrorClass      string   `json:"error_class,omitempty"`
+	ModerationError string   `json:"moderation_error,omitempty"`
 }
 
 // SetRuntimeSnapshot attaches a moderation outcome to the request's Gin context.
@@ -61,6 +66,7 @@ func (m *RuntimeModerator) setSnapshot(ctx context.Context, auth *coreauth.Auth,
 		ProfileID:        profile.ID,
 		ProfileName:      profile.Name,
 		ProfileVersion:   profile.Version,
+		Backend:          profile.Backend,
 		ResolutionSource: source,
 		ChannelType:      channelType,
 		ChannelID:        channelID,
@@ -68,6 +74,8 @@ func (m *RuntimeModerator) setSnapshot(ctx context.Context, auth *coreauth.Auth,
 		WouldBlock:       decision.WouldBlock,
 		MatchedKeyword:   decision.MatchedKeyword,
 		HighestCategory:  decision.HighestCategory,
+		Safety:           decision.Safety,
+		MatchedScanners:  decision.MatchedScanners,
 		LatencyMS:        decision.LatencyMS,
 		CacheHit:         cached,
 	}
@@ -92,6 +100,8 @@ func moderationErrorSummary(errorClass string) string {
 		return "moderation API returned an invalid response"
 	case "transport":
 		return "moderation API transport failed"
+	case "invalid_config":
+		return "moderation endpoint is misconfigured"
 	default:
 		return "moderation API evaluation failed"
 	}

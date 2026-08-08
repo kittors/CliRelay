@@ -312,6 +312,14 @@ func (m *RuntimeModerator) logDecision(tenantID string, auth *coreauth.Auth, sou
 		fields["category"] = decision.HighestCategory
 		fields["score"] = decision.HighestScore
 	}
+	// A guard verdict can block without naming an enabled category (unknown or
+	// unnamed risk), so the label is logged independently of category/score.
+	if decision.Safety != "" {
+		fields["safety"] = decision.Safety
+	}
+	if len(decision.MatchedScanners) > 0 {
+		fields["matched_scanners"] = strings.Join(decision.MatchedScanners, ",")
+	}
 	entry := log.WithFields(fields)
 	if decision.WouldBlock {
 		entry.Warn("content moderation blocked request")
@@ -423,10 +431,15 @@ func moderationErrorClass(message string) string {
 		return "timeout"
 	case strings.Contains(message, "returned status"):
 		return "upstream_status"
-	case strings.Contains(message, "decode") || strings.Contains(message, "missing category scores"):
+	case strings.Contains(message, "decode") ||
+		strings.Contains(message, "missing category scores") ||
+		strings.Contains(message, "not a valid verdict") ||
+		strings.Contains(message, "exceeds size limit"):
 		return "invalid_response"
 	case strings.Contains(message, "request failed"):
 		return "transport"
+	case strings.Contains(message, "base url"):
+		return "invalid_config"
 	default:
 		return "moderation_error"
 	}
