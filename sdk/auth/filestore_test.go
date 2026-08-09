@@ -3,6 +3,8 @@ package auth
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"net/http"
 	"os"
 	"path/filepath"
 	"testing"
@@ -274,6 +276,84 @@ func TestFileTokenStoreListNormalizesXAIImportMetadata(t *testing.T) {
 	}
 	if persisted["auth_kind"] != "oauth" || persisted["type"] != "xai" {
 		t.Fatalf("persisted = %#v", persisted)
+	}
+}
+
+func TestFileTokenStoreListRecordsProjectIDFetchFailureCooldown(t *testing.T) {
+	dir := t.TempDir()
+	fileName := "antigravity-missing-project.json"
+	path := filepath.Join(dir, fileName)
+	data := []byte(`{"type":"antigravity","email":"anti@example.com","access_token":"access","refresh_token":"refresh"}`)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	origFetch := fetchAntigravityProjectID
+	defer func() { fetchAntigravityProjectID = origFetch }()
+	calls := 0
+	fetchAntigravityProjectID = func(context.Context, string, *http.Client) (string, error) {
+		calls++
+		return "", errors.New("no project_id in response")
+	}
+
+	store := NewFileTokenStore()
+	store.SetBaseDir(dir)
+	if _, err := store.List(context.Background()); err != nil {
+		t.Fatalf("first List: %v", err)
+	}
+	if _, err := store.List(context.Background()); err != nil {
+		t.Fatalf("second List: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("project fetch calls = %d, want 1", calls)
+	}
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	var persisted map[string]any
+	if err := json.Unmarshal(raw, &persisted); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if _, ok := persisted[projectIDFetchFailedAtKey].(string); !ok {
+		t.Fatalf("missing %s in persisted metadata: %#v", projectIDFetchFailedAtKey, persisted)
+	}
+}
+
+func TestFileTokenStoreListSkipsProjectIDFetchDuringCooldown(t *testing.T) {
+	dir := t.TempDir()
+	fileName := "antigravity-cooldown.json"
+	path := filepath.Join(dir, fileName)
+	data, err := json.Marshal(map[string]any{
+		"type":                    "antigravity",
+		"email":                   "anti@example.com",
+		"access_token":            "access",
+		"refresh_token":           "refresh",
+		projectIDFetchFailedAtKey: time.Now().UTC().Format(time.RFC3339),
+	})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	origFetch := fetchAntigravityProjectID
+	defer func() { fetchAntigravityProjectID = origFetch }()
+	calls := 0
+	fetchAntigravityProjectID = func(context.Context, string, *http.Client) (string, error) {
+		calls++
+		return "project-id", nil
+	}
+
+	store := NewFileTokenStore()
+	store.SetBaseDir(dir)
+	if _, err := store.List(context.Background()); err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if calls != 0 {
+		t.Fatalf("project fetch calls = %d, want 0", calls)
 	}
 }
 

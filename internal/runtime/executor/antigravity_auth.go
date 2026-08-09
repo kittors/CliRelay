@@ -125,7 +125,11 @@ func (e *AntigravityExecutor) refreshToken(ctx context.Context, auth *cliproxyau
 	auth.Metadata["expired"] = now.Add(time.Duration(tokenResp.ExpiresIn) * time.Second).Format(time.RFC3339)
 	auth.Metadata["type"] = antigravityAuthType
 	if errProject := e.ensureAntigravityProjectID(ctx, auth, tokenResp.AccessToken); errProject != nil {
-		log.Warnf("antigravity executor: ensure project id failed: %v", errProject)
+		if isAntigravityProjectIDMissing(errProject) {
+			log.Debugf("antigravity executor: project id unavailable: %v", errProject)
+		} else {
+			log.Warnf("antigravity executor: ensure project id failed: %v", errProject)
+		}
 	}
 	return auth, nil
 }
@@ -161,6 +165,10 @@ func (e *AntigravityExecutor) ensureAntigravityProjectID(ctx context.Context, au
 	auth.Metadata["project_id"] = strings.TrimSpace(projectID)
 
 	return nil
+}
+
+func isAntigravityProjectIDMissing(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "no project_id in response")
 }
 
 func tokenExpiry(metadata map[string]any) time.Time {
