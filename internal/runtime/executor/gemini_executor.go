@@ -16,6 +16,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
+	cliproxyusage "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/usage"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v6/sdk/translator"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
@@ -260,6 +261,7 @@ func (e *GeminiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 		return nil, err
 	}
 	out := make(chan cliproxyexecutor.StreamChunk)
+	reporter.setInputContent(string(req.Payload))
 	go func() {
 		defer close(out)
 		defer func() {
@@ -270,17 +272,21 @@ func (e *GeminiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 		scanner := bufio.NewScanner(httpResp.Body)
 		scanner.Buffer(nil, streamScannerBuffer)
 		var param any
+		var lastUsage cliproxyusage.Detail
+		hasUsage := false
 		for scanner.Scan() {
 			line := scanner.Bytes()
 			recorder.AppendResponseChunk(line)
+			if detail, ok := parseGeminiStreamUsage(line); ok {
+				lastUsage = detail
+				hasUsage = true
+			}
 			filtered := FilterSSEUsageMetadata(line)
 			payload := jsonPayload(filtered)
 			if len(payload) == 0 {
 				continue
 			}
-			if detail, ok := parseGeminiStreamUsage(payload); ok {
-				reporter.publish(execCtx.Context, detail)
-			}
+			reporter.appendOutputChunk(payload)
 			lines := sdktranslator.TranslateStream(execCtx.Context, to, execCtx.SourceFormat, req.Model, opts.OriginalRequest, body, bytes.Clone(payload), &param)
 			for i := range lines {
 				out <- cliproxyexecutor.StreamChunk{Payload: []byte(lines[i])}
@@ -294,7 +300,13 @@ func (e *GeminiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 			recorder.RecordResponseError(errScan)
 			reporter.publishFailure(execCtx.Context)
 			out <- cliproxyexecutor.StreamChunk{Err: errScan}
+			return
 		}
+		if hasUsage {
+			reporter.publish(execCtx.Context, lastUsage)
+			return
+		}
+		reporter.ensurePublished(execCtx.Context)
 	}()
 	return &cliproxyexecutor.StreamResult{Headers: httpResp.Header.Clone(), Chunks: out}, nil
 }

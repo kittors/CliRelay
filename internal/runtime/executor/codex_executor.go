@@ -234,6 +234,10 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 
 		if detail, ok := parseCodexUsage(line); ok {
 			reporter.publishWithContentBytes(execCtx.Context, detail, req.Payload, string(data))
+		} else {
+			reporter.setInputContentBytes(req.Payload)
+			reporter.appendOutputChunk(data)
+			reporter.ensurePublished(execCtx.Context)
 		}
 
 		var param any
@@ -428,7 +432,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 				if bytes.HasPrefix(eventLine, dataTag) {
 					data := bytes.TrimSpace(eventLine[len(dataTag):])
 					switch gjson.GetBytes(data, "type").String() {
-					case "response.completed":
+					case "response.completed", "response.done":
 						completed = true
 						if detail, ok := parseCodexUsage(data); ok {
 							reporter.publish(execCtx.Context, detail)
@@ -451,10 +455,6 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 			}
 		}
 		if errScan := scanner.Err(); errScan != nil {
-			if shouldSuppressUsageFailure(errScan, "") {
-				out <- cliproxyexecutor.StreamChunk{Err: errScan}
-				return
-			}
 			recorder.RecordResponseError(errScan)
 			reporter.publishFailure(execCtx.Context)
 			out <- cliproxyexecutor.StreamChunk{Err: errScan}

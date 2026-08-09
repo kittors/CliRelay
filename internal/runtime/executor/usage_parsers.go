@@ -11,19 +11,36 @@ import (
 func parseCodexUsage(data []byte) (usage.Detail, bool) {
 	usageNode := gjson.ParseBytes(data).Get("response.usage")
 	if !usageNode.Exists() {
+		usageNode = gjson.ParseBytes(data).Get("usage")
+	}
+	if !usageNode.Exists() {
 		return usage.Detail{}, false
 	}
+	inputNode := usageNode.Get("input_tokens")
+	if !inputNode.Exists() {
+		inputNode = usageNode.Get("prompt_tokens")
+	}
+	outputNode := usageNode.Get("output_tokens")
+	if !outputNode.Exists() {
+		outputNode = usageNode.Get("completion_tokens")
+	}
 	detail := usage.Detail{
-		InputTokens:  usageNode.Get("input_tokens").Int(),
-		OutputTokens: usageNode.Get("output_tokens").Int(),
+		InputTokens:  inputNode.Int(),
+		OutputTokens: outputNode.Int(),
 		TotalTokens:  usageNode.Get("total_tokens").Int(),
 	}
 	if cached := usageNode.Get("input_tokens_details.cached_tokens"); cached.Exists() {
 		detail.CacheReadTokens = cached.Int()
 		detail.CachedTokens = detail.CacheReadTokens
 		detail.CacheReadIncludedInInput = true
+	} else if cached := usageNode.Get("prompt_tokens_details.cached_tokens"); cached.Exists() {
+		detail.CacheReadTokens = cached.Int()
+		detail.CachedTokens = detail.CacheReadTokens
+		detail.CacheReadIncludedInInput = true
 	}
 	if reasoning := usageNode.Get("output_tokens_details.reasoning_tokens"); reasoning.Exists() {
+		detail.ReasoningTokens = reasoning.Int()
+	} else if reasoning := usageNode.Get("completion_tokens_details.reasoning_tokens"); reasoning.Exists() {
 		detail.ReasoningTokens = reasoning.Int()
 	}
 	return detail, true

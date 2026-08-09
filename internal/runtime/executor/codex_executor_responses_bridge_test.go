@@ -7,11 +7,13 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	_ "github.com/router-for-me/CLIProxyAPI/v6/internal/translator"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
+	cliproxyusage "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/usage"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v6/sdk/translator"
 	"github.com/tidwall/gjson"
 )
@@ -132,6 +134,137 @@ func TestCodexExecutorExecuteStreamPreservesResponsesImageBridgeModel(t *testing
 	}
 	if got := gjson.Get(lastBody, "tools.0.model").String(); got != "gpt-image-2" {
 		t.Fatalf("tools.0.model = %q, want %q; body=%s", got, "gpt-image-2", lastBody)
+	}
+}
+
+func TestCodexExecutorExecuteStreamPublishesUsageForResponseDone(t *testing.T) {
+	const model = "gpt-response-done-log-test"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/backend-api/codex/responses" {
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(
+			"data: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n" +
+				"data: {\"type\":\"response.done\",\"response\":{\"id\":\"resp_1\",\"model\":\"" + model + "\",\"usage\":{\"input_tokens\":3,\"output_tokens\":2,\"total_tokens\":5}}}\n\n" +
+				"data: [DONE]\n\n",
+		))
+	}))
+	defer server.Close()
+
+	usagePlugin := &usageCapturePlugin{records: make(chan cliproxyusage.Record, 8)}
+	cliproxyusage.RegisterPlugin(usagePlugin)
+
+	executor := NewCodexExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{
+		ID:       "codex-auth-stream-response-done",
+		Provider: "codex",
+		Status:   cliproxyauth.StatusActive,
+		Attributes: map[string]string{
+			"base_url": server.URL + "/backend-api/codex",
+		},
+		Metadata: map[string]any{
+			"access_token": "token",
+			"account_id":   "account-1",
+		},
+	}
+
+	stream, err := executor.ExecuteStream(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   model,
+		Payload: []byte(`{"model":"` + model + `","input":"hi","stream":true}`),
+		Format:  sdktranslator.FromString("openai-response"),
+	}, cliproxyexecutor.Options{
+		Stream:       true,
+		SourceFormat: sdktranslator.FromString("openai-response"),
+	})
+	if err != nil {
+		t.Fatalf("ExecuteStream() error = %v", err)
+	}
+	for chunk := range stream.Chunks {
+		if chunk.Err != nil {
+			t.Fatalf("stream chunk error = %v", chunk.Err)
+		}
+	}
+
+	timer := time.NewTimer(2 * time.Second)
+	defer timer.Stop()
+	for {
+		select {
+		case record := <-usagePlugin.records:
+			if record.Provider != "codex" || record.Model != model {
+				continue
+			}
+			if record.Failed {
+				t.Fatal("response.done stream with usage should not be marked failed")
+			}
+			if !record.Streaming {
+				t.Fatal("response.done usage record should be marked streaming")
+			}
+			if record.Detail.InputTokens != 3 || record.Detail.OutputTokens != 2 || record.Detail.TotalTokens != 5 {
+				t.Fatalf("usage = %d/%d/%d, want 3/2/5", record.Detail.InputTokens, record.Detail.OutputTokens, record.Detail.TotalTokens)
+			}
+			return
+		case <-timer.C:
+			t.Fatal("timed out waiting for Codex response.done usage record")
+		}
+	}
+}
+
+func TestCodexExecutorExecutePublishesUsageRecordWithoutUsage(t *testing.T) {
+	const model = "gpt-codex-no-usage-log-test"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/backend-api/codex/responses" {
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"model\":\"" + model + "\",\"output\":[]}}\n\n"))
+	}))
+	defer server.Close()
+
+	usagePlugin := &usageCapturePlugin{records: make(chan cliproxyusage.Record, 8)}
+	cliproxyusage.RegisterPlugin(usagePlugin)
+
+	executor := NewCodexExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{
+		ID:       "codex-auth-no-usage",
+		Provider: "codex",
+		Status:   cliproxyauth.StatusActive,
+		Attributes: map[string]string{
+			"base_url": server.URL + "/backend-api/codex",
+		},
+		Metadata: map[string]any{
+			"access_token": "token",
+			"account_id":   "account-1",
+		},
+	}
+
+	_, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   model,
+		Payload: []byte(`{"model":"` + model + `","input":"hi"}`),
+		Format:  sdktranslator.FromString("openai-response"),
+	}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FromString("openai-response")})
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+
+	timer := time.NewTimer(2 * time.Second)
+	defer timer.Stop()
+	for {
+		select {
+		case record := <-usagePlugin.records:
+			if record.Provider != "codex" || record.Model != model {
+				continue
+			}
+			if record.Failed {
+				t.Fatal("completed response without usage should not be marked failed")
+			}
+			if record.Streaming {
+				t.Fatal("non-stream response should not be marked streaming")
+			}
+			return
+		case <-timer.C:
+			t.Fatal("timed out waiting for Codex no-usage success record")
+		}
 	}
 }
 

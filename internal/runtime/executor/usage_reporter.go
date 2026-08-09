@@ -3,7 +3,6 @@ package executor
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"io"
 	"os"
 	"strings"
@@ -240,9 +239,6 @@ func (r *usageReporter) publishFailureWithContentBytes(ctx context.Context, inpu
 	if r == nil {
 		return
 	}
-	if shouldSuppressUsageFailure(nil, outputContent) {
-		return
-	}
 	r.streamingRequest = isStreamingUsageRequestBytes(inputContent)
 	r.contentMu.Lock()
 	if r.captureFullContent {
@@ -260,9 +256,6 @@ func (r *usageReporter) trackFailure(ctx context.Context, errPtr *error) {
 		return
 	}
 	if *errPtr != nil {
-		if shouldSuppressUsageFailure(*errPtr, "") {
-			return
-		}
 		r.contentMu.Lock()
 		if r.outputContent == "" && r.outputBuilder.Len() == 0 && r.outputFile == nil {
 			output := structuredUpstreamErrorJSON(*errPtr)
@@ -274,13 +267,6 @@ func (r *usageReporter) trackFailure(ctx context.Context, errPtr *error) {
 		r.contentMu.Unlock()
 		r.publishFailure(ctx)
 	}
-}
-
-func shouldSuppressUsageFailure(err error, outputContent string) bool {
-	if errors.Is(err, context.Canceled) {
-		return true
-	}
-	return strings.Contains(strings.ToLower(outputContent), "context canceled")
 }
 
 type upstreamBodyError interface {
