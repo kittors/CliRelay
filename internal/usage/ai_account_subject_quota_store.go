@@ -65,10 +65,14 @@ func RecordAIAccountSubjectQuotaPoints(authSubjectID, provider string, points []
 				CycleStartAt: point.ResetAt.UTC().Add(-time.Duration(point.WindowSeconds) * time.Second),
 				ResetAt:      point.ResetAt.UTC(), WindowSeconds: point.WindowSeconds, LastVerifiedAt: recordedAt,
 			}
-			if err := upsertAIAccountSubjectQuotaCycleTx(tx, cycle); err != nil {
+			// Cache the anchored cycle, not the freshly derived one: the in-memory
+			// cache feeds the usage projection's bucket key, so seeding it with the
+			// jittered value would re-split the period the anchor just protected.
+			anchored, err := upsertAIAccountSubjectQuotaCycleTx(tx, cycle)
+			if err != nil {
 				return err
 			}
-			cycles = append(cycles, cycle)
+			cycles = append(cycles, anchored)
 		}
 		var latestAt sql.NullString
 		var latestPercent sql.NullFloat64
@@ -119,8 +123,49 @@ func nullableStoredTimeEqual(stored sql.NullString, value *time.Time) bool {
 	return ok && parsed.Equal(value.UTC())
 }
 
-func upsertAIAccountSubjectQuotaCycleTx(tx *sql.Tx, cycle AIAccountSubjectQuotaCycle) error {
-	_, err := tx.Exec(`
+// anchorAIAccountSubjectQuotaCycleTx keeps a cycle's identity stable across probes.
+//
+// The stored cycle_start doubles as the usage bucket key, so letting it follow
+// the upstream's per-probe jitter silently opened a new bucket every few seconds
+// and split one weekly period into fragments. Within the drift tolerance the
+// stored anchor wins and only last_verified_at moves; a real rollover shifts the
+// start by a whole window and falls outside the tolerance, so it still rolls.
+func anchorAIAccountSubjectQuotaCycleTx(tx *sql.Tx, cycle AIAccountSubjectQuotaCycle) (AIAccountSubjectQuotaCycle, error) {
+	var start, reset storedTime
+	var window int64
+	err := tx.QueryRow(`
+		SELECT cycle_start_at, reset_at, window_seconds
+		FROM ai_account_subject_quota_cycles
+		WHERE auth_subject_id = ? AND quota_key = ?
+	`, cycle.AuthSubjectID, cycle.QuotaKey).Scan(&start, &reset, &window)
+	if err == sql.ErrNoRows {
+		return cycle, nil
+	}
+	if err != nil {
+		return cycle, fmt.Errorf("usage: load shared quota cycle anchor: %w", err)
+	}
+	if !start.Valid || window != cycle.WindowSeconds {
+		return cycle, nil
+	}
+	if !sameAIAccountSubjectCycle(cycle.CycleStartAt, start.Time, cycle.WindowSeconds) {
+		return cycle, nil
+	}
+	cycle.CycleStartAt = start.Time.UTC()
+	if reset.Valid && !reset.Time.IsZero() {
+		// Keep reset_at consistent with the anchor so the card countdown stops
+		// jittering by a second or two on every probe.
+		cycle.ResetAt = reset.Time.UTC()
+	}
+	return cycle, nil
+}
+
+func upsertAIAccountSubjectQuotaCycleTx(tx *sql.Tx, cycle AIAccountSubjectQuotaCycle) (AIAccountSubjectQuotaCycle, error) {
+	anchored, err := anchorAIAccountSubjectQuotaCycleTx(tx, cycle)
+	if err != nil {
+		return cycle, err
+	}
+	cycle = anchored
+	_, err = tx.Exec(`
 		INSERT INTO ai_account_subject_quota_cycles
 			(auth_subject_id, provider, quota_key, cycle_start_at, reset_at, window_seconds, last_verified_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -134,9 +179,9 @@ func upsertAIAccountSubjectQuotaCycleTx(tx *sql.Tx, cycle AIAccountSubjectQuotaC
 		cycle.CycleStartAt.UTC().Format(time.RFC3339Nano), cycle.ResetAt.UTC().Format(time.RFC3339Nano),
 		cycle.WindowSeconds, cycle.LastVerifiedAt.UTC().Format(time.RFC3339Nano))
 	if err != nil {
-		return fmt.Errorf("usage: upsert shared quota cycle: %w", err)
+		return cycle, fmt.Errorf("usage: upsert shared quota cycle: %w", err)
 	}
-	return nil
+	return cycle, nil
 }
 
 // QueryAIAccountSubjectQuotaSeries loads shared quota history for the detail trend chart.

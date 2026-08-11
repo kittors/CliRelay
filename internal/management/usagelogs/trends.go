@@ -397,18 +397,10 @@ func latestWeeklyQuotaCycleStart(series []usage.QuotaSnapshotSeries, preferredQu
 	return latestPoint.ResetAt.Add(-time.Duration(latestWindow) * time.Second).UTC(), true
 }
 
+// primaryWeeklyQuotaKeysForProvider delegates to the usage package so the detail
+// trend anchors to the same cycle the card list and the usage projection use.
 func primaryWeeklyQuotaKeysForProvider(provider string) []string {
-	switch strings.ToLower(strings.TrimSpace(provider)) {
-	case "anthropic", "claude":
-		return []string{"seven_day"}
-	case "codex", "kimi":
-		return []string{"code_week"}
-	case "xai", "grok":
-		// Matches frontend quota-xai weekly_limit snapshot key.
-		return []string{"weekly_limit"}
-	default:
-		return nil
-	}
+	return usage.PrimaryWeeklyQuotaKeys(provider)
 }
 
 func (s *Service) authIndexesForProviderGroup(group string) []string {

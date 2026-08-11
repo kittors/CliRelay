@@ -1,7 +1,6 @@
 package aiaccountstatus
 
 import (
-	"strings"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
@@ -80,15 +79,9 @@ func weeklyUsedFromQuotas(quotas []usage.QuotaWindowDTO, preferred ...string) *f
 	return nil
 }
 
+// primaryWeeklyKeys delegates to the usage package so the card list, the detail
+// trend and the projection that writes the buckets all anchor to one cycle. Three
+// private copies of this table is how they drifted apart in the first place.
 func primaryWeeklyKeys(provider string) []string {
-	switch strings.ToLower(strings.TrimSpace(provider)) {
-	case "anthropic", "claude":
-		return []string{"seven_day"}
-	case "codex", "kimi":
-		return []string{"code_week"}
-	case "xai", "grok":
-		return []string{"weekly_limit"}
-	default:
-		return nil
-	}
+	return usage.PrimaryWeeklyQuotaKeys(provider)
 }

@@ -53,6 +53,56 @@ func primaryAIAccountSubjectWeeklyQuotaKey(provider string) string {
 	}
 }
 
+// PrimaryWeeklyQuotaKeys is the single source of truth for "which quota window
+// is this provider's card cycle". The card list and the detail trend must agree
+// on it: when they disagree they anchor their totals to different cycles and
+// report different numbers for the same account.
+func PrimaryWeeklyQuotaKeys(provider string) []string {
+	key := primaryAIAccountSubjectWeeklyQuotaKey(provider)
+	if key == "" {
+		return nil
+	}
+	return []string{key}
+}
+
+// aiAccountSubjectCycleDriftTolerance bounds how far a re-probed cycle start may
+// move and still count as the same cycle.
+//
+// Upstreams report the window as a remaining-seconds countdown, so reset_at (and
+// with it cycle_start = reset_at - window) lands a few seconds apart on every
+// probe. Treating those as distinct cycles is what split one weekly period into
+// several usage buckets, leaving each reader to see whichever fragment matched
+// the timestamp it happened to read. The tolerance is three orders of magnitude
+// below the window, far above real jitter and far below a genuine rollover.
+func aiAccountSubjectCycleDriftTolerance(windowSeconds int64) time.Duration {
+	if windowSeconds <= 0 {
+		return time.Minute
+	}
+	tolerance := time.Duration(windowSeconds) * time.Second / 1000
+	if tolerance < time.Minute {
+		tolerance = time.Minute
+	}
+	if tolerance > 30*time.Minute {
+		tolerance = 30 * time.Minute
+	}
+	return tolerance
+}
+
+func absDuration(value time.Duration) time.Duration {
+	if value < 0 {
+		return -value
+	}
+	return value
+}
+
+// sameAIAccountSubjectCycle reports whether two cycle anchors describe one cycle.
+func sameAIAccountSubjectCycle(a, b time.Time, windowSeconds int64) bool {
+	if a.IsZero() || b.IsZero() {
+		return false
+	}
+	return absDuration(a.UTC().Sub(b.UTC())) <= aiAccountSubjectCycleDriftTolerance(windowSeconds)
+}
+
 func selectAIAccountSubjectWeeklyCycle(cycles []AIAccountSubjectQuotaCycle) (AIAccountSubjectQuotaCycle, bool) {
 	var selected AIAccountSubjectQuotaCycle
 	for _, cycle := range cycles {
@@ -364,40 +414,33 @@ func QueryAIAccountSubjectUsageSummaries(subjectIDs []string, cycleStartBySubjec
 	}
 
 	cycleIDs := make([]string, 0, len(cycleStartBySubject))
-	cycleStarts := make([]string, 0, len(cycleStartBySubject))
-	startSeen := make(map[string]struct{}, len(cycleStartBySubject))
 	for id, start := range cycleStartBySubject {
 		if _, ok := out[id]; !ok || start.IsZero() {
 			continue
 		}
-		startKey := formatAIAccountSubjectCycleBucketStart(start)
 		s := out[id]
 		s.CycleKnown = true
 		s.CycleStart = start.UTC().Format(time.RFC3339)
 		out[id] = s
 		cycleIDs = append(cycleIDs, id)
-		if _, ok := startSeen[startKey]; !ok {
-			startSeen[startKey] = struct{}{}
-			cycleStarts = append(cycleStarts, startKey)
-		}
 	}
 	if len(cycleIDs) == 0 {
 		return out, nil
 	}
 
-	cycleArgs := make([]any, 0, len(cycleIDs)+len(cycleStarts))
+	cycleArgs := make([]any, 0, len(cycleIDs))
 	for _, id := range cycleIDs {
 		cycleArgs = append(cycleArgs, id)
 	}
-	for _, start := range cycleStarts {
-		cycleArgs = append(cycleArgs, start)
-	}
+	// Match buckets by tolerance rather than by exact key. Buckets written before
+	// cycle anchoring landed are still keyed to jittered starts, and an exact
+	// match would report only the fragment that happens to carry the current
+	// timestamp — the same period read as 19 requests here and 436 there.
 	cycleRows, err := db.Query(`
 		SELECT auth_subject_id, bucket_start, request_count, cost_total, total_tokens, updated_at
 		FROM ai_account_subject_usage_buckets
 		WHERE bucket_kind = 'cycle'
 		  AND auth_subject_id IN (`+strings.TrimSuffix(strings.Repeat("?,", len(cycleIDs)), ",")+`)
-		  AND bucket_start IN (`+strings.TrimSuffix(strings.Repeat("?,", len(cycleStarts)), ",")+`)
 	`, cycleArgs...)
 	if err != nil {
 		return nil, err
@@ -412,11 +455,17 @@ func QueryAIAccountSubjectUsageSummaries(subjectIDs []string, cycleStartBySubjec
 			return nil, err
 		}
 		expected, ok := cycleStartBySubject[id]
-		if !ok || bucketStart != formatAIAccountSubjectCycleBucketStart(expected) {
+		if !ok {
+			continue
+		}
+		bucketAt, parsed := parseStoredTimeString(bucketStart)
+		if !parsed || !sameAIAccountSubjectCycle(bucketAt, expected, aiAccountSubjectWeeklyWindowSeconds) {
 			continue
 		}
 		s := out[id]
-		s.CycleRequestTotal, s.CycleCostTotal, s.CycleTotalTokens = req, cost, totalTokens
+		s.CycleRequestTotal += req
+		s.CycleCostTotal += cost
+		s.CycleTotalTokens += totalTokens
 		if t, ok := parseStoredTimeString(updated.String); ok && t.After(s.UpdatedAt) {
 			s.UpdatedAt = t
 		}
