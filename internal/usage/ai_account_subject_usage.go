@@ -69,21 +69,25 @@ func PrimaryWeeklyQuotaKeys(provider string) []string {
 // move and still count as the same cycle.
 //
 // Upstreams report the window as a remaining-seconds countdown, so reset_at (and
-// with it cycle_start = reset_at - window) lands a few seconds apart on every
-// probe. Treating those as distinct cycles is what split one weekly period into
-// several usage buckets, leaving each reader to see whichever fragment matched
-// the timestamp it happened to read. The tolerance is three orders of magnitude
-// below the window, far above real jitter and far below a genuine rollover.
+// with it cycle_start = reset_at - window) lands apart on every probe. Treating
+// those as distinct cycles is what split one weekly period into several usage
+// buckets, leaving each reader to see whichever fragment matched the timestamp it
+// happened to read.
+//
+// One percent of the window: production showed drift is not always seconds — a
+// single odd probe moved a weekly start by 20 minutes and stranded its own
+// fragment — while a genuine rollover moves the start by a full window, a hundred
+// times the tolerance. Anything in between does not occur.
 func aiAccountSubjectCycleDriftTolerance(windowSeconds int64) time.Duration {
 	if windowSeconds <= 0 {
 		return time.Minute
 	}
-	tolerance := time.Duration(windowSeconds) * time.Second / 1000
+	tolerance := time.Duration(windowSeconds) * time.Second / 100
 	if tolerance < time.Minute {
 		tolerance = time.Minute
 	}
-	if tolerance > 30*time.Minute {
-		tolerance = 30 * time.Minute
+	if tolerance > 2*time.Hour {
+		tolerance = 2 * time.Hour
 	}
 	return tolerance
 }

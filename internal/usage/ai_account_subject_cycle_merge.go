@@ -8,7 +8,9 @@ import (
 	"time"
 )
 
-const aiAccountSubjectCycleBucketMergeMarker = "ai_account_subject_cycle_bucket_merge_v1"
+// v2 re-runs the merge with the widened drift tolerance and, unlike v1, drops the
+// in-memory cycle cache afterwards.
+const aiAccountSubjectCycleBucketMergeMarker = "ai_account_subject_cycle_bucket_merge_v2"
 
 type aiAccountSubjectCycleBucketRow struct {
 	subjectID  string
@@ -83,6 +85,12 @@ func runAIAccountSubjectCycleBucketMergeDB(db *sql.DB) error {
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("usage: commit shared subject cycle merge: %w", err)
 	}
+	// The projection keys its buckets off this cache, and a probe that ran before
+	// the merge left it holding a start that no longer has a bucket. Production
+	// showed exactly that: minutes after the merge a fresh fragment appeared at the
+	// pre-merge start. Dropping the cache forces the next write to re-read the
+	// realigned anchor.
+	resetAIAccountSubjectCycleCache()
 	return nil
 }
 

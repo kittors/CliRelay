@@ -225,6 +225,115 @@ func TestCycleBucketMergeKeepsDistinctPeriodsApart(t *testing.T) {
 	}
 }
 
+// A probe that ran before the merge leaves the in-memory cache pointing at a
+// start the merge just dropped; the projection would then re-open that fragment.
+func TestCycleBucketMergeDropsStaleCycleCache(t *testing.T) {
+	initSharedSubjectTestDB(t)
+	auth := sharedSubjectTestAuth(sharedSubjectTenantA, "cache", "acct-cache", "cache-merge@example.com")
+	identity := ResolveAuthSubjectIdentity(auth)
+	if err := UpsertAIAccountTenantBinding(auth, identity); err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Now().UTC().Truncate(time.Second)
+	anchor := now.Add(-24 * time.Hour)
+	stray := anchor.Add(3 * time.Second)
+	for _, at := range []time.Time{anchor, stray} {
+		if _, err := getDB().Exec(`
+			INSERT INTO ai_account_subject_usage_buckets (
+				auth_subject_id, bucket_kind, bucket_start, request_count, success_count,
+				failure_count, cost_total, total_tokens, first_event_at, updated_at
+			) VALUES (?, 'cycle', ?, 5, 5, 0, 1, 50, ?, ?)
+		`, identity.ID, formatAIAccountSubjectCycleBucketStart(at),
+			at.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := getDB().Exec(`
+		INSERT INTO ai_account_subject_quota_cycles
+			(auth_subject_id, provider, quota_key, cycle_start_at, reset_at, window_seconds, last_verified_at)
+		VALUES (?, 'codex', 'code_week', ?, ?, 604800, ?)
+	`, identity.ID, stray.Format(time.RFC3339Nano),
+		stray.Add(7*24*time.Hour).Format(time.RFC3339Nano), now.Format(time.RFC3339Nano)); err != nil {
+		t.Fatal(err)
+	}
+	// Seed the cache the way a pre-merge probe would have.
+	setAIAccountSubjectActiveCycle(AIAccountSubjectQuotaCycle{
+		AuthSubjectID: identity.ID, Provider: "codex", QuotaKey: "code_week",
+		CycleStartAt: stray, ResetAt: stray.Add(7 * 24 * time.Hour),
+		WindowSeconds: 604800, LastVerifiedAt: now,
+	})
+
+	if err := runAIAccountSubjectCycleBucketMergeDB(getDB()); err != nil {
+		t.Fatal(err)
+	}
+
+	tx, err := getDB().Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := projectAIAccountSubjectUsageTx(tx, identity.ID, false, 1, 10, now); err != nil {
+		_ = tx.Rollback()
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+
+	var buckets int
+	if err := getDB().QueryRow(`
+		SELECT COUNT(*) FROM ai_account_subject_usage_buckets
+		WHERE auth_subject_id = ? AND bucket_kind = 'cycle'
+	`, identity.ID).Scan(&buckets); err != nil {
+		t.Fatal(err)
+	}
+	if buckets != 1 {
+		t.Fatalf("cycle buckets after post-merge write = %d, want 1", buckets)
+	}
+}
+
+// Production carried a weekly start that a single odd probe moved by 20 minutes,
+// stranding its own fragment. That is drift, not a new week.
+func TestCycleBucketMergeFoldsMinuteScaleDrift(t *testing.T) {
+	initSharedSubjectTestDB(t)
+	auth := sharedSubjectTestAuth(sharedSubjectTenantA, "drift20", "acct-drift20", "drift20@example.com")
+	identity := ResolveAuthSubjectIdentity(auth)
+	if err := UpsertAIAccountTenantBinding(auth, identity); err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Now().UTC().Truncate(time.Second)
+	anchor := now.Add(-24 * time.Hour)
+	for _, at := range []time.Time{anchor, anchor.Add(20 * time.Minute)} {
+		if _, err := getDB().Exec(`
+			INSERT INTO ai_account_subject_usage_buckets (
+				auth_subject_id, bucket_kind, bucket_start, request_count, success_count,
+				failure_count, cost_total, total_tokens, first_event_at, updated_at
+			) VALUES (?, 'cycle', ?, 7, 7, 0, 1, 70, ?, ?)
+		`, identity.ID, formatAIAccountSubjectCycleBucketStart(at),
+			at.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := runAIAccountSubjectCycleBucketMergeDB(getDB()); err != nil {
+		t.Fatal(err)
+	}
+
+	var buckets int
+	var requests int64
+	if err := getDB().QueryRow(`
+		SELECT COUNT(*), COALESCE(SUM(request_count), 0)
+		FROM ai_account_subject_usage_buckets
+		WHERE auth_subject_id = ? AND bucket_kind = 'cycle'
+	`, identity.ID).Scan(&buckets, &requests); err != nil {
+		t.Fatal(err)
+	}
+	if buckets != 1 || requests != 14 {
+		t.Fatalf("buckets=%d requests=%d, want 1/14", buckets, requests)
+	}
+}
+
 func TestCycleBucketMergeRunsOncePerMarker(t *testing.T) {
 	initSharedSubjectTestDB(t)
 	if err := runAIAccountSubjectCycleBucketMergeDB(getDB()); err != nil {
