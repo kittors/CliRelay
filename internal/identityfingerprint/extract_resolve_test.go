@@ -255,19 +255,19 @@ func TestResolveCodexEffectiveVersionUsesFieldLevelPriority(t *testing.T) {
 		Provider:   ProviderCodex,
 		AccountKey: "acct",
 		Fields: map[string]string{
-			FieldCodexVersion: "0.142.0",
+			FieldCodexVersion: "0.151.0",
 		},
 	}
 
 	fp, effective := ResolveCodex(config.CodexIdentityFingerprintConfig{
 		Enabled: true,
-		Version: "0.140.0",
+		Version: "0.150.0",
 	}, learned)
 
-	if fp.Version != "0.142.0" {
+	if fp.Version != "0.151.0" {
 		t.Fatalf("resolved version = %q, want learned field", fp.Version)
 	}
-	if effective.Version != "0.142.0" {
+	if effective.Version != "0.151.0" {
 		t.Fatalf("effective version = %q, want learned field", effective.Version)
 	}
 	if got := effective.Fields[FieldCodexVersion].Source; got != FieldSourceLearned {

@@ -279,8 +279,8 @@ func TestCodexHeadersReplayLearnedFingerprintWithoutInboundHeaders(t *testing.T)
 		},
 	}
 	inbound := http.Header{}
-	inbound.Set("User-Agent", "codex_cli_rs/0.130.0 (Mac OS 26.3.1; arm64) iTerm.app/3.6.9")
-	inbound.Set("Version", "0.130.0")
+	inbound.Set("User-Agent", "codex_cli_rs/0.150.0 (Mac OS 26.3.1; arm64) iTerm.app/3.6.9")
+	inbound.Set("Version", "0.150.0")
 	inbound.Set("Originator", "codex_cli_rs")
 	inbound.Set("X-Codex-Beta-Features", "compact_mode")
 	ctx := contextWithInboundHeaders(http.MethodPost, "/v1/responses", inbound)
@@ -289,7 +289,7 @@ func TestCodexHeadersReplayLearnedFingerprintWithoutInboundHeaders(t *testing.T)
 
 	applyCodexHeaders(req, cfg, auth, "codex-token", false)
 
-	if got := req.Header.Get("User-Agent"); got != "codex_cli_rs/0.130.0 (Mac OS 26.3.1; arm64) iTerm.app/3.6.9" {
+	if got := req.Header.Get("User-Agent"); got != "codex_cli_rs/0.150.0 (Mac OS 26.3.1; arm64) iTerm.app/3.6.9" {
 		t.Fatalf("first User-Agent = %q, want learned Codex UA", got)
 	}
 	if got := req.Header.Get("Originator"); got != "codex_cli_rs" {
@@ -302,10 +302,10 @@ func TestCodexHeadersReplayLearnedFingerprintWithoutInboundHeaders(t *testing.T)
 	replayReq := httptest.NewRequest(http.MethodPost, "https://chatgpt.com/backend-api/codex/responses", nil)
 	applyCodexHeaders(replayReq, cfg, auth, "codex-token", false)
 
-	if got := replayReq.Header.Get("User-Agent"); got != "codex_cli_rs/0.130.0 (Mac OS 26.3.1; arm64) iTerm.app/3.6.9" {
+	if got := replayReq.Header.Get("User-Agent"); got != "codex_cli_rs/0.150.0 (Mac OS 26.3.1; arm64) iTerm.app/3.6.9" {
 		t.Fatalf("replayed User-Agent = %q, want stored learned Codex UA", got)
 	}
-	if got := replayReq.Header.Get("Version"); got != "0.130.0" {
+	if got := replayReq.Header.Get("Version"); got != "0.150.0" {
 		t.Fatalf("replayed Version = %q, want stored learned Codex version", got)
 	}
 	if got := replayReq.Header.Get("Originator"); got != "codex_cli_rs" {
@@ -333,8 +333,8 @@ func TestCodexFingerprintRepeatedRequestUsesHotPathCache(t *testing.T) {
 		},
 	}
 	inbound := http.Header{}
-	inbound.Set("User-Agent", "codex_cli_rs/0.144.1 (Mac OS 26.5.2; arm64) iTerm.app/3.6.9")
-	inbound.Set("Version", "0.144.1")
+	inbound.Set("User-Agent", "codex_cli_rs/0.150.1 (Mac OS 26.5.2; arm64) iTerm.app/3.6.9")
+	inbound.Set("Version", "0.150.1")
 	inbound.Set("Originator", "codex_cli_rs")
 	ctx := contextWithInboundHeaders(http.MethodPost, "/v1/responses", inbound)
 
@@ -558,11 +558,11 @@ func TestCodexHeadersUseOneSelectedProfileWithoutFieldMixing(t *testing.T) {
 			ProfileFamily: identityfingerprint.ProfileFamilyCLI,
 			ClientProduct: "codex_cli_rs",
 			ClientVariant: "codex_cli_rs",
-			Version:       "0.144.1",
+			Version:       "0.150.1",
 			Fields: map[string]string{
-				identityfingerprint.FieldUserAgent:       "codex_cli_rs/0.144.1 (Mac OS 26.5.2; arm64) unknown",
+				identityfingerprint.FieldUserAgent:       "codex_cli_rs/0.150.1 (Mac OS 26.5.2; arm64) unknown",
 				identityfingerprint.FieldCodexOriginator: "codex_cli_rs",
-				identityfingerprint.FieldCodexVersion:    "0.144.1",
+				identityfingerprint.FieldCodexVersion:    "0.150.1",
 			},
 			CreatedAt: now.Add(-time.Hour), UpdatedAt: now.Add(-time.Hour), LastSeenAt: now.Add(-time.Hour),
 		},
@@ -573,11 +573,11 @@ func TestCodexHeadersUseOneSelectedProfileWithoutFieldMixing(t *testing.T) {
 			ProfileFamily: identityfingerprint.ProfileFamilyDesktop,
 			ClientProduct: "codex",
 			ClientVariant: "Codex Desktop",
-			Version:       "0.144.0",
+			Version:       "0.150.0",
 			Fields: map[string]string{
-				identityfingerprint.FieldUserAgent:         "Codex Desktop/0.144.0-alpha.4 (Mac OS 26.5.2; arm64)",
+				identityfingerprint.FieldUserAgent:         "Codex Desktop/0.150.0-alpha.4 (Mac OS 26.5.2; arm64)",
 				identityfingerprint.FieldCodexOriginator:   "Codex Desktop",
-				identityfingerprint.FieldCodexVersion:      "0.144.0",
+				identityfingerprint.FieldCodexVersion:      "0.150.0",
 				identityfingerprint.FieldCodexBetaFeatures: "remote_compaction_v2",
 			},
 			CreatedAt: now, UpdatedAt: now, LastSeenAt: now,
@@ -591,9 +591,9 @@ func TestCodexHeadersUseOneSelectedProfileWithoutFieldMixing(t *testing.T) {
 	eventually(t, time.Second, func() bool {
 		cliReq := httptest.NewRequest(http.MethodPost, "https://chatgpt.com/backend-api/codex/responses", nil)
 		applyCodexHeaders(cliReq, cfg, auth, "codex-token", false)
-		return cliReq.Header.Get("User-Agent") == "codex_cli_rs/0.144.1 (Mac OS 26.5.2; arm64) unknown" &&
+		return cliReq.Header.Get("User-Agent") == "codex_cli_rs/0.150.1 (Mac OS 26.5.2; arm64) unknown" &&
 			cliReq.Header.Get("Originator") == "codex_cli_rs" &&
-			cliReq.Header.Get("Version") == "0.144.1" &&
+			cliReq.Header.Get("Version") == "0.150.1" &&
 			cliReq.Header.Get("X-Codex-Beta-Features") == ""
 	})
 
@@ -608,9 +608,9 @@ func TestCodexHeadersUseOneSelectedProfileWithoutFieldMixing(t *testing.T) {
 	eventually(t, time.Second, func() bool {
 		desktopReq := httptest.NewRequest(http.MethodPost, "https://chatgpt.com/backend-api/codex/responses", nil)
 		applyCodexHeaders(desktopReq, cfg, auth, "codex-token", false)
-		return desktopReq.Header.Get("User-Agent") == "Codex Desktop/0.144.0-alpha.4 (Mac OS 26.5.2; arm64)" &&
+		return desktopReq.Header.Get("User-Agent") == "Codex Desktop/0.150.0-alpha.4 (Mac OS 26.5.2; arm64)" &&
 			desktopReq.Header.Get("Originator") == "Codex Desktop" &&
-			desktopReq.Header.Get("Version") == "0.144.0" &&
+			desktopReq.Header.Get("Version") == "0.150.0" &&
 			desktopReq.Header.Get("X-Codex-Beta-Features") == "remote_compaction_v2"
 	})
 }

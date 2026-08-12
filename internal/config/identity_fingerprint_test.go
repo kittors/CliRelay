@@ -13,10 +13,10 @@ func TestDefaultCodexIdentityFingerprintUsesCurrentVersionAndDynamicSessions(t *
 	if !got.Enabled {
 		t.Fatalf("Enabled = false, want true by default")
 	}
-	if got.Version != "" {
-		t.Fatalf("Version = %q, want empty (codex-tui does not require Version)", got.Version)
+	if got.Version != "0.147.0" {
+		t.Fatalf("Version = %q, want current Codex client version (ChatGPT gates newer models on it)", got.Version)
 	}
-	if got.UserAgent != "codex-tui/0.118.0 (Mac OS 26.3.1; arm64) iTerm.app/3.6.9 (codex-tui; 0.118.0)" {
+	if got.UserAgent != "codex-tui/0.147.0 (Mac OS 26.5.0; arm64) iTerm.app/3.6.10 (codex-tui; 0.147.0)" {
 		t.Fatalf("UserAgent = %q, want codex-tui user agent", got.UserAgent)
 	}
 	if got.SessionMode != "per-request" {
@@ -32,10 +32,10 @@ func TestNormalizeCodexIdentityFingerprintAppliesCurrentDefaults(t *testing.T) {
 	if !got.Enabled {
 		t.Fatalf("Enabled = false, want true by default")
 	}
-	if got.Version != "" {
-		t.Fatalf("Version = %q, want empty (codex-tui does not require Version)", got.Version)
+	if got.Version != "0.147.0" {
+		t.Fatalf("Version = %q, want current Codex client version (ChatGPT gates newer models on it)", got.Version)
 	}
-	if got.UserAgent != "codex-tui/0.118.0 (Mac OS 26.3.1; arm64) iTerm.app/3.6.9 (codex-tui; 0.118.0)" {
+	if got.UserAgent != "codex-tui/0.147.0 (Mac OS 26.5.0; arm64) iTerm.app/3.6.10 (codex-tui; 0.147.0)" {
 		t.Fatalf("UserAgent = %q, want codex-tui user agent", got.UserAgent)
 	}
 	if got.SessionMode != "per-request" {

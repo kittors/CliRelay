@@ -14,8 +14,14 @@ import (
 
 const (
 	// Keep defaults aligned with upstream CLIProxyAPI (codex-tui).
-	codexUserAgent  = "codex-tui/0.118.0 (Mac OS 26.3.1; arm64) iTerm.app/3.6.9 (codex-tui; 0.118.0)"
+	// Bumped to 0.147.0: ChatGPT's backend rejects gpt-5.6-sol for older Codex
+	// client versions ("requires a newer version of Codex").
+	codexUserAgent  = "codex-tui/0.147.0 (Mac OS 26.5.0; arm64) iTerm.app/3.6.10 (codex-tui; 0.147.0)"
 	codexOriginator = "codex-tui"
+	// codexDefaultClientVersion is sent as the Codex "Version" header when the
+	// inbound client did not provide one. ChatGPT gates newer models on it, so
+	// a missing header must not mean "too old" upstream.
+	codexDefaultClientVersion = "0.147.0"
 )
 
 func applyCodexHeaders(r *http.Request, cfg *config.Config, auth *cliproxyauth.Auth, token string, stream bool) {
@@ -35,7 +41,10 @@ func applyCodexHeaders(r *http.Request, cfg *config.Config, auth *cliproxyauth.A
 		}
 	}
 	// Align with upstream: only propagate these from the client when present.
-	misc.EnsureHeader(r.Header, ginHeaders, "Version", "")
+	// Version defaults to a current Codex release: ChatGPT gates newer models
+	// (e.g. gpt-5.6-sol) on the client version, and an absent Version header is
+	// treated as too old upstream.
+	misc.EnsureHeader(r.Header, ginHeaders, "Version", codexDefaultClientVersion)
 	misc.EnsureHeader(r.Header, ginHeaders, "X-Codex-Turn-Metadata", "")
 	misc.EnsureHeader(r.Header, ginHeaders, "X-Client-Request-Id", "")
 

@@ -10,8 +10,9 @@ import (
 const (
 	// Defaults are intentionally aligned with upstream CLIProxyAPI's codex-tui behavior.
 	// Update these when upstream codex-tui identity changes.
-	DefaultCodexFingerprintUserAgent     = "codex-tui/0.118.0 (Mac OS 26.3.1; arm64) iTerm.app/3.6.9 (codex-tui; 0.118.0)"
-	DefaultCodexFingerprintVersion       = ""
+	// 0.147.0: ChatGPT rejects gpt-5.6-sol for Codex clients older than this.
+	DefaultCodexFingerprintUserAgent     = "codex-tui/0.147.0 (Mac OS 26.5.0; arm64) iTerm.app/3.6.10 (codex-tui; 0.147.0)"
+	DefaultCodexFingerprintVersion       = "0.147.0"
 	DefaultCodexFingerprintOriginator    = "codex-tui"
 	DefaultCodexFingerprintWebsocketBeta = "responses_websockets=2026-02-06"
 	DefaultCodexFingerprintBetaFeatures  = ""

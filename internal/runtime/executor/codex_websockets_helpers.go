@@ -194,8 +194,10 @@ func applyCodexWebsocketHeaders(ctx context.Context, headers http.Header, cfg *c
 		misc.EnsureHeader(headers, ginHeaders, "x-client-request-id", "")
 		misc.EnsureHeader(headers, ginHeaders, "x-responsesapi-include-timing-metrics", "")
 
-		// Align with upstream: Version is only propagated from client when present.
-		misc.EnsureHeader(headers, ginHeaders, "Version", "")
+		// Align with upstream: Version is propagated from the client when present,
+		// but defaults to a current Codex release so model gating upstream does not
+		// treat a missing header as an outdated client.
+		misc.EnsureHeader(headers, ginHeaders, "Version", codexDefaultClientVersion)
 		betaHeader := strings.TrimSpace(headers.Get("OpenAI-Beta"))
 		if betaHeader == "" && ginHeaders != nil {
 			betaHeader = strings.TrimSpace(ginHeaders.Get("OpenAI-Beta"))

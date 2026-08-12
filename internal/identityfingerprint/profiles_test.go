@@ -143,7 +143,7 @@ func TestResolveCodexSafeFallbackRejectsMixedAccountPreset(t *testing.T) {
 		Enabled:       true,
 		UserAgent:     "codex_cli_rs/0.144.1",
 		Originator:    "Codex Desktop",
-		Version:       "0.144.0",
+		Version:       "0.150.0",
 		BetaFeatures:  "desktop_only",
 		WebsocketBeta: "responses_websockets=desktop",
 	})
@@ -167,23 +167,23 @@ func TestResolveCodexProfileNeverFillsFromAnotherProductPreset(t *testing.T) {
 		AccountKey:    "acct",
 		ProfileKey:    "codex_cli_rs",
 		ProfileFamily: ProfileFamilyCLI,
-		Version:       "0.144.1",
+		Version:       "0.150.1",
 		Fields: map[string]string{
-			FieldUserAgent:       "codex_cli_rs/0.144.1 (Mac OS 26.5.2; arm64) unknown",
+			FieldUserAgent:       "codex_cli_rs/0.150.1 (Mac OS 26.5.2; arm64) unknown",
 			FieldCodexOriginator: "codex_cli_rs",
-			FieldCodexVersion:    "0.144.1",
+			FieldCodexVersion:    "0.150.1",
 		},
 	}
 	resolved, effective := ResolveCodexProfile(config.CodexIdentityFingerprintConfig{
 		Enabled:       true,
-		UserAgent:     "Codex Desktop/0.144.0-alpha.4",
+		UserAgent:     "Codex Desktop/0.150.0-alpha.4",
 		Originator:    "Codex Desktop",
-		Version:       "0.144.0",
+		Version:       "0.150.0",
 		WebsocketBeta: "responses_websockets=desktop",
 		BetaFeatures:  "desktop_only",
 	}, profile)
 
-	if resolved.UserAgent != profile.Fields[FieldUserAgent] || resolved.Originator != "codex_cli_rs" || resolved.Version != "0.144.1" {
+	if resolved.UserAgent != profile.Fields[FieldUserAgent] || resolved.Originator != "codex_cli_rs" || resolved.Version != "0.150.1" {
 		t.Fatalf("resolved = %#v, want complete CLI bundle", resolved)
 	}
 	if resolved.WebsocketBeta != "" || resolved.BetaFeatures != "" {

@@ -1,10 +1,132 @@
 package identityfingerprint
 
 import (
+	"strconv"
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 )
+
+// minCodexClientVersion is the floor for the outbound Codex "Version" header
+// and the version embedded in the spoofed User-Agent. ChatGPT gates newer
+// models (e.g. gpt-5.6-sol) on the client version and answers "requires a
+// newer version of Codex" for anything older, so a learned or configured
+// identity must never advertise a version below this floor.
+const minCodexClientVersion = "0.147.0"
+
+// codexVersionBelow reports whether version is a dotted-numeric version lower
+// than the floor. Unparseable values are treated as below the floor so callers
+// fall back to a known-good version instead of leaking a stale one upstream.
+func codexVersionBelow(version, floor string) bool {
+	parse := func(s string) []int {
+		parts := strings.Split(strings.TrimSpace(s), ".")
+		out := make([]int, 0, len(parts))
+		for _, p := range parts {
+			end := 0
+			for end < len(p) && p[end] >= '0' && p[end] <= '9' {
+				end++
+			}
+			if end == 0 {
+				return nil
+			}
+			n, err := strconv.Atoi(p[:end])
+			if err != nil {
+				return nil
+			}
+			out = append(out, n)
+		}
+		return out
+	}
+	v, f := parse(version), parse(floor)
+	if v == nil {
+		return true
+	}
+	if f == nil {
+		return false
+	}
+	n := len(v)
+	if len(f) > n {
+		n = len(f)
+	}
+	for i := 0; i < n; i++ {
+		vi, fi := 0, 0
+		if i < len(v) {
+			vi = v[i]
+		}
+		if i < len(f) {
+			fi = f[i]
+		}
+		if vi < fi {
+			return true
+		}
+		if vi > fi {
+			return false
+		}
+	}
+	return false
+}
+
+// floorCodexVersion clamps a below-floor version up to the minimum.
+func floorCodexVersion(version string) string {
+	if codexVersionBelow(version, minCodexClientVersion) {
+		return minCodexClientVersion
+	}
+	return strings.TrimSpace(version)
+}
+
+// clampCodexIdentityVersion aligns the Version header and the version embedded
+// in the User-Agent with the minimum supported Codex client version. When the
+// version is raised, the UA product token is rewritten to match so the pair
+// stays consistent upstream.
+func clampCodexIdentityVersion(resolved *config.CodexIdentityFingerprintConfig) {
+	if resolved == nil {
+		return
+	}
+	floored := floorCodexVersion(resolved.Version)
+	if floored == resolved.Version {
+		return
+	}
+	resolved.Version = floored
+	resolved.UserAgent = rewriteCodexUserAgentVersion(resolved.UserAgent, floored)
+}
+
+// rewriteCodexUserAgentVersion replaces the client version inside a Codex
+// User-Agent with the given version. Only the product token immediately
+// following "name/" and the parenthesized "(product; ver)" detail are
+// rewritten; OS, terminal, and other dotted numbers are preserved.
+func rewriteCodexUserAgentVersion(userAgent, version string) string {
+	ua := strings.TrimSpace(userAgent)
+	version = strings.TrimSpace(version)
+	if ua == "" || version == "" {
+		return ua
+	}
+	// Product token: the dotted version right after the first "/".
+	if idx := strings.Index(ua, "/"); idx >= 0 {
+		start := idx + 1
+		end := start
+		for end < len(ua) && ((ua[end] >= '0' && ua[end] <= '9') || ua[end] == '.') {
+			end++
+		}
+		if end > start && strings.Contains(ua[start:end], ".") {
+			ua = ua[:start] + version + ua[end:]
+		}
+	}
+	// Parenthesized product detail: "(codex_exec; 0.130.0)" style.
+	if idx := strings.LastIndex(ua, ";"); idx >= 0 {
+		start := idx + 1
+		for start < len(ua) && ua[start] == ' ' {
+			start++
+		}
+		end := start
+		for end < len(ua) && ((ua[end] >= '0' && ua[end] <= '9') || ua[end] == '.') {
+			end++
+		}
+		if end > start && strings.Contains(ua[start:end], ".") {
+			ua = ua[:start] + version + ua[end:]
+		}
+	}
+	return ua
+}
 
 func ResolveClaude(cfg config.ClaudeIdentityFingerprintConfig, learned *LearnedRecord) (config.ClaudeIdentityFingerprintConfig, EffectiveFingerprint) {
 	clean := config.CleanClaudeIdentityFingerprint(cfg)
@@ -79,8 +201,9 @@ func ResolveCodex(cfg config.CodexIdentityFingerprintConfig, learned *LearnedRec
 		SessionID:     clean.SessionID,
 		CustomHeaders: clean.CustomHeaders,
 	}
+	clampCodexIdentityVersion(&resolved)
 	effective := effective(ProviderCodex, clean.Enabled, learned, fields)
-	effective.Version = version
+	effective.Version = resolved.Version
 	return resolved, effective
 }
 
@@ -144,8 +267,9 @@ func ResolveCodexProfile(cfg config.CodexIdentityFingerprintConfig, profile *Lea
 		SessionID:     clean.SessionID,
 		CustomHeaders: clean.CustomHeaders,
 	}
+	clampCodexIdentityVersion(&resolved)
 	effective := effective(ProviderCodex, clean.Enabled, profile, fields)
-	effective.Version = version
+	effective.Version = resolved.Version
 	return resolved, effective
 }
 
