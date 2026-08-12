@@ -47,8 +47,8 @@ func principalFromContext(c *gin.Context) (identity.Principal, bool) {
 func (h *Handler) nextWithManagementAudit(c *gin.Context) {
 	if c != nil && c.Request != nil && isTenantGovernancePath(c.Request.URL.Path) {
 		if principal, ok := principalFromContext(c); ok && principal.Kind == "service_credential" {
-			h.recordManagementAudit(c, principal, "denied")
 			identityError(c, identity.ErrPermissionDenied)
+			h.recordManagementDenial(c, principal, denialServiceCredential)
 			return
 		}
 		if h.identity() == nil {
@@ -59,11 +59,26 @@ func (h *Handler) nextWithManagementAudit(c *gin.Context) {
 	c.Next()
 	principal, ok := principalFromContext(c)
 	if ok {
-		h.recordManagementAudit(c, principal, "")
+		h.recordManagementAudit(c, principal)
 	}
 }
 
-func (h *Handler) recordManagementAudit(c *gin.Context, principal identity.Principal, forcedResult string) {
+// recordManagementDenial writes the audit row for a refused request.
+//
+// It must be called *after* the response has been written. gin reports 200 until
+// something sets a status, so recording first stamped every denial row with
+// http.status 200 while the client received 403 — a live trail held 1,623 refusals
+// that all claimed to have succeeded, which is precisely backwards for the rows an
+// audit reader reaches for first.
+func (h *Handler) recordManagementDenial(c *gin.Context, principal identity.Principal, denial managementDenial) {
+	h.recordManagementAuditWithDenial(c, principal, denial)
+}
+
+func (h *Handler) recordManagementAudit(c *gin.Context, principal identity.Principal) {
+	h.recordManagementAuditWithDenial(c, principal, "")
+}
+
+func (h *Handler) recordManagementAuditWithDenial(c *gin.Context, principal identity.Principal, denial managementDenial) {
 	service := h.identity()
 	if service == nil || c == nil || c.Request == nil {
 		return
@@ -81,16 +96,16 @@ func (h *Handler) recordManagementAudit(c *gin.Context, principal identity.Princ
 	write := c.Request.Method != http.MethodGet && c.Request.Method != http.MethodHead
 	sensitiveRead := strings.Contains(relative, "/content") || strings.Contains(relative, "/egress") ||
 		strings.Contains(relative, "/export") || strings.Contains(relative, "/download")
-	result := forcedResult
-	if result == "" {
-		switch status := c.Writer.Status(); {
-		case status < http.StatusBadRequest:
-			result = auditResultSuccess
-		case status == http.StatusUnauthorized || status == http.StatusForbidden:
-			result = auditResultDenied
-		default:
-			result = auditResultFailed
-		}
+	// Derived from the status in every case, including denials: those are recorded
+	// after the response, so the code is real rather than gin's unwritten default.
+	var result string
+	switch status := c.Writer.Status(); {
+	case status < http.StatusBadRequest:
+		result = auditResultSuccess
+	case status == http.StatusUnauthorized || status == http.StatusForbidden:
+		result = auditResultDenied
+	default:
+		result = auditResultFailed
 	}
 	if result == auditResultSuccess && isTenantGovernancePath(c.Request.URL.Path) {
 		return
@@ -150,6 +165,9 @@ func (h *Handler) recordManagementAudit(c *gin.Context, principal identity.Princ
 			"resource": resourceType,
 			"route":    routePath,
 		},
+	}
+	if denial != "" {
+		changes["denial_reason"] = string(denial)
 	}
 	if repeat != nil {
 		changes["repeat"] = repeat

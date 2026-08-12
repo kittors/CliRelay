@@ -31,6 +31,21 @@ const (
 	auditResultFailed  = "failed"
 )
 
+// managementDenial names why a request was refused.
+//
+// All three refusals below answer 403 and produced identical audit rows, so the
+// trail could not tell "this operator lacks the permission" from "this tenant may
+// not use this route at all" — two findings with completely different follow-ups
+// (grant a permission vs. the operator is on the wrong tenant). The reason is
+// recorded alongside the permission that was required.
+type managementDenial string
+
+const (
+	denialPermission        managementDenial = "permission_denied"
+	denialTenantScope       managementDenial = "tenant_resource_scope"
+	denialServiceCredential managementDenial = "service_credential_forbidden"
+)
+
 const (
 	// auditRepeatWindow is how long one signature holds the floor. Five minutes
 	// turns a 2s polling client from ~1800 rows/hour into 12, while still showing
