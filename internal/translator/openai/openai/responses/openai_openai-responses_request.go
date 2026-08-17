@@ -122,13 +122,26 @@ func ConvertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 				}
 
 				if name := item.Get("name"); name.Exists() {
-					toolCall, _ = sjson.Set(toolCall, "function.name", name.String())
+					toolCall, _ = sjson.Set(toolCall, "function.name", responsesLiteChatToolName(item.Get("namespace").String(), name.String()))
 				}
 
 				if arguments := item.Get("arguments"); arguments.Exists() {
 					toolCall, _ = sjson.Set(toolCall, "function.arguments", arguments.String())
 				}
 
+				assistantMessage, _ = sjson.SetRaw(assistantMessage, "tool_calls.0", toolCall)
+				out, _ = sjson.SetRaw(out, "messages.-1", assistantMessage)
+
+			case "custom_tool_call":
+				// Chat Completions has no freeform custom tool call type. Represent it as
+				// the function wrapper used for Responses Lite custom tool definitions.
+				assistantMessage := `{"role":"assistant","tool_calls":[]}`
+				toolCall := `{"id":"","type":"function","function":{"name":"","arguments":""}}`
+				toolCall, _ = sjson.Set(toolCall, "id", item.Get("call_id").String())
+				toolCall, _ = sjson.Set(toolCall, "function.name", responsesLiteChatToolName(item.Get("namespace").String(), item.Get("name").String()))
+				arguments := `{"input":""}`
+				arguments, _ = sjson.Set(arguments, "input", item.Get("input").String())
+				toolCall, _ = sjson.Set(toolCall, "function.arguments", arguments)
 				assistantMessage, _ = sjson.SetRaw(assistantMessage, "tool_calls.0", toolCall)
 				out, _ = sjson.SetRaw(out, "messages.-1", assistantMessage)
 
@@ -144,6 +157,14 @@ func ConvertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 					toolMessage, _ = sjson.Set(toolMessage, "content", output.String())
 				}
 
+				out, _ = sjson.SetRaw(out, "messages.-1", toolMessage)
+
+			case "custom_tool_call_output":
+				toolMessage := `{"role":"tool","tool_call_id":"","content":""}`
+				toolMessage, _ = sjson.Set(toolMessage, "tool_call_id", item.Get("call_id").String())
+				if output := item.Get("output"); output.Exists() {
+					toolMessage, _ = sjson.Set(toolMessage, "content", output.String())
+				}
 				out, _ = sjson.SetRaw(out, "messages.-1", toolMessage)
 			}
 
@@ -198,6 +219,11 @@ func ConvertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 		}
 	}
 
+	// Responses Lite sends model-visible tools in input additional_tools items
+	// instead of the top-level tools array. Flatten namespace tools into regular
+	// Chat Completions functions so OpenAI-compatible providers can call them.
+	out = appendResponsesLiteCompatTools(out, root)
+
 	if reasoningEffort := root.Get("reasoning.effort"); reasoningEffort.Exists() {
 		effort := strings.ToLower(strings.TrimSpace(reasoningEffort.String()))
 		if effort != "" {
@@ -211,4 +237,138 @@ func ConvertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 	}
 
 	return []byte(out)
+}
+
+const responsesLiteDefaultNamespace = "functions"
+
+type responsesLiteCompatTool struct {
+	Namespace string
+	Name      string
+	Kind      string
+}
+
+func appendResponsesLiteCompatTools(out string, root gjson.Result) string {
+	input := root.Get("input")
+	if !input.IsArray() {
+		return out
+	}
+
+	seen := make(map[string]struct{})
+	for _, tool := range gjson.Get(out, "tools").Array() {
+		if name := tool.Get("function.name").String(); name != "" {
+			seen[name] = struct{}{}
+		}
+	}
+
+	input.ForEach(func(_, item gjson.Result) bool {
+		if item.Get("type").String() != "additional_tools" {
+			return true
+		}
+		item.Get("tools").ForEach(func(_, declaredTool gjson.Result) bool {
+			namespace := responsesLiteDefaultNamespace
+			tools := []gjson.Result{declaredTool}
+			if declaredTool.Get("type").String() == "namespace" {
+				namespace = declaredTool.Get("name").String()
+				tools = declaredTool.Get("tools").Array()
+			}
+			for _, tool := range tools {
+				chatTool, chatName, ok := responsesLiteToolToChat(namespace, tool)
+				if !ok {
+					continue
+				}
+				if _, exists := seen[chatName]; exists {
+					continue
+				}
+				out, _ = sjson.SetRaw(out, "tools.-1", chatTool)
+				seen[chatName] = struct{}{}
+			}
+			return true
+		})
+		return true
+	})
+
+	return out
+}
+
+func responsesLiteToolToChat(namespace string, tool gjson.Result) (chatTool string, chatName string, ok bool) {
+	kind := tool.Get("type").String()
+	if kind != "function" && kind != "custom" {
+		return "", "", false
+	}
+	name := tool.Get("name").String()
+	if name == "" {
+		return "", "", false
+	}
+	chatName = responsesLiteChatToolName(namespace, name)
+	chatTool = `{"type":"function","function":{"name":"","description":"","parameters":{}}}`
+	chatTool, _ = sjson.Set(chatTool, "function.name", chatName)
+	description := tool.Get("description").String()
+	if kind == "custom" {
+		if description != "" {
+			description += "\n\n"
+		}
+		description += "Pass the tool's freeform input in the `input` string."
+		chatTool, _ = sjson.SetRaw(chatTool, "function.parameters", `{"type":"object","properties":{"input":{"type":"string"}},"required":["input"],"additionalProperties":false}`)
+		chatTool, _ = sjson.Set(chatTool, "function.strict", true)
+	} else if parameters := tool.Get("parameters"); parameters.Exists() {
+		chatTool, _ = sjson.SetRaw(chatTool, "function.parameters", parameters.Raw)
+		if strict := tool.Get("strict"); strict.Exists() {
+			chatTool, _ = sjson.Set(chatTool, "function.strict", strict.Bool())
+		}
+	}
+	chatTool, _ = sjson.Set(chatTool, "function.description", description)
+	return chatTool, chatName, true
+}
+
+func responsesLiteChatToolName(namespace, name string) string {
+	if namespace == "" || namespace == responsesLiteDefaultNamespace {
+		return name
+	}
+	if strings.HasSuffix(namespace, "_") || strings.HasPrefix(name, "_") {
+		return namespace + name
+	}
+	return namespace + "__" + name
+}
+
+func lookupResponsesLiteCompatTool(rawJSON []byte, chatName string) (responsesLiteCompatTool, bool) {
+	root := gjson.ParseBytes(rawJSON)
+	for _, item := range root.Get("input").Array() {
+		if item.Get("type").String() != "additional_tools" {
+			continue
+		}
+		for _, declaredTool := range item.Get("tools").Array() {
+			namespace := responsesLiteDefaultNamespace
+			tools := []gjson.Result{declaredTool}
+			if declaredTool.Get("type").String() == "namespace" {
+				namespace = declaredTool.Get("name").String()
+				tools = declaredTool.Get("tools").Array()
+			}
+			for _, tool := range tools {
+				name := tool.Get("name").String()
+				kind := tool.Get("type").String()
+				if (kind == "function" || kind == "custom") && responsesLiteChatToolName(namespace, name) == chatName {
+					return responsesLiteCompatTool{Namespace: namespace, Name: name, Kind: kind}, true
+				}
+			}
+		}
+	}
+	return responsesLiteCompatTool{}, false
+}
+
+func lookupResponsesLiteCompatToolPair(originalRequestRawJSON, requestRawJSON []byte, chatName string) (responsesLiteCompatTool, bool) {
+	if tool, ok := lookupResponsesLiteCompatTool(originalRequestRawJSON, chatName); ok {
+		return tool, true
+	}
+	if tool, ok := lookupResponsesLiteCompatTool(requestRawJSON, chatName); ok {
+		return tool, true
+	}
+	return responsesLiteCompatTool{}, false
+}
+
+func responsesLiteCustomInput(arguments string) string {
+	input := gjson.Get(arguments, "input")
+	if input.Exists() && input.Type == gjson.String {
+		return input.String()
+	}
+	return arguments
 }

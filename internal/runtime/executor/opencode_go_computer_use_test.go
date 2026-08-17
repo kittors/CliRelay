@@ -364,6 +364,62 @@ func TestOpenAICompatExecutorInjectsCodexToolBridgeTools(t *testing.T) {
 	}
 }
 
+func TestOpenAICompatExecutorResponsesUsesOnlyDeclaredTools(t *testing.T) {
+	var gotBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer server.Close()
+
+	exec := NewOpenAICompatExecutor("openai-compatibility", &config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"base_url": server.URL + "/v1",
+		"api_key":  "test-key",
+	}}
+	payload := []byte("{\"model\":\"third-party-model\",\"stream\":true,\"input\":[{\"type\":\"additional_tools\",\"tools\":[{\"type\":\"namespace\",\"name\":\"functions\",\"tools\":[{\"type\":\"function\",\"name\":\"exec\",\"parameters\":{\"type\":\"object\"}}]}]},{\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"run\"}]}]}")
+
+	result, err := exec.ExecuteStream(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "third-party-model",
+		Payload: payload,
+	}, cliproxyexecutor.Options{OriginalRequest: payload, SourceFormat: sdktranslator.FormatOpenAIResponse, Stream: true})
+	if err != nil {
+		t.Fatalf("ExecuteStream error: %v", err)
+	}
+	for chunk := range result.Chunks {
+		if chunk.Err != nil {
+			t.Fatalf("stream chunk error: %v", chunk.Err)
+		}
+	}
+
+	tools := gjson.GetBytes(gotBody, "tools").Array()
+	if len(tools) != 1 || tools[0].Get("function.name").String() != "exec" {
+		t.Fatalf("upstream tools must match additional_tools exactly: %s", gotBody)
+	}
+}
+
+func TestOpenAICompatExecutorResponsesPreservesDeclaredMCPTool(t *testing.T) {
+	var gotBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte("{\"id\":\"chatcmpl_mcp\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}"))
+	}))
+	defer server.Close()
+
+	exec := NewOpenAICompatExecutor("openai-compatibility", &config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{"base_url": server.URL + "/v1", "api_key": "test-key"}}
+	payload := []byte("{\"model\":\"third-party-model\",\"input\":[{\"type\":\"additional_tools\",\"tools\":[{\"type\":\"namespace\",\"name\":\"mcp__node_repl__\",\"tools\":[{\"type\":\"function\",\"name\":\"js\",\"parameters\":{\"type\":\"object\"}}]}]},{\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"run\"}]}]}")
+	if _, err := exec.Execute(context.Background(), auth, cliproxyexecutor.Request{Model: "third-party-model", Payload: payload}, cliproxyexecutor.Options{OriginalRequest: payload, SourceFormat: sdktranslator.FormatOpenAIResponse}); err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+	tools := gjson.GetBytes(gotBody, "tools").Array()
+	if len(tools) != 1 || tools[0].Get("function.name").String() != "mcp__node_repl__js" {
+		t.Fatalf("declared MCP tool was not preserved exactly: %s", gotBody)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Integration: ExecuteStream with Codex tool bridge injection
 // ---------------------------------------------------------------------------

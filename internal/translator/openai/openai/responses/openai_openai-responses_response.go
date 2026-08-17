@@ -26,12 +26,14 @@ type oaiToResponsesState struct {
 	ReasoningIndex int
 	// aggregation buffers for response.output
 	// Per-output message text buffers by index
-	MsgTextBuf   map[int]*strings.Builder
-	ReasoningBuf strings.Builder
-	Reasonings   []oaiToResponsesStateReasoning
-	FuncArgsBuf  map[int]*strings.Builder // index -> args
-	FuncNames    map[int]string           // index -> name
-	FuncCallIDs  map[int]string           // index -> call_id
+	MsgTextBuf    map[int]*strings.Builder
+	ReasoningBuf  strings.Builder
+	Reasonings    []oaiToResponsesStateReasoning
+	FuncArgsBuf   map[int]*strings.Builder // index -> args
+	FuncNames     map[int]string           // index -> name
+	FuncCallIDs   map[int]string           // index -> call_id
+	FuncTools     map[int]responsesLiteCompatTool
+	FuncItemAdded map[int]bool
 	// message item state per output index
 	MsgItemAdded    map[int]bool // whether response.output_item.added emitted for message
 	MsgContentAdded map[int]bool // whether response.content_part.added emitted for message
@@ -63,6 +65,8 @@ func ConvertOpenAIChatCompletionsResponseToOpenAIResponses(ctx context.Context, 
 			FuncArgsBuf:     make(map[int]*strings.Builder),
 			FuncNames:       make(map[int]string),
 			FuncCallIDs:     make(map[int]string),
+			FuncTools:       make(map[int]responsesLiteCompatTool),
+			FuncItemAdded:   make(map[int]bool),
 			MsgTextBuf:      make(map[int]*strings.Builder),
 			MsgItemAdded:    make(map[int]bool),
 			MsgContentAdded: make(map[int]bool),
@@ -138,6 +142,8 @@ func ConvertOpenAIChatCompletionsResponseToOpenAIResponses(ctx context.Context, 
 		st.FuncArgsBuf = make(map[int]*strings.Builder)
 		st.FuncNames = make(map[int]string)
 		st.FuncCallIDs = make(map[int]string)
+		st.FuncTools = make(map[int]responsesLiteCompatTool)
+		st.FuncItemAdded = make(map[int]bool)
 		st.MsgItemAdded = make(map[int]bool)
 		st.MsgContentAdded = make(map[int]bool)
 		st.MsgItemDone = make(map[int]bool)
@@ -311,24 +317,37 @@ func ConvertOpenAIChatCompletionsResponseToOpenAIResponses(ctx context.Context, 
 						nameChunk := tc.Get("function.name").String()
 						if nameChunk != "" {
 							st.FuncNames[callIndex] = nameChunk
+							if tool, ok := lookupResponsesLiteCompatToolPair(originalRequestRawJSON, requestRawJSON, nameChunk); ok {
+								st.FuncTools[callIndex] = tool
+							}
 						}
 						existingCallID := st.FuncCallIDs[callIndex]
 						effectiveCallID := existingCallID
-						shouldEmitItem := false
 						if existingCallID == "" && newCallID != "" {
 							effectiveCallID = newCallID
 							st.FuncCallIDs[callIndex] = newCallID
-							shouldEmitItem = true
 						}
 
-						if shouldEmitItem && effectiveCallID != "" {
+						if !st.FuncItemAdded[callIndex] && effectiveCallID != "" && st.FuncNames[callIndex] != "" {
+							tool, isResponsesLiteTool := st.FuncTools[callIndex]
 							o := `{"type":"response.output_item.added","sequence_number":0,"output_index":0,"item":{"id":"","type":"function_call","status":"in_progress","arguments":"","call_id":"","name":""}}`
+							if isResponsesLiteTool && tool.Kind == "custom" {
+								o = `{"type":"response.output_item.added","sequence_number":0,"output_index":0,"item":{"id":"","type":"custom_tool_call","status":"in_progress","input":"","call_id":"","name":""}}`
+							}
 							o, _ = sjson.Set(o, "sequence_number", nextSeq())
 							o, _ = sjson.Set(o, "output_index", callIndex)
 							o, _ = sjson.Set(o, "item.id", fmt.Sprintf("fc_%s", effectiveCallID))
 							o, _ = sjson.Set(o, "item.call_id", effectiveCallID)
-							o, _ = sjson.Set(o, "item.name", st.FuncNames[callIndex])
+							if isResponsesLiteTool {
+								o, _ = sjson.Set(o, "item.name", tool.Name)
+								if tool.Namespace != "" && tool.Namespace != responsesLiteDefaultNamespace {
+									o, _ = sjson.Set(o, "item.namespace", tool.Namespace)
+								}
+							} else {
+								o, _ = sjson.Set(o, "item.name", st.FuncNames[callIndex])
+							}
 							out = append(out, emitRespEvent("response.output_item.added", o))
+							st.FuncItemAdded[callIndex] = true
 						}
 
 						if st.FuncArgsBuf[callIndex] == nil {
@@ -340,7 +359,7 @@ func ConvertOpenAIChatCompletionsResponseToOpenAIResponses(ctx context.Context, 
 							if refCallID == "" {
 								refCallID = newCallID
 							}
-							if refCallID != "" {
+							if refCallID != "" && st.FuncTools[callIndex].Kind != "custom" {
 								ad := `{"type":"response.function_call_arguments.delta","sequence_number":0,"item_id":"","output_index":0,"delta":""}`
 								ad, _ = sjson.Set(ad, "sequence_number", nextSeq())
 								ad, _ = sjson.Set(ad, "item_id", fmt.Sprintf("fc_%s", refCallID))
@@ -432,20 +451,38 @@ func ConvertOpenAIChatCompletionsResponseToOpenAIResponses(ctx context.Context, 
 						if b := st.FuncArgsBuf[i]; b != nil && b.Len() > 0 {
 							args = b.String()
 						}
-						fcDone := `{"type":"response.function_call_arguments.done","sequence_number":0,"item_id":"","output_index":0,"arguments":""}`
-						fcDone, _ = sjson.Set(fcDone, "sequence_number", nextSeq())
-						fcDone, _ = sjson.Set(fcDone, "item_id", fmt.Sprintf("fc_%s", callID))
-						fcDone, _ = sjson.Set(fcDone, "output_index", i)
-						fcDone, _ = sjson.Set(fcDone, "arguments", args)
-						out = append(out, emitRespEvent("response.function_call_arguments.done", fcDone))
+						tool, isResponsesLiteTool := st.FuncTools[i]
+						if !isResponsesLiteTool || tool.Kind != "custom" {
+							fcDone := `{"type":"response.function_call_arguments.done","sequence_number":0,"item_id":"","output_index":0,"arguments":""}`
+							fcDone, _ = sjson.Set(fcDone, "sequence_number", nextSeq())
+							fcDone, _ = sjson.Set(fcDone, "item_id", fmt.Sprintf("fc_%s", callID))
+							fcDone, _ = sjson.Set(fcDone, "output_index", i)
+							fcDone, _ = sjson.Set(fcDone, "arguments", args)
+							out = append(out, emitRespEvent("response.function_call_arguments.done", fcDone))
+						}
 
 						itemDone := `{"type":"response.output_item.done","sequence_number":0,"output_index":0,"item":{"id":"","type":"function_call","status":"completed","arguments":"","call_id":"","name":""}}`
+						if isResponsesLiteTool && tool.Kind == "custom" {
+							itemDone = `{"type":"response.output_item.done","sequence_number":0,"output_index":0,"item":{"id":"","type":"custom_tool_call","status":"completed","input":"","call_id":"","name":""}}`
+						}
 						itemDone, _ = sjson.Set(itemDone, "sequence_number", nextSeq())
 						itemDone, _ = sjson.Set(itemDone, "output_index", i)
 						itemDone, _ = sjson.Set(itemDone, "item.id", fmt.Sprintf("fc_%s", callID))
-						itemDone, _ = sjson.Set(itemDone, "item.arguments", args)
 						itemDone, _ = sjson.Set(itemDone, "item.call_id", callID)
-						itemDone, _ = sjson.Set(itemDone, "item.name", st.FuncNames[i])
+						if isResponsesLiteTool {
+							itemDone, _ = sjson.Set(itemDone, "item.name", tool.Name)
+							if tool.Namespace != "" && tool.Namespace != responsesLiteDefaultNamespace {
+								itemDone, _ = sjson.Set(itemDone, "item.namespace", tool.Namespace)
+							}
+							if tool.Kind == "custom" {
+								itemDone, _ = sjson.Set(itemDone, "item.input", responsesLiteCustomInput(args))
+							} else {
+								itemDone, _ = sjson.Set(itemDone, "item.arguments", args)
+							}
+						} else {
+							itemDone, _ = sjson.Set(itemDone, "item.arguments", args)
+							itemDone, _ = sjson.Set(itemDone, "item.name", st.FuncNames[i])
+						}
 						out = append(out, emitRespEvent("response.output_item.done", itemDone))
 						st.FuncItemDone[i] = true
 						st.FuncArgsDone[i] = true
@@ -573,11 +610,27 @@ func ConvertOpenAIChatCompletionsResponseToOpenAIResponses(ctx context.Context, 
 						}
 						callID := st.FuncCallIDs[i]
 						name := st.FuncNames[i]
+						tool, isResponsesLiteTool := st.FuncTools[i]
 						item := `{"id":"","type":"function_call","status":"completed","arguments":"","call_id":"","name":""}`
+						if isResponsesLiteTool && tool.Kind == "custom" {
+							item = `{"id":"","type":"custom_tool_call","status":"completed","input":"","call_id":"","name":""}`
+						}
 						item, _ = sjson.Set(item, "id", fmt.Sprintf("fc_%s", callID))
-						item, _ = sjson.Set(item, "arguments", args)
 						item, _ = sjson.Set(item, "call_id", callID)
-						item, _ = sjson.Set(item, "name", name)
+						if isResponsesLiteTool {
+							item, _ = sjson.Set(item, "name", tool.Name)
+							if tool.Namespace != "" && tool.Namespace != responsesLiteDefaultNamespace {
+								item, _ = sjson.Set(item, "namespace", tool.Namespace)
+							}
+							if tool.Kind == "custom" {
+								item, _ = sjson.Set(item, "input", responsesLiteCustomInput(args))
+							} else {
+								item, _ = sjson.Set(item, "arguments", args)
+							}
+						} else {
+							item, _ = sjson.Set(item, "arguments", args)
+							item, _ = sjson.Set(item, "name", name)
+						}
 						outputsWrapper, _ = sjson.SetRaw(outputsWrapper, "arr.-1", item)
 					}
 				}
@@ -743,10 +796,26 @@ func ConvertOpenAIChatCompletionsResponseToOpenAIResponsesNonStream(_ context.Co
 						name := tc.Get("function.name").String()
 						args := tc.Get("function.arguments").String()
 						item := `{"id":"","type":"function_call","status":"completed","arguments":"","call_id":"","name":""}`
+						tool, isResponsesLiteTool := lookupResponsesLiteCompatToolPair(originalRequestRawJSON, requestRawJSON, name)
+						if isResponsesLiteTool && tool.Kind == "custom" {
+							item = `{"id":"","type":"custom_tool_call","status":"completed","input":"","call_id":"","name":""}`
+						}
 						item, _ = sjson.Set(item, "id", fmt.Sprintf("fc_%s", callID))
-						item, _ = sjson.Set(item, "arguments", args)
 						item, _ = sjson.Set(item, "call_id", callID)
-						item, _ = sjson.Set(item, "name", name)
+						if isResponsesLiteTool {
+							item, _ = sjson.Set(item, "name", tool.Name)
+							if tool.Namespace != "" && tool.Namespace != responsesLiteDefaultNamespace {
+								item, _ = sjson.Set(item, "namespace", tool.Namespace)
+							}
+							if tool.Kind == "custom" {
+								item, _ = sjson.Set(item, "input", responsesLiteCustomInput(args))
+							} else {
+								item, _ = sjson.Set(item, "arguments", args)
+							}
+						} else {
+							item, _ = sjson.Set(item, "arguments", args)
+							item, _ = sjson.Set(item, "name", name)
+						}
 						outputsWrapper, _ = sjson.SetRaw(outputsWrapper, "arr.-1", item)
 						return true
 					})
