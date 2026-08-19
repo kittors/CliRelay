@@ -6,7 +6,7 @@ set -euo pipefail
 SERVICE_NAME="${SERVICE_NAME:-clirelay2}"
 BASE_DIR="${BASE_DIR:-/opt/clirelay2}"
 TEMP_BIN="${TEMP_BIN:-${BASE_DIR}/cli-proxy-api-new}"
-DOMAIN="${DOMAIN:-relay.07230805.xyz}"
+DOMAIN="${DOMAIN:-relay.example.com}"
 PUBLIC_BASE_URL="${PUBLIC_BASE_URL:-https://${DOMAIN}}"
 PORT_A="${PORT_A:-8318}"
 PORT_B="${PORT_B:-8319}"

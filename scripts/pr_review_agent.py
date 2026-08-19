@@ -180,7 +180,7 @@ def call_model(system: str, user_payload: str, max_tokens: int = 3500) -> str:
     api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
         raise RuntimeError("OPENAI_API_KEY is not set")
-    base_url = os.environ.get("OPENAI_BASE_URL", "https://relay.07230805.xyz/v1").rstrip("/")
+    base_url = os.environ.get("OPENAI_BASE_URL", "https://relay.example.com/v1").rstrip("/")
     model = os.environ.get("OPENAI_MODEL", "grok-4.5")
     data = {
         "model": model,
