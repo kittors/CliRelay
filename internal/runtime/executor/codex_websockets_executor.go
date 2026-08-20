@@ -425,8 +425,14 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 	go func() {
 		terminateReason := "completed"
 		var terminateErr error
+		completed := false
 
 		defer close(out)
+		defer func() {
+			if completed {
+				reporter.ensurePublished(execCtx.Context)
+			}
+		}()
 		defer func() {
 			if sess != nil {
 				sess.clearActive(readCh)
@@ -518,6 +524,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 			for _, eventPayload := range normalizedEvents {
 				eventType := gjson.GetBytes(eventPayload, "type").String()
 				if eventType == "response.completed" || eventType == "response.done" {
+					completed = true
 					if detail, ok := parseCodexUsage(eventPayload); ok {
 						reporter.publish(execCtx.Context, detail)
 					}

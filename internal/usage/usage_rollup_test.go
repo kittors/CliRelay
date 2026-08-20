@@ -124,3 +124,43 @@ func TestQueryStatsDoesNotRequireRequestLogs(t *testing.T) {
 		t.Fatalf("expected rollup-backed stats, got %#v", stats)
 	}
 }
+
+func TestInsertLogPersistsDetailWhenRollupProjectionFails(t *testing.T) {
+	initTestUsageDB(t, config.RequestLogStorageConfig{StoreContent: false})
+
+	if _, err := getDB().Exec(`DROP TABLE usage_rollup_buckets`); err != nil {
+		t.Fatalf("drop rollup table: %v", err)
+	}
+
+	InsertLogWithDetailsIdentitySubjectUpstreamVisionStreaming(
+		systemTenantID,
+		"sk-rollup-fail",
+		"key-rollup-fail",
+		"subject-rollup-fail",
+		"Rollup Fail Test",
+		"gpt-rollup-fail",
+		"",
+		"",
+		"",
+		"openai-compatibility",
+		"test-channel",
+		"0",
+		false,
+		time.Now().UTC(),
+		100,
+		20,
+		TokenStats{InputTokens: 1, OutputTokens: 2, TotalTokens: 3},
+		`{"model":"gpt-rollup-fail","stream":true}`,
+		"",
+		"",
+		true,
+	)
+
+	var count int
+	if err := getDB().QueryRow(`SELECT COUNT(*) FROM request_logs WHERE api_key_id = ?`, "key-rollup-fail").Scan(&count); err != nil {
+		t.Fatalf("count request log: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("request log count = %d, want 1", count)
+	}
+}
