@@ -274,13 +274,14 @@ func (s *Service) ReplaceCodexKeys(entries []config.CodexKey) error {
 	if s == nil || s.cfg == nil {
 		return nil
 	}
+	// Normalization only. Rows are dropped by SanitizeCodexKeys below, which
+	// keys on api-key like every other channel: an empty base-url means "use
+	// the default Codex endpoint", so filtering on it here silently discarded
+	// channels this call was asked to persist and still answered 200.
 	filtered := make([]config.CodexKey, 0, len(entries))
 	for i := range entries {
 		entry := entries[i]
 		NormalizeCodexKey(&entry)
-		if entry.BaseURL == "" {
-			continue
-		}
 		filtered = append(filtered, entry)
 	}
 	prev := append([]config.CodexKey(nil), s.cfg.CodexKey...)
@@ -324,12 +325,10 @@ func (s *Service) PatchCodexKey(index *int, match *string, patch CodexKeyPatch) 
 		entry.Prefix = strings.TrimSpace(*patch.Prefix)
 	}
 	if patch.BaseURL != nil {
-		trimmed := strings.TrimSpace(*patch.BaseURL)
-		if trimmed == "" {
-			s.deleteCodexKeyByIndex(targetIndex)
-			return nil
-		}
-		entry.BaseURL = trimmed
+		// Clearing base-url means "fall back to the default Codex endpoint",
+		// the same as every other channel. It used to delete the row, which is
+		// not something a PATCH of one field should ever do; DELETE exists.
+		entry.BaseURL = strings.TrimSpace(*patch.BaseURL)
 	}
 	if patch.ProxyURL != nil {
 		entry.ProxyURL = strings.TrimSpace(*patch.ProxyURL)

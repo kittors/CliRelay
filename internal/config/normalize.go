@@ -156,8 +156,14 @@ func (cfg *Config) SanitizeOpenAICompatibility() {
 	cfg.OpenAICompatibility = out
 }
 
-// SanitizeCodexKeys removes Codex API key entries missing a BaseURL.
+// SanitizeCodexKeys removes Codex API key entries missing an APIKey.
 // It trims whitespace and preserves order for remaining entries.
+//
+// The credential, not the endpoint, is what makes a Codex row usable: an empty
+// BaseURL means "use the default Codex endpoint" (see CodexKey.BaseURL), and the
+// runtime synthesizer only skips rows without an api-key. Dropping rows on an
+// empty BaseURL here silently deleted channels the operator had just saved
+// through the management API, which returned 200 all the same.
 func (cfg *Config) SanitizeCodexKeys() {
 	if cfg == nil || len(cfg.CodexKey) == 0 {
 		return
@@ -165,13 +171,14 @@ func (cfg *Config) SanitizeCodexKeys() {
 	out := make([]CodexKey, 0, len(cfg.CodexKey))
 	for i := range cfg.CodexKey {
 		e := cfg.CodexKey[i]
+		e.APIKey = strings.TrimSpace(e.APIKey)
 		e.Prefix = normalizeModelPrefix(e.Prefix)
 		e.BaseURL = strings.TrimSpace(e.BaseURL)
 		e.ProxyURL = strings.TrimSpace(e.ProxyURL)
 		e.ProxyID = strings.TrimSpace(e.ProxyID)
 		e.Headers = NormalizeHeaders(e.Headers)
 		e.ExcludedModels = NormalizeExcludedModels(e.ExcludedModels)
-		if e.BaseURL == "" {
+		if e.APIKey == "" {
 			continue
 		}
 		out = append(out, e)

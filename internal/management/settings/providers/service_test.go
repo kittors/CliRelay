@@ -230,28 +230,47 @@ func TestCodexKeysReplacePatchDeleteAndRollback(t *testing.T) {
 	}
 
 	svc = NewService(cfg, nil)
+	// base-url is optional (empty means the default Codex endpoint), so only the
+	// row without an api-key is dropped. Dropping on empty base-url used to make
+	// the management API answer 200 while discarding a channel it just accepted.
 	err = svc.ReplaceCodexKeys([]config.CodexKey{
 		{APIKey: "next", BaseURL: " https://codex.example ", ProxyURL: " http://proxy.example "},
-		{APIKey: "drop", BaseURL: " "},
+		{APIKey: "default-endpoint", BaseURL: " "},
+		{APIKey: " ", BaseURL: "https://no-credential.example"},
 	})
 	if err != nil {
 		t.Fatalf("ReplaceCodexKeys() error = %v, want nil", err)
 	}
-	if len(cfg.CodexKey) != 1 {
-		t.Fatalf("CodexKey len = %d, want 1", len(cfg.CodexKey))
+	if len(cfg.CodexKey) != 2 {
+		t.Fatalf("CodexKey len = %d, want 2 (%#v)", len(cfg.CodexKey), cfg.CodexKey)
 	}
 	if got := cfg.CodexKey[0]; got.BaseURL != "https://codex.example" || got.ProxyURL != "http://proxy.example" {
 		t.Fatalf("normalized codex key = %#v", got)
+	}
+	if got := cfg.CodexKey[1]; got.APIKey != "default-endpoint" || got.BaseURL != "" {
+		t.Fatalf("codex key without base url = %#v, want kept with empty base url", got)
 	}
 
 	match := "next"
 	emptyBaseURL := " "
 	err = svc.PatchCodexKey(nil, &match, CodexKeyPatch{BaseURL: &emptyBaseURL})
 	if err != nil {
-		t.Fatalf("PatchCodexKey(delete) error = %v, want nil", err)
+		t.Fatalf("PatchCodexKey(clear base url) error = %v, want nil", err)
 	}
-	if len(cfg.CodexKey) != 0 {
-		t.Fatalf("CodexKey after delete = %#v, want empty", cfg.CodexKey)
+	if len(cfg.CodexKey) != 2 {
+		t.Fatalf("CodexKey after clearing base url = %#v, want both entries kept", cfg.CodexKey)
+	}
+	if got := cfg.CodexKey[0]; got.APIKey != "next" || got.BaseURL != "" {
+		t.Fatalf("patched codex key = %#v, want base url cleared and row kept", got)
+	}
+
+	blankAPIKey := " "
+	err = svc.PatchCodexKey(nil, &match, CodexKeyPatch{APIKey: &blankAPIKey})
+	if err != nil {
+		t.Fatalf("PatchCodexKey(blank api key) error = %v, want nil", err)
+	}
+	if len(cfg.CodexKey) != 1 || cfg.CodexKey[0].APIKey != "default-endpoint" {
+		t.Fatalf("CodexKey after blank api key patch = %#v, want only the other row", cfg.CodexKey)
 	}
 }
 
