@@ -172,6 +172,9 @@ type Config struct {
 	// to common upstream AI API hosts through the fixed residential proxy.
 	ProxyWarmup ProxyWarmConfig `yaml:"proxy-warmup,omitempty" json:"proxy-warmup,omitempty"`
 
+	// AccountStatusRefresh configures the server-side periodic quota probe.
+	AccountStatusRefresh AccountStatusRefreshConfig `yaml:"account-status-refresh,omitempty" json:"account-status-refresh,omitempty"`
+
 	// OpenAICompatibility defines OpenAI API compatibility configurations for external providers.
 	OpenAICompatibility []OpenAICompatibility `yaml:"openai-compatibility" json:"openai-compatibility"`
 
@@ -308,6 +311,58 @@ type ProxyWarmTarget struct {
 	Host   string `yaml:"host" json:"host"`
 	URL    string `yaml:"url" json:"url"`
 	Method string `yaml:"method" json:"method"`
+}
+
+// AccountStatusRefreshConfig controls the server-side periodic quota probe.
+//
+// Quota snapshots used to advance only while someone had the accounts panel
+// open, because the panel was the only thing that ever asked for a refresh.
+// That is fine for consumption the proxy itself produces — the request that
+// spends the quota is the request that updates it — but not for accounts whose
+// allowance is also spent elsewhere: a Grok subscription burned down by Grok
+// Chat on the web looked untouched here until a human happened to look.
+type AccountStatusRefreshConfig struct {
+	Enabled bool `yaml:"enabled" json:"enabled"`
+	// IntervalMinutes is how often each account is re-probed. The per-account
+	// min-gap and in-flight dedupe in the status service still apply, so a panel
+	// refresh landing near a scheduled one costs no extra upstream calls.
+	IntervalMinutes int `yaml:"interval-minutes,omitempty" json:"interval-minutes,omitempty"`
+	// StartupDelaySeconds waits this long after start before the first round, so
+	// boot does not fire one upstream probe per credential at once.
+	StartupDelaySeconds int `yaml:"startup-delay-seconds,omitempty" json:"startup-delay-seconds,omitempty"`
+}
+
+func defaultAccountStatusRefreshConfig() AccountStatusRefreshConfig {
+	return AccountStatusRefreshConfig{
+		Enabled: true,
+		// Matches the quota snapshot heartbeat: probing faster than that writes
+		// no new history point unless the percentage actually moved.
+		IntervalMinutes:     15,
+		StartupDelaySeconds: 60,
+	}
+}
+
+// SanitizeAccountStatusRefresh fills unset fields with defaults and rejects
+// intervals short enough to hammer upstream billing endpoints.
+func (cfg *Config) SanitizeAccountStatusRefresh() {
+	if cfg == nil {
+		return
+	}
+	defaults := defaultAccountStatusRefreshConfig()
+	refresh := cfg.AccountStatusRefresh
+	if refresh.IntervalMinutes <= 0 {
+		refresh.IntervalMinutes = defaults.IntervalMinutes
+	}
+	if refresh.IntervalMinutes < 5 {
+		refresh.IntervalMinutes = 5
+	}
+	// Unset and negative both take the default: starting every credential's probe
+	// in the same instant as boot is a burst nobody asked for, and a YAML int has
+	// no way to say "zero on purpose".
+	if refresh.StartupDelaySeconds <= 0 {
+		refresh.StartupDelaySeconds = defaults.StartupDelaySeconds
+	}
+	cfg.AccountStatusRefresh = refresh
 }
 
 func defaultProxyWarmConfig() ProxyWarmConfig {

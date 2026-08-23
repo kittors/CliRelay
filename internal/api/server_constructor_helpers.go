@@ -218,6 +218,9 @@ func (s *Server) configureManagementHandler(
 	if optionState != nil && optionState.modelConfigMutatedCallback != nil {
 		s.mgmt.SetModelConfigMutatedHook(optionState.modelConfigMutatedCallback)
 	}
+	// Quota snapshots have to keep advancing for accounts nobody is watching;
+	// see config.AccountStatusRefreshConfig.
+	s.mgmt.StartAccountStatusScheduler()
 }
 
 func (s *Server) registerBuiltinModules(cfg *config.Config, accessManager *sdkaccess.Manager) {

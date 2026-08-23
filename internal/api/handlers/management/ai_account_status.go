@@ -3,11 +3,13 @@ package management
 import (
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/management/aiaccountstatus"
 	managementapitools "github.com/router-for-me/CLIProxyAPI/v6/internal/management/apitools"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 )
 
 // invalidateAIAccountCaches drops auth-file-trend keys for every credential
@@ -69,6 +71,61 @@ func (h *Handler) aiAccountStatusService() *aiaccountstatus.Service {
 		}, h.invalidateAIAccountCaches)
 	}
 	return h.aiAccountStatus
+}
+
+// StartAccountStatusScheduler starts (or restarts) the background quota probe.
+//
+// Called from server startup rather than from the first panel request: the
+// whole point is to keep snapshots current for accounts nobody is looking at,
+// which the lazily-built service can never do on its own.
+func (h *Handler) StartAccountStatusScheduler() {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	cfg := h.cfg
+	h.mu.Unlock()
+	if cfg == nil || !cfg.AccountStatusRefresh.Enabled {
+		h.stopAccountStatusScheduler()
+		return
+	}
+	interval := time.Duration(cfg.AccountStatusRefresh.IntervalMinutes) * time.Minute
+	if interval <= 0 {
+		h.stopAccountStatusScheduler()
+		return
+	}
+	scheduler := aiaccountstatus.NewScheduler(
+		h.aiAccountStatusService,
+		func() *coreauth.Manager {
+			h.mu.Lock()
+			defer h.mu.Unlock()
+			return h.authManager
+		},
+		interval,
+		time.Duration(cfg.AccountStatusRefresh.StartupDelaySeconds)*time.Second,
+	)
+
+	h.mu.Lock()
+	previous := h.statusScheduler
+	h.statusScheduler = scheduler
+	h.mu.Unlock()
+	if previous != nil {
+		previous.Stop()
+	}
+	scheduler.Start()
+}
+
+func (h *Handler) stopAccountStatusScheduler() {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	scheduler := h.statusScheduler
+	h.statusScheduler = nil
+	h.mu.Unlock()
+	if scheduler != nil {
+		scheduler.Stop()
+	}
 }
 
 type aiAccountStatusRefreshBody struct {

@@ -139,6 +139,22 @@ auto-update:
   docker-image: ghcr.io/kittors/clirelay
   updater-url: http://clirelay-updater:8320
 
+# Background re-probe of AI account quota status.
+#
+# Without it a quota snapshot only advances while someone has the accounts panel
+# open. That is enough while this proxy is the only thing spending the
+# allowance, but a Grok subscription is billed across surfaces the proxy never
+# sees: an account drained by Grok Chat on the web reads as untouched until a
+# human happens to look. The per-account min-gap and in-flight dedupe still
+# apply, so a scheduled round overlapping a manual refresh costs no extra
+# upstream calls.
+account-status-refresh:
+  enabled: true
+  # How often each account is re-probed. Floors at 5.
+  interval-minutes: 15
+  # Delay before the first round, so boot does not fire one probe per credential at once.
+  startup-delay-seconds: 60
+
 # Authentication directory (supports ~ for home directory).
 # In Docker/cloud deployments, AUTH_PATH overrides this value at runtime.
 auth-dir: "~/.cli-proxy-api"

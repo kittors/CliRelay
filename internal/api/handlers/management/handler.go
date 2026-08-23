@@ -52,6 +52,7 @@ type Handler struct {
 	videoGeneration      *imagegeneration.Service
 	identityService      *identity.Service
 	aiAccountStatus      *aiaccountstatus.Service
+	statusScheduler      *aiaccountstatus.Scheduler
 }
 
 type trendCacheEntry struct {
@@ -125,6 +126,7 @@ func (h *Handler) Close() {
 		return
 	}
 	h.loginThrottle.close()
+	h.stopAccountStatusScheduler()
 }
 
 // NewHandler creates a new management handler instance.
@@ -149,6 +151,9 @@ func (h *Handler) SetConfig(cfg *config.Config) {
 	// overrides are re-applied on top, or a config reload would silently revert
 	// them while the panel kept displaying them as active.
 	h.loginThrottle.setPolicies(overlayThrottleOverride(throttlePoliciesFromConfig(cfg), storedThrottleOverride()))
+	// Interval and on/off are reloadable for the same reason: turning the probe
+	// down must not require a restart.
+	h.StartAccountStatusScheduler()
 }
 
 // SetAuthManager updates the auth manager reference used by management endpoints.
