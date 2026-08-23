@@ -144,6 +144,7 @@ func (s *Service) authFileTrendFromSharedSubject(authIndex string, auth *coreaut
 		series = []usage.QuotaSnapshotSeries{}
 	}
 	weeklyQuotaUsed := latestWeeklyQuotaUsedPercent(series, preferredWeeklyQuotaKeys...)
+	projectionQuotaUsed := latestProjectionQuotaUsedPercent(series, auth.Provider)
 
 	cycleStarts, err := usage.QueryLatestAIAccountSubjectWeeklyCyclesBatch([]string{subjectID})
 	if err != nil {
@@ -177,19 +178,21 @@ func (s *Service) authFileTrendFromSharedSubject(authIndex string, auth *coreaut
 	}
 
 	return http.StatusOK, AuthFileTrendResponse{
-		AuthIndex:         authIndex,
-		Days:              days,
-		Hours:             hours,
-		RequestTotal:      requestTotal,
-		CycleRequestTotal: cycleRequestTotal,
-		CycleCostTotal:    cycleCostTotal,
-		CycleTotalTokens:  cycleTotalTokens,
-		WeeklyQuotaUsed:   weeklyQuotaUsed,
-		CycleKnown:        cycleKnown,
-		CycleStart:        cycleStartStr,
-		DailyUsage:        daily,
-		HourlyUsage:       hourly,
-		QuotaSeries:       series,
+		AuthIndex:                   authIndex,
+		Days:                        days,
+		Hours:                       hours,
+		RequestTotal:                requestTotal,
+		CycleRequestTotal:           cycleRequestTotal,
+		CycleCostTotal:              cycleCostTotal,
+		CycleTotalTokens:            cycleTotalTokens,
+		WeeklyQuotaUsed:             weeklyQuotaUsed,
+		ProjectionQuotaUsed:         projectionQuotaUsed,
+		ProjectionQuotaAttributable: usage.ProjectionQuotaIsAttributable(auth.Provider),
+		CycleKnown:                  cycleKnown,
+		CycleStart:                  cycleStartStr,
+		DailyUsage:                  daily,
+		HourlyUsage:                 hourly,
+		QuotaSeries:                 series,
 	}
 }
 
@@ -227,6 +230,7 @@ func (s *Service) authFileTrendFromTenantLogs(authIndex string, auth *coreauth.A
 		series = []usage.QuotaSnapshotSeries{}
 	}
 	weeklyQuotaUsed := latestWeeklyQuotaUsedPercent(series, preferredWeeklyQuotaKeys...)
+	projectionQuotaUsed := latestProjectionQuotaUsedPercent(series, auth.Provider)
 
 	var cycleStart time.Time
 	if identity := usage.ResolveAuthSubjectIdentity(auth); identity != nil && identity.ID != "" {
@@ -267,19 +271,21 @@ func (s *Service) authFileTrendFromTenantLogs(authIndex string, auth *coreauth.A
 		cycleStartStr = cycleStart.UTC().Format(time.RFC3339)
 	}
 	return http.StatusOK, AuthFileTrendResponse{
-		AuthIndex:         authIndex,
-		Days:              days,
-		Hours:             hours,
-		RequestTotal:      requestTotal,
-		CycleRequestTotal: cycleRequestTotal,
-		CycleCostTotal:    cycleCostTotal,
-		CycleTotalTokens:  cycleTotalTokens,
-		WeeklyQuotaUsed:   weeklyQuotaUsed,
-		CycleKnown:        cycleKnown,
-		CycleStart:        cycleStartStr,
-		DailyUsage:        daily,
-		HourlyUsage:       hourly,
-		QuotaSeries:       series,
+		AuthIndex:                   authIndex,
+		Days:                        days,
+		Hours:                       hours,
+		RequestTotal:                requestTotal,
+		CycleRequestTotal:           cycleRequestTotal,
+		CycleCostTotal:              cycleCostTotal,
+		CycleTotalTokens:            cycleTotalTokens,
+		WeeklyQuotaUsed:             weeklyQuotaUsed,
+		ProjectionQuotaUsed:         projectionQuotaUsed,
+		ProjectionQuotaAttributable: usage.ProjectionQuotaIsAttributable(auth.Provider),
+		CycleKnown:                  cycleKnown,
+		CycleStart:                  cycleStartStr,
+		DailyUsage:                  daily,
+		HourlyUsage:                 hourly,
+		QuotaSeries:                 series,
 	}
 }
 
@@ -308,10 +314,61 @@ func fillDailyUsagePoints(points []usage.DailyUsagePoint, days int) []usage.Dail
 
 func latestWeeklyQuotaUsedPercent(series []usage.QuotaSnapshotSeries, preferredQuotaKeys ...string) *float64 {
 	latest := latestWeeklyQuotaPercentPoint(series, preferredQuotaKeys...)
-	if latest == nil || latest.Percent == nil {
+	return quotaUsedPercentFromPoint(latest)
+}
+
+// latestProjectionQuotaUsedPercent picks the divisor for the weekly-budget
+// projection: the consumption share produced by traffic this proxy forwards.
+//
+// Unlike latestWeeklyQuotaUsedPercent this does not fall back to "any weekly
+// window". A wrong divisor here does not degrade the projection, it inverts its
+// meaning — dividing Grok Build cost by pool-wide consumption reports a smaller
+// budget the more the account uses Grok Chat. Returning nil lets the caller fall
+// back explicitly, at the pool-wide number it already has.
+func latestProjectionQuotaUsedPercent(series []usage.QuotaSnapshotSeries, provider string) *float64 {
+	// Summed, not "latest wins": several attributable windows are several slices
+	// of one pool, and the projection needs the whole attributable slice. Each
+	// window contributes its own most recent reading.
+	var total float64
+	var found bool
+	for i := range series {
+		if series[i].WindowSeconds < usage.WeeklyQuotaWindowSeconds {
+			continue
+		}
+		if !usage.MatchesProjectionQuotaKey(provider, series[i].QuotaKey) {
+			continue
+		}
+		var latestPoint *usage.QuotaSnapshotSeriesPoint
+		for j := range series[i].Points {
+			point := &series[i].Points[j]
+			if point.Percent == nil {
+				continue
+			}
+			if latestPoint == nil || point.Timestamp.After(latestPoint.Timestamp) {
+				latestPoint = point
+			}
+		}
+		used := quotaUsedPercentFromPoint(latestPoint)
+		if used == nil {
+			continue
+		}
+		total += *used
+		found = true
+	}
+	if !found {
 		return nil
 	}
-	value := 100 - *latest.Percent
+	if total > 100 {
+		total = 100
+	}
+	return &total
+}
+
+func quotaUsedPercentFromPoint(point *usage.QuotaSnapshotSeriesPoint) *float64 {
+	if point == nil || point.Percent == nil {
+		return nil
+	}
+	value := 100 - *point.Percent
 	if value < 0 {
 		value = 0
 	}

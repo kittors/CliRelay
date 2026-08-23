@@ -114,11 +114,12 @@ func parseXAIWeeklyBilling(body []byte) []usage.QuotaWindowDTO {
 		reset := weekly.ResetAt
 		resetAt = &reset
 	}
+	windowSeconds := weekly.WindowSeconds()
 	// Weekly cards already show relative reset from ResetAt; keep Meta empty so the
 	// UI is not flooded with raw ISO period strings like "2026-07-16T06:45:51+00:00 - …".
 	out := []usage.QuotaWindowDTO{{
 		QuotaKey: "weekly_limit", QuotaLabel: "xai_quota.weekly_limit", Percent: &weekly.RemainingPercent,
-		Value: formatPercent(weekly.RemainingPercent), ResetAt: resetAt, WindowSeconds: 604800,
+		Value: formatPercent(weekly.RemainingPercent), ResetAt: resetAt, WindowSeconds: windowSeconds,
 	}}
 	for index, product := range weekly.Products {
 		name := product.Name
@@ -126,10 +127,20 @@ func parseXAIWeeklyBilling(body []byte) []usage.QuotaWindowDTO {
 			name = fmt.Sprintf("Product %d", index+1)
 		}
 		remaining := product.RemainingPercent
-		out = append(out, usage.QuotaWindowDTO{
+		window := usage.QuotaWindowDTO{
 			QuotaKey: "product:" + name, QuotaLabel: "xai_quota.product_usage_named::" + name,
 			Percent: &remaining, Value: formatPercent(remaining),
-		})
+		}
+		// Attributable products carry the weekly window so the projection can pick
+		// them out of the snapshot series by width, the same way it selects every
+		// other provider's weekly quota. Products the proxy does not feed stay
+		// window-less: they are display-only, and giving them a weekly window would
+		// let the projection anchor on a share of the pool nobody here produced.
+		if product.Attributable {
+			window.ResetAt = resetAt
+			window.WindowSeconds = windowSeconds
+		}
+		out = append(out, window)
 	}
 	return out
 }

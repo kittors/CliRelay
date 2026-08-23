@@ -78,6 +78,54 @@ func PrimaryWeeklyQuotaKeys(provider string) []string {
 	return []string{key}
 }
 
+// xaiProductQuotaKeyPrefix marks a per-product xAI weekly window.
+const xaiProductQuotaKeyPrefix = "product:"
+
+// MatchesProjectionQuotaKey reports whether a weekly quota window may serve as
+// the divisor of the weekly-budget projection.
+//
+// The projection divides locally recorded cost by an upstream consumption
+// share, so the two sides have to describe the same requests. For most
+// providers the card cycle window is also the only window the proxy's traffic
+// feeds, and the primary key is the right divisor.
+//
+// xAI is the exception: SuperGrok bills every product — Grok Chat on the web
+// included — against one shared weekly pool, so weekly_limit counts consumption
+// this proxy never produced and using it understates the projected budget by
+// however much the account spent elsewhere. The xAI probe attaches the weekly
+// window only to products the proxy actually feeds (see parseXAIWeeklyBilling),
+// so a product window of weekly width is exactly the attributable share.
+//
+// Callers keep applying their own window-width filter; this only narrows which
+// keys within that width are eligible.
+func MatchesProjectionQuotaKey(provider, quotaKey string) bool {
+	quotaKey = strings.TrimSpace(quotaKey)
+	if quotaKey == "" {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "xai", "grok":
+		return strings.HasPrefix(quotaKey, xaiProductQuotaKeyPrefix)
+	default:
+		return quotaKey == primaryAIAccountSubjectWeeklyQuotaKey(provider)
+	}
+}
+
+// ProjectionQuotaIsAttributable reports whether a provider's projection divisor
+// is narrower than its pool-wide weekly percentage.
+//
+// The panel shows both numbers — "weekly quota used" from the pool and the
+// projected budget from the attributable share — and without this flag the two
+// read as contradictory (19% consumed against a budget derived from 16%).
+func ProjectionQuotaIsAttributable(provider string) bool {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "xai", "grok":
+		return true
+	default:
+		return false
+	}
+}
+
 // aiAccountSubjectCycleDriftTolerance bounds how far a re-probed cycle start may
 // move and still count as the same cycle.
 //

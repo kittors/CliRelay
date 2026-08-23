@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	xaiauth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/xai"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	managementapitools "github.com/router-for-me/CLIProxyAPI/v6/internal/management/apitools"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
@@ -680,9 +681,14 @@ func (s *Service) applyRuntimeQuotaProbe(ctx context.Context, auth *coreauth.Aut
 		if quota.QuotaKey != "weekly_limit" || quota.Percent == nil {
 			continue
 		}
+		// Same threshold the runtime recovery probe uses: percentages now carry
+		// upstream precision, and a fraction of a percent left cannot serve a
+		// request. Calling that recovered puts the credential back in rotation to
+		// take another 402 and cool down again, over and over until the reset.
+		exhausted := xaiauth.WeeklyBilling{RemainingPercent: *quota.Percent}.Exhausted()
 		result := &coreauth.QuotaProbeResult{
-			Recovered:       *quota.Percent > 0,
-			WindowExhausted: *quota.Percent <= 0,
+			Recovered:       !exhausted,
+			WindowExhausted: exhausted,
 			Window:          "week",
 			WindowMinutes:   10080,
 		}

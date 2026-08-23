@@ -672,3 +672,52 @@ func TestParseAntigravityQuotaSummaryLabelsRowsByGroupOnly(t *testing.T) {
 		t.Fatalf("5h meta=%+v, want group and bucket descriptions joined", fiveHour)
 	}
 }
+
+// Only the products this proxy feeds carry the weekly window. That window is
+// what the budget projection selects on, so tagging Grok Chat with it would let
+// the projection anchor on consumption produced somewhere else entirely.
+func TestParseXAIWeeklyBillingWindowsOnlyAttributableProducts(t *testing.T) {
+	body := []byte(`{"config":{"currentPeriod":{"type":"USAGE_PERIOD_TYPE_WEEKLY","start":"2026-08-20T06:45:51Z","end":"2026-08-27T06:45:51Z"},` +
+		`"creditUsagePercent":19,"productUsage":[{"product":"GrokBuild","usagePercent":16},{"product":"GrokChat","usagePercent":3},{"product":"GrokImagine"}]}}`)
+	items := parseXAIWeeklyBilling(body)
+
+	build := quotaByKey(items, "product:GrokBuild")
+	if build == nil || build.Percent == nil || *build.Percent != 84 {
+		t.Fatalf("build=%+v", build)
+	}
+	if build.WindowSeconds != 604800 || build.ResetAt == nil {
+		t.Fatalf("attributable product must carry the weekly window: %+v", build)
+	}
+
+	for _, key := range []string{"product:GrokChat", "product:GrokImagine"} {
+		item := quotaByKey(items, key)
+		if item == nil {
+			t.Fatalf("%s missing", key)
+		}
+		if item.WindowSeconds != 0 || item.ResetAt != nil {
+			t.Fatalf("%s must stay display-only, got window=%d reset=%v", key, item.WindowSeconds, item.ResetAt)
+		}
+	}
+
+	// The pool-wide window keeps reporting total consumption; it is what the
+	// "weekly quota used" figure shows.
+	weekly := quotaByKey(items, "weekly_limit")
+	if weekly == nil || weekly.Percent == nil || *weekly.Percent != 81 || weekly.WindowSeconds != 604800 {
+		t.Fatalf("weekly=%+v", weekly)
+	}
+}
+
+// Percentages reach the panel unrounded now; the displayed value is formatted
+// at the edge instead.
+func TestParseXAIWeeklyBillingKeepsFractionalPercent(t *testing.T) {
+	body := []byte(`{"config":{"currentPeriod":{"type":"WEEKLY","end":"2026-08-27T00:00:00Z"},"creditUsagePercent":2.4,` +
+		`"productUsage":[{"product":"GrokBuild","usagePercent":2.4}]}}`)
+	items := parseXAIWeeklyBilling(body)
+	weekly := quotaByKey(items, "weekly_limit")
+	if weekly == nil || weekly.Percent == nil || *weekly.Percent != 97.6 {
+		t.Fatalf("weekly percent=%+v, want 97.6", weekly)
+	}
+	if weekly.Value != "98%" {
+		t.Fatalf("weekly display value=%q, want 98%%", weekly.Value)
+	}
+}

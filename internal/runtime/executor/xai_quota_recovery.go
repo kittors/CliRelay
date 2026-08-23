@@ -66,7 +66,9 @@ func parseXAIQuotaProbe(body []byte, now time.Time) *cliproxyauth.QuotaProbeResu
 	if !ok {
 		return nil
 	}
-	if weekly.RemainingPercent > 0 {
+	// Exhaustion is a threshold, not "> 0": weekly percentages carry upstream
+	// precision now, and a sliver of remaining allowance cannot serve a request.
+	if !weekly.Exhausted() {
 		return &cliproxyauth.QuotaProbeResult{Recovered: true}
 	}
 	result := &cliproxyauth.QuotaProbeResult{
