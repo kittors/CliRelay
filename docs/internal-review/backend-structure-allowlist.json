@@ -22,7 +22,7 @@
       },
       {
         "path": "internal/management/aiaccountstatus/service.go",
-        "max_lines": 990
+        "max_lines": 910
       },
       {
         "path": "internal/management/modelcatalog/availability.go",
