@@ -12,8 +12,13 @@ const DisabledMetadataKey = "disabled"
 // SyncPersistedDisabled mirrors the runtime Disabled flag into the metadata map
 // that stores serialize. Call it in every Store.Save implementation before the
 // auth file is written.
+//
+// A record with neither metadata nor token storage owns no auth file at all —
+// config-derived API keys live in config.yaml — so it is left untouched.
+// Creating a metadata map for one would make the manager treat it as
+// persistable and write a stray JSON file into the auth directory.
 func SyncPersistedDisabled(auth *Auth) {
-	if auth == nil {
+	if auth == nil || (auth.Metadata == nil && auth.Storage == nil) {
 		return
 	}
 	if auth.Metadata == nil {

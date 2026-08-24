@@ -3,7 +3,7 @@ package auth
 import "testing"
 
 func TestSyncPersistedDisabledMirrorsRuntimeFlag(t *testing.T) {
-	auth := &Auth{Disabled: true}
+	auth := &Auth{Disabled: true, Metadata: map[string]any{"type": "codex"}}
 	SyncPersistedDisabled(auth)
 	if auth.Metadata[DisabledMetadataKey] != true {
 		t.Fatalf("metadata[%s] = %#v, want true", DisabledMetadataKey, auth.Metadata[DisabledMetadataKey])
@@ -19,6 +19,31 @@ func TestSyncPersistedDisabledMirrorsRuntimeFlag(t *testing.T) {
 func TestSyncPersistedDisabledIgnoresNilAuth(t *testing.T) {
 	SyncPersistedDisabled(nil)
 }
+
+// Config-derived API keys carry neither metadata nor token storage: nothing of
+// them is serialized, and creating a metadata map would make the manager start
+// writing stray auth files for them.
+func TestSyncPersistedDisabledSkipsRecordsWithNothingToSerialize(t *testing.T) {
+	auth := &Auth{Disabled: true, Attributes: map[string]string{"api_key": "k"}}
+	SyncPersistedDisabled(auth)
+	if auth.Metadata != nil {
+		t.Fatalf("Metadata = %#v, want nil", auth.Metadata)
+	}
+}
+
+// An OAuth credential keeps its payload in TokenStorage; the flag still has to
+// reach the file the storage writes.
+func TestSyncPersistedDisabledSeedsMetadataForTokenStorage(t *testing.T) {
+	auth := &Auth{Disabled: true, Storage: stubTokenStorage{}}
+	SyncPersistedDisabled(auth)
+	if auth.Metadata[DisabledMetadataKey] != true {
+		t.Fatalf("metadata[%s] = %#v, want true", DisabledMetadataKey, auth.Metadata[DisabledMetadataKey])
+	}
+}
+
+type stubTokenStorage struct{}
+
+func (stubTokenStorage) SaveTokenToFile(string) error { return nil }
 
 func TestRestorePersistedDisabled(t *testing.T) {
 	cases := []struct {

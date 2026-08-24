@@ -111,7 +111,7 @@ func TestPatchStatusPersistsDisabledAcrossReload(t *testing.T) {
 
 // ApplyStatusPatch owns the in-memory projection; stores mirror it again on save.
 func TestApplyStatusPatchSyncsMetadata(t *testing.T) {
-	auth := &coreauth.Auth{Status: coreauth.StatusActive}
+	auth := &coreauth.Auth{Status: coreauth.StatusActive, Metadata: map[string]any{"type": "codex"}}
 	if err := ApplyStatusPatch(auth, true, time.Time{}); err != nil {
 		t.Fatalf("ApplyStatusPatch: %v", err)
 	}
@@ -123,5 +123,23 @@ func TestApplyStatusPatchSyncsMetadata(t *testing.T) {
 	}
 	if auth.Metadata[coreauth.DisabledMetadataKey] != false {
 		t.Fatalf("metadata disabled = %#v, want false", auth.Metadata[coreauth.DisabledMetadataKey])
+	}
+}
+
+// Config-derived API keys live in config.yaml and own no auth file. Toggling one
+// must stay in memory instead of materializing a JSON file in the auth dir.
+func TestApplyStatusPatchLeavesConfigDerivedAuthUnpersisted(t *testing.T) {
+	auth := &coreauth.Auth{
+		Status:     coreauth.StatusActive,
+		Attributes: map[string]string{"source": "config:gemini[abc]", "api_key": "key"},
+	}
+	if err := ApplyStatusPatch(auth, true, time.Time{}); err != nil {
+		t.Fatalf("ApplyStatusPatch: %v", err)
+	}
+	if auth.Metadata != nil {
+		t.Fatalf("Metadata = %#v, want nil", auth.Metadata)
+	}
+	if !auth.Disabled || auth.Status != coreauth.StatusDisabled {
+		t.Fatalf("Disabled=%v Status=%q, want disabled", auth.Disabled, auth.Status)
 	}
 }
