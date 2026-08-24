@@ -2,8 +2,28 @@ package config
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
+
+// assertOfficialCodexCLIIdentity pins the outbound identity to the official
+// Codex CLI. The legacy `codex-tui` originator gets requests load-shed upstream
+// (CLIProxyAPI #4679), and spoofing only the User-Agent does not avoid it, so
+// both fields are checked together. The version is deliberately not pinned so
+// routine CLI bumps do not break the test.
+func assertOfficialCodexCLIIdentity(t *testing.T, got CodexIdentityFingerprintConfig) {
+	t.Helper()
+
+	if got.Originator != "codex_cli_rs" {
+		t.Fatalf("Originator = %q, want codex_cli_rs", got.Originator)
+	}
+	if !strings.HasPrefix(got.UserAgent, "codex_cli_rs/") {
+		t.Fatalf("UserAgent = %q, want a codex_cli_rs/<version> user agent", got.UserAgent)
+	}
+	if strings.Contains(got.UserAgent, "codex-tui") {
+		t.Fatalf("UserAgent = %q, must not carry the legacy codex-tui marker", got.UserAgent)
+	}
+}
 
 func TestDefaultCodexIdentityFingerprintUsesCurrentVersionAndDynamicSessions(t *testing.T) {
 	t.Parallel()
@@ -14,11 +34,9 @@ func TestDefaultCodexIdentityFingerprintUsesCurrentVersionAndDynamicSessions(t *
 		t.Fatalf("Enabled = false, want true by default")
 	}
 	if got.Version != "" {
-		t.Fatalf("Version = %q, want empty (codex-tui does not require Version)", got.Version)
+		t.Fatalf("Version = %q, want empty (the CLI does not require Version)", got.Version)
 	}
-	if got.UserAgent != "codex-tui/0.118.0 (Mac OS 26.3.1; arm64) iTerm.app/3.6.9 (codex-tui; 0.118.0)" {
-		t.Fatalf("UserAgent = %q, want codex-tui user agent", got.UserAgent)
-	}
+	assertOfficialCodexCLIIdentity(t, got)
 	if got.SessionMode != "per-request" {
 		t.Fatalf("SessionMode = %q, want per-request", got.SessionMode)
 	}
@@ -33,11 +51,9 @@ func TestNormalizeCodexIdentityFingerprintAppliesCurrentDefaults(t *testing.T) {
 		t.Fatalf("Enabled = false, want true by default")
 	}
 	if got.Version != "" {
-		t.Fatalf("Version = %q, want empty (codex-tui does not require Version)", got.Version)
+		t.Fatalf("Version = %q, want empty (the CLI does not require Version)", got.Version)
 	}
-	if got.UserAgent != "codex-tui/0.118.0 (Mac OS 26.3.1; arm64) iTerm.app/3.6.9 (codex-tui; 0.118.0)" {
-		t.Fatalf("UserAgent = %q, want codex-tui user agent", got.UserAgent)
-	}
+	assertOfficialCodexCLIIdentity(t, got)
 	if got.SessionMode != "per-request" {
 		t.Fatalf("SessionMode = %q, want per-request", got.SessionMode)
 	}

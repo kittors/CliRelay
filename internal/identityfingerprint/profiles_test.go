@@ -156,7 +156,9 @@ func TestResolveCodexSafeFallbackRejectsMixedAccountPreset(t *testing.T) {
 	if got := effective.Fields[FieldUserAgent].Source; got != FieldSourceBuiltinDefault {
 		t.Fatalf("safe fallback user-agent source = %q", got)
 	}
-	if effective.ProfileKey != "codex-tui" || effective.ProfileFamily != ProfileFamilyCLI {
+	// The fallback profile key is derived from the builtin originator, so it
+	// tracks that constant rather than a pinned product name.
+	if effective.ProfileKey != config.DefaultCodexFingerprintOriginator || effective.ProfileFamily != ProfileFamilyCLI {
 		t.Fatalf("safe fallback metadata = %#v", effective)
 	}
 }

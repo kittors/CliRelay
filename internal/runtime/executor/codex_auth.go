@@ -13,9 +13,11 @@ import (
 )
 
 const (
-	// Keep defaults aligned with upstream CLIProxyAPI (codex-tui).
-	codexUserAgent  = "codex-tui/0.118.0 (Mac OS 26.3.1; arm64) iTerm.app/3.6.9 (codex-tui; 0.118.0)"
-	codexOriginator = "codex-tui"
+	// Fallback identity for requests that bypass the fingerprint resolver. Kept in
+	// sync with config.DefaultCodexFingerprint* so both paths present the same
+	// official Codex CLI identity; see that block for why `codex-tui` was dropped.
+	codexUserAgent  = config.DefaultCodexFingerprintUserAgent
+	codexOriginator = config.DefaultCodexFingerprintOriginator
 )
 
 func applyCodexHeaders(r *http.Request, cfg *config.Config, auth *cliproxyauth.Auth, token string, stream bool) {

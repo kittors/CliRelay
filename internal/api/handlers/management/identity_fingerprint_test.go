@@ -303,7 +303,7 @@ func TestGetIdentityFingerprintAccountReturnsLearnedPresetAndBuiltinDefault(t *t
 	if payload.Preset.UserAgent != "codex-tui/0.118.0 (Mac OS 26.3.1; arm64)" {
 		t.Fatalf("preset user-agent = %q", payload.Preset.UserAgent)
 	}
-	if payload.BuiltinDefault.Originator != "codex-tui" {
+	if payload.BuiltinDefault.Originator != config.DefaultCodexFingerprintOriginator {
 		t.Fatalf("builtin default originator = %q", payload.BuiltinDefault.Originator)
 	}
 	if payload.Learned.ObservedHeaders["Version"] != "0.125.0" {

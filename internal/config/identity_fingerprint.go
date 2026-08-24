@@ -9,11 +9,15 @@ import (
 )
 
 const (
-	// Defaults are intentionally aligned with upstream CLIProxyAPI's codex-tui behavior.
-	// Update these when upstream codex-tui identity changes.
-	DefaultCodexFingerprintUserAgent     = "codex-tui/0.118.0 (Mac OS 26.3.1; arm64) iTerm.app/3.6.9 (codex-tui; 0.118.0)"
+	// Defaults follow the identity the current official Codex CLI sends.
+	// `codex-tui` is a legacy originator: upstream A/B probes (CLIProxyAPI #4679)
+	// showed gpt-5.6-sol requests carrying it get load-shed with
+	// `server_is_overloaded`, while `codex_cli_rs` succeeds from the same account.
+	// Spoofing only the User-Agent does not help, so both values move together.
+	// Update the version when the official CLI releases a new stable tag.
+	DefaultCodexFingerprintUserAgent     = "codex_cli_rs/0.149.1 (Mac OS 26.3.1; arm64) iTerm.app/3.6.9"
 	DefaultCodexFingerprintVersion       = ""
-	DefaultCodexFingerprintOriginator    = "codex-tui"
+	DefaultCodexFingerprintOriginator    = "codex_cli_rs"
 	DefaultCodexFingerprintWebsocketBeta = "responses_websockets=2026-02-06"
 	DefaultCodexFingerprintBetaFeatures  = ""
 	DefaultCodexFingerprintSessionMode   = "per-request"
@@ -28,10 +32,18 @@ const (
 	CodexFingerprintConvergenceSession = "session"
 	CodexFingerprintConvergenceFull    = "full"
 
-	// DefaultCodexFingerprintConvergenceMode converges installation and session
-	// while keeping one thread per real client session, which is the shape a
-	// single user spawning sub-agents produces upstream.
-	DefaultCodexFingerprintConvergenceMode = CodexFingerprintConvergenceSession
+	// DefaultCodexFingerprintConvergenceMode converges only the installation and
+	// leaves the client's own session, thread and window state alone.
+	//
+	// Device is the strongest mode that still matches the official client: a real
+	// Codex install legitimately hosts many sessions, so one installation with N
+	// client sessions is a shape upstream already sees. Session and full instead
+	// fold unrelated users into one session id while prompt_cache_key keeps the
+	// per-conversation value, and derive thread/window ids that disagree with the
+	// official state machine (root threads use session_id == thread_id, both
+	// UUIDv7; window ids are their own UUIDv7, not thread_id+":0"). That triple
+	// is a combination no official client emits.
+	DefaultCodexFingerprintConvergenceMode = CodexFingerprintConvergenceDevice
 
 	DefaultClaudeFingerprintCLIVersion              = "2.1.161"
 	DefaultClaudeFingerprintEntrypoint              = "cli"

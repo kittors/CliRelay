@@ -10,6 +10,7 @@ import (
 	"time"
 
 	codexauth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/codex"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	managementapitools "github.com/router-for-me/CLIProxyAPI/v6/internal/management/apitools"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
@@ -24,7 +25,7 @@ const (
 func probeCodex(ctx context.Context, svc *managementapitools.Service, auth *coreauth.Auth) (ProbeResult, error) {
 	body, err := doAuthGET(ctx, svc, auth, codexUsageURL, map[string]string{
 		"Content-Type": "application/json",
-		"User-Agent":   "codex_cli_rs/0.76.0 (Debian 13.0.0; x86_64) WindowsTerminal",
+		"User-Agent":   config.DefaultCodexFingerprintUserAgent,
 	}, func(req *http.Request) {
 		if accountID := codexAccountID(auth); accountID != "" {
 			req.Header.Set("Chatgpt-Account-Id", accountID)
@@ -47,7 +48,7 @@ func probeCodex(ctx context.Context, svc *managementapitools.Service, auth *core
 		if v > 0 {
 			if expBody, expErr := doAuthGET(ctx, svc, auth, codexResetCreditsURL, map[string]string{
 				"Content-Type": "application/json",
-				"User-Agent":   "codex_cli_rs/0.76.0 (Debian 13.0.0; x86_64) WindowsTerminal",
+				"User-Agent":   config.DefaultCodexFingerprintUserAgent,
 			}, func(req *http.Request) {
 				if accountID := codexAccountID(auth); accountID != "" {
 					req.Header.Set("Chatgpt-Account-Id", accountID)

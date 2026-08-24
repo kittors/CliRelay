@@ -354,14 +354,14 @@ func TestDeviceOnlyLeavesSessionUntouched(t *testing.T) {
 	}
 }
 
-func TestCodexConvergenceDefaultsToSessionMode(t *testing.T) {
+func TestCodexConvergenceDefaultsToDeviceMode(t *testing.T) {
 	cfg := codexConvergenceTestConfig("")
-	if got := codexConvergenceMode(cfg, codexConvergenceTestAuth("codex-default")); got != config.CodexFingerprintConvergenceSession {
-		t.Fatalf("convergence mode = %q, want the session default", got)
+	if got := codexConvergenceMode(cfg, codexConvergenceTestAuth("codex-default")); got != config.CodexFingerprintConvergenceDevice {
+		t.Fatalf("convergence mode = %q, want the device default", got)
 	}
 
 	cfg = codexConvergenceTestConfig("nonsense")
-	if got := codexConvergenceMode(cfg, codexConvergenceTestAuth("codex-bogus")); got != config.CodexFingerprintConvergenceSession {
+	if got := codexConvergenceMode(cfg, codexConvergenceTestAuth("codex-bogus")); got != config.CodexFingerprintConvergenceDevice {
 		t.Fatalf("convergence mode = %q, want an unrecognised value to fall back to the default", got)
 	}
 }

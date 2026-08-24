@@ -9,12 +9,12 @@ import (
 
 func TestNormalizeCodexIdentityFingerprintConvergenceDefaults(t *testing.T) {
 	got := NormalizeCodexIdentityFingerprint(CodexIdentityFingerprintConfig{})
-	if got.ConvergenceMode != CodexFingerprintConvergenceSession {
-		t.Fatalf("convergence mode = %q, want the session default", got.ConvergenceMode)
+	if got.ConvergenceMode != CodexFingerprintConvergenceDevice {
+		t.Fatalf("convergence mode = %q, want the device default", got.ConvergenceMode)
 	}
 
 	got = NormalizeCodexIdentityFingerprint(CodexIdentityFingerprintConfig{ConvergenceMode: "nonsense"})
-	if got.ConvergenceMode != CodexFingerprintConvergenceSession {
+	if got.ConvergenceMode != CodexFingerprintConvergenceDevice {
 		t.Fatalf("convergence mode = %q, want an invalid value to fall back", got.ConvergenceMode)
 	}
 
