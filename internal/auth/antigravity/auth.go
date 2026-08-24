@@ -36,6 +36,24 @@ type AntigravityAuth struct {
 	secret     string
 }
 
+// NewAntigravityAuthWithProxy is NewAntigravityAuth pinned to one egress proxy.
+// An empty proxyURL keeps the configured default.
+func NewAntigravityAuthWithProxy(cfg *config.Config, proxyURL string) *AntigravityAuth {
+	if cfg == nil {
+		cfg = &config.Config{}
+	}
+	sdkCfg := cfg.SDKConfig
+	if trimmed := strings.TrimSpace(proxyURL); trimmed != "" {
+		sdkCfg.ProxyURL = trimmed
+	}
+	clientID, clientSecret := cfg.OAuthClientCredentials(config.OAuthClientAntigravity)
+	return &AntigravityAuth{
+		httpClient: util.SetProxy(&sdkCfg, util.NewHTTPClient(util.DefaultHTTPClientTimeout)),
+		clientID:   clientID,
+		secret:     clientSecret,
+	}
+}
+
 // NewAntigravityAuth creates a new Antigravity auth service.
 func NewAntigravityAuth(cfg *config.Config, httpClient *http.Client) *AntigravityAuth {
 	if cfg == nil {

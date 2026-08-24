@@ -126,6 +126,14 @@ func oauthProxyIDFromRequest(c *gin.Context) string {
 	return strings.TrimSpace(c.Query("proxy-id"))
 }
 
+func (h *Handler) resolveOAuthProxyURL(c *gin.Context) string {
+	proxyID := oauthProxyIDFromRequest(c)
+	if proxyID == "" {
+		return ""
+	}
+	return h.cfg.ResolveProxyURL(proxyID, "")
+}
+
 func (h *Handler) tenantOAuthBindings(c *gin.Context) (
 	authDir string,
 	saveRecord func(context.Context, *coreauth.Auth) (string, error),
@@ -159,6 +167,7 @@ func (h *Handler) RequestAnthropicToken(c *gin.Context) {
 	result, err := claudeprovider.StartOAuthLogin(ctx, claudeprovider.OAuthLoginOptions{
 		AuthDir:               authDir,
 		Config:                h.cfg,
+		ProxyURL:              h.resolveOAuthProxyURL(c),
 		WebUI:                 isWebUIRequest(c),
 		PreferredCallbackPort: anthropicCallbackPort,
 		CallbackTarget:        h.managementCallbackURL,
@@ -243,6 +252,7 @@ func (h *Handler) RequestCodexToken(c *gin.Context) {
 	result, err := codexprovider.StartOAuthLogin(ctx, codexprovider.OAuthLoginOptions{
 		AuthDir:             authDir,
 		Config:              h.cfg,
+		ProxyURL:            h.resolveOAuthProxyURL(c),
 		WebUI:               isWebUIRequest(c),
 		CallbackPort:        codexCallbackPort,
 		CallbackTarget:      h.managementCallbackURL,
@@ -284,6 +294,7 @@ func (h *Handler) RequestAntigravityToken(c *gin.Context) {
 	result, err := antigravityprovider.StartOAuthLogin(ctx, antigravityprovider.OAuthLoginOptions{
 		AuthDir:             authDir,
 		Config:              h.cfg,
+		ProxyURL:            h.resolveOAuthProxyURL(c),
 		WebUI:               isWebUIRequest(c),
 		CallbackTarget:      h.managementCallbackURL,
 		WaitCallback:        WaitOAuthCallbackFile,
@@ -371,6 +382,7 @@ func (h *Handler) RequestXAIToken(c *gin.Context) {
 	result, err := xaiprovider.StartOAuthLogin(ctx, xaiprovider.OAuthLoginOptions{
 		AuthDir:             authDir,
 		Config:              h.cfg,
+		ProxyURL:            h.resolveOAuthProxyURL(c),
 		WebUI:               isWebUIRequest(c),
 		UsingAPI:            queryBool(c, "using_api"),
 		CallbackTarget:      h.managementCallbackURL,

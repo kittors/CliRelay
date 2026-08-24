@@ -50,6 +50,7 @@ type OAuthLoginOptions struct {
 	Config              *config.Config
 	Auth                OAuthAuth
 	AuthDir             string
+	ProxyURL            string
 	WebUI               bool
 	CallbackPort        int
 	CallbackWaitTimeout time.Duration
@@ -91,7 +92,7 @@ func StartOAuthLogin(ctx context.Context, opts OAuthLoginOptions) (OAuthLoginRes
 
 	auth := opts.Auth
 	if auth == nil {
-		auth = internalcodex.NewCodexAuth(opts.Config)
+		auth = internalcodex.NewCodexAuthWithProxy(opts.Config, opts.ProxyURL)
 	}
 	authURL, errAuthURL := auth.GenerateAuthURL(state, pkceCodes)
 	if errAuthURL != nil {

@@ -51,6 +51,7 @@ type OAuthLoginOptions struct {
 	Config                *config.Config
 	Auth                  OAuthAuth
 	AuthDir               string
+	ProxyURL              string
 	WebUI                 bool
 	PreferredCallbackPort int
 	CallbackWaitTimeout   time.Duration
@@ -92,7 +93,7 @@ func StartOAuthLogin(ctx context.Context, opts OAuthLoginOptions) (OAuthLoginRes
 
 	auth := opts.Auth
 	if auth == nil {
-		auth = internalclaude.NewClaudeAuth(opts.Config)
+		auth = internalclaude.NewClaudeAuthWithProxy(opts.Config, opts.ProxyURL)
 	}
 
 	redirectURI, forwarder, callbackPort := resolveRedirectURI(opts)

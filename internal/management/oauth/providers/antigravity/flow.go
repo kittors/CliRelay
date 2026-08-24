@@ -49,6 +49,7 @@ type OAuthLoginOptions struct {
 	Config              *config.Config
 	Auth                OAuthAuth
 	AuthDir             string
+	ProxyURL            string
 	WebUI               bool
 	CallbackPort        int
 	CallbackWaitTimeout time.Duration
@@ -72,7 +73,7 @@ func StartOAuthLogin(ctx context.Context, opts OAuthLoginOptions) (OAuthLoginRes
 
 	auth := opts.Auth
 	if auth == nil {
-		auth = internalantigravity.NewAntigravityAuth(opts.Config, nil)
+		auth = internalantigravity.NewAntigravityAuthWithProxy(opts.Config, opts.ProxyURL)
 	}
 
 	generateState := opts.GenerateState

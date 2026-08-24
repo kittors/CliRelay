@@ -51,6 +51,7 @@ type OAuthLoginOptions struct {
 	Config              *config.Config
 	Auth                OAuthAuth
 	AuthDir             string
+	ProxyURL            string
 	WebUI               bool
 	UsingAPI            bool
 	CallbackPort        int
@@ -95,7 +96,7 @@ func StartOAuthLogin(ctx context.Context, opts OAuthLoginOptions) (OAuthLoginRes
 
 	auth := opts.Auth
 	if auth == nil {
-		auth = internalxai.NewXAIAuth(opts.Config)
+		auth = internalxai.NewXAIAuthWithProxyURL(opts.Config, opts.ProxyURL)
 	}
 	discovery, errDiscovery := auth.Discover(ctx)
 	if errDiscovery != nil {
