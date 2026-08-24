@@ -478,7 +478,9 @@ func (e *ClaudeExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (
 	if refreshToken == "" {
 		return auth, nil
 	}
-	svc := claudeauth.NewClaudeAuth(e.cfg)
+	// Refresh goes out through this credential's own proxy, not the process
+	// default, so the token is renewed from the address that uses it.
+	svc := claudeauth.NewClaudeAuthWithProxy(e.cfg, resolveAuthProxyURL(e.cfg, auth))
 	td, err := svc.RefreshTokens(ctx, refreshToken)
 	if err != nil {
 		return nil, err

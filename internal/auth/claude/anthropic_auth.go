@@ -61,10 +61,28 @@ type ClaudeAuth struct {
 // Returns:
 //   - *ClaudeAuth: A new Claude authentication service instance
 func NewClaudeAuth(cfg *config.Config) *ClaudeAuth {
+	return NewClaudeAuthWithProxy(cfg, "")
+}
+
+// NewClaudeAuthWithProxy is NewClaudeAuth pinned to one egress proxy.
+//
+// Token refresh has to leave from the same address as the credential's own
+// requests; see resolveAuthProxyURL in the executor package for what goes wrong
+// when the two diverge. An empty proxyURL keeps the configured default. The
+// Firefox TLS fingerprint is preserved either way, since the proxy is applied by
+// substituting the dialer's config rather than replacing the transport.
+func NewClaudeAuthWithProxy(cfg *config.Config, proxyURL string) *ClaudeAuth {
+	var sdkCfg config.SDKConfig
+	if cfg != nil {
+		sdkCfg = cfg.SDKConfig
+	}
+	if trimmed := strings.TrimSpace(proxyURL); trimmed != "" {
+		sdkCfg.ProxyURL = trimmed
+	}
 	// Use custom HTTP client with Firefox TLS fingerprint to bypass
 	// Cloudflare's bot detection on Anthropic domains
 	return &ClaudeAuth{
-		httpClient: NewAnthropicHttpClient(&cfg.SDKConfig),
+		httpClient: NewAnthropicHttpClient(&sdkCfg),
 	}
 }
 

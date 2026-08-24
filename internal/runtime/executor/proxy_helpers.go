@@ -34,6 +34,34 @@ type requestLogEgressRoute struct {
 	ProxyURLHost string `json:"proxy_url_host,omitempty"`
 }
 
+// resolveAuthProxyURL returns the proxy a credential's own traffic goes out
+// through, using the same precedence as newProxyAwareHTTPClient.
+//
+// OAuth token refresh must leave from this address rather than the process
+// default. The two had drifted apart in production: requests went out through
+// the credential's proxy-pool entry while refresh went direct, so upstream saw
+// one account acting from two regions and rejected the refresh with
+// `unsupported_country_region_territory` once the host region was unsupported.
+// The access token then aged out and the account went unauthorized even though
+// its request path was healthy.
+//
+// It returns "" when nothing is configured, which leaves the caller on its
+// existing default.
+func resolveAuthProxyURL(cfg *config.Config, auth *cliproxyauth.Auth) string {
+	if cfg == nil {
+		if auth == nil {
+			return ""
+		}
+		return strings.TrimSpace(auth.ProxyURL)
+	}
+	proxyID, fallbackURL := "", ""
+	if auth != nil {
+		proxyID = auth.ProxyID
+		fallbackURL = auth.ProxyURL
+	}
+	return strings.TrimSpace(cfg.ResolveProxyURL(proxyID, fallbackURL))
+}
+
 // newProxyAwareHTTPClient creates an HTTP client with proper proxy configuration priority:
 // 1. Use auth.ProxyID when it resolves to an enabled proxy-pool entry
 // 2. Use auth.ProxyURL if configured

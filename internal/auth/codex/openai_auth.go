@@ -37,9 +37,32 @@ type CodexAuth struct {
 // NewCodexAuth creates a new CodexAuth service instance.
 // It initializes an HTTP client with proxy settings from the provided configuration.
 func NewCodexAuth(cfg *config.Config) *CodexAuth {
+	return NewCodexAuthWithProxy(cfg, "")
+}
+
+// NewCodexAuthWithProxy is NewCodexAuth pinned to one egress proxy.
+//
+// Token refresh has to leave from the same address as the credential's own
+// requests; see resolveAuthProxyURL in the executor package for what goes wrong
+// when the two diverge. An empty proxyURL keeps the configured default.
+func NewCodexAuthWithProxy(cfg *config.Config, proxyURL string) *CodexAuth {
+	sdkCfg := sdkConfigWithProxy(cfg, proxyURL)
 	return &CodexAuth{
-		httpClient: util.SetProxy(&cfg.SDKConfig, util.NewHTTPClient(util.DefaultHTTPClientTimeout)),
+		httpClient: util.SetProxy(sdkCfg, util.NewHTTPClient(util.DefaultHTTPClientTimeout)),
 	}
+}
+
+// sdkConfigWithProxy copies the SDK config with proxyURL substituted, so pinning
+// an egress proxy cannot mutate shared configuration.
+func sdkConfigWithProxy(cfg *config.Config, proxyURL string) *config.SDKConfig {
+	var sdkCfg config.SDKConfig
+	if cfg != nil {
+		sdkCfg = cfg.SDKConfig
+	}
+	if proxyURL = strings.TrimSpace(proxyURL); proxyURL != "" {
+		sdkCfg.ProxyURL = proxyURL
+	}
+	return &sdkCfg
 }
 
 // GenerateAuthURL creates the OAuth authorization URL with PKCE (Proof Key for Code Exchange).

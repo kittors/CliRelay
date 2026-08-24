@@ -493,7 +493,9 @@ func (e *QwenExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*c
 		return auth, nil
 	}
 
-	svc := qwenauth.NewQwenAuth(e.cfg)
+	// Refresh goes out through this credential's own proxy, not the process
+	// default, so the token is renewed from the address that uses it.
+	svc := qwenauth.NewQwenAuthWithProxy(e.cfg, resolveAuthProxyURL(e.cfg, auth))
 	td, err := svc.RefreshTokens(ctx, refreshToken)
 	if err != nil {
 		return nil, err
