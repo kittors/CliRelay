@@ -69,6 +69,10 @@ func (s *FileTokenStore) Save(ctx context.Context, auth *cliproxyauth.Auth) (str
 		return "", fmt.Errorf("auth filestore: create dir failed: %w", err)
 	}
 	syncRoutingMetadata(auth)
+	// Both branches serialize auth.Metadata, so the disabled flag has to be
+	// mirrored before either of them runs; the Storage branch used to skip it,
+	// which lost every enable/disable made on an OAuth credential.
+	cliproxyauth.SyncPersistedDisabled(auth)
 
 	switch {
 	case auth.Storage != nil:
@@ -77,7 +81,6 @@ func (s *FileTokenStore) Save(ctx context.Context, auth *cliproxyauth.Auth) (str
 			return "", err
 		}
 	case auth.Metadata != nil:
-		auth.Metadata["disabled"] = auth.Disabled
 		raw, errMarshal := json.Marshal(auth.Metadata)
 		if errMarshal != nil {
 			return "", fmt.Errorf("auth filestore: marshal metadata failed: %w", errMarshal)
@@ -239,11 +242,6 @@ func (s *FileTokenStore) readAuthFile(path, baseDir string) (*cliproxyauth.Auth,
 		return nil, fmt.Errorf("stat file: %w", err)
 	}
 	id := s.idFor(path, baseDir)
-	disabled, _ := metadata["disabled"].(bool)
-	status := cliproxyauth.StatusActive
-	if disabled {
-		status = cliproxyauth.StatusDisabled
-	}
 	auth := &cliproxyauth.Auth{
 		ID:               id,
 		TenantID:         cliproxyauth.TenantIDFromAuthID(id),
@@ -253,8 +251,7 @@ func (s *FileTokenStore) readAuthFile(path, baseDir string) (*cliproxyauth.Auth,
 		ProxyID:          metadataString(metadata, "proxy_id", "proxy-id", "proxyId"),
 		FileName:         id,
 		Label:            s.labelFor(metadata),
-		Status:           status,
-		Disabled:         disabled,
+		Status:           cliproxyauth.StatusActive,
 		Attributes:       buildFileAuthAttributes(path, metadata),
 		Metadata:         metadata,
 		CreatedAt:        info.ModTime(),
@@ -262,6 +259,7 @@ func (s *FileTokenStore) readAuthFile(path, baseDir string) (*cliproxyauth.Auth,
 		LastRefreshedAt:  time.Time{},
 		NextRefreshAfter: time.Time{},
 	}
+	cliproxyauth.RestorePersistedDisabled(auth)
 	return auth, nil
 }
 

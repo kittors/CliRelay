@@ -107,12 +107,6 @@ func (s *FileSynthesizer) Synthesize(ctx *SynthesisContext) ([]*coreauth.Auth, e
 			}
 		}
 
-		disabled, _ := metadata["disabled"].(bool)
-		status := coreauth.StatusActive
-		if disabled {
-			status = coreauth.StatusDisabled
-		}
-
 		// Read per-account excluded models from the OAuth JSON file
 		perAccountExcluded := extractExcludedModelsFromMetadata(metadata)
 
@@ -123,8 +117,7 @@ func (s *FileSynthesizer) Synthesize(ctx *SynthesisContext) ([]*coreauth.Auth, e
 			FileName: name,
 			Label:    label,
 			Prefix:   prefix,
-			Status:   status,
-			Disabled: disabled,
+			Status:   coreauth.StatusActive,
 			Attributes: map[string]string{
 				"source": full,
 				"path":   full,
@@ -135,6 +128,7 @@ func (s *FileSynthesizer) Synthesize(ctx *SynthesisContext) ([]*coreauth.Auth, e
 			CreatedAt: now,
 			UpdatedAt: now,
 		}
+		coreauth.RestorePersistedDisabled(a)
 		// Read priority from auth file
 		if rawPriority, ok := metadata["priority"]; ok {
 			switch v := rawPriority.(type) {

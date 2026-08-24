@@ -57,6 +57,10 @@ func ApplyStatusPatch(auth *coreauth.Auth, disabled bool, now time.Time) error {
 		auth.Status = coreauth.StatusActive
 		auth.StatusMessage = ""
 	}
+	// Keep the in-memory metadata projection aligned with the runtime flag.
+	// Stores mirror it again on save, but the manager hands this same metadata
+	// to field patches and list responses in between.
+	coreauth.SyncPersistedDisabled(auth)
 	auth.UpdatedAt = now
 	return nil
 }
