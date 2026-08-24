@@ -138,6 +138,43 @@ func TestSelectCodexProfileReportsNoSelectableProfile(t *testing.T) {
 	}
 }
 
+// A downstream client on the pre-rename CLI must not pin the account to that
+// identity: upstream load-sheds `codex-tui` traffic, so a self-consistent
+// codex-tui profile is still refused for outbound use and selection falls
+// through to the builtin CLI profile.
+func TestCodexTUIProfileIsNeverSelectedForOutbound(t *testing.T) {
+	legacy := LearnedRecord{
+		Provider: ProviderCodex, AccountKey: "acct",
+		ProfileKey: "codex-tui", ProfileFamily: ProfileFamilyCLI,
+		Fields: map[string]string{
+			FieldUserAgent:       "codex-tui/0.118.0 (Mac OS 26.3.1; arm64)",
+			FieldCodexOriginator: "codex-tui",
+		},
+	}
+	if eligible, reason := CodexProfileOutboundEligibility(&legacy); eligible || reason != "legacy_client_product" {
+		t.Fatalf("codex-tui eligibility = %v/%q, want refusal as a legacy product", eligible, reason)
+	}
+
+	selection := SelectCodexProfile([]LearnedRecord{legacy}, AccountPolicy{Provider: ProviderCodex, AccountKey: "acct"})
+	if selection.Profile != nil {
+		t.Fatalf("codex-tui was selected for outbound use: %+v", selection.Profile)
+	}
+	if selection.Reason != "no_selectable_profile" {
+		t.Fatalf("selection reason = %q, want no_selectable_profile", selection.Reason)
+	}
+
+	// The current CLI on the same account stays selectable.
+	current := legacy
+	current.ProfileKey = "codex_cli_rs"
+	current.Fields = map[string]string{
+		FieldUserAgent:       "codex_cli_rs/0.149.1 (Mac OS 26.3.1; arm64)",
+		FieldCodexOriginator: "codex_cli_rs",
+	}
+	if eligible, reason := CodexProfileOutboundEligibility(&current); !eligible {
+		t.Fatalf("codex_cli_rs eligibility = %v/%q, want eligible", eligible, reason)
+	}
+}
+
 func TestResolveCodexSafeFallbackRejectsMixedAccountPreset(t *testing.T) {
 	resolved, effective := ResolveCodexSafeFallback(config.CodexIdentityFingerprintConfig{
 		Enabled:       true,

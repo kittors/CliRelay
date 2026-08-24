@@ -231,17 +231,20 @@ func TestGetIdentityFingerprintAccountReturnsLearnedPresetAndBuiltinDefault(t *t
 		Provider:      identityfingerprint.ProviderCodex,
 		AccountKey:    accountKey,
 		AuthSubjectID: accountKey,
-		ClientProduct: "codex-tui",
+		// The learned sample is the current CLI on purpose: a legacy codex-tui
+		// profile is refused for outbound use, so it would never surface as the
+		// effective identity this test is about.
+		ClientProduct: "codex_cli_rs",
 		Version:       "0.125.0",
 		Fields: map[string]string{
-			identityfingerprint.FieldUserAgent:       "codex-tui/0.125.0 (Mac OS 26.5; arm64)",
+			identityfingerprint.FieldUserAgent:       "codex_cli_rs/0.125.0 (Mac OS 26.5; arm64)",
 			identityfingerprint.FieldCodexVersion:    "0.125.0",
-			identityfingerprint.FieldCodexOriginator: "codex-tui",
+			identityfingerprint.FieldCodexOriginator: "codex_cli_rs",
 		},
 		ObservedHeaders: map[string]string{
-			"User-Agent": "codex-tui/0.125.0 (Mac OS 26.5; arm64)",
+			"User-Agent": "codex_cli_rs/0.125.0 (Mac OS 26.5; arm64)",
 			"Version":    "0.125.0",
-			"Originator": "codex-tui",
+			"Originator": "codex_cli_rs",
 		},
 		CreatedAt:  time.Date(2026, 6, 23, 2, 0, 0, 0, time.UTC),
 		UpdatedAt:  time.Date(2026, 6, 23, 2, 1, 0, 0, time.UTC),
@@ -291,7 +294,7 @@ func TestGetIdentityFingerprintAccountReturnsLearnedPresetAndBuiltinDefault(t *t
 	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("unmarshal response: %v", err)
 	}
-	if got := payload.Effective.Fields[identityfingerprint.FieldUserAgent]; got.Value != "codex-tui/0.125.0 (Mac OS 26.5; arm64)" || got.Source != "learned" {
+	if got := payload.Effective.Fields[identityfingerprint.FieldUserAgent]; got.Value != "codex_cli_rs/0.125.0 (Mac OS 26.5; arm64)" || got.Source != "learned" {
 		t.Fatalf("user-agent field = %+v, want learned Codex client", got)
 	}
 	if got, ok := payload.Effective.Fields[identityfingerprint.FieldCodexWebsocketBeta]; ok && got.Value != "" {

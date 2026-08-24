@@ -135,11 +135,32 @@ func CodexProfileOutboundEligibility(record *LearnedRecord) (bool, string) {
 	if classifiedKey != profileKey {
 		return false, "profile_key_mismatch"
 	}
+	if IsLegacyCodexProfileKey(classifiedKey) {
+		return false, "legacy_client_product"
+	}
 	switch family {
 	case ProfileFamilyCLI, ProfileFamilyIDE, ProfileFamilyDesktop:
 		return true, ""
 	default:
 		return false, "unsupported_profile_family"
+	}
+}
+
+// IsLegacyCodexProfileKey reports products that must not be replayed upstream
+// even when a client still presents them.
+//
+// `codex-tui` is the pre-rename Codex CLI. Upstream A/B probes (CLIProxyAPI
+// #4679) had requests carrying it load-shed with `server_is_overloaded` while
+// the same account succeeded as `codex_cli_rs`, and spoofing only the
+// User-Agent did not help. Learning such a profile from a downstream client
+// would otherwise pin the account to that identity, so it is refused here and
+// resolution falls back to the coherent builtin CLI profile.
+func IsLegacyCodexProfileKey(profileKey string) bool {
+	switch strings.ToLower(strings.TrimSpace(profileKey)) {
+	case "codex-tui", "codex_tui":
+		return true
+	default:
+		return false
 	}
 }
 

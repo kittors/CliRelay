@@ -46,11 +46,20 @@ type codexConvergedIDs struct {
 	threadID       string
 	turnID         string
 	windowID       string
+	// clientRequestID mirrors x-client-request-id. Official Codex sets it to the
+	// thread id, but device mode scopes whatever the client actually sent rather
+	// than assuming that equality holds for every client.
+	clientRequestID string
 	// turnStartedAtUnixMs is stamped from the same clock that produced turnID
 	// (a time-ordered UUIDv7). Keeping the client's original timestamp next to a
 	// server-generated turn id would leave the two disagreeing about when the
 	// turn started, which is a discrepancy a real client never produces.
 	turnStartedAtUnixMs int64
+	// scopedFromClient marks the device-mode snapshot, whose session, thread and
+	// window ids are scoped rewrites of the client's own values instead of
+	// proxy-invented ones. Projection then only touches fields the client sent,
+	// and keeps its turn id and turn timestamp untouched.
+	scopedFromClient bool
 }
 
 type codexConvergedIDsContextKeyType struct{}
@@ -158,6 +167,51 @@ func resolveConvergedThreadID(scope, clientSessionID string) string {
 	return deriveStableUUIDv4("clirelay:codex-thread-id:v1:" + scope + ":" + clientSessionID)
 }
 
+// adoptScopedClientIdentity fills the snapshot with account-scoped rewrites of
+// the identifiers the client itself sent, instead of proxy-invented ones.
+//
+// This is what device mode projects. Every field goes through the same scope,
+// so the relationships the client established survive the rewrite: a root turn
+// that arrived with session_id == thread_id still leaves with the two equal,
+// and a window id keeps pointing at its own session. Fields the client did not
+// send stay empty, and projection then leaves them alone.
+func (ids *codexConvergedIDs) adoptScopedClientIdentity(scope string, clientHeaders http.Header) {
+	if ids == nil || scope == "" {
+		return
+	}
+	ids.scopedFromClient = true
+
+	// Clients split these between real headers and the turn metadata blob; both
+	// reach upstream, so both have to resolve to the same scoped value.
+	metadata := ""
+	if clientHeaders != nil {
+		metadata = strings.TrimSpace(clientHeaders.Get("X-Codex-Turn-Metadata"))
+	}
+	if metadata != "" && !gjson.Valid(metadata) {
+		metadata = ""
+	}
+	clientValue := func(metadataKey string, headerNames ...string) string {
+		if clientHeaders != nil {
+			for _, name := range headerNames {
+				if v := strings.TrimSpace(clientHeaders.Get(name)); v != "" {
+					return v
+				}
+			}
+		}
+		if metadata != "" && metadataKey != "" {
+			if v := strings.TrimSpace(gjson.Get(metadata, metadataKey).String()); v != "" {
+				return v
+			}
+		}
+		return ""
+	}
+
+	ids.sessionID = codexScopedIdentifier(scope, clientValue("session_id", "Session-Id", "Session_id"))
+	ids.threadID = codexScopedIdentifier(scope, clientValue("thread_id", "Thread-Id"))
+	ids.windowID = codexScopedIdentifier(scope, clientValue("window_id", "X-Codex-Window-Id"))
+	ids.clientRequestID = codexScopedIdentifier(scope, clientValue("", "X-Client-Request-Id"))
+}
+
 // extractClientSessionID reads the client's own session identifier before any
 // rewrite. Codex CLI sends the hyphenated form; the underscore form is accepted
 // as a fallback because some clients and earlier proxy layers emit it.
@@ -192,6 +246,12 @@ func resolveCodexConvergedIDs(cfg *config.Config, auth *cliproxyauth.Auth, clien
 
 	ids := &codexConvergedIDs{mode: mode, installationID: installationID}
 	if mode == config.CodexFingerprintConvergenceDevice {
+		// Deliberately the session isolation scope, not the convergence scope
+		// above: the cache helper already maps prompt_cache_key through that one,
+		// and the two must agree or the body cache key and the wire session end up
+		// naming different sessions. Installation keeps the convergence scope so
+		// existing device identities do not shift.
+		ids.adoptScopedClientIdentity(sessionIsolationScope(auth), clientHeaders)
 		return ids
 	}
 
@@ -257,6 +317,20 @@ func applyCodexConvergenceHeaders(h http.Header, ids *codexConvergedIDs, clientH
 	setIfClientSent(h, clientHeaders, "X-Codex-Installation-Id", ids.installationID)
 
 	if ids.mode == config.CodexFingerprintConvergenceDevice {
+		if ids.scopedFromClient {
+			// The scoped ids replace the client's own values wherever they travel.
+			// Session_id and Conversation_id are already on the request: the cache
+			// helper derived them from prompt_cache_key, which for a default Codex
+			// client equals the session id and therefore scopes to the same value.
+			// Pinning them here makes that hold even when a client overrides the
+			// cache key, so header and body never describe two different sessions.
+			setIfClientSent(h, clientHeaders, "Session-Id", ids.sessionID)
+			setIfClientSent(h, clientHeaders, "Session_id", ids.sessionID)
+			setIfClientSent(h, clientHeaders, "Conversation_id", ids.sessionID)
+			setIfClientSent(h, clientHeaders, "Thread-Id", ids.threadID)
+			setIfClientSent(h, clientHeaders, "X-Codex-Window-Id", ids.windowID)
+			setIfClientSent(h, clientHeaders, "X-Client-Request-Id", ids.clientRequestID)
+		}
 		rewriteCodexTurnMetadataHeader(h, ids.turnMetadataFields())
 		return
 	}
@@ -311,6 +385,22 @@ func (ids *codexConvergedIDs) deviceOnly() *codexConvergedIDs {
 // thread or turn fields the client sent.
 func (ids *codexConvergedIDs) turnMetadataFields() map[string]any {
 	fields := map[string]any{"installation_id": ids.installationID}
+	if ids.scopedFromClient {
+		// Device mode rewrites exactly the ids it scoped. turn_id and
+		// turn_started_at_unix_ms stay as the client sent them: they identify a
+		// single turn and carry no cross-request identity, so rewriting them
+		// would add divergence without hiding anything.
+		for key, value := range map[string]string{
+			"session_id": ids.sessionID,
+			"thread_id":  ids.threadID,
+			"window_id":  ids.windowID,
+		} {
+			if value != "" {
+				fields[key] = value
+			}
+		}
+		return fields
+	}
 	if ids.mode == config.CodexFingerprintConvergenceDevice {
 		return fields
 	}
@@ -376,7 +466,20 @@ func applyCodexConvergenceClientMetadata(body []byte, ids *codexConvergedIDs) []
 	fields := map[string]any{
 		"client_metadata.x-codex-installation-id": ids.installationID,
 	}
-	if ids.mode != config.CodexFingerprintConvergenceDevice {
+	switch {
+	case ids.scopedFromClient:
+		// Same snapshot as the headers, so the body cannot describe a different
+		// session than the wire does.
+		for key, value := range map[string]string{
+			"client_metadata.session_id":        ids.sessionID,
+			"client_metadata.thread_id":         ids.threadID,
+			"client_metadata.x-codex-window-id": ids.windowID,
+		} {
+			if value != "" {
+				fields[key] = value
+			}
+		}
+	case ids.mode != config.CodexFingerprintConvergenceDevice:
 		fields["client_metadata.session_id"] = ids.sessionID
 		fields["client_metadata.thread_id"] = ids.threadID
 		fields["client_metadata.turn_id"] = ids.turnID
