@@ -278,7 +278,12 @@ func defaultRuntimeDataStackMaintenanceOps() runtimeDataStackMaintenanceOps {
 			// After realign: that pass folds fragments onto the stored anchor, and
 			// this one may then move that anchor to the period it should have
 			// rolled into.
-			return usage.RunAIAccountSubjectCycleRolloverRepairAtInit()
+			if err := usage.RunAIAccountSubjectCycleRolloverRepairAtInit(); err != nil {
+				return err
+			}
+			// Last: it repairs the anchors the metered-probe pass above cannot see,
+			// those held on a period the upstream refilled rather than spent out.
+			return usage.RunAIAccountSubjectCycleRefillRepairAtInit()
 		},
 		scheduleUsageRollupCatchup: usage.ScheduleUsageRollupBlueGreenCatchup,
 	}

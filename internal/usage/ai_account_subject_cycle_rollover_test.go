@@ -86,6 +86,68 @@ func TestWeeklyCycleRollsWhenUpstreamEndsPeriodEarly(t *testing.T) {
 	}
 }
 
+// Production, 2026-08-25: two Codex accounts had code_week step from 55% and 70%
+// straight back to a full allowance, against resets a week past the stored ones.
+// The upstream had ended those periods early, but a refilled period is at a full
+// allowance by definition, so the metering rule could never admit the very probe
+// that announces one: both anchors stayed on the period that began on the 24th
+// while the new period's requests kept being added to it, and one card reported
+// 12311 requests and 1.4B tokens for two periods added together.
+func TestWeeklyCycleRollsWhenUpstreamRefillsTheAllowance(t *testing.T) {
+	// The two accounts described the same refill differently, so the anchor has to
+	// take both shapes: one reported a fixed period edge, the other "this instant
+	// plus a whole window" — which is what an untouched bucket reports too, and is
+	// why the refill itself has to be the evidence.
+	for _, shape := range []struct {
+		name           string
+		resetFromProbe time.Duration
+	}{
+		{name: "fixed period edge", resetFromProbe: 7*24*time.Hour - 14*time.Minute},
+		{name: "full window from the probe", resetFromProbe: 7 * 24 * time.Hour},
+	} {
+		t.Run(shape.name, func(t *testing.T) {
+			initSharedSubjectTestDB(t)
+			subjectID := "authsub_codex_refill"
+
+			spentProbe := time.Now().UTC().Truncate(time.Second).Add(-3 * time.Hour)
+			spentReset := spentProbe.Add(5 * 24 * time.Hour)
+			spent := 55.0
+			if err := RecordAIAccountSubjectQuotaPoints(subjectID, "codex", []QuotaSnapshotPoint{{
+				RecordedAt: spentProbe, Provider: "codex", QuotaKey: codexWeeklyQuotaKey, QuotaLabel: "Weekly",
+				Percent: &spent, ResetAt: &spentReset, WindowSeconds: weeklyWindowSeconds,
+			}}); err != nil {
+				t.Fatal(err)
+			}
+
+			refillProbe := spentProbe.Add(time.Hour)
+			refillReset := refillProbe.Add(shape.resetFromProbe)
+			full := 100.0
+			if err := RecordAIAccountSubjectQuotaPoints(subjectID, "codex", []QuotaSnapshotPoint{{
+				RecordedAt: refillProbe, Provider: "codex", QuotaKey: codexWeeklyQuotaKey, QuotaLabel: "Weekly",
+				Percent: &full, ResetAt: &refillReset, WindowSeconds: weeklyWindowSeconds,
+			}}); err != nil {
+				t.Fatal(err)
+			}
+
+			start, reset := readCycleAnchor(t, subjectID, codexWeeklyQuotaKey)
+			wantStart := refillReset.Add(-7 * 24 * time.Hour)
+			if !start.Equal(wantStart) || !reset.Equal(refillReset) {
+				t.Fatalf("anchor = %v..%v, want the refilled period %v..%v",
+					start, reset, wantStart, refillReset)
+			}
+
+			// The period the card reports and the one the projection writes into have
+			// to be the same, or the fresh allowance's usage is added to the period
+			// the upstream just ended.
+			projectSubjectRequest(t, subjectID, refillProbe.Add(time.Minute), 40)
+			got := readCycleSummary(t, subjectID)
+			if !got.CycleKnown || got.CycleRequestTotal != 1 || got.CycleTotalTokens != 40 {
+				t.Fatalf("cycle summary = %+v, want the refilled period's single request", got)
+			}
+		})
+	}
+}
+
 // The guard that made the freeze possible has to keep working: a window the
 // account never touched answers every probe with a full window remaining, and
 // following that countdown re-keys the usage bucket on each pass.
@@ -283,5 +345,192 @@ func TestCycleRolloverRepairMovesUsageToTheLivePeriod(t *testing.T) {
 	}
 	if requests, _, _ := readCycleBucket(t, subjectID, frozenStart); requests != 2 {
 		t.Fatalf("previous bucket after rerun = %d requests, want 2", requests)
+	}
+}
+
+func insertQuotaPoint(t *testing.T, subjectID string, percent float64, resetAt, recordedAt time.Time) {
+	t.Helper()
+	if _, err := getDB().Exec(`
+		INSERT INTO ai_account_subject_quota_points
+			(auth_subject_id, provider, quota_key, quota_label, percent, reset_at, window_seconds, recorded_at)
+		VALUES (?, 'codex', ?, 'Weekly', ?, ?, ?, ?)
+	`, subjectID, codexWeeklyQuotaKey, percent, resetAt.Format(time.RFC3339Nano),
+		weeklyWindowSeconds, recordedAt.Format(time.RFC3339Nano)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func insertFrozenWeeklyAnchor(t *testing.T, subjectID string, start, reset, verifiedAt time.Time) {
+	t.Helper()
+	if _, err := getDB().Exec(`
+		INSERT INTO ai_account_subject_quota_cycles
+			(auth_subject_id, provider, quota_key, cycle_start_at, reset_at, window_seconds, last_verified_at)
+		VALUES (?, 'codex', ?, ?, ?, ?, ?)
+	`, subjectID, codexWeeklyQuotaKey, start.Format(time.RFC3339Nano), reset.Format(time.RFC3339Nano),
+		weeklyWindowSeconds, verifiedAt.Format(time.RFC3339Nano)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The metered-probe repair cannot reach an anchor frozen on a period the upstream
+// refilled rather than spent out: every probe taken since the refill reports a full
+// allowance, so the newest metered probe is the one describing the frozen period
+// itself. Without a pass that reads the refill, these anchors stay wrong until the
+// account spends into the fresh allowance.
+func TestCycleRefillRepairMovesUsageToTheRefilledPeriod(t *testing.T) {
+	initSharedSubjectTestDB(t)
+	subjectID := "authsub_repair_refilled"
+
+	now := time.Now().UTC().Truncate(time.Second)
+	frozenStart := now.Add(-4 * 24 * time.Hour)
+	frozenReset := frozenStart.Add(7 * 24 * time.Hour)
+	insertFrozenWeeklyAnchor(t, subjectID, frozenStart, frozenReset, now)
+
+	// The history holds the step the anchor missed: metered on the frozen period,
+	// then a full allowance against a reset a week past it, and only full-allowance
+	// probes after that.
+	refillAt := now.Add(-90 * time.Minute)
+	refillReset := refillAt.Add(7 * 24 * time.Hour)
+	insertQuotaPoint(t, subjectID, 55, frozenReset, now.Add(-3*time.Hour))
+	insertQuotaPoint(t, subjectID, 100, refillReset, refillAt)
+	insertQuotaPoint(t, subjectID, 100, now.Add(-30*time.Minute).Add(7*24*time.Hour), now.Add(-30*time.Minute))
+
+	// Two requests in the period that ended, three in the refilled one — all five
+	// were counted into the frozen period's bucket.
+	events := []time.Time{
+		frozenStart.Add(time.Hour), frozenStart.Add(30 * time.Hour),
+		refillAt.Add(time.Minute), refillAt.Add(20 * time.Minute), refillAt.Add(80 * time.Minute),
+	}
+	for _, at := range events {
+		if _, err := getDB().Exec(`
+			INSERT INTO request_logs (tenant_id, timestamp, auth_subject_id, failed, cost, total_tokens)
+			VALUES ('default', ?, ?, 0, 2, 100)
+		`, at.Format(time.RFC3339Nano), subjectID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := getDB().Exec(`
+		INSERT INTO ai_account_subject_usage_buckets (
+			auth_subject_id, bucket_kind, bucket_start, request_count,
+			success_count, failure_count, cost_total, total_tokens, first_event_at, updated_at
+		) VALUES (?, 'cycle', ?, 5, 5, 0, 10, 500, ?, ?)
+	`, subjectID, formatAIAccountSubjectCycleBucketStart(frozenStart),
+		events[0].Format(time.RFC3339Nano), events[4].Format(time.RFC3339Nano)); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := runAIAccountSubjectCycleRefillRepairDB(getDB()); err != nil {
+		t.Fatal(err)
+	}
+
+	start, reset := readCycleAnchor(t, subjectID, codexWeeklyQuotaKey)
+	if !start.Equal(refillAt) || !reset.Equal(refillReset) {
+		t.Fatalf("anchor = %v..%v, want the refilled period %v..%v", start, reset, refillAt, refillReset)
+	}
+	if requests, cost, tokens := readCycleBucket(t, subjectID, refillAt); requests != 3 || cost != 6 || tokens != 300 {
+		t.Fatalf("refilled bucket = %d requests / %v cost / %d tokens, want 3 / 6 / 300", requests, cost, tokens)
+	}
+	if requests, cost, tokens := readCycleBucket(t, subjectID, frozenStart); requests != 2 || cost != 4 || tokens != 200 {
+		t.Fatalf("previous bucket = %d requests / %v cost / %d tokens, want 2 / 4 / 200", requests, cost, tokens)
+	}
+	got := readCycleSummary(t, subjectID)
+	if !got.CycleKnown || got.CycleRequestTotal != 3 || got.CycleTotalTokens != 300 {
+		t.Fatalf("cycle summary = %+v, want the refilled period's 3 requests / 300 tokens", got)
+	}
+
+	if err := runAIAccountSubjectCycleRefillRepairDB(getDB()); err != nil {
+		t.Fatal(err)
+	}
+	if requests, _, _ := readCycleBucket(t, subjectID, frozenStart); requests != 2 {
+		t.Fatalf("previous bucket after rerun = %d requests, want 2", requests)
+	}
+}
+
+// A frozen anchor rolls on its own the moment the account spends into the fresh
+// allowance, which leaves the anchor right and the buckets wrong: everything
+// served while it was frozen is still filed under the period before it, and the
+// anchor no longer needs moving so nothing goes looking for it. Production,
+// 2026-08-25: a Codex account's refilled period held 6 requests against 162 in
+// the request log, the other 156 left in the previous week's bucket.
+func TestCycleRefillRepairCompletesAPeriodTheAnchorRolledIntoLate(t *testing.T) {
+	initSharedSubjectTestDB(t)
+	subjectID := "authsub_repair_late_roll"
+
+	now := time.Now().UTC().Truncate(time.Second)
+	previousStart := now.Add(-2 * 24 * time.Hour)
+	refillAt := now.Add(-2 * time.Hour)
+	refillReset := refillAt.Add(7 * 24 * time.Hour)
+
+	insertFrozenWeeklyAnchor(t, subjectID, refillAt, refillReset, now)
+	insertQuotaPoint(t, subjectID, 55, previousStart.Add(7*24*time.Hour), now.Add(-3*time.Hour))
+	insertQuotaPoint(t, subjectID, 100, refillReset, refillAt)
+
+	// One request in the period that ended and five in the refilled one, of which
+	// the bucket only caught the two served after the anchor rolled.
+	events := []time.Time{
+		previousStart.Add(time.Hour),
+		refillAt.Add(time.Minute), refillAt.Add(2 * time.Minute), refillAt.Add(3 * time.Minute),
+		refillAt.Add(90 * time.Minute), refillAt.Add(100 * time.Minute),
+	}
+	for _, at := range events {
+		if _, err := getDB().Exec(`
+			INSERT INTO request_logs (tenant_id, timestamp, auth_subject_id, failed, cost, total_tokens)
+			VALUES ('default', ?, ?, 0, 2, 100)
+		`, at.Format(time.RFC3339Nano), subjectID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := getDB().Exec(`
+		INSERT INTO ai_account_subject_usage_buckets (
+			auth_subject_id, bucket_kind, bucket_start, request_count,
+			success_count, failure_count, cost_total, total_tokens, first_event_at, updated_at
+		) VALUES (?, 'cycle', ?, 4, 4, 0, 8, 400, ?, ?), (?, 'cycle', ?, 2, 2, 0, 4, 200, ?, ?)
+	`, subjectID, formatAIAccountSubjectCycleBucketStart(previousStart),
+		events[0].Format(time.RFC3339Nano), events[3].Format(time.RFC3339Nano),
+		subjectID, formatAIAccountSubjectCycleBucketStart(refillAt),
+		events[4].Format(time.RFC3339Nano), events[5].Format(time.RFC3339Nano)); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := runAIAccountSubjectCycleRefillRepairDB(getDB()); err != nil {
+		t.Fatal(err)
+	}
+
+	if start, _ := readCycleAnchor(t, subjectID, codexWeeklyQuotaKey); !start.Equal(refillAt) {
+		t.Fatalf("anchor = %v, want it left on the refilled period %v", start, refillAt)
+	}
+	if requests, cost, tokens := readCycleBucket(t, subjectID, refillAt); requests != 5 || cost != 10 || tokens != 500 {
+		t.Fatalf("refilled bucket = %d requests / %v cost / %d tokens, want 5 / 10 / 500", requests, cost, tokens)
+	}
+	// Only the three that were misfiled came off the previous period, not all five.
+	if requests, cost, tokens := readCycleBucket(t, subjectID, previousStart); requests != 1 || cost != 2 || tokens != 100 {
+		t.Fatalf("previous bucket = %d requests / %v cost / %d tokens, want 1 / 2 / 100", requests, cost, tokens)
+	}
+}
+
+// A window that has only ever answered "a full window remaining" never refilled,
+// because it never metered. Repairing it would move the anchor onto whatever the
+// last probe's countdown happened to say and re-key the usage bucket with it.
+func TestCycleRefillRepairLeavesNeverMeteredWindowsAlone(t *testing.T) {
+	initSharedSubjectTestDB(t)
+	subjectID := "authsub_repair_untouched"
+
+	now := time.Now().UTC().Truncate(time.Second)
+	storedStart := now.Add(-3 * 24 * time.Hour)
+	storedReset := storedStart.Add(7 * 24 * time.Hour)
+	insertFrozenWeeklyAnchor(t, subjectID, storedStart, storedReset, now)
+
+	for i := 3; i >= 1; i-- {
+		at := now.Add(-time.Duration(i) * time.Hour)
+		insertQuotaPoint(t, subjectID, 100, at.Add(7*24*time.Hour), at)
+	}
+
+	if err := runAIAccountSubjectCycleRefillRepairDB(getDB()); err != nil {
+		t.Fatal(err)
+	}
+	start, reset := readCycleAnchor(t, subjectID, codexWeeklyQuotaKey)
+	if !start.Equal(storedStart) || !reset.Equal(storedReset) {
+		t.Fatalf("anchor = %v..%v, want the stored period %v..%v left alone",
+			start, reset, storedStart, storedReset)
 	}
 }

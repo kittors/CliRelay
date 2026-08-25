@@ -59,21 +59,10 @@ func RecordAIAccountSubjectQuotaPoints(authSubjectID, provider string, points []
 			}
 			point.Percent = &v
 		}
-		if point.ResetAt != nil && !point.ResetAt.IsZero() && point.WindowSeconds > 0 {
-			cycle := AIAccountSubjectQuotaCycle{
-				AuthSubjectID: authSubjectID, Provider: pointProvider, QuotaKey: key,
-				CycleStartAt: point.ResetAt.UTC().Add(-time.Duration(point.WindowSeconds) * time.Second),
-				ResetAt:      point.ResetAt.UTC(), WindowSeconds: point.WindowSeconds, LastVerifiedAt: recordedAt,
-			}
-			// Cache the anchored cycle, not the freshly derived one: the in-memory
-			// cache feeds the usage projection's bucket key, so seeding it with the
-			// jittered value would re-split the period the anchor just protected.
-			anchored, err := upsertAIAccountSubjectQuotaCycleTx(tx, cycle, aiAccountSubjectQuotaWindowMetering(point.Percent))
-			if err != nil {
-				return err
-			}
-			cycles = append(cycles, anchored)
-		}
+		// The previous probe is loaded before anchoring, not only for the heartbeat
+		// de-duplication below: a period's end is a transition between two probes —
+		// a window that was metering and now reports a full allowance has been reset
+		// upstream — and a single probe cannot show it.
 		var latestAt sql.NullString
 		var latestPercent sql.NullFloat64
 		var latestReset sql.NullString
@@ -86,6 +75,26 @@ func RecordAIAccountSubjectQuotaPoints(authSubjectID, provider string, points []
 		`, authSubjectID, key).Scan(&latestAt, &latestPercent, &latestReset, &latestWindow)
 		if err != nil && err != sql.ErrNoRows {
 			return err
+		}
+		var previousPercent *float64
+		if err == nil {
+			previousPercent = nullableProbePercent(latestPercent)
+		}
+		if point.ResetAt != nil && !point.ResetAt.IsZero() && point.WindowSeconds > 0 {
+			cycle := AIAccountSubjectQuotaCycle{
+				AuthSubjectID: authSubjectID, Provider: pointProvider, QuotaKey: key,
+				CycleStartAt: point.ResetAt.UTC().Add(-time.Duration(point.WindowSeconds) * time.Second),
+				ResetAt:      point.ResetAt.UTC(), WindowSeconds: point.WindowSeconds, LastVerifiedAt: recordedAt,
+			}
+			// Cache the anchored cycle, not the freshly derived one: the in-memory
+			// cache feeds the usage projection's bucket key, so seeding it with the
+			// jittered value would re-split the period the anchor just protected.
+			anchored, upsertErr := upsertAIAccountSubjectQuotaCycleTx(tx, cycle,
+				newAIAccountSubjectQuotaObservation(previousPercent, point.Percent))
+			if upsertErr != nil {
+				return upsertErr
+			}
+			cycles = append(cycles, anchored)
 		}
 		if err == nil {
 			latest, _ := parseStoredTimeString(latestAt.String)
@@ -130,7 +139,7 @@ func nullableStoredTimeEqual(stored sql.NullString, value *time.Time) bool {
 // and split one weekly period into fragments. Within the drift tolerance the
 // stored anchor wins and only last_verified_at moves; a real rollover shifts the
 // start by a whole window and falls outside the tolerance, so it still rolls.
-func anchorAIAccountSubjectQuotaCycleTx(tx *sql.Tx, cycle AIAccountSubjectQuotaCycle, metering bool) (AIAccountSubjectQuotaCycle, error) {
+func anchorAIAccountSubjectQuotaCycleTx(tx *sql.Tx, cycle AIAccountSubjectQuotaCycle, observed aiAccountSubjectQuotaObservation) (AIAccountSubjectQuotaCycle, error) {
 	var start, reset storedTime
 	var window int64
 	err := tx.QueryRow(`
@@ -152,7 +161,7 @@ func anchorAIAccountSubjectQuotaCycleTx(tx *sql.Tx, cycle AIAccountSubjectQuotaC
 		storedReset = reset.Time.UTC()
 	}
 	if !sameAIAccountSubjectCycle(cycle.CycleStartAt, start.Time, cycle.WindowSeconds) &&
-		aiAccountSubjectCycleRollover(cycle, storedReset, metering) {
+		aiAccountSubjectCycleRollover(cycle, storedReset, observed) {
 		return cycle, nil
 	}
 	cycle.CycleStartAt = start.Time.UTC()
@@ -187,7 +196,22 @@ func anchorAIAccountSubjectQuotaCycleTx(tx *sql.Tx, cycle AIAccountSubjectQuotaC
 // week while its usage kept accruing into the previous week's bucket. A window
 // that reports consumption is one the upstream is actually counting, so its
 // reset is a real period edge rather than an idle bucket's countdown.
-func aiAccountSubjectCycleRollover(incoming AIAccountSubjectQuotaCycle, storedReset time.Time, metering bool) bool {
+//
+// Metering alone still froze the moment it was meant to catch. A period that has
+// just been refilled is at a full allowance by definition, so the probe that first
+// sees the new period never meters, and rollover waited for the account to spend
+// into it. Production, 2026-08-25: two Codex accounts had code_week drop from 55%
+// and 70% to a full allowance against resets a week past the stored ones, and both
+// anchors stayed on the period that started on the 24th — one card counted 12311
+// requests and 1.4B tokens of two periods added together.
+//
+// The refill itself is therefore the evidence, and it is checked before the
+// countdown guard because the two are indistinguishable by shape: of those two
+// accounts one reported the new period against a fixed edge and the other against
+// "this instant plus a window", which is exactly what an untouched bucket reports.
+// Only the transition out of metering separates a period that just began from one
+// that never started.
+func aiAccountSubjectCycleRollover(incoming AIAccountSubjectQuotaCycle, storedReset time.Time, observed aiAccountSubjectQuotaObservation) bool {
 	if storedReset.IsZero() {
 		return true
 	}
@@ -200,7 +224,40 @@ func aiAccountSubjectCycleRollover(incoming AIAccountSubjectQuotaCycle, storedRe
 	if incoming.ResetAt.UTC().Before(storedReset) {
 		return true
 	}
-	return metering && !aiAccountSubjectCycleFullWindowCountdown(incoming)
+	if observed.refilled {
+		return true
+	}
+	return observed.metering && !aiAccountSubjectCycleFullWindowCountdown(incoming)
+}
+
+// aiAccountSubjectQuotaObservation is what two consecutive probes say about one
+// window. Anchoring is judged on the pair because the end of a period is a
+// transition — no single probe carries it.
+type aiAccountSubjectQuotaObservation struct {
+	// metering reports that this probe shows consumption drawn from the period it
+	// describes, which makes its reset a real period edge.
+	metering bool
+	// refilled reports that the previous probe was metering and this one is back to
+	// a full allowance: the upstream ended the period it had been counting.
+	refilled bool
+}
+
+func newAIAccountSubjectQuotaObservation(previous, current *float64) aiAccountSubjectQuotaObservation {
+	return aiAccountSubjectQuotaObservation{
+		metering: aiAccountSubjectQuotaWindowMetering(current),
+		refilled: aiAccountSubjectQuotaWindowMetering(previous) && current != nil && *current >= 100,
+	}
+}
+
+// nullableProbePercent adapts a stored percentage for comparison. It is absent
+// both when no probe has been recorded yet and when the upstream reports no
+// percentage, and neither case says anything about a period ending.
+func nullableProbePercent(stored sql.NullFloat64) *float64 {
+	if !stored.Valid {
+		return nil
+	}
+	value := stored.Float64
+	return &value
 }
 
 // aiAccountSubjectQuotaWindowMetering reports whether a probe shows the window
@@ -232,8 +289,8 @@ func aiAccountSubjectCycleFullWindowCountdown(incoming AIAccountSubjectQuotaCycl
 
 const aiAccountSubjectFullWindowCountdownSlack = 2 * time.Minute
 
-func upsertAIAccountSubjectQuotaCycleTx(tx *sql.Tx, cycle AIAccountSubjectQuotaCycle, metering bool) (AIAccountSubjectQuotaCycle, error) {
-	anchored, err := anchorAIAccountSubjectQuotaCycleTx(tx, cycle, metering)
+func upsertAIAccountSubjectQuotaCycleTx(tx *sql.Tx, cycle AIAccountSubjectQuotaCycle, observed aiAccountSubjectQuotaObservation) (AIAccountSubjectQuotaCycle, error) {
+	anchored, err := anchorAIAccountSubjectQuotaCycleTx(tx, cycle, observed)
 	if err != nil {
 		return cycle, err
 	}
