@@ -237,7 +237,7 @@ func (s selectorService) pickLocked(
 		candidates := s.buildCandidatesLocked(scope, selectorRouteGroup, tried, registryRef, includeCandidate)
 		if len(candidates) == 0 {
 			if diagnosis == nil {
-				diagnosis = s.diagnoseEmptyCandidates(scope, selectorRouteGroup, includeCandidate)
+				diagnosis = s.diagnoseEmptyCandidates(scope, selectorRouteGroup, registryRef, includeCandidate)
 			}
 			continue
 		}
