@@ -28,6 +28,16 @@ type selectionRejection struct {
 	// credential for the request's provider, which is what makes a model-scope
 	// rejection the likely explanation rather than "there are no accounts".
 	sawTenantCandidate bool
+	// sawServingCandidate records that some healthy tenant credential actually
+	// serves the requested model. Without it a scope rejection means nothing:
+	// the model may simply not be registered anywhere.
+	sawServingCandidate bool
+	// servingBlockedByChannels records that a serving credential was excluded by
+	// the caller's allowed-channels restriction.
+	servingBlockedByChannels bool
+	// servingBlockedByGroups records that a serving credential was excluded by
+	// the caller's allowed-channel-groups restriction.
+	servingBlockedByGroups bool
 }
 
 // diagnoseEmptyCandidates inspects the credentials the scope considered and
@@ -36,6 +46,7 @@ type selectionRejection struct {
 func (s selectorService) diagnoseEmptyCandidates(
 	scope selectionScope,
 	scopedRouteGroup string,
+	registryRef ModelRegistry,
 	includeCandidate func(candidate *Auth) bool,
 ) error {
 	if s.manager == nil || scope.modelKey == "" {
@@ -55,6 +66,26 @@ func (s selectorService) diagnoseEmptyCandidates(
 		}
 		rejection.sawTenantCandidate = true
 
+		// Everything below only makes sense for a credential that serves the model.
+		// A credential outside the caller's channel scope that could not serve it
+		// anyway is not the reason the request failed.
+		if !candidateServesModel(registryRef, candidate, scope.modelKey) {
+			continue
+		}
+		rejection.sawServingCandidate = true
+
+		// The caller's own restrictions come first: they exclude the credential
+		// before any group's model list is consulted, and they are what the
+		// operator has to change.
+		if !authAllowedByChannels(candidate, scope.allowedChannels) {
+			rejection.servingBlockedByChannels = true
+			continue
+		}
+		if !authAllowedByGroups(scope.cfg, candidate, scope.allowedGroups) {
+			rejection.servingBlockedByGroups = true
+			continue
+		}
+
 		// Re-run only the model-scope gate. A candidate that clears it was excluded
 		// for some other reason, which this diagnosis deliberately does not guess at.
 		groups := authGroups(scope.cfg, candidate)
@@ -66,7 +97,35 @@ func (s selectorService) diagnoseEmptyCandidates(
 		}
 	}
 
-	if !rejection.sawTenantCandidate || len(rejection.modelBlockedByGroups) == 0 {
+	if !rejection.sawTenantCandidate {
+		return nil
+	}
+
+	// A credential that serves the model exists but the caller may not reach it.
+	// This is the case the generic message hid worst: the panel lists the account,
+	// the model panel lists the model, and the request still says "no auth".
+	if rejection.sawServingCandidate {
+		if rejection.servingBlockedByGroups {
+			return &Error{
+				Code: "model_outside_allowed_channel_groups",
+				Message: fmt.Sprintf(
+					"model %q is served only by credentials outside the channel groups this credential may use (%s); add a serving account to one of those groups, or widen the allowed channel groups",
+					scope.modelKey, describeScopeNames(scope.allowedGroups),
+				),
+			}
+		}
+		if rejection.servingBlockedByChannels {
+			return &Error{
+				Code: "model_outside_allowed_channels",
+				Message: fmt.Sprintf(
+					"model %q is served only by credentials outside the channels this credential may use (%s); widen the allowed channels or use an account in one of them",
+					scope.modelKey, describeScopeNames(scope.allowedChannels),
+				),
+			}
+		}
+	}
+
+	if len(rejection.modelBlockedByGroups) == 0 {
 		return nil
 	}
 
@@ -83,6 +142,35 @@ func (s selectorService) diagnoseEmptyCandidates(
 			scope.modelKey, strings.Join(quoteAll(names), ", "),
 		),
 	}
+}
+
+// candidateServesModel reports whether a credential can serve a model, ignoring
+// every scope gate. It mirrors the registry half of candidateSupportsModelOpts so
+// the diagnosis agrees with the selector on what "serves" means.
+func candidateServesModel(registryRef ModelRegistry, auth *Auth, modelID string) bool {
+	if auth == nil {
+		return false
+	}
+	if registryRef == nil {
+		return true
+	}
+	if len(registryRef.GetModelsForClient(auth.ID)) == 0 {
+		return !authHasDisableAllModelsRule(auth)
+	}
+	return registryRef.ClientSupportsModel(auth.ID, modelID)
+}
+
+// describeScopeNames renders a restriction set for an operator-facing message.
+func describeScopeNames(scope map[string]struct{}) string {
+	if len(scope) == 0 {
+		return "none"
+	}
+	names := make([]string, 0, len(scope))
+	for name := range scope {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return strings.Join(quoteAll(names), ", ")
 }
 
 // blockingRouteGroups lists the groups whose allowed-models list rejected a model.
