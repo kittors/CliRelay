@@ -448,6 +448,9 @@ func resolveIdentityFingerprint(current config.IdentityFingerprintConfig, provid
 	case identityfingerprint.ProviderXAI:
 		_, effective := identityfingerprint.ResolveXAI(current.XAI, learned)
 		return effective, current.XAI, config.DefaultXAIIdentityFingerprint()
+	case identityfingerprint.ProviderKimi:
+		_, effective := identityfingerprint.ResolveKimi(current.Kimi, learned)
+		return effective, current.Kimi, config.DefaultKimiIdentityFingerprint()
 	default:
 		return identityfingerprint.EffectiveFingerprint{}, nil, nil
 	}
@@ -504,6 +507,10 @@ func identityFingerprintSummaryVersion(provider identityfingerprint.Provider, ef
 		}
 	case identityfingerprint.ProviderXAI:
 		return strings.TrimSpace(effective.Version)
+	case identityfingerprint.ProviderKimi:
+		if value := identityFingerprintEffectiveField(effective, identityfingerprint.FieldKimiVersion); value != "" {
+			return value
+		}
 	}
 	return strings.TrimSpace(effective.Version)
 }
@@ -583,6 +590,8 @@ func normalizeIdentityFingerprintProvider(value string) (identityfingerprint.Pro
 		return identityfingerprint.ProviderGemini, true
 	case string(identityfingerprint.ProviderXAI), "grok":
 		return identityfingerprint.ProviderXAI, true
+	case string(identityfingerprint.ProviderKimi), "moonshot":
+		return identityfingerprint.ProviderKimi, true
 	default:
 		return "", false
 	}
