@@ -274,6 +274,15 @@ func TestResolveXAIPlanUsesEntitlementWhenMonthlyLimitIsZero(t *testing.T) {
 	}
 }
 
+func TestProbeXAI_DoesNotCrossPolluteWeeklyFromMonthly(t *testing.T) {
+	// If weekly request fails or body is empty, monthly billing should NOT generate a weekly_limit window.
+	monthlyOnly := []byte(`{"config":{"monthlyLimit":{"val":15000},"used":{"val":15000},"billingPeriodEnd":"2026-09-01T00:00:00Z"}}`)
+	weeklyItems := parseXAIWeeklyBilling(monthlyOnly)
+	if len(weeklyItems) != 0 {
+		t.Fatalf("parseXAIWeeklyBilling on monthly payload produced items: %+v, want none", weeklyItems)
+	}
+}
+
 // One row per family, each carrying a single representative model's real quota.
 //
 // gemini-2.5-pro and gemini-3.1-pro-high are both "Gemini Pro" yet draw on

@@ -45,13 +45,9 @@ func probeXAI(ctx context.Context, svc *managementapitools.Service, auth *coreau
 	quotas := make([]usage.QuotaWindowDTO, 0, 8)
 	if weeklyErr == nil {
 		quotas = append(quotas, parseXAIWeeklyBilling(weeklyBody)...)
-	} else if monthlyErr == nil {
-		quotas = append(quotas, parseXAIWeeklyBilling(monthlyBody)...)
 	}
 	if monthlyErr == nil {
 		quotas = append(quotas, parseXAIMonthlyBilling(monthlyBody)...)
-	} else if weeklyErr == nil {
-		quotas = append(quotas, parseXAIMonthlyBilling(weeklyBody)...)
 	}
 	if len(quotas) == 0 {
 		return ProbeResult{}, fmt.Errorf("empty_data")
