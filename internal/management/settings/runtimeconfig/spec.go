@@ -473,6 +473,7 @@ type identityFingerprintRuntimePayload struct {
 	Claude                config.ClaudeIdentityFingerprintConfig `json:"claude,omitempty"`
 	Gemini                config.GeminiIdentityFingerprintConfig `json:"gemini,omitempty"`
 	XAI                   config.XAIIdentityFingerprintConfig    `json:"xai,omitempty"`
+	Kimi                  config.KimiIdentityFingerprintConfig   `json:"kimi,omitempty"`
 }
 
 func IdentityFingerprintRuntimeSettingValue(value config.IdentityFingerprintConfig) any {
@@ -483,6 +484,7 @@ func IdentityFingerprintRuntimeSettingValue(value config.IdentityFingerprintConf
 		Claude:                normalized.Claude,
 		Gemini:                normalized.Gemini,
 		XAI:                   normalized.XAI,
+		Kimi:                  normalized.Kimi,
 	}
 }
 
@@ -496,6 +498,10 @@ func identityFingerprintRuntimeSettingConfig(raw json.RawMessage) (config.Identi
 		Claude: payload.Claude,
 		Gemini: payload.Gemini,
 		XAI:    payload.XAI,
+		// Payloads written before kimi joined carry no kimi block, so it stays a
+		// zero value and normalization enables it with the builtin template — which
+		// is byte-identical to what the executor hardcoded before.
+		Kimi: payload.Kimi,
 	}
 	if payload.RuntimeSettingVersion >= identityFingerprintRuntimeSettingVersion {
 		return config.NormalizeIdentityFingerprintConfig(value), nil

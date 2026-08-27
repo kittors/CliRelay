@@ -14,6 +14,7 @@ import (
 
 	kimiauth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/kimi"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/identityfingerprint"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/thinking"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
@@ -561,7 +562,16 @@ func resolveKimiDeviceID(auth *cliproxyauth.Auth) string {
 func applyKimiHeadersWithAuth(r *http.Request, token string, stream bool, auth *cliproxyauth.Auth, cfg *config.Config) {
 	applyKimiHeaders(r, token, stream, cfg)
 
-	if deviceID := resolveKimiDeviceID(auth); deviceID != "" {
+	// The identity fingerprint replaces the host-derived client identity with the
+	// one this account's real kimi-cli presents; anything it cannot resolve keeps
+	// the values applyKimiHeaders just set.
+	var learned *identityfingerprint.LearnedRecord
+	if fp, record, ok := kimiIdentityFingerprint(cfg, auth, r.Context()); ok {
+		applyKimiIdentityFingerprintHeaders(r.Header, fp)
+		learned = record
+	}
+
+	if deviceID := resolveKimiOutboundDeviceID(auth, learned); deviceID != "" {
 		r.Header.Set("X-Msh-Device-Id", deviceID)
 	}
 }

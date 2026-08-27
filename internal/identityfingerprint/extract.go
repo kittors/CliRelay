@@ -25,6 +25,11 @@ const (
 	FieldXAIGrokConversationID  = "x-grok-conv-id"
 	FieldXAIClientIdentifier    = "x-grok-client-identifier"
 	FieldXAIClientVersion       = "x-grok-client-version"
+	FieldKimiPlatform           = "x-msh-platform"
+	FieldKimiVersion            = "x-msh-version"
+	FieldKimiDeviceName         = "x-msh-device-name"
+	FieldKimiDeviceModel        = "x-msh-device-model"
+	FieldKimiDeviceID           = "x-msh-device-id"
 )
 
 var (
@@ -33,6 +38,7 @@ var (
 	tokenVerRe       = regexp.MustCompile(`(?i)\b([a-z0-9_.-]*codex[a-z0-9_.-]*)/([0-9]+(?:\.[0-9]+){0,3})(?:[-+][a-z0-9_.-]+)?`)
 	geminiUARe       = regexp.MustCompile(`(?i)^google-api-nodejs-client/([0-9]+(?:\.[0-9]+){0,3})`)
 	xaiTokenVerRe    = regexp.MustCompile(`(?i)\b([a-z0-9_.-]*(?:grok|xai)[a-z0-9_.-]*)/([0-9]+(?:\.[0-9]+){0,3})(?:[-+][a-z0-9_.-]+)?`)
+	kimiTokenVerRe   = regexp.MustCompile(`(?i)\b([a-z0-9_.-]*kimi[a-z0-9_.-]*)/([0-9]+(?:\.[0-9]+){0,3})(?:[-+][a-z0-9_.-]+)?`)
 )
 
 func ExtractObservation(input LearnInput) (Observation, bool) {
@@ -50,6 +56,8 @@ func ExtractObservation(input LearnInput) (Observation, bool) {
 		return extractGeminiObservation(input, headers, observedAt)
 	case ProviderXAI:
 		return extractXAIObservation(input, headers, observedAt)
+	case ProviderKimi:
+		return extractKimiObservation(input, headers, observedAt)
 	default:
 		return Observation{}, false
 	}
@@ -222,6 +230,59 @@ func extractXAIObservation(input LearnInput, headers http.Header, observedAt tim
 	}, true
 }
 
+// extractKimiObservation learns the identity a real kimi-cli presents.
+//
+// The device fields are part of the observation on purpose. Without them every
+// account on a host goes out with that host's name and, when the credential
+// carries no device id of its own, the literal fallback string the proxy uses —
+// so accounts that share nothing else still look like one machine to Moonshot.
+func extractKimiObservation(input LearnInput, headers http.Header, observedAt time.Time) (Observation, bool) {
+	ua := strings.TrimSpace(headers.Get("User-Agent"))
+	platform := strings.TrimSpace(headers.Get("X-Msh-Platform"))
+	version := strings.TrimSpace(headers.Get("X-Msh-Version"))
+	product, uaVersion := kimiProductVersion(ua)
+	if product == "" && platform != "" {
+		product = platform
+	}
+	if version == "" {
+		version = uaVersion
+	}
+	// A caller that presents neither a kimi User-Agent nor the platform header is
+	// not the kimi client, and recording it would pin the account to a made-up
+	// identity.
+	if product == "" {
+		return Observation{}, false
+	}
+	fields := map[string]string{}
+	if ua != "" {
+		fields[FieldUserAgent] = ua
+	}
+	if platform != "" {
+		fields[FieldKimiPlatform] = platform
+	}
+	if version != "" {
+		fields[FieldKimiVersion] = version
+	}
+	addHeaderField(fields, headers, "X-Msh-Device-Name", FieldKimiDeviceName)
+	addHeaderField(fields, headers, "X-Msh-Device-Model", FieldKimiDeviceModel)
+	addHeaderField(fields, headers, "X-Msh-Device-Id", FieldKimiDeviceID)
+	if len(fields) == 0 {
+		return Observation{}, false
+	}
+	return Observation{
+		Provider:        ProviderKimi,
+		AccountKey:      strings.TrimSpace(input.AccountKey),
+		ProfileKey:      ProfileKeyDefault,
+		AuthSubjectID:   strings.TrimSpace(input.AuthSubjectID),
+		ClientProduct:   product,
+		ClientVariant:   "cli",
+		Version:         version,
+		Fields:          fields,
+		ObservedHeaders: observedHeaders(headers, []string{"User-Agent", "X-Msh-Platform", "X-Msh-Version", "X-Msh-Device-Name", "X-Msh-Device-Model", "X-Msh-Device-Id"}),
+		ObservedAt:      observedAt.UTC(),
+	}, true
+}
+
 func MergeObservation(existing *LearnedRecord, obs Observation) MergeResult {
 	if strings.TrimSpace(obs.AccountKey) == "" {
 		return MergeResult{Reason: "missing_account_key"}
@@ -365,6 +426,20 @@ func xaiProductVersion(ua string) (string, string) {
 	}
 	if strings.Contains(lower, "xai") {
 		return "xai-cli", ""
+	}
+	return "", ""
+}
+
+func kimiProductVersion(ua string) (string, string) {
+	ua = strings.TrimSpace(ua)
+	if ua == "" {
+		return "", ""
+	}
+	if matches := kimiTokenVerRe.FindStringSubmatch(ua); len(matches) > 0 {
+		return strings.ToLower(matches[1]), matches[2]
+	}
+	if strings.Contains(strings.ToLower(ua), "kimi") {
+		return "kimi-cli", ""
 	}
 	return "", ""
 }
