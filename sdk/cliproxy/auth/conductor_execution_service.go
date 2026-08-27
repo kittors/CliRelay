@@ -101,7 +101,17 @@ func (s executionService) executeMixedOnce(ctx context.Context, providers []stri
 			return cliproxyexecutor.Response{}, errModeration
 		}
 
+		releaseSlot, errSlot := s.manager.acquireAccountSlot(candidate.auth)
+		if errSlot != nil {
+			if isRequestInvalidError(errSlot) || scope.singlePickRoute {
+				return cliproxyexecutor.Response{}, errSlot
+			}
+			lastErr = errSlot
+			continue
+		}
+
 		resp, errExec := candidate.executor.Execute(candidate.execCtx, candidate.auth, candidate.execReq, scope.opts)
+		releaseSlot()
 		result := Result{
 			AuthID:   candidate.auth.ID,
 			Provider: candidate.provider,
@@ -147,7 +157,17 @@ func (s executionService) executeCountMixedOnce(ctx context.Context, providers [
 			return cliproxyexecutor.Response{}, errModeration
 		}
 
+		releaseSlot, errSlot := s.manager.acquireAccountSlot(candidate.auth)
+		if errSlot != nil {
+			if isRequestInvalidError(errSlot) || scope.singlePickRoute {
+				return cliproxyexecutor.Response{}, errSlot
+			}
+			lastErr = errSlot
+			continue
+		}
+
 		resp, errExec := candidate.executor.CountTokens(candidate.execCtx, candidate.auth, candidate.execReq, scope.opts)
+		releaseSlot()
 		if errExec != nil {
 			if errCtx := candidate.execCtx.Err(); errCtx != nil {
 				return cliproxyexecutor.Response{}, errCtx
@@ -179,8 +199,18 @@ func (s executionService) executeStreamMixedOnce(ctx context.Context, providers 
 			return nil, errModeration
 		}
 
+		releaseSlot, errSlot := s.manager.acquireAccountSlot(candidate.auth)
+		if errSlot != nil {
+			if isRequestInvalidError(errSlot) || scope.singlePickRoute {
+				return nil, errSlot
+			}
+			lastErr = errSlot
+			continue
+		}
+
 		streamResult, errStream := candidate.executor.ExecuteStream(candidate.execCtx, candidate.auth, candidate.execReq, scope.opts)
 		if errStream != nil {
+			releaseSlot()
 			if errCtx := candidate.execCtx.Err(); errCtx != nil {
 				return nil, errCtx
 			}
@@ -202,7 +232,7 @@ func (s executionService) executeStreamMixedOnce(ctx context.Context, providers 
 			continue
 		}
 
-		return s.wrapStreamResult(candidate.execCtx, candidate.auth, candidate.provider, scope.routeModel, scope.opts.SourceFormat, streamResult), nil
+		return s.wrapStreamResult(candidate.execCtx, candidate.auth, candidate.provider, scope.routeModel, scope.opts.SourceFormat, streamResult, releaseSlot), nil
 	}
 }
 
@@ -266,11 +296,15 @@ func (s executionService) wrapStreamResult(
 	routeModel string,
 	sourceFormat sdktranslator.Format,
 	streamResult *cliproxyexecutor.StreamResult,
+	releaseSlot func(),
 ) *cliproxyexecutor.StreamResult {
 	out := make(chan cliproxyexecutor.StreamChunk)
 	streamHeaders := streamResult.Headers.Clone()
 	go func(streamCtx context.Context, streamAuth *Auth, streamProvider string, streamChunks <-chan cliproxyexecutor.StreamChunk, headers http.Header) {
 		defer close(out)
+		if releaseSlot != nil {
+			defer releaseSlot()
+		}
 		var failed bool
 		forward := true
 		completionTracker := newResponsesStreamCompletionTracker(sourceFormat)

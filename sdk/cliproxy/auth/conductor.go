@@ -188,6 +188,8 @@ type Manager struct {
 
 	requestModerator RequestModerator
 
+	concurrencyLimiter *AccountConcurrencyLimiter
+
 	// Auto refresh state
 	refreshCancel    context.CancelFunc
 	refreshSemaphore chan struct{}
@@ -225,6 +227,7 @@ func NewManager(store Store, selector Selector, hook Hook) *Manager {
 		hook:                  hook,
 		auths:                 make(map[string]*Auth),
 		providerOffsets:       make(map[string]int),
+		concurrencyLimiter:    NewAccountConcurrencyLimiter(),
 		refreshSemaphore:      make(chan struct{}, refreshMaxConcurrency),
 		quotaProbeAfter:       make(map[string]time.Time),
 	}
@@ -256,4 +259,19 @@ func (m *Manager) SetModelRegistry(registry ModelRegistry) {
 	m.mu.Lock()
 	m.modelRegistry = registry
 	m.mu.Unlock()
+}
+
+// ConcurrencyLimiter returns the manager's AccountConcurrencyLimiter instance.
+func (m *Manager) ConcurrencyLimiter() *AccountConcurrencyLimiter {
+	if m == nil {
+		return nil
+	}
+	return m.concurrencyLimiter
+}
+
+func (m *Manager) acquireAccountSlot(auth *Auth) (func(), error) {
+	if m == nil || m.concurrencyLimiter == nil || auth == nil {
+		return func() {}, nil
+	}
+	return m.concurrencyLimiter.AcquireSlot(auth)
 }

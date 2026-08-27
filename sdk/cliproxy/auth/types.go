@@ -298,6 +298,34 @@ func (a *Auth) RequestRetryOverride() (int, bool) {
 	return 0, false
 }
 
+// ConcurrencyLimit returns the max active concurrent requests allowed for this auth account.
+// If <= 0, concurrency is unlimited.
+// Looks up "concurrency_limit", "concurrency", or "concurrency-limit" in Attributes first, then Metadata.
+func (a *Auth) ConcurrencyLimit() int {
+	if a == nil {
+		return 0
+	}
+	if a.Attributes != nil {
+		for _, key := range []string{"concurrency_limit", "concurrency", "concurrency-limit"} {
+			if raw, ok := a.Attributes[key]; ok {
+				if parsed, okParse := parseIntAny(raw); okParse && parsed >= 0 {
+					return parsed
+				}
+			}
+		}
+	}
+	if a.Metadata != nil {
+		for _, key := range []string{"concurrency_limit", "concurrency", "concurrency-limit"} {
+			if raw, ok := a.Metadata[key]; ok {
+				if parsed, okParse := parseIntAny(raw); okParse && parsed >= 0 {
+					return parsed
+				}
+			}
+		}
+	}
+	return 0
+}
+
 func parseBoolAny(val any) (bool, bool) {
 	switch typed := val.(type) {
 	case bool:

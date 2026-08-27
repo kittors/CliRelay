@@ -141,6 +141,23 @@ func (s *FileSynthesizer) Synthesize(ctx *SynthesisContext) ([]*coreauth.Auth, e
 				}
 			}
 		}
+		// Read concurrency / concurrency_limit from auth file
+		for _, key := range []string{"concurrency_limit", "concurrency", "concurrency-limit"} {
+			if rawConcurrency, ok := metadata[key]; ok {
+				switch v := rawConcurrency.(type) {
+				case float64:
+					if int(v) >= 0 {
+						a.Attributes["concurrency_limit"] = strconv.Itoa(int(v))
+					}
+				case string:
+					concurrency := strings.TrimSpace(v)
+					if parsed, errAtoi := strconv.Atoi(concurrency); errAtoi == nil && parsed >= 0 {
+						a.Attributes["concurrency_limit"] = strconv.Itoa(parsed)
+					}
+				}
+				break
+			}
+		}
 		ApplyAuthExcludedModelsMeta(a, cfg, perAccountExcluded, "oauth")
 		if provider == "gemini-cli" {
 			if virtuals := SynthesizeGeminiVirtualAuths(a, metadata, now); len(virtuals) > 0 {

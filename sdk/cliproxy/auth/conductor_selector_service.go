@@ -242,6 +242,9 @@ func (s selectorService) pickLocked(
 			continue
 		}
 		selector := s.manager.selectorForRoutingScopeLocked(scope.cfg, selectorRouteGroup, scope.allowedGroups)
+		if s.manager.concurrencyLimiter != nil {
+			candidates = s.manager.concurrencyLimiter.FilterAvailableCandidates(candidates)
+		}
 		selected, errPick := selector.Pick(ctx, selectorProvider, scope.model, optionsForSelectionRouteGroup(opts, selectorRouteGroup), candidates)
 		if errPick != nil {
 			return nil, "", errPick
