@@ -40,6 +40,7 @@ func (h *Handler) GetIdentityFingerprint(c *gin.Context) {
 			"codex":  {Enabled: current.Codex.Enabled, LearnedCount: len(learned["codex"])},
 			"gemini": {Enabled: current.Gemini.Enabled, LearnedCount: len(learned["gemini"])},
 			"xai":    {Enabled: current.XAI.Enabled, LearnedCount: len(learned["xai"])},
+			"kimi":   {Enabled: current.Kimi.Enabled, LearnedCount: len(learned["kimi"])},
 		},
 	})
 }
@@ -65,6 +66,10 @@ func (h *Handler) PutIdentityFingerprint(c *gin.Context) {
 		return
 	}
 	if err := validateXAIIdentityFingerprint(body.XAI); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if err := validateKimiIdentityFingerprint(body.Kimi); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
@@ -126,14 +131,16 @@ func (h *Handler) identityFingerprintState(current config.IdentityFingerprintCon
 		"codex":  {},
 		"gemini": {},
 		"xai":    {},
+		"kimi":   {},
 	}
 	effective := map[string][]identityfingerprint.EffectiveFingerprint{
 		"claude": {},
 		"codex":  {},
 		"gemini": {},
 		"xai":    {},
+		"kimi":   {},
 	}
-	for _, provider := range []identityfingerprint.Provider{identityfingerprint.ProviderClaude, identityfingerprint.ProviderCodex, identityfingerprint.ProviderGemini, identityfingerprint.ProviderXAI} {
+	for _, provider := range []identityfingerprint.Provider{identityfingerprint.ProviderClaude, identityfingerprint.ProviderCodex, identityfingerprint.ProviderGemini, identityfingerprint.ProviderXAI, identityfingerprint.ProviderKimi} {
 		records, err := usage.ListIdentityFingerprints(provider, 200)
 		if err != nil {
 			continue
@@ -154,6 +161,9 @@ func (h *Handler) identityFingerprintState(current config.IdentityFingerprintCon
 				effective[key] = append(effective[key], eff)
 			case identityfingerprint.ProviderXAI:
 				_, eff := identityfingerprint.ResolveXAI(current.XAI, &record)
+				effective[key] = append(effective[key], eff)
+			case identityfingerprint.ProviderKimi:
+				_, eff := identityfingerprint.ResolveKimi(current.Kimi, &record)
 				effective[key] = append(effective[key], eff)
 			}
 		}
@@ -268,6 +278,33 @@ func validateXAIIdentityFingerprint(fp config.XAIIdentityFingerprintConfig) erro
 	return nil
 }
 
+func validateKimiIdentityFingerprint(fp config.KimiIdentityFingerprintConfig) error {
+	if containsHeaderLineBreak(fp.UserAgent) ||
+		containsHeaderLineBreak(fp.Platform) ||
+		containsHeaderLineBreak(fp.Version) ||
+		containsHeaderLineBreak(fp.DeviceName) ||
+		containsHeaderLineBreak(fp.DeviceModel) {
+		return fmt.Errorf("identity fingerprint fields must not contain line breaks")
+	}
+	for key, value := range fp.CustomHeaders {
+		key = strings.TrimSpace(key)
+		value = strings.TrimSpace(value)
+		if key == "" {
+			return fmt.Errorf("custom header name cannot be empty")
+		}
+		if !isHTTPHeaderToken(key) {
+			return fmt.Errorf("invalid custom header name: %s", key)
+		}
+		if isIdentityFingerprintBlockedHeader(key) || isKimiIdentityFingerprintBlockedHeader(key) {
+			return fmt.Errorf("custom header %s is managed by the system", key)
+		}
+		if containsHeaderLineBreak(value) {
+			return fmt.Errorf("custom header %s must not contain line breaks", key)
+		}
+	}
+	return nil
+}
+
 func containsHeaderLineBreak(value string) bool {
 	return strings.ContainsAny(value, "\r\n")
 }
@@ -308,6 +345,18 @@ func isGeminiIdentityFingerprintBlockedHeader(key string) bool {
 func isXAIIdentityFingerprintBlockedHeader(key string) bool {
 	switch strings.ToLower(strings.TrimSpace(key)) {
 	case "x-grok-client-identifier", "x-grok-client-version", "x-grok-conv-id":
+		return true
+	default:
+		return false
+	}
+}
+
+// isKimiIdentityFingerprintBlockedHeader covers the headers the kimi fingerprint
+// owns. The device id is included even though it has no preset: it is resolved
+// per account, and a custom header would override every account with one value.
+func isKimiIdentityFingerprintBlockedHeader(key string) bool {
+	switch strings.ToLower(strings.TrimSpace(key)) {
+	case "x-msh-platform", "x-msh-version", "x-msh-device-name", "x-msh-device-model", "x-msh-device-id":
 		return true
 	default:
 		return false

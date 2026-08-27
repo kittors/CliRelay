@@ -26,7 +26,7 @@ func TestRegisterManagementRouteTable(t *testing.T) {
 		routes[key] = route
 	}
 
-	if got, want := len(routes), 329; got != want {
+	if got, want := len(routes), 330; got != want {
 		t.Fatalf("route count = %d, want %d", got, want)
 	}
 	if got, want := sortedRouteKeys(routes), expectedManagementRoutes(); !slices.Equal(got, want) {
@@ -362,6 +362,7 @@ func expectedManagementRoutes() []string {
 		"GET /v0/management/model-pricing",
 		"GET /v0/management/models",
 		"GET /v0/management/models/configured-availability",
+		"POST /v0/management/models/test",
 		"GET /v0/management/oauth-excluded-models",
 		"GET /v0/management/oauth-model-alias",
 		"GET /v0/management/ollama-cloud-api-key",

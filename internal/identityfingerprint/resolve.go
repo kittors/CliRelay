@@ -194,6 +194,50 @@ func ResolveXAI(cfg config.XAIIdentityFingerprintConfig, learned *LearnedRecord)
 	return resolved, effective
 }
 
+// ResolveKimi merges the operator preset, the learned kimi-cli observation and
+// the builtin template into the identity sent to the Kimi coding gateway.
+//
+// Device name, model and id have no builtin fallback: an empty result means the
+// executor keeps its host-derived value, which is the pre-fingerprint behaviour.
+// The device id is learned but deliberately not presettable — one id configured
+// globally would make every account look like the same machine, which is the
+// opposite of what the learned value achieves.
+func ResolveKimi(cfg config.KimiIdentityFingerprintConfig, learned *LearnedRecord) (config.KimiIdentityFingerprintConfig, EffectiveFingerprint) {
+	clean := config.CleanKimiIdentityFingerprint(cfg)
+	defaults := config.DefaultKimiIdentityFingerprint()
+	fields := make(map[string]FieldValue)
+	pick := func(field, preset, learnedValue, defaultValue string) string {
+		value, source := pickField(preset, learnedValue, defaultValue)
+		fields[field] = FieldValue{Value: value, Source: source}
+		return value
+	}
+
+	resolved := config.KimiIdentityFingerprintConfig{
+		Enabled:       clean.Enabled,
+		UserAgent:     pick(FieldUserAgent, clean.UserAgent, learnedField(learned, FieldUserAgent), defaults.UserAgent),
+		Platform:      pick(FieldKimiPlatform, clean.Platform, learnedField(learned, FieldKimiPlatform), defaults.Platform),
+		Version:       pick(FieldKimiVersion, clean.Version, learnedFieldOrVersion(learned, FieldKimiVersion), defaults.Version),
+		DeviceName:    pick(FieldKimiDeviceName, clean.DeviceName, learnedField(learned, FieldKimiDeviceName), ""),
+		DeviceModel:   pick(FieldKimiDeviceModel, clean.DeviceModel, learnedField(learned, FieldKimiDeviceModel), ""),
+		CustomHeaders: clean.CustomHeaders,
+	}
+	if deviceID := learnedField(learned, FieldKimiDeviceID); deviceID != "" {
+		fields[FieldKimiDeviceID] = FieldValue{Value: deviceID, Source: FieldSourceLearned}
+	}
+	effective := effective(ProviderKimi, clean.Enabled, learned, fields)
+	if value := strings.TrimSpace(resolved.Version); value != "" {
+		effective.Version = value
+	}
+	return resolved, effective
+}
+
+// KimiLearnedDeviceID returns the device id observed from a real kimi-cli, or an
+// empty string. It is not part of the resolved config because it never comes from
+// operator presets or builtin defaults.
+func KimiLearnedDeviceID(learned *LearnedRecord) string {
+	return learnedField(learned, FieldKimiDeviceID)
+}
+
 func pickField(preset, learned, fallback string) (string, FieldSource) {
 	if value := strings.TrimSpace(learned); value != "" {
 		return value, FieldSourceLearned
