@@ -317,6 +317,106 @@ func TestMaybeEnsureDoesNotForceToolChoiceWithoutIntent(t *testing.T) {
 	}
 }
 
+func TestMaybeEnsureInjectsWhenBridgeMetadataAbsent(t *testing.T) {
+	// A fresh Codex OAuth account carries no bridge metadata. Requiring an explicit opt-in
+	// left the Image Generation skill dead for every account nobody had toggled by hand.
+	for name, auth := range map[string]*cliproxyauth.Auth{
+		"nil metadata":   {Provider: "codex"},
+		"empty metadata": {Provider: "codex", Metadata: map[string]any{}},
+		"other metadata": {Provider: "codex", Metadata: map[string]any{"email": "a@b.c"}},
+	} {
+		body := []byte(`{"model":"gpt-5.6-luna","tools":[{"type":"function","name":"shell"}]}`)
+		out := maybeEnsureCodexImageGenerationTool(body, auth, "gpt-5.6-luna", nil)
+		if got := gjson.GetBytes(out, "tools.1.type").String(); got != "image_generation" {
+			t.Fatalf("%s: tools.1.type = %q, want image_generation; body=%s", name, got, out)
+		}
+	}
+}
+
+func TestMaybeEnsureSkipsWhenBridgeExplicitlyDisabled(t *testing.T) {
+	auth := &cliproxyauth.Auth{
+		Provider: "codex",
+		Metadata: map[string]any{"codex_image_generation_bridge": false},
+	}
+	body := []byte(`{"model":"gpt-5.6-luna","tools":[{"type":"function","name":"shell"}],"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"帮我画一个小猫咪"}]}]}`)
+	out := maybeEnsureCodexImageGenerationTool(body, auth, "gpt-5.6-luna", nil)
+	if gjson.GetBytes(out, "tools.#").Int() != 1 {
+		t.Fatalf("opt-out account received the hosted tool; body=%s", out)
+	}
+}
+
+func TestMaybeEnsureInjectsToolShapeThatUpstreamInvokes(t *testing.T) {
+	// action + model mirror buildCodexImageResponsesRequest, the request shape verified to
+	// return images from chatgpt.com/backend-api/codex/responses. A bare
+	// {"type":"image_generation"} is accepted upstream but never invoked by the model.
+	auth := &cliproxyauth.Auth{Provider: "codex"}
+	body := []byte(`{"model":"gpt-5.6-luna","tools":[{"type":"function","name":"shell"}]}`)
+	out := maybeEnsureCodexImageGenerationTool(body, auth, "gpt-5.6-luna", nil)
+	tool := gjson.GetBytes(out, "tools.1")
+	if got := tool.Get("action").String(); got != "generate" {
+		t.Fatalf("tool.action = %q, want generate; body=%s", got, out)
+	}
+	if got := tool.Get("model").String(); got != codexImageModel {
+		t.Fatalf("tool.model = %q, want %q; body=%s", got, codexImageModel, out)
+	}
+}
+
+func TestMaybeEnsureUsesEditActionWhenTurnCarriesImage(t *testing.T) {
+	auth := &cliproxyauth.Auth{Provider: "codex"}
+	body := []byte(`{"model":"gpt-5.6-luna","tools":[],"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"把这张图改成蓝色"},{"type":"input_image","image_url":"data:image/png;base64,iVBORw0KGgo="}]}]}`)
+	out := maybeEnsureCodexImageGenerationTool(body, auth, "gpt-5.6-luna", nil)
+	if got := gjson.GetBytes(out, "tools.0.action").String(); got != "edit" {
+		t.Fatalf("tool.action = %q, want edit; body=%s", got, out)
+	}
+}
+
+func TestMaybeEnsureKeepsGenerateActionForTextOnlyTurn(t *testing.T) {
+	auth := &cliproxyauth.Auth{Provider: "codex"}
+	body := []byte(`{"model":"gpt-5.6-luna","tools":[],"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"帮我画一个小猫咪"}]}]}`)
+	out := maybeEnsureCodexImageGenerationTool(body, auth, "gpt-5.6-luna", nil)
+	if got := gjson.GetBytes(out, "tools.0.action").String(); got != "generate" {
+		t.Fatalf("tool.action = %q, want generate; body=%s", got, out)
+	}
+}
+
+func TestMaybeEnsureInjectsForLiteRequestWithImageIntent(t *testing.T) {
+	// Lite normally keeps its tools in input[].additional_tools, so the hosted tool is only
+	// worth the unverified upstream shape on turns that actually ask for an image.
+	auth := &cliproxyauth.Auth{Provider: "codex"}
+	headers := http.Header{}
+	headers.Set("X-OpenAI-Internal-Codex-Responses-Lite", "true")
+	body := []byte(`{"model":"gpt-5.6-luna","tools":[],"input":[{"type":"additional_tools","role":"developer","tools":[{"type":"namespace","name":"functions","tools":[{"type":"custom","name":"exec"}]}]},{"type":"message","role":"user","content":[{"type":"input_text","text":"[$imagegen](/Users/x/.codex/skills/.system/imagegen/SKILL.md) 帮我画一个小猫咪"}]}]}`)
+	out := maybeEnsureCodexImageGenerationTool(body, auth, "gpt-5.6-luna", headers)
+	if got := gjson.GetBytes(out, "tools.0.type").String(); got != "image_generation" {
+		t.Fatalf("tools.0.type = %q, want image_generation; body=%s", got, out)
+	}
+	if got := gjson.GetBytes(out, "tool_choice.type").String(); got != "image_generation" {
+		t.Fatalf("tool_choice.type = %q, want image_generation; body=%s", got, out)
+	}
+}
+
+func TestRequestLooksLikeImageGenerationIntentMatchesDesktopSkillPayload(t *testing.T) {
+	// Verbatim shapes captured from a Codex Desktop turn that had the Image Gen skill on.
+	for name, text := range map[string]string{
+		"skill link":  "[$imagegen](/Users/kittors/.codex/skills/.system/imagegen/SKILL.md)  帮我画一个小猫咪\n",
+		"skill block": "<skill>\n<name>imagegen</name>\n<path>/Users/kittors/.codex/skills/.system/imagegen/SKILL.md</path>\n",
+		"plain ask":   "帮我画一个小猫咪\n",
+	} {
+		body, err := json.Marshal(map[string]any{
+			"input": []any{map[string]any{
+				"type": "message", "role": "user",
+				"content": []any{map[string]any{"type": "input_text", "text": text}},
+			}},
+		})
+		if err != nil {
+			t.Fatalf("%s: marshal: %v", name, err)
+		}
+		if !requestLooksLikeImageGenerationIntent(body) {
+			t.Fatalf("%s: intent not detected for %q", name, text)
+		}
+	}
+}
+
 func TestStripCodexHistoryDataURLImagesReplacesHugeMarkdown(t *testing.T) {
 	// ~2KB base64 payload (still above 256 threshold); real Desktop history is multi-MB.
 	b64 := strings.Repeat("A", 400)

@@ -37,10 +37,6 @@
         "max_lines": 1198
       },
       {
-        "path": "internal/runtime/executor/codex_image_generation_bridge.go",
-        "max_lines": 1196
-      },
-      {
         "path": "internal/storage/postgres/migrations.go",
         "max_lines": 868
       },

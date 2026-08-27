@@ -14,7 +14,14 @@ func CodexImageGenerationBridgePayload(auth *coreauth.Auth) map[string]any {
 	if !isCodexOAuthAdmissionAuth(auth) {
 		return nil
 	}
-	enabled, _ := auth.Metadata[metadataKeyCodexImageGenerationBridge].(bool)
+	// Absent metadata means enabled, matching the executor default. Reporting false here
+	// would show the panel toggle as off while the bridge is actually injecting the tool.
+	enabled := true
+	if raw, ok := auth.Metadata[metadataKeyCodexImageGenerationBridge]; ok {
+		if value, isBool := raw.(bool); isBool {
+			enabled = value
+		}
+	}
 	return map[string]any{
 		"enabled": enabled,
 	}
