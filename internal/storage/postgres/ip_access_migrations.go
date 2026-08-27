@@ -9,8 +9,45 @@ func laterRuntimeMigrations() []Migration {
 		// Operator-managed IP allow/deny list, authentication attempt log, and
 		// source address on audit rows.
 		{Version: "202608100001_ip_access_control", SQL: ipAccessControlSQL},
+		// Drop model/channel scopes stranded on end users by an unbound permission
+		// profile. See endUserUnboundProfileScopeCleanupSQL.
+		{Version: "202608270001_end_user_unbound_profile_scope_cleanup", SQL: endUserUnboundProfileScopeCleanupSQL},
 	}
 }
+
+// endUserUnboundProfileScopeCleanupSQL clears model/channel scopes left on end
+// users that have no permission profile.
+//
+// Binding a profile copied its allowed-models / allowed-channels /
+// allowed-channel-groups onto the account row; unbinding cleared the quota
+// fields and left those three behind. The console renders them only while a
+// profile is attached, so the account showed "unrestricted" while a stale
+// channel-group whitelist kept every credential outside that group unreachable
+// — invisible in the UI, and with no way to clear it from there either.
+//
+// The unbind path now clears them, but that only helps the next unbind: an
+// account already in this state can no longer reach the code that would fix it.
+// Hence this one-off pass.
+//
+// Scope is deliberately narrow: only rows with no profile, and only the fields
+// a profile owns. A tenant that set these through the API without a profile is
+// outside what the console can express, and would have been equally invisible
+// there; the trade is a visible empty list over a silent unreachable one.
+const endUserUnboundProfileScopeCleanupSQL = `
+UPDATE end_users
+SET allowed_models         = '[]',
+    allowed_channels       = '[]',
+    allowed_channel_groups = '[]',
+    system_prompt          = '',
+    updated_at             = CURRENT_TIMESTAMP
+WHERE COALESCE(TRIM(permission_profile_id), '') = ''
+  AND (
+        COALESCE(allowed_models, '[]')         NOT IN ('[]', '')
+     OR COALESCE(allowed_channels, '[]')       NOT IN ('[]', '')
+     OR COALESCE(allowed_channel_groups, '[]') NOT IN ('[]', '')
+     OR COALESCE(system_prompt, '')            <> ''
+      );
+`
 
 // ipAccessControlSQL adds the operator-managed IP allow/deny list, the
 // authentication attempt log that makes an attack source identifiable, and the

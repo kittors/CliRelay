@@ -639,8 +639,36 @@ func (s *Service) UpdateUser(ctx context.Context, actor identity.Principal, tena
 	}
 	if accountQuotaPatch != nil {
 		if accountQuotaPatch.PermissionProfileID != nil {
+			nextProfileID := strings.TrimSpace(*accountQuotaPatch.PermissionProfileID)
 			sets = append(sets, "permission_profile_id = ?")
-			args = append(args, strings.TrimSpace(*accountQuotaPatch.PermissionProfileID))
+			args = append(args, nextProfileID)
+			// Unbinding a profile has to drop what the profile put on the account.
+			// Binding copies the profile's model/channel scopes onto the row, and the
+			// console only renders those scopes while a profile is attached — so a
+			// leftover whitelist became invisible: the account read "unrestricted"
+			// while a stale channel-group list kept every other credential out of
+			// reach, with nowhere in the UI to see or clear it.
+			//
+			// An explicit value in the same patch still wins; this only fills the
+			// fields the caller left alone.
+			if nextProfileID == "" && strings.TrimSpace(currentProfileID) != "" {
+				if accountQuotaPatch.AllowedModels == nil {
+					sets = append(sets, "allowed_models = ?")
+					args = append(args, encodeJSONStringList(nil))
+				}
+				if accountQuotaPatch.AllowedChannels == nil {
+					sets = append(sets, "allowed_channels = ?")
+					args = append(args, encodeJSONStringList(nil))
+				}
+				if accountQuotaPatch.AllowedChannelGroups == nil {
+					sets = append(sets, "allowed_channel_groups = ?")
+					args = append(args, encodeJSONStringList(nil))
+				}
+				if accountQuotaPatch.SystemPrompt == nil {
+					sets = append(sets, "system_prompt = ?")
+					args = append(args, "")
+				}
+			}
 		}
 		if accountQuotaPatch.DailyLimit != nil {
 			sets = append(sets, "daily_limit = ?")
