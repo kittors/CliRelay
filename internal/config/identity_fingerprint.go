@@ -68,6 +68,7 @@ type IdentityFingerprintConfig struct {
 	Claude ClaudeIdentityFingerprintConfig `yaml:"claude,omitempty" json:"claude,omitempty"`
 	Gemini GeminiIdentityFingerprintConfig `yaml:"gemini,omitempty" json:"gemini,omitempty"`
 	XAI    XAIIdentityFingerprintConfig    `yaml:"xai,omitempty" json:"xai,omitempty"`
+	Kimi   KimiIdentityFingerprintConfig   `yaml:"kimi,omitempty" json:"kimi,omitempty"`
 }
 
 // CodexIdentityFingerprintConfig configures Codex upstream identity headers.
@@ -231,14 +232,21 @@ func DefaultIdentityFingerprintConfig() IdentityFingerprintConfig {
 		Claude: DefaultClaudeIdentityFingerprint(),
 		Gemini: DefaultGeminiIdentityFingerprint(),
 		XAI:    DefaultXAIIdentityFingerprint(),
+		Kimi:   DefaultKimiIdentityFingerprint(),
 	}
 }
 
 // SanitizeIdentityFingerprint normalizes provider identity fingerprint config.
+//
+// The legacy kimi-header-defaults block is folded into the kimi fingerprint here
+// so the runtime, the management API and the panel all read one source. Doing it
+// anywhere later would leave the panel showing the builtin template while a
+// deployment's configured headers were what actually went upstream.
 func (cfg *Config) SanitizeIdentityFingerprint() {
 	if cfg == nil {
 		return
 	}
+	cfg.IdentityFingerprint.Kimi = WithKimiHeaderDefaults(cfg.IdentityFingerprint.Kimi, cfg.KimiHeaderDefaults)
 	cfg.IdentityFingerprint = NormalizeIdentityFingerprintConfig(cfg.IdentityFingerprint)
 }
 
@@ -250,6 +258,7 @@ func CleanIdentityFingerprintConfig(in IdentityFingerprintConfig) IdentityFinger
 		Claude: CleanClaudeIdentityFingerprint(in.Claude),
 		Gemini: CleanGeminiIdentityFingerprint(in.Gemini),
 		XAI:    CleanXAIIdentityFingerprint(in.XAI),
+		Kimi:   CleanKimiIdentityFingerprint(in.Kimi),
 	}
 }
 
@@ -261,6 +270,7 @@ func NormalizeIdentityFingerprintConfig(in IdentityFingerprintConfig) IdentityFi
 	out.Claude = defaultClaudeIdentityFingerprintEnabled(out.Claude)
 	out.Gemini = defaultGeminiIdentityFingerprintEnabled(out.Gemini)
 	out.XAI = defaultXAIIdentityFingerprintEnabled(out.XAI)
+	out.Kimi = defaultKimiIdentityFingerprintEnabled(out.Kimi)
 	return out
 }
 
@@ -279,6 +289,9 @@ func NormalizeLegacyIdentityFingerprintRuntimeConfig(in IdentityFingerprintConfi
 	}
 	if xaiLegacyDefaultDisabled(out.XAI) {
 		out.XAI.enabledSet = false
+	}
+	if kimiLegacyDefaultDisabled(out.Kimi) {
+		out.Kimi.enabledSet = false
 	}
 	return NormalizeIdentityFingerprintConfig(out)
 }
