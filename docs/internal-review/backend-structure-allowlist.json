@@ -14,7 +14,7 @@
       },
       {
         "path": "internal/enduser/service.go",
-        "max_lines": 1169
+        "max_lines": 1168
       },
       {
         "path": "internal/identity/service.go",

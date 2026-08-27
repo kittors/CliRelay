@@ -639,8 +639,7 @@ func (s *Service) UpdateUser(ctx context.Context, actor identity.Principal, tena
 	}
 	if accountQuotaPatch != nil {
 		if accountQuotaPatch.PermissionProfileID != nil {
-			sets = append(sets, "permission_profile_id = ?")
-			args = append(args, strings.TrimSpace(*accountQuotaPatch.PermissionProfileID))
+			sets, args = appendPermissionProfileSets(sets, args, currentProfileID, accountQuotaPatch)
 		}
 		if accountQuotaPatch.DailyLimit != nil {
 			sets = append(sets, "daily_limit = ?")

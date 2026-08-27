@@ -23,6 +23,7 @@ func openEndUserTestDB(t *testing.T) *sql.DB {
 	}
 	t.Cleanup(func() { _ = db.Close() })
 	sqlapikey.InitTable(db)
+	sqlapikey.InitPermissionProfilesTable(db)
 	if _, err := db.Exec(`
 		CREATE TABLE IF NOT EXISTS end_users (
 			id TEXT PRIMARY KEY,
@@ -203,5 +204,108 @@ func TestUpdateUserAutoCapsOwnedKeyPeriodLimits(t *testing.T) {
 	}
 	if stored != 100 {
 		t.Fatalf("stored day = %v, want 100", stored)
+	}
+}
+
+// Unbinding a permission profile used to leave the profile's model/channel
+// scopes on the account. The console renders those scopes only while a profile
+// is attached, so the account read "unrestricted" while a stale channel-group
+// whitelist kept every credential outside that group unreachable — with nowhere
+// in the UI to see it, and no error message that named it.
+func TestUnbindingPermissionProfileClearsInheritedScopes(t *testing.T) {
+	db := openEndUserTestDB(t)
+	svc := NewService(db)
+	ctx := context.Background()
+	tenantID := "00000000-0000-0000-0000-000000000001"
+	userID := uuid.NewString()
+	now := time.Now().UTC()
+	if _, err := db.Exec(`
+		INSERT INTO end_users (id, tenant_id, username, username_normalized, display_name, password_hash, status,
+			permission_profile_id, allowed_models, allowed_channels, allowed_channel_groups, system_prompt, created_at, updated_at)
+		VALUES (?, ?, 'scoped', 'scoped', 'Scoped', 'x', 'active',
+			'profile-1', '["grok-4.5"]', '["Grok Account"]', '["group"]', 'be brief', ?, ?)
+	`, userID, tenantID, now, now); err != nil {
+		t.Fatalf("insert user: %v", err)
+	}
+
+	actor := identity.Principal{EffectiveTenant: identity.Tenant{ID: tenantID}, Permissions: map[string]bool{"end_users.write": true}}
+	empty := ""
+	if _, err := svc.UpdateUser(ctx, actor, tenantID, userID, nil, nil, nil, nil, &QuotaPatch{PermissionProfileID: &empty}); err != nil {
+		t.Fatalf("UpdateUser: %v", err)
+	}
+
+	var profileID, models, channels, groups, prompt string
+	if err := db.QueryRow(`SELECT permission_profile_id, allowed_models, allowed_channels, allowed_channel_groups, system_prompt
+		FROM end_users WHERE id = ?`, userID).Scan(&profileID, &models, &channels, &groups, &prompt); err != nil {
+		t.Fatalf("query user: %v", err)
+	}
+	if profileID != "" {
+		t.Fatalf("permission_profile_id = %q, want cleared", profileID)
+	}
+	for name, got := range map[string]string{
+		"allowed_models":         models,
+		"allowed_channels":       channels,
+		"allowed_channel_groups": groups,
+	} {
+		if got != "[]" {
+			t.Errorf("%s = %q, want an empty list after unbinding", name, got)
+		}
+	}
+	if prompt != "" {
+		t.Errorf("system_prompt = %q, want cleared after unbinding", prompt)
+	}
+}
+
+// Switching between profiles must not trip the unbind cleanup, and an explicit
+// scope in the same patch still wins over it.
+func TestProfileScopesSurviveWhenNotUnbinding(t *testing.T) {
+	db := openEndUserTestDB(t)
+	svc := NewService(db)
+	ctx := context.Background()
+	tenantID := "00000000-0000-0000-0000-000000000001"
+	actor := identity.Principal{EffectiveTenant: identity.Tenant{ID: tenantID}, Permissions: map[string]bool{"end_users.write": true}}
+	now := time.Now().UTC()
+
+	rebind := uuid.NewString()
+	if _, err := db.Exec(`
+		INSERT INTO end_users (id, tenant_id, username, username_normalized, display_name, password_hash, status,
+			permission_profile_id, allowed_channel_groups, created_at, updated_at)
+		VALUES (?, ?, 'rebind', 'rebind', 'Rebind', 'x', 'active', 'profile-1', '["group"]', ?, ?)
+	`, rebind, tenantID, now, now); err != nil {
+		t.Fatalf("insert rebind user: %v", err)
+	}
+	other := "profile-2"
+	if _, err := svc.UpdateUser(ctx, actor, tenantID, rebind, nil, nil, nil, nil, &QuotaPatch{PermissionProfileID: &other}); err != nil {
+		t.Fatalf("UpdateUser rebind: %v", err)
+	}
+	var groups string
+	if err := db.QueryRow(`SELECT allowed_channel_groups FROM end_users WHERE id = ?`, rebind).Scan(&groups); err != nil {
+		t.Fatalf("query rebind: %v", err)
+	}
+	if groups != `["group"]` {
+		t.Fatalf("allowed_channel_groups = %q, want untouched when switching profiles", groups)
+	}
+
+	explicit := uuid.NewString()
+	if _, err := db.Exec(`
+		INSERT INTO end_users (id, tenant_id, username, username_normalized, display_name, password_hash, status,
+			permission_profile_id, allowed_channel_groups, created_at, updated_at)
+		VALUES (?, ?, 'explicit', 'explicit', 'Explicit', 'x', 'active', 'profile-1', '["group"]', ?, ?)
+	`, explicit, tenantID, now, now); err != nil {
+		t.Fatalf("insert explicit user: %v", err)
+	}
+	empty := ""
+	kept := []string{"default"}
+	if _, err := svc.UpdateUser(ctx, actor, tenantID, explicit, nil, nil, nil, nil, &QuotaPatch{
+		PermissionProfileID:  &empty,
+		AllowedChannelGroups: &kept,
+	}); err != nil {
+		t.Fatalf("UpdateUser explicit: %v", err)
+	}
+	if err := db.QueryRow(`SELECT allowed_channel_groups FROM end_users WHERE id = ?`, explicit).Scan(&groups); err != nil {
+		t.Fatalf("query explicit: %v", err)
+	}
+	if groups != `["default"]` {
+		t.Fatalf("allowed_channel_groups = %q, want the explicit value in the same patch", groups)
 	}
 }

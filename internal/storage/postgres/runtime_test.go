@@ -11,14 +11,27 @@ import (
 
 func TestRuntimeMigrationsCoverCoreTables(t *testing.T) {
 	migrations := RuntimeMigrations()
-	if len(migrations) != 28 {
-		t.Fatalf("RuntimeMigrations len = %d, want 28", len(migrations))
+	if len(migrations) != 29 {
+		t.Fatalf("RuntimeMigrations len = %d, want 29", len(migrations))
 	}
-	// Latest: the IP allow/deny list, authentication attempt log, and source
-	// address on audit rows. Appended from laterRuntimeMigrations() because
-	// migrations.go sits at its structure-gate size ceiling.
+	// Appended from laterRuntimeMigrations() because migrations.go sits at its
+	// structure-gate size ceiling.
 	if migrations[27].Version != "202608100001_ip_access_control" {
-		t.Fatalf("latest migration version = %q", migrations[27].Version)
+		t.Fatalf("ip access migration version = %q", migrations[27].Version)
+	}
+	// Latest: clears model/channel scopes stranded on end users whose permission
+	// profile was unbound without them.
+	if migrations[28].Version != "202608270001_end_user_unbound_profile_scope_cleanup" {
+		t.Fatalf("latest migration version = %q", migrations[28].Version)
+	}
+	for _, fragment := range []string{
+		"UPDATE end_users",
+		"allowed_channel_groups = '[]'",
+		"COALESCE(TRIM(permission_profile_id), '') = ''",
+	} {
+		if !strings.Contains(migrations[28].SQL, fragment) {
+			t.Fatalf("scope cleanup migration missing %q", fragment)
+		}
 	}
 	for _, fragment := range []string{
 		"CREATE TABLE IF NOT EXISTS ip_access_rules",
