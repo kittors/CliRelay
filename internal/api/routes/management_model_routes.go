@@ -9,6 +9,9 @@ func registerManagementModelRoutes(group *gin.RouterGroup, h *managementhandlers
 	models := h.Models()
 	group.GET("/models", models.GetModels)
 	group.GET("/models/configured-availability", models.GetConfiguredModelAvailability)
+	// Management-authority connectivity probe: no API key, so an end user's
+	// channel-group scope cannot make a healthy model look unreachable.
+	group.POST("/models/test", h.PostModelTest)
 	group.GET("/model-path-availability", models.GetModelPathAvailability)
 	group.GET("/model-configs", models.GetModelConfigs)
 	group.POST("/model-configs", models.PostModelConfig)
