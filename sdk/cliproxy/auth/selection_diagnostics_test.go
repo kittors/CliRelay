@@ -237,6 +237,11 @@ func TestModelOutsideAllowedChannelGroupsIsNamed(t *testing.T) {
 	if !strings.Contains(selectionErr.Message, "group") {
 		t.Errorf("message does not name the allowed channel group: %q", selectionErr.Message)
 	}
+	// Naming only the allowed set left the operator guessing which group to add:
+	// they had already edited the model list of a group they could not reach.
+	if !strings.Contains(selectionErr.Message, "default") {
+		t.Errorf("message does not name the group that actually serves the model: %q", selectionErr.Message)
+	}
 }
 
 // TestReachableModelStillSelectableUnderChannelGroupScope pins that the diagnosis

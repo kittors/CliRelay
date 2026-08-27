@@ -38,6 +38,11 @@ type selectionRejection struct {
 	// servingBlockedByGroups records that a serving credential was excluded by
 	// the caller's allowed-channel-groups restriction.
 	servingBlockedByGroups bool
+	// servingGroups holds the channel groups the excluded serving credentials
+	// actually belong to. Naming the allowed set alone left the operator guessing
+	// which group to add: the model list they had already edited lived in a group
+	// they could not reach.
+	servingGroups map[string]struct{}
 }
 
 // diagnoseEmptyCandidates inspects the credentials the scope considered and
@@ -53,7 +58,10 @@ func (s selectorService) diagnoseEmptyCandidates(
 		return nil
 	}
 
-	rejection := selectionRejection{modelBlockedByGroups: map[string]struct{}{}}
+	rejection := selectionRejection{
+		modelBlockedByGroups: map[string]struct{}{},
+		servingGroups:        map[string]struct{}{},
+	}
 	for _, candidate := range s.manager.auths {
 		if candidate == nil || candidate.Disabled || candidate.Status == StatusDisabled {
 			continue
@@ -83,6 +91,9 @@ func (s selectorService) diagnoseEmptyCandidates(
 		}
 		if !authAllowedByGroups(scope.cfg, candidate, scope.allowedGroups) {
 			rejection.servingBlockedByGroups = true
+			for group := range authGroups(scope.cfg, candidate) {
+				rejection.servingGroups[group] = struct{}{}
+			}
 			continue
 		}
 
@@ -109,8 +120,8 @@ func (s selectorService) diagnoseEmptyCandidates(
 			return &Error{
 				Code: "model_outside_allowed_channel_groups",
 				Message: fmt.Sprintf(
-					"model %q is served only by credentials outside the channel groups this credential may use (%s); add a serving account to one of those groups, or widen the allowed channel groups",
-					scope.modelKey, describeScopeNames(scope.allowedGroups),
+					"model %q is served by credentials in channel group %s, which this credential may not use (allowed: %s); add a serving group to the allowed channel groups, or move a serving account into an allowed one",
+					scope.modelKey, describeScopeNames(rejection.servingGroups), describeScopeNames(scope.allowedGroups),
 				),
 			}
 		}
