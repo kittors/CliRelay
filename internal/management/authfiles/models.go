@@ -21,7 +21,7 @@ type ModelRegistrar interface {
 	RegisterClient(clientID, clientProvider string, models []*registry.ModelInfo)
 }
 
-// Provider-level discovery cache for claude/codex/xai (Grok).
+// Provider-level discovery cache for claude/codex/xai (Grok)/kimi.
 // Live manifests are shared across accounts of the same provider+tenant so we
 // only hit upstream once (or on force refresh), then every auth-file models
 // panel reuses the same list without RegisterClient-replacing the static catalog.
@@ -75,7 +75,7 @@ func discoveryCacheKey(tenantID, provider string) string {
 
 func supportsSharedDiscovery(provider string) bool {
 	switch normalizeDiscoveryProvider(provider) {
-	case "claude", "codex", "xai":
+	case "claude", "codex", "xai", "kimi":
 		return true
 	default:
 		return false
@@ -119,7 +119,7 @@ func storeDiscoveryCache(tenantID, provider string, models []*registry.ModelInfo
 }
 
 // EnsureProviderDiscovery returns the shared live model list for
-// claude/codex/xai. Cache hit is preferred; on miss it warms once from the
+// claude/codex/xai/kimi. Cache hit is preferred; on miss it warms once from the
 // first active auth of that provider in the tenant (same single-flight path as
 // the auth-file models panel). force re-fetches upstream even when the cache
 // is warm.
@@ -257,7 +257,7 @@ func ListModelEntriesForTenant(manager *coreauth.Manager, source ModelSource, te
 // ListModelEntriesLiveForTenant returns models for an auth file panel.
 //
 // Behaviour:
-//   - claude / codex / xai (shared discovery):
+//   - claude / codex / xai / kimi (shared discovery):
 //     open (refresh=false): serve provider discovery cache if present; otherwise
 //     auto-warm once from upstream using this auth, store under provider+tenant,
 //     return source=upstream. Never RegisterClient-replace the static catalog.
@@ -286,8 +286,9 @@ func ListModelEntriesLiveForTenant(
 	}
 	provider := normalizeDiscoveryProvider(auth.Provider)
 
-	// Shared discovery path for Claude / Codex / xAI (Grok): prefer provider
-	// cache on open, auto-warm on first miss, force re-fetch only when refresh=1.
+	// Shared discovery path for Claude / Codex / xAI (Grok) / Kimi: prefer
+	// provider cache on open, auto-warm on first miss, force re-fetch only when
+	// refresh=1.
 	if supportsSharedDiscovery(provider) {
 		if !refresh {
 			if cached := loadDiscoveryCache(tenantID, provider); len(cached) > 0 {
@@ -329,7 +330,7 @@ func ListModelEntriesLiveForTenant(
 	return modelEntriesFromRegistry(live), sourceLabel
 }
 
-// warmSharedDiscovery fetches live models for claude/codex/xai and stores them
+// warmSharedDiscovery fetches live models for claude/codex/xai/kimi and stores them
 // in the provider-level cache. Concurrent warmers for the same key single-flight.
 // When force is false and another warmer already populated the cache, waiters
 // receive that result without a second upstream call.
@@ -432,6 +433,10 @@ func fetchLiveModelsForAuth(ctx context.Context, auth *coreauth.Auth, cfg *confi
 		// registers live xAI models via service_model_registration; management
 		// panels must not RegisterClient-replace per auth-file refresh.
 		sdkModels = executor.FetchXAIModels(fetchCtx, auth, cfg)
+	case provider == "kimi":
+		// Discovery only, same as xAI: startup registration owns the runtime
+		// registry, the panel just mirrors what the coding gateway advertises.
+		sdkModels = executor.FetchKimiModels(fetchCtx, auth, cfg)
 	case rawProvider == "antigravity":
 		sdkModels = executor.FetchAntigravityModels(fetchCtx, auth, cfg)
 		updateRegistry = true

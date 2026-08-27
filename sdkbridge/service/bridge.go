@@ -119,6 +119,10 @@ func FetchCodexModels(ctx context.Context, auth *coreauth.Auth, cfg *config.Conf
 	return internalserviceapp.FetchCodexModels(ctx, auth, cfg)
 }
 
+func FetchKimiModels(ctx context.Context, auth *coreauth.Auth, cfg *config.Config) []*sdkmodelcatalog.ModelInfo {
+	return internalserviceapp.FetchKimiModels(ctx, auth, cfg)
+}
+
 func RegisterExecutorForAuth(coreManager *coreauth.Manager, cfg *config.Config, auth *coreauth.Auth, forceReplace bool, gateway WebsocketGateway) {
 	internalserviceapp.RegisterExecutorForAuth(coreManager, cfg, auth, forceReplace, gateway)
 }

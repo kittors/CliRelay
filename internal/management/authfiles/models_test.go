@@ -278,13 +278,47 @@ func TestXAISharedDiscoveryCacheAcrossAccounts(t *testing.T) {
 }
 
 func TestSupportsSharedDiscoveryIncludesXAI(t *testing.T) {
-	for _, provider := range []string{"xai", "x-ai", "grok", "XAI", "Claude", "codex"} {
+	for _, provider := range []string{"xai", "x-ai", "grok", "XAI", "Claude", "codex", "kimi", "Kimi"} {
 		if !SupportsSharedDiscovery(provider) {
 			t.Fatalf("SupportsSharedDiscovery(%q)=false, want true", provider)
 		}
 	}
 	if SupportsSharedDiscovery("antigravity") {
 		t.Fatalf("antigravity must not use shared discovery")
+	}
+}
+
+// Kimi used to serve the compiled-in catalog here, so the panel showed the same
+// four ids no matter what Moonshot had shipped. The discovery cache is what makes
+// the panel reflect the gateway instead.
+func TestKimiSharedDiscoveryServesCacheWithoutRegistrar(t *testing.T) {
+	ResetDiscoveryCacheForTest()
+	storeDiscoveryCache("", "kimi", []*registry.ModelInfo{
+		{ID: "kimi-k2.7", DisplayName: "Kimi K2.7", Type: "kimi", OwnedBy: "moonshot"},
+	})
+	manager := coreauth.NewManager(nil, nil, nil)
+	if _, err := manager.Register(context.Background(), &coreauth.Auth{
+		ID: "kimi-a", FileName: "kimi-a.json", Provider: "kimi",
+	}); err != nil {
+		t.Fatalf("Register kimi: %v", err)
+	}
+	source := &modelSourceStub{models: []*registry.ModelInfo{{ID: "kimi-k2"}}}
+	reg := &modelRegistrarStub{}
+
+	models, label := ListModelEntriesLiveForTenant(
+		context.Background(), manager, source, reg, nil, "", "kimi-a.json", false,
+	)
+	if label != "upstream" {
+		t.Fatalf("label=%q want upstream", label)
+	}
+	if !containsModelID(models, "kimi-k2.7") {
+		t.Fatalf("kimi discovery result not served: %#v", models)
+	}
+	if containsModelID(models, "kimi-k2") {
+		t.Fatalf("static catalog leaked into the kimi discovery result: %#v", models)
+	}
+	if reg.calls != 0 {
+		t.Fatalf("RegisterClient calls=%d want 0 for kimi discovery path", reg.calls)
 	}
 }
 

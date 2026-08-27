@@ -240,7 +240,12 @@ func (s *Service) registerModelsForAuth(ctx context.Context, a *coreauth.Auth) {
 		models = sdkmodelcatalog.StaticModelDefinitionsByChannel("iflow")
 		models = applyExcludedModels(models, excluded)
 	case "kimi":
-		models = sdkmodelcatalog.StaticModelDefinitionsByChannel("kimi")
+		// Live discovery so a model Moonshot ships today is routable today; the
+		// tenant model library still supplements it, because the coding gateway
+		// lists what this account is entitled to rather than the full catalog.
+		models = s.fetchKimiRegistryModels(ctx, a, excluded)
+		catalogRows, mappedOwners := oauthCatalogScope(a)
+		models = appendOAuthProviderModelConfigs(models, provider, authKind, catalogRows, mappedOwners)
 		models = applyExcludedModels(models, excluded)
 	default:
 		if s.registerOpenAICompatModels(a, provider, compatProviderKey, compatDisplayName, compatDetected) {

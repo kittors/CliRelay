@@ -336,6 +336,10 @@ func modelConfigOwnerAliases(provider string) map[string]struct{} {
 		values = append(values, "anthropic", "claude-code")
 	case "gemini", "gemini-cli", "vertex":
 		values = append(values, "google")
+	case "kimi":
+		// Kimi models are owned by Moonshot in the catalog, so a library row added
+		// under the vendor name has to resolve back to the kimi channel.
+		values = append(values, "moonshot", "moonshotai")
 	}
 	out := make(map[string]struct{}, len(values))
 	for _, value := range values {

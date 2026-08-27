@@ -226,8 +226,8 @@ func managementVisibleModels(modelRegistry *registry.ModelRegistry) []map[string
 	return out
 }
 
-// sharedDiscoveryByProvider auto-warms (or reads) the claude/codex provider
-// discovery cache for the current tenant. force is reserved for future refresh
+// sharedDiscoveryByProvider auto-warms (or reads) the shared-discovery provider
+// cache (claude/codex/xai/kimi) for the current tenant. force is reserved for future refresh
 // query support; management list endpoints currently always use force=false.
 func (s *Service) sharedDiscoveryByProvider(force bool) map[string][]*registry.ModelInfo {
 	if s == nil || s.authManager == nil {
