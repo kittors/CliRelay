@@ -145,5 +145,8 @@ func BuildEntry(auth *coreauth.Auth, opts EntryOptions) map[string]any {
 	if xaiEndpoint := XAIEndpointPayload(auth); len(xaiEndpoint) > 0 {
 		entry["using_api"] = xaiEndpoint["using_api"]
 	}
+	if limit := auth.ConcurrencyLimit(); limit > 0 {
+		entry["concurrency_limit"] = limit
+	}
 	return entry
 }

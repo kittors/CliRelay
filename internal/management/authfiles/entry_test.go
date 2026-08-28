@@ -80,6 +80,25 @@ func TestBuildEntryUsesTenantLocalPublicName(t *testing.T) {
 	}
 }
 
+func TestBuildEntryIncludesConcurrencyLimit(t *testing.T) {
+	auth := &coreauth.Auth{
+		ID:       "runtime-concurrency",
+		Provider: "claude",
+		Attributes: map[string]string{
+			"runtime_only":      "true",
+			"concurrency_limit": "3",
+		},
+	}
+
+	entry := BuildEntry(auth, EntryOptions{})
+	if entry == nil {
+		t.Fatal("expected runtime-only entry")
+	}
+	if got, _ := entry["concurrency_limit"].(int); got != 3 {
+		t.Fatalf("concurrency_limit = %v, want 3", entry["concurrency_limit"])
+	}
+}
+
 func TestBuildEntryAllowsRuntimeOnlyAuthWithoutPath(t *testing.T) {
 	auth := &coreauth.Auth{
 		ID:       "runtime",

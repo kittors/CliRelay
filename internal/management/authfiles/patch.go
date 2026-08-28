@@ -30,6 +30,8 @@ type FieldPatch struct {
 	CodexImageGenerationBridge *bool `json:"codex_image_generation_bridge"`
 	// UsingAPI selects xAI official API vs Grok Build/CLI for OAuth accounts.
 	UsingAPI *bool `json:"using_api"`
+	// ConcurrencyLimit sets the max active concurrent requests for this account (0 = unlimited).
+	ConcurrencyLimit *int `json:"concurrency_limit"`
 }
 
 type FieldPatchOptions struct {
@@ -270,6 +272,30 @@ func ApplyFieldPatch(auth *coreauth.Auth, patch FieldPatch, opts FieldPatchOptio
 			attrs["using_api"] = "true"
 		} else {
 			attrs["using_api"] = "false"
+		}
+		changed = true
+	}
+	if patch.ConcurrencyLimit != nil {
+		limit := *patch.ConcurrencyLimit
+		if limit < 0 {
+			limit = 0
+		}
+		metadata := ensureMetadata(auth)
+		attrs := ensureAttributes(auth)
+		if limit == 0 {
+			delete(metadata, "concurrency_limit")
+			delete(metadata, "concurrency")
+			delete(metadata, "concurrency-limit")
+			delete(attrs, "concurrency_limit")
+			delete(attrs, "concurrency")
+			delete(attrs, "concurrency-limit")
+		} else {
+			delete(metadata, "concurrency")
+			delete(metadata, "concurrency-limit")
+			metadata["concurrency_limit"] = limit
+			delete(attrs, "concurrency")
+			delete(attrs, "concurrency-limit")
+			attrs["concurrency_limit"] = fmt.Sprintf("%d", limit)
 		}
 		changed = true
 	}

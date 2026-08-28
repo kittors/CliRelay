@@ -419,6 +419,44 @@ func TestApplyFieldPatchRejectsUsingAPIForXAIAPIKey(t *testing.T) {
 	}
 }
 
+func TestApplyFieldPatchUpdatesConcurrencyLimit(t *testing.T) {
+	auth := &coreauth.Auth{
+		ID:       "account-concurrency",
+		Provider: "claude",
+	}
+
+	limit := 5
+	_, err := ApplyFieldPatch(auth, FieldPatch{ConcurrencyLimit: &limit}, FieldPatchOptions{})
+	if err != nil {
+		t.Fatalf("ApplyFieldPatch() error = %v", err)
+	}
+	if got, _ := auth.Metadata["concurrency_limit"].(int); got != 5 {
+		t.Fatalf("metadata concurrency_limit = %v, want 5", got)
+	}
+	if got := auth.Attributes["concurrency_limit"]; got != "5" {
+		t.Fatalf("attributes concurrency_limit = %q, want 5", got)
+	}
+	if auth.ConcurrencyLimit() != 5 {
+		t.Fatalf("auth.ConcurrencyLimit() = %d, want 5", auth.ConcurrencyLimit())
+	}
+
+	// Setting to 0 should clear it (unlimited)
+	zeroLimit := 0
+	_, err = ApplyFieldPatch(auth, FieldPatch{ConcurrencyLimit: &zeroLimit}, FieldPatchOptions{})
+	if err != nil {
+		t.Fatalf("ApplyFieldPatch() zero error = %v", err)
+	}
+	if _, ok := auth.Metadata["concurrency_limit"]; ok {
+		t.Fatalf("metadata concurrency_limit should be deleted, got %v", auth.Metadata["concurrency_limit"])
+	}
+	if _, ok := auth.Attributes["concurrency_limit"]; ok {
+		t.Fatalf("attributes concurrency_limit should be deleted, got %v", auth.Attributes["concurrency_limit"])
+	}
+	if auth.ConcurrencyLimit() != 0 {
+		t.Fatalf("auth.ConcurrencyLimit() = %d, want 0", auth.ConcurrencyLimit())
+	}
+}
+
 func TestApplyFieldPatchRejectsNoFields(t *testing.T) {
 	auth := &coreauth.Auth{ID: "empty", Provider: "codex"}
 
