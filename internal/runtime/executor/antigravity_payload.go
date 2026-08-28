@@ -20,16 +20,23 @@ var (
 )
 
 func geminiToAntigravity(modelName string, payload []byte, projectID string) []byte {
-	template, _ := sjson.Set(string(payload), "model", modelName)
-	template, _ = sjson.Set(template, "userAgent", "antigravity")
-	template, _ = sjson.Set(template, "requestType", "agent")
-
-	if projectID != "" {
-		template, _ = sjson.Set(template, "project", projectID)
+	var requestRaw string
+	if reqNode := gjson.GetBytes(payload, "request"); reqNode.IsObject() {
+		requestRaw = reqNode.Raw
 	} else {
-		template, _ = sjson.Set(template, "project", generateProjectID())
+		requestRaw = string(payload)
 	}
+
+	pid := projectID
+	if pid == "" {
+		pid = generateProjectID()
+	}
+
+	template := `{"project":"","model":"","userAgent":"antigravity","requestType":"agent","requestId":"","request":{}}`
+	template, _ = sjson.Set(template, "project", pid)
+	template, _ = sjson.Set(template, "model", modelName)
 	template, _ = sjson.Set(template, "requestId", generateRequestID())
+	template, _ = sjson.SetRaw(template, "request", requestRaw)
 	template, _ = sjson.Set(template, "request.sessionId", generateStableSessionID(payload))
 
 	template, _ = sjson.Delete(template, "request.safetySettings")
@@ -53,6 +60,9 @@ func generateSessionID() string {
 
 func generateStableSessionID(payload []byte) string {
 	contents := gjson.GetBytes(payload, "request.contents")
+	if !contents.Exists() {
+		contents = gjson.GetBytes(payload, "contents")
+	}
 	if contents.IsArray() {
 		for _, content := range contents.Array() {
 			if content.Get("role").String() == "user" {

@@ -285,8 +285,6 @@ func ConvertOpenAIResponsesRequestToGemini(modelName string, inputRawJSON []byte
 			case "function_call_output":
 				// Handle function call outputs - convert to function message with functionResponse
 				callID := item.Get("call_id").String()
-				// Use .Raw to preserve the JSON encoding (includes quotes for strings)
-				outputRaw := item.Get("output").Str
 
 				functionContent := `{"role":"function","parts":[]}`
 				functionResponse := `{"functionResponse":{"name":"","response":{}}}`
@@ -310,13 +308,21 @@ func ConvertOpenAIResponsesRequestToGemini(modelName string, inputRawJSON []byte
 				functionResponse, _ = sjson.Set(functionResponse, "functionResponse.name", functionName)
 				functionResponse, _ = sjson.Set(functionResponse, "functionResponse.id", callID)
 
-				// Set the raw JSON output directly (preserves string encoding)
-				if outputRaw != "" && outputRaw != "null" {
-					output := gjson.Parse(outputRaw)
-					if output.Type == gjson.JSON {
-						functionResponse, _ = sjson.SetRaw(functionResponse, "functionResponse.response.result", output.Raw)
+				// Set the function response result safely
+				outputItem := item.Get("output")
+				if outputItem.IsObject() || outputItem.IsArray() {
+					functionResponse, _ = sjson.SetRaw(functionResponse, "functionResponse.response.result", outputItem.Raw)
+				} else if outputItem.Exists() {
+					val := outputItem.String()
+					if outputItem.Type == gjson.String && gjson.Valid(val) {
+						parsed := gjson.Parse(val)
+						if parsed.IsObject() || parsed.IsArray() {
+							functionResponse, _ = sjson.SetRaw(functionResponse, "functionResponse.response.result", parsed.Raw)
+						} else {
+							functionResponse, _ = sjson.Set(functionResponse, "functionResponse.response.result", val)
+						}
 					} else {
-						functionResponse, _ = sjson.Set(functionResponse, "functionResponse.response.result", outputRaw)
+						functionResponse, _ = sjson.Set(functionResponse, "functionResponse.response.result", val)
 					}
 				}
 				functionContent, _ = sjson.SetRaw(functionContent, "parts.-1", functionResponse)
