@@ -288,22 +288,30 @@ func extractKimiObservation(input LearnInput, headers http.Header, observedAt ti
 	}, true
 }
 
-// extractAntigravityObservation learns the identity an Antigravity client presents.
+// IsAntigravityClientUserAgent reports whether a User-Agent carries the
+// Antigravity client token. Antigravity's upstream refuses any caller it cannot
+// recognise with "You do not have a valid license of this product (#3501)", so a
+// User-Agent that fails this check must never be learned as, or resolved into,
+// an account's outbound identity.
+func IsAntigravityClientUserAgent(ua string) bool {
+	return antigravityUARe.MatchString(strings.TrimSpace(ua))
+}
+
+// extractAntigravityObservation learns the identity a real Antigravity client presents.
+//
+// A caller whose User-Agent does not identify the Antigravity client is not the
+// Antigravity client, and recording it would pin the account to a made-up
+// identity that the upstream then rejects. Generic SDK User-Agents reach this
+// path routinely — a Node client sends a bare "node" — so the client token, not
+// merely a non-empty header, is what makes an observation.
 func extractAntigravityObservation(input LearnInput, headers http.Header, observedAt time.Time) (Observation, bool) {
 	ua := strings.TrimSpace(headers.Get("User-Agent"))
 	matches := antigravityUARe.FindStringSubmatch(ua)
-	version := ""
-	product := "antigravity"
-	if len(matches) > 1 {
-		version = strings.TrimSpace(matches[1])
-	}
-	if ua == "" && version == "" {
+	if len(matches) == 0 {
 		return Observation{}, false
 	}
-	fields := map[string]string{}
-	if ua != "" {
-		fields[FieldUserAgent] = ua
-	}
+	version := strings.TrimSpace(matches[1])
+	fields := map[string]string{FieldUserAgent: ua}
 	if version != "" {
 		fields[FieldAntigravityVersion] = version
 	}
@@ -312,7 +320,7 @@ func extractAntigravityObservation(input LearnInput, headers http.Header, observ
 		AccountKey:      strings.TrimSpace(input.AccountKey),
 		ProfileKey:      ProfileKeyDefault,
 		AuthSubjectID:   strings.TrimSpace(input.AuthSubjectID),
-		ClientProduct:   product,
+		ClientProduct:   "antigravity",
 		ClientVariant:   "vscode",
 		Version:         version,
 		Fields:          fields,

@@ -240,6 +240,15 @@ func KimiLearnedDeviceID(learned *LearnedRecord) string {
 
 // ResolveAntigravity blends the operator config with learned Antigravity observations.
 func ResolveAntigravity(cfg config.AntigravityIdentityFingerprintConfig, learned *LearnedRecord) (config.AntigravityIdentityFingerprintConfig, EffectiveFingerprint) {
+	// A learned record only counts while its User-Agent still identifies the
+	// Antigravity client. Records written before the observation guard was
+	// tightened hold whatever the calling SDK sent, and applying one of those
+	// costs the account every request. Storage purges them at startup; this
+	// guard covers the copies already cached in memory, and any that a restored
+	// backup or an older peer writes back later.
+	if !IsAntigravityClientUserAgent(learnedField(learned, FieldUserAgent)) {
+		learned = nil
+	}
 	clean := config.CleanAntigravityIdentityFingerprint(cfg)
 	defaults := config.DefaultAntigravityIdentityFingerprint()
 	fields := make(map[string]FieldValue, 4)

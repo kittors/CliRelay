@@ -63,6 +63,69 @@ func initIdentityFingerprintsTable(db *sql.DB) {
 			log.Errorf("usage: recreate identity fingerprint indexes: %v", err)
 		}
 	}
+	purgeForeignAntigravityFingerprints(db)
+}
+
+type identityFingerprintKey struct {
+	accountKey string
+	profileKey string
+}
+
+// purgeForeignAntigravityFingerprints drops learned Antigravity identities whose
+// User-Agent does not identify the Antigravity client.
+//
+// Until the observation guard was tightened, any non-empty User-Agent was
+// learned and then replayed as that account's outbound identity — a Node client
+// sends a bare "node" — and Antigravity refuses every request from a client it
+// does not recognise with "You do not have a valid license of this product
+// (#3501)". Dropping the row falls the account back to the built-in default
+// identity, and a genuine client re-learns its own on the next request.
+func purgeForeignAntigravityFingerprints(db *sql.DB) {
+	if db == nil {
+		return
+	}
+	stale, err := staleAntigravityFingerprints(db)
+	if err != nil {
+		log.Errorf("usage: scan learned antigravity identities: %v", err)
+		return
+	}
+	provider := string(identityfingerprint.ProviderAntigravity)
+	for _, key := range stale {
+		if _, err = db.Exec(`DELETE FROM identity_fingerprints WHERE tenant_id = ? AND provider = ? AND account_key = ? AND profile_key = ?`,
+			systemTenantID, provider, key.accountKey, key.profileKey); err != nil {
+			log.Errorf("usage: purge learned antigravity identity %s/%s: %v", key.accountKey, key.profileKey, err)
+			continue
+		}
+		notifyIdentityFingerprintInvalidated(identityfingerprint.ProviderAntigravity, key.accountKey)
+		log.Infof("usage: purged learned antigravity identity for account %s (profile %s): user-agent does not identify an antigravity client", key.accountKey, key.profileKey)
+	}
+}
+
+func staleAntigravityFingerprints(db *sql.DB) ([]identityFingerprintKey, error) {
+	rows, err := db.Query(`SELECT account_key, profile_key, fields_json FROM identity_fingerprints WHERE tenant_id = ? AND provider = ?`,
+		systemTenantID, string(identityfingerprint.ProviderAntigravity))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var stale []identityFingerprintKey
+	for rows.Next() {
+		var key identityFingerprintKey
+		var fieldsJSON string
+		if err = rows.Scan(&key.accountKey, &key.profileKey, &fieldsJSON); err != nil {
+			return nil, err
+		}
+		fields := map[string]string{}
+		if strings.TrimSpace(fieldsJSON) != "" {
+			// A payload that will not parse cannot be shown to hold a real
+			// client identity, so it is purged along with the rest.
+			_ = json.Unmarshal([]byte(fieldsJSON), &fields)
+		}
+		if !identityfingerprint.IsAntigravityClientUserAgent(fields[identityfingerprint.FieldUserAgent]) {
+			stale = append(stale, key)
+		}
+	}
+	return stale, rows.Err()
 }
 
 func migrateIdentityFingerprintTenantSchema(db *sql.DB) {
