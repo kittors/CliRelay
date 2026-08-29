@@ -182,8 +182,8 @@ func (o *AntigravityAuth) FetchUserInfo(ctx context.Context, accessToken string)
 	return email, nil
 }
 
-// FetchProjectID retrieves the project ID for the authenticated user via loadCodeAssist
-func (o *AntigravityAuth) FetchProjectID(ctx context.Context, accessToken string) (string, error) {
+// FetchAccountDetails retrieves the project ID and plan type via loadCodeAssist
+func (o *AntigravityAuth) FetchAccountDetails(ctx context.Context, accessToken string) (AccountInfo, error) {
 	loadReqBody := map[string]any{
 		"metadata": map[string]string{
 			"ideType":    "ANTIGRAVITY",
@@ -194,13 +194,13 @@ func (o *AntigravityAuth) FetchProjectID(ctx context.Context, accessToken string
 
 	rawBody, errMarshal := json.Marshal(loadReqBody)
 	if errMarshal != nil {
-		return "", fmt.Errorf("marshal request body: %w", errMarshal)
+		return AccountInfo{}, fmt.Errorf("marshal request body: %w", errMarshal)
 	}
 
 	endpointURL := fmt.Sprintf("%s/%s:loadCodeAssist", APIEndpoint, APIVersion)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpointURL, strings.NewReader(string(rawBody)))
 	if err != nil {
-		return "", fmt.Errorf("create request: %w", err)
+		return AccountInfo{}, fmt.Errorf("create request: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 	req.Header.Set("Content-Type", "application/json")
@@ -210,7 +210,7 @@ func (o *AntigravityAuth) FetchProjectID(ctx context.Context, accessToken string
 
 	resp, errDo := o.httpClient.Do(req)
 	if errDo != nil {
-		return "", fmt.Errorf("execute request: %w", errDo)
+		return AccountInfo{}, fmt.Errorf("execute request: %w", errDo)
 	}
 	defer func() {
 		if errClose := resp.Body.Close(); errClose != nil {
@@ -220,19 +220,19 @@ func (o *AntigravityAuth) FetchProjectID(ctx context.Context, accessToken string
 
 	bodyBytes, errRead := util.ReadHTTPResponseBody("antigravity-oauth", resp.Body)
 	if errRead != nil {
-		return "", fmt.Errorf("read response: %w", errRead)
+		return AccountInfo{}, fmt.Errorf("read response: %w", errRead)
 	}
 
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return "", fmt.Errorf("request failed with status %d: %s", resp.StatusCode, strings.TrimSpace(string(bodyBytes)))
+		return AccountInfo{}, fmt.Errorf("request failed with status %d: %s", resp.StatusCode, strings.TrimSpace(string(bodyBytes)))
 	}
 
 	var loadResp map[string]any
 	if errDecode := json.Unmarshal(bodyBytes, &loadResp); errDecode != nil {
-		return "", fmt.Errorf("decode response: %w", errDecode)
+		return AccountInfo{}, fmt.Errorf("decode response: %w", errDecode)
 	}
 
-	// Extract projectID from response
+	// Extract projectID and plan details
 	projectID := ""
 	if id, ok := loadResp["cloudaicompanionProject"].(string); ok {
 		projectID = strings.TrimSpace(id)
@@ -245,8 +245,30 @@ func (o *AntigravityAuth) FetchProjectID(ctx context.Context, accessToken string
 		}
 	}
 
+	planType := ""
+	tierID := ""
+	if paidTier, ok := loadResp["paidTier"].(map[string]any); ok {
+		if name, okName := paidTier["name"].(string); okName && strings.TrimSpace(name) != "" {
+			planType = strings.TrimSpace(name)
+		} else if id, okID := paidTier["id"].(string); okID {
+			planType = strings.TrimSpace(id)
+		}
+	}
+	if currentTier, ok := loadResp["currentTier"].(map[string]any); ok {
+		if id, okID := currentTier["id"].(string); okID {
+			tierID = strings.TrimSpace(id)
+		}
+		if planType == "" {
+			if name, okName := currentTier["name"].(string); okName && strings.TrimSpace(name) != "" {
+				planType = strings.TrimSpace(name)
+			} else {
+				planType = tierID
+			}
+		}
+	}
+
 	if projectID == "" {
-		tierID := "legacy-tier"
+		defaultTierID := "legacy-tier"
 		if tiers, okTiers := loadResp["allowedTiers"].([]any); okTiers {
 			for _, rawTier := range tiers {
 				tier, okTier := rawTier.(map[string]any)
@@ -255,21 +277,34 @@ func (o *AntigravityAuth) FetchProjectID(ctx context.Context, accessToken string
 				}
 				if isDefault, okDefault := tier["isDefault"].(bool); okDefault && isDefault {
 					if id, okID := tier["id"].(string); okID && strings.TrimSpace(id) != "" {
-						tierID = strings.TrimSpace(id)
+						defaultTierID = strings.TrimSpace(id)
 						break
 					}
 				}
 			}
 		}
 
-		projectID, err = o.OnboardUser(ctx, accessToken, tierID)
+		onboardedProject, err := o.OnboardUser(ctx, accessToken, defaultTierID)
 		if err != nil {
-			return "", err
+			return AccountInfo{PlanType: planType, TierID: tierID}, err
 		}
-		return projectID, nil
+		projectID = onboardedProject
 	}
 
-	return projectID, nil
+	return AccountInfo{
+		ProjectID: projectID,
+		PlanType:  planType,
+		TierID:    tierID,
+	}, nil
+}
+
+// FetchProjectID retrieves the project ID for the authenticated user via loadCodeAssist
+func (o *AntigravityAuth) FetchProjectID(ctx context.Context, accessToken string) (string, error) {
+	info, err := o.FetchAccountDetails(ctx, accessToken)
+	if err != nil {
+		return "", err
+	}
+	return info.ProjectID, nil
 }
 
 // OnboardUser attempts to fetch the project ID via onboardUser by polling for completion

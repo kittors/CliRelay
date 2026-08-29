@@ -238,6 +238,31 @@ func KimiLearnedDeviceID(learned *LearnedRecord) string {
 	return learnedField(learned, FieldKimiDeviceID)
 }
 
+// ResolveAntigravity blends the operator config with learned Antigravity observations.
+func ResolveAntigravity(cfg config.AntigravityIdentityFingerprintConfig, learned *LearnedRecord) (config.AntigravityIdentityFingerprintConfig, EffectiveFingerprint) {
+	clean := config.CleanAntigravityIdentityFingerprint(cfg)
+	defaults := config.DefaultAntigravityIdentityFingerprint()
+	fields := make(map[string]FieldValue, 4)
+
+	pick := func(field, preset, learnedValue, defaultValue string) string {
+		value, source := pickField(preset, learnedValue, defaultValue)
+		fields[field] = FieldValue{Value: value, Source: source}
+		return value
+	}
+
+	resolved := config.AntigravityIdentityFingerprintConfig{
+		Enabled:       clean.Enabled,
+		UserAgent:     pick(FieldUserAgent, clean.UserAgent, learnedField(learned, FieldUserAgent), defaults.UserAgent),
+		Version:       pick(FieldAntigravityVersion, clean.Version, learnedFieldOrVersion(learned, FieldAntigravityVersion), defaults.Version),
+		CustomHeaders: clean.CustomHeaders,
+	}
+	effective := effective(ProviderAntigravity, clean.Enabled, learned, fields)
+	if value := strings.TrimSpace(resolved.Version); value != "" {
+		effective.Version = value
+	}
+	return resolved, effective
+}
+
 func pickField(preset, learned, fallback string) (string, FieldSource) {
 	if value := strings.TrimSpace(learned); value != "" {
 		return value, FieldSourceLearned

@@ -102,6 +102,10 @@ func (e *AntigravityExecutor) buildRequest(ctx context.Context, auth *cliproxyau
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Bearer "+token)
 	httpReq.Header.Set("User-Agent", resolveUserAgent(auth))
+	if e != nil && e.cfg != nil {
+		fp, _, _ := antigravityIdentityFingerprint(e.cfg, auth, ctx)
+		applyAntigravityIdentityFingerprintHeaders(httpReq.Header, fp)
+	}
 	if stream {
 		httpReq.Header.Set("Accept", "text/event-stream")
 	} else {

@@ -215,6 +215,12 @@ func FetchAntigravityModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *c
 				if modelCfg.MaxCompletionTokens > 0 {
 					modelInfo.MaxCompletionTokens = modelCfg.MaxCompletionTokens
 				}
+			} else if strings.Contains(strings.ToLower(modelID), "claude") || strings.Contains(strings.ToLower(modelID), "gemini-3") {
+				// Dynamic thinking defaults for newer discovered models
+				modelInfo.Thinking = &sdkmodelcatalog.ThinkingSupport{
+					DynamicAllowed: true,
+					Levels:         []string{"low", "medium", "high"},
+				}
 			}
 			models = append(models, modelInfo)
 		}

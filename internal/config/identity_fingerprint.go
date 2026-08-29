@@ -64,11 +64,12 @@ const (
 
 // IdentityFingerprintConfig groups provider-specific upstream identity settings.
 type IdentityFingerprintConfig struct {
-	Codex  CodexIdentityFingerprintConfig  `yaml:"codex,omitempty" json:"codex,omitempty"`
-	Claude ClaudeIdentityFingerprintConfig `yaml:"claude,omitempty" json:"claude,omitempty"`
-	Gemini GeminiIdentityFingerprintConfig `yaml:"gemini,omitempty" json:"gemini,omitempty"`
-	XAI    XAIIdentityFingerprintConfig    `yaml:"xai,omitempty" json:"xai,omitempty"`
-	Kimi   KimiIdentityFingerprintConfig   `yaml:"kimi,omitempty" json:"kimi,omitempty"`
+	Codex       CodexIdentityFingerprintConfig       `yaml:"codex,omitempty" json:"codex,omitempty"`
+	Claude      ClaudeIdentityFingerprintConfig      `yaml:"claude,omitempty" json:"claude,omitempty"`
+	Gemini      GeminiIdentityFingerprintConfig      `yaml:"gemini,omitempty" json:"gemini,omitempty"`
+	XAI         XAIIdentityFingerprintConfig         `yaml:"xai,omitempty" json:"xai,omitempty"`
+	Kimi        KimiIdentityFingerprintConfig        `yaml:"kimi,omitempty" json:"kimi,omitempty"`
+	Antigravity AntigravityIdentityFingerprintConfig `yaml:"antigravity,omitempty" json:"antigravity,omitempty"`
 }
 
 // CodexIdentityFingerprintConfig configures Codex upstream identity headers.
@@ -254,11 +255,12 @@ func (cfg *Config) SanitizeIdentityFingerprint() {
 // without changing explicit enablement.
 func CleanIdentityFingerprintConfig(in IdentityFingerprintConfig) IdentityFingerprintConfig {
 	return IdentityFingerprintConfig{
-		Codex:  CleanCodexIdentityFingerprint(in.Codex),
-		Claude: CleanClaudeIdentityFingerprint(in.Claude),
-		Gemini: CleanGeminiIdentityFingerprint(in.Gemini),
-		XAI:    CleanXAIIdentityFingerprint(in.XAI),
-		Kimi:   CleanKimiIdentityFingerprint(in.Kimi),
+		Codex:       CleanCodexIdentityFingerprint(in.Codex),
+		Claude:      CleanClaudeIdentityFingerprint(in.Claude),
+		Gemini:      CleanGeminiIdentityFingerprint(in.Gemini),
+		XAI:         CleanXAIIdentityFingerprint(in.XAI),
+		Kimi:        CleanKimiIdentityFingerprint(in.Kimi),
+		Antigravity: CleanAntigravityIdentityFingerprint(in.Antigravity),
 	}
 }
 
@@ -271,6 +273,7 @@ func NormalizeIdentityFingerprintConfig(in IdentityFingerprintConfig) IdentityFi
 	out.Gemini = defaultGeminiIdentityFingerprintEnabled(out.Gemini)
 	out.XAI = defaultXAIIdentityFingerprintEnabled(out.XAI)
 	out.Kimi = defaultKimiIdentityFingerprintEnabled(out.Kimi)
+	out.Antigravity = defaultAntigravityIdentityFingerprintEnabled(out.Antigravity)
 	return out
 }
 
@@ -292,6 +295,9 @@ func NormalizeLegacyIdentityFingerprintRuntimeConfig(in IdentityFingerprintConfi
 	}
 	if kimiLegacyDefaultDisabled(out.Kimi) {
 		out.Kimi.enabledSet = false
+	}
+	if antigravityLegacyDefaultDisabled(out.Antigravity) {
+		out.Antigravity.enabledSet = false
 	}
 	return NormalizeIdentityFingerprintConfig(out)
 }
@@ -513,6 +519,22 @@ func defaultXAIIdentityFingerprintEnabled(in XAIIdentityFingerprintConfig) XAIId
 		in.Enabled = true
 	}
 	return in
+}
+
+func defaultAntigravityIdentityFingerprintEnabled(in AntigravityIdentityFingerprintConfig) AntigravityIdentityFingerprintConfig {
+	if !in.enabledSet {
+		in.Enabled = true
+	}
+	return in
+}
+
+func antigravityLegacyDefaultDisabled(fp AntigravityIdentityFingerprintConfig) bool {
+	if fp.Enabled || len(fp.CustomHeaders) > 0 {
+		return false
+	}
+	defaults := DefaultAntigravityIdentityFingerprint()
+	return emptyOrEqual(fp.UserAgent, defaults.UserAgent) &&
+		emptyOrEqual(fp.Version, defaults.Version)
 }
 
 func codexLegacyDefaultDisabled(fp CodexIdentityFingerprintConfig) bool {

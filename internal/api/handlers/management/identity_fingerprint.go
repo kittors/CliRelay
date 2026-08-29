@@ -36,11 +36,12 @@ func (h *Handler) GetIdentityFingerprint(c *gin.Context) {
 		Learned:             learned,
 		Effective:           effective,
 		Status: map[string]identityFingerprintProviderStatus{
-			"claude": {Enabled: current.Claude.Enabled, LearnedCount: len(learned["claude"])},
-			"codex":  {Enabled: current.Codex.Enabled, LearnedCount: len(learned["codex"])},
-			"gemini": {Enabled: current.Gemini.Enabled, LearnedCount: len(learned["gemini"])},
-			"xai":    {Enabled: current.XAI.Enabled, LearnedCount: len(learned["xai"])},
-			"kimi":   {Enabled: current.Kimi.Enabled, LearnedCount: len(learned["kimi"])},
+			"claude":      {Enabled: current.Claude.Enabled, LearnedCount: len(learned["claude"])},
+			"codex":       {Enabled: current.Codex.Enabled, LearnedCount: len(learned["codex"])},
+			"gemini":      {Enabled: current.Gemini.Enabled, LearnedCount: len(learned["gemini"])},
+			"xai":         {Enabled: current.XAI.Enabled, LearnedCount: len(learned["xai"])},
+			"kimi":        {Enabled: current.Kimi.Enabled, LearnedCount: len(learned["kimi"])},
+			"antigravity": {Enabled: current.Antigravity.Enabled, LearnedCount: len(learned["antigravity"])},
 		},
 	})
 }
@@ -70,6 +71,10 @@ func (h *Handler) PutIdentityFingerprint(c *gin.Context) {
 		return
 	}
 	if err := validateKimiIdentityFingerprint(body.Kimi); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if err := validateAntigravityIdentityFingerprint(body.Antigravity); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
@@ -127,20 +132,22 @@ func (h *Handler) DeleteIdentityFingerprintLearned(c *gin.Context) {
 
 func (h *Handler) identityFingerprintState(current config.IdentityFingerprintConfig) (map[string][]identityfingerprint.LearnedRecord, map[string][]identityfingerprint.EffectiveFingerprint) {
 	learned := map[string][]identityfingerprint.LearnedRecord{
-		"claude": {},
-		"codex":  {},
-		"gemini": {},
-		"xai":    {},
-		"kimi":   {},
+		"claude":      {},
+		"codex":       {},
+		"gemini":      {},
+		"xai":         {},
+		"kimi":        {},
+		"antigravity": {},
 	}
 	effective := map[string][]identityfingerprint.EffectiveFingerprint{
-		"claude": {},
-		"codex":  {},
-		"gemini": {},
-		"xai":    {},
-		"kimi":   {},
+		"claude":      {},
+		"codex":       {},
+		"gemini":      {},
+		"xai":         {},
+		"kimi":        {},
+		"antigravity": {},
 	}
-	for _, provider := range []identityfingerprint.Provider{identityfingerprint.ProviderClaude, identityfingerprint.ProviderCodex, identityfingerprint.ProviderGemini, identityfingerprint.ProviderXAI, identityfingerprint.ProviderKimi} {
+	for _, provider := range []identityfingerprint.Provider{identityfingerprint.ProviderClaude, identityfingerprint.ProviderCodex, identityfingerprint.ProviderGemini, identityfingerprint.ProviderXAI, identityfingerprint.ProviderKimi, identityfingerprint.ProviderAntigravity} {
 		records, err := usage.ListIdentityFingerprints(provider, 200)
 		if err != nil {
 			continue
@@ -164,6 +171,9 @@ func (h *Handler) identityFingerprintState(current config.IdentityFingerprintCon
 				effective[key] = append(effective[key], eff)
 			case identityfingerprint.ProviderKimi:
 				_, eff := identityfingerprint.ResolveKimi(current.Kimi, &record)
+				effective[key] = append(effective[key], eff)
+			case identityfingerprint.ProviderAntigravity:
+				_, eff := identityfingerprint.ResolveAntigravity(current.Antigravity, &record)
 				effective[key] = append(effective[key], eff)
 			}
 		}
@@ -296,6 +306,29 @@ func validateKimiIdentityFingerprint(fp config.KimiIdentityFingerprintConfig) er
 			return fmt.Errorf("invalid custom header name: %s", key)
 		}
 		if isIdentityFingerprintBlockedHeader(key) || isKimiIdentityFingerprintBlockedHeader(key) {
+			return fmt.Errorf("custom header %s is managed by the system", key)
+		}
+		if containsHeaderLineBreak(value) {
+			return fmt.Errorf("custom header %s must not contain line breaks", key)
+		}
+	}
+	return nil
+}
+
+func validateAntigravityIdentityFingerprint(fp config.AntigravityIdentityFingerprintConfig) error {
+	if containsHeaderLineBreak(fp.UserAgent) || containsHeaderLineBreak(fp.Version) {
+		return fmt.Errorf("identity fingerprint fields must not contain line breaks")
+	}
+	for key, value := range fp.CustomHeaders {
+		key = strings.TrimSpace(key)
+		value = strings.TrimSpace(value)
+		if key == "" {
+			return fmt.Errorf("custom header name cannot be empty")
+		}
+		if !isHTTPHeaderToken(key) {
+			return fmt.Errorf("invalid custom header name: %s", key)
+		}
+		if isIdentityFingerprintBlockedHeader(key) {
 			return fmt.Errorf("custom header %s is managed by the system", key)
 		}
 		if containsHeaderLineBreak(value) {

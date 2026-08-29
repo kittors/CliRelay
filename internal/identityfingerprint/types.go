@@ -5,11 +5,12 @@ import "time"
 type Provider string
 
 const (
-	ProviderClaude Provider = "claude"
-	ProviderCodex  Provider = "codex"
-	ProviderGemini Provider = "gemini"
-	ProviderXAI    Provider = "xai"
-	ProviderKimi   Provider = "kimi"
+	ProviderClaude      Provider = "claude"
+	ProviderCodex       Provider = "codex"
+	ProviderGemini      Provider = "gemini"
+	ProviderXAI         Provider = "xai"
+	ProviderKimi        Provider = "kimi"
+	ProviderAntigravity Provider = "antigravity"
 )
 
 type FieldSource string

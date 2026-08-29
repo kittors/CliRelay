@@ -169,15 +169,19 @@ waitForCallback:
 		return nil, fmt.Errorf("antigravity: empty email returned from user info")
 	}
 
-	// Fetch project ID via loadCodeAssist (same approach as Gemini CLI)
+	// Fetch account details via loadCodeAssist (project ID & plan type)
 	projectID := ""
+	planType := ""
 	if accessToken != "" {
-		fetchedProjectID, errProject := authSvc.FetchProjectID(ctx, accessToken)
-		if errProject != nil {
-			log.Warnf("antigravity: failed to fetch project ID: %v", errProject)
+		accountInfo, errAccount := authSvc.FetchAccountDetails(ctx, accessToken)
+		if errAccount != nil {
+			log.Warnf("antigravity: failed to fetch account details: %v", errAccount)
 		} else {
-			projectID = fetchedProjectID
-			log.Infof("antigravity: obtained project ID %s", projectID)
+			projectID = accountInfo.ProjectID
+			planType = accountInfo.PlanType
+			if projectID != "" {
+				log.Infof("antigravity: obtained project ID %s (plan: %s)", projectID, planType)
+			}
 		}
 	}
 
@@ -195,6 +199,9 @@ waitForCallback:
 	}
 	if projectID != "" {
 		metadata["project_id"] = projectID
+	}
+	if planType != "" {
+		metadata["plan_type"] = planType
 	}
 
 	fileName := antigravity.CredentialFileName(email)

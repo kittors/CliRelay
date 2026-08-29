@@ -30,6 +30,8 @@ const (
 	FieldKimiDeviceName         = "x-msh-device-name"
 	FieldKimiDeviceModel        = "x-msh-device-model"
 	FieldKimiDeviceID           = "x-msh-device-id"
+	FieldAntigravityVersion     = "antigravity-version"
+	FieldAntigravityProjectID   = "project-id"
 )
 
 var (
@@ -39,6 +41,7 @@ var (
 	geminiUARe       = regexp.MustCompile(`(?i)^google-api-nodejs-client/([0-9]+(?:\.[0-9]+){0,3})`)
 	xaiTokenVerRe    = regexp.MustCompile(`(?i)\b([a-z0-9_.-]*(?:grok|xai)[a-z0-9_.-]*)/([0-9]+(?:\.[0-9]+){0,3})(?:[-+][a-z0-9_.-]+)?`)
 	kimiTokenVerRe   = regexp.MustCompile(`(?i)\b([a-z0-9_.-]*kimi[a-z0-9_.-]*)/([0-9]+(?:\.[0-9]+){0,3})(?:[-+][a-z0-9_.-]+)?`)
+	antigravityUARe  = regexp.MustCompile(`(?i)(?:vscode/[^\s]+\s+)?\(?antigravity/([0-9]+(?:\.[0-9]+){0,3})\)?`)
 )
 
 func ExtractObservation(input LearnInput) (Observation, bool) {
@@ -58,6 +61,8 @@ func ExtractObservation(input LearnInput) (Observation, bool) {
 		return extractXAIObservation(input, headers, observedAt)
 	case ProviderKimi:
 		return extractKimiObservation(input, headers, observedAt)
+	case ProviderAntigravity:
+		return extractAntigravityObservation(input, headers, observedAt)
 	default:
 		return Observation{}, false
 	}
@@ -279,6 +284,39 @@ func extractKimiObservation(input LearnInput, headers http.Header, observedAt ti
 		Version:         version,
 		Fields:          fields,
 		ObservedHeaders: observedHeaders(headers, []string{"User-Agent", "X-Msh-Platform", "X-Msh-Version", "X-Msh-Device-Name", "X-Msh-Device-Model", "X-Msh-Device-Id"}),
+		ObservedAt:      observedAt.UTC(),
+	}, true
+}
+
+// extractAntigravityObservation learns the identity an Antigravity client presents.
+func extractAntigravityObservation(input LearnInput, headers http.Header, observedAt time.Time) (Observation, bool) {
+	ua := strings.TrimSpace(headers.Get("User-Agent"))
+	matches := antigravityUARe.FindStringSubmatch(ua)
+	version := ""
+	product := "antigravity"
+	if len(matches) > 1 {
+		version = strings.TrimSpace(matches[1])
+	}
+	if ua == "" && version == "" {
+		return Observation{}, false
+	}
+	fields := map[string]string{}
+	if ua != "" {
+		fields[FieldUserAgent] = ua
+	}
+	if version != "" {
+		fields[FieldAntigravityVersion] = version
+	}
+	return Observation{
+		Provider:        ProviderAntigravity,
+		AccountKey:      strings.TrimSpace(input.AccountKey),
+		ProfileKey:      ProfileKeyDefault,
+		AuthSubjectID:   strings.TrimSpace(input.AuthSubjectID),
+		ClientProduct:   product,
+		ClientVariant:   "vscode",
+		Version:         version,
+		Fields:          fields,
+		ObservedHeaders: observedHeaders(headers, []string{"User-Agent"}),
 		ObservedAt:      observedAt.UTC(),
 	}, true
 }
