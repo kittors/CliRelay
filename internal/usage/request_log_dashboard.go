@@ -33,12 +33,21 @@ type DashboardThroughputPoint struct {
 	TPM   float64 `json:"tpm"`
 }
 
-type DashboardTrends struct {
-	RequestVolume    []DashboardTrendPoint      `json:"request_volume"`
-	SuccessRate      []DashboardTrendPoint      `json:"success_rate"`
-	TotalTokens      []DashboardTrendPoint      `json:"total_tokens"`
-	FailedRequests   []DashboardTrendPoint      `json:"failed_requests"`
+type DashboardTenantThroughputItem struct {
+	TenantID         string                     `json:"tenant_id"`
+	TenantName       string                     `json:"tenant_name,omitempty"`
 	ThroughputSeries []DashboardThroughputPoint `json:"throughput_series"`
+	CurrentRPM       float64                    `json:"current_rpm"`
+	CurrentTPM       float64                    `json:"current_tpm"`
+}
+
+type DashboardTrends struct {
+	RequestVolume    []DashboardTrendPoint           `json:"request_volume"`
+	SuccessRate      []DashboardTrendPoint           `json:"success_rate"`
+	TotalTokens      []DashboardTrendPoint           `json:"total_tokens"`
+	FailedRequests   []DashboardTrendPoint           `json:"failed_requests"`
+	ThroughputSeries []DashboardThroughputPoint      `json:"throughput_series"`
+	Tenants          []DashboardTenantThroughputItem `json:"tenants,omitempty"`
 }
 
 type dashboardBucket struct {
@@ -179,6 +188,94 @@ func normalizeDashboardSQLBucketKey(raw string, days int) string {
 // tenant trends). Used by platform super-admins.
 func QueryDashboardThroughputAcrossTenants() ([]DashboardThroughputPoint, error) {
 	return queryDashboardThroughputSeriesAt("", time.Now(), getUsageLocation(), true)
+}
+
+// QueryDashboardTenantBreakdownThroughput returns the recent 7 RPM/TPM points
+// for each active tenant with traffic in the recent window or known tenants.
+// Only accessible by platform super-admins.
+func QueryDashboardTenantBreakdownThroughput(tenantNames map[string]string) ([]DashboardTenantThroughputItem, error) {
+	db := getReadDB()
+	if db == nil {
+		return nil, nil
+	}
+	loc := getUsageLocation()
+	now := time.Now().In(loc)
+	start := now.Truncate(time.Minute).Add(-time.Duration(dashboardThroughputBucketCount-1) * time.Minute)
+	fromMinute := start.Format("2006-01-02T15:04")
+	toMinute := now.Add(time.Minute).Format("2006-01-02T15:04")
+	fromUTC := now.Add(-time.Minute).UTC().Format(time.RFC3339Nano)
+	toUTC := now.UTC().Format(time.RFC3339Nano)
+
+	// 1. Identify distinct tenant IDs active in rollup window or rolling window
+	tenantSet := make(map[string]struct{})
+	for tid := range tenantNames {
+		if tid != "" {
+			tenantSet[normalizeTenantID(tid)] = struct{}{}
+		}
+	}
+
+	rows, err := db.Query(`
+		SELECT DISTINCT tenant_id
+		FROM usage_rollup_buckets
+		WHERE bucket_kind = ? AND bucket_start >= ? AND bucket_start < ?
+	`, rollupBucketMinute, fromMinute, toMinute)
+	if err == nil {
+		for rows.Next() {
+			var tid string
+			if scanErr := rows.Scan(&tid); scanErr == nil && tid != "" {
+				tenantSet[normalizeTenantID(tid)] = struct{}{}
+			}
+		}
+		_ = rows.Close()
+	}
+
+	wRows, wErr := db.Query(`
+		SELECT DISTINCT tenant_id
+		FROM request_logs
+		WHERE timestamp >= ? AND timestamp <= ?
+	`, fromUTC, toUTC)
+	if wErr == nil {
+		for wRows.Next() {
+			var tid string
+			if scanErr := wRows.Scan(&tid); scanErr == nil && tid != "" {
+				tenantSet[normalizeTenantID(tid)] = struct{}{}
+			}
+		}
+		_ = wRows.Close()
+	}
+
+	if len(tenantSet) == 0 {
+		tenantSet[systemTenantID] = struct{}{}
+	}
+
+	// 2. Query each tenant's throughput series
+	result := make([]DashboardTenantThroughputItem, 0, len(tenantSet))
+	for tid := range tenantSet {
+		series, sErr := queryDashboardThroughputSeriesAt(tid, now, loc, false)
+		if sErr != nil {
+			continue
+		}
+		var curRPM, curTPM float64
+		if len(series) > 0 {
+			curRPM = series[len(series)-1].RPM
+			curTPM = series[len(series)-1].TPM
+		}
+		name := tid
+		if tenantNames != nil {
+			if n, ok := tenantNames[tid]; ok && n != "" {
+				name = n
+			}
+		}
+		result = append(result, DashboardTenantThroughputItem{
+			TenantID:         tid,
+			TenantName:       name,
+			ThroughputSeries: series,
+			CurrentRPM:       curRPM,
+			CurrentTPM:       curTPM,
+		})
+	}
+
+	return result, nil
 }
 
 func emptyDashboardTrends(days int) DashboardTrends {

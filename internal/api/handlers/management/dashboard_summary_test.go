@@ -215,6 +215,13 @@ func TestGetDashboardSummaryThroughputScopeByPrincipal(t *testing.T) {
 		t.Fatalf("admin status %d body=%s", recAdmin.Code, recAdmin.Body.String())
 	}
 	var adminPayload struct {
+		Trends struct {
+			ThroughputSeries []struct{ RPM float64 } `json:"throughput_series"`
+			Tenants          []struct {
+				TenantID   string `json:"tenant_id"`
+				TenantName string `json:"tenant_name"`
+			} `json:"tenants"`
+		} `json:"trends"`
 		Meta struct {
 			ThroughputScope string `json:"throughput_scope"`
 		} `json:"meta"`

@@ -95,6 +95,42 @@ func TestDashboardQueriesAreTenantScoped(t *testing.T) {
 	if latestThroughputRPM(allSeries) != 3 {
 		t.Fatalf("all-tenant latest RPM = %.0f, want 3", latestThroughputRPM(allSeries))
 	}
+
+	// Breakdown returns both tenants
+	breakdown, err := QueryDashboardTenantBreakdownThroughput(map[string]string{
+		tenantA: "Tenant Alpha",
+		tenantB: "Tenant Beta",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(breakdown) < 2 {
+		t.Fatalf("breakdown length = %d, want at least 2", len(breakdown))
+	}
+	var foundA, foundB bool
+	for _, item := range breakdown {
+		if item.TenantID == tenantA {
+			foundA = true
+			if item.TenantName != "Tenant Alpha" {
+				t.Errorf("tenant A name = %s, want Tenant Alpha", item.TenantName)
+			}
+			if item.CurrentRPM != 1 {
+				t.Errorf("tenant A current RPM = %.0f, want 1", item.CurrentRPM)
+			}
+		}
+		if item.TenantID == tenantB {
+			foundB = true
+			if item.TenantName != "Tenant Beta" {
+				t.Errorf("tenant B name = %s, want Tenant Beta", item.TenantName)
+			}
+			if item.CurrentRPM != 2 {
+				t.Errorf("tenant B current RPM = %.0f, want 2", item.CurrentRPM)
+			}
+		}
+	}
+	if !foundA || !foundB {
+		t.Fatalf("breakdown missing tenants: foundA=%v, foundB=%v", foundA, foundB)
+	}
 }
 
 func latestThroughputRPM(series []DashboardThroughputPoint) float64 {

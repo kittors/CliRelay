@@ -106,6 +106,21 @@ func (h *Handler) GetDashboardSummary(c *gin.Context) {
 				trends.ThroughputSeries = series
 				throughputScope = "all_tenants"
 			}
+			tenantNames := make(map[string]string)
+			if service := h.identity(); service != nil {
+				if tenants, tErr := service.ListTenants(c.Request.Context()); tErr == nil {
+					for _, t := range tenants {
+						name := t.Name
+						if name == "" {
+							name = t.Slug
+						}
+						tenantNames[t.ID] = name
+					}
+				}
+			}
+			if items, bErr := usage.QueryDashboardTenantBreakdownThroughput(tenantNames); bErr == nil {
+				trends.Tenants = items
+			}
 		}
 		h.setDashboardSummaryCache(cacheKey, dashboardSummaryUsageCache{
 			kpi:             kpi,
