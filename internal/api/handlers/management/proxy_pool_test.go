@@ -189,6 +189,71 @@ func TestDefaultProxyCheckURLPrefersForwardedOrigin(t *testing.T) {
 	}
 }
 
+func TestDefaultProxyCheckURLFallbacksForPrivateOrLocalHost(t *testing.T) {
+	t.Parallel()
+	testCases := []struct {
+		name string
+		host string
+	}{
+		{"IPv4 private 10.x", "10.126.126.7:8317"},
+		{"IPv4 private 172.16.x", "172.20.0.5:8080"},
+		{"IPv4 private 192.168.x", "192.168.1.100"},
+		{"IPv4 loopback", "127.0.0.1:8317"},
+		{"localhost", "localhost:8317"},
+		{"local domain", "my-server.local"},
+	}
+
+	for _, tc := range testCases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			req := httptest.NewRequest(http.MethodPost, "/proxy-pool/check", nil)
+			req.Host = tc.host
+			if got, want := defaultProxyCheckURL(req), defaultProxyCheckFallbackURL; got != want {
+				t.Fatalf("defaultProxyCheckURL(%q) = %q, want fallback %q", tc.host, got, want)
+			}
+		})
+	}
+}
+
+func TestPostProxyPoolCheckAllowsDisabledProxy(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	proxyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer proxyServer.Close()
+
+	h := NewHandler(&config.Config{
+		ProxyPool: []config.ProxyPoolEntry{
+			{ID: "disabled-proxy", Name: "Disabled", URL: proxyServer.URL, Enabled: false},
+		},
+	}, "", nil)
+	defer h.Close()
+
+	payload := []byte(`{"id":"disabled-proxy","test_url":"http://target.example/generate_204"}`)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/proxy-pool/check", bytes.NewReader(payload))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	h.PostProxyPoolCheck(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+	var body struct {
+		OK         bool `json:"ok"`
+		StatusCode int  `json:"statusCode"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !body.OK || body.StatusCode != http.StatusNoContent {
+		t.Fatalf("check response = %#v, want successful probe for disabled entry", body)
+	}
+}
+
 func TestProxyPoolHandlersUseSQLiteWhenAvailable(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	cleanup := usageTestProxyPoolDB(t)

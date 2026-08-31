@@ -109,3 +109,24 @@ func TestResolveProxyURLUsesProxyIDBeforeFallback(t *testing.T) {
 		})
 	}
 }
+
+func TestFindProxyPoolEntry(t *testing.T) {
+	t.Parallel()
+
+	cfg := &Config{
+		ProxyPool: []ProxyPoolEntry{
+			{ID: "hk", Name: "HK", URL: "socks5://127.0.0.1:1080", Enabled: true},
+			{ID: "disabled", Name: "Disabled", URL: "http://disabled.example:7890", Enabled: false},
+		},
+	}
+
+	if entry := cfg.FindProxyPoolEntry("hk"); entry == nil || entry.URL != "socks5://127.0.0.1:1080" {
+		t.Fatalf("FindProxyPoolEntry(hk) = %#v, want enabled entry", entry)
+	}
+	if entry := cfg.FindProxyPoolEntry("disabled"); entry == nil || entry.URL != "http://disabled.example:7890" {
+		t.Fatalf("FindProxyPoolEntry(disabled) = %#v, want disabled entry", entry)
+	}
+	if entry := cfg.FindProxyPoolEntry("non-existent"); entry != nil {
+		t.Fatalf("FindProxyPoolEntry(non-existent) = %#v, want nil", entry)
+	}
+}

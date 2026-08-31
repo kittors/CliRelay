@@ -138,6 +138,23 @@ func (cfg *Config) ResolveProxyURL(proxyID string, fallbackURL string) string {
 	return ""
 }
 
+// FindProxyPoolEntry finds a proxy pool entry by ID regardless of whether it is enabled.
+func (cfg *Config) FindProxyPoolEntry(proxyID string) *ProxyPoolEntry {
+	if cfg == nil {
+		return nil
+	}
+	id := normalizeProxyID(proxyID)
+	if id == "" {
+		return nil
+	}
+	for i := range cfg.ProxyPool {
+		if normalizeProxyID(cfg.ProxyPool[i].ID) == id {
+			return &cfg.ProxyPool[i]
+		}
+	}
+	return nil
+}
+
 // NormalizeProxyID exposes the shared proxy ID normalization used by storage,
 // management handlers, and runtime resolution.
 func NormalizeProxyID(raw string) string {

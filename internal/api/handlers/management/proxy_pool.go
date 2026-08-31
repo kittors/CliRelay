@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -224,12 +225,16 @@ func (h *Handler) PostProxyPoolCheck(c *gin.Context) {
 
 	proxyURL := strings.TrimSpace(body.URL)
 	if proxyURL == "" && proxypoolsettings.StoreAvailableForTenant(tenantID) {
-		if entry := proxypoolsettings.GetForTenant(tenantID, body.ID); entry != nil && entry.Enabled {
+		if entry := proxypoolsettings.GetForTenant(tenantID, body.ID); entry != nil {
 			proxyURL = strings.TrimSpace(entry.URL)
 		}
 	}
 	if proxyURL == "" && tenantID == identity.SystemTenantID && h != nil && h.cfg != nil {
-		proxyURL = h.cfg.ResolveProxyURL(body.ID, "")
+		if entry := h.cfg.FindProxyPoolEntry(body.ID); entry != nil {
+			proxyURL = strings.TrimSpace(entry.URL)
+		} else {
+			proxyURL = h.cfg.ResolveProxyURL(body.ID, "")
+		}
 	}
 	if err := config.ValidateProxyURL(proxyURL); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -307,7 +312,7 @@ func defaultProxyCheckURL(r *http.Request) string {
 	if host == "" {
 		host = strings.TrimSpace(r.Host)
 	}
-	if host == "" {
+	if host == "" || isPrivateOrLocalHost(host) {
 		return defaultProxyCheckFallbackURL
 	}
 
@@ -324,6 +329,30 @@ func defaultProxyCheckURL(r *http.Request) string {
 	}
 
 	return scheme + "://" + host + defaultProxyCheckPublicPath
+}
+
+func isPrivateOrLocalHost(rawHost string) bool {
+	host := strings.TrimSpace(rawHost)
+	if host == "" {
+		return true
+	}
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	host = strings.TrimPrefix(host, "[")
+	host = strings.TrimSuffix(host, "]")
+	lower := strings.ToLower(host)
+
+	if lower == "localhost" || strings.HasSuffix(lower, ".localhost") || strings.HasSuffix(lower, ".local") {
+		return true
+	}
+
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+
+	return ip.IsLoopback() || ip.IsPrivate() || ip.IsUnspecified() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast()
 }
 
 func maskProxyPoolURL(raw string) string {
