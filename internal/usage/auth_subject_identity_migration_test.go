@@ -470,6 +470,91 @@ func TestMergeLegacyAccountIDSubjectFoldsPersonalCodexUsage(t *testing.T) {
 	}
 }
 
+func seedTenantAccountStatus(t *testing.T, tenantID, subjectID, planType string, at time.Time) {
+	t.Helper()
+	stamp := at.UTC().Format(time.RFC3339Nano)
+	if _, err := getDB().Exec(`
+		INSERT INTO ai_account_status (
+			tenant_id, auth_subject_id, auth_index, provider, refresh_state, health_status,
+			plan_type, updated_at
+		) VALUES (?, ?, '', 'codex', 'idle', 'ok', ?, ?)
+	`, tenantID, subjectID, planType, stamp); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func seedUsageRollup(t *testing.T, tenantID, subjectID, day string, requests int64, at time.Time) {
+	t.Helper()
+	stamp := at.UTC().Format(time.RFC3339Nano)
+	if _, err := getDB().Exec(`
+		INSERT INTO usage_rollup_buckets (
+			tenant_id, bucket_kind, bucket_start, api_key_id, end_user_id, auth_subject_id,
+			model, source, channel_name, request_count, success_count, updated_at
+		) VALUES (?, 'day', ?, '', '', ?, 'gpt-5', 'codex', '', ?, ?, ?)
+	`, tenantID, day, subjectID, requests, requests, stamp); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Live after #970: both halves already had ai_account_status and rollup rows
+// for the same tenant. Blind UPDATE of auth_subject_id hit 23505, the
+// transaction rolled back, and the card kept reading a few hours of traffic.
+func TestMergeLegacyAccountIDSubjectFoldsWhenBothHalvesHaveStatus(t *testing.T) {
+	initSharedSubjectTestDB(t)
+	resetMergedLegacySubjects()
+
+	auth := codexMemberTestAuth(sharedSubjectTenantA, "lanlan.json", "acct-lanlan", "user-lanlan", "lanlan@example.com")
+	identity := ResolveAuthSubjectIdentity(auth)
+	legacyID := LegacyAccountIDAuthSubjectID(auth)
+
+	now := time.Now().UTC().Truncate(time.Second)
+	seedLegacyAuthSubjectRow(t, legacyID, "codex", "account_id", now.Add(-48*time.Hour))
+	for i := 0; i < 20; i++ {
+		projectSubjectRequest(t, legacyID, now.Add(-24*time.Hour), 50)
+	}
+	if err := UpsertAIAccountSubject(identity); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 3; i++ {
+		projectSubjectRequest(t, identity.ID, now.Add(-time.Hour), 10)
+	}
+	seedTenantAccountStatus(t, sharedSubjectTenantA, legacyID, "plus", now.Add(-24*time.Hour))
+	seedTenantAccountStatus(t, sharedSubjectTenantA, identity.ID, "pro", now.Add(-time.Minute))
+	seedUsageRollup(t, sharedSubjectTenantA, legacyID, "2026-09-01", 12, now.Add(-24*time.Hour))
+	seedUsageRollup(t, sharedSubjectTenantA, identity.ID, "2026-09-01", 4, now.Add(-time.Hour))
+
+	if err := MergeLegacySplitAuthSubject(auth, identity); err != nil {
+		t.Fatalf("merge collided on status/rollup: %v", err)
+	}
+	got := readSubjectSummary(t, identity.ID)
+	if got.RequestTotal != 23 {
+		t.Fatalf("merged lifetime = %+v, want 23", got)
+	}
+	var plan string
+	if err := getDB().QueryRow(
+		`SELECT plan_type FROM ai_account_status WHERE tenant_id = ? AND auth_subject_id = ?`,
+		sharedSubjectTenantA, identity.ID,
+	).Scan(&plan); err != nil {
+		t.Fatal(err)
+	}
+	if plan != "pro" {
+		t.Fatalf("kept plan %q, want the newer pro snapshot", plan)
+	}
+	var rollup int64
+	if err := getDB().QueryRow(`
+		SELECT request_count FROM usage_rollup_buckets
+		WHERE tenant_id = ? AND auth_subject_id = ? AND bucket_start = '2026-09-01'
+	`, sharedSubjectTenantA, identity.ID).Scan(&rollup); err != nil {
+		t.Fatal(err)
+	}
+	if rollup != 16 {
+		t.Fatalf("rollup = %d, want 12+4", rollup)
+	}
+	if leftoverAuthSubjectRows(t, legacyID) != 0 {
+		t.Fatalf("legacy account_id subject left rows behind")
+	}
+}
+
 func TestBindingHookMergesLegacyAccountIDSubjectOnAuthLoad(t *testing.T) {
 	initSharedSubjectTestDB(t)
 	resetMergedLegacySubjects()

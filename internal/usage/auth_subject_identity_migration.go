@@ -19,20 +19,20 @@ var mergedLegacySubjects sync.Map
 // concurrently and would otherwise race to move the same legacy rows.
 var legacySubjectMergeMu sync.Mutex
 
-// subjectRewriteTables carry a subject reference whose primary key already
-// includes tenant_id (or is a surrogate id), so one account's rows from two
-// tenants cannot collide and a plain rewrite is enough.
+// subjectRewriteTables are the tables whose unique key does not include the
+// subject id, so a plain UPDATE cannot collide. Tables keyed by the subject
+// itself — status snapshots, daily/rollup counters, quota cycles — are merged
+// explicitly first. The previous blind rewrite hit Postgres 23505 as soon as
+// both halves already had a row for the same tenant, which is exactly the
+// account_id → account_user_id split (and the email merge after bool writes
+// started succeeding).
 var subjectRewriteTables = []struct{ table, column string }{
 	{"ai_account_tenant_bindings", "auth_subject_id"},
-	{"ai_account_status", "auth_subject_id"},
 	{"ai_account_subject_quota_points", "auth_subject_id"},
-	{"auth_subject_usage_daily", "auth_subject_id"},
-	{"auth_subject_quota_cycles", "subject_id"},
 	{"auth_file_quota_snapshots", "auth_subject_id"},
 	{"auth_file_quota_snapshot_points", "auth_subject_id"},
 	{"identity_fingerprints", "auth_subject_id"},
 	{"request_logs", "auth_subject_id"},
-	{"usage_rollup_buckets", "auth_subject_id"},
 }
 
 // subjectAccountKeyTables key fingerprint rows by account_key, which is defined
@@ -206,6 +206,18 @@ func mergeLegacyAuthSubjectDB(db *sql.DB, legacyID string, identity *AuthSubject
 		return err
 	}
 	if err := mergeLegacySubjectQuotaCyclesTx(tx, legacyID, identity.ID); err != nil {
+		return err
+	}
+	if err := mergeLegacyAccountStatusTx(tx, legacyID, identity.ID); err != nil {
+		return err
+	}
+	if err := mergeLegacyTenantQuotaCyclesTx(tx, legacyID, identity.ID); err != nil {
+		return err
+	}
+	if err := mergeLegacySubjectUsageDailyTx(tx, legacyID, identity.ID); err != nil {
+		return err
+	}
+	if err := mergeLegacyUsageRollupBucketsTx(tx, legacyID, identity.ID); err != nil {
 		return err
 	}
 	for _, target := range subjectRewriteTables {
@@ -404,6 +416,125 @@ func mergeLegacySubjectQuotaCyclesTx(tx *sql.Tx, legacyID, subjectID string) err
 		subjectID, legacyID,
 	); err != nil {
 		return fmt.Errorf("usage: rewrite legacy quota cycles: %w", err)
+	}
+	return nil
+}
+
+// mergeLegacyAccountStatusTx keeps the newer snapshot per tenant. PK is
+// (tenant_id, auth_subject_id), so rewriting the old id on top of a row the
+// new subject already has is 23505.
+func mergeLegacyAccountStatusTx(tx *sql.Tx, legacyID, subjectID string) error {
+	return mergeLegacyTenantSnapshotTx(
+		tx, "ai_account_status", "auth_subject_id", "updated_at", nil,
+		legacyID, subjectID, "account status",
+	)
+}
+
+// mergeLegacyTenantQuotaCyclesTx is the older per-tenant cycle table
+// (column subject_id). Same collision as ai_account_status.
+func mergeLegacyTenantQuotaCyclesTx(tx *sql.Tx, legacyID, subjectID string) error {
+	return mergeLegacyTenantSnapshotTx(
+		tx, "auth_subject_quota_cycles", "subject_id", "last_verified_at",
+		[]string{"quota_key"}, legacyID, subjectID, "tenant quota cycles",
+	)
+}
+
+func mergeLegacyTenantSnapshotTx(tx *sql.Tx, table, subjectCol, newerCol string, extraMatch []string, legacyID, subjectID, label string) error {
+	match := "legacy.tenant_id = " + table + ".tenant_id"
+	sharedMatch := "shared.tenant_id = " + table + ".tenant_id"
+	for _, column := range extraMatch {
+		match += " AND legacy." + column + " = " + table + "." + column
+		sharedMatch += " AND shared." + column + " = " + table + "." + column
+	}
+	if _, err := tx.Exec(
+		`DELETE FROM `+table+` WHERE `+subjectCol+` = ? AND EXISTS (
+			SELECT 1 FROM `+table+` legacy
+			WHERE legacy.`+subjectCol+` = ? AND `+match+`
+			  AND legacy.`+newerCol+` > `+table+`.`+newerCol+`
+		)`, subjectID, legacyID,
+	); err != nil {
+		return fmt.Errorf("usage: drop stale shared %s: %w", label, err)
+	}
+	if _, err := tx.Exec(
+		`DELETE FROM `+table+` WHERE `+subjectCol+` = ? AND EXISTS (
+			SELECT 1 FROM `+table+` shared
+			WHERE shared.`+subjectCol+` = ? AND `+sharedMatch+`
+		)`, legacyID, subjectID,
+	); err != nil {
+		return fmt.Errorf("usage: drop overlapping legacy %s: %w", label, err)
+	}
+	if _, err := tx.Exec(
+		`UPDATE `+table+` SET `+subjectCol+` = ? WHERE `+subjectCol+` = ?`,
+		subjectID, legacyID,
+	); err != nil {
+		return fmt.Errorf("usage: rewrite legacy %s: %w", label, err)
+	}
+	return nil
+}
+
+func mergeLegacySubjectUsageDailyTx(tx *sql.Tx, legacyID, subjectID string) error {
+	if _, err := tx.Exec(`
+		INSERT INTO auth_subject_usage_daily (
+			tenant_id, auth_subject_id, day_key, request_count, success_count,
+			failure_count, cost_total, updated_at
+		)
+		SELECT tenant_id, ?, day_key, request_count, success_count,
+			failure_count, cost_total, updated_at
+		FROM auth_subject_usage_daily WHERE auth_subject_id = ?
+		ON CONFLICT(tenant_id, auth_subject_id, day_key) DO UPDATE SET
+			request_count = auth_subject_usage_daily.request_count + excluded.request_count,
+			success_count = auth_subject_usage_daily.success_count + excluded.success_count,
+			failure_count = auth_subject_usage_daily.failure_count + excluded.failure_count,
+			cost_total = auth_subject_usage_daily.cost_total + excluded.cost_total,
+			updated_at = CASE WHEN excluded.updated_at > auth_subject_usage_daily.updated_at
+				THEN excluded.updated_at ELSE auth_subject_usage_daily.updated_at END
+	`, subjectID, legacyID); err != nil {
+		return fmt.Errorf("usage: merge legacy subject usage daily: %w", err)
+	}
+	if _, err := tx.Exec(`DELETE FROM auth_subject_usage_daily WHERE auth_subject_id = ?`, legacyID); err != nil {
+		return fmt.Errorf("usage: drop legacy subject usage daily: %w", err)
+	}
+	return nil
+}
+
+func mergeLegacyUsageRollupBucketsTx(tx *sql.Tx, legacyID, subjectID string) error {
+	if _, err := tx.Exec(`
+		INSERT INTO usage_rollup_buckets (
+			tenant_id, bucket_kind, bucket_start, api_key_id, end_user_id, auth_subject_id,
+			model, source, channel_name, request_count, success_count, failure_count,
+			streaming_count, input_tokens, output_tokens, reasoning_tokens, cached_tokens,
+			effective_input_tokens, total_tokens, cost_total, latency_sum_ms, latency_count,
+			first_token_sum_ms, first_token_count, updated_at
+		)
+		SELECT tenant_id, bucket_kind, bucket_start, api_key_id, end_user_id, ?,
+			model, source, channel_name, request_count, success_count, failure_count,
+			streaming_count, input_tokens, output_tokens, reasoning_tokens, cached_tokens,
+			effective_input_tokens, total_tokens, cost_total, latency_sum_ms, latency_count,
+			first_token_sum_ms, first_token_count, updated_at
+		FROM usage_rollup_buckets WHERE auth_subject_id = ?
+		ON CONFLICT(tenant_id, bucket_kind, bucket_start, api_key_id, end_user_id, auth_subject_id, model, source, channel_name) DO UPDATE SET
+			request_count = usage_rollup_buckets.request_count + excluded.request_count,
+			success_count = usage_rollup_buckets.success_count + excluded.success_count,
+			failure_count = usage_rollup_buckets.failure_count + excluded.failure_count,
+			streaming_count = usage_rollup_buckets.streaming_count + excluded.streaming_count,
+			input_tokens = usage_rollup_buckets.input_tokens + excluded.input_tokens,
+			output_tokens = usage_rollup_buckets.output_tokens + excluded.output_tokens,
+			reasoning_tokens = usage_rollup_buckets.reasoning_tokens + excluded.reasoning_tokens,
+			cached_tokens = usage_rollup_buckets.cached_tokens + excluded.cached_tokens,
+			effective_input_tokens = usage_rollup_buckets.effective_input_tokens + excluded.effective_input_tokens,
+			total_tokens = usage_rollup_buckets.total_tokens + excluded.total_tokens,
+			cost_total = usage_rollup_buckets.cost_total + excluded.cost_total,
+			latency_sum_ms = usage_rollup_buckets.latency_sum_ms + excluded.latency_sum_ms,
+			latency_count = usage_rollup_buckets.latency_count + excluded.latency_count,
+			first_token_sum_ms = usage_rollup_buckets.first_token_sum_ms + excluded.first_token_sum_ms,
+			first_token_count = usage_rollup_buckets.first_token_count + excluded.first_token_count,
+			updated_at = CASE WHEN excluded.updated_at > usage_rollup_buckets.updated_at
+				THEN excluded.updated_at ELSE usage_rollup_buckets.updated_at END
+	`, subjectID, legacyID); err != nil {
+		return fmt.Errorf("usage: merge legacy usage rollup buckets: %w", err)
+	}
+	if _, err := tx.Exec(`DELETE FROM usage_rollup_buckets WHERE auth_subject_id = ?`, legacyID); err != nil {
+		return fmt.Errorf("usage: drop legacy usage rollup buckets: %w", err)
 	}
 	return nil
 }
