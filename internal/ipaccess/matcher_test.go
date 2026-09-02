@@ -188,13 +188,13 @@ func TestProtectedAddressesSurviveEveryRule(t *testing.T) {
 	// own address or its reverse proxy takes the deployment offline instead of
 	// blocking an attacker, so the list must not be able to express it.
 	registry := NewRegistry(NewStore(nil))
-	registry.SetProtectedAddresses([]string{"10.0.0.5"}, []string{"104.194.69.137"}, nil)
+	registry.SetProtectedAddresses([]string{"10.0.0.5"}, []string{"203.0.113.10"}, nil)
 	registry.matcher.Store(NewMatcher([]Rule{
 		mustRule(t, "10.0.0.0/8", EffectDeny),
-		mustRule(t, "104.194.69.137/32", EffectDeny),
+		mustRule(t, "203.0.113.10/32", EffectDeny),
 	}, true, time.Now()))
 
-	for _, ip := range []string{"10.0.0.5", "104.194.69.137"} {
+	for _, ip := range []string{"10.0.0.5", "203.0.113.10"} {
 		verdict := registry.Evaluate(ClientAddress{IP: net.ParseIP(ip), Raw: ip, Trusted: true})
 		if !verdict.Allowed() || !verdict.Enforced || verdict.Decision != DecisionAllow {
 			t.Errorf("%s: got %v (enforced=%t), want an enforced allow despite the deny rules", ip, verdict.Decision, verdict.Enforced)
@@ -211,10 +211,10 @@ func TestProtectedAddressesAreNotAutoBanned(t *testing.T) {
 	policy := DefaultPolicy()
 	policy.AutoBan.FailureThreshold = 2
 	registry := testRegistry(t, policy)
-	registry.SetProtectedAddresses(nil, []string{"104.194.69.137"}, nil)
+	registry.SetProtectedAddresses(nil, []string{"203.0.113.10"}, nil)
 
 	for i := 0; i < 5; i++ {
-		outcome := registry.AutoBan().RecordFailure(context.Background(), trustedAddress("104.194.69.137"), "test")
+		outcome := registry.AutoBan().RecordFailure(context.Background(), trustedAddress("203.0.113.10"), "test")
 		if outcome.Triggered {
 			t.Fatal("the reverse proxy was proposed for an automatic ban")
 		}
@@ -269,14 +269,14 @@ func TestResolveForwardedUntrustedWhenRelayedWithNoDeclaredProxy(t *testing.T) {
 	// This is the production state: nginx relays, nothing is declared, so the
 	// address is the proxy's and stands for everyone behind it.
 	req := httptest.NewRequest("GET", "/", nil)
-	req.RemoteAddr = "104.194.69.137:5000"
+	req.RemoteAddr = "203.0.113.10:5000"
 	req.Header.Set("X-Forwarded-For", "203.0.113.9")
 
 	addr := resolveForwarded(req, newTrustedProxyMatcher(nil))
 	if addr.Trusted {
 		t.Error("relayed request with no declared proxy must not be trusted")
 	}
-	if addr.Raw != "104.194.69.137" {
+	if addr.Raw != "203.0.113.10" {
 		t.Errorf("got %q, want the proxy address", addr.Raw)
 	}
 }
@@ -294,9 +294,9 @@ func TestResolveForwardedAllHopsTrustedIsNotAClient(t *testing.T) {
 
 func TestPolicyNormalizesAndDeduplicatesTrustedProxies(t *testing.T) {
 	policy := ProtectionPolicy{TrustedProxies: []string{
-		" 104.194.69.137 ", "104.194.69.137", "10.0.0.0/24", "not-an-ip", "",
+		" 203.0.113.10 ", "203.0.113.10", "10.0.0.0/24", "not-an-ip", "",
 	}}.Normalized()
-	want := []string{"104.194.69.137/32", "10.0.0.0/24"}
+	want := []string{"203.0.113.10/32", "10.0.0.0/24"}
 	if len(policy.TrustedProxies) != len(want) {
 		t.Fatalf("got %v, want %v", policy.TrustedProxies, want)
 	}
@@ -313,9 +313,9 @@ func TestRegistryPrefersStoredProxiesOverConfig(t *testing.T) {
 	if proxies, source := registry.TrustedProxies(); source != "config" || len(proxies) != 1 {
 		t.Fatalf("got %v from %q, want the config fallback", proxies, source)
 	}
-	registry.SetPolicy(context.Background(), ProtectionPolicy{TrustedProxies: []string{"104.194.69.137"}})
+	registry.SetPolicy(context.Background(), ProtectionPolicy{TrustedProxies: []string{"203.0.113.10"}})
 	proxies, source := registry.TrustedProxies()
-	if source != "database" || len(proxies) != 1 || proxies[0] != "104.194.69.137/32" {
+	if source != "database" || len(proxies) != 1 || proxies[0] != "203.0.113.10/32" {
 		t.Fatalf("got %v from %q, want the stored list to win", proxies, source)
 	}
 	// Clearing the stored list must fall back rather than strand the deployment.
@@ -332,10 +332,10 @@ func TestRelayedChainEndingOnLoopbackIsNotTrusted(t *testing.T) {
 	// Every external request was therefore exempt from rate limiting and from the
 	// rule list at once.
 	req := httptest.NewRequest("GET", "/", nil)
-	req.RemoteAddr = "104.194.69.137:5000"
+	req.RemoteAddr = "203.0.113.10:5000"
 	req.Header.Set("X-Forwarded-For", "203.0.113.9, 127.0.0.1")
 
-	addr := resolveForwarded(req, newTrustedProxyMatcher([]string{"104.194.69.137/32"}))
+	addr := resolveForwarded(req, newTrustedProxyMatcher([]string{"203.0.113.10/32"}))
 	if addr.Raw != "127.0.0.1" {
 		t.Fatalf("got %q, want the hop the chain stopped at", addr.Raw)
 	}
@@ -367,9 +367,9 @@ func TestRegistryDoesNotExemptARelayedLoopbackChain(t *testing.T) {
 	// as an enforced allow just because the chain resolved to loopback.
 	registry := NewRegistry(NewStore(nil))
 	req := httptest.NewRequest("GET", "/", nil)
-	req.RemoteAddr = "104.194.69.137:5000"
+	req.RemoteAddr = "203.0.113.10:5000"
 	req.Header.Set("X-Forwarded-For", "203.0.113.9, 127.0.0.1")
-	registry.SetPolicy(context.Background(), ProtectionPolicy{TrustedProxies: []string{"104.194.69.137/32"}})
+	registry.SetPolicy(context.Background(), ProtectionPolicy{TrustedProxies: []string{"203.0.113.10/32"}})
 
 	addr := registry.ResolveAddress(req, "")
 	verdict := registry.Evaluate(addr)
@@ -385,10 +385,10 @@ func TestFullyDeclaredChainResolvesTheRealClient(t *testing.T) {
 	// Declaring every hop is what makes the feature work; this is the state the
 	// diagnostics are meant to guide an operator towards.
 	req := httptest.NewRequest("GET", "/", nil)
-	req.RemoteAddr = "104.194.69.137:5000"
+	req.RemoteAddr = "203.0.113.10:5000"
 	req.Header.Set("X-Forwarded-For", "203.0.113.9, 127.0.0.1")
 
-	addr := resolveForwarded(req, newTrustedProxyMatcher([]string{"104.194.69.137/32", "127.0.0.1/32"}))
+	addr := resolveForwarded(req, newTrustedProxyMatcher([]string{"203.0.113.10/32", "127.0.0.1/32"}))
 	if addr.Raw != "203.0.113.9" || !addr.Trusted {
 		t.Fatalf("got %q trusted=%t, want the real client trusted", addr.Raw, addr.Trusted)
 	}
@@ -401,11 +401,11 @@ func TestForwardedChainIsReportedForDiagnostics(t *testing.T) {
 	// Operators cannot declare the right hops without seeing the chain; guessing
 	// is what produced the half-configured state in the first place.
 	req := httptest.NewRequest("GET", "/", nil)
-	req.RemoteAddr = "104.194.69.137:5000"
+	req.RemoteAddr = "203.0.113.10:5000"
 	req.Header.Set("X-Forwarded-For", "203.0.113.9, 127.0.0.1")
 
-	addr := resolveForwarded(req, newTrustedProxyMatcher([]string{"104.194.69.137/32"}))
-	if addr.Peer != "104.194.69.137" {
+	addr := resolveForwarded(req, newTrustedProxyMatcher([]string{"203.0.113.10/32"}))
+	if addr.Peer != "203.0.113.10" {
 		t.Errorf("peer = %q, want the direct TCP peer", addr.Peer)
 	}
 	if len(addr.Chain) != 2 || addr.Chain[0] != "203.0.113.9" || addr.Chain[1] != "127.0.0.1" {

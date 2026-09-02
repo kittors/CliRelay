@@ -34,7 +34,7 @@ jobs:
     env:
       GITHUB_TOKEN: ${{ github.token }}
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-      OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL || vars.OPENAI_BASE_URL || 'https://relay.07230805.xyz/v1' }}
+      OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL || vars.OPENAI_BASE_URL }}
       OPENAI_MODEL: ${{ secrets.OPENAI_MODEL || vars.OPENAI_MODEL || 'grok-4.5' }}
       TRIAGE_ISSUE_NUMBER: ${{ github.event.inputs.issue_number || '' }}
       # Auto-comment on newly opened issues (not on every edit) unless bot:quiet.
