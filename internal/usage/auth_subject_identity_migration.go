@@ -48,25 +48,65 @@ var subjectAccountKeyTables = []struct {
 	{"identity_fingerprint_account_policies", []string{"tenant_id", "provider"}, "updated_at"},
 }
 
-// MergeLegacySplitAuthSubject folds the rows an account accumulated while its
-// identity was tenant scoped onto the shared identity it has now.
+// MergeLegacySplitAuthSubject folds rows an account accumulated under an older
+// subject id onto the identity it has now.
 //
-// Every seed except auth_index used to carry tenant_id, so one upstream account
-// became a separate subject in each tenant holding a credential for it. Usage,
-// status and cycle rows were then split across those subjects while the quota
-// they sat next to described the whole account — a tenant that had not called
-// the account yet showed zeros beside a quota bar reading 87%.
+// Two predecessors exist:
+//
+//  1. Tenant-scoped email / auth_id seeds. Every seed except auth_index used to
+//     carry tenant_id, so one upstream account became a separate subject in each
+//     tenant. Usage sat on one half while the quota bar described the whole
+//     account — a tenant that had not called it yet showed zeros next to 87%.
+//  2. Codex account_id seeds. Distinguishing Team members required hashing
+//     chatgpt_user_id too, which minted a new subject for personal Pro accounts
+//     that already had a unique account_id. Bindings moved; history did not.
+//     The card then counted hours of traffic against a WHAM bar for the real
+//     week. Docker and native upgrades hit this the same way — it is an identity
+//     change, not a SQLite leftover.
 //
 // Called from the binding hook, so it runs with the authoritative auth in hand
-// rather than trying to reconstruct seeds from hashes on disk.
+// rather than trying to reconstruct seeds from hashes on disk. Native restarts
+// and Docker image upgrades both load every credential once, which is enough
+// to repair a split that already happened.
 func MergeLegacySplitAuthSubject(auth *coreauth.Auth, identity *AuthSubjectIdentity) error {
 	if auth == nil || identity == nil || strings.TrimSpace(identity.ID) == "" {
 		return nil
 	}
-	legacyID := LegacyTenantScopedAuthSubjectID(auth)
-	if legacyID == "" || legacyID == identity.ID {
+	if getDB() == nil {
 		return nil
 	}
+	var firstErr error
+	for _, legacyID := range predecessorAuthSubjectIDs(auth, identity) {
+		if err := mergeLegacyAuthSubjectIfPresent(legacyID, identity); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
+func predecessorAuthSubjectIDs(auth *coreauth.Auth, identity *AuthSubjectIdentity) []string {
+	if identity == nil {
+		return nil
+	}
+	seen := map[string]struct{}{strings.TrimSpace(identity.ID): {}}
+	out := make([]string, 0, 2)
+	add := func(id string) {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			return
+		}
+		if _, exists := seen[id]; exists {
+			return
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+	}
+	add(LegacyTenantScopedAuthSubjectID(auth))
+	add(LegacyAccountIDAuthSubjectID(auth))
+	return out
+}
+
+func mergeLegacyAuthSubjectIfPresent(legacyID string, identity *AuthSubjectIdentity) error {
 	if _, seen := mergedLegacySubjects.Load(legacyID); seen {
 		return nil
 	}
@@ -89,12 +129,41 @@ func MergeLegacySplitAuthSubject(auth *coreauth.Auth, identity *AuthSubjectIdent
 		mergedLegacySubjects.Store(legacyID, struct{}{})
 		return nil
 	}
+	skip, err := skipCrowdedAccountIDMerge(db, legacyID, identity)
+	if err != nil {
+		return err
+	}
+	if skip {
+		// Several credentials still share the old account_id subject — the Team
+		// collision the user-id seed was added to stop. Folding that pool onto
+		// this user would also rewrite the others' bindings onto this subject.
+		mergedLegacySubjects.Store(legacyID, struct{}{})
+		return nil
+	}
 
 	if err := mergeLegacyAuthSubjectDB(db, legacyID, identity); err != nil {
 		return err
 	}
 	mergedLegacySubjects.Store(legacyID, struct{}{})
 	return nil
+}
+
+// skipCrowdedAccountIDMerge reports whether the old account_id subject still has
+// more than one active binding. Personal Pro is 0 (already rebound after the
+// seed change) or 1 (first upgrade, merge runs before the binding upsert).
+func skipCrowdedAccountIDMerge(db *sql.DB, legacyID string, identity *AuthSubjectIdentity) (bool, error) {
+	if identity == nil || identity.SeedKind != "account_user_id" {
+		return false, nil
+	}
+	var n int
+	err := db.QueryRow(`
+		SELECT COUNT(*) FROM ai_account_tenant_bindings
+		WHERE auth_subject_id = ? AND binding_state = 'active'
+	`, legacyID).Scan(&n)
+	if err != nil {
+		return false, fmt.Errorf("usage: count account_id subject bindings: %w", err)
+	}
+	return n > 1, nil
 }
 
 // legacyAuthSubjectHasRows is the cheap guard on the reload path: an account
@@ -175,10 +244,11 @@ func mergeLegacyAuthSubjectDB(db *sql.DB, legacyID string, identity *AuthSubject
 // ensureAuthSubjectRowTx creates the shared subject row, seeding its history
 // markers from the legacy row so a merged account does not look newly observed.
 func ensureAuthSubjectRowTx(tx *sql.Tx, legacyID string, identity *AuthSubjectIdentity) error {
-	shareEligible := 0
-	if identity.ShareEligible {
-		shareEligible = 1
-	}
+	// Use bool, not integer 0/1: Postgres share_eligible is BOOLEAN and pgx
+	// cannot encode a Go int into OID 16. That failure aborted every merge on
+	// a Postgres host — including Docker upgrades — while SQLite had accepted
+	// the integer. UpsertAIAccountSubject already writes a bool; this path
+	// has to match or the repair never lands.
 	if _, err := tx.Exec(`
 		INSERT INTO ai_account_subjects (
 			auth_subject_id, provider, subject_scope, seed_kind, seed_hash, share_eligible,
@@ -198,7 +268,7 @@ func ensureAuthSubjectRowTx(tx *sql.Tx, legacyID string, identity *AuthSubjectId
 			updated_at = CASE WHEN excluded.updated_at > ai_account_subjects.updated_at
 				THEN excluded.updated_at ELSE ai_account_subjects.updated_at END
 	`, identity.ID, identity.Provider, identity.SubjectScope, identity.SeedKind, identity.SeedHash,
-		shareEligible, legacyID); err != nil {
+		identity.ShareEligible, legacyID); err != nil {
 		return fmt.Errorf("usage: ensure shared auth subject: %w", err)
 	}
 	return nil

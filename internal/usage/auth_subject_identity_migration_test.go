@@ -370,3 +370,174 @@ func TestMergeLegacySplitSubjectKeepsDistinctAccountsApart(t *testing.T) {
 		t.Fatalf("account two = %+v, want 6 requests", got)
 	}
 }
+
+func TestLegacyAccountIDAuthSubjectIDOnlyForCodexUserSeed(t *testing.T) {
+	oauth := codexMemberTestAuth(sharedSubjectTenantA, "oauth", "acct-1", "user-1", "a@example.com")
+	identity := ResolveAuthSubjectIdentity(oauth)
+	legacyID := LegacyAccountIDAuthSubjectID(oauth)
+	if identity.SeedKind != "account_user_id" || legacyID == "" || legacyID == identity.ID {
+		t.Fatalf("oauth predecessor = %q current = %q kind = %s", legacyID, identity.ID, identity.SeedKind)
+	}
+
+	accountOnly := sharedSubjectTestAuth(sharedSubjectTenantA, "acct-only", "acct-1", "a@example.com")
+	if got := LegacyAccountIDAuthSubjectID(accountOnly); got != "" {
+		t.Fatalf("account_id-only predecessor = %q, want empty", got)
+	}
+
+	apiKey := &coreauth.Auth{
+		ID: sharedSubjectTenantA + "/codex:apikey:abc123", TenantID: sharedSubjectTenantA,
+		Provider: "codex", FileName: "key.json",
+	}
+	if got := LegacyAccountIDAuthSubjectID(apiKey); got != "" {
+		t.Fatalf("API key predecessor = %q, want empty", got)
+	}
+}
+
+func leftoverAuthSubjectRows(t *testing.T, subjectID string) int {
+	t.Helper()
+	var n int
+	if err := getDB().QueryRow(`
+		SELECT (SELECT COUNT(*) FROM ai_account_subjects WHERE auth_subject_id = ?)
+		     + (SELECT COUNT(*) FROM ai_account_subject_usage_buckets WHERE auth_subject_id = ?)
+		     + (SELECT COUNT(*) FROM ai_account_subject_status WHERE auth_subject_id = ?)
+		     + (SELECT COUNT(*) FROM request_logs WHERE auth_subject_id = ?)
+	`, subjectID, subjectID, subjectID, subjectID).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+func seedActiveBindingOnSubject(t *testing.T, auth *coreauth.Auth, subjectID string, at time.Time) {
+	t.Helper()
+	stamp := at.UTC().Format(time.RFC3339Nano)
+	auth.EnsureIndex()
+	if _, err := getDB().Exec(`
+		INSERT INTO ai_account_tenant_bindings (
+			tenant_id, auth_id, auth_index, provider, auth_subject_id,
+			binding_seed_kind, binding_seed_hash, share_eligible,
+			binding_state, binding_revision, bound_at, last_seen_at
+		) VALUES (?, ?, ?, ?, ?, 'account_id', 'legacy-hash', ?, 'active', 1, ?, ?)
+	`, auth.TenantID, auth.ID, auth.Index, auth.Provider, subjectID, true, stamp, stamp); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Production after the Team-collision seed change: a personal Pro account kept
+// its week of traffic on the old account_id subject while the card read the
+// new account_user_id row. Bindings had already moved, so the old subject had
+// zero active bindings — the same shape a Docker host sees on the next boot
+// after upgrading past that change.
+func TestMergeLegacyAccountIDSubjectFoldsPersonalCodexUsage(t *testing.T) {
+	initSharedSubjectTestDB(t)
+	resetMergedLegacySubjects()
+
+	auth := codexMemberTestAuth(sharedSubjectTenantA, "jd7.json", "acct-jd7", "user-jd7", "jd7@example.com")
+	identity := ResolveAuthSubjectIdentity(auth)
+	legacyID := LegacyAccountIDAuthSubjectID(auth)
+	if legacyID == "" || legacyID == identity.ID {
+		t.Fatalf("expected a distinct account_id predecessor, got %q / %q", legacyID, identity.ID)
+	}
+
+	now := time.Now().UTC().Truncate(time.Second)
+	seedLegacyAuthSubjectRow(t, legacyID, "codex", "account_id", now.Add(-48*time.Hour))
+	for i := 0; i < 40; i++ {
+		projectSubjectRequest(t, legacyID, now.Add(-24*time.Hour), 100)
+	}
+	if err := UpsertAIAccountSubject(identity); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 5; i++ {
+		projectSubjectRequest(t, identity.ID, now.Add(-time.Hour), 20)
+	}
+
+	if err := MergeLegacySplitAuthSubject(auth, identity); err != nil {
+		t.Fatal(err)
+	}
+	got := readSubjectSummary(t, identity.ID)
+	if got.RequestTotal != 45 || got.SuccessTotal != 45 {
+		t.Fatalf("merged personal Codex lifetime = %+v, want 45 requests", got)
+	}
+	if leftoverAuthSubjectRows(t, legacyID) != 0 {
+		t.Fatalf("legacy account_id subject left rows behind")
+	}
+
+	resetMergedLegacySubjects()
+	if err := MergeLegacySplitAuthSubject(auth, identity); err != nil {
+		t.Fatal(err)
+	}
+	if again := readSubjectSummary(t, identity.ID); again.RequestTotal != 45 {
+		t.Fatalf("re-running the account_id merge changed totals: %+v", again)
+	}
+}
+
+func TestBindingHookMergesLegacyAccountIDSubjectOnAuthLoad(t *testing.T) {
+	initSharedSubjectTestDB(t)
+	resetMergedLegacySubjects()
+
+	auth := codexMemberTestAuth(sharedSubjectTenantA, "hook-codex.json", "acct-hook", "user-hook", "hook@example.com")
+	identity := ResolveAuthSubjectIdentity(auth)
+	legacyID := LegacyAccountIDAuthSubjectID(auth)
+
+	now := time.Now().UTC().Truncate(time.Second)
+	seedLegacyAuthSubjectRow(t, legacyID, "codex", "account_id", now.Add(-time.Hour))
+	seedActiveBindingOnSubject(t, auth, legacyID, now.Add(-time.Hour))
+	for i := 0; i < 8; i++ {
+		projectSubjectRequest(t, legacyID, now.Add(-time.Hour), 25)
+	}
+
+	AIAccountBindingHook{}.OnAuthLoaded(context.Background(), auth)
+
+	if got := readSubjectSummary(t, identity.ID); got.RequestTotal != 8 || got.SuccessTotal != 8 {
+		t.Fatalf("hook did not migrate the Codex account_id subject: %+v", got)
+	}
+	bindings, err := ListAIAccountBindingsForTenantAuths(sharedSubjectTenantA, []string{auth.ID})
+	if err != nil || len(bindings) != 1 || bindings[0].AuthSubjectID != identity.ID {
+		t.Fatalf("binding=%+v err=%v, want it pointing at the account_user_id subject", bindings, err)
+	}
+}
+
+// Two Team members still bound to the shared account_id subject must not have
+// that pool folded onto whoever loads first — the rewrite would steal the
+// other member's binding. Native and Docker upgrades of a Team workspace
+// both look like this on first boot of the user-id seed.
+func TestMergeLegacyAccountIDSubjectSkipsCrowdedTeamBindings(t *testing.T) {
+	initSharedSubjectTestDB(t)
+	resetMergedLegacySubjects()
+
+	authA := codexMemberTestAuth(sharedSubjectTenantA, "team-a.json", "acct-team", "user-a", "a@example.com")
+	authB := codexMemberTestAuth(sharedSubjectTenantA, "team-b.json", "acct-team", "user-b", "b@example.com")
+	identityA := ResolveAuthSubjectIdentity(authA)
+	identityB := ResolveAuthSubjectIdentity(authB)
+	legacyID := LegacyAccountIDAuthSubjectID(authA)
+	if legacyID == "" || legacyID != LegacyAccountIDAuthSubjectID(authB) {
+		t.Fatalf("team members must share the account_id predecessor: %q / %q", legacyID, LegacyAccountIDAuthSubjectID(authB))
+	}
+	if identityA.ID == identityB.ID {
+		t.Fatal("team members collapsed onto one account_user_id subject")
+	}
+
+	now := time.Now().UTC().Truncate(time.Second)
+	seedLegacyAuthSubjectRow(t, legacyID, "codex", "account_id", now.Add(-time.Hour))
+	seedActiveBindingOnSubject(t, authA, legacyID, now.Add(-time.Hour))
+	seedActiveBindingOnSubject(t, authB, legacyID, now.Add(-time.Hour))
+	for i := 0; i < 12; i++ {
+		projectSubjectRequest(t, legacyID, now.Add(-time.Hour), 10)
+	}
+
+	if err := MergeLegacySplitAuthSubject(authA, identityA); err != nil {
+		t.Fatal(err)
+	}
+	if err := MergeLegacySplitAuthSubject(authB, identityB); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := readSubjectSummary(t, identityA.ID); got.RequestTotal != 0 {
+		t.Fatalf("member A swallowed the shared pool: %+v", got)
+	}
+	if got := readSubjectSummary(t, identityB.ID); got.RequestTotal != 0 {
+		t.Fatalf("member B swallowed the shared pool: %+v", got)
+	}
+	if got := readSubjectSummary(t, legacyID); got.RequestTotal != 12 {
+		t.Fatalf("crowded account_id subject = %+v, want the 12 shared requests left in place", got)
+	}
+}
