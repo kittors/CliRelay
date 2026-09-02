@@ -70,7 +70,7 @@ func (h *Handler) GetDashboardSummary(c *gin.Context) {
 		providerTotal = authFileCount
 	}
 
-	// ── Usage KPIs (from SQLite — persists across restarts) ──
+	// ── Usage KPIs (persists across restarts) ──
 	daysStr := c.DefaultQuery("days", "7")
 	days := 7
 	if v, err := parsePositiveInt(daysStr); err == nil && v > 0 {

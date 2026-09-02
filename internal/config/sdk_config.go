@@ -98,10 +98,6 @@ type RequestLogStorageConfig struct {
 	// When the cap is exceeded, the oldest stored bodies are pruned before the
 	// normal retention window elapses. 0 disables the size cap.
 	MaxTotalSizeMB int `yaml:"max-total-size-mb,omitempty" json:"max-total-size-mb,omitempty"`
-
-	// VacuumOnCleanup triggers a database VACUUM after content pruning so disk space is reclaimed.
-	// PostgreSQL never runs VACUUM FULL from this flag.
-	VacuumOnCleanup bool `yaml:"vacuum-on-cleanup" json:"vacuum-on-cleanup"`
 }
 
 // StreamingConfig holds server streaming behavior configuration.

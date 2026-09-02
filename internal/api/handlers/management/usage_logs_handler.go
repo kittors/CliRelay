@@ -65,7 +65,7 @@ type deleteUsageLogsRequest struct {
 	ClearRequestRecords bool `json:"clear_request_records"`
 }
 
-// GetUsageLogs returns paginated, filterable request log entries from SQLite.
+// GetUsageLogs returns paginated, filterable request log entries.
 func (h *UsageLogsHandler) GetUsageLogs(c *gin.Context) {
 	channelValues := queryStringListMulti(c, "channel", "channels")
 	if raw := strings.TrimSpace(c.Query("channel_name")); raw != "" {

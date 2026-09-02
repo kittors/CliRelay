@@ -26,7 +26,7 @@ func QueryLogs(params LogQueryParams) (LogQueryResult, error) {
 	}
 
 	// Read path: use the dedicated read-only pool so management log queries do not
-	// block on the single writer or maintenance ops (wal_checkpoint/VACUUM).
+	// block on the writer or background compaction.
 	db := getReadDB()
 	if db == nil {
 		// Never return nil slices in JSON responses (nil slice => null in JSON).
@@ -599,16 +599,9 @@ func clearRequestLogs(db *sql.DB, options ClearRequestLogsOptions) (ClearRequest
 	committed = true
 	refreshRequestLogContentBytes(db)
 
-	if usageDriver == "sqlite" {
-		_, err := db.Exec("VACUUM")
-		if err != nil {
-			log.Warnf("usage: vacuum after request log cleanup failed: %v", err)
-		}
-	} else {
-		// PostgreSQL maintenance is asynchronous and online; never make this
-		// management request wait for DDL or database maintenance.
-		triggerRequestLogCompaction()
-	}
+	// PostgreSQL maintenance is asynchronous and online; never make this
+	// management request wait for DDL or database maintenance.
+	triggerRequestLogCompaction()
 
 	if result.DeletedLogs > 0 || result.DeletedContents > 0 || result.ClearedBodyRows > 0 || result.ClearedDetailRows > 0 || result.ClearedLegacyRows > 0 {
 		log.Infof(
@@ -625,7 +618,7 @@ func clearRequestLogs(db *sql.DB, options ClearRequestLogsOptions) (ClearRequest
 }
 
 // ClearAllRequestLogs removes all request_logs and request_log_content rows
-// while leaving other SQLite-backed management data untouched.
+// while leaving other management data untouched.
 func ClearAllRequestLogs() (ClearRequestLogsResult, error) {
 	return ClearAllRequestLogsForTenant(systemTenantID)
 }

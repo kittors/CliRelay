@@ -32,10 +32,10 @@ func (h *Handler) renameChannelReferencesForTenant(tenantID string, oldNames []s
 				return fmt.Errorf("failed to persist routing config: %w", err)
 			}
 		}
-		if err := renameSQLiteAPIKeyChannelsForTenant(tenantID, oldNameSet, newName); err != nil {
+		if err := renameStoredAPIKeyChannelsForTenant(tenantID, oldNameSet, newName); err != nil {
 			return err
 		}
-		if err := renameSQLiteAPIKeyPermissionProfileChannelsForTenant(tenantID, oldNameSet, newName); err != nil {
+		if err := renameStoredAPIKeyPermissionProfileChannelsForTenant(tenantID, oldNameSet, newName); err != nil {
 			return err
 		}
 		if h.authManager != nil {
@@ -66,10 +66,10 @@ func (h *Handler) renameChannelReferencesForTenant(tenantID string, oldNames []s
 			return fmt.Errorf("failed to persist routing config: %w", err)
 		}
 	}
-	if err := renameSQLiteAPIKeyChannels(oldNameSet, newName); err != nil {
+	if err := renameStoredAPIKeyChannels(oldNameSet, newName); err != nil {
 		return err
 	}
-	if err := renameSQLiteAPIKeyPermissionProfileChannels(oldNameSet, newName); err != nil {
+	if err := renameStoredAPIKeyPermissionProfileChannels(oldNameSet, newName); err != nil {
 		return err
 	}
 	if configChanged && h.cfg != nil && strings.TrimSpace(h.configFilePath) != "" {
@@ -102,10 +102,10 @@ func (h *Handler) removeChannelReferencesForTenant(tenantID string, oldNames []s
 				return fmt.Errorf("failed to persist routing config: %w", err)
 			}
 		}
-		if err := removeSQLiteAPIKeyChannelsForTenant(tenantID, oldNameSet); err != nil {
+		if err := removeStoredAPIKeyChannelsForTenant(tenantID, oldNameSet); err != nil {
 			return err
 		}
-		if err := removeSQLiteAPIKeyPermissionProfileChannelsForTenant(tenantID, oldNameSet); err != nil {
+		if err := removeStoredAPIKeyPermissionProfileChannelsForTenant(tenantID, oldNameSet); err != nil {
 			return err
 		}
 		if h.authManager != nil {
@@ -136,10 +136,10 @@ func (h *Handler) removeChannelReferencesForTenant(tenantID string, oldNames []s
 			return fmt.Errorf("failed to persist routing config: %w", err)
 		}
 	}
-	if err := removeSQLiteAPIKeyChannels(oldNameSet); err != nil {
+	if err := removeStoredAPIKeyChannels(oldNameSet); err != nil {
 		return err
 	}
-	if err := removeSQLiteAPIKeyPermissionProfileChannels(oldNameSet); err != nil {
+	if err := removeStoredAPIKeyPermissionProfileChannels(oldNameSet); err != nil {
 		return err
 	}
 	if configChanged && h.cfg != nil && strings.TrimSpace(h.configFilePath) != "" {
@@ -312,11 +312,11 @@ func removeConfigAPIKeyChannels(entries []config.APIKeyEntry, oldNameSet map[str
 	return changed
 }
 
-func renameSQLiteAPIKeyChannels(oldNameSet map[string]struct{}, newName string) error {
-	return renameSQLiteAPIKeyChannelsForTenant(identity.SystemTenantID, oldNameSet, newName)
+func renameStoredAPIKeyChannels(oldNameSet map[string]struct{}, newName string) error {
+	return renameStoredAPIKeyChannelsForTenant(identity.SystemTenantID, oldNameSet, newName)
 }
 
-func renameSQLiteAPIKeyChannelsForTenant(tenantID string, oldNameSet map[string]struct{}, newName string) error {
+func renameStoredAPIKeyChannelsForTenant(tenantID string, oldNameSet map[string]struct{}, newName string) error {
 	svc := apikeysettings.NewService(nil, apikeysettings.WithTenantID(tenantID))
 	if err := svc.RenameAllowedChannelRestrictions(oldNameSet, newName); err != nil {
 		return fmt.Errorf("failed to persist api key channel restrictions: %w", err)
@@ -324,11 +324,11 @@ func renameSQLiteAPIKeyChannelsForTenant(tenantID string, oldNameSet map[string]
 	return nil
 }
 
-func removeSQLiteAPIKeyChannels(oldNameSet map[string]struct{}) error {
-	return removeSQLiteAPIKeyChannelsForTenant(identity.SystemTenantID, oldNameSet)
+func removeStoredAPIKeyChannels(oldNameSet map[string]struct{}) error {
+	return removeStoredAPIKeyChannelsForTenant(identity.SystemTenantID, oldNameSet)
 }
 
-func removeSQLiteAPIKeyChannelsForTenant(tenantID string, oldNameSet map[string]struct{}) error {
+func removeStoredAPIKeyChannelsForTenant(tenantID string, oldNameSet map[string]struct{}) error {
 	svc := apikeysettings.NewService(nil, apikeysettings.WithTenantID(tenantID))
 	if err := svc.RemoveAllowedChannelRestrictions(oldNameSet); err != nil {
 		return fmt.Errorf("failed to persist api key channel restrictions: %w", err)
@@ -336,11 +336,11 @@ func removeSQLiteAPIKeyChannelsForTenant(tenantID string, oldNameSet map[string]
 	return nil
 }
 
-func renameSQLiteAPIKeyPermissionProfileChannels(oldNameSet map[string]struct{}, newName string) error {
-	return renameSQLiteAPIKeyPermissionProfileChannelsForTenant(identity.SystemTenantID, oldNameSet, newName)
+func renameStoredAPIKeyPermissionProfileChannels(oldNameSet map[string]struct{}, newName string) error {
+	return renameStoredAPIKeyPermissionProfileChannelsForTenant(identity.SystemTenantID, oldNameSet, newName)
 }
 
-func renameSQLiteAPIKeyPermissionProfileChannelsForTenant(tenantID string, oldNameSet map[string]struct{}, newName string) error {
+func renameStoredAPIKeyPermissionProfileChannelsForTenant(tenantID string, oldNameSet map[string]struct{}, newName string) error {
 	svc := apikeysettings.NewService(nil, apikeysettings.WithTenantID(tenantID))
 	if err := svc.RenamePermissionProfileChannelRestrictions(oldNameSet, newName); err != nil {
 		return fmt.Errorf("failed to persist api key permission profile channel restrictions: %w", err)
@@ -348,11 +348,11 @@ func renameSQLiteAPIKeyPermissionProfileChannelsForTenant(tenantID string, oldNa
 	return nil
 }
 
-func removeSQLiteAPIKeyPermissionProfileChannels(oldNameSet map[string]struct{}) error {
-	return removeSQLiteAPIKeyPermissionProfileChannelsForTenant(identity.SystemTenantID, oldNameSet)
+func removeStoredAPIKeyPermissionProfileChannels(oldNameSet map[string]struct{}) error {
+	return removeStoredAPIKeyPermissionProfileChannelsForTenant(identity.SystemTenantID, oldNameSet)
 }
 
-func removeSQLiteAPIKeyPermissionProfileChannelsForTenant(tenantID string, oldNameSet map[string]struct{}) error {
+func removeStoredAPIKeyPermissionProfileChannelsForTenant(tenantID string, oldNameSet map[string]struct{}) error {
 	svc := apikeysettings.NewService(nil, apikeysettings.WithTenantID(tenantID))
 	if err := svc.RemovePermissionProfileChannelRestrictions(oldNameSet); err != nil {
 		return fmt.Errorf("failed to persist api key permission profile channel restrictions: %w", err)

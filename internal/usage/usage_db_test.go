@@ -1222,7 +1222,6 @@ func TestCleanupExpiredLogContentKeepsMetadataRows(t *testing.T) {
 		StoreContent:           true,
 		ContentRetentionDays:   30,
 		CleanupIntervalMinutes: 1440,
-		VacuumOnCleanup:        false,
 	})
 
 	db := getDB()
@@ -1336,7 +1335,6 @@ func TestMigrateLegacyContentBatchKeepsAllContentWhenRetentionUnlimited(t *testi
 		StoreContent:           true,
 		ContentRetentionDays:   0,
 		CleanupIntervalMinutes: 1440,
-		VacuumOnCleanup:        false,
 	})
 
 	db := getDB()
@@ -1384,7 +1382,6 @@ func TestMigrateLegacyContentBatchPreservesInlineContentWhenStorageDisabled(t *t
 		StoreContent:           false,
 		ContentRetentionDays:   30,
 		CleanupIntervalMinutes: 1440,
-		VacuumOnCleanup:        false,
 	})
 
 	db := getDB()
@@ -1457,7 +1454,6 @@ func TestCleanupExpiredLogContentSkipsWhenRetentionUnlimited(t *testing.T) {
 				StoreContent:           true,
 				ContentRetentionDays:   0,
 				CleanupIntervalMinutes: 1440,
-				VacuumOnCleanup:        false,
 			},
 		},
 	}
@@ -1530,7 +1526,6 @@ func TestCleanupOversizedLogContentPrunesOldestRows(t *testing.T) {
 		ContentRetentionDays:   30,
 		CleanupIntervalMinutes: 1440,
 		MaxTotalSizeMB:         1,
-		VacuumOnCleanup:        false,
 	})
 
 	db := getDB()
@@ -1623,7 +1618,6 @@ func TestInsertLogContentTxSkipsSingleRowLargerThanSizeCap(t *testing.T) {
 		ContentRetentionDays:   30,
 		CleanupIntervalMinutes: 1440,
 		MaxTotalSizeMB:         1,
-		VacuumOnCleanup:        false,
 	})
 
 	db := getDB()

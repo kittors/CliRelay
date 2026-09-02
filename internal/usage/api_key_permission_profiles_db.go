@@ -104,7 +104,7 @@ func MigrateAPIKeyPermissionProfilesFromYAML(configFilePath string) int {
 	if backupConfigForMigration(configFilePath, apiKeyPermissionProfilesMigrationBackupSuffix) {
 		cleanAPIKeyPermissionProfilesFromYAML(configFilePath)
 	}
-	log.Infof("usage: migrated %d API key permission profile(s) from config to SQLite", len(profiles))
+	log.Infof("usage: migrated %d API key permission profile(s) from config to the database", len(profiles))
 	return len(profiles)
 }
 

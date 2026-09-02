@@ -24,12 +24,12 @@ func proxyPoolStoreForTenant(tenantID string) sqlproxypool.Store {
 	return sqlproxypool.NewTenantStore(getDB(), tenantID)
 }
 
-// ProxyPoolStoreAvailable reports whether the SQLite store is ready for proxy-pool operations.
+// ProxyPoolStoreAvailable reports whether the proxy-pool store is ready.
 func ProxyPoolStoreAvailable() bool {
 	return proxyPoolStore().Available()
 }
 
-// ListProxyPool retrieves all reusable proxies from SQLite.
+// ListProxyPool retrieves all reusable proxies from the database.
 func ListProxyPool() []config.ProxyPoolEntry {
 	return proxyPoolStore().List()
 }
@@ -39,7 +39,7 @@ func GetProxyPoolEntry(id string) *config.ProxyPoolEntry {
 	return proxyPoolStore().Get(id)
 }
 
-// ReplaceProxyPool atomically replaces all SQLite proxy entries after normalization.
+// ReplaceProxyPool atomically replaces all stored proxy entries after normalization.
 func ReplaceProxyPool(entries []config.ProxyPoolEntry) error {
 	return proxyPoolStore().Replace(entries)
 }
@@ -57,7 +57,7 @@ func ApplyStoredProxyPool(cfg *config.Config) bool {
 	return proxyPoolStore().ApplyToConfig(cfg)
 }
 
-// MigrateProxyPoolFromConfig moves legacy YAML proxy-pool entries into SQLite.
+// MigrateProxyPoolFromConfig moves legacy YAML proxy-pool entries into the database.
 func MigrateProxyPoolFromConfig(cfg *config.Config, configFilePath string) int {
 	if cfg == nil || !ProxyPoolStoreAvailable() {
 		return 0

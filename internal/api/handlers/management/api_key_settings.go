@@ -19,7 +19,7 @@ import (
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 )
 
-// refreshAPIKeyCache rebuilds the in-memory access provider cache from SQLite.
+// refreshAPIKeyCache rebuilds the in-memory access provider cache from the database.
 // Must be called after every API key write operation.
 // Returns error when live access manager update fails (fail-closed for callers that care).
 func (h *Handler) refreshAPIKeyCache() error {
@@ -78,7 +78,7 @@ func (h *Handler) apiKeySettingsForTenant(tenantID string) *apikeysettings.Servi
 	)
 }
 
-// api-keys (legacy simple list — now backed by SQLite)
+// api-keys (legacy simple list — now backed by the database)
 func (h *Handler) GetAPIKeys(c *gin.Context) {
 	c.JSON(200, gin.H{"api-keys": h.apiKeySettings(c).EnabledKeys()})
 }
@@ -213,7 +213,7 @@ func (h *Handler) PutAPIKeyPermissionProfiles(c *gin.Context) {
 	c.JSON(200, gin.H{"status": "ok", "applied_count": result.AppliedCount, "capped-keys": result.CappedKeys})
 }
 
-// api-key-entries: backed by SQLite api_keys table
+// api-key-entries: backed by the api_keys table
 func (h *Handler) GetAPIKeyEntries(c *gin.Context) {
 	entries, err := h.apiKeySettings(c).ListEntriesWithDailySpending()
 	if err != nil {

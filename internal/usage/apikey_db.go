@@ -41,7 +41,7 @@ func backfillAPIKeyNames(db *sql.DB) {
 	sqlapikey.BackfillNames(db)
 }
 
-// MigrateAPIKeysFromConfig moves API key entries from YAML config into SQLite.
+// MigrateAPIKeysFromConfig moves API key entries from YAML config into the database.
 // It only migrates if the api_keys table is empty AND the config has entries.
 // After migration, it backs up config.yaml and re-saves it without the API key
 // fields so the YAML file stays clean.
@@ -117,7 +117,7 @@ func MigrateAPIKeysFromConfig(cfg *config.Config, configFilePath string) (int, e
 		return 0, err
 	}
 
-	log.Infof("usage: migrated %d API keys from config to SQLite", len(rows))
+	log.Infof("usage: migrated %d API keys from config to the database", len(rows))
 
 	cfg.APIKeys = nil
 	cfg.APIKeyEntries = nil

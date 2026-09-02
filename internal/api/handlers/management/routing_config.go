@@ -25,7 +25,7 @@ func currentRoutingConfig(cfg *config.Config) config.RoutingConfig {
 	return currentRoutingConfigForTenant(cfg, identity.SystemTenantID)
 }
 
-func sqliteAPIKeyEntries(tenantID string) []config.APIKeyEntry {
+func storedAPIKeyEntries(tenantID string) []config.APIKeyEntry {
 	return apikeysettings.NewService(nil, apikeysettings.WithTenantID(tenantID)).ListEntries()
 }
 
@@ -59,7 +59,7 @@ func (h *Handler) PutRoutingConfig(c *gin.Context) {
 
 	candidate := &config.Config{
 		SDKConfig: config.SDKConfig{
-			APIKeyEntries: sqliteAPIKeyEntries(tenantID),
+			APIKeyEntries: storedAPIKeyEntries(tenantID),
 		},
 		Routing: body,
 	}

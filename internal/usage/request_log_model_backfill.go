@@ -10,7 +10,7 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-// providerEchoModelPattern is the SQLite LIKE pattern that marks request_logs.model
+// providerEchoModelPattern is the SQL LIKE pattern that marks request_logs.model
 // values that are upstream provider-internal paths echoed back in an
 // OpenAI-compatible response's "model" field (e.g. "accounts/fireworks/models/glm-5p2").
 // These are not valid model names for display, pricing lookup or filtering, and were

@@ -4,8 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"os"
-	"time"
 
 	log "github.com/sirupsen/logrus"
 )
@@ -188,141 +186,17 @@ func compactLogContentStorage(db *sql.DB) {
 	if db == nil {
 		return
 	}
-	compactLogContentStorageInternal(context.Background(), db, true)
+	compactLogContentStorageInternal(context.Background(), db)
 }
 
-type sqliteSpaceStats struct {
-	PageSize      int64
-	PageCount     int64
-	FreeListCount int64
-}
-
-func querySQLiteSpaceStats(q logContentQuerier) (sqliteSpaceStats, error) {
-	if q == nil {
-		return sqliteSpaceStats{}, fmt.Errorf("usage: nil querier")
-	}
-	var pageSize int64
-	if err := q.QueryRow("PRAGMA page_size").Scan(&pageSize); err != nil {
-		return sqliteSpaceStats{}, err
-	}
-	var pageCount int64
-	if err := q.QueryRow("PRAGMA page_count").Scan(&pageCount); err != nil {
-		return sqliteSpaceStats{}, err
-	}
-	var freeListCount int64
-	if err := q.QueryRow("PRAGMA freelist_count").Scan(&freeListCount); err != nil {
-		return sqliteSpaceStats{}, err
-	}
-	return sqliteSpaceStats{
-		PageSize:      pageSize,
-		PageCount:     pageCount,
-		FreeListCount: freeListCount,
-	}, nil
-}
-
-func reclaimableBytes(stats sqliteSpaceStats) int64 {
-	if stats.PageSize <= 0 || stats.FreeListCount <= 0 {
-		return 0
-	}
-	return stats.PageSize * stats.FreeListCount
-}
-
-func shouldVacuum(stats sqliteSpaceStats) bool {
-	if stats.PageSize <= 0 || stats.PageCount <= 0 || stats.FreeListCount <= 0 {
-		return false
-	}
-
-	freeBytes := reclaimableBytes(stats)
-	if freeBytes < sqliteVacuumMinReclaimBytes {
-		ratio := float64(stats.FreeListCount) / float64(stats.PageCount)
-		return ratio >= sqliteVacuumMinReclaimRatio && freeBytes >= (sqliteVacuumMinReclaimBytes/2)
-	}
-	return true
-}
-
-func vacuumAllowedNow(now time.Time) bool {
-	lastNano := lastUsageVacuumUnixNano.Load()
-	if lastNano <= 0 {
-		return true
-	}
-	last := time.Unix(0, lastNano)
-	if last.IsZero() {
-		return true
-	}
-	return now.Sub(last) >= sqliteVacuumMinInterval
-}
-
-func markVacuumRan(now time.Time) {
-	if now.IsZero() {
-		now = time.Now()
-	}
-	lastUsageVacuumUnixNano.Store(now.UnixNano())
-}
-
-func usageWALPath() string {
-	if usageDBPath == "" {
-		return ""
-	}
-	return usageDBPath + "-wal"
-}
-
-func walBytesOnDisk() int64 {
-	path := usageWALPath()
-	if path == "" {
-		return 0
-	}
-	info, err := os.Stat(path)
-	if err != nil {
-		return 0
-	}
-	return info.Size()
-}
-
-func compactLogContentStorageInternal(ctx context.Context, db *sql.DB, allowOptimize bool) {
+func compactLogContentStorageInternal(ctx context.Context, db *sql.DB) {
 	if db == nil {
 		return
 	}
-	if usageDriver == "postgres" {
-		if err := compactPostgresLogStorage(ctx, db); err != nil {
-			log.Warnf("usage: postgres log storage compact skipped: %v", err)
-		}
+	if usageDriver != "postgres" {
 		return
 	}
-
-	if _, err := db.Exec("PRAGMA wal_checkpoint(TRUNCATE)"); err != nil {
-		log.Warnf("usage: wal checkpoint failed: %v", err)
-	}
-
-	stats, errStats := querySQLiteSpaceStats(db)
-	if errStats != nil {
-		if allowOptimize {
-			if _, err := db.Exec("PRAGMA optimize"); err != nil {
-				log.Warnf("usage: sqlite optimize failed: %v", err)
-			}
-		}
-		return
-	}
-
-	didVacuum := false
-	now := time.Now()
-	if currentRequestLogStorageConfig().VacuumOnCleanup && shouldVacuum(stats) && vacuumAllowedNow(now) {
-		freeBytes := reclaimableBytes(stats)
-		log.Infof("usage: reclaimable sqlite free space detected (freelist=%d pages, approx=%d bytes), running VACUUM", stats.FreeListCount, freeBytes)
-		if _, err := db.Exec("VACUUM"); err != nil {
-			log.Warnf("usage: vacuum failed: %v", err)
-		} else {
-			didVacuum = true
-			markVacuumRan(now)
-		}
-	}
-
-	if allowOptimize || didVacuum {
-		if _, err := db.Exec("PRAGMA optimize"); err != nil {
-			log.Warnf("usage: sqlite optimize failed: %v", err)
-		}
-	}
-
-	if walBytes := walBytesOnDisk(); walBytes > 0 && walBytes >= (64<<20) {
-		log.Warnf("usage: sqlite WAL remains large after checkpoint (%d bytes at %s); consider lowering cleanup-interval-minutes or checking long-lived transactions", walBytes, usageWALPath())
+	if err := compactPostgresLogStorage(ctx, db); err != nil {
+		log.Warnf("usage: postgres log storage compact skipped: %v", err)
 	}
 }

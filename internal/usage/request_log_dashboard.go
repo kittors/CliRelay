@@ -62,7 +62,7 @@ type dashboardBucket struct {
 
 const dashboardThroughputBucketCount = 7
 
-// QueryDashboardKPI returns aggregated KPI data from SQLite for the dashboard.
+// QueryDashboardKPI returns aggregated KPI data from PostgreSQL for the dashboard.
 // This replaces the old in-memory snapshot-based counting which lost data on restart.
 func QueryDashboardKPI(days int) (DashboardKPI, error) {
 	return QueryDashboardKPIForTenant(systemTenantID, days)

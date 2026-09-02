@@ -312,56 +312,11 @@ auto-update:
 
 ### 🗄️ 运行时数据栈
 
-CliRelay 当前运行时数据栈已经完全统一为 PostgreSQL 15+、Redis 7+ 和 Ent ORM：PostgreSQL 是业务数据唯一事实源，Redis 只负责缓存、锁、限流、队列和可重建状态。SQLite 不再作为运行时数据库，也不参与正常启动、健康检查或 OTA 在线更新。
+CliRelay 运行时数据栈已经完全统一为 PostgreSQL 15+、Redis 7+ 和 Ent ORM：PostgreSQL 是业务数据唯一事实源，Redis 只负责缓存、锁、限流、队列和可重建状态。
 
-标准 Docker Compose 部署会启动 `clirelay-init`、PostgreSQL、Redis、业务容器和 updater sidecar。正常执行 `docker compose up -d` 或在管理面板中在线更新时，系统**不会扫描 `usage.db`、不会执行 SQLite inventory、不会自动导入 SQLite，也不会在更新进度中出现 SQLite 迁移阶段**。旧 compose 中残留的 `clirelay-migrate` 服务和 `CLIRELAY_SQLITE_AUTO_*` 启动配置会在部署栈升级时移除，但原始 SQLite 文件不会被删除或修改。
+标准 Docker Compose 部署会启动 `clirelay-init`、PostgreSQL、Redis、业务容器和 updater sidecar。
 
 OTA 更新状态由 updater sidecar 持有，并通过 SSE 实时发送。管理面板只展示 updater 返回的任务 ID、实际执行阶段、已完成步骤、当前/目标版本、管理面板版本、目标镜像、最新 Release 信息和最终结果，不再通过前端计时器模拟百分比。更新期间即使业务容器重启、页面刷新或 SSE 短暂断开，前端也会重新连接并读取 updater 的最新快照。Compose 默认把快照保存到 `.clirelay-updater-status.json`；更新器异常重启时，未完成任务会被明确标记为失败，不会继续显示为运行中。 业务容器通过健康检查后，当前 updater 会启动一个基于目标镜像的临时 helper，由 helper 安全重建 updater sidecar，使后续 OTA 继续使用目标版本的更新逻辑。
-
-#### 仅旧版本用户需要的 SQLite 手工迁移
-
-仓库和 Docker 镜像仍保留 `scripts/migrate-sqlite-to-postgres.sh`，只用于从旧版 SQLite `usage.db` 手工导入 PostgreSQL。该脚本是独立迁移工具，**不会被 CliRelay 启动流程或 OTA 自动调用**。全新安装、已经使用 PostgreSQL 的部署，以及不需要保留旧 SQLite 历史数据的用户都不应执行它。
-
-迁移前必须：
-
-1. 备份原始 `usage.db`，并保留只读副本；不要在迁移过程中让旧版本继续写入该文件。
-2. 先准备并启动 PostgreSQL 15+ 和 Redis 7+，确认 `CLIRELAY_POSTGRES_DSN` 指向正确的目标库。
-3. 先运行 inventory 和 PostgreSQL dry-run，检查表、行数、ID/时间范围、checksum 与计划写入数量。
-4. 只有核对 dry-run 后才执行 apply；完成后再次校验 PostgreSQL 数据。脚本不会删除、移动或写入 SQLite 文件，重复导入由 PostgreSQL 中的导入记录和 advisory lock 保护。
-
-非 Docker 部署可以直接执行：
-
-```bash
-CLIRELAY_BIN=/opt/clirelay2/clirelay2 \
-CLIRELAY_POSTGRES_DSN='postgres://user:pass@127.0.0.1:5432/cliproxy?sslmode=disable' \
-./scripts/migrate-sqlite-to-postgres.sh /path/to/usage.db
-```
-
-Docker Compose 部署先确保 PostgreSQL/Redis 已启动，再把旧库只读挂载到一次性容器中：
-
-```bash
-docker compose up -d postgres redis
-
-docker compose run --rm --no-deps \
-  -e CLIRELAY_BIN=/CLIProxyAPI/CLIProxyAPI \
-  -v /absolute/path/to/usage.db:/migration/usage.db:ro \
-  cli-proxy-api \
-  /usr/local/bin/migrate-sqlite-to-postgres.sh /migration/usage.db
-```
-
-脚本默认依次执行 SQLite 只读 inventory、PostgreSQL 导入 dry-run 和实际 apply。若只想检查而不写入 PostgreSQL，增加 `-e CLIRELAY_SQLITE_AUTO_IMPORT=false`。也可以分步使用二进制命令：
-
-```bash
-./cli-proxy-api -sqlite-dry-run /path/to/usage.db
-
-CLIRELAY_POSTGRES_DSN='postgres://user:pass@127.0.0.1:5432/cliproxy?sslmode=disable' \
-./cli-proxy-api -sqlite-import /path/to/usage.db
-
-CLIRELAY_POSTGRES_DSN='postgres://user:pass@127.0.0.1:5432/cliproxy?sslmode=disable' \
-./cli-proxy-api -sqlite-import /path/to/usage.db -sqlite-import-dry-run=false
-```
-
-如果旧 Docker 部署仍是 SQLite-only compose，应先替换为仓库最新版 `docker-compose.yml` 并执行 `docker compose up -d postgres redis clirelay-updater`，再手工迁移数据。对于不支持 updater SSE 的旧 sidecar，需要额外执行一次 `docker compose up -d --force-recreate clirelay-updater`，之后的 OTA 才能使用新的实时进度与断线恢复协议。完整迁移边界见 [`docs/postgres-redis-migration.md`](docs/postgres-redis-migration.md)。
 
 如果你的请求量较大，可以在 `config.yaml` 中调整 `request-log-storage`。全文请求/响应正文默认不保存；开启 `store-content` 后，正文会以压缩形式保留 30 天，并默认做约 1GB（1024MB）的总量上限，而轻量级请求元数据和请求详情仍可用于统计、筛选与排查。将 `content-retention-days: 0` 设为永久保留全文；在管理面板关闭正文存储时会同时清理已有输入与输出正文，但保留请求详情和请求记录；调整 `max-total-size-mb` 可让最老的全文在 retention 周期结束前提前裁剪。
 

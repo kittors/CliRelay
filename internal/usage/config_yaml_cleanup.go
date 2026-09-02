@@ -40,14 +40,14 @@ var dbBackedConfigYAMLKeys = map[string]bool{
 	"payload":                     true,
 }
 
-// ConfigStoreAvailable reports whether the SQLite store that owns DB-backed
+// ConfigStoreAvailable reports whether the database store that owns DB-backed
 // config sections is ready. Callers must not remove YAML fallbacks when this is
 // false.
 func ConfigStoreAvailable() bool {
 	return getDB() != nil
 }
 
-// CleanDBBackedConfigFromYAML removes config sections now owned by SQLite from
+// CleanDBBackedConfigFromYAML removes config sections now owned by the database from
 // config.yaml. It is safe to call repeatedly after management saves, because it
 // only rewrites the file when one of the target root keys exists.
 func CleanDBBackedConfigFromYAML(configFilePath string) int {

@@ -19,17 +19,6 @@ import (
 // - Non-goals: human-readable file log formatting and transport-level request log orchestration.
 const requestLogContentCompression = "zstd"
 
-const (
-	// Avoid vacuuming too frequently; VACUUM can be expensive on large DBs.
-	sqliteVacuumMinInterval = 2 * time.Hour
-
-	// Only vacuum when there's enough reclaimable space to matter.
-	sqliteVacuumMinReclaimBytes = 64 << 20 // 64 MiB
-
-	// If reclaimable bytes are smaller, require a higher ratio to vacuum.
-	sqliteVacuumMinReclaimRatio = 0.20
-)
-
 type requestLogStorageRuntime struct {
 	RetentionDays            int
 	ContentRetentionDays     int
@@ -40,7 +29,6 @@ type requestLogStorageRuntime struct {
 	MaxRows                  int
 	MaxMetadataSizeMB        int
 	MaxTotalSizeMB           int
-	VacuumOnCleanup          bool
 }
 
 var (
@@ -50,7 +38,6 @@ var (
 	requestLogMaintenanceWG     sync.WaitGroup
 	requestLogMaintenanceWakeup atomic.Value // chan struct{}
 
-	lastUsageVacuumUnixNano atomic.Int64
 	requestLogContentBytes  atomic.Int64 // total compressed bytes; -1 means unknown
 	requestLogBodiesEnabled atomic.Bool
 
@@ -93,7 +80,6 @@ func defaultRequestLogStorageRuntime() requestLogStorageRuntime {
 		MaxRows:                  100000,
 		MaxMetadataSizeMB:        256,
 		MaxTotalSizeMB:           128,
-		VacuumOnCleanup:          false,
 	}
 }
 
@@ -142,7 +128,6 @@ func normalizeRequestLogStorageConfig(cfg config.RequestLogStorageConfig) reques
 		MaxRows:                  cfg.MaxRows,
 		MaxMetadataSizeMB:        cfg.MaxMetadataSizeMB,
 		MaxTotalSizeMB:           cfg.MaxTotalSizeMB,
-		VacuumOnCleanup:          cfg.VacuumOnCleanup,
 	}
 	if cfg.CleanupEnabled != nil {
 		runtimeCfg.CleanupEnabled = *cfg.CleanupEnabled
@@ -246,7 +231,7 @@ func startRequestLogMaintenance(db *sql.DB, driver string) {
 				}
 				// Compaction/config wakeups should remain lightweight. The next
 				// timer is rebuilt from the latest runtime policy.
-				compactLogContentStorageInternal(ctx, db, false)
+				compactLogContentStorageInternal(ctx, db)
 			case <-timer.C:
 				runRequestLogMaintenancePass(ctx, db, driver)
 			}
@@ -322,7 +307,7 @@ func runRequestLogMaintenancePass(ctx context.Context, db *sql.DB, driver string
 	// cleanup-enabled gates metadata and content retention/size cleanup only.
 	// Body purge when store-content=false still runs above (privacy, not retention).
 	if !currentRequestLogStorageConfig().CleanupEnabled {
-		compactLogContentStorageInternal(ctx, db, true)
+		compactLogContentStorageInternal(ctx, db)
 		return
 	}
 
@@ -362,10 +347,8 @@ func runRequestLogMaintenancePass(ctx context.Context, db *sql.DB, driver string
 		requestLogContentBytes.Store(-1)
 	}
 
-	// Always run checkpoint + conditional vacuum. This ensures:
-	// - WAL is periodically truncated (usage.db-wal doesn't grow unbounded)
-	// - Large amounts of free pages can be reclaimed even if no rows were changed in this pass
-	compactLogContentStorageInternal(ctx, db, true)
+	// PostgreSQL compaction stays online and asynchronous; never wait for VACUUM FULL.
+	compactLogContentStorageInternal(ctx, db)
 }
 
 func refreshRequestLogContentBytes(q logContentQuerier) {

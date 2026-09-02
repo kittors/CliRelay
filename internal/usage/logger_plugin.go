@@ -103,13 +103,13 @@ func InitRedis(cfg config.RedisConfig) {
 		log.Infof("Successfully loaded usage statistics from Redis")
 	}
 
-	// Migrate existing in-memory data to SQLite (first run only)
+	// Migrate existing in-memory data to the database (first run only)
 	if defaultRequestStatistics != nil {
 		snapshot := defaultRequestStatistics.Snapshot()
 		if migrated, err := MigrateFromSnapshot(snapshot); err != nil {
 			log.Errorf("usage: migration from Redis snapshot failed: %v", err)
 		} else if migrated > 0 {
-			log.Infof("usage: migrated %d records from Redis to SQLite", migrated)
+			log.Infof("usage: migrated %d records from Redis to the database", migrated)
 		}
 	}
 
@@ -359,7 +359,7 @@ func (s *RequestStatistics) Record(ctx context.Context, record coreusage.Record)
 		s.mu.Unlock()
 	}
 
-	// Persist request logs in the usage manager worker so SQLite writes stay
+	// Persist request logs in the usage manager worker so database writes stay
 	// serialized and do not spawn one goroutine per request.
 	// Use the request-start identity snapshot when available so key renames
 	// during in-flight requests do not orphan log records.

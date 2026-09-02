@@ -33,7 +33,7 @@ func Register(cfg *sdkconfig.SDKConfig) {
 }
 
 // buildKeyConfigMap builds a map from API key to its full configuration.
-// Primary source: management/settings/apikey service backed by SQLite.
+// Primary source: management/settings/apikey service backed by PostgreSQL.
 // Fallback: legacy APIKeys and APIKeyEntries from YAML config.
 func buildKeyConfigMap(cfg *sdkconfig.SDKConfig) map[string]keyConfig {
 	result := make(map[string]keyConfig)

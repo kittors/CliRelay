@@ -83,10 +83,9 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	cfg.RequestLogStorage.CleanupMaxRuntimeSeconds = 30
 	cfg.RequestLogStorage.MaxRows = 100000
 	cfg.RequestLogStorage.MaxMetadataSizeMB = 256
-	// Default cap for stored request/response bodies in usage.db.
+	// Default cap for stored request/response bodies.
 	// This controls the compressed body payloads only (metadata rows are separate).
 	cfg.RequestLogStorage.MaxTotalSizeMB = 128
-	cfg.RequestLogStorage.VacuumOnCleanup = false
 	cfg.DisableCooling = false
 	cfg.Routing.IncludeDefaultGroup = true
 	cfg.Pprof.Enable = false

@@ -223,9 +223,6 @@ request-log-storage:
   # Default is 1024 (≈1GB). Set to 0 to disable the size cap.
   max-total-size-mb: 1024
 
-  # Reclaim disk space after cleanup. This can be I/O intensive on very large databases.
-  vacuum-on-cleanup: true
-
 # Proxy URL. Supports socks5/http/https protocols. Example: socks5://user:pass@192.168.1.1:1080/
 proxy-url: ""
 

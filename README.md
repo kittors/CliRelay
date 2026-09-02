@@ -309,56 +309,11 @@ auto-update:
 
 ### 🗄️ Runtime Data Stack
 
-CliRelay now uses PostgreSQL 15+, Redis 7+, and Ent ORM exclusively at runtime. PostgreSQL is the only source of truth for business data; Redis is limited to cache, locks, rate limits, queues, and rebuildable state. SQLite is no longer a runtime database and is not part of normal startup, health checks, or OTA updates.
+CliRelay uses PostgreSQL 15+, Redis 7+, and Ent ORM exclusively at runtime. PostgreSQL is the only source of truth for business data; Redis is limited to cache, locks, rate limits, queues, and rebuildable state.
 
-The standard Docker Compose stack starts `clirelay-init`, PostgreSQL, Redis, the application container, and the updater sidecar. A normal `docker compose up -d` or management-panel update **does not scan for `usage.db`, run SQLite inventory, import SQLite, or expose SQLite migration stages in update progress**. Stack upgrades remove stale `clirelay-migrate` services and `CLIRELAY_SQLITE_AUTO_*` startup settings, while leaving any original SQLite files untouched.
+The standard Docker Compose stack starts `clirelay-init`, PostgreSQL, Redis, the application container, and the updater sidecar.
 
 The updater sidecar owns OTA task state and publishes it through SSE. The management panel renders only the updater-provided run ID, actual stage, completed steps, current and target backend/UI versions, target image, latest Release metadata, and final result; it no longer advances a timer-based percentage. If the API container restarts, the page reloads, or SSE disconnects briefly, the panel reconnects and receives the latest updater snapshot. Compose persists that snapshot in `.clirelay-updater-status.json`; if the updater itself restarts during a task, the interrupted task is explicitly marked failed instead of remaining stuck as running. After the application passes its health check, the current updater launches a detached helper from the target image; that helper safely recreates the updater sidecar so later OTA runs use the target updater implementation.
-
-#### Manual SQLite import for legacy users only
-
-The repository and Docker image still include `scripts/migrate-sqlite-to-postgres.sh` solely for manually importing an old SQLite `usage.db` into PostgreSQL. It is an independent migration tool and **is never invoked by CliRelay startup or OTA updates**. Fresh installs, deployments already using PostgreSQL, and users who do not need old SQLite history should not run it.
-
-Before importing:
-
-1. Back up the original `usage.db` and keep a read-only copy. Do not let an old release continue writing to it during migration.
-2. Start PostgreSQL 15+ and Redis 7+, and verify that `CLIRELAY_POSTGRES_DSN` points to the intended target database.
-3. Run the SQLite inventory and PostgreSQL dry-run first, then review tables, row counts, ID/time ranges, checksums, and planned inserts.
-4. Apply only after reviewing the dry-run, and validate PostgreSQL again afterward. The script never deletes, moves, or writes the SQLite file; PostgreSQL import records and an advisory lock protect repeated or concurrent runs.
-
-For a non-Docker deployment:
-
-```bash
-CLIRELAY_BIN=/opt/clirelay2/clirelay2 \
-CLIRELAY_POSTGRES_DSN='postgres://user:pass@127.0.0.1:5432/cliproxy?sslmode=disable' \
-./scripts/migrate-sqlite-to-postgres.sh /path/to/usage.db
-```
-
-For Docker Compose, start PostgreSQL/Redis and mount the old database read-only into a one-off container:
-
-```bash
-docker compose up -d postgres redis
-
-docker compose run --rm --no-deps \
-  -e CLIRELAY_BIN=/CLIProxyAPI/CLIProxyAPI \
-  -v /absolute/path/to/usage.db:/migration/usage.db:ro \
-  cli-proxy-api \
-  /usr/local/bin/migrate-sqlite-to-postgres.sh /migration/usage.db
-```
-
-The script runs read-only SQLite inventory, PostgreSQL import dry-run, and apply in that order. Add `-e CLIRELAY_SQLITE_AUTO_IMPORT=false` to stop after dry-run. The binary commands can also be run separately:
-
-```bash
-./cli-proxy-api -sqlite-dry-run /path/to/usage.db
-
-CLIRELAY_POSTGRES_DSN='postgres://user:pass@127.0.0.1:5432/cliproxy?sslmode=disable' \
-./cli-proxy-api -sqlite-import /path/to/usage.db
-
-CLIRELAY_POSTGRES_DSN='postgres://user:pass@127.0.0.1:5432/cliproxy?sslmode=disable' \
-./cli-proxy-api -sqlite-import /path/to/usage.db -sqlite-import-dry-run=false
-```
-
-If an old Docker deployment still uses a SQLite-only compose file, replace it with the latest `docker-compose.yml`, run `docker compose up -d postgres redis clirelay-updater`, and then import data manually. A sidecar from a release that predates updater SSE must be recreated once with `docker compose up -d --force-recreate clirelay-updater`; subsequent OTA runs can then use real-time progress and reconnect recovery. See [`docs/postgres-redis-migration.md`](docs/postgres-redis-migration.md) for the full migration boundary.
 
 For large installations, tune `request-log-storage` in `config.yaml` to control full request/response body retention. Full body storage is disabled by default. When `store-content` is enabled, bodies are compressed, kept for 30 days, and capped at ~1GB (1024MB), while lightweight request metadata and request details remain available for statistics and troubleshooting. Set `content-retention-days: 0` to keep full bodies indefinitely. Disabling body storage from the management panel also clears historical input and output bodies while preserving request details and request records.
 

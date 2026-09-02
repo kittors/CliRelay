@@ -213,7 +213,7 @@ func (s Store) MigrateFromConfig(cfg *config.Config) (migrated int, hadStored bo
 		log.Errorf("sqlite/proxypool: migrate proxy_pool: %v", err)
 		return 0, false, false
 	}
-	log.Infof("sqlite/proxypool: migrated %d proxy_pool entries from config to SQLite", len(normalized))
+	log.Infof("sqlite/proxypool: migrated %d proxy_pool entries from config to the database", len(normalized))
 	return len(normalized), false, true
 }
 
