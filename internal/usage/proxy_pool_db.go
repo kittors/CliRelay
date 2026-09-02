@@ -4,12 +4,12 @@ import (
 	"database/sql"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	sqlproxypool "github.com/router-for-me/CLIProxyAPI/v6/internal/storage/sqlite/proxypool"
+	sqlproxypool "github.com/router-for-me/CLIProxyAPI/v6/internal/storage/sqlstore/proxypool"
 )
 
 // Compatibility bridge contract:
 // - Owner: proxy pool runtime settings boundary.
-// - Real implementation: internal/storage/sqlite/proxypool.
+// - Real implementation: internal/storage/sqlstore/proxypool.
 // - Allowed callers: bootstrap/runtime overlay and legacy management adapters pending migration.
 // - Exit condition: management/service callers use a dedicated proxy-pool boundary; do not add new imports here.
 func initProxyPoolTable(db *sql.DB) {

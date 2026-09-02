@@ -4,7 +4,7 @@ import (
 	"errors"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	sqlproxypool "github.com/router-for-me/CLIProxyAPI/v6/internal/storage/sqlite/proxypool"
+	sqlproxypool "github.com/router-for-me/CLIProxyAPI/v6/internal/storage/sqlstore/proxypool"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 )
 

@@ -128,7 +128,7 @@ AMP 路径还会受到 AMP model mapping 与 fallback 逻辑影响，不能简�
 | `internal/api/modules/amp/model_mapping.go` | AMP 的 `from -> to` 或 regex mapping 会把请求模型改写为另一个本地可用模型。 |
 | AMP `force-model-mappings` | 开启时 AMP mapping 优先于本地同名 provider 选择。 |
 | Bedrock executor | Bedrock 的模型配置、region、provider 格式和自定义 mapping 会影响最终上游模型 ID。 |
-| 静态模型库与数据库模型配置 | `internal/registry` 提供静态模型定义；`model-configs`/SQLite 保存价格、描述、启用状态等元数据，但这些元数据不等同于运行时可调用性。 |
+| 静态模型库与数据库模型配置 | `internal/registry` 提供静态模型定义；`model-configs` 保存价格、描述、启用状态等元数据，但这些元数据不等同于运行时可调用性。 |
 
 ### 4.2 后端权限与过滤
 

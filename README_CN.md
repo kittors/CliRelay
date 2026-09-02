@@ -40,7 +40,7 @@ CliRelay 会把 AI CLI 订阅、OAuth 凭据、API Key 以及兼容上游服务�
 
 它从一开始就假设**不止一个人在用**。租户、用户、角色和细粒度权限模型（`governance.tenants`、`models.write`、`providers.test` 等）决定每个账号能看到哪些页面、能按哪些按钮、能做哪些操作，安全敏感的变更都会落到审计日志里。门户账号则让终端用户在一个身份下持有多把 API Key，不用找管理员就能自查用量。
 
-当前运行时数据栈是 PostgreSQL 15+、Redis 7+ 和 Ent ORM。PostgreSQL 是运行时数据事实源；Redis 只承担缓存、锁、限流、队列和可重建状态。SQLite 已经是旧版本数据源，只在迁移导入时保留支持。
+当前运行时数据栈是 PostgreSQL 15+、Redis 7+ 和 Ent ORM。PostgreSQL 是运行时数据事实源；Redis 只承担缓存、锁、限流、队列和可重建状态。
 
 ```
 ┌───────────────────────┐         ┌──────────────┐         ┌────────────────────┐
@@ -384,7 +384,7 @@ CliRelay/
 | [SDK 进阶](docs/sdk-advanced.md) | 执行器与翻译器深入解析 |
 | [SDK 认证](docs/sdk-access.md) | SDK 认证上下文 |
 | [SDK Watcher](docs/sdk-watcher.md) | 凭据加载与热重载 |
-| [PostgreSQL / Redis 迁移](docs/postgres-redis-migration.md) | 运行时数据栈配置、SQLite dry-run 清单与验证命令 |
+| [PostgreSQL / Redis 运行时](docs/postgres-redis-migration.md) | 运行时数据栈配置与验证命令 |
 
 ## 🤝 贡献
 

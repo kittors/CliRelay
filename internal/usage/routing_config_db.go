@@ -5,12 +5,12 @@ import (
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	sqlrouting "github.com/router-for-me/CLIProxyAPI/v6/internal/storage/sqlite/routing"
+	sqlrouting "github.com/router-for-me/CLIProxyAPI/v6/internal/storage/sqlstore/routing"
 )
 
 // Compatibility bridge contract:
 // - Owner: runtime routing configuration boundary.
-// - Real implementation: internal/storage/sqlite/routing.
+// - Real implementation: internal/storage/sqlstore/routing.
 // - Allowed callers: bootstrap/runtime overlay and legacy management adapters pending migration.
 // - Exit condition: management/service callers depend on dedicated routing boundary instead of usage; do not add new imports here.
 func initRoutingConfigTable(db *sql.DB) {

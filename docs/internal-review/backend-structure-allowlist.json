@@ -41,11 +41,11 @@
         "max_lines": 868
       },
       {
-        "path": "internal/storage/sqlite/apikey/store.go",
+        "path": "internal/storage/sqlstore/apikey/store.go",
         "max_lines": 1176
       },
       {
-        "path": "internal/storage/sqlite/modelconfig/store.go",
+        "path": "internal/storage/sqlstore/modelconfig/store.go",
         "max_lines": 934
       },
       {
@@ -58,11 +58,11 @@
       },
       {
         "path": "internal/usage/request_log_query.go",
-        "max_lines": 1188
+        "max_lines": 1181
       },
       {
         "path": "internal/usage/usage_db.go",
-        "max_lines": 1150
+        "max_lines": 1149
       },
       {
         "path": "sdk/api/handlers/handlers.go",

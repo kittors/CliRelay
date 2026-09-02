@@ -6,15 +6,15 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	sqlapikey "github.com/router-for-me/CLIProxyAPI/v6/internal/storage/sqlite/apikey"
+	sqlapikey "github.com/router-for-me/CLIProxyAPI/v6/internal/storage/sqlstore/apikey"
 	log "github.com/sirupsen/logrus"
 )
 
 // Compatibility bridge contract:
 // - Owner: API key settings / config-access boundary.
-// - Real implementation: internal/storage/sqlite/apikey and internal/management/settings/apikey.
+// - Real implementation: internal/storage/sqlstore/apikey and internal/management/settings/apikey.
 // - Allowed callers: legacy adapters still being migrated; new management/config-access code should use apikey service first.
-// - Exit condition: remaining callers move to apikey service or sqlite store bridge; do not add new imports here.
+// - Exit condition: remaining callers move to apikey service or sqlstore bridge; do not add new imports here.
 type APIKeyRow = sqlapikey.APIKeyRow
 
 func APIKeyRowFromConfig(entry config.APIKeyEntry) APIKeyRow {

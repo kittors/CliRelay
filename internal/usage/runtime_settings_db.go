@@ -7,14 +7,14 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	runtimeconfig "github.com/router-for-me/CLIProxyAPI/v6/internal/management/settings/runtimeconfig"
-	sqlsettings "github.com/router-for-me/CLIProxyAPI/v6/internal/storage/sqlite/settings"
+	sqlsettings "github.com/router-for-me/CLIProxyAPI/v6/internal/storage/sqlstore/settings"
 )
 
 // Compatibility bridge contract:
 // - Owner: runtime settings / management settings boundary.
-// - Real implementation: internal/management/settings/runtimeconfig + internal/storage/sqlite/settings.
+// - Real implementation: internal/management/settings/runtimeconfig + internal/storage/sqlstore/settings.
 // - Allowed callers: bootstrap, legacy reload flow, and narrow adapters that have not finished migrating.
-// - Exit condition: callers move to runtimeconfig/sqlite settings packages directly; do not add new imports here.
+// - Exit condition: callers move to runtimeconfig/sqlstore settings packages directly; do not add new imports here.
 const (
 	RuntimeSettingGeminiKeys           = runtimeconfig.RuntimeSettingGeminiKeys
 	RuntimeSettingCodexKeys            = runtimeconfig.RuntimeSettingCodexKeys

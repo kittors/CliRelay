@@ -7,7 +7,7 @@ import (
 	"os"
 	"strings"
 
-	sqlapikey "github.com/router-for-me/CLIProxyAPI/v6/internal/storage/sqlite/apikey"
+	sqlapikey "github.com/router-for-me/CLIProxyAPI/v6/internal/storage/sqlstore/apikey"
 	log "github.com/sirupsen/logrus"
 	"gopkg.in/yaml.v3"
 )

@@ -40,7 +40,7 @@ CliRelay turns AI CLI subscriptions, OAuth credentials, API keys, and compatible
 
 It is built to be **operated by more than one person**. Tenants, users, roles, and a fine-grained permission model (`governance.tenants`, `models.write`, `providers.test`, …) decide which pages, buttons, and actions each account gets, and every security-sensitive change lands in an audit log. Portal accounts let end users hold several API keys under one identity and check their own usage without an admin in the loop.
 
-The current runtime data stack is PostgreSQL 15+, Redis 7+, and Ent ORM. PostgreSQL is the source of truth for runtime data; Redis is used for cache, locks, limits, queues, and rebuildable state. SQLite is legacy-only and is supported as an import source during migration.
+The current runtime data stack is PostgreSQL 15+, Redis 7+, and Ent ORM. PostgreSQL is the source of truth for runtime data; Redis is used for cache, locks, limits, queues, and rebuildable state.
 
 ```
 ┌───────────────────────┐         ┌──────────────┐         ┌────────────────────┐
@@ -381,7 +381,7 @@ CliRelay/
 | [SDK Advanced](docs/sdk-advanced.md) | Executors & translators deep-dive |
 | [SDK Access](docs/sdk-access.md) | Authentication in SDK context |
 | [SDK Watcher](docs/sdk-watcher.md) | Credential loading & hot-reload |
-| [PostgreSQL / Redis Migration](docs/postgres-redis-migration.md) | Runtime data-stack setup, SQLite dry-run inventory, and validation |
+| [PostgreSQL / Redis Runtime](docs/postgres-redis-migration.md) | Runtime data-stack setup and validation |
 
 ## 🤝 Contributing
 

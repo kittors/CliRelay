@@ -16,7 +16,6 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/contentmoderation"
 	postgresstore "github.com/router-for-me/CLIProxyAPI/v6/internal/storage/postgres"
 	log "github.com/sirupsen/logrus"
-	_ "modernc.org/sqlite"
 )
 
 const cacheRateEffectiveInputSQL = "CASE WHEN cached_tokens > input_tokens THEN input_tokens + cached_tokens ELSE input_tokens END"
@@ -204,7 +203,7 @@ func ensureRequestLogLookupIndexes(db *sql.DB) {
 		"CREATE INDEX IF NOT EXISTS idx_logs_api_key_id_timestamp ON request_logs(api_key_id, timestamp DESC)",
 		"CREATE INDEX IF NOT EXISTS idx_logs_api_key_chart_cover ON request_logs(api_key, api_key_id, timestamp DESC, model, failed, input_tokens, output_tokens, total_tokens, cost, cached_tokens)",
 		"CREATE INDEX IF NOT EXISTS idx_logs_api_key_id_chart_cover ON request_logs(api_key_id, timestamp DESC, model, failed, input_tokens, output_tokens, total_tokens, cost, cached_tokens)",
-		// AI Accounts entity-stats / auth-file-trend: tenant + auth identity + time (SQLite-only path).
+		// AI Accounts entity-stats / auth-file-trend: tenant + auth identity + time.
 		"CREATE INDEX IF NOT EXISTS idx_logs_tenant_auth_index_timestamp ON request_logs(tenant_id, auth_index, timestamp DESC)",
 		"CREATE INDEX IF NOT EXISTS idx_logs_tenant_auth_subject_timestamp ON request_logs(tenant_id, auth_subject_id, timestamp DESC)",
 	} {
@@ -560,8 +559,8 @@ func startRequestLogContentSessionIDBackfill(db *sql.DB) {
 	// startup must not read/decompress old rows on the request-serving process.
 }
 
-// InitDB opens (or creates) the SQLite database at the given path and creates
-// the request_logs table if it doesn't exist.
+// InitDB opens an embedded database for tests. Production startup uses InitPostgres.
+// Tests must register the sqlite driver (blank-import modernc.org/sqlite) before calling InitDB.
 func InitDB(dbPath string, storageCfg config.RequestLogStorageConfig, loc *time.Location) error {
 	usageDBLifecycleMu.Lock()
 	defer usageDBLifecycleMu.Unlock()
@@ -578,7 +577,7 @@ func InitDB(dbPath string, storageCfg config.RequestLogStorageConfig, loc *time.
 	}
 	usageLoc = loc
 
-	log.Debugf("usage: opening SQLite database at %s", dbPath)
+	log.Debugf("usage: opening test database at %s", dbPath)
 	// NOTE: Do NOT use _journal_mode or _busy_timeout in the connection string.
 	// Those are mattn/go-sqlite3 (CGO) conventions. modernc.org/sqlite ignores them,
 	// causing data to stay in-memory without flushing to disk.
@@ -592,8 +591,8 @@ func InitDB(dbPath string, storageCfg config.RequestLogStorageConfig, loc *time.
 
 	// Verify connectivity with a timeout to avoid hanging on WAL recovery
 	log.Debugf("usage: pinging database to verify connectivity")
-	// SQLite ping 属于服务启动期健康检查，不绑定请求生命周期；
-	// 这里使用带超时的根 context，避免 WAL 恢复阶段无限阻塞。
+	// Test-only ping is a bootstrap health check, not bound to a request lifecycle.
+	// Use a timed root context so WAL recovery cannot block forever.
 	pingCtx, pingCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer pingCancel()
 	if err := db.PingContext(pingCtx); err != nil {
@@ -816,7 +815,7 @@ func CloseDB() {
 	usageDBLifecycleMu.Lock()
 	defer usageDBLifecycleMu.Unlock()
 
-	// Maintenance and in-flight SQLite writes can read usageLoc under usageDBMu.
+	// Maintenance and in-flight writes can read usageLoc under usageDBMu.
 	// Stop the worker, then detach the handles under the mutex before waiting for
 	// database/sql to drain them, otherwise shutdown can deadlock on that mutex.
 	stopRequestLogMaintenance()
@@ -908,7 +907,7 @@ func insertLogIdentity(trustedTenantID, apiKey, apiKeyID, authSubjectID, apiKeyN
 	upstreamModel = strings.TrimSpace(upstreamModel)
 	visionFallbackModel = strings.TrimSpace(visionFallbackModel)
 	thinkingLevel = strings.TrimSpace(thinkingLevel)
-	// Resolve identity before opening the write tx: SQLite single-writer + maintenance
+	// Resolve identity before opening the write tx: a single-writer store + maintenance
 	// would deadlock if we query api_keys while this connection already holds a tx.
 	endUserID := ""
 	if row := GetAPIKey(apiKey); row != nil {

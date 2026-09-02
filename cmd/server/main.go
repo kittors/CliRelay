@@ -24,7 +24,6 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/managementasset"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/misc"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/storage/postgres/sqliteinventory"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/store"
 	_ "github.com/router-for-me/CLIProxyAPI/v6/internal/translator"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/tui"
@@ -89,10 +88,6 @@ func main() {
 	var password string
 	var tuiMode bool
 	var standalone bool
-	var sqliteDryRunPath string
-	var sqliteImportPath string
-	var sqliteImportDryRun bool
-	var sqliteImportPostgresDSN string
 
 	// Define command-line flags for different operation modes.
 	flag.BoolVar(&login, "login", false, "Login Google Account")
@@ -113,10 +108,6 @@ func main() {
 	flag.StringVar(&password, "password", "", "")
 	flag.BoolVar(&tuiMode, "tui", false, "Start with terminal management UI")
 	flag.BoolVar(&standalone, "standalone", false, "In TUI mode, start an embedded local server")
-	flag.StringVar(&sqliteDryRunPath, "sqlite-dry-run", "", "Read-only SQLite inventory for PostgreSQL migration")
-	flag.StringVar(&sqliteImportPath, "sqlite-import", "", "Import SQLite usage.db into PostgreSQL; dry-run by default")
-	flag.BoolVar(&sqliteImportDryRun, "sqlite-import-dry-run", true, "Dry-run SQLite import without writing PostgreSQL")
-	flag.StringVar(&sqliteImportPostgresDSN, "postgres-dsn", "", "PostgreSQL DSN for SQLite import; defaults to CLIRELAY_POSTGRES_DSN")
 
 	flag.CommandLine.Usage = func() {
 		out := flag.CommandLine.Output()
@@ -147,29 +138,6 @@ func main() {
 
 	// Parse the command-line flags.
 	flag.Parse()
-	if strings.TrimSpace(sqliteDryRunPath) != "" {
-		if err := sqliteinventory.WriteJSON(context.Background(), os.Stdout, sqliteinventory.Options{Path: sqliteDryRunPath}); err != nil {
-			log.Errorf("sqlite dry-run failed: %v", err)
-			os.Exit(1)
-		}
-		return
-	}
-	if strings.TrimSpace(sqliteImportPath) != "" {
-		dsn := strings.TrimSpace(sqliteImportPostgresDSN)
-		if dsn == "" {
-			dsn = strings.TrimSpace(os.Getenv(config.EnvPostgresDSN))
-		}
-		if err := sqliteinventory.WriteImportJSON(context.Background(), os.Stdout, sqliteinventory.ImportOptions{
-			SQLitePath:  sqliteImportPath,
-			PostgresDSN: dsn,
-			DryRun:      sqliteImportDryRun,
-			Progress:    os.Stderr,
-		}); err != nil {
-			log.Errorf("sqlite import failed: %v", err)
-			os.Exit(1)
-		}
-		return
-	}
 
 	// Core application variables.
 	var err error

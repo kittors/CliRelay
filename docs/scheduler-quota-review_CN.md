@@ -569,7 +569,7 @@ Codex executor 实现了 `ProbeQuotaRecovery()`，直接去打：
 - `internal/api/handlers/management/usage_logs_handler.go:573`
 - `internal/api/handlers/management/usage_logs_handler.go:582`
 
-底层数据来自 SQLite 的 `request_logs` 表：
+底层数据来自 `request_logs` 表：
 
 - `QueryEntityStats()` 直接按 `request_logs` 聚合
 
