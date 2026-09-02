@@ -114,6 +114,141 @@ func QueryDailyQuotaByAuthIndexesForTenant(tenantID string, authIndexes []string
 	return result, rows.Err()
 }
 
+type weeklyQuotaKey struct {
+	QuotaKey      string
+	QuotaLabel    string
+	WindowSeconds int64
+}
+
+// QueryWeeklyQuotaSeriesByAuthIndexesForTenant averages every weekly window
+// those credentials recorded, one series per quota_key. The old group-trend
+// path only asked for code_week, so Antigravity's gemini_weekly / 3p_weekly
+// (and Claude seven_day, extra Codex weeks) never reached the chart.
+func QueryWeeklyQuotaSeriesByAuthIndexesForTenant(tenantID string, authIndexes []string, days int) ([]DailyQuotaSeries, error) {
+	tenantID = normalizeTenantID(tenantID)
+	if days < 1 {
+		days = 7
+	}
+	normalized := uniqueAuthIndexes(authIndexes)
+	if len(normalized) == 0 {
+		return []DailyQuotaSeries{}, nil
+	}
+	keys, err := listWeeklyQuotaKeysForAuthIndexes(tenantID, normalized, days)
+	if err != nil {
+		return nil, err
+	}
+	if len(keys) == 0 {
+		// Hosts that only ever wrote the Codex/Kimi daily snapshot still need a
+		// series, otherwise the chart goes blank after this path stopped
+		// hardcoding code_week.
+		points, err := QueryDailyQuotaByAuthIndexesForTenant(tenantID, normalized, "code_week", days)
+		if err != nil {
+			return nil, err
+		}
+		if len(points) == 0 {
+			return []DailyQuotaSeries{}, nil
+		}
+		return []DailyQuotaSeries{{
+			QuotaKey:      "code_week",
+			WindowSeconds: WeeklyQuotaWindowSeconds,
+			Points:        points,
+		}}, nil
+	}
+	out := make([]DailyQuotaSeries, 0, len(keys))
+	for _, key := range keys {
+		points, err := QueryDailyQuotaByAuthIndexesForTenant(tenantID, normalized, key.QuotaKey, days)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, DailyQuotaSeries{
+			QuotaKey:      key.QuotaKey,
+			QuotaLabel:    key.QuotaLabel,
+			WindowSeconds: key.WindowSeconds,
+			Points:        points,
+		})
+	}
+	return out, nil
+}
+
+func uniqueAuthIndexes(authIndexes []string) []string {
+	seen := make(map[string]struct{}, len(authIndexes))
+	out := make([]string, 0, len(authIndexes))
+	for _, idx := range authIndexes {
+		idx = strings.TrimSpace(idx)
+		if idx == "" {
+			continue
+		}
+		if _, ok := seen[idx]; ok {
+			continue
+		}
+		seen[idx] = struct{}{}
+		out = append(out, idx)
+	}
+	return out
+}
+
+func listWeeklyQuotaKeysForAuthIndexes(tenantID string, authIndexes []string, days int) ([]weeklyQuotaKey, error) {
+	db := getDB()
+	if db == nil {
+		return nil, nil
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(authIndexes)), ",")
+	args := make([]interface{}, 0, len(authIndexes)+3)
+	args = append(args, tenantID, CutoffStartUTC(days).UTC().Format(time.RFC3339Nano), WeeklyQuotaWindowSeconds)
+	for _, idx := range authIndexes {
+		args = append(args, idx)
+	}
+	q := fmt.Sprintf(`
+		SELECT quota_key, MAX(quota_label), MAX(window_seconds)
+		FROM auth_file_quota_snapshot_points
+		WHERE tenant_id = ? AND recorded_at >= ? AND window_seconds >= ? AND auth_index IN (%s) AND percent IS NOT NULL
+		GROUP BY quota_key
+		ORDER BY quota_key ASC
+	`, placeholders)
+	rows, err := db.Query(q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("usage: list weekly quota keys: %w", err)
+	}
+	defer rows.Close()
+	keys := make([]weeklyQuotaKey, 0)
+	for rows.Next() {
+		var key weeklyQuotaKey
+		var label sql.NullString
+		if err := rows.Scan(&key.QuotaKey, &label, &key.WindowSeconds); err != nil {
+			return nil, fmt.Errorf("usage: scan weekly quota keys: %w", err)
+		}
+		if label.Valid {
+			key.QuotaLabel = strings.TrimSpace(label.String)
+		}
+		keys = append(keys, key)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return preferPrimaryWeeklyQuotaKey(keys), nil
+}
+
+func preferPrimaryWeeklyQuotaKey(keys []weeklyQuotaKey) []weeklyQuotaKey {
+	if len(keys) < 2 {
+		return keys
+	}
+	primary := -1
+	for i, key := range keys {
+		if key.QuotaKey == "code_week" {
+			primary = i
+			break
+		}
+	}
+	if primary <= 0 {
+		return keys
+	}
+	out := make([]weeklyQuotaKey, 0, len(keys))
+	out = append(out, keys[primary])
+	out = append(out, keys[:primary]...)
+	out = append(out, keys[primary+1:]...)
+	return out
+}
+
 func QueryQuotaSnapshotPoints(authIndex string, start, end time.Time) ([]QuotaSnapshotPoint, error) {
 	return QueryQuotaSnapshotPointsForTenant(systemTenantID, authIndex, start, end)
 }

@@ -24,6 +24,17 @@ type DailyQuotaPoint struct {
 	Samples int64    `json:"samples"`
 }
 
+// DailyQuotaSeries is one weekly window averaged across a group of credentials
+// for each local day. Group overview charts one line per series so providers
+// with two weeklies (Antigravity Gemini + 3P) are not collapsed into a single
+// code_week number that those accounts never wrote.
+type DailyQuotaSeries struct {
+	QuotaKey      string            `json:"quota_key"`
+	QuotaLabel    string            `json:"quota_label"`
+	WindowSeconds int64             `json:"window_seconds"`
+	Points        []DailyQuotaPoint `json:"points"`
+}
+
 type HourlyCountPoint struct {
 	Hour     string `json:"hour"`
 	Requests int64  `json:"requests"`

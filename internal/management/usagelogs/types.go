@@ -41,10 +41,11 @@ type LogContentResponse struct {
 }
 
 type AuthFileGroupTrendResponse struct {
-	Days        int                     `json:"days"`
-	Group       string                  `json:"group"`
-	Points      []usage.DailyCountPoint `json:"points"`
-	QuotaPoints []usage.DailyQuotaPoint `json:"quota_points"`
+	Days        int                      `json:"days"`
+	Group       string                   `json:"group"`
+	Points      []usage.DailyCountPoint  `json:"points"`
+	QuotaPoints []usage.DailyQuotaPoint  `json:"quota_points"`
+	QuotaSeries []usage.DailyQuotaSeries `json:"quota_series"`
 }
 
 type AuthFileTrendResponse struct {

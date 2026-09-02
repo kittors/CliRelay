@@ -22,14 +22,21 @@ func (s *Service) AuthFileGroupTrend(group string, days int) (AuthFileGroupTrend
 	if points == nil {
 		points = []usage.DailyCountPoint{}
 	}
-	quotaPoints, err := usage.QueryDailyQuotaByAuthIndexesForTenant(s.tenantID, authIndexes, "code_week", days)
+	quotaSeries, err := usage.QueryWeeklyQuotaSeriesByAuthIndexesForTenant(s.tenantID, authIndexes, days)
 	if err != nil {
 		return AuthFileGroupTrendResponse{}, err
 	}
-	if quotaPoints == nil {
-		quotaPoints = []usage.DailyQuotaPoint{}
+	if quotaSeries == nil {
+		quotaSeries = []usage.DailyQuotaSeries{}
 	}
-	return AuthFileGroupTrendResponse{Days: days, Group: group, Points: points, QuotaPoints: quotaPoints}, nil
+	quotaPoints := []usage.DailyQuotaPoint{}
+	if len(quotaSeries) > 0 && quotaSeries[0].Points != nil {
+		quotaPoints = quotaSeries[0].Points
+	}
+	return AuthFileGroupTrendResponse{
+		Days: days, Group: group, Points: points,
+		QuotaPoints: quotaPoints, QuotaSeries: quotaSeries,
+	}, nil
 }
 
 func (s *Service) AuthFileTrend(authIndex string, days int, hours int) (int, any) {
