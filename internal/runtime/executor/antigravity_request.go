@@ -95,6 +95,9 @@ func (e *AntigravityExecutor) buildRequest(ctx context.Context, auth *cliproxyau
 		payloadStr, _ = sjson.Delete(payloadStr, "request.generationConfig.maxOutputTokens")
 	}
 
+	payloadBytes := e.obfuscateSensitiveWords([]byte(payloadStr))
+	payloadStr = string(payloadBytes)
+
 	httpReq, errReq := http.NewRequestWithContext(ctx, http.MethodPost, requestURL.String(), strings.NewReader(payloadStr))
 	if errReq != nil {
 		return nil, nil, errReq

@@ -24,6 +24,18 @@ func (e *AntigravityExecutor) newAntigravityExecutionContext(
 	})
 }
 
+func (e *AntigravityExecutor) obfuscateSensitiveWords(payload []byte) []byte {
+	words := DefaultAntigravitySensitiveWords()
+	if e != nil && e.cfg != nil && len(e.cfg.Antigravity.SensitiveWords) > 0 {
+		words = e.cfg.Antigravity.SensitiveWords
+	}
+	if len(words) == 0 {
+		return payload
+	}
+	matcher := buildSensitiveWordMatcher(words)
+	return obfuscateSensitiveWordsInSystemInstruction(payload, matcher)
+}
+
 func (e *AntigravityExecutor) buildAntigravityPayload(execCtx *ExecutionContext) ([]byte, error) {
 	body, originalTranslated := execCtx.TranslateRequestPair(execCtx.Request.Payload)
 	body, err := thinking.ApplyThinking(body, execCtx.Request.Model, execCtx.SourceFormat.String(), execCtx.Execution.TargetFormat.String(), e.Identifier())
@@ -31,6 +43,7 @@ func (e *AntigravityExecutor) buildAntigravityPayload(execCtx *ExecutionContext)
 		return nil, err
 	}
 	body = execCtx.ApplyPayloadConfig(body, originalTranslated)
+	body = e.obfuscateSensitiveWords(body)
 	return body, nil
 }
 
@@ -43,5 +56,6 @@ func (e *AntigravityExecutor) buildAntigravityCountTokensPayload(execCtx *Execut
 	body = deleteJSONField(body, "project")
 	body = deleteJSONField(body, "model")
 	body = deleteJSONField(body, "request.safetySettings")
+	body = e.obfuscateSensitiveWords(body)
 	return body, nil
 }

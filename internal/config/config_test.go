@@ -473,3 +473,28 @@ func TestLoadConfigSanitizesSystemStatsWebSocketMaxAge(t *testing.T) {
 		})
 	}
 }
+
+func TestLoadConfigAntigravitySensitiveWords(t *testing.T) {
+	t.Parallel()
+
+	yamlContent := `port: 8317
+antigravity:
+  sensitive-words:
+    - "Claude Agent SDK"
+    - "Hermes Agent"
+`
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(configPath, []byte(yamlContent), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("LoadConfig returned error: %v", err)
+	}
+	if len(cfg.Antigravity.SensitiveWords) != 2 {
+		t.Fatalf("expected 2 sensitive words, got %d", len(cfg.Antigravity.SensitiveWords))
+	}
+	if cfg.Antigravity.SensitiveWords[0] != "Claude Agent SDK" || cfg.Antigravity.SensitiveWords[1] != "Hermes Agent" {
+		t.Fatalf("unexpected sensitive words: %#v", cfg.Antigravity.SensitiveWords)
+	}
+}

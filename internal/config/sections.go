@@ -241,6 +241,12 @@ type PayloadModelRule struct {
 	Protocol string `yaml:"protocol" json:"protocol"`
 }
 
+// AntigravityConfig configures provider-wide Antigravity request behavior.
+type AntigravityConfig struct {
+	// SensitiveWords is a list of words to obfuscate with zero-width characters in system instructions.
+	SensitiveWords []string `yaml:"sensitive-words,omitempty" json:"sensitive-words,omitempty"`
+}
+
 // CloakConfig configures request cloaking for non-Claude-Code clients.
 // Cloaking disguises API requests to appear as originating from the official Claude Code CLI.
 type CloakConfig struct {

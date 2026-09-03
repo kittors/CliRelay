@@ -120,6 +120,9 @@ type Config struct {
 	// QuotaExceeded defines the behavior when a quota is exceeded.
 	QuotaExceeded QuotaExceeded `yaml:"quota-exceeded" json:"quota-exceeded"`
 
+	// Antigravity configures provider-wide Antigravity request behavior.
+	Antigravity AntigravityConfig `yaml:"antigravity" json:"antigravity"`
+
 	// Routing controls credential selection behavior.
 	Routing RoutingConfig `yaml:"routing" json:"routing"`
 
