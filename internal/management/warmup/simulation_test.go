@@ -89,7 +89,7 @@ func TestWarmupDriversExecution(t *testing.T) {
 		ID:       "ag-1",
 		Provider: "antigravity",
 		Metadata: map[string]any{
-			"type": "antigravity",
+			"type":         "antigravity",
 			"access_token": "test-token",
 		},
 	}

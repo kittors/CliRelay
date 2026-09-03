@@ -46,13 +46,13 @@ type Policy struct {
 	TenantID        string          `json:"tenant_id"`
 	Name            string          `json:"name"`
 	Enabled         bool            `json:"enabled"`
-	Providers       []string        `json:"providers"`        // e.g. ["antigravity", "codex"]
-	PoolIDs         []string        `json:"pool_ids"`          // e.g. ["antigravity:gemini", "antigravity:3p"]
+	Providers       []string        `json:"providers"` // e.g. ["antigravity", "codex"]
+	PoolIDs         []string        `json:"pool_ids"`  // e.g. ["antigravity:gemini", "antigravity:3p"]
 	StartAt         *time.Time      `json:"start_at,omitempty"`
 	StopAt          *time.Time      `json:"stop_at,omitempty"`
 	DailyWindow     DailyTimeWindow `json:"daily_window"`
-	IntervalSeconds int64           `json:"interval_seconds"`  // e.g. 18000 (5h)
-	StaggerMinutes  int             `json:"stagger_minutes"`   // Spread execution across N minutes
+	IntervalSeconds int64           `json:"interval_seconds"` // e.g. 18000 (5h)
+	StaggerMinutes  int             `json:"stagger_minutes"`  // Spread execution across N minutes
 	Status          PolicyStatus    `json:"status"`
 	LastRunAt       *time.Time      `json:"last_run_at,omitempty"`
 	NextRunAt       *time.Time      `json:"next_run_at,omitempty"`
