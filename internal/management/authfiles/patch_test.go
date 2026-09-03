@@ -503,6 +503,52 @@ func TestApplyFieldPatchUpdatesCodexConvergenceMode(t *testing.T) {
 	}
 }
 
+func TestApplyFieldPatchUpdatesCodexServiceTier(t *testing.T) {
+	auth := &coreauth.Auth{
+		ID:       "codex-tier",
+		Provider: "codex",
+		Metadata: map[string]any{},
+	}
+
+	tier := "priority"
+	_, err := ApplyFieldPatch(auth, FieldPatch{CodexServiceTier: &tier}, FieldPatchOptions{})
+	if err != nil {
+		t.Fatalf("ApplyFieldPatch() error = %v", err)
+	}
+	if got, _ := auth.Metadata["codex_service_tier"].(string); got != "priority" {
+		t.Fatalf("metadata codex_service_tier = %v, want priority", got)
+	}
+	if got := auth.Attributes["codex_service_tier"]; got != "priority" {
+		t.Fatalf("attributes codex_service_tier = %q, want priority", got)
+	}
+	if got := CodexServiceTierPayload(auth); got != "priority" {
+		t.Fatalf("CodexServiceTierPayload() = %q, want priority", got)
+	}
+
+	// Clearing it
+	emptyTier := ""
+	_, err = ApplyFieldPatch(auth, FieldPatch{CodexServiceTier: &emptyTier}, FieldPatchOptions{})
+	if err != nil {
+		t.Fatalf("ApplyFieldPatch() clear error = %v", err)
+	}
+	if _, ok := auth.Metadata["codex_service_tier"]; ok {
+		t.Fatalf("metadata codex_service_tier should be deleted, got %v", auth.Metadata["codex_service_tier"])
+	}
+	if _, ok := auth.Attributes["codex_service_tier"]; ok {
+		t.Fatalf("attributes codex_service_tier should be deleted, got %v", auth.Attributes["codex_service_tier"])
+	}
+	if got := CodexServiceTierPayload(auth); got != "" {
+		t.Fatalf("CodexServiceTierPayload() = %q, want empty", got)
+	}
+
+	// Invalid tier should be rejected
+	invalidTier := "turbo"
+	_, err = ApplyFieldPatch(auth, FieldPatch{CodexServiceTier: &invalidTier}, FieldPatchOptions{})
+	if err == nil {
+		t.Fatal("ApplyFieldPatch() want error for invalid tier, got nil")
+	}
+}
+
 func TestApplyFieldPatchRejectsNoFields(t *testing.T) {
 	auth := &coreauth.Auth{ID: "empty", Provider: "codex"}
 

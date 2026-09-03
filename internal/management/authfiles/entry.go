@@ -151,5 +151,8 @@ func BuildEntry(auth *coreauth.Auth, opts EntryOptions) map[string]any {
 	if mode := CodexConvergenceModePayload(auth); mode != "" {
 		entry["codex_convergence_mode"] = mode
 	}
+	if tier := CodexServiceTierPayload(auth); tier != "" {
+		entry["codex_service_tier"] = tier
+	}
 	return entry
 }
