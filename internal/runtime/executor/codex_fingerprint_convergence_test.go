@@ -364,4 +364,17 @@ func TestCodexConvergenceDefaultsToDeviceMode(t *testing.T) {
 	if got := codexConvergenceMode(cfg, codexConvergenceTestAuth("codex-bogus")); got != config.CodexFingerprintConvergenceDevice {
 		t.Fatalf("convergence mode = %q, want an unrecognised value to fall back to the default", got)
 	}
+
+	// Test per-account override
+	authWithOverride := codexConvergenceTestAuth("codex-override")
+	authWithOverride.Metadata["codex_convergence_mode"] = "full"
+	if got := codexConvergenceMode(cfg, authWithOverride); got != config.CodexFingerprintConvergenceFull {
+		t.Fatalf("convergence mode = %q, want overridden full", got)
+	}
+
+	authWithOff := codexConvergenceTestAuth("codex-off")
+	authWithOff.Attributes = map[string]string{"codex_convergence_mode": "off"}
+	if got := codexConvergenceMode(cfg, authWithOff); got != config.CodexFingerprintConvergenceOff {
+		t.Fatalf("convergence mode = %q, want overridden off", got)
+	}
 }

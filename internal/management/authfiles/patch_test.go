@@ -457,6 +457,52 @@ func TestApplyFieldPatchUpdatesConcurrencyLimit(t *testing.T) {
 	}
 }
 
+func TestApplyFieldPatchUpdatesCodexConvergenceMode(t *testing.T) {
+	auth := &coreauth.Auth{
+		ID:       "codex-convergence",
+		Provider: "codex",
+		Metadata: map[string]any{},
+	}
+
+	mode := "session"
+	_, err := ApplyFieldPatch(auth, FieldPatch{CodexConvergenceMode: &mode}, FieldPatchOptions{})
+	if err != nil {
+		t.Fatalf("ApplyFieldPatch() error = %v", err)
+	}
+	if got, _ := auth.Metadata["codex_convergence_mode"].(string); got != "session" {
+		t.Fatalf("metadata codex_convergence_mode = %v, want session", got)
+	}
+	if got := auth.Attributes["codex_convergence_mode"]; got != "session" {
+		t.Fatalf("attributes codex_convergence_mode = %q, want session", got)
+	}
+	if got := CodexConvergenceModePayload(auth); got != "session" {
+		t.Fatalf("CodexConvergenceModePayload() = %q, want session", got)
+	}
+
+	// Clearing it
+	emptyMode := ""
+	_, err = ApplyFieldPatch(auth, FieldPatch{CodexConvergenceMode: &emptyMode}, FieldPatchOptions{})
+	if err != nil {
+		t.Fatalf("ApplyFieldPatch() clear error = %v", err)
+	}
+	if _, ok := auth.Metadata["codex_convergence_mode"]; ok {
+		t.Fatalf("metadata codex_convergence_mode should be deleted, got %v", auth.Metadata["codex_convergence_mode"])
+	}
+	if _, ok := auth.Attributes["codex_convergence_mode"]; ok {
+		t.Fatalf("attributes codex_convergence_mode should be deleted, got %v", auth.Attributes["codex_convergence_mode"])
+	}
+	if got := CodexConvergenceModePayload(auth); got != "" {
+		t.Fatalf("CodexConvergenceModePayload() = %q, want empty", got)
+	}
+
+	// Invalid mode should be rejected
+	invalidMode := "invalid_mode"
+	_, err = ApplyFieldPatch(auth, FieldPatch{CodexConvergenceMode: &invalidMode}, FieldPatchOptions{})
+	if err == nil {
+		t.Fatal("ApplyFieldPatch() want error for invalid mode, got nil")
+	}
+}
+
 func TestApplyFieldPatchRejectsNoFields(t *testing.T) {
 	auth := &coreauth.Auth{ID: "empty", Provider: "codex"}
 

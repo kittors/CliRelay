@@ -87,6 +87,8 @@ func codexConvergedIDsFromContext(ctx context.Context) *codexConvergedIDs {
 // codexConvergenceMode reports the effective convergence strength for this auth.
 // Convergence rides on the Codex identity fingerprint switch: turning that off
 // means "leave my outbound identity alone", which has to include device ids.
+// When an auth file explicitly specifies a convergence mode in its metadata or attributes,
+// that per-account override takes precedence over the global config.
 func codexConvergenceMode(cfg *config.Config, auth *cliproxyauth.Auth) string {
 	if cfg == nil || !cfg.IdentityFingerprint.Codex.Enabled {
 		return config.CodexFingerprintConvergenceOff
@@ -96,6 +98,29 @@ func codexConvergenceMode(cfg *config.Config, auth *cliproxyauth.Auth) string {
 	if auth != nil && auth.Attributes != nil {
 		if strings.TrimSpace(auth.Attributes["api_key"]) != "" {
 			return config.CodexFingerprintConvergenceOff
+		}
+	}
+	// Check per-account override first from attributes then metadata.
+	if auth != nil {
+		for _, key := range []string{"codex_convergence_mode", "convergence_mode", "codex-convergence-mode"} {
+			if auth.Attributes != nil {
+				if v, ok := auth.Attributes[key]; ok {
+					v = strings.TrimSpace(strings.ToLower(v))
+					if config.IsValidCodexFingerprintConvergenceMode(v) {
+						return v
+					}
+				}
+			}
+			if auth.Metadata != nil {
+				if raw, ok := auth.Metadata[key]; ok {
+					if s, isStr := raw.(string); isStr {
+						s = strings.TrimSpace(strings.ToLower(s))
+						if config.IsValidCodexFingerprintConvergenceMode(s) {
+							return s
+						}
+					}
+				}
+			}
 		}
 	}
 	mode := strings.TrimSpace(strings.ToLower(cfg.IdentityFingerprint.Codex.ConvergenceMode))

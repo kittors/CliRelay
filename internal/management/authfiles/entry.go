@@ -148,5 +148,8 @@ func BuildEntry(auth *coreauth.Auth, opts EntryOptions) map[string]any {
 	if limit := auth.ConcurrencyLimit(); limit > 0 {
 		entry["concurrency_limit"] = limit
 	}
+	if mode := CodexConvergenceModePayload(auth); mode != "" {
+		entry["codex_convergence_mode"] = mode
+	}
 	return entry
 }
