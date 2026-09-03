@@ -169,6 +169,32 @@ func (s *PolicyScheduler) triggerPolicy(ctx context.Context, policy *Policy, now
 		if a == nil || a.Unavailable {
 			continue
 		}
+		// Check explicit account inclusions
+		if len(policy.AccountIDs) > 0 {
+			included := false
+			for _, id := range policy.AccountIDs {
+				if a.ID == id || a.FileName == id {
+					included = true
+					break
+				}
+			}
+			if !included {
+				continue
+			}
+		}
+		// Check explicit account exclusions
+		if len(policy.ExcludedAuthIDs) > 0 {
+			excluded := false
+			for _, id := range policy.ExcludedAuthIDs {
+				if a.ID == id || a.FileName == id {
+					excluded = true
+					break
+				}
+			}
+			if excluded {
+				continue
+			}
+		}
 		if len(policy.Providers) > 0 {
 			match := false
 			for _, p := range policy.Providers {

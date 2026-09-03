@@ -38,6 +38,7 @@ func registerManagementAuthRoutes(group *gin.RouterGroup, h *managementhandlers.
 
 	group.GET("/auth-files/warmup/targets", h.GetWarmupAccountTargets)
 	group.POST("/auth-files/warmup/run", h.PostWarmupAccount)
+	group.POST("/auth-files/warmup/batch", h.PostWarmupBatch)
 	group.GET("/auth-files/warmup/policies", h.GetWarmupPolicies)
 	group.POST("/auth-files/warmup/policies", h.PostWarmupPolicy)
 }

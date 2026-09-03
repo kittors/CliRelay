@@ -45,6 +45,26 @@ func (h *Handler) PostWarmupAccount(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"result": res})
 }
 
+// PostWarmupBatch triggers a staggered warmup for multiple accounts.
+func (h *Handler) PostWarmupBatch(c *gin.Context) {
+	var req struct {
+		AuthIDs []string `json:"auth_ids" binding:"required"`
+		PoolID  string   `json:"pool_id"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		return
+	}
+
+	count, err := h.warmupService().WarmupBatchAccounts(c.Request.Context(), req.AuthIDs, req.PoolID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"dispatched": count})
+}
+
 // GetWarmupPolicies returns all configured warmup policies.
 func (h *Handler) GetWarmupPolicies(c *gin.Context) {
 	tenantID := effectiveTenantID(c)

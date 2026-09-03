@@ -46,8 +46,10 @@ type Policy struct {
 	TenantID        string          `json:"tenant_id"`
 	Name            string          `json:"name"`
 	Enabled         bool            `json:"enabled"`
-	Providers       []string        `json:"providers"` // e.g. ["antigravity", "codex"]
-	PoolIDs         []string        `json:"pool_ids"`  // e.g. ["antigravity:gemini", "antigravity:3p"]
+	Providers       []string        `json:"providers"`                   // e.g. ["antigravity", "codex"]
+	PoolIDs         []string        `json:"pool_ids"`                    // e.g. ["antigravity:gemini", "antigravity:3p"]
+	AccountIDs      []string        `json:"account_ids,omitempty"`       // Specific accounts to target; empty means all matching accounts
+	ExcludedAuthIDs []string        `json:"excluded_auth_ids,omitempty"` // Accounts explicitly excluded from auto warmup
 	StartAt         *time.Time      `json:"start_at,omitempty"`
 	StopAt          *time.Time      `json:"stop_at,omitempty"`
 	DailyWindow     DailyTimeWindow `json:"daily_window"`

@@ -119,6 +119,45 @@ func (s *Service) WarmupSingleAccount(ctx context.Context, authID string, poolID
 	return res, err
 }
 
+// WarmupBatchAccounts triggers immediate staggered warmup for multiple accounts.
+func (s *Service) WarmupBatchAccounts(ctx context.Context, authIDs []string, poolID string) (int, error) {
+	if s.authMgr == nil {
+		return 0, fmt.Errorf("auth manager unavailable")
+	}
+	if len(authIDs) == 0 {
+		return 0, nil
+	}
+
+	tasks := make([]Task, 0, len(authIDs))
+	now := time.Now()
+	for _, id := range authIDs {
+		auth, ok := s.authMgr.GetByID(id)
+		if !ok || auth == nil {
+			continue
+		}
+		driver, okDriver := s.registry.Get(auth.Provider)
+		if !okDriver {
+			continue
+		}
+		targets := driver.GetTargets(auth)
+		for _, t := range targets {
+			if poolID == "" || t.PoolID == poolID {
+				tasks = append(tasks, Task{
+					ID:        auth.ID + ":" + t.PoolID,
+					Auth:      auth,
+					Target:    t,
+					CreatedAt: now,
+				})
+			}
+		}
+	}
+
+	if len(tasks) > 0 {
+		s.queue.Dispatch(ctx, tasks)
+	}
+	return len(tasks), nil
+}
+
 func (s *Service) GetMetrics() QueueMetrics {
 	return s.queue.GetMetrics()
 }
