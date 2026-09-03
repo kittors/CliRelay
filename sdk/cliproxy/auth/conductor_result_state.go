@@ -95,6 +95,44 @@ func updateAggregatedAvailability(auth *Auth, now time.Time) {
 	} else {
 		auth.NextRetryAfter = time.Time{}
 	}
+
+	// For Antigravity, only set auth.Quota.Exceeded = true if ALL active families are exhausted.
+	// If only Gemini is exhausted while Claude is fine (or vice versa), the auth level quota
+	// is NOT globally exceeded, preventing global 429 lockout and top-level error badges.
+	if IsAntigravityAuth(auth) {
+		famGeminiExceeded := false
+		famClaudeExceeded := false
+		hasGemini := false
+		hasClaude := false
+		for m, state := range auth.ModelStates {
+			if state == nil {
+				continue
+			}
+			fam := ModelAntigravityQuotaFamily(m)
+			if fam == AntigravityFamilyGemini {
+				hasGemini = true
+				if state.Quota.Exceeded && activeModelQuotaCooldown(state, now) {
+					famGeminiExceeded = true
+				}
+			} else if fam == AntigravityFamilyClaude {
+				hasClaude = true
+				if state.Quota.Exceeded && activeModelQuotaCooldown(state, now) {
+					famClaudeExceeded = true
+				}
+			}
+		}
+		// If both exist, both must be exceeded; if only one exists, that one must be exceeded
+		allFamiliesExceeded := false
+		if hasGemini && hasClaude {
+			allFamiliesExceeded = famGeminiExceeded && famClaudeExceeded
+		} else if hasGemini {
+			allFamiliesExceeded = famGeminiExceeded
+		} else if hasClaude {
+			allFamiliesExceeded = famClaudeExceeded
+		}
+		quotaExceeded = allFamiliesExceeded
+	}
+
 	if quotaExceeded {
 		auth.Quota.Exceeded = true
 		auth.Quota.RecoveryRequired = quotaRecoveryRequired

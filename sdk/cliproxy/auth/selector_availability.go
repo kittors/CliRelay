@@ -304,7 +304,9 @@ func isAuthBlockedForModel(auth *Auth, model string, now time.Time) (bool, block
 	// we should block *all* model requests for that auth until recovery, even if per-model
 	// state hasn't been initialized yet. This prevents clients from burning extra upstream
 	// requests by switching models during the same quota window.
-	if auth.Quota.Exceeded {
+	// Exception: Antigravity has separate quota pools for Gemini vs Claude/GPT.
+	// A quota exhaustion on one pool should NOT block requests for the other pool.
+	if auth.Quota.Exceeded && (!IsAntigravityAuth(auth) || isAntigravityExhaustedForModel(auth, model, now)) {
 		next := auth.Quota.NextRecoverAt
 		if quotaNeedsConfirmedRecovery(auth.Quota, now) || (!next.IsZero() && next.After(now)) {
 			if auth.NextRetryAfter.After(now) && (next.IsZero() || auth.NextRetryAfter.Before(next)) {
@@ -360,6 +362,22 @@ func isAuthBlockedForModel(auth *Auth, model string, now time.Time) (bool, block
 				}
 				return false, blockReasonNone, time.Time{}
 			}
+			// If this specific model has no state yet, check if other models in the same Antigravity family are in cooldown
+			if IsAntigravityAuth(auth) {
+				fam := ModelAntigravityQuotaFamily(model)
+				for m, s := range auth.ModelStates {
+					if s == nil || !s.Quota.Exceeded {
+						continue
+					}
+					if ModelAntigravityQuotaFamily(m) == fam && activeModelQuotaCooldown(s, now) {
+						next := s.Quota.NextRecoverAt
+						if s.NextRetryAfter.After(now) && (next.IsZero() || s.NextRetryAfter.Before(next)) {
+							next = s.NextRetryAfter
+						}
+						return true, blockReasonCooldown, next
+					}
+				}
+			}
 		}
 		return false, blockReasonNone, time.Time{}
 	}
@@ -377,4 +395,30 @@ func isAuthBlockedForModel(auth *Auth, model string, now time.Time) (bool, block
 		return true, blockReasonOther, next
 	}
 	return false, blockReasonNone, time.Time{}
+}
+
+func isAntigravityExhaustedForModel(auth *Auth, model string, now time.Time) bool {
+	if model == "" {
+		// No specific model requested: if any model has quota left, don't block auth-wide
+		hasRemaining := false
+		for _, s := range auth.ModelStates {
+			if s != nil && !activeModelQuotaCooldown(s, now) {
+				hasRemaining = true
+				break
+			}
+		}
+		return !hasRemaining
+	}
+	targetFamily := ModelAntigravityQuotaFamily(model)
+	// If any model in the target family has an active quota cooldown, block it
+	for m, s := range auth.ModelStates {
+		if s == nil || !s.Quota.Exceeded {
+			continue
+		}
+		if ModelAntigravityQuotaFamily(m) == targetFamily && activeModelQuotaCooldown(s, now) {
+			return true
+		}
+	}
+	// Target family has no active cooldown -> not exhausted
+	return false
 }
