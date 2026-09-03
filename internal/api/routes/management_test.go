@@ -26,7 +26,7 @@ func TestRegisterManagementRouteTable(t *testing.T) {
 		routes[key] = route
 	}
 
-	if got, want := len(routes), 330; got != want {
+	if got, want := len(routes), 334; got != want {
 		t.Fatalf("route count = %d, want %d", got, want)
 	}
 	if got, want := sortedRouteKeys(routes), expectedManagementRoutes(); !slices.Equal(got, want) {
@@ -315,6 +315,8 @@ func expectedManagementRoutes() []string {
 		"GET /v0/management/auth-files",
 		"GET /v0/management/auth-files/download",
 		"GET /v0/management/auth-files/models",
+		"GET /v0/management/auth-files/warmup/policies",
+		"GET /v0/management/auth-files/warmup/targets",
 		"GET /v0/management/auth-group-model-owner-mappings",
 		"GET /v0/management/auto-update/channel",
 		"GET /v0/management/auto-update/enabled",
@@ -455,6 +457,8 @@ func expectedManagementRoutes() []string {
 		"POST /v0/management/api-key-entries/daily-spending/reset",
 		"POST /v0/management/api-key-entries/period-spending/reset",
 		"POST /v0/management/auth-files",
+		"POST /v0/management/auth-files/warmup/policies",
+		"POST /v0/management/auth-files/warmup/run",
 		"POST /v0/management/iflow-auth-url",
 		"POST /v0/management/image-generation/test",
 		"POST /v0/management/model-configs",

@@ -35,4 +35,9 @@ func registerManagementAuthRoutes(group *gin.RouterGroup, h *managementhandlers.
 	group.POST("/iflow-auth-url", h.RequestIFlowCookieToken)
 	group.POST("/oauth-callback", h.PostOAuthCallback)
 	group.GET("/get-auth-status", h.GetAuthStatus)
+
+	group.GET("/auth-files/warmup/targets", h.GetWarmupAccountTargets)
+	group.POST("/auth-files/warmup/run", h.PostWarmupAccount)
+	group.GET("/auth-files/warmup/policies", h.GetWarmupPolicies)
+	group.POST("/auth-files/warmup/policies", h.PostWarmupPolicy)
 }
