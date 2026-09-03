@@ -36,6 +36,9 @@ func TestAntigravityQuotaPoolIsolation_Selector(t *testing.T) {
 	if auth.Quota.Exceeded {
 		t.Fatalf("auth.Quota.Exceeded = true, want false because Gemini pool is healthy")
 	}
+	if auth.Status == StatusError {
+		t.Fatalf("auth.Status = StatusError, want StatusActive when not all pools exhausted")
+	}
 
 	// Calling claude-3-7-sonnet should be BLOCKED
 	blockedClaude, reasonClaude, _ := isAuthBlockedForModel(auth, "claude-3-7-sonnet", now)

@@ -99,6 +99,7 @@ func updateAggregatedAvailability(auth *Auth, now time.Time) {
 	// For Antigravity, only set auth.Quota.Exceeded = true if ALL active families are exhausted.
 	// If only Gemini is exhausted while Claude is fine (or vice versa), the auth level quota
 	// is NOT globally exceeded, preventing global 429 lockout and top-level error badges.
+	// Also, clear auth-level Status / StatusMessage / LastError if they came from single-family quota exhaustion.
 	if IsAntigravityAuth(auth) {
 		famGeminiExceeded := false
 		famClaudeExceeded := false
@@ -131,6 +132,14 @@ func updateAggregatedAvailability(auth *Auth, now time.Time) {
 			allFamiliesExceeded = famClaudeExceeded
 		}
 		quotaExceeded = allFamiliesExceeded
+
+		// If not all families are exceeded, auth is still partially healthy.
+		// Clear auth-level error status so it does not report a global 429.
+		if !allFamiliesExceeded && auth.Status == StatusError && !allUnavailable {
+			auth.Status = StatusActive
+			auth.StatusMessage = ""
+			auth.LastError = nil
+		}
 	}
 
 	if quotaExceeded {
