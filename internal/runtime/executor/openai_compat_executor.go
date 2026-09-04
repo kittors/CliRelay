@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -283,6 +284,12 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 	translated = opencodeGoFixToolCallArguments(translated)
 	translated = normalizeOpenAIChatToolCallMessages(translated)
 	translated = applyProviderPromptCaching(translated, req.Payload, auth, e.provider, execCtx.BaseModel, to, opts)
+	if shouldRequestNVIDIAStreamUsage(baseURL, translated) {
+		translated, err = sjson.SetBytes(translated, "stream_options.include_usage", true)
+		if err != nil {
+			return nil, fmt.Errorf("openai compat executor: set NVIDIA stream usage: %w", err)
+		}
+	}
 
 	url := strings.TrimSuffix(baseURL, "/") + "/chat/completions"
 	httpReq, err := http.NewRequestWithContext(execCtx.Context, http.MethodPost, url, bytes.NewReader(translated))
@@ -397,6 +404,14 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 		result = opencodeGoRewriteFallbackStreamResult(result, fallback.OriginalModel)
 	}
 	return result, nil
+}
+
+func shouldRequestNVIDIAStreamUsage(baseURL string, payload []byte) bool {
+	parsed, err := url.Parse(strings.TrimSpace(baseURL))
+	if err != nil || !strings.EqualFold(parsed.Scheme, "https") || !strings.EqualFold(parsed.Hostname(), "integrate.api.nvidia.com") {
+		return false
+	}
+	return gjson.GetBytes(payload, "stream").Bool()
 }
 
 func unwrapOpenAICompatProviderEnvelope(body []byte) []byte {

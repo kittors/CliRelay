@@ -10,12 +10,124 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
 	cliproxyusage "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/usage"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v6/sdk/translator"
 	"github.com/tidwall/gjson"
 )
+
+func TestOpenAICompatExecutorRequestsUsageForNVIDIAStreamsOnly(t *testing.T) {
+	tests := []struct {
+		name             string
+		baseURL          string
+		wantIncludeUsage bool
+	}{
+		{
+			name:             "NVIDIA",
+			baseURL:          "https://integrate.api.nvidia.com/v1",
+			wantIncludeUsage: true,
+		},
+		{
+			name:             "other OpenAI compatible provider",
+			baseURL:          "https://compat.example.com/v1",
+			wantIncludeUsage: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var gotBody []byte
+			ctx := context.WithValue(context.Background(), util.ContextKeyRoundTripper, roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+				var err error
+				gotBody, err = io.ReadAll(req.Body)
+				if err != nil {
+					t.Fatalf("read body: %v", err)
+				}
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Status:     "200 OK",
+					Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+					Body:       io.NopCloser(strings.NewReader("data: [DONE]\n\n")),
+					Request:    req,
+				}, nil
+			}))
+
+			executor := NewOpenAICompatExecutor("openai-compatibility", &config.Config{})
+			auth := &cliproxyauth.Auth{Attributes: map[string]string{
+				"base_url": tt.baseURL,
+				"api_key":  "test",
+			}}
+			payload := []byte(`{"model":"glm-5.2","stream":true,"messages":[{"role":"user","content":"hi"}]}`)
+
+			result, err := executor.ExecuteStream(ctx, auth, cliproxyexecutor.Request{
+				Model:   "glm-5.2",
+				Payload: payload,
+			}, cliproxyexecutor.Options{
+				OriginalRequest: payload,
+				SourceFormat:    sdktranslator.FromString("openai"),
+				Stream:          true,
+			})
+			if err != nil {
+				t.Fatalf("ExecuteStream error: %v", err)
+			}
+			for chunk := range result.Chunks {
+				if chunk.Err != nil {
+					t.Fatalf("stream chunk error: %v", chunk.Err)
+				}
+			}
+
+			includeUsage := gjson.GetBytes(gotBody, "stream_options.include_usage")
+			if includeUsage.Exists() != tt.wantIncludeUsage {
+				t.Fatalf("stream_options.include_usage exists = %v, want %v: %s", includeUsage.Exists(), tt.wantIncludeUsage, gotBody)
+			}
+			if tt.wantIncludeUsage && !includeUsage.Bool() {
+				t.Fatalf("stream_options.include_usage = false, want true: %s", gotBody)
+			}
+		})
+	}
+}
+
+func TestOpenAICompatExecutorDoesNotRequestUsageForNVIDIANonStream(t *testing.T) {
+	var gotBody []byte
+	ctx := context.WithValue(context.Background(), util.ContextKeyRoundTripper, roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		var err error
+		gotBody, err = io.ReadAll(req.Body)
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)),
+			Request:    req,
+		}, nil
+	}))
+
+	executor := NewOpenAICompatExecutor("openai-compatibility", &config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"base_url": "https://integrate.api.nvidia.com/v1",
+		"api_key":  "test",
+	}}
+	payload := []byte(`{"model":"glm-5.2","stream":false,"messages":[{"role":"user","content":"hi"}]}`)
+
+	_, err := executor.Execute(ctx, auth, cliproxyexecutor.Request{
+		Model:   "glm-5.2",
+		Payload: payload,
+	}, cliproxyexecutor.Options{
+		OriginalRequest: payload,
+		SourceFormat:    sdktranslator.FromString("openai"),
+		Stream:          false,
+	})
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+	if streamOptions := gjson.GetBytes(gotBody, "stream_options"); streamOptions.Exists() {
+		t.Fatalf("stream_options must be absent for NVIDIA non-stream requests: %s", gotBody)
+	}
+}
 
 func TestOpenAICompatExecutorStreamAddsKimiReasoningForAssistantToolCalls(t *testing.T) {
 	var gotBody []byte
