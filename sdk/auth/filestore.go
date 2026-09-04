@@ -27,6 +27,13 @@ type FileTokenStore struct {
 	baseDir string
 }
 
+const (
+	projectIDFetchFailedAtKey = "project_id_fetch_failed_at"
+	projectIDFetchCooldown    = time.Hour
+)
+
+var fetchAntigravityProjectID = FetchAntigravityProjectID
+
 // NewFileTokenStore creates a token store that saves credentials to disk through the
 // TokenStorage implementation embedded in the token record.
 func NewFileTokenStore() *FileTokenStore {
@@ -210,7 +217,7 @@ func (s *FileTokenStore) readAuthFile(path, baseDir string) (*cliproxyauth.Auth,
 		if pid, ok := metadata["project_id"].(string); ok {
 			projectID = strings.TrimSpace(pid)
 		}
-		if projectID == "" {
+		if projectID == "" && shouldAttemptProjectIDFetch(metadata, time.Now()) {
 			accessToken := extractAccessToken(metadata)
 			// For gemini type, the stored access_token is likely expired (~1h lifetime).
 			// Refresh it using the long-lived refresh_token before querying.
@@ -222,15 +229,14 @@ func (s *FileTokenStore) readAuthFile(path, baseDir string) (*cliproxyauth.Auth,
 				}
 			}
 			if accessToken != "" {
-				fetchedProjectID, errFetch := FetchAntigravityProjectID(context.Background(), accessToken, http.DefaultClient)
+				fetchedProjectID, errFetch := fetchAntigravityProjectID(context.Background(), accessToken, http.DefaultClient)
 				if errFetch == nil && strings.TrimSpace(fetchedProjectID) != "" {
 					metadata["project_id"] = strings.TrimSpace(fetchedProjectID)
-					if raw, errMarshal := json.Marshal(metadata); errMarshal == nil {
-						if file, errOpen := os.OpenFile(path, os.O_WRONLY|os.O_TRUNC, 0o600); errOpen == nil {
-							_, _ = file.Write(raw)
-							_ = file.Close()
-						}
-					}
+					delete(metadata, projectIDFetchFailedAtKey)
+					_ = persistAuthMetadata(path, metadata)
+				} else if errFetch != nil {
+					metadata[projectIDFetchFailedAtKey] = time.Now().UTC().Format(time.RFC3339)
+					_ = persistAuthMetadata(path, metadata)
 				}
 			}
 		}
@@ -259,6 +265,37 @@ func (s *FileTokenStore) readAuthFile(path, baseDir string) (*cliproxyauth.Auth,
 	}
 	cliproxyauth.RestorePersistedDisabled(auth)
 	return auth, nil
+}
+
+func shouldAttemptProjectIDFetch(metadata map[string]any, now time.Time) bool {
+	if metadata == nil {
+		return true
+	}
+	raw, ok := metadata[projectIDFetchFailedAtKey].(string)
+	if !ok || strings.TrimSpace(raw) == "" {
+		return true
+	}
+	failedAt, err := time.Parse(time.RFC3339, strings.TrimSpace(raw))
+	if err != nil {
+		return true
+	}
+	return now.Sub(failedAt) >= projectIDFetchCooldown
+}
+
+func persistAuthMetadata(path string, metadata map[string]any) error {
+	raw, errMarshal := json.Marshal(metadata)
+	if errMarshal != nil {
+		return errMarshal
+	}
+	file, errOpen := os.OpenFile(path, os.O_WRONLY|os.O_TRUNC, 0o600)
+	if errOpen != nil {
+		return errOpen
+	}
+	if _, errWrite := file.Write(raw); errWrite != nil {
+		_ = file.Close()
+		return errWrite
+	}
+	return file.Close()
 }
 
 // buildFileAuthAttributes keeps disk-loaded credentials aligned with OAuth login
