@@ -907,7 +907,7 @@ func GetOpenAIModels() []*ModelInfo {
 			SupportedParameters: []string{"tools"},
 			Thinking:            &ThinkingSupport{Levels: []string{"low", "medium", "high", "xhigh"}},
 		},
-	}, getGPT56ModelDefinitions()...)...)
+	}, append(getGPT56ModelDefinitions(), getGPT6ModelDefinitions()...)...)...)
 }
 
 func GetXAIModels() []*ModelInfo {

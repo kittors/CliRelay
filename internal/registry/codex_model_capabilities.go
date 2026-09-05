@@ -21,6 +21,8 @@ type CodexModelCapability struct {
 
 var gpt56CatalogReasoningLevels = []string{"low", "medium", "high", "xhigh", "max", "ultra"}
 var gpt56RuntimeWireReasoningLevels = []string{"low", "medium", "high", "xhigh", "max"}
+var gpt6CatalogReasoningLevels = []string{"low", "medium", "high", "xhigh", "max", "ultra"}
+var gpt6RuntimeWireReasoningLevels = []string{"low", "medium", "high", "xhigh", "max"}
 
 var codexModelCapabilities = map[string]CodexModelCapability{
 	"gpt-5.6": {
@@ -84,6 +86,30 @@ var codexModelCapabilities = map[string]CodexModelCapability{
 		RuntimeWireReasoningLevels: gpt56RuntimeWireReasoningLevels,
 		CompatibilityAlias:         true,
 	},
+	"gpt-6-astra": {
+		ModelID:                    "gpt-6-astra",
+		CanonicalTarget:            "gpt-6-astra",
+		DisplayName:                "GPT-6 Astra",
+		Description:                "OpenAI's flagship GPT-6 Astra model for complex coding and agentic tasks.",
+		ContextWindow:              1050000,
+		MaxContextWindow:           1050000,
+		MaxCompletionTokens:        128000,
+		DefaultReasoningLevel:      "medium",
+		CatalogReasoningLevels:     gpt6CatalogReasoningLevels,
+		RuntimeWireReasoningLevels: gpt6RuntimeWireReasoningLevels,
+	},
+	"gpt-6-astra-pro": {
+		ModelID:                    "gpt-6-astra-pro",
+		CanonicalTarget:            "gpt-6-astra-pro",
+		DisplayName:                "GPT-6 Astra Pro",
+		Description:                "OpenAI's GPT-6 Astra Pro model with enhanced reasoning and throughput.",
+		ContextWindow:              1050000,
+		MaxContextWindow:           1050000,
+		MaxCompletionTokens:        128000,
+		DefaultReasoningLevel:      "medium",
+		CatalogReasoningLevels:     gpt6CatalogReasoningLevels,
+		RuntimeWireReasoningLevels: gpt6RuntimeWireReasoningLevels,
+	},
 }
 
 // GetCodexModelCapability returns an isolated copy so callers cannot mutate the
@@ -100,6 +126,31 @@ func GetCodexModelCapability(modelID string) (CodexModelCapability, bool) {
 
 func getGPT56ModelDefinitions() []*ModelInfo {
 	modelIDs := []string{"gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.6-ultra"}
+	models := make([]*ModelInfo, 0, len(modelIDs))
+	for _, modelID := range modelIDs {
+		capability, _ := GetCodexModelCapability(modelID)
+		models = append(models, &ModelInfo{
+			ID:                  capability.ModelID,
+			Object:              "model",
+			OwnedBy:             "openai",
+			Type:                "openai",
+			Version:             capability.CanonicalTarget,
+			DisplayName:         capability.DisplayName,
+			UpstreamModelID:     capability.CanonicalTarget,
+			Description:         capability.Description,
+			ContextLength:       capability.ContextWindow,
+			MaxCompletionTokens: capability.MaxCompletionTokens,
+			SupportedParameters: []string{"tools"},
+			Thinking: &ThinkingSupport{
+				Levels: append([]string(nil), capability.RuntimeWireReasoningLevels...),
+			},
+		})
+	}
+	return models
+}
+
+func getGPT6ModelDefinitions() []*ModelInfo {
+	modelIDs := []string{"gpt-6-astra", "gpt-6-astra-pro"}
 	models := make([]*ModelInfo, 0, len(modelIDs))
 	for _, modelID := range modelIDs {
 		capability, _ := GetCodexModelCapability(modelID)
