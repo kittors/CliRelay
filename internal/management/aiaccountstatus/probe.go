@@ -131,7 +131,8 @@ func doAuthRequestStatus(ctx context.Context, svc *managementapitools.Service, a
 		mutate(req)
 	}
 	client := util.NewHTTPClient(30 * time.Second)
-	if transport := svc.APICallTransport(auth); transport != nil {
+	targetURL, _ := url.Parse(urlStr)
+	if transport := svc.APICallTransportForURL(auth, targetURL); transport != nil {
 		client.Transport = transport
 	}
 	resp, err := client.Do(req)

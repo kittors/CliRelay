@@ -24,8 +24,14 @@ const (
 
 func probeCodex(ctx context.Context, svc *managementapitools.Service, auth *coreauth.Auth) (ProbeResult, error) {
 	body, err := doAuthGET(ctx, svc, auth, codexUsageURL, map[string]string{
-		"Content-Type": "application/json",
-		"User-Agent":   config.DefaultCodexFingerprintUserAgent,
+		"Content-Type":   "application/json",
+		"User-Agent":     config.DefaultCodexFingerprintUserAgent,
+		"Originator":     "Codex Desktop",
+		"OpenAI-Beta":    "codex-1",
+		"Accept":         "application/json",
+		"Sec-Fetch-Site": "none",
+		"Sec-Fetch-Mode": "no-cors",
+		"Sec-Fetch-Dest": "empty",
 	}, func(req *http.Request) {
 		if accountID := codexAccountID(auth); accountID != "" {
 			req.Header.Set("Chatgpt-Account-Id", accountID)
@@ -47,8 +53,14 @@ func probeCodex(ctx context.Context, svc *managementapitools.Service, auth *core
 		result.ResetCreditCount = &v
 		if v > 0 {
 			if expBody, expErr := doAuthGET(ctx, svc, auth, codexResetCreditsURL, map[string]string{
-				"Content-Type": "application/json",
-				"User-Agent":   config.DefaultCodexFingerprintUserAgent,
+				"Content-Type":   "application/json",
+				"User-Agent":     config.DefaultCodexFingerprintUserAgent,
+				"Originator":     "Codex Desktop",
+				"OpenAI-Beta":    "codex-1",
+				"Accept":         "application/json",
+				"Sec-Fetch-Site": "none",
+				"Sec-Fetch-Mode": "no-cors",
+				"Sec-Fetch-Dest": "empty",
 			}, func(req *http.Request) {
 				if accountID := codexAccountID(auth); accountID != "" {
 					req.Header.Set("Chatgpt-Account-Id", accountID)
