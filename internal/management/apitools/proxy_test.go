@@ -5,8 +5,8 @@ import (
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	"net/url"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	"net/url"
 )
 
 func TestCachedManagementProxyTransportReusesSameKey(t *testing.T) {
@@ -64,7 +64,6 @@ func TestAPICallTransportForURL_SelectsTLSFingerprintForCodexUpstream(t *testing
 		t.Fatal("expected non-nil transport for Codex URL")
 	}
 }
-
 
 func itoa(v int) string {
 	if v == 0 {

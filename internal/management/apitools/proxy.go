@@ -2,15 +2,15 @@ package apitools
 
 import (
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
-	"net/url"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/tlsfingerprint"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/tlsfingerprint"
 )
 
 // Management probes must reuse transports by proxy/TLS config. Creating a new
