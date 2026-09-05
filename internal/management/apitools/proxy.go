@@ -79,7 +79,7 @@ func (s *Service) APICallTransportForURL(auth *coreauth.Auth, targetURL *url.URL
 		sdkCfg = &s.cfg.SDKConfig
 	}
 	for _, proxyStr := range proxyCandidates {
-		if targetURL != nil && isCodexTargetURL(auth, targetURL) {
+		if targetURL != nil && strings.EqualFold(targetURL.Scheme, "https") && isCodexTargetURL(auth, targetURL) {
 			if fpTransport := cachedManagementTLSFingerprintTransport(proxyStr, sdkCfg); fpTransport != nil {
 				return fpTransport
 			}
@@ -88,7 +88,7 @@ func (s *Service) APICallTransportForURL(auth *coreauth.Auth, targetURL *url.URL
 			return transport
 		}
 	}
-	if targetURL != nil && isCodexTargetURL(auth, targetURL) {
+	if targetURL != nil && strings.EqualFold(targetURL.Scheme, "https") && isCodexTargetURL(auth, targetURL) {
 		if fpTransport := cachedManagementTLSFingerprintTransport("", sdkCfg); fpTransport != nil {
 			return fpTransport
 		}
