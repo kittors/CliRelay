@@ -111,7 +111,7 @@ func (s *Service) APICall(ctx context.Context, body APICallRequest) (int, any) {
 	}
 
 	httpClient := util.NewHTTPClient(s.defaultAPICallTimeout())
-	httpClient.Transport = s.APICallTransport(auth)
+	httpClient.Transport = s.APICallTransportForURL(auth, parsedURL)
 	httpClient.CheckRedirect = func(req *http.Request, via []*http.Request) error {
 		if len(via) >= 10 {
 			return http.ErrUseLastResponse
@@ -142,6 +142,11 @@ func (s *Service) APICall(ctx context.Context, body APICallRequest) (int, any) {
 	}
 	if errReconcile := s.ReconcileCodexWhamUsagePlan(ctx, auth, parsedURL, resp.StatusCode, respBody); errReconcile != nil {
 		log.WithError(errReconcile).Warn("failed to reconcile codex usage plan type")
+	}
+	if isCodexResetConsumeURL(parsedURL) && resp.StatusCode >= http.StatusOK && resp.StatusCode < http.StatusMultipleChoices {
+		if s.authManager != nil && auth != nil {
+			_, _ = s.authManager.ClearQuotaStatus(ctx, auth.ID)
+		}
 	}
 
 	return http.StatusOK, APICallResponse{
@@ -264,6 +269,13 @@ func isCodexWhamUsageURL(parsedURL *url.URL) bool {
 	}
 	path := strings.TrimRight(parsedURL.EscapedPath(), "/")
 	return path == "/backend-api/wham/usage"
+}
+func isCodexResetConsumeURL(parsedURL *url.URL) bool {
+	if parsedURL == nil {
+		return false
+	}
+	path := strings.TrimRight(parsedURL.EscapedPath(), "/")
+	return path == "/backend-api/wham/rate-limit-reset-credits/consume"
 }
 
 func reconcileAuthExplicitDisplayTags(auth *coreauth.Auth) bool {

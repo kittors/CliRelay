@@ -2,11 +2,13 @@ package apitools
 
 import (
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/tlsfingerprint"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 )
@@ -51,6 +53,10 @@ func (s *Service) AuthByIndex(authIndex string) *coreauth.Auth {
 }
 
 func (s *Service) APICallTransport(auth *coreauth.Auth) http.RoundTripper {
+	return s.APICallTransportForURL(auth, nil)
+}
+
+func (s *Service) APICallTransportForURL(auth *coreauth.Auth, targetURL *url.URL) http.RoundTripper {
 	var proxyCandidates []string
 	if s != nil && s.cfg != nil {
 		proxyID := ""
@@ -73,11 +79,58 @@ func (s *Service) APICallTransport(auth *coreauth.Auth) http.RoundTripper {
 		sdkCfg = &s.cfg.SDKConfig
 	}
 	for _, proxyStr := range proxyCandidates {
+		if targetURL != nil && strings.EqualFold(targetURL.Scheme, "https") && isCodexTargetURL(auth, targetURL) {
+			if fpTransport := cachedManagementTLSFingerprintTransport(proxyStr, sdkCfg); fpTransport != nil {
+				return fpTransport
+			}
+		}
 		if transport := cachedManagementProxyTransport(proxyStr, sdkCfg); transport != nil {
 			return transport
 		}
 	}
+	if targetURL != nil && strings.EqualFold(targetURL.Scheme, "https") && isCodexTargetURL(auth, targetURL) {
+		if fpTransport := cachedManagementTLSFingerprintTransport("", sdkCfg); fpTransport != nil {
+			return fpTransport
+		}
+	}
 	return nil
+}
+
+func isCodexTargetURL(auth *coreauth.Auth, u *url.URL) bool {
+	if u == nil {
+		return false
+	}
+	host := strings.ToLower(strings.TrimSpace(u.Hostname()))
+	if host == "chatgpt.com" || strings.HasSuffix(host, ".chatgpt.com") ||
+		host == "openai.com" || strings.HasSuffix(host, ".openai.com") {
+		return true
+	}
+	if auth != nil && strings.EqualFold(strings.TrimSpace(auth.Provider), "codex") {
+		return true
+	}
+	return false
+}
+
+func cachedManagementTLSFingerprintTransport(proxyStr string, sdkCfg *config.SDKConfig) http.RoundTripper {
+	key := managementTransportKey{proxyURL: strings.TrimSpace(proxyStr)}
+	if sdkCfg != nil {
+		key.preferIPv4 = sdkCfg.PreferIPv4
+		key.insecureSkipVerify = sdkCfg.InsecureSkipVerify
+		key.caCert = strings.TrimSpace(sdkCfg.CACert)
+	}
+	opts := tlsfingerprint.Options{
+		Profile:            tlsfingerprint.DefaultProfile,
+		ProxyURL:           key.proxyURL,
+		PreferIPv4:         key.preferIPv4,
+		InsecureSkipVerify: key.insecureSkipVerify,
+		CACertPath:         key.caCert,
+		DialTimeout:        30 * time.Second,
+	}
+	rt, err := tlsfingerprint.New(opts)
+	if err != nil {
+		return nil
+	}
+	return rt
 }
 
 func cachedManagementProxyTransport(proxyStr string, sdkCfg *config.SDKConfig) *http.Transport {

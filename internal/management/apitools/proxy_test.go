@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	"net/url"
 )
 
 func TestCachedManagementProxyTransportReusesSameKey(t *testing.T) {
@@ -51,6 +53,15 @@ func TestCachedManagementProxyTransportEvictsOldest(t *testing.T) {
 	managementTransportMu.Unlock()
 	if n > maxManagementTransportEntries {
 		t.Fatalf("cache size %d > max", n)
+	}
+}
+func TestAPICallTransportForURL_SelectsTLSFingerprintForCodexUpstream(t *testing.T) {
+	svc := NewForTenant("test-tenant", &config.Config{}, nil, Dependencies{})
+	targetURL, _ := url.Parse("https://chatgpt.com/backend-api/wham/usage")
+	auth := &coreauth.Auth{Provider: "codex"}
+	tr := svc.APICallTransportForURL(auth, targetURL)
+	if tr == nil {
+		t.Fatal("expected non-nil transport for Codex URL")
 	}
 }
 
