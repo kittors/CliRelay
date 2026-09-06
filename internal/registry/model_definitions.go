@@ -19,6 +19,7 @@ import (
 //   - bedrock
 //   - codex
 //   - xai
+//   - minimax (image models only)
 //   - qwen
 //   - iflow
 //   - kimi
@@ -46,6 +47,8 @@ func GetStaticModelDefinitionsByChannel(channel string) []*ModelInfo {
 		return GetOpenAIModels()
 	case "xai", "x-ai", "grok":
 		return GetXAIModels()
+	case "minimax":
+		return GetMiniMaxModels()
 	case "qwen":
 		return GetQwenModels()
 	case "iflow":
@@ -104,6 +107,7 @@ func LookupStaticModelInfo(modelID string) *ModelInfo {
 		GetAIStudioModels(),
 		GetOpenAIModels(),
 		GetXAIModels(),
+		GetMiniMaxModels(),
 		GetQwenModels(),
 		GetIFlowModels(),
 		GetKimiModels(),

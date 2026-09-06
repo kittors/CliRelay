@@ -584,6 +584,11 @@ func RegisterExecutorForAuth(coreManager *coreauth.Manager, base *config.Config,
 		register(executor.NewKimiExecutor(cfg))
 	case "xai":
 		register(executor.NewXAIExecutor(cfg))
+	case "minimax":
+		// Chat is delegated to the compatibility path; the dedicated executor
+		// exists so image models have a credential pool that can actually serve
+		// them.
+		register(executor.NewMiniMaxExecutor(strings.ToLower(strings.TrimSpace(auth.Provider)), cfg))
 	default:
 		providerKey := strings.ToLower(strings.TrimSpace(auth.Provider))
 		if providerKey == "" {

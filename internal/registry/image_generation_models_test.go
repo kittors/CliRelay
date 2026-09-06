@@ -117,3 +117,108 @@ func TestGrokImageModelsAreRegistered(t *testing.T) {
 		}
 	}
 }
+
+func TestMiniMaxImageModelsClassify(t *testing.T) {
+	for _, modelID := range []string{"image-01", "image-01-live", "IMAGE-01", " image-01 "} {
+		if !IsImageGenerationModel(modelID) {
+			t.Errorf("IsImageGenerationModel(%q) = false, want true", modelID)
+		}
+	}
+
+	// No per-image rate is published for these models, so the defaults must not
+	// invent one; an invented number becomes real spend in usage reporting.
+	for _, modelID := range []string{"image-01", "image-01-live"} {
+		price, description, ok := ImageGenerationModelDefaults(modelID)
+		if !ok {
+			t.Errorf("%s should have defaults", modelID)
+			continue
+		}
+		if price != 0 {
+			t.Errorf("%s price = %v, want 0", modelID, price)
+		}
+		if description == "" {
+			t.Errorf("%s description should be set", modelID)
+		}
+	}
+}
+
+// TestMiniMaxImageModelsRouteToMiniMax is the routing rule the shared images handler
+// depends on: without it these models resolve to no provider at all and the request
+// is rejected as unsupported.
+func TestMiniMaxImageModelsRouteToMiniMax(t *testing.T) {
+	for _, modelID := range []string{"image-01", "image-01-live"} {
+		if got := ImageGenerationProvider(modelID); got != ImageProviderMiniMax {
+			t.Errorf("ImageGenerationProvider(%q) = %q, want %q", modelID, got, ImageProviderMiniMax)
+		}
+	}
+
+	// The existing providers must keep their models.
+	if got := ImageGenerationProvider("gpt-image-2"); got != ImageProviderCodex {
+		t.Errorf("ImageGenerationProvider(gpt-image-2) = %q, want %q", got, ImageProviderCodex)
+	}
+	if got := ImageGenerationProvider("grok-imagine-image"); got != ImageProviderXAI {
+		t.Errorf("ImageGenerationProvider(grok-imagine-image) = %q, want %q", got, ImageProviderXAI)
+	}
+
+	// Text-to-image only: the reference-image form is a different upstream request
+	// shape, so claiming edit support would offer a control this build cannot serve.
+	for _, modelID := range []string{"image-01", "image-01-live"} {
+		if SupportsImageEditing(modelID) {
+			t.Errorf("SupportsImageEditing(%q) = true, want false", modelID)
+		}
+	}
+}
+
+// TestMiniMaxImageModelsAreRegistered ties the classifier to the static catalog: a
+// model that routes to a provider but is absent from the catalog is selectable and
+// unreachable at the same time.
+func TestMiniMaxImageModelsAreRegistered(t *testing.T) {
+	wanted := []string{"image-01", "image-01-live"}
+
+	registered := make(map[string]struct{})
+	for _, model := range GetMiniMaxModels() {
+		registered[model.ID] = struct{}{}
+	}
+	for _, modelID := range wanted {
+		if _, ok := registered[modelID]; !ok {
+			t.Errorf("%s is classified as an image model but is not in the MiniMax catalog", modelID)
+		}
+		if LookupStaticModelInfo(modelID) == nil {
+			t.Errorf("%s is not reachable through the static model lookup", modelID)
+		}
+	}
+
+	byChannel := make(map[string]struct{})
+	for _, model := range GetStaticModelDefinitionsByChannel("minimax") {
+		byChannel[model.ID] = struct{}{}
+	}
+	for _, modelID := range wanted {
+		if _, ok := byChannel[modelID]; !ok {
+			t.Errorf("%s is missing from the minimax channel catalog", modelID)
+		}
+	}
+
+	listed := make(map[string]ImageGenerationModel)
+	for _, model := range ListImageGenerationModels() {
+		listed[model.ID] = model
+	}
+	for _, modelID := range wanted {
+		model, ok := listed[modelID]
+		if !ok {
+			t.Errorf("%s is not selectable in the console", modelID)
+			continue
+		}
+		if model.Provider != ImageProviderMiniMax {
+			t.Errorf("%s listed provider = %q, want %q", modelID, model.Provider, ImageProviderMiniMax)
+		}
+		if model.SupportsEdit {
+			t.Errorf("%s must not advertise edit support", modelID)
+		}
+	}
+	// The models that were already selectable must stay selectable.
+	for _, modelID := range []string{"gpt-image-2", "grok-imagine-image"} {
+		if _, ok := listed[modelID]; !ok {
+			t.Errorf("%s is no longer selectable", modelID)
+		}
+	}
+}
