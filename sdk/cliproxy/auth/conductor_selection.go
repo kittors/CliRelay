@@ -1,6 +1,10 @@
 package auth
 
-import "strings"
+import (
+	"strings"
+
+	sdkconfig "github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
+)
 
 func (m *Manager) normalizeProviders(providers []string) []string {
 	if len(providers) == 0 {
@@ -73,38 +77,86 @@ func (m *Manager) SetSelector(selector Selector) {
 	if m.fillFirstSelector == nil {
 		m.fillFirstSelector = &FillFirstSelector{}
 	}
+	if m.leastLoadSelector == nil {
+		m.leastLoadSelector = &LeastLoadSelector{}
+	}
 	if m.sessionStickySelector == nil {
 		m.sessionStickySelector = NewSessionStickySelector(m.roundRobinSelector)
+	}
+	// A replaced selector must keep observing load, otherwise least-load and the
+	// sticky release threshold silently lose their inputs after a config reload.
+	if m.scheduler != nil {
+		m.roundRobinSelector.deps = m.scheduler
+		m.fillFirstSelector.deps = m.scheduler
+		m.leastLoadSelector.deps = m.scheduler
+		m.sessionStickySelector.deps = m.scheduler
+	}
+	if m.sessionStickySelector.distribution == nil {
+		m.sessionStickySelector.distribution = func(name string) Selector {
+			return m.distributionSelectorLocked(name)
+		}
 	}
 	m.mu.Unlock()
 }
 
-func (m *Manager) selectorForRoutingScopeLocked(cfg *runtimeConfigSnapshot, routeGroup string, allowedGroups map[string]struct{}) Selector {
+// SetQuotaLoadSource wires the usage layer's quota snapshot into scheduling.
+// Least-load uses it to steer traffic away from accounts nearing their window
+// ceiling, and session stickiness uses it for early binding release.
+func (m *Manager) SetQuotaLoadSource(source QuotaLoadSource) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	if m.scheduler == nil {
+		m.scheduler = &schedulerDeps{tracker: newSelectionPressureTracker(), limiter: m.concurrencyLimiter}
+	}
+	m.scheduler.quota = source
+	m.mu.Unlock()
+}
+
+// distributionSelectorLocked returns the singleton selector implementing one
+// distribution mode. Singletons matter: the cursors, pressure counters and
+// sticky bindings are what make the distribution behave consistently across
+// requests.
+func (m *Manager) distributionSelectorLocked(distribution string) Selector {
 	if m == nil {
 		return &RoundRobinSelector{}
 	}
-	switch scopedRoutingStrategy(cfg, routeGroup, allowedGroups) {
-	case "session-sticky":
-		if m.sessionStickySelector != nil {
-			return m.sessionStickySelector
-		}
-		return NewSessionStickySelector(m.roundRobinSelector)
-	case "fill-first":
+	switch sdkconfig.NormalizeDistribution(distribution) {
+	case sdkconfig.DistributionFillFirst:
 		if m.fillFirstSelector != nil {
 			return m.fillFirstSelector
 		}
 		return &FillFirstSelector{}
-	case "round-robin":
+	case sdkconfig.DistributionLeastLoad:
+		if m.leastLoadSelector != nil {
+			return m.leastLoadSelector
+		}
+		return &LeastLoadSelector{}
+	default:
 		if m.roundRobinSelector != nil {
 			return m.roundRobinSelector
 		}
 		return &RoundRobinSelector{}
-	default:
-		if m.selector != nil {
-			return m.selector
-		}
+	}
+}
+
+// selectorForRoutingScopeLocked picks the selector for this request's routing
+// scope. Session stickiness wraps a distribution mode rather than replacing it,
+// so an operator can combine "keep a conversation on one account" with any of
+// the balancing behaviours.
+func (m *Manager) selectorForRoutingScopeLocked(cfg *runtimeConfigSnapshot, routeGroup string, allowedGroups map[string]struct{}) Selector {
+	if m == nil {
 		return &RoundRobinSelector{}
 	}
+	scheduling := scopedScheduling(cfg, routeGroup, allowedGroups)
+	if scheduling.StickyEnabled {
+		if m.sessionStickySelector != nil {
+			return m.sessionStickySelector
+		}
+		return NewSessionStickySelector(m.distributionSelectorLocked(scheduling.Distribution))
+	}
+	return m.distributionSelectorLocked(scheduling.Distribution)
 }
 
 func authAllowedByChannels(auth *Auth, allowed map[string]struct{}) bool {

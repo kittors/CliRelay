@@ -3,9 +3,11 @@ package serviceapp
 import (
 	"context"
 	"strings"
+	"sync"
 
 	configaccess "github.com/router-for-me/CLIProxyAPI/v6/internal/access/config_access"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/identity"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/management/schedulingload"
 	modelconfigsettings "github.com/router-for-me/CLIProxyAPI/v6/internal/management/settings/modelconfig"
 	internalusage "github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/watcher"
@@ -22,6 +24,21 @@ type OAuthProviderModelConfigRow struct {
 	Enabled     bool
 }
 
+// schedulingLoadProvider is a process-wide singleton: it caches one quota
+// snapshot shared by every selector, and ApplyTenantRuntimeConfigs runs again on
+// each config reload, so rebuilding it per call would throw the cache away.
+var (
+	schedulingLoadOnce     sync.Once
+	schedulingLoadProvider *schedulingload.Provider
+)
+
+func sharedSchedulingLoadProvider() *schedulingload.Provider {
+	schedulingLoadOnce.Do(func() {
+		schedulingLoadProvider = schedulingload.NewProvider()
+	})
+	return schedulingLoadProvider
+}
+
 func ApplyTenantRuntimeConfigs(base *config.Config, manager *coreauth.Manager) {
 	if base == nil || manager == nil || identity.Default() == nil {
 		return
@@ -30,13 +47,19 @@ func ApplyTenantRuntimeConfigs(base *config.Config, manager *coreauth.Manager) {
 	if err != nil {
 		return
 	}
+	loadProvider := sharedSchedulingLoadProvider()
+	loadProvider.TrackTenant(identity.SystemTenantID)
 	for _, tenant := range tenants {
 		if tenant.ID == "" || tenant.ID == identity.SystemTenantID {
 			continue
 		}
+		loadProvider.TrackTenant(tenant.ID)
 		tenantCfg := internalusage.BuildTenantRuntimeConfig(base, tenant.ID)
 		manager.SetConfigForTenant(tenant.ID, &tenantCfg)
 	}
+	// Least-load distribution and the sticky release threshold both read this;
+	// without it they degrade to concurrency-only signals.
+	manager.SetQuotaLoadSource(loadProvider)
 }
 
 func ListOAuthProviderModelConfigRows() []OAuthProviderModelConfigRow {

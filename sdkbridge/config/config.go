@@ -13,6 +13,8 @@ type RoutingConfig = internalconfig.RoutingConfig
 type RoutingChannelGroup = internalconfig.RoutingChannelGroup
 type RoutingPathRoute = internalconfig.RoutingPathRoute
 type ChannelGroupMatch = internalconfig.ChannelGroupMatch
+type GroupScheduling = internalconfig.GroupScheduling
+type GroupStickyConfig = internalconfig.GroupStickyConfig
 type TLSConfig = internalconfig.TLSConfig
 type PprofConfig = internalconfig.PprofConfig
 type RemoteManagement = internalconfig.RemoteManagement
@@ -51,7 +53,20 @@ const (
 	DefaultOllamaCloudBaseURL    = internalconfig.DefaultOllamaCloudBaseURL
 	DefaultCommandCodeBaseURL    = internalconfig.DefaultCommandCodeBaseURL
 	DefaultPprofAddr             = internalconfig.DefaultPprofAddr
+
+	DistributionWeighted     = internalconfig.DistributionWeighted
+	DistributionLeastLoad    = internalconfig.DistributionLeastLoad
+	DistributionFillFirst    = internalconfig.DistributionFillFirst
+	DefaultStickyMaxRequests = internalconfig.DefaultStickyMaxRequests
 )
+
+func NormalizeDistribution(value string) string {
+	return internalconfig.NormalizeDistribution(value)
+}
+
+func MigrateLegacyPriorities(priorities map[string]int) map[string]int {
+	return internalconfig.MigrateLegacyPriorities(priorities)
+}
 
 func LoadConfig(configFile string) (*Config, error) { return internalconfig.LoadConfig(configFile) }
 

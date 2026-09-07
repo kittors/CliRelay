@@ -21,14 +21,28 @@ const (
 type sessionStickyBinding struct {
 	authID    string
 	expiresAt time.Time
+	// requests counts how many times this binding has been honoured. It bounds
+	// how long one conversation may pin a single upstream account.
+	requests   int
+	lastUsedAt time.Time
 }
 
-// SessionStickySelector keeps stable client sessions on the same auth while it remains available.
+// SessionStickySelector keeps a client session on the same auth while that auth
+// remains a sensible target.
+//
+// Stickiness is a constraint layered on top of a distribution mode, not a
+// distribution mode of its own: it only pins conversations that are already
+// running. Every new conversation, and every conversation whose binding was
+// released, is placed by the group's configured distribution.
 type SessionStickySelector struct {
 	mu       sync.Mutex
-	bindings map[string]sessionStickyBinding
-	fallback Selector
-	maxKeys  int
+	bindings map[string]*sessionStickyBinding
+	// fallback is used when no distribution resolver is wired (SDK embedders
+	// constructing this selector directly).
+	fallback     Selector
+	distribution func(name string) Selector
+	deps         *schedulerDeps
+	maxKeys      int
 }
 
 func NewSessionStickySelector(fallback Selector) *SessionStickySelector {
@@ -45,20 +59,15 @@ func (s *SessionStickySelector) Pick(ctx context.Context, provider, model string
 	}
 
 	now := time.Now()
-	available, err := getAvailableAuths(auths, provider, model, now, false)
+	available, err := getAvailableAuths(auths, provider, model, now)
 	if err != nil {
 		return nil, err
 	}
 	available = preferCodexWebsocketAuths(ctx, provider, available)
 
-	if boundID := s.boundAuthID(key, now); boundID != "" {
-		for _, auth := range available {
-			if auth != nil && auth.ID == boundID {
-				s.refreshBinding(key, boundID, now)
-				return auth, nil
-			}
-		}
-		s.deleteBinding(key)
+	limits := stickyLimitsFromMetadata(opts.Metadata)
+	if bound := s.honourBinding(key, available, limits, now); bound != nil {
+		return bound, nil
 	}
 
 	selected, err := s.pickFallback(ctx, provider, model, opts, available)
@@ -66,53 +75,116 @@ func (s *SessionStickySelector) Pick(ctx context.Context, provider, model string
 		return nil, err
 	}
 	if selected != nil && strings.TrimSpace(selected.ID) != "" {
-		s.refreshBinding(key, selected.ID, now)
+		s.bind(key, selected.ID, now)
 	}
 	return selected, nil
 }
 
-func (s *SessionStickySelector) pickFallback(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, auths []*Auth) (*Auth, error) {
-	if s == nil || s.fallback == nil {
-		return (&RoundRobinSelector{}).Pick(ctx, provider, model, opts, auths)
-	}
-	return s.fallback.Pick(ctx, provider, model, opts, auths)
-}
-
-func (s *SessionStickySelector) boundAuthID(key string, now time.Time) string {
+// honourBinding returns the bound auth when the binding is still valid, and
+// releases it otherwise. Releasing here (rather than only when the account goes
+// unavailable) is what stops a long session from burning one account until it
+// hits a 429.
+func (s *SessionStickySelector) honourBinding(key string, available []*Auth, limits stickyLimits, now time.Time) *Auth {
 	if s == nil || key == "" {
-		return ""
+		return nil
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	binding, ok := s.bindings[key]
-	if !ok {
-		return ""
+	if !ok || binding == nil {
+		return nil
 	}
 	if !binding.expiresAt.IsZero() && now.After(binding.expiresAt) {
 		delete(s.bindings, key)
-		return ""
+		return nil
 	}
-	return binding.authID
+	if limits.maxRequests > 0 && binding.requests >= limits.maxRequests {
+		delete(s.bindings, key)
+		return nil
+	}
+
+	var bound *Auth
+	for _, auth := range available {
+		if auth != nil && auth.ID == binding.authID {
+			bound = auth
+			break
+		}
+	}
+	if bound == nil {
+		delete(s.bindings, key)
+		return nil
+	}
+	if limits.releaseAtLoad > 0 && s.deps.loadRatio(bound) >= limits.releaseAtLoad {
+		delete(s.bindings, key)
+		return nil
+	}
+
+	binding.requests++
+	binding.lastUsedAt = now
+	binding.expiresAt = now.Add(sessionStickyTTL)
+	s.deps.observeSelection(bound, now)
+	return bound
 }
 
-func (s *SessionStickySelector) refreshBinding(key, authID string, now time.Time) {
+func (s *SessionStickySelector) pickFallback(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, auths []*Auth) (*Auth, error) {
+	if s == nil {
+		return (&RoundRobinSelector{}).Pick(ctx, provider, model, opts, auths)
+	}
+	if s.distribution != nil {
+		if selector := s.distribution(distributionFromMetadata(opts.Metadata)); selector != nil {
+			return selector.Pick(ctx, provider, model, opts, auths)
+		}
+	}
+	if s.fallback != nil {
+		return s.fallback.Pick(ctx, provider, model, opts, auths)
+	}
+	return (&RoundRobinSelector{}).Pick(ctx, provider, model, opts, auths)
+}
+
+func (s *SessionStickySelector) bind(key, authID string, now time.Time) {
 	if s == nil || key == "" || authID == "" {
 		return
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.bindings == nil {
+		s.bindings = make(map[string]*sessionStickyBinding)
+	}
+	s.evictIfNeededLocked(key, now)
+	s.bindings[key] = &sessionStickyBinding{
+		authID:     authID,
+		expiresAt:  now.Add(sessionStickyTTL),
+		requests:   1,
+		lastUsedAt: now,
+	}
+}
+
+// evictIfNeededLocked makes room for a new binding by dropping expired entries
+// first and then the least recently used one. The previous implementation reset
+// the whole map on overflow, which re-shuffled every live conversation onto a
+// different account at once. Must be called with s.mu held.
+func (s *SessionStickySelector) evictIfNeededLocked(incoming string, now time.Time) {
 	limit := s.maxKeys
 	if limit <= 0 {
 		limit = sessionStickyMaxKeys
 	}
-	if s.bindings == nil {
-		s.bindings = make(map[string]sessionStickyBinding)
-	} else if len(s.bindings) >= limit {
-		s.bindings = make(map[string]sessionStickyBinding)
+	if _, exists := s.bindings[incoming]; exists || len(s.bindings) < limit {
+		return
 	}
-	s.bindings[key] = sessionStickyBinding{
-		authID:    authID,
-		expiresAt: now.Add(sessionStickyTTL),
+	oldestKey := ""
+	oldestAt := time.Time{}
+	for key, binding := range s.bindings {
+		if binding == nil || (!binding.expiresAt.IsZero() && now.After(binding.expiresAt)) {
+			delete(s.bindings, key)
+			continue
+		}
+		if oldestKey == "" || binding.lastUsedAt.Before(oldestAt) {
+			oldestKey = key
+			oldestAt = binding.lastUsedAt
+		}
+	}
+	if len(s.bindings) >= limit && oldestKey != "" {
+		delete(s.bindings, oldestKey)
 	}
 }
 

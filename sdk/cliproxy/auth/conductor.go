@@ -159,7 +159,9 @@ type Manager struct {
 	selector              Selector
 	roundRobinSelector    *RoundRobinSelector
 	fillFirstSelector     *FillFirstSelector
+	leastLoadSelector     *LeastLoadSelector
 	sessionStickySelector *SessionStickySelector
+	scheduler             *schedulerDeps
 	hook                  Hook
 	mu                    sync.RWMutex
 	auths                 map[string]*Auth
@@ -201,21 +203,29 @@ func NewManager(store Store, selector Selector, hook Hook) *Manager {
 	if selector == nil {
 		selector = &RoundRobinSelector{}
 	}
+	if hook == nil {
+		hook = NoopHook{}
+	}
+	limiter := NewAccountConcurrencyLimiter()
+	deps := &schedulerDeps{tracker: newSelectionPressureTracker(), limiter: limiter}
+
 	roundRobinSelector, _ := selector.(*RoundRobinSelector)
 	if roundRobinSelector == nil {
 		roundRobinSelector = &RoundRobinSelector{}
 	}
+	roundRobinSelector.deps = deps
 	fillFirstSelector, _ := selector.(*FillFirstSelector)
 	if fillFirstSelector == nil {
 		fillFirstSelector = &FillFirstSelector{}
 	}
+	fillFirstSelector.deps = deps
+	leastLoadSelector := &LeastLoadSelector{deps: deps}
 	sessionStickySelector, _ := selector.(*SessionStickySelector)
 	if sessionStickySelector == nil {
 		sessionStickySelector = NewSessionStickySelector(roundRobinSelector)
 	}
-	if hook == nil {
-		hook = NoopHook{}
-	}
+	sessionStickySelector.deps = deps
+
 	manager := &Manager{
 		store:                 store,
 		executors:             make(map[string]ProviderExecutor),
@@ -223,13 +233,20 @@ func NewManager(store Store, selector Selector, hook Hook) *Manager {
 		selector:              selector,
 		roundRobinSelector:    roundRobinSelector,
 		fillFirstSelector:     fillFirstSelector,
+		leastLoadSelector:     leastLoadSelector,
 		sessionStickySelector: sessionStickySelector,
+		scheduler:             deps,
 		hook:                  hook,
 		auths:                 make(map[string]*Auth),
 		providerOffsets:       make(map[string]int),
-		concurrencyLimiter:    NewAccountConcurrencyLimiter(),
+		concurrencyLimiter:    limiter,
 		refreshSemaphore:      make(chan struct{}, refreshMaxConcurrency),
 		quotaProbeAfter:       make(map[string]time.Time),
+	}
+	// Sticky delegates new conversations to whichever distribution the group
+	// configures, so it needs to reach the manager's singleton selectors.
+	sessionStickySelector.distribution = func(name string) Selector {
+		return manager.distributionSelectorLocked(name)
 	}
 	// atomic.Value requires non-nil initial value.
 	manager.runtimeConfig.Store(runtimeConfigSnapshotSet{defaultTenantID: newRuntimeConfigSnapshot(nil)})

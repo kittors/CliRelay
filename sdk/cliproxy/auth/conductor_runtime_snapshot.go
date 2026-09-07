@@ -26,13 +26,23 @@ type runtimeRoutingConfigSnapshot struct {
 }
 
 type runtimeRoutingChannelGroup struct {
-	Name               string
+	Name string
+	// Strategy is the legacy mirror of Scheduling; selection reads Scheduling.
 	Strategy           string
+	Scheduling         runtimeGroupScheduling
 	Match              runtimeChannelGroupMatch
 	ExcludeFromDefault bool
 	Priority           int
 	ChannelPriorities  map[string]int
 	AllowedModels      []string
+}
+
+type runtimeGroupScheduling struct {
+	Distribution   string
+	StickyEnabled  bool
+	StickyMax      int
+	StickyRelease  float64
+	ChannelWeights map[string]int
 }
 
 type runtimeChannelGroupMatch struct {
@@ -135,6 +145,7 @@ func cloneRuntimeRoutingChannelGroups(groups []sdkconfig.RoutingChannelGroup) []
 		out = append(out, runtimeRoutingChannelGroup{
 			Name:               group.Name,
 			Strategy:           normalizeOptionalRuntimeRoutingStrategy(group.Strategy),
+			Scheduling:         cloneRuntimeGroupScheduling(group),
 			Match:              cloneRuntimeChannelGroupMatch(group.Match),
 			ExcludeFromDefault: group.ExcludeFromDefault,
 			Priority:           group.Priority,
@@ -143,6 +154,33 @@ func cloneRuntimeRoutingChannelGroups(groups []sdkconfig.RoutingChannelGroup) []
 		})
 	}
 	return out
+}
+
+// cloneRuntimeGroupScheduling reads the group's scheduling block, falling back
+// to the legacy strategy/priorities pair for configs that predate it or that
+// were written by an older binary between deploys.
+func cloneRuntimeGroupScheduling(group sdkconfig.RoutingChannelGroup) runtimeGroupScheduling {
+	scheduling := group.Scheduling
+	if strings.TrimSpace(scheduling.Distribution) == "" && !scheduling.Sticky.Enabled && len(scheduling.ChannelWeights) == 0 {
+		switch normalizeOptionalRuntimeRoutingStrategy(group.Strategy) {
+		case "session-sticky":
+			scheduling.Distribution = sdkconfig.DistributionWeighted
+			scheduling.Sticky.Enabled = true
+			scheduling.Sticky.MaxRequests = sdkconfig.DefaultStickyMaxRequests
+		case "fill-first":
+			scheduling.Distribution = sdkconfig.DistributionFillFirst
+		default:
+			scheduling.Distribution = sdkconfig.DistributionWeighted
+		}
+		scheduling.ChannelWeights = sdkconfig.MigrateLegacyPriorities(group.ChannelPriorities)
+	}
+	return runtimeGroupScheduling{
+		Distribution:   sdkconfig.NormalizeDistribution(scheduling.Distribution),
+		StickyEnabled:  scheduling.Sticky.Enabled,
+		StickyMax:      scheduling.Sticky.MaxRequests,
+		StickyRelease:  scheduling.Sticky.ReleaseAtLoad,
+		ChannelWeights: cloneStringIntMap(scheduling.ChannelWeights),
+	}
 }
 
 func cloneRuntimeChannelGroupMatch(match sdkconfig.ChannelGroupMatch) runtimeChannelGroupMatch {

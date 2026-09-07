@@ -159,7 +159,11 @@ func TestSessionStickyKeyUsesPromptCacheKey(t *testing.T) {
 	}
 }
 
-func TestRoundRobinSelectorPick_PriorityBuckets(t *testing.T) {
+// A legacy `priority: 0` marked the default tier, not an exclusion, so such an
+// account keeps a minimal share rather than being dropped from rotation on
+// upgrade. Higher values still dominate, which is what the original "priority
+// buckets" behaviour existed for.
+func TestRoundRobinSelectorPick_LegacyPriorityZeroKeepsMinimalShare(t *testing.T) {
 	t.Parallel()
 
 	selector := &RoundRobinSelector{}
@@ -169,8 +173,8 @@ func TestRoundRobinSelectorPick_PriorityBuckets(t *testing.T) {
 		{ID: "b", Attributes: map[string]string{"priority": "10"}},
 	}
 
-	want := []string{"a", "b", "a", "b"}
-	for i, id := range want {
+	counts := map[string]int{}
+	for i := 0; i < 210; i++ {
 		got, err := selector.Pick(context.Background(), "mixed", "", cliproxyexecutor.Options{}, auths)
 		if err != nil {
 			t.Fatalf("Pick() #%d error = %v", i, err)
@@ -178,12 +182,10 @@ func TestRoundRobinSelectorPick_PriorityBuckets(t *testing.T) {
 		if got == nil {
 			t.Fatalf("Pick() #%d auth = nil", i)
 		}
-		if got.ID != id {
-			t.Fatalf("Pick() #%d auth.ID = %q, want %q", i, got.ID, id)
-		}
-		if got.ID == "c" {
-			t.Fatalf("Pick() #%d unexpectedly selected lower priority auth", i)
-		}
+		counts[got.ID]++
+	}
+	if counts["a"] != 100 || counts["b"] != 100 || counts["c"] != 10 {
+		t.Fatalf("counts = %v, want a=100 b=100 c=10 for weights 10:10:1", counts)
 	}
 }
 
@@ -295,7 +297,9 @@ func TestRoundRobinSelectorPick_AllowedChannelGroupZeroWeightIsExcluded(t *testi
 	}
 }
 
-func TestFillFirstSelectorPick_GroupedRouteUsesHighestPriorityFillFirst(t *testing.T) {
+// fill-first drains the highest-weighted account first; the weights here come
+// from the legacy priority attribute, which still maps onto a share.
+func TestFillFirstSelectorPick_GroupedRouteUsesHighestWeightFillFirst(t *testing.T) {
 	t.Parallel()
 
 	selector := &FillFirstSelector{}
@@ -834,7 +838,9 @@ func TestRoundRobinSelectorPick_ThinkingSuffixSharesCursor(t *testing.T) {
 	}
 }
 
-func TestRoundRobinSelectorPick_CursorKeyCap(t *testing.T) {
+// Flat (non gemini-virtual) selection keeps its per-model state in the weighted
+// cursor map, so that is where the key cap has to hold.
+func TestRoundRobinSelectorPick_WeightedStateKeyCap(t *testing.T) {
 	t.Parallel()
 
 	selector := &RoundRobinSelector{maxKeys: 2}
@@ -847,15 +853,15 @@ func TestRoundRobinSelectorPick_CursorKeyCap(t *testing.T) {
 	selector.mu.Lock()
 	defer selector.mu.Unlock()
 
-	if selector.cursors == nil {
-		t.Fatalf("selector.cursors = nil")
+	if selector.weighted == nil {
+		t.Fatalf("selector.weighted = nil")
 	}
-	if len(selector.cursors) != 1 {
-		t.Fatalf("len(selector.cursors) = %d, want %d", len(selector.cursors), 1)
+	if len(selector.weighted) != 1 {
+		t.Fatalf("len(selector.weighted) = %d, want %d", len(selector.weighted), 1)
 	}
-	expectedKey := defaultTenantID + ":gemini:m3"
-	if _, ok := selector.cursors[expectedKey]; !ok {
-		t.Fatalf("selector.cursors missing key %q", expectedKey)
+	expectedKey := defaultTenantID + ":gemini:m3:"
+	if _, ok := selector.weighted[expectedKey]; !ok {
+		t.Fatalf("selector.weighted missing key %q", expectedKey)
 	}
 }
 

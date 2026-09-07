@@ -143,8 +143,8 @@ func TestAuthGroupsMatchesLegacyOAuthEmailAfterRename(t *testing.T) {
 	if _, ok := groups["team-alpha"]; !ok {
 		t.Fatalf("expected group match through legacy email alias, got %v", groups)
 	}
-	if got, ok := derivedGroupPriority(runtimeCfg, auth, map[string]struct{}{"team-alpha": {}}); !ok || got != 100 {
-		t.Fatalf("derivedGroupPriority() = %d, want 100", got)
+	if got, ok := derivedGroupWeight(runtimeCfg, auth, map[string]struct{}{"team-alpha": {}}); !ok || got != 100 {
+		t.Fatalf("derivedGroupWeight() = %d, want 100", got)
 	}
 }
 
@@ -281,7 +281,7 @@ func TestAuthGroupsIgnoresHiddenDisplayTags(t *testing.T) {
 	}
 }
 
-func TestDerivedGroupPriorityPreservesExplicitZero(t *testing.T) {
+func TestDerivedGroupWeightPreservesExplicitZero(t *testing.T) {
 	t.Parallel()
 
 	cfg := &internalconfig.Config{
@@ -290,10 +290,14 @@ func TestDerivedGroupPriorityPreservesExplicitZero(t *testing.T) {
 				{
 					Name: "team-alpha",
 					Match: internalconfig.ChannelGroupMatch{
-						Channels: []string{"chatgpt-pro1"},
+						Channels: []string{"chatgpt-pro1", "chatgpt-pro2"},
 					},
-					ChannelPriorities: map[string]int{
-						"chatgpt-pro1": 0,
+					Scheduling: internalconfig.GroupScheduling{
+						Distribution: internalconfig.DistributionWeighted,
+						ChannelWeights: map[string]int{
+							"chatgpt-pro1": 0,
+							"chatgpt-pro2": 1,
+						},
 					},
 				},
 			},
@@ -302,20 +306,23 @@ func TestDerivedGroupPriorityPreservesExplicitZero(t *testing.T) {
 	auth := &Auth{Label: "chatgpt-pro1"}
 
 	runtimeCfg := newRuntimeConfigSnapshot(cfg)
-	got, ok := derivedGroupPriority(runtimeCfg, auth, map[string]struct{}{"team-alpha": {}})
+	got, ok := derivedGroupWeight(runtimeCfg, auth, map[string]struct{}{"team-alpha": {}})
 	if !ok {
-		t.Fatal("derivedGroupPriority() did not report an explicit priority")
+		t.Fatal("derivedGroupWeight() did not report an explicit weight")
 	}
 	if got != 0 {
-		t.Fatalf("derivedGroupPriority() = %d, want 0", got)
+		t.Fatalf("derivedGroupWeight() = %d, want 0", got)
 	}
 
 	prepared := prepareCandidateForSelection(runtimeCfg, auth, "", map[string]struct{}{"team-alpha": {}})
 	if prepared == nil {
 		t.Fatal("prepareCandidateForSelection() = nil")
 	}
-	if got := prepared.Attributes["priority"]; got != "0" {
-		t.Fatalf("prepared priority = %q, want %q", got, "0")
+	if got := prepared.Attributes[selectionWeightAttribute]; got != "0" {
+		t.Fatalf("prepared weight = %q, want %q", got, "0")
+	}
+	if authParticipatesInSelection(prepared) {
+		t.Fatal("weight 0 must exclude the candidate from scheduling")
 	}
 }
 

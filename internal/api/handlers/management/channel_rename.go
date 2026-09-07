@@ -242,21 +242,53 @@ func renameRoutingChannelReferences(routing *config.RoutingConfig, oldNameSet ma
 			routing.ChannelGroups[i].Match.Channels = channels
 			changed = true
 		}
-		if priorities := routing.ChannelGroups[i].ChannelPriorities; len(priorities) > 0 {
-			for channel, priority := range priorities {
-				if !shouldRenameChannel(channel, oldNameSet) {
-					continue
-				}
-				delete(priorities, channel)
-				if existing, exists := priorities[newName]; !exists || priority > existing {
-					priorities[newName] = priority
-				}
-				changed = true
-			}
-			if len(priorities) == 0 {
+		if renameWeightMap(routing.ChannelGroups[i].ChannelPriorities, oldNameSet, newName) {
+			if len(routing.ChannelGroups[i].ChannelPriorities) == 0 {
 				routing.ChannelGroups[i].ChannelPriorities = nil
 			}
+			changed = true
 		}
+		// The scheduling weights are keyed by channel name too; a rename that
+		// skipped them would silently reset that channel to the default weight.
+		if renameWeightMap(routing.ChannelGroups[i].Scheduling.ChannelWeights, oldNameSet, newName) {
+			if len(routing.ChannelGroups[i].Scheduling.ChannelWeights) == 0 {
+				routing.ChannelGroups[i].Scheduling.ChannelWeights = nil
+			}
+			changed = true
+		}
+	}
+	return changed
+}
+
+func renameWeightMap(weights map[string]int, oldNameSet map[string]struct{}, newName string) bool {
+	if len(weights) == 0 {
+		return false
+	}
+	changed := false
+	for channel, weight := range weights {
+		if !shouldRenameChannel(channel, oldNameSet) {
+			continue
+		}
+		delete(weights, channel)
+		if existing, exists := weights[newName]; !exists || weight > existing {
+			weights[newName] = weight
+		}
+		changed = true
+	}
+	return changed
+}
+
+func removeWeightMap(weights map[string]int, oldNameSet map[string]struct{}) bool {
+	if len(weights) == 0 {
+		return false
+	}
+	changed := false
+	for channel := range weights {
+		if !shouldRenameChannel(channel, oldNameSet) {
+			continue
+		}
+		delete(weights, channel)
+		changed = true
 	}
 	return changed
 }
@@ -272,17 +304,17 @@ func removeRoutingChannelReferences(routing *config.RoutingConfig, oldNameSet ma
 			routing.ChannelGroups[i].Match.Channels = channels
 			changed = true
 		}
-		if priorities := routing.ChannelGroups[i].ChannelPriorities; len(priorities) > 0 {
-			for channel := range priorities {
-				if !shouldRenameChannel(channel, oldNameSet) {
-					continue
-				}
-				delete(priorities, channel)
-				changed = true
-			}
-			if len(priorities) == 0 {
+		if removeWeightMap(routing.ChannelGroups[i].ChannelPriorities, oldNameSet) {
+			if len(routing.ChannelGroups[i].ChannelPriorities) == 0 {
 				routing.ChannelGroups[i].ChannelPriorities = nil
 			}
+			changed = true
+		}
+		if removeWeightMap(routing.ChannelGroups[i].Scheduling.ChannelWeights, oldNameSet) {
+			if len(routing.ChannelGroups[i].Scheduling.ChannelWeights) == 0 {
+				routing.ChannelGroups[i].Scheduling.ChannelWeights = nil
+			}
+			changed = true
 		}
 	}
 	return changed

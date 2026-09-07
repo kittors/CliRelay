@@ -14,10 +14,16 @@ type ChannelGroupMatch struct {
 }
 
 // RoutingChannelGroup defines a named channel group used by routing and API-key permissions.
+//
+// Strategy and ChannelPriorities are the pre-scheduling representation. They are
+// kept in sync with Scheduling by sanitizeScheduling so that an older binary or
+// admin panel reading this config still sees a coherent value; new code must
+// read Scheduling, never these two fields.
 type RoutingChannelGroup struct {
 	Name               string            `yaml:"name" json:"name"`
 	Description        string            `yaml:"description,omitempty" json:"description,omitempty"`
 	Strategy           string            `yaml:"strategy,omitempty" json:"strategy,omitempty"`
+	Scheduling         GroupScheduling   `yaml:"scheduling,omitempty" json:"scheduling,omitempty"`
 	Match              ChannelGroupMatch `yaml:"match,omitempty" json:"match,omitempty"`
 	ExcludeFromDefault bool              `yaml:"exclude-from-default,omitempty" json:"exclude-from-default,omitempty"`
 	Priority           int               `yaml:"priority,omitempty" json:"priority,omitempty"`
@@ -130,6 +136,7 @@ func (cfg *Config) SanitizeRouting() {
 		})
 		group.Match.Tags = normalizeStringList(group.Match.Tags, NormalizeRoutingTag)
 		group.ChannelPriorities = normalizeChannelPriorities(group.ChannelPriorities)
+		sanitizeScheduling(&group)
 		group.AllowedModels = normalizeStringList(group.AllowedModels, func(value string) string {
 			return strings.TrimSpace(value)
 		})

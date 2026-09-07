@@ -11,29 +11,6 @@ import (
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
 )
 
-func authPriority(auth *Auth) int {
-	priority, ok := authPriorityValue(auth)
-	if !ok {
-		return 0
-	}
-	return priority
-}
-
-func authPriorityValue(auth *Auth) (int, bool) {
-	if auth == nil || auth.Attributes == nil {
-		return 0, false
-	}
-	raw := strings.TrimSpace(auth.Attributes["priority"])
-	if raw == "" {
-		return 0, false
-	}
-	parsed, err := strconv.Atoi(raw)
-	if err != nil {
-		return 0, false
-	}
-	return parsed, true
-}
-
 func canonicalModelKey(model string) string {
 	model = strings.TrimSpace(model)
 	if model == "" {
@@ -103,14 +80,17 @@ func preferCodexWebsocketAuths(ctx context.Context, provider string, available [
 	return available
 }
 
-func collectAvailableByPriority(auths []*Auth, model string, now time.Time) (available map[int][]*Auth, cooldownCount int, cooldownEarliest time.Time, temporaryCount int, temporaryEarliest time.Time) {
-	available = make(map[int][]*Auth)
+// collectAvailableAuths partitions candidates into "can serve now" and the
+// diagnostic counters used to explain an empty result. Weight filtering is not
+// applied here: an excluded (weight 0) candidate must not be reported as being
+// in cooldown, so the caller drops those separately.
+func collectAvailableAuths(auths []*Auth, model string, now time.Time) (available []*Auth, cooldownCount int, cooldownEarliest time.Time, temporaryCount int, temporaryEarliest time.Time) {
+	available = make([]*Auth, 0, len(auths))
 	for i := 0; i < len(auths); i++ {
 		candidate := auths[i]
 		blocked, reason, next := isAuthBlockedForModel(candidate, model, now)
 		if !blocked {
-			priority := authPriority(candidate)
-			available[priority] = append(available[priority], candidate)
+			available = append(available, candidate)
 			continue
 		}
 		if reason == blockReasonCooldown {
@@ -200,28 +180,23 @@ func weightedSelectionScope(meta map[string]any) string {
 	return ""
 }
 
-func isWeightedPrioritySelection(meta map[string]any) bool {
-	return weightedSelectionScope(meta) != ""
-}
-
-func authSelectionWeight(auth *Auth) int {
-	weight, ok := authPriorityValue(auth)
-	if !ok {
-		return 1
-	}
-	if weight <= 0 {
-		return 0
-	}
-	return weight
-}
-
-func getAvailableAuths(auths []*Auth, provider, model string, now time.Time, includeAllPriorities bool) ([]*Auth, error) {
+// getAvailableAuths returns every candidate that can serve the request right
+// now, in a stable order.
+//
+// It deliberately has one behaviour for all distribution modes. The previous
+// implementation took an `includeAllPriorities` flag: round-robin passed true
+// and treated the priority as a weight, while session-sticky and fill-first
+// passed false and kept only the single highest priority tier. The same number
+// therefore meant "share" in one group and "hard cutoff" in another, and an
+// account with no configured priority (tier 0) was silently excluded from any
+// group where somebody else had set 1.
+func getAvailableAuths(auths []*Auth, provider, model string, now time.Time) ([]*Auth, error) {
 	if len(auths) == 0 {
 		return nil, &Error{Code: "auth_not_found", Message: "no auth candidates"}
 	}
 
-	availableByPriority, cooldownCount, earliest, temporaryCount, temporaryEarliest := collectAvailableByPriority(auths, model, now)
-	if len(availableByPriority) == 0 {
+	available, cooldownCount, earliest, temporaryCount, temporaryEarliest := collectAvailableAuths(auths, model, now)
+	if len(available) == 0 {
 		if cooldownCount == len(auths) && !earliest.IsZero() {
 			providerForError := provider
 			if providerForError == "mixed" {
@@ -247,49 +222,21 @@ func getAvailableAuths(auths []*Auth, provider, model string, now time.Time, inc
 		return nil, &Error{Code: "auth_unavailable", Message: "no auth available"}
 	}
 
-	if includeAllPriorities {
-		priorities := make([]int, 0, len(availableByPriority))
-		total := 0
-		for priority, items := range availableByPriority {
-			priorities = append(priorities, priority)
-			for _, item := range items {
-				if authSelectionWeight(item) > 0 {
-					total++
-				}
-			}
-		}
-		sort.Ints(priorities)
-
-		available := make([]*Auth, 0, total)
-		for _, priority := range priorities {
-			for _, item := range availableByPriority[priority] {
-				if authSelectionWeight(item) <= 0 {
-					continue
-				}
-				available = append(available, item)
-			}
-		}
-		if len(available) == 0 {
-			return nil, &Error{Code: "auth_unavailable", Message: "no auth available"}
-		}
-		sort.Slice(available, func(i, j int) bool { return available[i].ID < available[j].ID })
-		return available, nil
-	}
-
-	bestPriority := 0
-	found := false
-	for priority := range availableByPriority {
-		if !found || priority > bestPriority {
-			bestPriority = priority
-			found = true
+	scheduled := make([]*Auth, 0, len(available))
+	for _, candidate := range available {
+		if authParticipatesInSelection(candidate) {
+			scheduled = append(scheduled, candidate)
 		}
 	}
-
-	available := availableByPriority[bestPriority]
-	if len(available) > 1 {
-		sort.Slice(available, func(i, j int) bool { return available[i].ID < available[j].ID })
+	if len(scheduled) == 0 {
+		// Healthy accounts exist but every one of them is weighted 0. Saying
+		// "no auth available" here would send the operator hunting for a quota
+		// or auth problem that does not exist.
+		return nil, &Error{Code: "auth_excluded_by_weight", Message: "every candidate in this routing scope is configured with weight 0"}
 	}
-	return available, nil
+
+	sort.Slice(scheduled, func(i, j int) bool { return scheduled[i].ID < scheduled[j].ID })
+	return scheduled, nil
 }
 
 func isAuthBlockedForModel(auth *Auth, model string, now time.Time) (bool, blockReason, time.Time) {

@@ -31,10 +31,25 @@ const (
 	channelDisabledAuthorityConfig  = 2
 )
 
+// channelGroupScheduling mirrors config.GroupScheduling on the wire. It is
+// always emitted (no omitempty on the block) so the panel can render the
+// resolved defaults for implicit groups such as "default", which have no stored
+// configuration of their own.
+type channelGroupScheduling struct {
+	Distribution        string         `json:"distribution"`
+	StickyEnabled       bool           `json:"sticky-enabled"`
+	StickyMaxRequests   int            `json:"sticky-max-requests,omitempty"`
+	StickyReleaseAtLoad float64        `json:"sticky-release-at-load,omitempty"`
+	ChannelWeights      map[string]int `json:"channel-weights,omitempty"`
+}
+
 type channelGroupItem struct {
-	Name               string                      `json:"name"`
-	Description        string                      `json:"description,omitempty"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	// Strategy is the legacy mirror of Scheduling, retained so an older panel
+	// build keeps working against a newer backend during a staged rollout.
 	Strategy           string                      `json:"strategy,omitempty"`
+	Scheduling         channelGroupScheduling      `json:"scheduling"`
 	Priority           int                         `json:"priority,omitempty"`
 	ExcludeFromDefault bool                        `json:"exclude-from-default,omitempty"`
 	Implicit           bool                        `json:"implicit"`
@@ -44,6 +59,25 @@ type channelGroupItem struct {
 	ChannelDetails     []channelGroupChannelDetail `json:"channel-details,omitempty"`
 	AllowedModels      []string                    `json:"allowed-models,omitempty"`
 	PathRoutes         []string                    `json:"path-routes,omitempty"`
+}
+
+func schedulingItemFrom(group config.RoutingChannelGroup) channelGroupScheduling {
+	scheduling := group.Scheduling
+	if strings.TrimSpace(scheduling.Distribution) == "" && !scheduling.Sticky.Enabled && len(scheduling.ChannelWeights) == 0 {
+		scheduling = config.SchedulingFromLegacyGroup(group)
+	}
+	return channelGroupScheduling{
+		Distribution:        config.NormalizeDistribution(scheduling.Distribution),
+		StickyEnabled:       scheduling.Sticky.Enabled,
+		StickyMaxRequests:   scheduling.Sticky.MaxRequests,
+		StickyReleaseAtLoad: scheduling.Sticky.ReleaseAtLoad,
+		ChannelWeights:      scheduling.ChannelWeights,
+	}
+}
+
+// defaultSchedulingItem describes an implicit group that has no stored config.
+func defaultSchedulingItem() channelGroupScheduling {
+	return channelGroupScheduling{Distribution: config.DistributionWeighted}
 }
 
 func collectChannelDescriptors(cfg *config.Config, auths []*coreauth.Auth) []channelDescriptor {
@@ -196,7 +230,7 @@ func buildChannelGroupItems(cfg *config.Config, auths []*coreauth.Auth) []channe
 			}
 			return existing
 		}
-		item := &channelGroupItem{Name: name, Implicit: implicit}
+		item := &channelGroupItem{Name: name, Implicit: implicit, Scheduling: defaultSchedulingItem()}
 		groupMap[name] = item
 		return item
 	}
@@ -208,6 +242,7 @@ func buildChannelGroupItems(cfg *config.Config, auths []*coreauth.Auth) []channe
 		}
 		item.Description = group.Description
 		item.Strategy = group.Strategy
+		item.Scheduling = schedulingItemFrom(group)
 		item.Priority = group.Priority
 		item.ExcludeFromDefault = group.ExcludeFromDefault
 		item.AllowedModels = append(item.AllowedModels, group.AllowedModels...)
@@ -435,8 +470,12 @@ func validateRoutingAndAPIKeyRestrictions(cfg *config.Config, auths []*coreauth.
 			return fmt.Errorf("duplicate channel group %q", group.Name)
 		}
 		seenGroupNames[name] = struct{}{}
-		if _, exists := knownGroups[name]; !exists {
+		known, exists := knownGroups[name]
+		if !exists {
 			return fmt.Errorf("channel group %q does not match any known channel", group.Name)
+		}
+		if err := validateGroupWeights(group, known); err != nil {
+			return err
 		}
 	}
 
@@ -505,6 +544,41 @@ func validateRoutingAndAPIKeyRestrictions(cfg *config.Config, auths []*coreauth.
 	}
 
 	return nil
+}
+
+// validateGroupWeights rejects a group whose every resolved member is weighted
+// 0. Such a group cannot serve a single request, and letting it save produced a
+// runtime error far away from the setting that caused it.
+func validateGroupWeights(group config.RoutingChannelGroup, resolved channelGroupItem) error {
+	weights := group.Scheduling.ChannelWeights
+	if len(weights) == 0 {
+		weights = group.ChannelPriorities
+	}
+	if len(weights) == 0 || len(resolved.Channels) == 0 {
+		return nil
+	}
+	// A member without an entry keeps the default weight 1, so the group stays
+	// usable as long as one member is unconfigured or positively weighted.
+	for _, channel := range resolved.Channels {
+		weight, configured := lookupChannelWeight(weights, channel)
+		if !configured || weight > 0 {
+			return nil
+		}
+	}
+	return fmt.Errorf("channel group %q has every channel weighted 0, so it cannot serve any request", group.Name)
+}
+
+func lookupChannelWeight(weights map[string]int, channel string) (int, bool) {
+	channel = strings.TrimSpace(channel)
+	if channel == "" {
+		return 0, false
+	}
+	for name, weight := range weights {
+		if strings.EqualFold(strings.TrimSpace(name), channel) {
+			return weight, true
+		}
+	}
+	return 0, false
 }
 
 func channelGroupMatchesAnyDescriptor(group config.RoutingChannelGroup, descriptors []channelDescriptor) bool {

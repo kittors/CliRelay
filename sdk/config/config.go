@@ -16,6 +16,8 @@ type RoutingConfig = bridgeconfig.RoutingConfig
 type RoutingChannelGroup = bridgeconfig.RoutingChannelGroup
 type RoutingPathRoute = bridgeconfig.RoutingPathRoute
 type ChannelGroupMatch = bridgeconfig.ChannelGroupMatch
+type GroupScheduling = bridgeconfig.GroupScheduling
+type GroupStickyConfig = bridgeconfig.GroupStickyConfig
 type TLSConfig = bridgeconfig.TLSConfig
 type PprofConfig = bridgeconfig.PprofConfig
 type RemoteManagement = bridgeconfig.RemoteManagement
@@ -54,7 +56,20 @@ const (
 	DefaultOllamaCloudBaseURL    = bridgeconfig.DefaultOllamaCloudBaseURL
 	DefaultCommandCodeBaseURL    = bridgeconfig.DefaultCommandCodeBaseURL
 	DefaultPprofAddr             = bridgeconfig.DefaultPprofAddr
+
+	DistributionWeighted     = bridgeconfig.DistributionWeighted
+	DistributionLeastLoad    = bridgeconfig.DistributionLeastLoad
+	DistributionFillFirst    = bridgeconfig.DistributionFillFirst
+	DefaultStickyMaxRequests = bridgeconfig.DefaultStickyMaxRequests
 )
+
+func NormalizeDistribution(value string) string {
+	return bridgeconfig.NormalizeDistribution(value)
+}
+
+func MigrateLegacyPriorities(priorities map[string]int) map[string]int {
+	return bridgeconfig.MigrateLegacyPriorities(priorities)
+}
 
 func LoadConfig(configFile string) (*Config, error) { return bridgeconfig.LoadConfig(configFile) }
 

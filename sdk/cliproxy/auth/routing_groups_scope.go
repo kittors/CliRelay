@@ -3,27 +3,26 @@ package auth
 import (
 	"strconv"
 	"strings"
+
+	sdkconfig "github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
 )
 
-func channelGroupStrategy(cfg *runtimeConfigSnapshot, groupName string) string {
+func channelGroupScheduling(cfg *runtimeConfigSnapshot, groupName string) (runtimeGroupScheduling, bool) {
 	if cfg == nil {
-		return ""
+		return runtimeGroupScheduling{}, false
 	}
 	groupName = normalizeGroupName(groupName)
 	if groupName == "" {
-		return ""
+		return runtimeGroupScheduling{}, false
 	}
 	for i := range cfg.Routing.ChannelGroups {
 		group := cfg.Routing.ChannelGroups[i]
 		if normalizeGroupName(group.Name) != groupName {
 			continue
 		}
-		if strings.TrimSpace(group.Strategy) == "" {
-			return ""
-		}
-		return group.Strategy
+		return group.Scheduling, true
 	}
-	return ""
+	return runtimeGroupScheduling{}, false
 }
 
 func onlyAllowedGroupName(allowedGroups map[string]struct{}) string {
@@ -36,26 +35,40 @@ func onlyAllowedGroupName(allowedGroups map[string]struct{}) string {
 	return ""
 }
 
-func scopedRoutingStrategy(cfg *runtimeConfigSnapshot, routeGroup string, allowedGroups map[string]struct{}) string {
+// scopedScheduling resolves which group's scheduling block governs this
+// request. A named route group wins; otherwise a request restricted to exactly
+// one channel group adopts that group's settings; anything broader falls back
+// to the global default.
+func scopedScheduling(cfg *runtimeConfigSnapshot, routeGroup string, allowedGroups map[string]struct{}) runtimeGroupScheduling {
 	if routeGroup = normalizeGroupName(routeGroup); routeGroup != "" {
-		if strategy := channelGroupStrategy(cfg, routeGroup); strategy != "" {
-			return strategy
+		if scheduling, ok := channelGroupScheduling(cfg, routeGroup); ok {
+			return scheduling
 		}
-		return globalRoutingStrategy(cfg)
+		return globalScheduling(cfg)
 	}
 	if allowedGroup := onlyAllowedGroupName(allowedGroups); allowedGroup != "" {
-		if strategy := channelGroupStrategy(cfg, allowedGroup); strategy != "" {
-			return strategy
+		if scheduling, ok := channelGroupScheduling(cfg, allowedGroup); ok {
+			return scheduling
 		}
 	}
-	return globalRoutingStrategy(cfg)
+	return globalScheduling(cfg)
 }
 
-func globalRoutingStrategy(cfg *runtimeConfigSnapshot) string {
+// globalScheduling derives the fallback scheduling from the top-level routing
+// strategy, which has no scheduling block of its own.
+func globalScheduling(cfg *runtimeConfigSnapshot) runtimeGroupScheduling {
+	scheduling := runtimeGroupScheduling{Distribution: sdkconfig.DistributionWeighted}
 	if cfg == nil {
-		return ""
+		return scheduling
 	}
-	return strings.TrimSpace(cfg.Routing.Strategy)
+	switch strings.TrimSpace(cfg.Routing.Strategy) {
+	case "session-sticky":
+		scheduling.StickyEnabled = true
+		scheduling.StickyMax = sdkconfig.DefaultStickyMaxRequests
+	case "fill-first":
+		scheduling.Distribution = sdkconfig.DistributionFillFirst
+	}
+	return scheduling
 }
 
 func includeDefaultGroup(cfg *runtimeConfigSnapshot) bool {
@@ -203,7 +216,15 @@ func priorityScopeGroups(routeGroup string, allowedGroups map[string]struct{}) m
 	return out
 }
 
-func derivedGroupPriority(cfg *runtimeConfigSnapshot, auth *Auth, scopedGroups map[string]struct{}) (int, bool) {
+// derivedGroupWeight resolves the weight a candidate should carry inside the
+// scoped routing groups.
+//
+// Only per-channel weights participate. The group-level Priority field used to
+// be folded in here with a max(), which conflated two different questions:
+// "which group serves this request" and "what share does this account get
+// inside its group". Group-level priority is a group-ordering concern and no
+// longer leaks into per-account weights.
+func derivedGroupWeight(cfg *runtimeConfigSnapshot, auth *Auth, scopedGroups map[string]struct{}) (int, bool) {
 	if cfg == nil || auth == nil {
 		return 0, false
 	}
@@ -225,20 +246,23 @@ func derivedGroupPriority(cfg *runtimeConfigSnapshot, auth *Auth, scopedGroups m
 		if _, ok := scopedGroups[groupName]; !ok {
 			continue
 		}
-		for name, priority := range group.ChannelPriorities {
-			if authMatchesChannelName(auth, name) && (!found || priority > best) {
-				best = priority
+		for name, weight := range group.Scheduling.ChannelWeights {
+			if authMatchesChannelName(auth, name) && (!found || weight > best) {
+				best = weight
 				found = true
 			}
-		}
-		if group.Priority != 0 && (!found || group.Priority > best) {
-			best = group.Priority
-			found = true
 		}
 	}
 	return best, found
 }
 
+// prepareCandidateForSelection stamps the effective selection weight onto a
+// copy of the candidate.
+//
+// The group configuration wins over any weight written directly on the
+// credential: the group is what an operator can actually see and edit in the
+// panel, and the old precedence meant a stray `priority` attribute silently
+// disabled every weight configured there.
 func prepareCandidateForSelection(cfg *runtimeConfigSnapshot, auth *Auth, routeGroup string, allowedGroups map[string]struct{}) *Auth {
 	if auth == nil {
 		return nil
@@ -247,17 +271,14 @@ func prepareCandidateForSelection(cfg *runtimeConfigSnapshot, auth *Auth, routeG
 	if cloned == nil {
 		return nil
 	}
-	if strings.TrimSpace(cloned.Attributes["priority"]) != "" {
-		return cloned
-	}
-	priority, ok := derivedGroupPriority(cfg, cloned, priorityScopeGroups(routeGroup, allowedGroups))
+	weight, ok := derivedGroupWeight(cfg, cloned, priorityScopeGroups(routeGroup, allowedGroups))
 	if !ok {
 		return cloned
 	}
 	if cloned.Attributes == nil {
 		cloned.Attributes = make(map[string]string)
 	}
-	cloned.Attributes["priority"] = strconv.Itoa(priority)
+	cloned.Attributes[selectionWeightAttribute] = strconv.Itoa(weight)
 	return cloned
 }
 

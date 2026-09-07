@@ -271,6 +271,7 @@ func canonicalizeRoutingConfigChannels(routing config.RoutingConfig, known map[s
 		group := routing.ChannelGroups[i]
 		group.Match.Channels = canonicalizeChannelList(group.Match.Channels, known)
 		group.ChannelPriorities = canonicalizeChannelPriorities(group.ChannelPriorities, known)
+		group.Scheduling.ChannelWeights = canonicalizeChannelPriorities(group.Scheduling.ChannelWeights, known)
 		routing.ChannelGroups[i] = group
 	}
 	return routing

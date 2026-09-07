@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"strconv"
 	"strings"
 
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
@@ -128,9 +129,13 @@ func newSelectorService(manager *Manager) selectorService {
 	return selectorService{manager: manager}
 }
 
-func optionsForSelectionRouteGroup(opts cliproxyexecutor.Options, routeGroup string) cliproxyexecutor.Options {
+// optionsForSelectionScope stamps the resolved route group and the scheduling
+// settings that govern it onto the request options. The Selector interface is
+// part of the SDK contract and cannot grow a parameter, so per-group settings
+// ride along in the metadata.
+func optionsForSelectionScope(opts cliproxyexecutor.Options, routeGroup string, scheduling runtimeGroupScheduling) cliproxyexecutor.Options {
 	next := opts
-	meta := make(map[string]any, len(opts.Metadata)+1)
+	meta := make(map[string]any, len(opts.Metadata)+5)
 	for key, value := range opts.Metadata {
 		meta[key] = value
 	}
@@ -138,6 +143,16 @@ func optionsForSelectionRouteGroup(opts cliproxyexecutor.Options, routeGroup str
 		meta[cliproxyexecutor.RouteGroupMetadataKey] = routeGroup
 	} else {
 		delete(meta, cliproxyexecutor.RouteGroupMetadataKey)
+	}
+	meta[distributionMetadataKey] = scheduling.Distribution
+	if scheduling.StickyEnabled {
+		meta[stickyEnabledMetadataKey] = "true"
+		if scheduling.StickyMax > 0 {
+			meta[stickyMaxRequestsKey] = strconv.Itoa(scheduling.StickyMax)
+		}
+		if scheduling.StickyRelease > 0 {
+			meta[stickyReleaseAtLoadKey] = strconv.FormatFloat(scheduling.StickyRelease, 'f', -1, 64)
+		}
 	}
 	next.Metadata = meta
 	return next
@@ -241,11 +256,12 @@ func (s selectorService) pickLocked(
 			}
 			continue
 		}
+		scheduling := scopedScheduling(scope.cfg, selectorRouteGroup, scope.allowedGroups)
 		selector := s.manager.selectorForRoutingScopeLocked(scope.cfg, selectorRouteGroup, scope.allowedGroups)
 		if s.manager.concurrencyLimiter != nil {
 			candidates = s.manager.concurrencyLimiter.FilterAvailableCandidates(candidates)
 		}
-		selected, errPick := selector.Pick(ctx, selectorProvider, scope.model, optionsForSelectionRouteGroup(opts, selectorRouteGroup), candidates)
+		selected, errPick := selector.Pick(ctx, selectorProvider, scope.model, optionsForSelectionScope(opts, selectorRouteGroup, scheduling), candidates)
 		if errPick != nil {
 			return nil, "", errPick
 		}
