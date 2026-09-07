@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # SCRIPT_VERSION must stay in sync with deploy gate expectations.
-SCRIPT_VERSION="${SCRIPT_VERSION:-2026.08.19.3}"
+SCRIPT_VERSION="${SCRIPT_VERSION:-2026.09.08.1}"
 set -euo pipefail
 
 SERVICE_NAME="${SERVICE_NAME:-clirelay2}"
@@ -114,12 +114,25 @@ case "${redis_enable,,}" in
 esac
 
 config_port="$(awk '/^port:[[:space:]]*[0-9]+/ {print $2; exit}' "$config_path" 2>/dev/null || true)"
+NGINX_SEARCH_DIRS="${NGINX_SEARCH_DIRS:-/etc/nginx/conf.d /etc/nginx/sites-enabled /etc/nginx/sites-available}"
+
+# Backups of the live vhost sit in the same directory and contain the same
+# server_name, so an under-filtered match hands cutover a file nginx never
+# reads. The rewrite then "succeeds" against a backup, traffic never moves, and
+# drain stops the slot nginx is still serving -- the same shape of outage the
+# missing-perl bug caused. The deploy host carries both `.bak.<timestamp>` and
+# `.bak-before-<tag>` shapes; the previous dot-anchored filter only matched the
+# first of those and let every `bak-before` file through.
+# Single source of truth: both lookups and the drain guard use this pattern.
+NGINX_BACKUP_PATTERN='\.bak($|[.-])|/[^/]*bak-before'
+
 find_host_nginx_conf() {
 	if [ -n "${NGINX_CONF:-}" ]; then
 		echo "$NGINX_CONF"
 		return
 	fi
-	grep -Rsl "$DOMAIN" /etc/nginx/conf.d /etc/nginx/sites-enabled /etc/nginx/sites-available 2>/dev/null | grep -v '\.bak\.' | head -n1 || true
+	# shellcheck disable=SC2086 # NGINX_SEARCH_DIRS is an intentional word list.
+	grep -Rsl "$DOMAIN" $NGINX_SEARCH_DIRS 2>/dev/null | grep -Ev "$NGINX_BACKUP_PATTERN" | head -n1 || true
 }
 
 find_container_nginx_conf() {
@@ -129,7 +142,7 @@ find_container_nginx_conf() {
 	if ! docker inspect "$NGINX_CONTAINER" >/dev/null 2>&1; then
 		return
 	fi
-	docker exec "$NGINX_CONTAINER" sh -c "grep -Rsl '$DOMAIN' /etc/nginx/conf.d /etc/nginx/sites-enabled /etc/nginx/sites-available 2>/dev/null | grep -v '\\.bak\\.' | head -n1" || true
+	docker exec "$NGINX_CONTAINER" sh -c "grep -Rsl '$DOMAIN' ${NGINX_SEARCH_DIRS} 2>/dev/null | grep -Ev '${NGINX_BACKUP_PATTERN}' | head -n1" || true
 }
 
 # Nginx is the third state source, and the only one that decides where traffic

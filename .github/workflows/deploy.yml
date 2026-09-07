@@ -31,8 +31,15 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
-      SHOULD_DEPLOY: ${{ github.event_name == 'workflow_dispatch' || vars.CLIRELAY_DEV_AUTO_DEPLOY == 'true' }}
-      EXPECTED_SCRIPT_VERSION: '2026.08.19.3'
+      # Deploying is the default for a merge into dev. This used to require
+      # CLIRELAY_DEV_AUTO_DEPLOY=true, so an unset or reset repository variable
+      # silently turned every merge into a build-only run. Set the variable to
+      # 'false' to stop deployments deliberately.
+      SHOULD_DEPLOY: ${{ github.event_name == 'workflow_dispatch' || vars.CLIRELAY_DEV_AUTO_DEPLOY != 'false' }}
+      # Must match SCRIPT_VERSION in scripts/deploy-blue-green.sh; the host
+      # entrypoint refuses to run on a mismatch. Guarded by
+      # TestDeployScriptVersionMatchesWorkflowExpectation.
+      EXPECTED_SCRIPT_VERSION: '2026.09.08.1'
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
@@ -88,7 +95,7 @@ jobs:
         if: env.SHOULD_DEPLOY != 'true'
         run: |
           echo "Built dev binary, but server deploy is disabled."
-          echo "Run this workflow manually or set repository variable CLIRELAY_DEV_AUTO_DEPLOY=true after the target server data stack is ready."
+          echo "Deployment is opt-out: repository variable CLIRELAY_DEV_AUTO_DEPLOY is set to 'false'. Unset it to resume automatic deploys."
           echo "DEPLOY_MODE=built-only" >> "$GITHUB_ENV"
 
       # Native ssh/scp only. Remote user is deploy (not root).

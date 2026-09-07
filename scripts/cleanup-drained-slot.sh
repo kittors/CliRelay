@@ -29,6 +29,21 @@ if ! systemctl is-active --quiet "${SERVICE_NAME}-${expected_active_port}"; then
 	exit 1
 fi
 
+# Last line of defence: nginx decides where traffic actually goes, so never stop
+# a slot it still proxies to. .active-port and systemd can both agree while the
+# cutover silently failed to rewrite the vhost, and draining then takes the
+# serving slot down. Backup vhosts are excluded because nginx never reads them.
+NGINX_SEARCH_DIRS="${NGINX_SEARCH_DIRS:-/etc/nginx/conf.d /etc/nginx/sites-enabled}"
+NGINX_BACKUP_PATTERN="${NGINX_BACKUP_PATTERN:-\.bak($|[.-])|/[^/]*bak-before}"
+# shellcheck disable=SC2086 # NGINX_SEARCH_DIRS is an intentional word list.
+live_nginx_ports="$(grep -Rsl "127.0.0.1:" $NGINX_SEARCH_DIRS 2>/dev/null \
+	| grep -Ev "$NGINX_BACKUP_PATTERN" \
+	| xargs -r grep -hoE "127\.0\.0\.1:(${PORT_A}|${PORT_B})" 2>/dev/null | sort -u || true)"
+if printf '%s\n' "$live_nginx_ports" | grep -q "127.0.0.1:${old_port}"; then
+	echo "Refusing to drain ${old_port}: live nginx still proxies to it (${live_nginx_ports})." >&2
+	exit 1
+fi
+
 for old_unit in "$SERVICE_NAME" "${SERVICE_NAME}-${old_port}"; do
 	if [ "$old_unit" != "${SERVICE_NAME}-${expected_active_port}" ]; then
 		systemctl disable --now "$old_unit" 2>/dev/null || systemctl stop "$old_unit" 2>/dev/null || true
