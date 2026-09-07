@@ -163,6 +163,35 @@ jobs:
              /usr/local/sbin/clirelay-gha-deploy"
           echo "DEPLOY_MODE=${DEPLOY_MODE:-deployed}" >> "$GITHUB_ENV"
 
+      # The blue-green script smoke-tests the new slot at cutover, but the old
+      # slot is drained on a delay afterwards. Draining is exactly where two past
+      # outages happened, so keep probing across that window instead of declaring
+      # success at cutover and walking away.
+      - name: Verify service stays healthy through drain
+        if: env.SHOULD_DEPLOY == 'true'
+        env:
+          HEALTH_URL: ${{ vars.CLIRELAY_PUBLIC_HEALTH_URL || 'https://relay.07230805.xyz/healthz' }}
+        run: |
+          set -uo pipefail
+          fails=0
+          total=20
+          for i in $(seq 1 "$total"); do
+            code="$(curl -sS -o /dev/null -w '%{http_code}' -m 10 "$HEALTH_URL" 2>/dev/null || echo 000)"
+            case "$code" in
+              200|204) ;;
+              *)
+                fails=$((fails + 1))
+                echo "probe ${i}/${total}: HTTP ${code}"
+                ;;
+            esac
+            sleep 3
+          done
+          if [ "$fails" -gt 0 ]; then
+            echo "::error::Post-deploy health probes failed ${fails}/${total}; the deployed slot is not serving reliably"
+            exit 1
+          fi
+          echo "Post-deploy health: ${total}/${total} probes healthy across the drain window"
+
       - name: Write job summary
         if: always()
         run: |
@@ -172,6 +201,7 @@ jobs:
             echo "- sha: \`${{ github.sha }}\`"
             echo "- version: \`${APP_VERSION:-n/a}\`"
             echo "- should_deploy: \`${SHOULD_DEPLOY}\`"
+            echo "- post-deploy health probes: \`${SHOULD_DEPLOY}\` (see 'Verify service stays healthy through drain')"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Trigger dev Docker image build

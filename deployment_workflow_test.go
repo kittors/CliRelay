@@ -550,3 +550,38 @@ func TestDeployIsOptOutRatherThanOptIn(t *testing.T) {
 		t.Fatalf("deployment must not be gated behind an opt-in variable")
 	}
 }
+
+// Cutover smoke-tests the new slot, but the old slot is drained on a delay
+// afterwards, and draining is where the previous outages actually happened. The
+// workflow must keep probing across that window rather than reporting success
+// at cutover.
+func TestDeployVerifiesHealthAcrossTheDrainWindow(t *testing.T) {
+	data, err := os.ReadFile(".github/workflows/deploy.yml")
+	if err != nil {
+		t.Fatalf("read deploy workflow: %v", err)
+	}
+	content := string(data)
+
+	for _, want := range []string{
+		`name: Verify service stays healthy through drain`,
+		`CLIRELAY_PUBLIC_HEALTH_URL`,
+		`Post-deploy health probes failed`,
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("deploy workflow missing post-deploy verification marker %q", want)
+		}
+	}
+
+	// The probe is worthless if it runs before the deploy step.
+	deployIndex := strings.Index(content, `name: Blue-green deploy via fixed root entrypoint`)
+	probeIndex := strings.Index(content, `name: Verify service stays healthy through drain`)
+	if deployIndex < 0 || probeIndex < 0 || probeIndex <= deployIndex {
+		t.Fatalf("post-deploy health probe must run after the blue-green deploy step")
+	}
+
+	// It must also gate the run: a silent probe would repeat the failure mode
+	// this whole change exists to prevent.
+	if !strings.Contains(content, `exit 1`) {
+		t.Fatalf("post-deploy health probe must fail the workflow when probes fail")
+	}
+}
