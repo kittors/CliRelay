@@ -33,9 +33,10 @@ func (d *CodexDriver) Provider() string {
 func (d *CodexDriver) GetTargets(auth *coreauth.Auth) []Target {
 	return []Target{
 		{
-			PoolID:      "codex:5h",
-			PoolLabel:   "Codex (5h Pool)",
-			TargetModel: "gpt-5.3-codex-spark",
+			PoolID:    "codex:5h",
+			PoolLabel: "Codex (5h Pool)",
+			// Spark has a separate, tier-restricted quota; warm the regular Codex pool.
+			TargetModel: "gpt-5.6-luna",
 			Window:      5 * time.Hour,
 		},
 	}

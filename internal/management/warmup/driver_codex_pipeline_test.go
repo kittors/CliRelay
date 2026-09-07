@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+
+	"github.com/tidwall/gjson"
 	"testing"
 	"time"
 
@@ -24,6 +26,11 @@ func TestCodexDriverRealPipeline(t *testing.T) {
 		authHeader = r.Header.Get("Authorization")
 		b, _ := io.ReadAll(r.Body)
 		requestedBody = string(b)
+
+		if gjson.GetBytes(b, "model").String() == "gpt-5.3-codex-spark" {
+			http.Error(w, `{"detail":"The Spark model is not supported for this ChatGPT account."}`, http.StatusBadRequest)
+			return
+		}
 
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = w.Write([]byte("data: {\"type\":\"response.completed\"}\n\ndata: [DONE]\n\n"))
@@ -63,8 +70,10 @@ func TestCodexDriverRealPipeline(t *testing.T) {
 	if !strings.HasPrefix(authHeader, "Bearer eyJ") {
 		t.Fatalf("missing or invalid Authorization header: %s", authHeader)
 	}
-	if !strings.Contains(requestedBody, "gpt-5.3-codex-spark") {
-		t.Fatalf("expected spark model in request, got: %s", requestedBody)
+	if gjson.Get(requestedBody, "model").String() != "gpt-5.6-luna" {
+		t.Fatalf("expected regular Codex model in request, got: %s", requestedBody)
 	}
-	_ = requestedPath
+	if requestedPath != "/responses" {
+		t.Fatalf("unexpected path: %s", requestedPath)
+	}
 }
