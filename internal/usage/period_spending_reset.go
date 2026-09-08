@@ -61,7 +61,7 @@ func bootstrapPeriodSpendingResets(db *sql.DB) error {
 	if _, err := db.Exec(periodSpendingResetEventsTableSQL); err != nil {
 		return fmt.Errorf("usage: ensure period_spending_reset_events: %w", err)
 	}
-	return nil
+	return ensurePeriodWindowAnchors(db)
 }
 
 type PeriodSpendingResetResult struct {
@@ -109,26 +109,6 @@ func periodResetSubjectType(subject periodSubject) (string, error) {
 // lifetimeWindowKey is the constant window key stored for cumulative-spend resets.
 const lifetimeWindowKey = "lifetime"
 
-func periodWindowKey(period quota.Period, windows PeriodWindowKeys) string {
-	switch period {
-	case quota.PeriodFiveHour:
-		return windows.FiveHourFrom
-	case quota.PeriodDay:
-		return windows.Day
-	case quota.PeriodWeek:
-		return windows.WeekFrom
-	case quota.PeriodMonth:
-		return windows.MonthFrom
-	case quota.PeriodLifetime:
-		// Cumulative spend has no window to roll over, so its baseline stays in
-		// force until the next grant. A constant key makes the generic
-		// "same window?" validity check always hold for this period.
-		return lifetimeWindowKey
-	default:
-		return ""
-	}
-}
-
 func setPeriodUsageValue(used *quota.PeriodSpendingUsage, period quota.Period, value float64) {
 	if value < 0 {
 		value = 0
@@ -151,7 +131,7 @@ func applyPeriodBaseline(used *quota.PeriodSpendingUsage, period quota.Period, b
 	setPeriodUsageValue(used, period, used.Value(period)-baseline)
 }
 
-func listPeriodSpendingResetBaselines(tenantID string, subject periodSubject, ids []string, windows PeriodWindowKeys) (map[string]map[quota.Period]float64, error) {
+func listPeriodSpendingResetBaselines(tenantID string, subject periodSubject, ids []string, windows subjectPeriodWindows) (map[string]map[quota.Period]float64, error) {
 	out := make(map[string]map[quota.Period]float64)
 	if len(ids) == 0 {
 		return out, nil
@@ -183,7 +163,10 @@ func listPeriodSpendingResetBaselines(tenantID string, subject periodSubject, id
 			return nil, err
 		}
 		period := quota.Period(rawPeriod)
-		if periodWindowKey(period, windows) == "" || strings.TrimSpace(windowKey) != periodWindowKey(period, windows) {
+		// 窗口标识不一致说明基线属于已经翻篇的窗口，直接作废。5h 的标识是该
+		// subject 的消费锚点，窗口内保持不变，跨窗口才失效。
+		expected := windows.windowKey(id, period)
+		if expected == "" || strings.TrimSpace(windowKey) != expected {
 			continue
 		}
 		if out[id] == nil {
@@ -204,12 +187,15 @@ func resetPeriodSpendingForSubject(tenantID string, subject periodSubject, subje
 		return PeriodSpendingResetResult{}, fmt.Errorf("usage: subject_id is required")
 	}
 	tenantID = normalizeTenantID(tenantID)
-	rawByID, err := queryRawPeriodSpendingForSubjects(tenantID, subject, []string{subjectID}, now)
+	windows, err := loadSubjectPeriodWindows(tenantID, subject, []string{subjectID}, now)
+	if err != nil {
+		return PeriodSpendingResetResult{}, err
+	}
+	rawByID, err := queryRawPeriodSpendingForSubjects(tenantID, subject, []string{subjectID}, now, windows)
 	if err != nil {
 		return PeriodSpendingResetResult{}, err
 	}
 	raw := rawByID[subjectID]
-	windows := PeriodWindowKeysAt(now, getUsageLocation())
 	baselinesByID, err := listEffectivePeriodBaselines(tenantID, subject, []string{subjectID}, windows)
 	if err != nil {
 		return PeriodSpendingResetResult{}, fmt.Errorf("%w: period baselines: %v", ErrQuotaUsageUnavailable, err)
@@ -236,7 +222,7 @@ func resetPeriodSpendingForSubject(tenantID string, subject periodSubject, subje
 	defer func() { _ = tx.Rollback() }()
 	resetAt := now.UTC().Format(time.RFC3339Nano)
 	for _, period := range periods {
-		windowKey := periodWindowKey(period, windows)
+		windowKey := windows.windowKey(subjectID, period)
 		baseline := raw.Value(period)
 		if _, err := tx.Exec(`
 			INSERT INTO period_spending_resets
