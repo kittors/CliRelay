@@ -62,8 +62,6 @@ func endUserError(c *gin.Context, err error) {
 		c.AbortWithStatusJSON(http.StatusNotFound, gin.H{"error": gin.H{"code": "not_found", "message": err.Error()}})
 	case errors.Is(err, enduser.ErrPeriodDayLegacyConflict):
 		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": gin.H{"code": "period_day_legacy_conflict", "message": "daily-spending-limit conflicts with period-spending-limits.day"}})
-	case errors.Is(err, enduser.ErrFiveHourProjectionWarming):
-		c.AbortWithStatusJSON(http.StatusConflict, gin.H{"error": gin.H{"code": "five_hour_quota_projection_warming", "message": "5-hour quota projection is still warming"}})
 	case func() bool { var target *quota.LimitExceedsAccountError; return errors.As(err, &target) }():
 		var target *quota.LimitExceedsAccountError
 		_ = errors.As(err, &target)

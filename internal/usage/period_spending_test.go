@@ -68,29 +68,6 @@ func TestQueryPeriodSpendingWeekAndFiveHourBoundaries(t *testing.T) {
 	}
 }
 
-func TestFiveHourQuotaProjectionReadinessRequiresFullCoverage(t *testing.T) {
-	initTestUsageDB(t, config.RequestLogStorageConfig{})
-	db := getDB()
-	now := time.Date(2026, 7, 22, 12, 0, 0, 0, time.UTC)
-	ensureUsageProjectionMarkerTable(db)
-	set := func(start time.Time) {
-		t.Helper()
-		if _, err := db.Exec(`INSERT INTO usage_projection_markers(marker_key,marker_value,updated_at)
-			VALUES(?,?,?) ON CONFLICT(marker_key) DO UPDATE SET marker_value=excluded.marker_value,updated_at=excluded.updated_at`,
-			quotaMinuteCoverageStartMarker, start.Format(time.RFC3339), now); err != nil {
-			t.Fatalf("set marker: %v", err)
-		}
-	}
-	set(now.Add(-4*time.Hour - 59*time.Minute))
-	if FiveHourQuotaProjectionReadyAt(now) {
-		t.Fatal("projection should still be warming before five hours")
-	}
-	set(now.Add(-5 * time.Hour))
-	if !FiveHourQuotaProjectionReadyAt(now) {
-		t.Fatal("projection should be ready at full five-hour coverage")
-	}
-}
-
 func TestRollupBucketStartsProjectsQuotaMinuteInUTC(t *testing.T) {
 	loc := time.FixedZone("UTC+8", 8*60*60)
 	at := time.Date(2026, 7, 22, 23, 59, 30, 0, loc)
