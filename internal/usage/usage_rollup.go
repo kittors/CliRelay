@@ -511,10 +511,33 @@ func commitLogWithProjections(tx *sql.Tx, ev rollupEvent) error {
 			return fmt.Errorf("project shared auth subject usage: %w", err)
 		}
 	}
+	// 5h 窗口锚点只在实时落账时推进，不放进 projectUsageRollupTx：后者也服务
+	// 全量重建，重放历史事件会把锚点改写成过去的时刻。锚点是运行时状态，重建
+	// 消费桶时不应被回退。
+	if err := touchFiveHourWindowAnchorsTx(tx, ev); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
 	if err := tx.Commit(); err != nil {
 		return err
 	}
 	return nil
+}
+
+// touchFiveHourWindowAnchorsTx 为本次消费涉及的 Key 与账号各自开窗。只有真正
+// 产生费用的请求才开窗：5h 是美元额度，让零成本请求提前开窗会白白吃掉窗口。
+func touchFiveHourWindowAnchorsTx(tx *sql.Tx, ev rollupEvent) error {
+	if ev.Cost <= 0 {
+		return nil
+	}
+	at := ev.At
+	if at.IsZero() {
+		at = time.Now()
+	}
+	if err := touchFiveHourWindowAnchorTx(tx, ev.TenantID, periodResetSubjectAPIKey, ev.APIKeyID, at); err != nil {
+		return err
+	}
+	return touchFiveHourWindowAnchorTx(tx, ev.TenantID, periodResetSubjectEndUser, ev.EndUserID, at)
 }
 
 // cleanupExpiredUsageRollupBuckets prunes minute/hour/day buckets past retention.

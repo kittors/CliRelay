@@ -4,21 +4,28 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"time"
 )
 
 type Period string
 
 const (
+	// PeriodFiveHour 是首次消费锚定的固定窗口，不是滚动窗口：窗口在首笔消费时
+	// 开启，5 小时后整体失效，之后由下一笔消费重新开窗。与上游 Anthropic 的
+	// 5h session window 对齐，也让面板能给出确定的重置时刻。
 	PeriodFiveHour Period = "5h"
 	PeriodDay      Period = "day"
 	PeriodWeek     Period = "week"
 	PeriodMonth    Period = "month"
-	// PeriodLifetime is the account's cumulative spend. It is not a rolling
-	// window: it only resets when an operator explicitly grants a new allowance,
-	// which is why it is deliberately absent from OrderedPeriods (that list drives
-	// the four rolling per-period limits) while still being a resettable period.
+	// PeriodLifetime is the account's cumulative spend. It has no window at all:
+	// it only resets when an operator explicitly grants a new allowance, which is
+	// why it is deliberately absent from OrderedPeriods (that list drives the four
+	// windowed per-period limits) while still being a resettable period.
 	PeriodLifetime Period = "lifetime"
 )
+
+// FiveHourWindowDuration 是 5h 配额窗口的长度，窗口区间为 [start, start+5h)。
+const FiveHourWindowDuration = 5 * time.Hour
 
 var OrderedPeriods = [...]Period{PeriodFiveHour, PeriodDay, PeriodWeek, PeriodMonth}
 
@@ -111,14 +118,22 @@ type PeriodSpending struct {
 	Limit     float64 `json:"limit"`
 	Used      float64 `json:"used"`
 	Remaining float64 `json:"remaining"`
+	// WindowStart / ResetsAt 仅在锚定窗口（当前只有 5h）且窗口已开启时给出，
+	// 供面板显示确定的恢复时刻。日历周期的边界调用方本就能自行推导，不重复下发。
+	WindowStart *time.Time `json:"window_start,omitempty"`
+	ResetsAt    *time.Time `json:"resets_at,omitempty"`
 }
 
+// 已有字段刻意不加 json tag：重置事件表里存有历史快照，改名会让旧记录解析不一致。
 type PeriodSpendingUsage struct {
 	FiveHour float64
 	Day      float64
 	Week     float64
 	Month    float64
 	Lifetime float64
+	// FiveHourWindowStart 是当前 5h 窗口的起点（UTC）；零值表示尚未开窗或窗口已过期，
+	// 此时 FiveHour 恒为 0。
+	FiveHourWindowStart time.Time `json:"five_hour_window_start,omitempty"`
 }
 
 func NormalizeWholeUSD(value float64) (float64, error) {
@@ -256,7 +271,14 @@ func BuildPeriodSpending(limits PeriodSpendingLimits, used PeriodSpendingUsage) 
 		if remaining < 0 {
 			remaining = 0
 		}
-		out = append(out, PeriodSpending{Period: period, Limit: limit, Used: current, Remaining: remaining})
+		entry := PeriodSpending{Period: period, Limit: limit, Used: current, Remaining: remaining}
+		if period == PeriodFiveHour && !used.FiveHourWindowStart.IsZero() {
+			windowStart := used.FiveHourWindowStart.UTC()
+			resetsAt := windowStart.Add(FiveHourWindowDuration)
+			entry.WindowStart = &windowStart
+			entry.ResetsAt = &resetsAt
+		}
+		out = append(out, entry)
 	}
 	return out
 }

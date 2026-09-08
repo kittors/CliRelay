@@ -15,8 +15,9 @@ func TestPeriodWindowKeysAtUsesProjectTimezoneMondayWeek(t *testing.T) {
 	if got.WeekFrom != "2026-07-20" || got.MonthFrom != "2026-07-01" || got.DayTo != "2026-07-23" {
 		t.Fatalf("windows = %+v, want Monday 2026-07-20, month 2026-07-01, tomorrow 2026-07-23", got)
 	}
-	if got.FiveHourFrom != "2026-07-22T07:30" || got.FiveHourTo != "2026-07-22T12:31" {
-		t.Fatalf("5h windows = [%s,%s), want [2026-07-22T07:30,2026-07-22T12:31)", got.FiveHourFrom, got.FiveHourTo)
+	// 5h 的下界是 per-subject 锚点，这里只校验「含当前分钟」的上界。
+	if got.FiveHourTo != "2026-07-22T12:31" {
+		t.Fatalf("5h upper bound = %q, want 2026-07-22T12:31", got.FiveHourTo)
 	}
 }
 
@@ -36,20 +37,34 @@ func TestQueryPeriodSpendingWeekAndFiveHourBoundaries(t *testing.T) {
 	insert(rollupBucketDay, "2026-07-19", 100) // previous Sunday: excluded from week
 	insert(rollupBucketDay, "2026-07-20", 10)  // Monday inclusive
 	insert(rollupBucketDay, "2026-07-22", 5)
-	insert(rollupBucketDay, "2026-07-23", 20) // tomorrow exclusive
-	insert(rollupBucketQuotaMinuteUTC, "2026-07-22T07:29", 100)
-	insert(rollupBucketQuotaMinuteUTC, "2026-07-22T07:30", 3)   // cutoff minute included
+	insert(rollupBucketDay, "2026-07-23", 20)                   // tomorrow exclusive
+	insert(rollupBucketQuotaMinuteUTC, "2026-07-22T07:59", 100) // before window start
+	insert(rollupBucketQuotaMinuteUTC, "2026-07-22T08:00", 3)   // window start included
 	insert(rollupBucketQuotaMinuteUTC, "2026-07-22T12:30", 4)   // current minute included
 	insert(rollupBucketQuotaMinuteUTC, "2026-07-22T12:31", 100) // exclusive upper bound
 	insert(rollupBucketLifetime, rollupLifetimeStart, 999)
 
+	// 没有锚点就没有活跃窗口，5h 用量按 0 计，其余周期照常。
 	got, err := QueryPeriodSpendingByAPIKeyIDsForTenantAt(systemTenantID, []string{keyID}, now)
+	if err != nil {
+		t.Fatalf("QueryPeriodSpending: %v", err)
+	}
+	if used := got[keyID]; used.FiveHour != 0 || !used.FiveHourWindowStart.IsZero() {
+		t.Fatalf("without anchor used = %+v, want 5h=0 and zero window start", used)
+	}
+
+	// 窗口 [08:00,13:00) 仍在有效期内，只统计窗口内到当前分钟为止的消费。
+	seedFiveHourAnchor(t, systemTenantID, periodResetSubjectAPIKey, keyID, "2026-07-22T08:00")
+	got, err = QueryPeriodSpendingByAPIKeyIDsForTenantAt(systemTenantID, []string{keyID}, now)
 	if err != nil {
 		t.Fatalf("QueryPeriodSpending: %v", err)
 	}
 	used := got[keyID]
 	if used.FiveHour != 7 || used.Day != 5 || used.Week != 15 || used.Month != 115 || used.Lifetime != 999 {
 		t.Fatalf("used = %+v, want 5h=7 day=5 week=15 month=115 lifetime=999", used)
+	}
+	if want := time.Date(2026, 7, 22, 8, 0, 0, 0, time.UTC); !used.FiveHourWindowStart.Equal(want) {
+		t.Fatalf("window start = %v, want %v", used.FiveHourWindowStart, want)
 	}
 }
 
@@ -104,6 +119,8 @@ func TestPeriodSpendingResetWeekOnlyAndMultiplePeriods(t *testing.T) {
 	insert(rollupBucketDay, "2026-07-20", "monday", 10)
 	insert(rollupBucketDay, "2026-07-22", "today", 5)
 	insert(rollupBucketQuotaMinuteUTC, "2026-07-22T12:30", "minute", 7)
+	// 5h 需要活跃窗口才有用量，窗口 [12:00,17:00) 覆盖上面这一分钟。
+	seedFiveHourAnchor(t, systemTenantID, periodResetSubjectAPIKey, keyID, "2026-07-22T12:00")
 
 	reset, err := resetPeriodSpendingForSubject(systemTenantID, periodSubjectAPIKey, keyID, []quota.Period{quota.PeriodWeek}, PeriodSpendingResetActor{Kind: "test"}, now)
 	if err != nil {

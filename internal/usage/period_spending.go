@@ -19,33 +19,69 @@ const (
 	periodSubjectEndUser periodSubject = "end_user_id"
 )
 
+// PeriodWindowKeys 只承载与 subject 无关的日历窗口。5h 窗口的起点是
+// per-subject 的消费锚点（见 period_window_anchor.go），因此这里只保留上界。
 type PeriodWindowKeys struct {
-	FiveHourFrom string
-	FiveHourTo   string
-	Day          string
-	WeekFrom     string
-	MonthFrom    string
-	DayTo        string
+	FiveHourTo string
+	Day        string
+	WeekFrom   string
+	MonthFrom  string
+	DayTo      string
 }
 
 func PeriodWindowKeysAt(now time.Time, loc *time.Location) PeriodWindowKeys {
 	if loc == nil {
 		loc = time.Local
 	}
-	nowMinute := now.UTC().Truncate(time.Minute)
 	localNow := now.In(loc)
 	localMidnight := time.Date(localNow.Year(), localNow.Month(), localNow.Day(), 0, 0, 0, 0, loc)
 	weekdayOffset := (int(localMidnight.Weekday()) + 6) % 7
 	weekStart := localMidnight.AddDate(0, 0, -weekdayOffset)
 	monthStart := time.Date(localNow.Year(), localNow.Month(), 1, 0, 0, 0, 0, loc)
 	return PeriodWindowKeys{
-		FiveHourFrom: nowMinute.Add(-5 * time.Hour).Format("2006-01-02T15:04"),
-		FiveHourTo:   nowMinute.Add(time.Minute).Format("2006-01-02T15:04"),
-		Day:          localDayKeyAtLocation(now, loc),
-		WeekFrom:     localDayKeyAtLocation(weekStart, loc),
-		MonthFrom:    localDayKeyAtLocation(monthStart, loc),
-		DayTo:        localDayKeyAtLocation(localMidnight.AddDate(0, 0, 1), loc),
+		// 上界取下一分钟，保证当前这一分钟的消费桶被计入。
+		FiveHourTo: quotaMinuteKey(now.Add(time.Minute)),
+		Day:        localDayKeyAtLocation(now, loc),
+		WeekFrom:   localDayKeyAtLocation(weekStart, loc),
+		MonthFrom:  localDayKeyAtLocation(monthStart, loc),
+		DayTo:      localDayKeyAtLocation(localMidnight.AddDate(0, 0, 1), loc),
 	}
+}
+
+// subjectPeriodWindows 把日历窗口与 per-subject 的 5h 锚点合并成一份窗口视图，
+// 让用量查询和重置基线校验共用同一套窗口标识，避免两处各算一次导致漂移。
+type subjectPeriodWindows struct {
+	keys            PeriodWindowKeys
+	fiveHourAnchors map[string]string
+}
+
+// windowKey 返回某个 subject 在指定周期下的窗口标识；空串表示当前没有有效窗口
+// （5h 从未开窗或已过期），此时该周期的重置基线一律失效。
+func (w subjectPeriodWindows) windowKey(subjectID string, period quota.Period) string {
+	switch period {
+	case quota.PeriodFiveHour:
+		return w.fiveHourAnchors[subjectID]
+	case quota.PeriodDay:
+		return w.keys.Day
+	case quota.PeriodWeek:
+		return w.keys.WeekFrom
+	case quota.PeriodMonth:
+		return w.keys.MonthFrom
+	case quota.PeriodLifetime:
+		// 累计消费没有窗口可滚动，基线在下次授予前一直有效。常量键让通用的
+		// 「是否同一窗口」校验对该周期恒成立。
+		return lifetimeWindowKey
+	default:
+		return ""
+	}
+}
+
+func loadSubjectPeriodWindows(tenantID string, subject periodSubject, ids []string, now time.Time) (subjectPeriodWindows, error) {
+	anchors, err := listActiveFiveHourAnchors(tenantID, subject, ids, now)
+	if err != nil {
+		return subjectPeriodWindows{}, err
+	}
+	return subjectPeriodWindows{keys: PeriodWindowKeysAt(now, getUsageLocation()), fiveHourAnchors: anchors}, nil
 }
 
 func QueryPeriodSpendingByAPIKeyIDForTenant(tenantID, apiKeyID string) (quota.PeriodSpendingUsage, error) {
@@ -80,7 +116,10 @@ func QueryPeriodSpendingByEndUsersForTenant(tenantID string, endUserIDs []string
 	return QueryPeriodSpendingByEndUsersForTenantAt(tenantID, endUserIDs, time.Now())
 }
 
-func queryRawPeriodSpendingForSubjects(tenantID string, subject periodSubject, ids []string, now time.Time) (map[string]quota.PeriodSpendingUsage, error) {
+// subjectChunkSize 限制单条 IN 列表的主体数量，避免撑爆驱动的参数上限。
+const subjectChunkSize = 300
+
+func queryRawPeriodSpendingForSubjects(tenantID string, subject periodSubject, ids []string, now time.Time, windows subjectPeriodWindows) (map[string]quota.PeriodSpendingUsage, error) {
 	ids = dedupeExactStrings(ids)
 	out := make(map[string]quota.PeriodSpendingUsage, len(ids))
 	for _, id := range ids {
@@ -91,7 +130,6 @@ func queryRawPeriodSpendingForSubjects(tenantID string, subject periodSubject, i
 	if len(out) == 0 {
 		return out, nil
 	}
-	const subjectChunkSize = 300
 	if len(out) > subjectChunkSize {
 		cleanIDs := make([]string, 0, len(out))
 		for id := range out {
@@ -103,7 +141,7 @@ func queryRawPeriodSpendingForSubjects(tenantID string, subject periodSubject, i
 			if end > len(cleanIDs) {
 				end = len(cleanIDs)
 			}
-			part, err := queryRawPeriodSpendingForSubjects(tenantID, subject, cleanIDs[start:end], now)
+			part, err := queryRawPeriodSpendingForSubjects(tenantID, subject, cleanIDs[start:end], now, windows)
 			if err != nil {
 				return nil, err
 			}
@@ -117,17 +155,15 @@ func queryRawPeriodSpendingForSubjects(tenantID string, subject periodSubject, i
 	for id := range out {
 		ids = append(ids, id)
 	}
-	windows := PeriodWindowKeysAt(now, getUsageLocation())
 	queries := []struct {
 		kind string
 		from string
 		to   string
 		set  func(*quota.PeriodSpendingUsage, float64)
 	}{
-		{rollupBucketQuotaMinuteUTC, windows.FiveHourFrom, windows.FiveHourTo, func(v *quota.PeriodSpendingUsage, n float64) { v.FiveHour = n }},
-		{rollupBucketDay, windows.Day, windows.DayTo, func(v *quota.PeriodSpendingUsage, n float64) { v.Day = n }},
-		{rollupBucketDay, windows.WeekFrom, windows.DayTo, func(v *quota.PeriodSpendingUsage, n float64) { v.Week = n }},
-		{rollupBucketDay, windows.MonthFrom, windows.DayTo, func(v *quota.PeriodSpendingUsage, n float64) { v.Month = n }},
+		{rollupBucketDay, windows.keys.Day, windows.keys.DayTo, func(v *quota.PeriodSpendingUsage, n float64) { v.Day = n }},
+		{rollupBucketDay, windows.keys.WeekFrom, windows.keys.DayTo, func(v *quota.PeriodSpendingUsage, n float64) { v.Week = n }},
+		{rollupBucketDay, windows.keys.MonthFrom, windows.keys.DayTo, func(v *quota.PeriodSpendingUsage, n float64) { v.Month = n }},
 		{rollupBucketLifetime, "", "", func(v *quota.PeriodSpendingUsage, n float64) { v.Lifetime = n }},
 	}
 	for _, query := range queries {
@@ -141,12 +177,30 @@ func queryRawPeriodSpendingForSubjects(tenantID string, subject periodSubject, i
 			out[id] = current
 		}
 	}
+	// 5h 每个 subject 的窗口起点不同，无法并进上面的统一区间查询。
+	fiveHour, err := queryFiveHourCostByAnchors(tenantID, subject, ids, windows)
+	if err != nil {
+		return nil, err
+	}
+	for id, current := range out {
+		if anchor, ok := windows.fiveHourAnchors[id]; ok {
+			if windowStart, parsed := parseQuotaMinuteKey(anchor); parsed {
+				current.FiveHourWindowStart = windowStart
+			}
+		}
+		current.FiveHour = fiveHour[id]
+		out[id] = current
+	}
 
 	return out, nil
 }
 
 func queryPeriodSpendingForSubjects(tenantID string, subject periodSubject, ids []string, now time.Time) (map[string]quota.PeriodSpendingUsage, error) {
-	out, err := queryRawPeriodSpendingForSubjects(tenantID, subject, ids, now)
+	windows, err := loadSubjectPeriodWindows(tenantID, subject, dedupeExactStrings(ids), now)
+	if err != nil {
+		return nil, err
+	}
+	out, err := queryRawPeriodSpendingForSubjects(tenantID, subject, ids, now, windows)
 	if err != nil || len(out) == 0 {
 		return out, err
 	}
@@ -154,7 +208,6 @@ func queryPeriodSpendingForSubjects(tenantID string, subject periodSubject, ids 
 	for id := range out {
 		cleanIDs = append(cleanIDs, id)
 	}
-	windows := PeriodWindowKeysAt(now, getUsageLocation())
 	baselines, err := listEffectivePeriodBaselines(tenantID, subject, cleanIDs, windows)
 	if err != nil {
 		return nil, fmt.Errorf("%w: period baselines: %v", ErrQuotaUsageUnavailable, err)
@@ -169,7 +222,7 @@ func queryPeriodSpendingForSubjects(tenantID string, subject periodSubject, ids 
 	return out, nil
 }
 
-func listEffectivePeriodBaselines(tenantID string, subject periodSubject, ids []string, windows PeriodWindowKeys) (map[string]map[quota.Period]float64, error) {
+func listEffectivePeriodBaselines(tenantID string, subject periodSubject, ids []string, windows subjectPeriodWindows) (map[string]map[quota.Period]float64, error) {
 	const baselineChunkSize = 300
 	if len(ids) > baselineChunkSize {
 		combined := make(map[string]map[quota.Period]float64)
@@ -194,9 +247,9 @@ func listEffectivePeriodBaselines(tenantID string, subject periodSubject, ids []
 	}
 	var legacy map[string]float64
 	if subject == periodSubjectAPIKey {
-		legacy, err = listDailySpendingResetBaselinesAt(tenantID, ids, windows.Day)
+		legacy, err = listDailySpendingResetBaselinesAt(tenantID, ids, windows.keys.Day)
 	} else {
-		legacy, err = listEndUserDailySpendingResetBaselines(tenantID, ids, windows.Day)
+		legacy, err = listEndUserDailySpendingResetBaselines(tenantID, ids, windows.keys.Day)
 	}
 	if err != nil {
 		return nil, err
@@ -253,6 +306,60 @@ func queryGroupedPeriodCost(tenantID string, subject periodSubject, ids []string
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("%w: rows %s %s: %v", ErrQuotaUsageUnavailable, subject, kind, err)
+	}
+	return out, nil
+}
+
+// queryFiveHourCostByAnchors 按每个 subject 各自的窗口起点求和。起点不同导致无法
+// 共用一个区间条件，因此把 (subject, anchor) 展开成 OR 组合塞进同一条查询：既保持
+// 单次往返，也让 (tenant_id, bucket_kind, <subject>, bucket_start) 索引仍然可用。
+// 没有活跃窗口的 subject 不参与查询，其用量按 0 处理。
+func queryFiveHourCostByAnchors(tenantID string, subject periodSubject, ids []string, windows subjectPeriodWindows) (map[string]float64, error) {
+	out := make(map[string]float64, len(ids))
+	pairs := make([][2]string, 0, len(ids))
+	for _, id := range ids {
+		if anchor := windows.fiveHourAnchors[id]; anchor != "" {
+			pairs = append(pairs, [2]string{id, anchor})
+		}
+	}
+	if len(pairs) == 0 {
+		return out, nil
+	}
+	column := string(subject)
+	if subject != periodSubjectAPIKey && subject != periodSubjectEndUser {
+		return nil, fmt.Errorf("%w: invalid subject", ErrQuotaUsageUnavailable)
+	}
+	db := getReadDB()
+	if db == nil {
+		return nil, ErrQuotaUsageUnavailable
+	}
+	var b strings.Builder
+	b.WriteString(`SELECT ` + column + `, COALESCE(SUM(cost_total), 0) FROM usage_rollup_buckets WHERE tenant_id = ? AND bucket_kind = ? AND bucket_start < ? AND (`)
+	args := make([]any, 0, len(pairs)*2+3)
+	args = append(args, normalizeTenantID(tenantID), rollupBucketQuotaMinuteUTC, windows.keys.FiveHourTo)
+	for i, pair := range pairs {
+		if i > 0 {
+			b.WriteString(` OR `)
+		}
+		b.WriteString(`(` + column + ` = ? AND bucket_start >= ?)`)
+		args = append(args, pair[0], pair[1])
+	}
+	b.WriteString(`) GROUP BY ` + column)
+	rows, err := db.Query(b.String(), args...)
+	if err != nil {
+		return nil, fmt.Errorf("%w: query %s 5h: %v", ErrQuotaUsageUnavailable, subject, err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		var value float64
+		if err := rows.Scan(&id, &value); err != nil {
+			return nil, fmt.Errorf("%w: scan %s 5h: %v", ErrQuotaUsageUnavailable, subject, err)
+		}
+		out[id] = value
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("%w: rows %s 5h: %v", ErrQuotaUsageUnavailable, subject, err)
 	}
 	return out, nil
 }
