@@ -54,8 +54,12 @@ node_modules/
 tools*/**/node_modules/
 tools*/**/.profiles/
 tools*/**/data/
-tools*/**/__pycache__/
-tools*/**/*.pyc
+
+# Python bytecode — repo-wide, not scoped to tools*: every tracked .py lives in
+# scripts/ (structure-debt gate, PR/issue agents) and running them leaves a
+# scripts/__pycache__ that `git add -A` would otherwise sweep into a commit.
+__pycache__/
+*.pyc
 
 # Tooling metadata
 .vscode/*
