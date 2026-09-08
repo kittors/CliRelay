@@ -10,11 +10,11 @@
     "baseline_above_800": [
       {
         "path": "internal/api/handlers/management/end_user.go",
-        "max_lines": 910
+        "max_lines": 908
       },
       {
         "path": "internal/enduser/service.go",
-        "max_lines": 1168
+        "max_lines": 1164
       },
       {
         "path": "internal/identity/service.go",

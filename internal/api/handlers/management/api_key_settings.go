@@ -11,7 +11,6 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/access"
 	configaccess "github.com/router-for-me/CLIProxyAPI/v6/internal/access/config_access"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/enduser"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/identity"
 	apikeysettings "github.com/router-for-me/CLIProxyAPI/v6/internal/management/settings/apikey"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/quota"
@@ -187,9 +186,7 @@ func (h *Handler) PutAPIKeyPermissionProfiles(c *gin.Context) {
 
 	result, err := h.apiKeySettings(c).ReplacePermissionProfilesWithCaps(profiles, syncAccounts)
 	if err != nil {
-		if errors.Is(err, enduser.ErrFiveHourProjectionWarming) {
-			c.JSON(http.StatusConflict, gin.H{"error": gin.H{"code": "five_hour_quota_projection_warming", "message": "5-hour quota projection is still warming"}})
-		} else if errors.Is(err, quota.ErrPeriodDayLegacyConflict) {
+		if errors.Is(err, quota.ErrPeriodDayLegacyConflict) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"code": "period_day_legacy_conflict", "message": "daily-spending-limit conflicts with period-spending-limits.day"}})
 		} else {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -407,9 +404,6 @@ func (h *Handler) PatchAPIKeyEntry(c *gin.Context) {
 		switch {
 		case errors.Is(err, quota.ErrPeriodDayLegacyConflict):
 			c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"code": "period_day_legacy_conflict", "message": "daily-spending-limit conflicts with period-spending-limits.day"}})
-			return
-		case errors.Is(err, enduser.ErrFiveHourProjectionWarming):
-			c.JSON(http.StatusConflict, gin.H{"error": gin.H{"code": "five_hour_quota_projection_warming", "message": "5-hour quota projection is still warming"}})
 			return
 		case errors.As(err, &exceeds):
 			c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"code": "key_period_limit_exceeds_account", "message": exceeds.Error(), "details": gin.H{"period": exceeds.Period, "key_limit": exceeds.KeyLimit, "account_limit": exceeds.AccountLimit}}})

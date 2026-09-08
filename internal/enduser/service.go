@@ -24,23 +24,22 @@ import (
 )
 
 var (
-	ErrInvalidCredentials        = errors.New("invalid credentials")
-	ErrAccountDisabled           = errors.New("account disabled")
-	ErrAccountLocked             = errors.New("account locked")
-	ErrLoginCooldowned           = errors.New("login cooldown")
-	ErrMustChangePassword        = errors.New("must change password")
-	ErrSessionExpired            = errors.New("session expired")
-	ErrSessionRevoked            = errors.New("session revoked")
-	ErrPermissionDenied          = errors.New("permission denied")
-	ErrTenantScope               = errors.New("tenant scope forbidden")
-	ErrTenantSuspended           = errors.New("tenant suspended")
-	ErrTenantExpired             = errors.New("tenant expired")
-	ErrValidation                = errors.New("validation failed")
-	ErrDuplicateKeyName          = errors.New("duplicate key name")
-	ErrLastKey                   = errors.New("cannot delete last api key")
-	ErrNotFound                  = errors.New("not found")
-	ErrFiveHourProjectionWarming = errors.New("five hour quota projection warming")
-	ErrPeriodDayLegacyConflict   = errors.New("period day legacy conflict")
+	ErrInvalidCredentials      = errors.New("invalid credentials")
+	ErrAccountDisabled         = errors.New("account disabled")
+	ErrAccountLocked           = errors.New("account locked")
+	ErrLoginCooldowned         = errors.New("login cooldown")
+	ErrMustChangePassword      = errors.New("must change password")
+	ErrSessionExpired          = errors.New("session expired")
+	ErrSessionRevoked          = errors.New("session revoked")
+	ErrPermissionDenied        = errors.New("permission denied")
+	ErrTenantScope             = errors.New("tenant scope forbidden")
+	ErrTenantSuspended         = errors.New("tenant suspended")
+	ErrTenantExpired           = errors.New("tenant expired")
+	ErrValidation              = errors.New("validation failed")
+	ErrDuplicateKeyName        = errors.New("duplicate key name")
+	ErrLastKey                 = errors.New("cannot delete last api key")
+	ErrNotFound                = errors.New("not found")
+	ErrPeriodDayLegacyConflict = errors.New("period day legacy conflict")
 )
 
 const (
@@ -655,9 +654,6 @@ func (s *Service) UpdateUser(ctx context.Context, actor identity.Principal, tena
 		}
 		if resolvedPeriodPatch != nil {
 			if resolvedPeriodPatch.FiveHour != nil {
-				if *resolvedPeriodPatch.FiveHour > 0 && !usage.FiveHourQuotaProjectionReady() {
-					return User{}, ErrFiveHourProjectionWarming
-				}
 				sets = append(sets, "five_hour_spending_limit = ?")
 				args = append(args, *resolvedPeriodPatch.FiveHour)
 			}

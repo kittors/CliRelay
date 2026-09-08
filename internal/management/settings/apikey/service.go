@@ -218,9 +218,6 @@ func (s *Service) normalizePermissionProfiles(profiles []usage.APIKeyPermissionP
 			day = limits.Day
 		}
 		limits.Day = day
-		if limits.FiveHour > 0 && !usage.FiveHourQuotaProjectionReady() {
-			return nil, enduser.ErrFiveHourProjectionWarming
-		}
 		normalized[idx].DailySpendingLimit = day
 		normalized[idx].PeriodSpendingLimits = limits
 		if s != nil && s.sanitizeChannels != nil {
@@ -541,9 +538,6 @@ func (s *Service) prepareEntryForSave(entry config.APIKeyEntry) (config.APIKeyEn
 		day = limits.Day
 	}
 	limits.Day = day
-	if limits.FiveHour > 0 && !usage.FiveHourQuotaProjectionReady() {
-		return config.APIKeyEntry{}, enduser.ErrFiveHourProjectionWarming
-	}
 	entry.DailySpendingLimit = day
 	entry.PeriodSpendingLimits = limits
 	entry.AllowedChannelGroups = normalizeChannelGroups(entry.AllowedChannelGroups)

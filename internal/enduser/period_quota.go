@@ -10,7 +10,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/quota"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 )
 
 func (s *Service) CreateKeyWithPeriodLimits(ctx context.Context, tenantID, endUserID, name string, patch *quota.PeriodSpendingLimitsPatch) (CreateKeyResult, error) {
@@ -26,9 +25,6 @@ func (s *Service) CreateKeyWithPeriodLimits(ctx context.Context, tenantID, endUs
 		return result, fmt.Errorf("%w: %v", ErrValidation, err)
 	}
 	limits := quota.ApplyPatch(quota.PeriodSpendingLimits{}, patch)
-	if limits.FiveHour > 0 && !usage.FiveHourQuotaProjectionReady() {
-		return result, ErrFiveHourProjectionWarming
-	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return result, err
@@ -105,9 +101,6 @@ func (s *Service) UpdateKey(ctx context.Context, tenantID, endUserID, keyID stri
 	patch, err := quota.NormalizePatch(patch)
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrValidation, err)
-	}
-	if patch != nil && patch.FiveHour != nil && *patch.FiveHour > 0 && !usage.FiveHourQuotaProjectionReady() {
-		return ErrFiveHourProjectionWarming
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
