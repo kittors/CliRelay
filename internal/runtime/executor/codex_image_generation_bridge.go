@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/codexcarrier"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -53,6 +54,7 @@ var (
 //  3. When image intent is present and only hosted tool is available, force
 //     tool_choice=image_generation so the model cannot skip the tool and reply with text.
 func maybeEnsureCodexImageGenerationTool(body []byte, auth *cliproxyauth.Auth, baseModel string, headers http.Header) []byte {
+	body = repairCodexImageCarrierModel(body, baseModel)
 	if requestHasLocalImageGenTool(body) {
 		return stripHostedImageGenerationTools(body)
 	}
@@ -397,4 +399,42 @@ func isCodexFreePlanAuth(auth *cliproxyauth.Auth) bool {
 		return false
 	}
 	return strings.EqualFold(strings.TrimSpace(auth.Attributes["plan_type"]), "free")
+}
+
+// repairCodexImageCarrierModel replaces the carrier model on a bridged image request.
+//
+// A request for an image-only model (gpt-image-*) cannot be sent as-is: Codex has
+// no image endpoint on the OAuth path, so the translator rewrites it into a chat
+// completion with an image_generation tool and puts a chat model at the top level
+// to carry it. That carrier is a constant in internal/translator, which pull
+// requests may not modify, and the constant now names a model upstream retired —
+// every such request comes back "The '<model>' model is not supported when using
+// Codex with a ChatGPT account."
+//
+// Correcting it here reaches all four outbound paths (streaming, non-streaming and
+// both websocket variants) because they share this hook, and it keeps the fix on
+// the executor side of that boundary. baseModel is the client's requested model,
+// before translation, which is why it still reads gpt-image-* at this point.
+func repairCodexImageCarrierModel(body []byte, baseModel string) []byte {
+	if !isCodexImageOnlyModel(baseModel) {
+		return body
+	}
+	carrier := strings.TrimSpace(codexcarrier.Resolve())
+	if carrier == "" {
+		return body
+	}
+	if strings.TrimSpace(gjson.GetBytes(body, "model").String()) == carrier {
+		return body
+	}
+	updated, err := sjson.SetBytes(body, "model", carrier)
+	if err != nil {
+		return body
+	}
+	return updated
+}
+
+// isCodexImageOnlyModel reports whether a client asked for an image model directly,
+// matching the prefix the translator uses to decide it must bridge the request.
+func isCodexImageOnlyModel(model string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "gpt-image-")
 }

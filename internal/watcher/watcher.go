@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/fsnotify/fsnotify"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/codexcarrier"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"gopkg.in/yaml.v3"
 
@@ -135,6 +136,12 @@ func (w *Watcher) SetConfig(cfg *config.Config) {
 	defer w.clientsMutex.Unlock()
 	w.config = cfg
 	w.oldConfigYaml, _ = yaml.Marshal(cfg)
+	// The Codex image carrier is resolved from package state on outbound request
+	// paths that have no config handy; publishing the override on reload is what
+	// makes an operator's change take effect without a restart.
+	if cfg != nil {
+		codexcarrier.SetOverride(cfg.CodexImageBaseModel)
+	}
 }
 
 // SetAuthUpdateQueue sets the queue used to emit auth updates.

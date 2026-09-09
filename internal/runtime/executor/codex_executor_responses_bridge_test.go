@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/codexcarrier"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	_ "github.com/router-for-me/CLIProxyAPI/v6/internal/translator"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
@@ -54,8 +55,8 @@ func TestCodexExecutorExecutePreservesResponsesImageBridgeModel(t *testing.T) {
 		t.Fatalf("Execute() error = %v", err)
 	}
 
-	if got := gjson.Get(lastBody, "model").String(); got != "gpt-5.4-mini" {
-		t.Fatalf("top-level model = %q, want %q; body=%s", got, "gpt-5.4-mini", lastBody)
+	if got := gjson.Get(lastBody, "model").String(); got != codexcarrier.Default {
+		t.Fatalf("top-level model = %q, want %q; body=%s", got, codexcarrier.Default, lastBody)
 	}
 	if got := gjson.Get(lastBody, "tools.0.type").String(); got != "image_generation" {
 		t.Fatalf("tools.0.type = %q, want %q; body=%s", got, "image_generation", lastBody)
@@ -124,8 +125,8 @@ func TestCodexExecutorExecuteStreamPreservesResponsesImageBridgeModel(t *testing
 	if !strings.Contains(streamBody, `data: {"type":"response.completed"`) {
 		t.Fatalf("stream body = %q, want response.completed data event", streamBody)
 	}
-	if got := gjson.Get(lastBody, "model").String(); got != "gpt-5.4-mini" {
-		t.Fatalf("top-level model = %q, want %q; body=%s", got, "gpt-5.4-mini", lastBody)
+	if got := gjson.Get(lastBody, "model").String(); got != codexcarrier.Default {
+		t.Fatalf("top-level model = %q, want %q; body=%s", got, codexcarrier.Default, lastBody)
 	}
 	if got := gjson.Get(lastBody, "tools.0.type").String(); got != "image_generation" {
 		t.Fatalf("tools.0.type = %q, want %q; body=%s", got, "image_generation", lastBody)

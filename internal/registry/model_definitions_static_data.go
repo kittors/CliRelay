@@ -851,34 +851,13 @@ func GetOpenAIModels() []*ModelInfo {
 			SupportedParameters: []string{"tools"},
 			Thinking:            &ThinkingSupport{Levels: []string{"low", "medium", "high", "xhigh"}},
 		},
-		{
-			ID:                  "gpt-5.4",
-			Object:              "model",
-			Created:             1772870400,
-			OwnedBy:             "openai",
-			Type:                "openai",
-			Version:             "gpt-5.4",
-			DisplayName:         "GPT 5.4",
-			Description:         "Stable version of GPT 5.4, The best model for coding and agentic tasks across domains.",
-			ContextLength:       400000,
-			MaxCompletionTokens: 128000,
-			SupportedParameters: []string{"tools"},
-			Thinking:            &ThinkingSupport{Levels: []string{"low", "medium", "high", "xhigh"}},
-		},
-		{
-			ID:                  "gpt-5.4-mini",
-			Object:              "model",
-			Created:             1772870400,
-			OwnedBy:             "openai",
-			Type:                "openai",
-			Version:             "gpt-5.4-mini",
-			DisplayName:         "GPT 5.4 Mini",
-			Description:         "Stable version of GPT 5.4 Mini: cheaper, faster, but less capable version of GPT 5.4.",
-			ContextLength:       400000,
-			MaxCompletionTokens: 128000,
-			SupportedParameters: []string{"tools"},
-			Thinking:            &ThinkingSupport{Levels: []string{"low", "medium", "high", "xhigh"}},
-		},
+		// gpt-5.4 and gpt-5.4-mini were removed here after the upstream Codex
+		// manifest stopped serving them: client_version 0.118, 0.149 and 0.180 all
+		// return a list without them, so no account can reach either one. Leaving
+		// them registered offered operators a model that could only answer
+		// "The 'gpt-5.4-mini' model is not supported when using Codex with a
+		// ChatGPT account." Retired chat models are pruned; image models are not,
+		// for the reasons in image_model_registration.go.
 		{
 			ID:                  "gpt-5.5",
 			Object:              "model",

@@ -339,6 +339,14 @@ streaming:
 #       - "*flash*"            # wildcard matching substring (e.g. gemini-2.5-flash-lite)
 #   - api-key: "AIzaSy...02"
 
+# Chat model that carries the image_generation tool for Codex image requests.
+# Codex OAuth has no standalone image endpoint: /v1/images and image-only
+# /v1/responses calls are sent as a tool attached to an ordinary chat completion,
+# so some chat model has to carry them. Leave this unset to follow the live Codex
+# manifest, which is the only source that knows what an account may call. Set it
+# only to pin a specific carrier, e.g. to control cost.
+# codex-image-base-model: "gpt-5.5"
+
 # Codex API keys
 # codex-api-key:
 #   - api-key: "sk-atSM..."

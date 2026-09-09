@@ -171,6 +171,11 @@ type Config struct {
 	// CodexOAuthAdmission controls global fixed allowed-client presets for Codex OAuth accounts.
 	CodexOAuthAdmission CodexOAuthAdmissionConfig `yaml:"codex-oauth-admission,omitempty" json:"codex-oauth-admission,omitempty"`
 
+	// CodexImageBaseModel overrides the chat model that carries the image_generation
+	// tool for /v1/images requests. Empty resolves from the live Codex manifest, which
+	// is the only thing that knows what the account may actually call.
+	CodexImageBaseModel string `yaml:"codex-image-base-model,omitempty" json:"codex-image-base-model,omitempty"`
+
 	// ProxyPool stores reusable outbound proxies that can be referenced by providers and auth files.
 	ProxyPool []ProxyPoolEntry `yaml:"proxy-pool,omitempty" json:"proxy-pool,omitempty"`
 
