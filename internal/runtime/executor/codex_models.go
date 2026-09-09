@@ -219,6 +219,10 @@ func FetchCodexModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.
 	token, baseURL := codexCreds(auth)
 	token = strings.TrimSpace(token)
 	if token == "" {
+		// No credential: return whatever the cache holds, unmerged. Merging image
+		// models here would manufacture a routable set out of nothing, which reads
+		// downstream as live upstream data and leaks the system registry's models
+		// into tenants that hold no Codex credential at all.
 		return fallbackCodexModels()
 	}
 
@@ -229,7 +233,7 @@ func FetchCodexModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, modelsURL, nil)
 	if err != nil {
-		return fallbackCodexModels()
+		return withCodexImageModels(fallbackCodexModels())
 	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Authorization", "Bearer "+token)
@@ -249,7 +253,7 @@ func FetchCodexModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.
 		if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 			log.Debugf("codex executor: models request failed: %v", err)
 		}
-		return fallbackCodexModels()
+		return withCodexImageModels(fallbackCodexModels())
 	}
 	defer func() {
 		if errClose := resp.Body.Close(); errClose != nil {
@@ -260,22 +264,22 @@ func FetchCodexModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		_, _ = io.Copy(io.Discard, resp.Body)
 		log.Debugf("codex executor: models request failed with status %d", resp.StatusCode)
-		return fallbackCodexModels()
+		return withCodexImageModels(fallbackCodexModels())
 	}
 
 	body, err := readUpstreamResponseBody("codex", resp.Body)
 	if err != nil {
 		log.Debugf("codex executor: models response read failed: %v", err)
-		return fallbackCodexModels()
+		return withCodexImageModels(fallbackCodexModels())
 	}
 
 	models, ok := parseCodexModels(body, time.Now().Unix())
 	if !ok {
 		log.Debug("codex executor: fetched empty or invalid model list; retaining cached model list")
-		return fallbackCodexModels()
+		return withCodexImageModels(fallbackCodexModels())
 	}
 	storeCodexModels(models)
-	return models
+	return withCodexImageModels(models)
 }
 
 func codexAccountID(auth *cliproxyauth.Auth) string {
