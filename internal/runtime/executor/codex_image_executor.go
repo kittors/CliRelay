@@ -17,7 +17,6 @@ import (
 
 const (
 	codexImageModel              = "gpt-image-2"
-	codexImageResponsesMainModel = "gpt-5.4-mini"
 	codexImageBackendUserAgent   = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 	codexImageRequirementsDiff   = "0fffff"
 	codexImageGenerationAlt      = "images/generations"

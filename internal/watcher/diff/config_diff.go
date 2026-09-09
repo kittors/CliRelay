@@ -24,6 +24,9 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 	if oldCfg.AuthDir != newCfg.AuthDir {
 		changes = append(changes, fmt.Sprintf("auth-dir: %s -> %s", oldCfg.AuthDir, newCfg.AuthDir))
 	}
+	if strings.TrimSpace(oldCfg.CodexImageBaseModel) != strings.TrimSpace(newCfg.CodexImageBaseModel) {
+		changes = append(changes, fmt.Sprintf("codex-image-base-model: %s -> %s", strings.TrimSpace(oldCfg.CodexImageBaseModel), strings.TrimSpace(newCfg.CodexImageBaseModel)))
+	}
 	if oldCfg.Debug != newCfg.Debug {
 		changes = append(changes, fmt.Sprintf("debug: %t -> %t", oldCfg.Debug, newCfg.Debug))
 	}

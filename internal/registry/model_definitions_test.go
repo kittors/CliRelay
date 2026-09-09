@@ -11,12 +11,24 @@ func TestCodexStaticModelsIncludeCurrentCodexModels(t *testing.T) {
 		}
 	}
 
-	for _, id := range []string{"gpt-6-astra", "gpt-6-astra-pro", "gpt-5.6-sol", "gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex-spark", "gpt-image-2", "codex-auto-review"} {
+	for _, id := range []string{"gpt-6-astra", "gpt-6-astra-pro", "gpt-5.6-sol", "gpt-5.5", "gpt-5.3-codex-spark", "gpt-image-2", "codex-auto-review"} {
 		if !modelIDs[id] {
 			t.Fatalf("expected codex static models to include %q", id)
 		}
 		if LookupStaticModelInfo(id) == nil {
 			t.Fatalf("expected LookupStaticModelInfo to find %q", id)
+		}
+	}
+
+	// Retired upstream: no client_version of the Codex manifest serves the 5.4
+	// family any more, and offering it only produced "model is not supported when
+	// using Codex with a ChatGPT account" at request time.
+	for _, id := range []string{"gpt-5.4", "gpt-5.4-mini"} {
+		if modelIDs[id] {
+			t.Fatalf("expected codex static models to exclude retired %q", id)
+		}
+		if LookupStaticModelInfo(id) != nil {
+			t.Fatalf("expected LookupStaticModelInfo to exclude retired %q", id)
 		}
 	}
 

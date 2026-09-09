@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/fsnotify/fsnotify"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/codexcarrier"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"gopkg.in/yaml.v3"
 
@@ -135,6 +136,13 @@ func (w *Watcher) SetConfig(cfg *config.Config) {
 	defer w.clientsMutex.Unlock()
 	w.config = cfg
 	w.oldConfigYaml, _ = yaml.Marshal(cfg)
+	// The translator resolves the Codex image carrier from package state because it
+	// has no access to config; publishing here is what lets an operator override
+	// reach the /v1/responses image path without an image request having warmed it
+	// through the executor first.
+	if cfg != nil {
+		codexcarrier.SetOverride(cfg.CodexImageBaseModel)
+	}
 }
 
 // SetAuthUpdateQueue sets the queue used to emit auth updates.

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/codexcarrier"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -31,7 +32,7 @@ func (e *CodexExecutor) executeCodexImageViaResponses(
 	if baseURL == "" {
 		baseURL = "https://chatgpt.com/backend-api/codex"
 	}
-	body, err := buildCodexImageResponsesRequest(parsed, codexImageModel)
+	body, err := buildCodexImageResponsesRequest(parsed, codexImageModel, e.resolveCodexImageBaseModel())
 	if err != nil {
 		return nil, nil, statusErr{code: http.StatusBadRequest, msg: err.Error()}
 	}
@@ -95,7 +96,7 @@ func (e *CodexExecutor) executeCodexImageViaResponses(
 	return nil, nil, statusErr{code: http.StatusBadGateway, msg: "responses image request failed"}
 }
 
-func buildCodexImageResponsesRequest(parsed *codexImageRequest, toolModel string) ([]byte, error) {
+func buildCodexImageResponsesRequest(parsed *codexImageRequest, toolModel string, baseModel string) ([]byte, error) {
 	if parsed == nil {
 		return nil, fmt.Errorf("parsed images request is required")
 	}
@@ -121,7 +122,10 @@ func buildCodexImageResponsesRequest(parsed *codexImageRequest, toolModel string
 	}
 
 	req := []byte(`{"instructions":"","stream":true,"reasoning":{"effort":"medium","summary":"auto"},"parallel_tool_calls":true,"include":["reasoning.encrypted_content"],"model":"","store":false,"tool_choice":{"type":"image_generation"}}`)
-	req, _ = sjson.SetBytes(req, "model", codexImageResponsesMainModel)
+	if strings.TrimSpace(baseModel) == "" {
+		baseModel = codexcarrier.Resolve()
+	}
+	req, _ = sjson.SetBytes(req, "model", strings.TrimSpace(baseModel))
 
 	input := []byte(`[{"type":"message","role":"user","content":[{"type":"input_text","text":""}]}]`)
 	input, _ = sjson.SetBytes(input, "0.content.0.text", buildCodexImageResponsesInputText(parsed, prompt))

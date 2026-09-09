@@ -3,6 +3,7 @@ package responses
 import (
 	"testing"
 
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/codexcarrier"
 	"github.com/tidwall/gjson"
 )
 
@@ -330,8 +331,8 @@ func TestConvertOpenAIResponsesRequestToCodex_NormalizesImageOnlyModel(t *testin
 	output := ConvertOpenAIResponsesRequestToCodex("gpt-image-2", inputJSON, false)
 	outputStr := string(output)
 
-	if got := gjson.Get(outputStr, "model").String(); got != "gpt-5.4-mini" {
-		t.Fatalf("model = %q, want %q", got, "gpt-5.4-mini")
+	if got := gjson.Get(outputStr, "model").String(); got != codexcarrier.Default {
+		t.Fatalf("model = %q, want %q", got, codexcarrier.Default)
 	}
 	if got := gjson.Get(outputStr, "tool_choice.type").String(); got != "image_generation" {
 		t.Fatalf("tool_choice.type = %q, want %q", got, "image_generation")
@@ -371,8 +372,8 @@ func TestConvertOpenAIResponsesRequestToCodex_NormalizesExistingImageToolForImag
 	output := ConvertOpenAIResponsesRequestToCodex("gpt-image-2", inputJSON, false)
 	outputStr := string(output)
 
-	if got := gjson.Get(outputStr, "model").String(); got != "gpt-5.4-mini" {
-		t.Fatalf("model = %q, want %q", got, "gpt-5.4-mini")
+	if got := gjson.Get(outputStr, "model").String(); got != codexcarrier.Default {
+		t.Fatalf("model = %q, want %q", got, codexcarrier.Default)
 	}
 	if got := gjson.Get(outputStr, "tools.0.model").String(); got != "gpt-image-2" {
 		t.Fatalf("tools.0.model = %q, want %q", got, "gpt-image-2")
@@ -391,5 +392,45 @@ func TestConvertOpenAIResponsesRequestToCodex_NormalizesExistingImageToolForImag
 	}
 	if gjson.Get(outputStr, "prompt").Exists() {
 		t.Fatalf("prompt should be normalized into input")
+	}
+}
+
+// TestConvertOpenAIResponsesRequestToCodex_ImageCarrierFollowsManifest is the
+// regression guard for the carrier that used to be a constant here.
+//
+// The old code pinned gpt-5.4-mini, and the old test asserted that same constant,
+// so the pair stayed green long after upstream retired the model and every
+// image-only request started coming back "not supported when using Codex with a
+// ChatGPT account". Asserting against the manifest instead is what makes the next
+// retirement visible in CI rather than in production.
+func TestConvertOpenAIResponsesRequestToCodex_ImageCarrierFollowsManifest(t *testing.T) {
+	t.Cleanup(func() {
+		codexcarrier.Publish(nil)
+		codexcarrier.SetOverride("")
+	})
+
+	inputJSON := []byte(`{"model":"gpt-image-2","input":"draw a fox"}`)
+
+	// A manifest that no longer serves the default carrier must move the request
+	// onto one it does serve, not keep sending the retired name.
+	codexcarrier.Publish([]string{"gpt-9.9-future", "gpt-5.3-codex-spark"})
+	output := string(ConvertOpenAIResponsesRequestToCodex("gpt-image-2", inputJSON, false))
+	if got := gjson.Get(output, "model").String(); got != "gpt-9.9-future" {
+		t.Fatalf("model = %q, want the surviving manifest entry %q", got, "gpt-9.9-future")
+	}
+
+	// When the manifest does list the default, it stays preferred over whatever
+	// happens to be first.
+	codexcarrier.Publish([]string{"gpt-9.9-future", codexcarrier.Default})
+	output = string(ConvertOpenAIResponsesRequestToCodex("gpt-image-2", inputJSON, false))
+	if got := gjson.Get(output, "model").String(); got != codexcarrier.Default {
+		t.Fatalf("model = %q, want default %q", got, codexcarrier.Default)
+	}
+
+	// An operator override wins outright, including over a manifest that omits it.
+	codexcarrier.SetOverride("gpt-operator-choice")
+	output = string(ConvertOpenAIResponsesRequestToCodex("gpt-image-2", inputJSON, false))
+	if got := gjson.Get(output, "model").String(); got != "gpt-operator-choice" {
+		t.Fatalf("model = %q, want operator override", got)
 	}
 }

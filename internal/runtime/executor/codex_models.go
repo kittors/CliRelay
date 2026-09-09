@@ -86,6 +86,10 @@ func storeCodexModels(models []*sdkmodelcatalog.ModelInfo) bool {
 	codexModelsCache.mu.Lock()
 	codexModelsCache.models = cloned
 	codexModelsCache.mu.Unlock()
+	// The image carrier is chosen from this same list, and the translator path has
+	// no other way to learn it, so publish on every refresh rather than only when
+	// an image request happens to warm it.
+	publishCodexCarrierCandidates(cloned)
 	return true
 }
 

@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/codexcarrier"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
@@ -434,7 +435,7 @@ func TestCodexExecutorExecuteImageEditsViaResponses(t *testing.T) {
 	if !strings.Contains(lastBody, `"tool_choice":{"type":"image_generation"}`) {
 		t.Fatalf("request body = %s, want image_generation tool choice", lastBody)
 	}
-	if !strings.Contains(lastBody, `"model":"gpt-5.4-mini"`) {
+	if !strings.Contains(lastBody, `"model":"`+codexcarrier.Default+`"`) {
 		t.Fatalf("request body = %s, want responses wrapper model", lastBody)
 	}
 	if !strings.Contains(lastBody, `"action":"edit"`) {

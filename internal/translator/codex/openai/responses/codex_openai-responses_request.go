@@ -5,12 +5,20 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/codexcarrier"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
 
-const codexResponsesImageBridgeModel = "gpt-5.4-mini"
+// codexResponsesImageBridgeModel names the chat model that carries an
+// image_generation tool for an image-only request. It is resolved rather than
+// fixed: a hardcoded carrier here started returning "not supported when using
+// Codex with a ChatGPT account" the day it left the upstream manifest. See
+// internal/codexcarrier.
+func codexResponsesImageBridgeModel() string {
+	return codexcarrier.Resolve()
+}
 
 func ConvertOpenAIResponsesRequestToCodex(modelName string, inputRawJSON []byte, _ bool) []byte {
 	rawJSON := inputRawJSON
@@ -96,7 +104,7 @@ func normalizeOpenAIResponsesImageRequest(rawJSON []byte) []byte {
 		if !gjson.GetBytes(rawJSON, "tool_choice").Exists() {
 			rawJSON, _ = sjson.SetRawBytes(rawJSON, "tool_choice", []byte(`{"type":"image_generation"}`))
 		}
-		rawJSON, _ = sjson.SetBytes(rawJSON, "model", codexResponsesImageBridgeModel)
+		rawJSON, _ = sjson.SetBytes(rawJSON, "model", codexResponsesImageBridgeModel())
 	}
 
 	return rawJSON
