@@ -269,6 +269,9 @@ func TestManagerExecute_AccountConcurrencyFailover(t *testing.T) {
 
 func TestManagerExecuteStream_AccountConcurrencySlotLifecycle(t *testing.T) {
 	mgr := NewManager(nil, &FillFirstSelector{}, nil)
+	// This case asserts slot lifecycle, not queuing: with queuing off the second
+	// request reports saturation immediately instead of waiting out the timeout.
+	mgr.SetAccountConcurrencyConfig(0, 0)
 
 	auth := &Auth{
 		ID:         "auth-stream-1",

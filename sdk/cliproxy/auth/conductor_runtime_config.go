@@ -217,3 +217,20 @@ func (m *Manager) SetRetryConfig(retry int, maxRetryInterval time.Duration) {
 	m.requestRetry.Store(int32(retry))
 	m.maxRetryInterval.Store(maxRetryInterval.Nanoseconds())
 }
+
+// SetAccountConcurrencyConfig updates how requests queue for accounts that are at
+// their concurrency limit. A waitTimeout of 0 disables queuing and restores
+// fail-fast behavior; maxQueueDepth of 0 leaves the per-account queue unbounded.
+func (m *Manager) SetAccountConcurrencyConfig(waitTimeout time.Duration, maxQueueDepth int) {
+	if m == nil {
+		return
+	}
+	if waitTimeout < 0 {
+		waitTimeout = 0
+	}
+	if maxQueueDepth < 0 {
+		maxQueueDepth = 0
+	}
+	m.accountConcurrencyWait.Store(waitTimeout.Nanoseconds())
+	m.accountConcurrencyQueueDepth.Store(int32(maxQueueDepth))
+}

@@ -172,6 +172,12 @@ type Manager struct {
 	requestRetry     atomic.Int32
 	maxRetryInterval atomic.Int64
 
+	// accountConcurrencyWait is how long a request may queue for a saturated
+	// account before failing, in nanoseconds. Zero disables queuing.
+	accountConcurrencyWait atomic.Int64
+	// accountConcurrencyQueueDepth caps queued requests per account. Zero means unlimited.
+	accountConcurrencyQueueDepth atomic.Int32
+
 	// oauthModelAlias stores tenant -> channel -> alias mappings used during OAuth execution.
 	oauthModelAlias atomic.Value
 
@@ -243,6 +249,9 @@ func NewManager(store Store, selector Selector, hook Hook) *Manager {
 		refreshSemaphore:      make(chan struct{}, refreshMaxConcurrency),
 		quotaProbeAfter:       make(map[string]time.Time),
 	}
+	// Hosts that never call SetAccountConcurrencyConfig still get queuing rather
+	// than hard failures on a busy account.
+	manager.accountConcurrencyWait.Store(DefaultAccountConcurrencyWait.Nanoseconds())
 	// Sticky delegates new conversations to whichever distribution the group
 	// configures, so it needs to reach the manager's singleton selectors.
 	sessionStickySelector.distribution = func(name string) Selector {
@@ -291,4 +300,16 @@ func (m *Manager) acquireAccountSlot(auth *Auth) (func(), error) {
 		return func() {}, nil
 	}
 	return m.concurrencyLimiter.AcquireSlot(auth)
+}
+
+// waitAccountSlot queues for a slot on any of the given auths. It is the fallback
+// used once every candidate is saturated, so a burst does not fail requests that
+// a short wait could serve.
+func (m *Manager) waitAccountSlot(ctx context.Context, auths []*Auth) (func(), string, error) {
+	if m == nil || m.concurrencyLimiter == nil || len(auths) == 0 {
+		return nil, "", ErrAccountConcurrencyExceeded
+	}
+	timeout := time.Duration(m.accountConcurrencyWait.Load())
+	maxQueueDepth := int(m.accountConcurrencyQueueDepth.Load())
+	return m.concurrencyLimiter.AcquireSlotWait(ctx, auths, timeout, maxQueueDepth)
 }
