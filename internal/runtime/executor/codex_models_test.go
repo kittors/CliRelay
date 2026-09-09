@@ -113,8 +113,13 @@ func TestFetchCodexModelsAPIKeyCatalog(t *testing.T) {
 			"base_url": srv.URL,
 		},
 	}, nil)
-	if len(models) != 1 || models[0].ID != "codex-live-1" {
-		t.Fatalf("models=%v", models)
+	// Image models are merged into every Codex credential's set (see
+	// withCodexImageModels), so assert on membership rather than length.
+	if !codexModelSetContains(models, "codex-live-1") {
+		t.Fatalf("live model missing: %v", codexModelIDs(models))
+	}
+	if !codexModelSetContains(models, "gpt-image-2") {
+		t.Fatalf("image models must be routable for this credential: %v", codexModelIDs(models))
 	}
 }
 
@@ -125,10 +130,53 @@ func TestFetchCodexModelsFallsBackToCache(t *testing.T) {
 	if ok := storeCodexModels([]*sdkmodelcatalog.ModelInfo{{ID: "cached-codex", OwnedBy: "openai", Type: "codex"}}); !ok {
 		t.Fatal("cache seed failed")
 	}
+	// This auth carries no token, so nothing here is routable — the cache is
+	// returned unmerged. Merging image models onto a credential-less lookup would
+	// manufacture a servable set out of nothing.
 	models := FetchCodexModels(context.Background(), &cliproxyauth.Auth{Provider: "codex"}, nil)
 	if len(models) != 1 || models[0].ID != "cached-codex" {
-		t.Fatalf("fallback models=%v", models)
+		t.Fatalf("fallback models=%v", codexModelIDs(models))
 	}
+}
+
+// TestFetchCodexModelsMergesImageModelsForCredentialedFallback covers the other
+// fallback shape: a real credential whose manifest fetch failed still has to be
+// able to serve an image request, or the router reports auth_not_found.
+func TestFetchCodexModelsMergesImageModelsForCredentialedFallback(t *testing.T) {
+	resetCodexModelsCacheForTest()
+	t.Cleanup(resetCodexModelsCacheForTest)
+
+	if ok := storeCodexModels([]*sdkmodelcatalog.ModelInfo{{ID: "cached-codex", OwnedBy: "openai", Type: "codex"}}); !ok {
+		t.Fatal("cache seed failed")
+	}
+	models := FetchCodexModels(context.Background(), &cliproxyauth.Auth{
+		Provider:   "codex",
+		Attributes: map[string]string{"api_key": "sk-test", "base_url": "http://127.0.0.1:1"},
+	}, nil)
+	for _, modelID := range []string{"cached-codex", "gpt-image-2", "gpt-image-2.5-flare"} {
+		if !codexModelSetContains(models, modelID) {
+			t.Fatalf("%s missing from a credentialed fallback set: %v", modelID, codexModelIDs(models))
+		}
+	}
+}
+
+func codexModelIDs(models []*sdkmodelcatalog.ModelInfo) []string {
+	ids := make([]string, 0, len(models))
+	for _, model := range models {
+		if model != nil {
+			ids = append(ids, model.ID)
+		}
+	}
+	return ids
+}
+
+func codexModelSetContains(models []*sdkmodelcatalog.ModelInfo, modelID string) bool {
+	for _, model := range models {
+		if model != nil && model.ID == modelID {
+			return true
+		}
+	}
+	return false
 }
 
 func TestResolveCodexModelsClientVersionFloorsStaleDefault(t *testing.T) {
