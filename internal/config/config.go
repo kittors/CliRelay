@@ -117,6 +117,10 @@ type Config struct {
 	// MaxRetryInterval defines the maximum wait time in seconds before retrying a cooled-down credential.
 	MaxRetryInterval int `yaml:"max-retry-interval" json:"max-retry-interval"`
 
+	// AccountConcurrency controls how requests queue for AI accounts that are at
+	// their per-account concurrency limit.
+	AccountConcurrency AccountConcurrencyConfig `yaml:"account-concurrency,omitempty" json:"account-concurrency,omitempty"`
+
 	// QuotaExceeded defines the behavior when a quota is exceeded.
 	QuotaExceeded QuotaExceeded `yaml:"quota-exceeded" json:"quota-exceeded"`
 

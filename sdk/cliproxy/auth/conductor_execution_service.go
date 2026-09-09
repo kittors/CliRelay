@@ -2,11 +2,16 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"net/http"
 
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v6/sdk/translator"
 )
+
+// errNoSaturatedCandidate marks "there was nothing to queue on", which is an
+// internal control signal rather than the reason a request failed.
+var errNoSaturatedCandidate = errors.New("no saturated candidate to wait for")
 
 type executionService struct {
 	manager *Manager
@@ -18,6 +23,13 @@ type mixedExecutionScope struct {
 	opts            cliproxyexecutor.Options
 	singlePickRoute bool
 	tried           map[string]struct{}
+	// saturated collects candidates skipped because their account was already at
+	// its concurrency limit. Once no idle candidate is left they become the queue
+	// this request waits on.
+	saturated []*mixedExecutionCandidate
+	// lastErr keeps the most recent failover reason so an exhausted candidate list
+	// reports why every candidate was rejected instead of a generic "no auth".
+	lastErr error
 }
 
 type mixedExecutionCandidate struct {
@@ -91,23 +103,10 @@ func (s executionService) executeMixedOnce(ctx context.Context, providers []stri
 		return cliproxyexecutor.Response{}, err
 	}
 
-	var lastErr error
 	for {
-		candidate, errPick := s.nextMixedCandidate(ctx, &scope, req)
-		if errPick != nil {
-			return cliproxyexecutor.Response{}, resolveMixedPickError(lastErr, errPick)
-		}
-		if errModeration := s.manager.moderateRequest(candidate.execCtx, candidate.auth, scope.opts); errModeration != nil {
-			return cliproxyexecutor.Response{}, errModeration
-		}
-
-		releaseSlot, errSlot := s.manager.acquireAccountSlot(candidate.auth)
-		if errSlot != nil {
-			if isRequestInvalidError(errSlot) || scope.singlePickRoute {
-				return cliproxyexecutor.Response{}, errSlot
-			}
-			lastErr = errSlot
-			continue
+		candidate, releaseSlot, errReady := s.nextReadyCandidate(ctx, &scope, req)
+		if errReady != nil {
+			return cliproxyexecutor.Response{}, errReady
 		}
 
 		resp, errExec := candidate.executor.Execute(candidate.execCtx, candidate.auth, candidate.execReq, scope.opts)
@@ -131,7 +130,7 @@ func (s executionService) executeMixedOnce(ctx context.Context, providers []stri
 			if isRequestInvalidError(errExec) || scope.singlePickRoute {
 				return cliproxyexecutor.Response{}, errExec
 			}
-			lastErr = errExec
+			scope.lastErr = errExec
 			continue
 		}
 
@@ -147,23 +146,10 @@ func (s executionService) executeCountMixedOnce(ctx context.Context, providers [
 		return cliproxyexecutor.Response{}, err
 	}
 
-	var lastErr error
 	for {
-		candidate, errPick := s.nextMixedCandidate(ctx, &scope, req)
-		if errPick != nil {
-			return cliproxyexecutor.Response{}, resolveMixedPickError(lastErr, errPick)
-		}
-		if errModeration := s.manager.moderateRequest(candidate.execCtx, candidate.auth, scope.opts); errModeration != nil {
-			return cliproxyexecutor.Response{}, errModeration
-		}
-
-		releaseSlot, errSlot := s.manager.acquireAccountSlot(candidate.auth)
-		if errSlot != nil {
-			if isRequestInvalidError(errSlot) || scope.singlePickRoute {
-				return cliproxyexecutor.Response{}, errSlot
-			}
-			lastErr = errSlot
-			continue
+		candidate, releaseSlot, errReady := s.nextReadyCandidate(ctx, &scope, req)
+		if errReady != nil {
+			return cliproxyexecutor.Response{}, errReady
 		}
 
 		resp, errExec := candidate.executor.CountTokens(candidate.execCtx, candidate.auth, candidate.execReq, scope.opts)
@@ -175,7 +161,7 @@ func (s executionService) executeCountMixedOnce(ctx context.Context, providers [
 			if isRequestInvalidError(errExec) || scope.singlePickRoute {
 				return cliproxyexecutor.Response{}, errExec
 			}
-			lastErr = errExec
+			scope.lastErr = errExec
 			continue
 		}
 
@@ -189,23 +175,10 @@ func (s executionService) executeStreamMixedOnce(ctx context.Context, providers 
 		return nil, err
 	}
 
-	var lastErr error
 	for {
-		candidate, errPick := s.nextMixedCandidate(ctx, &scope, req)
-		if errPick != nil {
-			return nil, resolveMixedPickError(lastErr, errPick)
-		}
-		if errModeration := s.manager.moderateRequest(candidate.execCtx, candidate.auth, scope.opts); errModeration != nil {
-			return nil, errModeration
-		}
-
-		releaseSlot, errSlot := s.manager.acquireAccountSlot(candidate.auth)
-		if errSlot != nil {
-			if isRequestInvalidError(errSlot) || scope.singlePickRoute {
-				return nil, errSlot
-			}
-			lastErr = errSlot
-			continue
+		candidate, releaseSlot, errReady := s.nextReadyCandidate(ctx, &scope, req)
+		if errReady != nil {
+			return nil, errReady
 		}
 
 		streamResult, errStream := candidate.executor.ExecuteStream(candidate.execCtx, candidate.auth, candidate.execReq, scope.opts)
@@ -228,7 +201,7 @@ func (s executionService) executeStreamMixedOnce(ctx context.Context, providers 
 			if isRequestInvalidError(errStream) || scope.singlePickRoute {
 				return nil, errStream
 			}
-			lastErr = errStream
+			scope.lastErr = errStream
 			continue
 		}
 
@@ -251,6 +224,72 @@ func (s executionService) newMixedScope(providers []string, req cliproxyexecutor
 		singlePickRoute: isSinglePickRouteRequest(opts.Metadata),
 		tried:           make(map[string]struct{}),
 	}, nil
+}
+
+// nextReadyCandidate returns the next candidate that already owns a concurrency
+// slot, along with the release function the caller must invoke.
+//
+// Idle accounts are taken immediately so a healthy pool keeps its low latency.
+// Only when every candidate is saturated does the request queue on them, which is
+// what makes a per-account limit a throttle instead of an error: a single-pick
+// route (pinned auth or sticky session) has nowhere to fail over to, so failing
+// fast there would reject requests the account could serve moments later.
+func (s executionService) nextReadyCandidate(ctx context.Context, scope *mixedExecutionScope, req cliproxyexecutor.Request) (*mixedExecutionCandidate, func(), error) {
+	for {
+		candidate, errPick := s.nextMixedCandidate(ctx, scope, req)
+		if errPick != nil {
+			queued, releaseSlot, errWait := s.waitForSaturatedSlot(ctx, scope)
+			if errWait == nil {
+				return queued, releaseSlot, nil
+			}
+			if !errors.Is(errWait, errNoSaturatedCandidate) {
+				scope.lastErr = errWait
+			}
+			return nil, nil, resolveMixedPickError(scope.lastErr, errPick)
+		}
+		if errModeration := s.manager.moderateRequest(candidate.execCtx, candidate.auth, scope.opts); errModeration != nil {
+			return nil, nil, errModeration
+		}
+
+		releaseSlot, errSlot := s.manager.acquireAccountSlot(candidate.auth)
+		if errSlot == nil {
+			return candidate, releaseSlot, nil
+		}
+		if isRequestInvalidError(errSlot) {
+			return nil, nil, errSlot
+		}
+		scope.saturated = append(scope.saturated, candidate)
+		scope.lastErr = errSlot
+	}
+}
+
+// waitForSaturatedSlot queues on every candidate that was skipped for being at its
+// concurrency limit and resumes with whichever frees a slot first.
+func (s executionService) waitForSaturatedSlot(ctx context.Context, scope *mixedExecutionScope) (*mixedExecutionCandidate, func(), error) {
+	if len(scope.saturated) == 0 {
+		return nil, nil, errNoSaturatedCandidate
+	}
+	auths := make([]*Auth, 0, len(scope.saturated))
+	for _, candidate := range scope.saturated {
+		auths = append(auths, candidate.auth)
+	}
+	releaseSlot, authID, err := s.manager.waitAccountSlot(ctx, auths)
+	if err != nil {
+		return nil, nil, err
+	}
+	for i, candidate := range scope.saturated {
+		if candidate.auth.ID != authID {
+			continue
+		}
+		// Consume the entry: an account that has had its turn must not be queued
+		// for again, otherwise a candidate whose request keeps failing would loop
+		// through the queue instead of failing over or giving up.
+		scope.saturated = append(scope.saturated[:i], scope.saturated[i+1:]...)
+		return candidate, releaseSlot, nil
+	}
+	// Unreachable in practice; release rather than leak the slot we were granted.
+	releaseSlot()
+	return nil, nil, errNoSaturatedCandidate
 }
 
 func (s executionService) nextMixedCandidate(ctx context.Context, scope *mixedExecutionScope, req cliproxyexecutor.Request) (*mixedExecutionCandidate, error) {

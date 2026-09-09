@@ -248,6 +248,17 @@ request-retry: 3
 # Maximum wait time in seconds for a cooled-down credential before triggering a retry.
 max-retry-interval: 30
 
+# Behavior when an AI account reaches the `concurrency_limit` set on its auth file.
+# Requests first fail over to any account with a free slot; only when every candidate
+# is busy do they queue here, in arrival order, and resume as soon as a slot frees up.
+account-concurrency:
+  # Seconds a request may queue before giving up with HTTP 429. Default is 30.
+  # Set to 0 to disable queuing and fail as soon as all candidate accounts are busy.
+  wait-timeout-seconds: 30
+  # Maximum queued requests per account; 0 means unbounded. Set this when a stalled
+  # upstream should shed load instead of letting callers pile up behind it.
+  max-queue-depth: 0
+
 # Quota exceeded behavior
 quota-exceeded:
   switch-project: true # Whether to automatically switch to another project when a quota is exceeded
