@@ -25,6 +25,9 @@ import (
 // differs per tenant, but an image model is servable by any credential of its
 // provider, so withholding it from a tenant expresses nothing.
 
+// systemTenantID is the catalog tenant every other tenant's library derives from.
+const systemTenantID = "00000000-0000-0000-0000-000000000001"
+
 // seedAndRepairModelConfigRows brings the model library up to date on startup.
 //
 // Order matters: the system tenant is seeded first, legacy pricing rows are folded
@@ -38,11 +41,19 @@ func seedAndRepairModelConfigRows(db *sql.DB) {
 	seedMediaGenerationModelsForTenants(db)
 }
 
-// seedMediaGenerationModelsForTenants gives every existing tenant a row for each
-// media model in the static catalog.
+// seedMediaGenerationModelsForTenants adds newly released media models to the
+// tenants that already use that model family.
+//
+// Deliberately not "every media model into every tenant". A tenant with no xAI
+// credential has no use for grok-imagine rows, and filling its library with models
+// it cannot call is noise the operator then has to sift through. The narrow rule —
+// only complete a family the tenant already has — covers the case this exists for
+// (gpt-image-2.5 missing from tenants that have gpt-image-2) without inventing
+// entries nobody asked for.
 //
 // Existing rows are never touched: an operator's pricing, owner and enabled state
-// on a model they already have must survive this.
+// on a model they already have must survive this, which matters because this runs
+// on every startup.
 func seedMediaGenerationModelsForTenants(db *sql.DB) {
 	if db == nil {
 		return
@@ -57,6 +68,9 @@ func seedMediaGenerationModelsForTenants(db *sql.DB) {
 			continue
 		}
 		for _, tenantID := range tenants {
+			if !tenantUsesMediaModelFamily(db, tenantID, row.ModelID) {
+				continue
+			}
 			ownedBy := tenantMediaModelOwner(db, tenantID, row.ModelID, row.OwnedBy)
 			_, err := db.Exec(
 				`INSERT OR IGNORE INTO model_configs
@@ -153,6 +167,31 @@ func tenantMediaModelOwner(db *sql.DB, tenantID, modelID, fallback string) strin
 		return fallback
 	}
 	return strings.TrimSpace(ownedBy)
+}
+
+// tenantUsesMediaModelFamily reports whether a tenant already has any model from
+// the same family, which is what makes a new release in that family relevant to it.
+//
+// The system tenant is always in scope: it is the catalog every tenant is derived
+// from, so a model missing there is missing everywhere.
+func tenantUsesMediaModelFamily(db *sql.DB, tenantID, modelID string) bool {
+	if tenantID == systemTenantID {
+		return true
+	}
+	prefix := mediaModelFamilyPrefix(modelID)
+	if prefix == "" {
+		return false
+	}
+	var present int
+	err := db.QueryRow(
+		`SELECT 1 FROM model_configs
+		 WHERE tenant_id = ? AND model_id LIKE ? AND model_id != ?
+		 LIMIT 1`,
+		tenantID,
+		prefix+"%",
+		modelID,
+	).Scan(&present)
+	return err == nil
 }
 
 // mediaModelFamilyPrefix returns the id prefix shared by a media model's family,

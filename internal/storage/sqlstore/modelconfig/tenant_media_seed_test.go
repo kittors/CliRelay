@@ -82,12 +82,20 @@ func TestMediaModelsReachEveryTenant(t *testing.T) {
 	}
 }
 
-// TestMediaSeedFallsBackToCatalogOwner covers a tenant with no sibling to follow.
+// TestMediaSeedFallsBackToCatalogOwner covers a tenant whose family members all sit
+// on the catalog default, so there is no operator retarget to inherit.
 func TestMediaSeedFallsBackToCatalogOwner(t *testing.T) {
 	db := newSeededTestDB(t)
 
 	const tenant = "11f9ab9c-9fa6-4875-a76a-c39f113c57eb"
-	// Present in the tenant, but not an image model, so it must not be followed.
+	if _, err := db.Exec(
+		`INSERT INTO model_configs (tenant_id, model_id, owned_by, enabled, source, updated_at)
+		 VALUES (?, 'gpt-image-2', 'openai', 1, 'seed', '2026-01-01T00:00:00Z')`,
+		tenant,
+	); err != nil {
+		t.Fatalf("seed tenant image row: %v", err)
+	}
+	// A chat model with an unusual owner must not be mistaken for a family sibling.
 	if _, err := db.Exec(
 		`INSERT INTO model_configs (tenant_id, model_id, owned_by, enabled, source, updated_at)
 		 VALUES (?, 'gpt-5.5', 'some-custom-owner', 1, 'seed', '2026-01-01T00:00:00Z')`,
@@ -100,7 +108,7 @@ func TestMediaSeedFallsBackToCatalogOwner(t *testing.T) {
 
 	owner, ok := modelRowOwner(t, db, tenant, "gpt-image-2.5-flare")
 	if !ok {
-		t.Fatal("gpt-image-2.5-flare missing from a tenant with no image sibling")
+		t.Fatal("gpt-image-2.5-flare missing from a tenant that has gpt-image-2")
 	}
 	if owner != "openai" {
 		t.Fatalf("owner = %q, want the catalog default %q", owner, "openai")
@@ -179,5 +187,41 @@ func TestTenantIDQueryAvoidsEmptyStringComparison(t *testing.T) {
 	}
 	if strings.Contains(string(source), "tenant_id != ''") {
 		t.Fatal("tenant_id is a uuid column on PostgreSQL; comparing it to '' aborts the query. Use IS NOT NULL and filter blanks in Go.")
+	}
+}
+
+// TestSeedSkipsFamiliesTheTenantDoesNotUse is the blast-radius guard.
+//
+// Broadcasting every media model to every tenant would fill a Codex-only tenant's
+// library with grok-imagine and minimax rows it has no credential for — noise the
+// operator then has to sift through. Only a family the tenant already uses is
+// completed.
+func TestSeedSkipsFamiliesTheTenantDoesNotUse(t *testing.T) {
+	db := newSeededTestDB(t)
+
+	const tenant = "codex-only-tenant-0000-0000-000000000000"
+	if _, err := db.Exec(
+		`INSERT INTO model_configs (tenant_id, model_id, owned_by, enabled, source, updated_at)
+		 VALUES (?, 'gpt-image-2', 'codex', 1, 'seed', '2026-01-01T00:00:00Z')`,
+		tenant,
+	); err != nil {
+		t.Fatalf("seed tenant row: %v", err)
+	}
+
+	seedMediaGenerationModelsForTenants(db)
+
+	// The family it uses is completed.
+	if _, ok := modelRowOwner(t, db, tenant, "gpt-image-2.5-flare"); !ok {
+		t.Fatal("gpt-image-2.5-flare should be added to a tenant that already has gpt-image-2")
+	}
+	// Families it does not use are left alone.
+	for _, modelID := range []string{"grok-imagine-image", "grok-imagine-image-quality", "image-01"} {
+		if _, ok := modelRowOwner(t, db, tenant, modelID); ok {
+			t.Fatalf("%s was added to a tenant with no model of that family", modelID)
+		}
+	}
+	// The system tenant still carries the full catalog.
+	if _, ok := modelRowOwner(t, db, systemTenant, "grok-imagine-image"); !ok {
+		t.Fatal("grok-imagine-image should still be in the system tenant catalog")
 	}
 }
