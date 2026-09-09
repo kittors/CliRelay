@@ -14,8 +14,12 @@
 // with "The '<model>' model is not supported when using Codex with a ChatGPT
 // account." Neither test suite caught it, because both asserted the constant.
 //
-// The package sits below the executor because the executor already imports the
-// translator (see translator_init.go), so the dependency cannot run the other way.
+// Pull requests may not modify internal/translator, so the translator still holds
+// its constant; the executor overwrites the carrier it produced on the way out
+// (see repairCodexImageCarrierModel). Resolution lives in its own package rather
+// than inside the executor so it stays testable on its own, and so the translator
+// can adopt it directly if that restriction is ever lifted.
+//
 // It holds no opinion about which models exist: the executor publishes what the
 // live manifest returned, and resolution simply refuses to name a carrier that is
 // not on that list.

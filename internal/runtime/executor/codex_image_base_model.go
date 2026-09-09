@@ -9,10 +9,10 @@ import (
 
 // Carrier model wiring for Codex image generation.
 //
-// The resolution rules live in internal/codexcarrier, which the translator also
-// consumes; see that package for why the carrier cannot be a constant. This file
-// only feeds it: the operator override from config, and the usable model IDs from
-// whatever the live manifest last returned.
+// The resolution rules live in internal/codexcarrier; see that package for why the
+// carrier cannot be a constant. This file only feeds it: the operator override
+// from config, and the usable model IDs from whatever the live manifest last
+// returned.
 
 // resolveCodexImageBaseModel returns the chat model that carries image_generation.
 func (e *CodexExecutor) resolveCodexImageBaseModel() string {

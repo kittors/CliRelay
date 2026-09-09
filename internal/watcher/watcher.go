@@ -136,10 +136,9 @@ func (w *Watcher) SetConfig(cfg *config.Config) {
 	defer w.clientsMutex.Unlock()
 	w.config = cfg
 	w.oldConfigYaml, _ = yaml.Marshal(cfg)
-	// The translator resolves the Codex image carrier from package state because it
-	// has no access to config; publishing here is what lets an operator override
-	// reach the /v1/responses image path without an image request having warmed it
-	// through the executor first.
+	// The Codex image carrier is resolved from package state on outbound request
+	// paths that have no config handy; publishing the override on reload is what
+	// makes an operator's change take effect without a restart.
 	if cfg != nil {
 		codexcarrier.SetOverride(cfg.CodexImageBaseModel)
 	}
