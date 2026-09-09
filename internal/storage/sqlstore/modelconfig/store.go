@@ -158,10 +158,7 @@ func InitTables(db *sql.DB) {
 	ensureModelConfigSchema(db)
 	ensureOpenRouterModelSyncStateSchema(db)
 	migrateModelConfigTenantSchema(db)
-	seedDefaultModelConfigRows(db)
-	mergeLegacyPricingIntoModelConfigs(db)
-	repairDefaultPerCallModelConfigRows(db)
-	repairMediaGenerationModelConfigRows(db)
+	seedAndRepairModelConfigRows(db)
 }
 
 func NormalizeModelOwnerValue(value string) string {
