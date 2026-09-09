@@ -83,8 +83,18 @@ func seedMediaGenerationModelsForTenants(db *sql.DB) {
 }
 
 // modelConfigTenantIDs lists the tenants that already have a model library.
+//
+// The empty check is IS NOT NULL rather than an empty-string comparison. tenant_id is a uuid column on
+// PostgreSQL, where comparing it to an empty string fails outright with
+//
+//	ERROR: invalid input syntax for type uuid: ""
+//
+// and the whole seed then silently does nothing, because the error surfaces as a
+// warning on a deployment that does not log to file. SQLite types loosely and
+// accepts the comparison, so the unit tests passed while production was a no-op.
+// Blank ids are filtered in Go below, which behaves the same on both engines.
 func modelConfigTenantIDs(db *sql.DB) []string {
-	rows, err := db.Query(`SELECT DISTINCT tenant_id FROM model_configs WHERE tenant_id != ''`)
+	rows, err := db.Query(`SELECT DISTINCT tenant_id FROM model_configs WHERE tenant_id IS NOT NULL`)
 	if err != nil {
 		log.Warnf("sqlite/modelconfig: list tenants for media seed: %v", err)
 		return nil
@@ -114,8 +124,14 @@ func modelConfigTenantIDs(db *sql.DB) []string {
 // family that kept the catalog default would silently land outside that group,
 // leaving the operator to rediscover and repeat the change for every release.
 //
-// So a sibling already in the tenant decides it, and the catalog default applies
-// only when the tenant has no sibling to follow.
+// Only a sibling whose owner *differs* from the catalog default is followed, since
+// that difference is the operator's decision recorded in data. Following any
+// sibling would pick the wrong one: this deployment's tenant holds gpt-image-1 and
+// gpt-image-1-mini on the default "openai" alongside gpt-image-2 on "codex", so the
+// first sibling by id reproduces the default and misses the retarget entirely.
+//
+// The newest such sibling wins, on the grounds that a retarget applied to a recent
+// model reflects the current intent better than one left on an older entry.
 func tenantMediaModelOwner(db *sql.DB, tenantID, modelID, fallback string) string {
 	prefix := mediaModelFamilyPrefix(modelID)
 	if prefix == "" {
@@ -124,12 +140,14 @@ func tenantMediaModelOwner(db *sql.DB, tenantID, modelID, fallback string) strin
 	var ownedBy string
 	err := db.QueryRow(
 		`SELECT owned_by FROM model_configs
-		 WHERE tenant_id = ? AND model_id LIKE ? AND model_id != ? AND owned_by != ''
-		 ORDER BY model_id
+		 WHERE tenant_id = ? AND model_id LIKE ? AND model_id != ?
+		   AND owned_by != '' AND owned_by != ?
+		 ORDER BY model_id DESC
 		 LIMIT 1`,
 		tenantID,
 		prefix+"%",
 		modelID,
+		fallback,
 	).Scan(&ownedBy)
 	if err != nil || strings.TrimSpace(ownedBy) == "" {
 		return fallback

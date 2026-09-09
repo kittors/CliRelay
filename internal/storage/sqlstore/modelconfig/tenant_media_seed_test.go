@@ -2,6 +2,8 @@ package modelconfig
 
 import (
 	"database/sql"
+	"os"
+	"strings"
 	"testing"
 
 	_ "modernc.org/sqlite"
@@ -43,14 +45,26 @@ func modelRowOwner(t *testing.T, db *sql.DB, tenantID, modelID string) (string, 
 func TestMediaModelsReachEveryTenant(t *testing.T) {
 	db := newSeededTestDB(t)
 
-	// A tenant that predates the release and already carries the older model.
+	// The production shape this got wrong once: the tenant holds two older models
+	// left on the catalog default alongside one the operator retargeted to codex.
+	// Following the first sibling by id picks gpt-image-1 and reproduces the
+	// default, missing the retarget.
 	const tenant = "9e003dfb-751f-4898-b186-45f765c763a6"
-	if _, err := db.Exec(
-		`INSERT INTO model_configs (tenant_id, model_id, owned_by, enabled, source, updated_at)
-		 VALUES (?, 'gpt-image-2', 'codex', 1, 'seed', '2026-01-01T00:00:00Z')`,
-		tenant,
-	); err != nil {
-		t.Fatalf("seed existing tenant row: %v", err)
+	for _, row := range []struct {
+		modelID string
+		ownedBy string
+	}{
+		{"gpt-image-1", "openai"},
+		{"gpt-image-1-mini", "openai"},
+		{"gpt-image-2", "codex"},
+	} {
+		if _, err := db.Exec(
+			`INSERT INTO model_configs (tenant_id, model_id, owned_by, enabled, source, updated_at)
+			 VALUES (?, ?, ?, 1, 'seed', '2026-01-01T00:00:00Z')`,
+			tenant, row.modelID, row.ownedBy,
+		); err != nil {
+			t.Fatalf("seed existing tenant row %s: %v", row.modelID, err)
+		}
 	}
 
 	seedMediaGenerationModelsForTenants(db)
@@ -148,5 +162,22 @@ func TestChatModelsAreNotSeededPerTenant(t *testing.T) {
 	}
 	if _, ok := modelRowOwner(t, db, systemTenant, "gpt-5.5"); !ok {
 		t.Fatal("gpt-5.5 should still be seeded into the system tenant")
+	}
+}
+
+// TestTenantIDQueryAvoidsEmptyStringComparison guards the engine difference that
+// made the first version of this seed a silent no-op in production.
+//
+// tenant_id is a uuid column on PostgreSQL, where an empty-string comparison fails with
+// "invalid input syntax for type uuid", the error is logged as a warning, and the
+// seed does nothing. SQLite types loosely and accepts it, so the tests passed. The
+// unit suite cannot reach PostgreSQL, so this asserts on the SQL text instead.
+func TestTenantIDQueryAvoidsEmptyStringComparison(t *testing.T) {
+	source, err := os.ReadFile("tenant_media_seed.go")
+	if err != nil {
+		t.Fatalf("read source: %v", err)
+	}
+	if strings.Contains(string(source), "tenant_id != ''") {
+		t.Fatal("tenant_id is a uuid column on PostgreSQL; comparing it to '' aborts the query. Use IS NOT NULL and filter blanks in Go.")
 	}
 }
