@@ -25,6 +25,9 @@ import (
 // differs per tenant, but an image model is servable by any credential of its
 // provider, so withholding it from a tenant expresses nothing.
 
+// systemTenantID is the catalog tenant every other tenant's library derives from.
+const systemTenantID = "00000000-0000-0000-0000-000000000001"
+
 // seedAndRepairModelConfigRows brings the model library up to date on startup.
 //
 // Order matters: the system tenant is seeded first, legacy pricing rows are folded
@@ -38,11 +41,19 @@ func seedAndRepairModelConfigRows(db *sql.DB) {
 	seedMediaGenerationModelsForTenants(db)
 }
 
-// seedMediaGenerationModelsForTenants gives every existing tenant a row for each
-// media model in the static catalog.
+// seedMediaGenerationModelsForTenants adds newly released media models to the
+// tenants that already use that model family.
+//
+// Deliberately not "every media model into every tenant". A tenant with no xAI
+// credential has no use for grok-imagine rows, and filling its library with models
+// it cannot call is noise the operator then has to sift through. The narrow rule —
+// only complete a family the tenant already has — covers the case this exists for
+// (gpt-image-2.5 missing from tenants that have gpt-image-2) without inventing
+// entries nobody asked for.
 //
 // Existing rows are never touched: an operator's pricing, owner and enabled state
-// on a model they already have must survive this.
+// on a model they already have must survive this, which matters because this runs
+// on every startup.
 func seedMediaGenerationModelsForTenants(db *sql.DB) {
 	if db == nil {
 		return
@@ -57,6 +68,9 @@ func seedMediaGenerationModelsForTenants(db *sql.DB) {
 			continue
 		}
 		for _, tenantID := range tenants {
+			if !tenantUsesMediaModelFamily(db, tenantID, row.ModelID) {
+				continue
+			}
 			ownedBy := tenantMediaModelOwner(db, tenantID, row.ModelID, row.OwnedBy)
 			_, err := db.Exec(
 				`INSERT OR IGNORE INTO model_configs
@@ -83,8 +97,18 @@ func seedMediaGenerationModelsForTenants(db *sql.DB) {
 }
 
 // modelConfigTenantIDs lists the tenants that already have a model library.
+//
+// The empty check is IS NOT NULL rather than an empty-string comparison. tenant_id is a uuid column on
+// PostgreSQL, where comparing it to an empty string fails outright with
+//
+//	ERROR: invalid input syntax for type uuid: ""
+//
+// and the whole seed then silently does nothing, because the error surfaces as a
+// warning on a deployment that does not log to file. SQLite types loosely and
+// accepts the comparison, so the unit tests passed while production was a no-op.
+// Blank ids are filtered in Go below, which behaves the same on both engines.
 func modelConfigTenantIDs(db *sql.DB) []string {
-	rows, err := db.Query(`SELECT DISTINCT tenant_id FROM model_configs WHERE tenant_id != ''`)
+	rows, err := db.Query(`SELECT DISTINCT tenant_id FROM model_configs WHERE tenant_id IS NOT NULL`)
 	if err != nil {
 		log.Warnf("sqlite/modelconfig: list tenants for media seed: %v", err)
 		return nil
@@ -114,8 +138,14 @@ func modelConfigTenantIDs(db *sql.DB) []string {
 // family that kept the catalog default would silently land outside that group,
 // leaving the operator to rediscover and repeat the change for every release.
 //
-// So a sibling already in the tenant decides it, and the catalog default applies
-// only when the tenant has no sibling to follow.
+// Only a sibling whose owner *differs* from the catalog default is followed, since
+// that difference is the operator's decision recorded in data. Following any
+// sibling would pick the wrong one: this deployment's tenant holds gpt-image-1 and
+// gpt-image-1-mini on the default "openai" alongside gpt-image-2 on "codex", so the
+// first sibling by id reproduces the default and misses the retarget entirely.
+//
+// The newest such sibling wins, on the grounds that a retarget applied to a recent
+// model reflects the current intent better than one left on an older entry.
 func tenantMediaModelOwner(db *sql.DB, tenantID, modelID, fallback string) string {
 	prefix := mediaModelFamilyPrefix(modelID)
 	if prefix == "" {
@@ -124,17 +154,44 @@ func tenantMediaModelOwner(db *sql.DB, tenantID, modelID, fallback string) strin
 	var ownedBy string
 	err := db.QueryRow(
 		`SELECT owned_by FROM model_configs
-		 WHERE tenant_id = ? AND model_id LIKE ? AND model_id != ? AND owned_by != ''
-		 ORDER BY model_id
+		 WHERE tenant_id = ? AND model_id LIKE ? AND model_id != ?
+		   AND owned_by != '' AND owned_by != ?
+		 ORDER BY model_id DESC
 		 LIMIT 1`,
 		tenantID,
 		prefix+"%",
 		modelID,
+		fallback,
 	).Scan(&ownedBy)
 	if err != nil || strings.TrimSpace(ownedBy) == "" {
 		return fallback
 	}
 	return strings.TrimSpace(ownedBy)
+}
+
+// tenantUsesMediaModelFamily reports whether a tenant already has any model from
+// the same family, which is what makes a new release in that family relevant to it.
+//
+// The system tenant is always in scope: it is the catalog every tenant is derived
+// from, so a model missing there is missing everywhere.
+func tenantUsesMediaModelFamily(db *sql.DB, tenantID, modelID string) bool {
+	if tenantID == systemTenantID {
+		return true
+	}
+	prefix := mediaModelFamilyPrefix(modelID)
+	if prefix == "" {
+		return false
+	}
+	var present int
+	err := db.QueryRow(
+		`SELECT 1 FROM model_configs
+		 WHERE tenant_id = ? AND model_id LIKE ? AND model_id != ?
+		 LIMIT 1`,
+		tenantID,
+		prefix+"%",
+		modelID,
+	).Scan(&present)
+	return err == nil
 }
 
 // mediaModelFamilyPrefix returns the id prefix shared by a media model's family,
