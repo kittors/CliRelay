@@ -9,7 +9,17 @@ package registry
 // interpret them means adding a model is one file, not two.
 
 // getOpenAIImageModelDefinitions returns OpenAI image-generation models.
+//
+// The 2.5 pair is registered ahead of the subscription channel actually serving it.
+// chatgpt.com/backend-api/codex/images/generations ignores the model field outright
+// — sending gpt-image-2.5-flare, gpt-image-2, or a model id that does not exist at
+// all each return 200 with C2PA content credentials reading "gpt-image version
+// 2.0". Registering them makes the ids selectable and routable now, and they start
+// producing 2.5 output on their own the day upstream honours the field. Until then
+// the descriptions say so outright, because a silently downgraded model is worse to
+// debug than one that fails.
 func getOpenAIImageModelDefinitions() []*ModelInfo {
+	imageParameters := []string{"prompt", "size", "n", "response_format", "quality"}
 	return []*ModelInfo{
 		{
 			ID:                  "gpt-image-2",
@@ -20,6 +30,26 @@ func getOpenAIImageModelDefinitions() []*ModelInfo {
 			DisplayName:         "GPT Image 2",
 			Description:         "Text-to-image generation model.",
 			SupportedParameters: []string{"prompt", "size", "n", "response_format"},
+		},
+		{
+			ID:                  "gpt-image-2.5-flare",
+			Object:              "model",
+			OwnedBy:             "openai",
+			Type:                "openai",
+			Version:             "gpt-image-2.5-flare-2026-09-08",
+			DisplayName:         "GPT Image 2.5 Flare",
+			Description:         "Text-to-image generation, faster and higher quality than GPT Image 2. Note: the Codex subscription channel currently ignores the image model field and still renders GPT Image 2.0.",
+			SupportedParameters: imageParameters,
+		},
+		{
+			ID:                  "gpt-image-2.5-sunburst",
+			Object:              "model",
+			OwnedBy:             "openai",
+			Type:                "openai",
+			Version:             "gpt-image-2.5-sunburst-2026-09-08",
+			DisplayName:         "GPT Image 2.5 Sunburst",
+			Description:         "Text-to-image generation tuned for edit precision. Note: the Codex subscription channel currently ignores the image model field and still renders GPT Image 2.0.",
+			SupportedParameters: imageParameters,
 		},
 	}
 }

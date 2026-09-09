@@ -28,6 +28,20 @@ var imageGenerationModels = map[string]imageGenerationModelDefaults{
 		PricePerCall: 0.04,
 		Description:  "Image generation model billed per invocation",
 	},
+	// OpenAI prices the 2.5 pair per token rather than per image ($5/M text in,
+	// $8/M image in, $30/M image out) and states its token rates match GPT Image 2.
+	// Per-call is the only mode this struct expresses, so they inherit the 2 rate:
+	// on the subscription channel the request is billed against the plan anyway, and
+	// on any channel that later serves 2.5 natively the upstream response carries a
+	// real usage block for reporting to use.
+	"gpt-image-2.5-flare": {
+		PricePerCall: 0.04,
+		Description:  "GPT Image 2.5 Flare, billed per invocation",
+	},
+	"gpt-image-2.5-sunburst": {
+		PricePerCall: 0.04,
+		Description:  "GPT Image 2.5 Sunburst, billed per invocation",
+	},
 	// Grok Imagine. These two ids are what api.x.ai actually serves; earlier
 	// revisions also listed grok-imagine-image-pro and grok-2-image-1212, taken
 	// from a third-party model list and never present in the live catalog, so
