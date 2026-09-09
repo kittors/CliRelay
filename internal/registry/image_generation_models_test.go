@@ -1,6 +1,9 @@
 package registry
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestIsImageGenerationModel(t *testing.T) {
 	imageModels := []string{
@@ -231,6 +234,50 @@ func TestMiniMaxDoesNotAdvertiseUndocumentedTextToImageModels(t *testing.T) {
 			if model.ID == id {
 				t.Errorf("unsupported static model: %s", id)
 			}
+		}
+	}
+}
+
+// TestGPTImage25ModelsAreRegistered covers the 2.5 pair reaching every surface a
+// selectable image model has to appear on: the codex catalog, the classifier, the
+// provider mapping, edit support, and the console listing.
+func TestGPTImage25ModelsAreRegistered(t *testing.T) {
+	wanted := []string{"gpt-image-2.5-flare", "gpt-image-2.5-sunburst"}
+
+	registered := make(map[string]*ModelInfo)
+	for _, model := range GetOpenAIModels() {
+		registered[model.ID] = model
+	}
+	listed := make(map[string]ImageGenerationModel)
+	for _, model := range ListImageGenerationModels() {
+		listed[model.ID] = model
+	}
+
+	for _, modelID := range wanted {
+		info, ok := registered[modelID]
+		if !ok {
+			t.Errorf("%s is missing from the codex static catalog", modelID)
+			continue
+		}
+		// The panel shows this text; it must keep saying the subscription channel
+		// still renders 2.0, because upstream ignores the model field there.
+		if !strings.Contains(info.Description, "GPT Image 2.0") {
+			t.Errorf("%s description should disclose the 2.0 downgrade, got %q", modelID, info.Description)
+		}
+		if !IsImageGenerationModel(modelID) {
+			t.Errorf("IsImageGenerationModel(%q) = false, want true", modelID)
+		}
+		if got := ImageGenerationProvider(modelID); got != ImageProviderCodex {
+			t.Errorf("ImageGenerationProvider(%q) = %q, want %q", modelID, got, ImageProviderCodex)
+		}
+		if !SupportsImageEditing(modelID) {
+			t.Errorf("SupportsImageEditing(%q) = false, want true", modelID)
+		}
+		if _, _, ok := ImageGenerationModelDefaults(modelID); !ok {
+			t.Errorf("%s has no billing defaults, so it would be billed per token", modelID)
+		}
+		if _, ok := listed[modelID]; !ok {
+			t.Errorf("%s is absent from ListImageGenerationModels", modelID)
 		}
 	}
 }

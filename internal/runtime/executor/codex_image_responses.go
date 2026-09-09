@@ -32,7 +32,11 @@ func (e *CodexExecutor) executeCodexImageViaResponses(
 	if baseURL == "" {
 		baseURL = "https://chatgpt.com/backend-api/codex"
 	}
-	body, err := buildCodexImageResponsesRequest(parsed, codexImageModel, e.resolveCodexImageBaseModel())
+	// The caller's image model is forwarded rather than the compiled-in default, so
+	// selecting gpt-image-2.5-* actually reaches upstream. Upstream currently ignores
+	// this field on the subscription channel, which is why the catalog descriptions
+	// say so; sending it anyway is what makes the ids work the moment that changes.
+	body, err := buildCodexImageResponsesRequest(parsed, codexImageToolModel(parsed), e.resolveCodexImageBaseModel())
 	if err != nil {
 		return nil, nil, statusErr{code: http.StatusBadRequest, msg: err.Error()}
 	}
@@ -94,6 +98,18 @@ func (e *CodexExecutor) executeCodexImageViaResponses(
 		return nil, nil, lastErr
 	}
 	return nil, nil, statusErr{code: http.StatusBadGateway, msg: "responses image request failed"}
+}
+
+// codexImageToolModel resolves the image model to attach to the image_generation
+// tool, falling back to the compiled-in default when a caller omitted it.
+func codexImageToolModel(parsed *codexImageRequest) string {
+	if parsed == nil {
+		return codexImageModel
+	}
+	if model := strings.TrimSpace(parsed.Model); model != "" {
+		return model
+	}
+	return codexImageModel
 }
 
 func buildCodexImageResponsesRequest(parsed *codexImageRequest, toolModel string, baseModel string) ([]byte, error) {

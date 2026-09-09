@@ -7,9 +7,28 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
+
+// isCodexImageFamilyModel reports whether a model on the /v1/images endpoints is an
+// image model this credential pool serves.
+//
+// Classification comes from the registry rather than a list kept here, so adding a
+// model to the static catalog is enough to make it routable. Pinning a single id at
+// this gate meant every new gpt-image release was rejected by the proxy before
+// upstream ever saw it, which is not a judgement this layer should be making.
+func isCodexImageFamilyModel(model string) bool {
+	trimmed := strings.TrimSpace(model)
+	if trimmed == "" {
+		return false
+	}
+	if !registry.IsImageGenerationModel(trimmed) {
+		return false
+	}
+	return strings.EqualFold(registry.ImageGenerationProvider(trimmed), registry.ImageProviderCodex)
+}
 
 func parseCodexImageRequest(body []byte) (*codexImageRequest, error) {
 	if len(body) == 0 {
@@ -22,7 +41,11 @@ func parseCodexImageRequest(body []byte) (*codexImageRequest, error) {
 	if model == "" {
 		model = codexImageModel
 	}
-	if model != codexImageModel {
+	// Admit the whole Codex image family rather than one id. Pinning a single
+	// constant here meant every new gpt-image release was rejected by this proxy
+	// before upstream ever saw it, which is not a judgement this layer should be
+	// making: whether an account can serve a given image model is upstream's answer.
+	if !isCodexImageFamilyModel(model) {
 		return nil, fmt.Errorf("model %q is not supported by this endpoint", model)
 	}
 	prompt := strings.TrimSpace(gjson.GetBytes(body, "prompt").String())
@@ -58,7 +81,7 @@ func parseCodexImageRequest(body []byte) (*codexImageRequest, error) {
 	}
 	parsed.Quality = strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, "quality").String()))
 	if parsed.Quality != "" && !isSupportedCodexImageQuality(parsed.Quality) {
-		return nil, fmt.Errorf("quality must be one of low, medium, high")
+		return nil, fmt.Errorf("quality must be one of low, medium, high, xhigh, max, auto")
 	}
 	parsed.Background = strings.TrimSpace(gjson.GetBytes(body, "background").String())
 	parsed.OutputFormat = strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, "output_format").String()))
@@ -183,9 +206,13 @@ func isValidCodexImageSize(size string) bool {
 	return codexImageSizePattern.MatchString(strings.ToLower(strings.TrimSpace(size)))
 }
 
+// isSupportedCodexImageQuality accepts the quality levels the GPT Image family
+// documents. xhigh, max and auto arrived with 2.5; rejecting them locally would
+// fail a request this proxy has no reason to refuse, since the endpoint decides
+// what it honours. (Today it honours none of them and echoes back "low".)
 func isSupportedCodexImageQuality(quality string) bool {
 	switch strings.ToLower(strings.TrimSpace(quality)) {
-	case "low", "medium", "high":
+	case "low", "medium", "high", "xhigh", "max", "auto":
 		return true
 	default:
 		return false
