@@ -528,6 +528,11 @@ func isTenantScopedManagementPath(path string) bool {
 		strings.HasPrefix(relative, "/identity-fingerprint"),
 		strings.HasPrefix(relative, "/model-definitions/"),
 		strings.HasPrefix(relative, "/image-generation"),
+		// Text-to-video and image-to-video probes from the model catalogue.
+		// The image-generation sibling above was allowed through but this one
+		// was missed, so video models could not be tested from a business
+		// tenant at all.
+		strings.HasPrefix(relative, "/video-generation"),
 		relative == "/vertex/import",
 		strings.HasSuffix(relative, "-auth-url"),
 		relative == "/oauth-callback",
@@ -553,6 +558,11 @@ func isTenantScopedManagementPath(path string) bool {
 		relative == "/codex-oauth-admission":
 		return true
 	case relative == "/models",
+		// The catalogue's "test this model" dialog. It resolves the channel
+		// from the tenant's own auth files, so it is tenant-scoped in the same
+		// way /models is — listing it separately is what an exact == match on
+		// "/models" costs.
+		relative == "/models/test",
 		relative == "/models/configured-availability",
 		relative == "/model-path-availability",
 		strings.HasPrefix(relative, "/model-configs"),
