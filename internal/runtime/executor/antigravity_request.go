@@ -64,6 +64,15 @@ func (e *AntigravityExecutor) buildRequest(ctx context.Context, auth *cliproxyau
 	// Normalising here rather than in the translator covers every entrypoint
 	// format at once: this is the last point all of them pass through.
 	payloadStr = util.NormalizeGeminiContentRoles(payloadStr, "request.contents")
+
+	// Thinking replayed from an earlier turn is only accepted on the terms of
+	// the model family answering the call, and each entrypoint translator used
+	// to guess at those terms separately. Settle it here, where they all meet,
+	// so a thought block never reaches the upstream in a shape it rejects.
+	sanitized := sanitizeAntigravityThoughts([]byte(payloadStr), modelName)
+	sanitized = stripAntigravityUnsupportedThinkingConfig(sanitized, modelName)
+	payloadStr = string(sanitized)
+
 	paths := make([]string, 0)
 	util.Walk(gjson.Parse(payloadStr), "", "parametersJsonSchema", &paths)
 	for _, p := range paths {
