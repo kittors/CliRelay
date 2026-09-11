@@ -22,14 +22,13 @@ func registerIdentityAuthRoutes(engine *gin.Engine, h *managementhandlers.Handle
 
 	portal := engine.Group("/v0/portal")
 	portal.Use(middlewares...)
-	// Only the two credential-bearing portal routes are throttled, and per-route
-	// rather than on the group: the rest already require a portal session, so a
-	// shared bucket would let one client's failed logins rate-limit everyone
-	// else's key management. Attaching it here (not in the handler) keeps the
-	// route table unchanged.
-	portalAuthThrottle := h.PortalAuthThrottleMiddleware()
-	portal.POST("/auth/login", portalAuthThrottle, h.PostPortalLogin)
-	portal.POST("/auth/refresh", portalAuthThrottle, h.PostPortalRefresh)
+	// Login and refresh throttle themselves inside the handler, mirroring the
+	// admin /v0/auth routes. A middleware cannot do it correctly here: it only
+	// sees the response status, and "401" conflates a wrong password with an
+	// expired session, so it charged the password-guessing budget for sessions
+	// the server itself had revoked.
+	portal.POST("/auth/login", h.PostPortalLogin)
+	portal.POST("/auth/refresh", h.PostPortalRefresh)
 	portal.POST("/auth/logout", h.PostPortalLogout)
 	portal.GET("/auth/me", h.GetPortalMe)
 	portal.PUT("/auth/password", h.PutPortalPassword)

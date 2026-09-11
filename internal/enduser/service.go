@@ -20,7 +20,6 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/quota"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 	log "github.com/sirupsen/logrus"
-	"golang.org/x/crypto/bcrypt"
 )
 
 var (
@@ -93,14 +92,6 @@ func NormalizeUsername(value string) string {
 	return strings.ToLower(strings.TrimSpace(value))
 }
 
-func HashPassword(password string) (string, error) {
-	if len(password) < 8 {
-		return "", fmt.Errorf("%w: password must contain at least 8 characters", ErrValidation)
-	}
-	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
-	return string(hash), err
-}
-
 func tokenHash(token string) string {
 	sum := sha256.Sum256([]byte(strings.TrimSpace(token)))
 	return hex.EncodeToString(sum[:])
@@ -113,14 +104,6 @@ func randomPrefixedToken(prefix string) (plain, hash string, err error) {
 	}
 	plain = prefix + base64.RawURLEncoding.EncodeToString(raw)
 	return plain, tokenHash(plain), nil
-}
-
-func randomPassword() (string, error) {
-	raw := make([]byte, 12)
-	if _, err := rand.Read(raw); err != nil {
-		return "", err
-	}
-	return base64.RawURLEncoding.EncodeToString(raw), nil
 }
 
 func GenerateAPIKey() (string, error) {

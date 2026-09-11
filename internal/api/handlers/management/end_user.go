@@ -33,6 +33,12 @@ func (h *Handler) endUserService() *enduser.Service {
 }
 
 func endUserError(c *gin.Context, err error) {
+	// Password policy and cooldown are checked before the generic sentinels
+	// below, because both satisfy errors.Is against those sentinels and would
+	// otherwise collapse into a code the panel cannot translate.
+	if writePasswordPolicyError(c, err) {
+		return
+	}
 	switch {
 	case errors.Is(err, enduser.ErrInvalidCredentials):
 		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": gin.H{"code": "invalid_credentials", "message": err.Error()}})
@@ -41,7 +47,7 @@ func endUserError(c *gin.Context, err error) {
 	case errors.Is(err, enduser.ErrAccountLocked):
 		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": gin.H{"code": "account_locked", "message": err.Error()}})
 	case errors.Is(err, enduser.ErrLoginCooldowned):
-		c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{"error": gin.H{"code": "login_cooldown", "message": err.Error()}})
+		abortPortalCooldown(c, err)
 	case errors.Is(err, enduser.ErrMustChangePassword):
 		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": gin.H{"code": "must_change_password", "message": err.Error()}})
 	case errors.Is(err, enduser.ErrSessionExpired):
@@ -583,121 +589,6 @@ func (h *Handler) PostEndUserAPIKeyDefault(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
-}
-
-// Portal auth + key management
-
-const portalPrincipalKey = "portalEndUser"
-const portalSessionKey = "portalSessionID"
-
-func (h *Handler) PostPortalLogin(c *gin.Context) {
-	svc := h.endUserService()
-	if svc == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "end user service unavailable"})
-		return
-	}
-	var body struct {
-		Username string `json:"username"`
-		Password string `json:"password"`
-	}
-	if err := c.ShouldBindJSON(&body); err != nil || strings.TrimSpace(body.Username) == "" || body.Password == "" {
-		endUserError(c, enduser.ErrInvalidCredentials)
-		return
-	}
-	result, err := svc.Login(c.Request.Context(), body.Username, body.Password, c.GetHeader("User-Agent"))
-	if err != nil {
-		endUserError(c, err)
-		return
-	}
-	c.JSON(http.StatusOK, result)
-}
-
-func (h *Handler) PostPortalRefresh(c *gin.Context) {
-	svc := h.endUserService()
-	if svc == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "end user service unavailable"})
-		return
-	}
-	var body struct {
-		RefreshToken string `json:"refresh_token"`
-	}
-	if err := c.ShouldBindJSON(&body); err != nil || strings.TrimSpace(body.RefreshToken) == "" {
-		endUserError(c, enduser.ErrSessionRevoked)
-		return
-	}
-	result, err := svc.Refresh(c.Request.Context(), body.RefreshToken, c.GetHeader("User-Agent"))
-	if err != nil {
-		endUserError(c, err)
-		return
-	}
-	c.JSON(http.StatusOK, result)
-}
-
-func (h *Handler) authenticatePortal(c *gin.Context) (enduser.User, string, bool) {
-	svc := h.endUserService()
-	if svc == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "end user service unavailable"})
-		return enduser.User{}, "", false
-	}
-	token := bearerToken(c)
-	user, sessionID, err := svc.Authenticate(c.Request.Context(), token)
-	if err != nil {
-		endUserError(c, err)
-		return enduser.User{}, "", false
-	}
-	c.Set(portalPrincipalKey, user)
-	c.Set(portalSessionKey, sessionID)
-	return user, sessionID, true
-}
-
-// portalKeyAccess requires an active portal session that is allowed to manage keys.
-func (h *Handler) portalKeyAccess(c *gin.Context) (enduser.User, bool) {
-	user, _, ok := h.authenticatePortal(c)
-	if !ok {
-		return enduser.User{}, false
-	}
-	if user.MustChangePassword {
-		endUserError(c, enduser.ErrMustChangePassword)
-		return enduser.User{}, false
-	}
-	return user, true
-}
-
-func (h *Handler) PostPortalLogout(c *gin.Context) {
-	_, sessionID, ok := h.authenticatePortal(c)
-	if !ok {
-		return
-	}
-	_ = h.endUserService().Logout(c.Request.Context(), sessionID)
-	c.Status(http.StatusNoContent)
-}
-
-func (h *Handler) GetPortalMe(c *gin.Context) {
-	user, _, ok := h.authenticatePortal(c)
-	if !ok {
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{"user": user})
-}
-
-func (h *Handler) PutPortalPassword(c *gin.Context) {
-	user, sessionID, ok := h.authenticatePortal(c)
-	if !ok {
-		return
-	}
-	var body struct {
-		CurrentPassword string `json:"current_password"`
-		NewPassword     string `json:"new_password"`
-	}
-	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
-		return
-	}
-	if err := h.endUserService().ChangePassword(c.Request.Context(), user, sessionID, body.CurrentPassword, body.NewPassword); err != nil {
-		endUserError(c, err)
-		return
-	}
-	c.Status(http.StatusNoContent)
 }
 
 func (h *Handler) GetPortalAPIKeys(c *gin.Context) {
