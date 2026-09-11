@@ -16,19 +16,24 @@ func TestLockPenaltyStages(t *testing.T) {
 	}{
 		{failedCount: 0, wantStage: 0, wantWait: 0, wantApply: false},
 		{failedCount: 2, wantStage: 0, wantWait: 0, wantApply: false},
-		{failedCount: 3, wantStage: 1, wantWait: time.Minute, wantApply: true},
-		{failedCount: 4, wantStage: 1, wantWait: time.Minute, wantApply: false},
-		{failedCount: 5, wantStage: 2, wantWait: 5 * time.Minute, wantApply: true},
-		{failedCount: 9, wantStage: 2, wantWait: 5 * time.Minute, wantApply: false},
-		{failedCount: 10, wantStage: 3, wantWait: 15 * time.Minute, wantApply: true},
-		{failedCount: 14, wantStage: 3, wantWait: 15 * time.Minute, wantApply: false},
-		{failedCount: 15, wantStage: 4, wantWait: 30 * time.Minute, wantApply: true},
-		{failedCount: 19, wantStage: 4, wantWait: 30 * time.Minute, wantApply: false},
-		{failedCount: 20, wantStage: 5, wantWait: 60 * time.Minute, wantApply: true},
+		// Nothing arms before 5. Production access logs show users transcribing a
+		// correct generated password needing two or three attempts, so an earlier
+		// rung locked people out for honest mistypes.
+		{failedCount: 3, wantStage: 0, wantWait: 0, wantApply: false},
+		{failedCount: 4, wantStage: 0, wantWait: 0, wantApply: false},
+		{failedCount: 5, wantStage: 1, wantWait: time.Minute, wantApply: true},
+		{failedCount: 9, wantStage: 1, wantWait: time.Minute, wantApply: false},
+		{failedCount: 10, wantStage: 2, wantWait: 5 * time.Minute, wantApply: true},
+		{failedCount: 14, wantStage: 2, wantWait: 5 * time.Minute, wantApply: false},
+		{failedCount: 15, wantStage: 3, wantWait: 15 * time.Minute, wantApply: true},
+		{failedCount: 19, wantStage: 3, wantWait: 15 * time.Minute, wantApply: false},
+		{failedCount: 20, wantStage: 4, wantWait: 30 * time.Minute, wantApply: true},
+		{failedCount: 24, wantStage: 4, wantWait: 30 * time.Minute, wantApply: false},
+		{failedCount: 25, wantStage: 5, wantWait: 60 * time.Minute, wantApply: true},
 		// Past the top stage the cooldown re-arms every fifth failure, so a client
 		// stuck in a retry loop cannot ratchet its own penalty on every attempt.
-		{failedCount: 21, wantStage: 5, wantWait: 60 * time.Minute, wantApply: false},
-		{failedCount: 25, wantStage: 5, wantWait: 60 * time.Minute, wantApply: true},
+		{failedCount: 26, wantStage: 5, wantWait: 60 * time.Minute, wantApply: false},
+		{failedCount: 30, wantStage: 5, wantWait: 60 * time.Minute, wantApply: true},
 	}
 
 	for _, tc := range cases {

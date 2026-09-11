@@ -9,23 +9,93 @@ import (
 )
 
 const (
-	generatedPasswordLength   = 16
-	passwordUpperCharacters   = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-	passwordLowerCharacters   = "abcdefghijklmnopqrstuvwxyz"
-	passwordDigitCharacters   = "0123456789"
-	passwordSpecialCharacters = "!@#$%^&*()-_=+[]{}:,.?"
+	generatedPasswordLength = 16
+	// PasswordMinLength and PasswordMaxBytes are exported so callers can render
+	// the requirement before the user submits, instead of discovering it from a
+	// rejection.
+	PasswordMinLength = 12
+	PasswordMaxBytes  = 72
+
+	// The generated-password alphabets deliberately omit characters that are
+	// indistinguishable in the fonts these passwords actually travel through
+	// (chat clients, screenshots, printouts): I/l/1 and O/0. A temporary password
+	// is transcribed by hand far more often than it is pasted, and a character
+	// the user cannot read is a lockout waiting to happen.
+	passwordUpperCharacters = "ABCDEFGHJKLMNPQRSTUVWXYZ"
+	passwordLowerCharacters = "abcdefghijkmnpqrstuvwxyz"
+	passwordDigitCharacters = "23456789"
+	// Restricted to symbols that survive shell quoting, URL forms and chat
+	// auto-formatting unchanged. Brackets and quotes are omitted for the same
+	// transcription reason as above.
+	passwordSpecialCharacters = "!@#$%^&*+=?"
 	passwordAllCharacters     = passwordUpperCharacters + passwordLowerCharacters + passwordDigitCharacters + passwordSpecialCharacters
 )
 
-func HashPassword(password string) (string, error) {
-	if len(password) < 12 {
-		return "", fmt.Errorf("%w: password must contain at least 12 characters", ErrValidation)
+// PasswordPolicyCode names a single password rule. It travels to the browser as
+// the API error code so the panel can render a localized message per rule; the
+// English Error() text is a fallback for logs and non-UI callers, never
+// something a user should have to read.
+type PasswordPolicyCode string
+
+const (
+	PasswordTooShort       PasswordPolicyCode = "password_too_short"
+	PasswordTooLong        PasswordPolicyCode = "password_too_long"
+	PasswordMissingUpper   PasswordPolicyCode = "password_missing_upper"
+	PasswordMissingLower   PasswordPolicyCode = "password_missing_lower"
+	PasswordMissingSpecial PasswordPolicyCode = "password_missing_special"
+)
+
+// PasswordPolicyError is one violated password rule.
+//
+// It exists because the previous version returned a bare wrapped ErrValidation
+// whose only machine-readable part was "validation_failed". The panel had
+// nothing to key a translation off, so it fell back to printing the raw English
+// sentence in a toast — which is what users actually saw when a tenant admin
+// password missed the uppercase rule.
+type PasswordPolicyError struct {
+	Code PasswordPolicyCode
+	// Limit carries the boundary the input missed, so a caller can render
+	// "at least 12 characters" without hardcoding the number a second time.
+	// It is only meaningful for PasswordTooShort and PasswordTooLong.
+	Limit int
+}
+
+func (e *PasswordPolicyError) Error() string {
+	switch e.Code {
+	case PasswordTooShort:
+		return fmt.Sprintf("validation failed: password must contain at least %d characters", e.Limit)
+	case PasswordTooLong:
+		return fmt.Sprintf("validation failed: password must not exceed %d bytes", e.Limit)
+	case PasswordMissingUpper:
+		return "validation failed: password must contain at least one uppercase letter"
+	case PasswordMissingLower:
+		return "validation failed: password must contain at least one lowercase letter"
+	case PasswordMissingSpecial:
+		return "validation failed: password must contain at least one non-alphanumeric character"
+	default:
+		return "validation failed: password does not meet the password policy"
+	}
+}
+
+// Is keeps every existing errors.Is(err, ErrValidation) call site working, so
+// the HTTP layer still maps a policy violation to 400 without knowing about
+// this type.
+func (e *PasswordPolicyError) Is(target error) bool { return target == ErrValidation }
+
+// ValidatePassword reports the first rule the password violates, or nil.
+//
+// It is exported so services that store their own credentials (the end-user
+// portal) enforce the same rules as the admin identity store rather than
+// drifting into a weaker private copy.
+func ValidatePassword(password string) error {
+	if len(password) < PasswordMinLength {
+		return &PasswordPolicyError{Code: PasswordTooShort, Limit: PasswordMinLength}
 	}
 	// bcrypt refuses anything longer than 72 bytes. Reporting that as a validation error
 	// keeps it a 400 from the change-password endpoint; the raw bcrypt error is not
 	// wrapped in ErrValidation and would surface as a 500.
-	if len(password) > 72 {
-		return "", fmt.Errorf("%w: password must not exceed 72 bytes", ErrValidation)
+	if len(password) > PasswordMaxBytes {
+		return &PasswordPolicyError{Code: PasswordTooLong, Limit: PasswordMaxBytes}
 	}
 
 	hasUpper := false
@@ -43,18 +113,28 @@ func HashPassword(password string) (string, error) {
 		}
 	}
 	if !hasUpper {
-		return "", fmt.Errorf("%w: password must contain at least one uppercase letter", ErrValidation)
+		return &PasswordPolicyError{Code: PasswordMissingUpper}
 	}
 	if !hasLower {
-		return "", fmt.Errorf("%w: password must contain at least one lowercase letter", ErrValidation)
+		return &PasswordPolicyError{Code: PasswordMissingLower}
 	}
 	if !hasSpecial {
-		return "", fmt.Errorf("%w: password must contain at least one non-alphanumeric character", ErrValidation)
+		return &PasswordPolicyError{Code: PasswordMissingSpecial}
 	}
+	return nil
+}
 
+func HashPassword(password string) (string, error) {
+	if err := ValidatePassword(password); err != nil {
+		return "", err
+	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	return string(hash), err
 }
+
+// GeneratePassword returns a password that satisfies ValidatePassword and is
+// meant to be transcribed by a human at least once.
+func GeneratePassword() (string, error) { return randomPassword() }
 
 func randomPassword() (string, error) {
 	password := make([]byte, 0, generatedPasswordLength)

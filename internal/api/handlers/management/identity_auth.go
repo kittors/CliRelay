@@ -187,6 +187,12 @@ func (h *Handler) recordManagementAuditWithDenial(c *gin.Context, principal iden
 }
 
 func identityError(c *gin.Context, err error) {
+	// Checked first: a policy violation also satisfies errors.Is against
+	// ErrValidation below, and that branch can only produce the generic
+	// "validation_failed" code the panel cannot translate.
+	if writePasswordPolicyError(c, err) {
+		return
+	}
 	status := http.StatusUnauthorized
 	code := "invalid_credentials"
 	switch {

@@ -51,8 +51,8 @@ func (s *Service) Login(ctx context.Context, username, password, userAgent strin
 	if u.Status == "locked" {
 		return result, ErrAccountLocked
 	}
-	if u.LockedUntil != nil && u.LockedUntil.After(time.Now()) {
-		return result, ErrLoginCooldowned
+	if now := time.Now(); u.LockedUntil != nil && u.LockedUntil.After(now) {
+		return result, newCooldownError(*u.LockedUntil, now)
 	}
 	if bcrypt.CompareHashAndPassword([]byte(passwordHash), []byte(password)) != nil {
 		// Atomic increment to avoid lost updates under concurrent failures. The
@@ -76,12 +76,13 @@ func (s *Service) Login(ctx context.Context, username, password, userAgent strin
 		}
 		stage, wait, apply := lockPenalty(newCount)
 		if apply && wait > 0 {
-			until := time.Now().UTC().Add(wait)
+			now := time.Now().UTC()
+			until := now.Add(wait)
 			_, _ = s.db.ExecContext(ctx, `
 				UPDATE end_users SET lock_stage = ?, locked_until = ?, updated_at = now()
 				WHERE id = ?
 			`, stage, until, u.ID)
-			return result, ErrLoginCooldowned
+			return result, newCooldownError(until, now)
 		}
 		return result, ErrInvalidCredentials
 	}
