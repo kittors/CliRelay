@@ -313,14 +313,27 @@ func modelTestErrorMessage(detail map[string]any) string {
 	return "model test failed"
 }
 
+// newModelTestService builds the task service for media probes.
+//
+// It deliberately does not require an auth manager, matching the image and video
+// services: without one the task store still has to exist so polling an unknown
+// id answers "not found" rather than "service unavailable". A run that genuinely
+// has nowhere to execute is rejected by PostModelTest instead.
+func (h *Handler) newModelTestService() *imagegeneration.Service {
+	if h == nil {
+		return nil
+	}
+	return imagegeneration.NewService(h.executeModelTestTask, modelTestSystemAPIKey)
+}
+
 func (h *Handler) ensureModelTestService() *imagegeneration.Service {
-	if h == nil || h.authManager == nil {
+	if h == nil {
 		return nil
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.modelTest == nil {
-		h.modelTest = imagegeneration.NewService(h.executeModelTestTask, modelTestSystemAPIKey)
+		h.modelTest = h.newModelTestService()
 	}
 	return h.modelTest
 }

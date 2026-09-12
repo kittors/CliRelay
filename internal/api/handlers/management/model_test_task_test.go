@@ -1,6 +1,7 @@
 package management
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
@@ -14,7 +15,6 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/identity"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
-	"golang.org/x/net/context"
 )
 
 // End-to-end for the reported bug: selecting an image model in the catalog and
@@ -305,5 +305,22 @@ func TestModelTestRequestSnapshotOmitsInlineMedia(t *testing.T) {
 	}
 	if executor.alt != imageEditsAlt {
 		t.Fatalf("alt = %q, want %q for an edit", executor.alt, imageEditsAlt)
+	}
+}
+
+// Polling an id the task store does not have is "not found", not "service
+// unavailable". The all-routes smoke test treats a 503 as a broken route, and an
+// operator refreshing a finished task should not be told the feature is down.
+func TestGetModelTestTaskReportsNotFoundWithoutAnAuthManager(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Params = gin.Params{{Key: "task_id", Value: "task-does-not-exist"}}
+	c.Request = httptest.NewRequest(http.MethodGet, "/models/test/task-does-not-exist", nil)
+
+	(&Handler{}).GetModelTestTask(c)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404, body=%s", rec.Code, rec.Body.String())
 	}
 }

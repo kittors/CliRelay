@@ -87,6 +87,7 @@ func NewHandler(cfg *config.Config, configFilePath string, manager *coreauth.Man
 	}
 	h.imageGeneration = h.newImageGenerationService()
 	h.videoGeneration = h.newVideoGenerationService()
+	h.modelTest = h.newModelTestService()
 	return h
 }
 
