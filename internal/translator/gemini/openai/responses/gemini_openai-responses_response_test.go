@@ -351,3 +351,39 @@ func TestConvertGeminiResponseToOpenAIResponses_ResponseOutputOrdering(t *testin
 		t.Fatalf("expected response.completed after message added: msgAdded=%d completed=%d", posMsgAdded, posCompleted)
 	}
 }
+
+func TestConvertOpenAIResponsesRequestToGemini_NullableTypeInToolSchema(t *testing.T) {
+	req := []byte(`{
+		"model": "ag/gemini-3.8-flash-low",
+		"tools": [{
+			"type": "function",
+			"name": "grep",
+			"description": "search",
+			"parameters": {
+				"type": "object",
+				"properties": {
+					"skip": {
+						"type": ["number", "null"],
+						"description": "pagination"
+					},
+					"query": {
+						"type": "string"
+					}
+				}
+			}
+		}]
+	}`)
+
+	out := ConvertOpenAIResponsesRequestToGemini("gemini-2.5-pro", req, false)
+	outStr := string(out)
+
+	skipType := gjson.Get(outStr, "tools.0.functionDeclarations.0.parametersJsonSchema.properties.skip.type").String()
+	if skipType != "NUMBER" {
+		t.Fatalf("expected NUMBER, got %q", skipType)
+	}
+
+	queryType := gjson.Get(outStr, "tools.0.functionDeclarations.0.parametersJsonSchema.properties.query.type").String()
+	if queryType != "STRING" {
+		t.Fatalf("expected STRING, got %q", queryType)
+	}
+}
