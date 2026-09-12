@@ -51,6 +51,7 @@ type Handler struct {
 	systemStatsCache     systemStatsCacheEntry
 	imageGeneration      *imagegeneration.Service
 	videoGeneration      *imagegeneration.Service
+	modelTest            *imagegeneration.Service
 	identityService      *identity.Service
 	aiAccountStatus      *aiaccountstatus.Service
 	statusScheduler      *aiaccountstatus.Scheduler

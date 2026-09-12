@@ -10,8 +10,11 @@ func registerManagementModelRoutes(group *gin.RouterGroup, h *managementhandlers
 	group.GET("/models", models.GetModels)
 	group.GET("/models/configured-availability", models.GetConfiguredModelAvailability)
 	// Management-authority connectivity probe: no API key, so an end user's
-	// channel-group scope cannot make a healthy model look unreachable.
+	// channel-group scope cannot make a healthy model look unreachable. Media
+	// models answer as tasks, so the probe has a poll route beside it.
 	group.POST("/models/test", h.PostModelTest)
+	group.GET("/models/test/options", h.GetModelTestOptions)
+	group.GET("/models/test/:task_id", h.GetModelTestTask)
 	group.GET("/model-path-availability", models.GetModelPathAvailability)
 	group.GET("/model-configs", models.GetModelConfigs)
 	group.POST("/model-configs", models.PostModelConfig)

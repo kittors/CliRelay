@@ -28,6 +28,9 @@ type FieldPatch struct {
 	CodexCLIOnlyAllowedClients *[]string `json:"codex_cli_only_allowed_clients"`
 	// CodexImageGenerationBridge injects Responses-native image_generation for Codex OAuth.
 	CodexImageGenerationBridge *bool `json:"codex_image_generation_bridge"`
+	// CodexImageGenerationModel pins which image model the injected tool asks for.
+	// Empty clears the pin and returns the account to the build default.
+	CodexImageGenerationModel *string `json:"codex_image_generation_model"`
 	// UsingAPI selects xAI official API vs Grok Build/CLI for OAuth accounts.
 	UsingAPI *bool `json:"using_api"`
 	// ConcurrencyLimit sets the max active concurrent requests for this account (0 = unlimited).
@@ -263,6 +266,22 @@ func ApplyFieldPatch(auth *coreauth.Auth, patch FieldPatch, opts FieldPatchOptio
 		}
 		metadata := ensureMetadata(auth)
 		metadata[metadataKeyCodexImageGenerationBridge] = *patch.CodexImageGenerationBridge
+		changed = true
+	}
+	if patch.CodexImageGenerationModel != nil {
+		if err := ensureCodexImageGenerationBridgeEditable(auth); err != nil {
+			return result, err
+		}
+		model, errModel := normalizeCodexImageGenerationModel(*patch.CodexImageGenerationModel)
+		if errModel != nil {
+			return result, errModel
+		}
+		metadata := ensureMetadata(auth)
+		if model == "" {
+			delete(metadata, metadataKeyCodexImageGenerationModel)
+		} else {
+			metadata[metadataKeyCodexImageGenerationModel] = model
+		}
 		changed = true
 	}
 	if patch.UsingAPI != nil {
