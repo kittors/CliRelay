@@ -94,6 +94,7 @@ func (e *AntigravityExecutor) buildRequest(ctx context.Context, auth *cliproxyau
 	} else {
 		payloadStr, _ = sjson.Delete(payloadStr, "request.generationConfig.maxOutputTokens")
 	}
+	payloadStr = clampAntigravityOutputTokens(payloadStr, modelName)
 
 	payloadBytes := e.obfuscateSensitiveWords([]byte(payloadStr))
 	payloadStr = string(payloadBytes)
