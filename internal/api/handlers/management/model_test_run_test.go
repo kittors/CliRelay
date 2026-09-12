@@ -12,9 +12,9 @@ import (
 )
 
 func TestBuildModelTestPayloadShapesOneUserTurn(t *testing.T) {
-	payload, err := buildModelTestPayload("kimi-k3", "How is the weather?")
+	payload, err := buildChatTestPayload(modelTestRequest{Model: "kimi-k3", Prompt: "How is the weather?"})
 	if err != nil {
-		t.Fatalf("buildModelTestPayload: %v", err)
+		t.Fatalf("buildChatTestPayload: %v", err)
 	}
 	if got := gjson.GetBytes(payload, "model").String(); got != "kimi-k3" {
 		t.Fatalf("model = %q, want kimi-k3", got)

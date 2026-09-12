@@ -51,6 +51,7 @@ type Handler struct {
 	systemStatsCache     systemStatsCacheEntry
 	imageGeneration      *imagegeneration.Service
 	videoGeneration      *imagegeneration.Service
+	modelTest            *imagegeneration.Service
 	identityService      *identity.Service
 	aiAccountStatus      *aiaccountstatus.Service
 	statusScheduler      *aiaccountstatus.Scheduler
@@ -86,6 +87,7 @@ func NewHandler(cfg *config.Config, configFilePath string, manager *coreauth.Man
 	}
 	h.imageGeneration = h.newImageGenerationService()
 	h.videoGeneration = h.newVideoGenerationService()
+	h.modelTest = h.newModelTestService()
 	return h
 }
 

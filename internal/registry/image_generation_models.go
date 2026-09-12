@@ -201,6 +201,24 @@ func ListImageGenerationModels() []ImageGenerationModel {
 	return models
 }
 
+// ListImageGenerationModelsForProvider narrows the catalog to one credential
+// pool. The Codex bridge uses it to offer the image models a Codex account can
+// actually reach, derived from the same catalog as everything else so a newly
+// registered gpt-image release becomes selectable without a second edit here.
+func ListImageGenerationModelsForProvider(provider string) []ImageGenerationModel {
+	normalized := strings.ToLower(strings.TrimSpace(provider))
+	if normalized == "" {
+		return nil
+	}
+	models := make([]ImageGenerationModel, 0, 4)
+	for _, model := range ListImageGenerationModels() {
+		if strings.EqualFold(model.Provider, normalized) {
+			models = append(models, model)
+		}
+	}
+	return models
+}
+
 // SupportsImageEditing reports whether a model accepts reference images through the
 // /images/edits endpoint, as opposed to text-to-image only.
 func SupportsImageEditing(modelID string) bool {
