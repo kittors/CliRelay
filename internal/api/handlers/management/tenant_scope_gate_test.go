@@ -70,6 +70,33 @@ func TestTenantScopedManagementPathIncludesProviderRuntimeRoutes(t *testing.T) {
 	}
 }
 
+// The model catalogue's probes run on management authority and scope
+// themselves to the caller's effective tenant, so a business tenant must be
+// able to reach all three. /models/test and /video-generation/test were left
+// out, which is why testing a chat, image or video model from the catalogue
+// answered "tenant business resources are not enabled for this tenant".
+func TestTenantScopedManagementPathIncludesModelProbes(t *testing.T) {
+	tenantOperator := identity.Principal{
+		PlatformAdmin:   false,
+		EffectiveTenant: identity.Tenant{ID: "tenant-potato"},
+		HomeTenant:      identity.Tenant{ID: "tenant-potato"},
+	}
+	for _, path := range []string{
+		"/v0/management/models/test",
+		"/v0/management/image-generation/test",
+		"/v0/management/image-generation/test/task-1",
+		"/v0/management/video-generation/test",
+		"/v0/management/video-generation/test/task-1",
+	} {
+		if !isTenantScopedManagementPath(path) {
+			t.Errorf("isTenantScopedManagementPath(%q) = false", path)
+		}
+		if deniesTenantResourceScope(tenantOperator, path) {
+			t.Errorf("business tenant must reach %s", path)
+		}
+	}
+}
+
 func TestDeniesTenantResourceScopeAllowsBusinessTenantEndUsers(t *testing.T) {
 	tenantOperator := identity.Principal{
 		PlatformAdmin:   false,
