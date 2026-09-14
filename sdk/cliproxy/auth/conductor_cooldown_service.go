@@ -283,8 +283,14 @@ func (s cooldownService) applyModelFailureLocked(auth *Auth, result Result, now 
 			}
 			applyModelQuotaFailureLocked(auth, state, result, now, effects)
 		case 408, 500, 502, 503, 504:
+			// An upstream load-shed says the provider is busy right now, not that
+			// this credential is unhealthy. Parking the model for a full minute
+			// turns a sub-second blip into an outage once every account in a small
+			// pool has been shed, so those back off briefly instead.
 			if quotaCooldownDisabledForAuth(auth) {
 				state.NextRetryAfter = time.Time{}
+			} else if isTransientUpstreamOverloadError(result.Error) {
+				state.NextRetryAfter = now.Add(transientUpstreamOverloadCooldown)
 			} else {
 				state.NextRetryAfter = now.Add(1 * time.Minute)
 			}
@@ -418,6 +424,42 @@ func applyTransientRateLimitLocked(auth *Auth, state *ModelState, result Result,
 // transientRateLimitCooldown matches the shortest window a provider realistically
 // throttles on; a per-minute limit clears within it.
 const transientRateLimitCooldown = time.Minute
+
+// transientUpstreamOverloadCooldown is the back-off for a provider load-shed.
+// Long enough to let the current spike pass, short enough that a small pool
+// recovers before a retrying client can notice it was ever empty.
+const transientUpstreamOverloadCooldown = 5 * time.Second
+
+// isTransientUpstreamOverloadError reports whether a 5xx describes the provider
+// shedding load rather than a fault attributable to this credential.
+//
+// ChatGPT answers `server_is_overloaded` / `service_unavailable_error` inside a
+// 200 SSE stream when it is busy; the executor surfaces that as a 502 because no
+// other mapping fits. Any account would have drawn the same answer, so the model
+// must not be parked on the assumption this one is broken.
+//
+// Only phrases that name overload count. Anything unrecognised keeps the
+// existing one-minute cooldown, so this can only shorten the cases it matches,
+// never widen them.
+func isTransientUpstreamOverloadError(err *Error) bool {
+	if err == nil {
+		return false
+	}
+	haystack := strings.ToLower(err.Code + " " + err.Message)
+	if strings.TrimSpace(haystack) == "" {
+		return false
+	}
+	for _, signal := range []string{
+		"server_is_overloaded",
+		"service_unavailable_error",
+		"overloaded",
+	} {
+		if strings.Contains(haystack, signal) {
+			return true
+		}
+	}
+	return false
+}
 
 func isUsageBalanceExhaustedMessage(message string) bool {
 	lower := strings.ToLower(strings.TrimSpace(message))

@@ -209,6 +209,14 @@ func getAvailableAuths(auths []*Auth, provider, model string, now time.Time) ([]
 			return nil, newModelCooldownError(model, providerForError, resetIn)
 		}
 		if temporaryCount == len(auths) && !temporaryEarliest.IsZero() {
+			// Every candidate is parked, but only for a moment. Answering 503 here
+			// costs more than it saves: the reply is instant, so a retrying client
+			// simply asks again and again inside the same window, turning one
+			// upstream blip into a burst of failures. Let the soonest-recovering
+			// credential try instead and report whatever upstream actually says.
+			if candidate := earliestOptimisticCandidate(auths, model, now); candidate != nil {
+				return []*Auth{candidate}, nil
+			}
 			providerForError := provider
 			if providerForError == "mixed" {
 				providerForError = ""
@@ -237,6 +245,41 @@ func getAvailableAuths(auths []*Auth, provider, model string, now time.Time) ([]
 
 	sort.Slice(scheduled, func(i, j int) bool { return scheduled[i].ID < scheduled[j].ID })
 	return scheduled, nil
+}
+
+// optimisticRetryWindow bounds how near a recovery has to be before a request is
+// allowed through an empty pool. It covers a load-shed back-off without reaching
+// the minute-scale waits that follow a real fault, or the half-hour ones that
+// follow an auth or payment failure.
+const optimisticRetryWindow = 10 * time.Second
+
+// earliestOptimisticCandidate returns the credential worth trying while the pool
+// is nominally empty, or nil when every wait is long enough to be worth honouring.
+//
+// Only non-quota blocks qualify: a credential parked because the provider shed
+// load may well answer on the next attempt, whereas one parked on an exhausted
+// quota certainly will not, and sending it upstream would waste a call and the
+// caller's latency budget.
+func earliestOptimisticCandidate(auths []*Auth, model string, now time.Time) *Auth {
+	var best *Auth
+	var bestNext time.Time
+	deadline := now.Add(optimisticRetryWindow)
+	for _, candidate := range auths {
+		blocked, reason, next := isAuthBlockedForModel(candidate, model, now)
+		if !blocked || reason != blockReasonOther {
+			continue
+		}
+		if next.IsZero() || next.After(deadline) {
+			continue
+		}
+		if !authParticipatesInSelection(candidate) {
+			continue
+		}
+		if best == nil || next.Before(bestNext) || (next.Equal(bestNext) && candidate.ID < best.ID) {
+			best, bestNext = candidate, next
+		}
+	}
+	return best
 }
 
 func isAuthBlockedForModel(auth *Auth, model string, now time.Time) (bool, blockReason, time.Time) {
