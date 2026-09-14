@@ -367,8 +367,16 @@ func ConvertOpenAIResponsesRequestToGemini(modelName string, inputRawJSON []byte
 					if properties := paramsResult.Get("properties"); properties.Exists() {
 						properties.ForEach(func(key, value gjson.Result) bool {
 							if propType := value.Get("type"); propType.Exists() {
-								upperType := strings.ToUpper(propType.String())
-								cleaned, _ = sjson.Set(cleaned, "properties."+key.String()+".type", upperType)
+								t := propType.String()
+								if propType.IsArray() {
+									for _, item := range propType.Array() {
+										if item.String() != "null" {
+											t = item.String()
+											break
+										}
+									}
+								}
+								cleaned, _ = sjson.Set(cleaned, "properties."+key.String()+".type", strings.ToUpper(t))
 							}
 							return true
 						})
