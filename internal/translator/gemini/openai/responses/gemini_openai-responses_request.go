@@ -3,6 +3,7 @@ package responses
 import (
 	"strings"
 
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/cache"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/translator/gemini/common"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -13,9 +14,8 @@ const geminiResponsesThoughtSignature = "skip_thought_signature_validator"
 func ConvertOpenAIResponsesRequestToGemini(modelName string, inputRawJSON []byte, stream bool) []byte {
 	rawJSON := inputRawJSON
 
-	// Note: modelName and stream parameters are part of the fixed method signature
-	_ = modelName // Unused but required by interface
-	_ = stream    // Unused but required by interface
+	// Note: the stream parameter is part of the fixed method signature.
+	_ = stream // Unused but required by interface
 
 	// Base Gemini API template (do not include thinkingConfig by default)
 	out := `{"contents":[]}`
@@ -329,10 +329,29 @@ func ConvertOpenAIResponsesRequestToGemini(modelName string, inputRawJSON []byte
 				out, _ = sjson.SetRaw(out, "contents.-1", functionContent)
 
 			case "reasoning":
+				// A reasoning item may only be replayed when it carries a
+				// signature the upstream will accept. Responses clients rarely
+				// send `encrypted_content` back, and writing the empty string
+				// out anyway is what made these turns fail: Anthropic answers
+				// it with "thinking.signature: Field required".
+				//
+				// Fall back to the signature cache, which hands the Gemini
+				// family its skip sentinel and everyone else an empty string,
+				// then drop the item when nothing valid turned up — the same
+				// rule the Claude translator already applies.
+				thoughtText := item.Get("summary.0.text").String()
+				signature := item.Get("encrypted_content").String()
+				if !cache.HasValidSignature(modelName, signature) {
+					signature = cache.GetCachedSignature(modelName, thoughtText)
+				}
+				if !cache.HasValidSignature(modelName, signature) {
+					continue
+				}
+
 				thoughtContent := `{"role":"model","parts":[]}`
 				thought := `{"text":"","thoughtSignature":"","thought":true}`
-				thought, _ = sjson.Set(thought, "text", item.Get("summary.0.text").String())
-				thought, _ = sjson.Set(thought, "thoughtSignature", item.Get("encrypted_content").String())
+				thought, _ = sjson.Set(thought, "text", thoughtText)
+				thought, _ = sjson.Set(thought, "thoughtSignature", signature)
 
 				thoughtContent, _ = sjson.SetRaw(thoughtContent, "parts.-1", thought)
 				out, _ = sjson.SetRaw(out, "contents.-1", thoughtContent)

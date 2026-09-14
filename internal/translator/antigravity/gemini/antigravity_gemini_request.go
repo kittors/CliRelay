@@ -97,22 +97,20 @@ func ConvertGeminiRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 		}
 	}
 
-	// Gemini-specific handling for non-Claude models:
-	// - Add skip_thought_signature_validator to functionCall parts so upstream can bypass signature validation.
-	// - Also mark thinking parts with the same sentinel when present (we keep the parts; we only annotate them).
+	// Stamp the skip sentinel onto functionCall parts so the upstream waives
+	// signature validation for them. Claude is left alone: it validates the
+	// signature for real and rejects a made-up one.
+	//
+	// Thought parts deliberately are NOT stamped here. The sentinel only
+	// satisfies the Gemini family, and the executor settles that for every
+	// entrypoint in sanitizeAntigravityThoughts — stamping a GPT or Claude
+	// thought with it here just moved the failure one step downstream.
 	if !strings.Contains(modelName, "claude") {
 		const skipSentinel = "skip_thought_signature_validator"
 
 		gjson.GetBytes(rawJSON, "request.contents").ForEach(func(contentIdx, content gjson.Result) bool {
 			if content.Get("role").String() == "model" {
-				// First pass: collect indices of thinking parts to mark with skip sentinel
-				var thinkingIndicesToSkipSignature []int64
 				content.Get("parts").ForEach(func(partIdx, part gjson.Result) bool {
-					// Collect indices of thinking blocks to mark with skip sentinel
-					if part.Get("thought").Bool() {
-						thinkingIndicesToSkipSignature = append(thinkingIndicesToSkipSignature, partIdx.Int())
-					}
-					// Add skip sentinel to functionCall parts
 					if part.Get("functionCall").Exists() {
 						existingSig := part.Get("thoughtSignature").String()
 						if existingSig == "" || len(existingSig) < 50 {
@@ -121,12 +119,6 @@ func ConvertGeminiRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 					}
 					return true
 				})
-
-				// Add skip_thought_signature_validator sentinel to thinking blocks in reverse order to preserve indices
-				for i := len(thinkingIndicesToSkipSignature) - 1; i >= 0; i-- {
-					idx := thinkingIndicesToSkipSignature[i]
-					rawJSON, _ = sjson.SetBytes(rawJSON, fmt.Sprintf("request.contents.%d.parts.%d.thoughtSignature", contentIdx.Int(), idx), skipSentinel)
-				}
 			}
 			return true
 		})
