@@ -15,7 +15,7 @@ import (
 
 // AntigravityDriver handles quota warmup for Antigravity accounts.
 // Antigravity has two primary sliding window pools:
-// 1. Gemini Models ("antigravity:gemini"): triggered via minimal Flash-Lite request.
+// 1. Gemini Models ("antigravity:gemini"): triggered via minimal Flash request.
 // 2. 3P / Claude Models ("antigravity:3p"): triggered via minimal claude request.
 type AntigravityDriver struct {
 	cfg      *config.Config
@@ -38,10 +38,9 @@ func (d *AntigravityDriver) GetTargets(auth *coreauth.Auth) []Target {
 		{
 			PoolID:      "antigravity:gemini",
 			PoolLabel:   "Gemini Models",
-			// The free Antigravity tier advertises 2.5 Flash-Lite but currently
-			// returns capacity errors for it. 3.1 Flash-Lite is the lowest-cost
-			// officially priced model we verified serving a free account.
-			TargetModel: "gemini-3.1-flash-lite",
+			// A minimal gemini-3-flash request was verified to activate the
+			// free Starter account's seven-day Gemini window.
+			TargetModel: "gemini-3-flash",
 			Window:      5 * time.Hour,
 		},
 		{
