@@ -115,3 +115,106 @@ func TestAntigravityQuotaPoolIsolation_BothExhausted(t *testing.T) {
 		t.Errorf("gemini-2.5-pro should be blocked")
 	}
 }
+
+// An account that has only ever served Claude has no ModelStates entry for the
+// Gemini pool. Treating "no entry" as exhausted made the whole credential report
+// unavailable the moment Claude hit its weekly cap, which surfaced in the console
+// as an account-wide 429 badge even though the Gemini pool was untouched.
+func TestAntigravityQuotaPoolIsolation_ClaudeOnlyStatesKeepAuthAvailable(t *testing.T) {
+	now := time.Now()
+	recoverAt := now.Add(22 * time.Hour)
+
+	auth := &Auth{
+		ID:             "antigravity-test-claude-only",
+		Provider:       "antigravity",
+		Status:         StatusError,
+		StatusMessage:  `{"error":{"code":429,"message":"Individual quota reached."}}`,
+		Unavailable:    true,
+		NextRetryAfter: recoverAt,
+		ModelStates: map[string]*ModelState{
+			"claude-sonnet-4.5": {
+				Unavailable:    true,
+				Status:         StatusError,
+				NextRetryAfter: recoverAt,
+				Quota: QuotaState{
+					Exceeded:      true,
+					Reason:        "quota",
+					Window:        "week",
+					NextRecoverAt: recoverAt,
+				},
+			},
+			"gpt-5.1-codex": {
+				Unavailable:    true,
+				Status:         StatusError,
+				NextRetryAfter: recoverAt,
+				Quota: QuotaState{
+					Exceeded:      true,
+					Reason:        "quota",
+					Window:        "week",
+					NextRecoverAt: recoverAt,
+				},
+			},
+		},
+	}
+
+	updateAggregatedAvailability(auth, now)
+
+	if auth.Unavailable {
+		t.Errorf("auth.Unavailable = true, want false: the Gemini pool was never exhausted")
+	}
+	if auth.Quota.Exceeded {
+		t.Errorf("auth.Quota.Exceeded = true, want false: only the Claude/GPT pool is capped")
+	}
+	if auth.Status == StatusError {
+		t.Errorf("auth.Status = StatusError, want StatusActive while the Gemini pool serves")
+	}
+	if !auth.NextRetryAfter.IsZero() {
+		t.Errorf("auth.NextRetryAfter = %v, want zero so the console shows no account-wide countdown", auth.NextRetryAfter)
+	}
+
+	// The Claude pool must still be cooling down, and Gemini must still route.
+	if blocked, _, _ := isAuthBlockedForModel(auth, "claude-sonnet-4.5", now); !blocked {
+		t.Errorf("claude-sonnet-4.5 should stay blocked while its pool is capped")
+	}
+	if blocked, _, _ := isAuthBlockedForModel(auth, "gemini-3-pro", now); blocked {
+		t.Errorf("gemini-3-pro should not be blocked by the Claude/GPT pool")
+	}
+}
+
+// Clearing auth-level unavailability is only safe for quota cooldowns. A failure
+// that applies to the whole credential must keep it out of rotation.
+func TestAntigravityQuotaPoolIsolation_NonQuotaFailureKeepsAuthUnavailable(t *testing.T) {
+	now := time.Now()
+	recoverAt := now.Add(30 * time.Minute)
+
+	auth := &Auth{
+		ID:       "antigravity-test-unauthorized",
+		Provider: "antigravity",
+		Status:   StatusError,
+		ModelStates: map[string]*ModelState{
+			"claude-sonnet-4.5": {
+				Unavailable:    true,
+				Status:         StatusError,
+				NextRetryAfter: recoverAt,
+				Quota: QuotaState{
+					Exceeded:      true,
+					Reason:        "quota",
+					NextRecoverAt: recoverAt,
+				},
+			},
+			"gemini-3-pro": {
+				// 401 from upstream: no quota state, but the model cannot serve.
+				Unavailable:    true,
+				Status:         StatusError,
+				StatusMessage:  "unauthorized",
+				NextRetryAfter: recoverAt,
+			},
+		},
+	}
+
+	updateAggregatedAvailability(auth, now)
+
+	if !auth.Unavailable {
+		t.Errorf("auth.Unavailable = false, want true: the Gemini pool is down on a non-quota error")
+	}
+}

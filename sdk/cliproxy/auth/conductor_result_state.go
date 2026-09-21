@@ -103,42 +103,49 @@ func updateAggregatedAvailability(auth *Auth, now time.Time) {
 	if IsAntigravityAuth(auth) {
 		famGeminiExceeded := false
 		famClaudeExceeded := false
-		hasGemini := false
-		hasClaude := false
 		for m, state := range auth.ModelStates {
 			if state == nil {
 				continue
 			}
-			fam := ModelAntigravityQuotaFamily(m)
-			if fam == AntigravityFamilyGemini {
-				hasGemini = true
-				if state.Quota.Exceeded && activeModelQuotaCooldown(state, now) {
-					famGeminiExceeded = true
-				}
-			} else if fam == AntigravityFamilyClaude {
-				hasClaude = true
-				if state.Quota.Exceeded && activeModelQuotaCooldown(state, now) {
-					famClaudeExceeded = true
-				}
+			if !state.Quota.Exceeded || !activeModelQuotaCooldown(state, now) {
+				continue
+			}
+			switch ModelAntigravityQuotaFamily(m) {
+			case AntigravityFamilyGemini:
+				famGeminiExceeded = true
+			case AntigravityFamilyClaude:
+				famClaudeExceeded = true
 			}
 		}
-		// If both exist, both must be exceeded; if only one exists, that one must be exceeded
-		allFamiliesExceeded := false
-		if hasGemini && hasClaude {
-			allFamiliesExceeded = famGeminiExceeded && famClaudeExceeded
-		} else if hasGemini {
-			allFamiliesExceeded = famGeminiExceeded
-		} else if hasClaude {
-			allFamiliesExceeded = famClaudeExceeded
-		}
+		// Antigravity always carries both pools. ModelStates only records models the
+		// credential actually served, so a pool with no entry is unknown, not
+		// exhausted -- which is exactly how routing reads it, since
+		// isAntigravityExhaustedForModel returns false for a family it has never seen.
+		// Deriving "all families exhausted" from the families *present* in ModelStates
+		// instead made an account that had only ever served Claude look globally dead
+		// the moment Claude hit its weekly cap, with the Gemini pool untouched.
+		allFamiliesExceeded := famGeminiExceeded && famClaudeExceeded
 		quotaExceeded = allFamiliesExceeded
 
-		// If not all families are exceeded, auth is still partially healthy.
-		// Clear auth-level error status so it does not report a global 429.
-		if !allFamiliesExceeded && auth.Status == StatusError && !allUnavailable {
-			auth.Status = StatusActive
-			auth.StatusMessage = ""
-			auth.LastError = nil
+		if !allFamiliesExceeded {
+			// At least one pool can still serve. Auth-level unavailability would show
+			// up in the console as an account-wide 429 badge and a "request limited"
+			// tooltip counting down to the other pool's reset, hiding the fact that
+			// this credential is still usable -- so drop it. Only quota cooldowns are
+			// cleared this way: a 401 or a disabled model still takes the whole
+			// credential out.
+			if quotaOnlyModelUnavailability(auth, now) {
+				allUnavailable = false
+				auth.Unavailable = false
+				auth.NextRetryAfter = time.Time{}
+			}
+			// Auth is still partially healthy; clear the error status so it does not
+			// report a global 429.
+			if auth.Status == StatusError && !allUnavailable {
+				auth.Status = StatusActive
+				auth.StatusMessage = ""
+				auth.LastError = nil
+			}
 		}
 	}
 
@@ -159,6 +166,28 @@ func updateAggregatedAvailability(auth *Auth, now time.Time) {
 		auth.Quota.NextRecoverAt = time.Time{}
 		auth.Quota.BackoffLevel = 0
 	}
+}
+
+// quotaOnlyModelUnavailability reports whether every unavailable model state on
+// the auth is held down by a quota cooldown rather than by a failure that applies
+// to the credential as a whole (401, disabled, ...). Only the former is safe to
+// clear at the auth level when another quota pool is still serving.
+func quotaOnlyModelUnavailability(auth *Auth, now time.Time) bool {
+	if auth == nil {
+		return false
+	}
+	for _, state := range auth.ModelStates {
+		if state == nil {
+			continue
+		}
+		if state.Status == StatusDisabled {
+			return false
+		}
+		if state.Unavailable && !activeModelQuotaCooldown(state, now) {
+			return false
+		}
+	}
+	return true
 }
 
 func activeModelQuotaCooldown(state *ModelState, now time.Time) bool {
