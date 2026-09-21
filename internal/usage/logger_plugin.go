@@ -377,9 +377,30 @@ func (s *RequestStatistics) Record(ctx context.Context, record coreusage.Record)
 	inputContent := resolveDeferredUsageContent(record.InputContent, record.InputContentPath)
 	outputContent := resolveDeferredUsageContent(record.OutputContent, record.OutputContentPath)
 	detailContent := resolveDeferredUsageContent(record.DetailContent, record.DetailContentPath)
-	InsertLogWithDetailsIdentitySubjectUpstreamVisionStreaming(record.TrustedTenantID, statsKey, apiKeyID, record.AuthSubjectID, apiKeyName, modelName, record.UpstreamModel, record.VisionFallbackModel, record.ThinkingLevel, record.Source, record.ChannelName,
-		record.AuthIndex, failed, timestamp, record.LatencyMs, record.FirstTokenMs, detail,
-		inputContent, outputContent, detailContent, record.Streaming)
+	InsertRequestLog(RequestLogEntry{
+		TrustedTenantID:       record.TrustedTenantID,
+		APIKey:                statsKey,
+		APIKeyID:              apiKeyID,
+		AuthSubjectID:         record.AuthSubjectID,
+		APIKeyName:            apiKeyName,
+		Model:                 modelName,
+		UpstreamModel:         record.UpstreamModel,
+		UpstreamResponseModel: record.UpstreamResponseModel,
+		VisionFallbackModel:   record.VisionFallbackModel,
+		ThinkingLevel:         record.ThinkingLevel,
+		Source:                record.Source,
+		ChannelName:           record.ChannelName,
+		AuthIndex:             record.AuthIndex,
+		Failed:                failed,
+		Streaming:             record.Streaming,
+		Timestamp:             timestamp,
+		LatencyMs:             record.LatencyMs,
+		FirstTokenMs:          record.FirstTokenMs,
+		Tokens:                detail,
+		InputContent:          inputContent,
+		OutputContent:         outputContent,
+		DetailContent:         detailContent,
+	})
 }
 
 func resolveDeferredUsageContent(inline, path string) string {

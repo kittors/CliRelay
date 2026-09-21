@@ -117,6 +117,10 @@ func (e *OllamaCloudExecutor) executeNativeChatStream(ctx context.Context, auth 
 				continue
 			}
 			recorder.AppendResponseChunk(line)
+			// Audit the native line: the OpenAI lines below are synthesized from
+			// execCtx.BaseModel, so letting appendOutputChunk observe them would
+			// record our own model name back as the upstream's answer.
+			reporter.observeUpstreamResponse(line)
 			openAILines, usage, usageSeen := ollamaNativeStreamChunkToOpenAI(line, execCtx.BaseModel, responseID, estimator, &roleSent)
 			if usageSeen {
 				lastUsage = usage

@@ -3,7 +3,6 @@ package usage
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"os"
 	"slices"
@@ -717,6 +716,8 @@ func initOpenedDBLocked(db, readDB *sql.DB, dbPath, driver string, storageCfg co
 		migrateApiKeyNameColumn(db)
 		log.Debugf("usage: running upstream_model column migration")
 		migrateUpstreamModelColumn(db)
+		log.Debugf("usage: running upstream_response_model column migration")
+		migrateUpstreamResponseModelColumn(db)
 		log.Debugf("usage: running vision_fallback_model column migration")
 		migrateVisionFallbackModelColumn(db)
 		log.Debugf("usage: running thinking_level column migration")
@@ -840,134 +841,6 @@ func CloseDB() {
 	usageDBMu.Unlock()
 	resetAIAccountSubjectCycleCache()
 	log.Info("usage: database closed")
-}
-
-// InsertLog writes a single request log entry into the runtime database.
-// It is safe to call concurrently.
-func InsertLog(apiKey, apiKeyName, model, source, channelName, authIndex string,
-	failed bool, timestamp time.Time, latencyMs, firstTokenMs int64, tokens TokenStats,
-	inputContent, outputContent string) {
-	insertLogIdentity("", apiKey, "", "", apiKeyName, model, "", "", "", source, channelName, authIndex, failed, timestamp, latencyMs, firstTokenMs, tokens, inputContent, outputContent, "", isStreamingRequestContent(inputContent))
-}
-
-func InsertLogWithDetails(apiKey, apiKeyName, model, source, channelName, authIndex string,
-	failed bool, timestamp time.Time, latencyMs, firstTokenMs int64, tokens TokenStats,
-	inputContent, outputContent, detailContent string) {
-	insertLogIdentity("", apiKey, "", "", apiKeyName, model, "", "", "", source, channelName, authIndex, failed, timestamp, latencyMs, firstTokenMs, tokens, inputContent, outputContent, detailContent, isStreamingRequestContent(inputContent))
-}
-
-func InsertLogWithDetailsIdentity(apiKey, apiKeyID, apiKeyName, model, source, channelName, authIndex string,
-	failed bool, timestamp time.Time, latencyMs, firstTokenMs int64, tokens TokenStats,
-	inputContent, outputContent, detailContent string) {
-	insertLogIdentity("", apiKey, apiKeyID, "", apiKeyName, model, "", "", "", source, channelName, authIndex, failed, timestamp, latencyMs, firstTokenMs, tokens, inputContent, outputContent, detailContent, isStreamingRequestContent(inputContent))
-}
-
-func InsertLogWithDetailsIdentitySubject(apiKey, apiKeyID, authSubjectID, apiKeyName, model, source, channelName, authIndex string,
-	failed bool, timestamp time.Time, latencyMs, firstTokenMs int64, tokens TokenStats,
-	inputContent, outputContent, detailContent string) {
-	insertLogIdentity("", apiKey, apiKeyID, authSubjectID, apiKeyName, model, "", "", "", source, channelName, authIndex, failed, timestamp, latencyMs, firstTokenMs, tokens, inputContent, outputContent, detailContent, isStreamingRequestContent(inputContent))
-}
-
-func InsertLogWithDetailsIdentitySubjectUpstream(apiKey, apiKeyID, authSubjectID, apiKeyName, model, upstreamModel, source, channelName, authIndex string,
-	failed bool, timestamp time.Time, latencyMs, firstTokenMs int64, tokens TokenStats,
-	inputContent, outputContent, detailContent string) {
-	insertLogIdentity("", apiKey, apiKeyID, authSubjectID, apiKeyName, model, upstreamModel, "", "", source, channelName, authIndex, failed, timestamp, latencyMs, firstTokenMs, tokens, inputContent, outputContent, detailContent, isStreamingRequestContent(inputContent))
-}
-
-func InsertLogWithDetailsIdentitySubjectUpstreamVision(apiKey, apiKeyID, authSubjectID, apiKeyName, model, upstreamModel, visionFallbackModel, source, channelName, authIndex string,
-	failed bool, timestamp time.Time, latencyMs, firstTokenMs int64, tokens TokenStats,
-	inputContent, outputContent, detailContent string) {
-	insertLogIdentity("", apiKey, apiKeyID, authSubjectID, apiKeyName, model, upstreamModel, visionFallbackModel, "", source, channelName, authIndex, failed, timestamp, latencyMs, firstTokenMs, tokens, inputContent, outputContent, detailContent, isStreamingRequestContent(inputContent))
-}
-
-// InsertLogWithDetailsIdentitySubjectUpstreamVisionStreaming persists an
-// explicit streaming classification even when request body storage is disabled.
-func InsertLogWithDetailsIdentitySubjectUpstreamVisionStreaming(trustedTenantID, apiKey, apiKeyID, authSubjectID, apiKeyName, model, upstreamModel, visionFallbackModel, thinkingLevel, source, channelName, authIndex string,
-	failed bool, timestamp time.Time, latencyMs, firstTokenMs int64, tokens TokenStats,
-	inputContent, outputContent, detailContent string, streaming bool) {
-	insertLogIdentity(trustedTenantID, apiKey, apiKeyID, authSubjectID, apiKeyName, model, upstreamModel, visionFallbackModel, thinkingLevel, source, channelName, authIndex, failed, timestamp, latencyMs, firstTokenMs, tokens, inputContent, outputContent, detailContent, streaming)
-}
-
-func insertLogIdentity(trustedTenantID, apiKey, apiKeyID, authSubjectID, apiKeyName, model, upstreamModel, visionFallbackModel, thinkingLevel, source, channelName, authIndex string,
-	failed bool, timestamp time.Time, latencyMs, firstTokenMs int64, tokens TokenStats,
-	inputContent, outputContent, detailContent string, streaming bool) {
-	db := getDB()
-	if db == nil {
-		return
-	}
-
-	tenantID := resolveRequestLogTenantID(trustedTenantID, apiKey)
-
-	// Calculate cost from the trusted execution tenant or API key tenant catalog.
-	cost := CalculateCostV2ForTenant(tenantID, model, tokens)
-
-	apiKeyID = strings.TrimSpace(apiKeyID)
-	authSubjectID = strings.TrimSpace(authSubjectID)
-	apiKeyName = strings.TrimSpace(apiKeyName)
-	upstreamModel = strings.TrimSpace(upstreamModel)
-	visionFallbackModel = strings.TrimSpace(visionFallbackModel)
-	thinkingLevel = strings.TrimSpace(thinkingLevel)
-	// Resolve identity before opening the write tx: a single-writer store + maintenance
-	// would deadlock if we query api_keys while this connection already holds a tx.
-	endUserID := ""
-	if row := GetAPIKey(apiKey); row != nil {
-		if apiKeyID == "" {
-			apiKeyID = strings.TrimSpace(row.ID)
-		}
-		if name := strings.TrimSpace(row.Name); name != "" {
-			apiKeyName = name
-		} else if apiKeyName == "" {
-			apiKeyName = strings.TrimSpace(row.Name)
-		}
-		endUserID = strings.TrimSpace(row.EndUserID)
-	}
-
-	// Failed requests always keep a compact error payload in output_content so the
-	// management UI error modal can show the upstream failure even when full body
-	// storage is disabled. Successful request/response bodies still follow the
-	// store-content toggle.
-	shouldStoreContent := detailContent != "" ||
-		(RequestLogBodyStorageEnabled() && (inputContent != "" || outputContent != "")) ||
-		(failed && strings.TrimSpace(outputContent) != "")
-
-	// Retry on Postgres rollup UPSERT deadlocks under concurrent same-key traffic.
-	var lastErr error
-	for attempt := 0; attempt < 8; attempt++ {
-		if attempt > 0 {
-			time.Sleep(time.Duration(attempt*attempt) * time.Millisecond)
-		}
-		lastErr = insertLogIdentityOnce(
-			db, tenantID, apiKey, apiKeyID, authSubjectID, apiKeyName, model, upstreamModel, visionFallbackModel, thinkingLevel,
-			source, channelName, authIndex, endUserID, failed, streaming, timestamp, latencyMs, firstTokenMs,
-			tokens, cost, inputContent, outputContent, detailContent, shouldStoreContent,
-		)
-		if lastErr == nil {
-			break
-		}
-		if !isRetryableUsageWriteErr(lastErr) {
-			log.Errorf("usage: insert log: %v", lastErr)
-			return
-		}
-	}
-	if lastErr != nil {
-		log.Errorf("usage: insert log after retries: %v", lastErr)
-		return
-	}
-
-	// Notify TPM tracker about token usage
-	if tokenUsageCallback != nil && tokens.TotalTokens > 0 {
-		tokenUsageCallback(apiKey, tokens.TotalTokens)
-	}
-}
-
-func isStreamingRequestContent(content string) bool {
-	var payload struct {
-		Stream bool `json:"stream"`
-	}
-	if err := json.Unmarshal([]byte(content), &payload); err != nil {
-		return false
-	}
-	return payload.Stream
 }
 
 // tokenUsageCallback is set by SetTokenUsageCallback to notify external

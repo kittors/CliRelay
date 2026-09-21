@@ -16,23 +16,27 @@ type Record struct {
 	ThinkingLevel       string
 	UpstreamModel       string
 	VisionFallbackModel string
-	APIKey              string
-	APIKeyID            string
-	APIKeyName          string
-	AuthID              string
-	AuthIndex           string
-	AuthSubjectID       string
-	Source              string
-	ChannelName         string
-	RequestedAt         time.Time
-	LatencyMs           int64
-	FirstTokenMs        int64
-	Failed              bool
-	APIIdentifier       string
-	RequestID           string
-	ResponseStatus      int
-	Streaming           bool
-	Detail              Detail
+	// UpstreamResponseModel is the model the upstream declared in its own
+	// response body, empty when it declared none. It is recorded for auditing
+	// only and never substitutes for Model in logging or cost.
+	UpstreamResponseModel string
+	APIKey                string
+	APIKeyID              string
+	APIKeyName            string
+	AuthID                string
+	AuthIndex             string
+	AuthSubjectID         string
+	Source                string
+	ChannelName           string
+	RequestedAt           time.Time
+	LatencyMs             int64
+	FirstTokenMs          int64
+	Failed                bool
+	APIIdentifier         string
+	RequestID             string
+	ResponseStatus        int
+	Streaming             bool
+	Detail                Detail
 
 	// TrustedTenantID is set only by authenticated internal execution paths.
 	// When empty, persistence resolves the tenant from the real API key.

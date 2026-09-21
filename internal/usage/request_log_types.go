@@ -4,35 +4,41 @@ import "time"
 
 // LogRow represents a single request log entry returned by QueryLogs.
 type LogRow struct {
-	ID                  int64     `json:"id"`
-	Timestamp           time.Time `json:"timestamp"`
-	APIKey              string    `json:"api_key"`
-	APIKeyID            string    `json:"api_key_id,omitempty"`
-	APIKeyMasked        string    `json:"api_key_masked,omitempty"`
-	APIKeyName          string    `json:"api_key_name"`
-	APIKeyOwnName       string    `json:"api_key_own_name,omitempty"`
-	EndUserDisplayName  string    `json:"end_user_display_name,omitempty"`
-	Model               string    `json:"model"`
-	ThinkingLevel       string    `json:"thinking_level"`
-	UpstreamModel       string    `json:"upstream_model,omitempty"`
-	VisionFallbackModel string    `json:"vision_fallback_model,omitempty"`
-	Source              string    `json:"source"`
-	ChannelName         string    `json:"channel_name"`
-	Provider            string    `json:"provider,omitempty"`
-	AuthType            string    `json:"auth_type,omitempty"` // "oauth" | "api"
-	AuthIndex           string    `json:"auth_index"`
-	AuthSubjectID       string    `json:"auth_subject_id,omitempty"`
-	Failed              bool      `json:"failed"`
-	Streaming           bool      `json:"streaming"`
-	LatencyMs           int64     `json:"latency_ms"`
-	FirstTokenMs        int64     `json:"first_token_ms"`
-	InputTokens         int64     `json:"input_tokens"`
-	OutputTokens        int64     `json:"output_tokens"`
-	ReasoningTokens     int64     `json:"reasoning_tokens"`
-	CachedTokens        int64     `json:"cached_tokens"`
-	TotalTokens         int64     `json:"total_tokens"`
-	Cost                float64   `json:"cost"`
-	HasContent          bool      `json:"has_content"`
+	ID                 int64     `json:"id"`
+	Timestamp          time.Time `json:"timestamp"`
+	APIKey             string    `json:"api_key"`
+	APIKeyID           string    `json:"api_key_id,omitempty"`
+	APIKeyMasked       string    `json:"api_key_masked,omitempty"`
+	APIKeyName         string    `json:"api_key_name"`
+	APIKeyOwnName      string    `json:"api_key_own_name,omitempty"`
+	EndUserDisplayName string    `json:"end_user_display_name,omitempty"`
+	Model              string    `json:"model"`
+	ThinkingLevel      string    `json:"thinking_level"`
+	UpstreamModel      string    `json:"upstream_model,omitempty"`
+	// UpstreamResponseModel is the model the upstream declared in its own
+	// response; empty when it declared none.
+	UpstreamResponseModel string `json:"upstream_response_model,omitempty"`
+	// UpstreamModelMismatch is derived from the three model names on read, not
+	// stored. See usage.UpstreamModelMismatch.
+	UpstreamModelMismatch bool    `json:"upstream_model_mismatch,omitempty"`
+	VisionFallbackModel   string  `json:"vision_fallback_model,omitempty"`
+	Source                string  `json:"source"`
+	ChannelName           string  `json:"channel_name"`
+	Provider              string  `json:"provider,omitempty"`
+	AuthType              string  `json:"auth_type,omitempty"` // "oauth" | "api"
+	AuthIndex             string  `json:"auth_index"`
+	AuthSubjectID         string  `json:"auth_subject_id,omitempty"`
+	Failed                bool    `json:"failed"`
+	Streaming             bool    `json:"streaming"`
+	LatencyMs             int64   `json:"latency_ms"`
+	FirstTokenMs          int64   `json:"first_token_ms"`
+	InputTokens           int64   `json:"input_tokens"`
+	OutputTokens          int64   `json:"output_tokens"`
+	ReasoningTokens       int64   `json:"reasoning_tokens"`
+	CachedTokens          int64   `json:"cached_tokens"`
+	TotalTokens           int64   `json:"total_tokens"`
+	Cost                  float64 `json:"cost"`
+	HasContent            bool    `json:"has_content"`
 }
 
 // LogQueryParams holds filter/pagination parameters for QueryLogs.

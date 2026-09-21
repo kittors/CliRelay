@@ -55,6 +55,11 @@ type usageReporter struct {
 	streamingRequest  bool
 	compactOutputFull atomic.Bool
 
+	// upstreamResponse audits the model the upstream declares in its own answer.
+	// It is fed from the two output funnels below rather than from each executor,
+	// so every forwarding path is covered without a per-provider hook to maintain.
+	upstreamResponse upstreamResponseModelObserver
+
 	// Content captured for log detail viewer
 	inputContent  string
 	inputPath     string
@@ -111,6 +116,9 @@ func (r *usageReporter) publishWithContentBytes(ctx context.Context, detail core
 	if r == nil {
 		return
 	}
+	// The non-streaming funnel: outputContent is the upstream body as received,
+	// before any translation to the client's schema.
+	r.upstreamResponse.observe([]byte(outputContent))
 	if r.captureFullContent {
 		r.contentMu.Lock()
 		r.setInputContentLocked(string(inputContent))
@@ -206,6 +214,11 @@ func (r *usageReporter) appendOutputChunk(chunk []byte) {
 	if r == nil || len(chunk) == 0 {
 		return
 	}
+	// Audit the model before the content-capture early returns below: observation
+	// must not depend on body storage being enabled or on the compact buffer
+	// still having room, or the audit would silently stop on exactly the busy
+	// requests worth auditing.
+	r.upstreamResponse.observe(chunk)
 	if !r.captureFullContent && r.compactOutputFull.Load() {
 		return
 	}
@@ -377,35 +390,36 @@ func (r *usageReporter) publishWithOutcome(ctx context.Context, detail coreusage
 		firstTokenMs := firstTokenLatencyMsFromContext(ctx, r.requestedAt)
 		apiIdentifier, requestID, responseStatus := usageRequestMetadata(ctx)
 		coreusage.PublishRecord(ctx, coreusage.Record{
-			Provider:            r.provider,
-			Model:               r.model,
-			ThinkingLevel:       r.thinkingLevel,
-			UpstreamModel:       r.upstreamModel,
-			VisionFallbackModel: r.visionFallbackModel,
-			Source:              r.source,
-			ChannelName:         r.channelName,
-			APIKey:              r.apiKey,
-			TrustedTenantID:     r.trustedTenantID,
-			APIKeyID:            r.apiKeyID,
-			APIKeyName:          r.apiKeyName,
-			AuthID:              r.authID,
-			AuthIndex:           r.authIndex,
-			AuthSubjectID:       r.authSubjectID,
-			RequestedAt:         r.requestedAt,
-			LatencyMs:           latencyMs,
-			FirstTokenMs:        firstTokenMs,
-			Failed:              failed,
-			APIIdentifier:       apiIdentifier,
-			RequestID:           requestID,
-			ResponseStatus:      responseStatus,
-			Streaming:           r.streamingRequest,
-			Detail:              detail,
-			InputContent:        inputContent,
-			OutputContent:       outputContent,
-			DetailContent:       detailContent,
-			InputContentPath:    inputPath,
-			OutputContentPath:   outputPath,
-			DetailContentPath:   detailPath,
+			Provider:              r.provider,
+			Model:                 r.model,
+			ThinkingLevel:         r.thinkingLevel,
+			UpstreamModel:         r.upstreamModel,
+			VisionFallbackModel:   r.visionFallbackModel,
+			UpstreamResponseModel: r.upstreamResponse.model(),
+			Source:                r.source,
+			ChannelName:           r.channelName,
+			APIKey:                r.apiKey,
+			TrustedTenantID:       r.trustedTenantID,
+			APIKeyID:              r.apiKeyID,
+			APIKeyName:            r.apiKeyName,
+			AuthID:                r.authID,
+			AuthIndex:             r.authIndex,
+			AuthSubjectID:         r.authSubjectID,
+			RequestedAt:           r.requestedAt,
+			LatencyMs:             latencyMs,
+			FirstTokenMs:          firstTokenMs,
+			Failed:                failed,
+			APIIdentifier:         apiIdentifier,
+			RequestID:             requestID,
+			ResponseStatus:        responseStatus,
+			Streaming:             r.streamingRequest,
+			Detail:                detail,
+			InputContent:          inputContent,
+			OutputContent:         outputContent,
+			DetailContent:         detailContent,
+			InputContentPath:      inputPath,
+			OutputContentPath:     outputPath,
+			DetailContentPath:     detailPath,
 		})
 	})
 }
@@ -428,35 +442,36 @@ func (r *usageReporter) ensurePublished(ctx context.Context) {
 		firstTokenMs := firstTokenLatencyMsFromContext(ctx, r.requestedAt)
 		apiIdentifier, requestID, responseStatus := usageRequestMetadata(ctx)
 		coreusage.PublishRecord(ctx, coreusage.Record{
-			Provider:            r.provider,
-			Model:               r.model,
-			ThinkingLevel:       r.thinkingLevel,
-			UpstreamModel:       r.upstreamModel,
-			VisionFallbackModel: r.visionFallbackModel,
-			Source:              r.source,
-			ChannelName:         r.channelName,
-			APIKey:              r.apiKey,
-			TrustedTenantID:     r.trustedTenantID,
-			APIKeyID:            r.apiKeyID,
-			APIKeyName:          r.apiKeyName,
-			AuthID:              r.authID,
-			AuthIndex:           r.authIndex,
-			AuthSubjectID:       r.authSubjectID,
-			RequestedAt:         r.requestedAt,
-			LatencyMs:           latencyMs,
-			FirstTokenMs:        firstTokenMs,
-			Failed:              false,
-			APIIdentifier:       apiIdentifier,
-			RequestID:           requestID,
-			ResponseStatus:      responseStatus,
-			Streaming:           r.streamingRequest,
-			Detail:              coreusage.Detail{},
-			InputContent:        inputContent,
-			OutputContent:       outputContent,
-			DetailContent:       detailContent,
-			InputContentPath:    inputPath,
-			OutputContentPath:   outputPath,
-			DetailContentPath:   detailPath,
+			Provider:              r.provider,
+			Model:                 r.model,
+			ThinkingLevel:         r.thinkingLevel,
+			UpstreamModel:         r.upstreamModel,
+			VisionFallbackModel:   r.visionFallbackModel,
+			UpstreamResponseModel: r.upstreamResponse.model(),
+			Source:                r.source,
+			ChannelName:           r.channelName,
+			APIKey:                r.apiKey,
+			TrustedTenantID:       r.trustedTenantID,
+			APIKeyID:              r.apiKeyID,
+			APIKeyName:            r.apiKeyName,
+			AuthID:                r.authID,
+			AuthIndex:             r.authIndex,
+			AuthSubjectID:         r.authSubjectID,
+			RequestedAt:           r.requestedAt,
+			LatencyMs:             latencyMs,
+			FirstTokenMs:          firstTokenMs,
+			Failed:                false,
+			APIIdentifier:         apiIdentifier,
+			RequestID:             requestID,
+			ResponseStatus:        responseStatus,
+			Streaming:             r.streamingRequest,
+			Detail:                coreusage.Detail{},
+			InputContent:          inputContent,
+			OutputContent:         outputContent,
+			DetailContent:         detailContent,
+			InputContentPath:      inputPath,
+			OutputContentPath:     outputPath,
+			DetailContentPath:     detailPath,
 		})
 	})
 }

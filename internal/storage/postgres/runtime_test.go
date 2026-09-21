@@ -11,18 +11,28 @@ import (
 
 func TestRuntimeMigrationsCoverCoreTables(t *testing.T) {
 	migrations := RuntimeMigrations()
-	if len(migrations) != 29 {
-		t.Fatalf("RuntimeMigrations len = %d, want 29", len(migrations))
+	if len(migrations) != 30 {
+		t.Fatalf("RuntimeMigrations len = %d, want 30", len(migrations))
 	}
 	// Appended from laterRuntimeMigrations() because migrations.go sits at its
 	// structure-gate size ceiling.
 	if migrations[27].Version != "202608100001_ip_access_control" {
 		t.Fatalf("ip access migration version = %q", migrations[27].Version)
 	}
-	// Latest: clears model/channel scopes stranded on end users whose permission
-	// profile was unbound without them.
+	// Clears model/channel scopes stranded on end users whose permission profile
+	// was unbound without them.
 	if migrations[28].Version != "202608270001_end_user_unbound_profile_scope_cleanup" {
-		t.Fatalf("latest migration version = %q", migrations[28].Version)
+		t.Fatalf("scope cleanup migration version = %q", migrations[28].Version)
+	}
+	// Latest: records the model an upstream declares in its own response, so a
+	// silent reroute to a different build is visible in the request log. Added as
+	// a new migration rather than by editing the shipped runtime schema, which
+	// TestPublishedMigrationChecksums pins.
+	if migrations[29].Version != "202609210001_request_log_upstream_response_model" {
+		t.Fatalf("latest migration version = %q", migrations[29].Version)
+	}
+	if !strings.Contains(migrations[29].SQL, "ADD COLUMN IF NOT EXISTS upstream_response_model TEXT NOT NULL DEFAULT ''") {
+		t.Fatalf("upstream response model migration missing its column: %q", migrations[29].SQL)
 	}
 	for _, fragment := range []string{
 		"UPDATE end_users",

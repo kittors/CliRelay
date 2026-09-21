@@ -2668,3 +2668,70 @@ func TestClearRequestLogsAllowsNewContentAfterSizeCapCleanup(t *testing.T) {
 		t.Fatalf("HasContent = false for new log after cleanup, want true")
 	}
 }
+
+func TestQueryLogsReturnsUpstreamResponseModelAndMismatch(t *testing.T) {
+	initTestUsageDB(t, config.RequestLogStorageConfig{})
+
+	now := time.Now().UTC()
+	// The upstream honoured the mapped model: audited, but not a mismatch.
+	InsertRequestLog(RequestLogEntry{
+		APIKey: "sk-honoured", APIKeyID: "key-honoured", APIKeyName: "Primary",
+		Model: "fast", UpstreamModel: "claude-sonnet-4-5", UpstreamResponseModel: "claude-sonnet-4-5",
+		Source: "claude", ChannelName: "Claude", AuthIndex: "auth-honoured",
+		Timestamp: now, LatencyMs: 100, FirstTokenMs: 10,
+		Tokens: TokenStats{InputTokens: 1, OutputTokens: 1, TotalTokens: 2},
+	})
+	// The upstream answered with a different build: this is the audit finding.
+	InsertRequestLog(RequestLogEntry{
+		APIKey: "sk-rerouted", APIKeyID: "key-rerouted", APIKeyName: "Primary",
+		Model: "gemini-3.8-flash-high", UpstreamModel: "gemini-3.8-flash", UpstreamResponseModel: "gemini-3.8-flash-exp-a",
+		Source: "gemini", ChannelName: "Gemini", AuthIndex: "auth-rerouted",
+		Timestamp: now, LatencyMs: 120, FirstTokenMs: 12,
+		Tokens: TokenStats{InputTokens: 1, OutputTokens: 1, TotalTokens: 2},
+	})
+	// Legacy shape: no declaration at all must never read as a mismatch.
+	InsertRequestLog(RequestLogEntry{
+		APIKey: "sk-silent", APIKeyID: "key-silent", APIKeyName: "Primary",
+		Model:  "gpt-5.4",
+		Source: "codex", ChannelName: "Codex", AuthIndex: "auth-silent",
+		Timestamp: now, LatencyMs: 90, FirstTokenMs: 9,
+		Tokens: TokenStats{InputTokens: 1, OutputTokens: 1, TotalTokens: 2},
+	})
+
+	result, err := QueryLogs(LogQueryParams{Page: 1, Size: 10, Days: 1})
+	if err != nil {
+		t.Fatalf("QueryLogs() error = %v", err)
+	}
+	if len(result.Items) != 3 {
+		t.Fatalf("items = %d, want 3", len(result.Items))
+	}
+
+	byModel := make(map[string]LogRow, len(result.Items))
+	for _, row := range result.Items {
+		byModel[row.Model] = row
+	}
+
+	honoured := byModel["fast"]
+	if honoured.UpstreamResponseModel != "claude-sonnet-4-5" {
+		t.Fatalf("honoured UpstreamResponseModel = %q, want claude-sonnet-4-5", honoured.UpstreamResponseModel)
+	}
+	if honoured.UpstreamModelMismatch {
+		t.Fatal("honoured row must not be reported as a mismatch")
+	}
+
+	rerouted := byModel["gemini-3.8-flash-high"]
+	if rerouted.UpstreamResponseModel != "gemini-3.8-flash-exp-a" {
+		t.Fatalf("rerouted UpstreamResponseModel = %q, want gemini-3.8-flash-exp-a", rerouted.UpstreamResponseModel)
+	}
+	if !rerouted.UpstreamModelMismatch {
+		t.Fatal("rerouted row must be reported as a mismatch")
+	}
+
+	silent := byModel["gpt-5.4"]
+	if silent.UpstreamResponseModel != "" {
+		t.Fatalf("silent UpstreamResponseModel = %q, want empty", silent.UpstreamResponseModel)
+	}
+	if silent.UpstreamModelMismatch {
+		t.Fatal("a row with no upstream declaration must not be reported as a mismatch")
+	}
+}

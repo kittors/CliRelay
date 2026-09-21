@@ -9,12 +9,8 @@
     ],
     "baseline_above_800": [
       {
-        "path": "internal/api/handlers/management/end_user.go",
-        "max_lines": 908
-      },
-      {
         "path": "internal/enduser/service.go",
-        "max_lines": 1164
+        "max_lines": 1147
       },
       {
         "path": "internal/identity/service.go",
@@ -37,16 +33,12 @@
         "max_lines": 1198
       },
       {
-        "path": "internal/storage/postgres/migrations.go",
-        "max_lines": 868
-      },
-      {
         "path": "internal/storage/sqlstore/apikey/store.go",
         "max_lines": 1176
       },
       {
         "path": "internal/storage/sqlstore/modelconfig/store.go",
-        "max_lines": 934
+        "max_lines": 931
       },
       {
         "path": "internal/usage/ai_account_subject_store.go",
@@ -58,11 +50,11 @@
       },
       {
         "path": "internal/usage/request_log_query.go",
-        "max_lines": 1181
+        "max_lines": 1055
       },
       {
         "path": "internal/usage/usage_db.go",
-        "max_lines": 1149
+        "max_lines": 1022
       },
       {
         "path": "sdk/api/handlers/handlers.go",

@@ -12,6 +12,9 @@ func laterRuntimeMigrations() []Migration {
 		// Drop model/channel scopes stranded on end users by an unbound permission
 		// profile. See endUserUnboundProfileScopeCleanupSQL.
 		{Version: "202608270001_end_user_unbound_profile_scope_cleanup", SQL: endUserUnboundProfileScopeCleanupSQL},
+		// Record the model an upstream declares in its own response, so a silent
+		// reroute to a different build is visible in the request log.
+		{Version: "202609210001_request_log_upstream_response_model", SQL: requestLogUpstreamResponseModelSQL},
 	}
 }
 
