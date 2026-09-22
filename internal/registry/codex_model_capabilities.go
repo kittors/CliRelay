@@ -98,6 +98,30 @@ var codexModelCapabilities = map[string]CodexModelCapability{
 		CatalogReasoningLevels:     gpt6CatalogReasoningLevels,
 		RuntimeWireReasoningLevels: gpt6RuntimeWireReasoningLevels,
 	},
+	"gpt-6-luna": {
+		ModelID:                    "gpt-6-luna",
+		CanonicalTarget:            "gpt-6-luna",
+		DisplayName:                "GPT-6 Luna",
+		Description:                "OpenAI's fast, low-cost GPT-6 tier for high-volume everyday work.",
+		ContextWindow:              400000,
+		MaxContextWindow:           400000,
+		MaxCompletionTokens:        128000,
+		DefaultReasoningLevel:      "medium",
+		CatalogReasoningLevels:     gpt6CatalogReasoningLevels,
+		RuntimeWireReasoningLevels: gpt6RuntimeWireReasoningLevels,
+	},
+	"gpt-6-sol": {
+		ModelID:                    "gpt-6-sol",
+		CanonicalTarget:            "gpt-6-sol",
+		DisplayName:                "GPT-6 Sol",
+		Description:                "OpenAI's GPT-6 Sol for complex coding and professional work at lower cost.",
+		ContextWindow:              400000,
+		MaxContextWindow:           400000,
+		MaxCompletionTokens:        128000,
+		DefaultReasoningLevel:      "medium",
+		CatalogReasoningLevels:     gpt6CatalogReasoningLevels,
+		RuntimeWireReasoningLevels: gpt6RuntimeWireReasoningLevels,
+	},
 	"gpt-6-astra-pro": {
 		ModelID:                    "gpt-6-astra-pro",
 		CanonicalTarget:            "gpt-6-astra-pro",
@@ -150,7 +174,7 @@ func getGPT56ModelDefinitions() []*ModelInfo {
 }
 
 func getGPT6ModelDefinitions() []*ModelInfo {
-	modelIDs := []string{"gpt-6-astra", "gpt-6-astra-pro"}
+	modelIDs := []string{"gpt-6-astra", "gpt-6-astra-pro", "gpt-6-sol", "gpt-6-luna"}
 	models := make([]*ModelInfo, 0, len(modelIDs))
 	for _, modelID := range modelIDs {
 		capability, _ := GetCodexModelCapability(modelID)
