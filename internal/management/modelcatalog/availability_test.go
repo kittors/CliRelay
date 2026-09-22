@@ -758,6 +758,44 @@ func TestFilterModelsByRoutingAllowedModelsHonorsNamedGroup(t *testing.T) {
 	}
 }
 
+func TestFilterModelsByRoutingAllowedModelsHonorsExcludedModels(t *testing.T) {
+	svc := NewForTenant("", &config.Config{
+		Routing: config.RoutingConfig{
+			ChannelGroups: []config.RoutingChannelGroup{
+				{
+					Name:           "team",
+					ExcludedModels: []string{"claude-opus"},
+				},
+			},
+		},
+	}, nil)
+	// grok-4.7 stands in for a model the upstream added after the group was
+	// configured: exclusions must let it through, an allow list would not.
+	models := []map[string]any{{"id": "gpt-5"}, {"id": "claude-opus"}, {"id": "grok-4.7"}}
+	filtered := svc.filterModelsByRoutingAllowedModels(models, "team")
+	if len(filtered) != 2 || filtered[0]["id"] != "gpt-5" || filtered[1]["id"] != "grok-4.7" {
+		t.Fatalf("filtered = %#v, want gpt-5 and grok-4.7", filtered)
+	}
+}
+
+// Scoped groups form a union, so a model one group excludes stays listed when
+// another scoped group still serves it.
+func TestFilterModelsByRoutingAllowedModelsUnionAcrossGroups(t *testing.T) {
+	svc := NewForTenant("", &config.Config{
+		Routing: config.RoutingConfig{
+			ChannelGroups: []config.RoutingChannelGroup{
+				{Name: "team", ExcludedModels: []string{"claude-opus"}},
+				{Name: "research", AllowedModels: []string{"claude-opus"}},
+			},
+		},
+	}, nil)
+	models := []map[string]any{{"id": "gpt-5"}, {"id": "claude-opus"}}
+	filtered := svc.filterModelsByRoutingAllowedModels(models, "team,research")
+	if len(filtered) != 2 {
+		t.Fatalf("filtered = %#v, want both models", filtered)
+	}
+}
+
 func TestConfiguredAvailabilityIgnoreGroupAllowedModelsKeepsFullChannelSet(t *testing.T) {
 	// Channel-group editor must list every channel-servable model for checkbox
 	// selection, even when AllowedModels already restricts plaza/catalog.

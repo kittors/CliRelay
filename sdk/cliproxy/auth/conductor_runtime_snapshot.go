@@ -35,6 +35,7 @@ type runtimeRoutingChannelGroup struct {
 	Priority           int
 	ChannelPriorities  map[string]int
 	AllowedModels      []string
+	ExcludedModels     []string
 }
 
 type runtimeGroupScheduling struct {
@@ -151,6 +152,7 @@ func cloneRuntimeRoutingChannelGroups(groups []sdkconfig.RoutingChannelGroup) []
 			Priority:           group.Priority,
 			ChannelPriorities:  cloneStringIntMap(group.ChannelPriorities),
 			AllowedModels:      cloneStringSlice(group.AllowedModels),
+			ExcludedModels:     cloneStringSlice(group.ExcludedModels),
 		})
 	}
 	return out

@@ -58,6 +58,7 @@ type channelGroupItem struct {
 	Channels           []string                    `json:"channels,omitempty"`
 	ChannelDetails     []channelGroupChannelDetail `json:"channel-details,omitempty"`
 	AllowedModels      []string                    `json:"allowed-models,omitempty"`
+	ExcludedModels     []string                    `json:"excluded-models,omitempty"`
 	PathRoutes         []string                    `json:"path-routes,omitempty"`
 }
 
@@ -246,6 +247,7 @@ func buildChannelGroupItems(cfg *config.Config, auths []*coreauth.Auth) []channe
 		item.Priority = group.Priority
 		item.ExcludeFromDefault = group.ExcludeFromDefault
 		item.AllowedModels = append(item.AllowedModels, group.AllowedModels...)
+		item.ExcludedModels = append(item.ExcludedModels, group.ExcludedModels...)
 		item.Prefixes = append(item.Prefixes, group.Match.Prefixes...)
 		item.Tags = append(item.Tags, group.Match.Tags...)
 		configuredChannelsByGroup[item.Name] = append(configuredChannelsByGroup[item.Name], group.Match.Channels...)
