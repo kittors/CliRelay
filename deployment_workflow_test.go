@@ -130,6 +130,9 @@ func TestBlueGreenDeployScriptSyntaxAndGuards(t *testing.T) {
 		`nginx_slot_port`,
 		`required command not found on deploy host`,
 		`refusing to stop`,
+		// One rewrite cannot cut over two vhosts that both route the domain to
+		// a slot, so the deploy must refuse instead of picking one.
+		`several nginx configs proxy`,
 	} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("deploy script missing guard %q", want)
@@ -144,6 +147,12 @@ func TestBlueGreenDeployScriptSyntaxAndGuards(t *testing.T) {
 		// backup vhost that nginx never reads. Replaced by NGINX_BACKUP_PATTERN;
 		// see TestNginxBackupPatternExcludesEveryBackupShape.
 		`grep -v '\.bak\.'`,
+		// Taking the first file that names the domain handed cutover a port-80
+		// redirect with no slot port to rewrite, so every deploy failed at
+		// cutover. The container lookup cannot run in a unit test, so this is
+		// its only guard; see TestNginxLookupPicksTheVhostThatProxiesToASlot.
+		`"$NGINX_BACKUP_PATTERN" | head -n1`,
+		`'${NGINX_BACKUP_PATTERN}' | head -n1`,
 		`migrate-sqlite-to-postgres.sh`,
 		`Legacy SQLite`,
 		`stop_active_units_for_migration`,
@@ -151,7 +160,7 @@ func TestBlueGreenDeployScriptSyntaxAndGuards(t *testing.T) {
 		`usage.db`,
 	} {
 		if strings.Contains(content, forbidden) {
-			t.Fatalf("deploy script must not run legacy SQLite migration during blue-green deploy, found %q", forbidden)
+			t.Fatalf("deploy script contains forbidden pattern %q; see the comment beside it", forbidden)
 		}
 	}
 }
@@ -440,6 +449,125 @@ func TestNginxBackupPatternExcludesEveryBackupShape(t *testing.T) {
 	if got := matches[0]; got != dir+"/"+live {
 		t.Fatalf("lookup selected %q, want the live vhost %q", got, dir+"/"+live)
 	}
+}
+
+// extractShellFunction returns a function definition from a shell script, from
+// its `name() {` line through the closing brace in column one, so the test runs
+// the lookup the deploy host will run rather than a copy that can drift.
+func extractShellFunction(t *testing.T, path, name string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	var body []string
+	for _, line := range strings.Split(string(data), "\n") {
+		if body == nil {
+			if strings.HasPrefix(line, name+"() {") {
+				body = append(body, line)
+			}
+			continue
+		}
+		body = append(body, line)
+		if line == "}" {
+			return strings.Join(body, "\n")
+		}
+	}
+	t.Fatalf("%s does not define function %s", path, name)
+	return ""
+}
+
+// The deploy host names the domain in two live files: a port-80 redirect and
+// the TLS vhost that proxies to the slot. grep -R lists them in directory
+// order, and taking the first handed cutover the redirect, which has no slot
+// port to rewrite, so every deploy failed at cutover. The lookup must return
+// exactly the files that route to a slot, whatever order they are found in.
+func TestNginxLookupPicksTheVhostThatProxiesToASlot(t *testing.T) {
+	lookup := extractShellFunction(t, "scripts/deploy-blue-green.sh", "find_host_nginx_conf")
+	backupPattern := extractShellAssignment(t, "scripts/deploy-blue-green.sh", "NGINX_BACKUP_PATTERN")
+
+	// Shapes copied from the deploy host, including a second vhost in the TLS
+	// file that proxies elsewhere and must not matter.
+	const redirect = `server {
+    listen 80;
+    server_name code.07230805.xyz relay.07230805.xyz;
+    location / {
+        return 301 https://$host$request_uri;
+    }
+}
+`
+	const tlsVhost = `server {
+    listen 127.0.0.1:8444 ssl http2;
+    server_name code.07230805.xyz relay.07230805.xyz;
+    location / {
+        proxy_pass http://127.0.0.1:8318;
+    }
+}
+server {
+    listen 127.0.0.1:8444 ssl;
+    server_name sonar.07230805.xyz;
+    location / {
+        proxy_pass http://127.0.0.1:8787;
+    }
+}
+`
+	write := func(t *testing.T, path, content string) {
+		t.Helper()
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatalf("write %s: %v", path, err)
+		}
+	}
+	run := func(t *testing.T, searchDirs string) []string {
+		t.Helper()
+		cmd := exec.Command("bash", "-c", "set -euo pipefail\n"+lookup+"\nfind_host_nginx_conf")
+		cmd.Env = append(os.Environ(),
+			"DOMAIN=relay.07230805.xyz",
+			"PORT_A=8318",
+			"PORT_B=8319",
+			"NGINX_SEARCH_DIRS="+searchDirs,
+			"NGINX_BACKUP_PATTERN="+backupPattern,
+			"NGINX_CONF=",
+		)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("run lookup: %v\n%s", err, out)
+		}
+		return strings.Fields(strings.TrimSpace(string(out)))
+	}
+
+	t.Run("redirect is found first", func(t *testing.T) {
+		// grep -R walks its arguments in order, so the redirect is always the
+		// first match here: the file a first-match lookup would hand cutover.
+		redirectDir, vhostDir := t.TempDir(), t.TempDir()
+		write(t, redirectDir+"/code.07230805.xyz.conf", redirect)
+		write(t, vhostDir+"/00-https-local-8444.conf", tlsVhost)
+		// A backup that still routes to a slot stays excluded.
+		write(t, vhostDir+"/00-https-local-8444.conf.bak-before-migrate", strings.ReplaceAll(tlsVhost, "8318", "8319"))
+
+		got := run(t, redirectDir+" "+vhostDir)
+		if want := vhostDir + "/00-https-local-8444.conf"; len(got) != 1 || got[0] != want {
+			t.Fatalf("lookup returned %v, want only the vhost that proxies to the slot %q", got, want)
+		}
+	})
+
+	t.Run("two vhosts route to a slot", func(t *testing.T) {
+		// Both are reported so the deploy refuses instead of rewriting one and
+		// leaving the other on the old slot.
+		dir := t.TempDir()
+		write(t, dir+"/relay.conf", tlsVhost)
+		write(t, dir+"/code.conf", strings.ReplaceAll(tlsVhost, "8318", "8319"))
+		if got := run(t, dir); len(got) != 2 {
+			t.Fatalf("lookup returned %v, want both vhosts so the deploy can refuse", got)
+		}
+	})
+
+	t.Run("nothing routes to a slot", func(t *testing.T) {
+		dir := t.TempDir()
+		write(t, dir+"/code.07230805.xyz.conf", redirect)
+		if got := run(t, dir); len(got) != 0 {
+			t.Fatalf("lookup returned %v for a redirect-only host, want nothing", got)
+		}
+	})
 }
 
 // A cutover that failed to move nginx leaves .active-port and systemd agreeing
