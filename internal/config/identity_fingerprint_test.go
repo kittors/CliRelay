@@ -94,13 +94,13 @@ func TestDefaultClaudeIdentityFingerprintMirrorsClaudeCode(t *testing.T) {
 	if !got.Enabled {
 		t.Fatalf("Enabled = false, want true by default")
 	}
-	if got.CLIVersion != "2.1.252" {
-		t.Fatalf("CLIVersion = %q, want 2.1.252", got.CLIVersion)
+	if got.CLIVersion != "2.1.280" {
+		t.Fatalf("CLIVersion = %q, want 2.1.280", got.CLIVersion)
 	}
 	if got.Entrypoint != "cli" {
 		t.Fatalf("Entrypoint = %q, want cli", got.Entrypoint)
 	}
-	if got.UserAgent != "claude-cli/2.1.252 (external, cli)" {
+	if got.UserAgent != "claude-cli/2.1.280 (external, cli)" {
 		t.Fatalf("UserAgent = %q, want Claude Code user agent", got.UserAgent)
 	}
 	if got.StainlessPackageVersion != "0.94.0" {

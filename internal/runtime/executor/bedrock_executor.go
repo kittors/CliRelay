@@ -35,6 +35,9 @@ const (
 var bedrockCrossRegionPrefixes = []string{"us.", "eu.", "apac.", "jp.", "au.", "us-gov.", "global."}
 
 var defaultBedrockModelMapping = map[string]string{
+	"claude-opus-5-5":            "us.anthropic.claude-opus-5-5",
+	"claude-opus-5":              "us.anthropic.claude-opus-5",
+	"claude-opus-4-8":            "us.anthropic.claude-opus-4-8",
 	"claude-opus-4-7":            "us.anthropic.claude-opus-4-7-v1",
 	"claude-opus-4-6-thinking":   "us.anthropic.claude-opus-4-6-v1",
 	"claude-opus-4-6":            "us.anthropic.claude-opus-4-6-v1",

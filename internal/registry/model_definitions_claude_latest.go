@@ -26,13 +26,25 @@ func latestClaudeModels() []*ModelInfo {
 
 	return []*ModelInfo{
 		{
+			ID:                  "claude-opus-5-5",
+			Object:              "model",
+			Created:             1790035200, // 2026-09-22
+			OwnedBy:             "anthropic",
+			Type:                "claude",
+			DisplayName:         "Claude Opus 5.5",
+			Description:         "Latest generation Claude Opus frontier model",
+			ContextLength:       1000000,
+			MaxCompletionTokens: 128000,
+			Thinking:            thinking(),
+		},
+		{
 			ID:                  "claude-opus-5",
 			Object:              "model",
 			Created:             1783641600, // 2026-07-13
 			OwnedBy:             "anthropic",
 			Type:                "claude",
 			DisplayName:         "Claude Opus 5",
-			Description:         "Latest generation Claude Opus frontier model",
+			Description:         "Previous generation Claude Opus frontier model",
 			ContextLength:       1000000,
 			MaxCompletionTokens: 128000,
 			Thinking:            thinking(),

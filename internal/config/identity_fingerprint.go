@@ -45,7 +45,7 @@ const (
 	// is a combination no official client emits.
 	DefaultCodexFingerprintConvergenceMode = CodexFingerprintConvergenceDevice
 
-	DefaultClaudeFingerprintCLIVersion              = "2.1.252"
+	DefaultClaudeFingerprintCLIVersion              = "2.1.280"
 	DefaultClaudeFingerprintEntrypoint              = "cli"
 	DefaultClaudeFingerprintAnthropicBeta           = "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,prompt-caching-scope-2026-01-05,effort-2025-11-24,context-management-2025-06-27,extended-cache-ttl-2025-04-11"
 	DefaultClaudeFingerprintStainlessPackageVersion = "0.94.0"
