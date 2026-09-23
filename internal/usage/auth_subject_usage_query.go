@@ -23,6 +23,10 @@ func QueryDailyUsageByAuthSubject(matcher AuthSubjectMatcher, days int) ([]Daily
 }
 
 func QueryDailyUsageByAuthSubjectForTenant(tenantID string, matcher AuthSubjectMatcher, days int) ([]DailyUsagePoint, error) {
+	return queryDailyUsageByAuthSubjectAt(tenantID, matcher, days, time.Now(), getUsageLocation())
+}
+
+func queryDailyUsageByAuthSubjectAt(tenantID string, matcher AuthSubjectMatcher, days int, now time.Time, loc *time.Location) ([]DailyUsagePoint, error) {
 	tenantID = normalizeTenantID(tenantID)
 	db := getReadDB()
 	if db == nil {
@@ -37,20 +41,23 @@ func QueryDailyUsageByAuthSubjectForTenant(tenantID string, matcher AuthSubjectM
 		return []DailyUsagePoint{}, nil
 	}
 
-	// Aggregate in SQL instead of streaming every matching request_logs row into Go.
-	// date(timestamp, 'localtime') is rewritten by the postgres compat driver to a
-	// UTC day key; production keeps process TZ aligned with the configured usage zone.
-	args := make([]interface{}, 0, len(matchArgs)+2)
-	args = append(args, tenantID, CutoffStartUTC(days).Format(time.RFC3339))
+	// Aggregate in SQL instead of streaming every matching request_logs row into Go,
+	// but against day edges computed from the usage timezone: callers look these
+	// keys up in usageLoc day slots (see timeBucketCase).
+	bounds := localDayBoundsAt(now, days, loc)
+	dayExpr, dayArgs, dayKeys := timeBucketCase("timestamp", bounds, "2006-01-02")
+	args := make([]interface{}, 0, len(dayArgs)+len(matchArgs)+3)
+	args = append(args, dayArgs...)
+	args = append(args, tenantID, bounds[0].UTC().Format(time.RFC3339), bounds[len(bounds)-1].UTC().Format(time.RFC3339))
 	args = append(args, matchArgs...)
 
 	rows, err := db.Query(fmt.Sprintf(`
-		SELECT date(timestamp, 'localtime') as d, COUNT(*), COALESCE(SUM(cost), 0)
+		SELECT %s as d, COUNT(*), COALESCE(SUM(cost), 0)
 		FROM request_logs
-		WHERE tenant_id = ? AND timestamp >= ? AND (%s)
+		WHERE tenant_id = ? AND timestamp >= ? AND timestamp < ? AND (%s)
 		GROUP BY d
 		ORDER BY d
-	`, matchSQL), args...)
+	`, dayExpr, matchSQL), args...)
 	if err != nil {
 		return nil, fmt.Errorf("usage: daily usage by auth subject query: %w", err)
 	}
@@ -58,14 +65,12 @@ func QueryDailyUsageByAuthSubjectForTenant(tenantID string, matcher AuthSubjectM
 
 	result := make([]DailyUsagePoint, 0, days)
 	for rows.Next() {
+		var day int
 		var point DailyUsagePoint
-		if err := rows.Scan(&point.Date, &point.Requests, &point.Cost); err != nil {
+		if err := rows.Scan(&day, &point.Requests, &point.Cost); err != nil {
 			return nil, fmt.Errorf("usage: daily usage by auth subject scan: %w", err)
 		}
-		point.Date = strings.TrimSpace(point.Date)
-		if point.Date == "" {
-			continue
-		}
+		point.Date = dayKeys[day]
 		result = append(result, point)
 	}
 	if err := rows.Err(); err != nil {
@@ -91,17 +96,17 @@ func QueryHourlyUsageByAuthSubject(matcher AuthSubjectMatcher, hours int) ([]Hou
 }
 
 func QueryHourlyUsageByAuthSubjectForTenant(tenantID string, matcher AuthSubjectMatcher, hours int) ([]HourlyUsagePoint, error) {
-	return queryHourlyUsageByAuthSubject(normalizeTenantID(tenantID), matcher, hours, false)
+	return queryHourlyUsageByAuthSubject(normalizeTenantID(tenantID), matcher, hours, false, time.Now(), getUsageLocation())
 }
 
 // QueryHourlyUsageByAuthSubjectAcrossTenants aggregates the last N hours for one
 // physical account across all tenants. Only pass share-eligible subject matchers;
 // never use for tenant-scoped subjects or request-log list/detail.
 func QueryHourlyUsageByAuthSubjectAcrossTenants(matcher AuthSubjectMatcher, hours int) ([]HourlyUsagePoint, error) {
-	return queryHourlyUsageByAuthSubject("", matcher, hours, true)
+	return queryHourlyUsageByAuthSubject("", matcher, hours, true, time.Now(), getUsageLocation())
 }
 
-func queryHourlyUsageByAuthSubject(tenantID string, matcher AuthSubjectMatcher, hours int, acrossTenants bool) ([]HourlyUsagePoint, error) {
+func queryHourlyUsageByAuthSubject(tenantID string, matcher AuthSubjectMatcher, hours int, acrossTenants bool, now time.Time, loc *time.Location) ([]HourlyUsagePoint, error) {
 	db := getReadDB()
 	if db == nil {
 		return []HourlyUsagePoint{}, nil
@@ -116,7 +121,7 @@ func queryHourlyUsageByAuthSubject(tenantID string, matcher AuthSubjectMatcher, 
 	if acrossTenants {
 		subjectID := strings.TrimSpace(matcher.SubjectID)
 		if subjectID == "" {
-			return EmptyHourlyUsageBuckets(hours), nil
+			return emptyHourlyUsageBucketsAt(now, hours, loc), nil
 		}
 		matcher = AuthSubjectMatcher{SubjectID: subjectID}
 	}
@@ -126,9 +131,7 @@ func queryHourlyUsageByAuthSubject(tenantID string, matcher AuthSubjectMatcher, 
 		return []HourlyUsagePoint{}, nil
 	}
 
-	loc := getUsageLocation()
-	now := time.Now().In(loc).Truncate(time.Hour)
-	start := now.Add(-time.Duration(hours-1) * time.Hour)
+	start := floorLocalHour(now, loc).Add(-time.Duration(hours-1) * time.Hour)
 	buckets := make([]HourlyUsagePoint, 0, hours)
 	byKey := make(map[string]*HourlyUsagePoint, hours)
 	for i := 0; i < hours; i++ {
@@ -150,10 +153,9 @@ func queryHourlyUsageByAuthSubject(tenantID string, matcher AuthSubjectMatcher, 
 		where = fmt.Sprintf(`tenant_id = ? AND timestamp >= ? AND (%s)`, matchSQL)
 	}
 
-	// Keep a narrow row scan for hourly (≤24h). SQL strftime('localtime') follows
-	// process TZ, which can diverge from getUsageLocation() in tests and some
-	// deployments; Go-side bucketing preserves the project timezone contract.
-	// Daily aggregation above is the expensive 7d path and stays SQL-side.
+	// Keep a narrow row scan for hourly (≤24h) and bucket in Go against the usage
+	// timezone. Daily aggregation above is the expensive 7d path, so it stays
+	// SQL-side with day edges computed in Go instead.
 	rows, err := db.Query(fmt.Sprintf(`
 		SELECT timestamp, cost
 		FROM request_logs
@@ -173,7 +175,7 @@ func queryHourlyUsageByAuthSubject(tenantID string, matcher AuthSubjectMatcher, 
 		if !ts.Valid {
 			continue
 		}
-		key := ts.Time.In(loc).Truncate(time.Hour).Format("2006-01-02 15:00")
+		key := floorLocalHour(ts.Time, loc).Format("2006-01-02 15:00")
 		if bucket := byKey[key]; bucket != nil {
 			bucket.Requests++
 			bucket.Cost += cost

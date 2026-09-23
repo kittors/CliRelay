@@ -87,6 +87,10 @@ func (s *Service) loadInitialState(ctx context.Context) error {
 			log.Warnf("failed to load auth store: %v", errLoad)
 		}
 		s.syncConfigDerivedAuths(s.cfg)
+		// Fetch upstream model lists now, so the first answers overlap the
+		// registration pass below instead of following it; the lists re-register
+		// their credentials once that pass is done.
+		s.startProviderDiscovery(ctx)
 		for _, auth := range s.coreManager.List() {
 			if auth == nil || auth.ID == "" {
 				continue
@@ -94,6 +98,7 @@ func (s *Service) loadInitialState(ctx context.Context) error {
 			s.ensureExecutorsForAuth(auth)
 			s.registerModelsForAuth(ctx, auth)
 		}
+		s.markProviderDiscoveryRegistrationReady()
 	}
 
 	if _, err := s.tokenProvider.Load(ctx, s.cfg); err != nil && !errors.Is(err, context.Canceled) {
@@ -134,6 +139,7 @@ func (s *Service) Shutdown(ctx context.Context) error {
 		if s.coreManager != nil {
 			s.coreManager.StopAutoRefresh()
 		}
+		s.stopProviderDiscovery()
 		if s.watcher != nil {
 			if err := s.watcher.Stop(); err != nil {
 				log.Errorf("failed to stop file watcher: %v", err)

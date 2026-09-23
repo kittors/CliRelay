@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # SCRIPT_VERSION must stay in sync with deploy gate expectations.
-SCRIPT_VERSION="${SCRIPT_VERSION:-2026.09.17.1}"
+SCRIPT_VERSION="${SCRIPT_VERSION:-2026.09.23.1}"
 set -euo pipefail
 
 SERVICE_NAME="${SERVICE_NAME:-clirelay2}"
@@ -167,13 +167,22 @@ NGINX_SEARCH_DIRS="${NGINX_SEARCH_DIRS:-/etc/nginx/conf.d /etc/nginx/sites-enabl
 # Single source of truth: both lookups and the drain guard use this pattern.
 NGINX_BACKUP_PATTERN='\.bak($|[.-])|/[^/]*bak-before'
 
+# Cutover rewrites the vhost that proxies DOMAIN to a slot, so only such a file
+# qualifies. The domain is routinely named in more than one live file -- the
+# host keeps its port-80 redirect in one and the TLS vhost that proxies to the
+# slot in another -- and grep -R lists them in directory order, which nothing
+# controls. Taking the first match handed cutover the redirect block, which has
+# no slot port to rewrite, so every deploy failed at cutover. This is the same
+# slot-port test the drain guard in cleanup-drained-slot.sh applies. Every
+# qualifying file is printed; the caller refuses more than one.
 find_host_nginx_conf() {
 	if [ -n "${NGINX_CONF:-}" ]; then
 		echo "$NGINX_CONF"
 		return
 	fi
 	# shellcheck disable=SC2086 # NGINX_SEARCH_DIRS is an intentional word list.
-	grep -Rsl "$DOMAIN" $NGINX_SEARCH_DIRS 2>/dev/null | grep -Ev "$NGINX_BACKUP_PATTERN" | head -n1 || true
+	grep -Rsl "$DOMAIN" $NGINX_SEARCH_DIRS 2>/dev/null | grep -Ev "$NGINX_BACKUP_PATTERN" |
+		xargs -r grep -lE "127\.0\.0\.1:(${PORT_A}|${PORT_B})" 2>/dev/null || true
 }
 
 find_container_nginx_conf() {
@@ -183,7 +192,7 @@ find_container_nginx_conf() {
 	if ! docker inspect "$NGINX_CONTAINER" >/dev/null 2>&1; then
 		return
 	fi
-	docker exec "$NGINX_CONTAINER" sh -c "grep -Rsl '$DOMAIN' ${NGINX_SEARCH_DIRS} 2>/dev/null | grep -Ev '${NGINX_BACKUP_PATTERN}' | head -n1" || true
+	docker exec "$NGINX_CONTAINER" sh -c "grep -Rsl '$DOMAIN' ${NGINX_SEARCH_DIRS} 2>/dev/null | grep -Ev '${NGINX_BACKUP_PATTERN}' | xargs -r grep -lE '127\\.0\\.0\\.1:(${PORT_A}|${PORT_B})' 2>/dev/null" || true
 }
 
 # Nginx is the third state source, and the only one that decides where traffic
@@ -196,7 +205,12 @@ if [ -z "$nginx_conf" ]; then
 	nginx_conf="$(find_container_nginx_conf)"
 	nginx_mode="container"
 fi
-[ -n "$nginx_conf" ] || fail "nginx config for ${DOMAIN} not found on host or docker container ${NGINX_CONTAINER}; set NGINX_CONF/NGINX_CONTAINER"
+[ -n "$nginx_conf" ] || fail "nginx config proxying ${DOMAIN} to port ${PORT_A} or ${PORT_B} not found on host or docker container ${NGINX_CONTAINER}; set NGINX_CONF/NGINX_CONTAINER"
+# Rewriting only one of several vhosts that route the domain to a slot would
+# leave the rest on the old slot. Refuse rather than guess which one is live.
+case "$nginx_conf" in
+*$'\n'*) fail "several nginx configs proxy ${DOMAIN} to a slot; set NGINX_CONF to the one to cut over: $(printf '%s' "$nginx_conf" | tr '\n' ' ')" ;;
+esac
 
 # nginx_slot_port reports the blue-green slot nginx currently proxies to, or an
 # empty string when it points at neither.

@@ -49,6 +49,15 @@ func (c *catalogRefreshState) finish(tenantID string) bool {
 	return false
 }
 
+// abandon forgets a refresh loop that exits without finishing, so the next change
+// for the key starts a new one instead of only marking a pass as pending.
+func (c *catalogRefreshState) abandon(key string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.pending, key)
+	delete(c.running, key)
+}
+
 func (s *Service) onModelCatalogChanged(tenantID string) {
 	if s == nil || s.coreManager == nil {
 		return

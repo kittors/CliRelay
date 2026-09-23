@@ -2517,31 +2517,6 @@ func TestQueryStatsAndHeatmapCountSessionsFromDetails(t *testing.T) {
 	if stats.Total != 3 || stats.TotalTokens != 83 {
 		t.Fatalf("stats = %#v, want total=3 total_tokens=83", stats)
 	}
-	sessionCount, err := QuerySessionCount(LogQueryParams{APIKey: "sk-heatmap", Days: 7})
-	if err != nil {
-		t.Fatalf("QuerySessionCount() error = %v", err)
-	}
-	if sessionCount != 2 {
-		t.Fatalf("QuerySessionCount() = %d, want 2", sessionCount)
-	}
-
-	points, err := QueryDailyHeatmapSeries("sk-heatmap", 7)
-	if err != nil {
-		t.Fatalf("QueryDailyHeatmapSeries() error = %v", err)
-	}
-	byDate := make(map[string]DailyHeatmapPoint, len(points))
-	for _, point := range points {
-		byDate[point.Date] = point
-	}
-	todayPoint := byDate[LocalDayKeyAt(today)]
-	if todayPoint.Requests != 2 || todayPoint.Tokens != 80 || todayPoint.Sessions != 1 {
-		t.Fatalf("today heatmap point = %#v, want requests=2 tokens=80 sessions=1", todayPoint)
-	}
-	yesterdayPoint := byDate[LocalDayKeyAt(yesterday)]
-	if yesterdayPoint.Requests != 1 || yesterdayPoint.Tokens != 3 || yesterdayPoint.Sessions != 1 {
-		t.Fatalf("yesterday heatmap point = %#v, want requests=1 tokens=3 sessions=1", yesterdayPoint)
-	}
-
 	chartData, err := QueryPublicChartData("sk-heatmap", 7)
 	if err != nil {
 		t.Fatalf("QueryPublicChartData() error = %v", err)
@@ -2559,19 +2534,22 @@ func TestQueryStatsAndHeatmapCountSessionsFromDetails(t *testing.T) {
 	for _, point := range chartData.HeatmapSeries {
 		chartHeatmap[point.Date] = point
 	}
-	if chartHeatmap[LocalDayKeyAt(today)].Sessions != 1 || chartHeatmap[LocalDayKeyAt(yesterday)].Sessions != 1 {
-		t.Fatalf("public chart heatmap = %#v, want sessions by day populated", chartHeatmap)
+	if todayPoint := chartHeatmap[LocalDayKeyAt(today)]; todayPoint.Requests != 2 || todayPoint.Tokens != 80 || todayPoint.Sessions != 1 {
+		t.Fatalf("today heatmap point = %#v, want requests=2 tokens=80 sessions=1", todayPoint)
+	}
+	if yesterdayPoint := chartHeatmap[LocalDayKeyAt(yesterday)]; yesterdayPoint.Requests != 1 || yesterdayPoint.Tokens != 3 || yesterdayPoint.Sessions != 1 {
+		t.Fatalf("yesterday heatmap point = %#v, want requests=1 tokens=3 sessions=1", yesterdayPoint)
 	}
 
 	if _, err := ClearRequestLogs(ClearRequestLogsOptions{ClearDetailContent: true}); err != nil {
 		t.Fatalf("ClearRequestLogs(details) error = %v", err)
 	}
-	sessionCount, err = QuerySessionCount(LogQueryParams{APIKey: "sk-heatmap", Days: 7})
+	chartData, err = QueryPublicChartData("sk-heatmap", 7)
 	if err != nil {
-		t.Fatalf("QuerySessionCount() after detail cleanup error = %v", err)
+		t.Fatalf("QueryPublicChartData() after detail cleanup error = %v", err)
 	}
-	if sessionCount != 0 {
-		t.Fatalf("QuerySessionCount() after detail cleanup = %d, want 0", sessionCount)
+	if chartData.Stats.TotalSessions != 0 {
+		t.Fatalf("public chart sessions after detail cleanup = %d, want 0", chartData.Stats.TotalSessions)
 	}
 }
 

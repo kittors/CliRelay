@@ -46,6 +46,9 @@ type Service struct {
 	// catalogRefresh coalesces model-library driven credential re-registration.
 	catalogRefresh catalogRefreshState
 
+	// providerDiscovery keeps upstream model lists current for registration.
+	providerDiscovery providerDiscoveryState
+
 	// serverOptions contains additional server configuration options.
 	serverOptions []api.ServerOption
 

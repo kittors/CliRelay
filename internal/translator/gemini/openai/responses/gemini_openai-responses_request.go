@@ -367,8 +367,7 @@ func ConvertOpenAIResponsesRequestToGemini(modelName string, inputRawJSON []byte
 					if properties := paramsResult.Get("properties"); properties.Exists() {
 						properties.ForEach(func(key, value gjson.Result) bool {
 							if propType := value.Get("type"); propType.Exists() {
-								upperType := strings.ToUpper(propType.String())
-								cleaned, _ = sjson.Set(cleaned, "properties."+key.String()+".type", upperType)
+								cleaned, _ = sjson.Set(cleaned, "properties."+key.String()+".type", geminiSchemaType(propType))
 							}
 							return true
 						})
@@ -445,4 +444,22 @@ func ConvertOpenAIResponsesRequestToGemini(modelName string, inputRawJSON []byte
 	result := []byte(out)
 	result = common.AttachDefaultSafetySettings(result, "safetySettings")
 	return result
+}
+
+// geminiSchemaType normalizes a JSON Schema "type" value into a Gemini Type enum member.
+// JSON Schema 2020-12 permits union types such as ["boolean", "null"], and gjson renders
+// those through Result.String() as the raw array text, so uppercasing directly would emit
+// an invalid enum like "[\"BOOLEAN\",\"NULL\"]" and Gemini rejects the request with 400.
+// Unions collapse to their first non-null member and all-null unions fall back to STRING,
+// matching how util.flattenTypeArrays treats the same shapes on the Antigravity path.
+func geminiSchemaType(propType gjson.Result) string {
+	if !propType.IsArray() {
+		return strings.ToUpper(propType.String())
+	}
+	for _, item := range propType.Array() {
+		if member := item.String(); member != "null" {
+			return strings.ToUpper(member)
+		}
+	}
+	return "STRING"
 }

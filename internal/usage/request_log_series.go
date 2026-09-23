@@ -242,8 +242,8 @@ func QueryDailySeriesForTenant(tenantID, apiKey string, days int) ([]DailySeries
 		days = 7
 	}
 
-	// Use usage_rollup_buckets day keys (usageLoc / project timezone), not
-	// date(timestamp,'localtime') which PostgreSQL compat rewrites to UTC.
+	// Use usage_rollup_buckets, already keyed by usageLoc (project timezone)
+	// day; no SQL day function follows usageLoc on both drivers.
 	params := LogQueryParams{TenantID: tenantID, APIKey: apiKey, Days: days}
 	filter, ok := rollupIdentityFilter(params)
 	if !ok {
@@ -268,80 +268,6 @@ func QueryDailySeriesForTenant(tenantID, apiKey string, days int) ([]DailySeries
 	return result, nil
 }
 
-// QueryDailyHeatmapSeries returns sparse daily usage for the calendar heatmap.
-func QueryDailyHeatmapSeries(apiKey string, days int) ([]DailyHeatmapPoint, error) {
-	return QueryDailyHeatmapSeriesForTenant(systemTenantID, apiKey, days)
-}
-
-func QueryDailyHeatmapSeriesForTenant(tenantID, apiKey string, days int) ([]DailyHeatmapPoint, error) {
-	db := getReadDB()
-	if db == nil {
-		return nil, nil
-	}
-	if days < 1 {
-		days = 365
-	}
-
-	params := LogQueryParams{TenantID: tenantID, APIKey: apiKey, Days: days}
-	where, args := buildWhereClause(params)
-
-	q := `SELECT date(timestamp, 'localtime') as d,
-	             COUNT(*) as reqs,
-	             COALESCE(SUM(total_tokens),0),
-	             COALESCE(SUM(cost),0)
-	      FROM request_logs` + where + `
-	      GROUP BY d ORDER BY d`
-
-	rows, err := db.Query(q, args...)
-	if err != nil {
-		return nil, fmt.Errorf("usage: daily heatmap query: %w", err)
-	}
-	defer rows.Close()
-
-	sessionsByDate, err := querySessionCountsByDate(params)
-	if err != nil {
-		return nil, err
-	}
-
-	var result []DailyHeatmapPoint
-	for rows.Next() {
-		var p DailyHeatmapPoint
-		if err := rows.Scan(&p.Date, &p.Requests, &p.Tokens, &p.Cost); err != nil {
-			return nil, fmt.Errorf("usage: daily heatmap scan: %w", err)
-		}
-		p.Sessions = sessionsByDate[p.Date]
-		result = append(result, p)
-	}
-	return result, rows.Err()
-}
-
-// QuerySessionCount returns the distinct count of session-like request detail IDs.
-func QuerySessionCount(params LogQueryParams) (int64, error) {
-	seenByDate, err := querySessionSetsByDate(params)
-	if err != nil {
-		return 0, err
-	}
-	seen := make(map[string]struct{})
-	for _, sessions := range seenByDate {
-		for sessionID := range sessions {
-			seen[sessionID] = struct{}{}
-		}
-	}
-	return int64(len(seen)), nil
-}
-
-func querySessionCountsByDate(params LogQueryParams) (map[string]int64, error) {
-	seenByDate, err := querySessionSetsByDate(params)
-	if err != nil {
-		return nil, err
-	}
-	counts := make(map[string]int64, len(seenByDate))
-	for dateKey, sessions := range seenByDate {
-		counts[dateKey] = int64(len(sessions))
-	}
-	return counts, nil
-}
-
 func querySessionSetsByDate(params LogQueryParams) (map[string]map[string]struct{}, error) {
 	db := getReadDB()
 	if db == nil {
@@ -353,7 +279,7 @@ func querySessionSetsByDate(params LogQueryParams) (map[string]map[string]struct
 
 	where, args := buildWhereClause(params)
 	rows, err := db.Query(
-		`SELECT date(logs.timestamp, 'localtime'), content.session_id
+		`SELECT logs.timestamp, content.session_id
 		   FROM (SELECT tenant_id, id, timestamp FROM request_logs`+where+`) logs
 		   JOIN request_log_content content ON content.tenant_id = logs.tenant_id AND content.log_id = logs.id
 		  WHERE content.session_id <> ''`,
@@ -364,16 +290,20 @@ func querySessionSetsByDate(params LogQueryParams) (map[string]map[string]struct
 	}
 	defer rows.Close()
 
+	// Day keys meet usage_rollup_buckets keys, so they follow the usage timezone.
+	loc := getUsageLocation()
 	seenByDate := make(map[string]map[string]struct{})
 	for rows.Next() {
-		var dateKey, sessionID string
-		if err := rows.Scan(&dateKey, &sessionID); err != nil {
+		var at storedTime
+		var sessionID string
+		if err := rows.Scan(&at, &sessionID); err != nil {
 			return nil, fmt.Errorf("usage: session scan: %w", err)
 		}
 		sessionID = strings.TrimSpace(sessionID)
-		if sessionID == "" {
+		if sessionID == "" || !at.Valid {
 			continue
 		}
+		dateKey := localDayKeyAtLocation(at.Time, loc)
 		if seenByDate[dateKey] == nil {
 			seenByDate[dateKey] = make(map[string]struct{})
 		}
@@ -629,6 +559,10 @@ func QueryHourlySeries(apiKey string, hours int) ([]HourlyTokenPoint, []HourlyMo
 }
 
 func QueryHourlySeriesForTenant(tenantID, apiKey string, hours int) ([]HourlyTokenPoint, []HourlyModelPoint, error) {
+	return queryHourlySeriesAt(tenantID, apiKey, hours, time.Now(), getUsageLocation())
+}
+
+func queryHourlySeriesAt(tenantID, apiKey string, hours int, now time.Time, loc *time.Location) ([]HourlyTokenPoint, []HourlyModelPoint, error) {
 	tenantID = normalizeTenantID(tenantID)
 	db := getReadDB()
 	if db == nil {
@@ -638,14 +572,20 @@ func QueryHourlySeriesForTenant(tenantID, apiKey string, hours int) ([]HourlyTok
 		hours = 24
 	}
 
-	cutoff := time.Now().Add(-time.Duration(hours) * time.Hour).UTC().Format(time.RFC3339)
+	cutoff := now.Add(-time.Duration(hours) * time.Hour)
+	// The panel labels these hours as local wall-clock time, so key them in the
+	// usage timezone (see timeBucketCase).
+	bounds := localHourBoundsAt(cutoff, now, loc)
+	hourExpr, hourArgs, hourKeys := timeBucketCase("timestamp", bounds, "2006-01-02 15:00")
 
 	// Build WHERE clause directly with the correct hourly cutoff.
 	// Previously this used buildWhereClause + strings.Replace, but that failed
 	// because buildWhereClause uses parameterised queries (? placeholders)
 	// so the time value lives in args, not in the where string.
-	conditions := []string{"tenant_id = ?", "timestamp >= ?"}
-	args := []interface{}{tenantID, cutoff}
+	conditions := []string{"tenant_id = ?", "timestamp >= ?", "timestamp < ?"}
+	args := make([]interface{}, 0, len(hourArgs)+5)
+	args = append(args, hourArgs...)
+	args = append(args, tenantID, cutoff.UTC().Format(time.RFC3339), bounds[len(bounds)-1].UTC().Format(time.RFC3339))
 	if apiKey != "" {
 		if identity := GetAPIKeyForTenant(tenantID, apiKey); identity != nil {
 			conditions = append(conditions, "(api_key_id = ? OR (trim(coalesce(api_key_id, '')) = '' AND api_key = ?))")
@@ -658,7 +598,7 @@ func QueryHourlySeriesForTenant(tenantID, apiKey string, hours int) ([]HourlyTok
 	where := " WHERE " + strings.Join(conditions, " AND ")
 
 	// query tokens by hour
-	tokenQuery := `SELECT strftime('%Y-%m-%d %H:00', timestamp, 'localtime') as h,
+	tokenQuery := `SELECT ` + hourExpr + ` as h,
 	                      COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0),
 	                      COALESCE(SUM(reasoning_tokens),0), COALESCE(SUM(cached_tokens),0), COALESCE(SUM(total_tokens),0)
 	               FROM request_logs` + where + ` GROUP BY h ORDER BY h`
@@ -670,15 +610,17 @@ func QueryHourlySeriesForTenant(tenantID, apiKey string, hours int) ([]HourlyTok
 
 	var tokens []HourlyTokenPoint
 	for tokenRows.Next() {
+		var hour int
 		var p HourlyTokenPoint
-		if err := tokenRows.Scan(&p.Hour, &p.InputTokens, &p.OutputTokens, &p.ReasoningTokens, &p.CachedTokens, &p.TotalTokens); err != nil {
+		if err := tokenRows.Scan(&hour, &p.InputTokens, &p.OutputTokens, &p.ReasoningTokens, &p.CachedTokens, &p.TotalTokens); err != nil {
 			return nil, nil, fmt.Errorf("usage: hourly token scan: %w", err)
 		}
+		p.Hour = hourKeys[hour]
 		tokens = append(tokens, p)
 	}
 
 	// query models by hour
-	modelQuery := `SELECT strftime('%Y-%m-%d %H:00', timestamp, 'localtime') as h, model, COUNT(*) as reqs
+	modelQuery := `SELECT ` + hourExpr + ` as h, model, COUNT(*) as reqs
 	               FROM request_logs` + where + ` AND model != '' GROUP BY h, model ORDER BY h`
 	modelRows, err := db.Query(modelQuery, args...)
 	if err != nil {
@@ -688,10 +630,12 @@ func QueryHourlySeriesForTenant(tenantID, apiKey string, hours int) ([]HourlyTok
 
 	var models []HourlyModelPoint
 	for modelRows.Next() {
+		var hour int
 		var p HourlyModelPoint
-		if err := modelRows.Scan(&p.Hour, &p.Model, &p.Requests); err != nil {
+		if err := modelRows.Scan(&hour, &p.Model, &p.Requests); err != nil {
 			return nil, nil, fmt.Errorf("usage: hourly model scan: %w", err)
 		}
+		p.Hour = hourKeys[hour]
 		models = append(models, p)
 	}
 

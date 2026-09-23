@@ -256,6 +256,34 @@ func TestPostgresRuntimeDataStackConcurrencyConstraintsAndHotPaths(t *testing.T)
 	`, "idx_logs_api_key_id", "hotpath", time.Now().UTC().Add(-24*time.Hour))
 }
 
+// Production chart keys come from PostgreSQL, where SQL-side 'localtime' used to
+// be rewritten to UTC, so pin the usage-timezone contract on the real driver.
+func TestPostgresChartBucketsFollowUsageTimezone(t *testing.T) {
+	dsn := os.Getenv("CLIRELAY_POSTGRES_TEST_DSN")
+	if dsn == "" {
+		t.Skip("CLIRELAY_POSTGRES_TEST_DSN is not set")
+	}
+	postgrestest.LockSharedRuntimeDB(t, dsn)
+	CloseDB()
+	t.Cleanup(CloseDB)
+
+	// The session check reads the database's usage timezone; the daily and
+	// hourly checks pin their own clock and zone.
+	loc := time.FixedZone("UTC+14", 14*3600)
+	if err := InitPostgres(config.PostgresConfig{
+		DSN:          dsn,
+		MaxOpenConns: 4,
+		MaxIdleConns: 1,
+	}, config.RequestLogStorageConfig{StoreContent: true}, loc); err != nil {
+		t.Fatalf("InitPostgres() error = %v", err)
+	}
+	truncatePostgresRuntimeTables(t, getDB())
+
+	assertDailyUsageByAuthSubjectFollowsUsageTimezone(t)
+	assertHourlySeriesFollowsUsageTimezone(t)
+	assertPublicChartSessionsFollowUsageTimezone(t, loc)
+}
+
 func truncatePostgresRuntimeTables(t *testing.T, db *sql.DB) {
 	t.Helper()
 	if _, err := db.Exec(`
@@ -456,8 +484,8 @@ func assertPostgresRequestLogQueries(t *testing.T, logID int64, apiKey string) {
 	if series, err := QueryDailySeries(apiKey, 1); err != nil || len(series) == 0 {
 		t.Fatalf("QueryDailySeries() series=%#v err=%v", series, err)
 	}
-	if heatmap, err := QueryDailyHeatmapSeries(apiKey, 1); err != nil || len(heatmap) == 0 {
-		t.Fatalf("QueryDailyHeatmapSeries() heatmap=%#v err=%v", heatmap, err)
+	if chart, err := QueryPublicChartData(apiKey, 1); err != nil || len(chart.HeatmapSeries) == 0 {
+		t.Fatalf("QueryPublicChartData() chart=%#v err=%v", chart, err)
 	}
 	if tokens, models, err := QueryHourlySeries(apiKey, 24); err != nil || len(tokens) == 0 || len(models) == 0 {
 		t.Fatalf("QueryHourlySeries() tokens=%#v models=%#v err=%v", tokens, models, err)

@@ -953,6 +953,81 @@ func TestGetAuthFileTrendUsesWeeklyResetCycleForRequestTotal(t *testing.T) {
 	}
 }
 
+// Regression: daily_usage slots are keyed in the usage timezone, but the SQL day
+// keys followed the process TZ (UTC on PostgreSQL), so rows near local midnight
+// landed on the wrong day or fell off the window. UTC+14 differs from both CI
+// (UTC) and Asia/Shanghai machines, so a regression shows up on either.
+func TestGetAuthFileTrendDailyUsageFollowsUsageTimezone(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	usage.CloseDB()
+	loc := time.FixedZone("UTC+14", 14*3600)
+	if err := usage.InitDB(filepath.Join(t.TempDir(), "usage.db"), config.RequestLogStorageConfig{}, loc); err != nil {
+		t.Fatalf("InitDB: %v", err)
+	}
+	t.Cleanup(usage.CloseDB)
+
+	manager := coreauth.NewManager(&memoryAuthStore{}, nil, nil)
+	auth, err := manager.Register(context.Background(), &coreauth.Auth{
+		ID:       "codex-auth-file-trend-tz",
+		FileName: "codex-tz.json",
+		Provider: "codex",
+		Label:    "GptProTZ",
+	})
+	if err != nil {
+		t.Fatalf("register auth: %v", err)
+	}
+
+	nowLocal := time.Now().In(loc)
+	midnight := func(daysAgo int) time.Time {
+		return time.Date(nowLocal.Year(), nowLocal.Month(), nowLocal.Day()-daysAgo, 0, 0, 0, 0, loc)
+	}
+	for _, at := range []time.Time{
+		midnight(6).Add(-time.Second), // just before the first slot
+		midnight(6),                   // first slot opens
+		midnight(0).Add(-time.Second), // last second of yesterday
+		midnight(0),                   // today opens
+	} {
+		usage.InsertLog("", "", "gpt-5.4", "codex", "GptProTZ", auth.Index, false, at, 1, 1, usage.TokenStats{TotalTokens: 1}, "", "")
+	}
+
+	h := &Handler{cfg: &config.Config{}, authManager: manager}
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodGet, "/usage/auth-file-trend?auth_index="+auth.Index+"&days=7&hours=5", nil)
+
+	h.UsageLogs().GetAuthFileTrend(c)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d, body=%s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+	var payload struct {
+		DailyUsage []struct {
+			Date     string `json:"date"`
+			Requests int64  `json:"requests"`
+		} `json:"daily_usage"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if len(payload.DailyUsage) != 7 {
+		t.Fatalf("daily_usage len = %d, want 7: %+v", len(payload.DailyUsage), payload.DailyUsage)
+	}
+	want := map[string]int64{
+		midnight(6).Format("2006-01-02"): 1,
+		midnight(1).Format("2006-01-02"): 1,
+		midnight(0).Format("2006-01-02"): 1,
+	}
+	for i, point := range payload.DailyUsage {
+		if wantDate := midnight(6 - i).Format("2006-01-02"); point.Date != wantDate {
+			t.Fatalf("daily_usage[%d].date = %q, want %q: %+v", i, point.Date, wantDate, payload.DailyUsage)
+		}
+		if point.Requests != want[point.Date] {
+			t.Fatalf("daily_usage[%s] requests = %d, want %d: %+v", point.Date, point.Requests, want[point.Date], payload.DailyUsage)
+		}
+	}
+}
+
 func TestGetAuthFileTrendSharesCycleAcrossTenantsForStableAccountID(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

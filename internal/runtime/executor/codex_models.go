@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -48,6 +49,11 @@ type codexModelPayload struct {
 	Object      string `json:"object"`
 	OwnedBy     string `json:"owned_by"`
 	Created     int64  `json:"created"`
+	// Manifest-only fields describing a model this build may not know. They stay
+	// raw so a shape change in one of them cannot fail the whole manifest.
+	Description              string          `json:"description"`
+	SupportedReasoningLevels json.RawMessage `json:"supported_reasoning_levels"`
+	ContextWindow            json.RawMessage `json:"context_window"`
 }
 
 func cloneCodexModels(models []*sdkmodelcatalog.ModelInfo) []*sdkmodelcatalog.ModelInfo {
@@ -205,35 +211,66 @@ func codexVersionFromUserAgent(ua string) string {
 	return ""
 }
 
-// FetchCodexModels retrieves the live model list for a Codex auth.
+// FetchCodexModels retrieves the live model list for a Codex auth, for display.
 //
 // - OAuth / ChatGPT backend base: GET {base}/models?client_version=... (manifest)
 // - API key with OpenAI-compatible base: GET {base}/v1/models or {base}/models
 //
 // Response body schema evolves with Codex client releases; parsing is intentionally
-// tolerant (id/slug/name fields, data/models/items arrays).
+// tolerant (id/slug/name fields, data/models/items arrays). A failed fetch answers
+// with the last list any credential fetched, so a caller cannot tell a live answer
+// from a stale one; anything that decides routing uses DiscoverCodexModels instead.
 func FetchCodexModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.Config) []*sdkmodelcatalog.ModelInfo {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	token, baseURL := codexCreds(auth)
-	token = strings.TrimSpace(token)
-	if token == "" {
+	listing, err := requestCodexModelList(ctx, auth, cfg)
+	if errors.Is(err, errCodexModelsNoCredential) {
 		// No credential: return whatever the cache holds, unmerged. Merging image
 		// models here would manufacture a routable set out of nothing, which reads
 		// downstream as live upstream data and leaks the system registry's models
 		// into tenants that hold no Codex credential at all.
 		return fallbackCodexModels()
 	}
+	if err != nil {
+		return withCodexImageModels(fallbackCodexModels())
+	}
+	storeCodexModels(listing.models)
+	return withCodexImageModels(listing.models)
+}
 
-	useAPIKey := auth != nil && auth.Attributes != nil && strings.TrimSpace(auth.Attributes["api_key"]) != ""
+var (
+	errCodexModelsNoCredential = errors.New("codex models: credential carries no token")
+	errCodexModelsEmpty        = errors.New("codex models: upstream returned no recognisable models")
+)
+
+// codexModelListing is one parsed answer from a Codex models endpoint.
+type codexModelListing struct {
+	models []*sdkmodelcatalog.ModelInfo
+	// manifest is true when the answer came from the ChatGPT Codex manifest rather
+	// than an OpenAI-compatible /v1/models.
+	manifest bool
+	// loose is true when the heuristic walker recovered the list because the body
+	// matched none of the known shapes.
+	loose bool
+}
+
+// requestCodexModelList performs the models request for a credential and parses the
+// answer. It never substitutes cached data; that is the caller's call to make.
+func requestCodexModelList(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.Config) (codexModelListing, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	token, baseURL := codexCreds(auth)
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return codexModelListing{}, errCodexModelsNoCredential
+	}
+
 	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
 	clientVer := resolveCodexModelsClientVersion(cfg, auth)
-	modelsURL, isManifest := buildCodexModelsURL(baseURL, useAPIKey, clientVer)
+	modelsURL, isManifest := buildCodexModelsURL(baseURL, codexUsesAPIKey(auth), clientVer)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, modelsURL, nil)
 	if err != nil {
-		return withCodexImageModels(fallbackCodexModels())
+		return codexModelListing{}, err
 	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Authorization", "Bearer "+token)
@@ -253,7 +290,7 @@ func FetchCodexModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.
 		if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 			log.Debugf("codex executor: models request failed: %v", err)
 		}
-		return withCodexImageModels(fallbackCodexModels())
+		return codexModelListing{}, err
 	}
 	defer func() {
 		if errClose := resp.Body.Close(); errClose != nil {
@@ -264,22 +301,25 @@ func FetchCodexModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		_, _ = io.Copy(io.Discard, resp.Body)
 		log.Debugf("codex executor: models request failed with status %d", resp.StatusCode)
-		return withCodexImageModels(fallbackCodexModels())
+		return codexModelListing{}, fmt.Errorf("codex models: upstream answered status %d", resp.StatusCode)
 	}
 
 	body, err := readUpstreamResponseBody("codex", resp.Body)
 	if err != nil {
 		log.Debugf("codex executor: models response read failed: %v", err)
-		return withCodexImageModels(fallbackCodexModels())
+		return codexModelListing{}, err
 	}
 
-	models, ok := parseCodexModels(body, time.Now().Unix())
+	models, loose, ok := parseCodexModelList(body, time.Now().Unix())
 	if !ok {
 		log.Debug("codex executor: fetched empty or invalid model list; retaining cached model list")
-		return withCodexImageModels(fallbackCodexModels())
+		return codexModelListing{}, errCodexModelsEmpty
 	}
-	storeCodexModels(models)
-	return withCodexImageModels(models)
+	return codexModelListing{models: models, manifest: isManifest, loose: loose}, nil
+}
+
+func codexUsesAPIKey(auth *cliproxyauth.Auth) bool {
+	return auth != nil && auth.Attributes != nil && strings.TrimSpace(auth.Attributes["api_key"]) != ""
 }
 
 func codexAccountID(auth *cliproxyauth.Auth) string {
@@ -346,12 +386,20 @@ func buildCodexModelsURL(baseURL string, useAPIKey bool, clientVersion string) (
 }
 
 func parseCodexModels(body []byte, now int64) ([]*sdkmodelcatalog.ModelInfo, bool) {
+	models, _, ok := parseCodexModelList(body, now)
+	return models, ok
+}
+
+// parseCodexModelList parses a models answer. loose reports that none of the known
+// shapes matched and the heuristic walker produced the list instead.
+func parseCodexModelList(body []byte, now int64) (models []*sdkmodelcatalog.ModelInfo, loose bool, ok bool) {
 	var decoded codexModelsResponse
 	if err := json.Unmarshal(body, &decoded); err != nil {
 		var arrayResponse []codexModelPayload
 		if arrayErr := json.Unmarshal(body, &arrayResponse); arrayErr != nil {
 			// Last resort: walk arbitrary JSON for objects with id/slug fields.
-			return parseCodexModelsLoose(body, now)
+			models, ok = parseCodexModelsLoose(body, now)
+			return models, true, ok
 		}
 		decoded.Data = arrayResponse
 	}
@@ -364,7 +412,8 @@ func parseCodexModels(body []byte, now int64) ([]*sdkmodelcatalog.ModelInfo, boo
 		entries = decoded.Items
 	}
 	if len(entries) == 0 {
-		return parseCodexModelsLoose(body, now)
+		models, ok = parseCodexModelsLoose(body, now)
+		return models, true, ok
 	}
 
 	out := make([]*sdkmodelcatalog.ModelInfo, 0, len(entries))
@@ -418,10 +467,12 @@ func parseCodexModels(body []byte, now int64) ([]*sdkmodelcatalog.ModelInfo, boo
 				}
 				model.Thinking = &thinkingClone
 			}
+		} else {
+			applyCodexManifestMetadata(model, item)
 		}
 		out = append(out, model)
 	}
-	return out, len(out) > 0
+	return out, false, len(out) > 0
 }
 
 // parseCodexModelsLoose walks nested JSON maps/arrays looking for model-like objects.

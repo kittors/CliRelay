@@ -2,6 +2,7 @@ package registry
 
 import (
 	"context"
+	"strings"
 
 	sdkmodelcatalog "github.com/router-for-me/CLIProxyAPI/v6/sdk/modelcatalog"
 )
@@ -181,6 +182,39 @@ func cloneInternalThinkingSupportToSDK(thinking *ThinkingSupport) *sdkmodelcatal
 		DynamicAllowed: thinking.DynamicAllowed,
 		Levels:         append([]string(nil), thinking.Levels...),
 	}
+}
+
+// ModelInfosFromSDK converts SDK model metadata into registry entries, skipping
+// empty rows. It keeps Thinking and UserDefined, which decide whether a request's
+// reasoning settings are validated or passed through; the field-by-field copies in
+// the management layer dropped both.
+func ModelInfosFromSDK(models []*sdkmodelcatalog.ModelInfo) []*ModelInfo {
+	out := make([]*ModelInfo, 0, len(models))
+	for _, model := range models {
+		if model == nil || strings.TrimSpace(model.ID) == "" {
+			continue
+		}
+		out = append(out, cloneSDKModelInfoToInternal(model))
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// ModelInfosToSDK is the inverse of ModelInfosFromSDK.
+func ModelInfosToSDK(models []*ModelInfo) []*sdkmodelcatalog.ModelInfo {
+	out := make([]*sdkmodelcatalog.ModelInfo, 0, len(models))
+	for _, model := range models {
+		if model == nil || strings.TrimSpace(model.ID) == "" {
+			continue
+		}
+		out = append(out, cloneInternalModelInfoToSDK(model))
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func cloneSDKModelInfosToInternal(models []*sdkmodelcatalog.ModelInfo) []*ModelInfo {
