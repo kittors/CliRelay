@@ -36,8 +36,8 @@ func (d *AntigravityDriver) Provider() string {
 func (d *AntigravityDriver) GetTargets(auth *coreauth.Auth) []Target {
 	return []Target{
 		{
-			PoolID:      "antigravity:gemini",
-			PoolLabel:   "Gemini Models",
+			PoolID:    "antigravity:gemini",
+			PoolLabel: "Gemini Models",
 			// A minimal gemini-3-flash request was verified to activate the
 			// free Starter account's seven-day Gemini window.
 			TargetModel: "gemini-3-flash",
