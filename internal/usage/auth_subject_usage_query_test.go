@@ -2,11 +2,53 @@ package usage
 
 import (
 	"math"
+	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 )
+
+// Regression: day keys came from SQL date(timestamp, 'localtime'), which follows
+// the SQLite process TZ and was rewritten to UTC for PostgreSQL, while the AI
+// Accounts trend slots use the usage timezone. Between local and UTC midnight
+// the newest rows keyed to a day outside the slots and vanished from the chart.
+func TestQueryDailyUsageByAuthSubjectBucketsByUsageTimezone(t *testing.T) {
+	CloseDB()
+	loc := time.FixedZone("UTC+8", 8*3600)
+	if err := InitDB(filepath.Join(t.TempDir(), "usage.db"), config.RequestLogStorageConfig{}, loc); err != nil {
+		t.Fatalf("InitDB() error = %v", err)
+	}
+	stopRequestLogMaintenance()
+	t.Cleanup(CloseDB)
+
+	insert := func(at time.Time) {
+		InsertLog("", "", "gpt-5.4", "codex", "Codex", "auth-tz", false, at, 1, 1, TokenStats{TotalTokens: 1}, "", "")
+	}
+	insert(time.Date(2026, 9, 16, 15, 59, 59, 0, time.UTC)) // 09-16 23:59:59 local, before the window
+	insert(time.Date(2026, 9, 16, 16, 0, 0, 0, time.UTC))   // 09-17 00:00 local, first slot
+	insert(time.Date(2026, 9, 22, 15, 59, 59, 0, time.UTC)) // 09-22 23:59:59 local
+	insert(time.Date(2026, 9, 22, 16, 0, 0, 0, time.UTC))   // 09-23 00:00 local
+	insert(time.Date(2026, 9, 22, 21, 26, 0, 0, time.UTC))  // 09-23 05:26 local, the row that vanished
+	insert(time.Date(2026, 9, 23, 16, 0, 0, 0, time.UTC))   // 09-24 00:00 local, after the window
+
+	// 07:26 on 2026-09-23 local while UTC is still on 2026-09-22.
+	now := time.Date(2026, 9, 22, 23, 26, 0, 0, time.UTC)
+	daily, err := queryDailyUsageByAuthSubjectAt(systemTenantID, AuthSubjectMatcher{AuthIndexes: []string{"auth-tz"}}, 7, now, loc)
+	if err != nil {
+		t.Fatalf("queryDailyUsageByAuthSubjectAt: %v", err)
+	}
+
+	want := []DailyUsagePoint{
+		{Date: "2026-09-17", Requests: 1},
+		{Date: "2026-09-22", Requests: 1},
+		{Date: "2026-09-23", Requests: 2},
+	}
+	if !reflect.DeepEqual(daily, want) {
+		t.Fatalf("daily = %+v, want %+v", daily, want)
+	}
+}
 
 // Regression: AI Accounts card trend used to SELECT every matching request_logs
 // row for the 7-day daily series and aggregate in Go, which pegged CPU on large
