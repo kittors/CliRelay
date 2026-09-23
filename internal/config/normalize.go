@@ -238,8 +238,6 @@ func (cfg *Config) SanitizeOpenCodeGoKeys() {
 			entry.Models = nil
 		}
 		entry.VisionFallbackModel = strings.TrimSpace(entry.VisionFallbackModel)
-		entry.WorkspaceID = strings.TrimSpace(entry.WorkspaceID)
-		entry.AuthCookie = strings.TrimSpace(entry.AuthCookie)
 		out = append(out, entry)
 	}
 	cfg.OpenCodeGoKey = out

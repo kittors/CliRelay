@@ -7,7 +7,6 @@ import (
 	"io"
 	"math"
 	"net/http"
-	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -20,23 +19,14 @@ import (
 )
 
 var (
-	openCodeGoConsoleBaseURL = "https://opencode.ai"
-	clineUsageAPIBaseURL     = "https://api.cline.bot"
-	ollamaCloudSettingsURL   = "https://ollama.com/settings"
-	openCodeGoNumberPattern  = `(-?\d+(?:\.\d+)?)`
-	openCodeGoUsagePattern   = regexp.MustCompile(`(?i)(Rolling|Weekly|Monthly)\s+Usage\s+([0-9]{1,3})%\s+Resets\s+in\s+`)
-	ollamaCloudUsagePattern  = regexp.MustCompile(`(?i)(Session|Weekly)\s+usage\s+` + openCodeGoNumberPattern + `%\s+used\s+Resets\s+in\s+([^\.]+)`)
-	openCodeGoUsageWindows   = []openCodeGoUsageWindowPattern{
-		{usageType: "rolling", label: "Rolling", pctFirst: regexp.MustCompile(`rollingUsage:\$R\[\d+\]=\{[^}]*usagePercent:` + openCodeGoNumberPattern + `[^}]*resetInSec:` + openCodeGoNumberPattern + `[^}]*\}`), resetFirst: regexp.MustCompile(`rollingUsage:\$R\[\d+\]=\{[^}]*resetInSec:` + openCodeGoNumberPattern + `[^}]*usagePercent:` + openCodeGoNumberPattern + `[^}]*\}`)},
-		{usageType: "weekly", label: "Weekly", pctFirst: regexp.MustCompile(`weeklyUsage:\$R\[\d+\]=\{[^}]*usagePercent:` + openCodeGoNumberPattern + `[^}]*resetInSec:` + openCodeGoNumberPattern + `[^}]*\}`), resetFirst: regexp.MustCompile(`weeklyUsage:\$R\[\d+\]=\{[^}]*resetInSec:` + openCodeGoNumberPattern + `[^}]*usagePercent:` + openCodeGoNumberPattern + `[^}]*\}`)},
-		{usageType: "monthly", label: "Monthly", pctFirst: regexp.MustCompile(`monthlyUsage:\$R\[\d+\]=\{[^}]*usagePercent:` + openCodeGoNumberPattern + `[^}]*resetInSec:` + openCodeGoNumberPattern + `[^}]*\}`), resetFirst: regexp.MustCompile(`monthlyUsage:\$R\[\d+\]=\{[^}]*resetInSec:` + openCodeGoNumberPattern + `[^}]*usagePercent:` + openCodeGoNumberPattern + `[^}]*\}`)},
-	}
-	openCodeGoServerIDPattern = regexp.MustCompile(`(?i)^[a-f0-9]{64}$`)
-	openCodeGoTagPattern      = regexp.MustCompile(`(?s)<[^>]+>`)
-	openCodeGoSpacePattern    = regexp.MustCompile(`\s+`)
+	openCodeGoUsageAPIURL   = "https://opencode.ai/zen/go/v1/usage"
+	clineUsageAPIBaseURL    = "https://api.cline.bot"
+	ollamaCloudSettingsURL  = "https://ollama.com/settings"
+	openCodeGoNumberPattern = `(-?\d+(?:\.\d+)?)`
+	ollamaCloudUsagePattern = regexp.MustCompile(`(?i)(Session|Weekly)\s+usage\s+` + openCodeGoNumberPattern + `%\s+used\s+Resets\s+in\s+([^\.]+)`)
+	openCodeGoTagPattern    = regexp.MustCompile(`(?s)<[^>]+>`)
+	openCodeGoSpacePattern  = regexp.MustCompile(`\s+`)
 )
-
-const openCodeGoWorkspaceIDHint = "OpenCode Go workspace-id must be the /workspace/{id}/go URL segment from the dashboard address bar, usually starting with wrk_; workspace names like Default and server id hashes are not valid"
 
 type openCodeGoUsageItem struct {
 	Type       string  `json:"type"`
@@ -45,22 +35,44 @@ type openCodeGoUsageItem struct {
 	ResetsIn   string  `json:"resets_in"`
 }
 
-type openCodeGoUsageWindowPattern struct {
-	usageType  string
-	label      string
-	pctFirst   *regexp.Regexp
-	resetFirst *regexp.Regexp
+type openCodeGoUsageRequest struct {
+	Index      *int    `json:"index"`
+	APIKey     string  `json:"api-key"`
+	Name       string  `json:"name"`
+	AuthCookie string  `json:"auth-cookie"`
+	ProxyID    string  `json:"proxy-id"`
+	ProxyURL   string  `json:"proxy-url"`
+	TimeoutSec float64 `json:"timeout_sec"`
 }
 
-type openCodeGoUsageRequest struct {
-	Index       *int    `json:"index"`
-	APIKey      string  `json:"api-key"`
-	Name        string  `json:"name"`
-	WorkspaceID string  `json:"workspace-id"`
-	AuthCookie  string  `json:"auth-cookie"`
-	ProxyID     string  `json:"proxy-id"`
-	ProxyURL    string  `json:"proxy-url"`
-	TimeoutSec  float64 `json:"timeout_sec"`
+// openCodeGoUsageResponse mirrors the fields this handler reads from the
+// published Go usage endpoint. Each window arrives already reduced to a
+// percentage and an absolute reset instant, so nothing here has to reconstruct
+// limits from raw dollar counters.
+type openCodeGoUsageResponse struct {
+	Usage struct {
+		Rolling *openCodeGoUsageWindow `json:"rolling"`
+		Weekly  *openCodeGoUsageWindow `json:"weekly"`
+		Monthly *openCodeGoUsageWindow `json:"monthly"`
+	} `json:"usage"`
+}
+
+type openCodeGoUsageWindow struct {
+	Status   string   `json:"status"`
+	Percent  *float64 `json:"percent"`
+	ResetsAt string   `json:"resetsAt"`
+}
+
+// openCodeGoAPIError mirrors the endpoint's error envelope. The type field is
+// what separates a key that is not valid (AuthError) from a workspace that
+// simply never subscribed to Go (EntitlementError) — a distinction the previous
+// dashboard scrape could not make, because both rendered as a page without
+// usage figures.
+type openCodeGoAPIError struct {
+	Error struct {
+		Type    string `json:"type"`
+		Message string `json:"message"`
+	} `json:"error"`
 }
 
 type clineUsageResponse struct {
@@ -74,7 +86,14 @@ type clineUsageResponse struct {
 	} `json:"data"`
 }
 
-// QueryOpenCodeGoUsage fetches the OpenCode Go dashboard page and parses usage limits.
+// QueryOpenCodeGoUsage reports OpenCode Go rolling windows for one credential.
+//
+// Like the Command Code check, this needs no dashboard cookie: the published
+// usage endpoint authenticates with the same API key that serves inference, so
+// usage keeps working without an operator pasting a browser session that later
+// expires. It replaces an HTML scrape of /workspace/{id}/go, which broke once
+// the console moved the figures behind a server function and localised the
+// labels it used to print.
 func (h *Handler) QueryOpenCodeGoUsage(c *gin.Context) {
 	var body openCodeGoUsageRequest
 	if err := c.ShouldBindJSON(&body); err != nil {
@@ -84,16 +103,12 @@ func (h *Handler) QueryOpenCodeGoUsage(c *gin.Context) {
 
 	runtimeHandler := h.providerUsageHandler(c)
 	entry := runtimeHandler.findOpenCodeGoEntry(body)
-	workspaceID, workspaceErr := normalizeOpenCodeGoWorkspaceID(body.WorkspaceID)
-	authCookie := strings.TrimSpace(body.AuthCookie)
+	apiKey := strings.TrimSpace(body.APIKey)
 	proxyID := strings.TrimSpace(body.ProxyID)
 	proxyURL := strings.TrimSpace(body.ProxyURL)
 	if entry != nil {
-		if workspaceID == "" {
-			workspaceID, workspaceErr = normalizeOpenCodeGoWorkspaceID(entry.WorkspaceID)
-		}
-		if authCookie == "" {
-			authCookie = strings.TrimSpace(entry.AuthCookie)
+		if apiKey == "" {
+			apiKey = strings.TrimSpace(entry.APIKey)
 		}
 		if proxyID == "" {
 			proxyID = strings.TrimSpace(entry.ProxyID)
@@ -102,40 +117,17 @@ func (h *Handler) QueryOpenCodeGoUsage(c *gin.Context) {
 			proxyURL = strings.TrimSpace(entry.ProxyURL)
 		}
 	}
-	if workspaceID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "workspace-id is required"})
-		return
-	}
-	if workspaceErr != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": workspaceErr.Error()})
-		return
-	}
-	authCookie = normalizeOpenCodeGoAuthCookie(authCookie)
-	if authCookie == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "auth-cookie is required"})
+	if apiKey == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "api-key is required"})
 		return
 	}
 
-	timeout := 20 * time.Second
-	if body.TimeoutSec > 0 {
-		timeout = time.Duration(body.TimeoutSec * float64(time.Second))
-		if timeout < 3*time.Second {
-			timeout = 3 * time.Second
-		}
-		if timeout > 60*time.Second {
-			timeout = 60 * time.Second
-		}
-	}
-
-	items, err := runtimeHandler.fetchOpenCodeGoUsage(c.Request.Context(), workspaceID, authCookie, proxyID, proxyURL, timeout)
+	items, err := runtimeHandler.fetchOpenCodeGoUsage(c.Request.Context(), apiKey, proxyID, proxyURL, resolveUsageTimeout(body.TimeoutSec))
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{
-		"workspace_id": workspaceID,
-		"usage":        items,
-	})
+	c.JSON(http.StatusOK, gin.H{"usage": items})
 }
 
 // QueryClineUsage fetches ClinePass usage limits from the dashboard API.
@@ -300,18 +292,16 @@ func (h *Handler) findOllamaCloudEntry(body openCodeGoUsageRequest) *config.Olla
 	return nil
 }
 
-func (h *Handler) fetchOpenCodeGoUsage(ctx context.Context, workspaceID, authCookie, proxyID, proxyURL string, timeout time.Duration) ([]openCodeGoUsageItem, error) {
-	client := h.usageHTTPClient(timeout, proxyID, proxyURL)
-	pageURL := strings.TrimRight(openCodeGoConsoleBaseURL, "/") + "/workspace/" + url.PathEscape(workspaceID) + "/go"
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, pageURL, nil)
+func (h *Handler) fetchOpenCodeGoUsage(ctx context.Context, apiKey, proxyID, proxyURL string, timeout time.Duration) ([]openCodeGoUsageItem, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, openCodeGoUsageAPIURL, nil)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Cookie", "auth="+authCookie+"; oc_locale=en")
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; CliRelay OpenCode Go usage checker)")
-	req.Header.Set("Accept", "text/html,application/xhtml+xml")
 
-	resp, err := client.Do(req)
+	resp, err := h.usageHTTPClient(timeout, proxyID, proxyURL).Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -321,18 +311,39 @@ func (h *Handler) fetchOpenCodeGoUsage(ctx context.Context, workspaceID, authCoo
 	if err != nil {
 		return nil, err
 	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, openCodeGoUsageError("OpenCode Go usage page returned HTTP " + resp.Status)
+	if resp.StatusCode == http.StatusForbidden {
+		return nil, openCodeGoUsageError(openCodeGoStatusError(body, "This OpenCode account has no Go subscription, so it reports no usage limits"))
 	}
-	items := parseOpenCodeGoUsageHTML(string(body))
+	if resp.StatusCode == http.StatusUnauthorized {
+		return nil, openCodeGoUsageError(openCodeGoStatusError(body, "OpenCode Go API key is invalid or expired"))
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, openCodeGoUsageError("OpenCode Go usage API returned HTTP " + resp.Status)
+	}
+
+	var payload openCodeGoUsageResponse
+	if err = json.Unmarshal(body, &payload); err != nil {
+		return nil, err
+	}
+	items := parseOpenCodeGoUsage(payload)
 	if len(items) == 0 {
-		text := strings.ToLower(stripOpenCodeGoHTML(string(body)))
-		if strings.Contains(text, "continue with github") || strings.Contains(text, "continue with google") {
-			return nil, openCodeGoUsageError("OpenCode Go auth cookie is invalid or expired")
-		}
-		return nil, openCodeGoUsageError("OpenCode Go usage data was not found on the dashboard page")
+		return nil, openCodeGoUsageError("OpenCode Go reported no usage windows for this account")
 	}
 	return items, nil
+}
+
+// openCodeGoStatusError prefers the upstream message over our own wording: the
+// endpoint states the reason precisely ("OpenCode Go subscription required."),
+// and a relayed reason ages better than one this code guesses from a status
+// code alone.
+func openCodeGoStatusError(body []byte, fallback string) string {
+	var payload openCodeGoAPIError
+	if err := json.Unmarshal(body, &payload); err == nil {
+		if message := strings.TrimSpace(payload.Error.Message); message != "" {
+			return "OpenCode Go usage API: " + message
+		}
+	}
+	return fallback
 }
 
 func (h *Handler) fetchClineUsage(ctx context.Context, authCookie, proxyID, proxyURL string, timeout time.Duration) ([]openCodeGoUsageItem, error) {
@@ -427,27 +438,6 @@ type openCodeGoUsageError string
 
 func (e openCodeGoUsageError) Error() string { return string(e) }
 
-func normalizeOpenCodeGoAuthCookie(raw string) string {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return ""
-	}
-	if strings.HasPrefix(strings.ToLower(raw), "cookie:") {
-		raw = strings.TrimSpace(raw[len("cookie:"):])
-	}
-	raw = strings.TrimSpace(raw)
-	for _, part := range strings.Split(raw, ";") {
-		part = strings.TrimSpace(part)
-		if strings.HasPrefix(strings.ToLower(part), "auth=") {
-			return strings.TrimSpace(part[5:])
-		}
-	}
-	if strings.Contains(raw, ";") && strings.Contains(raw, "=") {
-		return ""
-	}
-	return raw
-}
-
 func normalizeDashboardCookie(raw string) string {
 	raw = strings.TrimSpace(raw)
 	if raw == "" || strings.ContainsAny(raw, "\r\n") {
@@ -473,98 +463,36 @@ func resolveUsageTimeout(timeoutSec float64) time.Duration {
 	return timeout
 }
 
-func normalizeOpenCodeGoWorkspaceID(raw string) (string, error) {
-	raw = strings.Trim(strings.TrimSpace(raw), `"'`)
-	if raw == "" {
-		return "", nil
-	}
-	if id := extractOpenCodeGoWorkspaceID(raw); id != "" {
-		return id, nil
-	}
-	trimmed := strings.Trim(raw, "/")
-	if strings.EqualFold(trimmed, "default") || openCodeGoServerIDPattern.MatchString(trimmed) {
-		return trimmed, openCodeGoUsageError(openCodeGoWorkspaceIDHint)
-	}
-	return trimmed, nil
+func parseOpenCodeGoUsage(payload openCodeGoUsageResponse) []openCodeGoUsageItem {
+	return parseOpenCodeGoUsageAt(payload, time.Now())
 }
 
-func extractOpenCodeGoWorkspaceID(raw string) string {
-	parsed, err := url.Parse(raw)
-	if err == nil && parsed.Path != "" {
-		if id := extractOpenCodeGoWorkspaceIDFromPath(parsed.Path); id != "" {
-			return id
-		}
-	}
-	return extractOpenCodeGoWorkspaceIDFromPath(raw)
-}
-
-func extractOpenCodeGoWorkspaceIDFromPath(path string) string {
-	parts := strings.Split(path, "/")
-	for i, part := range parts {
-		if part != "workspace" || i+1 >= len(parts) {
-			continue
-		}
-		id := strings.TrimSpace(parts[i+1])
-		if id == "" {
-			continue
-		}
-		if unescaped, err := url.PathUnescape(id); err == nil {
-			id = unescaped
-		}
-		return strings.TrimSpace(id)
-	}
-	return ""
-}
-
-func parseOpenCodeGoUsageHTML(body string) []openCodeGoUsageItem {
-	if items := parseOpenCodeGoHydrationUsage(body); len(items) > 0 {
-		return items
-	}
-	text := stripOpenCodeGoHTML(body)
-	matches := openCodeGoUsagePattern.FindAllStringSubmatchIndex(text, -1)
-	if len(matches) == 0 {
-		return nil
-	}
-	items := make([]openCodeGoUsageItem, 0, len(matches))
-	for i, match := range matches {
-		if len(match) < 6 {
-			continue
-		}
-		percentage := 0
-		for _, ch := range text[match[4]:match[5]] {
-			percentage = percentage*10 + int(ch-'0')
-		}
-		resetEnd := len(text)
-		if i+1 < len(matches) {
-			resetEnd = matches[i+1][0]
-		}
-		label := strings.TrimSpace(text[match[2]:match[3]])
-		items = append(items, openCodeGoUsageItem{
-			Type:       strings.ToLower(label),
-			Label:      label,
-			Percentage: float64(percentage),
-			ResetsIn:   strings.TrimSpace(text[match[1]:resetEnd]),
-		})
-	}
-	return items
-}
-
-func parseOpenCodeGoHydrationUsage(body string) []openCodeGoUsageItem {
-	items := make([]openCodeGoUsageItem, 0, len(openCodeGoUsageWindows))
-	for _, window := range openCodeGoUsageWindows {
-		percentage, resetInSec, ok := parseOpenCodeGoHydrationWindow(body, window)
-		if !ok {
+// parseOpenCodeGoUsageAt is parseOpenCodeGoUsage with the reference instant
+// passed in, so the reset countdown a test asserts does not depend on when the
+// test happens to run.
+func parseOpenCodeGoUsageAt(payload openCodeGoUsageResponse, now time.Time) []openCodeGoUsageItem {
+	items := make([]openCodeGoUsageItem, 0, 3)
+	for _, window := range []struct {
+		usageType string
+		label     string
+		data      *openCodeGoUsageWindow
+	}{
+		{"rolling", "Rolling", payload.Usage.Rolling},
+		{"weekly", "Weekly", payload.Usage.Weekly},
+		{"monthly", "Monthly", payload.Usage.Monthly},
+	} {
+		// A window without a percentage carries nothing worth showing, and
+		// rendering the zero value would read as "plenty left" on a plan that
+		// may have none.
+		if window.data == nil || window.data.Percent == nil {
 			continue
 		}
 		items = append(items, openCodeGoUsageItem{
 			Type:       window.usageType,
 			Label:      window.label,
-			Percentage: float64(percentage),
-			ResetsIn:   formatOpenCodeGoResetIn(resetInSec),
+			Percentage: clampUsagePercentage(*window.data.Percent),
+			ResetsIn:   formatResetAtFrom(window.data.ResetsAt, now),
 		})
-	}
-	if len(items) == 0 {
-		return nil
 	}
 	return items
 }
@@ -636,45 +564,24 @@ func clampUsagePercentage(value float64) float64 {
 }
 
 func formatResetAt(raw string) string {
+	return formatResetAtFrom(raw, time.Now())
+}
+
+// formatResetAtFrom is formatResetAt with the reference instant passed in.
+// Reading the clock inside the formatter makes the result depend on when it is
+// called, which is untestable at the boundaries: two calls a microsecond apart
+// can land on either side of a rounding step and render "2 hours" and "1 hour
+// 59 minutes" for the same input.
+func formatResetAtFrom(raw string, now time.Time) string {
 	resetAt, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(raw))
 	if err != nil {
 		return ""
 	}
-	seconds := int64(math.Round(time.Until(resetAt).Seconds()))
+	seconds := int64(math.Round(resetAt.Sub(now).Seconds()))
 	if seconds < 0 {
 		seconds = 0
 	}
 	return formatOpenCodeGoResetIn(seconds)
-}
-
-func parseOpenCodeGoHydrationWindow(body string, window openCodeGoUsageWindowPattern) (int, int64, bool) {
-	if match := window.pctFirst.FindStringSubmatch(body); len(match) == 3 {
-		percentage, resetInSec, ok := parseOpenCodeGoHydrationNumbers(match[1], match[2])
-		return percentage, resetInSec, ok
-	}
-	if match := window.resetFirst.FindStringSubmatch(body); len(match) == 3 {
-		percentage, resetInSec, ok := parseOpenCodeGoHydrationNumbers(match[2], match[1])
-		return percentage, resetInSec, ok
-	}
-	return 0, 0, false
-}
-
-func parseOpenCodeGoHydrationNumbers(usagePercentRaw, resetInSecRaw string) (int, int64, bool) {
-	usagePercent, err := strconv.ParseFloat(usagePercentRaw, 64)
-	if err != nil {
-		return 0, 0, false
-	}
-	resetInSec, err := strconv.ParseFloat(resetInSecRaw, 64)
-	if err != nil {
-		return 0, 0, false
-	}
-	if usagePercent < 0 {
-		usagePercent = 0
-	}
-	if resetInSec < 0 {
-		resetInSec = 0
-	}
-	return int(math.Round(usagePercent)), int64(math.Round(resetInSec)), true
 }
 
 func formatOpenCodeGoResetIn(seconds int64) string {

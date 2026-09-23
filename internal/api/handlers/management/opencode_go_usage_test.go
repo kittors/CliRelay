@@ -12,92 +12,54 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 )
 
-func TestParseOpenCodeGoUsageHTML(t *testing.T) {
-	html := `<div data-slot="usage">
-		<div>Rolling Usage</div><span>3%</span><span>Resets in 31 minutes</span>
-		<div>Weekly Usage</div><span>1%</span><span>Resets in 5 days 16 hours</span>
-		<div>Monthly Usage</div><span>0%</span><span>Resets in 29 days 0 hours</span>
-	</div>`
+func TestParseOpenCodeGoUsage(t *testing.T) {
+	now := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
+	percent := func(v float64) *float64 { return &v }
+	payload := openCodeGoUsageResponse{}
+	payload.Usage.Rolling = &openCodeGoUsageWindow{Status: "ok", Percent: percent(12.4), ResetsAt: now.Add(62 * time.Minute).Format(time.RFC3339Nano)}
+	payload.Usage.Weekly = &openCodeGoUsageWindow{Status: "ok", Percent: percent(34), ResetsAt: now.Add(120 * time.Hour).Format(time.RFC3339Nano)}
+	payload.Usage.Monthly = &openCodeGoUsageWindow{Status: "rate-limited", Percent: percent(100), ResetsAt: now.Add(696 * time.Hour).Format(time.RFC3339Nano)}
 
-	items := parseOpenCodeGoUsageHTML(html)
+	items := parseOpenCodeGoUsageAt(payload, now)
 	if len(items) != 3 {
 		t.Fatalf("usage item count = %d, want 3: %+v", len(items), items)
 	}
-	if items[0].Type != "rolling" || items[0].Percentage != 3 || items[0].ResetsIn != "31 minutes" {
-		t.Fatalf("rolling item = %+v", items[0])
-	}
-	if items[1].Type != "weekly" || items[1].Percentage != 1 || items[1].ResetsIn != "5 days 16 hours" {
-		t.Fatalf("weekly item = %+v", items[1])
-	}
-	if items[2].Type != "monthly" || items[2].Percentage != 0 || items[2].ResetsIn != "29 days 0 hours" {
-		t.Fatalf("monthly item = %+v", items[2])
-	}
-}
-
-func TestParseOpenCodeGoUsageHydrationHTML(t *testing.T) {
-	html := `<script>
-		rollingUsage:$R[1]={usagePercent:12.4,resetInSec:3720}
-		weeklyUsage:$R[2]={resetInSec:432000,usagePercent:34}
-		monthlyUsage:$R[3]={usagePercent:56,resetInSec:2505600}
-	</script>`
-
-	items := parseOpenCodeGoUsageHTML(html)
-	if len(items) != 3 {
-		t.Fatalf("usage item count = %d, want 3: %+v", len(items), items)
-	}
-	if items[0].Type != "rolling" || items[0].Percentage != 12 || items[0].ResetsIn != "1 hour 2 minutes" {
+	if items[0].Type != "rolling" || items[0].Label != "Rolling" || items[0].Percentage != 12.4 || items[0].ResetsIn != "1 hour 2 minutes" {
 		t.Fatalf("rolling item = %+v", items[0])
 	}
 	if items[1].Type != "weekly" || items[1].Percentage != 34 || items[1].ResetsIn != "5 days" {
 		t.Fatalf("weekly item = %+v", items[1])
 	}
-	if items[2].Type != "monthly" || items[2].Percentage != 56 || items[2].ResetsIn != "29 days" {
+	if items[2].Type != "monthly" || items[2].Percentage != 100 || items[2].ResetsIn != "29 days" {
 		t.Fatalf("monthly item = %+v", items[2])
 	}
 }
 
-func TestNormalizeOpenCodeGoAuthCookie(t *testing.T) {
-	tests := map[string]string{
-		"token":                        "token",
-		" auth=abc123; oc_locale=en ":  "abc123",
-		"Cookie: foo=bar; auth=abc; z": "abc",
-		"cookie: auth=lowercase":       "lowercase",
-		"foo=bar; session=not-an-auth": "",
-		"token=with-padding":           "token=with-padding",
-	}
-	for input, want := range tests {
-		if got := normalizeOpenCodeGoAuthCookie(input); got != want {
-			t.Fatalf("normalizeOpenCodeGoAuthCookie(%q) = %q, want %q", input, got, want)
-		}
+// A window the account does not have must be dropped rather than rendered as
+// 0%, which would read as "plenty left" on a plan that has none.
+func TestParseOpenCodeGoUsageSkipsWindowsWithoutPercent(t *testing.T) {
+	now := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
+	percent := 5.0
+	payload := openCodeGoUsageResponse{}
+	payload.Usage.Rolling = &openCodeGoUsageWindow{Status: "ok", Percent: &percent, ResetsAt: now.Add(time.Hour).Format(time.RFC3339Nano)}
+	payload.Usage.Weekly = &openCodeGoUsageWindow{Status: "ok"}
+
+	items := parseOpenCodeGoUsageAt(payload, now)
+	if len(items) != 1 || items[0].Type != "rolling" {
+		t.Fatalf("items = %+v, want rolling only", items)
 	}
 }
 
-func TestNormalizeOpenCodeGoWorkspaceID(t *testing.T) {
+func TestNormalizeDashboardCookieForUsageChecks(t *testing.T) {
 	tests := map[string]string{
-		"wrk_123": "wrk_123",
-		" https://opencode.ai/workspace/wrk_123/go ":  "wrk_123",
-		"/workspace/wrk_456/go":                       "wrk_456",
-		"https://opencode.ai/workspace/wrk_789/usage": "wrk_789",
+		"token":                  "token",
+		" auth=abc123; extra=1 ": "auth=abc123; extra=1",
+		"Cookie: foo=bar":        "foo=bar",
+		"bad\r\ninjection":       "",
 	}
 	for input, want := range tests {
-		got, err := normalizeOpenCodeGoWorkspaceID(input)
-		if err != nil {
-			t.Fatalf("normalizeOpenCodeGoWorkspaceID(%q) error: %v", input, err)
-		}
-		if got != want {
-			t.Fatalf("normalizeOpenCodeGoWorkspaceID(%q) = %q, want %q", input, got, want)
-		}
-	}
-}
-
-func TestNormalizeOpenCodeGoWorkspaceIDRejectsNamesAndServerIDs(t *testing.T) {
-	tests := []string{
-		"Default",
-		"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-	}
-	for _, input := range tests {
-		if _, err := normalizeOpenCodeGoWorkspaceID(input); err == nil {
-			t.Fatalf("normalizeOpenCodeGoWorkspaceID(%q) error = nil, want validation error", input)
+		if got := normalizeDashboardCookie(input); got != want {
+			t.Fatalf("normalizeDashboardCookie(%q) = %q, want %q", input, got, want)
 		}
 	}
 }
@@ -120,36 +82,30 @@ func TestParseOllamaCloudUsageHTML(t *testing.T) {
 	}
 }
 
-func TestQueryOpenCodeGoUsageFetchesDashboard(t *testing.T) {
+func TestQueryOpenCodeGoUsageFetchesUsageAPI(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
+	resetAt := time.Now().Add(2 * time.Hour).UTC().Format(time.RFC3339Nano)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/workspace/wrk_test/go" {
-			t.Fatalf("path = %s", r.URL.Path)
+		if got := r.Header.Get("Authorization"); got != "Bearer sk-go" {
+			t.Fatalf("authorization = %q", got)
 		}
-		if got := r.Header.Get("Cookie"); got != "auth=token; oc_locale=en" {
-			t.Fatalf("cookie = %q", got)
+		if got := r.Header.Get("Cookie"); got != "" {
+			t.Fatalf("cookie = %q, want none: usage must authenticate with the API key", got)
 		}
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`<div data-slot="usage">
-			Rolling Usage <strong>12%</strong> Resets in 2 hours
-			Weekly Usage <strong>34%</strong> Resets in 4 days
-			Monthly Usage <strong>56%</strong> Resets in 20 days
-		</div>`))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"usage":{"rolling":{"status":"ok","percent":12,"resetsAt":"` + resetAt + `"},` +
+			`"weekly":{"status":"ok","percent":34,"resetsAt":"` + resetAt + `"},` +
+			`"monthly":{"status":"ok","percent":56,"resetsAt":"` + resetAt + `"}}}`))
 	}))
 	defer upstream.Close()
 
-	prevBaseURL := openCodeGoConsoleBaseURL
-	openCodeGoConsoleBaseURL = upstream.URL
-	defer func() { openCodeGoConsoleBaseURL = prevBaseURL }()
+	prevURL := openCodeGoUsageAPIURL
+	openCodeGoUsageAPIURL = upstream.URL
+	defer func() { openCodeGoUsageAPIURL = prevURL }()
 
 	h := &Handler{cfg: &config.Config{
-		OpenCodeGoKey: []config.OpenCodeGoKey{{
-			APIKey:      "sk-go",
-			Name:        "OpenCode Go",
-			WorkspaceID: "wrk_test",
-			AuthCookie:  "auth=token; oc_locale=zh-CN",
-		}},
+		OpenCodeGoKey: []config.OpenCodeGoKey{{APIKey: "sk-go", Name: "OpenCode Go"}},
 	}}
 
 	body := []byte(`{"index":0}`)
@@ -163,36 +119,82 @@ func TestQueryOpenCodeGoUsageFetchesDashboard(t *testing.T) {
 	}
 
 	var decoded struct {
-		WorkspaceID string                `json:"workspace_id"`
-		Usage       []openCodeGoUsageItem `json:"usage"`
+		Usage []openCodeGoUsageItem `json:"usage"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &decoded); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if decoded.WorkspaceID != "wrk_test" || len(decoded.Usage) != 3 || decoded.Usage[2].Percentage != 56 {
+	if len(decoded.Usage) != 3 || decoded.Usage[0].Label != "Rolling" || decoded.Usage[2].Percentage != 56 {
 		t.Fatalf("response = %+v", decoded)
 	}
 }
 
-func TestQueryOpenCodeGoUsageFetchesHydrationDashboard(t *testing.T) {
+// An account that never subscribed to Go must not be reported as a broken
+// credential: the key still serves inference, and the operator needs to be told
+// what is actually missing.
+func TestQueryOpenCodeGoUsageReportsMissingSubscription(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/workspace/wrk_test/go" {
-			t.Fatalf("path = %s", r.URL.Path)
-		}
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`<html><script>
-			rollingUsage:$R[10]={usagePercent:7,resetInSec:120}
-			weeklyUsage:$R[11]={resetInSec:3600,usagePercent:8}
-			monthlyUsage:$R[12]={usagePercent:9,resetInSec:86400}
-		</script></html>`))
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"type":"error","error":{"type":"EntitlementError","message":"OpenCode Go subscription required."}}`))
 	}))
 	defer upstream.Close()
 
-	prevBaseURL := openCodeGoConsoleBaseURL
-	openCodeGoConsoleBaseURL = upstream.URL
-	defer func() { openCodeGoConsoleBaseURL = prevBaseURL }()
+	prevURL := openCodeGoUsageAPIURL
+	openCodeGoUsageAPIURL = upstream.URL
+	defer func() { openCodeGoUsageAPIURL = prevURL }()
+
+	h := &Handler{cfg: &config.Config{}}
+	body := []byte(`{"api-key":"sk-go"}`)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v0/management/opencode-go-api-key/usage", bytes.NewReader(body))
+
+	h.QueryOpenCodeGoUsage(c)
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d body=%s", w.Code, w.Body.String())
+	}
+	if !bytes.Contains(w.Body.Bytes(), []byte("subscription required")) {
+		t.Fatalf("body = %s", w.Body.String())
+	}
+}
+
+func TestQueryOpenCodeGoUsageReportsInvalidKey(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"type":"error","error":{"type":"AuthError","message":"Unauthorized"}}`))
+	}))
+	defer upstream.Close()
+
+	prevURL := openCodeGoUsageAPIURL
+	openCodeGoUsageAPIURL = upstream.URL
+	defer func() { openCodeGoUsageAPIURL = prevURL }()
+
+	h := &Handler{cfg: &config.Config{}}
+	body := []byte(`{"api-key":"sk-bad"}`)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v0/management/opencode-go-api-key/usage", bytes.NewReader(body))
+
+	h.QueryOpenCodeGoUsage(c)
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d body=%s", w.Code, w.Body.String())
+	}
+	if !bytes.Contains(w.Body.Bytes(), []byte("Unauthorized")) {
+		t.Fatalf("body = %s", w.Body.String())
+	}
+}
+
+// A panel that has not been redeployed still posts workspace-id and
+// auth-cookie. Those must not be mistaken for credentials: without an api-key
+// the request is incomplete, and saying so beats scraping with a cookie.
+func TestQueryOpenCodeGoUsageRequiresAPIKey(t *testing.T) {
+	gin.SetMode(gin.TestMode)
 
 	h := &Handler{cfg: &config.Config{}}
 	body := []byte(`{"workspace-id":"wrk_test","auth-cookie":"token"}`)
@@ -201,17 +203,11 @@ func TestQueryOpenCodeGoUsageFetchesHydrationDashboard(t *testing.T) {
 	c.Request = httptest.NewRequest(http.MethodPost, "/v0/management/opencode-go-api-key/usage", bytes.NewReader(body))
 
 	h.QueryOpenCodeGoUsage(c)
-	if w.Code != http.StatusOK {
+	if w.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d body=%s", w.Code, w.Body.String())
 	}
-	var decoded struct {
-		Usage []openCodeGoUsageItem `json:"usage"`
-	}
-	if err := json.Unmarshal(w.Body.Bytes(), &decoded); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
-	if len(decoded.Usage) != 3 || decoded.Usage[0].Percentage != 7 || decoded.Usage[2].ResetsIn != "1 day" {
-		t.Fatalf("response = %+v", decoded)
+	if !bytes.Contains(w.Body.Bytes(), []byte("api-key is required")) {
+		t.Fatalf("body = %s", w.Body.String())
 	}
 }
 
@@ -308,82 +304,5 @@ func TestQueryOllamaCloudUsageFetchesSettingsPage(t *testing.T) {
 	}
 	if len(decoded.Usage) != 2 || decoded.Usage[0].Type != "session" || decoded.Usage[1].Percentage != 1.6 {
 		t.Fatalf("response = %+v", decoded)
-	}
-}
-
-func TestQueryOpenCodeGoUsageAcceptsDashboardURL(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/workspace/wrk_test/go" {
-			t.Fatalf("path = %s", r.URL.Path)
-		}
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`Rolling Usage 1% Resets in 1 hour Weekly Usage 2% Resets in 2 days Monthly Usage 3% Resets in 3 days`))
-	}))
-	defer upstream.Close()
-
-	prevBaseURL := openCodeGoConsoleBaseURL
-	openCodeGoConsoleBaseURL = upstream.URL
-	defer func() { openCodeGoConsoleBaseURL = prevBaseURL }()
-
-	h := &Handler{cfg: &config.Config{}}
-	body := []byte(`{"workspace-id":"https://opencode.ai/workspace/wrk_test/go","auth-cookie":"token"}`)
-	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
-	c.Request = httptest.NewRequest(http.MethodPost, "/v0/management/opencode-go-api-key/usage", bytes.NewReader(body))
-
-	h.QueryOpenCodeGoUsage(c)
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d body=%s", w.Code, w.Body.String())
-	}
-	if !bytes.Contains(w.Body.Bytes(), []byte(`"workspace_id":"wrk_test"`)) {
-		t.Fatalf("body = %s", w.Body.String())
-	}
-}
-
-func TestQueryOpenCodeGoUsageRejectsWorkspaceName(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
-	h := &Handler{cfg: &config.Config{}}
-	body := []byte(`{"workspace-id":"Default","auth-cookie":"token"}`)
-	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
-	c.Request = httptest.NewRequest(http.MethodPost, "/v0/management/opencode-go-api-key/usage", bytes.NewReader(body))
-
-	h.QueryOpenCodeGoUsage(c)
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d body=%s", w.Code, w.Body.String())
-	}
-	if !bytes.Contains(w.Body.Bytes(), []byte("/workspace/{id}/go")) {
-		t.Fatalf("body = %s", w.Body.String())
-	}
-}
-
-func TestQueryOpenCodeGoUsageReportsExpiredCookie(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`Continue with GitHub Continue with Google`))
-	}))
-	defer upstream.Close()
-
-	prevBaseURL := openCodeGoConsoleBaseURL
-	openCodeGoConsoleBaseURL = upstream.URL
-	defer func() { openCodeGoConsoleBaseURL = prevBaseURL }()
-
-	h := &Handler{cfg: &config.Config{}}
-	body := []byte(`{"workspace-id":"wrk_test","auth-cookie":"token"}`)
-	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
-	c.Request = httptest.NewRequest(http.MethodPost, "/v0/management/opencode-go-api-key/usage", bytes.NewReader(body))
-
-	h.QueryOpenCodeGoUsage(c)
-	if w.Code != http.StatusBadGateway {
-		t.Fatalf("status = %d body=%s", w.Code, w.Body.String())
-	}
-	if !bytes.Contains(w.Body.Bytes(), []byte("invalid or expired")) {
-		t.Fatalf("body = %s", w.Body.String())
 	}
 }

@@ -64,7 +64,7 @@ func TestSanitizeOpenCodeGoKeysDropsEmptyAndDeduplicates(t *testing.T) {
 			{APIKey: " "},
 			{APIKey: "go-key", Prefix: " team "},
 			{APIKey: "go-key", Prefix: "duplicate"},
-			{APIKey: "go-key-2", Headers: map[string]string{" X-Trace ": " on "}, Models: []OpenCodeGoModel{{Name: " glm-5.2 "}, {Name: "GLM-5.2"}, {Name: " "}}, ExcludedModels: []string{"glm-5.2", "*"}, VisionFallbackModel: " qwen3.6-plus ", WorkspaceID: " wrk_123 ", AuthCookie: " auth-token "},
+			{APIKey: "go-key-2", Headers: map[string]string{" X-Trace ": " on "}, Models: []OpenCodeGoModel{{Name: " glm-5.2 "}, {Name: "GLM-5.2"}, {Name: " "}}, ExcludedModels: []string{"glm-5.2", "*"}, VisionFallbackModel: " qwen3.6-plus "},
 		},
 	}
 
@@ -87,8 +87,5 @@ func TestSanitizeOpenCodeGoKeysDropsEmptyAndDeduplicates(t *testing.T) {
 	}
 	if len(cfg.OpenCodeGoKey[1].ExcludedModels) != 1 || cfg.OpenCodeGoKey[1].ExcludedModels[0] != "*" {
 		t.Fatalf("excluded models = %#v, want disable-all marker only", cfg.OpenCodeGoKey[1].ExcludedModels)
-	}
-	if cfg.OpenCodeGoKey[1].WorkspaceID != "wrk_123" || cfg.OpenCodeGoKey[1].AuthCookie != "auth-token" {
-		t.Fatalf("usage fields not normalized: %+v", cfg.OpenCodeGoKey[1])
 	}
 }
