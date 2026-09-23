@@ -36,6 +36,21 @@ func effectiveTenantID(c *gin.Context) string {
 	return identity.SystemTenantID
 }
 
+// routingConfigResponse is what GET /routing-config returns: the stored config
+// plus what this backend can enforce. The panel is updated on its own schedule
+// (it follows the latest codeProxy release, not this binary), so it has to ask
+// before writing a field an older backend would drop. A panel that wrote
+// excluded-models to a backend without them would clear the group's allow list
+// and leave it serving every model.
+type routingConfigResponse struct {
+	config.RoutingConfig
+	Capabilities routingConfigCapabilities `json:"capabilities"`
+}
+
+type routingConfigCapabilities struct {
+	ChannelGroupExcludedModels bool `json:"channel-group-excluded-models"`
+}
+
 func (h *Handler) GetRoutingConfig(c *gin.Context) {
 	tenantID := effectiveTenantID(c)
 	var auths []*coreauth.Auth
@@ -46,7 +61,10 @@ func (h *Handler) GetRoutingConfig(c *gin.Context) {
 	if known, err := collectKnownChannels(h.cfg, auths, ""); err == nil {
 		routing = canonicalizeRoutingConfigChannels(routing, known)
 	}
-	c.JSON(http.StatusOK, routing)
+	c.JSON(http.StatusOK, routingConfigResponse{
+		RoutingConfig: routing,
+		Capabilities:  routingConfigCapabilities{ChannelGroupExcludedModels: true},
+	})
 }
 
 func (h *Handler) PutRoutingConfig(c *gin.Context) {

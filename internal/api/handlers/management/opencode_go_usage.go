@@ -25,6 +25,7 @@ var (
 	openCodeGoNumberPattern = `(-?\d+(?:\.\d+)?)`
 	ollamaCloudUsagePattern = regexp.MustCompile(`(?i)(Session|Weekly)\s+usage\s+` + openCodeGoNumberPattern + `%\s+used\s+Resets\s+in\s+([^\.]+)`)
 	openCodeGoTagPattern    = regexp.MustCompile(`(?s)<[^>]+>`)
+	openCodeGoTitlePattern  = regexp.MustCompile(`(?is)<title[^>]*>(.*?)</title>`)
 	openCodeGoSpacePattern  = regexp.MustCompile(`\s+`)
 )
 
@@ -67,7 +68,8 @@ type openCodeGoUsageWindow struct {
 // what separates a key that is not valid (AuthError) from a workspace that
 // simply never subscribed to Go (EntitlementError) — a distinction the previous
 // dashboard scrape could not make, because both rendered as a page without
-// usage figures.
+// usage figures. The status code alone cannot make it either; see
+// openCodeGoStatusError.
 type openCodeGoAPIError struct {
 	Error struct {
 		Type    string `json:"type"`
@@ -303,27 +305,25 @@ func (h *Handler) fetchOpenCodeGoUsage(ctx context.Context, apiKey, proxyID, pro
 
 	resp, err := h.usageHTTPClient(timeout, proxyID, proxyURL).Do(req)
 	if err != nil {
-		return nil, err
+		return nil, openCodeGoUsageError("OpenCode Go usage API request failed: " + err.Error())
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 2*1024*1024))
 	if err != nil {
-		return nil, err
+		return nil, openCodeGoUsageError("OpenCode Go usage API response could not be read: " + err.Error())
 	}
-	if resp.StatusCode == http.StatusForbidden {
-		return nil, openCodeGoUsageError(openCodeGoStatusError(body, "This OpenCode account has no Go subscription, so it reports no usage limits"))
-	}
-	if resp.StatusCode == http.StatusUnauthorized {
-		return nil, openCodeGoUsageError(openCodeGoStatusError(body, "OpenCode Go API key is invalid or expired"))
-	}
+	contentType := resp.Header.Get("Content-Type")
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, openCodeGoUsageError("OpenCode Go usage API returned HTTP " + resp.Status)
+		return nil, openCodeGoUsageError(openCodeGoStatusError(resp.StatusCode, contentType, body))
 	}
 
 	var payload openCodeGoUsageResponse
 	if err = json.Unmarshal(body, &payload); err != nil {
-		return nil, err
+		// The decoder's own message names Go types and byte offsets. What an
+		// operator needs is that the endpoint answered with something other than
+		// the usage document, and what that something looked like.
+		return nil, openCodeGoUsageError(openCodeGoUnexpectedBody("OpenCode Go usage API returned unreadable data", contentType, body))
 	}
 	items := parseOpenCodeGoUsage(payload)
 	if len(items) == 0 {
@@ -332,18 +332,60 @@ func (h *Handler) fetchOpenCodeGoUsage(ctx context.Context, apiKey, proxyID, pro
 	return items, nil
 }
 
-// openCodeGoStatusError prefers the upstream message over our own wording: the
-// endpoint states the reason precisely ("OpenCode Go subscription required."),
-// and a relayed reason ages better than one this code guesses from a status
-// code alone.
-func openCodeGoStatusError(body []byte, fallback string) string {
+// openCodeGoStatusError explains a refused usage query. Only the endpoint's own
+// error envelope is trusted to name the reason: opencode.ai sits behind
+// Cloudflare, and a challenge page, a WAF block on the proxy's exit IP or a
+// relay in between all answer 403 without the endpoint ever running. Reading
+// every 403 as "no Go subscription" sent operators after a plan they already
+// had, so anything that is not the envelope is reported by status, media type
+// and what the body looked like instead.
+func openCodeGoStatusError(status int, contentType string, body []byte) string {
 	var payload openCodeGoAPIError
 	if err := json.Unmarshal(body, &payload); err == nil {
+		// The endpoint states the reason precisely ("OpenCode Go subscription
+		// required."), and a relayed reason ages better than our own wording.
 		if message := strings.TrimSpace(payload.Error.Message); message != "" {
 			return "OpenCode Go usage API: " + message
 		}
+		switch strings.TrimSpace(payload.Error.Type) {
+		case "EntitlementError":
+			return "OpenCode Go usage API: no Go subscription on this account"
+		case "AuthError":
+			return "OpenCode Go usage API: API key is invalid or expired"
+		}
 	}
-	return fallback
+	return openCodeGoUnexpectedBody("OpenCode Go usage API returned HTTP "+strconv.Itoa(status), contentType, body)
+}
+
+// openCodeGoUnexpectedBody describes a response that is not the document this
+// handler expects, keeping what tells the cases apart: the media type, and the
+// page title or first words of the body. A Cloudflare challenge or block page
+// names itself in its <title>.
+func openCodeGoUnexpectedBody(prefix, contentType string, body []byte) string {
+	message := prefix
+	if mediaType := strings.TrimSpace(strings.SplitN(contentType, ";", 2)[0]); mediaType != "" {
+		message += " (" + mediaType + ")"
+	}
+	if excerpt := openCodeGoBodyExcerpt(body); excerpt != "" {
+		message += ": " + excerpt
+	}
+	return message
+}
+
+func openCodeGoBodyExcerpt(body []byte) string {
+	const scanLimit, maxRunes = 16 * 1024, 80
+	if len(body) > scanLimit {
+		body = body[:scanLimit]
+	}
+	text := string(body)
+	if match := openCodeGoTitlePattern.FindStringSubmatch(text); len(match) == 2 {
+		text = match[1]
+	}
+	text = stripOpenCodeGoHTML(text)
+	if runes := []rune(text); len(runes) > maxRunes {
+		text = string(runes[:maxRunes]) + "…"
+	}
+	return text
 }
 
 func (h *Handler) fetchClineUsage(ctx context.Context, authCookie, proxyID, proxyURL string, timeout time.Duration) ([]openCodeGoUsageItem, error) {

@@ -278,3 +278,42 @@ func TestModelOutsideAllowedChannelsIsNamed(t *testing.T) {
 		t.Errorf("message does not name the model: %q", selectionErr.Message)
 	}
 }
+
+// An exclusion blocks a model the opposite way from an allow list: adding the
+// model to an allow list does nothing while an exclusion names it. Saying "add
+// it there" would send the operator to edit the wrong list.
+func TestExcludedModelReportsTheExclusion(t *testing.T) {
+	manager := NewManager(nil, &FillFirstSelector{}, nil)
+	manager.SetConfig(&internalconfig.Config{
+		Routing: internalconfig.RoutingConfig{
+			IncludeDefaultGroup: true,
+			ChannelGroups: []internalconfig.RoutingChannelGroup{
+				{Name: "default", ExcludedModels: []string{"grok-imagine-*"}},
+			},
+		},
+	})
+	manager.RegisterExecutor(&stubExecutor{id: "xai"})
+	if _, err := manager.Register(context.Background(), &Auth{
+		ID:       "xai-auth",
+		Label:    "Grok Account",
+		Provider: "xai",
+		Status:   StatusActive,
+	}); err != nil {
+		t.Fatalf("register auth: %v", err)
+	}
+
+	err := pickWithModel(manager, "grok-imagine-image")
+	selectionErr, ok := err.(*Error)
+	if !ok {
+		t.Fatalf("error = %v (%T), want *Error", err, err)
+	}
+	if selectionErr.Code != "model_not_allowed_by_channel_group" {
+		t.Errorf("code = %q, want model_not_allowed_by_channel_group", selectionErr.Code)
+	}
+	if !strings.Contains(selectionErr.Message, `excluded by channel group "default"`) {
+		t.Errorf("message does not name the exclusion: %q", selectionErr.Message)
+	}
+	if strings.Contains(selectionErr.Message, "not in the allowed models") {
+		t.Errorf("message blames an allow list the group does not have: %q", selectionErr.Message)
+	}
+}

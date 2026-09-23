@@ -204,7 +204,7 @@ func (o *AntigravityAuth) FetchAccountDetails(ctx context.Context, accessToken s
 	}
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", APIUserAgent)
+	req.Header.Set("User-Agent", ClientUserAgent)
 	req.Header.Set("X-Goog-Api-Client", APIClient)
 	req.Header.Set("Client-Metadata", ClientMetadata)
 

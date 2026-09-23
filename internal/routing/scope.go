@@ -28,6 +28,10 @@ func NormalizeGroupName(value string) string {
 	return sdkrouting.NormalizeGroupName(value)
 }
 
+func ChannelGroupExcludesModel(excluded []string, model string) bool {
+	return sdkrouting.ChannelGroupExcludesModel(excluded, model)
+}
+
 func NormalizeNamespacePath(value string) string {
 	return sdkrouting.NormalizeNamespacePath(value)
 }

@@ -103,6 +103,9 @@ func TestWarmupDriversExecution(t *testing.T) {
 	if targets[0].PoolID != "antigravity:gemini" || targets[1].PoolID != "antigravity:3p" {
 		t.Fatalf("unexpected pool targets: %+v", targets)
 	}
+	if targets[0].TargetModel != "gemini-3-flash" {
+		t.Fatalf("unexpected Antigravity warmup model: %s", targets[0].TargetModel)
+	}
 
 	// 2. Test Codex Driver
 	codexDriver := warmup.NewCodexDriver(cfg)

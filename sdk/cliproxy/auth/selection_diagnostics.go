@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	sdkrouting "github.com/router-for-me/CLIProxyAPI/v6/sdk/routing"
 )
 
 // Selection diagnostics.
@@ -22,8 +24,12 @@ import (
 // selectionRejection explains why a candidate was excluded.
 type selectionRejection struct {
 	// modelBlockedByGroups holds the channel groups whose allowed-models list
-	// excluded the requested model.
+	// does not name the requested model.
 	modelBlockedByGroups map[string]struct{}
+	// modelExcludedByGroups holds the channel groups whose excluded-models list
+	// covers the requested model. Kept apart because the fix is the opposite one:
+	// adding the model to an allow list does nothing while an exclusion names it.
+	modelExcludedByGroups map[string]struct{}
 	// sawTenantCandidate records that the tenant owns at least one enabled
 	// credential for the request's provider, which is what makes a model-scope
 	// rejection the likely explanation rather than "there are no accounts".
@@ -59,8 +65,9 @@ func (s selectorService) diagnoseEmptyCandidates(
 	}
 
 	rejection := selectionRejection{
-		modelBlockedByGroups: map[string]struct{}{},
-		servingGroups:        map[string]struct{}{},
+		modelBlockedByGroups:  map[string]struct{}{},
+		modelExcludedByGroups: map[string]struct{}{},
+		servingGroups:         map[string]struct{}{},
 	}
 	for _, candidate := range s.manager.auths {
 		if candidate == nil || candidate.Disabled || candidate.Status == StatusDisabled {
@@ -103,7 +110,11 @@ func (s selectorService) diagnoseEmptyCandidates(
 		if modelAllowedByRoutingGroupScopes(scope.cfg, scope.modelKey, groups, scopedRouteGroup, scope.allowedGroups) {
 			continue
 		}
-		for _, name := range blockingRouteGroups(scope.cfg, scope.modelKey, groups, scopedRouteGroup, scope.allowedGroups) {
+		excludedBy, notAllowedBy := blockingRouteGroups(scope.cfg, scope.modelKey, groups, scopedRouteGroup, scope.allowedGroups)
+		for _, name := range excludedBy {
+			rejection.modelExcludedByGroups[name] = struct{}{}
+		}
+		for _, name := range notAllowedBy {
 			rejection.modelBlockedByGroups[name] = struct{}{}
 		}
 	}
@@ -136,23 +147,28 @@ func (s selectorService) diagnoseEmptyCandidates(
 		}
 	}
 
-	if len(rejection.modelBlockedByGroups) == 0 {
+	excluded, notAllowed := rejection.modelExcludedByGroups, rejection.modelBlockedByGroups
+	var message string
+	switch {
+	case len(excluded) == 0 && len(notAllowed) == 0:
 		return nil
-	}
-
-	names := make([]string, 0, len(rejection.modelBlockedByGroups))
-	for name := range rejection.modelBlockedByGroups {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-
-	return &Error{
-		Code: "model_not_allowed_by_channel_group",
-		Message: fmt.Sprintf(
+	case len(excluded) == 0:
+		message = fmt.Sprintf(
 			"model %q is not in the allowed models of channel group %s; add it there or route the request to a group that permits it",
-			scope.modelKey, strings.Join(quoteAll(names), ", "),
-		),
+			scope.modelKey, describeScopeNames(notAllowed),
+		)
+	case len(notAllowed) == 0:
+		message = fmt.Sprintf(
+			"model %q is excluded by channel group %s; remove it from the group's excluded models or route the request to a group that permits it",
+			scope.modelKey, describeScopeNames(excluded),
+		)
+	default:
+		message = fmt.Sprintf(
+			"model %q is excluded by channel group %s and not in the allowed models of channel group %s; change the group's model list or route the request to a group that permits it",
+			scope.modelKey, describeScopeNames(excluded), describeScopeNames(notAllowed),
+		)
 	}
+	return &Error{Code: "model_not_allowed_by_channel_group", Message: message}
 }
 
 // candidateServesModel reports whether a credential can serve a model, ignoring
@@ -184,24 +200,25 @@ func describeScopeNames(scope map[string]struct{}) string {
 	return strings.Join(quoteAll(names), ", ")
 }
 
-// blockingRouteGroups lists the groups whose allowed-models list rejected a model.
+// blockingRouteGroups lists the groups whose model gate rejected a model, split
+// by the list that did it: excluded holds groups whose excluded-models cover the
+// model, notAllowed groups whose allow list does not name it.
 func blockingRouteGroups(
 	cfg *runtimeConfigSnapshot,
 	modelID string,
 	candidateGroups map[string]struct{},
 	routeGroup string,
 	allowedGroups map[string]struct{},
-) []string {
+) (excluded, notAllowed []string) {
 	if cfg == nil || len(candidateGroups) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	scoped := scopedRouteGroupNames(candidateGroups, routeGroup, allowedGroups)
 	if len(scoped) == 0 {
-		return nil
+		return nil, nil
 	}
 
-	blocking := make([]string, 0, len(scoped))
 	for _, group := range cfg.Routing.ChannelGroups {
 		name := normalizeGroupName(group.Name)
 		if _, ok := scoped[name]; !ok {
@@ -210,11 +227,16 @@ func blockingRouteGroups(
 		if len(group.AllowedModels) == 0 && len(group.ExcludedModels) == 0 {
 			continue
 		}
-		if !routingGroupModelAllowed(name, group.AllowedModels, group.ExcludedModels, modelID) {
-			blocking = append(blocking, group.Name)
+		if routingGroupModelAllowed(name, group.AllowedModels, group.ExcludedModels, modelID) {
+			continue
+		}
+		if sdkrouting.ChannelGroupExcludesModel(group.ExcludedModels, modelID) {
+			excluded = append(excluded, group.Name)
+		} else {
+			notAllowed = append(notAllowed, group.Name)
 		}
 	}
-	return blocking
+	return excluded, notAllowed
 }
 
 // scopedRouteGroupNames mirrors the group narrowing modelAllowedByRoutingGroupScopes
