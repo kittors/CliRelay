@@ -6,6 +6,7 @@ import (
 
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
+	sdkrouting "github.com/router-for-me/CLIProxyAPI/v6/sdk/routing"
 )
 
 func applyExcludedModels(models []*ModelInfo, excluded []string) []*ModelInfo {
@@ -94,48 +95,10 @@ func applyModelPrefixes(models []*ModelInfo, prefix string, forceModelPrefix boo
 	return out
 }
 
-// matchWildcard performs case-insensitive wildcard matching where '*' matches any substring.
+// matchWildcard matches '*' against any substring. Callers lower-case both
+// sides; channel-group exclusions use the same rule, so it lives in one place.
 func matchWildcard(pattern, value string) bool {
-	if pattern == "" {
-		return false
-	}
-
-	// Fast path for exact match (no wildcard present).
-	if !strings.Contains(pattern, "*") {
-		return pattern == value
-	}
-
-	parts := strings.Split(pattern, "*")
-	// Handle prefix.
-	if prefix := parts[0]; prefix != "" {
-		if !strings.HasPrefix(value, prefix) {
-			return false
-		}
-		value = value[len(prefix):]
-	}
-
-	// Handle suffix.
-	if suffix := parts[len(parts)-1]; suffix != "" {
-		if !strings.HasSuffix(value, suffix) {
-			return false
-		}
-		value = value[:len(value)-len(suffix)]
-	}
-
-	// Handle middle segments in order.
-	for i := 1; i < len(parts)-1; i++ {
-		segment := parts[i]
-		if segment == "" {
-			continue
-		}
-		idx := strings.Index(value, segment)
-		if idx < 0 {
-			return false
-		}
-		value = value[idx+len(segment):]
-	}
-
-	return true
+	return sdkrouting.MatchWildcard(pattern, value)
 }
 
 type modelEntry interface {

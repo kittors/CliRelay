@@ -97,7 +97,8 @@ func TestCanServeModelWithScopesHonorsGroupAllowedModels(t *testing.T) {
 
 // A group that lists exclusions instead of an allow list must keep serving a
 // model the upstream added after the group was configured. The allow-list form
-// cannot express that, which is why the panel writes exclusions by default.
+// cannot express that, which is what the panel's "auto-allow new models" switch
+// saves the group as.
 func TestCanServeModelWithScopesHonorsGroupExcludedModels(t *testing.T) {
 	t.Parallel()
 

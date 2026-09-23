@@ -284,11 +284,18 @@ routing:
   #     priority: 100
   #     match:
   #       prefixes: ["pro"]
+  #     # Every model these channels serve, including ones the upstream adds
+  #     # later, except these. Accepts '*' wildcards, and a route prefix on
+  #     # either side is ignored ("xai/grok-4.7" also covers "grok-4.7").
+  #     excluded-models: ["grok-imagine-*"]
   #   - name: "team-a"
   #     description: "Team A channels"
   #     match:
   #       prefixes: ["team-a"]
   #       channels: ["Team A Codex"]
+  #     # A fixed allow list instead: exact ids, no wildcards. Models the
+  #     # upstream adds later are refused until they are listed here.
+  #     allowed-models: ["gpt-5.5", "gpt-5.6-sol"]
   # path-routes:
   #   - path: "/pro"
   #     group: "pro"

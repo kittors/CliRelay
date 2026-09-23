@@ -57,7 +57,10 @@ func (g routingModelGate) allows(model string) bool {
 		return true
 	}
 	for _, group := range g.groups {
-		if len(group.excluded) > 0 && routingAllowedModelMatches(model, group.excluded) {
+		// Exclusions go through the shared matcher the runtime gate uses, so
+		// plaza can never list a model a request would be refused (or the
+		// reverse) because the two read a prefixed or wildcard entry differently.
+		if internalrouting.ChannelGroupExcludesModel(group.excluded, model) {
 			continue
 		}
 		if len(group.allowed) == 0 || routingAllowedModelMatches(model, group.allowed) {
@@ -110,6 +113,9 @@ func (s *Service) resolveRoutingModelGate(allowedGroupsRaw string) routingModelG
 	return gate
 }
 
+// routingAllowedModelMatches reports whether an allow list names the model. It
+// has no wildcard: "*" in an allow list never meant "everything", and reading it
+// that way would open a group that was configured to serve nothing.
 func routingAllowedModelMatches(model string, patterns []string) bool {
 	model = strings.TrimSpace(model)
 	if model == "" {
@@ -119,9 +125,6 @@ func routingAllowedModelMatches(model string, patterns []string) bool {
 		pattern = strings.TrimSpace(pattern)
 		if pattern == "" {
 			continue
-		}
-		if pattern == "*" {
-			return true
 		}
 		if strings.EqualFold(model, pattern) {
 			return true

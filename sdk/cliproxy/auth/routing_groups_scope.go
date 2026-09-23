@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
+	sdkrouting "github.com/router-for-me/CLIProxyAPI/v6/sdk/routing"
 )
 
 func channelGroupScheduling(cfg *runtimeConfigSnapshot, groupName string) (runtimeGroupScheduling, bool) {
@@ -393,12 +394,14 @@ func modelAllowedByRoutingGroupScopes(cfg *runtimeConfigSnapshot, modelID string
 
 // routingGroupModelAllowed applies one group's model gate.
 //
-// An exclusion wins over an allow entry: the two lists are meant to be used one
-// at a time, and a model named in both is the operator's most recent intent to
-// block it. With no allow list, everything the group's channels serve passes
-// except the exclusions, which is what keeps newly added upstream models usable.
+// An exclusion wins over an allow entry. With no allow list, everything the
+// group's channels serve passes except the exclusions, which is what keeps
+// newly added upstream models usable. The two lists match differently on
+// purpose: an exclusion that misses serves a model the operator blocked, so it
+// matches loosely (see sdkrouting.ChannelGroupExcludesModel); an allow entry
+// that misses only refuses one, so it keeps its exact match.
 func routingGroupModelAllowed(groupName string, allowedModels, excludedModels []string, modelID string) bool {
-	if len(excludedModels) > 0 && routingGroupAllowsModel(groupName, excludedModels, modelID) {
+	if sdkrouting.ChannelGroupExcludesModel(excludedModels, modelID) {
 		return false
 	}
 	if len(allowedModels) == 0 {
@@ -407,6 +410,9 @@ func routingGroupModelAllowed(groupName string, allowedModels, excludedModels []
 	return routingGroupAllowsModel(groupName, allowedModels, modelID)
 }
 
+// routingGroupAllowsModel reports whether an allow list names the model. It has
+// no wildcard: "*" in an allow list never meant "everything", and reading it
+// that way would open a group that was configured to serve nothing.
 func routingGroupAllowsModel(groupName string, allowedModels []string, modelID string) bool {
 	modelID = strings.TrimSpace(modelID)
 	if modelID == "" {
@@ -423,11 +429,6 @@ func routingGroupAllowsModel(groupName string, allowedModels []string, modelID s
 		allowed = strings.TrimSpace(allowed)
 		if allowed == "" {
 			continue
-		}
-		// "*" matches everything, mirroring the provider-level excluded-models
-		// wildcard so an operator can block a whole group's models in one entry.
-		if allowed == "*" {
-			return true
 		}
 		if strings.EqualFold(allowed, modelID) || strings.EqualFold(allowed, unprefixed) {
 			return true

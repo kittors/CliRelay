@@ -20,8 +20,7 @@ type ChannelGroupMatch struct {
 // admin panel reading this config still sees a coherent value; new code must
 // read Scheduling, never these two fields.
 //
-// AllowedModels and ExcludedModels express the two halves of the same gate and
-// only one of them should be set at a time:
+// AllowedModels and ExcludedModels express the two halves of the same gate:
 //
 //	both empty        → every model the group's channels serve, including ones
 //	                    the upstream adds later
@@ -29,9 +28,16 @@ type ChannelGroupMatch struct {
 //	                    rejected until an operator adds it here
 //	ExcludedModels set→ every model except these, so new upstream models stay
 //	                    usable without touching the config
+//	both set          → the allow list minus the exclusions
 //
-// The panel writes ExcludedModels by default for exactly that reason: an
-// allow-list snapshot silently blocks tomorrow's models.
+// An exclusion always wins. The two lists match differently on purpose: allow
+// entries are exact ids, while exclusions accept '*' wildcards and ignore a
+// route prefix on either side (sdkrouting.ChannelGroupExcludesModel), because
+// an exclusion that misses serves a model the operator blocked.
+//
+// Which form a group uses is the operator's choice in the panel; the panel
+// never converts an allow list on its own, since that widens what the group
+// serves.
 type RoutingChannelGroup struct {
 	Name               string            `yaml:"name" json:"name"`
 	Description        string            `yaml:"description,omitempty" json:"description,omitempty"`

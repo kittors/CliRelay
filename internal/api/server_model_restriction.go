@@ -260,12 +260,14 @@ func (s *Server) modelAllowedByScopedRoutingGroupsForTenant(tenantID, model, rou
 	return s.scopedRoutingModelGateForTenant(tenantID, routeGroup, allowedGroups).allows(model)
 }
 
-// scopedRoutingModelGate applies the channel-group model gate to the /v1/models
-// listing, mirroring the runtime gate in sdk/cliproxy/auth: a group with neither
-// list serves every model its channels offer (including ones added upstream
-// later), an allow list freezes the group to the models it names, and exclusions
-// subtract from everything. Scoped groups form a union, so one permissive group
-// is enough.
+// scopedRoutingModelGate applies the channel-group model gate to requests and to
+// the /v1/models listing, mirroring the runtime gate in sdk/cliproxy/auth: a
+// group with neither list serves every model its channels offer (including ones
+// added upstream later), an allow list freezes the group to the models it names,
+// and exclusions subtract from everything. Scoped groups form a union, so one
+// permissive group is enough. Exclusions match through the shared
+// internalrouting.ChannelGroupExcludesModel so that this gate and the runtime
+// one cannot disagree on how a prefixed or wildcard entry is read.
 type scopedRoutingModelGate struct {
 	unrestricted bool
 	groups       []scopedRoutingModelGroupGate
@@ -284,7 +286,7 @@ func (g scopedRoutingModelGate) allows(model string) bool {
 		return false
 	}
 	for _, group := range g.groups {
-		if len(group.excluded) > 0 && routeAllowedModelMatches(model, group.excluded) {
+		if internalrouting.ChannelGroupExcludesModel(group.excluded, model) {
 			continue
 		}
 		if len(group.allowed) == 0 || routeAllowedModelMatches(model, group.allowed) {
@@ -292,27 +294,6 @@ func (g scopedRoutingModelGate) allows(model string) bool {
 		}
 	}
 	return false
-}
-
-// scopedRoutingAllowedModelsForTenant returns the union of allow lists for the
-// scoped groups, or nil when no allow list applies. Exclusion-only groups are
-// not representable here, so restriction checks must use the gate instead.
-func (s *Server) scopedRoutingAllowedModelsForTenant(tenantID, routeGroup string, allowedGroups map[string]struct{}) []string {
-	gate := s.scopedRoutingModelGateForTenant(tenantID, routeGroup, allowedGroups)
-	if gate.unrestricted {
-		return nil
-	}
-	var allowedModels []string
-	for _, group := range gate.groups {
-		if len(group.allowed) == 0 {
-			return nil
-		}
-		allowedModels = append(allowedModels, group.allowed...)
-	}
-	if len(allowedModels) == 0 {
-		return nil
-	}
-	return allowedModels
 }
 
 func (s *Server) scopedRoutingModelGateForTenant(tenantID, routeGroup string, allowedGroups map[string]struct{}) scopedRoutingModelGate {
@@ -400,6 +381,9 @@ func extractRequestedModel(c *gin.Context) (string, error) {
 	return strings.TrimSpace(bodyObj.Model), nil
 }
 
+// routeAllowedModelMatches reports whether an allow list names the model. It has
+// no wildcard: "*" in an allow list never meant "everything", and reading it
+// that way would open a group that was configured to serve nothing.
 func routeAllowedModelMatches(model string, allowedModels []string) bool {
 	model = strings.TrimSpace(model)
 	if model == "" {
@@ -409,10 +393,6 @@ func routeAllowedModelMatches(model string, allowedModels []string) bool {
 		allowed = strings.TrimSpace(allowed)
 		if allowed == "" {
 			continue
-		}
-		// "*" matches everything, so one exclusion entry can block a whole group.
-		if allowed == "*" {
-			return true
 		}
 		if strings.EqualFold(model, allowed) {
 			return true
