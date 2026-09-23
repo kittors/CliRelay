@@ -28,6 +28,34 @@ func TestScopedRoutingAllowedModelsUsesSystemCfgWhenNoDB(t *testing.T) {
 	}
 }
 
+// The /v1/models listing has to apply exclusions too, or a model the operator
+// blocked would still be advertised to clients — and, more importantly, a model
+// the upstream added later must not be hidden just because the group narrows
+// anything at all.
+func TestScopedRoutingModelGateHonorsExcludedModels(t *testing.T) {
+	server := &Server{cfg: &config.Config{
+		Routing: config.RoutingConfig{
+			IncludeDefaultGroup: true,
+			ChannelGroups: []config.RoutingChannelGroup{
+				{Name: "default", ExcludedModels: []string{"grok-imagine-video-1.5"}},
+			},
+		},
+	}}
+	if !server.hasScopedRoutingModelRestrictionForTenant(identity.SystemTenantID, "", nil) {
+		t.Fatal("expected an exclusion-only group to count as a restriction")
+	}
+	if server.modelAllowedByScopedRoutingGroupsForTenant(identity.SystemTenantID, "grok-imagine-video-1.5", "", nil) {
+		t.Fatal("expected excluded model to be filtered out of the listing")
+	}
+	if !server.modelAllowedByScopedRoutingGroupsForTenant(identity.SystemTenantID, "grok-4.7", "", nil) {
+		t.Fatal("expected a newly added upstream model to stay listed")
+	}
+	// An exclusion-only group has no allow list to report.
+	if allowed := server.scopedRoutingAllowedModelsForTenant(identity.SystemTenantID, "", nil); allowed != nil {
+		t.Fatalf("allowed = %#v, want nil", allowed)
+	}
+}
+
 func TestScopedRoutingAllowedModelsDoesNotUseSystemCfgForOtherTenant(t *testing.T) {
 	server := &Server{cfg: &config.Config{
 		Routing: config.RoutingConfig{
