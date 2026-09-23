@@ -312,10 +312,8 @@ func fillDailyUsagePoints(points []usage.DailyUsagePoint, days int) []usage.Dail
 		existing.Cost += point.Cost
 		byDate[point.Date] = existing
 	}
-	start := usage.CutoffStartUTC(days)
 	result := make([]usage.DailyUsagePoint, 0, days)
-	for i := 0; i < days; i++ {
-		date := usage.LocalDayKeyAt(start.AddDate(0, 0, i))
+	for _, date := range usage.LocalDayKeys(days) {
 		point := byDate[date]
 		point.Date = date
 		result = append(result, point)

@@ -74,6 +74,21 @@ func localDayBoundsAt(now time.Time, days int, loc *time.Location) []time.Time {
 	return bounds
 }
 
+// LocalDayKeys returns the day keys of the last days days in the usage
+// timezone, oldest first: the slots that day-bucketed chart keys land in.
+func LocalDayKeys(days int) []string {
+	return localDayKeysAt(time.Now(), days, getUsageLocation())
+}
+
+func localDayKeysAt(now time.Time, days int, loc *time.Location) []string {
+	bounds := localDayBoundsAt(now, days, loc)
+	keys := make([]string, 0, len(bounds)-1)
+	for _, start := range bounds[:len(bounds)-1] {
+		keys = append(keys, start.Format("2006-01-02"))
+	}
+	return keys
+}
+
 // localHourBoundsAt returns local hour edges from the hour containing from to
 // the hour after the one containing now.
 func localHourBoundsAt(from, now time.Time, loc *time.Location) []time.Time {

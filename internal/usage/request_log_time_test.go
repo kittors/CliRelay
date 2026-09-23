@@ -66,6 +66,24 @@ func TestLocalDayBoundsAtKeepsDSTDayLengths(t *testing.T) {
 	}
 }
 
+// Regression: the AI Accounts trend stepped 24h from a UTC cutoff to name its
+// slots, which repeated 11-01 after the 25-hour DST day and left no slot for
+// today, so a week of trends in DST zones dropped the current day's usage.
+func TestLocalDayKeysAtWalksTheLocalCalendarAcrossDST(t *testing.T) {
+	loc, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Fatalf("LoadLocation: %v", err)
+	}
+	now := time.Date(2026, 11, 3, 12, 0, 0, 0, loc)
+
+	got := localDayKeysAt(now, 4, loc)
+
+	want := []string{"2026-10-31", "2026-11-01", "2026-11-02", "2026-11-03"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("day keys = %v, want %v", got, want)
+	}
+}
+
 func TestLocalHourBoundsAtFollowsWallClockForQuarterHourOffsets(t *testing.T) {
 	loc := time.FixedZone("UTC+05:45", 5*3600+45*60)
 	from := time.Date(2026, 9, 22, 18, 20, 0, 0, time.UTC) // 00:05 local
