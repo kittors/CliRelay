@@ -25,10 +25,6 @@
         "max_lines": 987
       },
       {
-        "path": "internal/management/settings/providers/provider_keys_extended.go",
-        "max_lines": 900
-      },
-      {
         "path": "internal/management/usagelogs/list.go",
         "max_lines": 1198
       },
