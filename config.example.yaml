@@ -159,11 +159,18 @@ account-status-refresh:
 # In Docker/cloud deployments, AUTH_PATH overrides this value at runtime.
 auth-dir: "~/.cli-proxy-api"
 
-# API keys for authentication
-api-keys:
-  - "your-api-key-1"
-  - "your-api-key-2"
-  - "your-api-key-3"
+# Client API keys for /v1, /v1beta and the other client routes.
+# Create them on the API Keys page of the management panel. Keys listed here are
+# only imported while the database holds no API keys yet, and are then removed
+# from this file.
+# None is configured by default: every client request is rejected until you add
+# one (unless allow-unauthenticated below is turned on).
+# The your-api-key-* values are placeholders and are rejected even if uncommented;
+# use long random values of your own.
+# api-keys:
+#   - "your-api-key-1"
+#   - "your-api-key-2"
+#   - "your-api-key-3"
 
 # When true, allow /v1 and /v1beta requests without API keys when no keys/providers
 # are configured. Not recommended for production.

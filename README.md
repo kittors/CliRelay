@@ -279,7 +279,7 @@ After the first start, edit the generated `config.yaml` to add your API keys or 
 docker compose restart cli-proxy-api
 ```
 
-By default, client API routes (`/v1`, `/v1beta`) require an API key. To run without client keys, set `allow-unauthenticated: true` in `config.yaml` (not recommended for production).
+By default, client API routes (`/v1`, `/v1beta`) require an API key. The generated `config.yaml` contains none, so every client request is rejected until you create one on the API Keys page of the web panel. The `your-api-key-*` values shown in `config.example.yaml` are placeholders and are always rejected. To run without client keys, set `allow-unauthenticated: true` in `config.yaml` (not recommended for production).
 
 After startup:
 

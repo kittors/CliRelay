@@ -227,6 +227,7 @@ func initializeRuntimeDataStack(cfg *config.Config, configPath string, loc *time
 	if _, err := usage.MigrateAPIKeysFromConfig(cfg, configPath); err != nil {
 		return fmt.Errorf("migrate api keys from config: %w", err)
 	}
+	usage.WarnEnabledPlaceholderAPIKeys()
 	if created, err := enduserService.BackfillFromAPIKeys(context.Background()); err != nil {
 		log.WithError(err).Error("enduser: backfill from api keys failed")
 		return fmt.Errorf("enduser backfill: %w", err)

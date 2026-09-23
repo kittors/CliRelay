@@ -2,6 +2,7 @@ package usage
 
 import (
 	"database/sql"
+	"fmt"
 	"strings"
 	"time"
 
@@ -43,6 +44,7 @@ func backfillAPIKeyNames(db *sql.DB) {
 
 // MigrateAPIKeysFromConfig moves API key entries from YAML config into the database.
 // It only migrates if the api_keys table is empty AND the config has entries.
+// The example keys published in config.example.yaml are never imported.
 // After migration, it backs up config.yaml and re-saves it without the API key
 // fields so the YAML file stays clean.
 // Fail-closed: DB query/write errors return err so callers do not mark one-shot
@@ -68,6 +70,7 @@ func MigrateAPIKeysFromConfig(cfg *config.Config, configFilePath string) (int, e
 
 	seen := make(map[string]struct{})
 	rows := make([]APIKeyRow, 0)
+	skipped := make([]string, 0)
 	now := time.Now().UTC().Format(time.RFC3339)
 
 	for _, entry := range cfg.APIKeyEntries {
@@ -79,6 +82,10 @@ func MigrateAPIKeysFromConfig(cfg *config.Config, configFilePath string) (int, e
 			continue
 		}
 		seen[trimmed] = struct{}{}
+		if config.IsPlaceholderAPIKey(trimmed) {
+			skipped = append(skipped, trimmed)
+			continue
+		}
 		row := APIKeyRowFromConfig(entry)
 		row.Key = trimmed
 		row.Name = strings.TrimSpace(row.Name)
@@ -101,6 +108,10 @@ func MigrateAPIKeysFromConfig(cfg *config.Config, configFilePath string) (int, e
 			continue
 		}
 		seen[trimmed] = struct{}{}
+		if config.IsPlaceholderAPIKey(trimmed) {
+			skipped = append(skipped, trimmed)
+			continue
+		}
 		rows = append(rows, APIKeyRow{
 			Key:       trimmed,
 			Name:      sqlapikey.DefaultAPIKeyName(len(rows)),
@@ -109,7 +120,15 @@ func MigrateAPIKeysFromConfig(cfg *config.Config, configFilePath string) (int, e
 		})
 	}
 
+	if len(skipped) > 0 {
+		log.Warnf("usage: not importing %d API key(s) from config (%s): they are the example keys published in config.example.yaml and are rejected for client requests; create real keys on the API Keys page of the management panel", len(skipped), strings.Join(skipped, ", "))
+	}
+
 	if len(rows) == 0 {
+		// Example keys alone stay in cfg and in the YAML. The access provider still
+		// counts them as configured (and rejects them), so an instance that had only
+		// those keeps demanding a key instead of falling through to
+		// allow-unauthenticated.
 		return 0, nil
 	}
 
@@ -129,6 +148,35 @@ func MigrateAPIKeysFromConfig(cfg *config.Config, configFilePath string) (int, e
 	}
 
 	return len(rows), nil
+}
+
+// WarnEnabledPlaceholderAPIKeys reports enabled database keys whose value is one of
+// the example keys published in config.example.yaml, and returns how many there are.
+// Instances set up from the old example imported them as ordinary keys, and they
+// stopped authenticating once the example keys were rejected; this is the operator's
+// notice. The rows are only reported, never deleted or disabled here: the operator
+// decides when the clients still sending them have been moved to a real key.
+func WarnEnabledPlaceholderAPIKeys() int {
+	labels := make([]string, 0)
+	for _, row := range ListAllAPIKeys() {
+		key := strings.TrimSpace(row.Key)
+		if row.Disabled || !config.IsPlaceholderAPIKey(key) {
+			continue
+		}
+		label := key
+		if name := strings.TrimSpace(row.Name); name != "" {
+			label = fmt.Sprintf("%s (%s)", name, key)
+		}
+		if tenantID := normalizeTenantID(row.TenantID); tenantID != systemTenantID {
+			label += " in tenant " + tenantID
+		}
+		labels = append(labels, label)
+	}
+	if len(labels) == 0 {
+		return 0
+	}
+	log.Warnf("security warning: %d enabled API key(s) in the database use the example values published in config.example.yaml: %s. Every client request with them is rejected. Create replacement keys on the API Keys page of the management panel, switch clients to them, then delete these keys there.", len(labels), strings.Join(labels, ", "))
+	return len(labels)
 }
 
 // EffectiveAPIKeyRow applies the currently linked permission profile to an API key row.
