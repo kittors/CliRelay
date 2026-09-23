@@ -242,8 +242,8 @@ func QueryDailySeriesForTenant(tenantID, apiKey string, days int) ([]DailySeries
 		days = 7
 	}
 
-	// Use usage_rollup_buckets day keys (usageLoc / project timezone), not
-	// date(timestamp,'localtime') which PostgreSQL compat rewrites to UTC.
+	// Use usage_rollup_buckets, already keyed by usageLoc (project timezone)
+	// day; no SQL day function follows usageLoc on both drivers.
 	params := LogQueryParams{TenantID: tenantID, APIKey: apiKey, Days: days}
 	filter, ok := rollupIdentityFilter(params)
 	if !ok {

@@ -96,9 +96,10 @@ var sqliteDDLRewrites = []struct {
 	{"BLOB", "BYTEA"},
 	{"REAL", "DOUBLE PRECISION"},
 	{"X''", "decode('', 'hex')"},
-	{"date(timestamp, 'localtime')", "to_char(timestamp AT TIME ZONE 'UTC', 'YYYY-MM-DD')"},
-	{"date(logs.timestamp, 'localtime')", "to_char(logs.timestamp AT TIME ZONE 'UTC', 'YYYY-MM-DD')"},
-	{"strftime('%Y-%m-%d %H:00', timestamp, 'localtime')", "to_char(timestamp AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:00')"},
+	// SQLite 'localtime' modifiers are deliberately not translated. They follow
+	// the process TZ and PostgreSQL has no equivalent; rewriting them to UTC
+	// silently shifted every chart on non-UTC deployments. Callers bucket
+	// against edges computed from the usage timezone instead.
 }
 
 var pragmaRE = regexp.MustCompile(`(?is)^\s*PRAGMA\b.*$`)

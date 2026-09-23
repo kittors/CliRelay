@@ -1,10 +1,41 @@
 package usage
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
+
+// SQL-side 'localtime' follows the SQLite process TZ and has no PostgreSQL
+// counterpart, so keys built with it pass SQLite tests and drift from the
+// usage timezone in production. Bucket against timeBucketCase edges instead.
+func TestUsageSQLDoesNotUseLocaltime(t *testing.T) {
+	names, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatalf("glob: %v", err)
+	}
+	fset := token.NewFileSet()
+	for _, name := range names {
+		if strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		file, err := parser.ParseFile(fset, name, nil, 0)
+		if err != nil {
+			t.Fatalf("parse %s: %v", name, err)
+		}
+		ast.Inspect(file, func(node ast.Node) bool {
+			if lit, ok := node.(*ast.BasicLit); ok && lit.Kind == token.STRING && strings.Contains(lit.Value, "'localtime'") {
+				t.Errorf("%s: SQL uses 'localtime'; bucket against timeBucketCase edges instead", fset.Position(lit.Pos()))
+			}
+			return true
+		})
+	}
+}
 
 func TestLocalDayBoundsAtKeepsDSTDayLengths(t *testing.T) {
 	loc, err := time.LoadLocation("America/New_York")
