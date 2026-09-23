@@ -123,6 +123,40 @@ func FetchKimiModels(ctx context.Context, auth *coreauth.Auth, cfg *config.Confi
 	return internalserviceapp.FetchKimiModels(ctx, auth, cfg)
 }
 
+// ProviderDiscoveryDrivesRouting reports whether a provider's upstream model list is
+// merged into the models its credentials register.
+func ProviderDiscoveryDrivesRouting(provider string) bool {
+	return internalserviceapp.ProviderDiscoveryDrivesRouting(provider)
+}
+
+// ProviderDiscoveryRoutingProviders lists the providers whose upstream lists drive routing.
+func ProviderDiscoveryRoutingProviders() []string {
+	return internalserviceapp.ProviderDiscoveryRoutingProviders()
+}
+
+// IsProviderDiscoveryCredential reports whether a credential takes part in its
+// provider's shared upstream list.
+func IsProviderDiscoveryCredential(auth *coreauth.Auth, provider string) bool {
+	return internalserviceapp.IsProviderDiscoveryCredential(auth, provider)
+}
+
+// ProviderDiscoverySnapshot returns the last upstream model list stored for a
+// tenant's credentials of a routing provider.
+func ProviderDiscoverySnapshot(tenantID, provider string) []*sdkmodelcatalog.ModelInfo {
+	return internalserviceapp.ProviderDiscoverySnapshot(tenantID, provider)
+}
+
+// RefreshProviderDiscovery re-fetches a provider's upstream list for a tenant.
+func RefreshProviderDiscovery(ctx context.Context, manager *coreauth.Manager, cfg *config.Config, tenantID, provider string) bool {
+	return internalserviceapp.RefreshProviderDiscovery(ctx, manager, cfg, tenantID, provider)
+}
+
+// SetProviderDiscoveryChangeHook registers the callback run after a routing
+// provider's upstream list changes for a tenant; nil removes it.
+func SetProviderDiscoveryChangeHook(fn func(tenantID, provider string)) {
+	internalserviceapp.SetProviderDiscoveryChangeHook(fn)
+}
+
 func RegisterExecutorForAuth(coreManager *coreauth.Manager, cfg *config.Config, auth *coreauth.Auth, forceReplace bool, gateway WebsocketGateway) {
 	internalserviceapp.RegisterExecutorForAuth(coreManager, cfg, auth, forceReplace, gateway)
 }

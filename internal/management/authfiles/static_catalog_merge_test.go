@@ -142,7 +142,8 @@ func TestEveryDiscoveryReturnMerges(t *testing.T) {
 		t.Fatalf("read models.go: %v", err)
 	}
 	block := string(source)
-	start := strings.Index(block, "if supportsSharedDiscovery(provider) {")
+	// Match the condition's prefix only: the branch also checks the credential kind.
+	start := strings.Index(block, "if supportsSharedDiscovery(provider)")
 	if start < 0 {
 		t.Fatal("shared discovery branch not found")
 	}

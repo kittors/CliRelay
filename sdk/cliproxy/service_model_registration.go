@@ -158,6 +158,8 @@ func (s *Service) registerModelsForAuth(ctx context.Context, a *coreauth.Auth) {
 				excluded = entry.ExcludedModels
 			}
 		}
+		// A no-op until modeldiscovery lists claude as a routing provider.
+		models = s.withLiveDiscoveredModels(a, provider, authKind, models)
 		catalogRows, mappedOwners := oauthCatalogScope(a)
 		models = appendOAuthProviderModelConfigs(models, provider, authKind, catalogRows, mappedOwners)
 		models = applyExcludedModels(models, excluded)
@@ -209,9 +211,11 @@ func (s *Service) registerModelsForAuth(ctx context.Context, a *coreauth.Auth) {
 		}
 		models = applyExcludedModels(models, excluded)
 	case "codex":
-		// Always use the static Codex catalog (+ optional config / OAuth model
-		// configs). Live ChatGPT manifest returns only a subset of models and
-		// must not replace the full registry list (regression from #673).
+		// The static Codex catalog is the floor and is never replaced: the ChatGPT
+		// manifest omits image models and is gated by client_version, and replacing
+		// the catalog with it was #673. What the manifest lists on top — a model
+		// shipped after this build — is merged in by withLiveDiscoveredModels, so it
+		// is routable without a catalog edit.
 		models = sdkmodelcatalog.StaticModelDefinitionsByChannel("codex")
 		if entry := s.resolveConfigCodexKey(a); entry != nil {
 			if len(entry.Models) > 0 {
@@ -221,6 +225,7 @@ func (s *Service) registerModelsForAuth(ctx context.Context, a *coreauth.Auth) {
 				excluded = entry.ExcludedModels
 			}
 		}
+		models = s.withLiveDiscoveredModels(a, provider, authKind, models)
 		catalogRows, mappedOwners := oauthCatalogScope(a)
 		models = appendOAuthProviderModelConfigs(models, provider, authKind, catalogRows, mappedOwners)
 		models = applyExcludedModels(models, excluded)
