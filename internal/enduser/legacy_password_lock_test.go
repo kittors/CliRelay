@@ -3,7 +3,9 @@ package enduser
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"slices"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -14,14 +16,20 @@ import (
 
 const legacyLockTestTenant = "00000000-0000-0000-0000-000000000001"
 
-// The legacy backfill filled created_at and password_changed_at from one clock.
+// When the pre-#1040 backfill ran on the fixtures that it ran on. It wrote its
+// accounts and its completion row in one transaction, so this is both done_at
+// and the created_at (and password_changed_at) of every account it created.
 const legacyLockCreatedAt = "2026-07-20 10:00:00"
 
+// A month after the backfill: accounts created by anything else.
+const legacyLockLaterAt = "2026-08-20 10:00:00"
+
 // openLegacyPasswordLockTestDB adds the tables the lock touches that the shared
-// end-user fixture does not create, in their Postgres shape.
+// end-user fixture does not create, in their Postgres shape. The backfill has
+// not run on it; openLegacyBackfilledTestDB is one it has.
 func openLegacyPasswordLockTestDB(t *testing.T) *sql.DB {
 	t.Helper()
-	db := openEndUserTestDB(t)
+	db := openBackfillTestDB(t)
 	for _, stmt := range []string{`
 		CREATE TABLE IF NOT EXISTS end_user_sessions (
 			id TEXT PRIMARY KEY,
@@ -50,9 +58,49 @@ func openLegacyPasswordLockTestDB(t *testing.T) *sql.DB {
 	return db
 }
 
+// openLegacyBackfilledTestDB is a database the pre-#1040 backfill completed on
+// at legacyLockCreatedAt.
+func openLegacyBackfilledTestDB(t *testing.T) *sql.DB {
+	t.Helper()
+	db := openLegacyPasswordLockTestDB(t)
+	if _, err := db.Exec(`INSERT INTO end_user_backfill_state (id, done_at) VALUES (1, ?)`, legacyLockCreatedAt); err != nil {
+		t.Fatalf("record backfill run: %v", err)
+	}
+	return db
+}
+
+func legacyLockBatchTime(t *testing.T) time.Time {
+	t.Helper()
+	at, err := time.Parse(time.DateTime, legacyLockCreatedAt)
+	if err != nil {
+		t.Fatalf("parse batch time: %v", err)
+	}
+	return at
+}
+
+// countLegacyPasswordComparisons counts the bcrypt comparisons the pass makes
+// for the rest of the test. The comparison is a package variable, so a test
+// using this must not call t.Parallel.
+func countLegacyPasswordComparisons(t *testing.T) *atomic.Int64 {
+	t.Helper()
+	var calls atomic.Int64
+	compare := holdsLegacyBackfillPassword
+	holdsLegacyBackfillPassword = func(hash string) bool {
+		calls.Add(1)
+		return compare(hash)
+	}
+	t.Cleanup(func() { holdsLegacyBackfillPassword = compare })
+	return &calls
+}
+
 func bcryptForTest(t *testing.T, password string) string {
 	t.Helper()
-	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	return bcryptAtCost(t, password, bcrypt.DefaultCost)
+}
+
+func bcryptAtCost(t *testing.T, password string, cost int) string {
+	t.Helper()
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), cost)
 	if err != nil {
 		t.Fatalf("bcrypt: %v", err)
 	}
@@ -63,14 +111,19 @@ type legacyLockSeed struct {
 	username          string
 	passwordHash      string
 	mustChange        bool
-	passwordChangedAt string
+	createdAt         string // defaults to the backfill run
+	passwordChangedAt string // defaults to createdAt
 }
 
 func insertLegacyLockAccount(t *testing.T, db *sql.DB, seed legacyLockSeed) string {
 	t.Helper()
+	createdAt := seed.createdAt
+	if createdAt == "" {
+		createdAt = legacyLockCreatedAt
+	}
 	changedAt := seed.passwordChangedAt
 	if changedAt == "" {
-		changedAt = legacyLockCreatedAt
+		changedAt = createdAt
 	}
 	id := uuid.NewString()
 	if _, err := db.Exec(`
@@ -78,7 +131,7 @@ func insertLegacyLockAccount(t *testing.T, db *sql.DB, seed legacyLockSeed) stri
 			must_change_password, created_at, updated_at, password_changed_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, id, legacyLockTestTenant, seed.username, seed.username, seed.username, seed.passwordHash,
-		seed.mustChange, legacyLockCreatedAt, legacyLockCreatedAt, changedAt); err != nil {
+		seed.mustChange, createdAt, createdAt, changedAt); err != nil {
 		t.Fatalf("insert account %q: %v", seed.username, err)
 	}
 	return id
@@ -153,12 +206,12 @@ func legacyLockMarker(t *testing.T, db *sql.DB) (rows, lockedCount int) {
 }
 
 // Accounts created by the pre-#1040 backfill still hold its published password
-// with must_change_password off. The pass must take exactly the ones whose owner
-// never replaced that password, end their sessions, and leave every other
-// account and every API key as it was.
+// with must_change_password off. The pass must take exactly the ones in that
+// batch whose owner never replaced the password, end their sessions, and leave
+// every other account and every API key as it was.
 func TestLegacyBackfillPasswordLockTakesOnlyUntouchedBackfillAccounts(t *testing.T) {
 	t.Parallel()
-	db := openLegacyPasswordLockTestDB(t)
+	db := openLegacyBackfilledTestDB(t)
 	svc := NewService(db)
 	ctx := context.Background()
 	// One backfill run hashed once and gave every account that same string.
@@ -168,11 +221,14 @@ func TestLegacyBackfillPasswordLockTakesOnlyUntouchedBackfillAccounts(t *testing
 	bob := insertLegacyLockAccount(t, db, legacyLockSeed{username: "bob", passwordHash: legacyHash})
 	// Each control fails exactly one rule. The owner set this one a month later
 	// (the pre-policy portal allowed it): a choice, not the backfill's credential.
-	changed := insertLegacyLockAccount(t, db, legacyLockSeed{username: "carol", passwordHash: legacyHash, passwordChangedAt: "2026-08-20 10:00:00"})
+	changed := insertLegacyLockAccount(t, db, legacyLockSeed{username: "carol", passwordHash: legacyHash, passwordChangedAt: legacyLockLaterAt})
 	// Already flagged to change, as an admin reset or the current backfill leaves it.
 	flagged := insertLegacyLockAccount(t, db, legacyLockSeed{username: "dave", passwordHash: legacyHash, mustChange: true})
-	// Never changed, but not the published password.
+	// In the batch and never changed, but not the published password.
 	other := insertLegacyLockAccount(t, db, legacyLockSeed{username: "erin", passwordHash: bcryptForTest(t, "Another-Password-123")})
+	// Not in the batch: the same string set by hand later, under the pre-v0.5.2
+	// 8-character policy. A weak password, but not the one the backfill published.
+	outsider := insertLegacyLockAccount(t, db, legacyLockSeed{username: "oscar", passwordHash: bcryptForTest(t, legacyBackfillPassword), createdAt: legacyLockLaterAt})
 
 	key, err := svc.CreateKey(ctx, legacyLockTestTenant, alice, "alice-key")
 	if err != nil {
@@ -183,7 +239,7 @@ func TestLegacyBackfillPasswordLockTakesOnlyUntouchedBackfillAccounts(t *testing
 	controlSession := insertLegacyLockSession(t, db, changed, "")
 
 	before := make(map[string]legacyLockAccountState)
-	for _, id := range []string{alice, bob, changed, flagged, other} {
+	for _, id := range []string{alice, bob, changed, flagged, other, outsider} {
 		before[id] = readLegacyLockAccount(t, db, id)
 	}
 
@@ -221,7 +277,7 @@ func TestLegacyBackfillPasswordLockTakesOnlyUntouchedBackfillAccounts(t *testing
 	if want := []string{"alice", "bob"}; !slices.Equal(locked, want) {
 		t.Fatalf("locked = %v, want %v", locked, want)
 	}
-	for _, id := range []string{changed, flagged, other} {
+	for _, id := range []string{changed, flagged, other, outsider} {
 		if after := readLegacyLockAccount(t, db, id); after != before[id] {
 			t.Fatalf("control account %s changed:\n before %+v\n after  %+v", id, before[id], after)
 		}
@@ -262,11 +318,109 @@ func TestLegacyBackfillPasswordLockTakesOnlyUntouchedBackfillAccounts(t *testing
 	}
 }
 
+// The pass runs before the server listens, inside a transaction that holds the
+// advisory lock, so every bcrypt comparison is boot time. Accounts outside the
+// backfill batch — however many, each with its own salt, even ones that happen
+// to hold the same string — must not cost one. The batch shares one hash, so
+// the whole pass costs one comparison.
+func TestLegacyBackfillPasswordLockComparesOnlyTheBackfillBatch(t *testing.T) {
+	db := openLegacyBackfilledTestDB(t)
+	svc := NewService(db)
+	calls := countLegacyPasswordComparisons(t)
+	legacyHash := bcryptForTest(t, legacyBackfillPassword)
+
+	insertLegacyLockAccount(t, db, legacyLockSeed{username: "batch_a", passwordHash: legacyHash})
+	insertLegacyLockAccount(t, db, legacyLockSeed{username: "batch_b", passwordHash: legacyHash})
+	const outsiders = 200
+	outsiderIDs := make([]string, 0, outsiders)
+	for i := range outsiders {
+		password := fmt.Sprintf("Outsider-Password-%03d", i)
+		if i%10 == 0 {
+			password = legacyBackfillPassword
+		}
+		outsiderIDs = append(outsiderIDs, insertLegacyLockAccount(t, db, legacyLockSeed{
+			username:     fmt.Sprintf("outsider_%03d", i),
+			passwordHash: bcryptAtCost(t, password, bcrypt.MinCost),
+			createdAt:    legacyLockLaterAt,
+		}))
+	}
+	before := make(map[string]legacyLockAccountState, outsiders)
+	for _, id := range outsiderIDs {
+		before[id] = readLegacyLockAccount(t, db, id)
+	}
+
+	locked, err := svc.LockLegacyBackfillPasswordAccounts(context.Background())
+	if err != nil {
+		t.Fatalf("LockLegacyBackfillPasswordAccounts: %v", err)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("bcrypt comparisons = %d with %d accounts outside the batch, want 1", got, outsiders)
+	}
+	if want := []string{"batch_a", "batch_b"}; !slices.Equal(locked, want) {
+		t.Fatalf("locked = %v, want %v", locked, want)
+	}
+	for _, id := range outsiderIDs {
+		if after := readLegacyLockAccount(t, db, id); after != before[id] {
+			t.Fatalf("account outside the batch changed:\n before %+v\n after  %+v", before[id], after)
+		}
+	}
+}
+
+// With no backfill run recorded, no account can be one the backfill created:
+// the pass records itself and compares nothing, whatever the accounts hold.
+func TestLegacyBackfillPasswordLockWithoutBackfillRunComparesNothing(t *testing.T) {
+	db := openLegacyPasswordLockTestDB(t)
+	svc := NewService(db)
+	calls := countLegacyPasswordComparisons(t)
+	id := insertLegacyLockAccount(t, db, legacyLockSeed{username: "judy", passwordHash: bcryptForTest(t, legacyBackfillPassword)})
+	before := readLegacyLockAccount(t, db, id)
+
+	locked, err := svc.LockLegacyBackfillPasswordAccounts(context.Background())
+	if err != nil {
+		t.Fatalf("LockLegacyBackfillPasswordAccounts: %v", err)
+	}
+	if got := calls.Load(); got != 0 {
+		t.Fatalf("bcrypt comparisons = %d without a backfill run, want 0", got)
+	}
+	if len(locked) != 0 {
+		t.Fatalf("locked = %v without a backfill run, want nothing", locked)
+	}
+	if after := readLegacyLockAccount(t, db, id); after != before {
+		t.Fatalf("account changed without a backfill run:\n before %+v\n after  %+v", before, after)
+	}
+	if rows, count := legacyLockMarker(t, db); rows != 1 || count != 0 {
+		t.Fatalf("lock marker = (%d rows, locked_count %d), want (1, 0)", rows, count)
+	}
+}
+
+// A fresh install boots through both passes in their real order: the current
+// backfill records its run, and the lock finds nothing of its batch to check.
+func TestLegacyBackfillPasswordLockOnFreshDatabase(t *testing.T) {
+	db := openLegacyPasswordLockTestDB(t)
+	svc := NewService(db)
+	calls := countLegacyPasswordComparisons(t)
+	ctx := context.Background()
+
+	if _, err := svc.BackfillFromAPIKeys(ctx); err != nil {
+		t.Fatalf("BackfillFromAPIKeys on an empty database: %v", err)
+	}
+	locked, err := svc.LockLegacyBackfillPasswordAccounts(ctx)
+	if err != nil {
+		t.Fatalf("LockLegacyBackfillPasswordAccounts on an empty database: %v", err)
+	}
+	if len(locked) != 0 || calls.Load() != 0 {
+		t.Fatalf("fresh database: locked %v with %d comparisons, want nothing and 0", locked, calls.Load())
+	}
+	if rows, count := legacyLockMarker(t, db); rows != 1 || count != 0 {
+		t.Fatalf("lock marker = (%d rows, locked_count %d), want (1, 0)", rows, count)
+	}
+}
+
 // One-shot: once completion is recorded, later boots leave the accounts alone —
 // including one that looks exactly like a backfill account.
 func TestLegacyBackfillPasswordLockRunsOnce(t *testing.T) {
 	t.Parallel()
-	db := openLegacyPasswordLockTestDB(t)
+	db := openLegacyBackfilledTestDB(t)
 	svc := NewService(db)
 	ctx := context.Background()
 	legacyHash := bcryptForTest(t, legacyBackfillPassword)
@@ -298,31 +452,12 @@ func TestLegacyBackfillPasswordLockRunsOnce(t *testing.T) {
 	}
 }
 
-// A fresh install has nothing to lock and must still boot and record the pass,
-// the way the backfill's own fresh-database path has to.
-func TestLegacyBackfillPasswordLockOnFreshDatabase(t *testing.T) {
-	t.Parallel()
-	db := openLegacyPasswordLockTestDB(t)
-	svc := NewService(db)
-
-	locked, err := svc.LockLegacyBackfillPasswordAccounts(context.Background())
-	if err != nil {
-		t.Fatalf("LockLegacyBackfillPasswordAccounts on an empty database: %v", err)
-	}
-	if len(locked) != 0 {
-		t.Fatalf("locked = %v on an empty database", locked)
-	}
-	if rows, count := legacyLockMarker(t, db); rows != 1 || count != 0 {
-		t.Fatalf("lock marker = (%d rows, locked_count %d), want (1, 0)", rows, count)
-	}
-}
-
 // Candidates are read before any account is written, and during a blue-green
 // deploy the old slot keeps serving meanwhile. A password the owner replaced
 // after the read must survive the pass; an untouched candidate is still locked.
 func TestLegacyBackfillPasswordLockKeepsPasswordChangedAfterRead(t *testing.T) {
 	t.Parallel()
-	db := openLegacyPasswordLockTestDB(t)
+	db := openLegacyBackfilledTestDB(t)
 	ctx := context.Background()
 	legacyHash := bcryptForTest(t, legacyBackfillPassword)
 
@@ -334,7 +469,7 @@ func TestLegacyBackfillPasswordLockKeepsPasswordChangedAfterRead(t *testing.T) {
 	if err != nil {
 		t.Fatalf("begin read: %v", err)
 	}
-	candidates, err := loadLegacyPasswordCandidates(ctx, readTx)
+	candidates, err := loadLegacyPasswordCandidates(ctx, readTx, legacyLockBatchTime(t))
 	_ = readTx.Rollback()
 	if err != nil {
 		t.Fatalf("loadLegacyPasswordCandidates: %v", err)
