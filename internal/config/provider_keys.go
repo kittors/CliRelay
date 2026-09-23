@@ -207,6 +207,13 @@ type OpenAICompatibility struct {
 
 	// Headers optionally adds extra HTTP headers for requests sent to this provider.
 	Headers map[string]string `yaml:"headers,omitempty" json:"headers,omitempty"`
+
+	// CodexToolBridge appends the Codex Desktop Computer Use and Browser plugin
+	// tool definitions (mcp__computer_use__* and mcp__node_repl__js) to every
+	// request sent through this provider that already declares tools. The list
+	// is fixed rather than taken from the request, so leave it off unless Codex
+	// Desktop uses those plugins through this upstream. Default: false.
+	CodexToolBridge bool `yaml:"codex-tool-bridge,omitempty" json:"codex-tool-bridge,omitempty"`
 }
 
 // OpenAICompatibilityAPIKey represents an API key configuration with optional proxy setting.
@@ -279,6 +286,11 @@ type OpenCodeGoKey struct {
 
 	// VisionFallbackModel is used for image requests whose requested model lacks vision support.
 	VisionFallbackModel string `yaml:"vision-fallback-model,omitempty" json:"vision-fallback-model,omitempty"`
+
+	// CodexToolBridge appends the Codex Desktop Computer Use and Browser plugin
+	// tool definitions to every request sent with this key that already declares
+	// tools. See OpenAICompatibility.CodexToolBridge. Default: false.
+	CodexToolBridge bool `yaml:"codex-tool-bridge,omitempty" json:"codex-tool-bridge,omitempty"`
 }
 
 // OpenCodeGoModel describes a model explicitly enabled for OpenCode Go routing.

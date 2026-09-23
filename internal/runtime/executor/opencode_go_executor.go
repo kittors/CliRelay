@@ -122,9 +122,10 @@ func (e *OpenCodeGoExecutor) Execute(ctx context.Context, auth *cliproxyauth.Aut
 	if opencodeGoNeedsReasoningInjection(req.Model) && sessionID != "" {
 		req.Payload = opencodeGoInjectReasoningContentIntoPayload(req.Payload, req.Model, sessionID)
 	}
-	// Expand Codex MCP namespace tools into concrete function tools for
-	// OpenAI-compatible upstreams that cannot consume Codex namespaces directly.
-	req.Payload = opencodeGoInjectCodexToolBridgeTools(req.Payload)
+	// Codex tool bridge for keys that opt in. This pre-translation pass is the
+	// only one messages models get; chat models also get the compatibility
+	// executor's pass, and the bridge skips names that are already present.
+	req.Payload = maybeInjectCodexToolBridgeTools(req.Payload, auth)
 	// Strip old base64 screenshots from tool result messages to save context.
 	if opencodeGoNeedsReasoningInjection(req.Model) {
 		req.Payload = opencodeGoStripScreenshots(req.Payload)
@@ -201,9 +202,8 @@ func (e *OpenCodeGoExecutor) ExecuteStream(ctx context.Context, auth *cliproxyau
 	if opencodeGoNeedsReasoningInjection(req.Model) && sessionID != "" {
 		req.Payload = opencodeGoInjectReasoningContentIntoPayload(req.Payload, req.Model, sessionID)
 	}
-	// Expand Codex MCP namespace tools into concrete function tools for
-	// OpenAI-compatible upstreams that cannot consume Codex namespaces directly.
-	req.Payload = opencodeGoInjectCodexToolBridgeTools(req.Payload)
+	// Codex tool bridge for keys that opt in (see Execute).
+	req.Payload = maybeInjectCodexToolBridgeTools(req.Payload, auth)
 	// Strip old base64 screenshots from tool result messages to save context.
 	if opencodeGoNeedsReasoningInjection(req.Model) {
 		req.Payload = opencodeGoStripScreenshots(req.Payload)

@@ -220,147 +220,205 @@ func TestNodeReplJSFunction_ValidDefinition(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // Integration: Execute with Codex tool bridge injection
+//
+// The bridge is an operator opt-in (codex-tool-bridge on the provider entry,
+// carried to the executor as the codex_tool_bridge auth attribute). Each test
+// checks both sides: a default credential forwards only the caller's tools, and
+// an opted-in credential still gets the bridge exactly as before.
 // ---------------------------------------------------------------------------
 
+// codexToolBridgeCases runs a test once with a default credential and once with
+// the bridge enabled.
+var codexToolBridgeCases = []struct {
+	name    string
+	attrs   map[string]string
+	bridged bool
+}{
+	{name: "off by default", attrs: map[string]string{}},
+	{name: "on when the entry opts in", attrs: map[string]string{"codex_tool_bridge": "true"}, bridged: true},
+}
+
+func withAttributes(base map[string]string, extra map[string]string) map[string]string {
+	merged := make(map[string]string, len(base)+len(extra))
+	for k, v := range base {
+		merged[k] = v
+	}
+	for k, v := range extra {
+		merged[k] = v
+	}
+	return merged
+}
+
 func TestOpenCodeGoExecutorInjectsCodexToolBridgeTools(t *testing.T) {
-	var gotBody []byte
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotBody, _ = io.ReadAll(r.Body)
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"id":"chatcmpl_cu","object":"chat.completion","created":1,"model":"deepseek-v4-flash","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
-	}))
-	defer server.Close()
+	for _, tc := range codexToolBridgeCases {
+		t.Run(tc.name, func(t *testing.T) {
+			var gotBody []byte
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotBody, _ = io.ReadAll(r.Body)
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"id":"chatcmpl_cu","object":"chat.completion","created":1,"model":"deepseek-v4-flash","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+			}))
+			defer server.Close()
 
-	oldURL := opencodeGoBaseURL
-	opencodeGoBaseURL = server.URL + "/v1"
-	t.Cleanup(func() { opencodeGoBaseURL = oldURL })
+			oldURL := opencodeGoBaseURL
+			opencodeGoBaseURL = server.URL + "/v1"
+			t.Cleanup(func() { opencodeGoBaseURL = oldURL })
 
-	exec := NewOpenCodeGoExecutor(&config.Config{})
-	auth := &cliproxyauth.Auth{Attributes: map[string]string{"api_key": "test-key"}}
-	payload := []byte(`{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"use computer"}],"tools":[{"type":"function","function":{"name":"existing_tool"}}]}`)
+			exec := NewOpenCodeGoExecutor(&config.Config{})
+			auth := &cliproxyauth.Auth{Attributes: withAttributes(map[string]string{"api_key": "test-key"}, tc.attrs)}
+			payload := []byte(`{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"use computer"}],"tools":[{"type":"function","function":{"name":"existing_tool"}}]}`)
 
-	_, err := exec.Execute(context.Background(), auth, cliproxyexecutor.Request{
-		Model:   "deepseek-v4-flash",
-		Payload: payload,
-	}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatOpenAI})
-	if err != nil {
-		t.Fatalf("Execute error: %v", err)
-	}
+			_, err := exec.Execute(context.Background(), auth, cliproxyexecutor.Request{
+				Model:   "deepseek-v4-flash",
+				Payload: payload,
+			}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatOpenAI})
+			if err != nil {
+				t.Fatalf("Execute error: %v", err)
+			}
 
-	// Verify upstream body has Codex bridge tools injected
-	tools := gjson.GetBytes(gotBody, "tools").Array()
-	hasCU := false
-	hasNodeRepl := false
-	hasExisting := false
-	for _, tool := range tools {
-		name := tool.Get("function.name").String()
-		if name == "mcp__computer_use__get_app_state" {
-			hasCU = true
-		}
-		if name == "mcp__node_repl__js" {
-			hasNodeRepl = true
-		}
-		if name == "existing_tool" {
-			hasExisting = true
-		}
-	}
-	if !hasExisting {
-		t.Error("upstream body missing existing_tool")
-	}
-	if !hasCU {
-		t.Errorf("upstream body missing mcp__computer_use__ tools; body=%s", string(gotBody))
-	}
-	if !hasNodeRepl {
-		t.Errorf("upstream body missing mcp__node_repl__js; body=%s", string(gotBody))
+			tools := gjson.GetBytes(gotBody, "tools").Array()
+			hasCU := false
+			hasNodeRepl := false
+			hasExisting := false
+			for _, tool := range tools {
+				name := tool.Get("function.name").String()
+				if name == "mcp__computer_use__get_app_state" {
+					hasCU = true
+				}
+				if name == "mcp__node_repl__js" {
+					hasNodeRepl = true
+				}
+				if name == "existing_tool" {
+					hasExisting = true
+				}
+			}
+			if !hasExisting {
+				t.Error("upstream body missing existing_tool")
+			}
+			if !tc.bridged {
+				if hasCU || hasNodeRepl || len(tools) != 1 {
+					t.Errorf("default credential must forward only the caller's tool; body=%s", string(gotBody))
+				}
+				return
+			}
+			if !hasCU {
+				t.Errorf("upstream body missing mcp__computer_use__ tools; body=%s", string(gotBody))
+			}
+			if !hasNodeRepl {
+				t.Errorf("upstream body missing mcp__node_repl__js; body=%s", string(gotBody))
+			}
+		})
 	}
 }
 
 func TestOpenCodeGoExecutorInjectsBridgeForNonDeepSeekOpenCodeGoModel(t *testing.T) {
-	var gotBody []byte
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotBody, _ = io.ReadAll(r.Body)
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"id":"chatcmpl_no","object":"chat.completion","created":1,"model":"gpt-5.5","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
-	}))
-	defer server.Close()
+	for _, tc := range codexToolBridgeCases {
+		t.Run(tc.name, func(t *testing.T) {
+			var gotBody []byte
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotBody, _ = io.ReadAll(r.Body)
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"id":"chatcmpl_no","object":"chat.completion","created":1,"model":"gpt-5.5","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+			}))
+			defer server.Close()
 
-	oldURL := opencodeGoBaseURL
-	opencodeGoBaseURL = server.URL + "/v1"
-	t.Cleanup(func() { opencodeGoBaseURL = oldURL })
+			oldURL := opencodeGoBaseURL
+			opencodeGoBaseURL = server.URL + "/v1"
+			t.Cleanup(func() { opencodeGoBaseURL = oldURL })
 
-	exec := NewOpenCodeGoExecutor(&config.Config{})
-	auth := &cliproxyauth.Auth{Attributes: map[string]string{"api_key": "test-key"}}
-	payload := []byte(`{"model":"gpt-5.5","messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function","function":{"name":"existing_tool"}}]}`)
+			exec := NewOpenCodeGoExecutor(&config.Config{})
+			auth := &cliproxyauth.Auth{Attributes: withAttributes(map[string]string{"api_key": "test-key"}, tc.attrs)}
+			payload := []byte(`{"model":"gpt-5.5","messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function","function":{"name":"existing_tool"}}]}`)
 
-	_, err := exec.Execute(context.Background(), auth, cliproxyexecutor.Request{
-		Model:   "gpt-5.5",
-		Payload: payload,
-	}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatOpenAI})
-	if err != nil {
-		t.Fatalf("Execute error: %v", err)
-	}
+			_, err := exec.Execute(context.Background(), auth, cliproxyexecutor.Request{
+				Model:   "gpt-5.5",
+				Payload: payload,
+			}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatOpenAI})
+			if err != nil {
+				t.Fatalf("Execute error: %v", err)
+			}
 
-	// Non-DeepSeek OpenCode-Go models should still get the generic Codex bridge.
-	tools := gjson.GetBytes(gotBody, "tools").Array()
-	hasCU := false
-	hasNodeRepl := false
-	for _, tool := range tools {
-		name := tool.Get("function.name").String()
-		if hasPrefix(name, "mcp__computer_use__") {
-			hasCU = true
-		}
-		if name == "mcp__node_repl__js" {
-			hasNodeRepl = true
-		}
-	}
-	if !hasCU {
-		t.Errorf("non-deepseek opencode-go model should get Computer Use bridge tools; body=%s", string(gotBody))
-	}
-	if !hasNodeRepl {
-		t.Errorf("non-deepseek opencode-go model should get node_repl js bridge; body=%s", string(gotBody))
+			// The bridge is not tied to DeepSeek: an opted-in key bridges every
+			// OpenCode Go model, and a default key bridges none.
+			tools := gjson.GetBytes(gotBody, "tools").Array()
+			hasCU := false
+			hasNodeRepl := false
+			for _, tool := range tools {
+				name := tool.Get("function.name").String()
+				if hasPrefix(name, "mcp__computer_use__") {
+					hasCU = true
+				}
+				if name == "mcp__node_repl__js" {
+					hasNodeRepl = true
+				}
+			}
+			if !tc.bridged {
+				if hasCU || hasNodeRepl || len(tools) != 1 {
+					t.Errorf("default credential must forward only the caller's tool; body=%s", string(gotBody))
+				}
+				return
+			}
+			if !hasCU {
+				t.Errorf("non-deepseek opencode-go model should get Computer Use bridge tools; body=%s", string(gotBody))
+			}
+			if !hasNodeRepl {
+				t.Errorf("non-deepseek opencode-go model should get node_repl js bridge; body=%s", string(gotBody))
+			}
+		})
 	}
 }
 
 func TestOpenAICompatExecutorInjectsCodexToolBridgeTools(t *testing.T) {
-	var gotBody []byte
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotBody, _ = io.ReadAll(r.Body)
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"id":"chatcmpl_bridge","object":"chat.completion","created":1,"model":"third-party-model","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
-	}))
-	defer server.Close()
+	for _, tc := range codexToolBridgeCases {
+		t.Run(tc.name, func(t *testing.T) {
+			var gotBody []byte
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotBody, _ = io.ReadAll(r.Body)
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"id":"chatcmpl_bridge","object":"chat.completion","created":1,"model":"third-party-model","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+			}))
+			defer server.Close()
 
-	exec := NewOpenAICompatExecutor("openai-compatibility", &config.Config{})
-	auth := &cliproxyauth.Auth{Attributes: map[string]string{
-		"base_url": server.URL + "/v1",
-		"api_key":  "test-key",
-	}}
-	payload := []byte(`{"model":"third-party-model","messages":[{"role":"user","content":"use browser"}],"tools":[{"type":"function","function":{"name":"existing_tool"}}]}`)
+			exec := NewOpenAICompatExecutor("openai-compatibility", &config.Config{})
+			auth := &cliproxyauth.Auth{Attributes: withAttributes(map[string]string{
+				"base_url": server.URL + "/v1",
+				"api_key":  "test-key",
+			}, tc.attrs)}
+			payload := []byte(`{"model":"third-party-model","messages":[{"role":"user","content":"use browser"}],"tools":[{"type":"function","function":{"name":"existing_tool"}}]}`)
 
-	_, err := exec.Execute(context.Background(), auth, cliproxyexecutor.Request{
-		Model:   "third-party-model",
-		Payload: payload,
-	}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatOpenAI})
-	if err != nil {
-		t.Fatalf("Execute error: %v", err)
-	}
+			_, err := exec.Execute(context.Background(), auth, cliproxyexecutor.Request{
+				Model:   "third-party-model",
+				Payload: payload,
+			}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatOpenAI})
+			if err != nil {
+				t.Fatalf("Execute error: %v", err)
+			}
 
-	hasCU := false
-	hasNodeRepl := false
-	for _, tool := range gjson.GetBytes(gotBody, "tools").Array() {
-		name := tool.Get("function.name").String()
-		if hasPrefix(name, "mcp__computer_use__") {
-			hasCU = true
-		}
-		if name == "mcp__node_repl__js" {
-			hasNodeRepl = true
-		}
-	}
-	if !hasCU {
-		t.Errorf("openai-compatible executor should get Computer Use bridge tools; body=%s", string(gotBody))
-	}
-	if !hasNodeRepl {
-		t.Errorf("openai-compatible executor should get node_repl js bridge; body=%s", string(gotBody))
+			tools := gjson.GetBytes(gotBody, "tools").Array()
+			hasCU := false
+			hasNodeRepl := false
+			for _, tool := range tools {
+				name := tool.Get("function.name").String()
+				if hasPrefix(name, "mcp__computer_use__") {
+					hasCU = true
+				}
+				if name == "mcp__node_repl__js" {
+					hasNodeRepl = true
+				}
+			}
+			if !tc.bridged {
+				if hasCU || hasNodeRepl || len(tools) != 1 {
+					t.Errorf("default credential must forward only the caller's tool; body=%s", string(gotBody))
+				}
+				return
+			}
+			if !hasCU {
+				t.Errorf("openai-compatible executor should get Computer Use bridge tools; body=%s", string(gotBody))
+			}
+			if !hasNodeRepl {
+				t.Errorf("openai-compatible executor should get node_repl js bridge; body=%s", string(gotBody))
+			}
+		})
 	}
 }
 
@@ -369,54 +427,64 @@ func TestOpenAICompatExecutorInjectsCodexToolBridgeTools(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestOpenCodeGoExecutorStreamInjectsCodexToolBridgeTools(t *testing.T) {
-	var gotBody []byte
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotBody, _ = io.ReadAll(r.Body)
-		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = w.Write([]byte(`data: {"id":"chunk1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"ok"}}]}` + "\n\n"))
-		_, _ = w.Write([]byte("data: [DONE]\n\n"))
-	}))
-	defer server.Close()
+	for _, tc := range codexToolBridgeCases {
+		t.Run(tc.name, func(t *testing.T) {
+			var gotBody []byte
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotBody, _ = io.ReadAll(r.Body)
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = w.Write([]byte(`data: {"id":"chunk1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"ok"}}]}` + "\n\n"))
+				_, _ = w.Write([]byte("data: [DONE]\n\n"))
+			}))
+			defer server.Close()
 
-	oldURL := opencodeGoBaseURL
-	opencodeGoBaseURL = server.URL + "/v1"
-	t.Cleanup(func() { opencodeGoBaseURL = oldURL })
+			oldURL := opencodeGoBaseURL
+			opencodeGoBaseURL = server.URL + "/v1"
+			t.Cleanup(func() { opencodeGoBaseURL = oldURL })
 
-	exec := NewOpenCodeGoExecutor(&config.Config{})
-	auth := &cliproxyauth.Auth{Attributes: map[string]string{"api_key": "test-key"}}
-	payload := []byte(`{"model":"deepseek-v4-flash","stream":true,"messages":[{"role":"user","content":"use computer"}],"tools":[{"type":"function","function":{"name":"tool1"}}]}`)
+			exec := NewOpenCodeGoExecutor(&config.Config{})
+			auth := &cliproxyauth.Auth{Attributes: withAttributes(map[string]string{"api_key": "test-key"}, tc.attrs)}
+			payload := []byte(`{"model":"deepseek-v4-flash","stream":true,"messages":[{"role":"user","content":"use computer"}],"tools":[{"type":"function","function":{"name":"tool1"}}]}`)
 
-	result, err := exec.ExecuteStream(context.Background(), auth, cliproxyexecutor.Request{
-		Model:   "deepseek-v4-flash",
-		Payload: payload,
-	}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatOpenAI, Stream: true})
-	if err != nil {
-		t.Fatalf("ExecuteStream error: %v", err)
-	}
+			result, err := exec.ExecuteStream(context.Background(), auth, cliproxyexecutor.Request{
+				Model:   "deepseek-v4-flash",
+				Payload: payload,
+			}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatOpenAI, Stream: true})
+			if err != nil {
+				t.Fatalf("ExecuteStream error: %v", err)
+			}
 
-	for chunk := range result.Chunks {
-		if chunk.Err != nil {
-			t.Fatalf("stream chunk error: %v", chunk.Err)
-		}
-	}
+			for chunk := range result.Chunks {
+				if chunk.Err != nil {
+					t.Fatalf("stream chunk error: %v", chunk.Err)
+				}
+			}
 
-	// Verify upstream body has Codex bridge tools
-	hasCU := false
-	hasNodeRepl := false
-	for _, tool := range gjson.GetBytes(gotBody, "tools").Array() {
-		name := tool.Get("function.name").String()
-		if hasPrefix(name, "mcp__computer_use__") {
-			hasCU = true
-		}
-		if name == "mcp__node_repl__js" {
-			hasNodeRepl = true
-		}
-	}
-	if !hasCU {
-		t.Errorf("stream request missing mcp__computer_use__ tools; body=%s", string(gotBody))
-	}
-	if !hasNodeRepl {
-		t.Errorf("stream request missing mcp__node_repl__js; body=%s", string(gotBody))
+			tools := gjson.GetBytes(gotBody, "tools").Array()
+			hasCU := false
+			hasNodeRepl := false
+			for _, tool := range tools {
+				name := tool.Get("function.name").String()
+				if hasPrefix(name, "mcp__computer_use__") {
+					hasCU = true
+				}
+				if name == "mcp__node_repl__js" {
+					hasNodeRepl = true
+				}
+			}
+			if !tc.bridged {
+				if hasCU || hasNodeRepl || len(tools) != 1 {
+					t.Errorf("default credential must forward only the caller's tool; body=%s", string(gotBody))
+				}
+				return
+			}
+			if !hasCU {
+				t.Errorf("stream request missing mcp__computer_use__ tools; body=%s", string(gotBody))
+			}
+			if !hasNodeRepl {
+				t.Errorf("stream request missing mcp__node_repl__js; body=%s", string(gotBody))
+			}
+		})
 	}
 }
 

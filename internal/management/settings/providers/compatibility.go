@@ -7,13 +7,14 @@ import (
 )
 
 type OpenAICompatibilityPatch struct {
-	Name          *string                             `json:"name"`
-	Disabled      *bool                               `json:"disabled"`
-	Prefix        *string                             `json:"prefix"`
-	BaseURL       *string                             `json:"base-url"`
-	APIKeyEntries *[]config.OpenAICompatibilityAPIKey `json:"api-key-entries"`
-	Models        *[]config.OpenAICompatibilityModel  `json:"models"`
-	Headers       *map[string]string                  `json:"headers"`
+	Name            *string                             `json:"name"`
+	Disabled        *bool                               `json:"disabled"`
+	Prefix          *string                             `json:"prefix"`
+	BaseURL         *string                             `json:"base-url"`
+	APIKeyEntries   *[]config.OpenAICompatibilityAPIKey `json:"api-key-entries"`
+	Models          *[]config.OpenAICompatibilityModel  `json:"models"`
+	Headers         *map[string]string                  `json:"headers"`
+	CodexToolBridge *bool                               `json:"codex-tool-bridge"`
 }
 
 func (s *Service) OpenAICompatibility() []config.OpenAICompatibility {
@@ -97,6 +98,9 @@ func (s *Service) PatchOpenAICompatibility(index *int, name *string, patch OpenA
 	}
 	if patch.Headers != nil {
 		entry.Headers = config.NormalizeHeaders(*patch.Headers)
+	}
+	if patch.CodexToolBridge != nil {
+		entry.CodexToolBridge = *patch.CodexToolBridge
 	}
 	NormalizeOpenAICompatibilityEntry(&entry)
 	prev := append([]config.OpenAICompatibility(nil), s.cfg.OpenAICompatibility...)

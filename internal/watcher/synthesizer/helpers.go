@@ -154,3 +154,14 @@ func addProviderBindingAttrs(attrs map[string]string, providerConfigID, provider
 		attrs["provider_key_id"] = id
 	}
 }
+
+// addCodexToolBridgeAttr marks credentials whose provider entry enables
+// codex-tool-bridge. The OpenAI-compatible and OpenCode Go executors add the
+// Codex Desktop tool definitions only when this attribute is present, so it is
+// written for an explicit opt-in and omitted otherwise.
+func addCodexToolBridgeAttr(attrs map[string]string, enabled bool) {
+	if attrs == nil || !enabled {
+		return
+	}
+	attrs["codex_tool_bridge"] = "true"
+}

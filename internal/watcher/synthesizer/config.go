@@ -348,6 +348,7 @@ func (s *ConfigSynthesizer) synthesizeOpenCodeGoKeys(ctx *SynthesisContext) []*c
 		if visionFallbackModel := strings.TrimSpace(entry.VisionFallbackModel); visionFallbackModel != "" {
 			attrs["vision_fallback_model"] = visionFallbackModel
 		}
+		addCodexToolBridgeAttr(attrs, entry.CodexToolBridge)
 		addConfigHeadersToAttrs(entry.Headers, attrs)
 		label := strings.TrimSpace(entry.Name)
 		if label == "" {
@@ -612,6 +613,7 @@ func (s *ConfigSynthesizer) synthesizeOpenAICompat(ctx *SynthesisContext) []*cor
 			if hash := diff.ComputeOpenAICompatModelsHash(compat.Models); hash != "" {
 				attrs["models_hash"] = hash
 			}
+			addCodexToolBridgeAttr(attrs, compat.CodexToolBridge)
 			addConfigHeadersToAttrs(compat.Headers, attrs)
 			addProviderBindingAttrs(attrs, compat.ID, entry.ID)
 			a := &coreauth.Auth{
@@ -644,6 +646,7 @@ func (s *ConfigSynthesizer) synthesizeOpenAICompat(ctx *SynthesisContext) []*cor
 			if hash := diff.ComputeOpenAICompatModelsHash(compat.Models); hash != "" {
 				attrs["models_hash"] = hash
 			}
+			addCodexToolBridgeAttr(attrs, compat.CodexToolBridge)
 			addConfigHeadersToAttrs(compat.Headers, attrs)
 			addProviderBindingAttrs(attrs, compat.ID, "")
 			a := &coreauth.Auth{

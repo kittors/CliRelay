@@ -428,6 +428,22 @@ streaming:
 #   runtime-version: "v24.3.0"
 #   timeout: "600"
 
+# Codex tool bridge (codex-tool-bridge on openai-compatibility and
+# opencode-go-api-key entries). Off by default.
+# Codex Desktop's Computer Use and Browser plugins do not reach models behind an
+# OpenAI-compatible upstream as usable tools. With codex-tool-bridge: true, every
+# request sent through that entry that already declares tools gets a fixed set of
+# function definitions appended for them: ten mcp__computer_use__* functions and
+# mcp__node_repl__js (a JavaScript kernel). Turning it on costs roughly 1.4k extra
+# input tokens per such request, and the upstream model is offered these tools
+# whether or not the client declared them. Enable it only on entries that serve
+# Codex Desktop with those plugins.
+
+# OpenCode Go API keys (the upstream endpoint is fixed)
+# opencode-go-api-key:
+#   - api-key: "<OPENCODE_GO_API_KEY>"
+#     codex-tool-bridge: false # opt in only for Codex Desktop Computer Use / Browser, see above
+
 # OpenAI compatibility providers
 # openai-compatibility:
 #   - name: "openrouter" # The name of the provider; it will be used in the user agent and other places.
@@ -435,6 +451,7 @@ streaming:
 #     base-url: "https://openrouter.ai/api/v1" # The base URL of the provider.
 #     headers:
 #       X-Custom-Header: "custom-value"
+#     codex-tool-bridge: false # opt in only for Codex Desktop Computer Use / Browser, see above
 #     api-key-entries:
 #       - api-key: "sk-or-v1-...b780"
 #         proxy-url: "socks5://proxy.example.com:1080" # optional: per-key proxy override

@@ -78,6 +78,9 @@ func describeOpenAICompatibilityUpdate(oldEntry, newEntry config.OpenAICompatibi
 	if !equalStringMap(oldEntry.Headers, newEntry.Headers) {
 		details = append(details, "headers updated")
 	}
+	if oldEntry.CodexToolBridge != newEntry.CodexToolBridge {
+		details = append(details, fmt.Sprintf("codex-tool-bridge %t -> %t", oldEntry.CodexToolBridge, newEntry.CodexToolBridge))
+	}
 	if len(details) == 0 {
 		return ""
 	}

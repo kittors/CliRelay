@@ -12,17 +12,18 @@ import (
 // current size by the structure ratchet and may only shrink.
 
 type OpenCodeGoPatch struct {
-	APIKey         *string                   `json:"api-key"`
-	Name           *string                   `json:"name"`
-	Disabled       *bool                     `json:"disabled"`
-	Priority       *int                      `json:"priority"`
-	Prefix         *string                   `json:"prefix"`
-	ProxyURL       *string                   `json:"proxy-url"`
-	ProxyID        *string                   `json:"proxy-id"`
-	Headers        *map[string]string        `json:"headers"`
-	Models         *[]config.OpenCodeGoModel `json:"models"`
-	ExcludedModels *[]string                 `json:"excluded-models"`
-	VisionFallback *string                   `json:"vision-fallback-model"`
+	APIKey          *string                   `json:"api-key"`
+	Name            *string                   `json:"name"`
+	Disabled        *bool                     `json:"disabled"`
+	Priority        *int                      `json:"priority"`
+	Prefix          *string                   `json:"prefix"`
+	ProxyURL        *string                   `json:"proxy-url"`
+	ProxyID         *string                   `json:"proxy-id"`
+	Headers         *map[string]string        `json:"headers"`
+	Models          *[]config.OpenCodeGoModel `json:"models"`
+	ExcludedModels  *[]string                 `json:"excluded-models"`
+	VisionFallback  *string                   `json:"vision-fallback-model"`
+	CodexToolBridge *bool                     `json:"codex-tool-bridge"`
 }
 
 func (s *Service) OpenCodeGoKeys() []config.OpenCodeGoKey {
@@ -124,6 +125,9 @@ func (s *Service) PatchOpenCodeGoKey(index *int, apiKey *string, name *string, p
 	}
 	if patch.VisionFallback != nil {
 		entry.VisionFallbackModel = strings.TrimSpace(*patch.VisionFallback)
+	}
+	if patch.CodexToolBridge != nil {
+		entry.CodexToolBridge = *patch.CodexToolBridge
 	}
 	NormalizeOpenCodeGoKey(&entry)
 	if entry.APIKey == "" {

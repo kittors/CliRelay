@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -218,10 +219,31 @@ var mcpNodeReplJSFunction = map[string]any{
 
 var mcpCodexToolBridgeFunctions = append(append([]map[string]any{}, mcpComputerUseFunctions...), mcpNodeReplJSFunction)
 
+// codexToolBridgeAttribute is set by the config synthesizer on credentials whose
+// provider entry enables codex-tool-bridge. Only openai-compatibility and
+// opencode-go entries expose that setting.
+const codexToolBridgeAttribute = "codex_tool_bridge"
+
+// maybeInjectCodexToolBridgeTools adds the Codex tool bridge only for
+// credentials whose provider entry opted in.
+//
+// The bridge appends a fixed tool list rather than one derived from the
+// request, so running it for every caller offered Computer Use and a JavaScript
+// kernel to upstream models on behalf of clients that never declared them
+// (#1041). Every injection point goes through here, so one setting governs the
+// OpenCode Go pre-translation pass and the OpenAI-compatible executor alike.
+func maybeInjectCodexToolBridgeTools(payload []byte, auth *cliproxyauth.Auth) []byte {
+	if auth == nil || auth.Attributes[codexToolBridgeAttribute] != "true" {
+		return payload
+	}
+	return opencodeGoInjectCodexToolBridgeTools(payload)
+}
+
 // opencodeGoInjectCodexToolBridgeTools checks whether the request payload
 // already carries concrete Codex ecosystem MCP function definitions. When they
 // are missing, it injects them so non-native models see Computer Use, Browser,
-// and Chrome capabilities as regular function tools.
+// and Chrome capabilities as regular function tools. Executors must call it
+// through maybeInjectCodexToolBridgeTools, which applies the operator opt-in.
 //
 // The function detects whether existing tools are in OpenAI Chat Completions
 // format ({"type":"function","function":{"name":"..."}}) or Claude /v1/messages
