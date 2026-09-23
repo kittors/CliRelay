@@ -59,6 +59,17 @@ func TestMultiSourceSecret_PrecedenceOrder(t *testing.T) {
 	}
 }
 
+// fakeClock only moves when the test advances it. Cache-expiry tests used to
+// compare against wall time, so a loaded CI runner that paused between two
+// reads saw the TTL lapse and failed the "still cached" assertion.
+type fakeClock struct {
+	now time.Time
+}
+
+func (c *fakeClock) Now() time.Time { return c.now }
+
+func (c *fakeClock) Advance(d time.Duration) { c.now = c.now.Add(d) }
+
 func TestMultiSourceSecret_CacheBehavior(t *testing.T) {
 	ctx := context.Background()
 	tmpDir := t.TempDir()
@@ -69,7 +80,10 @@ func TestMultiSourceSecret_CacheBehavior(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	s := NewMultiSourceSecretWithPath("", p, 50*time.Millisecond)
+	const ttl = 50 * time.Millisecond
+	clock := &fakeClock{now: time.Unix(0, 0)}
+	s := NewMultiSourceSecretWithPath("", p, ttl)
+	s.now = clock.Now
 
 	// First read - should return v1
 	got1, err := s.Get(ctx)
@@ -80,25 +94,30 @@ func TestMultiSourceSecret_CacheBehavior(t *testing.T) {
 		t.Fatalf("expected v1, got %s", got1)
 	}
 
-	// Change file; within TTL we should still see v1 (cached)
+	// Change file; up to the last instant of the TTL we should still see v1 (cached)
 	if err := os.WriteFile(p, []byte(`{"apiKey@https://ampcode.com/":"v2"}`), 0600); err != nil {
 		t.Fatal(err)
 	}
+	clock.Advance(ttl - time.Nanosecond)
 	got2, _ := s.Get(ctx)
 	if got2 != "v1" {
 		t.Fatalf("cache hit expected v1, got %s", got2)
 	}
 
-	// After TTL expires, should see v2
-	time.Sleep(60 * time.Millisecond)
+	// Once the full TTL has elapsed, should see v2
+	clock.Advance(time.Nanosecond)
 	got3, _ := s.Get(ctx)
 	if got3 != "v2" {
 		t.Fatalf("cache miss expected v2, got %s", got3)
 	}
 
-	// Invalidate forces re-read immediately
+	// Invalidate forces re-read immediately. The clock stays put, so v3 is
+	// hidden behind the cached v2 until the cache is invalidated.
 	if err := os.WriteFile(p, []byte(`{"apiKey@https://ampcode.com/":"v3"}`), 0600); err != nil {
 		t.Fatal(err)
+	}
+	if cached, _ := s.Get(ctx); cached != "v2" {
+		t.Fatalf("before invalidate expected cached v2, got %s", cached)
 	}
 	s.InvalidateCache()
 	got4, _ := s.Get(ctx)
@@ -252,7 +271,10 @@ func TestMultiSourceSecret_CacheEmptyResult(t *testing.T) {
 	tmpDir := t.TempDir()
 	p := filepath.Join(tmpDir, "nonexistent.json")
 
-	s := NewMultiSourceSecretWithPath("", p, 100*time.Millisecond)
+	const ttl = 100 * time.Millisecond
+	clock := &fakeClock{now: time.Unix(0, 0)}
+	s := NewMultiSourceSecretWithPath("", p, ttl)
+	s.now = clock.Now
 	ctx := context.Background()
 
 	// First call - file doesn't exist, should cache empty result
@@ -269,14 +291,15 @@ func TestMultiSourceSecret_CacheEmptyResult(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Second call - should still return empty (cached), not read the new file
+	// Second call - until the TTL runs out, should still return empty (cached), not read the new file
+	clock.Advance(ttl - time.Nanosecond)
 	got2, _ := s.Get(ctx)
 	if got2 != "" {
 		t.Fatalf("cache should return empty, got %q", got2)
 	}
 
 	// After TTL expires, should see the new value
-	time.Sleep(110 * time.Millisecond)
+	clock.Advance(time.Nanosecond)
 	got3, _ := s.Get(ctx)
 	if got3 != "new-value" {
 		t.Fatalf("after cache expiry, expected new-value, got %q", got3)

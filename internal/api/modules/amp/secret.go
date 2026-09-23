@@ -34,6 +34,7 @@ type MultiSourceSecret struct {
 	envKey      string
 	filePath    string
 	cacheTTL    time.Duration
+	now         func() time.Time // Injectable clock so tests can expire the cache without sleeping
 
 	mu    sync.RWMutex
 	cache *cachedSecret
@@ -53,6 +54,7 @@ func NewMultiSourceSecret(explicitKey string, cacheTTL time.Duration) *MultiSour
 		envKey:      "AMP_API_KEY",
 		filePath:    filePath,
 		cacheTTL:    cacheTTL,
+		now:         time.Now,
 	}
 }
 
@@ -67,6 +69,7 @@ func NewMultiSourceSecretWithPath(explicitKey string, filePath string, cacheTTL 
 		envKey:      "AMP_API_KEY",
 		filePath:    filePath,
 		cacheTTL:    cacheTTL,
+		now:         time.Now,
 	}
 }
 
@@ -86,7 +89,7 @@ func (s *MultiSourceSecret) Get(ctx context.Context) (string, error) {
 	// Precedence 3: File-based secret (lowest priority, cached)
 	// Check cache first
 	s.mu.RLock()
-	if s.cache != nil && time.Now().Before(s.cache.expiresAt) {
+	if s.cache != nil && s.now().Before(s.cache.expiresAt) {
 		value := s.cache.value
 		s.mu.RUnlock()
 		return value, nil
@@ -131,7 +134,7 @@ func (s *MultiSourceSecret) updateCache(value string) {
 	defer s.mu.Unlock()
 	s.cache = &cachedSecret{
 		value:     value,
-		expiresAt: time.Now().Add(s.cacheTTL),
+		expiresAt: s.now().Add(s.cacheTTL),
 	}
 }
 
