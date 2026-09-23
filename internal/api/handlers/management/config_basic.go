@@ -200,7 +200,6 @@ func sanitizeConfigForAPI(cfg *config.Config) *config.Config {
 		copy.OpenCodeGoKey[i].APIKey = maskKey(copy.OpenCodeGoKey[i].APIKey)
 		copy.OpenCodeGoKey[i].Name = maskName(copy.OpenCodeGoKey[i].Name)
 		copy.OpenCodeGoKey[i].ProxyURL = maskBaseURL(copy.OpenCodeGoKey[i].ProxyURL)
-		copy.OpenCodeGoKey[i].AuthCookie = maskKey(copy.OpenCodeGoKey[i].AuthCookie)
 		copy.OpenCodeGoKey[i].ExcludedModels = nil
 	}
 

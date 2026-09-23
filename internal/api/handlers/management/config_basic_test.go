@@ -127,7 +127,6 @@ func TestSanitizeConfigForAPI(t *testing.T) {
 				APIKey:         "sk-goXXXX1234000000",
 				Name:           "OpenCode Go 渠道",
 				ProxyURL:       "https://proxy.example.com/go",
-				AuthCookie:     "auth-cookie-secret",
 				ExcludedModels: []string{"minimax-m2.5"},
 			},
 		},
@@ -234,9 +233,6 @@ func TestSanitizeConfigForAPI(t *testing.T) {
 		}
 		if c.ProxyURL == "https://proxy.example.com/go" {
 			t.Error("OpenCodeGoKey: proxy-url not masked")
-		}
-		if c.AuthCookie == "auth-cookie-secret" {
-			t.Error("OpenCodeGoKey: auth-cookie not masked")
 		}
 	}
 

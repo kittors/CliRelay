@@ -279,12 +279,6 @@ type OpenCodeGoKey struct {
 
 	// VisionFallbackModel is used for image requests whose requested model lacks vision support.
 	VisionFallbackModel string `yaml:"vision-fallback-model,omitempty" json:"vision-fallback-model,omitempty"`
-
-	// WorkspaceID identifies the OpenCode workspace used for dashboard usage checks.
-	WorkspaceID string `yaml:"-" json:"workspace-id,omitempty"`
-
-	// AuthCookie stores the OpenCode dashboard auth cookie value used for usage checks.
-	AuthCookie string `yaml:"-" json:"auth-cookie,omitempty"`
 }
 
 // OpenCodeGoModel describes a model explicitly enabled for OpenCode Go routing.

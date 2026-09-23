@@ -351,8 +351,6 @@ func TestOpenCodeGoKeysReplacePatchDeleteAndRollback(t *testing.T) {
 		Prefix:              " team ",
 		Headers:             map[string]string{"X-Test": " yes "},
 		VisionFallbackModel: " qwen3.5-plus ",
-		WorkspaceID:         " wrk_123 ",
-		AuthCookie:          " auth-token ",
 	}})
 	if err != nil {
 		t.Fatalf("ReplaceOpenCodeGoKeys() error = %v, want nil", err)
@@ -360,7 +358,7 @@ func TestOpenCodeGoKeysReplacePatchDeleteAndRollback(t *testing.T) {
 	if len(cfg.OpenCodeGoKey) != 1 {
 		t.Fatalf("OpenCodeGoKey len = %d, want 1", len(cfg.OpenCodeGoKey))
 	}
-	if got := cfg.OpenCodeGoKey[0]; got.APIKey != "go-key" || got.Prefix != "team" || got.VisionFallbackModel != "qwen3.5-plus" || got.WorkspaceID != "wrk_123" || got.AuthCookie != "auth-token" {
+	if got := cfg.OpenCodeGoKey[0]; got.APIKey != "go-key" || got.Prefix != "team" || got.VisionFallbackModel != "qwen3.5-plus" {
 		t.Fatalf("normalized opencode go key = %#v", got)
 	}
 
@@ -368,19 +366,15 @@ func TestOpenCodeGoKeysReplacePatchDeleteAndRollback(t *testing.T) {
 	name := "secondary"
 	excludedModels := []string{" minimax-m2.5 "}
 	visionFallback := " qwen3.6-plus "
-	workspaceID := " https://opencode.ai/workspace/wrk_456/go "
-	authCookie := " auth-next "
 	err = svc.PatchOpenCodeGoKey(&index, nil, nil, OpenCodeGoPatch{
 		Name:           &name,
 		ExcludedModels: &excludedModels,
 		VisionFallback: &visionFallback,
-		WorkspaceID:    &workspaceID,
-		AuthCookie:     &authCookie,
 	})
 	if err != nil {
 		t.Fatalf("PatchOpenCodeGoKey() error = %v, want nil", err)
 	}
-	if got := cfg.OpenCodeGoKey[0]; got.Name != "secondary" || len(got.ExcludedModels) != 0 || got.VisionFallbackModel != "qwen3.6-plus" || got.WorkspaceID != "wrk_456" || got.AuthCookie != "auth-next" {
+	if got := cfg.OpenCodeGoKey[0]; got.Name != "secondary" || len(got.ExcludedModels) != 0 || got.VisionFallbackModel != "qwen3.6-plus" {
 		t.Fatalf("patched opencode go key = %#v", got)
 	}
 

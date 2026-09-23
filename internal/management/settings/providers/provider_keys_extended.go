@@ -2,14 +2,10 @@ package providers
 
 import (
 	"errors"
-	"net/url"
-	"regexp"
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 )
-
-var openCodeGoServerIDPattern = regexp.MustCompile(`(?i)^[a-f0-9]{64}$`)
 
 var ErrProviderAPIKeyRequired = errors.New("api-key is required")
 
@@ -192,8 +188,6 @@ type OpenCodeGoPatch struct {
 	Models         *[]config.OpenCodeGoModel `json:"models"`
 	ExcludedModels *[]string                 `json:"excluded-models"`
 	VisionFallback *string                   `json:"vision-fallback-model"`
-	WorkspaceID    *string                   `json:"workspace-id"`
-	AuthCookie     *string                   `json:"auth-cookie"`
 }
 
 func (s *Service) OpenCodeGoKeys() []config.OpenCodeGoKey {
@@ -295,12 +289,6 @@ func (s *Service) PatchOpenCodeGoKey(index *int, apiKey *string, name *string, p
 	}
 	if patch.VisionFallback != nil {
 		entry.VisionFallbackModel = strings.TrimSpace(*patch.VisionFallback)
-	}
-	if patch.WorkspaceID != nil {
-		entry.WorkspaceID = strings.TrimSpace(*patch.WorkspaceID)
-	}
-	if patch.AuthCookie != nil {
-		entry.AuthCookie = strings.TrimSpace(*patch.AuthCookie)
 	}
 	NormalizeOpenCodeGoKey(&entry)
 	if entry.APIKey == "" {
@@ -760,12 +748,6 @@ func NormalizeOpenCodeGoKey(entry *config.OpenCodeGoKey) {
 	entry.Models = config.NormalizeOpenCodeGoModels(entry.Models)
 	entry.ExcludedModels = config.NormalizeProviderModelAccessExcludedModels(entry.ExcludedModels)
 	entry.VisionFallbackModel = strings.TrimSpace(entry.VisionFallbackModel)
-	if workspaceID, err := normalizeOpenCodeGoWorkspaceID(entry.WorkspaceID); err == nil {
-		entry.WorkspaceID = workspaceID
-	} else {
-		entry.WorkspaceID = strings.TrimSpace(entry.WorkspaceID)
-	}
-	entry.AuthCookie = strings.TrimSpace(entry.AuthCookie)
 }
 
 func NormalizedOpenCodeGoKeyEntries(entries []config.OpenCodeGoKey) []config.OpenCodeGoKey {
@@ -851,50 +833,4 @@ func NormalizedOllamaCloudKeyEntries(entries []config.OllamaCloudKey) []config.O
 		}
 	}
 	return out
-}
-
-func normalizeOpenCodeGoWorkspaceID(raw string) (string, error) {
-	raw = strings.Trim(strings.TrimSpace(raw), `"'`)
-	if raw == "" {
-		return "", nil
-	}
-	if id := extractOpenCodeGoWorkspaceID(raw); id != "" {
-		return id, nil
-	}
-	trimmed := strings.Trim(raw, "/")
-	if strings.EqualFold(trimmed, "default") || openCodeGoServerIDPattern.MatchString(trimmed) {
-		return trimmed, errors.New("invalid workspace id")
-	}
-	return trimmed, nil
-}
-
-func extractOpenCodeGoWorkspaceID(raw string) string {
-	parsed, err := url.Parse(raw)
-	if err == nil && parsed.Path != "" {
-		if id := extractOpenCodeGoWorkspaceIDFromPath(parsed.Path); id != "" {
-			return id
-		}
-	}
-	return extractOpenCodeGoWorkspaceIDFromPath(raw)
-}
-
-func extractOpenCodeGoWorkspaceIDFromPath(path string) string {
-	parts := strings.Split(path, "/")
-	for i, part := range parts {
-		if part != "workspace" || i+1 >= len(parts) {
-			continue
-		}
-		id := strings.TrimSpace(parts[i+1])
-		if id == "" {
-			continue
-		}
-		if unescaped, err := url.PathUnescape(id); err == nil {
-			id = unescaped
-		}
-		id = strings.Trim(strings.TrimSpace(id), `"'`)
-		if id != "" {
-			return id
-		}
-	}
-	return ""
 }
