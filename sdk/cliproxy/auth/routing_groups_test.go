@@ -95,6 +95,95 @@ func TestCanServeModelWithScopesHonorsGroupAllowedModels(t *testing.T) {
 	}
 }
 
+// A group that lists exclusions instead of an allow list must keep serving a
+// model the upstream added after the group was configured. The allow-list form
+// cannot express that, which is why the panel writes exclusions by default.
+func TestCanServeModelWithScopesHonorsGroupExcludedModels(t *testing.T) {
+	t.Parallel()
+
+	reg := registry.GetGlobalRegistry()
+	now := time.Now().Unix()
+	reg.RegisterClient("xai-auth", "openai", []*registry.ModelInfo{
+		{ID: "xai/grok-4.6", Created: now},
+		{ID: "xai/grok-4.7", Created: now},
+		{ID: "xai/grok-imagine-video-1.5", Created: now},
+	})
+	t.Cleanup(func() {
+		reg.UnregisterClient("xai-auth")
+	})
+
+	manager := NewManager(nil, nil, nil)
+	manager.SetConfig(&internalconfig.Config{
+		Routing: internalconfig.RoutingConfig{
+			ChannelGroups: []internalconfig.RoutingChannelGroup{
+				{
+					Name:           "xai",
+					ExcludedModels: []string{"grok-imagine-video-1.5"},
+				},
+			},
+		},
+	})
+	if _, err := manager.Register(context.Background(), &Auth{
+		ID:       "xai-auth",
+		Provider: "openai",
+		Prefix:   "xai",
+	}); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+
+	if !manager.CanServeModelWithScopes("grok-4.6", nil, nil, "xai") {
+		t.Fatal("expected model outside the exclusion list to stay available")
+	}
+	if !manager.CanServeModelWithScopes("grok-4.7", nil, nil, "xai") {
+		t.Fatal("expected a newly added upstream model to be available without editing the group")
+	}
+	if manager.CanServeModelWithScopes("grok-imagine-video-1.5", nil, nil, "xai") {
+		t.Fatal("expected excluded model to be unavailable")
+	}
+}
+
+// Exclusions win over allow entries so a model named in both stays blocked.
+func TestCanServeModelWithScopesExclusionOverridesAllowList(t *testing.T) {
+	t.Parallel()
+
+	reg := registry.GetGlobalRegistry()
+	now := time.Now().Unix()
+	reg.RegisterClient("mixed-auth", "openai", []*registry.ModelInfo{
+		{ID: "mixed/gpt-5", Created: now},
+		{ID: "mixed/claude-opus", Created: now},
+	})
+	t.Cleanup(func() {
+		reg.UnregisterClient("mixed-auth")
+	})
+
+	manager := NewManager(nil, nil, nil)
+	manager.SetConfig(&internalconfig.Config{
+		Routing: internalconfig.RoutingConfig{
+			ChannelGroups: []internalconfig.RoutingChannelGroup{
+				{
+					Name:           "mixed",
+					AllowedModels:  []string{"gpt-5", "claude-opus"},
+					ExcludedModels: []string{"claude-opus"},
+				},
+			},
+		},
+	})
+	if _, err := manager.Register(context.Background(), &Auth{
+		ID:       "mixed-auth",
+		Provider: "openai",
+		Prefix:   "mixed",
+	}); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+
+	if !manager.CanServeModelWithScopes("gpt-5", nil, nil, "mixed") {
+		t.Fatal("expected allowed model to stay available")
+	}
+	if manager.CanServeModelWithScopes("claude-opus", nil, nil, "mixed") {
+		t.Fatal("expected exclusion to win over the allow entry")
+	}
+}
+
 func TestCanServeModelWithScopesHonorsDisableAllModelsMetadata(t *testing.T) {
 	t.Parallel()
 

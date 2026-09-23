@@ -207,10 +207,10 @@ func blockingRouteGroups(
 		if _, ok := scoped[name]; !ok {
 			continue
 		}
-		if len(group.AllowedModels) == 0 {
+		if len(group.AllowedModels) == 0 && len(group.ExcludedModels) == 0 {
 			continue
 		}
-		if !routingGroupAllowsModel(name, group.AllowedModels, modelID) {
+		if !routingGroupModelAllowed(name, group.AllowedModels, group.ExcludedModels, modelID) {
 			blocking = append(blocking, group.Name)
 		}
 	}

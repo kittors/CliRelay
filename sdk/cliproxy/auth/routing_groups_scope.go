@@ -380,15 +380,31 @@ func modelAllowedByRoutingGroupScopes(cfg *runtimeConfigSnapshot, modelID string
 		if _, ok := scopedGroups[groupName]; !ok {
 			continue
 		}
-		if len(group.AllowedModels) == 0 {
+		if len(group.AllowedModels) == 0 && len(group.ExcludedModels) == 0 {
 			return true
 		}
 		foundRestrictedGroup = true
-		if routingGroupAllowsModel(groupName, group.AllowedModels, modelID) {
+		if routingGroupModelAllowed(groupName, group.AllowedModels, group.ExcludedModels, modelID) {
 			return true
 		}
 	}
 	return !foundRestrictedGroup
+}
+
+// routingGroupModelAllowed applies one group's model gate.
+//
+// An exclusion wins over an allow entry: the two lists are meant to be used one
+// at a time, and a model named in both is the operator's most recent intent to
+// block it. With no allow list, everything the group's channels serve passes
+// except the exclusions, which is what keeps newly added upstream models usable.
+func routingGroupModelAllowed(groupName string, allowedModels, excludedModels []string, modelID string) bool {
+	if len(excludedModels) > 0 && routingGroupAllowsModel(groupName, excludedModels, modelID) {
+		return false
+	}
+	if len(allowedModels) == 0 {
+		return strings.TrimSpace(modelID) != ""
+	}
+	return routingGroupAllowsModel(groupName, allowedModels, modelID)
 }
 
 func routingGroupAllowsModel(groupName string, allowedModels []string, modelID string) bool {
@@ -407,6 +423,11 @@ func routingGroupAllowsModel(groupName string, allowedModels []string, modelID s
 		allowed = strings.TrimSpace(allowed)
 		if allowed == "" {
 			continue
+		}
+		// "*" matches everything, mirroring the provider-level excluded-models
+		// wildcard so an operator can block a whole group's models in one entry.
+		if allowed == "*" {
+			return true
 		}
 		if strings.EqualFold(allowed, modelID) || strings.EqualFold(allowed, unprefixed) {
 			return true

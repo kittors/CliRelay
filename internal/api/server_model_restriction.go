@@ -249,7 +249,7 @@ func (s *Server) hasScopedRoutingModelRestriction(routeGroup string, allowedGrou
 }
 
 func (s *Server) hasScopedRoutingModelRestrictionForTenant(tenantID, routeGroup string, allowedGroups map[string]struct{}) bool {
-	return s.scopedRoutingAllowedModelsForTenant(tenantID, routeGroup, allowedGroups) != nil
+	return !s.scopedRoutingModelGateForTenant(tenantID, routeGroup, allowedGroups).unrestricted
 }
 
 func (s *Server) modelAllowedByScopedRoutingGroups(model string, routeGroup string, allowedGroups map[string]struct{}) bool {
@@ -257,21 +257,69 @@ func (s *Server) modelAllowedByScopedRoutingGroups(model string, routeGroup stri
 }
 
 func (s *Server) modelAllowedByScopedRoutingGroupsForTenant(tenantID, model, routeGroup string, allowedGroups map[string]struct{}) bool {
-	allowedModels := s.scopedRoutingAllowedModelsForTenant(tenantID, routeGroup, allowedGroups)
-	if allowedModels == nil {
+	return s.scopedRoutingModelGateForTenant(tenantID, routeGroup, allowedGroups).allows(model)
+}
+
+// scopedRoutingModelGate applies the channel-group model gate to the /v1/models
+// listing, mirroring the runtime gate in sdk/cliproxy/auth: a group with neither
+// list serves every model its channels offer (including ones added upstream
+// later), an allow list freezes the group to the models it names, and exclusions
+// subtract from everything. Scoped groups form a union, so one permissive group
+// is enough.
+type scopedRoutingModelGate struct {
+	unrestricted bool
+	groups       []scopedRoutingModelGroupGate
+}
+
+type scopedRoutingModelGroupGate struct {
+	allowed  []string
+	excluded []string
+}
+
+func (g scopedRoutingModelGate) allows(model string) bool {
+	if g.unrestricted {
 		return true
 	}
-	return routeAllowedModelMatches(model, allowedModels)
+	if strings.TrimSpace(model) == "" {
+		return false
+	}
+	for _, group := range g.groups {
+		if len(group.excluded) > 0 && routeAllowedModelMatches(model, group.excluded) {
+			continue
+		}
+		if len(group.allowed) == 0 || routeAllowedModelMatches(model, group.allowed) {
+			return true
+		}
+	}
+	return false
 }
 
-func (s *Server) scopedRoutingAllowedModels(routeGroup string, allowedGroups map[string]struct{}) []string {
-	return s.scopedRoutingAllowedModelsForTenant(identity.SystemTenantID, routeGroup, allowedGroups)
-}
-
+// scopedRoutingAllowedModelsForTenant returns the union of allow lists for the
+// scoped groups, or nil when no allow list applies. Exclusion-only groups are
+// not representable here, so restriction checks must use the gate instead.
 func (s *Server) scopedRoutingAllowedModelsForTenant(tenantID, routeGroup string, allowedGroups map[string]struct{}) []string {
+	gate := s.scopedRoutingModelGateForTenant(tenantID, routeGroup, allowedGroups)
+	if gate.unrestricted {
+		return nil
+	}
+	var allowedModels []string
+	for _, group := range gate.groups {
+		if len(group.allowed) == 0 {
+			return nil
+		}
+		allowedModels = append(allowedModels, group.allowed...)
+	}
+	if len(allowedModels) == 0 {
+		return nil
+	}
+	return allowedModels
+}
+
+func (s *Server) scopedRoutingModelGateForTenant(tenantID, routeGroup string, allowedGroups map[string]struct{}) scopedRoutingModelGate {
+	unrestricted := scopedRoutingModelGate{unrestricted: true}
 	routing := s.routingConfigForTenant(tenantID)
 	if routing == nil {
-		return nil
+		return unrestricted
 	}
 	scopedGroups := make(map[string]struct{})
 	if routeGroup = internalrouting.NormalizeGroupName(routeGroup); routeGroup != "" {
@@ -289,24 +337,27 @@ func (s *Server) scopedRoutingAllowedModelsForTenant(tenantID, routeGroup string
 		}
 	}
 	if len(scopedGroups) == 0 {
-		return nil
+		return unrestricted
 	}
 
-	var allowedModels []string
+	var gate scopedRoutingModelGate
 	for _, group := range routing.ChannelGroups {
 		groupName := internalrouting.NormalizeGroupName(group.Name)
 		if _, ok := scopedGroups[groupName]; !ok {
 			continue
 		}
-		if len(group.AllowedModels) == 0 {
-			return nil
+		if len(group.AllowedModels) == 0 && len(group.ExcludedModels) == 0 {
+			return unrestricted
 		}
-		allowedModels = append(allowedModels, group.AllowedModels...)
+		gate.groups = append(gate.groups, scopedRoutingModelGroupGate{
+			allowed:  group.AllowedModels,
+			excluded: group.ExcludedModels,
+		})
 	}
-	if len(allowedModels) == 0 {
-		return nil
+	if len(gate.groups) == 0 {
+		return unrestricted
 	}
-	return allowedModels
+	return gate
 }
 
 // routingConfigForTenant prefers the tenant's DB-backed routing config so
@@ -358,6 +409,10 @@ func routeAllowedModelMatches(model string, allowedModels []string) bool {
 		allowed = strings.TrimSpace(allowed)
 		if allowed == "" {
 			continue
+		}
+		// "*" matches everything, so one exclusion entry can block a whole group.
+		if allowed == "*" {
+			return true
 		}
 		if strings.EqualFold(model, allowed) {
 			return true

@@ -19,6 +19,19 @@ type ChannelGroupMatch struct {
 // kept in sync with Scheduling by sanitizeScheduling so that an older binary or
 // admin panel reading this config still sees a coherent value; new code must
 // read Scheduling, never these two fields.
+//
+// AllowedModels and ExcludedModels express the two halves of the same gate and
+// only one of them should be set at a time:
+//
+//	both empty        → every model the group's channels serve, including ones
+//	                    the upstream adds later
+//	AllowedModels set → a frozen allow list; a model the upstream adds later is
+//	                    rejected until an operator adds it here
+//	ExcludedModels set→ every model except these, so new upstream models stay
+//	                    usable without touching the config
+//
+// The panel writes ExcludedModels by default for exactly that reason: an
+// allow-list snapshot silently blocks tomorrow's models.
 type RoutingChannelGroup struct {
 	Name               string            `yaml:"name" json:"name"`
 	Description        string            `yaml:"description,omitempty" json:"description,omitempty"`
@@ -29,6 +42,7 @@ type RoutingChannelGroup struct {
 	Priority           int               `yaml:"priority,omitempty" json:"priority,omitempty"`
 	ChannelPriorities  map[string]int    `yaml:"channel-priorities,omitempty" json:"channel-priorities,omitempty"`
 	AllowedModels      []string          `yaml:"allowed-models,omitempty" json:"allowed-models,omitempty"`
+	ExcludedModels     []string          `yaml:"excluded-models,omitempty" json:"excluded-models,omitempty"`
 }
 
 // RoutingPathRoute maps a URL namespace path to a channel group.
@@ -138,6 +152,9 @@ func (cfg *Config) SanitizeRouting() {
 		group.ChannelPriorities = normalizeChannelPriorities(group.ChannelPriorities)
 		sanitizeScheduling(&group)
 		group.AllowedModels = normalizeStringList(group.AllowedModels, func(value string) string {
+			return strings.TrimSpace(value)
+		})
+		group.ExcludedModels = normalizeStringList(group.ExcludedModels, func(value string) string {
 			return strings.TrimSpace(value)
 		})
 		if group.Name == "" {
