@@ -106,6 +106,9 @@ func localHourBoundsAt(from, now time.Time, loc *time.Location) []time.Time {
 // floorLocalHour truncates t to the start of its hour on loc's wall clock.
 // time.Truncate works on absolute time and lands mid-hour for +05:45 or +09:30.
 func floorLocalHour(t time.Time, loc *time.Location) time.Time {
+	if loc == nil {
+		loc = time.Local
+	}
 	local := t.In(loc)
 	return local.Add(-time.Duration(local.Minute())*time.Minute -
 		time.Duration(local.Second())*time.Second -

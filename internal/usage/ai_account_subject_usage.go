@@ -420,15 +420,17 @@ func QueryAIAccountSubjectDailyUsage(authSubjectID string, days int) ([]DailyUsa
 // EmptyHourlyUsageBuckets returns a zero-filled hourly window in the usage timezone.
 // Shared subject tables have day/cycle/lifetime only; detail charts use zeros for hours.
 func EmptyHourlyUsageBuckets(hours int) []HourlyUsagePoint {
+	return emptyHourlyUsageBucketsAt(time.Now(), hours, getUsageLocation())
+}
+
+func emptyHourlyUsageBucketsAt(now time.Time, hours int, loc *time.Location) []HourlyUsagePoint {
 	if hours < 1 {
 		hours = 5
 	}
 	if hours > 24 {
 		hours = 24
 	}
-	loc := getUsageLocation()
-	now := time.Now().In(loc).Truncate(time.Hour)
-	start := now.Add(-time.Duration(hours-1) * time.Hour)
+	start := floorLocalHour(now, loc).Add(-time.Duration(hours-1) * time.Hour)
 	out := make([]HourlyUsagePoint, 0, hours)
 	for i := 0; i < hours; i++ {
 		out = append(out, HourlyUsagePoint{

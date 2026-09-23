@@ -96,17 +96,17 @@ func QueryHourlyUsageByAuthSubject(matcher AuthSubjectMatcher, hours int) ([]Hou
 }
 
 func QueryHourlyUsageByAuthSubjectForTenant(tenantID string, matcher AuthSubjectMatcher, hours int) ([]HourlyUsagePoint, error) {
-	return queryHourlyUsageByAuthSubject(normalizeTenantID(tenantID), matcher, hours, false)
+	return queryHourlyUsageByAuthSubject(normalizeTenantID(tenantID), matcher, hours, false, time.Now(), getUsageLocation())
 }
 
 // QueryHourlyUsageByAuthSubjectAcrossTenants aggregates the last N hours for one
 // physical account across all tenants. Only pass share-eligible subject matchers;
 // never use for tenant-scoped subjects or request-log list/detail.
 func QueryHourlyUsageByAuthSubjectAcrossTenants(matcher AuthSubjectMatcher, hours int) ([]HourlyUsagePoint, error) {
-	return queryHourlyUsageByAuthSubject("", matcher, hours, true)
+	return queryHourlyUsageByAuthSubject("", matcher, hours, true, time.Now(), getUsageLocation())
 }
 
-func queryHourlyUsageByAuthSubject(tenantID string, matcher AuthSubjectMatcher, hours int, acrossTenants bool) ([]HourlyUsagePoint, error) {
+func queryHourlyUsageByAuthSubject(tenantID string, matcher AuthSubjectMatcher, hours int, acrossTenants bool, now time.Time, loc *time.Location) ([]HourlyUsagePoint, error) {
 	db := getReadDB()
 	if db == nil {
 		return []HourlyUsagePoint{}, nil
@@ -121,7 +121,7 @@ func queryHourlyUsageByAuthSubject(tenantID string, matcher AuthSubjectMatcher, 
 	if acrossTenants {
 		subjectID := strings.TrimSpace(matcher.SubjectID)
 		if subjectID == "" {
-			return EmptyHourlyUsageBuckets(hours), nil
+			return emptyHourlyUsageBucketsAt(now, hours, loc), nil
 		}
 		matcher = AuthSubjectMatcher{SubjectID: subjectID}
 	}
@@ -131,9 +131,7 @@ func queryHourlyUsageByAuthSubject(tenantID string, matcher AuthSubjectMatcher, 
 		return []HourlyUsagePoint{}, nil
 	}
 
-	loc := getUsageLocation()
-	now := time.Now().In(loc).Truncate(time.Hour)
-	start := now.Add(-time.Duration(hours-1) * time.Hour)
+	start := floorLocalHour(now, loc).Add(-time.Duration(hours-1) * time.Hour)
 	buckets := make([]HourlyUsagePoint, 0, hours)
 	byKey := make(map[string]*HourlyUsagePoint, hours)
 	for i := 0; i < hours; i++ {
@@ -177,7 +175,7 @@ func queryHourlyUsageByAuthSubject(tenantID string, matcher AuthSubjectMatcher, 
 		if !ts.Valid {
 			continue
 		}
-		key := ts.Time.In(loc).Truncate(time.Hour).Format("2006-01-02 15:00")
+		key := floorLocalHour(ts.Time, loc).Format("2006-01-02 15:00")
 		if bucket := byKey[key]; bucket != nil {
 			bucket.Requests++
 			bucket.Cost += cost

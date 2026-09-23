@@ -32,6 +32,52 @@ func TestQueryDailyUsageByAuthSubjectBucketsByUsageTimezone(t *testing.T) {
 	assertDailyUsageByAuthSubjectFollowsUsageTimezone(t)
 }
 
+// Regression: hourly buckets used time.Truncate(time.Hour), which truncates
+// absolute time, so in a +05:30 usage timezone every bucket began at :30 and
+// was labelled with the hour before it.
+func TestQueryHourlyUsageByAuthSubjectFollowsLocalWallClockHours(t *testing.T) {
+	CloseDB()
+	loc := time.FixedZone("UTC+05:30", 5*3600+30*60)
+	if err := InitDB(filepath.Join(t.TempDir(), "usage.db"), config.RequestLogStorageConfig{}, loc); err != nil {
+		t.Fatalf("InitDB() error = %v", err)
+	}
+	stopRequestLogMaintenance()
+	t.Cleanup(CloseDB)
+
+	for _, at := range []time.Time{
+		time.Date(2026, 9, 22, 0, 29, 59, 0, time.UTC), // 05:59:59 local, before the window
+		time.Date(2026, 9, 22, 0, 30, 0, 0, time.UTC),  // 06:00 local, first bucket
+		time.Date(2026, 9, 22, 4, 40, 0, 0, time.UTC),  // 10:10 local, current hour
+	} {
+		InsertLog("", "", "gpt-5.4", "codex", "Codex", "auth-half-hour", false, at, 1, 1, TokenStats{TotalTokens: 1}, "", "")
+	}
+
+	now := time.Date(2026, 9, 22, 4, 45, 0, 0, time.UTC) // 10:15 local
+	hourly, err := queryHourlyUsageByAuthSubject(systemTenantID, AuthSubjectMatcher{AuthIndexes: []string{"auth-half-hour"}}, 5, false, now, loc)
+	if err != nil {
+		t.Fatalf("queryHourlyUsageByAuthSubject: %v", err)
+	}
+
+	want := []HourlyUsagePoint{
+		{Hour: "2026-09-22 06:00", Requests: 1},
+		{Hour: "2026-09-22 07:00"},
+		{Hour: "2026-09-22 08:00"},
+		{Hour: "2026-09-22 09:00"},
+		{Hour: "2026-09-22 10:00", Requests: 1},
+	}
+	if !reflect.DeepEqual(hourly, want) {
+		t.Fatalf("hourly = %+v, want %+v", hourly, want)
+	}
+	// Shared subjects without hour data fall back to these empty slots.
+	empty := emptyHourlyUsageBucketsAt(now, 5, loc)
+	for i := range want {
+		want[i].Requests = 0
+	}
+	if !reflect.DeepEqual(empty, want) {
+		t.Fatalf("empty buckets = %+v, want %+v", empty, want)
+	}
+}
+
 // assertDailyUsageByAuthSubjectFollowsUsageTimezone runs on SQLite and on
 // PostgreSQL, where production day keys come from.
 func assertDailyUsageByAuthSubjectFollowsUsageTimezone(t *testing.T) {

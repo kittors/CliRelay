@@ -143,8 +143,7 @@ func QueryHourlyCallsByAuthIndex(authIndex string, hours int) ([]HourlyCountPoin
 	}
 
 	loc := getUsageLocation()
-	now := time.Now().In(loc).Truncate(time.Hour)
-	start := now.Add(-time.Duration(hours-1) * time.Hour)
+	start := floorLocalHour(time.Now(), loc).Add(-time.Duration(hours-1) * time.Hour)
 	buckets := make([]HourlyCountPoint, 0, hours)
 	byKey := make(map[string]*HourlyCountPoint, hours)
 	for i := 0; i < hours; i++ {
@@ -171,7 +170,7 @@ func QueryHourlyCallsByAuthIndex(authIndex string, hours int) ([]HourlyCountPoin
 		if !ts.Valid {
 			continue
 		}
-		key := ts.Time.In(loc).Truncate(time.Hour).Format("2006-01-02 15:00")
+		key := floorLocalHour(ts.Time, loc).Format("2006-01-02 15:00")
 		if bucket := byKey[key]; bucket != nil {
 			bucket.Requests++
 		}
