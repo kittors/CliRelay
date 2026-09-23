@@ -75,6 +75,9 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 	var lastRequest []byte
 	lastResponseOutput := []byte("[]")
 	pinnedAuthID := ""
+	// Published by the quota middleware on the upgrade request when the key has
+	// limits; it stays the same for the life of the connection.
+	quotaGate := handlers.QuotaGateFromGin(c)
 
 	for {
 		msgType, payload, errReadMessage := conn.ReadMessage()
@@ -162,41 +165,51 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 		}
 
 		modelName := gjson.GetBytes(requestJSON, "model").String()
+		// A turn reaches the executor and spends upstream quota just like a POST,
+		// so it passes the same quota checks, once per turn. They run before the
+		// model gate, as the quota middleware runs before model restriction on
+		// POST. An admitted turn holds its concurrency slot until releaseQuota.
+		releaseQuota := func() {}
+		if quotaGate != nil {
+			release, rejection := quotaGate()
+			if rejection != nil {
+				refusal := &interfaces.ErrorMessage{StatusCode: rejection.StatusCode, Error: rejection, Addon: rejection.Headers}
+				if !h.refuseResponsesWebsocketTurn(c, conn, refusal, &wsBodyLog, "turn refused by quota", passthroughSessionID) {
+					return
+				}
+				continue
+			}
+			releaseQuota = release
+		}
 		// The HTTP middleware could not see this model: it ran on the upgrade
 		// request, which has no body. Apply its verdict here, per turn, so a
 		// disabled or not-allowed model is refused on WebSocket exactly as on POST.
 		if gate := handlers.ModelGateFromGin(c); gate != nil {
 			if verdict := gate(modelName); verdict != nil {
-				h.LoggingAPIResponseError(context.WithValue(c.Request.Context(), util.ContextKeyGin, c), verdict)
-				markAPIResponseTimestamp(c)
-				errorPayload, errWrite := writeResponsesWebsocketError(conn, verdict)
-				appendWebsocketEvent(&wsBodyLog, "response", errorPayload)
-				log.Infof(
-					"responses websocket: model %q refused id=%s status=%d",
-					modelName,
-					passthroughSessionID,
-					verdict.StatusCode,
-				)
-				if errWrite != nil {
-					log.Warnf("responses websocket: refusal write failed id=%s error=%v", passthroughSessionID, errWrite)
+				releaseQuota()
+				if !h.refuseResponsesWebsocketTurn(c, conn, verdict, &wsBodyLog, fmt.Sprintf("model %q refused", modelName), passthroughSessionID) {
 					return
 				}
 				continue
 			}
 		}
-		cliCtx, cliCancel := h.GetContextWithCancel(h, c, c.Request.Context())
-		cliCtx = cliproxyexecutor.WithDownstreamWebsocket(cliCtx)
-		cliCtx = handlers.WithExecutionSessionID(cliCtx, passthroughSessionID)
-		if pinnedAuthID != "" {
-			cliCtx = handlers.WithPinnedAuthID(cliCtx, pinnedAuthID)
-		} else {
-			cliCtx = handlers.WithSelectedAuthIDCallback(cliCtx, func(authID string) {
-				pinnedAuthID = strings.TrimSpace(authID)
-			})
-		}
-		dataChan, _, errChan := h.ExecuteStreamWithAuthManager(cliCtx, h.HandlerType(), modelName, requestJSON, "")
-
-		completedOutput, errForward := h.forwardResponsesWebsocket(c, conn, cliCancel, dataChan, errChan, &wsBodyLog, passthroughSessionID)
+		completedOutput, errForward := func() ([]byte, error) {
+			// Deferred so the slot comes back however the turn ends: completed,
+			// failed upstream, client gone, or a panic.
+			defer releaseQuota()
+			cliCtx, cliCancel := h.GetContextWithCancel(h, c, c.Request.Context())
+			cliCtx = cliproxyexecutor.WithDownstreamWebsocket(cliCtx)
+			cliCtx = handlers.WithExecutionSessionID(cliCtx, passthroughSessionID)
+			if pinnedAuthID != "" {
+				cliCtx = handlers.WithPinnedAuthID(cliCtx, pinnedAuthID)
+			} else {
+				cliCtx = handlers.WithSelectedAuthIDCallback(cliCtx, func(authID string) {
+					pinnedAuthID = strings.TrimSpace(authID)
+				})
+			}
+			dataChan, _, errChan := h.ExecuteStreamWithAuthManager(cliCtx, h.HandlerType(), modelName, requestJSON, "")
+			return h.forwardResponsesWebsocket(c, conn, cliCancel, dataChan, errChan, &wsBodyLog, passthroughSessionID)
+		}()
 		if errForward != nil {
 			wsTerminateErr = errForward
 			appendWebsocketEvent(&wsBodyLog, "disconnect", []byte(errForward.Error()))
@@ -205,6 +218,23 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 		}
 		lastResponseOutput = completedOutput
 	}
+}
+
+// refuseResponsesWebsocketTurn answers a turn refused before it reached the
+// executor with an error event. The connection stays open for the next turn,
+// just as only that one request fails on POST. It returns false when the event
+// could not be written and the connection has to close.
+func (h *OpenAIResponsesAPIHandler) refuseResponsesWebsocketTurn(c *gin.Context, conn *websocket.Conn, refusal *interfaces.ErrorMessage, wsBodyLog *strings.Builder, reason, sessionID string) bool {
+	h.LoggingAPIResponseError(context.WithValue(c.Request.Context(), util.ContextKeyGin, c), refusal)
+	markAPIResponseTimestamp(c)
+	errorPayload, errWrite := writeResponsesWebsocketError(conn, refusal)
+	appendWebsocketEvent(wsBodyLog, "response", errorPayload)
+	log.Infof("responses websocket: %s id=%s status=%d", reason, sessionID, refusal.StatusCode)
+	if errWrite != nil {
+		log.Warnf("responses websocket: refusal write failed id=%s error=%v", sessionID, errWrite)
+		return false
+	}
+	return true
 }
 
 func websocketUpgradeHeaders(req *http.Request) http.Header {
