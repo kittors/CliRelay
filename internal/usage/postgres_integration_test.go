@@ -456,8 +456,8 @@ func assertPostgresRequestLogQueries(t *testing.T, logID int64, apiKey string) {
 	if series, err := QueryDailySeries(apiKey, 1); err != nil || len(series) == 0 {
 		t.Fatalf("QueryDailySeries() series=%#v err=%v", series, err)
 	}
-	if heatmap, err := QueryDailyHeatmapSeries(apiKey, 1); err != nil || len(heatmap) == 0 {
-		t.Fatalf("QueryDailyHeatmapSeries() heatmap=%#v err=%v", heatmap, err)
+	if chart, err := QueryPublicChartData(apiKey, 1); err != nil || len(chart.HeatmapSeries) == 0 {
+		t.Fatalf("QueryPublicChartData() chart=%#v err=%v", chart, err)
 	}
 	if tokens, models, err := QueryHourlySeries(apiKey, 24); err != nil || len(tokens) == 0 || len(models) == 0 {
 		t.Fatalf("QueryHourlySeries() tokens=%#v models=%#v err=%v", tokens, models, err)
