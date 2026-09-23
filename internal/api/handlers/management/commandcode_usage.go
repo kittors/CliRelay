@@ -15,10 +15,10 @@ import (
 
 // Command Code plan usage.
 //
-// Unlike the OpenCode Go, Cline and Ollama Cloud checks in opencode_go_usage.go,
-// this one needs no dashboard cookie: the credits endpoint authenticates with the
-// same API key that serves inference, so usage keeps working without the operator
-// pasting a browser cookie that later expires.
+// Unlike the Cline and Ollama Cloud checks in opencode_go_usage.go, and like the
+// OpenCode Go one, this needs no dashboard cookie: the credits endpoint
+// authenticates with the same API key that serves inference, so usage keeps
+// working without the operator pasting a browser cookie that later expires.
 //
 // The endpoint is not part of Command Code's published API reference — it was
 // observed on the live gateway. Treat every failure as "usage unavailable" rather

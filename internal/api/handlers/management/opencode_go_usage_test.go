@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -187,6 +188,126 @@ func TestQueryOpenCodeGoUsageReportsInvalidKey(t *testing.T) {
 	}
 	if !bytes.Contains(w.Body.Bytes(), []byte("Unauthorized")) {
 		t.Fatalf("body = %s", w.Body.String())
+	}
+}
+
+// A 403 is not by itself "no Go subscription": opencode.ai sits behind
+// Cloudflare, and a challenge page or a WAF block on the proxy's exit IP answers
+// 403 without the usage endpoint ever running. Only the endpoint's own error
+// envelope may name the reason; anything else has to say what actually came
+// back, so the operator is not sent after a plan they already have.
+func TestQueryOpenCodeGoUsageNamesOnlyTheReasonTheEndpointGave(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	tests := []struct {
+		name        string
+		status      int
+		contentType string
+		body        string
+		want        []string
+		reject      []string
+	}{
+		{
+			name:        "cloudflare challenge page",
+			status:      http.StatusForbidden,
+			contentType: "text/html; charset=UTF-8",
+			body:        "<!DOCTYPE html><html><head><title>Just a moment...</title></head><body>Enable JavaScript and cookies to continue</body></html>",
+			want:        []string{"HTTP 403", "(text/html)", "Just a moment..."},
+			reject:      []string{"subscription", "Enable JavaScript"},
+		},
+		{
+			name:        "403 without the envelope",
+			status:      http.StatusForbidden,
+			contentType: "application/json",
+			body:        `{}`,
+			want:        []string{"HTTP 403", "(application/json)"},
+			reject:      []string{"subscription"},
+		},
+		{
+			name:        "entitlement error without a message",
+			status:      http.StatusForbidden,
+			contentType: "application/json",
+			body:        `{"type":"error","error":{"type":"EntitlementError"}}`,
+			want:        []string{"no Go subscription"},
+		},
+		{
+			name:        "auth error without a message",
+			status:      http.StatusUnauthorized,
+			contentType: "application/json",
+			body:        `{"type":"error","error":{"type":"AuthError"}}`,
+			want:        []string{"invalid or expired"},
+		},
+		{
+			name:        "upstream reason on another status",
+			status:      http.StatusServiceUnavailable,
+			contentType: "application/json",
+			body:        `{"type":"error","error":{"type":"ServiceUnavailableError","message":"Inference routing is unavailable."}}`,
+			want:        []string{"Inference routing is unavailable."},
+			reject:      []string{"HTTP 503"},
+		},
+		{
+			name:        "long body without a title is cut short",
+			status:      http.StatusBadGateway,
+			contentType: "text/plain",
+			body:        strings.Repeat("upstream connect error ", 20),
+			want:        []string{"HTTP 502", "(text/plain)", "upstream connect error", "…"},
+		},
+		{
+			name:        "maintenance page served as 200",
+			status:      http.StatusOK,
+			contentType: "text/html",
+			body:        "<html><head><title>Down for maintenance</title></head></html>",
+			want:        []string{"unreadable data", "(text/html)", "Down for maintenance"},
+		},
+		{
+			name:        "usage document of the wrong shape",
+			status:      http.StatusOK,
+			contentType: "application/json",
+			body:        `{"usage":{"rolling":{"status":"ok","percent":"12"}}}`,
+			want:        []string{"unreadable data", "(application/json)"},
+			reject:      []string{"openCodeGoUsageWindow", "Go struct field"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", tt.contentType)
+				w.WriteHeader(tt.status)
+				_, _ = w.Write([]byte(tt.body))
+			}))
+			defer upstream.Close()
+
+			prevURL := openCodeGoUsageAPIURL
+			openCodeGoUsageAPIURL = upstream.URL
+			defer func() { openCodeGoUsageAPIURL = prevURL }()
+
+			h := &Handler{cfg: &config.Config{}}
+			w := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(w)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v0/management/opencode-go-api-key/usage", bytes.NewReader([]byte(`{"api-key":"sk-go-secret"}`)))
+
+			h.QueryOpenCodeGoUsage(c)
+			if w.Code != http.StatusBadGateway {
+				t.Fatalf("status = %d body=%s", w.Code, w.Body.String())
+			}
+			var decoded struct {
+				Error string `json:"error"`
+			}
+			if err := json.Unmarshal(w.Body.Bytes(), &decoded); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			for _, want := range tt.want {
+				if !strings.Contains(decoded.Error, want) {
+					t.Errorf("error %q does not mention %q", decoded.Error, want)
+				}
+			}
+			for _, reject := range append(tt.reject, "sk-go-secret") {
+				if strings.Contains(decoded.Error, reject) {
+					t.Errorf("error %q must not mention %q", decoded.Error, reject)
+				}
+			}
+		})
 	}
 }
 
