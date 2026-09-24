@@ -133,6 +133,10 @@ func (s *FileTokenStore) List(ctx context.Context) ([]*cliproxyauth.Auth, error)
 			return walkErr
 		}
 		if d.IsDir() {
+			// Credentials cluster mode set aside must never load as live accounts.
+			if path != dir && util.IsReservedAuthSubdir(d.Name()) {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 		if !strings.HasSuffix(strings.ToLower(d.Name()), ".json") {
@@ -255,26 +259,7 @@ func (s *FileTokenStore) readAuthFile(path, baseDir string) (*cliproxyauth.Auth,
 	if err != nil {
 		return nil, fmt.Errorf("stat file: %w", err)
 	}
-	id := s.idFor(path, baseDir)
-	auth := &cliproxyauth.Auth{
-		ID:               id,
-		TenantID:         cliproxyauth.TenantIDFromAuthID(id),
-		Provider:         provider,
-		Prefix:           metadataString(metadata, "prefix"),
-		ProxyURL:         metadataString(metadata, "proxy_url", "proxy-url", "proxyUrl"),
-		ProxyID:          metadataString(metadata, "proxy_id", "proxy-id", "proxyId"),
-		FileName:         id,
-		Label:            s.labelFor(metadata),
-		Status:           cliproxyauth.StatusActive,
-		Attributes:       buildFileAuthAttributes(path, metadata),
-		Metadata:         metadata,
-		CreatedAt:        info.ModTime(),
-		UpdatedAt:        info.ModTime(),
-		LastRefreshedAt:  time.Time{},
-		NextRefreshAfter: time.Time{},
-	}
-	cliproxyauth.RestorePersistedDisabled(auth)
-	return auth, nil
+	return NewFileAuthRecord(s.idFor(path, baseDir), path, provider, metadata, info.ModTime()), nil
 }
 
 // buildFileAuthAttributes keeps disk-loaded credentials aligned with OAuth login
@@ -567,22 +552,6 @@ func (s *FileTokenStore) resolveAuthPath(auth *cliproxyauth.Auth) (string, error
 		return "", fmt.Errorf("auth filestore: directory not configured")
 	}
 	return filepath.Join(dir, auth.ID), nil
-}
-
-func (s *FileTokenStore) labelFor(metadata map[string]any) string {
-	if metadata == nil {
-		return ""
-	}
-	if v, ok := metadata["label"].(string); ok && v != "" {
-		return v
-	}
-	if v, ok := metadata["email"].(string); ok && v != "" {
-		return v
-	}
-	if project, ok := metadata["project_id"].(string); ok && project != "" {
-		return project
-	}
-	return ""
 }
 
 func (s *FileTokenStore) baseDirSnapshot() string {

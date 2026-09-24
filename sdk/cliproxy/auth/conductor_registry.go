@@ -109,6 +109,7 @@ func (m *Manager) Register(ctx context.Context, auth *Auth) (*Auth, error) {
 	if auth.ID == "" {
 		auth.ID = uuid.NewString()
 	}
+	m.pinStoreIndex(auth)
 	auth.EnsureIndex()
 	snapshot := auth.Clone()
 	m.mu.Lock()
@@ -133,6 +134,7 @@ func (m *Manager) Update(ctx context.Context, auth *Auth) (*Auth, error) {
 	}
 	var previous *Auth
 	m.mu.Lock()
+	m.pinStoreIndex(auth)
 	if existing, ok := m.auths[auth.ID]; ok && existing != nil && !auth.indexAssigned && auth.Index == "" {
 		auth.Index = existing.Index
 		auth.indexAssigned = existing.indexAssigned
@@ -209,6 +211,7 @@ func (m *Manager) Load(ctx context.Context) error {
 		if auth == nil || auth.ID == "" {
 			continue
 		}
+		m.pinStoreIndex(auth)
 		auth.EnsureIndex()
 		snapshot := auth.Clone()
 		m.auths[auth.ID] = snapshot

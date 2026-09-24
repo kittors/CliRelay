@@ -120,6 +120,9 @@ func (s *Service) applyCoreAuthAddOrUpdate(ctx context.Context, auth *coreauth.A
 	op := "register"
 	var err error
 	if existing, ok := s.coreManager.GetByID(auth.ID); ok {
+		if !acceptCredentialReload(auth, existing) {
+			return
+		}
 		auth.CreatedAt = existing.CreatedAt
 		auth.LastRefreshedAt = existing.LastRefreshedAt
 		auth.NextRefreshAfter = existing.NextRefreshAfter
@@ -156,4 +159,27 @@ func (s *Service) applyCoreAuthRemoval(ctx context.Context, id string) {
 		return
 	}
 	GlobalModelRegistry().UnregisterClient(id)
+}
+
+// acceptCredentialReload guards reloads of a credential that is already in
+// memory. In cluster mode auth files are mirrors of the database stamped with
+// a version; the watcher can deliver a copy older than one this node already
+// adopted (a slow event, or a stray file without a stamp), and applying it
+// would roll the credential back. An unchanged version keeps this node's own
+// runtime observations instead of the file's snapshot of them. Single-node
+// files carry no version, so neither rule ever applies there.
+func acceptCredentialReload(incoming, existing *coreauth.Auth) bool {
+	current := coreauth.CredentialVersion(existing)
+	if current <= 0 {
+		return true
+	}
+	version := coreauth.CredentialVersion(incoming)
+	if version < current {
+		log.Debugf("ignoring stale reload of auth %s (version %d, have %d)", incoming.ID, version, current)
+		return false
+	}
+	if version == current {
+		coreauth.PreserveRuntimeMetadata(incoming, existing)
+	}
+	return true
 }

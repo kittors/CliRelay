@@ -202,6 +202,9 @@ type Manager struct {
 	refreshCancel    context.CancelFunc
 	refreshSemaphore chan struct{}
 	quotaProbeAfter  map[string]time.Time
+
+	// refreshCoordinator holds a refreshCoordinatorHolder; see SetRefreshCoordinator.
+	refreshCoordinator atomic.Value
 }
 
 // NewManager constructs a manager with optional custom selector and hook.

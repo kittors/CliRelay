@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/fsnotify/fsnotify"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -101,6 +102,9 @@ func (w *Watcher) rewatchConfigFile() {
 func (w *Watcher) handleEvent(event fsnotify.Event) {
 	if event.Op&fsnotify.Create != 0 {
 		if info, err := os.Stat(event.Name); err == nil && info.IsDir() {
+			if util.IsReservedAuthPath(w.authDir, event.Name) {
+				return
+			}
 			if errAdd := w.watcher.Add(event.Name); errAdd != nil {
 				log.WithError(errAdd).Warnf("failed to watch tenant auth directory %s", event.Name)
 			}
@@ -121,7 +125,8 @@ func (w *Watcher) handleEvent(event fsnotify.Event) {
 	normalizedAuthDir := w.normalizeAuthPath(w.authDir)
 	isConfigEvent := normalizedName == normalizedConfigPath && event.Op&configWatchOps != 0
 	authOps := fsnotify.Create | fsnotify.Write | fsnotify.Remove | fsnotify.Rename
-	isAuthJSON := strings.HasPrefix(normalizedName, normalizedAuthDir) && strings.HasSuffix(normalizedName, ".json") && event.Op&authOps != 0
+	isAuthJSON := strings.HasPrefix(normalizedName, normalizedAuthDir) && strings.HasSuffix(normalizedName, ".json") && event.Op&authOps != 0 &&
+		!util.IsReservedAuthPath(w.authDir, event.Name)
 	if !isConfigEvent && !isAuthJSON {
 		// Ignore unrelated files (e.g., cookie snapshots *.cookie) and other noise.
 		return
@@ -186,6 +191,9 @@ func (w *Watcher) addAuthDirectoryWatches() error {
 			return err
 		}
 		if entry.IsDir() {
+			if path != w.authDir && util.IsReservedAuthSubdir(entry.Name()) {
+				return filepath.SkipDir
+			}
 			return w.watcher.Add(path)
 		}
 		return nil
