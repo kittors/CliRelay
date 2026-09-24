@@ -309,6 +309,13 @@ func ConvertClaudeRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 			out, _ = sjson.Set(out, "tool_choice", "auto")
 		case "any":
 			out, _ = sjson.Set(out, "tool_choice", "required")
+		case "none":
+			// Keep the tools declared but forbid calling them. Omitted when no tools are
+			// sent: Chat Completions rejects any tool_choice without tools, even "none",
+			// and "none" is already its default then.
+			if gjson.Get(out, "tools.#").Int() > 0 {
+				out, _ = sjson.Set(out, "tool_choice", "none")
+			}
 		case "tool":
 			// Specific tool choice
 			toolName := strings.TrimSpace(toolChoice.Get("name").String())
@@ -320,8 +327,9 @@ func ConvertClaudeRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 			toolChoiceJSON, _ = sjson.Set(toolChoiceJSON, "function.name", toolName)
 			out, _ = sjson.SetRaw(out, "tool_choice", toolChoiceJSON)
 		default:
-			// Default to auto if not specified
-			out, _ = sjson.Set(out, "tool_choice", "auto")
+			// Unknown or missing type: leave tool_choice unset so the upstream default
+			// applies (auto with tools, none without). A forced "auto" behaves the same
+			// when tools are present and is rejected by Chat Completions when they are not.
 		}
 	}
 
