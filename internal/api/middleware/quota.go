@@ -2,7 +2,6 @@ package middleware
 
 import (
 	"errors"
-	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -11,9 +10,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/diagnostics"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/quota"
-	log "github.com/sirupsen/logrus"
 )
 
 // ─── Sliding window counters ────────────────────────────────────────────────
@@ -154,230 +151,76 @@ func RecordTokenUsageForRequest(apiKey, endUserID string, totalTokens int64) {
 //
 // It reads the limits from the accessMetadata set by the auth provider.
 // This middleware MUST be placed after AuthMiddleware and before route handlers.
-// Only POST requests are checked (GET /models etc. don't consume quota).
+// POST requests are checked; other methods pass unchecked (GET /models etc.
+// don't consume quota). The exception is a WebSocket upgrade, whose turns are
+// billed like POST requests: see admitWebsocketHandshake. The checks themselves
+// live in quota_admission.go and are shared by both transports.
 func QuotaMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// Only enforce on POST requests (actual API calls)
+		// Enforce on POST requests (actual API calls) and on WebSocket upgrades,
+		// whose turns are API calls too. Anything else passes unchecked.
 		if c.Request.Method != http.MethodPost {
+			if IsWebsocketUpgrade(c.Request) {
+				admitWebsocketHandshake(c)
+				return
+			}
 			c.Next()
 			return
 		}
 
-		// Get the authenticated API key
-		apiKeyVal, exists := c.Get("apiKey")
-		if !exists {
+		apiKey, metadata, ok := quotaCredentials(c)
+		if !ok {
 			c.Next()
 			return
 		}
-		apiKey, ok := apiKeyVal.(string)
-		if !ok || apiKey == "" {
-			c.Next()
-			return
-		}
-
-		// Get access metadata containing limits (needed for end-user subject).
-		var metadata map[string]string
-		if metadataVal, ok := c.Get("accessMetadata"); ok {
-			metadata, _ = metadataVal.(map[string]string)
-		}
-		subject := quotaSubjectKey(apiKey, metadata)
-		endUserID := ""
-		if metadata != nil {
-			endUserID = strings.TrimSpace(metadata["end-user-id"])
-		}
+		policy := parseQuotaPolicy(apiKey, metadata)
 
 		// ── Always record this request for system-wide RPM tracking ──
 		// This must happen before any metadata checks so ALL authenticated
 		// POST requests are counted for the dashboard RPM display.
-		rpmTracker := getRPMTracker(subject)
-		rpmTracker.add()
+		getRPMTracker(policy.subject).add()
 
 		if metadata == nil {
 			c.Next()
 			return
 		}
 
-		// Parse limits from metadata
-		dailyLimit := parseIntMetadata(metadata, "daily-limit")
-		totalQuota := parseIntMetadata(metadata, "total-quota")
-		concurrencyLimit := parseIntMetadata(metadata, "concurrency-limit")
-		rpmLimit := parseIntMetadata(metadata, "rpm-limit")
-		tpmLimit := parseIntMetadata(metadata, "tpm-limit")
-		spendingLimit := parseFloatMetadata(metadata, "spending-limit")
-		dailySpendingLimit := parseFloatMetadata(metadata, "daily-spending-limit")
-		accountPeriodLimits := parsePeriodLimitsMetadata(metadata, "account-period-spending-limit-")
-		keyPeriodLimits := parsePeriodLimitsMetadata(metadata, "key-period-spending-limit-")
-		tenantID := strings.TrimSpace(metadata["tenant-id"])
-		apiKeyID := strings.TrimSpace(metadata["api-key-id"])
-		diagnostics.SetQuotaLimits(c, diagnostics.QuotaSnapshot{
-			DailyLimit:         dailyLimit,
-			TotalQuota:         totalQuota,
-			ConcurrencyLimit:   concurrencyLimit,
-			RPMLimit:           rpmLimit,
-			TPMLimit:           tpmLimit,
-			SpendingLimit:      spendingLimit,
-			DailySpendingLimit: dailySpendingLimit,
-		})
-
-		// Cache limits for dashboard snapshot
-		UpdateKeyLimits(subject, rpmLimit, tpmLimit)
+		// Diagnostics, and cached limits for the dashboard snapshot
+		policy.record(c)
 
 		// No limits configured — skip all checks
-		if dailyLimit <= 0 && totalQuota <= 0 && concurrencyLimit <= 0 && rpmLimit <= 0 && tpmLimit <= 0 && spendingLimit <= 0 && dailySpendingLimit <= 0 && !hasPeriodLimits(accountPeriodLimits) && !hasPeriodLimits(keyPeriodLimits) {
+		if !policy.hasLimits() {
 			c.Next()
 			return
 		}
 
-		if concurrencyLimit > 0 {
-			release, ok := acquireKeyConcurrency(subject, concurrencyLimit)
-			if !ok {
-				current := keyConcurrencyCount(subject)
-				rejectQuotaLimit(c, "concurrency", float64(concurrencyLimit), float64(current), "concurrency_limit_exceeded",
-					fmt.Sprintf("Concurrent request limit exceeded: %d in-flight requests (limit %d). Wait for running requests to finish, or raise the concurrency limit in the permission profile.", current, concurrencyLimit))
-				return
-			}
-			defer release()
+		release, verdict := policy.admit()
+		if verdict != nil {
+			verdict.abort(c)
+			return
 		}
-
-		// --- RPM check (sliding window, in-memory) ---
-		if rpmLimit > 0 {
-			currentRPM := rpmTracker.count()
-			if currentRPM > rpmLimit {
-				rejectQuotaLimit(c, "rpm", float64(rpmLimit), float64(currentRPM), "rpm_limit_exceeded",
-					fmt.Sprintf("Requests-per-minute (RPM) limit exceeded: %d/%d requests in the last minute. Slow down, or raise the RPM limit in the permission profile.", currentRPM, rpmLimit))
-				return
-			}
-		}
-
-		// --- TPM check (sliding window, in-memory) ---
-		if tpmLimit > 0 {
-			tracker := getTPMTracker(subject)
-			currentTPM := tracker.sum()
-			if currentTPM >= int64(tpmLimit) {
-				rejectQuotaLimit(c, "tpm", float64(tpmLimit), float64(currentTPM), "tpm_limit_exceeded",
-					fmt.Sprintf("Tokens-per-minute (TPM) limit exceeded: %d/%d tokens in the last minute. Slow down, or raise the TPM limit in the permission profile.", currentTPM, tpmLimit))
-				return
-			}
-		}
-
-		// --- Daily limit check (from usage DB) ---
-		if dailyLimit > 0 {
-			todayCount, err := countTodayUsage(apiKey, endUserID)
-			if err != nil {
-				rejectQuotaUsageUnavailable(c, quotaScope(endUserID), "day", tenantID, stableQuotaSubject(apiKeyID, endUserID), err)
-				return
-			} else if todayCount >= int64(dailyLimit) {
-				rejectQuotaLimit(c, "daily", float64(dailyLimit), float64(todayCount), "daily_limit_exceeded",
-					fmt.Sprintf("Daily request limit exceeded: %d/%d requests used today. Raise the daily request limit in the permission profile, or wait until the next project day.", todayCount, dailyLimit))
-				return
-			}
-		}
-
-		// --- Total quota check (from usage DB) ---
-		if totalQuota > 0 {
-			totalCount, err := countTotalUsage(apiKey, endUserID)
-			if err != nil {
-				rejectQuotaUsageUnavailable(c, quotaScope(endUserID), "lifetime", tenantID, stableQuotaSubject(apiKeyID, endUserID), err)
-				return
-			} else if totalCount >= int64(totalQuota) {
-				rejectQuotaLimit(c, "total", float64(totalQuota), float64(totalCount), "total_quota_exceeded",
-					fmt.Sprintf("Total request quota exhausted: %d/%d lifetime requests used. Raise the total request quota in the permission profile to continue.", totalCount, totalQuota))
-				return
-			}
-		}
-
-		// --- Spending limit check (from usage DB) ---
-		if spendingLimit > 0 {
-			totalCost, err := queryTotalCostUsage(apiKey, endUserID)
-			if err != nil {
-				rejectQuotaUsageUnavailable(c, quotaScope(endUserID), "lifetime", tenantID, stableQuotaSubject(apiKeyID, endUserID), err)
-				return
-			} else if totalCost >= spendingLimit {
-				rejectQuotaLimit(c, "spending", spendingLimit, totalCost, "spending_limit_exceeded",
-					fmt.Sprintf("Lifetime spending limit exceeded: $%.2f of $%.2f used. Raise the spending limit to continue.", totalCost, spendingLimit))
-				return
-			}
-		}
-
-		// --- Daily spending limit check (from usage DB) ---
-		if dailySpendingLimit > 0 && accountPeriodLimits.Day <= 0 && keyPeriodLimits.Day <= 0 {
-			todayCost, err := queryTodayCostUsage(apiKey, endUserID)
-			if err != nil {
-				rejectQuotaUsageUnavailable(c, quotaScope(endUserID), "day", tenantID, stableQuotaSubject(apiKeyID, endUserID), err)
-				return
-			} else if todayCost >= dailySpendingLimit {
-				rejectQuotaLimit(c, "daily_spending", dailySpendingLimit, todayCost, "daily_spending_limit_exceeded",
-					fmt.Sprintf("Daily spending limit exceeded: $%.2f of $%.2f used today. Raise the daily spending limit in the permission profile, reset today's spending, or wait until the next project day.", todayCost, dailySpendingLimit))
-				return
-			}
-		}
-
-		if hasPeriodLimits(accountPeriodLimits) {
-			used, err := queryPeriodByEndUserFunc(tenantID, endUserID)
-			if err != nil {
-				rejectQuotaUsageUnavailable(c, "account", "period", tenantID, endUserID, err)
-				return
-			}
-			if rejectConfiguredPeriod(c, "account", accountPeriodLimits, used) {
-				return
-			}
-		}
-		if hasPeriodLimits(keyPeriodLimits) {
-			used, err := queryPeriodByKeyFunc(tenantID, apiKeyID)
-			if err != nil {
-				rejectQuotaUsageUnavailable(c, "key", "period", tenantID, apiKeyID, err)
-				return
-			}
-			if rejectConfiguredPeriod(c, "key", keyPeriodLimits, used) {
-				return
-			}
-		}
-
+		defer release()
 		c.Next()
 	}
 }
 
-func rejectConfiguredPeriod(c *gin.Context, scope string, limits quota.PeriodSpendingLimits, used quota.PeriodSpendingUsage) bool {
-	for _, period := range quota.OrderedPeriods {
-		limit := limits.Value(period)
-		current := used.Value(period)
-		if limit <= 0 || current < limit {
-			continue
-		}
-		code := "period_spending_limit_exceeded"
-		if period == quota.PeriodDay {
-			code = "daily_spending_limit_exceeded"
-		}
-		scopeLabel := "Key"
-		if scope == "account" {
-			scopeLabel = "Account"
-		}
-		message := fmt.Sprintf("%s %s spending limit exceeded: $%.2f of $%.2f used.", scopeLabel, period, current, limit)
-		rejectPeriodQuotaLimit(c, scope, period, limit, current, code, message)
-		return true
+// quotaCredentials returns the authenticated API key and the access metadata
+// holding its limits.
+func quotaCredentials(c *gin.Context) (apiKey string, metadata map[string]string, ok bool) {
+	// Get the authenticated API key
+	apiKeyVal, exists := c.Get("apiKey")
+	if !exists {
+		return "", nil, false
 	}
-	return false
-}
-
-func rejectPeriodQuotaLimit(c *gin.Context, scope string, period quota.Period, limit, current float64, code, message string) {
-	const errType = "rate_limit_exceeded"
-	diagnostics.SetQuotaRejection(c, "period_spending", limit, current, code, errType, message)
-	c.Header("X-CliRelay-Quota-Code", code)
-	c.Header("X-CliRelay-Quota-Rejected-By", "period_spending")
-	c.Header("X-CliRelay-Quota-Scope", scope)
-	c.Header("X-CliRelay-Quota-Period", string(period))
-	c.Header("X-CliRelay-Quota-Limit", formatQuotaNumber(limit))
-	c.Header("X-CliRelay-Quota-Current", formatQuotaNumber(current))
-	c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{"error": gin.H{
-		"message": message, "type": errType, "code": code, "scope": scope, "period": period,
-	}})
-}
-
-func rejectQuotaUsageUnavailable(c *gin.Context, scope, period, tenantID, subjectID string, err error) {
-	log.WithError(err).WithFields(log.Fields{"tenant": tenantID, "scope": scope, "period": period, "subject_id": subjectID}).Error("quota usage query unavailable")
-	c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"error": gin.H{
-		"code": "quota_usage_unavailable", "message": "Quota usage is temporarily unavailable", "scope": scope, "period": period,
-	}})
+	apiKey, ok = apiKeyVal.(string)
+	if !ok || apiKey == "" {
+		return "", nil, false
+	}
+	// Get access metadata containing limits (needed for end-user subject).
+	if metadataVal, exists := c.Get("accessMetadata"); exists {
+		metadata, _ = metadataVal.(map[string]string)
+	}
+	return apiKey, metadata, true
 }
 
 func quotaScope(endUserID string) string {
@@ -405,24 +248,6 @@ func parsePeriodLimitsMetadata(metadata map[string]string, prefix string) quota.
 
 func hasPeriodLimits(limits quota.PeriodSpendingLimits) bool {
 	return limits.FiveHour > 0 || limits.Day > 0 || limits.Week > 0 || limits.Month > 0
-}
-
-// rejectQuotaLimit writes a 429 with a distinct code/message and diagnostic headers.
-// Headers help clients that only surface "429 Too Many Requests" after retries.
-func rejectQuotaLimit(c *gin.Context, rejectedBy string, limit, current float64, code, message string) {
-	const errType = "rate_limit_exceeded"
-	diagnostics.SetQuotaRejection(c, rejectedBy, limit, current, code, errType, message)
-	c.Header("X-CliRelay-Quota-Code", code)
-	c.Header("X-CliRelay-Quota-Limit", formatQuotaNumber(limit))
-	c.Header("X-CliRelay-Quota-Current", formatQuotaNumber(current))
-	c.Header("X-CliRelay-Quota-Rejected-By", rejectedBy)
-	c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{
-		"error": map[string]interface{}{
-			"message": message,
-			"type":    errType,
-			"code":    code,
-		},
-	})
 }
 
 func formatQuotaNumber(v float64) string {

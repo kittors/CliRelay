@@ -227,6 +227,7 @@ func initializeRuntimeDataStack(cfg *config.Config, configPath string, loc *time
 	if _, err := usage.MigrateAPIKeysFromConfig(cfg, configPath); err != nil {
 		return fmt.Errorf("migrate api keys from config: %w", err)
 	}
+	usage.WarnEnabledPlaceholderAPIKeys()
 	if created, err := enduserService.BackfillFromAPIKeys(context.Background()); err != nil {
 		log.WithError(err).Error("enduser: backfill from api keys failed")
 		return fmt.Errorf("enduser backfill: %w", err)
@@ -235,6 +236,15 @@ func initializeRuntimeDataStack(cfg *config.Config, configPath string, loc *time
 		// without a usable password, so without this line the first symptom is
 		// a migrated user reporting that no password works.
 		log.Infof("enduser: backfilled %d end users from api keys; each account needs a password issued via the management password reset before its owner can sign in", created)
+	}
+	// Before listening, so this instance never serves a portal sign-in with the
+	// published password. Fatal like the backfill: starting anyway would leave
+	// those accounts open with nothing but a log line to show for it.
+	if locked, err := enduserService.LockLegacyBackfillPasswordAccounts(context.Background()); err != nil {
+		log.WithError(err).Error("enduser: locking accounts on the legacy backfill password failed")
+		return fmt.Errorf("enduser legacy backfill password lock: %w", err)
+	} else if len(locked) > 0 {
+		log.WithField("usernames", locked).Warnf("enduser: locked %d portal accounts still holding the legacy backfill password; each needs a credential issued via the end-user password reset before its owner can sign in again", len(locked))
 	}
 	usage.MigrateAPIKeyPermissionProfilesFromYAML(configPath)
 	usage.MigrateRoutingConfigFromConfig(cfg, configPath)

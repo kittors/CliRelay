@@ -344,13 +344,23 @@ func ConvertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 			case "auto":
 				out, _ = sjson.SetRaw(out, "tool_choice", `{"type":"auto"}`)
 			case "none":
-				// Leave unset; implies no tools
+				// Leaving tool_choice unset would not stop tool use: Anthropic defaults to
+				// auto whenever tools are present. Omitted when no tools are sent: Anthropic
+				// rejects a tool_choice without tools, and "none" is already its default then.
+				if gjson.Get(out, "tools.#").Int() > 0 {
+					out, _ = sjson.SetRaw(out, "tool_choice", `{"type":"none"}`)
+				}
 			case "required":
 				out, _ = sjson.SetRaw(out, "tool_choice", `{"type":"any"}`)
 			}
 		case gjson.JSON:
 			if toolChoice.Get("type").String() == "function" {
-				fn := toolChoice.Get("function.name").String()
+				// Responses puts the name at the top level ({"type":"function","name":"x"});
+				// also accept the Chat Completions shape, which nests it under "function".
+				fn := toolChoice.Get("name").String()
+				if fn == "" {
+					fn = toolChoice.Get("function.name").String()
+				}
 				toolChoiceJSON := `{"name":"","type":"tool"}`
 				toolChoiceJSON, _ = sjson.Set(toolChoiceJSON, "name", fn)
 				out, _ = sjson.SetRaw(out, "tool_choice", toolChoiceJSON)

@@ -3,6 +3,19 @@ package postgres
 // End-user identity, token and spending-limit tables. Split out of migrations.go
 // to keep that file's migration list readable as it grows.
 
+// endUserLegacyPasswordLockStateSQL records that the one-shot pass locking
+// accounts still on the legacy backfill password has run (see
+// enduser.LockLegacyBackfillPasswordAccounts). The pass lives in Go because
+// recognising the password takes a bcrypt comparison; this row keeps it from
+// re-running on every boot, and locked_count outlives the boot log line.
+const endUserLegacyPasswordLockStateSQL = `
+CREATE TABLE IF NOT EXISTS end_user_legacy_password_lock_state (
+  id           INTEGER PRIMARY KEY CHECK (id = 1),
+  done_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  locked_count INTEGER NOT NULL DEFAULT 0
+);
+`
+
 const endUserDailySpendingResetsSQL = `
 CREATE TABLE IF NOT EXISTS end_user_daily_spending_resets (
   tenant_id     UUID NOT NULL DEFAULT '00000000-0000-0000-0000-000000000001',

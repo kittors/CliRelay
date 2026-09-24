@@ -7,6 +7,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/api/bodyutil"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/api/middleware"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/identity"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/interfaces"
@@ -23,8 +24,10 @@ func (s *Server) modelRestrictionMiddleware() gin.HandlerFunc {
 		case http.MethodGet:
 			// A WebSocket upgrade (GET /responses) carries no body; each turn's
 			// model arrives later inside a frame. Publish the gate so the
-			// frame-driven handler applies the same rules per turn.
-			if isWebsocketUpgrade(c.Request) {
+			// frame-driven handler applies the same rules per turn. Upgrades are
+			// recognised with the same check the upgrader uses, so every
+			// accepted upgrade is gated.
+			if middleware.IsWebsocketUpgrade(c.Request) {
 				if gate := s.buildModelGate(c); gate != nil {
 					c.Set(handlers.ModelGateContextKey, gate)
 				}
@@ -65,14 +68,6 @@ func (s *Server) modelRestrictionMiddleware() gin.HandlerFunc {
 		}
 		c.Next()
 	}
-}
-
-// isWebsocketUpgrade reports whether the request asks to switch protocols.
-func isWebsocketUpgrade(r *http.Request) bool {
-	if r == nil {
-		return false
-	}
-	return strings.EqualFold(strings.TrimSpace(r.Header.Get("Upgrade")), "websocket")
 }
 
 // buildModelGate resolves every model restriction that applies to this request

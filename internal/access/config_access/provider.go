@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/identity"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/quota"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
@@ -235,6 +236,13 @@ func (p *provider) Authenticate(_ context.Context, r *http.Request) (*sdkaccess.
 			continue
 		}
 		if kc, ok := p.keys[candidate.value]; ok {
+			// Example keys stay in p.keys so an instance configured with only them
+			// still has keys and allow-unauthenticated cannot open it up, but they
+			// never authenticate: carry on exactly as for an unknown key.
+			if config.IsPlaceholderAPIKey(candidate.value) {
+				warnPlaceholderKeyRejected(candidate.value, kc.apiKeyName)
+				continue
+			}
 			metadata := map[string]string{
 				"source":     candidate.source,
 				"tenant-id":  kc.tenantID,

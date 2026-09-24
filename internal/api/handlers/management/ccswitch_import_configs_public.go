@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	apikeysettings "github.com/router-for-me/CLIProxyAPI/v6/internal/management/settings/apikey"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 )
@@ -125,7 +126,7 @@ func ccSwitchImportConfigMatchesAPIKeyPermissions(config usage.CcSwitchImportCon
 //
 // SECURITY:
 // - Requires api_key in POST body; does not accept query params to avoid leaking secrets in URLs.
-// - Returns an empty list when the key does not exist or is disabled.
+// - Returns an empty list when the key does not exist, is disabled, or is a public example key from config.example.yaml.
 func (h *Handler) GetPublicCcSwitchImportConfigs(c *gin.Context) {
 	req, status, message := readPublicLookupRequest(c)
 	if message != "" {
@@ -142,7 +143,7 @@ func (h *Handler) GetPublicCcSwitchImportConfigs(c *gin.Context) {
 	tenantID := usage.ResolveAPIKeyTenant(apiKey)
 	row := apikeysettings.NewService(nil, apikeysettings.WithTenantID(tenantID)).GetRow(apiKey)
 	maskedAPIKey := maskKey(apiKey)
-	if row == nil {
+	if row == nil || config.IsPlaceholderAPIKey(apiKey) {
 		items := []usage.CcSwitchImportConfigRow{}
 		c.JSON(http.StatusOK, gin.H{
 			"ccswitch-import-configs": items,

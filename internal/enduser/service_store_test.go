@@ -34,7 +34,10 @@ func openEndUserTestDB(t *testing.T) *sql.DB {
 			password_hash TEXT NOT NULL,
 			status TEXT NOT NULL DEFAULT 'active',
 			must_change_password INTEGER NOT NULL DEFAULT 0,
-			password_changed_at TEXT,
+			-- NOT NULL DEFAULT now() on Postgres. The legacy password lock tells
+			-- an untouched account by this matching created_at, so the fixture
+			-- has to fill it the same way.
+			password_changed_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			last_login_at TEXT,
 			failed_login_count INTEGER NOT NULL DEFAULT 0,
 			lock_stage INTEGER NOT NULL DEFAULT 0,

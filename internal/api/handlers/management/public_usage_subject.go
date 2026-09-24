@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 )
 
@@ -42,6 +43,13 @@ func (h *Handler) resolvePublicUsageSubject(c *gin.Context, apiKey string) (publ
 	apiKey = strings.TrimSpace(apiKey)
 	if apiKey == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "api_key parameter is required"})
+		return publicUsageSubject{}, false
+	}
+	// Presenting the key is the only proof of ownership here, and the example keys
+	// from config.example.yaml are public. Refuse them the way the client API does
+	// rather than expose whatever was recorded under them.
+	if config.IsPlaceholderAPIKey(apiKey) {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid API key"})
 		return publicUsageSubject{}, false
 	}
 
