@@ -1,0 +1,74 @@
+# clirelay-dnswatch configuration (example)
+#
+# Install as /etc/clirelay-dnswatch/dnswatch.yaml, owned by root, mode 0600.
+# The systemd unit hands it to the service with LoadCredential=, so the
+# service user never needs read access to /etc.
+#
+# The REPLACE_WITH_* placeholders are invalid on purpose: an unedited copy
+# fails `clirelay-dnswatch -check` instead of running with made-up values.
+
+cloudflare:
+  # File holding a Cloudflare API token scoped to Zone / DNS / Edit on this
+  # zone only. A relative path resolves next to this config file, which under
+  # the provided unit is the service's private credentials directory.
+  # A token written directly into this file (api_token:) is refused.
+  api_token_file: cf-token
+  # Zone ID from the zone's Overview page in the Cloudflare dashboard.
+  zone_id: "REPLACE_WITH_ZONE_ID"
+
+# Hostnames whose A records follow node health. dnswatch creates unproxied
+# (grey cloud) A records so clients connect to the nodes directly.
+records:
+  - relay.07230805.xyz
+  - code.07230805.xyz
+# TTL in seconds for the records dnswatch creates. 60 is the lowest value
+# Cloudflare accepts outside Enterprise zones; it bounds how long resolvers
+# keep sending clients to a node after it is pulled.
+ttl: 60
+
+# Application nodes (public IPv4). Only A records whose content is one of
+# these addresses are ever added or removed; every other record is left alone.
+nodes:
+  - name: app-1
+    ip: REPLACE_WITH_APP_1_IPV4
+  - name: app-2
+    ip: REPLACE_WITH_APP_2_IPV4
+
+probe:
+  # Each round sends GET https://<node ip><path> to every node with TLS SNI
+  # and Host set to `host`. The certificate is verified against `host`, so
+  # every node must serve a valid certificate for it, and nginx on the node
+  # must pass the path through to CliRelay's readiness endpoint.
+  path: /readyz
+  host: relay.07230805.xyz
+  interval: 10s
+  timeout: 5s
+  # Consecutive failed probes before a node's records are removed.
+  fail_threshold: 3
+  # Consecutive successful probes before they are added back.
+  recover_threshold: 3
+  expect_status: [200, 204]
+
+# Minimum time between two state changes of the same node, so a flapping
+# node cannot churn DNS.
+min_change_interval: 60s
+
+# How often a one-line summary is logged.
+summary_interval: 10m
+
+# While this file exists dnswatch keeps probing but changes no DNS record:
+#   touch /etc/clirelay-dnswatch/hold   # before maintenance
+#   rm /etc/clirelay-dnswatch/hold      # afterwards
+hold_file: /etc/clirelay-dnswatch/hold
+
+# Log the changes dnswatch would make without making them. Start with true,
+# watch `journalctl -u clirelay-dnswatch`, then switch to false.
+dry_run: true
+
+# Optional: JSON POST on state changes and DNS updates. The body carries a
+# one-line "text" field, which Slack-style incoming webhooks display as is.
+alert_webhook: ""
+
+# Optional: serves GET /status as JSON. It has no authentication, so keep it
+# on loopback.
+status_listen: 127.0.0.1:9109

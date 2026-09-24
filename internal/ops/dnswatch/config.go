@@ -338,12 +338,12 @@ func ReadAPIToken(path string) (string, error) {
 	return token, nil
 }
 
-// DescribeTokenPath renders the token file path for messages.
+// DescribeTokenPath renders the token file path for messages and logs.
 func DescribeTokenPath(path string) string {
 	if tokenLikeName.MatchString(filepath.Base(path)) {
 		return "(path hidden: it looks like a token, not a file name)"
 	}
-	return strconv.Quote(path)
+	return path
 }
 
 // LogAttrs describes the effective config for logs. It carries no secret:
