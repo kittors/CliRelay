@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/gorilla/websocket"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/quota"
 )
 
@@ -161,10 +160,7 @@ func QuotaMiddleware() gin.HandlerFunc {
 		// Enforce on POST requests (actual API calls) and on WebSocket upgrades,
 		// whose turns are API calls too. Anything else passes unchecked.
 		if c.Request.Method != http.MethodPost {
-			// gorilla's own predicate, so every request the Responses WebSocket
-			// upgrader would accept is screened, whatever form its
-			// Connection/Upgrade headers take.
-			if c.Request.Method == http.MethodGet && websocket.IsWebSocketUpgrade(c.Request) {
+			if IsWebsocketUpgrade(c.Request) {
 				admitWebsocketHandshake(c)
 				return
 			}
