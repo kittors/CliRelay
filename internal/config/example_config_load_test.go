@@ -18,3 +18,20 @@ func TestExampleConfigLoadsAccountStatusRefresh(t *testing.T) {
 		t.Fatalf("example refresh = %+v, want interval 15 / delay 60", refresh)
 	}
 }
+
+// Fresh installs copy this file verbatim (clirelay-init and the git/object/postgres
+// store bootstraps), so any client key left active here is a working credential on
+// every such deployment. Shipping none is only safe while allow-unauthenticated
+// stays off: with it on, "no keys" means an open client API.
+func TestExampleConfigShipsNoActiveClientAPIKeys(t *testing.T) {
+	cfg, err := LoadConfig("../../config.example.yaml")
+	if err != nil {
+		t.Fatalf("load config.example.yaml: %v", err)
+	}
+	if len(cfg.APIKeys) != 0 || len(cfg.APIKeyEntries) != 0 {
+		t.Fatalf("example config ships active client API keys: api-keys=%q api-key-entries=%d", cfg.APIKeys, len(cfg.APIKeyEntries))
+	}
+	if cfg.AllowUnauthenticated {
+		t.Fatal("example config must keep allow-unauthenticated off")
+	}
+}

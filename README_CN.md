@@ -282,7 +282,7 @@ Synology/DSM 共享文件夹可能同时受 ACL 控制。如果容器 entrypoint
 docker compose restart cli-proxy-api
 ```
 
-默认情况下，客户端 API 路由（`/v1`、`/v1beta`）需要 API Key；如需在未配置 client key 的情况下运行，可设置 `allow-unauthenticated: true`（生产环境不推荐）。
+默认情况下，客户端 API 路由（`/v1`、`/v1beta`）需要 API Key。自动生成的 `config.yaml` 不含任何 client key，在 Web 面板的「API 密钥」页面创建之前，所有客户端请求都会被拒绝；`config.example.yaml` 中出现的 `your-api-key-*` 只是占位示例，任何情况下都会被拒绝。如需在未配置 client key 的情况下运行，可设置 `allow-unauthenticated: true`（生产环境不推荐）。
 
 启动后常用入口：
 

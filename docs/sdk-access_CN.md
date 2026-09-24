@@ -60,6 +60,7 @@ default:
 - `config-api-key`：校验 `config.yaml` 顶层的 `api-keys`。
   - 凭证来源：`Authorization: Bearer`、`X-Goog-Api-Key`、`X-Api-Key`、`?key=`、`?auth_token=`
   - 元数据：`Result.Metadata["source"]` 会写入匹配到的来源标识
+  - `config.example.yaml` 中的示例值 `your-api-key-1` 至 `your-api-key-3` 即使被配置也永远无法通过校验，结果与未知 key 相同
 
 在 CLI 服务端与 `sdk/cliproxy` 中，该 provider 会根据加载到的配置自动注册。
 

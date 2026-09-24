@@ -11,8 +11,8 @@ import (
 
 func TestRuntimeMigrationsCoverCoreTables(t *testing.T) {
 	migrations := RuntimeMigrations()
-	if len(migrations) != 30 {
-		t.Fatalf("RuntimeMigrations len = %d, want 30", len(migrations))
+	if len(migrations) != 31 {
+		t.Fatalf("RuntimeMigrations len = %d, want 31", len(migrations))
 	}
 	// Appended from laterRuntimeMigrations() because migrations.go sits at its
 	// structure-gate size ceiling.
@@ -24,12 +24,21 @@ func TestRuntimeMigrationsCoverCoreTables(t *testing.T) {
 	if migrations[28].Version != "202608270001_end_user_unbound_profile_scope_cleanup" {
 		t.Fatalf("scope cleanup migration version = %q", migrations[28].Version)
 	}
-	// Latest: records the model an upstream declares in its own response, so a
-	// silent reroute to a different build is visible in the request log. Added as
-	// a new migration rather than by editing the shipped runtime schema, which
+	// Latest: completion marker for the one-shot pass that locks portal accounts
+	// still on the legacy backfill password; without it the pass would re-run on
+	// every boot.
+	if migrations[30].Version != "202609240001_end_user_legacy_password_lock_state" {
+		t.Fatalf("latest migration version = %q", migrations[30].Version)
+	}
+	if !strings.Contains(migrations[30].SQL, "CREATE TABLE IF NOT EXISTS end_user_legacy_password_lock_state") {
+		t.Fatalf("legacy password lock migration missing its table: %q", migrations[30].SQL)
+	}
+	// Records the model an upstream declares in its own response, so a silent
+	// reroute to a different build is visible in the request log. Added as a new
+	// migration rather than by editing the shipped runtime schema, which
 	// TestPublishedMigrationChecksums pins.
 	if migrations[29].Version != "202609210001_request_log_upstream_response_model" {
-		t.Fatalf("latest migration version = %q", migrations[29].Version)
+		t.Fatalf("upstream response model migration version = %q", migrations[29].Version)
 	}
 	if !strings.Contains(migrations[29].SQL, "ADD COLUMN IF NOT EXISTS upstream_response_model TEXT NOT NULL DEFAULT ''") {
 		t.Fatalf("upstream response model migration missing its column: %q", migrations[29].SQL)

@@ -140,7 +140,7 @@ func TestBackfillAccountsHaveNoGuessablePassword(t *testing.T) {
 	}
 	// The historical credential, plus the shapes a "just make it longer" fix
 	// would have produced.
-	for _, guess := range []string{"password123", "password1234", "Password123!", "Password-1234!"} {
+	for _, guess := range []string{legacyBackfillPassword, "password1234", "Password123!", "Password-1234!"} {
 		if err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(guess)); err == nil {
 			t.Fatalf("a migrated account can be signed into with the hardcoded password %q", guess)
 		}

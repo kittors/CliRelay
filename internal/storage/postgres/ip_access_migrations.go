@@ -15,6 +15,9 @@ func laterRuntimeMigrations() []Migration {
 		// Record the model an upstream declares in its own response, so a silent
 		// reroute to a different build is visible in the request log.
 		{Version: "202609210001_request_log_upstream_response_model", SQL: requestLogUpstreamResponseModelSQL},
+		// Completion marker for the one-shot pass that locks portal accounts
+		// still on the legacy backfill password.
+		{Version: "202609240001_end_user_legacy_password_lock_state", SQL: endUserLegacyPasswordLockStateSQL},
 	}
 }
 
