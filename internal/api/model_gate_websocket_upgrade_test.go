@@ -46,6 +46,8 @@ func rawResponsesTurn(t *testing.T, base, upgradeLines, model string) (int, []by
 	if err != nil {
 		t.Fatalf("read handshake response: %v", err)
 	}
+	// Closed on return, after the frames below have been read through reader.
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusSwitchingProtocols {
 		return resp.StatusCode, nil
 	}
