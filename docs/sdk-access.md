@@ -60,6 +60,7 @@ The proxy includes one built-in access provider:
 - `config-api-key`: Validates API keys declared under top-level `api-keys`.
   - Credential sources: `Authorization: Bearer`, `X-Goog-Api-Key`, `X-Api-Key`, `?key=`, `?auth_token=`
   - Metadata: `Result.Metadata["source"]` is set to the matched source label.
+  - The example values `your-api-key-1` to `your-api-key-3` from `config.example.yaml` never authenticate, even when configured; they fail like an unknown key.
 
 In the CLI server and `sdk/cliproxy`, this provider is registered automatically based on the loaded configuration.
 

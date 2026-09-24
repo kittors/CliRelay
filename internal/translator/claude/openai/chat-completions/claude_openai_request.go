@@ -322,7 +322,12 @@ func ConvertOpenAIRequestToClaude(modelName string, inputRawJSON []byte, stream 
 			choice := toolChoice.String()
 			switch choice {
 			case "none":
-				// Don't set tool_choice, Claude Code will not use tools
+				// Leaving tool_choice unset would not stop tool use: Anthropic defaults to
+				// auto whenever tools are present. Omitted when no tools are sent: Anthropic
+				// rejects a tool_choice without tools, and "none" is already its default then.
+				if gjson.Get(out, "tools.#").Int() > 0 {
+					out, _ = sjson.SetRaw(out, "tool_choice", `{"type":"none"}`)
+				}
 			case "auto":
 				out, _ = sjson.SetRaw(out, "tool_choice", `{"type":"auto"}`)
 			case "required":
