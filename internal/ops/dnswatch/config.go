@@ -346,6 +346,34 @@ func DescribeTokenPath(path string) string {
 	return strconv.Quote(path)
 }
 
+// LogAttrs describes the effective config for logs. It carries no secret:
+// the token is never part of Config, and only the webhook's origin is shown.
+func (c *Config) LogAttrs() []any {
+	nodes := make([]string, 0, len(c.Nodes))
+	for _, node := range c.Nodes {
+		nodes = append(nodes, node.Name+"="+node.IP)
+	}
+	return []any{
+		"zone_id", c.Cloudflare.ZoneID,
+		"api_token_file", DescribeTokenPath(c.Cloudflare.APITokenFile),
+		"records", strings.Join(c.Records, ","),
+		"ttl", c.TTL,
+		"nodes", strings.Join(nodes, ","),
+		"probe", "https://<node-ip>" + c.Probe.Path,
+		"probe_host", c.Probe.Host,
+		"interval", c.Probe.Interval.String(),
+		"timeout", c.Probe.Timeout.String(),
+		"fail_threshold", c.Probe.FailThreshold,
+		"recover_threshold", c.Probe.RecoverThreshold,
+		"expect_status", fmt.Sprint(c.Probe.ExpectStatus),
+		"min_change_interval", c.MinChangeInterval.String(),
+		"dry_run", c.DryRun,
+		"hold_file", c.HoldFile,
+		"alert_webhook", webhookOrigin(c.AlertWebhook),
+		"status_listen", c.StatusListen,
+	}
+}
+
 func normalizeHostname(name string) string {
 	return strings.TrimSuffix(strings.ToLower(strings.TrimSpace(name)), ".")
 }

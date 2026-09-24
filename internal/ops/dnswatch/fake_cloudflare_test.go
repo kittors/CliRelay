@@ -31,9 +31,9 @@ type fakeCloudflare struct {
 	writes   []string
 	requests []string
 	faults   []cfFault
-	// ignoreTypeFilter returns every record with the requested name, as a
-	// defensive check that dnswatch filters record types itself.
-	ignoreTypeFilter bool
+	// ignoreFilters answers every list call with the whole zone, to prove
+	// dnswatch filters record names and types itself.
+	ignoreFilters bool
 	// pageSize > 0 splits list replies into pages of that size.
 	pageSize int
 	// echoAuth copies the Authorization header into injected error replies.
@@ -188,10 +188,7 @@ func (f *fakeCloudflare) listLocked(w http.ResponseWriter, r *http.Request) {
 	name, recordType := query.Get("name"), query.Get("type")
 	var matched []dnsRecord
 	for _, rec := range f.records {
-		if !strings.EqualFold(rec.Name, name) {
-			continue
-		}
-		if !f.ignoreTypeFilter && recordType != "" && rec.Type != recordType {
+		if !f.ignoreFilters && (!strings.EqualFold(rec.Name, name) || (recordType != "" && rec.Type != recordType)) {
 			continue
 		}
 		matched = append(matched, rec)
