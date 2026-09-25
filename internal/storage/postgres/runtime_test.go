@@ -11,8 +11,21 @@ import (
 
 func TestRuntimeMigrationsCoverCoreTables(t *testing.T) {
 	migrations := RuntimeMigrations()
-	if len(migrations) != 31 {
-		t.Fatalf("RuntimeMigrations len = %d, want 31", len(migrations))
+	if len(migrations) != 32 {
+		t.Fatalf("RuntimeMigrations len = %d, want 32", len(migrations))
+	}
+	// Optimistic versions for cross-node management writes.
+	if migrations[31].Version != "202609250901_config_optimistic_versions" {
+		t.Fatalf("config versions migration version = %q", migrations[31].Version)
+	}
+	for _, fragment := range []string{
+		"ALTER TABLE runtime_settings ADD COLUMN IF NOT EXISTS version BIGINT NOT NULL DEFAULT 1",
+		"ALTER TABLE routing_config ADD COLUMN IF NOT EXISTS version BIGINT NOT NULL DEFAULT 1",
+		"CREATE TABLE IF NOT EXISTS config_versions",
+	} {
+		if !strings.Contains(migrations[31].SQL, fragment) {
+			t.Fatalf("config versions migration missing %q", fragment)
+		}
 	}
 	// Appended from laterRuntimeMigrations() because migrations.go sits at its
 	// structure-gate size ceiling.
@@ -24,7 +37,7 @@ func TestRuntimeMigrationsCoverCoreTables(t *testing.T) {
 	if migrations[28].Version != "202608270001_end_user_unbound_profile_scope_cleanup" {
 		t.Fatalf("scope cleanup migration version = %q", migrations[28].Version)
 	}
-	// Latest: completion marker for the one-shot pass that locks portal accounts
+	// Completion marker for the one-shot pass that locks portal accounts
 	// still on the legacy backfill password; without it the pass would re-run on
 	// every boot.
 	if migrations[30].Version != "202609240001_end_user_legacy_password_lock_state" {

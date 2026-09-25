@@ -9,7 +9,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/identityfingerprint"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/management/settings/runtimeconfig"
 	settingsstore "github.com/router-for-me/CLIProxyAPI/v6/internal/management/settings/store"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 )
@@ -20,6 +19,7 @@ type identityFingerprintResponse struct {
 	Learned             map[string][]identityfingerprint.LearnedRecord        `json:"learned"`
 	Effective           map[string][]identityfingerprint.EffectiveFingerprint `json:"effective"`
 	Status              map[string]identityFingerprintProviderStatus          `json:"status"`
+	Version             int64                                                 `json:"version"`
 }
 
 type identityFingerprintProviderStatus struct {
@@ -32,6 +32,7 @@ func (h *Handler) GetIdentityFingerprint(c *gin.Context) {
 	learned, effective := h.identityFingerprintState(current)
 	c.JSON(http.StatusOK, identityFingerprintResponse{
 		IdentityFingerprint: current,
+		Version:             h.liveSettingVersion(settingsstore.RuntimeSettingIdentityFingerprint),
 		Defaults:            config.DefaultIdentityFingerprintConfig(),
 		Learned:             learned,
 		Effective:           effective,
@@ -85,22 +86,12 @@ func (h *Handler) PutIdentityFingerprint(c *gin.Context) {
 		body.Claude.SessionID = uuid.NewString()
 	}
 
-	h.mu.Lock()
-	if h.cfg == nil {
-		h.cfg = &config.Config{}
-	}
-	previous := h.cfg.IdentityFingerprint
-	h.cfg.IdentityFingerprint = body
-	h.mu.Unlock()
-
-	if !h.persistRuntimeSetting(c, settingsstore.RuntimeSettingIdentityFingerprint, runtimeconfig.IdentityFingerprintRuntimeSettingValue(body)) {
-		h.mu.Lock()
-		if h.cfg != nil {
-			h.cfg.IdentityFingerprint = previous
-		}
-		h.mu.Unlock()
-		return
-	}
+	// Identity fingerprints are a system-wide setting whatever tenant the
+	// operator is viewing, as before.
+	h.mutateSystemConfig(c, func(cfg *config.Config) error {
+		cfg.IdentityFingerprint = body
+		return nil
+	})
 }
 
 func (h *Handler) GetCodexFingerprintRecommendations(c *gin.Context) {

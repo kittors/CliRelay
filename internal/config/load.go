@@ -66,26 +66,14 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	// Set defaults before unmarshal so that absent keys keep defaults.
 	cfg.Host = "" // Default empty: binds to all interfaces (IPv4 + IPv6)
 	cfg.LoggingToFile = false
-	cfg.LogsMaxTotalSizeMB = 512
-	cfg.ErrorLogsMaxFiles = 10
+	cfg.LogsMaxTotalSizeMB = DefaultLogsMaxTotalSizeMB
+	cfg.ErrorLogsMaxFiles = DefaultErrorLogsMaxFiles
 	cfg.RequestBody.ModelMaxMB = DefaultModelRequestBodyMB
 	cfg.RequestBody.DiskThresholdMB = DefaultRequestBodyDiskThresholdMB
 	cfg.UsageStatisticsEnabled = false
 	cfg.SystemStatsCacheSeconds = 60
 	cfg.SystemStatsWebSocketMaxAgeSeconds = int(DefaultSystemStatsWebSocketMaxAge / time.Second)
-	cfg.RequestLogStorage.StoreContent = false
-	cfg.RequestLogStorage.RetentionDays = 7
-	cfg.RequestLogStorage.ContentRetentionDays = 3
-	cleanupEnabled := true
-	cfg.RequestLogStorage.CleanupEnabled = &cleanupEnabled
-	cfg.RequestLogStorage.CleanupIntervalMinutes = 60
-	cfg.RequestLogStorage.CleanupBatchSize = 1000
-	cfg.RequestLogStorage.CleanupMaxRuntimeSeconds = 30
-	cfg.RequestLogStorage.MaxRows = 100000
-	cfg.RequestLogStorage.MaxMetadataSizeMB = 256
-	// Default cap for stored request/response bodies.
-	// This controls the compressed body payloads only (metadata rows are separate).
-	cfg.RequestLogStorage.MaxTotalSizeMB = 128
+	cfg.RequestLogStorage = DefaultRequestLogStorageConfig()
 	cfg.DisableCooling = false
 	cfg.Routing.IncludeDefaultGroup = true
 	cfg.Pprof.Enable = false
