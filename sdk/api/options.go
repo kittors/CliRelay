@@ -107,6 +107,12 @@ func WithModelConfigMutatedCallback(fn func(tenantID string)) ServerOption {
 	return apisdkbridge.WithModelConfigMutatedCallback(fn)
 }
 
+// WithConfigResyncCallback registers the full reload a cluster node falls back
+// to when it cannot tell which settings other nodes changed.
+func WithConfigResyncCallback(fn func(*config.Config)) ServerOption {
+	return apisdkbridge.WithConfigResyncCallback(fn)
+}
+
 // WithKeepAliveEndpoint enables a keep-alive endpoint with the provided timeout and callback.
 func WithKeepAliveEndpoint(timeout time.Duration, onTimeout func()) ServerOption {
 	return apisdkbridge.WithKeepAliveEndpoint(timeout, onTimeout)

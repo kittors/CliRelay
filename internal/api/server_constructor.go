@@ -22,6 +22,7 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	s.installDynamicMiddleware(configFilePath)
 	s.applyInitialRuntimeConfig(cfg, authManager)
 	s.configureManagementHandler(cfg, configFilePath, authManager, accessManager, optionState)
+	s.configSync.resync, s.configSync.modelsChanged = optionState.configResyncCallback, optionState.modelConfigMutatedCallback
 	s.setupRoutes()
 	s.registerBuiltinModules(cfg, accessManager)
 	s.applyRouterConfigurator(optionState, cfg)

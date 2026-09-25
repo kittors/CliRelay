@@ -46,14 +46,23 @@ func PublishTx(ctx context.Context, tx *sql.Tx, ev cluster.ConfigEvent) error {
 // point: the announcement becomes part of the transaction, so a failed commit
 // announces nothing.
 func CommitTx(ctx context.Context, tx *sql.Tx, events ...cluster.ConfigEvent) error {
-	if Active() {
+	active := Active()
+	if active {
 		for _, ev := range events {
 			if err := PublishTx(ctx, tx, ev); err != nil {
 				return err
 			}
 		}
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	if active {
+		for _, ev := range events {
+			noteLocalWrite(ev)
+		}
+	}
+	return nil
 }
 
 // WithTx runs fn in a transaction on db and commits it together with events.

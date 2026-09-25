@@ -29,11 +29,18 @@ type Options struct {
 	Window time.Duration
 	// Handlers maps a domain to its reload function.
 	Handlers map[string]Handler
-	// FullReload rebuilds every configuration cache from the database. It runs
-	// for Resync events, because a reconnected listener may have missed any
-	// number of changes, and for domains without a handler, which a newer node
-	// may announce during a rolling upgrade.
+	// FullReload rebuilds every configuration cache from the database. It is
+	// the last resort: for domains without a handler, which a newer node may
+	// announce during a rolling upgrade, and for a Resync when Fingerprint is
+	// missing or fails. It rebuilds executors and so cuts upstream sessions.
 	FullReload func(ctx context.Context) error
+	// Fingerprint reads the current fingerprint of every configuration unit.
+	// A Resync (a reconnected listener, or any node joining the cluster, which
+	// happens on every restart of a rolling deploy) compares it with what this
+	// node last applied and reloads only the units that differ.
+	Fingerprint func(ctx context.Context) (Fingerprints, error)
+	// NodeID names the node, so writes it made itself count as applied.
+	NodeID string
 }
 
 type pendingKey struct {
@@ -46,9 +53,14 @@ type pendingKey struct {
 // queued on the bus goroutine; a single worker drains the queue, so reloads
 // never run concurrently with each other and never block the bus.
 type Dispatcher struct {
-	window   time.Duration
-	handlers map[string]Handler
-	full     func(ctx context.Context) error
+	window      time.Duration
+	handlers    map[string]Handler
+	full        func(ctx context.Context) error
+	fingerprint func(ctx context.Context) (Fingerprints, error)
+	nodeID      string
+	// applied is what this node has applied, as fingerprints; nil until the
+	// baseline taken at Start succeeds. Only the worker goroutine uses it.
+	applied Fingerprints
 
 	mu      sync.Mutex
 	pending map[pendingKey]cluster.ConfigEvent
@@ -78,13 +90,15 @@ func NewDispatcher(opts Options) *Dispatcher {
 		}
 	}
 	return &Dispatcher{
-		window:   window,
-		handlers: handlers,
-		full:     opts.FullReload,
-		pending:  make(map[pendingKey]cluster.ConfigEvent),
-		wake:     make(chan struct{}, 1),
-		stop:     make(chan struct{}),
-		done:     make(chan struct{}),
+		window:      window,
+		handlers:    handlers,
+		full:        opts.FullReload,
+		fingerprint: opts.Fingerprint,
+		nodeID:      opts.NodeID,
+		pending:     make(map[pendingKey]cluster.ConfigEvent),
+		wake:        make(chan struct{}, 1),
+		stop:        make(chan struct{}),
+		done:        make(chan struct{}),
 	}
 }
 
@@ -99,11 +113,26 @@ func (d *Dispatcher) Start(coord *cluster.Coordinator) {
 		d.mu.Lock()
 		d.started = true
 		d.mu.Unlock()
+		// The baseline is what this node loaded at startup; take it before
+		// subscribing so no change can fall between the two.
+		d.applied = d.snapshot(context.Background())
 		if coord != nil {
 			d.unsub = coord.Subscribe(cluster.TopicConfig, d.Enqueue)
 		}
 		go d.run()
 	})
+}
+
+func (d *Dispatcher) snapshot(ctx context.Context) Fingerprints {
+	if d.fingerprint == nil {
+		return nil
+	}
+	fingerprints, err := d.fingerprint(ctx)
+	if err != nil {
+		log.WithError(err).Warn("configsync: cannot read configuration fingerprints")
+		return nil
+	}
+	return fingerprints
 }
 
 // Stop unsubscribes and waits for the worker to finish the reload it is
@@ -215,24 +244,31 @@ func (d *Dispatcher) drainAndProcess() {
 
 func (d *Dispatcher) process(batch []cluster.ConfigEvent, resync bool) {
 	ctx := context.Background()
-	if !resync {
-		for _, ev := range batch {
-			if _, ok := d.handlers[ev.Domain]; !ok {
-				log.Warnf("configsync: no reload handler for domain %q, running a full reload", ev.Domain)
-				resync = true
-				break
+	// Read the fingerprints before reloading: a write that lands during the
+	// reload is applied by it and seen again next time, never lost.
+	current := d.snapshot(ctx)
+	d.forgetLocalWrites(current)
+	if resync {
+		if current == nil || d.applied == nil {
+			d.fullReload(ctx, "resync without configuration fingerprints")
+			d.applied = current
+			return
+		}
+		changed := current.Changed(d.applied)
+		log.Debugf("configsync: resync found %d changed configuration units", len(changed))
+		batch = mergeEvents(batch, changed)
+	}
+	for _, ev := range batch {
+		if _, ok := d.handlers[ev.Domain]; !ok {
+			d.fullReload(ctx, fmt.Sprintf("no reload handler for domain %q", ev.Domain))
+			if current != nil {
+				d.applied = current
 			}
+			return
 		}
 	}
-	if resync {
-		// A full reload rebuilds every domain, so the queued events are covered.
-		d.call("full reload", func() error {
-			if d.full == nil {
-				return nil
-			}
-			return d.full(ctx)
-		})
-		return
+	if current != nil {
+		defer func() { d.applied = current }()
 	}
 	byDomain := make(map[string][]cluster.ConfigEvent)
 	domains := make([]string, 0)
@@ -247,6 +283,50 @@ func (d *Dispatcher) process(batch []cluster.ConfigEvent, resync bool) {
 		events := byDomain[domain]
 		d.call("reload "+domain, func() error { return handler(ctx, events) })
 	}
+}
+
+// fullReload is the fallback when the dispatcher cannot tell what changed. It
+// rebuilds executors, so the reason is logged where operators look.
+func (d *Dispatcher) fullReload(ctx context.Context, reason string) {
+	log.Warnf("configsync: full configuration reload: %s", reason)
+	d.call("full reload", func() error {
+		if d.full == nil {
+			return nil
+		}
+		return d.full(ctx)
+	})
+}
+
+// forgetLocalWrites marks the versions this node wrote itself as applied: its
+// management handlers applied them already, and reloading them on the next
+// Resync could rebuild executors for nothing.
+func (d *Dispatcher) forgetLocalWrites(current Fingerprints) {
+	notes := takeLocalWrites(d.nodeID)
+	if d.applied == nil {
+		return
+	}
+	for key, token := range notes {
+		if current == nil || current[key] == token {
+			d.applied[key] = token
+		}
+	}
+}
+
+// mergeEvents appends extra to batch, skipping units already queued.
+func mergeEvents(batch, extra []cluster.ConfigEvent) []cluster.ConfigEvent {
+	seen := make(map[pendingKey]struct{}, len(batch))
+	for _, ev := range batch {
+		seen[pendingKey{domain: ev.Domain, tenant: NormalizeTenantID(ev.TenantID), key: ev.Key}] = struct{}{}
+	}
+	for _, ev := range extra {
+		key := pendingKey{domain: ev.Domain, tenant: NormalizeTenantID(ev.TenantID), key: ev.Key}
+		if _, dup := seen[key]; dup {
+			continue
+		}
+		seen[key] = struct{}{}
+		batch = append(batch, ev)
+	}
+	return batch
 }
 
 // call runs one reload and keeps the worker alive whatever it does: a panic

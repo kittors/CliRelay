@@ -47,7 +47,11 @@ func WithConfigFileWriteLock(fn func() error) error {
 // data is re-parsed before anything is published: writing YAML that cannot be read
 // back bricks the config for every later save, so it is worth rejecting up front.
 func WriteYAMLFileAtomic(path string, data []byte) error {
-	return writeYAMLFileAtomicWithRename(path, data, os.Rename)
+	if err := writeYAMLFileAtomicWithRename(path, data, os.Rename); err != nil {
+		return err
+	}
+	noteSelfWrite(path, data)
+	return nil
 }
 
 // writeYAMLFileAtomicWithRename takes the rename function so tests can exercise the

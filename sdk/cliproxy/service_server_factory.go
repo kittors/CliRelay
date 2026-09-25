@@ -15,6 +15,11 @@ func (s *Service) buildServerOptions() []api.ServerOption {
 	serverOptions = append(serverOptions, api.WithModelConfigMutatedCallback(func(tenantID string) {
 		s.onModelCatalogChanged(tenantID)
 	}))
+	// Last resort of cluster config sync: a full reload that, unlike a local
+	// save, does not re-register every model.
+	serverOptions = append(serverOptions, api.WithConfigResyncCallback(func(updated *config.Config) {
+		s.applyConfigReload(updated, false)
+	}))
 	return serverOptions
 }
 

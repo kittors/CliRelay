@@ -97,6 +97,9 @@ type Server struct {
 
 	draining         atomic.Bool
 	inFlightRequests atomic.Int64
+
+	// configSync applies management changes made on other cluster nodes.
+	configSync configSyncState
 }
 
 // Start begins listening for and serving HTTP or HTTPS requests.
@@ -106,6 +109,7 @@ func (s *Server) Start() error {
 		return fmt.Errorf("failed to start HTTP server: server not initialized")
 	}
 
+	s.startConfigSync()
 	useTLS := s.cfg != nil && s.cfg.TLS.Enable
 	if useTLS {
 		cert := strings.TrimSpace(s.cfg.TLS.Cert)
@@ -143,6 +147,7 @@ func (s *Server) Stop(ctx context.Context) error {
 		}
 	}
 
+	s.stopConfigSync()
 	if s.mgmt != nil {
 		s.mgmt.Close()
 	}
