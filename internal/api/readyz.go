@@ -9,6 +9,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/redis/go-redis/v9"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/cluster"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
@@ -30,6 +31,10 @@ func (s *Server) handleReadyz(c *gin.Context) {
 
 	if s.cfg == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"status": "not_ready", "reason": "config_not_loaded"})
+		return
+	}
+	if cluster.Default().Enabled() {
+		s.handleClusterReadyz(ctx, c)
 		return
 	}
 

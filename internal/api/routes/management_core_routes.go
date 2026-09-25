@@ -8,6 +8,7 @@ import (
 func registerManagementCoreRoutes(group *gin.RouterGroup, h *managementhandlers.Handler, clearWriteDeadline func(*gin.Context)) {
 	group.GET("/dashboard-summary", h.GetDashboardSummary)
 	group.GET("/system-stats", h.GetSystemStats)
+	group.GET("/cluster", h.GetClusterStatus)
 	group.GET("/system-stats/ws", func(c *gin.Context) {
 		clearWriteDeadline(c)
 		h.SystemStatsWebSocket(c)
