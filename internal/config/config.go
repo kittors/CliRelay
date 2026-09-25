@@ -218,6 +218,10 @@ type Config struct {
 	Payload PayloadConfig `yaml:"payload" json:"payload"`
 
 	legacyMigrationPending bool `yaml:"-" json:"-"`
+
+	// runtimeSettings records the runtime_settings rows this config was loaded
+	// from; see RuntimeSettingState.
+	runtimeSettings *RuntimeSettingState `yaml:"-" json:"-"`
 }
 
 func (cfg *Config) MainAPIReadTimeout() time.Duration {

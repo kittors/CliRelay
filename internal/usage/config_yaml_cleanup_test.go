@@ -114,21 +114,23 @@ func TestCleanDBBackedConfigFromYAMLCleansPersistedSections(t *testing.T) {
 		t.Fatalf("write config: %v", err)
 	}
 
-	if removed := CleanDBBackedConfigFromYAML(configPath); removed != 19 {
-		t.Fatalf("CleanDBBackedConfigFromYAML removed %d sections, want 19", removed)
+	// 19 provider/routing sections plus logging-to-file, which the management
+	// API edits and which is database-backed for that reason.
+	if removed := CleanDBBackedConfigFromYAML(configPath); removed != 20 {
+		t.Fatalf("CleanDBBackedConfigFromYAML removed %d sections, want 20", removed)
 	}
 
 	data, err := os.ReadFile(configPath)
 	if err != nil {
 		t.Fatalf("read config: %v", err)
 	}
-	for _, forbidden := range []string{"api-keys:", "api-key-entries:", "api-key-permission-profiles:", "routing:", "proxy-pool:", "gemini-api-key:", "codex-api-key:", "claude-api-key:", "bedrock-api-key:", "opencode-go-api-key:", "openai-compatibility:", "vertex-api-key:", "claude-header-defaults:", "kimi-header-defaults:", "identity-fingerprint:", "codex-oauth-admission:", "oauth-excluded-models:", "oauth-model-alias:", "payload:"} {
+	for _, forbidden := range []string{"api-keys:", "api-key-entries:", "api-key-permission-profiles:", "routing:", "proxy-pool:", "gemini-api-key:", "codex-api-key:", "claude-api-key:", "bedrock-api-key:", "opencode-go-api-key:", "openai-compatibility:", "vertex-api-key:", "claude-header-defaults:", "kimi-header-defaults:", "identity-fingerprint:", "codex-oauth-admission:", "oauth-excluded-models:", "oauth-model-alias:", "payload:", "logging-to-file:"} {
 		if strings.Contains(string(data), forbidden) {
 			t.Fatalf("%s should be removed from YAML:\n%s", forbidden, string(data))
 		}
 	}
-	if !strings.Contains(string(data), "port: 8318") || !strings.Contains(string(data), "logging-to-file: true") {
-		t.Fatalf("ordinary config should remain in YAML:\n%s", string(data))
+	if !strings.Contains(string(data), "port: 8318") {
+		t.Fatalf("node-local config should remain in YAML:\n%s", string(data))
 	}
 	info, err := os.Stat(configPath)
 	if err != nil {

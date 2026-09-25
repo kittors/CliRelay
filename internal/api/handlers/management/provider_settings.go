@@ -13,7 +13,6 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/identity"
 	providersettings "github.com/router-for-me/CLIProxyAPI/v6/internal/management/settings/providers"
 	settingsstore "github.com/router-for-me/CLIProxyAPI/v6/internal/management/settings/store"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 )
 
@@ -55,93 +54,56 @@ func (h *Handler) providerConfigForTenant(c *gin.Context) *config.Config {
 			}
 		}
 	}
-	tenantID := effectiveTenantID(c)
-	if tenantID == identity.SystemTenantID {
-		return h.cfg
-	}
-	cfg := usage.BuildTenantRuntimeConfig(h.cfg, tenantID)
+	// Every tenant, the system one included, edits a copy freshly read from
+	// the database: a write computed from this node's in-memory copy could
+	// silently revert a change another node made in the meantime.
+	cfg := h.freshConfig(effectiveTenantID(c))
 	if c != nil {
-		c.Set(providerTenantConfigKey, &cfg)
+		c.Set(providerTenantConfigKey, cfg)
 	}
-	return &cfg
+	return cfg
 }
 
 func (h *ProviderKeysHandler) persistProviderSettings(c *gin.Context) bool {
 	tenantID := effectiveTenantID(c)
 	cfg := h.providerConfigForTenant(c)
-	if tenantID == identity.SystemTenantID {
-		h.mu.Lock()
-		err := settingsstore.SaveConfig(h.cfg, h.configFilePath)
-		mutated := h.onConfigMutated
-		h.mu.Unlock()
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to save config: %v", err)})
-			return false
-		}
-		payload := gin.H{"status": "ok"}
-		if errCleanup := h.cleanupRemovedProviderModerationBindings(c.Request.Context(), c, tenantID, cfg); errCleanup != nil {
-			payload["warning"] = fmt.Sprintf("provider saved but content moderation binding cleanup failed: %v", errCleanup)
-		}
-		c.JSON(http.StatusOK, payload)
-		if mutated != nil {
-			mutated(h.cfg)
-		}
-		return true
+	if !settingsstore.StoreAvailable() {
+		// Without a database the live config is the store (see mutateSystemConfig).
+		return h.persistProviderSettingsToYAML(c, cfg)
 	}
-	key, value := providerRuntimeSetting(c.Request.URL.Path, cfg)
-	if key == "" {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "unsupported provider setting"})
+	keys, err := settingsstore.CommitTenantConfig(c.Request.Context(), tenantID, cfg, requestVersion(c), h.configFilePath)
+	if err != nil {
+		writeConfigSaveError(c, "failed to save provider setting", err)
 		return false
-	}
-	if err := usage.UpsertRuntimeSettingForTenant(tenantID, key, value); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to save provider setting: %v", err)})
-		return false
-	}
-	if h.authManager != nil {
-		serviceapp.SyncConfigDerivedAuthsForTenant(h.cfg, h.authManager, tenantID)
 	}
 	payload := gin.H{"status": "ok"}
+	if len(keys) == 1 {
+		setVersionHeader(c, cfg.RuntimeSettingState().Version(keys[0]))
+	}
+	var mutated func(*config.Config)
+	var live *config.Config
+	if tenantID == identity.SystemTenantID {
+		h.mu.Lock()
+		live = h.cfg
+		settingsstore.AdoptKeys(live, cfg, keys...)
+		mutated = h.onConfigMutated
+		h.mu.Unlock()
+	} else if h.authManager != nil {
+		serviceapp.SyncConfigDerivedAuthsForTenant(h.cfg, h.authManager, tenantID)
+	}
 	if errCleanup := h.cleanupRemovedProviderModerationBindings(c.Request.Context(), c, tenantID, cfg); errCleanup != nil {
 		payload["warning"] = fmt.Sprintf("provider saved but content moderation binding cleanup failed: %v", errCleanup)
 	}
 	c.JSON(http.StatusOK, payload)
+	if mutated != nil {
+		mutated(live)
+	}
 	return true
-}
-
-func providerRuntimeSetting(path string, cfg *config.Config) (string, any) {
-	if cfg == nil {
-		return "", nil
-	}
-	relative := strings.TrimPrefix(path, "/v0/management")
-	switch {
-	case strings.HasPrefix(relative, "/gemini-api-key"):
-		return settingsstore.RuntimeSettingGeminiKeys, cfg.GeminiKey
-	case strings.HasPrefix(relative, "/claude-api-key"):
-		return settingsstore.RuntimeSettingClaudeKeys, cfg.ClaudeKey
-	case strings.HasPrefix(relative, "/bedrock-api-key"):
-		return settingsstore.RuntimeSettingBedrockKeys, cfg.BedrockKey
-	case strings.HasPrefix(relative, "/opencode-go-api-key"):
-		return settingsstore.RuntimeSettingOpenCodeGoKeys, cfg.OpenCodeGoKey
-	case strings.HasPrefix(relative, "/cline-api-key"):
-		return settingsstore.RuntimeSettingClineKeys, cfg.ClineKey
-	case strings.HasPrefix(relative, "/ollama-cloud-api-key"):
-		return settingsstore.RuntimeSettingOllamaCloudKeys, cfg.OllamaCloudKey
-	case strings.HasPrefix(relative, "/commandcode-api-key"):
-		return settingsstore.RuntimeSettingCommandCodeKeys, cfg.CommandCodeKey
-	case strings.HasPrefix(relative, "/codex-api-key"):
-		return settingsstore.RuntimeSettingCodexKeys, cfg.CodexKey
-	case strings.HasPrefix(relative, "/openai-compatibility"):
-		return settingsstore.RuntimeSettingOpenAICompatibility, cfg.OpenAICompatibility
-	case strings.HasPrefix(relative, "/vertex-api-key"):
-		return settingsstore.RuntimeSettingVertexCompatKeys, cfg.VertexCompatAPIKey
-	default:
-		return "", nil
-	}
 }
 
 // gemini-api-key: []GeminiKey
 func (h *ProviderKeysHandler) GetGeminiKeys(c *gin.Context) {
-	c.JSON(200, gin.H{"gemini-api-key": providerSettingsService(h, c).GeminiKeys()})
+	h.jsonWithRequestVersion(c, settingsstore.RuntimeSettingGeminiKeys, gin.H{"gemini-api-key": providerSettingsService(h, c).GeminiKeys()})
 }
 
 func (h *ProviderKeysHandler) PutGeminiKeys(c *gin.Context) {
@@ -210,7 +172,7 @@ func (h *ProviderKeysHandler) DeleteGeminiKey(c *gin.Context) {
 
 // claude-api-key: []ClaudeKey
 func (h *ProviderKeysHandler) GetClaudeKeys(c *gin.Context) {
-	c.JSON(200, gin.H{"claude-api-key": providerSettingsService(h, c).ClaudeKeys()})
+	h.jsonWithRequestVersion(c, settingsstore.RuntimeSettingClaudeKeys, gin.H{"claude-api-key": providerSettingsService(h, c).ClaudeKeys()})
 }
 
 func (h *ProviderKeysHandler) PutClaudeKeys(c *gin.Context) {
@@ -277,7 +239,7 @@ func (h *ProviderKeysHandler) DeleteClaudeKey(c *gin.Context) {
 
 // bedrock-api-key: []BedrockKey
 func (h *ProviderKeysHandler) GetBedrockKeys(c *gin.Context) {
-	c.JSON(200, gin.H{"bedrock-api-key": providerSettingsService(h, c).BedrockKeys()})
+	h.jsonWithRequestVersion(c, settingsstore.RuntimeSettingBedrockKeys, gin.H{"bedrock-api-key": providerSettingsService(h, c).BedrockKeys()})
 }
 
 func (h *ProviderKeysHandler) PutBedrockKeys(c *gin.Context) {
@@ -362,7 +324,7 @@ func (h *ProviderKeysHandler) DeleteBedrockKey(c *gin.Context) {
 
 // opencode-go-api-key: []OpenCodeGoKey
 func (h *ProviderKeysHandler) GetOpenCodeGoKeys(c *gin.Context) {
-	c.JSON(200, gin.H{"opencode-go-api-key": providerSettingsService(h, c).OpenCodeGoKeys()})
+	h.jsonWithRequestVersion(c, settingsstore.RuntimeSettingOpenCodeGoKeys, gin.H{"opencode-go-api-key": providerSettingsService(h, c).OpenCodeGoKeys()})
 }
 
 func (h *ProviderKeysHandler) PutOpenCodeGoKeys(c *gin.Context) {
@@ -440,7 +402,7 @@ func (h *ProviderKeysHandler) DeleteOpenCodeGoKey(c *gin.Context) {
 
 // cline-api-key: []ClineKey
 func (h *ProviderKeysHandler) GetClineKeys(c *gin.Context) {
-	c.JSON(200, gin.H{"cline-api-key": providerSettingsService(h, c).ClineKeys()})
+	h.jsonWithRequestVersion(c, settingsstore.RuntimeSettingClineKeys, gin.H{"cline-api-key": providerSettingsService(h, c).ClineKeys()})
 }
 
 func (h *ProviderKeysHandler) PutClineKeys(c *gin.Context) {
@@ -518,7 +480,7 @@ func (h *ProviderKeysHandler) DeleteClineKey(c *gin.Context) {
 
 // ollama-cloud-api-key: []OllamaCloudKey
 func (h *ProviderKeysHandler) GetOllamaCloudKeys(c *gin.Context) {
-	c.JSON(200, gin.H{"ollama-cloud-api-key": providerSettingsService(h, c).OllamaCloudKeys()})
+	h.jsonWithRequestVersion(c, settingsstore.RuntimeSettingOllamaCloudKeys, gin.H{"ollama-cloud-api-key": providerSettingsService(h, c).OllamaCloudKeys()})
 }
 
 func (h *ProviderKeysHandler) PutOllamaCloudKeys(c *gin.Context) {
@@ -596,7 +558,7 @@ func (h *ProviderKeysHandler) DeleteOllamaCloudKey(c *gin.Context) {
 
 // openai-compatibility: []OpenAICompatibility
 func (h *ProviderKeysHandler) GetOpenAICompat(c *gin.Context) {
-	c.JSON(200, gin.H{"openai-compatibility": providerSettingsService(h, c).OpenAICompatibility()})
+	h.jsonWithRequestVersion(c, settingsstore.RuntimeSettingOpenAICompatibility, gin.H{"openai-compatibility": providerSettingsService(h, c).OpenAICompatibility()})
 }
 
 func (h *ProviderKeysHandler) PutOpenAICompat(c *gin.Context) {
@@ -663,7 +625,7 @@ func (h *ProviderKeysHandler) DeleteOpenAICompat(c *gin.Context) {
 
 // vertex-api-key: []VertexCompatKey
 func (h *ProviderKeysHandler) GetVertexCompatKeys(c *gin.Context) {
-	c.JSON(200, gin.H{"vertex-api-key": providerSettingsService(h, c).VertexCompatKeys()})
+	h.jsonWithRequestVersion(c, settingsstore.RuntimeSettingVertexCompatKeys, gin.H{"vertex-api-key": providerSettingsService(h, c).VertexCompatKeys()})
 }
 
 func (h *ProviderKeysHandler) PutVertexCompatKeys(c *gin.Context) {
@@ -723,7 +685,7 @@ func (h *ProviderKeysHandler) DeleteVertexCompatKey(c *gin.Context) {
 
 // codex-api-key: []CodexKey
 func (h *ProviderKeysHandler) GetCodexKeys(c *gin.Context) {
-	c.JSON(200, gin.H{"codex-api-key": providerSettingsService(h, c).CodexKeys()})
+	h.jsonWithRequestVersion(c, settingsstore.RuntimeSettingCodexKeys, gin.H{"codex-api-key": providerSettingsService(h, c).CodexKeys()})
 }
 
 func (h *ProviderKeysHandler) PutCodexKeys(c *gin.Context) {

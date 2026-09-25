@@ -9,6 +9,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/configsync"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/identity"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/management/modelcatalog"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
@@ -177,6 +178,7 @@ func (h *ModelsHandler) DeleteModelConfig(c *gin.Context) {
 
 // GetModelOwnerPresets returns editable model owner presets.
 func (h *ModelsHandler) GetModelOwnerPresets(c *gin.Context) {
+	setVersionHeader(c, usage.ConfigCollectionVersion(configsync.DomainModelOwnerPresets, effectiveTenantID(c)))
 	c.JSON(http.StatusOK, h.service(c).OwnerPresets())
 }
 
@@ -189,11 +191,12 @@ func (h *ModelsHandler) PutModelOwnerPresets(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
 		return
 	}
-	payload, err := h.service(c).ReplaceOwnerPresets(body.Items)
+	payload, version, err := h.service(c).ReplaceOwnerPresetsExpect(c.Request.Context(), body.Items, requestExpectedVersion(c))
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeConfigSaveError(c, "failed to save owner presets", err)
 		return
 	}
+	setVersionHeader(c, version)
 	c.JSON(http.StatusOK, payload)
 }
 

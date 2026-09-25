@@ -61,6 +61,18 @@ func (w *Watcher) reloadConfigIfChanged() {
 		log.Debugf("config file content unchanged (hash match), skipping reload")
 		return
 	}
+	if config.WrittenByThisProcess(w.configPath, sum) {
+		// A management save or cleanup of this process wrote the file and has
+		// applied the change already; a second full reload would only rebuild
+		// every executor again. Mirrored stores still get the new content.
+		log.Debugf("config file change was written by this process, skipping reload")
+		w.clientsMutex.Lock()
+		w.lastConfigHash = newHash
+		w.clientsMutex.Unlock()
+		w.persistConfigAsync()
+		return
+	}
+	config.ForgetSelfWrites(w.configPath)
 	log.Infof("config file changed, reloading: %s", w.configPath)
 	if w.reloadConfig() {
 		finalHash := newHash

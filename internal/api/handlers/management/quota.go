@@ -6,22 +6,24 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/management/settings/runtimeconfig"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 )
 
 // Quota exceeded toggles
 func (h *Handler) GetSwitchProject(c *gin.Context) {
-	c.JSON(200, gin.H{"switch-project": h.cfg.QuotaExceeded.SwitchProject})
+	h.jsonWithLiveVersion(c, runtimeconfig.RuntimeSettingQuotaExceeded, gin.H{"switch-project": h.cfg.QuotaExceeded.SwitchProject})
 }
 func (h *Handler) PutSwitchProject(c *gin.Context) {
-	h.updateBoolField(c, func(v bool) { h.cfg.QuotaExceeded.SwitchProject = v })
+	h.updateBoolField(c, func(cfg *config.Config, v bool) { cfg.QuotaExceeded.SwitchProject = v })
 }
 
 func (h *Handler) GetSwitchPreviewModel(c *gin.Context) {
-	c.JSON(200, gin.H{"switch-preview-model": h.cfg.QuotaExceeded.SwitchPreviewModel})
+	h.jsonWithLiveVersion(c, runtimeconfig.RuntimeSettingQuotaExceeded, gin.H{"switch-preview-model": h.cfg.QuotaExceeded.SwitchPreviewModel})
 }
 func (h *Handler) PutSwitchPreviewModel(c *gin.Context) {
-	h.updateBoolField(c, func(v bool) { h.cfg.QuotaExceeded.SwitchPreviewModel = v })
+	h.updateBoolField(c, func(cfg *config.Config, v bool) { cfg.QuotaExceeded.SwitchPreviewModel = v })
 }
 
 type quotaReconcileRequest struct {

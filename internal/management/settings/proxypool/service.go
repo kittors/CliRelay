@@ -1,6 +1,7 @@
 package proxypool
 
 import (
+	"context"
 	"errors"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
@@ -52,4 +53,10 @@ func UpdateForTenant(tenantID, id string, entry config.ProxyPoolEntry) error {
 		return ErrItemNotFound
 	}
 	return err
+}
+
+// ReplaceForTenantExpect replaces the tenant's proxy pool if the collection is
+// still at expected (configsync.AnyVersion: unchecked).
+func ReplaceForTenantExpect(ctx context.Context, tenantID string, entries []config.ProxyPoolEntry, expected int64) (int64, error) {
+	return usage.ReplaceProxyPoolForTenantExpect(ctx, tenantID, entries, expected)
 }

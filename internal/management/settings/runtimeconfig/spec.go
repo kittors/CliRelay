@@ -35,7 +35,9 @@ type Spec struct {
 	Apply      func(*config.Config, json.RawMessage) bool
 }
 
-func Specs() []Spec {
+// providerAndRuntimeSpecs are the settings stored in runtime_settings from
+// the start; generalSpecs in spec_general.go joined them later.
+func providerAndRuntimeSpecs() []Spec {
 	return []Spec{
 		{
 			Key: RuntimeSettingGeminiKeys,

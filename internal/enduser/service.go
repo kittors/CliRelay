@@ -522,7 +522,7 @@ func (s *Service) CreateUser(ctx context.Context, actor identity.Principal, tena
 	if err != nil {
 		return result, err
 	}
-	if err = tx.Commit(); err != nil {
+	if err = commitKeyChange(ctx, tx, tenantID); err != nil {
 		return result, err
 	}
 	u, err := s.GetUser(ctx, tenantID, userID)
@@ -719,7 +719,7 @@ func (s *Service) UpdateUser(ctx context.Context, actor identity.Principal, tena
 	if err != nil {
 		return User{}, err
 	}
-	if err = tx.Commit(); err != nil {
+	if err = commitAccountChange(ctx, tx, tenantID); err != nil {
 		return User{}, err
 	}
 	updated, err := s.GetUser(ctx, tenantID, userID)
@@ -849,7 +849,7 @@ func (s *Service) DeleteUser(ctx context.Context, actor identity.Principal, tena
 	if n, _ := res.RowsAffected(); n == 0 {
 		return ErrNotFound
 	}
-	return tx.Commit()
+	return commitKeyChange(ctx, tx, tenantID)
 }
 
 // ResolveOwnedKeySecret returns the plaintext key for a key owned by this end user.
@@ -961,7 +961,7 @@ func (s *Service) SetDefaultKey(ctx context.Context, tenantID, endUserID, keyID 
 	if _, err = tx.ExecContext(ctx, `UPDATE api_keys SET is_default = true, updated_at = ? WHERE tenant_id = ? AND end_user_id = ? AND id = ?`, time.Now().UTC().Format(time.RFC3339), tenantID, endUserID, keyID); err != nil {
 		return err
 	}
-	return tx.Commit()
+	return commitKeyChange(ctx, tx, tenantID)
 }
 
 func (s *Service) UpdateKeyName(ctx context.Context, tenantID, endUserID, keyID, name string) error {
@@ -1038,7 +1038,7 @@ func (s *Service) RotateKey(ctx context.Context, tenantID, endUserID, keyID stri
 	if _, err = tx.ExecContext(ctx, `UPDATE api_keys SET key = ?, updated_at = ? WHERE tenant_id = ? AND end_user_id = ? AND id = ?`, plain, now, tenantID, endUserID, keyID); err != nil {
 		return result, err
 	}
-	if err = tx.Commit(); err != nil {
+	if err = commitKeyChange(ctx, tx, tenantID); err != nil {
 		return result, err
 	}
 	if _, backfillErr := usage.BackfillLegacyRequestLogsAPIKeyIDForTenant(context.Background(), tenantID, keyID, oldSecret); backfillErr != nil {
@@ -1111,7 +1111,7 @@ func (s *Service) DeleteKey(ctx context.Context, tenantID, endUserID, keyID stri
 				return err
 			}
 		}
-		return tx.Commit()
+		return commitKeyChange(ctx, tx, tenantID)
 	}
 	var count int
 	if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM api_keys WHERE tenant_id = ? AND end_user_id = ? AND disabled = 0`, tenantID, endUserID).Scan(&count); err != nil {
@@ -1143,5 +1143,5 @@ func (s *Service) DeleteKey(ctx context.Context, tenantID, endUserID, keyID stri
 			return err
 		}
 	}
-	return tx.Commit()
+	return commitKeyChange(ctx, tx, tenantID)
 }

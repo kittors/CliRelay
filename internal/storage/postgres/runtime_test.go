@@ -11,8 +11,8 @@ import (
 
 func TestRuntimeMigrationsCoverCoreTables(t *testing.T) {
 	migrations := RuntimeMigrations()
-	if len(migrations) != 34 {
-		t.Fatalf("RuntimeMigrations len = %d, want 34", len(migrations))
+	if len(migrations) != 35 {
+		t.Fatalf("RuntimeMigrations len = %d, want 35", len(migrations))
 	}
 	// Membership table of multi-instance deployments.
 	if migrations[31].Version != "202609250001_cluster_nodes" {
@@ -25,6 +25,19 @@ func TestRuntimeMigrationsCoverCoreTables(t *testing.T) {
 	if migrations[33].Version != "202609250003_cluster_auth_credentials" ||
 		!strings.Contains(migrations[33].SQL, "CREATE TABLE IF NOT EXISTS auth_credentials") {
 		t.Fatalf("cluster credential migration = %q", migrations[33].Version)
+	}
+	// Optimistic versions for cross-node management writes.
+	if migrations[34].Version != "202609250004_config_optimistic_versions" {
+		t.Fatalf("config versions migration version = %q", migrations[34].Version)
+	}
+	for _, fragment := range []string{
+		"ALTER TABLE runtime_settings ADD COLUMN IF NOT EXISTS version BIGINT NOT NULL DEFAULT 1",
+		"ALTER TABLE routing_config ADD COLUMN IF NOT EXISTS version BIGINT NOT NULL DEFAULT 1",
+		"CREATE TABLE IF NOT EXISTS config_versions",
+	} {
+		if !strings.Contains(migrations[34].SQL, fragment) {
+			t.Fatalf("config versions migration missing %q", fragment)
+		}
 	}
 	// Appended from laterRuntimeMigrations() because migrations.go sits at its
 	// structure-gate size ceiling.

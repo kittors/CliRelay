@@ -1,6 +1,7 @@
 package proxypool
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/configsync"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -52,6 +54,8 @@ func InitTable(db *sql.DB) {
 	if db == nil {
 		return
 	}
+	// Whole-replace writes of this table bump its collection version.
+	configsync.InitTables(db)
 	if _, err := db.Exec(createProxyPoolTableSQL); err != nil {
 		log.Errorf("sqlite/proxypool: create proxy_pool table: %v", err)
 	}
@@ -104,47 +108,43 @@ func (s Store) Get(id string) *config.ProxyPoolEntry {
 	return &entry
 }
 
+// Replace replaces the tenant's proxy pool whatever the stored collection
+// version is, as clients without versions expect.
 func (s Store) Replace(entries []config.ProxyPoolEntry) error {
-	if s.db == nil {
-		return fmt.Errorf("database not initialised")
-	}
-
-	normalized := config.NormalizeProxyPool(entries)
-	tx, err := s.db.Begin()
-	if err != nil {
-		return err
-	}
-	if _, err := tx.Exec("DELETE FROM proxy_pool WHERE tenant_id = ?", s.tenantID); err != nil {
-		_ = tx.Rollback()
-		return err
-	}
-	if len(normalized) == 0 {
-		return tx.Commit()
-	}
-
-	stmt, err := tx.Prepare(`INSERT INTO proxy_pool
-		(tenant_id, id, name, url, enabled, description, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
-	if err != nil {
-		_ = tx.Rollback()
-		return err
-	}
-	defer stmt.Close()
-
-	now := time.Now().UTC().Format(time.RFC3339)
-	for _, entry := range normalized {
-		enabledInt := 0
-		if entry.Enabled {
-			enabledInt = 1
-		}
-		if _, err := stmt.Exec(s.tenantID, entry.ID, entry.Name, entry.URL, enabledInt, entry.Description, now, now); err != nil {
-			_ = tx.Rollback()
-			return err
-		}
-	}
-	return tx.Commit()
+	_, err := s.ReplaceExpect(context.Background(), entries, configsync.AnyVersion)
+	return err
 }
 
+// ReplaceExpect replaces the tenant's proxy pool if the collection is still at
+// expected (configsync.AnyVersion: unchecked), announces it, and returns the
+// new collection version.
+func (s Store) ReplaceExpect(ctx context.Context, entries []config.ProxyPoolEntry, expected int64) (int64, error) {
+	if s.db == nil {
+		return 0, fmt.Errorf("database not initialised")
+	}
+	normalized := config.NormalizeProxyPool(entries)
+	return configsync.WriteCollection(ctx, s.db, configsync.DomainProxyPool, s.tenantID, expected, func(tx *sql.Tx) error {
+		if _, err := tx.Exec("DELETE FROM proxy_pool WHERE tenant_id = ?", s.tenantID); err != nil {
+			return err
+		}
+		now := time.Now().UTC().Format(time.RFC3339)
+		for _, entry := range normalized {
+			enabledInt := 0
+			if entry.Enabled {
+				enabledInt = 1
+			}
+			if _, err := tx.Exec(`INSERT INTO proxy_pool
+				(tenant_id, id, name, url, enabled, description, created_at, updated_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, s.tenantID, entry.ID, entry.Name, entry.URL, enabledInt, entry.Description, now, now); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// Update updates one proxy entry, bumping the collection version and
+// announcing the change with it.
 func (s Store) Update(id string, entry config.ProxyPoolEntry) error {
 	if s.db == nil {
 		return fmt.Errorf("database not initialised")
@@ -159,7 +159,13 @@ func (s Store) Update(id string, entry config.ProxyPoolEntry) error {
 	if entry.Enabled {
 		enabledInt = 1
 	}
-	result, err := s.db.Exec(
+	ctx := context.Background()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	result, err := tx.Exec(
 		`UPDATE proxy_pool
 		 SET name = ?, url = ?, enabled = ?, description = ?, updated_at = ?
 		 WHERE tenant_id = ? AND id = ?`,
@@ -181,7 +187,7 @@ func (s Store) Update(id string, entry config.ProxyPoolEntry) error {
 	if rowsAffected == 0 {
 		return ErrEntryNotFound
 	}
-	return nil
+	return configsync.BumpAndCommit(ctx, tx, configsync.DomainProxyPool, s.tenantID)
 }
 
 func (s Store) ApplyToConfig(cfg *config.Config) bool {
