@@ -1,0 +1,28 @@
+# Continuous WAL archive for point-in-time recovery, on the arbiter host.
+#
+# Replication protects against a lost machine, not against a bad DELETE: a
+# mistake is replicated in milliseconds. Base backups plus every WAL segment
+# since the oldest one let an operator restore to any moment in between.
+#
+# pg_receivewal follows the primary through the multi-host DSN and the
+# permanent slot clirelay_walarchive that Patroni keeps on every member, so a
+# failover neither loses segments nor needs reconfiguration.
+[Unit]
+Description=CliRelay cluster WAL archive (pg_receivewal)
+After=docker.service network-online.target
+Requires=docker.service
+
+[Service]
+EnvironmentFile=/etc/clirelay-cluster/backup.env
+ExecStartPre=-/usr/bin/docker rm -f clirelay-walarchive
+ExecStartPre=/usr/bin/install -d -m 0700 /opt/clirelay-cluster/backups/wal
+ExecStart=/usr/bin/docker run --rm --name clirelay-walarchive --network host \
+  -e PGPASSWORD -v /etc/clirelay-cluster/tls:/tls:ro -v /opt/clirelay-cluster/backups/wal:/wal \
+  ${PG_IMAGE} pg_receivewal -D /wal --slot=clirelay_walarchive --compress=gzip \
+  --dbname=${WAL_ARCHIVE_DSN}
+ExecStop=/usr/bin/docker stop -t 20 clirelay-walarchive
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

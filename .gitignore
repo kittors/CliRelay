@@ -34,6 +34,8 @@ auths/*
 # Documentation
 docs/*
 !docs/multi-instance-node-bootstrap_CN.md
+!docs/multi-instance-deployment.md
+!docs/multi-instance-deployment_CN.md
 !docs/images/
 !docs/images/*.png
 !docs/internal-review/

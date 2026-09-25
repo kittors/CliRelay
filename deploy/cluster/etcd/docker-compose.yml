@@ -1,0 +1,47 @@
+# One member of the three-node etcd cluster that holds Patroni's leader key.
+# Every node (the two PostgreSQL hosts and the arbiter) runs one member, so
+# the cluster keeps quorum when any single machine is lost.
+#
+# Host networking: members reach each other on the public addresses; mutual
+# TLS against the cluster CA (peer and client) is the access control.
+# Values come from .env next to this file (see etcd.env.example).
+services:
+  etcd:
+    image: ${ETCD_IMAGE:-quay.io/coreos/etcd:v3.6.15}
+    container_name: clirelay-etcd
+    network_mode: host
+    restart: unless-stopped
+    mem_limit: 256m
+    environment:
+      GOMEMLIMIT: 200MiB
+    volumes:
+      - ${ETCD_DATA_DIR:-/opt/clirelay-cluster/etcd-data}:/etcd-data
+      - ${TLS_DIR:-/etc/clirelay-cluster/tls}:/tls:ro
+    command:
+      - etcd
+      - --name=${NODE_NAME:?}
+      - --data-dir=/etcd-data
+      - --listen-client-urls=https://127.0.0.1:2379,https://${NODE_IP:?}:2379
+      - --advertise-client-urls=https://${NODE_IP}:2379
+      - --listen-peer-urls=https://${NODE_IP}:2380
+      - --initial-advertise-peer-urls=https://${NODE_IP}:2380
+      - --initial-cluster=${ETCD_INITIAL_CLUSTER:?}
+      - --initial-cluster-state=${ETCD_INITIAL_STATE:-new}
+      - --initial-cluster-token=clirelay-etcd
+      - --client-cert-auth
+      - --trusted-ca-file=/tls/ca.crt
+      - --cert-file=/tls/node.crt
+      - --key-file=/tls/node.key
+      - --peer-client-cert-auth
+      - --peer-trusted-ca-file=/tls/ca.crt
+      - --peer-cert-file=/tls/node.crt
+      - --peer-key-file=/tls/node.key
+      # Members are 1.4-2.8 ms apart over the public internet; a longer
+      # election timeout than the LAN default tolerates VPS network jitter.
+      - --heartbeat-interval=250
+      - --election-timeout=2500
+      - --auto-compaction-mode=periodic
+      - --auto-compaction-retention=1h
+      - --quota-backend-bytes=1073741824
+      - --listen-metrics-urls=http://127.0.0.1:2381
+      - --log-level=warn

@@ -110,6 +110,14 @@ func (s *Store) processSync() {
 			log.WithError(errGet).Debugf("cluster auth: re-read %s", id)
 			req.attempts++
 			retry[id] = req
+		case r == nil && req.version > 0:
+			// Announced but not visible yet: an in-process bus can deliver a
+			// PublishTx event before the writer's commit is visible to other
+			// connections, and a brand-new row reads as missing until then.
+			// Forgetting it here would leave the mirror empty until the next
+			// reconcile, so re-read it like any row that is behind.
+			req.attempts++
+			retry[id] = req
 		case r == nil:
 			s.forget(id)
 		case r.Version < req.version:

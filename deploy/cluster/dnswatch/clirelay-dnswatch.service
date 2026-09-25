@@ -1,0 +1,80 @@
+# clirelay-dnswatch: points the CliRelay DNS A records at the nodes that pass
+# their readiness probe, and pulls a node that stops passing.
+#
+# Run it on the arbiter (third) machine, never on an application node: a node
+# cannot tell whether clients can still reach it.
+#
+# Requires systemd >= 248 for LoadCredential= with the %d specifier.
+#
+#   install -m 0755 clirelay-dnswatch /usr/local/bin/clirelay-dnswatch
+#   install -d -m 0755 /etc/clirelay-dnswatch
+#   install -m 0600 dnswatch.yaml /etc/clirelay-dnswatch/dnswatch.yaml
+#   install -m 0600 /dev/null /etc/clirelay-dnswatch/cf-token   # then paste the token into it
+#   install -m 0644 clirelay-dnswatch.service /etc/systemd/system/
+#   systemctl daemon-reload && systemctl enable --now clirelay-dnswatch
+
+[Unit]
+Description=CliRelay DNS failover watcher
+Documentation=https://github.com/kittors/CliRelay/tree/main/deploy/cluster/dnswatch
+Wants=network-online.target
+After=network-online.target
+# Keep restarting for as long as it takes; a watcher that gave up is worse
+# than one that retries.
+StartLimitIntervalSec=0
+
+[Service]
+Type=exec
+# The config and the token stay root-only in /etc. systemd copies them into a
+# private credentials directory (%d) that only this service can read; the
+# config names its token file relative to itself, so both resolve there.
+LoadCredential=dnswatch.yaml:/etc/clirelay-dnswatch/dnswatch.yaml
+LoadCredential=cf-token:/etc/clirelay-dnswatch/cf-token
+ExecStart=/usr/local/bin/clirelay-dnswatch -config %d/dnswatch.yaml
+Restart=always
+RestartSec=5s
+# Exit status 2 means a bad config or token file, which a restart cannot fix.
+RestartPreventExitStatus=2
+
+# Unprivileged throwaway user. It only needs outbound HTTPS (nodes,
+# Cloudflare, the webhook), the optional loopback status port, and to stat
+# the hold file in /etc/clirelay-dnswatch.
+DynamicUser=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+NoNewPrivileges=yes
+UMask=0077
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateUsers=yes
+ProtectProc=invisible
+ProcSubset=pid
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RemoveIPC=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+# Deny filtered calls with EPERM instead of killing the process: the Go
+# runtime probes a few of them (setrlimit) and copes with a refusal.
+SystemCallErrorNumber=EPERM
+
+# The Go runtime does not read the cgroup memory limit, so give it a soft
+# limit below MemoryMax; otherwise it only learns about the ceiling when the
+# kernel starts reclaiming from under it.
+MemoryMax=128M
+Environment=GOMEMLIMIT=96MiB
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,44 @@
+# Redis shared by all CliRelay nodes (cluster.redis): cluster-wide rate-limit
+# counters, concurrency leases, session-affinity bindings and minted IDs.
+#
+# Everything stored here is disposable: when it is unreachable the nodes fall
+# back to per-node limits (limit / active nodes), so persistence is off and
+# the instance lives on the arbiter, away from both application hosts.
+# TLS only (port 0 disables plaintext); clients need a cluster certificate
+# and the password.
+services:
+  redis:
+    image: ${REDIS_IMAGE:-redis:7-alpine}
+    container_name: clirelay-cluster-redis
+    network_mode: host
+    restart: unless-stopped
+    mem_limit: 384m
+    volumes:
+      - /etc/clirelay-cluster/tls-redis:/tls:ro
+    command:
+      - redis-server
+      - --port
+      - "0"
+      - --tls-port
+      - "6380"
+      - --bind
+      - ${REDIS_BIND:?} 127.0.0.1
+      - --tls-cert-file
+      - /tls/node.crt
+      - --tls-key-file
+      - /tls/node.key
+      - --tls-ca-cert-file
+      - /tls/ca.crt
+      - --tls-auth-clients
+      - "yes"
+      - --requirepass
+      - ${REDIS_PASSWORD:?}
+      - --maxmemory
+      - 256mb
+      # every key the nodes write carries a TTL
+      - --maxmemory-policy
+      - volatile-lru
+      - --save
+      - ""
+      - --appendonly
+      - "no"

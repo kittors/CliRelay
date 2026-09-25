@@ -1,0 +1,10 @@
+[Unit]
+Description=CliRelay cluster daily base backup
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/clirelay-cluster/backup/pg-basebackup.sh
+Nice=10
+IOSchedulingClass=idle

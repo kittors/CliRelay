@@ -1,0 +1,17 @@
+[Unit]
+Description=CliRelay PostgreSQL migration tunnel (stunnel, mutual TLS)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/bin/stunnel /etc/clirelay-cluster/stunnel/pg-tunnel.conf
+Restart=always
+RestartSec=2
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadOnlyPaths=/etc/clirelay-cluster
+
+[Install]
+WantedBy=multi-user.target
