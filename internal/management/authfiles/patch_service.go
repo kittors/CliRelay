@@ -72,10 +72,17 @@ func (s PatchService) PatchStatus(ctx context.Context, patch StatusPatch) (Statu
 	if targetAuth == nil {
 		return StatusPatchResult{}, ErrAuthFileNotFound
 	}
-	if errPatch := ApplyStatusPatch(targetAuth, *patch.Disabled, s.Now); errPatch != nil {
+	// MutateAuth applies the patch to targetAuth as before on a single node;
+	// in cluster mode it re-applies it to the newest persisted copy.
+	var errPatch error
+	_, errUpdate := s.Manager.MutateAuth(ctx, targetAuth, func(auth *coreauth.Auth) (bool, error) {
+		errPatch = ApplyStatusPatch(auth, *patch.Disabled, s.Now)
+		return errPatch == nil, errPatch
+	})
+	if errPatch != nil {
 		return StatusPatchResult{}, errPatch
 	}
-	if _, errUpdate := s.Manager.Update(ctx, targetAuth); errUpdate != nil {
+	if errUpdate != nil {
 		return StatusPatchResult{}, internalPatchError{err: fmt.Errorf("failed to update auth: %w", errUpdate)}
 	}
 	return StatusPatchResult{Disabled: *patch.Disabled}, nil
@@ -93,14 +100,21 @@ func (s PatchService) PatchFields(ctx context.Context, patch FieldPatch) error {
 	if targetAuth == nil {
 		return ErrAuthFileNotFound
 	}
-	patchResult, errPatch := ApplyFieldPatch(targetAuth, patch, FieldPatchOptions{
-		Now:           s.Now,
-		ValidateLabel: s.ValidateLabel,
+	var (
+		patchResult FieldPatchResult
+		errPatch    error
+	)
+	_, errUpdate := s.Manager.MutateAuth(ctx, targetAuth, func(auth *coreauth.Auth) (bool, error) {
+		patchResult, errPatch = ApplyFieldPatch(auth, patch, FieldPatchOptions{
+			Now:           s.Now,
+			ValidateLabel: s.ValidateLabel,
+		})
+		return errPatch == nil, errPatch
 	})
 	if errPatch != nil {
 		return errPatch
 	}
-	if _, errUpdate := s.Manager.Update(ctx, targetAuth); errUpdate != nil {
+	if errUpdate != nil {
 		return internalPatchError{err: fmt.Errorf("failed to update auth: %w", errUpdate)}
 	}
 	if path := strings.TrimSpace(Attribute(targetAuth, "path")); path != "" {

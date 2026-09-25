@@ -202,6 +202,9 @@ type Manager struct {
 	refreshCancel    context.CancelFunc
 	refreshSemaphore chan struct{}
 	quotaProbeAfter  map[string]time.Time
+
+	// refreshCoordinator holds a refreshCoordinatorHolder; see SetRefreshCoordinator.
+	refreshCoordinator atomic.Value
 }
 
 // NewManager constructs a manager with optional custom selector and hook.
@@ -261,6 +264,7 @@ func NewManager(store Store, selector Selector, hook Hook) *Manager {
 	manager.runtimeConfig.Store(runtimeConfigSnapshotSet{defaultTenantID: newRuntimeConfigSnapshot(nil)})
 	manager.apiKeyModelAlias.Store(apiKeyModelAliasTable(nil))
 	AttachDefaultModelRegistry(manager)
+	manager.adoptStoreRefreshCoordinator(store)
 	return manager
 }
 

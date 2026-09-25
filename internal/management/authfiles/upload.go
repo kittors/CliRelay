@@ -98,12 +98,14 @@ func (s UploadService) upload(ctx context.Context, name string, data []byte, wri
 	if errWrite := os.Rename(tmpPath, dst); errWrite != nil {
 		return UploadResult{}, fmt.Errorf("%s: %w", writeMessage, errWrite)
 	}
+	// An upload creates or replaces the credential outright, which is the one
+	// kind of write a cluster store lets bring back a deleted credential.
 	if errRegister := (Registrar{
 		Manager:  s.Manager,
 		AuthDir:  s.AuthDir,
 		TenantID: s.TenantID,
 		Now:      s.Now,
-	}).RegisterFile(ctx, dst, data); errRegister != nil {
+	}).RegisterFile(coreauth.WithCredentialCreate(ctx), dst, data); errRegister != nil {
 		return UploadResult{}, errRegister
 	}
 	if errPersist := s.Repository.PersistChange(ctx, "Update auth "+name, dst); errPersist != nil {

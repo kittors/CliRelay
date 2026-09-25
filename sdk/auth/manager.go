@@ -68,7 +68,9 @@ func (m *Manager) Login(ctx context.Context, provider string, cfg *config.Config
 		}
 	}
 
-	savedPath, err := m.store.Save(ctx, record)
+	// A login is an explicit create: stores that refuse implicit writes to
+	// unknown or deleted credentials (cluster mode) must accept this one.
+	savedPath, err := m.store.Save(coreauth.WithCredentialCreate(ctx), record)
 	if err != nil {
 		return record, "", err
 	}
