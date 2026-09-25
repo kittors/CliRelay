@@ -12,7 +12,7 @@
 #   deploy-blue-green.sh --print-settings  print the effective settings and exit
 #
 # SCRIPT_VERSION must stay in sync with deploy gate expectations.
-SCRIPT_VERSION='2026.09.25.1'
+SCRIPT_VERSION='2026.09.25.2'
 set -euo pipefail
 
 mode=deploy
@@ -92,12 +92,29 @@ GO_MEM_LIMIT_PERCENT=85
 
 # DEPLOY_ENV_KEYS are the settings DEPLOY_ENV_FILE may set. Anything else there
 # is refused, since a misspelt key would otherwise be ignored in silence.
-DEPLOY_ENV_KEYS='DOMAIN NODE_PUBLIC_IP SMOKE_LOCAL_TLS_ADDR NGINX_CONF NGINX_SEARCH_DIRS NGINX_CONTAINER SLOT_USER SLOT_GROUP DRAIN_SECONDS SHUTDOWN_GRACE_SECONDS HEALTH_TIMEOUT_SECONDS SMOKE_TIMEOUT_SECONDS MIN_AVAILABLE_MB GO_MEM_LIMIT_PERCENT'
+#
+# The SERVICE_* resource limits may also arrive from the workflow. The node's
+# file wins: it is root-managed on the machine the limits are for, while the
+# workflow's values are one repository-wide setting for nodes whose memory
+# differs by half, one of which also hosts PostgreSQL, etcd and Redis.
+DEPLOY_ENV_KEYS='DOMAIN NODE_PUBLIC_IP SMOKE_LOCAL_TLS_ADDR NGINX_CONF NGINX_SEARCH_DIRS NGINX_CONTAINER SLOT_USER SLOT_GROUP DRAIN_SECONDS SHUTDOWN_GRACE_SECONDS HEALTH_TIMEOUT_SECONDS SMOKE_TIMEOUT_SECONDS MIN_AVAILABLE_MB GO_MEM_LIMIT_PERCENT SERVICE_CPU_QUOTA SERVICE_MEMORY_HIGH SERVICE_MEMORY_MAX SERVICE_TASKS_MAX SERVICE_GO_MEM_LIMIT'
 
 # setting_is_valid checks a DEPLOY_ENV_FILE value against the shape its setting
 # may take. The values reach sed patterns, curl arguments and the unit file.
 setting_is_valid() {
 	case "$1" in
+	SERVICE_CPU_QUOTA | SERVICE_MEMORY_HIGH | SERVICE_MEMORY_MAX | SERVICE_TASKS_MAX)
+		# Same shapes as the workflow's values. A node that names a limit must
+		# give one: an empty value would drop the directive, and with it the
+		# limit. `infinity` lifts a memory or task limit on purpose.
+		[ -n "$2" ] && tunable_is_valid "$1" "$2"
+		return
+		;;
+	SERVICE_GO_MEM_LIMIT)
+		# Empty is allowed and means: derive it from this node's MemoryHigh.
+		tunable_is_valid "$1" "$2"
+		return
+		;;
 	DOMAIN) pattern='^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$' ;;
 	NODE_PUBLIC_IP) pattern='^([0-9]{1,3}(\.[0-9]{1,3}){3}|[0-9A-Fa-f]*:[0-9A-Fa-f:]*)?$' ;;
 	SMOKE_LOCAL_TLS_ADDR) pattern='^([0-9]{1,3}(\.[0-9]{1,3}){3}|\[[0-9A-Fa-f:]+\]|localhost):[0-9]{1,5}$' ;;
@@ -145,7 +162,21 @@ load_deploy_env() {
 		esac
 		setting_is_valid "$env_key" "$env_value" || fail "${1}:${env_line_no}: invalid ${env_key}: ${env_value}"
 		printf -v "$env_key" '%s' "$env_value"
+		deploy_env_set="${deploy_env_set:-} ${env_key} "
 	done <"$1"
+
+	# GOMEMLIMIT only means something relative to MemoryHigh, and must stay
+	# below it. A node that sets its own MemoryHigh therefore gets a limit
+	# derived from that, not one the workflow chose for the repository-wide
+	# MemoryHigh, unless the node sets SERVICE_GO_MEM_LIMIT as well.
+	case "${deploy_env_set:-}" in
+	*" SERVICE_MEMORY_HIGH "*)
+		case "$deploy_env_set" in
+		*" SERVICE_GO_MEM_LIMIT "*) ;;
+		*) SERVICE_GO_MEM_LIMIT= ;;
+		esac
+		;;
+	esac
 }
 
 # tunable_is_valid checks a value the caller passed in. The slot unit is built
@@ -212,28 +243,6 @@ print_settings() {
 	done
 }
 
-read_caller_tunables
-deploy_env_state=absent
-if [ -e "$DEPLOY_ENV_FILE" ]; then
-	require_root_controlled "$DEPLOY_ENV_FILE"
-	load_deploy_env "$DEPLOY_ENV_FILE"
-	deploy_env_state=loaded
-fi
-PUBLIC_BASE_URL="https://${DOMAIN}"
-
-if [ "$mode" = print-settings ]; then
-	print_settings
-	exit 0
-fi
-
-if [ -n "$EXPECTED_SCRIPT_VERSION" ] && [ "$SCRIPT_VERSION" != "$EXPECTED_SCRIPT_VERSION" ]; then
-	echo "deploy script version mismatch: have ${SCRIPT_VERSION}, want ${EXPECTED_SCRIPT_VERSION}" >&2
-	exit 1
-fi
-if [ "$mode" = deploy ] && [ -z "$COMMIT_SHA" ]; then
-	fail "COMMIT_SHA is required"
-fi
-
 # Convert a systemd byte quantity (1400M, 2G, plain bytes) to bytes. Anything
 # else — "infinity", a percentage, a malformed value — yields nothing so the
 # caller can fall back to leaving GOMEMLIMIT unset.
@@ -253,7 +262,10 @@ systemd_bytes() {
 	esac
 }
 
-if [ -z "$SERVICE_GO_MEM_LIMIT" ]; then
+# derive_go_mem_limit sets GOMEMLIMIT to GO_MEM_LIMIT_PERCENT of MemoryHigh when
+# neither the node nor the workflow pinned one.
+derive_go_mem_limit() {
+	[ -z "$SERVICE_GO_MEM_LIMIT" ] || return 0
 	high_bytes="$(systemd_bytes "$SERVICE_MEMORY_HIGH")"
 	if [ -n "$high_bytes" ] && [ "$high_bytes" -gt 0 ]; then
 		derived="$((high_bytes * GO_MEM_LIMIT_PERCENT / 100))"
@@ -264,6 +276,30 @@ if [ -z "$SERVICE_GO_MEM_LIMIT" ]; then
 			SERVICE_GO_MEM_LIMIT="$derived"
 		fi
 	fi
+}
+
+read_caller_tunables
+deploy_env_state=absent
+deploy_env_set=""
+if [ -e "$DEPLOY_ENV_FILE" ]; then
+	require_root_controlled "$DEPLOY_ENV_FILE"
+	load_deploy_env "$DEPLOY_ENV_FILE"
+	deploy_env_state=loaded
+fi
+derive_go_mem_limit
+PUBLIC_BASE_URL="https://${DOMAIN}"
+
+if [ "$mode" = print-settings ]; then
+	print_settings
+	exit 0
+fi
+
+if [ -n "$EXPECTED_SCRIPT_VERSION" ] && [ "$SCRIPT_VERSION" != "$EXPECTED_SCRIPT_VERSION" ]; then
+	echo "deploy script version mismatch: have ${SCRIPT_VERSION}, want ${EXPECTED_SCRIPT_VERSION}" >&2
+	exit 1
+fi
+if [ "$mode" = deploy ] && [ -z "$COMMIT_SHA" ]; then
+	fail "COMMIT_SHA is required"
 fi
 
 # Refuse to start when a tool the cutover depends on is missing. The previous
@@ -692,9 +728,10 @@ if [ "$mode" = check ]; then
 	if [ ! -e "$ACTIVE_PORT_FILE" ] && [ -z "$running_slots" ]; then
 		first_deploy_hint=yes
 	fi
-	printf 'CLIRELAY_DEPLOY_CHECK ok script_version=%s domain=%s nginx=%s:%s routed_port=%s recorded_port=%s running_slots=%s first_deploy=%s slot_user=%s smoke=%s deploy_env=%s\n' \
+	printf 'CLIRELAY_DEPLOY_CHECK ok script_version=%s domain=%s nginx=%s:%s routed_port=%s recorded_port=%s running_slots=%s first_deploy=%s slot_user=%s smoke=%s deploy_env=%s limits=CPUQuota:%s,MemoryHigh:%s,MemoryMax:%s,TasksMax:%s,GOMEMLIMIT:%s\n' \
 		"$SCRIPT_VERSION" "$DOMAIN" "$nginx_mode" "$nginx_conf" "$(nginx_slot_port)" "${recorded_port:-none}" \
-		"${running_slots:-none}" "$first_deploy_hint" "${slot_user:-root}" "$smoke_route_desc" "$deploy_env_state"
+		"${running_slots:-none}" "$first_deploy_hint" "${slot_user:-root}" "$smoke_route_desc" "$deploy_env_state" \
+		"${SERVICE_CPU_QUOTA:-none}" "${SERVICE_MEMORY_HIGH:-none}" "${SERVICE_MEMORY_MAX:-none}" "${SERVICE_TASKS_MAX:-none}" "${SERVICE_GO_MEM_LIMIT:-none}"
 	exit 0
 fi
 

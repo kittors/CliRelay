@@ -36,7 +36,7 @@ env:
   # entrypoint refuses to run on a mismatch, and the preflight job checks it on
   # every node before any node is touched. Guarded by
   # TestDeployScriptVersionMatchesWorkflowExpectation.
-  EXPECTED_SCRIPT_VERSION: '2026.09.25.1'
+  EXPECTED_SCRIPT_VERSION: '2026.09.25.2'
   HEALTH_URL: ${{ vars.CLIRELAY_PUBLIC_HEALTH_URL || 'https://relay.07230805.xyz/healthz' }}
   # After its cutover each node is probed through its own address for its drain
   # (DRAIN_SECONDS=180 in scripts/deploy-blue-green.sh, or what the node's

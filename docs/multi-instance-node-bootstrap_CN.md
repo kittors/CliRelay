@@ -1,6 +1,6 @@
 # 多节点部署：节点初始化说明
 
-本文说明一台服务器要满足哪些条件，才能加入 `Deploy CliRelay` 与 `Deploy Frontend` 两个工作流的逐台滚动发布，也说明现有节点升级到本版部署脚本（`SCRIPT_VERSION=2026.09.25.1`）时要做的一次性操作。
+本文说明一台服务器要满足哪些条件，才能加入 `Deploy CliRelay` 与 `Deploy Frontend` 两个工作流的逐台滚动发布，也说明现有节点升级到本版部署脚本（`SCRIPT_VERSION=2026.09.25.2`）时要做的一次性操作。
 
 文中的 IP 都是文档保留地址（`203.0.113.x`、`198.51.100.x`），实际操作时换成节点真实地址。
 
@@ -81,7 +81,7 @@ visudo -c
 sudo -n -l                                  # 规则里不应再出现 SETENV
 sudo -n CLIRELAY_SETENV_PROBE=1 /usr/local/sbin/clirelay-gha-deploy --preflight
                                             # 必须被 sudo 拒绝：not allowed to set ... CLIRELAY_SETENV_PROBE
-sudo -n EXPECTED_SCRIPT_VERSION=2026.09.25.1 /usr/local/sbin/clirelay-gha-deploy --preflight
+sudo -n EXPECTED_SCRIPT_VERSION=2026.09.25.2 /usr/local/sbin/clirelay-gha-deploy --preflight
                                             # 最后一行应为 CLIRELAY_DEPLOY_CHECK ok ...
 ```
 
@@ -106,22 +106,37 @@ sudo -n EXPECTED_SCRIPT_VERSION=2026.09.25.1 /usr/local/sbin/clirelay-gha-deploy
 | `SMOKE_TIMEOUT_SECONDS` | `30` | 切流后 smoke 的等待时间 |
 | `MIN_AVAILABLE_MB` | `512` | 部署前要求的可用内存 |
 | `GO_MEM_LIMIT_PERCENT` | `85` | GOMEMLIMIT 相对 MemoryHigh 的比例 |
+| `SERVICE_CPU_QUOTA` | workflow 传入（`170%`） | slot 单元的 `CPUQuota=`，格式如 `120%` |
+| `SERVICE_MEMORY_HIGH` | workflow 传入（`1400M`） | `MemoryHigh=`，格式如 `900M`、`2G`，或 `infinity` |
+| `SERVICE_MEMORY_MAX` | workflow 传入（`1600M`） | `MemoryMax=`，格式同上 |
+| `SERVICE_TASKS_MAX` | workflow 传入（`512`） | `TasksMax=`，整数或 `infinity` |
+| `SERVICE_GO_MEM_LIMIT` | 按 MemoryHigh 的 85% 推导 | `GOMEMLIMIT`，纯字节数或 `700MiB` 这种 Go 格式（不接受 `700M`） |
+
+资源上限的优先级：**deploy.env 高于 workflow**。workflow 的值来自仓库级变量（`CLIRELAY_SERVICE_*`），所有节点共用一份；deploy.env 由节点本机的 root 管理，更贴近那台机器的实际情况。写了哪个键，就只覆盖哪个键。这四个限制不能写成空值，因为空值会让对应的限制从单元里消失；要解除内存或任务数限制，请明确写 `infinity`。
+
+GOMEMLIMIT 必须低于 MemoryHigh。节点设置了自己的 `SERVICE_MEMORY_HIGH`、但没设置 `SERVICE_GO_MEM_LIMIT` 时，会丢弃 workflow 传入的 GOMEMLIMIT，改按本机 MemoryHigh 的 `GO_MEM_LIMIT_PERCENT` 重新推导，以免照搬为 1400M 设计的值。实际生效值可以用 `--print-settings` 查看，preflight 汇总里的 `limits=` 字段也会列出。
 
 示例（两台节点各一份）：
 
 ```bash
-# n43：root 执行
+# n43：总内存 3.9G，同机还有 PostgreSQL（Patroni）、etcd 和 Redis。root 执行
 cat > /tmp/deploy.env <<'EOF'
 DOMAIN=relay.07230805.xyz
 NODE_PUBLIC_IP=203.0.113.43
 NGINX_CONF=/etc/nginx/conf.d/relay.07230805.xyz.conf
+# 与该机现有 slot 单元一致：CPUQuota=120%、MemoryHigh=900M、MemoryMax=1100M、GOMEMLIMIT=700MiB
+SERVICE_CPU_QUOTA=120%
+SERVICE_MEMORY_HIGH=900M
+SERVICE_MEMORY_MAX=1100M
+SERVICE_GO_MEM_LIMIT=734003200
 # 没有基础单元 clirelay2.service 时必须填写：
 # SLOT_USER=clirelay
 # SLOT_GROUP=clirelay
 EOF
 install -m 0644 -o root -g root /tmp/deploy.env /etc/clirelay2/deploy.env
 
-# n156 同理，NODE_PUBLIC_IP=198.51.100.156，NGINX_CONF 写该机的实际文件
+# n156（8G）同理：NODE_PUBLIC_IP=198.51.100.156，NGINX_CONF 写该机的实际文件；
+# 资源键可以不写，沿用 workflow 的 170% / 1400M / 1600M / 512，GOMEMLIMIT 按 85% 推导
 ```
 
 查看生效值和节点检查结果：
@@ -191,7 +206,7 @@ ssh <root@node> 'set -e
   grep -m1 "^SCRIPT_VERSION=" /opt/clirelay2/scripts/deploy-blue-green.sh'
 ```
 
-两边的 sha256 要一致，最后一行应输出 `SCRIPT_VERSION='2026.09.25.1'`。然后按第 3 节自检一次。
+两边的 sha256 要一致，最后一行应输出 `SCRIPT_VERSION='2026.09.25.2'`。然后按第 3 节自检一次。
 
 ## 8. GitHub 变量与 secrets
 
