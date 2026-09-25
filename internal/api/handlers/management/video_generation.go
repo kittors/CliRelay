@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -31,12 +32,14 @@ const (
 	videoStatusAlt              = "videos/status"
 	videoGenerationSystemAPIKey = "POST /video-generation/test"
 
-	videoPollInterval = 5 * time.Second
 	// Ceiling for one console test. The task service applies its own timeout as
 	// well; this bound exists so a generation that upstream never finishes cannot
 	// hold a worker until that outer timeout fires.
 	videoPollBudget = 8 * time.Minute
 )
+
+// videoPollInterval spaces the console's status polls; tests shorten it.
+var videoPollInterval = 5 * time.Second
 
 // ListVideoGenerationModels reports the video models together with the channels
 // this tenant can actually reach.
@@ -201,7 +204,7 @@ func (h *Handler) executeVideoGenerationTestForTenant(ctx context.Context, tenan
 		return nil, fmt.Errorf("model %q is not a supported video generation model", modelName)
 	}
 
-	submission, err := h.executeVideoCall(ctx, tenantID, provider, modelName, payload, videoGenerationAlt)
+	submission, authID, err := h.executeVideoCall(ctx, tenantID, provider, modelName, payload, videoGenerationAlt, "")
 	if err != nil {
 		return nil, err
 	}
@@ -226,7 +229,7 @@ func (h *Handler) executeVideoGenerationTestForTenant(ctx context.Context, tenan
 		case <-time.After(videoPollInterval):
 		}
 
-		status, pollErr := h.executeVideoCall(ctx, tenantID, provider, modelName, statusPayload, videoStatusAlt)
+		status, _, pollErr := h.executeVideoCall(ctx, tenantID, provider, modelName, statusPayload, videoStatusAlt, authID)
 		if pollErr != nil {
 			return nil, pollErr
 		}
@@ -244,7 +247,25 @@ func (h *Handler) executeVideoGenerationTestForTenant(ctx context.Context, tenan
 	}
 }
 
-func (h *Handler) executeVideoCall(ctx context.Context, tenantID, provider, model string, payload []byte, alt string) ([]byte, error) {
+// executeVideoCall runs one video request and reports the credential that
+// served it. A video request id only resolves on the account that created it,
+// so the polls of a job pass that account as pinnedAuthID; left to the
+// scheduler, a tenant with two xAI accounts had some polls answered 404.
+func (h *Handler) executeVideoCall(ctx context.Context, tenantID, provider, model string, payload []byte, alt, pinnedAuthID string) ([]byte, string, error) {
+	var selectedMu sync.Mutex
+	selected := ""
+	meta := map[string]any{
+		coreexecutor.SinglePickMetadataKey: true,
+		coreexecutor.TenantMetadataKey:     coreauth.NormalizedTenantID(tenantID),
+		coreexecutor.SelectedAuthCallbackMetadataKey: func(authID string) {
+			selectedMu.Lock()
+			selected = strings.TrimSpace(authID)
+			selectedMu.Unlock()
+		},
+	}
+	if pinnedAuthID != "" {
+		meta[coreexecutor.PinnedAuthMetadataKey] = pinnedAuthID
+	}
 	resp, err := h.authManager.Execute(ctx, []string{provider}, coreexecutor.Request{
 		Model:   model,
 		Payload: payload,
@@ -253,15 +274,14 @@ func (h *Handler) executeVideoCall(ctx context.Context, tenantID, provider, mode
 		Alt:             alt,
 		OriginalRequest: payload,
 		SourceFormat:    sdktranslator.FromString("openai"),
-		Metadata: map[string]any{
-			coreexecutor.SinglePickMetadataKey: true,
-			coreexecutor.TenantMetadataKey:     coreauth.NormalizedTenantID(tenantID),
-		},
+		Metadata:        meta,
 	})
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
-	return resp.Payload, nil
+	selectedMu.Lock()
+	defer selectedMu.Unlock()
+	return resp.Payload, selected, nil
 }
 
 func (h *Handler) newVideoGenerationService() *imagegeneration.Service {
