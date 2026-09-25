@@ -18,6 +18,11 @@ func laterRuntimeMigrations() []Migration {
 		// Completion marker for the one-shot pass that locks portal accounts
 		// still on the legacy backfill password.
 		{Version: "202609240001_end_user_legacy_password_lock_state", SQL: endUserLegacyPasswordLockStateSQL},
+		// Membership heartbeats of multi-instance deployments. See clusterNodesSQL.
+		{Version: "202609250001_cluster_nodes", SQL: clusterNodesSQL},
+		// Exactly-once keys for request log writes retried or replayed across a
+		// database failover. See requestLogIdempotencyKeysSQL.
+		{Version: "202609250002_request_log_idempotency_keys", SQL: requestLogIdempotencyKeysSQL},
 		// Cross-node sessions and asynchronous work; see
 		// cluster_session_migrations.go.
 		{Version: "202609250201_oauth_sessions", SQL: oauthSessionsSQL},

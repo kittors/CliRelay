@@ -300,6 +300,15 @@ func (s *RequestStatistics) Record(ctx context.Context, record coreusage.Record)
 	if s == nil {
 		return
 	}
+	// Persist request logs in the usage manager worker so database writes stay
+	// serialized and do not spawn one goroutine per request.
+	InsertRequestLog(s.ingest(ctx, record))
+}
+
+// ingest updates the in-memory aggregates and builds the request log entry for
+// record. It never touches the database, so the queue-overflow path can run it
+// on the request goroutine; the write resolves the key's current name itself.
+func (s *RequestStatistics) ingest(ctx context.Context, record coreusage.Record) RequestLogEntry {
 	timestamp := record.RequestedAt
 	if timestamp.IsZero() {
 		timestamp = time.Now()
@@ -359,30 +368,19 @@ func (s *RequestStatistics) Record(ctx context.Context, record coreusage.Record)
 		s.mu.Unlock()
 	}
 
-	// Persist request logs in the usage manager worker so database writes stay
-	// serialized and do not spawn one goroutine per request.
 	// Use the request-start identity snapshot when available so key renames
-	// during in-flight requests do not orphan log records.
-	apiKeyID := strings.TrimSpace(record.APIKeyID)
-	apiKeyName := strings.TrimSpace(record.APIKeyName)
-	if statsKey != "" {
-		if row := GetAPIKey(statsKey); row != nil {
-			// Persist the key's own name. Account display name is resolved separately
-			// at read time so the UI can show both user and key identity.
-			if name := strings.TrimSpace(row.Name); name != "" {
-				apiKeyName = name
-			}
-		}
-	}
+	// during in-flight requests do not orphan log records. The key's own name
+	// (not the account display name) replaces the snapshot at write time.
 	inputContent := resolveDeferredUsageContent(record.InputContent, record.InputContentPath)
 	outputContent := resolveDeferredUsageContent(record.OutputContent, record.OutputContentPath)
 	detailContent := resolveDeferredUsageContent(record.DetailContent, record.DetailContentPath)
-	InsertRequestLog(RequestLogEntry{
+	return RequestLogEntry{
+		IdempotencyKey:        record.IdempotencyKey,
 		TrustedTenantID:       record.TrustedTenantID,
 		APIKey:                statsKey,
-		APIKeyID:              apiKeyID,
+		APIKeyID:              strings.TrimSpace(record.APIKeyID),
 		AuthSubjectID:         record.AuthSubjectID,
-		APIKeyName:            apiKeyName,
+		APIKeyName:            strings.TrimSpace(record.APIKeyName),
 		Model:                 modelName,
 		UpstreamModel:         record.UpstreamModel,
 		UpstreamResponseModel: record.UpstreamResponseModel,
@@ -400,7 +398,7 @@ func (s *RequestStatistics) Record(ctx context.Context, record coreusage.Record)
 		InputContent:          inputContent,
 		OutputContent:         outputContent,
 		DetailContent:         detailContent,
-	})
+	}
 }
 
 func resolveDeferredUsageContent(inline, path string) string {

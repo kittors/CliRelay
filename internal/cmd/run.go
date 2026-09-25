@@ -36,12 +36,19 @@ import (
 //   - localPassword: Optional password accepted for local management requests
 func StartService(cfg *config.Config, configPath string, localPassword string) {
 	loc := config.ApplyTimeZone(cfg.Timezone)
-	if err := initializeRuntimeDataStack(cfg, configPath, loc); err != nil {
+	prepareCluster(cfg)
+	if err := withRuntimeMigrationLock(cfg, func() error { return initializeRuntimeDataStack(cfg, configPath, loc) }); err != nil {
 		log.Errorf("usage: failed to initialize runtime data stack: %v", err)
 		return
 	}
 	usage.InitRedis(cfg.Redis)
 	defer stopRuntimeDataStack()
+	coordinator, err := startCluster(cfg)
+	if err != nil {
+		log.Errorf("cluster: failed to join the cluster: %v", err)
+		return
+	}
+	defer coordinator.Close()
 
 	moderator := contentmoderation.NewRequestModerator(contentmoderation.NewStore(usage.RuntimeDB()), contentmoderation.NewEvaluator(nil))
 	contentmoderation.SetRuntime(moderator)
@@ -71,6 +78,7 @@ func StartService(cfg *config.Config, configPath string, localPassword string) {
 		log.Errorf("failed to build proxy service: %v", err)
 		return
 	}
+	defer closeClusterOnShutdown(runCtx, coordinator)()
 
 	err = service.Run(runCtx)
 	if err != nil && !errors.Is(err, context.Canceled) {
@@ -82,13 +90,22 @@ func StartService(cfg *config.Config, configPath string, localPassword string) {
 // and returns a cancel function for shutdown and a done channel.
 func StartServiceBackground(cfg *config.Config, configPath string, localPassword string) (cancel func(), done <-chan struct{}) {
 	loc := config.ApplyTimeZone(cfg.Timezone)
-	if err := initializeRuntimeDataStack(cfg, configPath, loc); err != nil {
+	prepareCluster(cfg)
+	if err := withRuntimeMigrationLock(cfg, func() error { return initializeRuntimeDataStack(cfg, configPath, loc) }); err != nil {
 		log.Errorf("usage: failed to initialize runtime data stack: %v", err)
 		doneCh := make(chan struct{})
 		close(doneCh)
 		return func() {}, doneCh
 	}
 	usage.InitRedis(cfg.Redis)
+	coordinator, err := startCluster(cfg)
+	if err != nil {
+		log.Errorf("cluster: failed to join the cluster: %v", err)
+		stopRuntimeDataStack()
+		doneCh := make(chan struct{})
+		close(doneCh)
+		return func() {}, doneCh
+	}
 
 	moderator := contentmoderation.NewRequestModerator(contentmoderation.NewStore(usage.RuntimeDB()), contentmoderation.NewEvaluator(nil))
 	contentmoderation.SetRuntime(moderator)
@@ -106,14 +123,18 @@ func StartServiceBackground(cfg *config.Config, configPath string, localPassword
 	service, err := builder.Build()
 	if err != nil {
 		log.Errorf("failed to build proxy service: %v", err)
+		coordinator.Close()
 		stopRuntimeDataStack()
 		close(doneCh)
 		return cancelFn, doneCh
 	}
+	stopClusterWatch := closeClusterOnShutdown(ctx, coordinator)
 
 	go func() {
 		defer close(doneCh)
 		defer stopRuntimeDataStack()
+		defer coordinator.Close()
+		defer stopClusterWatch()
 		if err := service.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 			log.Errorf("proxy service exited with error: %v", err)
 		}
@@ -174,6 +195,9 @@ func stopRuntimeDataStack() {
 		stopAudit()
 	}
 	stopSharedSessionState()
+	// Before the database closes: queued usage records still need it, and
+	// whatever it cannot take goes to the spool for the next start.
+	stopUsageSpool()
 	usage.StopRedis()
 }
 
@@ -259,13 +283,12 @@ func initializeRuntimeDataStack(cfg *config.Config, configPath string, loc *time
 	middleware.InitQuotaUsageFuncs(usage.CountTodayByKey, usage.CountTotalByKey, usage.QueryTotalCostByKey, usage.QueryTodayCostByKey)
 	middleware.InitQuotaEndUserUsageFuncs(usage.CountTodayByEndUser, usage.CountTotalByEndUser, usage.QueryTotalCostByEndUser, usage.QueryTodayCostByEndUser)
 	middleware.InitQuotaPeriodUsageFuncs(usage.QueryPeriodSpendingByAPIKeyIDForTenant, usage.QueryPeriodSpendingByEndUserForTenant)
-	usage.SetTokenUsageCallback(func(apiKey string, totalTokens int64) {
-		endUserID := ""
-		if row := usage.GetAPIKey(apiKey); row != nil {
-			endUserID = row.EndUserID
-		}
-		middleware.RecordTokenUsageForRequest(apiKey, endUserID, totalTokens)
-	})
+	middleware.SetQuotaUsageStaleMaxAge(cfg.DBResilience.QuotaStaleMaxAge())
+	// The write path hands over the key's owner it already resolved, so TPM
+	// accounting needs no lookup of its own and keeps working while the
+	// database is unreachable.
+	usage.SetTokenUsageCallback(middleware.RecordTokenUsageForRequest)
+	startUsageSpool(cfg)
 	startSharedSessionState(cfg)
 	return nil
 }
@@ -273,6 +296,9 @@ func initializeRuntimeDataStack(cfg *config.Config, configPath string, loc *time
 type runtimeDataStackMaintenanceOps struct {
 	runAIAccountSharedSubjectBackfill func() error
 	scheduleUsageRollupCatchup        func()
+	// withRepairLock serialises the one-time repairs across nodes; nil runs
+	// them directly.
+	withRepairLock func(func() error) error
 }
 
 func defaultRuntimeDataStackMaintenanceOps() runtimeDataStackMaintenanceOps {
@@ -301,6 +327,7 @@ func defaultRuntimeDataStackMaintenanceOps() runtimeDataStackMaintenanceOps {
 			return usage.RunAIAccountSubjectCycleRefillRepairAtInit()
 		},
 		scheduleUsageRollupCatchup: usage.ScheduleUsageRollupBlueGreenCatchup,
+		withRepairLock:             withRepairLock,
 	}
 }
 
@@ -316,7 +343,11 @@ func runRuntimeDataStackPostStartMaintenance(ops runtimeDataStackMaintenanceOps)
 
 	if ops.runAIAccountSharedSubjectBackfill != nil {
 		stepStartedAt := time.Now()
-		if err := ops.runAIAccountSharedSubjectBackfill(); err != nil {
+		repair := ops.runAIAccountSharedSubjectBackfill
+		if ops.withRepairLock != nil {
+			repair = func() error { return ops.withRepairLock(ops.runAIAccountSharedSubjectBackfill) }
+		}
+		if err := repair(); err != nil {
 			log.WithError(err).Error("usage: post-listen ai account shared subject backfill failed")
 		} else {
 			log.Infof("usage: post-listen ai account shared subject backfill completed in %s", time.Since(stepStartedAt).Round(time.Millisecond))

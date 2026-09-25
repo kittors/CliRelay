@@ -571,6 +571,7 @@ func (s *Service) DeleteTenant(ctx context.Context, actor Principal, tenantID st
 	if err = tx.Commit(); err != nil {
 		return Tenant{}, err
 	}
+	s.InvalidateTenant(tenantID)
 	s.RecordAudit(ctx, AuditEvent{TenantID: tenantID, ActorKind: actor.Kind, ActorUserID: actor.User.ID, ActorSessionID: actor.SessionID, Action: "tenant.disable", ResourceType: "tenant", ResourceID: tenantID, Result: "success"})
 	return s.GetTenant(ctx, tenantID)
 }

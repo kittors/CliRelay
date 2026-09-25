@@ -301,20 +301,7 @@ func runOpenRouterModelSyncScheduler(ctx context.Context) {
 	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
 
-	runIfDue := func() {
-		for _, tenantID := range enabledOpenRouterSyncTenantIDs() {
-			state := GetOpenRouterModelSyncStateForTenant(tenantID)
-			if !isOpenRouterModelSyncDue(state, time.Now().UTC()) {
-				continue
-			}
-			syncCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
-			_, _, err := RunOpenRouterModelSyncForTenant(syncCtx, tenantID)
-			cancel()
-			if err != nil {
-				log.Warnf("usage: scheduled openrouter model sync failed for tenant %s: %v", tenantID, err)
-			}
-		}
-	}
+	runIfDue := func() { runDueOpenRouterModelSyncs(ctx) }
 
 	runIfDue()
 	for {

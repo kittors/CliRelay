@@ -14,7 +14,15 @@ const (
 	TopicCooldown = "cooldown"
 	// TopicOAuth announces a delivered OAuth callback or session change.
 	TopicOAuth = "oauth"
+	// TopicMembership announces membership changes: MembershipEvent.
+	TopicMembership = "membership"
 )
+
+// MembershipJoined is the MembershipEvent kind a node publishes once its bus
+// is up. Whatever it wrote while starting (migrations, YAML imports,
+// backfills) happened before it could publish anything, so every peer answers
+// it with a Resync.
+const MembershipJoined = "joined"
 
 // maxPayloadBytes keeps a published event under PostgreSQL's 8000-byte
 // NOTIFY payload limit, leaving room for the envelope.
@@ -68,6 +76,12 @@ type CooldownEvent struct {
 	UntilUnix  int64  `json:"until_unix"`
 	StatusCode int    `json:"status_code,omitempty"`
 	Reason     string `json:"reason,omitempty"`
+}
+
+// MembershipEvent is the payload of TopicMembership.
+type MembershipEvent struct {
+	Kind    string `json:"kind"`
+	Version string `json:"version,omitempty"`
 }
 
 // OAuthEvent is the payload of TopicOAuth: the shared session State received

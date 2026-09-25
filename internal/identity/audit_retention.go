@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/cluster"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	log "github.com/sirupsen/logrus"
 )
@@ -127,6 +128,10 @@ func (s *Service) StartAuditRetention(ctx context.Context, policy AuditRetention
 }
 
 func (s *Service) runAuditRetentionPass(ctx context.Context, policy AuditRetentionPolicy) {
+	// audit_logs is shared; the cluster leader prunes it for every node.
+	if !cluster.Default().IsLeader() {
+		return
+	}
 	deleted, err := s.PruneAuditLogs(ctx, policy)
 	switch {
 	case err != nil && ctx.Err() != nil:
