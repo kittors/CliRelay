@@ -457,6 +457,6 @@ func TestWorkflowNodeSSHRequiresKnownHostsEntryForThePort(t *testing.T) {
 	out, written, err = run(t, "NODE=n156", "NODE_HOST=203.0.113.10", "NODE_PORT=47222",
 		"NODE_KNOWN_HOSTS=[203.0.113.10]:47222 "+hostKey)
 	if err != nil || strings.Contains(written, "ProxyJump") {
-		t.Fatalf("without NODE_JUMP the node must be reached directly, err=%v\n%s", err, written)
+		t.Fatalf("without NODE_JUMP the node must be reached directly, err=%v\n%s\n%s", err, out, written)
 	}
 }
