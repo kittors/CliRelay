@@ -37,6 +37,8 @@ type Service struct {
 	// policy is read on every login/refresh and replaced by config hot-reload, so
 	// it is swapped atomically rather than guarded by the package-level mutex.
 	policy atomic.Pointer[SessionPolicy]
+	// tenants caches tenant rows for access checks; see tenant_cache.go.
+	tenants tenantCache
 }
 
 var (
@@ -444,49 +446,6 @@ func (s *Service) ChangePassword(ctx context.Context, principal Principal, curre
 	return nil
 }
 
-func (s *Service) GetTenant(ctx context.Context, id string) (Tenant, error) {
-	var tenant Tenant
-	var expires sql.NullTime
-	var accessTTL, refreshTTL sql.NullInt64
-	err := s.db.QueryRowContext(ctx, `
-		SELECT id, slug, name, type, status, expires_at, description,
-		       COALESCE(access_token_ttl_seconds, 43200), COALESCE(refresh_token_ttl_seconds, 2592000),
-		       created_at, updated_at, version
-		  FROM tenants WHERE id = ?`, id).Scan(
-		&tenant.ID, &tenant.Slug, &tenant.Name, &tenant.Type, &tenant.Status, &expires,
-		&tenant.Description, &accessTTL, &refreshTTL, &tenant.CreatedAt, &tenant.UpdatedAt, &tenant.Version)
-	if err != nil {
-		// Fallback for DBs that have not yet applied TTL columns.
-		err2 := s.db.QueryRowContext(ctx, `SELECT id, slug, name, type, status, expires_at, description, created_at, updated_at, version FROM tenants WHERE id = ?`, id).Scan(
-			&tenant.ID, &tenant.Slug, &tenant.Name, &tenant.Type, &tenant.Status, &expires,
-			&tenant.Description, &tenant.CreatedAt, &tenant.UpdatedAt, &tenant.Version)
-		if err2 != nil {
-			return tenant, err
-		}
-		tenant.AccessTokenTTLSeconds = 43200
-		tenant.RefreshTokenTTLSeconds = 2592000
-	} else {
-		if accessTTL.Valid {
-			tenant.AccessTokenTTLSeconds = int(accessTTL.Int64)
-		} else {
-			tenant.AccessTokenTTLSeconds = 43200
-		}
-		if refreshTTL.Valid {
-			tenant.RefreshTokenTTLSeconds = int(refreshTTL.Int64)
-		} else {
-			tenant.RefreshTokenTTLSeconds = 2592000
-		}
-	}
-	if expires.Valid {
-		tenant.ExpiresAt = &expires.Time
-	}
-	tenant.EffectiveStatus = tenant.Status
-	if tenant.Status == "active" && tenant.Type != "system" && tenant.ExpiresAt != nil && !tenant.ExpiresAt.After(time.Now()) {
-		tenant.EffectiveStatus = "expired"
-	}
-	return tenant, nil
-}
-
 func (s *Service) ListTenants(ctx context.Context) ([]Tenant, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT id FROM tenants ORDER BY type, name`)
 	if err != nil {
@@ -499,7 +458,7 @@ func (s *Service) ListTenants(ctx context.Context) ([]Tenant, error) {
 		if err = rows.Scan(&id); err != nil {
 			return nil, err
 		}
-		tenant, e := s.GetTenant(ctx, id)
+		tenant, e := s.loadTenant(ctx, id)
 		if e != nil {
 			return nil, e
 		}
@@ -554,6 +513,7 @@ func (s *Service) CreateTenant(ctx context.Context, actor Principal, input Creat
 	if err = tx.Commit(); err != nil {
 		return tenant, admin, err
 	}
+	s.InvalidateTenant(tenantID)
 	tenant, err = s.GetTenant(ctx, tenantID)
 	if err != nil {
 		return tenant, admin, err
@@ -633,6 +593,7 @@ func (s *Service) UpdateTenantDetails(ctx context.Context, actor Principal, id s
 	if err = tx.Commit(); err != nil {
 		return Tenant{}, err
 	}
+	s.InvalidateTenant(id)
 	tenant, err := s.GetTenant(ctx, id)
 	if err == nil {
 		s.RecordAudit(ctx, AuditEvent{TenantID: id, ActorKind: actor.Kind, ActorUserID: actor.User.ID, ActorSessionID: actor.SessionID, Action: "tenant.update", ResourceType: "tenant", ResourceID: id, Result: "success"})

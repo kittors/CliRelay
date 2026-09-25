@@ -1,13 +1,12 @@
 package usage
 
 import (
-	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
 
+	coreusage "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/usage"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -20,6 +19,12 @@ import (
 // New columns now go here instead of adding another wrapper and another word to
 // that name. The legacy wrappers are retained below for existing callers.
 type RequestLogEntry struct {
+	// IdempotencyKey makes the write exactly-once: a retry or spool replay of
+	// an entry whose earlier attempt already committed is skipped. Records from
+	// the usage queue carry the key assigned when they were published;
+	// InsertRequestLog assigns one to entries that arrive without it.
+	IdempotencyKey string
+
 	// TrustedTenantID is set only by authenticated internal execution paths;
 	// when empty the tenant is resolved from the API key.
 	TrustedTenantID string
@@ -56,6 +61,8 @@ type RequestLogEntry struct {
 	DetailContent string
 }
 
+// isRetryableUsageWriteErr reports lock contention between concurrent writers,
+// which a quick retry resolves.
 func isRetryableUsageWriteErr(err error) bool {
 	if err == nil {
 		return false
@@ -69,25 +76,10 @@ func isRetryableUsageWriteErr(err error) bool {
 		strings.Contains(msg, "database is locked")
 }
 
-func insertRequestLogOnce(
-	db *sql.DB,
-	tenantID, endUserID string,
-	cost float64,
-	shouldStoreContent bool,
-	entry RequestLogEntry,
-) error {
-	// Shared projection lock before opening a DB tx so exclusive rebuilds never
-	// leave writers holding connections while waiting on the mutex (pool deadlock).
-	usageProjectionMu.RLock()
-	defer usageProjectionMu.RUnlock()
-
-	// 插入 request log 的事务由 usage 存储层统一拥有，不从外部 HTTP 请求透传 context，
-	// 以避免请求取消把已经选定要持久化的审计记录中断在半途。
-	tx, err := db.BeginTx(context.Background(), nil)
-	if err != nil {
-		return fmt.Errorf("begin insert tx: %w", err)
-	}
-
+// insertRequestLogRowTx inserts the request_logs row and, when the plan keeps
+// content, its compressed body row.
+func insertRequestLogRowTx(tx usageWriteTx, plan requestLogWritePlan) error {
+	entry := plan.entry
 	failedInt, streamingInt := 0, 0
 	if entry.Failed {
 		failedInt = 1
@@ -101,77 +93,49 @@ func insertRequestLogOnce(
 		 failed, streaming, latency_ms, first_token_ms, input_tokens, output_tokens, reasoning_tokens, cached_tokens, total_tokens, cost)
 	 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 	insertArgs := []any{
-		tenantID, entry.Timestamp.UTC().Format(time.RFC3339Nano),
+		plan.tenantID, entry.Timestamp.UTC().Format(time.RFC3339Nano),
 		entry.APIKey, entry.APIKeyID, entry.AuthSubjectID, entry.APIKeyName, entry.Model, entry.ThinkingLevel,
 		entry.UpstreamModel, entry.UpstreamResponseModel, entry.VisionFallbackModel, entry.Source, entry.ChannelName, entry.AuthIndex,
 		failedInt, streamingInt, entry.LatencyMs, entry.FirstTokenMs,
 		entry.Tokens.InputTokens, entry.Tokens.OutputTokens, entry.Tokens.ReasoningTokens,
-		entry.Tokens.CachedTokens, entry.Tokens.TotalTokens, cost,
+		entry.Tokens.CachedTokens, entry.Tokens.TotalTokens, plan.cost,
 	}
 
-	if shouldStoreContent {
-		var logID int64
-		if usageDriver == "postgres" {
-			if err := tx.QueryRow(insertSQL+" RETURNING id", insertArgs...).Scan(&logID); err != nil {
-				_ = tx.Rollback()
-				return fmt.Errorf("insert log: %w", err)
-			}
-		} else {
-			result, err := tx.Exec(insertSQL, insertArgs...)
-			if err != nil {
-				_ = tx.Rollback()
-				return fmt.Errorf("insert log: %w", err)
-			}
-			logID, err = result.LastInsertId()
-			if err != nil {
-				_ = tx.Rollback()
-				return fmt.Errorf("resolve inserted log id: %w", err)
-			}
+	if !plan.storeContent {
+		if _, err := tx.Exec(insertSQL, insertArgs...); err != nil {
+			return fmt.Errorf("insert log: %w", err)
 		}
-		if errStore := insertLogContentTenantTx(tx, tenantID, logID, entry.Timestamp, entry.InputContent, entry.OutputContent, entry.DetailContent, entry.Failed); errStore != nil {
-			_ = tx.Rollback()
-			return fmt.Errorf("insert log content: %w", errStore)
-		}
-	} else if _, err := tx.Exec(insertSQL, insertArgs...); err != nil {
-		_ = tx.Rollback()
-		return fmt.Errorf("insert log: %w", err)
+		return nil
 	}
-
-	if errCommit := commitLogWithProjections(tx, rollupEvent{
-		TenantID:      tenantID,
-		APIKeyID:      entry.APIKeyID,
-		EndUserID:     endUserID,
-		AuthSubjectID: entry.AuthSubjectID,
-		Model:         entry.Model,
-		Source:        entry.Source,
-		ChannelName:   entry.ChannelName,
-		Failed:        entry.Failed,
-		Streaming:     entry.Streaming,
-		LatencyMs:     entry.LatencyMs,
-		FirstTokenMs:  entry.FirstTokenMs,
-		Tokens:        entry.Tokens,
-		Cost:          cost,
-		At:            entry.Timestamp,
-	}); errCommit != nil {
-		return fmt.Errorf("commit log insert: %w", errCommit)
+	var logID int64
+	if usageDriver == "postgres" {
+		if err := tx.QueryRow(insertSQL+" RETURNING id", insertArgs...).Scan(&logID); err != nil {
+			return fmt.Errorf("insert log: %w", err)
+		}
+	} else {
+		result, err := tx.Exec(insertSQL, insertArgs...)
+		if err != nil {
+			return fmt.Errorf("insert log: %w", err)
+		}
+		logID, err = result.LastInsertId()
+		if err != nil {
+			return fmt.Errorf("resolve inserted log id: %w", err)
+		}
+	}
+	if err := insertLogContentTenantTx(tx, plan.tenantID, logID, entry.Timestamp, entry.InputContent, entry.OutputContent, entry.DetailContent, entry.Failed); err != nil {
+		return fmt.Errorf("insert log content: %w", err)
 	}
 	return nil
 }
 
-// InsertRequestLog writes a single request log entry into the runtime database.
-// It is safe to call concurrently.
-func InsertRequestLog(entry RequestLogEntry) {
-	db := getDB()
-	if db == nil {
-		return
+// normalizeRequestLogEntry trims identity fields and makes sure the entry
+// carries an idempotency key before its first attempt, so every retry and
+// replay of it shares that key.
+func normalizeRequestLogEntry(entry RequestLogEntry) RequestLogEntry {
+	entry.IdempotencyKey = strings.TrimSpace(entry.IdempotencyKey)
+	if entry.IdempotencyKey == "" {
+		entry.IdempotencyKey = coreusage.NewIdempotencyKey()
 	}
-
-	tenantID := resolveRequestLogTenantID(entry.TrustedTenantID, entry.APIKey)
-
-	// Calculate cost from the trusted execution tenant or API key tenant catalog.
-	// Cost always follows Model, never the model the upstream echoed back.
-	cost := CalculateCostV2ForTenant(tenantID, entry.Model, entry.Tokens)
-
 	entry.APIKeyID = strings.TrimSpace(entry.APIKeyID)
 	entry.AuthSubjectID = strings.TrimSpace(entry.AuthSubjectID)
 	entry.APIKeyName = strings.TrimSpace(entry.APIKeyName)
@@ -179,53 +143,47 @@ func InsertRequestLog(entry RequestLogEntry) {
 	entry.UpstreamResponseModel = strings.TrimSpace(entry.UpstreamResponseModel)
 	entry.VisionFallbackModel = strings.TrimSpace(entry.VisionFallbackModel)
 	entry.ThinkingLevel = strings.TrimSpace(entry.ThinkingLevel)
+	return entry
+}
 
-	// Resolve identity before opening the write tx: a single-writer store + maintenance
-	// would deadlock if we query api_keys while this connection already holds a tx.
-	endUserID := ""
-	if row := GetAPIKey(entry.APIKey); row != nil {
-		if entry.APIKeyID == "" {
-			entry.APIKeyID = strings.TrimSpace(row.ID)
-		}
-		if name := strings.TrimSpace(row.Name); name != "" {
-			entry.APIKeyName = name
-		} else if entry.APIKeyName == "" {
-			entry.APIKeyName = strings.TrimSpace(row.Name)
-		}
-		endUserID = strings.TrimSpace(row.EndUserID)
-	}
-
-	// Failed requests always keep a compact error payload in output_content so the
-	// management UI error modal can show the upstream failure even when full body
-	// storage is disabled. Successful request/response bodies still follow the
-	// store-content toggle.
-	shouldStoreContent := entry.DetailContent != "" ||
-		(RequestLogBodyStorageEnabled() && (entry.InputContent != "" || entry.OutputContent != "")) ||
-		(entry.Failed && strings.TrimSpace(entry.OutputContent) != "")
-
-	// Retry on Postgres rollup UPSERT deadlocks under concurrent same-key traffic.
-	var lastErr error
-	for attempt := 0; attempt < 8; attempt++ {
-		if attempt > 0 {
-			time.Sleep(time.Duration(attempt*attempt) * time.Millisecond)
-		}
-		lastErr = insertRequestLogOnce(db, tenantID, endUserID, cost, shouldStoreContent, entry)
-		if lastErr == nil {
-			break
-		}
-		if !isRetryableUsageWriteErr(lastErr) {
-			log.Errorf("usage: insert log: %v", lastErr)
-			return
-		}
-	}
-	if lastErr != nil {
-		log.Errorf("usage: insert log after retries: %v", lastErr)
+// InsertRequestLog writes a single request log entry into the runtime database.
+// It is safe to call concurrently.
+//
+// With the local spool running, a database that stays unreachable through the
+// retry budget no longer costs the record: it is appended to the spool and
+// replayed once the database is back. While such an outage is known, new
+// entries go straight to the spool so the usage worker keeps pace with
+// traffic instead of spending the retry budget on every record.
+func InsertRequestLog(entry RequestLogEntry) {
+	entry = normalizeRequestLogEntry(entry)
+	spool := activeUsageSpool()
+	if spool == nil && getDB() == nil {
 		return
 	}
-
-	// Notify TPM tracker about token usage
-	if tokenUsageCallback != nil && entry.Tokens.TotalTokens > 0 {
-		tokenUsageCallback(entry.APIKey, entry.Tokens.TotalTokens)
+	if spool != nil && usageDBHealth.down() {
+		spoolLiveRequestLog(spool, entry, usageSpoolReasonDBUnavailable, time.Time{}, nil)
+		return
+	}
+	result, outcome, err := writeRequestLogWithRetry(entry, liveRequestLogRetryBudget(spool))
+	switch outcome {
+	case requestLogWriteCommitted:
+		usageDBHealth.markUp()
+		if spool != nil && result.duplicateNeedsRecheck(time.Now()) {
+			// The key found may be our own commit that a failover is about to
+			// discard; the replayer checks it again after the settle window.
+			spoolLiveRequestLog(spool, entry, usageSpoolReasonVerifyCommit, result.commitUncertainAt, nil)
+			return
+		}
+		notifyTokenUsage(entry, result.endUserID)
+	case requestLogWriteTransient:
+		if spool == nil {
+			log.Errorf("usage: insert log after retries: %v", err)
+			return
+		}
+		usageDBHealth.markDown(err)
+		spoolLiveRequestLog(spool, entry, usageSpoolReasonWriteFailed, result.commitUncertainAt, err)
+	default:
+		log.Errorf("usage: insert log: %v", err)
 	}
 }
 

@@ -194,6 +194,9 @@ func stopRuntimeDataStack() {
 	if stopAudit != nil {
 		stopAudit()
 	}
+	// Before the database closes: queued usage records still need it, and
+	// whatever it cannot take goes to the spool for the next start.
+	stopUsageSpool()
 	usage.StopRedis()
 }
 
@@ -279,13 +282,12 @@ func initializeRuntimeDataStack(cfg *config.Config, configPath string, loc *time
 	middleware.InitQuotaUsageFuncs(usage.CountTodayByKey, usage.CountTotalByKey, usage.QueryTotalCostByKey, usage.QueryTodayCostByKey)
 	middleware.InitQuotaEndUserUsageFuncs(usage.CountTodayByEndUser, usage.CountTotalByEndUser, usage.QueryTotalCostByEndUser, usage.QueryTodayCostByEndUser)
 	middleware.InitQuotaPeriodUsageFuncs(usage.QueryPeriodSpendingByAPIKeyIDForTenant, usage.QueryPeriodSpendingByEndUserForTenant)
-	usage.SetTokenUsageCallback(func(apiKey string, totalTokens int64) {
-		endUserID := ""
-		if row := usage.GetAPIKey(apiKey); row != nil {
-			endUserID = row.EndUserID
-		}
-		middleware.RecordTokenUsageForRequest(apiKey, endUserID, totalTokens)
-	})
+	middleware.SetQuotaUsageStaleMaxAge(cfg.DBResilience.QuotaStaleMaxAge())
+	// The write path hands over the key's owner it already resolved, so TPM
+	// accounting needs no lookup of its own and keeps working while the
+	// database is unreachable.
+	usage.SetTokenUsageCallback(middleware.RecordTokenUsageForRequest)
+	startUsageSpool(cfg)
 	return nil
 }
 
