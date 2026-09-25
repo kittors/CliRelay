@@ -210,10 +210,15 @@ func quotaRefusalContractCases() (all []quotaContractCase, budgetOnly map[string
 			wantStatus: http.StatusTooManyRequests, wantBody: body, wantHeader: header, wantQuota: q, wantResp: resp,
 		}, true)
 	}
+	// The unavailable cases model an outage that has outlasted the stale
+	// window: no kept reading is left to stand in (see quota_outage.go).
 	add(quotaContractCase{
-		name:       "daily usage unavailable",
-		metadata:   map[string]string{"daily-limit": "5"},
-		setup:      func(*testing.T) { countTodayByKeyFunc = func(string) (int64, error) { return 0, unavailable } },
+		name:     "daily usage unavailable",
+		metadata: map[string]string{"daily-limit": "5"},
+		setup: func(*testing.T) {
+			countTodayByKeyFunc = func(string) (int64, error) { return 0, unavailable }
+			resetQuotaUsageFallback()
+		},
 		wantStatus: http.StatusServiceUnavailable, wantBody: unavailableContract("key", "day"),
 		wantQuota: &diagnostics.QuotaSnapshot{DailyLimit: 5},
 	}, true)
@@ -224,6 +229,7 @@ func quotaRefusalContractCases() (all []quotaContractCase, budgetOnly map[string
 			queryPeriodByEndUserFunc = func(string, string) (quota.PeriodSpendingUsage, error) {
 				return quota.PeriodSpendingUsage{}, unavailable
 			}
+			resetQuotaUsageFallback()
 		},
 		wantStatus: http.StatusServiceUnavailable, wantBody: unavailableContract("account", "period"),
 		wantQuota: &diagnostics.QuotaSnapshot{},

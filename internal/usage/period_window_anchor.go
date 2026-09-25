@@ -55,7 +55,7 @@ func fiveHourExpiryThreshold(now time.Time) string {
 
 // touchFiveHourWindowAnchorTx 在首次消费时开窗，窗口未过期则保持原锚点不动。
 // 条件 UPDATE 让并发落账天然幂等：同一窗口内的后续消费不会推移窗口起点。
-func touchFiveHourWindowAnchorTx(tx *sql.Tx, tenantID, subjectType, subjectID string, at time.Time) error {
+func touchFiveHourWindowAnchorTx(tx usageWriteTx, tenantID, subjectType, subjectID string, at time.Time) error {
 	subjectID = strings.TrimSpace(subjectID)
 	if tx == nil || subjectID == "" {
 		return nil
