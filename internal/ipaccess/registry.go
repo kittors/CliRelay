@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/cluster"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -370,6 +371,11 @@ func (r *Registry) loop(ctx context.Context) {
 		case <-flush.C:
 			r.flushHits(ctx)
 		case <-purge.C:
+			// Rules are shared; the cluster leader reclaims lapsed bans. Every
+			// node still refreshes and flushes its own hit counters above.
+			if !cluster.Default().IsLeader() {
+				continue
+			}
 			// Keep lapsed bans for a day before reclaiming them so the panel can
 			// still show what was recently blocked and why.
 			if removed, err := r.store.PurgeExpiredAuto(ctx, time.Now().Add(-24*time.Hour)); err != nil {

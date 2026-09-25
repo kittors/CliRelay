@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/cluster"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -29,6 +30,10 @@ func (s *Service) StartSessionReaper(ctx context.Context, interval time.Duration
 			case <-reaperCtx.Done():
 				return
 			case <-ticker.C:
+				// The session tables are shared; one node sweeping them is enough.
+				if !cluster.Default().IsLeader() {
+					continue
+				}
 				tokens, sessions, err := s.reapOnce(reaperCtx)
 				if err != nil {
 					log.WithError(err).Debug("identity: session reaper pass failed")

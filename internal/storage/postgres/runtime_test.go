@@ -11,8 +11,20 @@ import (
 
 func TestRuntimeMigrationsCoverCoreTables(t *testing.T) {
 	migrations := RuntimeMigrations()
-	if len(migrations) != 31 {
-		t.Fatalf("RuntimeMigrations len = %d, want 31", len(migrations))
+	if len(migrations) != 33 {
+		t.Fatalf("RuntimeMigrations len = %d, want 33", len(migrations))
+	}
+	// Membership table of multi-instance deployments.
+	if migrations[31].Version != "202609250001_cluster_nodes" {
+		t.Fatalf("cluster nodes migration version = %q", migrations[31].Version)
+	}
+	if !strings.Contains(migrations[31].SQL, "CREATE TABLE IF NOT EXISTS cluster_nodes") {
+		t.Fatalf("cluster nodes migration missing its table: %q", migrations[31].SQL)
+	}
+	// Shared credential store of cluster mode.
+	if migrations[32].Version != "202609259101_cluster_auth_credentials" ||
+		!strings.Contains(migrations[32].SQL, "CREATE TABLE IF NOT EXISTS auth_credentials") {
+		t.Fatalf("cluster credential migration = %q", migrations[32].Version)
 	}
 	// Appended from laterRuntimeMigrations() because migrations.go sits at its
 	// structure-gate size ceiling.
@@ -24,11 +36,11 @@ func TestRuntimeMigrationsCoverCoreTables(t *testing.T) {
 	if migrations[28].Version != "202608270001_end_user_unbound_profile_scope_cleanup" {
 		t.Fatalf("scope cleanup migration version = %q", migrations[28].Version)
 	}
-	// Latest: completion marker for the one-shot pass that locks portal accounts
+	// Completion marker for the one-shot pass that locks portal accounts
 	// still on the legacy backfill password; without it the pass would re-run on
 	// every boot.
 	if migrations[30].Version != "202609240001_end_user_legacy_password_lock_state" {
-		t.Fatalf("latest migration version = %q", migrations[30].Version)
+		t.Fatalf("legacy password lock migration version = %q", migrations[30].Version)
 	}
 	if !strings.Contains(migrations[30].SQL, "CREATE TABLE IF NOT EXISTS end_user_legacy_password_lock_state") {
 		t.Fatalf("legacy password lock migration missing its table: %q", migrations[30].SQL)

@@ -8,6 +8,8 @@ import (
 	"hash/fnv"
 	"strings"
 	"time"
+
+	log "github.com/sirupsen/logrus"
 )
 
 // Lock names shared by every node. Advisory locks are only meaningful when
@@ -20,6 +22,14 @@ const (
 	LockMaintenanceRepairs = "maintenance-repairs"
 	// LockLeader is the cluster leadership lock.
 	LockLeader = "leader"
+	// LockUsageRollupRebuild serialises the wipe-and-rebuild of
+	// usage_rollup_buckets, so a rebuild queued behind another node's cannot
+	// wipe the projection that one just finished.
+	LockUsageRollupRebuild = "usage-rollup-rebuild"
+	// LockAuthSubjectMerge serialises folding a legacy AI-account subject into
+	// its current identity; two nodes loading the same credential would
+	// otherwise merge the same rows concurrently.
+	LockAuthSubjectMerge = "auth-subject-merge"
 	// LockAuthImport serialises the one-time import of local auth files into
 	// the shared credential store, so two first nodes cannot both import.
 	LockAuthImport = "auth-import"
@@ -43,7 +53,10 @@ func LockKey(name string) int64 {
 //
 // A session lock survives transaction boundaries inside fn, which is what
 // schema migrations need; it is released when fn returns, and PostgreSQL
-// releases it anyway if this process dies and the connection drops.
+// releases it anyway if this process dies and the connection drops. The
+// holding session gets short TCP keepalives, so a holder whose host dies
+// stops blocking the others within seconds, and it is closed afterwards
+// rather than pooled.
 //
 // When db is not PostgreSQL (SQLite in unit tests) the lock is a no-op.
 func WithSessionLock(ctx context.Context, db *sql.DB, name string, wait time.Duration, fn func(context.Context) error) error {
@@ -54,7 +67,6 @@ func WithSessionLock(ctx context.Context, db *sql.DB, name string, wait time.Dur
 	if err != nil {
 		return fmt.Errorf("cluster: acquire connection for lock %s: %w", name, err)
 	}
-	defer conn.Close()
 
 	key := LockKey(name)
 	deadline := time.Now().Add(wait)
@@ -63,26 +75,39 @@ func WithSessionLock(ctx context.Context, db *sql.DB, name string, wait time.Dur
 		err := conn.QueryRowContext(ctx, `SELECT pg_try_advisory_lock($1)`, key).Scan(&locked)
 		if err != nil {
 			if isUnsupportedAdvisoryLockError(err) {
+				// Release the connection first: a single-connection SQLite
+				// pool would otherwise leave fn waiting for it forever.
+				_ = conn.Close()
 				return fn(ctx)
 			}
+			// The server may have granted the lock before the reply was lost.
+			discardConn(conn)
 			return fmt.Errorf("cluster: take lock %s: %w", name, err)
 		}
 		if locked {
 			break
 		}
 		if wait <= 0 || time.Now().After(deadline) {
+			_ = conn.Close()
 			return fmt.Errorf("%w: %s", ErrLockTimeout, name)
 		}
 		select {
 		case <-ctx.Done():
+			_ = conn.Close()
 			return ctx.Err()
 		case <-time.After(250 * time.Millisecond):
 		}
+	}
+	if err := tuneSession(ctx, sqlConnExec(conn), "clirelay-lock:"+name); err != nil {
+		log.Debugf("cluster: tune session holding lock %s: %v", name, err)
 	}
 	defer func() {
 		unlockCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_, _ = conn.ExecContext(unlockCtx, `SELECT pg_advisory_unlock($1)`, key)
+		// Never pool the session: had the unlock failed, the lock would live
+		// on in whatever code reused the connection.
+		discardConn(conn)
 	}()
 	return fn(ctx)
 }
