@@ -522,6 +522,9 @@ func (h *Handler) GetAuthStatus(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "error": "invalid state"})
 		return
 	}
+	if respondSharedAuthStatus(c, state) {
+		return
+	}
 
 	_, tenantID, status, ok := GetOAuthSessionWithTenant(state)
 	if !ok {
