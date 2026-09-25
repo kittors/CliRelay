@@ -219,6 +219,7 @@ ssh <root@node> 'set -e
 | SSH 端口（secret） | `SERVER_PORT_<node>` | 同左 | 22；`default` 用 `SERVER_PORT` |
 | 部署私钥（secret） | `SSH_PRIVATE_KEY_<node>` | 同左 | 用共享的 `SSH_PRIVATE_KEY` |
 | known_hosts（secret） | `DEPLOY_SSH_KNOWN_HOSTS_<node>` | 同左 | 用共享的 `DEPLOY_SSH_KNOWN_HOSTS` |
+| SSH 跳板（secret，可选） | `SSH_JUMP_<node>`，格式 `user@host[:port]` | 同左 | 不设则直连节点 |
 | 探测绑定的公网 IP | 变量 `CLIRELAY_SMOKE_IP_<node>` 或 secret `SMOKE_IP_<node>` | 变量 `RELAY_SMOKE_IP_<node>` 或 secret `SMOKE_IP_<node>` | `SERVER_HOST` 为 IP 时直接用它 |
 
 只有私钥和 known_hosts 会回退到共享 secret；地址和端口不回退，否则漏配的节点会被当成另一台机器重复部署，自己却被报告为已完成。非 22 端口的 known_hosts 条目必须是 `[host]:port` 形式（`ssh-keyscan -p <port> <host>` 的输出就是这种形式），preflight 会逐节点核对。
@@ -237,6 +238,24 @@ for node in n43 n156; do
 done
 gh variable list --repo "$REPO"
 gh secret list --repo "$REPO"
+```
+
+### 经跳板连接节点
+
+有的服务商会丢弃 GitHub 运行机部分地址段发来的入站 SSH（表现为 `ssh: connect to host … Connection timed out`，节点的 sshd 日志里没有任何连接记录）。这时给该节点设置 `SSH_JUMP_<node>`，工作流会经跳板机连接（`ProxyJump`）。跳板机的主机密钥要一起写进该节点的 `DEPLOY_SSH_KNOWN_HOSTS_<node>`，同样严格校验。
+
+跳板机上用一个只能转发到这个节点 SSH 端口的受限账号，不给 shell：
+
+```bash
+# 跳板机 root 执行（示例：只允许转发到 156.225.27.154:47222）
+useradd -m -s /sbin/nologin gha-jump
+install -d -m 0700 -o gha-jump -g gha-jump /home/gha-jump/.ssh
+printf 'restrict,port-forwarding,permitopen="156.225.27.154:47222" %s\n' '<部署公钥>' > /home/gha-jump/.ssh/authorized_keys
+chown gha-jump:gha-jump /home/gha-jump/.ssh/authorized_keys && chmod 0600 /home/gha-jump/.ssh/authorized_keys
+
+# 本机：写 secrets（known_hosts 同时包含节点和跳板机的主机密钥，写入前核对指纹）
+gh secret set SSH_JUMP_n156 --repo "$REPO" --body 'gha-jump@<跳板IP>:<跳板SSH端口>'
+cat node-known-hosts jump-known-hosts | gh secret set DEPLOY_SSH_KNOWN_HOSTS_n156 --repo "$REPO"
 ```
 
 `--repo` 不能省略，否则 gh 会去查 upstream 仓库。known_hosts 写入前要人工核对指纹，不要盲信 `ssh-keyscan` 的结果。
