@@ -155,8 +155,17 @@ func (e *autoBanEngine) RecordFailure(ctx context.Context, addr ClientAddress, r
 }
 
 // charge adds one failure and reports the window count, the number of previous
-// bans, and whether a ban is already in force.
+// bans, and whether a ban is already in force. In a cluster the cluster-wide
+// count decides (autoban_cluster.go); the local one is kept for fallback.
 func (e *autoBanEngine) charge(cidr string, policy AutoBanPolicy, now time.Time) (int, int, bool) {
+	failures, bans, banned := e.chargeLocal(cidr, policy, now)
+	if sharedFailures, sharedBans, sharedBanned, ok := chargeShared(cidr, policy, now); ok {
+		return sharedFailures, sharedBans, sharedBanned
+	}
+	return failures, bans, banned
+}
+
+func (e *autoBanEngine) chargeLocal(cidr string, policy AutoBanPolicy, now time.Time) (int, int, bool) {
 	window := policy.Window()
 	if window <= 0 {
 		return 0, 0, false
@@ -196,6 +205,7 @@ func (e *autoBanEngine) charge(cidr string, policy AutoBanPolicy, now time.Time)
 }
 
 func (e *autoBanEngine) markBanned(cidr string, until time.Time, now time.Time) {
+	markBannedShared(cidr, until, now)
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	counter := e.counters[cidr]
