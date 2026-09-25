@@ -11,6 +11,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/access"
 	configaccess "github.com/router-for-me/CLIProxyAPI/v6/internal/access/config_access"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/configsync"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/identity"
 	apikeysettings "github.com/router-for-me/CLIProxyAPI/v6/internal/management/settings/apikey"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/quota"
@@ -38,12 +39,14 @@ func (h *Handler) refreshAPIKeyCache() error {
 }
 
 func (h *Handler) apiKeySettings(c *gin.Context) *apikeysettings.Service {
-	return h.apiKeySettingsForTenant(effectiveTenantID(c))
+	// A full replacement is checked against the collection version the client
+	// read, when it sent one.
+	return h.apiKeySettingsForTenant(effectiveTenantID(c), apikeysettings.WithExpectedVersion(requestExpectedVersion(c)))
 }
 
-func (h *Handler) apiKeySettingsForTenant(tenantID string) *apikeysettings.Service {
+func (h *Handler) apiKeySettingsForTenant(tenantID string, extra ...apikeysettings.Option) *apikeysettings.Service {
 	if h == nil {
-		return apikeysettings.NewService(nil, apikeysettings.WithTenantID(tenantID))
+		return apikeysettings.NewService(nil, append([]apikeysettings.Option{apikeysettings.WithTenantID(tenantID)}, extra...)...)
 	}
 
 	var auths []*coreauth.Auth
@@ -66,19 +69,22 @@ func (h *Handler) apiKeySettingsForTenant(tenantID string) *apikeysettings.Servi
 		func(values []string) ([]string, error) {
 			return h.sanitizeAllowedChannelsForTenant(tenantID, values)
 		},
-		apikeysettings.WithTenantID(tenantID),
-		apikeysettings.WithChannelGroupValidator(func(values []string) ([]string, error) {
-			return h.validateAllowedChannelGroupsForTenant(tenantID, values)
-		}),
-		apikeysettings.WithEntryValidator(validateEntry),
-		apikeysettings.WithLogsDeleter(func(apiKey string) (int64, error) {
-			return usage.DeleteLogsByAPIKeyForTenant(tenantID, apiKey)
-		}),
+		append([]apikeysettings.Option{apikeysettings.WithTenantID(tenantID),
+			apikeysettings.WithChannelGroupValidator(func(values []string) ([]string, error) {
+				return h.validateAllowedChannelGroupsForTenant(tenantID, values)
+			}),
+			apikeysettings.WithEntryValidator(validateEntry),
+			apikeysettings.WithLogsDeleter(func(apiKey string) (int64, error) {
+				return usage.DeleteLogsByAPIKeyForTenant(tenantID, apiKey)
+			}),
+			apikeysettings.WithExpectedVersion(configsync.AnyVersion),
+		}, extra...)...,
 	)
 }
 
 // api-keys (legacy simple list — now backed by the database)
 func (h *Handler) GetAPIKeys(c *gin.Context) {
+	setVersionHeader(c, usage.ConfigCollectionVersion(configsync.DomainAPIKeys, effectiveTenantID(c)))
 	c.JSON(200, gin.H{"api-keys": h.apiKeySettings(c).EnabledKeys()})
 }
 
@@ -100,7 +106,7 @@ func (h *Handler) PutAPIKeys(c *gin.Context) {
 		arr = obj.Items
 	}
 	if err := h.apiKeySettings(c).ReplaceKeys(arr); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeConfigSaveError(c, "failed to save api keys", err)
 		return
 	}
 	if err := h.refreshAPIKeyCache(); err != nil {
@@ -148,6 +154,7 @@ func (h *Handler) DeleteAPIKeys(c *gin.Context) {
 
 func (h *Handler) GetAPIKeyPermissionProfiles(c *gin.Context) {
 	profiles := h.apiKeySettings(c).PermissionProfiles()
+	setVersionHeader(c, usage.ConfigCollectionVersion(configsync.DomainPermissionProfiles, effectiveTenantID(c)))
 	c.JSON(200, gin.H{
 		"api-key-permission-profiles": profiles,
 		"items":                       profiles,
@@ -186,6 +193,9 @@ func (h *Handler) PutAPIKeyPermissionProfiles(c *gin.Context) {
 
 	result, err := h.apiKeySettings(c).ReplacePermissionProfilesWithCaps(profiles, syncAccounts)
 	if err != nil {
+		if writeConfigConflict(c, err) {
+			return
+		}
 		if errors.Is(err, quota.ErrPeriodDayLegacyConflict) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"code": "period_day_legacy_conflict", "message": "daily-spending-limit conflicts with period-spending-limits.day"}})
 		} else {
@@ -212,11 +222,13 @@ func (h *Handler) PutAPIKeyPermissionProfiles(c *gin.Context) {
 
 // api-key-entries: backed by the api_keys table
 func (h *Handler) GetAPIKeyEntries(c *gin.Context) {
+	version := usage.ConfigCollectionVersion(configsync.DomainAPIKeys, effectiveTenantID(c))
 	entries, err := h.apiKeySettings(c).ListEntriesWithDailySpending()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	setVersionHeader(c, version)
 	c.JSON(200, gin.H{"api-key-entries": entries})
 }
 
@@ -374,6 +386,9 @@ func (h *Handler) PutAPIKeyEntries(c *gin.Context) {
 		arr = obj.Items
 	}
 	if err := h.apiKeySettings(c).ReplaceEntries(arr); err != nil {
+		if writeConfigConflict(c, err) {
+			return
+		}
 		if errors.Is(err, apikeysettings.ErrInvalidEntry) || errors.Is(err, apikeysettings.ErrKeyRequired) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": apiKeyEntryErrorMessage(err)})
 			return

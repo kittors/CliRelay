@@ -20,8 +20,21 @@ func (h *Handler) GetAutoUpdateEnabled(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"enabled": enabled})
 }
 
+// PutAutoUpdateEnabled changes auto-update in this node's config.yaml only:
+// auto-update drives the updater sidecar of the node itself, so it is a
+// per-node setting even in a cluster.
 func (h *Handler) PutAutoUpdateEnabled(c *gin.Context) {
-	h.updateBoolField(c, func(v bool) { h.cfg.AutoUpdate.Enabled = v })
+	var body struct {
+		Value *bool `json:"value"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil || body.Value == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		return
+	}
+	h.mu.Lock()
+	h.cfg.AutoUpdate.Enabled = *body.Value
+	h.mu.Unlock()
+	h.persistNodeLocal(c)
 }
 
 func (h *Handler) GetAutoUpdateChannel(c *gin.Context) {
@@ -46,8 +59,10 @@ func (h *Handler) PutAutoUpdateChannel(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid auto update channel"})
 		return
 	}
+	h.mu.Lock()
 	h.cfg.AutoUpdate.Channel = channel
-	h.persist(c)
+	h.mu.Unlock()
+	h.persistNodeLocal(c)
 }
 
 func (h *Handler) CheckUpdate(c *gin.Context) {

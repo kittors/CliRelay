@@ -1,12 +1,13 @@
 package routing
 
 import (
+	"context"
 	"database/sql"
-	"encoding/json"
+	"errors"
 	"strings"
-	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/configsync"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -16,6 +17,7 @@ CREATE TABLE IF NOT EXISTS routing_config (
   id         INTEGER NOT NULL CHECK (id = 1),
   payload    TEXT NOT NULL DEFAULT '{}',
   updated_at TEXT NOT NULL DEFAULT '',
+  version    INTEGER NOT NULL DEFAULT 1,
   PRIMARY KEY (tenant_id, id)
 );
 `
@@ -45,6 +47,7 @@ func InitTable(db *sql.DB) {
 		log.Errorf("sqlite/routing: create routing_config table: %v", err)
 	}
 	migrateTenantSchema(db)
+	ensureVersionColumn(db)
 }
 
 func normalize(input config.RoutingConfig) config.RoutingConfig {
@@ -58,51 +61,17 @@ func meaningful(cfg config.RoutingConfig) bool {
 }
 
 func (s Store) Get() *config.RoutingConfig {
-	if s.db == nil {
-		return nil
-	}
-
-	var payload string
-	if err := s.db.QueryRow(`SELECT payload FROM routing_config WHERE tenant_id = ? AND id = 1`, s.tenantID).Scan(&payload); err != nil {
-		if err != sql.ErrNoRows {
-			log.Warnf("sqlite/routing: load routing_config: %v", err)
-		}
-		return nil
-	}
-
-	payload = strings.TrimSpace(payload)
-	if payload == "" {
-		return nil
-	}
-
-	var cfg config.RoutingConfig
-	if err := json.Unmarshal([]byte(payload), &cfg); err != nil {
-		log.Warnf("sqlite/routing: decode routing_config: %v", err)
-		return nil
-	}
-	normalized := normalize(cfg)
-	return &normalized
+	stored, _ := s.GetWithVersion()
+	return stored
 }
 
+// Upsert stores cfg whatever the stored version is. It still bumps the
+// version and announces the write; management saves use CompareAndSwap.
 func (s Store) Upsert(cfg config.RoutingConfig) error {
 	if s.db == nil {
 		return nil
 	}
-
-	normalized := normalize(cfg)
-	payload, err := json.Marshal(normalized)
-	if err != nil {
-		return err
-	}
-
-	_, err = s.db.Exec(
-		`INSERT INTO routing_config (tenant_id, id, payload, updated_at)
-		 VALUES (?, 1, ?, ?)
-		 ON CONFLICT(tenant_id, id) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at`,
-		s.tenantID,
-		string(payload),
-		time.Now().UTC().Format(time.RFC3339),
-	)
+	_, err := s.CompareAndSwap(context.Background(), cfg, configsync.AnyVersion)
 	return err
 }
 
@@ -128,7 +97,11 @@ func (s Store) MigrateFromConfig(cfg *config.Config) (migrated bool, hadStored b
 	if !meaningful(cfg.Routing) {
 		return false, false
 	}
-	if err := s.Upsert(cfg.Routing); err != nil {
+	// Insert only: when several nodes start at once the first import wins.
+	if _, err := s.CompareAndSwap(context.Background(), cfg.Routing, 0); err != nil {
+		if errors.Is(err, configsync.ErrVersionConflict) {
+			return false, true
+		}
 		log.Errorf("sqlite/routing: migrate routing config: %v", err)
 		return false, false
 	}

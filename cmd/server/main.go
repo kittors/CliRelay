@@ -25,6 +25,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/managementasset"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/misc"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/store"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/store/clusterauth"
 	_ "github.com/router-for-me/CLIProxyAPI/v6/internal/translator"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/tui"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
@@ -459,6 +460,13 @@ func main() {
 		CallbackPort: oauthCallbackPort,
 	}
 
+	// Cluster mode keeps credentials in the runtime database; a second remote
+	// store would fight it over the same auth directory.
+	if cfg.Cluster.Enabled && (usePostgresStore || useObjectStore || useGitStore) {
+		log.Error("cluster mode keeps credentials in the runtime PostgreSQL database and cannot be combined with PGSTORE_*, GITSTORE_* or OBJECTSTORE_*; unset them or disable cluster mode")
+		return
+	}
+
 	// Register the shared token store once so all components use the same persistence backend.
 	if usePostgresStore {
 		sdkAuth.RegisterTokenStore(pgStoreInst)
@@ -466,6 +474,15 @@ func main() {
 		sdkAuth.RegisterTokenStore(objectStoreInst)
 	} else if useGitStore {
 		sdkAuth.RegisterTokenStore(gitStoreInst)
+	} else if cfg.Cluster.Enabled {
+		// Bound to the runtime database once the service has joined the
+		// cluster (see internal/cmd.startClusterAuthStore); one-shot CLI
+		// commands reach the database through the DSN instead.
+		sdkAuth.RegisterTokenStore(clusterauth.New(clusterauth.Options{
+			AuthDir: cfg.AuthDir,
+			NodeID:  cfg.Cluster.NodeID,
+			DSN:     cfg.Postgres.DSN,
+		}))
 	} else {
 		sdkAuth.RegisterTokenStore(sdkAuth.NewFileTokenStore())
 	}

@@ -52,13 +52,13 @@ func (s *Service) ResolveTokenForAuth(ctx context.Context, auth *coreauth.Auth) 
 	case "gemini-cli":
 		return s.refreshGeminiOAuthAccessToken(ctx, auth)
 	case "antigravity":
-		return s.refreshAntigravityOAuthAccessToken(ctx, auth)
+		return s.coordinatedRefresh(ctx, auth, antigravityTokenNeedsRefresh, s.refreshAntigravityOAuthAccessToken)
 	case "claude", "anthropic":
-		return s.refreshClaudeOAuthAccessToken(ctx, auth)
+		return s.coordinatedRefresh(ctx, auth, claudeTokenNeedsRefresh, s.refreshClaudeOAuthAccessToken)
 	case "kimi":
-		return s.refreshKimiOAuthAccessToken(ctx, auth)
+		return s.coordinatedRefresh(ctx, auth, kimiTokenNeedsRefresh, s.refreshKimiOAuthAccessToken)
 	case "xai", "x-ai", "grok":
-		return s.refreshXAIOAuthAccessToken(ctx, auth)
+		return s.coordinatedRefresh(ctx, auth, xaiTokenNeedsRefresh, s.refreshXAIOAuthAccessToken)
 	default:
 		return TokenValueForAuth(auth), nil
 	}
@@ -166,7 +166,7 @@ func (s *Service) refreshXAIOAuthAccessToken(ctx context.Context, auth *coreauth
 	if s != nil && s.authManager != nil {
 		auth.LastRefreshedAt = now
 		auth.UpdatedAt = now
-		_, _ = s.authManager.Update(ctx, auth)
+		s.persistRefreshedAuth(ctx, auth)
 	}
 
 	return strings.TrimSpace(tokenData.AccessToken), nil
@@ -256,7 +256,7 @@ func (s *Service) refreshClaudeOAuthAccessToken(ctx context.Context, auth *corea
 	if s != nil && s.authManager != nil {
 		auth.LastRefreshedAt = now
 		auth.UpdatedAt = now
-		_, _ = s.authManager.Update(ctx, auth)
+		s.persistRefreshedAuth(ctx, auth)
 	}
 
 	return strings.TrimSpace(tokenData.AccessToken), nil
@@ -469,7 +469,7 @@ func (s *Service) refreshAntigravityOAuthAccessToken(ctx context.Context, auth *
 	if s != nil && s.authManager != nil {
 		auth.LastRefreshedAt = now
 		auth.UpdatedAt = now
-		_, _ = s.authManager.Update(ctx, auth)
+		s.persistRefreshedAuth(ctx, auth)
 	}
 
 	return strings.TrimSpace(tokenResp.AccessToken), nil
@@ -489,13 +489,8 @@ func (s *Service) refreshKimiOAuthAccessToken(ctx context.Context, auth *coreaut
 	}
 
 	current := strings.TrimSpace(TokenValueFromMetadata(metadata))
-	expStr := stringValue(metadata, "expired")
-	if current != "" && expStr != "" {
-		if ts, errParse := time.Parse(time.RFC3339, strings.TrimSpace(expStr)); errParse == nil {
-			if time.Now().Add(30 * time.Second).Before(ts) {
-				return current, nil
-			}
-		}
+	if current != "" && !kimiTokenNeedsRefresh(metadata) {
+		return current, nil
 	}
 
 	refreshToken := stringValue(metadata, "refresh_token")
@@ -587,7 +582,7 @@ func (s *Service) refreshKimiOAuthAccessToken(ctx context.Context, auth *coreaut
 	if s != nil && s.authManager != nil {
 		auth.LastRefreshedAt = now
 		auth.UpdatedAt = now
-		_, _ = s.authManager.Update(ctx, auth)
+		s.persistRefreshedAuth(ctx, auth)
 	}
 
 	return strings.TrimSpace(tokenResp.AccessToken), nil

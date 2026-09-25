@@ -2,10 +2,13 @@ package usage
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	runtimeconfig "github.com/router-for-me/CLIProxyAPI/v6/internal/management/settings/runtimeconfig"
 	log "github.com/sirupsen/logrus"
 	"gopkg.in/yaml.v3"
 )
@@ -17,27 +20,24 @@ const (
 	runtimeSettingsBackupSuffix    = ".pre-runtime-settings-sqlite-migration"
 )
 
-var dbBackedConfigYAMLKeys = map[string]bool{
-	"api-keys":                    true,
-	"api-key-entries":             true,
-	"api-key-permission-profiles": true,
-	"routing":                     true,
-	"proxy-pool":                  true,
-	"gemini-api-key":              true,
-	"codex-api-key":               true,
-	"claude-api-key":              true,
-	"bedrock-api-key":             true,
-	"opencode-go-api-key":         true,
-	"cline-api-key":               true,
-	"openai-compatibility":        true,
-	"vertex-api-key":              true,
-	"claude-header-defaults":      true,
-	"kimi-header-defaults":        true,
-	"identity-fingerprint":        true,
-	"codex-oauth-admission":       true,
-	"oauth-excluded-models":       true,
-	"oauth-model-alias":           true,
-	"payload":                     true,
+// runtimeSettingYAMLKeys are the config.yaml root keys owned by
+// runtime_settings. Derived from the specs so a new database-backed setting is
+// cleaned from config.yaml without a second list to keep in step.
+func runtimeSettingYAMLKeys() map[string]bool {
+	keys := make(map[string]bool)
+	for _, spec := range runtimeconfig.Specs() {
+		keys[spec.Key] = true
+	}
+	return keys
+}
+
+// dbBackedConfigYAMLKeys are all config.yaml root keys owned by the database.
+func dbBackedConfigYAMLKeys() map[string]bool {
+	keys := runtimeSettingYAMLKeys()
+	for _, key := range []string{"api-keys", "api-key-entries", "api-key-permission-profiles", "routing", "proxy-pool"} {
+		keys[key] = true
+	}
+	return keys
 }
 
 // ConfigStoreAvailable reports whether the database store that owns DB-backed
@@ -51,7 +51,7 @@ func ConfigStoreAvailable() bool {
 // config.yaml. It is safe to call repeatedly after management saves, because it
 // only rewrites the file when one of the target root keys exists.
 func CleanDBBackedConfigFromYAML(configFilePath string) int {
-	return cleanConfigKeysFromYAML(configFilePath, dbBackedConfigYAMLKeys, "DB-backed config")
+	return cleanConfigKeysFromYAML(configFilePath, dbBackedConfigYAMLKeys(), "DB-backed config")
 }
 
 func backupConfigForMigration(configFilePath string, suffix string) bool {
@@ -64,6 +64,11 @@ func backupConfigForMigration(configFilePath string, suffix string) bool {
 		return false
 	}
 	backupPath := configFilePath + suffix
+	if _, statErr := os.Stat(backupPath); statErr == nil {
+		// An earlier migration already left a backup under this name; it holds
+		// the older, more complete config.yaml, so keep it and add a new one.
+		backupPath = fmt.Sprintf("%s.%d", backupPath, time.Now().Unix())
+	}
 	if err := os.WriteFile(backupPath, data, 0o600); err != nil {
 		log.Warnf("usage: failed to backup config before cleanup: %v", err)
 		return false
@@ -92,25 +97,7 @@ func cleanRoutingConfigFromYAML(configFilePath string) {
 }
 
 func cleanRuntimeSettingsFromYAML(configFilePath string) {
-	cleanConfigKeysFromYAML(configFilePath, map[string]bool{
-		"gemini-api-key":         true,
-		"codex-api-key":          true,
-		"claude-api-key":         true,
-		"bedrock-api-key":        true,
-		"opencode-go-api-key":    true,
-		"cline-api-key":          true,
-		"ollama-cloud-api-key":   true,
-		"commandcode-api-key":    true,
-		"openai-compatibility":   true,
-		"vertex-api-key":         true,
-		"claude-header-defaults": true,
-		"kimi-header-defaults":   true,
-		"identity-fingerprint":   true,
-		"codex-oauth-admission":  true,
-		"oauth-excluded-models":  true,
-		"oauth-model-alias":      true,
-		"payload":                true,
-	}, "runtime_settings")
+	cleanConfigKeysFromYAML(configFilePath, runtimeSettingYAMLKeys(), "runtime_settings")
 }
 
 // cleanConfigKeysFromYAML strips the given root keys from config.yaml. It runs under

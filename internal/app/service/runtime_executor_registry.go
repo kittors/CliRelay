@@ -40,6 +40,22 @@ func SyncConfigDerivedAuths(base *config.Config, coreManager *coreauth.Manager) 
 
 // SyncConfigDerivedAuthsForTenant reconciles config-backed credentials inside one tenant namespace.
 func SyncConfigDerivedAuthsForTenant(base *config.Config, coreManager *coreauth.Manager, tenantID string) {
+	syncConfigDerivedAuthsForTenant(base, coreManager, tenantID, true)
+}
+
+// SyncConfigDerivedAuthsForTenantInPlace reconciles config-backed credentials
+// like SyncConfigDerivedAuthsForTenant, but instead of rebinding every
+// executor of the tenant it only registers executors that are missing.
+// Rebinding replaces executors, which closes their upstream sessions (Codex
+// websockets); a peer that merely learned about a provider-key change from
+// another node must not cut its users' sessions for that. It is correct when
+// the executors read the configuration they were bound with by reference, as
+// the system tenant's do.
+func SyncConfigDerivedAuthsForTenantInPlace(base *config.Config, coreManager *coreauth.Manager, tenantID string) {
+	syncConfigDerivedAuthsForTenant(base, coreManager, tenantID, false)
+}
+
+func syncConfigDerivedAuthsForTenant(base *config.Config, coreManager *coreauth.Manager, tenantID string, rebind bool) {
 	if base == nil || coreManager == nil {
 		return
 	}
@@ -110,7 +126,27 @@ func SyncConfigDerivedAuthsForTenant(base *config.Config, coreManager *coreauth.
 		}
 		syncConfigDerivedAuthModels(tenantCfg, disabled)
 	}
-	RebindTenantExecutors(base, coreManager, tenantID, nil)
+	if rebind {
+		RebindTenantExecutors(base, coreManager, tenantID, nil)
+		return
+	}
+	ensureTenantExecutors(base, coreManager, tenantID)
+}
+
+// ensureTenantExecutors registers an executor for every provider of the
+// tenant that has none yet, leaving existing executors in place.
+func ensureTenantExecutors(base *config.Config, coreManager *coreauth.Manager, tenantID string) {
+	for _, auth := range coreManager.ListForTenant(tenantID) {
+		if auth == nil || auth.Disabled {
+			continue
+		}
+		if key := executorBindingKey(auth); key != "" {
+			if _, exists := coreManager.ExecutorForTenant(tenantID, key); exists {
+				continue
+			}
+		}
+		RegisterExecutorForAuth(coreManager, base, auth, false, nil)
+	}
 }
 
 func syncConfigDerivedAuthModels(cfg *config.Config, auth *coreauth.Auth) {

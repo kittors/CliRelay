@@ -3,6 +3,7 @@ package modelcatalog
 import (
 	"context"
 	"errors"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/configsync"
 	"strings"
 	"time"
 
@@ -95,10 +96,18 @@ func (s *Service) OwnerPresets() map[string]any {
 }
 
 func (s *Service) ReplaceOwnerPresets(rows []usage.ModelOwnerPresetRow) (map[string]any, error) {
-	if err := modelconfigsettings.ReplaceOwnerPresetsForTenant(s.tenantID, rows); err != nil {
-		return nil, err
+	payload, _, err := s.ReplaceOwnerPresetsExpect(context.Background(), rows, configsync.AnyVersion)
+	return payload, err
+}
+
+// ReplaceOwnerPresetsExpect replaces the presets if the collection is still
+// at expected, and returns the new collection version.
+func (s *Service) ReplaceOwnerPresetsExpect(ctx context.Context, rows []usage.ModelOwnerPresetRow, expected int64) (map[string]any, int64, error) {
+	version, err := usage.ReplaceModelOwnerPresetsForTenantExpect(ctx, s.tenantID, rows, expected)
+	if err != nil {
+		return nil, 0, err
 	}
-	return map[string]any{"status": "ok", "updated": len(rows)}, nil
+	return map[string]any{"status": "ok", "updated": len(rows)}, version, nil
 }
 
 func (s *Service) AuthGroupOwnerMappings() map[string]any {

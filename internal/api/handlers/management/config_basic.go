@@ -15,6 +15,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/api/bodyutil"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/identity"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/management/settings/runtimeconfig"
 	settingsstore "github.com/router-for-me/CLIProxyAPI/v6/internal/management/settings/store"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
@@ -36,7 +37,7 @@ func (h *Handler) GetConfig(c *gin.Context) {
 	}
 	tenantID := effectiveTenantID(c)
 	if tenantID == identity.SystemTenantID {
-		c.JSON(200, sanitizeConfigForAPI(h.cfg))
+		c.JSON(200, withSettingVersions(sanitizeConfigForAPI(h.cfg), h.cfg.RuntimeSettingState().Versions()))
 		return
 	}
 	runtimeCfg := usage.BuildTenantRuntimeConfig(h.cfg, tenantID)
@@ -68,7 +69,7 @@ func (h *Handler) GetConfig(c *gin.Context) {
 	if principal, ok := principalFromContext(c); ok && principal.PlatformAdmin {
 		copyProcessGlobalRuntimeToggles(h.cfg, tenantView)
 	}
-	c.JSON(200, sanitizeConfigForAPI(tenantView))
+	c.JSON(200, withSettingVersions(sanitizeConfigForAPI(tenantView), runtimeCfg.RuntimeSettingState().Versions()))
 }
 
 // copyProcessGlobalRuntimeToggles copies host-wide runtime switches that the
@@ -453,28 +454,32 @@ func (h *Handler) GetConfigYAML(c *gin.Context) {
 }
 
 // Debug
-func (h *Handler) GetDebug(c *gin.Context) { c.JSON(200, gin.H{"debug": h.cfg.Debug}) }
-func (h *Handler) PutDebug(c *gin.Context) { h.updateBoolField(c, func(v bool) { h.cfg.Debug = v }) }
+func (h *Handler) GetDebug(c *gin.Context) {
+	h.jsonWithLiveVersion(c, runtimeconfig.RuntimeSettingDebug, gin.H{"debug": h.cfg.Debug})
+}
+func (h *Handler) PutDebug(c *gin.Context) {
+	h.updateBoolField(c, func(cfg *config.Config, v bool) { cfg.Debug = v })
+}
 
 // UsageStatisticsEnabled
 func (h *Handler) GetUsageStatisticsEnabled(c *gin.Context) {
-	c.JSON(200, gin.H{"usage-statistics-enabled": h.cfg.UsageStatisticsEnabled})
+	h.jsonWithLiveVersion(c, runtimeconfig.RuntimeSettingUsageStatistics, gin.H{"usage-statistics-enabled": h.cfg.UsageStatisticsEnabled})
 }
 func (h *Handler) PutUsageStatisticsEnabled(c *gin.Context) {
-	h.updateBoolField(c, func(v bool) { h.cfg.UsageStatisticsEnabled = v })
+	h.updateBoolField(c, func(cfg *config.Config, v bool) { cfg.UsageStatisticsEnabled = v })
 }
 
 // UsageStatisticsEnabled
 func (h *Handler) GetLoggingToFile(c *gin.Context) {
-	c.JSON(200, gin.H{"logging-to-file": h.cfg.LoggingToFile})
+	h.jsonWithLiveVersion(c, runtimeconfig.RuntimeSettingLoggingToFile, gin.H{"logging-to-file": h.cfg.LoggingToFile})
 }
 func (h *Handler) PutLoggingToFile(c *gin.Context) {
-	h.updateBoolField(c, func(v bool) { h.cfg.LoggingToFile = v })
+	h.updateBoolField(c, func(cfg *config.Config, v bool) { cfg.LoggingToFile = v })
 }
 
 // LogsMaxTotalSizeMB
 func (h *Handler) GetLogsMaxTotalSizeMB(c *gin.Context) {
-	c.JSON(200, gin.H{"logs-max-total-size-mb": h.cfg.LogsMaxTotalSizeMB})
+	h.jsonWithLiveVersion(c, runtimeconfig.RuntimeSettingLogsMaxTotalSizeMB, gin.H{"logs-max-total-size-mb": h.cfg.LogsMaxTotalSizeMB})
 }
 func (h *Handler) PutLogsMaxTotalSizeMB(c *gin.Context) {
 	var body struct {
@@ -488,13 +493,12 @@ func (h *Handler) PutLogsMaxTotalSizeMB(c *gin.Context) {
 	if value < 0 {
 		value = 0
 	}
-	h.cfg.LogsMaxTotalSizeMB = value
-	h.persist(c)
+	h.mutateSystemConfig(c, func(cfg *config.Config) error { cfg.LogsMaxTotalSizeMB = value; return nil })
 }
 
 // ErrorLogsMaxFiles
 func (h *Handler) GetErrorLogsMaxFiles(c *gin.Context) {
-	c.JSON(200, gin.H{"error-logs-max-files": h.cfg.ErrorLogsMaxFiles})
+	h.jsonWithLiveVersion(c, runtimeconfig.RuntimeSettingErrorLogsMaxFiles, gin.H{"error-logs-max-files": h.cfg.ErrorLogsMaxFiles})
 }
 func (h *Handler) PutErrorLogsMaxFiles(c *gin.Context) {
 	var body struct {
@@ -508,46 +512,47 @@ func (h *Handler) PutErrorLogsMaxFiles(c *gin.Context) {
 	if value < 0 {
 		value = 10
 	}
-	h.cfg.ErrorLogsMaxFiles = value
-	h.persist(c)
+	h.mutateSystemConfig(c, func(cfg *config.Config) error { cfg.ErrorLogsMaxFiles = value; return nil })
 }
 
 // Request log
-func (h *Handler) GetRequestLog(c *gin.Context) { c.JSON(200, gin.H{"request-log": h.cfg.RequestLog}) }
+func (h *Handler) GetRequestLog(c *gin.Context) {
+	h.jsonWithLiveVersion(c, runtimeconfig.RuntimeSettingRequestLog, gin.H{"request-log": h.cfg.RequestLog})
+}
 func (h *Handler) PutRequestLog(c *gin.Context) {
-	h.updateBoolField(c, func(v bool) { h.cfg.RequestLog = v })
+	h.updateBoolField(c, func(cfg *config.Config, v bool) { cfg.RequestLog = v })
 }
 
 // Websocket auth
 func (h *Handler) GetWebsocketAuth(c *gin.Context) {
-	c.JSON(200, gin.H{"ws-auth": h.cfg.WebsocketAuth})
+	h.jsonWithLiveVersion(c, runtimeconfig.RuntimeSettingWebsocketAuth, gin.H{"ws-auth": h.cfg.WebsocketAuth})
 }
 func (h *Handler) PutWebsocketAuth(c *gin.Context) {
-	h.updateBoolField(c, func(v bool) { h.cfg.WebsocketAuth = v })
+	h.updateBoolField(c, func(cfg *config.Config, v bool) { cfg.WebsocketAuth = v })
 }
 
 // Request retry
 func (h *Handler) GetRequestRetry(c *gin.Context) {
-	c.JSON(200, gin.H{"request-retry": h.cfg.RequestRetry})
+	h.jsonWithLiveVersion(c, runtimeconfig.RuntimeSettingRequestRetry, gin.H{"request-retry": h.cfg.RequestRetry})
 }
 func (h *Handler) PutRequestRetry(c *gin.Context) {
-	h.updateIntField(c, func(v int) { h.cfg.RequestRetry = v })
+	h.updateIntField(c, func(cfg *config.Config, v int) { cfg.RequestRetry = v })
 }
 
 // Max retry interval
 func (h *Handler) GetMaxRetryInterval(c *gin.Context) {
-	c.JSON(200, gin.H{"max-retry-interval": h.cfg.MaxRetryInterval})
+	h.jsonWithLiveVersion(c, runtimeconfig.RuntimeSettingMaxRetryInterval, gin.H{"max-retry-interval": h.cfg.MaxRetryInterval})
 }
 func (h *Handler) PutMaxRetryInterval(c *gin.Context) {
-	h.updateIntField(c, func(v int) { h.cfg.MaxRetryInterval = v })
+	h.updateIntField(c, func(cfg *config.Config, v int) { cfg.MaxRetryInterval = v })
 }
 
 // ForceModelPrefix
 func (h *Handler) GetForceModelPrefix(c *gin.Context) {
-	c.JSON(200, gin.H{"force-model-prefix": h.cfg.ForceModelPrefix})
+	h.jsonWithLiveVersion(c, runtimeconfig.RuntimeSettingForceModelPrefix, gin.H{"force-model-prefix": h.cfg.ForceModelPrefix})
 }
 func (h *Handler) PutForceModelPrefix(c *gin.Context) {
-	h.updateBoolField(c, func(v bool) { h.cfg.ForceModelPrefix = v })
+	h.updateBoolField(c, func(cfg *config.Config, v bool) { cfg.ForceModelPrefix = v })
 }
 
 func normalizeRoutingStrategy(strategy string) (string, bool) {
@@ -566,6 +571,8 @@ func normalizeRoutingStrategy(strategy string) (string, bool) {
 
 // RoutingStrategy
 func (h *Handler) GetRoutingStrategy(c *gin.Context) {
+	_, version := usage.GetRoutingConfigWithVersionForTenant(identity.SystemTenantID)
+	setVersionHeader(c, version)
 	strategy, ok := normalizeRoutingStrategy(h.cfg.Routing.Strategy)
 	if !ok {
 		c.JSON(200, gin.H{"strategy": strings.TrimSpace(h.cfg.Routing.Strategy)})
@@ -586,16 +593,16 @@ func (h *Handler) PutRoutingStrategy(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid strategy"})
 		return
 	}
-	h.cfg.Routing.Strategy = normalized
-	h.persist(c)
+	h.putRoutingStrategy(c, normalized)
 }
 
 // Proxy URL
-func (h *Handler) GetProxyURL(c *gin.Context) { c.JSON(200, gin.H{"proxy-url": h.cfg.ProxyURL}) }
+func (h *Handler) GetProxyURL(c *gin.Context) {
+	h.jsonWithLiveVersion(c, runtimeconfig.RuntimeSettingProxyURL, gin.H{"proxy-url": h.cfg.ProxyURL})
+}
 func (h *Handler) PutProxyURL(c *gin.Context) {
-	h.updateStringField(c, func(v string) { h.cfg.ProxyURL = v })
+	h.updateStringField(c, func(cfg *config.Config, v string) { cfg.ProxyURL = v })
 }
 func (h *Handler) DeleteProxyURL(c *gin.Context) {
-	h.cfg.ProxyURL = ""
-	h.persist(c)
+	h.mutateSystemConfig(c, func(cfg *config.Config) error { cfg.ProxyURL = ""; return nil })
 }

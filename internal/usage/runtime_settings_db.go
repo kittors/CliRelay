@@ -1,11 +1,13 @@
 package usage
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/configsync"
 	runtimeconfig "github.com/router-for-me/CLIProxyAPI/v6/internal/management/settings/runtimeconfig"
 	sqlsettings "github.com/router-for-me/CLIProxyAPI/v6/internal/storage/sqlstore/settings"
 )
@@ -37,6 +39,8 @@ const (
 
 func initRuntimeSettingsTable(db *sql.DB) {
 	sqlsettings.InitRuntimeSettingsTable(db)
+	// Collection versions live next to the settings they version.
+	configsync.InitTables(db)
 }
 
 func runtimeSettingsStore() sqlsettings.RuntimeSettingsStore {
@@ -58,13 +62,6 @@ func GetRuntimeSettingPayload(key string) (json.RawMessage, bool) {
 	return runtimeSettingsStore().Payload(key)
 }
 
-func PersistRuntimeSettingsFromConfig(cfg *config.Config) int {
-	if cfg == nil || !ConfigStoreAvailable() {
-		return 0
-	}
-	return runtimeSettingsStore().PersistFromConfig(cfg)
-}
-
 // PersistRuntimeSettingsPresentInYAML stores DB-backed runtime settings that
 // were explicitly included in a management config.yaml save.
 func PersistRuntimeSettingsPresentInYAML(cfg *config.Config, yamlContent []byte) int {
@@ -74,16 +71,22 @@ func PersistRuntimeSettingsPresentInYAML(cfg *config.Config, yamlContent []byte)
 	return runtimeSettingsStore().PersistPresentInYAML(cfg, yamlContent)
 }
 
+// ApplyStoredRuntimeSettings overlays the stored settings onto the live config
+// and records what was loaded, so a later management save writes only the
+// keys it changed and checks them against these versions.
 func ApplyStoredRuntimeSettings(cfg *config.Config) bool {
 	if cfg == nil || !ConfigStoreAvailable() {
 		return false
 	}
-	store := runtimeSettingsStore()
-	applied := store.ApplyToConfig(cfg)
-	if cfg.EnsureProviderStableIDs() {
-		persistProviderStableIDBackfill(store, cfg)
-		return true
+	return applyStoredRuntimeSettings(runtimeSettingsStore(), cfg)
+}
+
+func applyStoredRuntimeSettings(store sqlsettings.RuntimeSettingsStore, cfg *config.Config) bool {
+	applied, _ := store.ApplyToConfigRecording(cfg, cfg.RuntimeSettingState())
+	if sqlsettings.EnsureStoredProviderIDs(context.Background(), store, cfg) {
+		applied = true
 	}
+	sqlsettings.Rebaseline(cfg)
 	return applied
 }
 
@@ -116,43 +119,15 @@ func GetRuntimeSettingPayloadForTenant(tenantID, key string) (json.RawMessage, b
 	}
 	return runtimeSettingsStoreForTenant(tenantID).Payload(key)
 }
+
+// ApplyStoredRuntimeSettingsForTenant overlays tenantID's stored settings onto
+// cfg and records them in cfg's own state. cfg must not share its state with
+// the live config; BuildTenantRuntimeConfig detaches it first.
 func ApplyStoredRuntimeSettingsForTenant(tenantID string, cfg *config.Config) bool {
 	if cfg == nil || !ConfigStoreAvailable() {
 		return false
 	}
-	store := runtimeSettingsStoreForTenant(tenantID)
-	applied := store.ApplyToConfig(cfg)
-	if cfg.EnsureProviderStableIDs() {
-		persistProviderStableIDBackfill(store, cfg)
-		return true
-	}
-	return applied
-}
-
-func persistProviderStableIDBackfill(store sqlsettings.RuntimeSettingsStore, cfg *config.Config) {
-	settings := []struct {
-		key   string
-		value any
-	}{
-		{RuntimeSettingGeminiKeys, cfg.GeminiKey},
-		{RuntimeSettingCodexKeys, cfg.CodexKey},
-		{RuntimeSettingClaudeKeys, cfg.ClaudeKey},
-		{RuntimeSettingBedrockKeys, cfg.BedrockKey},
-		{RuntimeSettingOpenCodeGoKeys, cfg.OpenCodeGoKey},
-		{RuntimeSettingClineKeys, cfg.ClineKey},
-		{RuntimeSettingOllamaCloudKeys, cfg.OllamaCloudKey},
-		{RuntimeSettingCommandCodeKeys, cfg.CommandCodeKey},
-		{RuntimeSettingOpenAICompatibility, cfg.OpenAICompatibility},
-		{RuntimeSettingVertexCompatKeys, cfg.VertexCompatAPIKey},
-	}
-	for _, setting := range settings {
-		if !store.Exists(setting.key) {
-			continue
-		}
-		if err := store.Upsert(setting.key, setting.value); err != nil {
-			continue
-		}
-	}
+	return applyStoredRuntimeSettings(runtimeSettingsStoreForTenant(tenantID), cfg)
 }
 
 // BuildTenantRuntimeConfig returns an isolated runtime snapshot for one tenant.
@@ -166,6 +141,9 @@ func BuildTenantRuntimeConfig(base *config.Config, tenantID string) config.Confi
 	if tenantID == systemTenantID {
 		return tenantCfg
 	}
+	// The copy is loaded from this tenant's rows; sharing the base config's
+	// state would record tenant versions as if they were the system's.
+	tenantCfg.DetachRuntimeSettingState()
 
 	tenantCfg.GeminiKey = nil
 	tenantCfg.CodexKey = nil
@@ -196,5 +174,6 @@ func BuildTenantRuntimeConfig(base *config.Config, tenantID string) config.Confi
 	tenantCfg.ProxyPool = ListProxyPoolForTenant(tenantID)
 	ApplyStoredRuntimeSettingsForTenant(tenantID, &tenantCfg)
 	tenantCfg.SanitizeIdentityFingerprint()
+	sqlsettings.Rebaseline(&tenantCfg)
 	return tenantCfg
 }

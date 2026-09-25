@@ -24,6 +24,7 @@ type serverOptionConfig struct {
 	postAuthHook               auth.PostAuthHook
 	configMutatedCallback      func(*config.Config)
 	modelConfigMutatedCallback func(tenantID string)
+	configResyncCallback       func(*config.Config)
 }
 
 // ServerOption customises HTTP server construction.
@@ -100,5 +101,14 @@ func WithConfigMutatedCallback(fn func(*config.Config)) ServerOption {
 func WithModelConfigMutatedCallback(fn func(tenantID string)) ServerOption {
 	return func(cfg *serverOptionConfig) {
 		cfg.modelConfigMutatedCallback = fn
+	}
+}
+
+// WithConfigResyncCallback registers the full configuration reload a cluster
+// node falls back to when it cannot tell which settings other nodes changed.
+// Unlike the config-mutated callback it must not re-register models.
+func WithConfigResyncCallback(fn func(*config.Config)) ServerOption {
+	return func(cfg *serverOptionConfig) {
+		cfg.configResyncCallback = fn
 	}
 }

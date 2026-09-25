@@ -11,8 +11,8 @@ import (
 
 func TestRuntimeMigrationsCoverCoreTables(t *testing.T) {
 	migrations := RuntimeMigrations()
-	if len(migrations) != 37 {
-		t.Fatalf("RuntimeMigrations len = %d, want 37", len(migrations))
+	if len(migrations) != 39 {
+		t.Fatalf("RuntimeMigrations len = %d, want 39", len(migrations))
 	}
 	// Membership table of multi-instance deployments.
 	if migrations[31].Version != "202609250001_cluster_nodes" {
@@ -21,16 +21,34 @@ func TestRuntimeMigrationsCoverCoreTables(t *testing.T) {
 	if !strings.Contains(migrations[31].SQL, "CREATE TABLE IF NOT EXISTS cluster_nodes") {
 		t.Fatalf("cluster nodes migration missing its table: %q", migrations[31].SQL)
 	}
+	// Shared credential store of cluster mode.
+	if migrations[33].Version != "202609250003_cluster_auth_credentials" ||
+		!strings.Contains(migrations[33].SQL, "CREATE TABLE IF NOT EXISTS auth_credentials") {
+		t.Fatalf("cluster credential migration = %q", migrations[33].Version)
+	}
+	// Optimistic versions for cross-node management writes.
+	if migrations[34].Version != "202609250004_config_optimistic_versions" {
+		t.Fatalf("config versions migration version = %q", migrations[34].Version)
+	}
+	for _, fragment := range []string{
+		"ALTER TABLE runtime_settings ADD COLUMN IF NOT EXISTS version BIGINT NOT NULL DEFAULT 1",
+		"ALTER TABLE routing_config ADD COLUMN IF NOT EXISTS version BIGINT NOT NULL DEFAULT 1",
+		"CREATE TABLE IF NOT EXISTS config_versions",
+	} {
+		if !strings.Contains(migrations[34].SQL, fragment) {
+			t.Fatalf("config versions migration missing %q", fragment)
+		}
+	}
 	// Cross-node sessions and asynchronous work, one new table each.
 	for i, want := range []struct{ version, table string }{
-		{"202609250201_oauth_sessions", "CREATE TABLE IF NOT EXISTS oauth_sessions"},
-		{"202609250202_async_task_routes", "CREATE TABLE IF NOT EXISTS async_task_routes"},
-		{"202609250203_management_jobs", "CREATE TABLE IF NOT EXISTS management_jobs"},
-		{"202609250204_warmup_policies", "CREATE TABLE IF NOT EXISTS warmup_policies"},
+		{"202609250005_oauth_sessions", "CREATE TABLE IF NOT EXISTS oauth_sessions"},
+		{"202609250006_async_task_routes", "CREATE TABLE IF NOT EXISTS async_task_routes"},
+		{"202609250007_management_jobs", "CREATE TABLE IF NOT EXISTS management_jobs"},
+		{"202609250008_warmup_policies", "CREATE TABLE IF NOT EXISTS warmup_policies"},
 	} {
-		got := migrations[33+i]
+		got := migrations[35+i]
 		if got.Version != want.version || !strings.Contains(got.SQL, want.table) {
-			t.Fatalf("migration %d = %q, want %q creating %q", 33+i, got.Version, want.version, want.table)
+			t.Fatalf("migration %d = %q, want %q creating %q", 35+i, got.Version, want.version, want.table)
 		}
 	}
 	// Appended from laterRuntimeMigrations() because migrations.go sits at its
@@ -49,8 +67,8 @@ func TestRuntimeMigrationsCoverCoreTables(t *testing.T) {
 	if migrations[30].Version != "202609240001_end_user_legacy_password_lock_state" {
 		t.Fatalf("legacy password lock migration version = %q", migrations[30].Version)
 	}
-	// Exactly-once keys for request log writes. It must be a new table, not an
-	// index on request_logs, so upgrading never blocks log writes.
+	// Exactly-once keys for request log writes. It must be a new table,
+	// not an index on request_logs, so upgrading never blocks log writes.
 	if migrations[32].Version != "202609250002_request_log_idempotency_keys" {
 		t.Fatalf("request log idempotency migration version = %q", migrations[32].Version)
 	}

@@ -1,6 +1,7 @@
 package modelconfig
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -8,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/cluster"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/configsync"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
 	log "github.com/sirupsen/logrus"
 )
@@ -151,6 +154,8 @@ func InitTables(db *sql.DB) {
 	if db == nil {
 		return
 	}
+	// Whole-replace writes of this table bump its collection version.
+	configsync.InitTables(db)
 	if _, err := db.Exec(createModelConfigTablesSQL); err != nil {
 		log.Errorf("sqlite/modelconfig: create model config tables: %v", err)
 		return
@@ -287,7 +292,7 @@ func (s Store) UpsertModelConfig(row ModelConfigRow) error {
 	row.KnowledgeCutoff = strings.TrimSpace(row.KnowledgeCutoff)
 	row.SupportedParameters = NormalizeModelParameterNames(row.SupportedParameters)
 	row.Reasoning = NormalizeModelReasoningJSON(row.Reasoning)
-	_, err := s.db.Exec(
+	_, err := configsync.Exec(context.Background(), s.db, []cluster.ConfigEvent{configsync.Event(configsync.DomainModelConfigs, s.tenantID)},
 		`INSERT INTO model_configs
 		 (tenant_id, model_id, owned_by, display_name, description, enabled, input_modalities, output_modalities, context_length, max_completion_tokens, supported_parameters, reasoning, knowledge_cutoff, pricing_mode, input_price_per_million, output_price_per_million, cached_price_per_million, cache_read_price_per_million, cache_write_price_per_million, price_per_call, source, updated_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -349,7 +354,7 @@ func (s Store) DeleteModelConfig(modelID string) error {
 	if modelID == "" {
 		return fmt.Errorf("model id is required")
 	}
-	if _, err := s.db.Exec("DELETE FROM model_configs WHERE tenant_id = ? AND model_id = ?", s.tenantID, modelID); err != nil {
+	if _, err := configsync.Exec(context.Background(), s.db, []cluster.ConfigEvent{configsync.Event(configsync.DomainModelConfigs, s.tenantID)}, "DELETE FROM model_configs WHERE tenant_id = ? AND model_id = ?", s.tenantID, modelID); err != nil {
 		return fmt.Errorf("delete model config: %w", err)
 	}
 	return nil
@@ -403,7 +408,7 @@ func (s Store) UpsertModelOwnerPreset(row ModelOwnerPresetRow) error {
 		row.Label = OwnerLabelForValue(row.Value)
 	}
 	row.UpdatedAt = nowRFC3339()
-	_, err := s.db.Exec(
+	_, err := configsync.Exec(context.Background(), s.db, []cluster.ConfigEvent{configsync.Event(configsync.DomainModelOwnerPresets, s.tenantID)},
 		`INSERT INTO model_owner_presets (tenant_id, value, label, description, enabled, updated_at)
 		 VALUES (?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(tenant_id, value) DO UPDATE SET
@@ -420,47 +425,6 @@ func (s Store) UpsertModelOwnerPreset(row ModelOwnerPresetRow) error {
 	)
 	if err != nil {
 		return fmt.Errorf("upsert owner preset: %w", err)
-	}
-	return nil
-}
-
-func (s Store) ReplaceModelOwnerPresets(rows []ModelOwnerPresetRow) error {
-	if s.db == nil {
-		return fmt.Errorf("database not initialised")
-	}
-	tx, err := s.db.Begin()
-	if err != nil {
-		return fmt.Errorf("begin owner preset replace: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-
-	if _, err := tx.Exec("DELETE FROM model_owner_presets WHERE tenant_id = ?", s.tenantID); err != nil {
-		return fmt.Errorf("clear owner presets: %w", err)
-	}
-	now := nowRFC3339()
-	for _, row := range rows {
-		row.Value = NormalizeModelOwnerValue(row.Value)
-		if row.Value == "" {
-			continue
-		}
-		if strings.TrimSpace(row.Label) == "" {
-			row.Label = OwnerLabelForValue(row.Value)
-		}
-		if _, err := tx.Exec(
-			`INSERT INTO model_owner_presets (tenant_id, value, label, description, enabled, updated_at)
-			 VALUES (?, ?, ?, ?, ?, ?)`,
-			s.tenantID,
-			row.Value,
-			row.Label,
-			row.Description,
-			boolToInt(row.Enabled),
-			now,
-		); err != nil {
-			return fmt.Errorf("insert owner preset: %w", err)
-		}
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit owner preset replace: %w", err)
 	}
 	return nil
 }

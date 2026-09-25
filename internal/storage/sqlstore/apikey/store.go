@@ -1,6 +1,7 @@
 package apikey
 
 import (
+	"context"
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/configsync"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/quota"
 	log "github.com/sirupsen/logrus"
 )
@@ -116,6 +118,8 @@ func InitTable(db *sql.DB) {
 	if db == nil {
 		return
 	}
+	// Whole-replace writes of this table bump its collection version.
+	configsync.InitTables(db)
 	if _, err := db.Exec(createAPIKeysTableSQL); err != nil {
 		log.Errorf("sqlite/apikey: create api_keys table: %v", err)
 	}
@@ -421,7 +425,7 @@ func (s Store) Upsert(entry APIKeyRow) error {
 		endUserID = strings.TrimSpace(entry.EndUserID)
 	}
 
-	result, err := s.db.Exec(`INSERT INTO api_keys
+	result, err := s.execKeyWrite(`INSERT INTO api_keys
 		(tenant_id, key, id, name, disabled, permission_profile_id, daily_limit, total_quota, spending_limit, daily_spending_limit, five_hour_spending_limit, weekly_spending_limit, monthly_spending_limit,
 		 concurrency_limit, rpm_limit, tpm_limit, allowed_models, allowed_channels, allowed_channel_groups, system_prompt, created_at, updated_at,
 		 end_user_id, is_default)
@@ -545,7 +549,7 @@ func (s Store) UpdateByID(entry APIKeyRow) error {
 			return err
 		}
 	}
-	return tx.Commit()
+	return configsync.BumpAndCommit(context.Background(), tx, configsync.DomainAPIKeys, s.tenantID)
 }
 
 func lockOwnedEndUser(tx *sql.Tx, ownerID string) error {
@@ -665,7 +669,7 @@ func (s Store) deleteOwnedGuarded(where string, arg string) error {
 	} else if _, err = tx.Exec(`DELETE FROM api_keys WHERE tenant_id = ? AND id = ?`, s.tenantID, keyID); err != nil {
 		return err
 	}
-	return tx.Commit()
+	return configsync.BumpAndCommit(context.Background(), tx, configsync.DomainAPIKeys, s.tenantID)
 }
 
 // newTombstoneSecret returns a unique unusable secret for soft-deleted owned keys.
@@ -684,154 +688,6 @@ func (s Store) Delete(key string) error {
 
 func (s Store) DeleteByID(id string) error {
 	return s.deleteOwnedGuarded("id = ?", id)
-}
-
-func (s Store) ReplaceAll(entries []APIKeyRow) error {
-	if s.db == nil {
-		return fmt.Errorf("database not initialised")
-	}
-	// Preserve end-user ownership across full replace.
-	// Prefer stable id, then key text (admin may rename key secret while keeping id).
-	type ownership struct {
-		id        string
-		key       string
-		endUserID string
-		isDefault bool
-	}
-	byID := make(map[string]ownership)
-	byKey := make(map[string]ownership)
-	for _, row := range s.List() {
-		key := strings.TrimSpace(row.Key)
-		id := strings.TrimSpace(row.ID)
-		own := ownership{
-			id:        id,
-			key:       key,
-			endUserID: strings.TrimSpace(row.EndUserID),
-			isDefault: row.IsDefault,
-		}
-		if id != "" {
-			byID[id] = own
-		}
-		if key != "" {
-			byKey[key] = own
-		}
-	}
-
-	tx, err := s.db.Begin()
-	if err != nil {
-		return err
-	}
-
-	// Resolve ownership for each incoming row first, then verify every previously
-	// owned end user still ends up with >=1 key. Counting by ID and key separately
-	// is unsafe: id=A+key=B would mark both A and B as "kept" while only A survives.
-	type resolvedEntry struct {
-		row APIKeyRow
-	}
-	resolved := make([]resolvedEntry, 0, len(entries))
-	seenIDs := make(map[string]struct{}, len(entries))
-	seenKeys := make(map[string]struct{}, len(entries))
-	for _, entry := range entries {
-		entry = normalizeRow(entry)
-		if entry.Key == "" {
-			continue
-		}
-		if _, dup := seenKeys[entry.Key]; dup {
-			_ = tx.Rollback()
-			return fmt.Errorf("duplicate api key in replace payload")
-		}
-		seenKeys[entry.Key] = struct{}{}
-		prev, ok := byID[entry.ID]
-		if !ok {
-			prev = byKey[entry.Key]
-		}
-		if entry.ID == "" {
-			if prev.id != "" {
-				entry.ID = prev.id
-			} else {
-				entry.ID = uuid.NewString()
-			}
-		}
-		if _, dup := seenIDs[entry.ID]; dup {
-			_ = tx.Rollback()
-			return fmt.Errorf("duplicate api key id in replace payload")
-		}
-		seenIDs[entry.ID] = struct{}{}
-		// Ownership is not client-authoritative on full replace for existing keys.
-		if prev.endUserID != "" {
-			entry.EndUserID = prev.endUserID
-			entry.IsDefault = prev.isDefault
-		} else {
-			// Brand-new keys may not carry ownership through generic replace.
-			entry.EndUserID = ""
-			entry.IsDefault = false
-		}
-		resolved = append(resolved, resolvedEntry{row: entry})
-	}
-	ownedBefore := make(map[string]struct{})
-	for _, prev := range byID {
-		if prev.endUserID != "" {
-			ownedBefore[prev.endUserID] = struct{}{}
-		}
-	}
-	for _, prev := range byKey {
-		if prev.endUserID != "" {
-			ownedBefore[prev.endUserID] = struct{}{}
-		}
-	}
-	if _, err := tx.Exec("DELETE FROM api_keys WHERE tenant_id = ?", s.tenantID); err != nil {
-		_ = tx.Rollback()
-		return err
-	}
-
-	stmt, err := tx.Prepare(`INSERT INTO api_keys
-		(tenant_id, key, id, name, disabled, permission_profile_id, daily_limit, total_quota, spending_limit, daily_spending_limit, five_hour_spending_limit, weekly_spending_limit, monthly_spending_limit,
-		 concurrency_limit, rpm_limit, tpm_limit, allowed_models, allowed_channels, allowed_channel_groups, system_prompt, created_at, updated_at,
-		 end_user_id, is_default)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-	if err != nil {
-		_ = tx.Rollback()
-		return err
-	}
-	defer stmt.Close()
-
-	now := time.Now().UTC().Format(time.RFC3339)
-	for _, item := range resolved {
-		entry := item.row
-		if entry.CreatedAt == "" {
-			entry.CreatedAt = now
-		}
-		disabledInt := 0
-		if entry.Disabled {
-			disabledInt = 1
-		}
-		isDefault := entry.IsDefault
-		var endUserID any
-		if entry.EndUserID != "" {
-			endUserID = entry.EndUserID
-		}
-		if _, err := stmt.Exec(
-			s.tenantID, entry.Key, entry.ID, entry.Name, disabledInt, entry.PermissionProfileID,
-			entry.DailyLimit, entry.TotalQuota, entry.SpendingLimit, entry.DailySpendingLimit,
-			entry.PeriodSpendingLimits.FiveHour, entry.PeriodSpendingLimits.Week, entry.PeriodSpendingLimits.Month,
-			entry.ConcurrencyLimit, entry.RPMLimit, entry.TPMLimit,
-			mustJSONStringList(entry.AllowedModels), mustJSONStringList(entry.AllowedChannels),
-			mustJSONStringList(entry.AllowedChannelGroups), entry.SystemPrompt,
-			entry.CreatedAt, now, endUserID, isDefault,
-		); err != nil {
-			_ = tx.Rollback()
-			return err
-		}
-	}
-
-	for endUserID := range ownedBefore {
-		if err := ensureOwnedActiveKeyAndDefault(tx, s.tenantID, endUserID, now); err != nil {
-			_ = tx.Rollback()
-			return err
-		}
-	}
-
-	return tx.Commit()
 }
 
 func migrateColumns(db *sql.DB) {

@@ -49,6 +49,10 @@ func WithModelConfigMutatedCallback(fn func(tenantID string)) ServerOption {
 	return internalapisdkbridge.WithModelConfigMutatedCallback(fn)
 }
 
+func WithConfigResyncCallback(fn func(*sdkconfig.Config)) ServerOption {
+	return internalapisdkbridge.WithConfigResyncCallback(fn)
+}
+
 func WithKeepAliveEndpoint(timeout time.Duration, onTimeout func()) ServerOption {
 	return internalapisdkbridge.WithKeepAliveEndpoint(timeout, onTimeout)
 }

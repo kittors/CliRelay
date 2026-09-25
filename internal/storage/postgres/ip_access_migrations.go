@@ -23,12 +23,19 @@ func laterRuntimeMigrations() []Migration {
 		// Exactly-once keys for request log writes retried or replayed across a
 		// database failover. See requestLogIdempotencyKeysSQL.
 		{Version: "202609250002_request_log_idempotency_keys", SQL: requestLogIdempotencyKeysSQL},
+		// Shared credential store for cluster mode: one row per credential,
+		// versioned for compare-and-swap writes across nodes.
+		{Version: "202609250003_cluster_auth_credentials", SQL: authCredentialsSQL},
+		// Per-row versions on runtime_settings/routing_config and per-collection
+		// counters, so a management write based on stale data fails instead of
+		// silently overwriting a change made on another node.
+		{Version: "202609250004_config_optimistic_versions", SQL: configOptimisticVersionsSQL},
 		// Cross-node sessions and asynchronous work; see
 		// cluster_session_migrations.go.
-		{Version: "202609250201_oauth_sessions", SQL: oauthSessionsSQL},
-		{Version: "202609250202_async_task_routes", SQL: asyncTaskRoutesSQL},
-		{Version: "202609250203_management_jobs", SQL: managementJobsSQL},
-		{Version: "202609250204_warmup_policies", SQL: warmupPoliciesSQL},
+		{Version: "202609250005_oauth_sessions", SQL: oauthSessionsSQL},
+		{Version: "202609250006_async_task_routes", SQL: asyncTaskRoutesSQL},
+		{Version: "202609250007_management_jobs", SQL: managementJobsSQL},
+		{Version: "202609250008_warmup_policies", SQL: warmupPoliciesSQL},
 	}
 }
 

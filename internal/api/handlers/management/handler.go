@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	serviceapp "github.com/router-for-me/CLIProxyAPI/v6/internal/app/service"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/identity"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/management/aiaccountstatus"
@@ -278,17 +277,20 @@ func (h *Handler) authenticateSessionToken(c *gin.Context, token string) bool {
 	return true
 }
 
-// persist saves the current in-memory config to disk.
+// persist stores the settings the live config changed, each checked against
+// the version this node loaded, and reloads the runtime. Handlers that edit
+// the live config in place use it; new code edits a fresh copy through
+// mutateSystemConfig instead.
 func (h *Handler) persist(c *gin.Context) bool {
 	h.mu.Lock()
 	cfg := h.cfg
 	mutated := h.onConfigMutated
-	if err := settingsstore.SaveConfig(cfg, h.configFilePath); err != nil {
-		h.mu.Unlock()
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to save config: %v", err)})
+	_, err := settingsstore.CommitLiveConfig(c.Request.Context(), cfg, h.configFilePath, requestVersion(c))
+	h.mu.Unlock()
+	if err != nil {
+		writeConfigSaveError(c, "failed to save config", err)
 		return false
 	}
-	h.mu.Unlock()
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 	if mutated != nil {
 		mutated(cfg)
@@ -296,36 +298,22 @@ func (h *Handler) persist(c *gin.Context) bool {
 	return true
 }
 
-func (h *Handler) persistRuntimeSetting(c *gin.Context, key string, value any) bool {
-	if err := settingsstore.PersistRuntimeSetting(h.cfg, h.configFilePath, key, value); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to save runtime setting: %v", err)})
-		return false
-	}
+// persistNodeLocal writes config.yaml for the settings that stay per node
+// (auto-update) and reloads the runtime.
+func (h *Handler) persistNodeLocal(c *gin.Context) bool {
+	h.mu.Lock()
 	cfg := h.cfg
-	if h.authManager != nil {
-		h.authManager.SetConfig(cfg)
-	}
-	c.JSON(http.StatusOK, gin.H{"status": "ok"})
-	if h.onConfigMutated != nil {
-		h.onConfigMutated(cfg)
-	}
-	return true
-}
-
-func (h *Handler) persistRuntimeSettingForTenant(c *gin.Context, key string, value any, cfg *config.Config) bool {
-	tenantID := effectiveTenantID(c)
-	if tenantID == identity.SystemTenantID {
-		return h.persistRuntimeSetting(c, key, value)
-	}
-	if err := usage.UpsertRuntimeSettingForTenant(tenantID, key, value); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to save runtime setting: %v", err)})
+	mutated := h.onConfigMutated
+	err := settingsstore.SaveNodeLocalConfig(cfg, h.configFilePath)
+	h.mu.Unlock()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to save config: %v", err)})
 		return false
 	}
-	if h.authManager != nil {
-		h.authManager.SetConfigForTenant(tenantID, cfg)
-		serviceapp.RebindTenantExecutors(h.cfg, h.authManager, tenantID, nil)
-	}
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
+	if mutated != nil {
+		mutated(cfg)
+	}
 	return true
 }
 
@@ -335,12 +323,34 @@ func (h *Handler) saveConfigFile() error {
 	return settingsstore.SaveConfig(h.cfg, h.configFilePath)
 }
 
-func (h *Handler) storeRuntimeSetting(key string, value any) error {
-	return settingsstore.PersistRuntimeSetting(h.cfg, h.configFilePath, key, value)
+// persistDerivedSetting applies a derived change (for example renaming a
+// channel wherever it is referenced) to the stored value of key, retrying on
+// concurrent writes, and adopts the result into the live config.
+func (h *Handler) persistDerivedSetting(key string, mutate func(*config.Config) bool) error {
+	if !settingsstore.StoreAvailable() {
+		return nil
+	}
+	h.mu.Lock()
+	var base config.Config
+	if h.cfg != nil {
+		base = *h.cfg
+	}
+	h.mu.Unlock()
+	stored, changed, err := usage.UpdateRuntimeSetting(context.Background(), &base, identity.SystemTenantID, key, mutate)
+	if err != nil || !changed {
+		return err
+	}
+	h.mu.Lock()
+	if h.cfg != nil {
+		settingsstore.AdoptKeys(h.cfg, stored, key)
+	}
+	h.mu.Unlock()
+	return nil
 }
 
-// Helper methods for simple types
-func (h *Handler) updateBoolField(c *gin.Context, set func(bool)) {
+// Helper methods for simple types. They edit a fresh copy of the system
+// configuration; see mutateSystemConfig.
+func (h *Handler) updateBoolField(c *gin.Context, set func(*config.Config, bool)) {
 	var body struct {
 		Value *bool `json:"value"`
 	}
@@ -348,11 +358,10 @@ func (h *Handler) updateBoolField(c *gin.Context, set func(bool)) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
 		return
 	}
-	set(*body.Value)
-	h.persist(c)
+	h.mutateSystemConfig(c, func(cfg *config.Config) error { set(cfg, *body.Value); return nil })
 }
 
-func (h *Handler) updateIntField(c *gin.Context, set func(int)) {
+func (h *Handler) updateIntField(c *gin.Context, set func(*config.Config, int)) {
 	var body struct {
 		Value *int `json:"value"`
 	}
@@ -360,11 +369,10 @@ func (h *Handler) updateIntField(c *gin.Context, set func(int)) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
 		return
 	}
-	set(*body.Value)
-	h.persist(c)
+	h.mutateSystemConfig(c, func(cfg *config.Config) error { set(cfg, *body.Value); return nil })
 }
 
-func (h *Handler) updateStringField(c *gin.Context, set func(string)) {
+func (h *Handler) updateStringField(c *gin.Context, set func(*config.Config, string)) {
 	var body struct {
 		Value *string `json:"value"`
 	}
@@ -372,6 +380,5 @@ func (h *Handler) updateStringField(c *gin.Context, set func(string)) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
 		return
 	}
-	set(*body.Value)
-	h.persist(c)
+	h.mutateSystemConfig(c, func(cfg *config.Config) error { set(cfg, *body.Value); return nil })
 }

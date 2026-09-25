@@ -76,7 +76,7 @@ func (s *Service) CreateKeyWithPeriodLimits(ctx context.Context, tenantID, endUs
 		limits.Day, limits.FiveHour, limits.Week, limits.Month); err != nil {
 		return result, err
 	}
-	if err = tx.Commit(); err != nil {
+	if err = commitKeyChange(ctx, tx, tenantID); err != nil {
 		return result, err
 	}
 	result.APIKey = APIKey{
@@ -148,7 +148,7 @@ func (s *Service) UpdateKey(ctx context.Context, tenantID, endUserID, keyID stri
 	if n, _ := res.RowsAffected(); n == 0 {
 		return ErrNotFound
 	}
-	return tx.Commit()
+	return commitKeyChange(ctx, tx, tenantID)
 }
 
 func effectiveAccountPeriodLimitsTx(ctx context.Context, tx *sql.Tx, tenantID, endUserID string) (string, quota.PeriodSpendingLimits, error) {
