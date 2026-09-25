@@ -133,6 +133,9 @@ func (l *AccountConcurrencyLimiter) AcquireSlotWait(ctx context.Context, auths [
 	if err := ctx.Err(); err != nil {
 		return nil, "", err
 	}
+	if l.coord() != nil {
+		return l.acquireSlotWaitCluster(ctx, candidates, timeout, maxQueueDepth)
+	}
 
 	waiter, release, authID, err := l.acquireOrEnqueue(candidates, timeout, maxQueueDepth)
 	if err != nil {
@@ -184,7 +187,16 @@ func (l *AccountConcurrencyLimiter) acquireOrEnqueue(candidates []*Auth, timeout
 	if timeout <= 0 {
 		return nil, nil, "", l.saturatedErrorLocked(candidates[0], 0)
 	}
+	waiter, err := l.enqueueLocked(candidates, maxQueueDepth)
+	if err != nil {
+		return nil, nil, "", err
+	}
+	return waiter, nil, "", nil
+}
 
+// enqueueLocked queues a waiter on every candidate whose queue has room.
+// Callers must hold l.mu.
+func (l *AccountConcurrencyLimiter) enqueueLocked(candidates []*Auth, maxQueueDepth int) (*slotWaiter, error) {
 	queueable := candidates
 	if maxQueueDepth > 0 {
 		queueable = make([]*Auth, 0, len(candidates))
@@ -194,7 +206,7 @@ func (l *AccountConcurrencyLimiter) acquireOrEnqueue(candidates []*Auth, timeout
 			}
 		}
 		if len(queueable) == 0 {
-			return nil, nil, "", l.saturatedErrorLocked(candidates[0], 0)
+			return nil, l.saturatedErrorLocked(candidates[0], 0)
 		}
 	}
 
@@ -202,7 +214,7 @@ func (l *AccountConcurrencyLimiter) acquireOrEnqueue(candidates []*Auth, timeout
 	for _, authID := range waiter.authIDs {
 		l.waiters[authID] = append(l.waiters[authID], waiter)
 	}
-	return waiter, nil, "", nil
+	return waiter, nil
 }
 
 // giveUp abandons a queued waiter after a timeout or context cancellation.
@@ -280,7 +292,7 @@ func (l *AccountConcurrencyLimiter) saturatedErrorLocked(auth *Auth, waited time
 	return &AccountConcurrencyError{
 		AuthID: auth.ID,
 		Active: l.active[auth.ID],
-		Limit:  auth.ConcurrencyLimit(),
+		Limit:  l.effectiveLimit(auth.ConcurrencyLimit()),
 		Waited: waited,
 	}
 }
