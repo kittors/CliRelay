@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/translator/common"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -79,11 +80,10 @@ func ConvertOpenAIRequestToCodex(modelName string, inputRawJSON []byte, stream b
 			switch role {
 			case "tool":
 				toolCallID := m.Get("tool_call_id").String()
-				content := m.Get("content").String()
 				funcOutput := `{}`
 				funcOutput, _ = sjson.Set(funcOutput, "type", "function_call_output")
 				funcOutput, _ = sjson.Set(funcOutput, "call_id", toolCallID)
-				funcOutput, _ = sjson.Set(funcOutput, "output", content)
+				funcOutput, _ = sjson.SetRaw(funcOutput, "output", common.ToResponsesOutput(common.ParseToolResult(m.Get("content"))))
 				appendInput(funcOutput)
 
 			default:

@@ -3,6 +3,7 @@ package responses
 import (
 	"strings"
 
+	translatorcommon "github.com/router-for-me/CLIProxyAPI/v6/internal/translator/common"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/translator/gemini/common"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -310,7 +311,10 @@ func ConvertOpenAIResponsesRequestToGemini(modelName string, inputRawJSON []byte
 
 				// Set the function response result safely
 				outputItem := item.Get("output")
-				if outputItem.IsObject() || outputItem.IsArray() {
+				if parsed := translatorcommon.ParseToolResult(outputItem); parsed.HasImage() {
+					fr := translatorcommon.SetGeminiFunctionResponse(gjson.Get(functionResponse, "functionResponse").Raw, parsed)
+					functionResponse, _ = sjson.SetRaw(functionResponse, "functionResponse", fr)
+				} else if outputItem.IsObject() || outputItem.IsArray() {
 					functionResponse, _ = sjson.SetRaw(functionResponse, "functionResponse.response.result", outputItem.Raw)
 				} else if outputItem.Exists() {
 					val := outputItem.String()

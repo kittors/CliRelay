@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/misc"
+	translatorcommon "github.com/router-for-me/CLIProxyAPI/v6/internal/translator/common"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/translator/gemini/common"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	log "github.com/sirupsen/logrus"
@@ -126,6 +127,9 @@ func ConvertOpenAIRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 
 		// Second pass build systemInstruction/tool responses cache
 		toolResponses := map[string]string{} // tool_call_id -> response text
+		// tool_call_id -> tool results that carry images; these are written
+		// through translatorcommon so the images reach Gemini as inlineData.
+		toolImageResponses := map[string]translatorcommon.ToolResult{}
 		for i := 0; i < len(arr); i++ {
 			m := arr[i]
 			role := m.Get("role").String()
@@ -134,6 +138,9 @@ func ConvertOpenAIRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 				if toolCallID != "" {
 					c := m.Get("content")
 					toolResponses[toolCallID] = c.Raw
+					if parsed := translatorcommon.ParseToolResult(c); parsed.HasImage() {
+						toolImageResponses[toolCallID] = parsed
+					}
 				}
 			}
 		}
@@ -278,6 +285,12 @@ func ConvertOpenAIRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 						if name, ok := tcID2Name[fid]; ok {
 							toolNode, _ = sjson.SetBytes(toolNode, "parts."+itoa(pp)+".functionResponse.id", fid)
 							toolNode, _ = sjson.SetBytes(toolNode, "parts."+itoa(pp)+".functionResponse.name", name)
+							if parsed, ok := toolImageResponses[fid]; ok {
+								fr := translatorcommon.SetGeminiFunctionResponse(gjson.GetBytes(toolNode, "parts."+itoa(pp)+".functionResponse").Raw, parsed)
+								toolNode, _ = sjson.SetRawBytes(toolNode, "parts."+itoa(pp)+".functionResponse", []byte(fr))
+								pp++
+								continue
+							}
 							resp := toolResponses[fid]
 							if resp == "" {
 								resp = "{}"

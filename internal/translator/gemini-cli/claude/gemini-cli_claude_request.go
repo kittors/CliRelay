@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"strings"
 
+	translatorcommon "github.com/router-for-me/CLIProxyAPI/v6/internal/translator/common"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/translator/gemini/common"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -111,10 +112,14 @@ func ConvertClaudeRequestToCLI(modelName string, inputRawJSON []byte, _ bool) []
 						if len(toolCallIDs) > 1 {
 							funcName = strings.Join(toolCallIDs[0:len(toolCallIDs)-1], "-")
 						}
-						responseData := contentResult.Get("content").Raw
 						part := `{"functionResponse":{"name":"","response":{"result":""}}}`
 						part, _ = sjson.Set(part, "functionResponse.name", funcName)
-						part, _ = sjson.Set(part, "functionResponse.response.result", responseData)
+						if parsed := translatorcommon.ParseToolResult(contentResult.Get("content")); parsed.HasImage() {
+							fr := translatorcommon.SetGeminiFunctionResponse(gjson.Get(part, "functionResponse").Raw, parsed)
+							part, _ = sjson.SetRaw(part, "functionResponse", fr)
+						} else {
+							part, _ = sjson.Set(part, "functionResponse.response.result", contentResult.Get("content").Raw)
+						}
 						contentJSON, _ = sjson.SetRaw(contentJSON, "parts.-1", part)
 
 					case "image":
