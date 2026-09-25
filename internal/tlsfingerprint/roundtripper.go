@@ -43,6 +43,29 @@ type Options struct {
 
 const defaultDialTimeout = 30 * time.Second
 
+// Health-check bounds for the pooled HTTP/2 connections.
+//
+// h2Conns keeps one connection per host for as long as CanTakeNewRequest
+// reports it usable, but that method only inspects local state: whether the
+// connection was closed, whether a GOAWAY arrived, and whether the stream
+// budget is exhausted. It cannot observe a peer that stopped answering without
+// sending FIN or RST, which is what happens when a load balancer or NAT drops
+// an idle flow. A request written onto such a connection is retransmitted by
+// the kernel until tcp_retries2 is exhausted, so the caller waits roughly
+// fifteen minutes for an error instead of seconds.
+//
+// Setting ReadIdleTimeout makes the connection's read loop send a PING once no
+// frame has arrived for that long; PingTimeout bounds the wait for the PONG,
+// after which closeForLostPing tears the connection down and the next
+// CanTakeNewRequest returns false, forcing a redial. Detection is therefore
+// bounded by their sum rather than by the kernel's retransmission budget.
+// Both are variables rather than constants so tests can shorten them; nothing
+// outside this package writes to them.
+var (
+	h2ReadIdleTimeout = 30 * time.Second
+	h2PingTimeout     = 15 * time.Second
+)
+
 // RoundTripper performs HTTPS requests over connections whose ClientHello
 // matches a configured client profile.
 //
@@ -198,7 +221,10 @@ func (t *RoundTripper) dialH2(ctx context.Context, host, addr string) (*http2.Cl
 		_ = tlsConn.Close()
 		return nil, nil
 	}
-	h2Transport := &http2.Transport{}
+	h2Transport := &http2.Transport{
+		ReadIdleTimeout: h2ReadIdleTimeout,
+		PingTimeout:     h2PingTimeout,
+	}
 	h2Conn, err := h2Transport.NewClientConn(tlsConn)
 	if err != nil {
 		_ = tlsConn.Close()
