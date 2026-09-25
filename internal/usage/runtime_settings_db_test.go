@@ -51,10 +51,13 @@ debug: true
 			"antigravity": {{Name: "rev19-uic3-1p", Alias: "gemini-2.5-computer-use-preview-10-2025"}},
 		},
 		CodexOAuthAdmission: config.CodexOAuthAdmissionConfig{AllowedClientPresets: []string{"claude_code"}},
+		// Mirrors "debug: true" above; debug is database-backed now too.
+		Debug: true,
 	}
+	withLoadDefaults(cfg)
 
-	if migrated := MigrateRuntimeSettingsFromConfig(cfg, configPath); migrated != 4 {
-		t.Fatalf("MigrateRuntimeSettingsFromConfig = %d, want 4", migrated)
+	if migrated := MigrateRuntimeSettingsFromConfig(cfg, configPath); migrated != 5 {
+		t.Fatalf("MigrateRuntimeSettingsFromConfig = %d, want 5", migrated)
 	}
 
 	cfg.KimiHeaderDefaults = config.KimiHeaderDefaults{}
@@ -91,8 +94,14 @@ debug: true
 			t.Fatalf("%s should be removed from YAML after migration:\n%s", forbidden, string(data))
 		}
 	}
-	if !strings.Contains(string(data), "port: 8318") || !strings.Contains(string(data), "debug: true") {
-		t.Fatalf("ordinary config should remain in YAML:\n%s", string(data))
+	if !strings.Contains(string(data), "port: 8318") {
+		t.Fatalf("node-local config should remain in YAML:\n%s", string(data))
+	}
+	if strings.Contains(string(data), "debug:") {
+		t.Fatalf("debug is database-backed and should be removed from YAML:\n%s", string(data))
+	}
+	if payload, ok := GetRuntimeSettingPayload("debug"); !ok || string(payload) != "true" {
+		t.Fatalf("stored debug = %s (%v), want true", payload, ok)
 	}
 	assertMigrationBackupMode(t, configPath+".pre-runtime-settings-sqlite-migration", 0o600)
 }
@@ -148,10 +157,12 @@ debug: true
 		OllamaCloudKey: []config.OllamaCloudKey{
 			{APIKey: "sk-ollama-test", BaseURL: "https://ollama.com", Models: []config.OllamaCloudModel{{Name: "gpt-oss:120b"}}},
 		},
+		Debug: true,
 	}
+	withLoadDefaults(cfg)
 
-	if migrated := MigrateRuntimeSettingsFromConfig(cfg, configPath); migrated != 5 {
-		t.Fatalf("MigrateRuntimeSettingsFromConfig = %d, want 5", migrated)
+	if migrated := MigrateRuntimeSettingsFromConfig(cfg, configPath); migrated != 6 {
+		t.Fatalf("MigrateRuntimeSettingsFromConfig = %d, want 6", migrated)
 	}
 
 	cfg.CodexKey = nil
@@ -187,8 +198,8 @@ debug: true
 			t.Fatalf("%s should be removed from YAML after migration:\n%s", forbidden, string(data))
 		}
 	}
-	if !strings.Contains(string(data), "port: 8318") || !strings.Contains(string(data), "debug: true") {
-		t.Fatalf("ordinary config should remain in YAML:\n%s", string(data))
+	if !strings.Contains(string(data), "port: 8318") || strings.Contains(string(data), "debug:") {
+		t.Fatalf("node-local config should remain and debug should move to the database:\n%s", string(data))
 	}
 }
 
@@ -205,6 +216,7 @@ func TestRuntimeSettingsSQLiteWinsOverStaleYAML(t *testing.T) {
 		t.Fatalf("write config: %v", err)
 	}
 	cfg := &config.Config{KimiHeaderDefaults: config.KimiHeaderDefaults{UserAgent: "KimiCLI/yaml"}}
+	withLoadDefaults(cfg)
 
 	if migrated := MigrateRuntimeSettingsFromConfig(cfg, configPath); migrated != 0 {
 		t.Fatalf("MigrateRuntimeSettingsFromConfig = %d, want 0 when DB already has row", migrated)
@@ -223,9 +235,20 @@ func TestRuntimeSettingsSQLiteWinsOverStaleYAML(t *testing.T) {
 	if strings.Contains(string(data), "kimi-header-defaults:") {
 		t.Fatalf("stale kimi-header-defaults should be removed from YAML:\n%s", string(data))
 	}
-	if !strings.Contains(string(data), "logging-to-file: true") {
-		t.Fatalf("ordinary config should remain in YAML:\n%s", string(data))
+	// logging-to-file is database-backed now; the YAML copy was never imported
+	// (the config above does not set it), and the cleanup drops it with the
+	// other stale database-owned sections.
+	if strings.Contains(string(data), "logging-to-file:") {
+		t.Fatalf("database-owned logging-to-file should be removed from YAML:\n%s", string(data))
 	}
+}
+
+// withLoadDefaults gives a literal config the defaults LoadConfig applies, so
+// the settings it does not mention compare as "not configured".
+func withLoadDefaults(cfg *config.Config) {
+	cfg.LogsMaxTotalSizeMB = config.DefaultLogsMaxTotalSizeMB
+	cfg.ErrorLogsMaxFiles = config.DefaultErrorLogsMaxFiles
+	cfg.RequestLogStorage = config.DefaultRequestLogStorageConfig()
 }
 
 func TestBuildTenantRuntimeConfigDoesNotInheritSystemCredentials(t *testing.T) {

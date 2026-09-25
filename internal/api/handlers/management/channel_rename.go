@@ -1,6 +1,7 @@
 package management
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -8,7 +9,6 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/identity"
 	apikeysettings "github.com/router-for-me/CLIProxyAPI/v6/internal/management/settings/apikey"
 	oauthsettings "github.com/router-for-me/CLIProxyAPI/v6/internal/management/settings/oauth"
-	routingconfigsettings "github.com/router-for-me/CLIProxyAPI/v6/internal/management/settings/routingconfig"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 )
 
@@ -28,9 +28,11 @@ func (h *Handler) renameChannelReferencesForTenant(tenantID string, oldNames []s
 	if tenantID != identity.SystemTenantID {
 		routing := currentRoutingConfigForTenant(h.cfg, tenantID)
 		if renameRoutingChannelReferences(&routing, oldNameSet, newName) {
-			if err := usage.UpsertRoutingConfigForTenant(tenantID, routing); err != nil {
+			updated, _, err := usage.UpdateRoutingConfigForTenant(context.Background(), tenantID, routing, func(r *config.RoutingConfig) bool { return renameRoutingChannelReferences(r, oldNameSet, newName) })
+			if err != nil {
 				return fmt.Errorf("failed to persist routing config: %w", err)
 			}
+			routing = updated
 		}
 		if err := renameStoredAPIKeyChannelsForTenant(tenantID, oldNameSet, newName); err != nil {
 			return err
@@ -55,14 +57,14 @@ func (h *Handler) renameChannelReferencesForTenant(tenantID string, oldNames []s
 		}
 		if renameOAuthModelAliasChannels(h.cfg, oldNameSet, newName) {
 			configChanged = true
-			if err := h.storeRuntimeSetting(usage.RuntimeSettingOAuthModelAlias, h.cfg.OAuthModelAlias); err != nil {
+			if err := h.persistDerivedSetting(usage.RuntimeSettingOAuthModelAlias, func(cfg *config.Config) bool { return renameOAuthModelAliasChannels(cfg, oldNameSet, newName) }); err != nil {
 				return fmt.Errorf("failed to persist oauth model aliases: %w", err)
 			}
 		}
 	}
 
 	if routingChanged && h.cfg != nil {
-		if err := routingconfigsettings.Upsert(h.cfg.Routing); err != nil {
+		if err := h.persistDerivedRouting(func(r *config.RoutingConfig) bool { return renameRoutingChannelReferences(r, oldNameSet, newName) }); err != nil {
 			return fmt.Errorf("failed to persist routing config: %w", err)
 		}
 	}
@@ -98,9 +100,11 @@ func (h *Handler) removeChannelReferencesForTenant(tenantID string, oldNames []s
 	if tenantID != identity.SystemTenantID {
 		routing := currentRoutingConfigForTenant(h.cfg, tenantID)
 		if removeRoutingChannelReferences(&routing, oldNameSet) {
-			if err := usage.UpsertRoutingConfigForTenant(tenantID, routing); err != nil {
+			updated, _, err := usage.UpdateRoutingConfigForTenant(context.Background(), tenantID, routing, func(r *config.RoutingConfig) bool { return removeRoutingChannelReferences(r, oldNameSet) })
+			if err != nil {
 				return fmt.Errorf("failed to persist routing config: %w", err)
 			}
+			routing = updated
 		}
 		if err := removeStoredAPIKeyChannelsForTenant(tenantID, oldNameSet); err != nil {
 			return err
@@ -125,14 +129,14 @@ func (h *Handler) removeChannelReferencesForTenant(tenantID string, oldNames []s
 		}
 		if removeOAuthModelAliasChannels(h.cfg, oldNameSet) {
 			configChanged = true
-			if err := h.storeRuntimeSetting(usage.RuntimeSettingOAuthModelAlias, h.cfg.OAuthModelAlias); err != nil {
+			if err := h.persistDerivedSetting(usage.RuntimeSettingOAuthModelAlias, func(cfg *config.Config) bool { return removeOAuthModelAliasChannels(cfg, oldNameSet) }); err != nil {
 				return fmt.Errorf("failed to persist oauth model aliases: %w", err)
 			}
 		}
 	}
 
 	if routingChanged && h.cfg != nil {
-		if err := routingconfigsettings.Upsert(h.cfg.Routing); err != nil {
+		if err := h.persistDerivedRouting(func(r *config.RoutingConfig) bool { return removeRoutingChannelReferences(r, oldNameSet) }); err != nil {
 			return fmt.Errorf("failed to persist routing config: %w", err)
 		}
 	}

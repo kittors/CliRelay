@@ -92,6 +92,10 @@ func WithModelConfigMutatedCallback(fn func(tenantID string)) ServerOption {
 	return coreapi.WithModelConfigMutatedCallback(fn)
 }
 
+func WithConfigResyncCallback(fn func(*sdkconfig.Config)) ServerOption {
+	return coreapi.WithConfigResyncCallback(fn)
+}
+
 func WithKeepAliveEndpoint(timeout time.Duration, onTimeout func()) ServerOption {
 	return coreapi.WithKeepAliveEndpoint(timeout, onTimeout)
 }

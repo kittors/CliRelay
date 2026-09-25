@@ -10,6 +10,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	providersettings "github.com/router-for-me/CLIProxyAPI/v6/internal/management/settings/providers"
+	settingsstore "github.com/router-for-me/CLIProxyAPI/v6/internal/management/settings/store"
 )
 
 // Command Code provider key endpoints.
@@ -19,7 +20,7 @@ import (
 
 // commandcode-api-key: []CommandCodeKey
 func (h *ProviderKeysHandler) GetCommandCodeKeys(c *gin.Context) {
-	c.JSON(200, gin.H{"commandcode-api-key": providerSettingsService(h, c).CommandCodeKeys()})
+	h.jsonWithRequestVersion(c, settingsstore.RuntimeSettingCommandCodeKeys, gin.H{"commandcode-api-key": providerSettingsService(h, c).CommandCodeKeys()})
 }
 
 func (h *ProviderKeysHandler) PutCommandCodeKeys(c *gin.Context) {
