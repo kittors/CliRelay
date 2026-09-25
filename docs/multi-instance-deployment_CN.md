@@ -30,7 +30,7 @@ CliRelay 支持两种部署方式：
                        │  DNS：relay/code 各有两条 A 记录（灰云直连，不经 Cloudflare 代理）
           ┌────────────┴────────────┐
           ▼                         ▼
-   节点 A（n43）                 节点 B（n156）
+   节点 A（n43）                 节点 B（n2）
    nginx :443                    nginx :443
     ├ 本机 CliRelay（优先）        ├ 本机 CliRelay（优先）
     └ 满载/故障 → 对端 :8445 ◀────▶ └ 满载/故障 → 对端 :8445     （双向 TLS）
@@ -73,13 +73,13 @@ CliRelay 支持两种部署方式：
 
 ## 4. 部署多实例
 
-下面以生产环境为例：两台应用节点 n43（43.255.122.4）、n156（156.225.27.154），仲裁机 relay（103.231.58.53）。各组件的部署文件都在仓库的 `deploy/cluster/` 下。
+下面的示例用两台应用节点 n43（43.255.122.4）、n2（198.51.100.20，文档保留地址），以及仲裁机 relay（103.231.58.53）。各组件的部署文件都在仓库的 `deploy/cluster/` 下。
 
 ### 4.1 证书（集群私有 CA）
 
 ```bash
 deploy/cluster/tls/gen-cluster-certs.sh <安全目录> \
-  n43=43.255.122.4 n156=156.225.27.154 relay=103.231.58.53
+  n43=43.255.122.4 n2=198.51.100.20 relay=103.231.58.53
 ```
 
 - **有效期**：CA 10 年，节点证书 5 年。节点证书同时带 serverAuth 和 clientAuth 用途，SAN 包含节点名、127.0.0.1 和公网 IP。
@@ -172,7 +172,7 @@ docker exec clirelay-patroni patronictl -c /etc/patroni/patroni.yml list
 CLIRELAY_CLUSTER_ENABLED=true
 CLIRELAY_CLUSTER_NODE_ID=n43                     # 各节点唯一
 # 多主机 DSN：本机优先，target_session_attrs=read-write 自动找到当前主库
-CLIRELAY_POSTGRES_DSN=postgres://cliproxy:<密码>@127.0.0.1:55432,156.225.27.154:55432/cliproxy?target_session_attrs=read-write&sslmode=verify-ca&sslrootcert=/etc/clirelay-cluster/tls/ca.crt&sslcert=/etc/clirelay-cluster/tls/node.crt&sslkey=/etc/clirelay-cluster/tls/node.key&connect_timeout=5
+CLIRELAY_POSTGRES_DSN=postgres://cliproxy:<密码>@127.0.0.1:55432,198.51.100.20:55432/cliproxy?target_session_attrs=read-write&sslmode=verify-ca&sslrootcert=/etc/clirelay-cluster/tls/ca.crt&sslcert=/etc/clirelay-cluster/tls/node.crt&sslkey=/etc/clirelay-cluster/tls/node.key&connect_timeout=5
 # 集群共享 Redis
 CLIRELAY_CLUSTER_REDIS_ADDR=103.231.58.53:6380
 CLIRELAY_CLUSTER_REDIS_PASSWORD=<密码>
@@ -222,7 +222,7 @@ server {                                    # 接收对端溢出：只转本机 
 `cmd/clirelay-dnswatch` 加上 `deploy/cluster/dnswatch/`。部署步骤见 `clirelay-dnswatch.service` 文件头；配置示例见 `dnswatch.example.yaml`。
 
 - 每 10 秒以 `https://<节点IP>/readyz`（SNI 为域名，正常校验证书）探测一次。连续失败 3 次摘除；恢复后连续成功 3 次加回；两次切换之间至少间隔 60 秒。
-- **出口检查（`probe.egress_path`）**：各节点到上游代理的线路并不相同（机房、运营商、中转都不一样），一个节点可能连不上代理商，而对端照常能连。2026-09-25 n156 到代理商 IP 段的路由断了，`/readyz` 却一直正常，落到 n156 的 Codex 请求连续失败约 43 分钟，直到人工把它从 DNS 摘掉。所以 DNS 健康判断要把出口算进去：
+- **出口检查（`probe.egress_path`）**：各节点到上游代理的线路并不相同（机房、运营商、中转都不一样），一个节点可能连不上代理商，而对端照常能连。2026-09-25 有一个节点到代理商 IP 段的路由断了，`/readyz` 却一直正常，落到它上面的 Codex 请求连续失败约 43 分钟，直到人工把它从 DNS 摘掉。所以 DNS 健康判断要把出口算进去：
   - **节点侧**：CliRelay 每 15 秒对上游流量可能经过的每个代理端点（所有租户已启用的代理池条目，加上全局 `proxy-url`，按 host:port 去重）发起一次纯 TCP 连接（超时 3 秒），连上即关闭：不通过代理发送任何数据，不做代理握手，不用任何凭据。连续 2 次连不上才算不可达。`GET /readyz/egress` 在没有不可达端点时返回 204（没配代理、或启动后首轮检查还没跑完时也是 204），否则返回 503 `{"status":"degraded","unreachable":N,"total":M}`。响应体不含任何主机信息，节点日志里只记 `host:port`。和 `/readyz` 一样不受 IP 访问名单限制。
   - **仲裁机侧**：配置 `egress_path: /readyz/egress` 后，每轮额外请求这个路径；非 2xx 一律算失败，包括超时和旧版本返回的 404。就绪的节点连续 3 轮失败即为**降级**，连续 3 轮成功才恢复。DNS 按三档取舍：有健康节点（就绪且出口正常）就只保留健康节点；没有就保留降级节点，所以代理商整体故障、所有节点一起降级时 DNS 不动；连降级节点都没有就什么都不改（见下一条）。
   - 出口断掉的节点约 1 分钟后被摘掉。`min_change_interval`、hold 文件、dry-run 照常生效。降级节点会出现在日志、汇总行（`healthy=… degraded=… unhealthy=…`）、`GET /status`（`state`、`egress`）和告警 `node_egress_degraded` / `node_egress_recovered` 里。

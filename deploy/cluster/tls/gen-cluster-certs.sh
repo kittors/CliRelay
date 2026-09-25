@@ -13,7 +13,7 @@
 # Usage:
 #   gen-cluster-certs.sh <out-dir> <node-name>=<ip>[,<ip>...] [...]
 # Example:
-#   gen-cluster-certs.sh ~/secure/clirelay-cluster n43=43.255.122.4 n156=156.225.27.154 relay=103.231.58.53
+#   gen-cluster-certs.sh ~/secure/clirelay-cluster n43=43.255.122.4 n2=198.51.100.20 relay=103.231.58.53
 #
 # Re-running keeps an existing CA and skips nodes whose certificate exists, so
 # adding a node later only issues the new one.

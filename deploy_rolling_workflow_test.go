@@ -392,7 +392,7 @@ func TestWorkflowNodeSSHRequiresKnownHostsEntryForThePort(t *testing.T) {
 		return string(out), string(config) + string(exported), err
 	}
 
-	out, written, err := run(t, "NODE=n156", "NODE_HOST=203.0.113.10", "NODE_PORT=47222",
+	out, written, err := run(t, "NODE=n2", "NODE_HOST=203.0.113.10", "NODE_PORT=47222",
 		"NODE_KNOWN_HOSTS=[203.0.113.10]:47222 "+hostKey)
 	if err != nil {
 		t.Fatalf("a bracketed entry must match port 47222: %v\n%s", err, out)
@@ -403,7 +403,7 @@ func TestWorkflowNodeSSHRequiresKnownHostsEntryForThePort(t *testing.T) {
 		}
 	}
 
-	out, _, err = run(t, "NODE=n156", "NODE_HOST=203.0.113.10", "NODE_PORT=47222",
+	out, _, err = run(t, "NODE=n2", "NODE_HOST=203.0.113.10", "NODE_PORT=47222",
 		"NODE_KNOWN_HOSTS=203.0.113.10 "+hostKey)
 	if err == nil || !strings.Contains(out, "no entry for [203.0.113.10]:47222") {
 		t.Fatalf("a bare-host entry must be reported for port 47222, err=%v\n%s", err, out)
@@ -420,15 +420,15 @@ func TestWorkflowNodeSSHRequiresKnownHostsEntryForThePort(t *testing.T) {
 		t.Fatalf("a node name that cannot be a secret suffix must be refused, err=%v\n%s", err, out)
 	}
 
-	out, _, err = run(t, "NODE=n156", "NODE_KNOWN_HOSTS=203.0.113.10 "+hostKey)
-	if err == nil || !strings.Contains(out, "secret SERVER_HOST_n156 is not set") {
+	out, _, err = run(t, "NODE=n2", "NODE_KNOWN_HOSTS=203.0.113.10 "+hostKey)
+	if err == nil || !strings.Contains(out, "secret SERVER_HOST_n2 is not set") {
 		t.Fatalf("a missing per-node host must name the per-node secret, err=%v\n%s", err, out)
 	}
 
 	// A node whose provider drops runner SSH is reached through a jump host,
 	// and the jump host is held to the same strict known_hosts check.
 	bothKeys := "[203.0.113.10]:47222 " + hostKey + "\n[198.51.100.53]:2233 " + hostKey
-	out, written, err = run(t, "NODE=n156", "NODE_HOST=203.0.113.10", "NODE_PORT=47222",
+	out, written, err = run(t, "NODE=n2", "NODE_HOST=203.0.113.10", "NODE_PORT=47222",
 		"NODE_KNOWN_HOSTS="+bothKeys, "NODE_JUMP=gha-jump@198.51.100.53:2233")
 	if err != nil {
 		t.Fatalf("a jump host with a known key must be accepted: %v\n%s", err, out)
@@ -442,19 +442,19 @@ func TestWorkflowNodeSSHRequiresKnownHostsEntryForThePort(t *testing.T) {
 		t.Fatalf("the setup summary must name the jump host:\n%s", out)
 	}
 
-	out, _, err = run(t, "NODE=n156", "NODE_HOST=203.0.113.10", "NODE_PORT=47222",
+	out, _, err = run(t, "NODE=n2", "NODE_HOST=203.0.113.10", "NODE_PORT=47222",
 		"NODE_KNOWN_HOSTS=[203.0.113.10]:47222 "+hostKey, "NODE_JUMP=gha-jump@198.51.100.53:2233")
 	if err == nil || !strings.Contains(out, "no entry for the jump host [198.51.100.53]:2233") {
 		t.Fatalf("a jump host without a known key must be refused, err=%v\n%s", err, out)
 	}
 
-	out, _, err = run(t, "NODE=n156", "NODE_HOST=203.0.113.10", "NODE_PORT=47222",
+	out, _, err = run(t, "NODE=n2", "NODE_HOST=203.0.113.10", "NODE_PORT=47222",
 		"NODE_KNOWN_HOSTS="+bothKeys, "NODE_JUMP=198.51.100.53")
-	if err == nil || !strings.Contains(out, "SSH_JUMP_n156 must be user@host[:port]") {
+	if err == nil || !strings.Contains(out, "SSH_JUMP_n2 must be user@host[:port]") {
 		t.Fatalf("a jump host without a user must be refused, err=%v\n%s", err, out)
 	}
 
-	out, written, err = run(t, "NODE=n156", "NODE_HOST=203.0.113.10", "NODE_PORT=47222",
+	out, written, err = run(t, "NODE=n2", "NODE_HOST=203.0.113.10", "NODE_PORT=47222",
 		"NODE_KNOWN_HOSTS=[203.0.113.10]:47222 "+hostKey)
 	if err != nil || strings.Contains(written, "ProxyJump") {
 		t.Fatalf("without NODE_JUMP the node must be reached directly, err=%v\n%s\n%s", err, out, written)

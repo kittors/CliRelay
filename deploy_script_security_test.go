@@ -269,7 +269,7 @@ printf 'DOMAIN=%%s NODE_PUBLIC_IP=%%s NGINX_CONF=%%s SLOT_USER=%%s DRAIN_SECONDS
 }
 
 // The workflow sends one repository-wide set of resource limits, but the nodes
-// differ: n43 has 3.9G and also runs PostgreSQL, etcd and Redis, n156 has 8G.
+// differ: n43 has 3.9G and also runs PostgreSQL, etcd and Redis, while another node may have 8G.
 // A limit in the node's root-owned deploy.env beats the workflow's value.
 func TestDeployEnvResourceLimitsOverrideTheWorkflow(t *testing.T) {
 	keys := extractShellAssignment(t, "scripts/deploy-blue-green.sh", "DEPLOY_ENV_KEYS")

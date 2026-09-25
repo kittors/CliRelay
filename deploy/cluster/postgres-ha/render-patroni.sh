@@ -4,9 +4,9 @@
 # Usage: render-patroni.sh <node.env> > patroni.yml
 #
 # node.env provides (see node.env.example):
-#   NODE_NAME            unique member name, e.g. n156
+#   NODE_NAME            unique member name, e.g. n2
 #   NODE_ADDR            address other members use to reach this node
-#   PG_LISTEN            comma-separated listen addresses, e.g. 127.0.0.1,156.225.27.154
+#   PG_LISTEN            comma-separated listen addresses, e.g. 127.0.0.1,198.51.100.20
 #   PG_PORT              PostgreSQL port (55432 keeps the single-node DSN valid)
 #   REST_PORT            Patroni REST port (8008)
 #   ETCD_HOSTS           comma-separated etcd client endpoints host:port
