@@ -13,6 +13,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/api/middleware"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/api/modules"
 	ampmodule "github.com/router-for-me/CLIProxyAPI/v6/internal/api/modules/amp"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/cluster/clusterruntime"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/identity"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/logging"
@@ -163,6 +164,9 @@ func (s *Server) applyInitialRuntimeConfig(cfg *config.Config, authManager *auth
 		authManager.SetRetryConfig(cfg.RequestRetry, time.Duration(cfg.MaxRetryInterval)*time.Second)
 		authManager.SetAccountConcurrencyConfig(cfg.AccountConcurrency.WaitTimeout(), cfg.AccountConcurrency.QueueDepth())
 	}
+	// Cluster-wide limits, slots, affinity and cooldowns; a no-op on a single
+	// node. Before the server listens, after StartService prepared the cluster.
+	s.clusterRuntime = clusterruntime.Install(cfg, authManager)
 	managementasset.SetCurrentConfig(cfg)
 	auth.SetQuotaCooldownDisabled(cfg.DisableCooling)
 	s.applyProxyWarmupConfig(cfg)

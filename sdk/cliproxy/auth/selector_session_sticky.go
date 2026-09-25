@@ -66,7 +66,7 @@ func (s *SessionStickySelector) Pick(ctx context.Context, provider, model string
 	available = preferCodexWebsocketAuths(ctx, provider, available)
 
 	limits := stickyLimitsFromMetadata(opts.Metadata)
-	if bound := s.honourBinding(key, available, limits, now); bound != nil {
+	if bound := s.honour(ctx, key, available, limits, now); bound != nil {
 		return bound, nil
 	}
 
@@ -75,7 +75,7 @@ func (s *SessionStickySelector) Pick(ctx context.Context, provider, model string
 		return nil, err
 	}
 	if selected != nil && strings.TrimSpace(selected.ID) != "" {
-		s.bind(key, selected.ID, now)
+		selected = s.bindSelected(ctx, key, selected, available, now)
 	}
 	return selected, nil
 }

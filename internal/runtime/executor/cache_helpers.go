@@ -8,6 +8,9 @@ import (
 type codexCache struct {
 	ID     string
 	Expire time.Time
+	// Shared marks an id the cluster agreed on (cluster_shared_ids.go). Ids
+	// minted outside a cluster, or while its store was unreachable, are not.
+	Shared bool
 }
 
 // codexCacheMap stores prompt cache IDs keyed by model+user_id.
@@ -59,14 +62,6 @@ func getCodexCache(key string) (codexCache, bool) {
 	return cache, true
 }
 
-// setCodexCache stores a cache entry.
-func setCodexCache(key string, cache codexCache) {
-	codexCacheCleanupOnce.Do(startCodexCacheCleanup)
-	codexCacheMu.Lock()
-	codexCacheMap[key] = cache
-	codexCacheMu.Unlock()
-}
-
 // getOrCreateCodexCacheID returns the id bound to key, minting one under the
 // write lock when there is none.
 //
@@ -76,7 +71,13 @@ func setCodexCache(key string, cache codexCache) {
 // per-conversation rather than per-request.
 func getOrCreateCodexCacheID(key string, ttl time.Duration, newID func() string) string {
 	if cache, ok := getCodexCache(key); ok {
-		return cache.ID
+		if cache.Shared {
+			return cache.ID
+		}
+		return adoptSharedCodexID(key, cache)
+	}
+	if id, ok := mintSharedCodexID(key, ttl, newID); ok {
+		return id
 	}
 	codexCacheMu.Lock()
 	defer codexCacheMu.Unlock()

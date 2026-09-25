@@ -10,6 +10,9 @@ import (
 type userIDCacheEntry struct {
 	value  string
 	expire time.Time
+	// sharedAt is when the value was last agreed with the cluster; zero when
+	// it never was (see cluster_shared_ids.go).
+	sharedAt time.Time
 }
 
 var (
@@ -68,19 +71,28 @@ func cachedUserID(apiKey string) string {
 		entry = userIDCache[key]
 		if entry.value != "" && entry.expire.After(now) && isValidUserID(entry.value) {
 			entry.expire = now.Add(userIDTTL)
+			refresh := userIDNeedsSharedRefresh(&entry, now)
 			userIDCache[key] = entry
 			userIDCacheMu.Unlock()
+			if refresh {
+				go refreshSharedUserID(key, entry.value)
+			}
 			return entry.value
 		}
 		userIDCacheMu.Unlock()
 	}
 
 	newID := generateFakeUserID()
+	var sharedAt time.Time
+	if shared, ok := mintSharedUserID(key, newID); ok {
+		newID, sharedAt = shared, now
+	}
 
 	userIDCacheMu.Lock()
 	entry, ok = userIDCache[key]
 	if !ok || entry.value == "" || !entry.expire.After(now) || !isValidUserID(entry.value) {
 		entry.value = newID
+		entry.sharedAt = sharedAt
 	}
 	entry.expire = now.Add(userIDTTL)
 	userIDCache[key] = entry

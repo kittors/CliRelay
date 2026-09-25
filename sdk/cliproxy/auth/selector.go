@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
@@ -18,6 +19,9 @@ type schedulerDeps struct {
 	tracker *selectionPressureTracker
 	limiter *AccountConcurrencyLimiter
 	quota   QuotaLoadSource
+	// affinity shares sticky bindings across processes; see
+	// selector_session_sticky_shared.go.
+	affinity atomic.Pointer[sessionAffinityRef]
 }
 
 func (d *schedulerDeps) observeSelection(auth *Auth, now time.Time) {

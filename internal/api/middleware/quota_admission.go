@@ -84,14 +84,26 @@ func (p *quotaPolicy) record(c *gin.Context) {
 // admit does not count the request toward RPM. Callers count it first, because
 // the POST path counts every authenticated request for the dashboard, including
 // requests of keys that have no limits at all.
+//
+// In a cluster the rate and concurrency checks run against counters shared by
+// every node (quota_cluster.go). When those are unavailable the checks below
+// run on this node's counters with this node's share of each limit; outside a
+// cluster the share is the whole limit.
 func (p *quotaPolicy) admit() (release func(), verdict *quotaVerdict) {
+	if release, verdict, ok := p.admitShared(); ok {
+		return release, verdict
+	}
+	share := p.nodeShare()
+	return share.admitLocal()
+}
+
+// admitLocal runs every check against the node-local counters.
+func (p *quotaPolicy) admitLocal() (release func(), verdict *quotaVerdict) {
 	release = func() {}
 	if p.concurrencyLimit > 0 {
 		slot, ok := acquireKeyConcurrency(p.subject, p.concurrencyLimit)
 		if !ok {
-			current := keyConcurrencyCount(p.subject)
-			return nil, quotaLimitVerdict("concurrency", float64(p.concurrencyLimit), float64(current), "concurrency_limit_exceeded",
-				fmt.Sprintf("Concurrent request limit exceeded: %d in-flight requests (limit %d). Wait for running requests to finish, or raise the concurrency limit in the permission profile.", current, p.concurrencyLimit))
+			return nil, concurrencyLimitVerdict(keyConcurrencyCount(p.subject), p.concurrencyLimit)
 		}
 		release = slot
 	}
@@ -111,8 +123,7 @@ func (p *quotaPolicy) checkRates() *quotaVerdict {
 	if p.rpmLimit > 0 {
 		currentRPM := getRPMTracker(p.subject).count()
 		if currentRPM > p.rpmLimit {
-			return quotaLimitVerdict("rpm", float64(p.rpmLimit), float64(currentRPM), "rpm_limit_exceeded",
-				fmt.Sprintf("Requests-per-minute (RPM) limit exceeded: %d/%d requests in the last minute. Slow down, or raise the RPM limit in the permission profile.", currentRPM, p.rpmLimit))
+			return rpmLimitVerdict(currentRPM, p.rpmLimit)
 		}
 	}
 
@@ -120,11 +131,25 @@ func (p *quotaPolicy) checkRates() *quotaVerdict {
 	if p.tpmLimit > 0 {
 		currentTPM := getTPMTracker(p.subject).sum()
 		if currentTPM >= int64(p.tpmLimit) {
-			return quotaLimitVerdict("tpm", float64(p.tpmLimit), float64(currentTPM), "tpm_limit_exceeded",
-				fmt.Sprintf("Tokens-per-minute (TPM) limit exceeded: %d/%d tokens in the last minute. Slow down, or raise the TPM limit in the permission profile.", currentTPM, p.tpmLimit))
+			return tpmLimitVerdict(currentTPM, p.tpmLimit)
 		}
 	}
 	return nil
+}
+
+func concurrencyLimitVerdict(current, limit int) *quotaVerdict {
+	return quotaLimitVerdict("concurrency", float64(limit), float64(current), "concurrency_limit_exceeded",
+		fmt.Sprintf("Concurrent request limit exceeded: %d in-flight requests (limit %d). Wait for running requests to finish, or raise the concurrency limit in the permission profile.", current, limit))
+}
+
+func rpmLimitVerdict(current, limit int) *quotaVerdict {
+	return quotaLimitVerdict("rpm", float64(limit), float64(current), "rpm_limit_exceeded",
+		fmt.Sprintf("Requests-per-minute (RPM) limit exceeded: %d/%d requests in the last minute. Slow down, or raise the RPM limit in the permission profile.", current, limit))
+}
+
+func tpmLimitVerdict(current int64, limit int) *quotaVerdict {
+	return quotaLimitVerdict("tpm", float64(limit), float64(current), "tpm_limit_exceeded",
+		fmt.Sprintf("Tokens-per-minute (TPM) limit exceeded: %d/%d tokens in the last minute. Slow down, or raise the TPM limit in the permission profile.", current, limit))
 }
 
 // checkBudgets runs the checks against usage recorded in the usage DB: request

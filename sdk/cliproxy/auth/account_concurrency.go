@@ -3,6 +3,7 @@ package auth
 import (
 	"errors"
 	"sync"
+	"sync/atomic"
 )
 
 var (
@@ -21,13 +22,22 @@ type AccountConcurrencyLimiter struct {
 	active map[string]int
 	// waiters holds the FIFO queue of callers blocked on each auth ID.
 	waiters map[string][]*slotWaiter
+	// coordinator, when set, extends the limits across processes; see
+	// account_concurrency_cluster.go.
+	coordinator atomic.Pointer[accountSlotCoordinatorRef]
+	// clustered and unshared count, per auth ID, the active slots that hold a
+	// cluster-wide slot and those taken while cluster counting was down.
+	clustered map[string]int
+	unshared  map[string]int
 }
 
 // NewAccountConcurrencyLimiter creates a new thread-safe concurrency limiter.
 func NewAccountConcurrencyLimiter() *AccountConcurrencyLimiter {
 	return &AccountConcurrencyLimiter{
-		active:  make(map[string]int),
-		waiters: make(map[string][]*slotWaiter),
+		active:    make(map[string]int),
+		waiters:   make(map[string][]*slotWaiter),
+		clustered: make(map[string]int),
+		unshared:  make(map[string]int),
 	}
 }
 
@@ -57,7 +67,7 @@ func (l *AccountConcurrencyLimiter) HasAvailableSlot(auth *Auth) bool {
 	if l == nil || auth == nil {
 		return true
 	}
-	limit := auth.ConcurrencyLimit()
+	limit := l.effectiveLimit(auth.ConcurrencyLimit())
 	if limit <= 0 {
 		return true
 	}
@@ -72,6 +82,9 @@ func (l *AccountConcurrencyLimiter) HasAvailableSlot(auth *Auth) bool {
 func (l *AccountConcurrencyLimiter) AcquireSlot(auth *Auth) (func(), error) {
 	if l == nil || auth == nil {
 		return func() {}, nil
+	}
+	if l.coord() != nil {
+		return l.acquireSlotCluster(auth)
 	}
 
 	l.mu.Lock()
@@ -110,7 +123,7 @@ func (l *AccountConcurrencyLimiter) ReleaseSlot(authID string) {
 		if waiter == nil {
 			break
 		}
-		if limit := waiter.limitFor(authID); limit > 0 && current > limit {
+		if limit := l.effectiveLimit(waiter.limitFor(authID)); limit > 0 && current > limit {
 			break
 		}
 		l.popWaiterLocked(authID)
@@ -124,6 +137,7 @@ func (l *AccountConcurrencyLimiter) ReleaseSlot(authID string) {
 	} else {
 		l.active[authID] = current - 1
 	}
+	l.releaseClusterSlotLocked(authID)
 }
 
 // FilterAvailableCandidates partitions candidates into available vs saturated by concurrency limit.
@@ -140,7 +154,7 @@ func (l *AccountConcurrencyLimiter) FilterAvailableCandidates(candidates []*Auth
 		if c == nil {
 			continue
 		}
-		limit := c.ConcurrencyLimit()
+		limit := l.effectiveLimit(c.ConcurrencyLimit())
 		inFlight := l.active[c.ID]
 		if limit <= 0 || inFlight < limit {
 			available = append(available, c)
@@ -160,7 +174,7 @@ func (l *AccountConcurrencyLimiter) tryAcquireLocked(auth *Auth) bool {
 	if auth == nil || auth.ID == "" {
 		return false
 	}
-	limit := auth.ConcurrencyLimit()
+	limit := l.effectiveLimit(auth.ConcurrencyLimit())
 	if limit > 0 && l.active[auth.ID] >= limit {
 		return false
 	}
