@@ -217,6 +217,19 @@ func (t *loginThrottle) evaluate(key throttleKey, now time.Time) throttleDecisio
 	if t == nil {
 		return throttleDecision{Scope: key.Scope}
 	}
+	// A block armed here needs no round trip; otherwise a cluster-wide one
+	// may be in force (login_throttle_cluster.go).
+	local := t.evaluateLocal(key, now)
+	if local.Outcome != outcomeAllow {
+		return local
+	}
+	if shared, ok := t.sharedEvaluate(key, now); ok {
+		return shared
+	}
+	return local
+}
+
+func (t *loginThrottle) evaluateLocal(key throttleKey, now time.Time) throttleDecision {
 	policy := t.policyFor(key)
 	bucket := bucketID(key)
 	shard := t.shardFor(bucket)
@@ -245,6 +258,16 @@ func (t *loginThrottle) recordFailure(key throttleKey, now time.Time) throttleDe
 	if t == nil {
 		return throttleDecision{Scope: key.Scope}
 	}
+	// The local bucket is charged even in a cluster, so falling back to it
+	// never starts from zero; the cluster-wide standing decides when known.
+	local := t.recordFailureLocal(key, now)
+	if shared, ok := t.sharedCharge(key, now); ok {
+		return shared
+	}
+	return local
+}
+
+func (t *loginThrottle) recordFailureLocal(key throttleKey, now time.Time) throttleDecision {
 	policy := t.policyFor(key)
 	bucket := bucketID(key)
 	shard := t.shardFor(bucket)
@@ -320,6 +343,7 @@ func (t *loginThrottle) recordSuccess(key throttleKey) {
 	shard.mu.Lock()
 	delete(shard.entries, bucket)
 	shard.mu.Unlock()
+	t.sharedClear(key)
 }
 
 func blockOutcome(policy throttlePolicy) throttleOutcome {

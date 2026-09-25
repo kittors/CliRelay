@@ -164,7 +164,7 @@ func saveToRedis() {
 	// We don't set an expiration; it should persist indefinitely
 	// saveToRedis 可能发生在定时后台循环或 StopRedis 最终 flush 阶段，
 	// 不依赖任意请求 context，因此使用根 context。
-	if err := redisClient.Set(context.Background(), redisUsageKey, data, 0).Err(); err != nil {
+	if err := redisClient.Set(context.Background(), redisUsageSnapshotKey(), data, 0).Err(); err != nil {
 		log.Errorf("failed to save usage snapshot to Redis: %v", err)
 	}
 }
@@ -174,7 +174,7 @@ func loadFromRedis() error {
 		return nil
 	}
 	// loadFromRedis 属于服务启动期恢复逻辑，不绑定请求生命周期。
-	data, err := redisClient.Get(context.Background(), redisUsageKey).Bytes()
+	data, err := redisClient.Get(context.Background(), redisUsageSnapshotKey()).Bytes()
 	if err != nil {
 		if err == redis.Nil {
 			return nil // Key does not exist, which is fine for the first run

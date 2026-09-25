@@ -198,6 +198,10 @@ type Manager struct {
 
 	concurrencyLimiter *AccountConcurrencyLimiter
 
+	// cooldownPublisher receives the cooldowns this process sets, for peers;
+	// see conductor_cooldown_cluster.go.
+	cooldownPublisher atomic.Pointer[cooldownPublisherRef]
+
 	// Auto refresh state
 	refreshCancel    context.CancelFunc
 	refreshSemaphore chan struct{}
