@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"strings"
+	"time"
 )
 
 // DBResilienceConfig tunes how the gateway rides out a short database outage
@@ -20,12 +21,18 @@ type DBResilienceConfig struct {
 	// negative value switches spooling off and restores the old behaviour of
 	// dropping a record the database refuses.
 	UsageSpoolMaxSizeMB int `yaml:"usage-spool-max-size-mb,omitempty" json:"usage-spool-max-size-mb,omitempty"`
+	// QuotaStaleSeconds is how old the last successfully read quota usage may
+	// be and still decide admission while the usage database cannot be read.
+	// Default 120; a negative value refuses with 503 immediately, as before.
+	QuotaStaleSeconds int `yaml:"quota-stale-seconds,omitempty" json:"quota-stale-seconds,omitempty"`
 }
 
 const (
 	// EnvUsageSpoolDir overrides db-resilience.usage-spool-dir, for container
 	// and systemd deployments that mount the persistent volume elsewhere.
 	EnvUsageSpoolDir = "CLIRELAY_USAGE_SPOOL_DIR"
+
+	defaultQuotaStaleSeconds = 120
 )
 
 // UsageSpoolDirOverride returns the configured spool directory, with the
@@ -35,4 +42,17 @@ func (c DBResilienceConfig) UsageSpoolDirOverride() string {
 		return v
 	}
 	return strings.TrimSpace(c.UsageSpoolDir)
+}
+
+// QuotaStaleMaxAge returns how long a cached quota usage reading may stand in
+// for the database; zero disables the fallback.
+func (c DBResilienceConfig) QuotaStaleMaxAge() time.Duration {
+	switch {
+	case c.QuotaStaleSeconds < 0:
+		return 0
+	case c.QuotaStaleSeconds == 0:
+		return defaultQuotaStaleSeconds * time.Second
+	default:
+		return time.Duration(c.QuotaStaleSeconds) * time.Second
+	}
 }

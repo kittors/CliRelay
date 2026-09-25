@@ -261,6 +261,7 @@ func initializeRuntimeDataStack(cfg *config.Config, configPath string, loc *time
 	middleware.InitQuotaUsageFuncs(usage.CountTodayByKey, usage.CountTotalByKey, usage.QueryTotalCostByKey, usage.QueryTodayCostByKey)
 	middleware.InitQuotaEndUserUsageFuncs(usage.CountTodayByEndUser, usage.CountTotalByEndUser, usage.QueryTotalCostByEndUser, usage.QueryTodayCostByEndUser)
 	middleware.InitQuotaPeriodUsageFuncs(usage.QueryPeriodSpendingByAPIKeyIDForTenant, usage.QueryPeriodSpendingByEndUserForTenant)
+	middleware.SetQuotaUsageStaleMaxAge(cfg.DBResilience.QuotaStaleMaxAge())
 	// The write path hands over the key's owner it already resolved, so TPM
 	// accounting needs no lookup of its own and keeps working while the
 	// database is unreachable.

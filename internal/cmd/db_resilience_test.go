@@ -41,3 +41,14 @@ func TestResolveUsageSpoolDirPrefersPersistentLocations(t *testing.T) {
 		t.Fatalf("spool dir from %s = %q, want %q", config.EnvUsageSpoolDir, got, want)
 	}
 }
+
+func TestDBResilienceDefaults(t *testing.T) {
+	var cfg config.DBResilienceConfig
+	if got := cfg.QuotaStaleMaxAge().Seconds(); got != 120 {
+		t.Fatalf("default quota stale max age = %vs, want 120s", got)
+	}
+	cfg.QuotaStaleSeconds = -1
+	if got := cfg.QuotaStaleMaxAge(); got != 0 {
+		t.Fatalf("disabled quota stale max age = %v, want 0", got)
+	}
+}

@@ -65,6 +65,9 @@ redis:
 #   # Disk cap; when full the oldest records are dropped (logged). -1 disables
 #   # spooling and restores dropping records the database refuses.
 #   usage-spool-max-size-mb: 1024
+#   # How old the last successful quota usage read may be and still admit a
+#   # request while the database cannot be read. -1 refuses with 503 at once.
+#   quota-stale-seconds: 120
 
 # TLS settings for HTTPS. When enabled, the server listens with the provided certificate and key.
 tls:

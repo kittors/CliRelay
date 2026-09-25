@@ -247,6 +247,7 @@ func resetQuotaMiddlewareState(t *testing.T) {
 	inFlightMu.Lock()
 	inFlightByKey = map[string]int{}
 	inFlightMu.Unlock()
+	resetQuotaUsageFallback()
 	admissionSubjects = sync.Map{}
 	countTodayByKeyFunc = func(string) (int64, error) { return 0, nil }
 	countTotalByKeyFunc = func(string) (int64, error) { return 0, nil }
