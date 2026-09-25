@@ -1,29 +1,149 @@
-#!/usr/bin/env bash
+#!/bin/bash -p
 # Root-only GitHub Actions deploy entrypoint installed at /usr/local/sbin/clirelay-gha-deploy.
 # deploy stages ONLY the binary into /opt/clirelay2/incoming/cli-proxy-api-new, then sudo this path.
 # Scripts under /opt/clirelay2/scripts are root-managed and never overwritten by GHA.
+#
+#   sudo -n [TUNABLE=value ...] /usr/local/sbin/clirelay-gha-deploy     deploy the staged binary
+#   sudo -n [EXPECTED_SCRIPT_VERSION=v] /usr/local/sbin/clirelay-gha-deploy --preflight
+#                                                                      read-only checks
+#
+# Trust boundary: the caller is the deploy user, so its environment is hostile.
+# sudoers passes only the tunables listed in TUNABLES (env_keep, no SETENV; see
+# docs/multi-instance-node-bootstrap_CN.md). This script checks each of them
+# again and starts the deploy script with those values and nothing else, never
+# a PATH, BASH_ENV or script path from the caller. `bash -p` keeps BASH_ENV,
+# ENV, SHELLOPTS and exported functions out of this shell as well, in case a
+# host still grants SETENV; LD_PRELOAD it cannot stop, which is why the
+# workflow's preflight refuses such a host.
 set -euo pipefail
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+SAFE_PATH="$PATH"
+umask 022
 
 BASE=/opt/clirelay2
 IN="${BASE}/incoming"
 SCRIPTS="${BASE}/scripts"
 TEMP_BIN="${BASE}/cli-proxy-api-new"
 STAGED="${IN}/cli-proxy-api-new"
+DEPLOY_ENV_FILE=/etc/clirelay2/deploy.env
+TUNABLES='COMMIT_SHA EXPECTED_SCRIPT_VERSION SERVICE_CPU_QUOTA SERVICE_MEMORY_HIGH SERVICE_MEMORY_MAX SERVICE_TASKS_MAX SERVICE_GO_MEM_LIMIT'
 
-[ -f "$STAGED" ] || { echo "missing staged binary: $STAGED" >&2; exit 1; }
-[ -x "${SCRIPTS}/deploy-blue-green.sh" ] || { echo "root-managed deploy-blue-green.sh missing" >&2; exit 1; }
-[ -x "${SCRIPTS}/cleanup-drained-slot.sh" ] || { echo "root-managed cleanup-drained-slot.sh missing" >&2; exit 1; }
-[ -x "${SCRIPTS}/reconcile-active-slot.sh" ] || { echo "root-managed reconcile-active-slot.sh missing" >&2; exit 1; }
+die() {
+	echo "clirelay-gha-deploy: $*" >&2
+	exit 1
+}
+
+mode=deploy
+case "$#:${1:-}" in
+0:) ;;
+1:--preflight) mode=preflight ;;
+*) die "usage: clirelay-gha-deploy [--preflight]" ;;
+esac
+
+[ "$(id -u)" = 0 ] || die "must run as root, through sudo"
+
+# The workflow's preflight sends this variable to prove sudo refuses anything
+# outside the whitelist. Arriving here with it set means the sudoers rule still
+# grants SETENV (or disables env_reset): the caller could then set LD_PRELOAD
+# or BASH_ENV as well, which no script can undo.
+if [ -n "${CLIRELAY_SETENV_PROBE+x}" ]; then
+	echo "clirelay-gha-deploy: setenv-probe-accepted: sudo let the caller set CLIRELAY_SETENV_PROBE; remove SETENV from the deploy sudoers rule" >&2
+	exit 3
+fi
+
+# tunable_is_valid is the same table as in deploy-blue-green.sh; the unit file
+# is built from these values, where a newline would smuggle in a directive.
+# TestDeployTunableValidationMatchesEntrypoint keeps the two copies equal.
+tunable_is_valid() {
+	case "$1" in
+	COMMIT_SHA) pattern='^([0-9a-f]{40}|[0-9a-f]{64})?$' ;;
+	EXPECTED_SCRIPT_VERSION) pattern='^[0-9A-Za-z._-]{0,64}$' ;;
+	SERVICE_CPU_QUOTA) pattern='^([0-9]{1,5}%)?$' ;;
+	SERVICE_MEMORY_HIGH | SERVICE_MEMORY_MAX) pattern='^([0-9]{1,15}[KMGT]?|infinity)?$' ;;
+	SERVICE_TASKS_MAX) pattern='^([0-9]{1,9}|infinity)?$' ;;
+	SERVICE_GO_MEM_LIMIT) pattern='^([0-9]{1,15}(B|KiB|MiB|GiB|TiB)?|off)?$' ;;
+	*) return 1 ;;
+	esac
+	[[ "$2" =~ $pattern ]]
+}
+
+# canonical_path resolves symlinks, so the ownership walk checks the real file.
+canonical_path() {
+	readlink -f -- "$1" 2>/dev/null || printf '%s\n' "$1"
+}
+
+# require_root_controlled refuses a file root is about to execute or trust
+# unless only root can change it: the file and every directory above it must
+# be owned by root and not writable by group or others. A deploy-writable
+# /opt/clirelay2 would let the deploy user swap scripts/ out from under root.
+require_root_controlled() {
+	trusted_path="$(canonical_path "$1")"
+	while :; do
+		owner_mode="$(stat -c '%u %a' "$trusted_path" 2>/dev/null || stat -f '%u %Lp' "$trusted_path" 2>/dev/null || true)"
+		trusted_owner="${owner_mode%% *}"
+		trusted_mode="${owner_mode##* }"
+		case "$trusted_mode" in
+		'' | *[!0-7]*) die "cannot read the owner and mode of ${trusted_path}" ;;
+		esac
+		[ "$trusted_owner" = 0 ] || die "${trusted_path} must be owned by root (it is uid ${trusted_owner}) before root trusts ${1}"
+		[ $((8#$trusted_mode & 8#022)) -eq 0 ] || die "${trusted_path} must not be writable by group or others (mode ${trusted_mode}) before root trusts ${1}"
+		[ "$trusted_path" != / ] || break
+		trusted_path="$(dirname "$trusted_path")"
+	done
+}
+
+passed_env=()
+for tunable in $TUNABLES; do
+	[ -n "${!tunable+x}" ] || continue
+	tunable_is_valid "$tunable" "${!tunable}" || die "refusing ${tunable}=$(printf '%q' "${!tunable}")"
+	passed_env+=("${tunable}=${!tunable}")
+done
+
+for script in deploy-blue-green.sh cleanup-drained-slot.sh reconcile-active-slot.sh; do
+	[ -f "${SCRIPTS}/${script}" ] && [ -x "${SCRIPTS}/${script}" ] || die "root-managed ${script} missing"
+	require_root_controlled "${SCRIPTS}/${script}"
+	# A syntax error in the drain script would otherwise surface minutes after
+	# the cutover, as an old slot that never stops.
+	bash -n "${SCRIPTS}/${script}" || die "root-managed ${script} does not parse"
+done
+if [ -e "$DEPLOY_ENV_FILE" ]; then
+	require_root_controlled "$DEPLOY_ENV_FILE"
+fi
+
+run_deploy_script() {
+	exec env -i PATH="$SAFE_PATH" HOME=/root LC_ALL=C ${passed_env[@]+"${passed_env[@]}"} \
+		/bin/bash "${SCRIPTS}/deploy-blue-green.sh" "$@"
+}
+
+if [ "$mode" = preflight ]; then
+	echo "clirelay-gha-deploy: root-managed scripts are root-owned and parse"
+	run_deploy_script --check
+fi
 
 # Validate commit marker on the staged file BEFORE touching slot binaries.
-COMMIT_SHA="${COMMIT_SHA:?COMMIT_SHA is required}"
-if ! grep -a -q "$COMMIT_SHA" "$STAGED"; then
+[ -n "${COMMIT_SHA:-}" ] || die "COMMIT_SHA is required"
+if [ ! -f "$STAGED" ] || [ -L "$STAGED" ]; then
+	die "missing staged binary: $STAGED"
+fi
+# Copy without following links and check the copy. deploy owns incoming/ and
+# could swap the file for a symlink between a check on the original and the
+# install, which would have root copy out a file deploy cannot read itself.
+stage_dir="$(mktemp -d "${BASE}/.stage.XXXXXX")"
+trap 'rm -rf -- "$stage_dir"' EXIT
+cp -P -- "$STAGED" "${stage_dir}/bin"
+if [ ! -f "${stage_dir}/bin" ] || [ -L "${stage_dir}/bin" ]; then
+	rm -f "$STAGED"
+	die "staged binary is not a regular file; refusing install"
+fi
+if ! grep -a -F -q "$COMMIT_SHA" "${stage_dir}/bin"; then
 	echo "staged binary does not contain expected commit SHA; refusing install" >&2
 	rm -f "$STAGED"
 	exit 1
 fi
 
-install -m 0755 -o root -g root "$STAGED" "$TEMP_BIN"
+install -m 0755 -o root -g root "${stage_dir}/bin" "$TEMP_BIN"
 rm -f "$STAGED"
+rm -rf -- "$stage_dir"
+trap - EXIT
 
-exec /bin/bash "${SCRIPTS}/deploy-blue-green.sh"
+run_deploy_script
