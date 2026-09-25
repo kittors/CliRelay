@@ -10,11 +10,16 @@ import (
 // These are configuration drift guard tests: they assert shipped workflow text,
 // not runtime behavior.
 func TestDeployWorkflowOnlyPublishesBackendBinary(t *testing.T) {
-	data, err := os.ReadFile(".github/workflows/deploy.yml")
-	if err != nil {
-		t.Fatalf("read deploy workflow: %v", err)
+	// The ssh client setup moved into a script both the preflight and the
+	// deploy jobs call, so the markers are checked across the two files.
+	var content string
+	for _, path := range []string{".github/workflows/deploy.yml", "scripts/gha-node-ssh.sh"} {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		content += string(data) + "\n"
 	}
-	content := string(data)
 
 	for _, want := range []string{
 		`Upload binary to staging`,
@@ -87,6 +92,11 @@ func TestBlueGreenDeployScriptSyntaxAndGuards(t *testing.T) {
 		"scripts/deploy-blue-green.sh",
 		"scripts/cleanup-drained-slot.sh",
 		"scripts/reconcile-active-slot.sh",
+		// The root entrypoint is installed by hand and never run in CI, so a
+		// syntax error would first show up as a failed production deploy.
+		"scripts/clirelay-gha-deploy",
+		"scripts/gha-node-ssh.sh",
+		"scripts/gha-node-verify.sh",
 	} {
 		cmd := exec.Command("bash", "-n", path)
 		if out, err := cmd.CombinedOutput(); err != nil {
@@ -133,6 +143,15 @@ func TestBlueGreenDeployScriptSyntaxAndGuards(t *testing.T) {
 		// One rewrite cannot cut over two vhosts that both route the domain to
 		// a slot, so the deploy must refuse instead of picking one.
 		`several nginx configs proxy`,
+		// Multi-node: settings come from a root-owned file, the smoke is pinned
+		// to this node, a split config is refused, and a new node can deploy.
+		`DEPLOY_ENV_FILE=/etc/clirelay2/deploy.env`,
+		`require_root_controlled "$DEPLOY_ENV_FILE"`,
+		`--resolve "${DOMAIN}:443:${smoke_addr}"`,
+		`routes to both slots`,
+		`first deploy on this node`,
+		`SLOT_USER in ${DEPLOY_ENV_FILE}`,
+		`CLIRELAY_DEPLOY_RESULT`,
 	} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("deploy script missing guard %q", want)

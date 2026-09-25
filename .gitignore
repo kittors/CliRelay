@@ -33,6 +33,7 @@ auths/*
 
 # Documentation
 docs/*
+!docs/multi-instance-node-bootstrap_CN.md
 !docs/images/
 !docs/images/*.png
 !docs/internal-review/

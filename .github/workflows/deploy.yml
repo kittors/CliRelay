@@ -26,20 +26,33 @@ concurrency:
   group: deploy-relay-backend
   cancel-in-progress: false
 
+env:
+  # Deploying is the default for a merge into dev. This used to require
+  # CLIRELAY_DEV_AUTO_DEPLOY=true, so an unset or reset repository variable
+  # silently turned every merge into a build-only run. Set the variable to
+  # 'false' to stop deployments deliberately.
+  SHOULD_DEPLOY: ${{ github.event_name == 'workflow_dispatch' || vars.CLIRELAY_DEV_AUTO_DEPLOY != 'false' }}
+  # Must match SCRIPT_VERSION in scripts/deploy-blue-green.sh; the host
+  # entrypoint refuses to run on a mismatch, and the preflight job checks it on
+  # every node before any node is touched. Guarded by
+  # TestDeployScriptVersionMatchesWorkflowExpectation.
+  EXPECTED_SCRIPT_VERSION: '2026.09.25.2'
+  HEALTH_URL: ${{ vars.CLIRELAY_PUBLIC_HEALTH_URL || 'https://relay.07230805.xyz/healthz' }}
+  # After its cutover each node is probed through its own address for its drain
+  # (DRAIN_SECONDS=180 in scripts/deploy-blue-green.sh, or what the node's
+  # deploy.env sets) plus PROBE_MARGIN_SECONDS, and never less than
+  # PROBE_MIN_SECONDS. Guarded by TestDeployWorkflowProbesEachNodeAcrossItsDrain.
+  PROBE_MIN_SECONDS: '210'
+  PROBE_MARGIN_SECONDS: '30'
+
 jobs:
-  build-and-deploy:
+  build:
+    name: Build
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    env:
-      # Deploying is the default for a merge into dev. This used to require
-      # CLIRELAY_DEV_AUTO_DEPLOY=true, so an unset or reset repository variable
-      # silently turned every merge into a build-only run. Set the variable to
-      # 'false' to stop deployments deliberately.
-      SHOULD_DEPLOY: ${{ github.event_name == 'workflow_dispatch' || vars.CLIRELAY_DEV_AUTO_DEPLOY != 'false' }}
-      # Must match SCRIPT_VERSION in scripts/deploy-blue-green.sh; the host
-      # entrypoint refuses to run on a mismatch. Guarded by
-      # TestDeployScriptVersionMatchesWorkflowExpectation.
-      EXPECTED_SCRIPT_VERSION: '2026.09.23.1'
+    outputs:
+      should_deploy: ${{ steps.plan.outputs.should_deploy }}
+      app_version: ${{ steps.build.outputs.app_version }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
@@ -50,16 +63,31 @@ jobs:
       # Merge commits themselves do not re-run pr-test-build, so we do not re-query
       # check-runs on github.sha here (that would always fail-closed incorrectly).
       - name: Record deploy mode
-        if: env.SHOULD_DEPLOY == 'true'
+        id: plan
         env:
           FORCE_DEPLOY: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.force || 'false' }}
+          DEPLOY_NODES: ${{ vars.CLIRELAY_DEPLOY_NODES || '["default"]' }}
         run: |
           set -euo pipefail
+          echo "should_deploy=${SHOULD_DEPLOY}" >> "$GITHUB_OUTPUT"
+          if [ "${SHOULD_DEPLOY}" != "true" ]; then
+            exit 0
+          fi
+          # Node names become secret-name suffixes (SERVER_HOST_<node>), and
+          # GitHub compares secret names case-insensitively.
+          if ! printf '%s' "${DEPLOY_NODES}" | jq -e '
+              type == "array" and length > 0
+              and all(.[]; type == "string" and test("^[A-Za-z0-9_]+$"))
+              and ((map(ascii_downcase) | unique | length) == length)' > /dev/null; then
+            echo "::error::CLIRELAY_DEPLOY_NODES must be a non-empty JSON array of distinct names made of letters, digits and underscores, such as [\"n43\",\"n156\"]; got: ${DEPLOY_NODES}"
+            exit 1
+          fi
+          echo "Rolling deploy order: $(printf '%s' "${DEPLOY_NODES}" | jq -r 'join(" -> ")')"
           if [ "${FORCE_DEPLOY}" = "true" ]; then
             echo "::warning::Forced deploy via workflow_dispatch"
             echo "DEPLOY_MODE=forced" >> "$GITHUB_ENV"
           else
-            echo "DEPLOY_MODE=deployed" >> "$GITHUB_ENV"
+            echo "DEPLOY_MODE=deploying" >> "$GITHUB_ENV"
           fi
 
       - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
@@ -69,6 +97,7 @@ jobs:
           cache-dependency-path: go.sum
 
       - name: Build linux/amd64 binary
+        id: build
         env:
           BUILD_TIME: ${{ github.event.head_commit.timestamp }}
         run: |
@@ -84,12 +113,23 @@ jobs:
           echo "Build date: $BUILD_DATE"
           echo "Version: $VERSION"
           echo "APP_VERSION=${VERSION}" >> "$GITHUB_ENV"
+          echo "app_version=${VERSION}" >> "$GITHUB_OUTPUT"
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
             -ldflags="-s -w \
               -X 'github.com/router-for-me/CLIProxyAPI/v6/internal/buildinfo.Version=${VERSION}' \
               -X 'github.com/router-for-me/CLIProxyAPI/v6/internal/buildinfo.Commit=${{ github.sha }}' \
               -X 'github.com/router-for-me/CLIProxyAPI/v6/internal/buildinfo.BuildDate=${BUILD_DATE}'" \
             -o cli-proxy-api-new ./cmd/server/
+
+      # Every node gets this exact binary; nothing is rebuilt per node.
+      - name: Upload binary artifact
+        if: env.SHOULD_DEPLOY == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: cli-proxy-api-new
+          path: cli-proxy-api-new
+          if-no-files-found: error
+          retention-days: 7
 
       - name: Skip automatic server deploy
         if: env.SHOULD_DEPLOY != 'true'
@@ -98,50 +138,160 @@ jobs:
           echo "Deployment is opt-out: repository variable CLIRELAY_DEV_AUTO_DEPLOY is set to 'false'. Unset it to resume automatic deploys."
           echo "DEPLOY_MODE=built-only" >> "$GITHUB_ENV"
 
-      # Native ssh/scp only. Remote user is deploy (not root).
-      # Staging path is /opt/clirelay2/incoming; root-owned entrypoint installs + deploys.
-      - name: Configure SSH
-        if: env.SHOULD_DEPLOY == 'true'
+      - name: Write job summary
+        if: always()
         env:
-          SERVER_HOST: ${{ secrets.SERVER_HOST }}
-          SERVER_PORT: ${{ secrets.SERVER_PORT }}
-          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
-          DEPLOY_SSH_KNOWN_HOSTS: ${{ secrets.DEPLOY_SSH_KNOWN_HOSTS }}
+          DEPLOY_NODES: ${{ vars.CLIRELAY_DEPLOY_NODES || '["default"]' }}
+        run: |
+          {
+            echo "## CliRelay deploy"
+            echo "- mode: \`${DEPLOY_MODE:-unknown}\`"
+            echo "- sha: \`${{ github.sha }}\`"
+            echo "- version: \`${APP_VERSION:-n/a}\`"
+            echo "- should_deploy: \`${SHOULD_DEPLOY}\`"
+            echo "- nodes, in rollout order: \`${DEPLOY_NODES}\`"
+            echo "- post-deploy health probes: \`${SHOULD_DEPLOY}\` (per node in 'Verify service stays healthy through drain', then 'Verify public endpoint after rollout')"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # Read-only checks on every node before the first one is touched, so a node
+  # that cannot take this release stops the run while all nodes still serve the
+  # previous build, instead of halfway through the rollout.
+  preflight:
+    name: Preflight ${{ matrix.node }}
+    needs: build
+    if: needs.build.outputs.should_deploy == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: true
+      matrix:
+        node: ${{ fromJSON(vars.CLIRELAY_DEPLOY_NODES || '["default"]') }}
+    env:
+      NODE: ${{ matrix.node }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      # Each node has its own SERVER_HOST_<node> and friends. The node named
+      # "default" uses the original unsuffixed secrets, so a single-node setup
+      # needs no new configuration. Only the key and known_hosts may fall back
+      # to the shared secrets: a missing host must never resolve to another node.
+      - name: Configure SSH for node
+        env:
+          NODE_HOST: ${{ matrix.node == 'default' && secrets.SERVER_HOST || secrets[format('SERVER_HOST_{0}', matrix.node)] }}
+          NODE_PORT: ${{ matrix.node == 'default' && secrets.SERVER_PORT || secrets[format('SERVER_PORT_{0}', matrix.node)] }}
+          NODE_SSH_KEY: ${{ secrets[format('SSH_PRIVATE_KEY_{0}', matrix.node)] || secrets.SSH_PRIVATE_KEY }}
+          NODE_KNOWN_HOSTS: ${{ secrets[format('DEPLOY_SSH_KNOWN_HOSTS_{0}', matrix.node)] || secrets.DEPLOY_SSH_KNOWN_HOSTS }}
+          NODE_SMOKE_IP: ${{ matrix.node == 'default' && (secrets.SMOKE_IP || vars.CLIRELAY_SMOKE_IP) || secrets[format('SMOKE_IP_{0}', matrix.node)] || vars[format('CLIRELAY_SMOKE_IP_{0}', matrix.node)] }}
+        run: ./scripts/gha-node-ssh.sh
+
+      - name: Check node is ready for this release
         run: |
           set -euo pipefail
-          test -n "${SERVER_HOST:-}"
-          test -n "${SSH_PRIVATE_KEY:-}"
-          test -n "${DEPLOY_SSH_KNOWN_HOSTS:-}"
-          mkdir -p ~/.ssh
-          chmod 700 ~/.ssh
-          printf '%s\n' "${SSH_PRIVATE_KEY}" > ~/.ssh/deploy_key
-          chmod 600 ~/.ssh/deploy_key
-          printf '%s\n' "${DEPLOY_SSH_KNOWN_HOSTS}" > ~/.ssh/known_hosts
-          chmod 600 ~/.ssh/known_hosts
-          port="${SERVER_PORT:-22}"
-          {
-            echo "Host deploy-target"
-            echo "  HostName ${SERVER_HOST}"
-            echo "  Port ${port}"
-            echo "  User deploy"
-            echo "  IdentityFile ~/.ssh/deploy_key"
-            echo "  IdentitiesOnly yes"
-            echo "  UserKnownHostsFile ~/.ssh/known_hosts"
-            echo "  StrictHostKeyChecking yes"
-          } > ~/.ssh/config
-          chmod 600 ~/.ssh/config
+          if ! ssh deploy-target true; then
+            echo "::error::node ${NODE}: cannot log in as deploy; check this node's SERVER_HOST, SERVER_PORT and SSH key secrets"
+            exit 1
+          fi
 
+          # Read without sudo first, so a node whose root-managed scripts were
+          # never synced is named plainly rather than failing inside sudo.
+          version_line="$(ssh deploy-target "grep -m1 '^SCRIPT_VERSION=' /opt/clirelay2/scripts/deploy-blue-green.sh" || true)"
+          remote_version="${version_line#SCRIPT_VERSION=}"
+          remote_version="${remote_version//[\"\']/}"
+          remote_version="${remote_version#\$\{SCRIPT_VERSION:-}"
+          remote_version="${remote_version%\}}"
+          if [ "${remote_version}" != "${EXPECTED_SCRIPT_VERSION}" ]; then
+            echo "::error::node ${NODE}: /opt/clirelay2/scripts/deploy-blue-green.sh is version '${remote_version:-missing}', this workflow expects '${EXPECTED_SCRIPT_VERSION}'. Sync the root-managed scripts on every node first (docs/multi-instance-node-bootstrap_CN.md)."
+            exit 1
+          fi
+
+          # The root entrypoint checks its scripts, then runs the deploy script
+          # in --check mode: deploy.env, nginx layout, slot user. Read-only.
+          set +e
+          ssh deploy-target \
+            "sudo -n EXPECTED_SCRIPT_VERSION=$(printf %q "${EXPECTED_SCRIPT_VERSION}") /usr/local/sbin/clirelay-gha-deploy --preflight" \
+            2>&1 | tee preflight.log
+          preflight_status="${PIPESTATUS[0]}"
+          set -e
+          if [ "${preflight_status}" -ne 0 ] || ! grep -q '^CLIRELAY_DEPLOY_CHECK ok' preflight.log; then
+            echo "::error::node ${NODE}: root preflight failed (exit ${preflight_status}); see the output above. An entrypoint without --preflight predates this workflow: reinstall it from scripts/clirelay-gha-deploy."
+            exit 1
+          fi
+
+          # sudo must refuse variables outside the env_keep whitelist. A rule
+          # that still grants SETENV lets the deploy user set LD_PRELOAD for a
+          # root process, which no script can defend against.
+          probe="$(ssh deploy-target 'sudo -n CLIRELAY_SETENV_PROBE=1 /usr/local/sbin/clirelay-gha-deploy --preflight' 2>&1 || true)"
+          if printf '%s\n' "${probe}" | grep -q 'setenv-probe-accepted'; then
+            echo "::error::node ${NODE}: the deploy sudoers rule still grants SETENV. Replace it with the env_keep whitelist in docs/multi-instance-node-bootstrap_CN.md."
+            exit 1
+          fi
+
+          {
+            echo "### Preflight \`${NODE}\`"
+            echo '```'
+            grep '^CLIRELAY_DEPLOY_CHECK' preflight.log | tr ' ' '\n'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  deploy:
+    name: Deploy ${{ matrix.node }}
+    needs: [build, preflight]
+    if: needs.build.outputs.should_deploy == 'true'
+    runs-on: ubuntu-latest
+    # Readiness, cutover smoke and, without systemd-run, a synchronous drain;
+    # then the drain window and the old slot's shutdown grace.
+    timeout-minutes: 30
+    strategy:
+      # One node at a time, in CLIRELAY_DEPLOY_NODES order. A node must stay
+      # healthy through its drain, with its old slot stopped, before the next
+      # one is touched, and the first failure cancels the rest: those nodes
+      # keep serving the previous build.
+      max-parallel: 1
+      fail-fast: true
+      matrix:
+        node: ${{ fromJSON(vars.CLIRELAY_DEPLOY_NODES || '["default"]') }}
+    env:
+      NODE: ${{ matrix.node }}
+      APP_VERSION: ${{ needs.build.outputs.app_version }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: cli-proxy-api-new
+
+      - name: Configure SSH for node
+        env:
+          NODE_HOST: ${{ matrix.node == 'default' && secrets.SERVER_HOST || secrets[format('SERVER_HOST_{0}', matrix.node)] }}
+          NODE_PORT: ${{ matrix.node == 'default' && secrets.SERVER_PORT || secrets[format('SERVER_PORT_{0}', matrix.node)] }}
+          NODE_SSH_KEY: ${{ secrets[format('SSH_PRIVATE_KEY_{0}', matrix.node)] || secrets.SSH_PRIVATE_KEY }}
+          NODE_KNOWN_HOSTS: ${{ secrets[format('DEPLOY_SSH_KNOWN_HOSTS_{0}', matrix.node)] || secrets.DEPLOY_SSH_KNOWN_HOSTS }}
+          NODE_SMOKE_IP: ${{ matrix.node == 'default' && (secrets.SMOKE_IP || vars.CLIRELAY_SMOKE_IP) || secrets[format('SMOKE_IP_{0}', matrix.node)] || vars[format('CLIRELAY_SMOKE_IP_{0}', matrix.node)] }}
+        run: ./scripts/gha-node-ssh.sh
+
+      # Staging path is /opt/clirelay2/incoming; root-owned entrypoint installs + deploys.
       - name: Upload binary to staging
-        if: env.SHOULD_DEPLOY == 'true'
         run: |
           set -euo pipefail
           # deploy may only write the binary into incoming/.
           # Root-managed /opt/clirelay2/scripts/* are never overwritten by GHA (prevents sudo script injection).
           ssh deploy-target 'mkdir -p /opt/clirelay2/incoming && rm -f /opt/clirelay2/incoming/cli-proxy-api-new'
-          scp cli-proxy-api-new deploy-target:/opt/clirelay2/incoming/cli-proxy-api-new
+          # Streamed over ssh instead of scp, which needs an SFTP subsystem a
+          # freshly built node may not have enabled.
+          ssh deploy-target 'cat > /opt/clirelay2/incoming/cli-proxy-api-new' < cli-proxy-api-new
+          local_sum="$(sha256sum cli-proxy-api-new | cut -d' ' -f1)"
+          remote_sum="$(ssh deploy-target 'sha256sum /opt/clirelay2/incoming/cli-proxy-api-new' | cut -d' ' -f1)"
+          if [ "${local_sum}" != "${remote_sum}" ]; then
+            echo "::error::node ${NODE}: staged binary checksum ${remote_sum} does not match ${local_sum}"
+            exit 1
+          fi
 
       - name: Blue-green deploy via fixed root entrypoint
-        if: env.SHOULD_DEPLOY == 'true'
+        id: deploy
         env:
           SERVICE_CPU_QUOTA: ${{ vars.CLIRELAY_SERVICE_CPU_QUOTA || '170%' }}
           SERVICE_MEMORY_HIGH: ${{ vars.CLIRELAY_SERVICE_MEMORY_HIGH || '1400M' }}
@@ -153,7 +303,8 @@ jobs:
           COMMIT_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-          # Only /usr/local/sbin/clirelay-gha-deploy is sudo-allowed for deploy.
+          # Only /usr/local/sbin/clirelay-gha-deploy is sudo-allowed for deploy, and
+          # sudoers passes only these variables (env_keep whitelist, no SETENV).
           # It validates COMMIT_SHA in the staged binary, then runs root-managed deploy-blue-green.sh.
           ssh deploy-target \
             "sudo -n \
@@ -164,49 +315,83 @@ jobs:
              SERVICE_GO_MEM_LIMIT=$(printf %q "${SERVICE_GO_MEM_LIMIT}") \
              COMMIT_SHA=$(printf %q "${COMMIT_SHA}") \
              EXPECTED_SCRIPT_VERSION=$(printf %q "${EXPECTED_SCRIPT_VERSION}") \
-             /usr/local/sbin/clirelay-gha-deploy"
-          echo "DEPLOY_MODE=${DEPLOY_MODE:-deployed}" >> "$GITHUB_ENV"
+             /usr/local/sbin/clirelay-gha-deploy" 2>&1 | tee deploy.log
+          # The script ends with one machine-readable line naming the slots it
+          # moved between; the verification step needs them.
+          result="$(grep '^CLIRELAY_DEPLOY_RESULT ' deploy.log | tail -n 1 || true)"
+          if [ -z "${result}" ]; then
+            echo "::error::node ${NODE}: the deploy printed no CLIRELAY_DEPLOY_RESULT line"
+            exit 1
+          fi
+          for field in ${result#CLIRELAY_DEPLOY_RESULT }; do
+            case "${field}" in
+              *[!A-Za-z0-9_=.:+-]*)
+                echo "::error::node ${NODE}: unexpected field in the deploy result: ${field}"
+                exit 1
+                ;;
+              service=* | new_port=* | old_port=* | drain_seconds=* | shutdown_grace_seconds=* | version=*)
+                printf '%s\n' "${field}" >> "$GITHUB_OUTPUT"
+                ;;
+            esac
+          done
 
       # The blue-green script smoke-tests the new slot at cutover, but the old
       # slot is drained on a delay afterwards. Draining is exactly where two past
-      # outages happened, so keep probing across that window instead of declaring
-      # success at cutover and walking away.
+      # outages happened, so keep probing this node -- pinned to it, as DNS may
+      # send a probe to another node -- until its drain is over and the old slot
+      # has really stopped, and only then move on to the next node.
       - name: Verify service stays healthy through drain
-        if: env.SHOULD_DEPLOY == 'true'
         env:
-          HEALTH_URL: ${{ vars.CLIRELAY_PUBLIC_HEALTH_URL || 'https://relay.07230805.xyz/healthz' }}
+          SLOT_SERVICE: ${{ steps.deploy.outputs.service }}
+          NEW_PORT: ${{ steps.deploy.outputs.new_port }}
+          OLD_PORT: ${{ steps.deploy.outputs.old_port }}
+          DRAIN_SECONDS: ${{ steps.deploy.outputs.drain_seconds }}
+          SHUTDOWN_GRACE_SECONDS: ${{ steps.deploy.outputs.shutdown_grace_seconds }}
         run: |
-          set -uo pipefail
-          fails=0
-          total=20
-          for i in $(seq 1 "$total"); do
-            code="$(curl -sS -o /dev/null -w '%{http_code}' -m 10 "$HEALTH_URL" 2>/dev/null || echo 000)"
-            case "$code" in
-              200|204) ;;
-              *)
-                fails=$((fails + 1))
-                echo "probe ${i}/${total}: HTTP ${code}"
-                ;;
-            esac
-            sleep 3
-          done
-          if [ "$fails" -gt 0 ]; then
-            echo "::error::Post-deploy health probes failed ${fails}/${total}; the deployed slot is not serving reliably"
+          set -euo pipefail
+          if ! ./scripts/gha-node-verify.sh node; then
+            echo "::error::Post-deploy health probes failed on node ${NODE}; the rollout stops here and later nodes keep the previous build"
             exit 1
           fi
-          echo "Post-deploy health: ${total}/${total} probes healthy across the drain window"
 
       - name: Write job summary
         if: always()
+        env:
+          OLD_PORT: ${{ steps.deploy.outputs.old_port }}
+          NEW_PORT: ${{ steps.deploy.outputs.new_port }}
+          JOB_STATUS: ${{ job.status }}
         run: |
           {
-            echo "## CliRelay deploy"
-            echo "- mode: \`${DEPLOY_MODE:-unknown}\`"
-            echo "- sha: \`${{ github.sha }}\`"
-            echo "- version: \`${APP_VERSION:-n/a}\`"
-            echo "- should_deploy: \`${SHOULD_DEPLOY}\`"
-            echo "- post-deploy health probes: \`${SHOULD_DEPLOY}\` (see 'Verify service stays healthy through drain')"
+            echo "### Node \`${NODE}\`"
+            echo "- version: \`${APP_VERSION}\`"
+            echo "- slots: \`${OLD_PORT:-none}\` -> \`${NEW_PORT:-n/a}\`"
+            echo "- probes pinned to: \`${NODE_SMOKE_IP:-n/a}\`"
+            echo "- result: \`${JOB_STATUS}\`"
           } >> "$GITHUB_STEP_SUMMARY"
+
+  docker:
+    name: Verify rollout and publish image
+    needs: [build, deploy]
+    if: needs.build.outputs.should_deploy == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      APP_VERSION: ${{ needs.build.outputs.app_version }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      # Each node was verified through its own address. This last pass goes
+      # through DNS the way users do, which also catches a node DNS serves but
+      # CLIRELAY_DEPLOY_NODES does not list.
+      - name: Verify public endpoint after rollout
+        run: |
+          set -euo pipefail
+          if ! ./scripts/gha-node-verify.sh public; then
+            echo "::error::Post-deploy health probes failed on the public endpoint after every node was deployed"
+            exit 1
+          fi
 
       - name: Trigger dev Docker image build
         if: success() && env.SHOULD_DEPLOY == 'true'
@@ -218,3 +403,14 @@ jobs:
             --repo "${GITHUB_REPOSITORY}" \
             --ref dev
           echo "Triggered Docker image build after relay deployment completed."
+
+      - name: Write job summary
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          {
+            echo "## Rollout"
+            echo "- version: \`${APP_VERSION}\`"
+            echo "- public probe and image build: \`${JOB_STATUS}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
