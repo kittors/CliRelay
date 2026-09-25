@@ -10,6 +10,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/api/middleware"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/identity"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 	"github.com/shirou/gopsutil/v3/cpu"
 	"github.com/shirou/gopsutil/v3/disk"
@@ -71,6 +72,19 @@ type SystemStats struct {
 	TotalInFlight     int64                            `json:"total_in_flight"`
 	TotalRPM          int                              `json:"total_rpm"`
 	TotalTPM          int64                            `json:"total_tpm"`
+
+	// DBResilience shows how this node is riding out database trouble.
+	DBResilience DBResilienceStats `json:"db_resilience"`
+}
+
+// DBResilienceStats reports usage records waiting in the local spool and
+// decisions made on cached data while the database could not be read.
+type DBResilienceStats struct {
+	UsageWrites usage.UsageWriteStatus `json:"usage_writes"`
+	// QuotaStaleDecisions counts quota checks decided on a kept usage reading.
+	QuotaStaleDecisions int64 `json:"quota_stale_decisions"`
+	// TenantStaleChecks counts tenant checks answered from a cached row.
+	TenantStaleChecks int64 `json:"tenant_stale_checks"`
 }
 
 type expensiveSystemStats struct {
@@ -234,6 +248,11 @@ func (h *Handler) collectSystemStats() SystemStats {
 	stats.TotalRPM = sysRPM
 	stats.TotalTPM = sysTPM
 
+	stats.DBResilience = DBResilienceStats{
+		UsageWrites:         usage.GetUsageWriteStatus(),
+		QuotaStaleDecisions: middleware.QuotaUsageStaleServed(),
+		TenantStaleChecks:   identity.TenantStaleServed(),
+	}
 	return stats
 }
 
