@@ -19,9 +19,12 @@ package clusterauth
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -119,6 +122,9 @@ type Store struct {
 	stop        chan struct{}
 	wg          sync.WaitGroup
 	unsubscribe func()
+
+	ownerOnce sync.Once
+	owner     string
 }
 
 var (
@@ -189,6 +195,22 @@ func (s *Store) nodeID() string {
 		return id
 	}
 	return s.coordinator().NodeID()
+}
+
+// leaseOwner identifies this process as a refresh lease holder. Two slots of
+// a blue-green deploy on one host share the node ID (the host name), so the
+// holder carries a per-process suffix; a node ID alone would let both
+// processes hold the same lease and spend the same refresh token.
+func (s *Store) leaseOwner() string {
+	s.ownerOnce.Do(func() {
+		suffix := make([]byte, 6)
+		if _, err := rand.Read(suffix); err != nil {
+			s.owner = fmt.Sprintf("%s#%d-%d", s.nodeID(), os.Getpid(), time.Now().UnixNano())
+			return
+		}
+		s.owner = s.nodeID() + "#" + hex.EncodeToString(suffix)
+	})
+	return s.owner
 }
 
 // backendFor returns the bound backend. A store that was never started (a
@@ -362,7 +384,7 @@ func (s *Store) ClaimRefresh(ctx context.Context, id string) (*coreauth.Auth, bo
 	if err != nil {
 		return nil, false, err
 	}
-	r, err := b.claimLease(ctx, id, s.nodeID(), s.opts.LeaseTTL)
+	r, err := b.claimLease(ctx, id, s.leaseOwner(), s.opts.LeaseTTL)
 	if err != nil {
 		return nil, false, err
 	}
@@ -391,7 +413,7 @@ func (s *Store) ReleaseRefresh(ctx context.Context, id string) {
 	}
 	releaseCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
-	if errRelease := b.releaseLease(releaseCtx, id, s.nodeID()); errRelease != nil {
+	if errRelease := b.releaseLease(releaseCtx, id, s.leaseOwner()); errRelease != nil {
 		log.WithError(errRelease).Debugf("cluster auth: release refresh lease of %s", id)
 	}
 }

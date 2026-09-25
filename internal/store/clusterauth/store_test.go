@@ -302,3 +302,26 @@ func TestMutateAuthThroughManagerRetriesOnPeerWrite(t *testing.T) {
 		}
 	})
 }
+
+func TestRefreshLeaseTellsApartProcessesSharingANodeID(t *testing.T) {
+	forEachBackend(t, func(t *testing.T, env *testEnv) {
+		startSlot := func(slot string) *Store {
+			// Both blue-green slots default to the host name as node ID.
+			store := New(testOptions("same-host", t.TempDir(), env.hub.Join(slot)))
+			store.backend = env.newBackend()
+			if err := store.start(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { store.Close(context.Background()) })
+			return store
+		}
+		blue, green := startSlot("blue"), startSlot("green")
+		create(t, blue, "claude.json", claudeDoc("at-1"))
+		if _, acquired, err := blue.ClaimRefresh(context.Background(), "claude.json"); err != nil || !acquired {
+			t.Fatalf("blue claim = %v %v", acquired, err)
+		}
+		if _, acquired, err := green.ClaimRefresh(context.Background(), "claude.json"); err != nil || acquired {
+			t.Fatalf("green claim = %v %v, a second process on the same host must not share the lease", acquired, err)
+		}
+	})
+}

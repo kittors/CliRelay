@@ -11,8 +11,9 @@ import (
 // SetStore swaps the underlying persistence store.
 func (m *Manager) SetStore(store Store) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	m.store = store
+	m.mu.Unlock()
+	m.adoptStoreRefreshCoordinator(store)
 }
 
 // SetRoundTripperProvider register a provider that returns a per-auth RoundTripper.

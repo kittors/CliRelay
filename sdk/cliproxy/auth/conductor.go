@@ -264,6 +264,7 @@ func NewManager(store Store, selector Selector, hook Hook) *Manager {
 	manager.runtimeConfig.Store(runtimeConfigSnapshotSet{defaultTenantID: newRuntimeConfigSnapshot(nil)})
 	manager.apiKeyModelAlias.Store(apiKeyModelAliasTable(nil))
 	AttachDefaultModelRegistry(manager)
+	manager.adoptStoreRefreshCoordinator(store)
 	return manager
 }
 

@@ -49,6 +49,12 @@ func StartService(cfg *config.Config, configPath string, localPassword string) {
 		return
 	}
 	defer coordinator.Close()
+	stopClusterAuth, err := startClusterAuthStore(cfg)
+	if err != nil {
+		log.Errorf("cluster: failed to start the shared credential store: %v", err)
+		return
+	}
+	defer stopClusterAuth()
 
 	moderator := contentmoderation.NewRequestModerator(contentmoderation.NewStore(usage.RuntimeDB()), contentmoderation.NewEvaluator(nil))
 	contentmoderation.SetRuntime(moderator)
@@ -106,6 +112,15 @@ func StartServiceBackground(cfg *config.Config, configPath string, localPassword
 		close(doneCh)
 		return func() {}, doneCh
 	}
+	stopClusterAuth, err := startClusterAuthStore(cfg)
+	if err != nil {
+		log.Errorf("cluster: failed to start the shared credential store: %v", err)
+		coordinator.Close()
+		stopRuntimeDataStack()
+		doneCh := make(chan struct{})
+		close(doneCh)
+		return func() {}, doneCh
+	}
 
 	moderator := contentmoderation.NewRequestModerator(contentmoderation.NewStore(usage.RuntimeDB()), contentmoderation.NewEvaluator(nil))
 	contentmoderation.SetRuntime(moderator)
@@ -123,6 +138,7 @@ func StartServiceBackground(cfg *config.Config, configPath string, localPassword
 	service, err := builder.Build()
 	if err != nil {
 		log.Errorf("failed to build proxy service: %v", err)
+		stopClusterAuth()
 		coordinator.Close()
 		stopRuntimeDataStack()
 		close(doneCh)
@@ -134,6 +150,7 @@ func StartServiceBackground(cfg *config.Config, configPath string, localPassword
 		defer close(doneCh)
 		defer stopRuntimeDataStack()
 		defer coordinator.Close()
+		defer stopClusterAuth()
 		defer stopClusterWatch()
 		if err := service.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 			log.Errorf("proxy service exited with error: %v", err)

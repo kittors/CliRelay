@@ -22,6 +22,15 @@ func (m *Manager) SetRefreshCoordinator(coordinator RefreshCoordinator) {
 	m.refreshCoordinator.Store(refreshCoordinatorHolder{coordinator: coordinator})
 }
 
+// adoptStoreRefreshCoordinator installs the store as refresh coordinator when
+// it is one (the cluster store), and clears a coordinator a previous store
+// provided. The file store is not one, so single-node managers never
+// coordinate.
+func (m *Manager) adoptStoreRefreshCoordinator(store Store) {
+	coordinator, _ := store.(RefreshCoordinator)
+	m.SetRefreshCoordinator(coordinator)
+}
+
 func (m *Manager) currentRefreshCoordinator() RefreshCoordinator {
 	if m == nil {
 		return nil

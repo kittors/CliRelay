@@ -42,12 +42,14 @@ func forEachBackend(t *testing.T, fn func(t *testing.T, env *testEnv)) {
 		if dsn == "" {
 			t.Skip("CLIRELAY_POSTGRES_TEST_DSN is not set")
 		}
-		db := newDisposableDB(t, dsn)
+		db, _ := newDisposableDB(t, dsn)
 		fn(t, &testEnv{name: "postgres", hub: cluster.NewMemoryHub(), db: db, newBackend: func() backend { return newPGBackend(db, false) }})
 	})
 }
 
-func newDisposableDB(t *testing.T, dsn string) *sql.DB {
+// newDisposableDB creates a migrated database for one test and returns a
+// pool on it and its DSN.
+func newDisposableDB(t *testing.T, dsn string) (*sql.DB, string) {
 	t.Helper()
 	ctx := context.Background()
 	admin, err := sql.Open(compatdriver.DriverName, dsn)
@@ -77,7 +79,7 @@ func newDisposableDB(t *testing.T, dsn string) *sql.DB {
 	if err = postgresstore.ApplyMigrations(ctx, db, postgresstore.RuntimeMigrations()); err != nil {
 		t.Fatalf("migrate disposable database: %v", err)
 	}
-	return db
+	return db, parsed.String()
 }
 
 func testOptions(name, dir string, coord *cluster.Coordinator) Options {
