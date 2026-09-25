@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -98,22 +99,40 @@ func fallbackKimiModels() []*sdkmodelcatalog.ModelInfo {
 	return nil
 }
 
+var (
+	errKimiModelsNoToken = errors.New("kimi models: no access token")
+	errKimiModelsEmpty   = errors.New("kimi models: upstream listed no models")
+)
+
 // FetchKimiModels retrieves the account's live model list from the Kimi coding
 // gateway, which exposes the OpenAI-compatible /v1/models listing on the same
-// base URL and credentials as chat completions.
+// base URL and credentials as chat completions. When the gateway cannot be
+// listed it answers with the last list fetched in this process;
+// DiscoverKimiModels reports the failure instead.
 func FetchKimiModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.Config) []*sdkmodelcatalog.ModelInfo {
+	models, err := DiscoverKimiModels(ctx, auth, cfg)
+	if err != nil {
+		return fallbackKimiModels()
+	}
+	return models
+}
+
+// DiscoverKimiModels asks the Kimi coding gateway which models a credential can
+// call. It never substitutes a cached list, so a caller can tell a live answer
+// from a failure.
+func DiscoverKimiModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.Config) ([]*sdkmodelcatalog.ModelInfo, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	token := strings.TrimSpace(kimiCreds(auth))
 	if token == "" {
-		return fallbackKimiModels()
+		return nil, errKimiModelsNoToken
 	}
 
 	modelsURL := strings.TrimRight(kimiauth.KimiAPIBaseURL, "/") + kimiModelsPath
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, modelsURL, nil)
 	if err != nil {
-		return fallbackKimiModels()
+		return nil, err
 	}
 	// Same identity headers as chat traffic: the gateway rejects requests that do
 	// not look like kimi-cli, and the device id must match the account's.
@@ -124,7 +143,7 @@ func FetchKimiModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.C
 		if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 			log.Debugf("kimi executor: models request failed: %v", err)
 		}
-		return fallbackKimiModels()
+		return nil, err
 	}
 	defer func() {
 		if errClose := resp.Body.Close(); errClose != nil {
@@ -135,22 +154,22 @@ func FetchKimiModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.C
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		_, _ = io.Copy(io.Discard, resp.Body)
 		log.Debugf("kimi executor: models request failed with status %d", resp.StatusCode)
-		return fallbackKimiModels()
+		return nil, fmt.Errorf("kimi models: upstream answered status %d", resp.StatusCode)
 	}
 
 	body, err := readUpstreamResponseBody("kimi", resp.Body)
 	if err != nil {
 		log.Debugf("kimi executor: models response read failed: %v", err)
-		return fallbackKimiModels()
+		return nil, err
 	}
 
 	models, ok := parseKimiModels(body, time.Now().Unix())
 	if !ok {
 		log.Debug("kimi executor: fetched empty or invalid model list; retaining cached model list")
-		return fallbackKimiModels()
+		return nil, errKimiModelsEmpty
 	}
 	storeKimiModels(models)
-	return models
+	return models, nil
 }
 
 func parseKimiModels(body []byte, now int64) ([]*sdkmodelcatalog.ModelInfo, bool) {

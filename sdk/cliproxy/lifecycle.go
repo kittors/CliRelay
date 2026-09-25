@@ -87,18 +87,26 @@ func (s *Service) loadInitialState(ctx context.Context) error {
 			log.Warnf("failed to load auth store: %v", errLoad)
 		}
 		s.syncConfigDerivedAuths(s.cfg)
-		// Fetch upstream model lists now, so the first answers overlap the
-		// registration pass below instead of following it; the lists re-register
-		// their credentials once that pass is done.
+		// The pass below registers every credential from lists already at hand —
+		// the compiled-in catalogs and the lists the previous process saved — and
+		// never waits on an upstream, so the listener comes up whether or not the
+		// upstreams answer. Fetching starts first so the first live answers overlap
+		// the pass; each re-registers its credentials once it arrives.
+		s.loadModelLists()
 		s.startProviderDiscovery(ctx)
+		s.startLiveModelLists(ctx)
+		started := time.Now()
+		registered := 0
 		for _, auth := range s.coreManager.List() {
 			if auth == nil || auth.ID == "" {
 				continue
 			}
 			s.ensureExecutorsForAuth(auth)
 			s.registerModelsForAuth(ctx, auth)
+			registered++
 		}
 		s.markProviderDiscoveryRegistrationReady()
+		log.Infof("model registration: registered %d credentials in %s; upstream model lists refresh in the background", registered, time.Since(started).Round(time.Millisecond))
 	}
 
 	if _, err := s.tokenProvider.Load(ctx, s.cfg); err != nil && !errors.Is(err, context.Canceled) {
@@ -140,6 +148,7 @@ func (s *Service) Shutdown(ctx context.Context) error {
 			s.coreManager.StopAutoRefresh()
 		}
 		s.stopProviderDiscovery()
+		s.stopLiveModelLists()
 		if s.watcher != nil {
 			if err := s.watcher.Stop(); err != nil {
 				log.Errorf("failed to stop file watcher: %v", err)
