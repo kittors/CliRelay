@@ -77,6 +77,12 @@ type Coordinator struct {
 
 	closeOnce sync.Once
 	closeFns  []func()
+
+	// prepared marks a coordinator installed by Prepare; started is set once
+	// Start has adopted it, and closed once Close ran.
+	prepared bool
+	started  atomic.Bool
+	closed   atomic.Bool
 }
 
 func newCoordinator(enabled bool, nodeID string) *Coordinator {
@@ -146,6 +152,40 @@ func Start(ctx context.Context, opts Options) (*Coordinator, error) {
 	}
 	SetDefault(c)
 	return c, nil
+}
+
+// Prepare installs a cluster-mode coordinator as Default before the database
+// is up, and returns it. Until Start adopts it the node is a follower that
+// publishes nothing, so leader-only maintenance started during startup stays
+// idle instead of running on every node that boots at the same time, and
+// subscriptions made before Start keep working afterwards because Start
+// reuses this coordinator. With opts.Enabled false it changes nothing.
+func Prepare(opts Options) *Coordinator {
+	if !opts.Enabled {
+		return Default()
+	}
+	nodeID := strings.TrimSpace(opts.NodeID)
+	if nodeID == "" {
+		nodeID = DefaultNodeID()
+	}
+	c := newCoordinator(true, nodeID)
+	c.prepared = true
+	newBackendSlot(c)
+	SetDefault(c)
+	return c
+}
+
+// adoptPrepared hands Start the coordinator Prepare installed for nodeID, or
+// nil when there is none to take over.
+func adoptPrepared(nodeID string) *Coordinator {
+	c := defaultCoordinator.Load()
+	if c == nil || !c.prepared || c.nodeID != nodeID || c.closed.Load() {
+		return nil
+	}
+	if !c.started.CompareAndSwap(false, true) {
+		return nil
+	}
+	return c
 }
 
 // Enabled reports whether this process runs in cluster mode.
@@ -320,6 +360,7 @@ func (c *Coordinator) Close() {
 		return
 	}
 	c.closeOnce.Do(func() {
+		c.closed.Store(true)
 		for i := len(c.closeFns) - 1; i >= 0; i-- {
 			c.closeFns[i]()
 		}

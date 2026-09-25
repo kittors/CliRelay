@@ -11,19 +11,26 @@ import (
 
 func TestRuntimeMigrationsCoverCoreTables(t *testing.T) {
 	migrations := RuntimeMigrations()
-	if len(migrations) != 32 {
-		t.Fatalf("RuntimeMigrations len = %d, want 32", len(migrations))
+	if len(migrations) != 33 {
+		t.Fatalf("RuntimeMigrations len = %d, want 33", len(migrations))
+	}
+	// Membership table of multi-instance deployments.
+	if migrations[31].Version != "202609250001_cluster_nodes" {
+		t.Fatalf("cluster nodes migration version = %q", migrations[31].Version)
+	}
+	if !strings.Contains(migrations[31].SQL, "CREATE TABLE IF NOT EXISTS cluster_nodes") {
+		t.Fatalf("cluster nodes migration missing its table: %q", migrations[31].SQL)
 	}
 	// Optimistic versions for cross-node management writes.
-	if migrations[31].Version != "202609250901_config_optimistic_versions" {
-		t.Fatalf("config versions migration version = %q", migrations[31].Version)
+	if migrations[32].Version != "202609250901_config_optimistic_versions" {
+		t.Fatalf("config versions migration version = %q", migrations[32].Version)
 	}
 	for _, fragment := range []string{
 		"ALTER TABLE runtime_settings ADD COLUMN IF NOT EXISTS version BIGINT NOT NULL DEFAULT 1",
 		"ALTER TABLE routing_config ADD COLUMN IF NOT EXISTS version BIGINT NOT NULL DEFAULT 1",
 		"CREATE TABLE IF NOT EXISTS config_versions",
 	} {
-		if !strings.Contains(migrations[31].SQL, fragment) {
+		if !strings.Contains(migrations[32].SQL, fragment) {
 			t.Fatalf("config versions migration missing %q", fragment)
 		}
 	}
@@ -41,7 +48,7 @@ func TestRuntimeMigrationsCoverCoreTables(t *testing.T) {
 	// still on the legacy backfill password; without it the pass would re-run on
 	// every boot.
 	if migrations[30].Version != "202609240001_end_user_legacy_password_lock_state" {
-		t.Fatalf("latest migration version = %q", migrations[30].Version)
+		t.Fatalf("legacy password lock migration version = %q", migrations[30].Version)
 	}
 	if !strings.Contains(migrations[30].SQL, "CREATE TABLE IF NOT EXISTS end_user_legacy_password_lock_state") {
 		t.Fatalf("legacy password lock migration missing its table: %q", migrations[30].SQL)
