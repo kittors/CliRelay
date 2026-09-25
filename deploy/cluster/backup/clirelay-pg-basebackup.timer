@@ -1,0 +1,11 @@
+[Unit]
+Description=Run the CliRelay base backup daily
+
+[Timer]
+# 04:20 Asia/Shanghai: the quietest hour on the relay.
+OnCalendar=*-*-* 04:20:00 Asia/Shanghai
+RandomizedDelaySec=10m
+Persistent=true
+
+[Install]
+WantedBy=timers.target

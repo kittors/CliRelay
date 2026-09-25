@@ -1,0 +1,21 @@
+# PostgreSQL managed by Patroni, one member per database host.
+#
+# Host networking: PostgreSQL listens on 127.0.0.1 for the local CliRelay and
+# on the public address for replication and remote nodes (TLS + cluster
+# certificate required by pg_hba), Patroni's REST API on :8008 (mutual TLS).
+# The container never restarts PostgreSQL on its own terms: Patroni decides
+# whether this member starts as primary or replica after asking etcd.
+services:
+  patroni:
+    image: ${PATRONI_IMAGE:-clirelay/postgres-ha:15.19-patroni4.1.5}
+    container_name: clirelay-patroni
+    network_mode: host
+    restart: unless-stopped
+    shm_size: 256m
+    # Give PostgreSQL time for a clean shutdown checkpoint before SIGKILL.
+    stop_grace_period: 120s
+    mem_limit: ${PATRONI_MEM_LIMIT:-2g}
+    volumes:
+      - ${PGDATA_DIR:-/opt/clirelay-cluster/pgdata}:/var/lib/postgresql/data
+      - /etc/clirelay-cluster/patroni.yml:/etc/patroni/patroni.yml:ro
+      - /etc/clirelay-cluster/tls-pg:/tls:ro

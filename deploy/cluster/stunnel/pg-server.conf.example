@@ -1,0 +1,17 @@
+; Migration only: carries replication from the unmanaged single-node primary
+; (PostgreSQL in Docker, published on 127.0.0.1 only) to the Patroni standby
+; cluster on the peer host. Removed after the switchover.
+foreground = yes
+debug = notice
+[clirelay-pg]
+accept = 43.255.122.4:25431
+connect = 127.0.0.1:55432
+cert = /etc/clirelay-cluster/tls/node.crt
+key = /etc/clirelay-cluster/tls/node.key
+CAfile = /etc/clirelay-cluster/tls/ca.crt
+verifyChain = yes
+requireCert = yes
+; only the standby host's certificate may open the tunnel
+checkHost = n156
+socket = l:TCP_NODELAY=1
+socket = r:TCP_NODELAY=1

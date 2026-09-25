@@ -261,6 +261,8 @@ CliRelay 可以在 `/manage` 提供内置 Web 控制面板。服务端既能托�
 
 团队网关与 NAS 部署请同时阅读[生产部署检查清单](docs/production-checklist_CN.md)。
 
+CliRelay 默认以单实例运行。需要多台机器分摊流量、一台宕机另一台自动接管时，请看[多实例部署](docs/multi-instance-deployment_CN.md)；单实例安装无需任何改动。
+
 Docker Compose 是 CliRelay 推荐的安装方式。仓库内的 `docker-compose.yml` 会启动 CliRelay、PostgreSQL 15、Redis 7 和 updater sidecar。`.env` 不是必需的：首次执行 `docker compose up -d` 时，`clirelay-init` 会自动创建 `.env`，生成缺失的 `CLIRELAY_UPDATER_TOKEN`、`CLIRELAY_ADMIN_PASSWORD` 和 `CLIRELAY_POSTGRES_PASSWORD`，保留已有非空值，并在缺少 `config.yaml` 时从 `config.example.yaml` 创建一份。`CLIRELAY_ADMIN_PASSWORD` 用于空数据库首次创建 `admin`；初始化脚本会生成一个满足校验规则的随机值；你也可以提前在 `.env` 中自行设置，但必须不少于 12 个字符且同时包含大写字母、小写字母和非字母数字字符。不满足规则的预设值会在下次启动时被替换——否则 bootstrap 会拒绝它，容器起不来。生产环境只有在需要固定自己的密钥或挂载路径时，才需要提前写 `.env`。
 
 ```bash
@@ -387,6 +389,8 @@ CliRelay/
 | [SDK 认证](docs/sdk-access.md) | SDK 认证上下文 |
 | [SDK Watcher](docs/sdk-watcher.md) | 凭据加载与热重载 |
 | [PostgreSQL / Redis 运行时](docs/postgres-redis-migration.md) | 运行时数据栈配置与验证命令 |
+| [多实例部署](docs/multi-instance-deployment_CN.md) | 多个节点共用一个 PostgreSQL：流量分摊、故障自动切换、数据库无损切主、逐台滚动发布 |
+| [滚动发布的节点初始化](docs/multi-instance-node-bootstrap_CN.md) | 一台服务器接入逐台发布流程前需要做的准备 |
 
 ## 🤝 贡献
 

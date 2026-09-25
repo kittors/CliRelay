@@ -1,0 +1,16 @@
+; Client end of the migration tunnel on the standby host: Patroni's
+; standby_cluster connects to 127.0.0.1:25431.
+foreground = yes
+debug = notice
+[clirelay-pg]
+client = yes
+accept = 127.0.0.1:25431
+connect = 43.255.122.4:25431
+cert = /etc/clirelay-cluster/tls/node.crt
+key = /etc/clirelay-cluster/tls/node.key
+CAfile = /etc/clirelay-cluster/tls/ca.crt
+verifyChain = yes
+; the far end must present the old primary's certificate
+checkHost = n43
+socket = l:TCP_NODELAY=1
+socket = r:TCP_NODELAY=1
