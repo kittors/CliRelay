@@ -11,8 +11,8 @@ import (
 
 func TestRuntimeMigrationsCoverCoreTables(t *testing.T) {
 	migrations := RuntimeMigrations()
-	if len(migrations) != 31 {
-		t.Fatalf("RuntimeMigrations len = %d, want 31", len(migrations))
+	if len(migrations) != 32 {
+		t.Fatalf("RuntimeMigrations len = %d, want 32", len(migrations))
 	}
 	// Appended from laterRuntimeMigrations() because migrations.go sits at its
 	// structure-gate size ceiling.
@@ -24,11 +24,20 @@ func TestRuntimeMigrationsCoverCoreTables(t *testing.T) {
 	if migrations[28].Version != "202608270001_end_user_unbound_profile_scope_cleanup" {
 		t.Fatalf("scope cleanup migration version = %q", migrations[28].Version)
 	}
-	// Latest: completion marker for the one-shot pass that locks portal accounts
-	// still on the legacy backfill password; without it the pass would re-run on
+	// Completion marker for the one-shot pass that locks portal accounts still
+	// on the legacy backfill password; without it the pass would re-run on
 	// every boot.
 	if migrations[30].Version != "202609240001_end_user_legacy_password_lock_state" {
-		t.Fatalf("latest migration version = %q", migrations[30].Version)
+		t.Fatalf("legacy password lock migration version = %q", migrations[30].Version)
+	}
+	// Latest: exactly-once keys for request log writes. It must be a new table,
+	// not an index on request_logs, so upgrading never blocks log writes.
+	if migrations[31].Version != "202609250001_request_log_idempotency_keys" {
+		t.Fatalf("latest migration version = %q", migrations[31].Version)
+	}
+	if !strings.Contains(migrations[31].SQL, "CREATE TABLE IF NOT EXISTS request_log_idempotency_keys") ||
+		strings.Contains(migrations[31].SQL, "ON request_logs") {
+		t.Fatalf("request log idempotency migration must only add its own table: %q", migrations[31].SQL)
 	}
 	if !strings.Contains(migrations[30].SQL, "CREATE TABLE IF NOT EXISTS end_user_legacy_password_lock_state") {
 		t.Fatalf("legacy password lock migration missing its table: %q", migrations[30].SQL)

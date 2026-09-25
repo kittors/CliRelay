@@ -232,7 +232,7 @@ func cachedAIAccountSubjectWeeklyCycle(subjectID string) (AIAccountSubjectQuotaC
 	return selectAIAccountSubjectWeeklyCycle(cycles)
 }
 
-func loadAIAccountSubjectWeeklyCycleTx(tx *sql.Tx, subjectID string) (AIAccountSubjectQuotaCycle, bool, error) {
+func loadAIAccountSubjectWeeklyCycleTx(tx usageWriteTx, subjectID string) (AIAccountSubjectQuotaCycle, bool, error) {
 	rows, err := tx.Query(`
 		SELECT auth_subject_id, provider, quota_key, cycle_start_at, reset_at, window_seconds, last_verified_at
 		FROM ai_account_subject_quota_cycles
@@ -269,7 +269,7 @@ func loadAIAccountSubjectWeeklyCycleTx(tx *sql.Tx, subjectID string) (AIAccountS
 	return cycle, ok, nil
 }
 
-func aiAccountSubjectCycleAt(tx *sql.Tx, subjectID string, at time.Time) (AIAccountSubjectQuotaCycle, bool, error) {
+func aiAccountSubjectCycleAt(tx usageWriteTx, subjectID string, at time.Time) (AIAccountSubjectQuotaCycle, bool, error) {
 	cycle, ok := cachedAIAccountSubjectWeeklyCycle(subjectID)
 	if !ok {
 		var err error
@@ -326,7 +326,7 @@ func formatAIAccountSubjectCycleBucketStart(value time.Time) string {
 // projectAIAccountSubjectUsageTx is the request-hot B-layer projection. It only
 // uses the server-computed subject already captured by usageReporter; it never
 // reads or upserts the low-frequency tenant binding table.
-func projectAIAccountSubjectUsageTx(tx *sql.Tx, authSubjectID string, failed bool, cost float64, totalTokens int64, at time.Time) error {
+func projectAIAccountSubjectUsageTx(tx usageWriteTx, authSubjectID string, failed bool, cost float64, totalTokens int64, at time.Time) error {
 	if tx == nil {
 		return nil
 	}

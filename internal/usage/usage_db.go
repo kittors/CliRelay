@@ -740,6 +740,11 @@ func initOpenedDBLocked(db, readDB *sql.DB, dbPath, driver string, storageCfg co
 		migrateRequestLogContentSessionIDColumn(db)
 		log.Debugf("usage: ensuring request log detail indexes")
 		ensureRequestLogDetailIndexes(db)
+		if err := ensureRequestLogIdempotencyTable(db); err != nil {
+			_ = db.Close()
+			usageDB, usageReadDB = nil, nil
+			return err
+		}
 	}
 	bootstrapAIAccountStatusReadModels(db, loc)
 	if err := ensureAIAccountSharedSubjectTables(db); err != nil {
@@ -841,16 +846,6 @@ func CloseDB() {
 	usageDBMu.Unlock()
 	resetAIAccountSubjectCycleCache()
 	log.Info("usage: database closed")
-}
-
-// tokenUsageCallback is set by SetTokenUsageCallback to notify external
-// rate limiters (e.g. quota middleware) of token consumption.
-var tokenUsageCallback func(apiKey string, totalTokens int64)
-
-// SetTokenUsageCallback registers a function to be called after each
-// request's tokens are recorded. Used by the quota middleware for TPM tracking.
-func SetTokenUsageCallback(fn func(apiKey string, totalTokens int64)) {
-	tokenUsageCallback = fn
 }
 
 // MigrateFromSnapshot imports all request details from an existing

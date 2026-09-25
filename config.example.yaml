@@ -54,6 +54,18 @@ redis:
   password: ""
   db: 0
 
+# Riding out a short database outage (a restart or a primary failover).
+# All fields are optional; the defaults below apply when the block is absent.
+# db-resilience:
+#   # Request logs the database cannot take are kept here and replayed in order
+#   # once it is back, also after a restart. Must be persistent storage.
+#   # Empty: <auth-dir parent>/data/usage-spool when that data directory exists,
+#   # else <auth-dir parent>/usage-spool. Env override: CLIRELAY_USAGE_SPOOL_DIR.
+#   usage-spool-dir: ""
+#   # Disk cap; when full the oldest records are dropped (logged). -1 disables
+#   # spooling and restores dropping records the database refuses.
+#   usage-spool-max-size-mb: 1024
+
 # TLS settings for HTTPS. When enabled, the server listens with the provided certificate and key.
 tls:
   enable: false
