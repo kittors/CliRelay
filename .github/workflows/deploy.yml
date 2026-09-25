@@ -184,6 +184,7 @@ jobs:
           NODE_SSH_KEY: ${{ secrets[format('SSH_PRIVATE_KEY_{0}', matrix.node)] || secrets.SSH_PRIVATE_KEY }}
           NODE_KNOWN_HOSTS: ${{ secrets[format('DEPLOY_SSH_KNOWN_HOSTS_{0}', matrix.node)] || secrets.DEPLOY_SSH_KNOWN_HOSTS }}
           NODE_SMOKE_IP: ${{ matrix.node == 'default' && (secrets.SMOKE_IP || vars.CLIRELAY_SMOKE_IP) || secrets[format('SMOKE_IP_{0}', matrix.node)] || vars[format('CLIRELAY_SMOKE_IP_{0}', matrix.node)] }}
+          NODE_JUMP: ${{ secrets[format('SSH_JUMP_{0}', matrix.node)] }}
         run: ./scripts/gha-node-ssh.sh
 
       - name: Check node is ready for this release
@@ -271,6 +272,7 @@ jobs:
           NODE_SSH_KEY: ${{ secrets[format('SSH_PRIVATE_KEY_{0}', matrix.node)] || secrets.SSH_PRIVATE_KEY }}
           NODE_KNOWN_HOSTS: ${{ secrets[format('DEPLOY_SSH_KNOWN_HOSTS_{0}', matrix.node)] || secrets.DEPLOY_SSH_KNOWN_HOSTS }}
           NODE_SMOKE_IP: ${{ matrix.node == 'default' && (secrets.SMOKE_IP || vars.CLIRELAY_SMOKE_IP) || secrets[format('SMOKE_IP_{0}', matrix.node)] || vars[format('CLIRELAY_SMOKE_IP_{0}', matrix.node)] }}
+          NODE_JUMP: ${{ secrets[format('SSH_JUMP_{0}', matrix.node)] }}
         run: ./scripts/gha-node-ssh.sh
 
       # Staging path is /opt/clirelay2/incoming; root-owned entrypoint installs + deploys.

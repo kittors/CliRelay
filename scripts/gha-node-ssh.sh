@@ -13,6 +13,9 @@
 #   NODE_KNOWN_HOSTS  DEPLOY_SSH_KNOWN_HOSTS_<node>, else DEPLOY_SSH_KNOWN_HOSTS
 #   NODE_SMOKE_IP     optional public address to pin post-deploy probes to;
 #                     defaults to NODE_HOST when that is an address
+#   NODE_JUMP         SSH_JUMP_<node>, optional user@host[:port] to reach the
+#                     node through (ProxyJump); its host key must be in the
+#                     node's known_hosts as well
 #
 # Appends NODE_SMOKE_IP to $GITHUB_ENV for the steps that probe the node.
 set -euo pipefail
@@ -43,6 +46,34 @@ esac
 case "$port" in
 '' | *[!0-9]*) fail "node ${node}: $(secret_name SERVER_PORT) must be a port number" ;;
 esac
+# Some providers drop inbound SSH from parts of the runners' address space, so
+# a node can be reached through a jump host that always gets through. The jump
+# host is authenticated exactly like the node: same key, strict known_hosts.
+jump="${NODE_JUMP:-}"
+jump_user=
+jump_host=
+jump_port=22
+if [ -n "$jump" ]; then
+	case "$jump" in
+	*@*) ;;
+	*) fail "node ${node}: $(secret_name SSH_JUMP) must be user@host[:port]" ;;
+	esac
+	jump_user="${jump%%@*}"
+	jump_hostport="${jump#*@}"
+	jump_host="${jump_hostport%%:*}"
+	if [ "$jump_hostport" != "$jump_host" ]; then
+		jump_port="${jump_hostport#*:}"
+	fi
+	case "$jump_user" in
+	'' | *[!A-Za-z0-9_.-]*) fail "node ${node}: $(secret_name SSH_JUMP) has an invalid user" ;;
+	esac
+	case "$jump_host" in
+	'' | *[!A-Za-z0-9.-]*) fail "node ${node}: $(secret_name SSH_JUMP) must name a host name or IPv4 address" ;;
+	esac
+	case "$jump_port" in
+	'' | *[!0-9]*) fail "node ${node}: $(secret_name SSH_JUMP) has an invalid port" ;;
+	esac
+fi
 [ -n "${NODE_SSH_KEY:-}" ] || fail "node ${node}: neither $(secret_name SSH_PRIVATE_KEY) nor SSH_PRIVATE_KEY is set"
 [ -n "${NODE_KNOWN_HOSTS:-}" ] || fail "node ${node}: neither $(secret_name DEPLOY_SSH_KNOWN_HOSTS) nor DEPLOY_SSH_KNOWN_HOSTS is set"
 
@@ -65,8 +96,32 @@ fi
 if ! ssh-keygen -F "$known_key" -f "${ssh_dir}/known_hosts" >/dev/null 2>&1; then
 	fail "node ${node}: known_hosts has no entry for ${known_key}; regenerate $(secret_name DEPLOY_SSH_KNOWN_HOSTS) with: ssh-keyscan -p ${port} ${host}"
 fi
+if [ -n "$jump" ]; then
+	if [ "$jump_port" = 22 ]; then
+		jump_known_key="$jump_host"
+	else
+		jump_known_key="[${jump_host}]:${jump_port}"
+	fi
+	if ! ssh-keygen -F "$jump_known_key" -f "${ssh_dir}/known_hosts" >/dev/null 2>&1; then
+		fail "node ${node}: known_hosts has no entry for the jump host ${jump_known_key}; add the output of: ssh-keyscan -p ${jump_port} ${jump_host}"
+	fi
+fi
 
 {
+	if [ -n "$jump" ]; then
+		echo "Host deploy-jump"
+		echo "  HostName ${jump_host}"
+		echo "  Port ${jump_port}"
+		echo "  User ${jump_user}"
+		echo "  IdentityFile ${ssh_dir}/deploy_key"
+		echo "  IdentitiesOnly yes"
+		echo "  UserKnownHostsFile ${ssh_dir}/known_hosts"
+		echo "  StrictHostKeyChecking yes"
+		echo "  BatchMode yes"
+		echo "  ConnectTimeout 20"
+		echo "  ServerAliveInterval 15"
+		echo "  ServerAliveCountMax 8"
+	fi
 	echo "Host deploy-target"
 	echo "  HostName ${host}"
 	echo "  Port ${port}"
@@ -81,6 +136,9 @@ fi
 	# a synchronous drain; keepalives stop a NAT from dropping it.
 	echo "  ServerAliveInterval 15"
 	echo "  ServerAliveCountMax 8"
+	if [ -n "$jump" ]; then
+		echo "  ProxyJump deploy-jump"
+	fi
 } >"${ssh_dir}/config"
 chmod 600 "${ssh_dir}/config"
 
@@ -107,4 +165,8 @@ fi
 if [ -n "${GITHUB_ENV:-}" ]; then
 	echo "NODE_SMOKE_IP=${smoke_ip}" >>"$GITHUB_ENV"
 fi
-echo "node ${node}: ssh deploy@${host}:${port}, probes pinned to ${smoke_ip}"
+via=""
+if [ -n "$jump" ]; then
+	via=" via ${jump_user}@${jump_host}:${jump_port}"
+fi
+echo "node ${node}: ssh deploy@${host}:${port}${via}, probes pinned to ${smoke_ip}"
