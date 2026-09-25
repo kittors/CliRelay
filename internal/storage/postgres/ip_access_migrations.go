@@ -30,6 +30,12 @@ func laterRuntimeMigrations() []Migration {
 		// counters, so a management write based on stale data fails instead of
 		// silently overwriting a change made on another node.
 		{Version: "202609250004_config_optimistic_versions", SQL: configOptimisticVersionsSQL},
+		// Cross-node sessions and asynchronous work; see
+		// cluster_session_migrations.go.
+		{Version: "202609250005_oauth_sessions", SQL: oauthSessionsSQL},
+		{Version: "202609250006_async_task_routes", SQL: asyncTaskRoutesSQL},
+		{Version: "202609250007_management_jobs", SQL: managementJobsSQL},
+		{Version: "202609250008_warmup_policies", SQL: warmupPoliciesSQL},
 	}
 }
 

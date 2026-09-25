@@ -66,9 +66,9 @@ func (h *Handler) aiAccountStatusService() *aiaccountstatus.Service {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.aiAccountStatus == nil {
-		h.aiAccountStatus = aiaccountstatus.New(h.cfg, h.authManager, func(tenantID string) *managementapitools.Service {
+		h.aiAccountStatus = shareRefreshJobs(aiaccountstatus.New(h.cfg, h.authManager, func(tenantID string) *managementapitools.Service {
 			return h.APITools().serviceForTenant(tenantID)
-		}, h.invalidateAIAccountCaches)
+		}, h.invalidateAIAccountCaches))
 	}
 	return h.aiAccountStatus
 }

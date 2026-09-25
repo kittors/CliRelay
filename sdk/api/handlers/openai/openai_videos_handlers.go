@@ -4,11 +4,14 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/api/handlers"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v6/sdk/translator"
+	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -73,6 +76,9 @@ func (h *OpenAIVideosAPIHandler) Generations(c *gin.Context) {
 	stopKeepAlive := h.StartNonStreamingKeepAlive(c, cliCtx)
 	defer stopKeepAlive()
 
+	execMeta := cloneImageExecutionMetadata(meta)
+	selected := &selectedAuthRecorder{}
+	execMeta[coreexecutor.SelectedAuthCallbackMetadataKey] = selected.record
 	resp, err := h.AuthManager.Execute(cliCtx, []string{provider}, coreexecutor.Request{
 		Model:   modelName,
 		Payload: rawJSON,
@@ -81,7 +87,7 @@ func (h *OpenAIVideosAPIHandler) Generations(c *gin.Context) {
 		Alt:             openAIVideoGenerationAlt,
 		OriginalRequest: rawJSON,
 		SourceFormat:    sdktranslator.FromString("openai"),
-		Metadata:        cloneImageExecutionMetadata(meta),
+		Metadata:        execMeta,
 	})
 	if err != nil {
 		status := http.StatusBadGateway
@@ -93,11 +99,17 @@ func (h *OpenAIVideosAPIHandler) Generations(c *gin.Context) {
 	}
 
 	if requestID := strings.TrimSpace(gjson.GetBytes(resp.Payload, "request_id").String()); requestID != "" {
-		rememberVideoJob(requestID, videoJob{
+		route := VideoJobRoute{
 			Model:    modelName,
 			Provider: provider,
+			AuthID:   selected.id(),
 			TenantID: tenantIDFromMetadata(meta),
-		})
+		}
+		if errRemember := rememberVideoJob(cliCtx, requestID, route); errRemember != nil {
+			// The job exists upstream either way, so the caller still gets its id;
+			// polls will answer that the id is unknown rather than guess an account.
+			log.WithError(errRemember).WithField("request_id", requestID).Warn("openai videos: failed to record video submission")
+		}
 	}
 
 	handlers.WriteUpstreamHeaders(c.Writer.Header(), resp.Headers)
@@ -112,9 +124,21 @@ func (h *OpenAIVideosAPIHandler) Status(c *gin.Context) {
 		return
 	}
 
-	job, ok := lookupVideoJob(requestID)
+	cliCtx := ginRequestContext(c)
+	meta := requestImageExecutionMetadata(c)
+
+	job, ok, err := lookupVideoJob(cliCtx, requestID)
+	if err != nil {
+		writeOpenAIImagesError(c, http.StatusServiceUnavailable, "server_error", "video request lookup is unavailable; retry shortly")
+		return
+	}
+	// Another tenant's id is answered exactly like an unknown one, so polling
+	// cannot confirm that an id exists.
+	if ok && coreauth.NormalizedTenantID(job.TenantID) != coreauth.NormalizedTenantID(tenantIDFromMetadata(meta)) {
+		ok = false
+	}
 	if !ok {
-		// The mapping is in-memory with a TTL, so an id from a previous process or
+		// The mapping expires with the job, so an id from a restarted process or
 		// from hours ago is genuinely unknown here. Say so rather than guessing an
 		// account: polling with the wrong credential returns someone else's 404.
 		writeOpenAIImagesError(c, http.StatusNotFound, "invalid_request_error",
@@ -133,9 +157,10 @@ func (h *OpenAIVideosAPIHandler) Status(c *gin.Context) {
 		return
 	}
 
-	cliCtx := ginRequestContext(c)
-	meta := requestImageExecutionMetadata(c)
-
+	execMeta := cloneImageExecutionMetadata(meta)
+	if job.AuthID != "" {
+		execMeta[coreexecutor.PinnedAuthMetadataKey] = job.AuthID
+	}
 	resp, err := h.AuthManager.Execute(cliCtx, []string{job.Provider}, coreexecutor.Request{
 		Model:   job.Model,
 		Payload: payload,
@@ -144,7 +169,7 @@ func (h *OpenAIVideosAPIHandler) Status(c *gin.Context) {
 		Alt:             openAIVideoStatusAlt,
 		OriginalRequest: payload,
 		SourceFormat:    sdktranslator.FromString("openai"),
-		Metadata:        cloneImageExecutionMetadata(meta),
+		Metadata:        execMeta,
 	})
 	if err != nil {
 		status := http.StatusBadGateway
@@ -156,7 +181,9 @@ func (h *OpenAIVideosAPIHandler) Status(c *gin.Context) {
 	}
 
 	if strings.EqualFold(strings.TrimSpace(gjson.GetBytes(resp.Payload, "status").String()), "done") {
-		forgetVideoJob(requestID)
+		if errForget := forgetVideoJob(cliCtx, requestID); errForget != nil {
+			log.WithError(errForget).WithField("request_id", requestID).Debug("openai videos: failed to drop finished video submission")
+		}
 	}
 
 	handlers.WriteUpstreamHeaders(c.Writer.Header(), resp.Headers)
@@ -169,4 +196,24 @@ func tenantIDFromMetadata(meta map[string]any) string {
 	}
 	tenant, _ := meta[coreexecutor.TenantMetadataKey].(string)
 	return strings.TrimSpace(tenant)
+}
+
+// selectedAuthRecorder learns which credential the scheduler picked for a
+// submission. The scheduler reports each pick through the callback; the last
+// one is the credential that produced the response.
+type selectedAuthRecorder struct {
+	mu     sync.Mutex
+	authID string
+}
+
+func (r *selectedAuthRecorder) record(authID string) {
+	r.mu.Lock()
+	r.authID = strings.TrimSpace(authID)
+	r.mu.Unlock()
+}
+
+func (r *selectedAuthRecorder) id() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.authID
 }

@@ -227,6 +227,8 @@ func (s *Server) configureManagementHandler(
 	// Quota snapshots have to keep advancing for accounts nobody is watching;
 	// see config.AccountStatusRefreshConfig.
 	s.mgmt.StartAccountStatusScheduler()
+	// Stored warmup policies run from startup, not from the first panel visit.
+	s.mgmt.StartWarmupScheduler()
 }
 
 func (s *Server) registerBuiltinModules(cfg *config.Config, accessManager *sdkaccess.Manager) {

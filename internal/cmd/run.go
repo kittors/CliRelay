@@ -211,6 +211,7 @@ func stopRuntimeDataStack() {
 	if stopAudit != nil {
 		stopAudit()
 	}
+	stopSharedSessionState()
 	// Before the database closes: queued usage records still need it, and
 	// whatever it cannot take goes to the spool for the next start.
 	stopUsageSpool()
@@ -305,6 +306,7 @@ func initializeRuntimeDataStack(cfg *config.Config, configPath string, loc *time
 	// database is unreachable.
 	usage.SetTokenUsageCallback(middleware.RecordTokenUsageForRequest)
 	startUsageSpool(cfg)
+	startSharedSessionState(cfg)
 	return nil
 }
 

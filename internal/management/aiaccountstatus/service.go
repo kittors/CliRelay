@@ -11,6 +11,7 @@ import (
 	xaiauth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/xai"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	managementapitools "github.com/router-for-me/CLIProxyAPI/v6/internal/management/apitools"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/management/jobsnapshot"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
@@ -55,6 +56,8 @@ type Service struct {
 	lastSuccess   map[string]time.Time // shared subject -> last successful probe (closes force=false TOCTOU)
 	staleNormMu   sync.Mutex
 	lastStaleNorm map[string]time.Time
+	// sharedJobs publishes job progress to the other nodes; nil on one node.
+	sharedJobs *jobsnapshot.Publisher
 }
 
 type job struct {
@@ -65,6 +68,7 @@ type job struct {
 	UpdatedAt time.Time
 	Results   map[string]*AccountRefreshResult
 	order     []string
+	version   int64
 }
 
 func New(cfg *config.Config, authManager *coreauth.Manager, apiToolsFor APIToolsFactory, invalidate CacheInvalidator) *Service {
@@ -287,7 +291,9 @@ func (s *Service) StartRefresh(tenantID string, req RefreshRequest) RefreshAccep
 		j.State = "completed"
 	}
 	s.jobs[j.ID] = j
+	shared, sharedSnap := s.shareJobLocked(j)
 	s.mu.Unlock()
+	shared.Publish(sharedSnap)
 
 	// Persist queued only for truly accepted accounts (partial update).
 	for _, auth := range workAuths {
@@ -421,13 +427,7 @@ func (s *Service) runJob(jobID, tenantID string, auths []*coreauth.Auth) {
 		}()
 	}
 	wg.Wait()
-
-	s.mu.Lock()
-	if j := s.jobs[jobID]; j != nil {
-		j.State = "completed"
-		j.UpdatedAt = time.Now().UTC()
-	}
-	s.mu.Unlock()
+	s.finishJob(jobID)
 }
 
 func (s *Service) refreshOne(jobID, tenantID string, auth *coreauth.Auth, subjectID string) {
@@ -733,58 +733,6 @@ func (s *Service) viewFromPersistedRecord(tenantID string, auth *coreauth.Auth, 
 	return &view
 }
 
-func (s *Service) setResult(jobID, subjectID string, fn func(*AccountRefreshResult)) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	j := s.jobs[jobID]
-	if j == nil {
-		return
-	}
-	r := j.Results[subjectID]
-	if r == nil {
-		r = &AccountRefreshResult{AuthSubjectID: subjectID}
-		j.Results[subjectID] = r
-	}
-	fn(r)
-	j.UpdatedAt = time.Now().UTC()
-}
-
-func (s *Service) GetJob(tenantID, jobID string) (JobSnapshot, bool) {
-	s.purgeExpiredJobs()
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	j := s.jobs[jobID]
-	if j == nil || j.TenantID != strings.TrimSpace(tenantID) {
-		return JobSnapshot{}, false
-	}
-	snap := JobSnapshot{
-		JobID:     j.ID,
-		TenantID:  j.TenantID,
-		State:     j.State,
-		CreatedAt: j.CreatedAt,
-		UpdatedAt: j.UpdatedAt,
-		Results:   make([]AccountRefreshResult, 0, len(j.order)),
-	}
-	for _, sid := range j.order {
-		r := j.Results[sid]
-		if r == nil {
-			continue
-		}
-		snap.Results = append(snap.Results, *r)
-		snap.Total++
-		switch {
-		case r.ErrorCode == "deduplicated" || r.ErrorCode == "fresh":
-			snap.Completed++
-		case r.State == RefreshSuccess:
-			snap.Completed++
-		case r.State == RefreshError:
-			snap.Failed++
-			snap.Completed++
-		}
-	}
-	return snap, true
-}
-
 func (s *Service) ListStatus(tenantID string, authIndexes, authSubjectIDs []string) (StatusListResponse, error) {
 	tenantID = strings.TrimSpace(tenantID)
 	s.maybeNormalizeStaleRefresh(tenantID)
@@ -885,26 +833,4 @@ func (s *Service) listAuths(tenantID string) []*coreauth.Auth {
 		return nil
 	}
 	return s.authManager.ListForTenant(tenantID)
-}
-
-func (s *Service) purgeExpiredJobs() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	now := time.Now()
-	// Drop stale success memory outside min-gap so the map stays bounded.
-	for key, at := range s.lastSuccess {
-		if now.Sub(at) >= accountRefreshMinGap {
-			delete(s.lastSuccess, key)
-		}
-	}
-	for id, j := range s.jobs {
-		if now.Sub(j.UpdatedAt) > jobTTL {
-			delete(s.jobs, id)
-		}
-	}
-	for key, jobID := range s.inFlight {
-		if _, ok := s.jobs[jobID]; !ok {
-			delete(s.inFlight, key)
-		}
-	}
 }
