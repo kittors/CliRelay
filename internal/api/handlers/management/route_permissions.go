@@ -100,7 +100,7 @@ func permissionForManagementRequest(method, path string) string {
 		return "tenant.roles.update"
 	case strings.HasPrefix(relative, "/dashboard-summary"):
 		return "dashboard.read"
-	case strings.HasPrefix(relative, "/system-stats"):
+	case strings.HasPrefix(relative, "/system-stats"), relative == "/cluster":
 		return "system.status.read"
 	// Sensitive request/error log files — not system.config.
 	case strings.HasPrefix(relative, "/request-error-logs"), strings.HasPrefix(relative, "/request-log-by-id"):

@@ -54,6 +54,7 @@ func newServerEngine(cfg *config.Config, optionState *serverOptionConfig) *gin.E
 		optionState.engineConfigurator(engine)
 	}
 
+	engine.Use(clusterNodeHeaderMiddleware())
 	engine.Use(logging.GinLogrusLogger())
 	engine.Use(logging.GinLogrusRecovery())
 	// Admission runs before any body handling: a denied source must not be able

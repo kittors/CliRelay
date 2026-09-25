@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/authevents"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/cluster"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/ipaccess"
 	settingsstore "github.com/router-for-me/CLIProxyAPI/v6/internal/management/settings/store"
@@ -74,6 +75,10 @@ func startAuthEventRetention(ctx context.Context, recorder *authevents.Recorder,
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
+				// The attempt log is shared; the cluster leader sweeps it.
+				if !cluster.Default().IsLeader() {
+					continue
+				}
 				retention := time.Duration(registry.Policy().AttemptRetentionDays) * 24 * time.Hour
 				if retention <= 0 {
 					retention = ipaccess.DefaultAttemptRetentionDays * 24 * time.Hour

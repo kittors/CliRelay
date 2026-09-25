@@ -11,8 +11,15 @@ import (
 
 func TestRuntimeMigrationsCoverCoreTables(t *testing.T) {
 	migrations := RuntimeMigrations()
-	if len(migrations) != 32 {
-		t.Fatalf("RuntimeMigrations len = %d, want 32", len(migrations))
+	if len(migrations) != 33 {
+		t.Fatalf("RuntimeMigrations len = %d, want 33", len(migrations))
+	}
+	// Membership table of multi-instance deployments.
+	if migrations[31].Version != "202609250001_cluster_nodes" {
+		t.Fatalf("cluster nodes migration version = %q", migrations[31].Version)
+	}
+	if !strings.Contains(migrations[31].SQL, "CREATE TABLE IF NOT EXISTS cluster_nodes") {
+		t.Fatalf("cluster nodes migration missing its table: %q", migrations[31].SQL)
 	}
 	// Appended from laterRuntimeMigrations() because migrations.go sits at its
 	// structure-gate size ceiling.
@@ -32,12 +39,12 @@ func TestRuntimeMigrationsCoverCoreTables(t *testing.T) {
 	}
 	// Latest: exactly-once keys for request log writes. It must be a new table,
 	// not an index on request_logs, so upgrading never blocks log writes.
-	if migrations[31].Version != "202609250001_request_log_idempotency_keys" {
-		t.Fatalf("latest migration version = %q", migrations[31].Version)
+	if migrations[32].Version != "202609250002_request_log_idempotency_keys" {
+		t.Fatalf("latest migration version = %q", migrations[32].Version)
 	}
-	if !strings.Contains(migrations[31].SQL, "CREATE TABLE IF NOT EXISTS request_log_idempotency_keys") ||
-		strings.Contains(migrations[31].SQL, "ON request_logs") {
-		t.Fatalf("request log idempotency migration must only add its own table: %q", migrations[31].SQL)
+	if !strings.Contains(migrations[32].SQL, "CREATE TABLE IF NOT EXISTS request_log_idempotency_keys") ||
+		strings.Contains(migrations[32].SQL, "ON request_logs") {
+		t.Fatalf("request log idempotency migration must only add its own table: %q", migrations[32].SQL)
 	}
 	if !strings.Contains(migrations[30].SQL, "CREATE TABLE IF NOT EXISTS end_user_legacy_password_lock_state") {
 		t.Fatalf("legacy password lock migration missing its table: %q", migrations[30].SQL)

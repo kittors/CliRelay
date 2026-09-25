@@ -26,7 +26,7 @@ func TestRegisterManagementRouteTable(t *testing.T) {
 		routes[key] = route
 	}
 
-	if got, want := len(routes), 337; got != want {
+	if got, want := len(routes), 338; got != want {
 		t.Fatalf("route count = %d, want %d", got, want)
 	}
 	if got, want := sortedRouteKeys(routes), expectedManagementRoutes(); !slices.Equal(got, want) {
@@ -45,6 +45,7 @@ func TestRegisterManagementRouteTable(t *testing.T) {
 		"PATCH /v0/management/content-moderation/channel-bindings",
 		"GET /v0/management/dashboard-summary",
 		"GET /v0/management/system-stats/ws",
+		"GET /v0/management/cluster",
 		"GET /v0/management/model-configs",
 		"PUT /v0/management/model-configs/*id",
 		"PATCH /v0/management/auth-group-model-owner-mappings",
@@ -149,6 +150,7 @@ func TestManagementRoutePermissionsComplete(t *testing.T) {
 		{http.MethodGet, "/v0/management/ai-accounts/status", "auth_files.read"},
 		{http.MethodPost, "/v0/management/ai-accounts/status-refresh", "auth_files.write"},
 		{http.MethodGet, "/v0/management/ai-accounts/status-refresh/job-1", "auth_files.read"},
+		{http.MethodGet, "/v0/management/cluster", "system.status.read"},
 		{http.MethodGet, "/v0/management/totally-unknown-route", ""},
 	}
 	for _, item := range locked {
@@ -325,6 +327,7 @@ func expectedManagementRoutes() []string {
 		"GET /v0/management/channel-groups",
 		"GET /v0/management/claude-api-key",
 		"GET /v0/management/cline-api-key",
+		"GET /v0/management/cluster",
 		"GET /v0/management/codex-api-key",
 		"GET /v0/management/codex-auth-url",
 		"GET /v0/management/codex-oauth-admission",
