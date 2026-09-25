@@ -257,7 +257,8 @@ func (c *Client) Status() Status {
 }
 
 // Eval runs script on the request path. It returns ErrUnavailable at once
-// while the client is down; otherwise the call is bounded by the op timeout.
+// while the client is down; otherwise the call is bounded by the op timeout
+// (or an earlier deadline on ctx).
 //
 // The caller's cancellation is deliberately not propagated: a command that
 // takes a slot or mints an id must either complete or time out, because a
@@ -324,11 +325,17 @@ func (c *Client) TxPipelineBackground(ctx context.Context, fn func(redis.Pipelin
 	return nil
 }
 
+// opContext bounds one command by timeout, or by the caller's deadline when
+// that is earlier. The caller's cancellation is not inherited (see Eval).
 func (c *Client) opContext(parent context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
 	if parent == nil {
 		parent = context.Background()
 	}
-	return context.WithTimeout(context.WithoutCancel(parent), timeout)
+	deadline := time.Now().Add(timeout)
+	if d, ok := parent.Deadline(); ok && d.Before(deadline) {
+		deadline = d
+	}
+	return context.WithDeadline(context.WithoutCancel(parent), deadline)
 }
 
 // Observe classifies a command error. A connectivity failure marks the client

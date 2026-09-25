@@ -311,3 +311,26 @@ func (p *blackholeProxy) pipe(dst, src net.Conn) {
 		}
 	}
 }
+
+func TestOpContextHonoursEarlierDeadlineButNotCancellation(t *testing.T) {
+	c := &Client{opts: fastOptions().withDefaults()}
+	parent, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	ctx, done := c.opContext(parent, time.Second)
+	defer done()
+	deadline, ok := ctx.Deadline()
+	if !ok || time.Until(deadline) > 60*time.Millisecond {
+		t.Fatalf("an earlier caller deadline must bound the command, got %v", time.Until(deadline))
+	}
+	cancel()
+	if ctx.Err() != nil {
+		t.Fatal("the caller's cancellation must not abort a command already sent")
+	}
+
+	long, cancelLong := context.WithTimeout(context.Background(), time.Hour)
+	defer cancelLong()
+	ctx2, done2 := c.opContext(long, 200*time.Millisecond)
+	defer done2()
+	if d, _ := ctx2.Deadline(); time.Until(d) > 250*time.Millisecond {
+		t.Fatal("a later caller deadline must not extend the op timeout")
+	}
+}
