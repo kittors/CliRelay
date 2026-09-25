@@ -15,6 +15,7 @@ Single-instance behaviour is exactly what it was before clustering existed. This
 - **Automatic takeover.**
   - When a node's CliRelay process is down, being deployed, or saturated, its nginx hands the same request to the peer node within the request.
   - When a whole machine dies, `clirelay-dnswatch` on the arbiter removes it from DNS after three failed probes (about 30 s) and adds it back once it recovers.
+  - When a node can no longer reach its upstream proxies but its peer can, dnswatch removes it from DNS in about a minute (see 4.7).
   - When the database primary's machine dies, Patroni promotes the synchronous replica in about 20–40 s, and applications reconnect to it on their own.
 - **No data loss.**
   - Replication is synchronous: a commit lands on both database nodes.
@@ -231,8 +232,13 @@ server {                                    # accepts the peer's spill-over: loc
 The watcher is `cmd/clirelay-dnswatch`, plus `deploy/cluster/dnswatch/`. The unit file's header lists the install steps, and `dnswatch.example.yaml` is the configuration template.
 
 - **Probing.** Every 10 s the watcher requests `https://<node-ip>/readyz` with the hostname as SNI and a verified certificate. Three failures remove a node and three successes add it back, with at least 60 s between two changes of the same node.
+- **Egress check (`probe.egress_path`).** Nodes do not share one route to the upstream proxies: they sit with different providers and transit, so one node can lose the proxy provider while its peer still reaches it. On 2026-09-25 n156 lost its route to the proxy provider's address ranges while `/readyz` stayed healthy, and for about 43 minutes every Codex request that landed on n156 failed until a human pulled it from DNS. DNS health therefore includes egress:
+  - **On each node**, CliRelay opens a plain TCP connection every 15 s (3 s timeout) to each distinct proxy endpoint its upstream traffic may use: every enabled proxy-pool entry of every tenant, plus the global `proxy-url`. It sends nothing through it, performs no proxy handshake and uses no credentials. Two consecutive failed connects make an endpoint unreachable. `GET /readyz/egress` answers 204 while no endpoint is unreachable (also with no proxy configured, and before the first check after startup), otherwise 503 `{"status":"degraded","unreachable":N,"total":M}`. The body names no host; the node log names `host:port`. Like `/readyz`, the path bypasses the IP access list.
+  - **On the arbiter**, `egress_path: /readyz/egress` adds that request to every round; anything but 2xx fails, including a timeout or a 404 from a release without the endpoint. A ready node failing it three rounds in a row is **degraded** until it passes three in a row. DNS then lists the healthy nodes (ready, egress passing) if there are any; otherwise the degraded ones, so a proxy outage that hits every node changes nothing; otherwise nothing changes (see the safety rules).
+  - A node whose egress breaks leaves DNS after about a minute. `min_change_interval`, the hold file and dry-run apply as before. Degraded nodes show in the log, in the summary line (`healthy=… degraded=… unhealthy=…`), in `GET /status` (`state`, `egress`) and in the alerts `node_egress_degraded` / `node_egress_recovered`.
+  - Upgrade every node before setting `egress_path`. An enabled pool entry that is dead from everywhere degrades every node and so disables the preference: disable such entries. An empty `egress_path` keeps the readiness-only behaviour.
 - **Safety rules.**
-  - If no node is healthy, DNS is left untouched and an alert is raised. **It never deletes every record.**
+  - If no node passes readiness, DNS is left untouched and an alert is raised. **It never deletes every record.**
   - Records are added before stale ones are removed.
   - Only A records pointing at the listed node IPs are touched.
 - **Operating it.**
