@@ -481,11 +481,7 @@ func TestUsageSpoolFilesArePrivate(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX permissions")
 	}
-	parent := t.TempDir()
-	dir := filepath.Join(parent, "usage-spool")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatal(err)
-	}
+	dir := filepath.Join(t.TempDir(), "usage-spool")
 	spool, err := openUsageSpool(dir, 0)
 	if err != nil {
 		t.Fatalf("openUsageSpool() error = %v", err)

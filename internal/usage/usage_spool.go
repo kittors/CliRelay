@@ -110,10 +110,14 @@ func openUsageSpool(dir string, maxBytes int64) (*usageSpool, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("usage: create spool directory: %w", err)
 	}
-	// The directory may predate this release with a wider mode; the records in
-	// it are as sensitive as the database rows they stand in for.
-	if err := os.Chmod(dir, 0o700); err != nil {
-		return nil, fmt.Errorf("usage: restrict spool directory: %w", err)
+	// An operator-provided directory keeps its mode (it may be shared); the
+	// segment files are 0600 regardless, only their names would be visible.
+	if info, err := os.Stat(dir); err != nil {
+		return nil, fmt.Errorf("usage: stat spool directory: %w", err)
+	} else if !info.IsDir() {
+		return nil, fmt.Errorf("usage: spool path %s is not a directory", dir)
+	} else if info.Mode().Perm()&0o077 != 0 {
+		log.Warnf("usage: spool directory %s is accessible to other users (mode %o); its records carry API keys, 0700 is recommended", dir, info.Mode().Perm())
 	}
 	segmentMax := min(max(maxBytes/usageSpoolMinSegmentFraction, 1), int64(usageSpoolMaxSegmentBytes))
 	s := &usageSpool{

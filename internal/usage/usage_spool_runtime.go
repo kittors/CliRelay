@@ -102,7 +102,7 @@ func stopUsageSpoolLocked() {
 func overflowUsageRecord(record coreusage.Record) bool {
 	spool := activeUsageSpool()
 	if spool == nil {
-		log.Errorf("usage: request log %s lost: usage queue full and no spool is running", record.IdempotencyKey)
+		log.Errorf("usage: request log %s lost: the usage queue cannot take it and no spool is running", record.IdempotencyKey)
 		return false
 	}
 	entry := normalizeRequestLogEntry(defaultRequestStatistics.ingest(context.Background(), record))
