@@ -49,6 +49,15 @@ type Service struct {
 	// providerDiscovery keeps upstream model lists current for registration.
 	providerDiscovery providerDiscoveryState
 
+	// modelLists keeps the last model list each self-listing credential fetched.
+	modelLists credentialModelLists
+
+	// liveModels refreshes those lists in the background.
+	liveModels liveModelFetcher
+
+	// registrationLocks serialises model registration per credential.
+	registrationLocks registrationLocks
+
 	// serverOptions contains additional server configuration options.
 	serverOptions []api.ServerOption
 

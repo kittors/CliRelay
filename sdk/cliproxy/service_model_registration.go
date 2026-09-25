@@ -69,10 +69,13 @@ func oauthCatalogScope(a *coreauth.Auth) ([]oauthProviderModelConfigRow, []strin
 }
 
 // registerModelsForAuth (re)binds provider models in the global registry using the core auth ID as client identifier.
+// It never waits on an upstream: self-listing credentials register their last known list and refresh it in the background.
 func (s *Service) registerModelsForAuth(ctx context.Context, a *coreauth.Auth) {
 	if a == nil || a.ID == "" {
 		return
 	}
+	unlock := s.registrationLocks.lock(a.ID)
+	defer unlock()
 	if a.Disabled {
 		GlobalModelRegistry().UnregisterClient(a.ID)
 		return
@@ -115,6 +118,7 @@ func (s *Service) registerModelsForAuth(ctx context.Context, a *coreauth.Auth) {
 		}
 	}
 	var models []*ModelInfo
+	branch := "catalog"
 	switch provider {
 	case "gemini":
 		models = sdkmodelcatalog.StaticModelDefinitionsByChannel("gemini")
@@ -143,7 +147,7 @@ func (s *Service) registerModelsForAuth(ctx context.Context, a *coreauth.Auth) {
 		models = sdkmodelcatalog.StaticModelDefinitionsByChannel("aistudio")
 		models = applyExcludedModels(models, excluded)
 	case "antigravity":
-		models = s.fetchAntigravityRegistryModels(ctx, a, excluded)
+		models, branch = s.selfListedModels(a, provider, excluded)
 	case "claude":
 		// Always use the static Claude catalog (+ optional config / OAuth model
 		// configs). Live Anthropic /v1/models can return a subset of models and
@@ -237,7 +241,7 @@ func (s *Service) registerModelsForAuth(ctx context.Context, a *coreauth.Auth) {
 		// today, so a newly released model id is unroutable until we ship a
 		// catalog update. Honour the tenant's model library the same way
 		// claude/codex do, letting operators add an id and use it immediately.
-		models = s.fetchXAIRegistryModels(ctx, a, excluded)
+		models, branch = s.selfListedModels(a, provider, excluded)
 		catalogRows, mappedOwners := oauthCatalogScope(a)
 		models = appendOAuthProviderModelConfigs(models, provider, authKind, catalogRows, mappedOwners)
 		models = applyExcludedModels(models, excluded)
@@ -248,7 +252,7 @@ func (s *Service) registerModelsForAuth(ctx context.Context, a *coreauth.Auth) {
 		// Live discovery so a model Moonshot ships today is routable today; the
 		// tenant model library still supplements it, because the coding gateway
 		// lists what this account is entitled to rather than the full catalog.
-		models = s.fetchKimiRegistryModels(ctx, a, excluded)
+		models, branch = s.selfListedModels(a, provider, excluded)
 		catalogRows, mappedOwners := oauthCatalogScope(a)
 		models = appendOAuthProviderModelConfigs(models, provider, authKind, catalogRows, mappedOwners)
 		models = applyExcludedModels(models, excluded)
@@ -267,7 +271,7 @@ func (s *Service) registerModelsForAuth(ctx context.Context, a *coreauth.Auth) {
 		if key == "" {
 			key = strings.ToLower(strings.TrimSpace(a.Provider))
 		}
-		logModelRegistration(a, provider, authKind, "catalog", models)
+		logModelRegistration(a, provider, authKind, branch, models)
 		GlobalModelRegistry().RegisterClient(a.ID, key, applyModelPrefixes(models, a.Prefix, s.cfg != nil && s.cfg.ForceModelPrefix))
 		if provider == "antigravity" {
 			s.backfillAntigravityModels(a, models)

@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"context"
-	"os"
 	"path/filepath"
 	"time"
 
@@ -21,15 +20,9 @@ const (
 )
 
 // resolveUsageSpoolDir picks where the request log spool lives. The spool only
-// helps if it survives a restart, so the order prefers persistent locations:
-//
-//  1. db-resilience.usage-spool-dir, or CLIRELAY_USAGE_SPOOL_DIR;
-//  2. WRITABLE_PATH, the base the log directory already uses when set;
-//  3. a "data" directory next to the auth directory, when it exists. The
-//     Docker image mounts /CLIProxyAPI/data as a volume, while /CLIProxyAPI
-//     itself belongs to the container and is lost when it is recreated;
-//  4. the auth directory's parent;
-//  5. the working directory.
+// helps if it survives a restart, so it is db-resilience.usage-spool-dir or
+// CLIRELAY_USAGE_SPOOL_DIR when set, and otherwise a directory in the persistent
+// state location util.StateDir picks.
 func resolveUsageSpoolDir(cfg *config.Config) string {
 	if dir := cfg.DBResilience.UsageSpoolDirOverride(); dir != "" {
 		if resolved, err := util.ResolveAuthDir(dir); err == nil && resolved != "" {
@@ -37,18 +30,7 @@ func resolveUsageSpoolDir(cfg *config.Config) string {
 		}
 		return dir
 	}
-	if base := util.WritablePath(); base != "" {
-		return filepath.Join(base, usageSpoolDirName)
-	}
-	authDir, err := util.ResolveAuthDir(cfg.AuthDir)
-	if err != nil || authDir == "" {
-		return usageSpoolDirName
-	}
-	parent := filepath.Dir(authDir)
-	if info, err := os.Stat(filepath.Join(parent, "data")); err == nil && info.IsDir() {
-		return filepath.Join(parent, "data", usageSpoolDirName)
-	}
-	return filepath.Join(parent, usageSpoolDirName)
+	return filepath.Join(util.StateDir(cfg.AuthDir), usageSpoolDirName)
 }
 
 // startUsageSpool starts the request log spool. A spool that cannot start is
