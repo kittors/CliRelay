@@ -30,6 +30,9 @@ const (
 	// its current identity; two nodes loading the same credential would
 	// otherwise merge the same rows concurrently.
 	LockAuthSubjectMerge = "auth-subject-merge"
+	// LockAuthImport serialises the one-time import of local auth files into
+	// the shared credential store, so two first nodes cannot both import.
+	LockAuthImport = "auth-import"
 )
 
 // ErrLockTimeout is returned when a session lock is not acquired in time.

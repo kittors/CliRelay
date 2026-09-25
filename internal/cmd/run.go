@@ -49,6 +49,12 @@ func StartService(cfg *config.Config, configPath string, localPassword string) {
 		return
 	}
 	defer coordinator.Close()
+	stopClusterAuth, err := startClusterAuthStore(cfg)
+	if err != nil {
+		log.Errorf("cluster: failed to start the shared credential store: %v", err)
+		return
+	}
+	defer stopClusterAuth()
 
 	moderator := contentmoderation.NewRequestModerator(contentmoderation.NewStore(usage.RuntimeDB()), contentmoderation.NewEvaluator(nil))
 	contentmoderation.SetRuntime(moderator)
@@ -106,6 +112,15 @@ func StartServiceBackground(cfg *config.Config, configPath string, localPassword
 		close(doneCh)
 		return func() {}, doneCh
 	}
+	stopClusterAuth, err := startClusterAuthStore(cfg)
+	if err != nil {
+		log.Errorf("cluster: failed to start the shared credential store: %v", err)
+		coordinator.Close()
+		stopRuntimeDataStack()
+		doneCh := make(chan struct{})
+		close(doneCh)
+		return func() {}, doneCh
+	}
 
 	moderator := contentmoderation.NewRequestModerator(contentmoderation.NewStore(usage.RuntimeDB()), contentmoderation.NewEvaluator(nil))
 	contentmoderation.SetRuntime(moderator)
@@ -123,6 +138,7 @@ func StartServiceBackground(cfg *config.Config, configPath string, localPassword
 	service, err := builder.Build()
 	if err != nil {
 		log.Errorf("failed to build proxy service: %v", err)
+		stopClusterAuth()
 		coordinator.Close()
 		stopRuntimeDataStack()
 		close(doneCh)
@@ -134,6 +150,7 @@ func StartServiceBackground(cfg *config.Config, configPath string, localPassword
 		defer close(doneCh)
 		defer stopRuntimeDataStack()
 		defer coordinator.Close()
+		defer stopClusterAuth()
 		defer stopClusterWatch()
 		if err := service.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 			log.Errorf("proxy service exited with error: %v", err)
@@ -194,6 +211,9 @@ func stopRuntimeDataStack() {
 	if stopAudit != nil {
 		stopAudit()
 	}
+	// Before the database closes: queued usage records still need it, and
+	// whatever it cannot take goes to the spool for the next start.
+	stopUsageSpool()
 	usage.StopRedis()
 }
 
@@ -279,13 +299,12 @@ func initializeRuntimeDataStack(cfg *config.Config, configPath string, loc *time
 	middleware.InitQuotaUsageFuncs(usage.CountTodayByKey, usage.CountTotalByKey, usage.QueryTotalCostByKey, usage.QueryTodayCostByKey)
 	middleware.InitQuotaEndUserUsageFuncs(usage.CountTodayByEndUser, usage.CountTotalByEndUser, usage.QueryTotalCostByEndUser, usage.QueryTodayCostByEndUser)
 	middleware.InitQuotaPeriodUsageFuncs(usage.QueryPeriodSpendingByAPIKeyIDForTenant, usage.QueryPeriodSpendingByEndUserForTenant)
-	usage.SetTokenUsageCallback(func(apiKey string, totalTokens int64) {
-		endUserID := ""
-		if row := usage.GetAPIKey(apiKey); row != nil {
-			endUserID = row.EndUserID
-		}
-		middleware.RecordTokenUsageForRequest(apiKey, endUserID, totalTokens)
-	})
+	middleware.SetQuotaUsageStaleMaxAge(cfg.DBResilience.QuotaStaleMaxAge())
+	// The write path hands over the key's owner it already resolved, so TPM
+	// accounting needs no lookup of its own and keeps working while the
+	// database is unreachable.
+	usage.SetTokenUsageCallback(middleware.RecordTokenUsageForRequest)
+	startUsageSpool(cfg)
 	return nil
 }
 

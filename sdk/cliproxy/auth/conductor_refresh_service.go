@@ -240,7 +240,14 @@ func (s refreshService) refreshAuth(ctx context.Context, id string) {
 	if auth == nil || exec == nil {
 		return
 	}
+	claim := s.claimBackgroundRefresh(ctx, auth)
+	if !claim.proceed {
+		return
+	}
+	defer claim.done()
+	auth = claim.auth
 	cloned := auth.Clone()
+	before := s.manager.refreshBaseline(cloned)
 	updated, err := exec.Refresh(ctx, cloned)
 	if err != nil && errors.Is(err, context.Canceled) {
 		log.Debugf("refresh canceled for %s, %s", auth.Provider, auth.ID)
@@ -252,7 +259,7 @@ func (s refreshService) refreshAuth(ctx context.Context, id string) {
 		s.applyRefreshFailure(ctx, id, auth, cloned, now, err)
 		return
 	}
-	s.applyRefreshSuccess(ctx, auth, cloned, updated, now)
+	s.applyRefreshSuccess(ctx, auth, cloned, updated, now, before)
 }
 
 func (s refreshService) currentAuthAndExecutor(id string) (*Auth, ProviderExecutor) {
@@ -295,7 +302,7 @@ func (s refreshService) applyRefreshFailure(ctx context.Context, id string, auth
 	s.manager.mu.Unlock()
 }
 
-func (s refreshService) applyRefreshSuccess(ctx context.Context, auth *Auth, cloned *Auth, updated *Auth, now time.Time) {
+func (s refreshService) applyRefreshSuccess(ctx context.Context, auth *Auth, cloned *Auth, updated *Auth, now time.Time, before MetadataSnapshot) {
 	if updated == nil {
 		updated = cloned
 	}
@@ -307,7 +314,7 @@ func (s refreshService) applyRefreshSuccess(ctx context.Context, auth *Auth, clo
 	updated.LastError = nil
 	updated.UpdatedAt = now
 	markClaudeOAuthHealthRefreshSuccessLocked(updated, now)
-	_, _ = s.manager.Update(ctx, updated)
+	s.manager.persistRefreshResult(ctx, updated, before)
 }
 
 func (s refreshService) recoverRotatedRefreshToken(ctx context.Context, id string, used *Auth, now time.Time, refreshErr error) bool {
@@ -321,15 +328,9 @@ func (s refreshService) recoverRotatedRefreshToken(ctx context.Context, id strin
 
 	latest := s.findAuthWithDifferentRefreshToken(id, usedRefreshToken)
 	if latest == nil {
-		if items, err := s.manager.loadPersistedAuths(ctx); err == nil {
-			for _, item := range items {
-				if item == nil || item.ID != id {
-					continue
-				}
-				if latestRefreshToken := authRefreshToken(item); latestRefreshToken != "" && latestRefreshToken != usedRefreshToken {
-					latest = item.Clone()
-				}
-				break
+		if item, err := s.manager.persistedAuthByID(ctx, id); err == nil {
+			if latestRefreshToken := authRefreshToken(item); item != nil && latestRefreshToken != "" && latestRefreshToken != usedRefreshToken {
+				latest = item.Clone()
 			}
 		} else if s.manager.store != nil {
 			log.Debugf("failed to re-read auth store after refresh failure for %s: %v", id, err)

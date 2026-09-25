@@ -380,7 +380,7 @@ func rollupBucketStarts(at time.Time, loc *time.Location) map[string]string {
 	}
 }
 
-func projectUsageRollupTx(tx *sql.Tx, ev rollupEvent) error {
+func projectUsageRollupTx(tx usageWriteTx, ev rollupEvent) error {
 	if tx == nil {
 		return nil
 	}
@@ -492,33 +492,35 @@ func resolveEndUserIDForKey(apiKey string) string {
 
 // commitLogWithProjections writes tenant rollup and shared subject buckets, then commits.
 // Caller must already hold usageProjectionMu.RLock (see insertLogIdentity).
-func commitLogWithProjections(tx *sql.Tx, ev rollupEvent) error {
-	if err := projectUsageRollupTx(tx, ev); err != nil {
+func commitLogWithProjections(tx usageWriteTx, ev rollupEvent) error {
+	if err := projectLogWriteTx(tx, ev); err != nil {
 		_ = tx.Rollback()
+		return err
+	}
+	return tx.Commit()
+}
+
+// projectLogWriteTx applies every projection of one request log write without
+// committing, so the live writer can tell a failed projection (nothing
+// committed) from a failed COMMIT (outcome unknown).
+func projectLogWriteTx(tx usageWriteTx, ev rollupEvent) error {
+	if err := projectUsageRollupTx(tx, ev); err != nil {
 		return err
 	}
 	if ev.AuthSubjectID != "" {
 		if err := projectAIAccountSubjectUsageTx(tx, ev.AuthSubjectID, ev.Failed, ev.Cost, ev.Tokens.TotalTokens, ev.At); err != nil {
-			_ = tx.Rollback()
 			return fmt.Errorf("project shared auth subject usage: %w", err)
 		}
 	}
 	// 5h 窗口锚点只在实时落账时推进，不放进 projectUsageRollupTx：后者也服务
 	// 全量重建，重放历史事件会把锚点改写成过去的时刻。锚点是运行时状态，重建
 	// 消费桶时不应被回退。
-	if err := touchFiveHourWindowAnchorsTx(tx, ev); err != nil {
-		_ = tx.Rollback()
-		return err
-	}
-	if err := tx.Commit(); err != nil {
-		return err
-	}
-	return nil
+	return touchFiveHourWindowAnchorsTx(tx, ev)
 }
 
 // touchFiveHourWindowAnchorsTx 为本次消费涉及的 Key 与账号各自开窗。只有真正
 // 产生费用的请求才开窗：5h 是美元额度，让零成本请求提前开窗会白白吃掉窗口。
-func touchFiveHourWindowAnchorsTx(tx *sql.Tx, ev rollupEvent) error {
+func touchFiveHourWindowAnchorsTx(tx usageWriteTx, ev rollupEvent) error {
 	if ev.Cost <= 0 {
 		return nil
 	}

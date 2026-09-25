@@ -11,8 +11,8 @@ import (
 
 func TestRuntimeMigrationsCoverCoreTables(t *testing.T) {
 	migrations := RuntimeMigrations()
-	if len(migrations) != 33 {
-		t.Fatalf("RuntimeMigrations len = %d, want 33", len(migrations))
+	if len(migrations) != 35 {
+		t.Fatalf("RuntimeMigrations len = %d, want 35", len(migrations))
 	}
 	// Membership table of multi-instance deployments.
 	if migrations[31].Version != "202609250001_cluster_nodes" {
@@ -21,16 +21,21 @@ func TestRuntimeMigrationsCoverCoreTables(t *testing.T) {
 	if !strings.Contains(migrations[31].SQL, "CREATE TABLE IF NOT EXISTS cluster_nodes") {
 		t.Fatalf("cluster nodes migration missing its table: %q", migrations[31].SQL)
 	}
+	// Shared credential store of cluster mode.
+	if migrations[33].Version != "202609250003_cluster_auth_credentials" ||
+		!strings.Contains(migrations[33].SQL, "CREATE TABLE IF NOT EXISTS auth_credentials") {
+		t.Fatalf("cluster credential migration = %q", migrations[33].Version)
+	}
 	// Optimistic versions for cross-node management writes.
-	if migrations[32].Version != "202609250901_config_optimistic_versions" {
-		t.Fatalf("config versions migration version = %q", migrations[32].Version)
+	if migrations[34].Version != "202609250004_config_optimistic_versions" {
+		t.Fatalf("config versions migration version = %q", migrations[34].Version)
 	}
 	for _, fragment := range []string{
 		"ALTER TABLE runtime_settings ADD COLUMN IF NOT EXISTS version BIGINT NOT NULL DEFAULT 1",
 		"ALTER TABLE routing_config ADD COLUMN IF NOT EXISTS version BIGINT NOT NULL DEFAULT 1",
 		"CREATE TABLE IF NOT EXISTS config_versions",
 	} {
-		if !strings.Contains(migrations[32].SQL, fragment) {
+		if !strings.Contains(migrations[34].SQL, fragment) {
 			t.Fatalf("config versions migration missing %q", fragment)
 		}
 	}
@@ -44,11 +49,20 @@ func TestRuntimeMigrationsCoverCoreTables(t *testing.T) {
 	if migrations[28].Version != "202608270001_end_user_unbound_profile_scope_cleanup" {
 		t.Fatalf("scope cleanup migration version = %q", migrations[28].Version)
 	}
-	// Completion marker for the one-shot pass that locks portal accounts
-	// still on the legacy backfill password; without it the pass would re-run on
+	// Completion marker for the one-shot pass that locks portal accounts still
+	// on the legacy backfill password; without it the pass would re-run on
 	// every boot.
 	if migrations[30].Version != "202609240001_end_user_legacy_password_lock_state" {
 		t.Fatalf("legacy password lock migration version = %q", migrations[30].Version)
+	}
+	// Exactly-once keys for request log writes. It must be a new table,
+	// not an index on request_logs, so upgrading never blocks log writes.
+	if migrations[32].Version != "202609250002_request_log_idempotency_keys" {
+		t.Fatalf("request log idempotency migration version = %q", migrations[32].Version)
+	}
+	if !strings.Contains(migrations[32].SQL, "CREATE TABLE IF NOT EXISTS request_log_idempotency_keys") ||
+		strings.Contains(migrations[32].SQL, "ON request_logs") {
+		t.Fatalf("request log idempotency migration must only add its own table: %q", migrations[32].SQL)
 	}
 	if !strings.Contains(migrations[30].SQL, "CREATE TABLE IF NOT EXISTS end_user_legacy_password_lock_state") {
 		t.Fatalf("legacy password lock migration missing its table: %q", migrations[30].SQL)

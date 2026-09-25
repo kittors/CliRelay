@@ -47,6 +47,9 @@ type Config struct {
 	// Cluster config controls multi-instance deployment. Disabled by default.
 	Cluster ClusterConfig `yaml:"cluster,omitempty" json:"cluster,omitempty"`
 
+	// DBResilience controls how a short database outage is ridden out.
+	DBResilience DBResilienceConfig `yaml:"db-resilience,omitempty" json:"db-resilience,omitempty"`
+
 	// TLS config controls HTTPS server settings.
 	TLS TLSConfig `yaml:"tls" json:"tls"`
 

@@ -147,7 +147,7 @@ func (s cooldownService) markResult(ctx context.Context, result Result) {
 	if auth, ok := s.manager.auths[result.AuthID]; ok && auth != nil {
 		now := time.Now()
 		effects = s.applyResultLocked(auth, result, now)
-		_ = s.manager.persist(ctx, auth)
+		_ = s.manager.persist(withResultPersist(ctx), auth)
 	}
 	s.manager.mu.Unlock()
 

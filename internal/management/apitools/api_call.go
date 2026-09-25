@@ -238,7 +238,18 @@ func (s *Service) ReconcileCodexWhamUsagePlan(ctx context.Context, auth *coreaut
 	if planType == "" || auth.Metadata == nil {
 		return nil
 	}
+	// MutateAuth edits auth itself on a single node; in cluster mode it applies
+	// the same edit to the newest persisted copy.
+	_, err := s.authManager.MutateAuth(ctx, auth, func(target *coreauth.Auth) (bool, error) {
+		return applyCodexUsagePlan(target, planType, time.Now()), nil
+	})
+	return err
+}
 
+func applyCodexUsagePlan(auth *coreauth.Auth, planType string, now time.Time) bool {
+	if auth.Metadata == nil {
+		return false
+	}
 	changed := false
 	if currentType, _ := auth.Metadata["type"].(string); strings.TrimSpace(currentType) == "" {
 		auth.Metadata["type"] = "codex"
@@ -253,14 +264,10 @@ func (s *Service) ReconcileCodexWhamUsagePlan(ctx context.Context, auth *coreaut
 	if reconcileAuthExplicitDisplayTags(auth) {
 		changed = true
 	}
-	if !changed {
-		return nil
+	if changed {
+		auth.UpdatedAt = now
 	}
-
-	now := time.Now()
-	auth.UpdatedAt = now
-	_, err := s.authManager.Update(ctx, auth)
-	return err
+	return changed
 }
 
 func isCodexWhamUsageURL(parsedURL *url.URL) bool {

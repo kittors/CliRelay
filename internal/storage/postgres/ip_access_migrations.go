@@ -20,10 +20,16 @@ func laterRuntimeMigrations() []Migration {
 		{Version: "202609240001_end_user_legacy_password_lock_state", SQL: endUserLegacyPasswordLockStateSQL},
 		// Membership heartbeats of multi-instance deployments. See clusterNodesSQL.
 		{Version: "202609250001_cluster_nodes", SQL: clusterNodesSQL},
+		// Exactly-once keys for request log writes retried or replayed across a
+		// database failover. See requestLogIdempotencyKeysSQL.
+		{Version: "202609250002_request_log_idempotency_keys", SQL: requestLogIdempotencyKeysSQL},
+		// Shared credential store for cluster mode: one row per credential,
+		// versioned for compare-and-swap writes across nodes.
+		{Version: "202609250003_cluster_auth_credentials", SQL: authCredentialsSQL},
 		// Per-row versions on runtime_settings/routing_config and per-collection
 		// counters, so a management write based on stale data fails instead of
 		// silently overwriting a change made on another node.
-		{Version: "202609250901_config_optimistic_versions", SQL: configOptimisticVersionsSQL},
+		{Version: "202609250004_config_optimistic_versions", SQL: configOptimisticVersionsSQL},
 	}
 }
 
