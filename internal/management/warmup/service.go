@@ -177,3 +177,24 @@ func (s *Service) AddPolicy(p Policy) {
 func (s *Service) GetPolicies(tenantID string) []Policy {
 	return s.scheduler.GetPolicies(tenantID)
 }
+
+// SetPolicyStore persists policies in store; set it before Start.
+func (s *Service) SetPolicyStore(store PolicyStore) {
+	s.scheduler.SetStore(store)
+}
+
+// SetLeaderCheck overrides which node evaluates policies; the default is the
+// cluster leader.
+func (s *Service) SetLeaderCheck(isLeader func() bool) {
+	s.scheduler.SetLeaderCheck(isLeader)
+}
+
+// SavePolicy creates or replaces a policy, persisting it when a store is set.
+func (s *Service) SavePolicy(ctx context.Context, p Policy) error {
+	return s.scheduler.SavePolicy(ctx, p)
+}
+
+// ListPolicies returns the policies of tenantID as every node sees them.
+func (s *Service) ListPolicies(ctx context.Context, tenantID string) ([]Policy, error) {
+	return s.scheduler.ListPolicies(ctx, tenantID)
+}

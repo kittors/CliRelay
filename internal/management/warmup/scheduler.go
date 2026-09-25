@@ -16,8 +16,12 @@ type PolicyScheduler struct {
 	registry *DriverRegistry
 	authMgr  *coreauth.Manager
 
-	mu       sync.RWMutex
-	policies map[string]*Policy
+	mu sync.RWMutex
+	// policies is keyed by tenant and id: two tenants may use the same id.
+	policies  map[string]*Policy
+	revisions map[string]int64
+	store     PolicyStore
+	isLeader  func() bool
 
 	tickerInterval time.Duration
 	stopChan       chan struct{}
@@ -32,6 +36,8 @@ func NewPolicyScheduler(queue *StaggeredQueue, registry *DriverRegistry, authMgr
 		registry:       registry,
 		authMgr:        authMgr,
 		policies:       make(map[string]*Policy),
+		revisions:      make(map[string]int64),
+		isLeader:       defaultLeaderCheck,
 		tickerInterval: 1 * time.Minute,
 		stopChan:       make(chan struct{}),
 		nowFunc:        time.Now,
@@ -44,10 +50,11 @@ func (s *PolicyScheduler) SetNowFunc(fn func() time.Time) {
 	s.nowFunc = fn
 }
 
+// AddPolicy stores p in memory only; SavePolicy also persists it.
 func (s *PolicyScheduler) AddPolicy(p Policy) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.policies[p.ID] = &p
+	s.policies[policyKey(p.TenantID, p.ID)] = &p
 }
 
 func (s *PolicyScheduler) GetPolicies(tenantID string) []Policy {
@@ -98,13 +105,26 @@ func (s *PolicyScheduler) loop() {
 	}
 }
 
-// EvaluateTick evaluates all policies at the current point in time.
+// EvaluateTick evaluates all policies at the current point in time. Only the
+// leader evaluates, working on the stored policies when there is a store.
 func (s *PolicyScheduler) EvaluateTick(ctx context.Context) {
+	if !s.shouldEvaluate() || !s.reload(ctx) {
+		return
+	}
+	s.mu.RLock()
 	now := s.nowFunc()
+	s.mu.RUnlock()
 
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	before := s.runStatesLocked()
+	s.evaluateLocked(ctx, now)
+	changed := s.changedLocked(before)
+	s.mu.Unlock()
 
+	s.persistRunStates(ctx, changed)
+}
+
+func (s *PolicyScheduler) evaluateLocked(ctx context.Context, now time.Time) {
 	for _, policy := range s.policies {
 		if !policy.Enabled {
 			policy.Status = PolicyStatusDisabled

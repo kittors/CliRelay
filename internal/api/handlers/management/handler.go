@@ -95,6 +95,9 @@ func (h *Handler) warmupService() *warmup.Service {
 	defer h.mu.Unlock()
 	if h.warmupSvc == nil {
 		h.warmupSvc = warmup.NewService(h.cfg, h.authManager)
+		if store := sharedWarmupPolicyStore(); store != nil {
+			h.warmupSvc.SetPolicyStore(store)
+		}
 		h.warmupSvc.Start()
 	}
 	return h.warmupSvc
@@ -104,9 +107,9 @@ func (h *Handler) newImageGenerationService() *imagegeneration.Service {
 	if h == nil {
 		return nil
 	}
-	return imagegeneration.NewService(func(ctx context.Context, tenantID string, payload []byte, alt string) ([]byte, error) {
+	return shareTaskSnapshots(imagegeneration.NewService(func(ctx context.Context, tenantID string, payload []byte, alt string) ([]byte, error) {
 		return h.executeImageGenerationTestForTenant(ctx, tenantID, payload, alt)
-	}, imageGenerationSystemAPIKey)
+	}, imageGenerationSystemAPIKey), jobKindImageGenerationTest)
 }
 
 func (h *Handler) ensureImageGenerationService() *imagegeneration.Service {
@@ -140,6 +143,7 @@ func (h *Handler) Close() {
 	}
 	h.loginThrottle.close()
 	h.stopAccountStatusScheduler()
+	h.stopWarmupScheduler()
 }
 
 // NewHandler creates a new management handler instance.
