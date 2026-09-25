@@ -10,7 +10,11 @@ import (
 )
 
 const (
-	storeTimeout = 10 * time.Second
+	// syncStoreTimeout bounds the writes made on the caller's goroutine: the
+	// first snapshot is written inside the request that created the job, and
+	// a database outage must not hold that request for long.
+	syncStoreTimeout = 3 * time.Second
+	storeTimeout     = 10 * time.Second
 	// retryInterval and maxRetries bound how long a failed write is retried.
 	// A final snapshot that never lands would leave other nodes reporting the
 	// job as running until its heartbeat ages out.
@@ -42,6 +46,9 @@ type published struct {
 	lastPublish time.Time
 	timer       *time.Timer
 	failures    int
+	// writing counts saves in progress. Background flushes wait for them
+	// instead of piling up while the database is slow.
+	writing int
 }
 
 // NewPublisher returns a publisher for jobs of kind kept for ttl after their
@@ -81,7 +88,8 @@ func (p *Publisher) Kind() string { return p.kind }
 // a job and a terminal one are written before Publish returns, so a job is
 // visible to every node by the time its id is handed to a client, and its
 // outcome is written by the time the job goroutine ends. Progress in between
-// is coalesced to at most one write per flush interval.
+// is written in the background, at most once per flush interval, so a slow
+// database never stalls the job itself.
 func (p *Publisher) Publish(snap Snapshot) {
 	if p == nil || strings.TrimSpace(snap.ID) == "" {
 		return
@@ -107,22 +115,40 @@ func (p *Publisher) Publish(snap Snapshot) {
 	}
 	st.pending = &snap
 	st.lastPublish = now
-	immediate := first || snap.Terminal || now.Sub(st.lastWrite) >= p.flushGap
-	if !immediate && st.timer == nil {
-		st.timer = time.AfterFunc(p.flushGap-now.Sub(st.lastWrite), func() { p.flush(snap.ID) })
+	immediate := first || snap.Terminal
+	if !immediate {
+		p.scheduleLocked(snap.ID, st, p.flushGap-now.Sub(st.lastWrite))
 	}
 	p.startBeatsLocked()
 	p.mu.Unlock()
 
 	if immediate {
-		p.flush(snap.ID)
+		p.write(snap.ID, syncStoreTimeout, true)
 	}
 }
 
-func (p *Publisher) flush(id string) {
+// scheduleLocked arranges a background write of the pending snapshot after
+// delay, unless one is already scheduled or a write is still in progress;
+// that write reschedules when it ends.
+func (p *Publisher) scheduleLocked(id string, st *published, delay time.Duration) {
+	if st.timer != nil || st.writing > 0 || p.closed {
+		return
+	}
+	if delay < 0 {
+		delay = 0
+	}
+	st.timer = time.AfterFunc(delay, func() { p.flush(id) })
+}
+
+func (p *Publisher) flush(id string) { p.write(id, storeTimeout, false) }
+
+// write saves the pending snapshot of job id. A forced write (the first and
+// the final snapshot) goes out even while a background write is in progress;
+// the version guard in the store orders them.
+func (p *Publisher) write(id string, timeout time.Duration, force bool) {
 	p.mu.Lock()
 	st := p.jobs[id]
-	if st == nil || st.pending == nil {
+	if st == nil || st.pending == nil || (!force && st.writing > 0) {
 		p.mu.Unlock()
 		return
 	}
@@ -133,14 +159,16 @@ func (p *Publisher) flush(id string) {
 		st.timer = nil
 	}
 	st.lastWrite = time.Now()
+	st.writing++
 	p.mu.Unlock()
 
-	ctx, cancel := context.WithTimeout(context.Background(), storeTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	err := p.store.Save(ctx, snap, p.ttl)
 	cancel()
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	st.writing--
 	if p.jobs[id] != st {
 		return
 	}
@@ -155,16 +183,19 @@ func (p *Publisher) flush(id string) {
 		if st.pending == nil || st.pending.Version < snap.Version {
 			st.pending = &snap
 		}
-		if st.timer == nil && !p.closed {
-			st.timer = time.AfterFunc(retryInterval, func() { p.flush(id) })
-		}
+		p.scheduleLocked(id, st, retryInterval)
 		return
 	}
 	st.failures = 0
 	if snap.Version > st.written {
 		st.written = snap.Version
 	}
-	if snap.Terminal && st.pending == nil {
+	if st.pending != nil {
+		// Progress published while this write was in flight.
+		p.scheduleLocked(id, st, p.flushGap-time.Since(st.lastWrite))
+		return
+	}
+	if snap.Terminal {
 		delete(p.jobs, id)
 	}
 }

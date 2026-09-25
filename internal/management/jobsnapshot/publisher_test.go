@@ -117,3 +117,60 @@ func TestPublisherRetriesFailedFinalWrite(t *testing.T) {
 		t.Fatalf("retried final snapshot = %+v", snap)
 	}
 }
+
+// slowStore blocks every save after the first until released, like a
+// database in the middle of a failover.
+type slowStore struct {
+	*MemoryStore
+	mu      sync.Mutex
+	saves   int
+	release chan struct{}
+}
+
+func (s *slowStore) Save(ctx context.Context, snap Snapshot, ttl time.Duration) error {
+	s.mu.Lock()
+	s.saves++
+	blocked := s.saves > 1
+	s.mu.Unlock()
+	if blocked {
+		select {
+		case <-s.release:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return s.MemoryStore.Save(ctx, snap, ttl)
+}
+
+func TestPublisherProgressNeverBlocksCaller(t *testing.T) {
+	store := &slowStore{MemoryStore: NewMemoryStore(), release: make(chan struct{})}
+	pub := NewPublisher(store, "k", time.Minute, func() string { return "node-a" })
+	pub.SetIntervals(time.Millisecond, time.Hour)
+	t.Cleanup(pub.Close)
+
+	pub.Publish(Snapshot{ID: "job-5", Status: "running", Version: 1})
+	time.Sleep(5 * time.Millisecond)
+	started := time.Now()
+	for v := int64(2); v <= 5; v++ {
+		pub.Publish(Snapshot{ID: "job-5", Status: "running", Phase: "p", Version: v})
+	}
+	if elapsed := time.Since(started); elapsed > 100*time.Millisecond {
+		t.Fatalf("progress publishing blocked the caller for %s", elapsed)
+	}
+	time.Sleep(20 * time.Millisecond)
+	store.mu.Lock()
+	inFlight := store.saves
+	store.mu.Unlock()
+	if inFlight > 2 {
+		t.Fatalf("background writes piled up behind a stuck database: %d saves issued", inFlight)
+	}
+	close(store.release)
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if snap, ok, _ := store.Get(context.Background(), "k", "job-5"); ok && snap.Version == 5 {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("the latest progress was never written once the store recovered")
+}
