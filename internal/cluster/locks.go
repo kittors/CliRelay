@@ -20,6 +20,9 @@ const (
 	LockMaintenanceRepairs = "maintenance-repairs"
 	// LockLeader is the cluster leadership lock.
 	LockLeader = "leader"
+	// LockAuthImport serialises the one-time import of local auth files into
+	// the shared credential store, so two first nodes cannot both import.
+	LockAuthImport = "auth-import"
 )
 
 // ErrLockTimeout is returned when a session lock is not acquired in time.
