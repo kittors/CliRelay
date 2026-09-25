@@ -35,6 +35,9 @@ type Runtime struct {
 
 	mu       sync.Mutex
 	managers map[*coreauth.Manager]struct{}
+
+	// refs counts the Install calls not yet released; guarded by installMu.
+	refs int
 }
 
 var (
@@ -42,10 +45,11 @@ var (
 	installed *Runtime
 )
 
-// Install wires the cluster into this process for cfg and attaches manager.
-// It is a no-op outside cluster mode, and idempotent: later calls only attach
-// further managers. The cluster Redis settings are read once; changing them
-// needs a restart.
+// Install wires the cluster into this process for cfg, attaches manager and
+// returns the process's runtime, or nil outside cluster mode. The runtime is
+// shared: a later Install only attaches another manager. Every non-nil result
+// must be handed back to Release. The cluster Redis settings are read once;
+// changing them needs a restart.
 //
 // It must run after cluster.Prepare, which StartService calls first: the
 // cooldown subscription has to be made on the coordinator that cluster.Start
@@ -60,19 +64,29 @@ func Install(cfg *config.Config, manager *coreauth.Manager) *Runtime {
 	if installed == nil {
 		installed = start(cfg.Cluster, cluster.Default)
 	}
+	installed.refs++
 	installed.Attach(manager)
 	return installed
 }
 
-// Shutdown gives this node's concurrency slots back to the cluster, flushes
-// pending counters and closes the cluster Redis client. Call it once the
-// server has drained; it is a no-op when nothing was installed.
-func Shutdown() {
+// Release hands back one Install. The last release gives this node's
+// concurrency slots back to the cluster, flushes pending counters and closes
+// the cluster Redis client; call it once the server has drained. nil is a
+// no-op.
+func Release(rt *Runtime) {
+	if rt == nil {
+		return
+	}
 	installMu.Lock()
-	rt := installed
-	installed = nil
+	rt.refs--
+	last := rt.refs <= 0
+	if last && installed == rt {
+		installed = nil
+	}
 	installMu.Unlock()
-	rt.Close()
+	if last {
+		rt.Close()
+	}
 }
 
 // start builds the runtime. coord resolves the coordinator on every use.

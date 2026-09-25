@@ -98,6 +98,10 @@ type Server struct {
 
 	draining         atomic.Bool
 	inFlightRequests atomic.Int64
+
+	// clusterRuntime is this server's hold on the cluster wiring; nil on a
+	// single node.
+	clusterRuntime *clusterruntime.Runtime
 }
 
 // Start begins listening for and serving HTTP or HTTPS requests.
@@ -153,7 +157,8 @@ func (s *Server) Stop(ctx context.Context) error {
 	err := s.server.Shutdown(ctx)
 	// Drained (or out of time): give this node's cluster slots back now rather
 	// than letting them sit until their leases expire.
-	clusterruntime.Shutdown()
+	clusterruntime.Release(s.clusterRuntime)
+	s.clusterRuntime = nil
 	if err != nil {
 		log.Errorf("API server shutdown timed out with %d in-flight request(s)", s.inFlightRequests.Load())
 		return fmt.Errorf("failed to shutdown HTTP server: %v", err)

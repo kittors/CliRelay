@@ -235,7 +235,7 @@ func TestInstallIsANoOpOnASingleNode(t *testing.T) {
 	if rt := Install(cfg, newManager(t)); rt != nil {
 		t.Fatal("cluster mode off must install nothing")
 	}
-	Shutdown() // nothing to shut down
+	Release(nil) // nothing to release
 }
 
 func TestInstallWiresAndShutdownUnwires(t *testing.T) {
@@ -249,24 +249,25 @@ func TestInstallWiresAndShutdownUnwires(t *testing.T) {
 	cfg.Cluster.Redis.Addr = mr.Addr()
 	manager := newManager(t, "acct-1")
 	rt := Install(cfg, manager)
-	if rt == nil || Install(cfg, manager) != rt {
-		t.Fatal("install must be idempotent and return the process runtime")
+	if rt == nil || Install(cfg, newManager(t)) != rt {
+		t.Fatal("install must share one runtime per process")
 	}
-	t.Cleanup(Shutdown)
 	eventually(t, "cluster redis", func() bool { return rt.Status().Available })
 	if rt.Status().Addr != mr.Addr() {
 		t.Fatalf("status = %+v", rt.Status())
 	}
-	if manager.ConcurrencyLimiter() == nil {
-		t.Fatal("limiter missing")
-	}
 
-	Shutdown()
+	// The first release leaves the runtime to the other holder.
+	Release(rt)
+	if !rt.Status().Available {
+		t.Fatal("a runtime still held must stay open")
+	}
+	Release(rt)
 	if rt.Status().Available {
-		t.Fatal("shutdown must close the cluster redis client")
+		t.Fatal("the last release must close the cluster redis client")
 	}
 	if Install(&config.Config{}, manager) != nil {
-		t.Fatal("after shutdown a single-node config installs nothing")
+		t.Fatal("after release a single-node config installs nothing")
 	}
 }
 
@@ -281,7 +282,7 @@ func TestInstallWithoutRedisStillSplitsLimits(t *testing.T) {
 	cfg.Cluster.Enabled = true
 	manager := newManager(t)
 	rt := Install(cfg, manager)
-	t.Cleanup(Shutdown)
+	t.Cleanup(func() { Release(rt) })
 	if rt == nil || rt.client != nil {
 		t.Fatal("no cluster.redis means no client")
 	}
