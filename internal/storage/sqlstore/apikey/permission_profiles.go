@@ -1,6 +1,7 @@
 package apikey
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/configsync"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/quota"
 	log "github.com/sirupsen/logrus"
 )
@@ -64,6 +66,8 @@ func InitPermissionProfilesTable(db *sql.DB) {
 	if db == nil {
 		return
 	}
+	// Whole-replace writes of this table bump its collection version.
+	configsync.InitTables(db)
 	if _, err := db.Exec(createAPIKeyPermissionProfilesTableSQL); err != nil {
 		log.Errorf("sqlite/apikey: create api_key_permission_profiles table: %v", err)
 	}
@@ -208,32 +212,46 @@ func (s Store) ReplaceAllPermissionProfilesWithCaps(profiles []PermissionProfile
 }
 
 func (s Store) replaceAllPermissionProfiles(profiles []PermissionProfileRow, syncEndUsers bool) (PermissionProfileSyncResult, error) {
+	result, _, err := s.ReplaceAllPermissionProfilesExpect(context.Background(), profiles, syncEndUsers, configsync.AnyVersion)
+	return result, err
+}
+
+// ReplaceAllPermissionProfilesExpect replaces the tenant's permission profiles
+// if the collection is still at expected (configsync.AnyVersion: unchecked)
+// and returns the new collection version. Syncing bound accounts can rewrite
+// their keys too, so the api_keys collection version moves with it.
+func (s Store) ReplaceAllPermissionProfilesExpect(ctx context.Context, profiles []PermissionProfileRow, syncEndUsers bool, expected int64) (PermissionProfileSyncResult, int64, error) {
 	if s.db == nil {
-		return PermissionProfileSyncResult{}, fmt.Errorf("database not initialised")
+		return PermissionProfileSyncResult{}, 0, fmt.Errorf("database not initialised")
 	}
 	for _, table := range []string{"end_users", "api_keys"} {
 		for _, column := range []string{"five_hour_spending_limit", "weekly_spending_limit", "monthly_spending_limit"} {
 			if _, err := s.db.Exec("ALTER TABLE " + table + " ADD COLUMN " + column + " REAL NOT NULL DEFAULT 0"); err != nil {
 				message := strings.ToLower(err.Error())
 				if !strings.Contains(message, "duplicate") && !strings.Contains(message, "no such table") {
-					return PermissionProfileSyncResult{}, err
+					return PermissionProfileSyncResult{}, 0, err
 				}
 			}
 		}
 	}
 
-	tx, err := s.db.Begin()
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return PermissionProfileSyncResult{}, err
+		return PermissionProfileSyncResult{}, 0, err
+	}
+	version, err := configsync.BumpTx(ctx, tx, configsync.DomainPermissionProfiles, s.tenantID, expected)
+	if err != nil {
+		_ = tx.Rollback()
+		return PermissionProfileSyncResult{}, 0, err
 	}
 	if err := lockBoundEndUsersForProfileUpdate(tx, s.tenantID); err != nil {
 		_ = tx.Rollback()
-		return PermissionProfileSyncResult{}, err
+		return PermissionProfileSyncResult{}, 0, err
 	}
 
 	if _, err := tx.Exec("DELETE FROM api_key_permission_profiles WHERE tenant_id = ?", s.tenantID); err != nil {
 		_ = tx.Rollback()
-		return PermissionProfileSyncResult{}, err
+		return PermissionProfileSyncResult{}, 0, err
 	}
 
 	stmt, err := tx.Prepare(`INSERT INTO api_key_permission_profiles
@@ -242,7 +260,7 @@ func (s Store) replaceAllPermissionProfiles(profiles []PermissionProfileRow, syn
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		_ = tx.Rollback()
-		return PermissionProfileSyncResult{}, err
+		return PermissionProfileSyncResult{}, 0, err
 	}
 	defer stmt.Close()
 
@@ -252,15 +270,15 @@ func (s Store) replaceAllPermissionProfiles(profiles []PermissionProfileRow, syn
 		profile = normalizePermissionProfile(profile)
 		if profile.ID == "" {
 			_ = tx.Rollback()
-			return PermissionProfileSyncResult{}, fmt.Errorf("id is required")
+			return PermissionProfileSyncResult{}, 0, fmt.Errorf("id is required")
 		}
 		if profile.Name == "" {
 			_ = tx.Rollback()
-			return PermissionProfileSyncResult{}, fmt.Errorf("name is required")
+			return PermissionProfileSyncResult{}, 0, fmt.Errorf("name is required")
 		}
 		if _, exists := seen[profile.ID]; exists {
 			_ = tx.Rollback()
-			return PermissionProfileSyncResult{}, fmt.Errorf("duplicate id %q", profile.ID)
+			return PermissionProfileSyncResult{}, 0, fmt.Errorf("duplicate id %q", profile.ID)
 		}
 		seen[profile.ID] = struct{}{}
 		if profile.CreatedAt == "" {
@@ -276,7 +294,7 @@ func (s Store) replaceAllPermissionProfiles(profiles []PermissionProfileRow, syn
 			profile.CreatedAt, profile.UpdatedAt,
 		); err != nil {
 			_ = tx.Rollback()
-			return PermissionProfileSyncResult{}, err
+			return PermissionProfileSyncResult{}, 0, err
 		}
 	}
 
@@ -298,7 +316,7 @@ func (s Store) replaceAllPermissionProfiles(profiles []PermissionProfileRow, syn
 				now, s.tenantID, profile.ID)
 			if syncErr != nil {
 				_ = tx.Rollback()
-				return PermissionProfileSyncResult{}, syncErr
+				return PermissionProfileSyncResult{}, 0, syncErr
 			}
 			if rows, rowsErr := result.RowsAffected(); rowsErr == nil {
 				appliedCount += rows
@@ -320,7 +338,7 @@ func (s Store) replaceAllPermissionProfiles(profiles []PermissionProfileRow, syn
 		result, syncErr := tx.Exec(unbindQuery, unbindArgs...)
 		if syncErr != nil {
 			_ = tx.Rollback()
-			return PermissionProfileSyncResult{}, syncErr
+			return PermissionProfileSyncResult{}, 0, syncErr
 		}
 		if rows, rowsErr := result.RowsAffected(); rowsErr == nil {
 			appliedCount += rows
@@ -330,12 +348,16 @@ func (s Store) replaceAllPermissionProfiles(profiles []PermissionProfileRow, syn
 	cappedKeys, err := capProfileOwnedKeysTx(tx, s.tenantID, profiles, now)
 	if err != nil {
 		_ = tx.Rollback()
-		return PermissionProfileSyncResult{}, err
+		return PermissionProfileSyncResult{}, 0, err
 	}
-	if err := tx.Commit(); err != nil {
-		return PermissionProfileSyncResult{}, err
+	if _, err := configsync.BumpTx(ctx, tx, configsync.DomainAPIKeys, s.tenantID, configsync.AnyVersion); err != nil {
+		_ = tx.Rollback()
+		return PermissionProfileSyncResult{}, 0, err
 	}
-	return PermissionProfileSyncResult{AppliedCount: appliedCount, CappedKeys: cappedKeys}, nil
+	if err := configsync.CommitTx(ctx, tx, configsync.KeyEvent(configsync.DomainPermissionProfiles, s.tenantID, "", version)); err != nil {
+		return PermissionProfileSyncResult{}, 0, err
+	}
+	return PermissionProfileSyncResult{AppliedCount: appliedCount, CappedKeys: cappedKeys}, version, nil
 }
 
 func lockBoundEndUsersForProfileUpdate(tx *sql.Tx, tenantID string) error {

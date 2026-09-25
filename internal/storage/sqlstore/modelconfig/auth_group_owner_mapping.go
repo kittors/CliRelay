@@ -1,7 +1,10 @@
 package modelconfig
 
 import (
+	"context"
 	"fmt"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/cluster"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/configsync"
 	"strings"
 )
 
@@ -53,7 +56,7 @@ func (s Store) UpsertAuthGroupOwnerMapping(row AuthGroupOwnerMappingRow) error {
 	if row.AuthGroup == "" || row.Owner == "" {
 		return fmt.Errorf("auth group and owner are required")
 	}
-	_, err := s.db.Exec(`INSERT INTO auth_group_model_owner_mappings(tenant_id,auth_group,owner,updated_at) VALUES(?,?,?,?) ON CONFLICT(tenant_id,auth_group) DO UPDATE SET owner=excluded.owner,updated_at=excluded.updated_at`, s.tenantID, row.AuthGroup, row.Owner, row.UpdatedAt)
+	_, err := configsync.Exec(context.Background(), s.db, []cluster.ConfigEvent{configsync.Event(configsync.DomainModelConfigs, s.tenantID)}, `INSERT INTO auth_group_model_owner_mappings(tenant_id,auth_group,owner,updated_at) VALUES(?,?,?,?) ON CONFLICT(tenant_id,auth_group) DO UPDATE SET owner=excluded.owner,updated_at=excluded.updated_at`, s.tenantID, row.AuthGroup, row.Owner, row.UpdatedAt)
 	if err != nil {
 		return fmt.Errorf("upsert auth group owner mapping: %w", err)
 	}
@@ -68,6 +71,6 @@ func (s Store) DeleteAuthGroupOwnerMapping(authGroup string) error {
 	if authGroup == "" {
 		return fmt.Errorf("auth group is required")
 	}
-	_, err := s.db.Exec("DELETE FROM auth_group_model_owner_mappings WHERE tenant_id = ? AND auth_group = ?", s.tenantID, authGroup)
+	_, err := configsync.Exec(context.Background(), s.db, []cluster.ConfigEvent{configsync.Event(configsync.DomainModelConfigs, s.tenantID)}, "DELETE FROM auth_group_model_owner_mappings WHERE tenant_id = ? AND auth_group = ?", s.tenantID, authGroup)
 	return err
 }

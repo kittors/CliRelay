@@ -13,6 +13,7 @@ type codexOAuthAdmissionResponse struct {
 	AllowedClients          []string                                 `json:"allowed_clients"`
 	AvailableAllowedClients []codexadmission.AllowedClientPresetInfo `json:"available_allowed_clients"`
 	CodexOAuthAdmission     config.CodexOAuthAdmissionConfig         `json:"codex-oauth-admission"`
+	Version                 int64                                    `json:"version"`
 }
 
 type codexOAuthAdmissionRequest struct {
@@ -31,6 +32,7 @@ func (h *Handler) GetCodexOAuthAdmission(c *gin.Context) {
 		AllowedClients:          append([]string(nil), current.AllowedClientPresets...),
 		AvailableAllowedClients: codexadmission.AvailableAllowedClientPresets(),
 		CodexOAuthAdmission:     current,
+		Version:                 h.requestSettingVersion(c, settingsstore.RuntimeSettingCodexOAuthAdmission),
 	})
 }
 
@@ -52,9 +54,7 @@ func (h *Handler) PutCodexOAuthAdmission(c *gin.Context) {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "config unavailable"})
 		return
 	}
-	previous := cfg.CodexOAuthAdmission
+	// cfg is this request's fresh copy; a failed commit leaves nothing to undo.
 	cfg.CodexOAuthAdmission = next
-	if !h.persistRuntimeSettingForTenant(c, settingsstore.RuntimeSettingCodexOAuthAdmission, next, cfg) {
-		cfg.CodexOAuthAdmission = previous
-	}
+	h.commitRequestConfig(c, cfg)
 }

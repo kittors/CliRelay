@@ -1,12 +1,15 @@
 package usage
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/cluster"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/configsync"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -176,7 +179,7 @@ func UpsertModelPricingV2ForTenant(tenantID, modelID string, input, output, cach
 		return fmt.Errorf("usage: database not initialised")
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
-	_, err := db.Exec(
+	_, err := configsync.Exec(context.Background(), db, []cluster.ConfigEvent{configsync.Event(configsync.DomainPricing, tenantID)},
 		`INSERT INTO model_pricing (tenant_id, model_id, input_price_per_million, output_price_per_million, cached_price_per_million, cache_read_price_per_million, cache_write_price_per_million, updated_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(tenant_id, model_id) DO UPDATE SET
@@ -281,7 +284,7 @@ func DeleteModelPricingForTenant(tenantID, modelID string) error {
 	if db == nil {
 		return fmt.Errorf("usage: database not initialised")
 	}
-	_, err := db.Exec("DELETE FROM model_pricing WHERE tenant_id = ? AND model_id = ?", tenantID, modelID)
+	_, err := configsync.Exec(context.Background(), db, []cluster.ConfigEvent{configsync.Event(configsync.DomainPricing, tenantID)}, "DELETE FROM model_pricing WHERE tenant_id = ? AND model_id = ?", tenantID, modelID)
 	if err != nil {
 		return fmt.Errorf("usage: delete pricing: %w", err)
 	}
@@ -599,3 +602,10 @@ func QueryTotalCostByKey(apiKey string) (float64, error) {
 
 // QueryTodayCostByKey is defined in api_key_daily_spending_reset.go and returns
 // effective project-day cost (raw sum minus same-day reset baseline when present).
+
+// ReloadPricingCache re-reads every pricing row into the in-memory cache. A
+// cluster node calls it when another node changed prices; its own writes
+// update the cache as they go.
+func ReloadPricingCache() {
+	reloadPricingCache(getDB())
+}

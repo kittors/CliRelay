@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/configsync"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/enduser"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/quota"
 	internalrouting "github.com/router-for-me/CLIProxyAPI/v6/internal/routing"
@@ -38,6 +39,10 @@ type Service struct {
 	validateChannelGroup ChannelGroupValidator
 	validateEntry        EntryValidator
 	deleteLogs           LogsDeleter
+	// expectedVersion is the api_keys / permission-profile collection version
+	// a full replacement was computed from; configsync.AnyVersion when the
+	// client sent none.
+	expectedVersion int64
 }
 
 type EntryPatch struct {
@@ -90,8 +95,16 @@ func WithLogsDeleter(fn LogsDeleter) Option {
 	}
 }
 
+// WithExpectedVersion makes full replacements fail with a version conflict
+// unless the collection is still at version.
+func WithExpectedVersion(version int64) Option {
+	return func(s *Service) {
+		s.expectedVersion = version
+	}
+}
+
 func NewService(sanitizeChannels ChannelSanitizer, opts ...Option) *Service {
-	svc := &Service{sanitizeChannels: sanitizeChannels}
+	svc := &Service{sanitizeChannels: sanitizeChannels, expectedVersion: configsync.AnyVersion}
 	for _, opt := range opts {
 		if opt != nil {
 			opt(svc)
@@ -131,7 +144,8 @@ func (s *Service) ReplaceKeys(keys []string) error {
 			rows = append(rows, usage.APIKeyRow{Key: trimmed})
 		}
 	}
-	return usage.ReplaceAllAPIKeysForTenant(s.tenantID, rows)
+	_, err := usage.ReplaceAllAPIKeysForTenantExpect(context.Background(), s.tenantID, rows, s.expectedVersion)
+	return err
 }
 
 func (s *Service) PatchKey(oldKey string, newKey string) error {
@@ -175,7 +189,8 @@ func (s *Service) ReplacePermissionProfiles(profiles []usage.APIKeyPermissionPro
 	if err != nil {
 		return err
 	}
-	return usage.ReplaceAllAPIKeyPermissionProfilesForTenant(s.tenantID, normalized)
+	_, _, err = usage.ReplaceAllAPIKeyPermissionProfilesForTenantExpect(context.Background(), s.tenantID, normalized, false, s.expectedVersion)
+	return err
 }
 
 func (s *Service) ReplacePermissionProfilesAndSyncAccounts(profiles []usage.APIKeyPermissionProfileRow) (int64, error) {
@@ -188,7 +203,8 @@ func (s *Service) ReplacePermissionProfilesWithCaps(profiles []usage.APIKeyPermi
 	if err != nil {
 		return usage.APIKeyPermissionProfileSyncResult{}, err
 	}
-	return usage.ReplaceAllAPIKeyPermissionProfilesForTenantWithCaps(s.tenantID, normalized, syncAccounts)
+	result, _, err := usage.ReplaceAllAPIKeyPermissionProfilesForTenantExpect(context.Background(), s.tenantID, normalized, syncAccounts, s.expectedVersion)
+	return result, err
 }
 
 func (s *Service) normalizePermissionProfiles(profiles []usage.APIKeyPermissionProfileRow) ([]usage.APIKeyPermissionProfileRow, error) {
@@ -382,7 +398,8 @@ func (s *Service) ReplaceEntries(entries []config.APIKeyEntry) error {
 		}
 		rows = append(rows, usage.APIKeyRowFromConfig(normalized))
 	}
-	return usage.ReplaceAllAPIKeysForTenant(s.tenantID, rows)
+	_, err := usage.ReplaceAllAPIKeysForTenantExpect(context.Background(), s.tenantID, rows, s.expectedVersion)
+	return err
 }
 
 func (s *Service) PatchEntry(id *string, index *int, match *string, patch EntryPatch) error {

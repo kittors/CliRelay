@@ -17,7 +17,7 @@ func TestPutIdentityFingerprintPersistsToSQLite(t *testing.T) {
 	initManagementModelsTestDB(t)
 
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
-	if err := os.WriteFile(configPath, []byte("identity-fingerprint:\n  codex:\n    enabled: false\nlogging-to-file: true\n"), 0o600); err != nil {
+	if err := os.WriteFile(configPath, []byte("identity-fingerprint:\n  codex:\n    enabled: false\nport: 8318\n"), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 	h := NewHandler(&config.Config{LoggingToFile: true}, configPath, nil)
@@ -71,7 +71,7 @@ func TestPutIdentityFingerprintPersistsToSQLite(t *testing.T) {
 	if strings.Contains(string(data), "identity-fingerprint:") {
 		t.Fatalf("identity-fingerprint should be removed from YAML after DB write:\n%s", string(data))
 	}
-	if !strings.Contains(string(data), "logging-to-file: true") {
+	if !strings.Contains(string(data), "port: 8318") {
 		t.Fatalf("ordinary config should remain in YAML:\n%s", string(data))
 	}
 }
@@ -113,7 +113,7 @@ func TestPutCodexOAuthAdmissionPersistsToSQLite(t *testing.T) {
 	initManagementModelsTestDB(t)
 
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
-	if err := os.WriteFile(configPath, []byte("codex-oauth-admission:\n  allowed-clients:\n    - stale\nlogging-to-file: true\n"), 0o600); err != nil {
+	if err := os.WriteFile(configPath, []byte("codex-oauth-admission:\n  allowed-clients:\n    - stale\nport: 8318\n"), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 	h := NewHandler(&config.Config{LoggingToFile: true}, configPath, nil)
@@ -141,7 +141,7 @@ func TestPutCodexOAuthAdmissionPersistsToSQLite(t *testing.T) {
 	if strings.Contains(string(data), "codex-oauth-admission:") {
 		t.Fatalf("codex-oauth-admission should be removed from YAML after DB write:\n%s", string(data))
 	}
-	if !strings.Contains(string(data), "logging-to-file: true") {
+	if !strings.Contains(string(data), "port: 8318") {
 		t.Fatalf("ordinary config should remain in YAML:\n%s", string(data))
 	}
 }
@@ -198,7 +198,7 @@ func TestPutOAuthModelAliasPersistsToSQLite(t *testing.T) {
 	initManagementModelsTestDB(t)
 
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
-	if err := os.WriteFile(configPath, []byte("oauth-model-alias:\n  codex:\n    - name: old\n      alias: stale\nlogging-to-file: true\n"), 0o600); err != nil {
+	if err := os.WriteFile(configPath, []byte("oauth-model-alias:\n  codex:\n    - name: old\n      alias: stale\nport: 8318\n"), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 	h := NewHandler(&config.Config{LoggingToFile: true}, configPath, nil)
@@ -228,7 +228,7 @@ func TestPutOAuthModelAliasPersistsToSQLite(t *testing.T) {
 	if strings.Contains(string(data), "oauth-model-alias:") {
 		t.Fatalf("oauth-model-alias should be removed from YAML after DB write:\n%s", string(data))
 	}
-	if !strings.Contains(string(data), "logging-to-file: true") {
+	if !strings.Contains(string(data), "port: 8318") {
 		t.Fatalf("ordinary config should remain in YAML:\n%s", string(data))
 	}
 }
@@ -237,7 +237,7 @@ func TestPutProviderCredentialsPersistToSQLite(t *testing.T) {
 	initManagementModelsTestDB(t)
 
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
-	if err := os.WriteFile(configPath, []byte("codex-api-key:\n  - api-key: old-codex\n    base-url: https://old.example.com\nclaude-api-key:\n  - api-key: old-claude\n    base-url: https://old.example.com\nlogging-to-file: true\n"), 0o600); err != nil {
+	if err := os.WriteFile(configPath, []byte("codex-api-key:\n  - api-key: old-codex\n    base-url: https://old.example.com\nclaude-api-key:\n  - api-key: old-claude\n    base-url: https://old.example.com\nport: 8318\n"), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 	h := NewHandler(&config.Config{LoggingToFile: true}, configPath, nil)
@@ -275,7 +275,7 @@ func TestPutProviderCredentialsPersistToSQLite(t *testing.T) {
 			t.Fatalf("%s should be removed from YAML after DB write:\n%s", forbidden, string(data))
 		}
 	}
-	if !strings.Contains(string(data), "logging-to-file: true") {
+	if !strings.Contains(string(data), "port: 8318") {
 		t.Fatalf("ordinary config should remain in YAML:\n%s", string(data))
 	}
 }

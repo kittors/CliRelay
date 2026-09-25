@@ -1,10 +1,12 @@
 package management
 
 import (
-	"fmt"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/identity"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/management/settings/runtimeconfig"
 	settingsstore "github.com/router-for-me/CLIProxyAPI/v6/internal/management/settings/store"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 )
@@ -19,7 +21,7 @@ func (h *Handler) GetRequestLogBodyStorage(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"enabled": false})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"enabled": h.cfg.RequestLogStorage.StoreContent})
+	h.jsonWithLiveVersion(c, runtimeconfig.RuntimeSettingRequestLogStorage, gin.H{"enabled": h.cfg.RequestLogStorage.StoreContent})
 }
 
 // GetRequestLogStorageStatus returns retention policy + live table sizes.
@@ -52,16 +54,12 @@ func (h *Handler) PutRequestLogBodyStorage(c *gin.Context) {
 	}
 
 	enabled := *body.Value
-	h.mu.Lock()
-	previous := h.cfg.RequestLogStorage.StoreContent
-	h.cfg.RequestLogStorage.StoreContent = enabled
-	if err := settingsstore.SaveConfig(h.cfg, h.configFilePath); err != nil {
-		h.cfg.RequestLogStorage.StoreContent = previous
-		h.mu.Unlock()
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to save config: %v", err)})
+	cfg, err := h.commitRequestLogBodyStorage(c, enabled)
+	if err != nil {
+		writeConfigSaveError(c, "failed to save config", err)
 		return
 	}
-	cfg := h.cfg
+	h.mu.Lock()
 	mutated := h.onConfigMutated
 	h.mu.Unlock()
 
@@ -86,4 +84,31 @@ func (h *Handler) PutRequestLogBodyStorage(c *gin.Context) {
 		response["cleanup"] = result
 	}
 	c.JSON(http.StatusOK, response)
+}
+
+// commitRequestLogBodyStorage stores the toggle and returns the live config it
+// was applied to. It edits a fresh copy like mutateSystemConfig, but the
+// caller has to answer the request itself: disabling also purges bodies.
+func (h *Handler) commitRequestLogBodyStorage(c *gin.Context, enabled bool) (*config.Config, error) {
+	if !settingsstore.StoreAvailable() {
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		previous := h.cfg.RequestLogStorage.StoreContent
+		h.cfg.RequestLogStorage.StoreContent = enabled
+		if err := settingsstore.SaveConfig(h.cfg, h.configFilePath); err != nil {
+			h.cfg.RequestLogStorage.StoreContent = previous
+			return nil, err
+		}
+		return h.cfg, nil
+	}
+	fresh := h.freshConfig(identity.SystemTenantID)
+	fresh.RequestLogStorage.StoreContent = enabled
+	keys, err := settingsstore.CommitTenantConfig(c.Request.Context(), identity.SystemTenantID, fresh, requestVersion(c), h.configFilePath)
+	if err != nil {
+		return nil, err
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	settingsstore.AdoptKeys(h.cfg, fresh, keys...)
+	return h.cfg, nil
 }

@@ -14,6 +14,7 @@ import (
 	"github.com/gin-gonic/gin"
 	serviceapp "github.com/router-for-me/CLIProxyAPI/v6/internal/app/service"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/configsync"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/identity"
 	proxypoolsettings "github.com/router-for-me/CLIProxyAPI/v6/internal/management/settings/proxypool"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
@@ -46,6 +47,7 @@ func (h *Handler) GetProxyPool(c *gin.Context) {
 		h.mu.Unlock()
 	}
 
+	setVersionHeader(c, usage.ConfigCollectionVersion(configsync.DomainProxyPool, tenantID))
 	items := make([]proxyPoolAPIEntry, 0, len(entries))
 	for _, entry := range entries {
 		items = append(items, proxyPoolAPIEntry{
@@ -81,10 +83,12 @@ func (h *Handler) PutProxyPool(c *gin.Context) {
 		return
 	}
 	if proxypoolsettings.StoreAvailableForTenant(tenantID) {
-		if err := proxypoolsettings.ReplaceForTenant(tenantID, normalized); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to save proxy pool: %v", err)})
+		version, err := proxypoolsettings.ReplaceForTenantExpect(c.Request.Context(), tenantID, normalized, requestExpectedVersion(c))
+		if err != nil {
+			writeConfigSaveError(c, "failed to save proxy pool", err)
 			return
 		}
+		setVersionHeader(c, version)
 		if tenantID == identity.SystemTenantID {
 			h.mu.Lock()
 			if h.cfg == nil {

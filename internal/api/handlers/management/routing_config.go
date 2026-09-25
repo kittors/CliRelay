@@ -45,6 +45,8 @@ func effectiveTenantID(c *gin.Context) string {
 type routingConfigResponse struct {
 	config.RoutingConfig
 	Capabilities routingConfigCapabilities `json:"capabilities"`
+	// Version is sent back with a write to detect a concurrent change.
+	Version int64 `json:"version"`
 }
 
 type routingConfigCapabilities struct {
@@ -58,12 +60,14 @@ func (h *Handler) GetRoutingConfig(c *gin.Context) {
 		auths = h.authManager.ListForTenant(tenantID)
 	}
 	routing := currentRoutingConfigForTenant(h.cfg, tenantID)
+	_, version := usage.GetRoutingConfigWithVersionForTenant(tenantID)
 	if known, err := collectKnownChannels(h.cfg, auths, ""); err == nil {
 		routing = canonicalizeRoutingConfigChannels(routing, known)
 	}
 	c.JSON(http.StatusOK, routingConfigResponse{
 		RoutingConfig: routing,
 		Capabilities:  routingConfigCapabilities{ChannelGroupExcludedModels: true},
+		Version:       version,
 	})
 }
 
@@ -95,8 +99,11 @@ func (h *Handler) PutRoutingConfig(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	if err := usage.UpsertRoutingConfigForTenant(tenantID, candidate.Routing); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+	// A PUT replaces the whole routing config, so it is checked against the
+	// version the client read, when it sent one.
+	version, err := usage.CompareAndSwapRoutingConfigForTenant(c.Request.Context(), tenantID, candidate.Routing, requestExpectedVersion(c))
+	if err != nil {
+		writeConfigSaveError(c, "failed to save routing config", err)
 		return
 	}
 
@@ -117,6 +124,7 @@ func (h *Handler) PutRoutingConfig(c *gin.Context) {
 		h.authManager.SetConfigForTenant(tenantID, &tenantCfg)
 	}
 
+	setVersionHeader(c, version)
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 	if tenantID == identity.SystemTenantID && h != nil && h.onConfigMutated != nil {
 		h.onConfigMutated(cfgRef)

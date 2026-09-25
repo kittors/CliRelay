@@ -510,7 +510,7 @@ func (s *Service) CreateTenant(ctx context.Context, actor Principal, input Creat
 	if _, err = tx.ExecContext(ctx, `INSERT INTO user_roles (user_id, role_id, created_by) VALUES (?, ?, ?)`, userID, roleID, actor.User.ID); err != nil {
 		return tenant, admin, err
 	}
-	if err = tx.Commit(); err != nil {
+	if err = commitTenantChange(ctx, tx, tenantID); err != nil {
 		return tenant, admin, err
 	}
 	s.InvalidateTenant(tenantID)
@@ -590,7 +590,7 @@ func (s *Service) UpdateTenantDetails(ctx context.Context, actor Principal, id s
 			return Tenant{}, err
 		}
 	}
-	if err = tx.Commit(); err != nil {
+	if err = commitTenantChange(ctx, tx, id); err != nil {
 		return Tenant{}, err
 	}
 	s.InvalidateTenant(id)

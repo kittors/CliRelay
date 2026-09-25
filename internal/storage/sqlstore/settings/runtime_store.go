@@ -1,12 +1,13 @@
 package settings
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"strings"
-	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/configsync"
 	runtimeconfig "github.com/router-for-me/CLIProxyAPI/v6/internal/management/settings/runtimeconfig"
 	log "github.com/sirupsen/logrus"
 	"gopkg.in/yaml.v3"
@@ -18,6 +19,7 @@ CREATE TABLE IF NOT EXISTS runtime_settings (
   setting_key TEXT NOT NULL,
   payload     TEXT NOT NULL DEFAULT '{}',
   updated_at  TEXT NOT NULL DEFAULT '',
+  version     INTEGER NOT NULL DEFAULT 1,
   PRIMARY KEY (tenant_id, setting_key)
 );
 `
@@ -47,6 +49,7 @@ func InitRuntimeSettingsTable(db *sql.DB) {
 		log.Errorf("sqlite/settings: create runtime_settings table: %v", err)
 	}
 	migrateRuntimeSettingsTenantSchema(db)
+	ensureRuntimeSettingsVersionColumn(db)
 }
 
 func (s RuntimeSettingsStore) Payload(key string) (json.RawMessage, bool) {
@@ -72,6 +75,9 @@ func (s RuntimeSettingsStore) Exists(key string) bool {
 	return ok
 }
 
+// Upsert writes value whatever the stored version is. It still bumps the
+// version and announces the write, so readers holding the old version notice.
+// Management saves use CompareAndSwap instead.
 func (s RuntimeSettingsStore) Upsert(key string, value any) error {
 	if s.db == nil {
 		return nil
@@ -80,40 +86,13 @@ func (s RuntimeSettingsStore) Upsert(key string, value any) error {
 	if key == "" {
 		return nil
 	}
-	payload, err := json.Marshal(value)
-	if err != nil {
-		return err
-	}
-	_, err = s.db.Exec(
-		`INSERT INTO runtime_settings (tenant_id, setting_key, payload, updated_at)
-		 VALUES ($1, $2, $3, $4)
-		 ON CONFLICT(tenant_id, setting_key) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at`,
-		s.tenantID,
-		key,
-		string(payload),
-		time.Now().UTC().Format(time.RFC3339),
-	)
+	_, err := s.CompareAndSwap(context.Background(), []Change{{Key: key, Value: value, Expected: configsync.AnyVersion}})
 	return err
 }
 
-func (s RuntimeSettingsStore) PersistFromConfig(cfg *config.Config) int {
-	if s.db == nil || cfg == nil {
-		return 0
-	}
-	persisted := 0
-	for _, spec := range runtimeconfig.Specs() {
-		if !spec.Meaningful(cfg) && !s.Exists(spec.Key) {
-			continue
-		}
-		if err := s.Upsert(spec.Key, spec.Value(cfg)); err != nil {
-			log.Errorf("sqlite/settings: persist runtime setting %s: %v", spec.Key, err)
-			continue
-		}
-		persisted++
-	}
-	return persisted
-}
-
+// PersistPresentInYAML stores the settings that a raw config.yaml save from
+// the management panel spelled out explicitly. Only keys whose value differs
+// from the stored one are written, each against the version it replaces.
 func (s RuntimeSettingsStore) PersistPresentInYAML(cfg *config.Config, yamlContent []byte) int {
 	if s.db == nil || cfg == nil {
 		return 0
@@ -127,49 +106,83 @@ func (s RuntimeSettingsStore) PersistPresentInYAML(cfg *config.Config, yamlConte
 		if !present[spec.Key] {
 			continue
 		}
-		if err := s.Upsert(spec.Key, spec.Value(cfg)); err != nil {
+		written, err := s.writeIfChanged(context.Background(), spec, cfg)
+		if err != nil {
 			log.Errorf("sqlite/settings: persist runtime setting %s from YAML save: %v", spec.Key, err)
 			continue
 		}
-		persisted++
+		if written {
+			persisted++
+		}
 	}
 	return persisted
 }
 
+// ApplyToConfig overlays every stored setting onto cfg without recording
+// versions, for configs built on the fly (tenant views).
 func (s RuntimeSettingsStore) ApplyToConfig(cfg *config.Config) bool {
-	if s.db == nil || cfg == nil {
-		return false
-	}
-	applied := false
-	for _, spec := range runtimeconfig.Specs() {
-		raw, ok := s.Payload(spec.Key)
-		if !ok {
-			continue
-		}
-		if spec.Apply(cfg, raw) {
-			applied = true
-		}
-	}
+	applied, _ := s.ApplyToConfigRecording(cfg, nil)
 	return applied
 }
 
+// ApplyToConfigRecording overlays every stored setting onto cfg and, when state
+// is not nil, records what was loaded so a later save can tell which keys it
+// changed. It returns the loaded entries.
+func (s RuntimeSettingsStore) ApplyToConfigRecording(cfg *config.Config, state *config.RuntimeSettingState) (bool, map[string]Entry) {
+	if s.db == nil || cfg == nil {
+		return false, nil
+	}
+	entries, err := s.LoadAll()
+	if err != nil {
+		log.Warnf("sqlite/settings: load runtime settings: %v", err)
+		return false, nil
+	}
+	applied := false
+	for _, spec := range runtimeconfig.Specs() {
+		entry, ok := entries[spec.Key]
+		if !ok {
+			state.Forget(spec.Key)
+			continue
+		}
+		if !spec.Apply(cfg, entry.Payload) {
+			continue
+		}
+		applied = true
+		RecordSnapshot(state, spec, cfg, entry.Version)
+	}
+	return applied, entries
+}
+
+// MigrateFromConfig imports the settings the database does not have yet from
+// cfg (normally config.yaml). It never overwrites a stored row: when several
+// nodes start at once, the first import wins and the others adopt it.
 func (s RuntimeSettingsStore) MigrateFromConfig(cfg *config.Config) (migrated int, hadStored bool) {
 	if s.db == nil || cfg == nil {
 		return 0, false
 	}
+	entries, err := s.LoadAll()
+	if err != nil {
+		log.Warnf("sqlite/settings: load runtime settings before migration: %v", err)
+		return 0, false
+	}
 	for _, spec := range runtimeconfig.Specs() {
-		if s.Exists(spec.Key) {
+		if _, ok := entries[spec.Key]; ok {
 			hadStored = true
 			continue
 		}
 		if !spec.Meaningful(cfg) {
 			continue
 		}
-		if err := s.Upsert(spec.Key, spec.Value(cfg)); err != nil {
+		inserted, err := s.InsertIfAbsent(context.Background(), spec.Key, spec.Value(cfg))
+		if err != nil {
 			log.Errorf("sqlite/settings: migrate runtime setting %s: %v", spec.Key, err)
 			continue
 		}
-		migrated++
+		if inserted {
+			migrated++
+		} else {
+			hadStored = true
+		}
 	}
 	return migrated, hadStored
 }
