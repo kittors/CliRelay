@@ -96,6 +96,9 @@ func (h *Handler) warmupService() *warmup.Service {
 	defer h.mu.Unlock()
 	if h.warmupSvc == nil {
 		h.warmupSvc = warmup.NewService(h.cfg, h.authManager)
+		if store := sharedWarmupPolicyStore(); store != nil {
+			h.warmupSvc.SetPolicyStore(store)
+		}
 		h.warmupSvc.Start()
 	}
 	return h.warmupSvc
@@ -141,6 +144,7 @@ func (h *Handler) Close() {
 	}
 	h.loginThrottle.close()
 	h.stopAccountStatusScheduler()
+	h.stopWarmupScheduler()
 }
 
 // NewHandler creates a new management handler instance.
