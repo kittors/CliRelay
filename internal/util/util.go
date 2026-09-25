@@ -125,6 +125,9 @@ func CountJSONAuthFiles(dir string) (int, error) {
 			return walkErr
 		}
 		if d.IsDir() {
+			if path != trimmed && IsReservedAuthSubdir(d.Name()) {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 		if !strings.HasSuffix(strings.ToLower(d.Name()), ".json") {

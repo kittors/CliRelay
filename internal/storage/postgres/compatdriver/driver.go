@@ -7,79 +7,131 @@ import (
 	"io"
 	"regexp"
 	"strings"
-
-	"github.com/jackc/pgx/v5/stdlib"
+	"sync/atomic"
+	"time"
 )
 
 const DriverName = "pgxq"
 
 func init() {
-	sql.Register(DriverName, driverWrapper{inner: stdlib.GetDefaultDriver()})
+	sql.Register(DriverName, driverWrapper{})
 }
 
-type driverWrapper struct {
-	inner driver.Driver
-}
+// driverWrapper wraps pgx's database/sql driver: it rewrites the SQLite
+// dialect still used by shared queries, hardens connection setup and drops
+// connections that point at a server which can no longer take writes.
+type driverWrapper struct{}
 
+// Open serves callers that use the driver directly; database/sql goes through
+// OpenConnector. The deadline matches the one pgx's own Open applies.
 func (d driverWrapper) Open(name string) (driver.Conn, error) {
-	conn, err := d.inner.Open(name)
+	connector, err := d.OpenConnector(name)
 	if err != nil {
 		return nil, err
 	}
-	return wrappedConn{Conn: conn}, nil
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	return connector.Connect(ctx)
 }
 
 type wrappedConn struct {
 	driver.Conn
+
+	// pool and epoch tie the connection to its connector, see poolState.
+	pool  *poolState
+	epoch uint64
+	// broken is set once an error showed the connection must not be reused.
+	broken atomic.Bool
+	// readOnlyTx is true while a transaction begun with ReadOnly is open.
+	// database/sql never uses one connection concurrently, so it needs no lock.
+	readOnlyTx bool
 }
 
-func (c wrappedConn) Prepare(query string) (driver.Stmt, error) {
-	return c.Conn.Prepare(rewriteSQL(query))
-}
-
-func (c wrappedConn) PrepareContext(ctx context.Context, query string) (driver.Stmt, error) {
-	if inner, ok := c.Conn.(driver.ConnPrepareContext); ok {
-		return inner.PrepareContext(ctx, rewriteSQL(query))
+func newWrappedConn(conn driver.Conn, pool *poolState) *wrappedConn {
+	c := &wrappedConn{Conn: conn, pool: pool}
+	if pool != nil {
+		c.epoch = pool.epoch.Load()
 	}
-	return nil, driver.ErrSkip
+	return c
 }
 
-func (c wrappedConn) ExecContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
-	if inner, ok := c.Conn.(driver.ExecerContext); ok {
-		return inner.ExecContext(ctx, rewriteSQL(query), args)
+func (c *wrappedConn) Prepare(query string) (driver.Stmt, error) {
+	stmt, err := c.Conn.Prepare(rewriteSQL(query))
+	if err != nil {
+		return nil, c.noteError(err, false)
 	}
-	return nil, driver.ErrSkip
+	return &wrappedStmt{Stmt: stmt, conn: c}, nil
 }
 
-func (c wrappedConn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
-	if inner, ok := c.Conn.(driver.QueryerContext); ok {
-		return inner.QueryContext(ctx, rewriteSQL(query), args)
+func (c *wrappedConn) PrepareContext(ctx context.Context, query string) (driver.Stmt, error) {
+	inner, ok := c.Conn.(driver.ConnPrepareContext)
+	if !ok {
+		return nil, driver.ErrSkip
 	}
-	return nil, driver.ErrSkip
+	stmt, err := inner.PrepareContext(ctx, rewriteSQL(query))
+	if err != nil {
+		return nil, c.noteError(err, false)
+	}
+	return &wrappedStmt{Stmt: stmt, conn: c}, nil
 }
 
-func (c wrappedConn) Ping(ctx context.Context) error {
+func (c *wrappedConn) ExecContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
+	inner, ok := c.Conn.(driver.ExecerContext)
+	if !ok {
+		return nil, driver.ErrSkip
+	}
+	result, err := inner.ExecContext(ctx, rewriteSQL(query), args)
+	return result, c.noteError(err, true)
+}
+
+func (c *wrappedConn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
+	inner, ok := c.Conn.(driver.QueryerContext)
+	if !ok {
+		return nil, driver.ErrSkip
+	}
+	rows, err := inner.QueryContext(ctx, rewriteSQL(query), args)
+	return rows, c.noteError(err, true)
+}
+
+func (c *wrappedConn) Ping(ctx context.Context) error {
 	if inner, ok := c.Conn.(driver.Pinger); ok {
 		return inner.Ping(ctx)
 	}
 	return nil
 }
 
-func (c wrappedConn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.Tx, error) {
-	if inner, ok := c.Conn.(driver.ConnBeginTx); ok {
-		return inner.BeginTx(ctx, opts)
+func (c *wrappedConn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.Tx, error) {
+	inner, ok := c.Conn.(driver.ConnBeginTx)
+	if !ok {
+		return nil, driver.ErrSkip
 	}
-	return nil, driver.ErrSkip
+	tx, err := inner.BeginTx(ctx, opts)
+	if err != nil {
+		return nil, c.noteError(err, false)
+	}
+	c.readOnlyTx = opts.ReadOnly
+	return &wrappedTx{Tx: tx, conn: c}, nil
 }
 
-func (c wrappedConn) ResetSession(ctx context.Context) error {
+// ResetSession runs before database/sql hands a pooled connection out again.
+// Returning driver.ErrBadConn makes it close the connection and pick another.
+func (c *wrappedConn) ResetSession(ctx context.Context) error {
+	if c.unusable() {
+		return driver.ErrBadConn
+	}
 	if inner, ok := c.Conn.(driver.SessionResetter); ok {
 		return inner.ResetSession(ctx)
 	}
 	return nil
 }
 
-func (c wrappedConn) IsValid() bool {
+// IsValid runs when a connection is returned to the pool; false closes it.
+// pgx's connection does not implement it, so a closed socket used to linger
+// in the pool until the next checkout noticed.
+func (c *wrappedConn) IsValid() bool {
+	if c.unusable() || c.innerClosed() {
+		return false
+	}
 	if inner, ok := c.Conn.(driver.Validator); ok {
 		return inner.IsValid()
 	}
@@ -189,12 +241,12 @@ func intString(n int) string {
 }
 
 var _ driver.Driver = driverWrapper{}
-var _ driver.Conn = wrappedConn{}
-var _ driver.ConnPrepareContext = wrappedConn{}
-var _ driver.ExecerContext = wrappedConn{}
-var _ driver.QueryerContext = wrappedConn{}
-var _ driver.Pinger = wrappedConn{}
-var _ driver.ConnBeginTx = wrappedConn{}
-var _ driver.SessionResetter = wrappedConn{}
-var _ driver.Validator = wrappedConn{}
-var _ io.Closer = wrappedConn{}
+var _ driver.Conn = (*wrappedConn)(nil)
+var _ driver.ConnPrepareContext = (*wrappedConn)(nil)
+var _ driver.ExecerContext = (*wrappedConn)(nil)
+var _ driver.QueryerContext = (*wrappedConn)(nil)
+var _ driver.Pinger = (*wrappedConn)(nil)
+var _ driver.ConnBeginTx = (*wrappedConn)(nil)
+var _ driver.SessionResetter = (*wrappedConn)(nil)
+var _ driver.Validator = (*wrappedConn)(nil)
+var _ io.Closer = (*wrappedConn)(nil)

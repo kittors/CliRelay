@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/klauspost/compress/zstd"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/cluster"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	log "github.com/sirupsen/logrus"
 )
@@ -257,6 +258,12 @@ func runRequestLogMaintenancePass(ctx context.Context, db *sql.DB, driver string
 	if db == nil {
 		return
 	}
+	if !cluster.Default().IsLeader() {
+		// The tables below are shared; the leader maintains them. Keep this
+		// node's running size total honest, since its size-cap checks use it.
+		refreshRequestLogContentBytes(db)
+		return
+	}
 	if !RequestLogBodyStorageEnabled() {
 		if _, err := purgeStoredRequestBodies(db, driver); err != nil {
 			log.Errorf("usage: purge disabled request log body storage: %v", err)
@@ -297,6 +304,15 @@ func runRequestLogMaintenancePass(ctx context.Context, db *sql.DB, driver string
 		log.Errorf("usage: prune shared AI account day buckets: %v", err)
 	} else if n > 0 {
 		log.Infof("usage: pruned %d expired shared AI account day rows", n)
+	}
+	// Exactly-once keys only need to outlive the retries and spool replays of
+	// their own record; see requestLogIdempotencyRetention.
+	if n, err := pruneRequestLogIdempotencyKeys(ctx, db, time.Now().Add(-requestLogIdempotencyRetention)); err != nil {
+		if ctx.Err() == nil {
+			log.Errorf("usage: prune request log idempotency keys: %v", err)
+		}
+	} else if n > 0 {
+		log.Infof("usage: pruned %d expired request log idempotency keys", n)
 	}
 	if n, err := cleanupExpiredAIAccountSubjectQuotaPoints(db); err != nil {
 		log.Errorf("usage: prune shared AI account quota points: %v", err)
@@ -363,7 +379,7 @@ func insertLogContentTx(tx *sql.Tx, logID int64, timestamp time.Time, inputConte
 	return insertLogContentTenantTx(tx, "00000000-0000-0000-0000-000000000001", logID, timestamp, inputContent, outputContent, detailContent, false)
 }
 
-func insertLogContentTenantTx(tx *sql.Tx, tenantID string, logID int64, timestamp time.Time, inputContent, outputContent, detailContent string, failed bool) error {
+func insertLogContentTenantTx(tx usageWriteTx, tenantID string, logID int64, timestamp time.Time, inputContent, outputContent, detailContent string, failed bool) error {
 	if tx == nil || logID < 1 {
 		return nil
 	}

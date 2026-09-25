@@ -90,7 +90,7 @@ func DoVertexImport(cfg *config.Config, keyPath string) {
 	if setter, ok := store.(interface{ SetBaseDir(string) }); ok {
 		setter.SetBaseDir(cfg.AuthDir)
 	}
-	path, errSave := store.Save(context.Background(), record)
+	path, errSave := store.Save(coreauth.WithCredentialCreate(context.Background()), record)
 	if errSave != nil {
 		log.Errorf("vertex-import: save credential failed: %v", errSave)
 		return
