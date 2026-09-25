@@ -46,17 +46,22 @@ type pgTimings struct {
 	// step bounds each individual database call made while starting,
 	// campaigning or shutting down.
 	step time.Duration
+	// supersededGrace is how long a process may keep running after a newer
+	// process took its node ID before that is reported as a misconfiguration.
+	// It exceeds the blue-green drain (CLIRELAY_SHUTDOWN_GRACE, 300s).
+	supersededGrace time.Duration
 }
 
 var defaultPGTimings = pgTimings{
-	heartbeat:      5 * time.Second,
-	campaign:       2 * time.Second,
-	leaderPing:     2 * time.Second,
-	listenIdle:     30 * time.Second,
-	reconnectMin:   time.Second,
-	reconnectMax:   15 * time.Second,
-	publishTimeout: 3 * time.Second,
-	step:           2 * time.Second,
+	heartbeat:       5 * time.Second,
+	campaign:        2 * time.Second,
+	leaderPing:      2 * time.Second,
+	listenIdle:      30 * time.Second,
+	reconnectMin:    time.Second,
+	reconnectMax:    15 * time.Second,
+	publishTimeout:  3 * time.Second,
+	step:            2 * time.Second,
+	supersededGrace: 10 * time.Minute,
 }
 
 // pgNode is the PostgreSQL backend of one enabled coordinator: membership
@@ -90,7 +95,10 @@ type pgNode struct {
 
 	lastHeartbeatWarn time.Time
 	lastConflictWarn  time.Time
-	shutdownOnce      sync.Once
+	// supersededAt is when a newer process of the same node ID took the
+	// membership row; zero while this process owns it.
+	supersededAt time.Time
+	shutdownOnce sync.Once
 }
 
 // backendSlot is the coordinator's transport and membership source. A
