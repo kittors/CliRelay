@@ -143,15 +143,19 @@ func (s cooldownService) markResult(ctx context.Context, result Result) {
 	}
 
 	var effects resultStateEffects
+	var cooldown *CooldownNotice
 	s.manager.mu.Lock()
 	if auth, ok := s.manager.auths[result.AuthID]; ok && auth != nil {
 		now := time.Now()
+		before := s.manager.cooldownBeforeLocked(auth, result, now)
 		effects = s.applyResultLocked(auth, result, now)
+		cooldown = s.manager.cooldownNoticeLocked(auth, result, effects, before, now)
 		_ = s.manager.persist(ctx, auth)
 	}
 	s.manager.mu.Unlock()
 
 	s.applyRegistryEffects(result, effects)
+	s.manager.publishCooldown(cooldown)
 	s.manager.hook.OnResult(ctx, result)
 	if !result.Success && result.RetryAfter == nil && isXAIWeekBalanceExhaustedError(result.Error) {
 		probeCtx := context.Background()
