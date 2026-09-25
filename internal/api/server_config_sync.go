@@ -340,14 +340,34 @@ func (s *Server) reloadModelConfigs(_ context.Context, events []cluster.ConfigEv
 
 // reloadTenants rebuilds the per-tenant runtime configs, which is how a tenant
 // created on another node becomes routable here.
-func (s *Server) reloadTenants(context.Context, []cluster.ConfigEvent) error {
+func (s *Server) reloadTenants(_ context.Context, events []cluster.ConfigEvent) error {
 	cfg := s.liveConfig(nil)
 	if manager := s.coreManager(); manager != nil && cfg != nil {
 		internalserviceapp.ApplyTenantRuntimeConfigs(cfg, manager)
 	}
-	// Extension point: invalidate the tenant cache here once it exists, so a
-	// suspended or expired tenant is refused on every node.
+	// The tenant access check serves cached rows for up to 15 s; drop them so
+	// a tenant suspended or expired on another node is refused here at once.
+	invalidateTenantCaches(events)
 	return nil
+}
+
+// invalidateTenantCaches drops the cached tenant rows named by events, or all
+// of them when an event does not name its tenant (collection-level changes
+// and resyncs), since then any row may be stale.
+func invalidateTenantCaches(events []cluster.ConfigEvent) {
+	if len(events) == 0 {
+		identity.InvalidateAllTenants()
+		return
+	}
+	for _, event := range events {
+		if strings.TrimSpace(event.TenantID) == "" {
+			identity.InvalidateAllTenants()
+			return
+		}
+	}
+	for _, event := range events {
+		identity.InvalidateTenant(event.TenantID)
+	}
 }
 
 // fullConfigReload is the dispatcher's last resort: the service's own reload
@@ -365,6 +385,7 @@ func (s *Server) fullConfigReload(ctx context.Context) error {
 	}
 	usage.ReloadPricingCache()
 	modelconfigsettings.InvalidateDisabledModelCache()
+	identity.InvalidateAllTenants()
 	ipaccess.Default().ReloadPolicy(ctx)
 	if err := ipaccess.Default().Refresh(ctx); err != nil {
 		log.WithError(err).Debug("config sync: ip access refresh failed")
