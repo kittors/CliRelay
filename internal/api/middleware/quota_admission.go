@@ -156,9 +156,15 @@ func tpmLimitVerdict(current int64, limit int) *quotaVerdict {
 // counts and spending. It changes no counters, so a WebSocket handshake can run
 // it without counting as a request. A usage lookup failure refuses (fails closed).
 func (p *quotaPolicy) checkBudgets() *quotaVerdict {
+	// Reads that fail fall back to the last successful one for a short while;
+	// see quota_outage.go.
+	subject, logSubject := p.usageSubjects()
+
 	// --- Daily limit check (from usage DB) ---
 	if p.dailyLimit > 0 {
-		todayCount, err := countTodayUsage(p.apiKey, p.endUserID)
+		todayCount, err := readQuotaUsage(quotaWindowDayRequests, subject, logSubject, true, func() (int64, error) {
+			return countTodayUsage(p.apiKey, p.endUserID)
+		})
 		if err != nil {
 			return quotaUsageUnavailableVerdict(quotaScope(p.endUserID), "day", p.tenantID, stableQuotaSubject(p.apiKeyID, p.endUserID), err)
 		} else if todayCount >= int64(p.dailyLimit) {
@@ -169,7 +175,9 @@ func (p *quotaPolicy) checkBudgets() *quotaVerdict {
 
 	// --- Total quota check (from usage DB) ---
 	if p.totalQuota > 0 {
-		totalCount, err := countTotalUsage(p.apiKey, p.endUserID)
+		totalCount, err := readQuotaUsage(quotaWindowTotalRequests, subject, logSubject, false, func() (int64, error) {
+			return countTotalUsage(p.apiKey, p.endUserID)
+		})
 		if err != nil {
 			return quotaUsageUnavailableVerdict(quotaScope(p.endUserID), "lifetime", p.tenantID, stableQuotaSubject(p.apiKeyID, p.endUserID), err)
 		} else if totalCount >= int64(p.totalQuota) {
@@ -180,7 +188,9 @@ func (p *quotaPolicy) checkBudgets() *quotaVerdict {
 
 	// --- Spending limit check (from usage DB) ---
 	if p.spendingLimit > 0 {
-		totalCost, err := queryTotalCostUsage(p.apiKey, p.endUserID)
+		totalCost, err := readQuotaUsage(quotaWindowTotalCost, subject, logSubject, false, func() (float64, error) {
+			return queryTotalCostUsage(p.apiKey, p.endUserID)
+		})
 		if err != nil {
 			return quotaUsageUnavailableVerdict(quotaScope(p.endUserID), "lifetime", p.tenantID, stableQuotaSubject(p.apiKeyID, p.endUserID), err)
 		} else if totalCost >= p.spendingLimit {
@@ -191,7 +201,9 @@ func (p *quotaPolicy) checkBudgets() *quotaVerdict {
 
 	// --- Daily spending limit check (from usage DB) ---
 	if p.dailySpendingLimit > 0 && p.accountPeriod.Day <= 0 && p.keyPeriod.Day <= 0 {
-		todayCost, err := queryTodayCostUsage(p.apiKey, p.endUserID)
+		todayCost, err := readQuotaUsage(quotaWindowDayCost, subject, logSubject, true, func() (float64, error) {
+			return queryTodayCostUsage(p.apiKey, p.endUserID)
+		})
 		if err != nil {
 			return quotaUsageUnavailableVerdict(quotaScope(p.endUserID), "day", p.tenantID, stableQuotaSubject(p.apiKeyID, p.endUserID), err)
 		} else if todayCost >= p.dailySpendingLimit {
@@ -201,7 +213,11 @@ func (p *quotaPolicy) checkBudgets() *quotaVerdict {
 	}
 
 	if hasPeriodLimits(p.accountPeriod) {
-		used, err := queryPeriodByEndUserFunc(p.tenantID, p.endUserID)
+		// Period windows roll over at local midnight (the 5h window aside), so a
+		// reading from another day never stands in.
+		used, err := readQuotaUsage(quotaWindowPeriodAccount, "eu:"+p.tenantID+"/"+p.endUserID, "account "+p.endUserID, true, func() (quota.PeriodSpendingUsage, error) {
+			return queryPeriodByEndUserFunc(p.tenantID, p.endUserID)
+		})
 		if err != nil {
 			return quotaUsageUnavailableVerdict("account", "period", p.tenantID, p.endUserID, err)
 		}
@@ -210,7 +226,9 @@ func (p *quotaPolicy) checkBudgets() *quotaVerdict {
 		}
 	}
 	if hasPeriodLimits(p.keyPeriod) {
-		used, err := queryPeriodByKeyFunc(p.tenantID, p.apiKeyID)
+		used, err := readQuotaUsage(quotaWindowPeriodKey, "key:"+p.tenantID+"/"+p.apiKeyID, "key "+p.apiKeyID, true, func() (quota.PeriodSpendingUsage, error) {
+			return queryPeriodByKeyFunc(p.tenantID, p.apiKeyID)
+		})
 		if err != nil {
 			return quotaUsageUnavailableVerdict("key", "period", p.tenantID, p.apiKeyID, err)
 		}

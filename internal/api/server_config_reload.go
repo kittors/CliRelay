@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/api/bodyutil"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/api/middleware"
 	internalserviceapp "github.com/router-for-me/CLIProxyAPI/v6/internal/app/service"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/identity"
@@ -148,6 +149,7 @@ func (s *Server) applyAuthRuntimeConfig(oldCfg, cfg *config.Config) {
 		s.handlers.AuthManager.SetRetryConfig(cfg.RequestRetry, time.Duration(cfg.MaxRetryInterval)*time.Second)
 		s.handlers.AuthManager.SetAccountConcurrencyConfig(cfg.AccountConcurrency.WaitTimeout(), cfg.AccountConcurrency.QueueDepth())
 	}
+	middleware.SetQuotaUsageStaleMaxAge(cfg.DBResilience.QuotaStaleMaxAge())
 }
 
 func (s *Server) applyRuntimeLogLevel(oldCfg, cfg *config.Config) {

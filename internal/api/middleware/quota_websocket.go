@@ -31,6 +31,7 @@ func admitWebsocketHandshake(c *gin.Context) {
 		return
 	}
 	policy := parseQuotaPolicy(apiKey, metadata)
+	rememberAdmissionSubject(apiKey, policy.subject)
 	if !policy.hasLimits() {
 		// No gate is published, so turns of keys without limits skip quota
 		// entirely, as they always have.
