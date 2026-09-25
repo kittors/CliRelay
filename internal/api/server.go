@@ -17,6 +17,7 @@ import (
 	ampmodule "github.com/router-for-me/CLIProxyAPI/v6/internal/api/modules/amp"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/cluster/clusterruntime"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/egresshealth"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/logging"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v6/sdk/access"
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/api/handlers"
@@ -105,6 +106,10 @@ type Server struct {
 
 	// configSync applies management changes made on other cluster nodes.
 	configSync configSyncState
+
+	// egress checks the proxies upstream traffic leaves through; it backs
+	// /readyz/egress.
+	egress *egresshealth.Prober
 }
 
 // Start begins listening for and serving HTTP or HTTPS requests.
@@ -115,6 +120,7 @@ func (s *Server) Start() error {
 	}
 
 	s.startConfigSync()
+	s.egress.Start(context.Background())
 	useTLS := s.cfg != nil && s.cfg.TLS.Enable
 	if useTLS {
 		cert := strings.TrimSpace(s.cfg.TLS.Cert)
@@ -153,6 +159,7 @@ func (s *Server) Stop(ctx context.Context) error {
 	}
 
 	s.stopConfigSync()
+	s.egress.Stop()
 	if s.mgmt != nil {
 		s.mgmt.Close()
 	}

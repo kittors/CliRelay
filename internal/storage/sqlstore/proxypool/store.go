@@ -91,6 +91,33 @@ func (s Store) List() []config.ProxyPoolEntry {
 	return entries
 }
 
+// ListEnabledURLs returns the URL of every enabled entry of every tenant. It
+// serves checks that must cover every proxy the deployment can send traffic
+// through; the runtime config only holds the system tenant's pool. A nil db
+// yields nothing.
+func ListEnabledURLs(ctx context.Context, db *sql.DB) ([]string, error) {
+	if db == nil {
+		return nil, nil
+	}
+	rows, err := db.QueryContext(ctx, `SELECT url FROM proxy_pool WHERE enabled <> 0`)
+	if err != nil {
+		return nil, fmt.Errorf("list enabled proxy_pool urls: %w", err)
+	}
+	defer rows.Close()
+	var urls []string
+	for rows.Next() {
+		var raw string
+		if err := rows.Scan(&raw); err != nil {
+			return nil, fmt.Errorf("scan proxy_pool url: %w", err)
+		}
+		urls = append(urls, raw)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read proxy_pool urls: %w", err)
+	}
+	return urls, nil
+}
+
 func (s Store) Get(id string) *config.ProxyPoolEntry {
 	if s.db == nil {
 		return nil

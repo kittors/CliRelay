@@ -17,10 +17,12 @@ import (
 // A blocked health probe does not just hide a problem, it creates one: the
 // blue/green deploy script gates cutover on /readyz, so a deny rule that
 // happened to cover the load balancer would turn every future deployment into a
-// rollback.
+// rollback. Likewise the arbiter's DNS watcher reads a refused /readyz/egress
+// as broken egress and pulls the node from DNS.
 var healthProbePaths = map[string]struct{}{
-	"/healthz": {},
-	"/readyz":  {},
+	"/healthz":       {},
+	"/readyz":        {},
+	"/readyz/egress": {},
 }
 
 // untrustedAdmissionWarn deduplicates the "list not enforced" warning, which
