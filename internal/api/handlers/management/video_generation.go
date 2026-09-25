@@ -268,7 +268,7 @@ func (h *Handler) newVideoGenerationService() *imagegeneration.Service {
 	if h == nil {
 		return nil
 	}
-	return imagegeneration.NewService(func(ctx context.Context, tenantID string, payload []byte, alt string) ([]byte, error) {
+	return shareTaskSnapshots(imagegeneration.NewService(func(ctx context.Context, tenantID string, payload []byte, alt string) ([]byte, error) {
 		return h.executeVideoGenerationTestForTenant(ctx, tenantID, payload, alt)
-	}, videoGenerationSystemAPIKey)
+	}, videoGenerationSystemAPIKey), jobKindVideoGenerationTest)
 }

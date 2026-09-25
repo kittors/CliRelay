@@ -323,7 +323,7 @@ func (h *Handler) newModelTestService() *imagegeneration.Service {
 	if h == nil {
 		return nil
 	}
-	return imagegeneration.NewService(h.executeModelTestTask, modelTestSystemAPIKey)
+	return shareTaskSnapshots(imagegeneration.NewService(h.executeModelTestTask, modelTestSystemAPIKey), jobKindModelTest)
 }
 
 func (h *Handler) ensureModelTestService() *imagegeneration.Service {

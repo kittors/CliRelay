@@ -105,9 +105,9 @@ func (h *Handler) newImageGenerationService() *imagegeneration.Service {
 	if h == nil {
 		return nil
 	}
-	return imagegeneration.NewService(func(ctx context.Context, tenantID string, payload []byte, alt string) ([]byte, error) {
+	return shareTaskSnapshots(imagegeneration.NewService(func(ctx context.Context, tenantID string, payload []byte, alt string) ([]byte, error) {
 		return h.executeImageGenerationTestForTenant(ctx, tenantID, payload, alt)
-	}, imageGenerationSystemAPIKey)
+	}, imageGenerationSystemAPIKey), jobKindImageGenerationTest)
 }
 
 func (h *Handler) ensureImageGenerationService() *imagegeneration.Service {
