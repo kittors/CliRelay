@@ -3,8 +3,11 @@
 //
 // It runs on a third (arbiter) machine, probes every node's readiness endpoint
 // over the same HTTPS path clients use, and adds or removes each node's A
-// record as nodes fail and recover. It never deletes the last healthy record
-// and never touches records that do not belong to a configured node.
+// record as nodes fail and recover. With probe.egress_path set it also probes
+// each node's egress check and, while any node passes both, leaves out ready
+// nodes that cannot reach their upstream proxies. It never deletes the last
+// healthy record and never touches records that do not belong to a configured
+// node.
 package dnswatch
 
 import (
@@ -105,6 +108,11 @@ type ProbeConfig struct {
 	FailThreshold    int           `yaml:"fail_threshold"`
 	RecoverThreshold int           `yaml:"recover_threshold"`
 	ExpectStatus     []int         `yaml:"expect_status"`
+	// EgressPath, e.g. /readyz/egress, is requested on every node next to
+	// Path when set. A ready node that answers anything but 2xx there for
+	// FailThreshold rounds is degraded: DNS drops it while another node is
+	// fully healthy. Empty judges nodes on readiness alone.
+	EgressPath string `yaml:"egress_path"`
 }
 
 var errPlaintextToken = errors.New("cloudflare.api_token is not accepted: write the token to a file readable only by the service and set cloudflare.api_token_file")
@@ -203,6 +211,7 @@ func (c *Config) applyDefaults() {
 	if len(p.ExpectStatus) == 0 {
 		p.ExpectStatus = append([]int(nil), defaultExpectStatus...)
 	}
+	p.EgressPath = strings.TrimSpace(p.EgressPath)
 
 	if c.MinChangeInterval == 0 {
 		c.MinChangeInterval = DefaultMinChangeInterval
@@ -292,6 +301,13 @@ func (c *Config) validate() error {
 			fail("probe.expect_status: %d is not an HTTP status code", code)
 		}
 	}
+	if p.EgressPath != "" {
+		if parsed, err := url.Parse(p.EgressPath); err != nil || !strings.HasPrefix(p.EgressPath, "/") || parsed.Host != "" {
+			fail("probe.egress_path must be an absolute path such as /readyz/egress")
+		} else if p.EgressPath == p.Path {
+			fail("probe.egress_path must differ from probe.path")
+		}
+	}
 
 	if c.MinChangeInterval < 0 {
 		fail("min_change_interval must not be negative")
@@ -353,6 +369,10 @@ func (c *Config) LogAttrs() []any {
 	for _, node := range c.Nodes {
 		nodes = append(nodes, node.Name+"="+node.IP)
 	}
+	egressProbe := "off"
+	if c.Probe.EgressPath != "" {
+		egressProbe = "https://<node-ip>" + c.Probe.EgressPath
+	}
 	return []any{
 		"zone_id", c.Cloudflare.ZoneID,
 		"api_token_file", DescribeTokenPath(c.Cloudflare.APITokenFile),
@@ -361,6 +381,7 @@ func (c *Config) LogAttrs() []any {
 		"nodes", strings.Join(nodes, ","),
 		"probe", "https://<node-ip>" + c.Probe.Path,
 		"probe_host", c.Probe.Host,
+		"egress_probe", egressProbe,
 		"interval", c.Probe.Interval.String(),
 		"timeout", c.Probe.Timeout.String(),
 		"fail_threshold", c.Probe.FailThreshold,

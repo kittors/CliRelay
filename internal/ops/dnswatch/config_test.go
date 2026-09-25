@@ -228,3 +228,57 @@ func TestReadAPIToken(t *testing.T) {
 		t.Fatalf("an ordinary missing path should be named in the error, got %v", err)
 	}
 }
+
+func TestParseConfigReadsEgressPath(t *testing.T) {
+	logAttr := func(cfg *Config, key string) any {
+		attrs := cfg.LogAttrs()
+		for i := 0; i+1 < len(attrs); i += 2 {
+			if attrs[i] == key {
+				return attrs[i+1]
+			}
+		}
+		return nil
+	}
+
+	cfg, err := ParseConfig([]byte(minimalConfigYAML))
+	if err != nil {
+		t.Fatalf("ParseConfig: %v", err)
+	}
+	if cfg.Probe.EgressPath != "" || logAttr(cfg, "egress_probe") != "off" {
+		t.Fatalf("the egress probe must default to off, got %q", cfg.Probe.EgressPath)
+	}
+
+	cfg, err = ParseConfig([]byte(minimalConfigYAML + "probe:\n  egress_path: \" /readyz/egress \"\n"))
+	if err != nil {
+		t.Fatalf("ParseConfig: %v", err)
+	}
+	if cfg.Probe.EgressPath != "/readyz/egress" || cfg.Probe.Path != DefaultProbePath {
+		t.Fatalf("probe = %+v, want egress_path /readyz/egress next to the default path", cfg.Probe)
+	}
+	if got := logAttr(cfg, "egress_probe"); got != "https://<node-ip>/readyz/egress" {
+		t.Fatalf("egress_probe log attribute = %v", got)
+	}
+}
+
+func TestConfigValidationOfEgressPath(t *testing.T) {
+	cases := []struct {
+		name, path, want string
+	}{
+		{"relative", "readyz/egress", "probe.egress_path must be an absolute path"},
+		{"with a host", "//other.dnswatch.test/readyz/egress", "probe.egress_path must be an absolute path"},
+		{"same as the readiness path", "/readyz", "probe.egress_path must differ from probe.path"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &Config{
+				Cloudflare: CloudflareConfig{APITokenFile: "/etc/clirelay-dnswatch/cf-token", ZoneID: testZoneID},
+				Records:    []string{"relay.dnswatch.test"},
+				Nodes:      []Node{{Name: "node-a", IP: "203.0.113.11"}},
+				Probe:      ProbeConfig{EgressPath: tc.path},
+			}
+			if err := cfg.normalize(); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("expected an error containing %q, got %v", tc.want, err)
+			}
+		})
+	}
+}

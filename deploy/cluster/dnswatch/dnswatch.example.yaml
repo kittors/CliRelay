@@ -48,6 +48,14 @@ probe:
   # Consecutive successful probes before they are added back.
   recover_threshold: 3
   expect_status: [200, 204]
+  # Also request this path each round. CliRelay answers 503 there once it
+  # cannot connect to its proxies (proxy pool, proxy-url). A node that is
+  # ready but fails it fail_threshold times in a row is "degraded" and leaves
+  # DNS while another node passes both probes; when every ready node is
+  # degraded, DNS stays as it is. Anything but 2xx fails, including 404 from
+  # a release without the endpoint, so upgrade every node first. Remove the
+  # line to judge readiness alone.
+  egress_path: /readyz/egress
 
 # Minimum time between two state changes of the same node, so a flapping
 # node cannot churn DNS.

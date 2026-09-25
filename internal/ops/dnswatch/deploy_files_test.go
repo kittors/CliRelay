@@ -94,3 +94,9 @@ func TestSystemdUnitMatchesExampleConfig(t *testing.T) {
 		t.Errorf("hold_file %q should live in /etc/clirelay-dnswatch", cfg.HoldFile)
 	}
 }
+
+func TestExampleConfigEnablesTheEgressProbe(t *testing.T) {
+	if got := editedExampleConfig(t).Probe.EgressPath; got != "/readyz/egress" {
+		t.Fatalf("the example should probe /readyz/egress, got %q", got)
+	}
+}

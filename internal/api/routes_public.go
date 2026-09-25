@@ -21,6 +21,7 @@ func (s *Server) setupRoutes() {
 		c.Status(http.StatusNoContent)
 	})
 	s.engine.GET("/readyz", s.handleReadyz)
+	s.engine.GET("/readyz/egress", s.handleReadyzEgress)
 
 	s.engine.GET("/management.html", s.serveManagementControlPanel)
 	s.engine.GET("/manage", s.serveManagementControlPanel)
