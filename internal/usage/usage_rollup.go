@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/cluster"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -143,6 +144,12 @@ func ScheduleUsageRollupBlueGreenCatchup() {
 			if usageRollupBackfillCompleted(db) {
 				return
 			}
+			if !cluster.Default().IsLeader() {
+				// The leader runs the catch-up. Keep checking: leadership can
+				// move here before the marker reaches done.
+				time.Sleep(60 * time.Second)
+				continue
+			}
 			attempt++
 			if err := runUsageRollupBackfillAtInitDB(db, getUsageLocation(), rollupMarkerDone); err != nil {
 				log.Errorf("usage: blue-green rollup catch-up attempt %d failed: %v", attempt, err)
@@ -166,7 +173,7 @@ func usageRollupBackfillCompleted(db *sql.DB) bool {
 // maybeFinalizeUsageRollupCatchup is called from maintenance as a backup finalizer.
 // It never runs before rollupCatchupEarliest (drain window) so it cannot race old slot.
 func maybeFinalizeUsageRollupCatchup(db *sql.DB) {
-	if db == nil || usageRollupBackfillCompleted(db) {
+	if db == nil || !cluster.Default().IsLeader() || usageRollupBackfillCompleted(db) {
 		return
 	}
 	if projectionMarkerValue(db, usageRollupBackfillMarker) != rollupMarkerPending {
@@ -327,6 +334,10 @@ func runUsageRollupBackfillAtInitDB(db *sql.DB, loc *time.Location, finalMarker 
 	tx, err := db.Begin()
 	if err != nil {
 		return fmt.Errorf("usage: rollup backfill begin: %w", err)
+	}
+	if proceed, errLock := lockUsageRollupRebuildTx(tx); errLock != nil || !proceed {
+		_ = tx.Rollback()
+		return errLock
 	}
 	if _, err = tx.Exec(`DELETE FROM usage_rollup_buckets`); err != nil {
 		_ = tx.Rollback()

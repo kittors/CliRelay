@@ -1,11 +1,13 @@
 package usage
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"strings"
 	"sync"
 
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/cluster"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 )
 
@@ -193,6 +195,12 @@ func mergeLegacyAuthSubjectDB(db *sql.DB, legacyID string, identity *AuthSubject
 		return fmt.Errorf("usage: begin legacy auth subject merge: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+	// Every node loads every credential at start, so two of them can merge the
+	// same legacy subject at once; legacySubjectMergeMu only covers one process.
+	// Once the first merge commits, the second finds no legacy rows left.
+	if err := cluster.XactLock(context.Background(), tx, cluster.LockAuthSubjectMerge); err != nil {
+		return fmt.Errorf("usage: lock legacy auth subject merge: %w", err)
+	}
 
 	// The shared subject row must exist first: four tables carry a foreign key to
 	// it, so nothing may point at an id that is not there yet.

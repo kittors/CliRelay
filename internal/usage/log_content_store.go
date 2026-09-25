@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/klauspost/compress/zstd"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/cluster"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	log "github.com/sirupsen/logrus"
 )
@@ -255,6 +256,12 @@ func runRequestLogMaintenancePass(ctx context.Context, db *sql.DB, driver string
 		log.Infof("usage: removed %d stale deferred content file(s)", removed)
 	}
 	if db == nil {
+		return
+	}
+	if !cluster.Default().IsLeader() {
+		// The tables below are shared; the leader maintains them. Keep this
+		// node's running size total honest, since its size-cap checks use it.
+		refreshRequestLogContentBytes(db)
 		return
 	}
 	if !RequestLogBodyStorageEnabled() {
