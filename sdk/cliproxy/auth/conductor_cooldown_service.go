@@ -150,7 +150,7 @@ func (s cooldownService) markResult(ctx context.Context, result Result) {
 		before := s.manager.cooldownBeforeLocked(auth, result, now)
 		effects = s.applyResultLocked(auth, result, now)
 		cooldown = s.manager.cooldownNoticeLocked(auth, result, effects, before, now)
-		_ = s.manager.persist(ctx, auth)
+		_ = s.manager.persist(withResultPersist(ctx), auth)
 	}
 	s.manager.mu.Unlock()
 

@@ -11,8 +11,8 @@ import (
 
 func TestRuntimeMigrationsCoverCoreTables(t *testing.T) {
 	migrations := RuntimeMigrations()
-	if len(migrations) != 33 {
-		t.Fatalf("RuntimeMigrations len = %d, want 33", len(migrations))
+	if len(migrations) != 34 {
+		t.Fatalf("RuntimeMigrations len = %d, want 34", len(migrations))
 	}
 	// Membership table of multi-instance deployments.
 	if migrations[31].Version != "202609250001_cluster_nodes" {
@@ -20,6 +20,11 @@ func TestRuntimeMigrationsCoverCoreTables(t *testing.T) {
 	}
 	if !strings.Contains(migrations[31].SQL, "CREATE TABLE IF NOT EXISTS cluster_nodes") {
 		t.Fatalf("cluster nodes migration missing its table: %q", migrations[31].SQL)
+	}
+	// Shared credential store of cluster mode.
+	if migrations[33].Version != "202609250003_cluster_auth_credentials" ||
+		!strings.Contains(migrations[33].SQL, "CREATE TABLE IF NOT EXISTS auth_credentials") {
+		t.Fatalf("cluster credential migration = %q", migrations[33].Version)
 	}
 	// Appended from laterRuntimeMigrations() because migrations.go sits at its
 	// structure-gate size ceiling.
@@ -37,10 +42,10 @@ func TestRuntimeMigrationsCoverCoreTables(t *testing.T) {
 	if migrations[30].Version != "202609240001_end_user_legacy_password_lock_state" {
 		t.Fatalf("legacy password lock migration version = %q", migrations[30].Version)
 	}
-	// Latest: exactly-once keys for request log writes. It must be a new table,
+	// Exactly-once keys for request log writes. It must be a new table,
 	// not an index on request_logs, so upgrading never blocks log writes.
 	if migrations[32].Version != "202609250002_request_log_idempotency_keys" {
-		t.Fatalf("latest migration version = %q", migrations[32].Version)
+		t.Fatalf("request log idempotency migration version = %q", migrations[32].Version)
 	}
 	if !strings.Contains(migrations[32].SQL, "CREATE TABLE IF NOT EXISTS request_log_idempotency_keys") ||
 		strings.Contains(migrations[32].SQL, "ON request_logs") {

@@ -23,6 +23,9 @@ func laterRuntimeMigrations() []Migration {
 		// Exactly-once keys for request log writes retried or replayed across a
 		// database failover. See requestLogIdempotencyKeysSQL.
 		{Version: "202609250002_request_log_idempotency_keys", SQL: requestLogIdempotencyKeysSQL},
+		// Shared credential store for cluster mode: one row per credential,
+		// versioned for compare-and-swap writes across nodes.
+		{Version: "202609250003_cluster_auth_credentials", SQL: authCredentialsSQL},
 	}
 }
 
