@@ -41,43 +41,50 @@ func (f *fakeAffinityStore) Lookup(_ context.Context, key string, _ time.Duratio
 	return out, nil
 }
 
-func (f *fakeAffinityStore) Bind(_ context.Context, key, authID string, _ time.Duration) (SessionAffinityBinding, error) {
+func (f *fakeAffinityStore) Bind(_ context.Context, key, accountRef string, _ time.Duration) (SessionAffinityBinding, error) {
 	if f.down.Load() {
 		return SessionAffinityBinding{}, errStoreDown
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.raceWinner != "" && f.bindings[key] == nil {
-		f.bindings[key] = &SessionAffinityBinding{AuthID: f.raceWinner, Served: 1, Found: true}
+		f.bindings[key] = &SessionAffinityBinding{AccountRef: AffinityAccountRef(f.raceWinner), Served: 1, Found: true}
 	}
 	if b := f.bindings[key]; b != nil {
 		out := *b
 		b.Served++
 		return out, nil
 	}
-	f.bindings[key] = &SessionAffinityBinding{AuthID: authID, Served: 1, Found: true}
-	return SessionAffinityBinding{AuthID: authID, Found: true}, nil
+	f.bindings[key] = &SessionAffinityBinding{AccountRef: accountRef, Served: 1, Found: true}
+	return SessionAffinityBinding{AccountRef: accountRef, Found: true}, nil
 }
 
-func (f *fakeAffinityStore) Release(_ context.Context, key, authID string) error {
+func (f *fakeAffinityStore) Release(_ context.Context, key, accountRef string) error {
 	if f.down.Load() {
 		return errStoreDown
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if b := f.bindings[key]; b != nil && b.AuthID == authID {
+	if b := f.bindings[key]; b != nil && b.AccountRef == accountRef {
 		delete(f.bindings, key)
 	}
 	return nil
 }
 
+// boundTo reports which of the test auths key is bound to, by reference.
 func (f *fakeAffinityStore) boundTo(key string) string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if b := f.bindings[key]; b != nil {
-		return b.AuthID
+	b := f.bindings[key]
+	if b == nil {
+		return ""
 	}
-	return ""
+	for _, auth := range stickyAuths() {
+		if AffinityAccountRef(auth.ID) == b.AccountRef {
+			return auth.ID
+		}
+	}
+	return "unknown:" + b.AccountRef
 }
 
 // stickyProcess is one process's sticky selector wired to the shared store.

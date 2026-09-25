@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -214,15 +215,26 @@ func TestSessionAffinityIsSharedThroughTheAdapter(t *testing.T) {
 	_, storeB := testStore(t, mr, "b")
 	a, b := affinityAdapter{store: storeA}, affinityAdapter{store: storeB}
 
-	bound, err := a.Bind(context.Background(), "tenant|codex|openai|default|sess", "acct-1", time.Hour)
-	if err != nil || bound.AuthID != "acct-1" {
+	ref := coreauth.AffinityAccountRef("codex-someone@example.com.json")
+	bound, err := a.Bind(context.Background(), "tenant|codex|openai|default|sess", ref, time.Hour)
+	if err != nil || bound.AccountRef != ref {
 		t.Fatalf("bind = %+v %v", bound, err)
 	}
 	seen, err := b.Lookup(context.Background(), "tenant|codex|openai|default|sess", time.Hour)
-	if err != nil || !seen.Found || seen.AuthID != "acct-1" || seen.Served != 1 {
+	if err != nil || !seen.Found || seen.AccountRef != ref || seen.Served != 1 {
 		t.Fatalf("lookup from the other node = %+v %v", seen, err)
 	}
-	if err := b.Release(context.Background(), "tenant|codex|openai|default|sess", "acct-1"); err != nil {
+	for _, key := range mr.Keys() {
+		if strings.Contains(key, "sess") || strings.Contains(key, "example.com") {
+			t.Fatalf("session keys must be hashed in key names: %s", key)
+		}
+		if mr.Exists(key) {
+			if value := mr.HGet(key, "a"); strings.Contains(value, "example.com") {
+				t.Fatalf("an auth id (credential file name, often an e-mail) reached Redis: %s", value)
+			}
+		}
+	}
+	if err := b.Release(context.Background(), "tenant|codex|openai|default|sess", ref); err != nil {
 		t.Fatal(err)
 	}
 	if gone, _ := a.Lookup(context.Background(), "tenant|codex|openai|default|sess", time.Hour); gone.Found {

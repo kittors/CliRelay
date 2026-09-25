@@ -2,6 +2,8 @@ package auth
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"time"
 )
 
@@ -13,25 +15,37 @@ import (
 // that account's upstream prompt cache. With a store installed every process
 // reads and writes the same bindings; the in-memory table is kept as a mirror
 // and is what selection falls back to when the store cannot be reached.
+//
+// Bindings name accounts by AffinityAccountRef, never by auth ID: the store
+// lives outside this process (in production a Redis on another machine), and
+// auth IDs are credential file names that often carry the account's e-mail.
 type SessionAffinityStore interface {
 	// Lookup returns the binding for key, counts this request against it and
 	// extends its TTL.
 	Lookup(ctx context.Context, key string, ttl time.Duration) (SessionAffinityBinding, error)
-	// Bind binds key to authID unless a binding exists; then the existing
+	// Bind binds key to accountRef unless a binding exists; then the existing
 	// binding wins, counts this request and is returned.
-	Bind(ctx context.Context, key, authID string, ttl time.Duration) (SessionAffinityBinding, error)
-	// Release deletes the binding for key if it still names authID.
-	Release(ctx context.Context, key, authID string) error
+	Bind(ctx context.Context, key, accountRef string, ttl time.Duration) (SessionAffinityBinding, error)
+	// Release deletes the binding for key if it still names accountRef.
+	Release(ctx context.Context, key, accountRef string) error
 }
 
 // SessionAffinityBinding is one shared binding.
 type SessionAffinityBinding struct {
-	AuthID string
+	// AccountRef is the AffinityAccountRef of the bound auth.
+	AccountRef string
 	// Served counts the requests the binding served before this one; the
 	// sticky-max-requests limit compares against it.
 	Served int
 	// Found is false when no binding existed.
 	Found bool
+}
+
+// AffinityAccountRef is the stable, non-reversible name a shared binding
+// uses for an auth.
+func AffinityAccountRef(authID string) string {
+	sum := sha256.Sum256([]byte("clirelay-affinity\x00" + authID))
+	return hex.EncodeToString(sum[:16])
 }
 
 type sessionAffinityRef struct{ store SessionAffinityStore }
@@ -88,11 +102,11 @@ func (s *SessionStickySelector) honour(ctx context.Context, key string, availabl
 
 	// The same release rules as the local table: request budget spent, the
 	// account no longer eligible, or the account too loaded.
-	bound := findAuthByID(available, binding.AuthID)
+	bound := findAuthByRef(available, binding.AccountRef)
 	if bound == nil ||
 		(limits.maxRequests > 0 && binding.Served >= limits.maxRequests) ||
 		(limits.releaseAtLoad > 0 && s.deps.loadRatio(bound) >= limits.releaseAtLoad) {
-		_ = store.Release(ctx, key, binding.AuthID)
+		_ = store.Release(ctx, key, binding.AccountRef)
 		s.deleteBinding(key)
 		return nil
 	}
@@ -115,12 +129,13 @@ func (s *SessionStickySelector) bindSelected(ctx context.Context, key string, se
 // bindShared stores key→picked. If another process bound the session first,
 // its binding wins and the request joins that account when it may use it.
 func (s *SessionStickySelector) bindShared(ctx context.Context, store SessionAffinityStore, key string, picked *Auth, available []*Auth, now time.Time) *Auth {
-	winner, err := store.Bind(ctx, key, picked.ID, sessionStickyTTL)
-	if err != nil || winner.AuthID == "" || winner.AuthID == picked.ID {
+	ref := AffinityAccountRef(picked.ID)
+	winner, err := store.Bind(ctx, key, ref, sessionStickyTTL)
+	if err != nil || winner.AccountRef == "" || winner.AccountRef == ref {
 		s.bind(key, picked.ID, now)
 		return picked
 	}
-	if other := findAuthByID(available, winner.AuthID); other != nil {
+	if other := findAuthByRef(available, winner.AccountRef); other != nil {
 		s.deps.observeSelection(other, now)
 		s.mirrorBinding(key, other.ID, winner.Served+1, now)
 		return other
@@ -143,9 +158,12 @@ func (s *SessionStickySelector) mirrorBinding(key, authID string, requests int, 
 	s.mu.Unlock()
 }
 
-func findAuthByID(auths []*Auth, id string) *Auth {
+func findAuthByRef(auths []*Auth, ref string) *Auth {
+	if ref == "" {
+		return nil
+	}
 	for _, auth := range auths {
-		if auth != nil && auth.ID == id {
+		if auth != nil && AffinityAccountRef(auth.ID) == ref {
 			return auth
 		}
 	}

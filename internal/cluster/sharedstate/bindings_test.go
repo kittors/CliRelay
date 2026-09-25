@@ -16,17 +16,17 @@ func TestAffinityBindLookupRelease(t *testing.T) {
 		t.Fatalf("fresh key must be unbound: %+v %v", got, err)
 	}
 	bound, err := a.AffinityBind(bg, key, "auth-1", time.Hour)
-	if err != nil || !bound.Created || bound.AuthID != "auth-1" || bound.Served != 0 {
+	if err != nil || !bound.Created || bound.Account != "auth-1" || bound.Served != 0 {
 		t.Fatalf("bind = %+v %v", bound, err)
 	}
 	// Another node binding the same session concurrently loses to the existing
 	// binding, and that request counts against it.
 	conflict, err := b.AffinityBind(bg, key, "auth-2", time.Hour)
-	if err != nil || conflict.Created || conflict.AuthID != "auth-1" || conflict.Served != 1 {
+	if err != nil || conflict.Created || conflict.Account != "auth-1" || conflict.Served != 1 {
 		t.Fatalf("conflicting bind must return the existing binding: %+v %v", conflict, err)
 	}
 	seen, err := b.AffinityLookup(bg, key, time.Hour)
-	if err != nil || !seen.Found || seen.AuthID != "auth-1" || seen.Served != 2 {
+	if err != nil || !seen.Found || seen.Account != "auth-1" || seen.Served != 2 {
 		t.Fatalf("lookup from the other node = %+v %v", seen, err)
 	}
 

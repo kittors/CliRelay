@@ -220,14 +220,14 @@ type affinityAdapter struct{ store *sharedstate.Store }
 
 func (a affinityAdapter) Lookup(ctx context.Context, key string, ttl time.Duration) (coreauth.SessionAffinityBinding, error) {
 	b, err := a.store.AffinityLookup(ctx, key, ttl)
-	return coreauth.SessionAffinityBinding{AuthID: b.AuthID, Served: b.Served, Found: b.Found}, err
+	return coreauth.SessionAffinityBinding{AccountRef: b.Account, Served: b.Served, Found: b.Found}, err
 }
 
-func (a affinityAdapter) Bind(ctx context.Context, key, authID string, ttl time.Duration) (coreauth.SessionAffinityBinding, error) {
-	b, err := a.store.AffinityBind(ctx, key, authID, ttl)
-	return coreauth.SessionAffinityBinding{AuthID: b.AuthID, Served: b.Served, Found: b.Found}, err
+func (a affinityAdapter) Bind(ctx context.Context, key, accountRef string, ttl time.Duration) (coreauth.SessionAffinityBinding, error) {
+	b, err := a.store.AffinityBind(ctx, key, accountRef, ttl)
+	return coreauth.SessionAffinityBinding{AccountRef: b.Account, Served: b.Served, Found: b.Found}, err
 }
 
-func (a affinityAdapter) Release(ctx context.Context, key, authID string) error {
-	return a.store.AffinityRelease(ctx, key, authID)
+func (a affinityAdapter) Release(ctx context.Context, key, accountRef string) error {
+	return a.store.AffinityRelease(ctx, key, accountRef)
 }
