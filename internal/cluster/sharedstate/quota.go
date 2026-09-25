@@ -285,7 +285,7 @@ func (b *countBatcher) flush() {
 		return
 	}
 	ctx := context.Background()
-	_ = b.store.client.PipelineBackground(ctx, func(pipe redis.Pipeliner) error {
+	_ = b.store.client.TxPipelineBackground(ctx, func(pipe redis.Pipeliner) error {
 		for key, delta := range batch {
 			rpmCur, _, tpmCur, _, _ := subjectKeys(key.subject, key.minute)
 			if delta.requests > 0 {

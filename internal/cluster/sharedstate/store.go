@@ -98,6 +98,14 @@ func (s *Store) Client() *sharedredis.Client {
 	return s.client
 }
 
+// Flush writes asynchronously counted requests and tokens now.
+func (s *Store) Flush() {
+	if s == nil {
+		return
+	}
+	s.counts.flush()
+}
+
 // Close flushes pending counters, stops renewing leases and gives back the
 // ones still held, so a node that shuts down cleanly frees its slots at once
 // instead of after a lease TTL.

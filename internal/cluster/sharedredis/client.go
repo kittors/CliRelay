@@ -305,6 +305,25 @@ func (c *Client) PipelineBackground(ctx context.Context, fn func(redis.Pipeliner
 	return nil
 }
 
+// TxPipelineBackground runs fn as one MULTI/EXEC transaction off the request
+// path. Use it whenever the batch creates keys: a key and the PEXPIRE that
+// bounds it are then applied together or not at all. The production instance
+// evicts with volatile-lru, so a key left without a TTL could never be evicted
+// and would eventually make every write fail once memory is full.
+func (c *Client) TxPipelineBackground(ctx context.Context, fn func(redis.Pipeliner) error) error {
+	if !c.Available() {
+		return ErrUnavailable
+	}
+	opCtx, cancel := c.opContext(ctx, BackgroundTimeout)
+	defer cancel()
+	_, err := c.rdb.TxPipelined(opCtx, fn)
+	if err != nil && !errors.Is(err, redis.Nil) {
+		c.Observe(err)
+		return err
+	}
+	return nil
+}
+
 func (c *Client) opContext(parent context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
 	if parent == nil {
 		parent = context.Background()

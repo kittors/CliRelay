@@ -190,7 +190,7 @@ func (k *leaseKeeper) renew() {
 	}
 	expiry := k.store.now().Add(k.store.leaseTTL).UnixMilli()
 	setTTL := k.store.setTTL()
-	_ = k.store.client.PipelineBackground(context.Background(), func(pipe redis.Pipeliner) error {
+	_ = k.store.client.TxPipelineBackground(context.Background(), func(pipe redis.Pipeliner) error {
 		for _, ref := range refs {
 			pipe.ZAdd(context.Background(), ref.key, redis.Z{Score: float64(expiry), Member: ref.member})
 			pipe.PExpire(context.Background(), ref.key, setTTL)
