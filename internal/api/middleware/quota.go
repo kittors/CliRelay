@@ -130,6 +130,7 @@ func RecordTokenUsage(subject string, totalTokens int64) {
 		return
 	}
 	getTPMTracker(subject).add(totalTokens)
+	recordClusterTokens(subject, totalTokens)
 }
 
 // RecordTokenUsageForRequest records TPM against the end-user pool when known.
@@ -178,7 +179,7 @@ func QuotaMiddleware() gin.HandlerFunc {
 		// ── Always record this request for system-wide RPM tracking ──
 		// This must happen before any metadata checks so ALL authenticated
 		// POST requests are counted for the dashboard RPM display.
-		getRPMTracker(policy.subject).add()
+		policy.countRequest()
 
 		if metadata == nil {
 			c.Next()
@@ -372,17 +373,19 @@ func acquireKeyConcurrency(apiKey string, limit int) (func(), bool) {
 	}
 	inFlightByKey[apiKey]++
 
-	return func() {
-		inFlightMu.Lock()
-		defer inFlightMu.Unlock()
+	return func() { releaseKeyConcurrency(apiKey) }, true
+}
 
-		current := inFlightByKey[apiKey]
-		if current <= 1 {
-			delete(inFlightByKey, apiKey)
-			return
-		}
-		inFlightByKey[apiKey] = current - 1
-	}, true
+func releaseKeyConcurrency(apiKey string) {
+	inFlightMu.Lock()
+	defer inFlightMu.Unlock()
+
+	current := inFlightByKey[apiKey]
+	if current <= 1 {
+		delete(inFlightByKey, apiKey)
+		return
+	}
+	inFlightByKey[apiKey] = current - 1
 }
 
 func keyConcurrencyCount(apiKey string) int {
@@ -469,5 +472,5 @@ func GetConcurrencySnapshot() ([]ConcurrencySnapshot, int64) {
 		return true
 	})
 
-	return snapshots, totalInFlight
+	return applyClusterRates(snapshots, totalInFlight)
 }

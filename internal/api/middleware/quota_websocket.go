@@ -51,7 +51,7 @@ func admitWebsocketHandshake(c *gin.Context) {
 // POST, the turn counts toward RPM whether or not it is admitted.
 func (p quotaPolicy) turnGate() handlers.QuotaGate {
 	return func() (func(), *handlers.QuotaRejection) {
-		getRPMTracker(p.subject).add()
+		p.countRequest()
 		release, verdict := p.admit()
 		if verdict != nil {
 			return nil, verdict.forTurn()
