@@ -74,6 +74,7 @@ Numbers come from a rehearsal with the production settings: Patroni 4.1.5, Postg
 | Primary's machine dies | The synchronous replica is promoted after about 21 s | Writes are spooled and replayed |
 | Primary partitioned away (still running) | It demotes itself before its lease expires, then the other node is promoted. Two primaries never coexist | Unconfirmed commits on the isolated side fail instead of reporting success |
 | Failed node comes back | `pg_rewind` removes its divergent tail and it rejoins as the synchronous replica | No manual step |
+| Synchronous replica stalls or hangs (host I/O stall, frozen VM) | Commits on the primary wait for it: as long as a short stall lasts, at most 15–19 s for a replica that never answers, after which the primary continues asynchronously | API requests do not wait on commits (usage is queued and spooled); management writes wait |
 | Arbiter down | Service continues; etcd still has 2 of 3 votes; DNS stops being updated automatically | None |
 | Shared Redis down | Nodes count locally and enforce `limit / active nodes` | Limits become approximate for a while |
 
@@ -127,7 +128,8 @@ Key settings and why:
 | Setting | Value | Why |
 |---|---|---|
 | `synchronous_mode` | true (once a replica exists) | Commits land on both nodes, so a failover loses nothing |
-| `synchronous_mode_strict` | false | A dead replica drops the primary back to asynchronous replication instead of blocking it |
+| `synchronous_mode_strict` | false | A dead replica drops the primary back to asynchronous replication instead of blocking it, once it is noticed (next row) |
+| `wal_sender_timeout` | 15s | A replica that hangs without closing its connection holds commits until it is noticed. Freezing the standby in the rehearsal held them 32 s with the default 60 s (Patroni's member key expired first) and 15–19 s with 15 s. Shorter would cut replication during the few-second I/O stalls some hosts show, which hold commits for their own length either way |
 | `failsafe_mode` | **false** | In the rehearsal, with failsafe on, an isolated primary first tried to reach the other members and demoted *after* the peer was promoted, so both were primary for a few seconds. With it off, the isolated side demotes before its lease expires |
 | `use_pg_rewind` + `wal_log_hints` | on | A failed node rewinds its divergent tail and rejoins by itself |
 | `remove_data_directory_on_*` | false | A data directory is never deleted automatically; a human decides after a diverged timeline |
