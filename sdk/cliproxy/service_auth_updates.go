@@ -120,7 +120,7 @@ func (s *Service) applyCoreAuthAddOrUpdate(ctx context.Context, auth *coreauth.A
 	op := "register"
 	var err error
 	if existing, ok := s.coreManager.GetByID(auth.ID); ok {
-		if !acceptCredentialReload(auth, existing) {
+		if s.coreManager.CredentialsVersioned() && !acceptCredentialReload(auth, existing) {
 			return
 		}
 		auth.CreatedAt = existing.CreatedAt
@@ -166,8 +166,9 @@ func (s *Service) applyCoreAuthRemoval(ctx context.Context, id string) {
 // a version; the watcher can deliver a copy older than one this node already
 // adopted (a slow event, or a stray file without a stamp), and applying it
 // would roll the credential back. An unchanged version keeps this node's own
-// runtime observations instead of the file's snapshot of them. Single-node
-// files carry no version, so neither rule ever applies there.
+// runtime observations instead of the file's snapshot of them. It only runs
+// with a versioned store: mirror files left behind after switching back to
+// a single node still carry stamps, and must not make edits be ignored.
 func acceptCredentialReload(incoming, existing *coreauth.Auth) bool {
 	current := coreauth.CredentialVersion(existing)
 	if current <= 0 {

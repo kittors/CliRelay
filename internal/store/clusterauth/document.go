@@ -37,7 +37,12 @@ func persistedDocument(auth *coreauth.Auth) (map[string]any, error) {
 		doc["proxy_id"] = proxyID
 	}
 	doc[coreauth.DisabledMetadataKey] = auth.Disabled
-	if auth.Storage == nil {
+	// A login flow hands over the token storage with partial metadata, and
+	// the storage is what the file would hold. Once the credential came back
+	// from the store (it carries a version) the metadata is the whole
+	// document; the manager keeps the storage attached for good, and encoding
+	// it on every request would cost a temporary file under the manager lock.
+	if auth.Storage == nil || coreauth.CredentialVersion(auth) > 0 {
 		return doc, nil
 	}
 	baseauth.ApplyMetadata(auth.Storage, doc)

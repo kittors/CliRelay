@@ -79,6 +79,21 @@ func TestFirstNodeImportsItsAuthDirectory(t *testing.T) {
 				t.Fatalf("imported files must not be set aside, found %s", rel)
 			}
 		}
+
+		// The first request on an imported account only records runtime state.
+		mgr := coreauth.NewManager(a, nil, nil)
+		if err = mgr.Load(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		for _, auth := range mgr.List() {
+			mgr.MarkResult(context.Background(), coreauth.Result{AuthID: auth.ID, Provider: auth.Provider, Success: true})
+		}
+		a.flush(context.Background())
+		for _, id := range []string{"claude-root.json", systemTenant + "/codex-sys.json", tenantID} {
+			if v := env.row(t, id).Version; v != 1 {
+				t.Fatalf("%s: version %d after the first request, want the import's 1", id, v)
+			}
+		}
 	})
 }
 

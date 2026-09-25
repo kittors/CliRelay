@@ -77,9 +77,7 @@ func (s *Store) importLocal(ctx context.Context, b backend) error {
 	rows := make([]row, 0, len(files))
 	kept := 0
 	for _, file := range files {
-		doc := file.doc
-		provider := sdkauth.InferAuthProvider(doc)
-		doc = sdkauth.NormalizeAuthMetadata(doc, provider)
+		doc, provider := importDocument(file.doc)
 		content, runtime := splitDocument(doc)
 		canonical, errContent := canonicalJSON(content)
 		runtimeEntries, errRuntime := canonicalEntries(runtime)
@@ -120,6 +118,23 @@ func (s *Store) importLocal(ctx context.Context, b backend) error {
 		log.Infof("cluster auth: %d imported credentials keep the auth_index their account bindings record (credentials added since the last restart)", kept)
 	}
 	return nil
+}
+
+// importDocument normalises a local credential file the way the file store
+// normalises it on load, and writes the disabled flag the way every save
+// writes it; without the latter, the first request on each imported account
+// would change its document and bump its version once.
+func importDocument(doc map[string]any) (map[string]any, string) {
+	probe := make(map[string]any, len(doc)+1)
+	for key, value := range doc {
+		probe[key] = value
+	}
+	provider := sdkauth.InferAuthProvider(probe)
+	normalized := sdkauth.NormalizeAuthMetadata(probe, provider)
+	flag := &coreauth.Auth{Metadata: normalized}
+	coreauth.RestorePersistedDisabled(flag)
+	normalized[coreauth.DisabledMetadataKey] = flag.Disabled
+	return normalized, provider
 }
 
 // importAuthIndex picks the auth_index an imported credential keeps.

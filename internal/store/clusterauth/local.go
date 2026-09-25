@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
-	sdkauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/auth"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
 )
@@ -156,14 +155,10 @@ func (s *Store) reconcileLocalFiles(prefix string, grace time.Duration) {
 	}
 }
 
-// normalizedContent is the canonical credential part of doc after the
-// normalisation the file store applies on load.
+// normalizedContent is the canonical credential part of doc as an import
+// would store it.
 func normalizedContent(doc map[string]any) []byte {
-	probe := make(map[string]any, len(doc))
-	for key, value := range doc {
-		probe[key] = value
-	}
-	normalized := sdkauth.NormalizeAuthMetadata(probe, sdkauth.InferAuthProvider(probe))
+	normalized, _ := importDocument(doc)
 	content, _ := splitDocument(normalized)
 	canonical, err := canonicalJSON(content)
 	if err != nil {

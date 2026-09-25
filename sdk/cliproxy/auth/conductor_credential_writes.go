@@ -208,6 +208,9 @@ func mergeLatestCredential(current, latest *Auth) *Auth {
 		merged.Label = label
 	}
 	switch {
+	case isGeminiVirtualPrimary(current):
+		// Synthesis disables a multi-project primary in favour of its
+		// per-project children; that state is not the document's.
 	case latest.Disabled:
 		merged.Disabled = true
 		merged.Status = StatusDisabled
@@ -220,6 +223,16 @@ func mergeLatestCredential(current, latest *Auth) *Auth {
 		merged.LastRefreshedAt = refreshedAt
 	}
 	return merged
+}
+
+func isGeminiVirtualPrimary(auth *Auth) bool {
+	return auth != nil && auth.Attributes != nil && strings.EqualFold(strings.TrimSpace(auth.Attributes["gemini_virtual_primary"]), "true")
+}
+
+// CredentialsVersioned reports whether the manager persists to a versioned
+// store (cluster mode).
+func (m *Manager) CredentialsVersioned() bool {
+	return m.versionedStore() != nil
 }
 
 func metadataLabel(metadata map[string]any) string {
