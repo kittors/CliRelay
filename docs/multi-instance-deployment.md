@@ -30,7 +30,7 @@ Single-instance behaviour is exactly what it was before clustering existed. This
                           │  DNS: relay/code each resolve to every healthy node (DNS only, not proxied)
             ┌─────────────┴─────────────┐
             ▼                           ▼
-     node A (n43)                  node B (n156)
+     node A (n43)                  node B (n2)
      nginx :443                    nginx :443
       ├ local CliRelay first        ├ local CliRelay first
       └ down/full → peer :8445 ◀───▶ └ down/full → peer :8445      (mutual TLS)
@@ -81,13 +81,13 @@ Numbers come from a rehearsal with the production settings: Patroni 4.1.5, Postg
 
 ## 4. Deploying a cluster
 
-The example is the production layout: application nodes **n43** (43.255.122.4) and **n156** (156.225.27.154), and the arbiter **relay** (103.231.58.53). Everything referenced below lives in the repository under `deploy/cluster/`.
+The example uses two application nodes, **n43** (43.255.122.4) and **n2** (198.51.100.20, a documentation address), and the arbiter **relay** (103.231.58.53). Everything referenced below lives in the repository under `deploy/cluster/`.
 
 ### 4.1 Certificates (private cluster CA)
 
 ```bash
 deploy/cluster/tls/gen-cluster-certs.sh <secure-dir> \
-  n43=43.255.122.4 n156=156.225.27.154 relay=103.231.58.53
+  n43=43.255.122.4 n2=198.51.100.20 relay=103.231.58.53
 ```
 
 - **Validity and usage.** The CA is valid for 10 years and node certificates for 5 years. Node certificates carry both `serverAuth` and `clientAuth`, and their SANs are the node name, `127.0.0.1` and the public IP.
@@ -180,7 +180,7 @@ Keep `config.yaml` identical on all nodes, apart from node-local values such as 
 CLIRELAY_CLUSTER_ENABLED=true
 CLIRELAY_CLUSTER_NODE_ID=n43                     # unique per node
 # multi-host DSN: local host first; target_session_attrs=read-write finds the primary
-CLIRELAY_POSTGRES_DSN=postgres://cliproxy:<password>@127.0.0.1:55432,156.225.27.154:55432/cliproxy?target_session_attrs=read-write&sslmode=verify-ca&sslrootcert=/etc/clirelay-cluster/tls/ca.crt&sslcert=/etc/clirelay-cluster/tls/node.crt&sslkey=/etc/clirelay-cluster/tls/node.key&connect_timeout=5
+CLIRELAY_POSTGRES_DSN=postgres://cliproxy:<password>@127.0.0.1:55432,198.51.100.20:55432/cliproxy?target_session_attrs=read-write&sslmode=verify-ca&sslrootcert=/etc/clirelay-cluster/tls/ca.crt&sslcert=/etc/clirelay-cluster/tls/node.crt&sslkey=/etc/clirelay-cluster/tls/node.key&connect_timeout=5
 # shared cluster Redis
 CLIRELAY_CLUSTER_REDIS_ADDR=103.231.58.53:6380
 CLIRELAY_CLUSTER_REDIS_PASSWORD=<password>
@@ -232,7 +232,7 @@ server {                                    # accepts the peer's spill-over: loc
 The watcher is `cmd/clirelay-dnswatch`, plus `deploy/cluster/dnswatch/`. The unit file's header lists the install steps, and `dnswatch.example.yaml` is the configuration template.
 
 - **Probing.** Every 10 s the watcher requests `https://<node-ip>/readyz` with the hostname as SNI and a verified certificate. Three failures remove a node and three successes add it back, with at least 60 s between two changes of the same node.
-- **Egress check (`probe.egress_path`).** Nodes do not share one route to the upstream proxies: they sit with different providers and transit, so one node can lose the proxy provider while its peer still reaches it. On 2026-09-25 n156 lost its route to the proxy provider's address ranges while `/readyz` stayed healthy, and for about 43 minutes every Codex request that landed on n156 failed until a human pulled it from DNS. DNS health therefore includes egress:
+- **Egress check (`probe.egress_path`).** Nodes do not share one route to the upstream proxies: they sit with different providers and transit, so one node can lose the proxy provider while its peer still reaches it. On 2026-09-25 one node lost its route to the proxy provider's address ranges while `/readyz` stayed healthy, and for about 43 minutes every Codex request that landed on it failed until a human pulled it from DNS. DNS health therefore includes egress:
   - **On each node**, CliRelay opens a plain TCP connection every 15 s (3 s timeout) to each distinct proxy endpoint its upstream traffic may use: every enabled proxy-pool entry of every tenant, plus the global `proxy-url`. It sends nothing through it, performs no proxy handshake and uses no credentials. Two consecutive failed connects make an endpoint unreachable. `GET /readyz/egress` answers 204 while no endpoint is unreachable (also with no proxy configured, and before the first check after startup), otherwise 503 `{"status":"degraded","unreachable":N,"total":M}`. The body names no host; the node log names `host:port`. Like `/readyz`, the path bypasses the IP access list.
   - **On the arbiter**, `egress_path: /readyz/egress` adds that request to every round; anything but 2xx fails, including a timeout or a 404 from a release without the endpoint. A ready node failing it three rounds in a row is **degraded** until it passes three in a row. DNS then lists the healthy nodes (ready, egress passing) if there are any; otherwise the degraded ones, so a proxy outage that hits every node changes nothing; otherwise nothing changes (see the safety rules).
   - A node whose egress breaks leaves DNS after about a minute. `min_change_interval`, the hold file and dry-run apply as before. Degraded nodes show in the log, in the summary line (`healthy=… degraded=… unhealthy=…`), in `GET /status` (`state`, `egress`) and in the alerts `node_egress_degraded` / `node_egress_recovered`.

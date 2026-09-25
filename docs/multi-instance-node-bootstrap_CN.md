@@ -135,7 +135,7 @@ SERVICE_GO_MEM_LIMIT=734003200
 EOF
 install -m 0644 -o root -g root /tmp/deploy.env /etc/clirelay2/deploy.env
 
-# n156（8G）同理：NODE_PUBLIC_IP=198.51.100.156，NGINX_CONF 写该机的实际文件；
+# 第二个节点（例如 8G 的 n2）同理：NODE_PUBLIC_IP=198.51.100.20，NGINX_CONF 写该机的实际文件；
 # 资源键可以不写，沿用 workflow 的 170% / 1400M / 1600M / 512，GOMEMLIMIT 按 85% 推导
 ```
 
@@ -226,8 +226,8 @@ ssh <root@node> 'set -e
 
 ```bash
 REPO=kittors/CliRelay     # 前端改为 kittors/codeProxy，变量名换成 RELAY_ 前缀
-gh variable set CLIRELAY_DEPLOY_NODES --repo "$REPO" --body '["n43","n156"]'
-for node in n43 n156; do
+gh variable set CLIRELAY_DEPLOY_NODES --repo "$REPO" --body '["n43","n2"]'
+for node in n43 n2; do
   gh secret set "SERVER_HOST_${node}" --repo "$REPO" --body '<该节点 SSH 地址>'
   gh secret set "SERVER_PORT_${node}" --repo "$REPO" --body '<该节点 SSH 端口>'
   ssh-keyscan -p '<该节点 SSH 端口>' '<该节点 SSH 地址>' 2>/dev/null | gh secret set "DEPLOY_SSH_KNOWN_HOSTS_${node}" --repo "$REPO"
@@ -247,15 +247,15 @@ gh secret list --repo "$REPO"
 跳板机上用一个只能转发到这个节点 SSH 端口的受限账号，不给 shell：
 
 ```bash
-# 跳板机 root 执行（示例：只允许转发到 156.225.27.154:47222）
+# 跳板机 root 执行（示例：只允许转发到 198.51.100.20:22）
 useradd -m -s /sbin/nologin gha-jump
 install -d -m 0700 -o gha-jump -g gha-jump /home/gha-jump/.ssh
-printf 'restrict,port-forwarding,permitopen="156.225.27.154:47222" %s\n' '<部署公钥>' > /home/gha-jump/.ssh/authorized_keys
+printf 'restrict,port-forwarding,permitopen="198.51.100.20:22" %s\n' '<部署公钥>' > /home/gha-jump/.ssh/authorized_keys
 chown gha-jump:gha-jump /home/gha-jump/.ssh/authorized_keys && chmod 0600 /home/gha-jump/.ssh/authorized_keys
 
 # 本机：写 secrets（known_hosts 同时包含节点和跳板机的主机密钥，写入前核对指纹）
-gh secret set SSH_JUMP_n156 --repo "$REPO" --body 'gha-jump@<跳板IP>:<跳板SSH端口>'
-cat node-known-hosts jump-known-hosts | gh secret set DEPLOY_SSH_KNOWN_HOSTS_n156 --repo "$REPO"
+gh secret set SSH_JUMP_n2 --repo "$REPO" --body 'gha-jump@<跳板IP>:<跳板SSH端口>'
+cat node-known-hosts jump-known-hosts | gh secret set DEPLOY_SSH_KNOWN_HOSTS_n2 --repo "$REPO"
 ```
 
 `--repo` 不能省略，否则 gh 会去查 upstream 仓库。known_hosts 写入前要人工核对指纹，不要盲信 `ssh-keyscan` 的结果。

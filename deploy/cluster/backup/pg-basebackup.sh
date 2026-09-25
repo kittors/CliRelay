@@ -8,7 +8,7 @@
 # KEEP are removed only after the new one verified.
 #
 # Config: /etc/clirelay-cluster/backup.env (root, 0600)
-#   BACKUP_HOSTS="156.225.27.154,43.255.122.4"   BACKUP_PORT=55432
+#   BACKUP_HOSTS="198.51.100.20,43.255.122.4"   BACKUP_PORT=55432
 #   PGPASSWORD=<replicator password>              KEEP=7
 #   BACKUP_DIR=/opt/clirelay-cluster/backups      PG_IMAGE=postgres:15.19-alpine3.24
 set -euo pipefail

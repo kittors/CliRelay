@@ -79,7 +79,7 @@ jobs:
               type == "array" and length > 0
               and all(.[]; type == "string" and test("^[A-Za-z0-9_]+$"))
               and ((map(ascii_downcase) | unique | length) == length)' > /dev/null; then
-            echo "::error::CLIRELAY_DEPLOY_NODES must be a non-empty JSON array of distinct names made of letters, digits and underscores, such as [\"n43\",\"n156\"]; got: ${DEPLOY_NODES}"
+            echo "::error::CLIRELAY_DEPLOY_NODES must be a non-empty JSON array of distinct names made of letters, digits and underscores, such as [\"n43\",\"n2\"]; got: ${DEPLOY_NODES}"
             exit 1
           fi
           echo "Rolling deploy order: $(printf '%s' "${DEPLOY_NODES}" | jq -r 'join(" -> ")')"

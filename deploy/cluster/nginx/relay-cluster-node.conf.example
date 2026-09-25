@@ -1,5 +1,5 @@
 # CliRelay behind nginx on one cluster node (example for node n43 with peer
-# n156; swap the addresses and names on the other node).
+# n2; swap the addresses and names on the other node).
 #
 # Traffic reaches 127.0.0.1:8444 through the stream SNI router on :443. The
 # local CliRelay slot serves it first. The peer node takes a request only
@@ -72,13 +72,13 @@ server {
     listen 127.0.0.1:8446;
     client_max_body_size 2000m;
     location / {
-        proxy_pass https://156.225.27.154:8445;
+        proxy_pass https://198.51.100.20:8445;
         proxy_ssl_certificate /etc/clirelay-cluster/tls/node.crt;
         proxy_ssl_certificate_key /etc/clirelay-cluster/tls/node.key;
         proxy_ssl_trusted_certificate /etc/clirelay-cluster/tls/ca.crt;
         proxy_ssl_verify on;
         proxy_ssl_verify_depth 2;
-        proxy_ssl_name n156;
+        proxy_ssl_name n2;
         proxy_ssl_server_name on;
         proxy_ssl_protocols TLSv1.2 TLSv1.3;
         proxy_ssl_session_reuse on;

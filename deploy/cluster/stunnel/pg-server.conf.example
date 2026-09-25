@@ -12,6 +12,6 @@ CAfile = /etc/clirelay-cluster/tls/ca.crt
 verifyChain = yes
 requireCert = yes
 ; only the standby host's certificate may open the tunnel
-checkHost = n156
+checkHost = n2
 socket = l:TCP_NODELAY=1
 socket = r:TCP_NODELAY=1
