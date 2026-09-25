@@ -85,6 +85,12 @@ type fakeNode struct {
 	delay  atomic.Int64
 	hits   atomic.Int32
 
+	// egressStatus answers testEgressPath. legacy drops that route, like a
+	// node running a release that predates it.
+	egressStatus atomic.Int32
+	egressHits   atomic.Int32
+	legacy       atomic.Bool
+
 	mu   sync.Mutex
 	seen []seenRequest
 }
@@ -93,6 +99,7 @@ func newFakeNode(t *testing.T, pki *testPKI) *fakeNode {
 	t.Helper()
 	n := &fakeNode{}
 	n.status.Store(http.StatusNoContent)
+	n.egressStatus.Store(http.StatusNoContent)
 	server := httptest.NewUnstartedServer(http.HandlerFunc(n.serve))
 	server.TLS = &tls.Config{Certificates: []tls.Certificate{pki.cert}}
 	// Rejected handshakes are expected in some tests; keep them off stderr.
@@ -104,14 +111,14 @@ func newFakeNode(t *testing.T, pki *testPKI) *fakeNode {
 }
 
 func (n *fakeNode) serve(w http.ResponseWriter, r *http.Request) {
-	n.hits.Add(1)
-	seen := seenRequest{host: r.Host, path: r.URL.Path}
-	if r.TLS != nil {
-		seen.sni = r.TLS.ServerName
+	if r.URL.Path == testEgressPath && !n.legacy.Load() {
+		n.egressHits.Add(1)
+		n.record(r)
+		w.WriteHeader(int(n.egressStatus.Load()))
+		return
 	}
-	n.mu.Lock()
-	n.seen = append(n.seen, seen)
-	n.mu.Unlock()
+	n.hits.Add(1)
+	n.record(r)
 
 	if delay := time.Duration(n.delay.Load()); delay > 0 {
 		select {
@@ -131,7 +138,19 @@ func (n *fakeNode) serve(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(status)
 }
 
+func (n *fakeNode) record(r *http.Request) {
+	seen := seenRequest{host: r.Host, path: r.URL.Path}
+	if r.TLS != nil {
+		seen.sni = r.TLS.ServerName
+	}
+	n.mu.Lock()
+	n.seen = append(n.seen, seen)
+	n.mu.Unlock()
+}
+
 func (n *fakeNode) setStatus(status int) { n.status.Store(int32(status)) }
+
+func (n *fakeNode) setEgressStatus(status int) { n.egressStatus.Store(int32(status)) }
 
 func (n *fakeNode) lastRequest() seenRequest {
 	n.mu.Lock()

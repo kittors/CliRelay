@@ -21,9 +21,13 @@ const (
 
 // Alert is the JSON body POSTed to alert_webhook.
 //
-// Events: node_unhealthy, node_healthy, dns_updated, no_healthy_nodes,
+// Events: node_unhealthy, node_healthy, node_egress_degraded,
+// node_egress_recovered, dns_updated, no_healthy_nodes,
 // no_healthy_nodes_resolved, dns_reconcile_failed, dns_reconcile_recovered,
 // dns_hold_started, dns_hold_ended.
+//
+// DegradedNodes, the ready nodes failing their egress check, only appears
+// with the egress probe on.
 type Alert struct {
 	Event string `json:"event"`
 	// Text is a one-line summary; the name suits Slack-style incoming hooks.
@@ -37,6 +41,7 @@ type Alert struct {
 	Changes              []DNSChange `json:"changes,omitempty"`
 	Error                string      `json:"error,omitempty"`
 	HealthyNodes         []string    `json:"healthy_nodes"`
+	DegradedNodes        []string    `json:"degraded_nodes,omitempty"`
 	UnhealthyNodes       []string    `json:"unhealthy_nodes"`
 	DryRun               bool        `json:"dry_run"`
 	Hold                 bool        `json:"hold"`

@@ -49,6 +49,7 @@ type Watcher struct {
 	hold             bool
 	holdProblem      string
 	noHealthy        bool
+	allDegraded      bool
 	reconcileFailing bool
 	records          map[string]recordView
 	dryRunPlans      map[string]string
@@ -62,7 +63,7 @@ type Watcher struct {
 }
 
 type summaryCounters struct {
-	rounds, probeFailures, stateChanges, dnsChanges, reconcileErrors int
+	rounds, probeFailures, egressFailures, stateChanges, dnsChanges, reconcileErrors int
 }
 
 // New builds a Watcher. cfg is copied and normalized, so configs built in
@@ -108,7 +109,11 @@ func New(cfg *Config, token string, opts Options) (*Watcher, error) {
 		startedAt:   now(),
 	}
 	for _, node := range c.Nodes {
-		w.nodes = append(w.nodes, &nodeState{Node: node})
+		s := &nodeState{Node: node}
+		if c.Probe.EgressPath != "" {
+			s.egress = &nodeState{Node: node}
+		}
+		w.nodes = append(w.nodes, s)
 	}
 	w.lastReconcile = ReconcileStatus{Skipped: "initializing"}
 	w.publish()
@@ -159,7 +164,7 @@ func (w *Watcher) RunOnce(ctx context.Context) {
 		}
 	}
 
-	results := w.prober.probeAll(ctx, w.cfg.Nodes)
+	results, egress := w.prober.probeRound(ctx, w.cfg.Nodes)
 	if ctx.Err() != nil {
 		// Shutting down: cancelled probes say nothing about the nodes.
 		return
@@ -167,15 +172,21 @@ func (w *Watcher) RunOnce(ctx context.Context) {
 	now := w.now()
 	for i, s := range w.nodes {
 		w.apply(s, results[i], now)
+		if s.egress != nil {
+			w.applyEgress(s, egress[i], now)
+		}
 	}
 	w.checkHold()
-	healthy, _ := w.partitionNodes()
-	w.trackNoHealthy(healthy)
+	ready := w.readyNodes()
+	w.trackNoHealthy(ready)
+	healthy, degraded, _ := w.partitionNodes()
+	w.trackAllDegraded(healthy, degraded)
+	w.markDesired(len(healthy) > 0)
 
 	switch {
 	case w.hold:
 		w.lastReconcile = ReconcileStatus{At: now, Skipped: "hold"}
-	case len(healthy) == 0:
+	case len(ready) == 0:
 		// Never empty the records: with every node failing its probe, the
 		// likelier culprit is the arbiter's own network, and a stale record
 		// still beats NXDOMAIN if any node can serve.
@@ -209,6 +220,11 @@ func (w *Watcher) initialize(ctx context.Context) error {
 	}
 	for _, s := range w.nodes {
 		s.healthy = len(publishedIn[s]) > 0
+		if s.egress != nil {
+			// Egress starts from the same place: a published node keeps its
+			// records until egress probes fail, a missing one earns them.
+			s.egress.healthy = s.healthy
+		}
 		w.log.Info("initial node state from DNS", "node", s.Name, "ip", s.IP,
 			"healthy", s.healthy, "published_in", strings.Join(publishedIn[s], ","))
 	}
@@ -327,34 +343,59 @@ func (w *Watcher) maybeLogSummary(now time.Time) {
 	if now.Sub(w.lastSummary) < w.cfg.SummaryInterval {
 		return
 	}
-	healthy, unhealthy := w.partitionNodes()
+	healthy, degraded, unhealthy := w.partitionNodes()
 	c := w.counters
-	w.log.Info("dnswatch summary",
-		"healthy", strings.Join(healthy, ","),
+	egressOn := w.cfg.Probe.EgressPath != ""
+	attrs := []any{"healthy", strings.Join(healthy, ",")}
+	if egressOn {
+		attrs = append(attrs, "degraded", strings.Join(degraded, ","))
+	}
+	attrs = append(attrs,
 		"unhealthy", strings.Join(unhealthy, ","),
 		"records", w.recordsSummary(),
 		"rounds", c.rounds,
-		"probe_failures", c.probeFailures,
+		"probe_failures", c.probeFailures)
+	if egressOn {
+		attrs = append(attrs, "egress_failures", c.egressFailures)
+	}
+	attrs = append(attrs,
 		"state_changes", c.stateChanges,
 		"dns_changes", c.dnsChanges,
 		"reconcile_errors", c.reconcileErrors,
 		"hold", w.hold,
 		"dry_run", w.cfg.DryRun)
+	w.log.Info("dnswatch summary", attrs...)
 	w.counters = summaryCounters{}
 	w.lastSummary = now
 }
 
-// partitionNodes returns node names by health, in config order.
-func (w *Watcher) partitionNodes() (healthy, unhealthy []string) {
-	healthy, unhealthy = []string{}, []string{}
+// partitionNodes returns node names by tier, in config order. degraded stays
+// empty while the egress probe is off.
+func (w *Watcher) partitionNodes() (healthy, degraded, unhealthy []string) {
+	healthy, degraded, unhealthy = []string{}, []string{}, []string{}
 	for _, s := range w.nodes {
-		if s.healthy {
+		switch tier(s) {
+		case tierHealthy:
 			healthy = append(healthy, s.Name)
-		} else {
+		case tierDegraded:
+			degraded = append(degraded, s.Name)
+		default:
 			unhealthy = append(unhealthy, s.Name)
 		}
 	}
-	return healthy, unhealthy
+	return healthy, degraded, unhealthy
+}
+
+// readyNodes returns the names of the nodes that pass their readiness probe,
+// healthy or degraded, in config order.
+func (w *Watcher) readyNodes() []string {
+	ready := []string{}
+	for _, s := range w.nodes {
+		if s.healthy {
+			ready = append(ready, s.Name)
+		}
+	}
+	return ready
 }
 
 func (w *Watcher) nodeSummary() string {
@@ -378,12 +419,13 @@ func (w *Watcher) recordsSummary() string {
 }
 
 func (w *Watcher) newAlert(event, text string) Alert {
-	healthy, unhealthy := w.partitionNodes()
+	healthy, degraded, unhealthy := w.partitionNodes()
 	return Alert{
 		Event:          event,
 		Text:           text,
 		Time:           w.now().UTC(),
 		HealthyNodes:   healthy,
+		DegradedNodes:  degraded,
 		UnhealthyNodes: unhealthy,
 		DryRun:         w.cfg.DryRun,
 		Hold:           w.hold,

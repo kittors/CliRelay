@@ -12,7 +12,9 @@ import (
 	"time"
 )
 
-// Status is the JSON document served at GET /status.
+// Status is the JSON document served at GET /status. DegradedNodes counts
+// the ready nodes failing their egress check and stays 0 while the egress
+// probe is off.
 type Status struct {
 	StartedAt     time.Time               `json:"started_at"`
 	UpdatedAt     time.Time               `json:"updated_at"`
@@ -20,16 +22,37 @@ type Status struct {
 	DryRun        bool                    `json:"dry_run"`
 	Hold          bool                    `json:"hold"`
 	HealthyNodes  int                     `json:"healthy_nodes"`
+	DegradedNodes int                     `json:"degraded_nodes"`
 	Nodes         []NodeStatus            `json:"nodes"`
 	Records       map[string]RecordStatus `json:"records"`
 	LastReconcile ReconcileStatus         `json:"last_reconcile"`
 }
 
-// NodeStatus is one node's state machine as of the last round.
+// NodeStatus is one node's state as of the last round. Healthy and the
+// counters are the readiness state machine. State is the node's tier:
+// healthy, degraded (ready, egress check failing) or unhealthy (not ready).
+// Egress, the egress check's state machine, is present only with
+// probe.egress_path set.
 type NodeStatus struct {
 	Name                 string     `json:"name"`
 	IP                   string     `json:"ip"`
 	Healthy              bool       `json:"healthy"`
+	State                string     `json:"state"`
+	Confirmed            bool       `json:"confirmed"`
+	ConsecutiveFailures  int        `json:"consecutive_failures"`
+	ConsecutiveSuccesses int        `json:"consecutive_successes"`
+	LastChange           *time.Time `json:"last_change,omitempty"`
+	LastProbe            *time.Time `json:"last_probe,omitempty"`
+	LastStatus           int        `json:"last_status,omitempty"`
+	LastLatencyMS        int64      `json:"last_latency_ms"`
+	LastError            string     `json:"last_error,omitempty"`
+
+	Egress *EgressStatus `json:"egress,omitempty"`
+}
+
+// EgressStatus is one node's egress state machine as of the last round.
+type EgressStatus struct {
+	OK                   bool       `json:"ok"`
 	Confirmed            bool       `json:"confirmed"`
 	ConsecutiveFailures  int        `json:"consecutive_failures"`
 	ConsecutiveSuccesses int        `json:"consecutive_successes"`
@@ -122,6 +145,7 @@ func (w *Watcher) publish() {
 			Name:                 s.Name,
 			IP:                   s.IP,
 			Healthy:              s.healthy,
+			State:                tier(s),
 			Confirmed:            s.confirmed,
 			ConsecutiveFailures:  s.failures,
 			ConsecutiveSuccesses: s.successes,
@@ -131,8 +155,24 @@ func (w *Watcher) publish() {
 			LastLatencyMS:        s.last.latency.Milliseconds(),
 			LastError:            s.last.reason,
 		}
-		if s.healthy {
+		if e := s.egress; e != nil {
+			node.Egress = &EgressStatus{
+				OK:                   e.healthy,
+				Confirmed:            e.confirmed,
+				ConsecutiveFailures:  e.failures,
+				ConsecutiveSuccesses: e.successes,
+				LastChange:           optionalTime(e.lastChange),
+				LastProbe:            optionalTime(e.lastProbeAt),
+				LastStatus:           e.last.status,
+				LastLatencyMS:        e.last.latency.Milliseconds(),
+				LastError:            e.last.reason,
+			}
+		}
+		switch node.State {
+		case tierHealthy:
 			snapshot.HealthyNodes++
+		case tierDegraded:
+			snapshot.DegradedNodes++
 		}
 		snapshot.Nodes = append(snapshot.Nodes, node)
 	}
@@ -152,6 +192,12 @@ func cloneStatus(s Status) Status {
 	for i := range s.Nodes {
 		s.Nodes[i].LastChange = cloneTime(s.Nodes[i].LastChange)
 		s.Nodes[i].LastProbe = cloneTime(s.Nodes[i].LastProbe)
+		if egress := s.Nodes[i].Egress; egress != nil {
+			copied := *egress
+			copied.LastChange = cloneTime(egress.LastChange)
+			copied.LastProbe = cloneTime(egress.LastProbe)
+			s.Nodes[i].Egress = &copied
+		}
 	}
 	s.Records = maps.Clone(s.Records)
 	for name, record := range s.Records {

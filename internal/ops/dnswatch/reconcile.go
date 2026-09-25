@@ -34,7 +34,7 @@ type domainPlan struct {
 	name string
 	// add holds healthy, confirmed nodes that have no record here yet.
 	add []*nodeState
-	// remove holds the records of unhealthy nodes.
+	// remove holds the records of unhealthy and sidelined nodes.
 	remove []removal
 	// keptHealthy counts healthy nodes that already have a record here.
 	keptHealthy int
@@ -80,14 +80,17 @@ func matchRecords(name string, records []dnsRecord, nodes []*nodeState) (map[*no
 }
 
 // planDomain compares the records under name with node health. The desired
-// set is the healthy nodes; only records owned by a node are ever removed.
+// set is the healthy nodes, which with the egress probe on means the ready
+// nodes markDesired did not sideline; only records owned by a node are ever
+// removed.
 func planDomain(name string, records []dnsRecord, nodes []*nodeState) domainPlan {
 	owned, other := matchRecords(name, records, nodes)
 	plan := domainPlan{name: name, view: recordView{Other: other}}
 	for _, s := range nodes {
 		recs := owned[s]
+		wanted := s.healthy && !s.sidelined
 		switch {
-		case len(recs) > 0 && s.healthy:
+		case len(recs) > 0 && wanted:
 			plan.keptHealthy++
 			plan.view.Nodes = append(plan.view.Nodes, s.IP)
 		case len(recs) > 0:
@@ -95,9 +98,9 @@ func planDomain(name string, records []dnsRecord, nodes []*nodeState) domainPlan
 				plan.remove = append(plan.remove, removal{record: rec, node: s})
 			}
 			plan.view.Nodes = append(plan.view.Nodes, s.IP)
-		case s.healthy && s.confirmed:
+		case wanted && s.confirmed && !s.egressPending:
 			plan.add = append(plan.add, s)
-		case s.healthy:
+		case wanted:
 			plan.unconfirmed = append(plan.unconfirmed, s)
 		}
 	}
@@ -212,9 +215,9 @@ func (w *Watcher) applyPlan(ctx context.Context, plan domainPlan, now time.Time)
 		}
 		view.Nodes = removeFirst(view.Nodes, rm.node.IP)
 		change := DNSChange{Action: "remove", Domain: plan.name, Node: rm.node.Name, IP: rm.node.IP, RecordID: rm.record.ID,
-			Reason: removeReason(rm.node, w.limits.recover), ConsecutiveFailures: rm.node.failures}
+			Reason: removeReason(rm.node, w.limits.recover), ConsecutiveFailures: consecutiveFailures(rm.node)}
 		w.log.Warn("dns record removed", "domain", plan.name, "node", rm.node.Name, "ip", rm.node.IP, "record_id", rm.record.ID,
-			"reason", change.Reason, "consecutive_failures", rm.node.failures)
+			"reason", change.Reason, "consecutive_failures", change.ConsecutiveFailures)
 		changes = append(changes, change)
 	}
 	return changes, joinFailures(plan.name, failed)
@@ -254,18 +257,31 @@ func (w *Watcher) logDryRun(plan domainPlan, now time.Time) {
 	}
 	for _, rm := range plan.remove {
 		w.log.Info("dry-run: would remove DNS record", "domain", plan.name, "node", rm.node.Name, "ip", rm.node.IP,
-			"record_id", rm.record.ID, "reason", removeReason(rm.node, w.limits.recover), "consecutive_failures", rm.node.failures)
+			"record_id", rm.record.ID, "reason", removeReason(rm.node, w.limits.recover), "consecutive_failures", consecutiveFailures(rm.node))
 	}
 }
 
 func addReason(s *nodeState, now time.Time) string {
-	if s.lastChange.Equal(now) {
+	switch {
+	case s.lastChange.Equal(now):
 		return fmt.Sprintf("node recovered after %d consecutive successful probes", s.successes)
+	case s.egress != nil && !s.egress.healthy:
+		return "node is ready and no node passes its egress check"
+	case s.egress != nil && s.egress.lastChange.Equal(now):
+		return fmt.Sprintf("node egress recovered after %d consecutive successful egress probes", s.egress.successes)
+	default:
+		return "node is healthy but has no record here"
 	}
-	return "node is healthy but has no record here"
 }
 
 func removeReason(s *nodeState, recover int) string {
+	if s.sidelined {
+		e := s.egress
+		if e.successes > 0 || e.lastFailure == "" {
+			return fmt.Sprintf("node degraded: egress check not passing yet (%d/%d consecutive successful egress probes)", e.successes, recover)
+		}
+		return "node degraded: egress check failed: " + e.lastFailure
+	}
 	if s.successes > 0 || s.lastFailure == "" {
 		return fmt.Sprintf("node not healthy yet (%d/%d consecutive successful probes)", s.successes, recover)
 	}

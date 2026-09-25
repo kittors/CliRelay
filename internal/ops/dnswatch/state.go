@@ -29,6 +29,18 @@ type nodeState struct {
 	lastFailure string
 	// deferNoted keeps the "held by min_change_interval" line to one per hold.
 	deferNoted bool
+
+	// egress runs this same state machine over the egress probe when
+	// probe.egress_path is set, and is nil otherwise. Its healthy means the
+	// node's egress check passes.
+	egress *nodeState
+	// sidelined and egressPending are this round's DNS verdict, set by
+	// markDesired for planDomain. sidelined drops a ready node whose egress
+	// check fails while another node is fully healthy. egressPending keeps a
+	// node whose egress has not passed a probe yet from being added anywhere,
+	// as confirmed does for readiness.
+	sidelined     bool
+	egressPending bool
 }
 
 // observation reports what one probe result did to a node.
