@@ -11,8 +11,8 @@ import (
 
 func TestRuntimeMigrationsCoverCoreTables(t *testing.T) {
 	migrations := RuntimeMigrations()
-	if len(migrations) != 35 {
-		t.Fatalf("RuntimeMigrations len = %d, want 35", len(migrations))
+	if len(migrations) != 39 {
+		t.Fatalf("RuntimeMigrations len = %d, want 39", len(migrations))
 	}
 	// Membership table of multi-instance deployments.
 	if migrations[31].Version != "202609250001_cluster_nodes" {
@@ -37,6 +37,18 @@ func TestRuntimeMigrationsCoverCoreTables(t *testing.T) {
 	} {
 		if !strings.Contains(migrations[34].SQL, fragment) {
 			t.Fatalf("config versions migration missing %q", fragment)
+		}
+	}
+	// Cross-node sessions and asynchronous work, one new table each.
+	for i, want := range []struct{ version, table string }{
+		{"202609250005_oauth_sessions", "CREATE TABLE IF NOT EXISTS oauth_sessions"},
+		{"202609250006_async_task_routes", "CREATE TABLE IF NOT EXISTS async_task_routes"},
+		{"202609250007_management_jobs", "CREATE TABLE IF NOT EXISTS management_jobs"},
+		{"202609250008_warmup_policies", "CREATE TABLE IF NOT EXISTS warmup_policies"},
+	} {
+		got := migrations[35+i]
+		if got.Version != want.version || !strings.Contains(got.SQL, want.table) {
+			t.Fatalf("migration %d = %q, want %q creating %q", 35+i, got.Version, want.version, want.table)
 		}
 	}
 	// Appended from laterRuntimeMigrations() because migrations.go sits at its

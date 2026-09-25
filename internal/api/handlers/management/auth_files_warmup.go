@@ -3,10 +3,51 @@ package management
 import (
 	"net/http"
 	"strings"
+	"sync/atomic"
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/management/warmup"
+	log "github.com/sirupsen/logrus"
 )
+
+type warmupPolicyStoreHolder struct{ store warmup.PolicyStore }
+
+var warmupPolicyStore atomic.Pointer[warmupPolicyStoreHolder]
+
+// SetWarmupPolicyStore persists warmup policies in store for schedulers
+// created from now on; nil keeps them in memory, lost on restart.
+func SetWarmupPolicyStore(store warmup.PolicyStore) {
+	if store == nil {
+		warmupPolicyStore.Store(nil)
+		return
+	}
+	warmupPolicyStore.Store(&warmupPolicyStoreHolder{store: store})
+}
+
+func sharedWarmupPolicyStore() warmup.PolicyStore {
+	if holder := warmupPolicyStore.Load(); holder != nil {
+		return holder.store
+	}
+	return nil
+}
+
+// StartWarmupScheduler starts policy scheduling at server startup. Stored
+// policies must keep running after a restart, before anyone opens the panel;
+// in a cluster only the leader evaluates them.
+func (h *Handler) StartWarmupScheduler() {
+	if h != nil {
+		h.warmupService()
+	}
+}
+
+func (h *Handler) stopWarmupScheduler() {
+	h.mu.Lock()
+	svc := h.warmupSvc
+	h.mu.Unlock()
+	if svc != nil {
+		svc.Stop()
+	}
+}
 
 // GetWarmupAccountTargets returns quota pools available for warmup on a specific auth file.
 func (h *Handler) GetWarmupAccountTargets(c *gin.Context) {
@@ -68,7 +109,12 @@ func (h *Handler) PostWarmupBatch(c *gin.Context) {
 // GetWarmupPolicies returns all configured warmup policies.
 func (h *Handler) GetWarmupPolicies(c *gin.Context) {
 	tenantID := effectiveTenantID(c)
-	policies := h.warmupService().GetPolicies(tenantID)
+	policies, err := h.warmupService().ListPolicies(c.Request.Context(), tenantID)
+	if err != nil {
+		log.WithError(err).Error("warmup: failed to list policies")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load warmup policies"})
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{
 		"policies": policies,
 		"metrics":  h.warmupService().GetMetrics(),
@@ -88,6 +134,10 @@ func (h *Handler) PostWarmupPolicy(c *gin.Context) {
 		return
 	}
 
-	h.warmupService().AddPolicy(p)
+	if err := h.warmupService().SavePolicy(c.Request.Context(), p); err != nil {
+		log.WithError(err).Error("warmup: failed to save policy")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save warmup policy"})
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{"status": "ok", "policy": p})
 }

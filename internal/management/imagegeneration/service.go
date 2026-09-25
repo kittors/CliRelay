@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/management/jobsnapshot"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 )
 
@@ -26,6 +27,9 @@ type Service struct {
 	ttl          time.Duration
 	systemAPIKey string
 	now          func() time.Time
+	// shared publishes snapshots for the other nodes of a cluster; nil on a
+	// single node.
+	shared *jobsnapshot.Publisher
 }
 
 type task struct {
@@ -37,6 +41,7 @@ type task struct {
 	UpdatedAt time.Time
 	Result    json.RawMessage
 	Error     map[string]any
+	version   int64
 }
 
 type Snapshot struct {
@@ -83,7 +88,11 @@ func (s *Service) Start(tenantID string, payload []byte, alt string) Snapshot {
 	}
 	s.tasks[item.ID] = item
 	snapshot := s.snapshot(item)
+	shared, sharedSnap := s.sharedSnapshotLocked(item)
 	s.mu.Unlock()
+	// Published before the id is returned, so the first poll finds the task
+	// whichever node it reaches.
+	shared.Publish(sharedSnap)
 
 	go s.run(item.TenantID, item.ID, payload, alt)
 	return snapshot
@@ -91,13 +100,14 @@ func (s *Service) Start(tenantID string, payload []byte, alt string) Snapshot {
 
 func (s *Service) Get(tenantID, taskID string) (Snapshot, bool) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	item := s.tasks[taskID]
-	if item == nil || item.TenantID != strings.TrimSpace(tenantID) {
-		return Snapshot{}, false
+	if item != nil && item.TenantID == strings.TrimSpace(tenantID) {
+		snapshot := s.snapshot(item)
+		s.mu.Unlock()
+		return snapshot, true
 	}
-	return s.snapshot(item), true
+	s.mu.Unlock()
+	return s.lookupShared(tenantID, taskID)
 }
 
 func (s *Service) run(tenantID, taskID string, payload []byte, alt string) {
@@ -143,14 +153,16 @@ func (s *Service) update(taskID string, update func(*task)) {
 		return
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	item := s.tasks[taskID]
 	if item == nil {
+		s.mu.Unlock()
 		return
 	}
 	update(item)
 	item.UpdatedAt = s.now()
+	shared, sharedSnap := s.sharedSnapshotLocked(item)
+	s.mu.Unlock()
+	shared.Publish(sharedSnap)
 }
 
 func (s *Service) purgeExpired() {

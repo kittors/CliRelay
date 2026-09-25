@@ -83,3 +83,10 @@ type MembershipEvent struct {
 	Kind    string `json:"kind"`
 	Version string `json:"version,omitempty"`
 }
+
+// OAuthEvent is the payload of TopicOAuth: the shared session State received
+// its provider callback or stopped being pending. Only the node that started
+// the login waits on it; that node re-reads the session row.
+type OAuthEvent struct {
+	State string `json:"state"`
+}
