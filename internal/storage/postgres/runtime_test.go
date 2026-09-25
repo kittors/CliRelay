@@ -11,8 +11,20 @@ import (
 
 func TestRuntimeMigrationsCoverCoreTables(t *testing.T) {
 	migrations := RuntimeMigrations()
-	if len(migrations) != 31 {
-		t.Fatalf("RuntimeMigrations len = %d, want 31", len(migrations))
+	if len(migrations) != 35 {
+		t.Fatalf("RuntimeMigrations len = %d, want 35", len(migrations))
+	}
+	// Cross-node sessions and asynchronous work, one new table each.
+	for i, want := range []struct{ version, table string }{
+		{"202609250201_oauth_sessions", "CREATE TABLE IF NOT EXISTS oauth_sessions"},
+		{"202609250202_async_task_routes", "CREATE TABLE IF NOT EXISTS async_task_routes"},
+		{"202609250203_management_jobs", "CREATE TABLE IF NOT EXISTS management_jobs"},
+		{"202609250204_warmup_policies", "CREATE TABLE IF NOT EXISTS warmup_policies"},
+	} {
+		got := migrations[31+i]
+		if got.Version != want.version || !strings.Contains(got.SQL, want.table) {
+			t.Fatalf("migration %d = %q, want %q creating %q", 31+i, got.Version, want.version, want.table)
+		}
 	}
 	// Appended from laterRuntimeMigrations() because migrations.go sits at its
 	// structure-gate size ceiling.
@@ -24,7 +36,7 @@ func TestRuntimeMigrationsCoverCoreTables(t *testing.T) {
 	if migrations[28].Version != "202608270001_end_user_unbound_profile_scope_cleanup" {
 		t.Fatalf("scope cleanup migration version = %q", migrations[28].Version)
 	}
-	// Latest: completion marker for the one-shot pass that locks portal accounts
+	// Completion marker for the one-shot pass that locks portal accounts
 	// still on the legacy backfill password; without it the pass would re-run on
 	// every boot.
 	if migrations[30].Version != "202609240001_end_user_legacy_password_lock_state" {

@@ -18,6 +18,12 @@ func laterRuntimeMigrations() []Migration {
 		// Completion marker for the one-shot pass that locks portal accounts
 		// still on the legacy backfill password.
 		{Version: "202609240001_end_user_legacy_password_lock_state", SQL: endUserLegacyPasswordLockStateSQL},
+		// Cross-node sessions and asynchronous work; see
+		// cluster_session_migrations.go.
+		{Version: "202609250201_oauth_sessions", SQL: oauthSessionsSQL},
+		{Version: "202609250202_async_task_routes", SQL: asyncTaskRoutesSQL},
+		{Version: "202609250203_management_jobs", SQL: managementJobsSQL},
+		{Version: "202609250204_warmup_policies", SQL: warmupPoliciesSQL},
 	}
 }
 
