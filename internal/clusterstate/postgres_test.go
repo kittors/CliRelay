@@ -19,6 +19,14 @@ import (
 // disturb rows written by other packages on the shared test server.
 func openTestDB(t *testing.T) *sql.DB {
 	t.Helper()
+	db, _ := openTestDBWithDSN(t)
+	return db
+}
+
+// openTestDBWithDSN is openTestDB that also returns the DSN of the disposable
+// database, for a bus listener that must LISTEN on that same database.
+func openTestDBWithDSN(t *testing.T) (*sql.DB, string) {
+	t.Helper()
 	dsn := strings.TrimSpace(os.Getenv("CLIRELAY_POSTGRES_TEST_DSN"))
 	if dsn == "" {
 		t.Skip("CLIRELAY_POSTGRES_TEST_DSN is not set")
@@ -52,7 +60,7 @@ func openTestDB(t *testing.T) *sql.DB {
 		t.Fatalf("open migrated runtime db: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	return db
+	return db, testDSN
 }
 
 func withDatabase(dsn, dbName string) (string, error) {

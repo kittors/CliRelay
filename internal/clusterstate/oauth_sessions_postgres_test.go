@@ -184,3 +184,50 @@ func TestSweepClosesAbandonedOAuthSessions(t *testing.T) {
 		t.Fatal("rows past retention must be deleted")
 	}
 }
+
+// The same login across two real coordinators: node B's callback reaches
+// node A through PostgreSQL LISTEN/NOTIFY, with polling effectively off.
+func TestOAuthLoginAcrossRealCoordinators(t *testing.T) {
+	db, dsn := openTestDBWithDSN(t)
+	start := func(name string) *cluster.Coordinator {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		c, err := cluster.Start(ctx, cluster.Options{Enabled: true, NodeID: name, DSN: dsn, DB: db, Version: "test"})
+		if err != nil {
+			t.Fatalf("start %s: %v", name, err)
+		}
+		t.Cleanup(c.Close)
+		return c
+	}
+	t.Cleanup(func() { cluster.SetDefault(nil) })
+	nodeA, nodeB := start("oauth-node-a"), start("oauth-node-b")
+
+	storeA := oauthsession.NewClusterStore(NewOAuthSessions(db), func() *cluster.Coordinator { return nodeA }, time.Minute)
+	storeB := oauthsession.NewClusterStore(NewOAuthSessions(db), func() *cluster.Coordinator { return nodeB }, time.Minute)
+	storeA.SetPollInterval(time.Hour)
+	t.Cleanup(storeA.Close)
+	t.Cleanup(storeB.Close)
+
+	storeA.RegisterTenant("real-bus-state", "xai", "")
+	done := make(chan error, 1)
+	go func() {
+		payload, err := storeA.WaitCallback("", "xai", "real-bus-state", 20*time.Second, 0)
+		if err == nil && payload["code"] != "bus-code" {
+			err = errors.New("unexpected payload " + payload["code"])
+		}
+		done <- err
+	}()
+	time.Sleep(200 * time.Millisecond)
+	if err := storeB.DeliverCallback("", "xai", "real-bus-state", "bus-code", ""); err != nil {
+		t.Fatalf("deliver on node B: %v", err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("owner wait: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the callback event never reached node A over the database bus")
+	}
+}
