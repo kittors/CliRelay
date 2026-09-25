@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/buildinfo"
@@ -70,17 +71,25 @@ func startCluster(cfg *config.Config) (*cluster.Coordinator, error) {
 
 // closeClusterOnShutdown leaves the cluster as soon as ctx ends, instead of
 // after the request drain that follows, so leadership moves to a peer at
-// once. The returned stop ends the watch.
+// once. The returned stop ends the watch and waits for it to exit: without
+// the wait, a ctx cancelled right after stop could still win the select and
+// close a coordinator the caller meant to keep.
 func closeClusterOnShutdown(ctx context.Context, coordinator *cluster.Coordinator) (stop func()) {
 	done := make(chan struct{})
+	exited := make(chan struct{})
 	go func() {
+		defer close(exited)
 		select {
 		case <-ctx.Done():
 			coordinator.Close()
 		case <-done:
 		}
 	}()
-	return func() { close(done) }
+	var once sync.Once
+	return func() {
+		once.Do(func() { close(done) })
+		<-exited
+	}
 }
 
 // withRuntimeMigrationLock runs fn, the whole runtime data stack
