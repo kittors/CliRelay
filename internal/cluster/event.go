@@ -76,6 +76,9 @@ type CooldownEvent struct {
 	UntilUnix  int64  `json:"until_unix"`
 	StatusCode int    `json:"status_code,omitempty"`
 	Reason     string `json:"reason,omitempty"`
+	// Quota marks an exhausted quota rather than a backoff; receivers then
+	// set the quota flags too.
+	Quota bool `json:"quota,omitempty"`
 }
 
 // MembershipEvent is the payload of TopicMembership.
