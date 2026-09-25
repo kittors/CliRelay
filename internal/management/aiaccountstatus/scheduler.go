@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/cluster"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
 )
@@ -93,6 +94,11 @@ func (s *Scheduler) loop(ctx context.Context) {
 }
 
 func (s *Scheduler) runRound() {
+	// Probes write shared snapshots and spend upstream requests; one node
+	// probing per round is enough.
+	if !cluster.Default().IsLeader() {
+		return
+	}
 	service := s.serviceFor()
 	if service == nil {
 		return

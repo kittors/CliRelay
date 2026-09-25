@@ -300,6 +300,7 @@ func (cfg *Config) ApplyEnvOverrides() {
 			cfg.Redis.DB = db
 		}
 	}
+	cfg.applyClusterEnvOverrides()
 	for _, key := range []string{EnvPort, EnvLegacyPort} {
 		if rawPort := strings.TrimSpace(os.Getenv(key)); rawPort != "" {
 			if port, err := strconv.Atoi(rawPort); err == nil && port > 0 {

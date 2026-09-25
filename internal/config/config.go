@@ -44,6 +44,9 @@ type Config struct {
 	// Redis config controls the Redis connection for usage persistence.
 	Redis RedisConfig `yaml:"redis" json:"redis"`
 
+	// Cluster config controls multi-instance deployment. Disabled by default.
+	Cluster ClusterConfig `yaml:"cluster,omitempty" json:"cluster,omitempty"`
+
 	// TLS config controls HTTPS server settings.
 	TLS TLSConfig `yaml:"tls" json:"tls"`
 
