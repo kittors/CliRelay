@@ -173,6 +173,7 @@ func stopRuntimeDataStack() {
 	if stopAudit != nil {
 		stopAudit()
 	}
+	stopSharedSessionState()
 	usage.StopRedis()
 }
 
@@ -265,6 +266,7 @@ func initializeRuntimeDataStack(cfg *config.Config, configPath string, loc *time
 		}
 		middleware.RecordTokenUsageForRequest(apiKey, endUserID, totalTokens)
 	})
+	startSharedSessionState(cfg)
 	return nil
 }
 
