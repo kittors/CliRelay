@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/cluster"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/configsync"
 )
 
 // ErrRuleNotFound is returned when an id does not resolve to a rule.
@@ -220,7 +222,7 @@ func (s *Store) Create(ctx context.Context, in CreateInput) (Rule, error) {
 		expires = in.ExpiresAt.UTC()
 	}
 	id := uuid.NewString()
-	_, err = s.db.ExecContext(ctx, `INSERT INTO ip_access_rules
+	_, err = configsync.Exec(ctx, s.db, ruleChangeEvents, `INSERT INTO ip_access_rules
 		(id,cidr,family,effect,source,reason,note,enabled,expires_at,created_by)
 		VALUES (?,?,?,?,?,?,?,true,?,?)`,
 		id, cidr, family, string(in.Effect), string(source), in.Reason, in.Note, expires, createdBy)
@@ -268,7 +270,7 @@ func (s *Store) Update(ctx context.Context, id string, in UpdateInput) (Rule, er
 	}
 	sets = append(sets, "updated_at = now()")
 	args = append(args, id)
-	result, err := s.db.ExecContext(ctx,
+	result, err := configsync.Exec(ctx, s.db, ruleChangeEvents,
 		`UPDATE ip_access_rules SET `+strings.Join(sets, ", ")+` WHERE id = ?`, args...)
 	if err != nil {
 		return Rule{}, err
@@ -284,7 +286,7 @@ func (s *Store) Delete(ctx context.Context, id string) error {
 	if !s.Available() {
 		return ErrRuleNotFound
 	}
-	result, err := s.db.ExecContext(ctx, `DELETE FROM ip_access_rules WHERE id = ?`, id)
+	result, err := configsync.Exec(ctx, s.db, ruleChangeEvents, `DELETE FROM ip_access_rules WHERE id = ?`, id)
 	if err != nil {
 		return err
 	}
@@ -316,7 +318,7 @@ func (s *Store) UpsertAutoBan(ctx context.Context, cidr, reason string, expiresA
 		if existing.Source == SourceManual {
 			return existing, false, nil
 		}
-		if _, updateErr := s.db.ExecContext(ctx,
+		if _, updateErr := configsync.Exec(ctx, s.db, ruleChangeEvents,
 			`UPDATE ip_access_rules SET expires_at = ?, enabled = true, reason = ?, updated_at = now() WHERE id = ?`,
 			expiresAt.UTC(), reason, existing.ID); updateErr != nil {
 			return Rule{}, false, updateErr
@@ -326,7 +328,7 @@ func (s *Store) UpsertAutoBan(ctx context.Context, cidr, reason string, expiresA
 	}
 
 	id := uuid.NewString()
-	if _, err = s.db.ExecContext(ctx, `INSERT INTO ip_access_rules
+	if _, err = configsync.Exec(ctx, s.db, ruleChangeEvents, `INSERT INTO ip_access_rules
 		(id,cidr,family,effect,source,reason,note,enabled,expires_at)
 		VALUES (?,?,?,'deny','auto',?,'',true,?)`,
 		id, normalized, family, reason, expiresAt.UTC()); err != nil {
@@ -380,7 +382,7 @@ func (s *Store) PurgeExpiredAuto(ctx context.Context, cutoff time.Time) (int64, 
 	if !s.Available() {
 		return 0, nil
 	}
-	result, err := s.db.ExecContext(ctx,
+	result, err := configsync.Exec(ctx, s.db, ruleChangeEvents,
 		`DELETE FROM ip_access_rules WHERE source = 'auto' AND expires_at IS NOT NULL AND expires_at < ?`,
 		cutoff.UTC())
 	if err != nil {
@@ -400,4 +402,15 @@ func isUniqueViolation(err error) bool {
 	return strings.Contains(msg, "23505") ||
 		strings.Contains(msg, "duplicate key") ||
 		strings.Contains(msg, "unique constraint")
+}
+
+// ruleChangeEvents announce a rule write to the other cluster nodes. They
+// refresh their rule snapshot on it instead of waiting for the periodic poll,
+// so a ban placed on one node applies on every node within about a second.
+var ruleChangeEvents = []cluster.ConfigEvent{configsync.Event(configsync.DomainIPAccessRules, "")}
+
+func init() {
+	// The protection policy is a runtime_settings row, but its receivers are
+	// in this package, so its writes are announced under their own domain.
+	configsync.RouteRuntimeSettingKey(SettingKey, configsync.DomainIPAccessPolicy)
 }

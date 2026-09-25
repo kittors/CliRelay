@@ -302,3 +302,18 @@ type configResponse struct {
 func withSettingVersions(cfg *config.Config, versions map[string]int64) configResponse {
 	return configResponse{Config: cfg, RuntimeSettingVersions: versions}
 }
+
+// WithLiveConfig runs fn with this node's live configuration while holding the
+// handler lock. Cluster reloads use it to apply, in place, a change another
+// node made, the same way this node's handlers apply their own.
+func (h *Handler) WithLiveConfig(fn func(*config.Config)) {
+	if h == nil || fn == nil {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.cfg == nil {
+		return
+	}
+	fn(h.cfg)
+}

@@ -2,6 +2,7 @@ package management
 
 import (
 	"encoding/json"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/configsync"
 	"net/http"
 	"strings"
 
@@ -10,6 +11,7 @@ import (
 )
 
 func (h *Handler) GetCcSwitchImportConfigs(c *gin.Context) {
+	setVersionHeader(c, usage.ConfigCollectionVersion(configsync.DomainCcSwitch, effectiveTenantID(c)))
 	items := usage.ListCcSwitchImportConfigsForTenant(effectiveTenantID(c))
 	if items == nil {
 		items = []usage.CcSwitchImportConfigRow{}
@@ -78,10 +80,15 @@ func (h *Handler) PutCcSwitchImportConfigs(c *gin.Context) {
 		}
 	}
 
-	if err := usage.ReplaceAllCcSwitchImportConfigsForTenant(effectiveTenantID(c), items); err != nil {
+	version, err := usage.ReplaceAllCcSwitchImportConfigsForTenantExpect(c.Request.Context(), effectiveTenantID(c), items, requestExpectedVersion(c))
+	if err != nil {
+		if writeConfigConflict(c, err) {
+			return
+		}
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	setVersionHeader(c, version)
 
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }

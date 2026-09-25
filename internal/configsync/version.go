@@ -180,3 +180,18 @@ func WriteCollection(ctx context.Context, db *sql.DB, domain, tenantID string, e
 	}
 	return version, nil
 }
+
+// BumpAndCommit ends a row-level write to a whole-replace collection: it bumps
+// the collection version, so a replacement computed from an older list is
+// detected, and commits tx together with the announcement. A database without
+// config_versions (a SQLite test schema) still commits the write.
+func BumpAndCommit(ctx context.Context, tx *sql.Tx, domain, tenantID string, extra ...cluster.ConfigEvent) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	version, err := BumpTx(ctx, tx, domain, tenantID, AnyVersion)
+	if err != nil && !isMissingTable(err) {
+		return err
+	}
+	return CommitTx(ctx, tx, append([]cluster.ConfigEvent{KeyEvent(domain, tenantID, "", version)}, extra...)...)
+}

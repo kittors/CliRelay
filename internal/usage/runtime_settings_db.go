@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/configsync"
 	runtimeconfig "github.com/router-for-me/CLIProxyAPI/v6/internal/management/settings/runtimeconfig"
 	sqlsettings "github.com/router-for-me/CLIProxyAPI/v6/internal/storage/sqlstore/settings"
 )
@@ -38,6 +39,8 @@ const (
 
 func initRuntimeSettingsTable(db *sql.DB) {
 	sqlsettings.InitRuntimeSettingsTable(db)
+	// Collection versions live next to the settings they version.
+	configsync.InitTables(db)
 }
 
 func runtimeSettingsStore() sqlsettings.RuntimeSettingsStore {

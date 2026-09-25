@@ -1,9 +1,11 @@
 package usage
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/configsync"
 	"strings"
 	"time"
 
@@ -175,20 +177,33 @@ func ReplaceAllCcSwitchImportConfigs(configs []CcSwitchImportConfigRow) error {
 }
 
 func ReplaceAllCcSwitchImportConfigsForTenant(tenantID string, configs []CcSwitchImportConfigRow) error {
+	_, err := ReplaceAllCcSwitchImportConfigsForTenantExpect(context.Background(), tenantID, configs, configsync.AnyVersion)
+	return err
+}
+
+// ReplaceAllCcSwitchImportConfigsForTenantExpect replaces the tenant's import
+// configs if the collection is still at expected (configsync.AnyVersion:
+// unchecked), announces the change and returns the new collection version.
+func ReplaceAllCcSwitchImportConfigsForTenantExpect(ctx context.Context, tenantID string, configs []CcSwitchImportConfigRow, expected int64) (int64, error) {
 	tenantID = normalizeTenantID(tenantID)
 	db := getDB()
 	if db == nil {
-		return fmt.Errorf("database not initialised")
+		return 0, fmt.Errorf("database not initialised")
 	}
 
-	tx, err := db.Begin()
+	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
-		return err
+		return 0, err
+	}
+	version, err := configsync.BumpTx(ctx, tx, configsync.DomainCcSwitch, tenantID, expected)
+	if err != nil {
+		_ = tx.Rollback()
+		return 0, err
 	}
 
 	if _, err := tx.Exec("DELETE FROM ccswitch_import_configs WHERE tenant_id = ?", tenantID); err != nil {
 		_ = tx.Rollback()
-		return err
+		return 0, err
 	}
 
 	stmt, err := tx.Prepare(`INSERT INTO ccswitch_import_configs
@@ -197,7 +212,7 @@ func ReplaceAllCcSwitchImportConfigsForTenant(tenantID string, configs []CcSwitc
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		_ = tx.Rollback()
-		return err
+		return 0, err
 	}
 	defer stmt.Close()
 
@@ -208,29 +223,29 @@ func ReplaceAllCcSwitchImportConfigsForTenant(tenantID string, configs []CcSwitc
 		row = normalizeCcSwitchImportConfigRow(row)
 		if row.ID == "" {
 			_ = tx.Rollback()
-			return fmt.Errorf("id is required")
+			return 0, fmt.Errorf("id is required")
 		}
 		if row.ClientType == "" {
 			_ = tx.Rollback()
-			return fmt.Errorf("client-type is required")
+			return 0, fmt.Errorf("client-type is required")
 		}
 		if row.ProviderName == "" {
 			_ = tx.Rollback()
-			return fmt.Errorf("provider-name is required")
+			return 0, fmt.Errorf("provider-name is required")
 		}
 		if row.DefaultModel == "" {
 			_ = tx.Rollback()
-			return fmt.Errorf("default-model is required")
+			return 0, fmt.Errorf("default-model is required")
 		}
 		if _, exists := seen[row.ID]; exists {
 			_ = tx.Rollback()
-			return fmt.Errorf("duplicate id %q", row.ID)
+			return 0, fmt.Errorf("duplicate id %q", row.ID)
 		}
 		seen[row.ID] = struct{}{}
 		if row.RoutePath != "" {
 			if _, exists := seenRoutePaths[row.RoutePath]; exists {
 				_ = tx.Rollback()
-				return fmt.Errorf("duplicate route-path %q", row.RoutePath)
+				return 0, fmt.Errorf("duplicate route-path %q", row.RoutePath)
 			}
 			seenRoutePaths[row.RoutePath] = struct{}{}
 		}
@@ -256,11 +271,14 @@ func ReplaceAllCcSwitchImportConfigsForTenant(tenantID string, configs []CcSwitc
 			row.UpdatedAt,
 		); err != nil {
 			_ = tx.Rollback()
-			return err
+			return 0, err
 		}
 	}
 
-	return tx.Commit()
+	if err := configsync.CommitTx(ctx, tx, configsync.KeyEvent(configsync.DomainCcSwitch, tenantID, "", version)); err != nil {
+		return 0, err
+	}
+	return version, nil
 }
 
 func normalizeCcSwitchImportConfigRow(row CcSwitchImportConfigRow) CcSwitchImportConfigRow {

@@ -159,3 +159,15 @@ func ReloadScopeForKey(key string) ReloadScope {
 		return ReloadLight
 	}
 }
+
+// IsProviderListKey reports whether key holds provider credentials, from which
+// config-derived credentials are synthesised.
+func IsProviderListKey(key string) bool {
+	switch key {
+	case RuntimeSettingGeminiKeys, RuntimeSettingCodexKeys, RuntimeSettingClaudeKeys, RuntimeSettingBedrockKeys,
+		RuntimeSettingOpenCodeGoKeys, RuntimeSettingClineKeys, RuntimeSettingOllamaCloudKeys, RuntimeSettingCommandCodeKeys,
+		RuntimeSettingOpenAICompatibility, RuntimeSettingVertexCompatKeys:
+		return true
+	}
+	return false
+}

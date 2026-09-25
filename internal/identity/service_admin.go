@@ -568,7 +568,7 @@ func (s *Service) DeleteTenant(ctx context.Context, actor Principal, tenantID st
 	if _, err = tx.ExecContext(ctx, `UPDATE user_sessions SET revoked_at=now(),revoke_reason='tenant_disabled' WHERE user_id IN (SELECT id FROM users WHERE tenant_id=?) AND revoked_at IS NULL`, tenantID); err != nil {
 		return Tenant{}, err
 	}
-	if err = tx.Commit(); err != nil {
+	if err = commitTenantChange(ctx, tx, tenantID); err != nil {
 		return Tenant{}, err
 	}
 	s.RecordAudit(ctx, AuditEvent{TenantID: tenantID, ActorKind: actor.Kind, ActorUserID: actor.User.ID, ActorSessionID: actor.SessionID, Action: "tenant.disable", ResourceType: "tenant", ResourceID: tenantID, Result: "success"})
