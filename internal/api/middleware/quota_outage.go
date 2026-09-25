@@ -82,15 +82,15 @@ func QuotaUsageStaleServed() int64 { return quotaUsageStaleServed.Load() }
 // for a dayBounded window, was read on the current local day.
 func readQuotaUsage[T any](window, subject, logSubject string, dayBounded bool, read func() (T, error)) (T, error) {
 	value, err := read()
+	maxAge := time.Duration(quotaUsageStaleMaxAge.Load())
+	if maxAge <= 0 {
+		return value, err
+	}
 	now := time.Now()
 	key := quotaUsageCacheKey{window: window, subject: subject}
 	if err == nil {
 		keepQuotaUsageReading(key, quotaUsageReading{value: value, readAt: now, day: now.Format(time.DateOnly)})
 		return value, nil
-	}
-	maxAge := time.Duration(quotaUsageStaleMaxAge.Load())
-	if maxAge <= 0 {
-		return value, err
 	}
 	quotaUsageCacheMu.Lock()
 	reading, ok := quotaUsageCache[key]
