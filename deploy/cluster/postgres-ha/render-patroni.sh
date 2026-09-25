@@ -90,7 +90,10 @@ bootstrap:
     failsafe_mode: false
     # Turned on once a replica exists: commits then wait for the replica,
     # and Patroni drops back to asynchronous replication when it is gone
-    # (strict mode off) so the primary never blocks on a dead replica.
+    # (strict mode off). A replica that hangs without closing its
+    # connection still holds commits until it is noticed: about 32s with
+    # the default wal_sender_timeout (the member key expiring), 15-19s with
+    # the 15s set below, measured by freezing the standby in the lab.
     synchronous_mode: false
     synchronous_mode_strict: false
     postgresql:
@@ -109,6 +112,10 @@ bootstrap:
         wal_keep_size: 1GB
         max_slot_wal_keep_size: 8GB
         hot_standby_feedback: 'on'
+        # Detects a hung synchronous standby in 15s instead of 60s. Shorter
+        # would cut replication during the few-second I/O stalls some hosts
+        # show; those stalls hold commits for their own length either way.
+        wal_sender_timeout: 15s
         password_encryption: scram-sha-256
         ssl: 'on'
         ssl_cert_file: ${TLS_DIR}/node.crt
