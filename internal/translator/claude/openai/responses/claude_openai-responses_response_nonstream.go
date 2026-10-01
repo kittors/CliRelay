@@ -120,7 +120,6 @@ func ConvertClaudeResponseToOpenAIResponsesNonStream(_ context.Context, _ string
 				reasoningSig = cb.Get("signature").String()
 			case "redacted_thinking":
 				item := claudeReasoningItem(fmt.Sprintf("rs_%s_%d", responseID, idx), "", claudeReasoningCarrier(cb))
-				reasoningItems = append(reasoningItems, item)
 				outputItems = append(outputItems, item)
 			}
 
