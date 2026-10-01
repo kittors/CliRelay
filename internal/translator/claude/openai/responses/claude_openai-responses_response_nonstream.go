@@ -51,7 +51,6 @@ func ConvertClaudeResponseToOpenAIResponsesNonStream(_ context.Context, _ string
 		reasoningActive bool
 		reasoningItemID string
 		reasoningSig    string
-		reasoningItems  []string
 		reasoningChars  int
 		inputTokens     int64
 		outputTokens    int64
@@ -158,8 +157,7 @@ func ConvertClaudeResponseToOpenAIResponsesNonStream(_ context.Context, _ string
 
 		case "content_block_stop":
 			if reasoningActive {
-				reasoningItems = append(reasoningItems, claudeReasoningItem(reasoningItemID, reasoningBuf.String(), reasoningSig))
-				outputItems = append(outputItems, reasoningItems[len(reasoningItems)-1])
+				outputItems = append(outputItems, claudeReasoningItem(reasoningItemID, reasoningBuf.String(), reasoningSig))
 				reasoningChars += reasoningBuf.Len()
 				reasoningActive = false
 				reasoningBuf.Reset()
@@ -264,7 +262,6 @@ func ConvertClaudeResponseToOpenAIResponsesNonStream(_ context.Context, _ string
 	outputsWrapper := `{"arr":[]}`
 	if reasoningActive && reasoningBuf.Len() > 0 {
 		item := claudeReasoningItem(reasoningItemID, reasoningBuf.String(), reasoningSig)
-		reasoningItems = append(reasoningItems, item)
 		outputItems = append(outputItems, item)
 		reasoningChars += reasoningBuf.Len()
 	}
