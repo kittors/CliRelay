@@ -1,29 +1,11 @@
 package cliproxy
 
 import (
-	"context"
 	"strings"
-	"time"
 
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
-	serviceapp "github.com/router-for-me/CLIProxyAPI/v6/sdkbridge/service"
 	log "github.com/sirupsen/logrus"
 )
-
-func (s *Service) fetchAntigravityRegistryModels(ctx context.Context, auth *coreauth.Auth, excluded []string) []*ModelInfo {
-	fetchCtx := ctx
-	if fetchCtx == nil {
-		// Model fetch can be called from service-owned refresh paths that have no
-		// request scope; fall back to a service-owned root context in that case.
-		fetchCtx = context.Background()
-	}
-	// Model registration should not be aborted by unrelated caller cancellation
-	// once the service has committed to refreshing the registry.
-	fetchCtx, cancel := context.WithTimeout(context.WithoutCancel(fetchCtx), 15*time.Second)
-	defer cancel()
-	models := serviceapp.FetchAntigravityModels(fetchCtx, auth, s.cfg)
-	return applyExcludedModels(models, excluded)
-}
 
 func (s *Service) backfillAntigravityModels(source *coreauth.Auth, primaryModels []*ModelInfo) {
 	if s == nil || s.coreManager == nil || len(primaryModels) == 0 {
