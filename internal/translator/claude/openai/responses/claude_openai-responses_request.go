@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/thinking"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/translator/common"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -297,10 +298,9 @@ func ConvertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 			case "function_call_output":
 				// Map to user tool_result
 				callID := item.Get("call_id").String()
-				outputStr := item.Get("output").String()
 				toolResult := `{"type":"tool_result","tool_use_id":"","content":""}`
 				toolResult, _ = sjson.Set(toolResult, "tool_use_id", callID)
-				toolResult, _ = sjson.Set(toolResult, "content", outputStr)
+				toolResult, _ = sjson.SetRaw(toolResult, "content", common.ToClaudeContent(common.ParseToolResult(item.Get("output"))))
 
 				usr := `{"role":"user","content":[]}`
 				usr, _ = sjson.SetRaw(usr, "content.-1", toolResult)
