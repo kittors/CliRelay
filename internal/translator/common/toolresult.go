@@ -88,17 +88,20 @@ func ParseToolResult(value gjson.Result) ToolResult {
 				// unfamiliar part (for example a document). Falling back to
 				// Raw would stringify any image base64 into the prompt.
 				unknown = true
+				// Preserve unfamiliar JSON alongside recognized images, without
+				// flattening the image-bearing array as a whole.
+				parts = append(parts, ToolPart{Text: el.Raw})
 				continue
 			}
 			if part.Text != "" || part.Image != nil {
 				parts = append(parts, part)
 			}
 		}
-		if len(parts) == 0 && len(elements) > 0 {
-			return ToolResult{Raw: gjson.Parse(`""`)}
-		}
 		if unknown && !hasImageParts(parts) {
 			return ToolResult{Raw: value}
+		}
+		if len(parts) == 0 && len(elements) > 0 {
+			return ToolResult{Raw: gjson.Parse(`""`)}
 		}
 		return ToolResult{Parts: parts}
 	case value.IsObject():
@@ -215,7 +218,7 @@ func ParseGeminiFunctionResponse(value gjson.Result) ToolResult {
 	if value.Get("parts").IsArray() {
 		for _, element := range value.Get("parts").Array() {
 			part, ok := parseToolPart(element)
-			if !ok && element.Get("text").Exists() {
+			if !ok && element.IsObject() && len(element.Map()) == 1 && element.Get("text").Type == gjson.String {
 				part, ok = ToolPart{Text: element.Get("text").String()}, true
 			}
 			if ok && (part.Image != nil || part.Text != "") {
@@ -224,16 +227,16 @@ func ParseGeminiFunctionResponse(value gjson.Result) ToolResult {
 		}
 	}
 	if len(parts) > 0 {
-		if raw.Exists() && hasImageParts(parts) {
+		if raw.Exists() {
 			text := raw.Raw
 			if raw.Type == gjson.String {
 				text = raw.String()
 			}
-			parts = append([]ToolPart{{Text: text}}, parts...)
+			if text != "" {
+				parts = append([]ToolPart{{Text: text}}, parts...)
+			}
 		}
-		if hasImageParts(parts) || !raw.Exists() {
-			return ToolResult{Parts: parts}
-		}
+		return ToolResult{Parts: parts}
 	}
 	if raw.Exists() {
 		return ToolResult{Raw: raw}
