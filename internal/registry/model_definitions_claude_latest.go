@@ -50,13 +50,25 @@ func latestClaudeModels() []*ModelInfo {
 			Thinking:            thinking(),
 		},
 		{
+			ID:                  "claude-sonnet-5-5",
+			Object:              "model",
+			Created:             1790553600, // 2026-09-28
+			OwnedBy:             "anthropic",
+			Type:                "claude",
+			DisplayName:         "Claude Sonnet 5.5",
+			Description:         "Latest generation Claude Sonnet balanced model",
+			ContextLength:       1000000,
+			MaxCompletionTokens: 128000,
+			Thinking:            thinking(),
+		},
+		{
 			ID:                  "claude-sonnet-5",
 			Object:              "model",
 			Created:             1783641600, // 2026-07-13
 			OwnedBy:             "anthropic",
 			Type:                "claude",
 			DisplayName:         "Claude Sonnet 5",
-			Description:         "Latest generation Claude Sonnet balanced model",
+			Description:         "Previous generation Claude Sonnet balanced model",
 			ContextLength:       1000000,
 			MaxCompletionTokens: 128000,
 			Thinking:            thinking(),
