@@ -2,6 +2,7 @@ package cliproxy
 
 import (
 	"context"
+	"strings"
 
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
@@ -126,9 +127,25 @@ func (s *Service) applyCoreAuthAddOrUpdate(ctx context.Context, auth *coreauth.A
 		auth.LastRefreshedAt = existing.LastRefreshedAt
 		auth.NextRefreshAfter = existing.NextRefreshAfter
 		op = "update"
+		// Serialize the manager mutation with the final commit of an in-flight
+		// listing. The listing generation is advanced only after the update is
+		// accepted, so same-provider token/proxy edits invalidate old responses too.
+		unlock := s.registrationLocks.lock(auth.ID)
 		_, err = s.coreManager.Update(ctx, auth)
+		if err == nil {
+			s.liveModels.invalidate(auth.ID, strings.TrimSpace(auth.Provider))
+			if !strings.EqualFold(strings.TrimSpace(existing.Provider), strings.TrimSpace(auth.Provider)) {
+				s.modelLists.forget(auth.ID)
+			}
+		}
+		unlock()
 	} else {
+		unlock := s.registrationLocks.lock(auth.ID)
 		_, err = s.coreManager.Register(ctx, auth)
+		if err == nil {
+			s.liveModels.invalidate(auth.ID, strings.TrimSpace(auth.Provider))
+		}
+		unlock()
 	}
 	if err != nil {
 		log.Errorf("failed to %s auth %s: %v", op, auth.ID, err)
