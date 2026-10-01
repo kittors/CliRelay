@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
@@ -332,5 +333,87 @@ func TestClaudeResponsesStream_InterleavedReasoningAndToolsKeepOutputOrder(t *te
 	}
 	if got := output.Get("2.type").String(); got != "reasoning" {
 		t.Fatalf("response.output order = %s, want second reasoning at index 2", output.Raw)
+	}
+}
+
+func TestClaudeResponsesNonStream_InterleavedOutputKeepsSourceOrder(t *testing.T) {
+	blocks := []claudeStreamBlock{
+		{kind: "text", chunks: []string{"before tool"}},
+		{kind: "thinking", chunks: []string{"first thought"}},
+		{kind: "tool_use", chunks: []string{`{"command":"ls"}`}},
+		{kind: "thinking", chunks: []string{"second thought"}},
+	}
+	raw := strings.Join(claudeStreamLines(t, blocks, "tool_use"), "\n")
+	req := []byte(`{"model":"claude-opus-5-5","input":"hi"}`)
+	out := gjson.Parse(ConvertClaudeResponseToOpenAIResponsesNonStream(context.Background(), "claude-opus-5-5", req, req, []byte(raw), nil))
+
+	var got []string
+	out.Get("output").ForEach(func(_, item gjson.Result) bool {
+		switch item.Get("type").String() {
+		case "message":
+			got = append(got, "message:"+item.Get("content.0.text").String())
+		case "reasoning":
+			got = append(got, "reasoning:"+item.Get("summary.0.text").String())
+		case "function_call":
+			got = append(got, "function_call:"+item.Get("call_id").String())
+		}
+		return true
+	})
+	want := []string{
+		"message:before tool",
+		"reasoning:first thought",
+		"function_call:toolu_02",
+		"reasoning:second thought",
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("non-stream output order = %q, want %q; output=%s", got, want, out.Get("output").Raw)
+	}
+
+	// The stream and non-stream paths must expose the same ordered item kinds.
+	stream := convertClaudeStream(t, claudeStreamLines(t, blocks, "tool_use"))
+	var streamOutput gjson.Result
+	for _, ev := range stream {
+		if ev.name == "response.completed" {
+			streamOutput = ev.data.Get("response.output")
+		}
+	}
+	var streamKinds []string
+	streamOutput.ForEach(func(_, item gjson.Result) bool {
+		streamKinds = append(streamKinds, item.Get("type").String())
+		return true
+	})
+	var nonStreamKinds []string
+	out.Get("output").ForEach(func(_, item gjson.Result) bool {
+		nonStreamKinds = append(nonStreamKinds, item.Get("type").String())
+		return true
+	})
+	if !slices.Equal(streamKinds, nonStreamKinds) {
+		t.Fatalf("stream output kinds = %q, non-stream = %q", streamKinds, nonStreamKinds)
+	}
+}
+
+func TestClaudeResponsesStream_TextOutputIndicesMatchAddedAndDone(t *testing.T) {
+	blocks := []claudeStreamBlock{
+		{kind: "text", chunks: []string{"answer"}},
+		{kind: "thinking", chunks: []string{"after"}},
+	}
+	events := convertClaudeStream(t, claudeStreamLines(t, blocks, "end_turn"))
+	added := map[string]int{}
+	done := map[string]int{}
+	for _, ev := range events {
+		if ev.name == "response.output_item.added" {
+			added[ev.data.Get("item.id").String()] = int(ev.data.Get("output_index").Int())
+		}
+		if ev.name == "response.output_item.done" {
+			done[ev.data.Get("item.id").String()] = int(ev.data.Get("output_index").Int())
+		}
+	}
+	if len(added) != len(done) {
+		t.Fatalf("added item IDs = %v, done IDs = %v", added, done)
+	}
+	for id, got := range added {
+		if done[id] != got {
+			t.Errorf("item %s output_index added=%d done=%d", id, got, done[id])
+		}
 	}
 }
