@@ -211,9 +211,14 @@ func TestConvertClaudeResponseToOpenAIResponses_DoneEventsCarryBlockText(t *test
 				{kind: "redacted_thinking"},
 				{kind: "text", chunks: []string{"Still ", "here."}},
 			},
-			stop:          "end_turn",
-			wantDone:      []string{"Still here."},
-			wantCompleted: []string{`message msg_msg_01_0 "Still here."`},
+			stop:     "end_turn",
+			wantDone: []string{"Still here."},
+			// The redacted block is kept as a reasoning item so its payload can be
+			// replayed; it has no summary text.
+			wantCompleted: []string{
+				`reasoning rs_msg_01_0 ""`,
+				`message msg_msg_01_0 "Still here."`,
+			},
 		},
 		{
 			name: "text interleaved with tool_use",
