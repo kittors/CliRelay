@@ -114,9 +114,8 @@ func (s *Service) applyCoreAuthAddOrUpdate(ctx context.Context, auth *coreauth.A
 
 	// IMPORTANT: Update coreManager FIRST, before model registration.
 	// This ensures that configuration changes (proxy_url, prefix, etc.) take effect
-	// immediately for API calls, rather than waiting for model registration to complete.
-	// Model registration may involve network calls (e.g., FetchAntigravityModels) that
-	// could timeout if the new proxy_url is unreachable.
+	// immediately for API calls, and that the background model listing registration
+	// asks for reads the updated credential rather than the one it replaces.
 	op := "register"
 	var err error
 	if existing, ok := s.coreManager.GetByID(auth.ID); ok {
@@ -141,9 +140,9 @@ func (s *Service) applyCoreAuthAddOrUpdate(ctx context.Context, auth *coreauth.A
 		auth = current
 	}
 
-	// Register models after auth is updated in coreManager.
-	// This operation may block on network calls, but the auth configuration
-	// is already effective at this point.
+	// Register models after auth is updated in coreManager. Registration does not
+	// wait on the upstream; a credential that lists its own models registers its
+	// last known list and refreshes it in the background.
 	s.registerModelsForAuth(ctx, auth)
 }
 
@@ -154,11 +153,19 @@ func (s *Service) applyCoreAuthRemoval(ctx context.Context, id string) {
 	if s.coreManager == nil {
 		return
 	}
+	// Serialize removal with registration. A startup/live registration that
+	// already read this credential must finish before the client is unregistered,
+	// otherwise it can repopulate models for an auth that was just deleted.
+	unlock := s.registrationLocks.lock(id)
+	defer unlock()
 	if _, err := s.coreManager.Delete(coreauth.WithSkipPersist(ctx), id); err != nil {
 		log.Errorf("failed to remove auth %s: %v", id, err)
 		return
 	}
 	GlobalModelRegistry().UnregisterClient(id)
+	s.modelLists.forget(id)
+	s.liveModels.forget(id)
+	s.saveModelLists()
 }
 
 // acceptCredentialReload guards reloads of a credential that is already in
