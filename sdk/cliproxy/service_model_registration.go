@@ -76,6 +76,18 @@ func (s *Service) registerModelsForAuth(ctx context.Context, a *coreauth.Auth) {
 	}
 	unlock := s.registrationLocks.lock(a.ID)
 	defer unlock()
+	// A registration request may have been queued with a snapshot that was
+	// removed before it acquired the lock. Never let that stale snapshot
+	// resurrect a deleted client. When a manager is present it is authoritative;
+	// direct unit callers without one retain the historical behavior.
+	if s.coreManager != nil {
+		current, ok := s.coreManager.GetByID(a.ID)
+		if !ok || current == nil || current.Disabled || current.Status == coreauth.StatusDisabled {
+			GlobalModelRegistry().UnregisterClient(a.ID)
+			return
+		}
+		a = current
+	}
 	if a.Disabled {
 		GlobalModelRegistry().UnregisterClient(a.ID)
 		return
