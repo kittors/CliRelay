@@ -536,6 +536,85 @@ func TestProviderChangeInvalidatesInFlightModelListing(t *testing.T) {
 	}
 }
 
+func TestCredentialUpdateInvalidatesSameProviderListing(t *testing.T) {
+	oldStarted := make(chan struct{})
+	releaseOld := make(chan struct{})
+	var calls atomic.Int32
+	fetch := func(ctx context.Context, _ *coreauth.Auth, _ *config.Config, provider string) ([]*ModelInfo, error) {
+		if calls.Add(1) == 1 {
+			close(oldStarted)
+			select {
+			case <-releaseOld:
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+			return listedModels(provider, "stale-same-provider"), nil
+		}
+		return listedModels(provider, "fresh-same-provider"), nil
+	}
+	auth := antigravityOAuthAuth("same-provider-update")
+	manager := storedAuthsManager(auth)
+	service := selfListingService(t, manager, filepath.Join(t.TempDir(), "lists.json"), fetch)
+	service.liveModels.timeout = time.Second
+	if err := service.loadInitialState(context.Background()); err != nil {
+		t.Fatalf("loadInitialState: %v", err)
+	}
+	select {
+	case <-oldStarted:
+	case <-time.After(time.Second):
+		t.Fatal("initial listing did not start")
+	}
+	updated := auth.Clone()
+	updated.ProxyURL = "http://new-proxy.invalid"
+	service.applyCoreAuthAddOrUpdate(context.Background(), updated)
+	close(releaseOld)
+	waitForCondition(t, "same-provider replacement listing", func() bool {
+		return GlobalModelRegistry().ClientSupportsModel(auth.ID, "fresh-same-provider")
+	})
+	if GlobalModelRegistry().ClientSupportsModel(auth.ID, "stale-same-provider") {
+		t.Fatal("listing from before same-provider credential update was registered")
+	}
+}
+
+func TestRemovedAndReaddedCredentialRejectsOldListing(t *testing.T) {
+	oldStarted := make(chan struct{})
+	releaseOld := make(chan struct{})
+	var calls atomic.Int32
+	fetch := func(ctx context.Context, _ *coreauth.Auth, _ *config.Config, provider string) ([]*ModelInfo, error) {
+		if calls.Add(1) == 1 {
+			close(oldStarted)
+			select {
+			case <-releaseOld:
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+			return listedModels(provider, "stale-before-readd"), nil
+		}
+		return listedModels(provider, "fresh-after-readd"), nil
+	}
+	auth := antigravityOAuthAuth("remove-readd-generation")
+	manager := storedAuthsManager(auth)
+	service := selfListingService(t, manager, filepath.Join(t.TempDir(), "lists.json"), fetch)
+	service.liveModels.timeout = time.Second
+	if err := service.loadInitialState(context.Background()); err != nil {
+		t.Fatalf("loadInitialState: %v", err)
+	}
+	select {
+	case <-oldStarted:
+	case <-time.After(time.Second):
+		t.Fatal("initial listing did not start")
+	}
+	service.applyCoreAuthRemoval(context.Background(), auth.ID)
+	service.applyCoreAuthAddOrUpdate(context.Background(), auth.Clone())
+	close(releaseOld)
+	waitForCondition(t, "replacement listing", func() bool {
+		return GlobalModelRegistry().ClientSupportsModel(auth.ID, "fresh-after-readd")
+	})
+	if GlobalModelRegistry().ClientSupportsModel(auth.ID, "stale-before-readd") {
+		t.Fatal("listing from removed credential was registered after re-add")
+	}
+}
+
 func TestCredentialRemovalWaitsForRegistrationLock(t *testing.T) {
 	auth := antigravityOAuthAuth("remove-registration-lock")
 	manager := storedAuthsManager(auth)
@@ -564,6 +643,39 @@ func TestCredentialRemovalWaitsForRegistrationLock(t *testing.T) {
 	}
 	if models := GlobalModelRegistry().GetModelsForClient(auth.ID); len(models) != 0 {
 		t.Fatalf("removed credential still has registered models: %v", modelIDs(models))
+	}
+}
+
+func TestQueuedRegistrationDoesNotResurrectRemovedCredential(t *testing.T) {
+	auth := antigravityOAuthAuth("queued-registration-after-remove")
+	manager := storedAuthsManager(auth)
+	service := selfListingService(t, manager, filepath.Join(t.TempDir(), "lists.json"), func(_ context.Context, _ *coreauth.Auth, _ *config.Config, provider string) ([]*ModelInfo, error) {
+		return listedModels(provider, "queued-stale-model"), nil
+	})
+	// Hold the same lock used by removal while a registration with the old
+	// snapshot queues behind it. Remove the manager entry before releasing the
+	// lock, which is the ordering that used to let the stale registration
+	// resurrect a deleted client.
+	unlock := service.registrationLocks.lock(auth.ID)
+	registered := make(chan struct{})
+	go func() {
+		service.registerModelsForAuth(context.Background(), auth)
+		close(registered)
+	}()
+	time.Sleep(20 * time.Millisecond)
+	if _, err := manager.Delete(context.Background(), auth.ID); err != nil {
+		t.Fatalf("delete auth: %v", err)
+	}
+	GlobalModelRegistry().UnregisterClient(auth.ID)
+	service.modelLists.forget(auth.ID)
+	unlock()
+	select {
+	case <-registered:
+	case <-time.After(time.Second):
+		t.Fatal("queued registration did not finish")
+	}
+	if models := GlobalModelRegistry().GetModelsForClient(auth.ID); len(models) != 0 {
+		t.Fatalf("queued registration resurrected removed credential: %v", modelIDs(models))
 	}
 }
 
