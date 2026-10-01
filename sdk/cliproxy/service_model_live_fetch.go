@@ -52,7 +52,10 @@ var errLiveModelListEmpty = errors.New("model discovery: upstream listed no mode
 type liveModelFetchFunc func(ctx context.Context, auth *coreauth.Auth, cfg *config.Config, provider string) ([]*ModelInfo, error)
 
 type liveModelFetchStatus struct {
-	provider    string
+	provider string
+	// generation identifies one provider/auth incarnation. Incrementing it
+	// invalidates an in-flight fetch before it can update status or models.
+	generation  uint64
 	inflight    bool
 	lastSuccess time.Time
 	failures    int
@@ -68,6 +71,9 @@ type liveModelFetcher struct {
 	wg      sync.WaitGroup
 	slots   chan struct{}
 	status  map[string]*liveModelFetchStatus
+	// epochs survives status deletion, preventing an old fetch from becoming
+	// valid again if the same credential ID is removed and re-added.
+	epochs map[string]uint64
 
 	// Settings. Zero values take the defaults above when the fetcher starts.
 	fetch       liveModelFetchFunc
@@ -222,18 +228,23 @@ func (s *Service) requestLiveModelList(authID, provider string) {
 	st := &s.liveModels
 	st.mu.Lock()
 	ctx := st.ctx
-	if ctx == nil || st.stopped || ctx.Err() != nil || !st.admit(authID, provider) {
+	if ctx == nil || st.stopped || ctx.Err() != nil {
+		st.mu.Unlock()
+		return
+	}
+	admitted, generation := st.admit(authID, provider)
+	if !admitted {
 		st.mu.Unlock()
 		return
 	}
 	st.wg.Add(1)
 	st.mu.Unlock()
 
-	go s.runLiveModelFetch(ctx, authID, provider)
+	go s.runLiveModelFetch(ctx, authID, provider, generation)
 }
 
 // admit marks a credential's fetch as running when one is due. Callers hold mu.
-func (st *liveModelFetcher) admit(authID, provider string) bool {
+func (st *liveModelFetcher) admit(authID, provider string) (bool, uint64) {
 	status := st.status[authID]
 	if status == nil {
 		status = &liveModelFetchStatus{}
@@ -242,38 +253,47 @@ func (st *liveModelFetcher) admit(authID, provider string) bool {
 	now := st.now()
 	switch {
 	case status.inflight:
-		return false
+		return false, status.generation
 	case status.failures > 0 && now.Before(status.retryAt):
-		return false
+		return false, status.generation
 	case status.failures == 0 && !status.lastSuccess.IsZero() && now.Sub(status.lastSuccess) < st.freshFor:
-		return false
+		return false, status.generation
 	}
 	status.inflight = true
 	status.provider = provider
-	return true
+	status.generation = st.nextGeneration(authID)
+	return true, status.generation
 }
 
-func (s *Service) runLiveModelFetch(ctx context.Context, authID, provider string) {
+func (s *Service) runLiveModelFetch(ctx context.Context, authID, provider string, generation uint64) {
 	st := &s.liveModels
 	defer st.wg.Done()
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			log.Errorf("model discovery panicked: provider=%s auth=%s err=%v", provider, authID, recovered)
-			st.release(authID)
+			st.release(authID, generation)
 		}
 	}()
 
 	select {
 	case st.slots <- struct{}{}:
 	case <-ctx.Done():
-		st.release(authID)
+		st.release(authID, generation)
 		return
 	}
 	defer func() { <-st.slots }()
 
 	auth, ok := s.coreManager.GetByID(authID)
 	if !ok || auth == nil || auth.Disabled || auth.Status == coreauth.StatusDisabled {
-		st.forget(authID)
+		st.forgetIfCurrent(authID, generation)
+		return
+	}
+	// A fetch can wait for a concurrency slot while this credential is updated.
+	// Do not invoke the old provider fetch with a newer auth snapshot; the
+	// generation check also handles same-provider token/proxy changes.
+	if !strings.EqualFold(strings.TrimSpace(auth.Provider), strings.TrimSpace(provider)) || !st.generationCurrent(authID, provider, generation) {
+		st.forgetIfCurrent(authID, generation)
+		s.requestLiveModelListForCurrentAuth(authID)
 		return
 	}
 
@@ -282,7 +302,7 @@ func (s *Service) runLiveModelFetch(ctx context.Context, authID, provider string
 	cancel()
 	if ctx.Err() != nil {
 		// Shutting down: the upstream did not fail, the fetch was cancelled.
-		st.release(authID)
+		st.release(authID, generation)
 		return
 	}
 	if err == nil && len(models) == 0 {
@@ -290,32 +310,40 @@ func (s *Service) runLiveModelFetch(ctx context.Context, authID, provider string
 	}
 	if err != nil {
 		if !s.liveFetchMatchesCurrentAuth(authID, provider) {
-			s.liveModels.forget(authID)
+			s.liveModels.forgetIfCurrent(authID, generation)
 			s.requestLiveModelListForCurrentAuth(authID)
 			return
 		}
-		s.recordLiveModelListFailure(authID, provider, err)
+		s.recordLiveModelListFailure(authID, provider, generation, err)
 		return
 	}
-	if !s.liveFetchMatchesCurrentAuth(authID, provider) {
-		// The credential changed providers while this request was in flight.
-		// Never store the old provider's list or mark the new provider fresh.
-		st.forget(authID)
+	// Validation and cache mutation share the registration lock with deletion and
+	// credential updates. This closes the narrow check/store race: a removal can
+	// no longer pass validation, delete the auth, and then be followed by a stale
+	// fetch that repopulates the saved list or registry.
+	unlock := s.registrationLocks.lock(authID)
+	if !s.liveFetchMatchesCurrentAuth(authID, provider) || !st.generationCurrent(authID, provider, generation) {
+		unlock()
+		st.forgetIfCurrent(authID, generation)
 		s.requestLiveModelListForCurrentAuth(authID)
 		return
 	}
-
 	changed := s.modelLists.store(authID, provider, models, st.now())
-	if failures := st.recordSuccess(authID); failures > 0 {
+	if failures := st.recordSuccess(authID, generation); failures > 0 {
 		log.Infof("model discovery: %s listing for auth %s answered again after %d failed attempts", provider, authID, failures)
 	}
-	if !changed {
+	if changed {
+		s.saveModelLists()
+	}
+	current, found := s.coreManager.GetByID(authID)
+	unlock()
+	if !changed || !found {
 		return
 	}
-	s.saveModelLists()
-	if current, found := s.coreManager.GetByID(authID); found {
-		s.registerModelsForAuth(ctx, current)
-	}
+	// Re-checking through registerModelsForAuth is intentional: an update may
+	// have arrived after this commit, and that function uses the manager's current
+	// credential rather than this fetch's stale snapshot.
+	s.registerModelsForAuth(ctx, current)
 }
 
 func (s *Service) liveFetchMatchesCurrentAuth(authID, provider string) bool {
@@ -333,13 +361,13 @@ func (s *Service) requestLiveModelListForCurrentAuth(authID string) {
 	}
 }
 
-func (s *Service) recordLiveModelListFailure(authID, provider string, err error) {
+func (s *Service) recordLiveModelListFailure(authID, provider string, generation uint64, err error) {
 	st := &s.liveModels
 	st.mu.Lock()
 	status := st.status[authID]
-	if status == nil {
-		status = &liveModelFetchStatus{provider: provider}
-		st.status[authID] = status
+	if status == nil || status.generation != generation || status.provider != provider {
+		st.mu.Unlock()
+		return
 	}
 	status.inflight = false
 	status.failures++
@@ -357,11 +385,11 @@ func (s *Service) recordLiveModelListFailure(authID, provider string, err error)
 }
 
 // recordSuccess clears a credential's failures and returns how many there were.
-func (st *liveModelFetcher) recordSuccess(authID string) int {
+func (st *liveModelFetcher) recordSuccess(authID string, generation uint64) int {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	status := st.status[authID]
-	if status == nil {
+	if status == nil || status.generation != generation {
 		return 0
 	}
 	failures := status.failures
@@ -373,10 +401,47 @@ func (st *liveModelFetcher) recordSuccess(authID string) int {
 }
 
 // release ends a fetch that neither succeeded nor failed.
-func (st *liveModelFetcher) release(authID string) {
+func (st *liveModelFetcher) release(authID string, generation uint64) {
 	st.mu.Lock()
-	if status := st.status[authID]; status != nil {
+	if status := st.status[authID]; status != nil && status.generation == generation {
 		status.inflight = false
+	}
+	st.mu.Unlock()
+}
+
+func (st *liveModelFetcher) generationCurrent(authID, provider string, generation uint64) bool {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	status := st.status[authID]
+	return status != nil && status.generation == generation && status.provider == provider && status.inflight
+}
+
+// invalidate advances the credential incarnation and makes any older fetch stale.
+// Callers use this while holding the registration lock, so a fetch cannot commit
+// a list concurrently with a provider update or removal.
+func (st *liveModelFetcher) invalidate(authID, provider string) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	generation := st.nextGeneration(authID)
+	status := st.status[authID]
+	if status == nil {
+		return
+	}
+	status.provider = provider
+	status.generation = generation
+	status.inflight = false
+	status.failures = 0
+	status.retryAt = time.Time{}
+	status.lastSuccess = time.Time{}
+}
+
+// forgetIfCurrent only removes the state owned by one fetch. A stale fetch must
+// not erase the status of a newer provider incarnation.
+func (st *liveModelFetcher) forgetIfCurrent(authID string, generation uint64) {
+	st.mu.Lock()
+	if status := st.status[authID]; status != nil && status.generation == generation {
+		st.nextGeneration(authID)
+		delete(st.status, authID)
 	}
 	st.mu.Unlock()
 }
@@ -384,8 +449,17 @@ func (st *liveModelFetcher) release(authID string) {
 // forget drops the state of a credential that no longer exists or is disabled.
 func (st *liveModelFetcher) forget(authID string) {
 	st.mu.Lock()
+	st.nextGeneration(authID)
 	delete(st.status, authID)
 	st.mu.Unlock()
+}
+
+func (st *liveModelFetcher) nextGeneration(authID string) uint64 {
+	if st.epochs == nil {
+		st.epochs = make(map[string]uint64)
+	}
+	st.epochs[authID]++
+	return st.epochs[authID]
 }
 
 func (st *liveModelFetcher) backoff(failures int) time.Duration {
