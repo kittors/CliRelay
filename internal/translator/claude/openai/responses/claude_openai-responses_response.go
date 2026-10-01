@@ -47,8 +47,7 @@ type claudeToResponsesState struct {
 	// thinking blocks with tool calls.
 	ReasoningItems []string
 	// OutputItems preserves the closure order of reasoning and function-call
-	// items. Keeping separate slices groups interleaved reasoning blocks ahead
-	// of tool calls in response.completed.
+	// items, with the aggregated message inserted at its first text block.
 	OutputItems []string
 	FuncClosed  map[int]bool
 	// ReasoningChars counts thinking text across all blocks for the usage estimate.
@@ -159,12 +158,14 @@ func ConvertClaudeResponseToOpenAIResponses(ctx context.Context, modelName strin
 			st.CurrentMsgID = fmt.Sprintf("msg_%s_0", st.ResponseID)
 			item := `{"type":"response.output_item.added","sequence_number":0,"output_index":0,"item":{"id":"","type":"message","status":"in_progress","content":[],"role":"assistant"}}`
 			item, _ = sjson.Set(item, "sequence_number", nextSeq())
+			item, _ = sjson.Set(item, "output_index", idx)
 			item, _ = sjson.Set(item, "item.id", st.CurrentMsgID)
 			out = append(out, emitEvent("response.output_item.added", item))
 
 			part := `{"type":"response.content_part.added","sequence_number":0,"item_id":"","output_index":0,"content_index":0,"part":{"type":"output_text","annotations":[],"logprobs":[],"text":""}}`
 			part, _ = sjson.Set(part, "sequence_number", nextSeq())
 			part, _ = sjson.Set(part, "item_id", st.CurrentMsgID)
+			part, _ = sjson.Set(part, "output_index", idx)
 			out = append(out, emitEvent("response.content_part.added", part))
 		} else if typ == "tool_use" {
 			st.InFuncBlock = true
@@ -287,15 +288,18 @@ func ConvertClaudeResponseToOpenAIResponses(ctx context.Context, modelName strin
 			done := `{"type":"response.output_text.done","sequence_number":0,"item_id":"","output_index":0,"content_index":0,"text":"","logprobs":[]}`
 			done, _ = sjson.Set(done, "sequence_number", nextSeq())
 			done, _ = sjson.Set(done, "item_id", st.CurrentMsgID)
+			done, _ = sjson.Set(done, "output_index", idx)
 			done, _ = sjson.Set(done, "text", blockText)
 			out = append(out, emitEvent("response.output_text.done", done))
 			partDone := `{"type":"response.content_part.done","sequence_number":0,"item_id":"","output_index":0,"content_index":0,"part":{"type":"output_text","annotations":[],"logprobs":[],"text":""}}`
 			partDone, _ = sjson.Set(partDone, "sequence_number", nextSeq())
 			partDone, _ = sjson.Set(partDone, "item_id", st.CurrentMsgID)
+			partDone, _ = sjson.Set(partDone, "output_index", idx)
 			partDone, _ = sjson.Set(partDone, "part.text", blockText)
 			out = append(out, emitEvent("response.content_part.done", partDone))
 			final := `{"type":"response.output_item.done","sequence_number":0,"output_index":0,"item":{"id":"","type":"message","status":"completed","content":[{"type":"output_text","text":""}],"role":"assistant"}}`
 			final, _ = sjson.Set(final, "sequence_number", nextSeq())
+			final, _ = sjson.Set(final, "output_index", idx)
 			final, _ = sjson.Set(final, "item.id", st.CurrentMsgID)
 			final, _ = sjson.Set(final, "item.content.0.text", blockText)
 			out = append(out, emitEvent("response.output_item.done", final))
@@ -565,6 +569,8 @@ func ConvertClaudeResponseToOpenAIResponsesNonStream(_ context.Context, _ string
 		currentMsgID    string
 		currentFCID     string
 		textBuf         strings.Builder
+		textSeen        bool
+		textOutputIndex int
 		reasoningBuf    strings.Builder
 		reasoningActive bool
 		reasoningItemID string
@@ -574,6 +580,11 @@ func ConvertClaudeResponseToOpenAIResponsesNonStream(_ context.Context, _ string
 		inputTokens     int64
 		outputTokens    int64
 	)
+	textOutputIndex = -1
+	// outputItems is deliberately populated as Claude closes content blocks.
+	// Responses output is an ordered sequence; rebuilding it by type (reasoning,
+	// message, then tools) changes the meaning of interleaved thinking and calls.
+	var outputItems []string
 
 	// Per-index tool call aggregation
 	type toolState struct {
@@ -608,6 +619,15 @@ func ConvertClaudeResponseToOpenAIResponsesNonStream(_ context.Context, _ string
 			switch typ {
 			case "text":
 				currentMsgID = "msg_" + responseID + "_0"
+				if !textSeen {
+					textSeen = true
+					// Reserve the message's position at the first text block. Text
+					// blocks are retained as one assistant message for compatibility,
+					// but that message stays at its source position relative to tools
+					// and reasoning items.
+					textOutputIndex = len(outputItems)
+					outputItems = append(outputItems, "")
+				}
 			case "tool_use":
 				currentFCID = cb.Get("id").String()
 				name := cb.Get("name").String()
@@ -623,7 +643,9 @@ func ConvertClaudeResponseToOpenAIResponsesNonStream(_ context.Context, _ string
 				reasoningBuf.Reset()
 				reasoningSig = cb.Get("signature").String()
 			case "redacted_thinking":
-				reasoningItems = append(reasoningItems, claudeReasoningItem(fmt.Sprintf("rs_%s_%d", responseID, idx), "", claudeReasoningCarrier(cb)))
+				item := claudeReasoningItem(fmt.Sprintf("rs_%s_%d", responseID, idx), "", claudeReasoningCarrier(cb))
+				reasoningItems = append(reasoningItems, item)
+				outputItems = append(outputItems, item)
 			}
 
 		case "content_block_delta":
@@ -662,10 +684,27 @@ func ConvertClaudeResponseToOpenAIResponsesNonStream(_ context.Context, _ string
 		case "content_block_stop":
 			if reasoningActive {
 				reasoningItems = append(reasoningItems, claudeReasoningItem(reasoningItemID, reasoningBuf.String(), reasoningSig))
+				outputItems = append(outputItems, reasoningItems[len(reasoningItems)-1])
 				reasoningChars += reasoningBuf.Len()
 				reasoningActive = false
 				reasoningBuf.Reset()
 				reasoningSig = ""
+			} else if idxState := toolCalls[int(root.Get("index").Int())]; idxState != nil && idxState.id != "" {
+				// A tool item is finalized at its content_block_stop, preserving
+				// its source position in outputItems.
+				args := idxState.args.String()
+				if args == "" {
+					args = "{}"
+				}
+				item := `{"id":"","type":"function_call","status":"completed","arguments":"","call_id":"","name":""}`
+				item, _ = sjson.Set(item, "id", fmt.Sprintf("fc_%s", idxState.id))
+				item, _ = sjson.Set(item, "arguments", args)
+				item, _ = sjson.Set(item, "call_id", idxState.id)
+				item, _ = sjson.Set(item, "name", idxState.name)
+				outputItems = append(outputItems, item)
+				// Mark the state as closed so malformed duplicate stop events do
+				// not duplicate the output item.
+				idxState.id = ""
 			}
 
 		case "message_delta":
@@ -745,45 +784,23 @@ func ConvertClaudeResponseToOpenAIResponsesNonStream(_ context.Context, _ string
 		}
 	}
 
-	// Build output array
+	// Build output array in Claude source order. The text placeholder reserved
+	// at its first block is filled after all deltas have been consumed.
 	outputsWrapper := `{"arr":[]}`
 	if reasoningActive && reasoningBuf.Len() > 0 {
-		reasoningItems = append(reasoningItems, claudeReasoningItem(reasoningItemID, reasoningBuf.String(), reasoningSig))
+		item := claudeReasoningItem(reasoningItemID, reasoningBuf.String(), reasoningSig)
+		reasoningItems = append(reasoningItems, item)
+		outputItems = append(outputItems, item)
 		reasoningChars += reasoningBuf.Len()
 	}
-	for _, item := range reasoningItems {
-		outputsWrapper, _ = sjson.SetRaw(outputsWrapper, "arr.-1", item)
-	}
-	if currentMsgID != "" || textBuf.Len() > 0 {
+	if textSeen {
 		item := `{"id":"","type":"message","status":"completed","content":[{"type":"output_text","annotations":[],"logprobs":[],"text":""}],"role":"assistant"}`
 		item, _ = sjson.Set(item, "id", currentMsgID)
 		item, _ = sjson.Set(item, "content.0.text", textBuf.String())
-		outputsWrapper, _ = sjson.SetRaw(outputsWrapper, "arr.-1", item)
+		outputItems[textOutputIndex] = item
 	}
-	if len(toolCalls) > 0 {
-		// Preserve index order
-		idxs := make([]int, 0, len(toolCalls))
-		for i := range toolCalls {
-			idxs = append(idxs, i)
-		}
-		for i := 0; i < len(idxs); i++ {
-			for j := i + 1; j < len(idxs); j++ {
-				if idxs[j] < idxs[i] {
-					idxs[i], idxs[j] = idxs[j], idxs[i]
-				}
-			}
-		}
-		for _, i := range idxs {
-			st := toolCalls[i]
-			args := st.args.String()
-			if args == "" {
-				args = "{}"
-			}
-			item := `{"id":"","type":"function_call","status":"completed","arguments":"","call_id":"","name":""}`
-			item, _ = sjson.Set(item, "id", fmt.Sprintf("fc_%s", st.id))
-			item, _ = sjson.Set(item, "arguments", args)
-			item, _ = sjson.Set(item, "call_id", st.id)
-			item, _ = sjson.Set(item, "name", st.name)
+	for _, item := range outputItems {
+		if item != "" {
 			outputsWrapper, _ = sjson.SetRaw(outputsWrapper, "arr.-1", item)
 		}
 	}
