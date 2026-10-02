@@ -123,6 +123,30 @@ func FetchKimiModels(ctx context.Context, auth *coreauth.Auth, cfg *config.Confi
 	return internalserviceapp.FetchKimiModels(ctx, auth, cfg)
 }
 
+// IsSelfListingProvider reports whether a provider's credentials each list their
+// own models.
+func IsSelfListingProvider(provider string) bool {
+	return internalserviceapp.IsSelfListingProvider(provider)
+}
+
+// DiscoverCredentialModels asks the upstream which models one credential of a
+// self-listing provider can call, reporting failure as an error.
+func DiscoverCredentialModels(ctx context.Context, auth *coreauth.Auth, cfg *config.Config, provider string) ([]*sdkmodelcatalog.ModelInfo, error) {
+	return internalserviceapp.DiscoverCredentialModels(ctx, auth, cfg, provider)
+}
+
+// CredentialModelFloor lists the compiled-in models a self-listing credential
+// registers while no credential of its provider has fetched a list.
+func CredentialModelFloor(provider string) []*sdkmodelcatalog.ModelInfo {
+	return internalserviceapp.CredentialModelFloor(provider)
+}
+
+// ModelListSnapshotPath is where the last list each credential fetched is kept
+// across restarts.
+func ModelListSnapshotPath(authDir string) string {
+	return internalserviceapp.ModelListSnapshotPath(authDir)
+}
+
 // ProviderDiscoveryDrivesRouting reports whether a provider's upstream model list is
 // merged into the models its credentials register.
 func ProviderDiscoveryDrivesRouting(provider string) bool {
