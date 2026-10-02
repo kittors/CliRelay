@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -88,12 +89,34 @@ func fallbackAntigravityPrimaryModels() []*sdkmodelcatalog.ModelInfo {
 	return models
 }
 
+var (
+	errAntigravityModelsNoToken = errors.New("antigravity models: no access token")
+	errAntigravityModelsEmpty   = errors.New("antigravity models: upstream listed no models")
+)
+
 // FetchAntigravityModels retrieves available models using the supplied auth.
+// When the upstream cannot be listed it answers with the last list any
+// credential fetched in this process; DiscoverAntigravityModels reports the
+// failure instead.
 func FetchAntigravityModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.Config) []*sdkmodelcatalog.ModelInfo {
+	models, err := DiscoverAntigravityModels(ctx, auth, cfg)
+	if err != nil {
+		return fallbackAntigravityPrimaryModels()
+	}
+	return models
+}
+
+// DiscoverAntigravityModels asks the upstream which models a credential can
+// call. Unlike FetchAntigravityModels it never substitutes a cached list, so a
+// caller can tell a live answer from a failure.
+func DiscoverAntigravityModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.Config) ([]*sdkmodelcatalog.ModelInfo, error) {
 	exec := &AntigravityExecutor{cfg: cfg}
 	token, updatedAuth, errToken := exec.ensureAccessToken(ctx, auth)
-	if errToken != nil || token == "" {
-		return fallbackAntigravityPrimaryModels()
+	if errToken != nil {
+		return nil, errToken
+	}
+	if token == "" {
+		return nil, errAntigravityModelsNoToken
 	}
 	if updatedAuth != nil {
 		auth = updatedAuth
@@ -106,7 +129,7 @@ func FetchAntigravityModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *c
 		modelsURL := baseURL + antigravityModelsPath
 		httpReq, errReq := http.NewRequestWithContext(ctx, http.MethodPost, modelsURL, bytes.NewReader(antigravityModelsRequestPayload(auth)))
 		if errReq != nil {
-			return fallbackAntigravityPrimaryModels()
+			return nil, errReq
 		}
 		httpReq.Header.Set("Content-Type", "application/json")
 		httpReq.Header.Set("Authorization", "Bearer "+token)
@@ -118,13 +141,13 @@ func FetchAntigravityModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *c
 		httpResp, errDo := httpClient.Do(httpReq)
 		if errDo != nil {
 			if errors.Is(errDo, context.Canceled) || errors.Is(errDo, context.DeadlineExceeded) {
-				return fallbackAntigravityPrimaryModels()
+				return nil, errDo
 			}
 			if idx+1 < len(baseURLs) {
 				log.Debugf("antigravity executor: models request error on base url %s, retrying with fallback base url: %s", baseURL, baseURLs[idx+1])
 				continue
 			}
-			return fallbackAntigravityPrimaryModels()
+			return nil, errDo
 		}
 
 		readBody := readUpstreamResponseBody
@@ -142,7 +165,7 @@ func FetchAntigravityModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *c
 				log.Debugf("antigravity executor: models read error on base url %s, retrying with fallback base url: %s", baseURL, baseURLs[idx+1])
 				continue
 			}
-			return fallbackAntigravityPrimaryModels()
+			return nil, errRead
 		}
 		if httpResp.StatusCode < http.StatusOK || httpResp.StatusCode >= http.StatusMultipleChoices {
 			if httpResp.StatusCode == http.StatusTooManyRequests && idx+1 < len(baseURLs) {
@@ -153,7 +176,7 @@ func FetchAntigravityModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *c
 				log.Debugf("antigravity executor: models request failed with status %d on base url %s, retrying with fallback base url: %s", httpResp.StatusCode, baseURL, baseURLs[idx+1])
 				continue
 			}
-			return fallbackAntigravityPrimaryModels()
+			return nil, fmt.Errorf("antigravity models: upstream answered status %d", httpResp.StatusCode)
 		}
 
 		result := gjson.GetBytes(bodyBytes, "models")
@@ -162,7 +185,7 @@ func FetchAntigravityModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *c
 				log.Debugf("antigravity executor: models field missing on base url %s, retrying with fallback base url: %s", baseURL, baseURLs[idx+1])
 				continue
 			}
-			return fallbackAntigravityPrimaryModels()
+			return nil, errAntigravityModelsEmpty
 		}
 
 		now := time.Now().Unix()
@@ -230,12 +253,12 @@ func FetchAntigravityModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *c
 				continue
 			}
 			log.Debug("antigravity executor: fetched empty model list; retaining cached primary model list")
-			return fallbackAntigravityPrimaryModels()
+			return nil, errAntigravityModelsEmpty
 		}
 		storeAntigravityPrimaryModels(models)
-		return models
+		return models, nil
 	}
-	return fallbackAntigravityPrimaryModels()
+	return nil, errAntigravityModelsEmpty
 }
 
 func antigravityModelsRequestPayload(auth *cliproxyauth.Auth) []byte {
@@ -265,11 +288,17 @@ func antigravityModelsRequestPayload(auth *cliproxyauth.Auth) []byte {
 }
 
 func isInternalAntigravityModel(modelID string, modelData gjson.Result) bool {
-	id := strings.ToLower(strings.TrimSpace(modelID))
-	if id == "" {
+	if modelData.Get("isInternal").Bool() {
 		return true
 	}
-	if modelData.Get("isInternal").Bool() {
+	return IsInternalAntigravityModelID(modelID)
+}
+
+// IsInternalAntigravityModelID reports whether an id names one of the editor
+// completion models the Antigravity listing carries but chat traffic cannot use.
+func IsInternalAntigravityModelID(modelID string) bool {
+	id := strings.ToLower(strings.TrimSpace(modelID))
+	if id == "" {
 		return true
 	}
 	return strings.HasPrefix(id, "chat_") ||
