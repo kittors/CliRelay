@@ -15,6 +15,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/thinking"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/translator/common"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -275,11 +276,10 @@ func ConvertOpenAIRequestToClaude(modelName string, inputRawJSON []byte, stream 
 			case "tool":
 				// Handle tool result messages conversion
 				toolCallID := message.Get("tool_call_id").String()
-				content := message.Get("content").String()
 
 				msg := `{"role":"user","content":[{"type":"tool_result","tool_use_id":"","content":""}]}`
 				msg, _ = sjson.Set(msg, "content.0.tool_use_id", toolCallID)
-				msg, _ = sjson.Set(msg, "content.0.content", content)
+				msg, _ = sjson.SetRaw(msg, "content.0.content", common.ToClaudeContent(common.ParseToolResult(message.Get("content"))))
 				out, _ = sjson.SetRaw(out, "messages.-1", msg)
 				messageIndex++
 			}

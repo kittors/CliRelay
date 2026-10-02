@@ -3,6 +3,7 @@ package responses
 import (
 	"strings"
 
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/translator/common"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -141,7 +142,7 @@ func ConvertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 				}
 
 				if output := item.Get("output"); output.Exists() {
-					toolMessage, _ = sjson.Set(toolMessage, "content", output.String())
+					toolMessage, _ = sjson.SetRaw(toolMessage, "content", common.ToChatContent(common.ParseToolResult(output)))
 				}
 
 				out, _ = sjson.SetRaw(out, "messages.-1", toolMessage)
