@@ -46,7 +46,9 @@ func (r *Registry) TranslateRequest(from, to Format, model string, rawJSON []byt
 
 	if byTarget, ok := r.requests[from]; ok {
 		if fn, isOk := byTarget[to]; isOk && fn != nil {
-			return fn(model, rawJSON, stream)
+			out := fn(model, rawJSON, stream)
+			warnOnLeakedImages(from, to, model, out)
+			return out
 		}
 	}
 	return rawJSON
