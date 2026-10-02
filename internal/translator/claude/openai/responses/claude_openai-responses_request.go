@@ -10,7 +10,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/thinking"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/translator/common"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -26,6 +25,7 @@ var (
 // It supports:
 // - instructions -> system message
 // - input[].type==message with input_text/output_text -> user/assistant messages
+// - reasoning -> assistant thinking / redacted_thinking (only with a Claude signature)
 // - function_call -> assistant tool_use
 // - function_call_output -> user tool_result
 // - tools[].parameters -> tools[].input_schema
@@ -139,6 +139,20 @@ func ConvertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 		}
 	}
 
+	// thinkingTurnOpen is set while the last message is an assistant turn that a
+	// replayed reasoning item opened. Anthropic needs the thinking block and the
+	// tool_use / text it led to in one assistant message, with thinking first, so
+	// the following assistant items are appended to it instead of starting a new
+	// message. Any other item closes it.
+	thinkingTurnOpen := false
+	appendToOpenThinkingTurn := func(parts ...string) {
+		// sjson reads "-1" as append, so the last message is addressed by index.
+		path := fmt.Sprintf("messages.%d.content.-1", gjson.Get(out, "messages.#").Int()-1)
+		for _, part := range parts {
+			out, _ = sjson.SetRaw(out, path, part)
+		}
+	}
+
 	// input array processing
 	if input := root.Get("input"); input.Exists() && input.IsArray() {
 		input.ForEach(func(_, item gjson.Result) bool {
@@ -148,6 +162,11 @@ func ConvertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 			typ := item.Get("type").String()
 			if typ == "" && item.Get("role").String() != "" {
 				typ = "message"
+			}
+			continuesThinkingTurn := typ == "reasoning" || typ == "function_call" ||
+				(typ == "message" && strings.EqualFold(item.Get("role").String(), "assistant"))
+			if !continuesThinkingTurn {
+				thinkingTurnOpen = false
 			}
 			switch typ {
 			case "message":
@@ -251,7 +270,10 @@ func ConvertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 					}
 				}
 
-				if len(partsJSON) > 0 {
+				if thinkingTurnOpen && role == "assistant" && len(partsJSON) > 0 {
+					appendToOpenThinkingTurn(partsJSON...)
+				} else if len(partsJSON) > 0 {
+					thinkingTurnOpen = false
 					msg := `{"role":"","content":[]}`
 					msg, _ = sjson.Set(msg, "role", role)
 					if len(partsJSON) == 1 && !hasImage && !hasFile {
@@ -291,16 +313,37 @@ func ConvertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 					}
 				}
 
+				if thinkingTurnOpen {
+					appendToOpenThinkingTurn(toolUse)
+					break
+				}
 				asst := `{"role":"assistant","content":[]}`
 				asst, _ = sjson.SetRaw(asst, "content.-1", toolUse)
 				out, _ = sjson.SetRaw(out, "messages.-1", asst)
 
+			case "reasoning":
+				block := convertResponsesReasoningToClaudeThinking(item)
+				if block == "" {
+					// No Claude signature to replay. Anthropic rejects an unsigned
+					// thinking block, so the item is dropped, as it always was.
+					break
+				}
+				if thinkingTurnOpen {
+					appendToOpenThinkingTurn(block)
+					break
+				}
+				asst := `{"role":"assistant","content":[]}`
+				asst, _ = sjson.SetRaw(asst, "content.-1", block)
+				out, _ = sjson.SetRaw(out, "messages.-1", asst)
+				thinkingTurnOpen = true
+
 			case "function_call_output":
 				// Map to user tool_result
 				callID := item.Get("call_id").String()
+				outputStr := item.Get("output").String()
 				toolResult := `{"type":"tool_result","tool_use_id":"","content":""}`
 				toolResult, _ = sjson.Set(toolResult, "tool_use_id", callID)
-				toolResult, _ = sjson.SetRaw(toolResult, "content", common.ToClaudeContent(common.ParseToolResult(item.Get("output"))))
+				toolResult, _ = sjson.Set(toolResult, "content", outputStr)
 
 				usr := `{"role":"user","content":[]}`
 				usr, _ = sjson.SetRaw(usr, "content.-1", toolResult)
@@ -309,6 +352,8 @@ func ConvertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 			return true
 		})
 	}
+
+	out = stripTrailingClaudeThinking(out)
 
 	// tools mapping: parameters -> input_schema
 	if tools := root.Get("tools"); tools.Exists() && tools.IsArray() {
