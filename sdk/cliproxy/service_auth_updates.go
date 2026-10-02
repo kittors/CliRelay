@@ -119,7 +119,7 @@ func (s *Service) applyCoreAuthAddOrUpdate(ctx context.Context, auth *coreauth.A
 	// asks for reads the updated credential rather than the one it replaces.
 	op := "register"
 	var err error
-	if existing, ok := s.coreManager.GetByID(auth.ID); ok {
+	if _, ok := s.coreManager.GetByID(auth.ID); ok {
 		// Re-read under the same lock used by removal and fetch commits. A delete
 		// may have won the race after the optimistic lookup above; never turn this
 		// stale modify event into a fresh registration.
@@ -129,7 +129,7 @@ func (s *Service) applyCoreAuthAddOrUpdate(ctx context.Context, auth *coreauth.A
 			unlock()
 			return
 		}
-		existing = latest
+		existing := latest
 		if s.coreManager.CredentialsVersioned() && !acceptCredentialReload(auth, existing) {
 			unlock()
 			return
