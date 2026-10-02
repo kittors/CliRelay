@@ -15,6 +15,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/thinking"
+	translatorcommon "github.com/router-for-me/CLIProxyAPI/v6/internal/translator/common"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -252,11 +253,13 @@ func ConvertGeminiRequestToClaude(modelName string, inputRawJSON []byte, stream 
 						}
 						toolResult, _ = sjson.Set(toolResult, "tool_use_id", toolID)
 
-						// Extract result content from the function response
-						if result := fr.Get("response.result"); result.Exists() {
-							toolResult, _ = sjson.Set(toolResult, "content", result.String())
-						} else if response := fr.Get("response"); response.Exists() {
-							toolResult, _ = sjson.Set(toolResult, "content", response.Raw)
+						parsed := translatorcommon.ParseGeminiFunctionResponse(fr)
+						if parsed.HasImage() {
+							toolResult, _ = sjson.SetRaw(toolResult, "content", translatorcommon.ToClaudeContent(parsed))
+						} else if len(parsed.Parts) > 0 {
+							toolResult, _ = sjson.Set(toolResult, "content", parsed.Text())
+						} else if parsed.Raw.Exists() {
+							toolResult, _ = sjson.Set(toolResult, "content", parsed.Text())
 						}
 						msg, _ = sjson.SetRaw(msg, "content.-1", toolResult)
 						return true
