@@ -45,6 +45,8 @@ var defaultBedrockModelMapping = map[string]string{
 	"claude-opus-4-5-20251101":   "us.anthropic.claude-opus-4-5-20251101-v1:0",
 	"claude-opus-4-1":            "us.anthropic.claude-opus-4-1-20250805-v1:0",
 	"claude-opus-4-20250514":     "us.anthropic.claude-opus-4-20250514-v1:0",
+	"claude-sonnet-5-5":          "us.anthropic.claude-sonnet-5-5",
+	"claude-sonnet-5":            "us.anthropic.claude-sonnet-5",
 	"claude-sonnet-4-6-thinking": "us.anthropic.claude-sonnet-4-6",
 	"claude-sonnet-4-6":          "us.anthropic.claude-sonnet-4-6",
 	"claude-sonnet-4-5":          "us.anthropic.claude-sonnet-4-5-20250929-v1:0",

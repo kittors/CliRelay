@@ -19,6 +19,7 @@ func GetCommandCodeModels() []*ModelInfo {
 		displayName   string
 		contextLength int
 	}{
+		{"claude-sonnet-5-5", "Claude Sonnet 5.5", 1000000},
 		{"claude-sonnet-5", "Claude Sonnet 5", 1000000},
 		{"claude-sonnet-4-6", "Claude Sonnet 4.6", 1000000},
 		{"claude-fable-5", "Claude Fable 5", 1000000},
