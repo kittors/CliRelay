@@ -57,9 +57,11 @@ const (
 	DefaultGeminiFingerprintAPIClient      = "gl-node/22.17.0"
 	DefaultGeminiFingerprintClientMetadata = "ideType=IDE_UNSPECIFIED,platform=PLATFORM_UNSPECIFIED,pluginType=GEMINI"
 
-	DefaultXAIFingerprintUserAgent        = "grok-shell/0.2.93 (macos; aarch64)"
+	// cli-chat-proxy.grok.com rejects x-grok-client-version below 1.0.13.
+	// 1.0.46 is the stable CLI published at https://x.ai/cli/stable.
+	DefaultXAIFingerprintUserAgent        = "grok-shell/1.0.46 (macos; aarch64)"
 	DefaultXAIFingerprintClientIdentifier = "grok-shell"
-	DefaultXAIFingerprintClientVersion    = "0.2.93"
+	DefaultXAIFingerprintClientVersion    = "1.0.46"
 )
 
 // IdentityFingerprintConfig groups provider-specific upstream identity settings.
