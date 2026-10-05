@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	"github.com/tidwall/gjson"
@@ -271,6 +272,22 @@ func TestResolveXAIPlanUsesEntitlementWhenMonthlyLimitIsZero(t *testing.T) {
 	}
 	if got := resolveXAIPlan(zeroMonthly); got != "" {
 		t.Fatalf("zero monthly without weekly plan=%q, want empty", got)
+	}
+}
+
+func TestXAIProbeHeadersAdvertiseCurrentCLIVersion(t *testing.T) {
+	// cli-chat-proxy.grok.com rejects outdated Grok CLI versions on the billing
+	// endpoints too; the probe must follow the chat path's version, not pin its own.
+	headers := xaiProbeHeaders(nil)
+	if got := headers["x-grok-client-version"]; got != config.DefaultXAIFingerprintClientVersion {
+		t.Fatalf("x-grok-client-version = %q, want %q", got, config.DefaultXAIFingerprintClientVersion)
+	}
+	wantUA := "grok-pager/" + config.DefaultXAIFingerprintClientVersion + " grok-shell/" + config.DefaultXAIFingerprintClientVersion + " (macos; aarch64)"
+	if got := headers["user-agent"]; got != wantUA {
+		t.Fatalf("user-agent = %q, want %q", got, wantUA)
+	}
+	if _, ok := headers["x-userid"]; ok {
+		t.Fatal("x-userid set without an auth to resolve it from")
 	}
 }
 
