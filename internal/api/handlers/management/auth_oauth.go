@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/identity"
@@ -20,6 +21,7 @@ import (
 	kimiprovider "github.com/router-for-me/CLIProxyAPI/v6/internal/management/oauth/providers/kimi"
 	qwenprovider "github.com/router-for-me/CLIProxyAPI/v6/internal/management/oauth/providers/qwen"
 	xaiprovider "github.com/router-for-me/CLIProxyAPI/v6/internal/management/oauth/providers/xai"
+	oauthsession "github.com/router-for-me/CLIProxyAPI/v6/internal/management/oauth/session"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
 )
@@ -167,10 +169,13 @@ func (h *Handler) RequestAnthropicToken(c *gin.Context) {
 	authDir, saveRecord, registerSession, completeProvider := h.tenantOAuthBindings(c)
 
 	result, err := claudeprovider.StartOAuthLogin(ctx, claudeprovider.OAuthLoginOptions{
-		AuthDir:               authDir,
-		Config:                h.cfg,
-		ProxyURL:              h.resolveOAuthProxyURL(c),
-		WebUI:                 isWebUIRequest(c),
+		AuthDir:  authDir,
+		Config:   h.cfg,
+		ProxyURL: h.resolveOAuthProxyURL(c),
+		WebUI:    isWebUIRequest(c),
+		// callback_mode=code: Anthropic's page shows the code to paste back, so a
+		// remote panel never sends the browser to a localhost it cannot open.
+		UsePlatformCallback:   strings.EqualFold(strings.TrimSpace(c.Query("callback_mode")), "code"),
 		PreferredCallbackPort: anthropicCallbackPort,
 		CallbackTarget:        h.managementCallbackURL,
 		WaitCallback:          WaitOAuthCallbackFile,
@@ -201,7 +206,7 @@ func (h *Handler) RequestAnthropicToken(c *gin.Context) {
 		return
 	}
 
-	c.JSON(200, gin.H{"status": "ok", "url": result.AuthURL, "state": result.State})
+	c.JSON(http.StatusOK, oauthStartPayload(anthropicLoginFlow(result.AuthURL), result.AuthURL, result.State, oauthSessionExpiry(time.Now()), nil))
 }
 
 func (h *Handler) RequestGeminiCLIToken(c *gin.Context) {
@@ -244,7 +249,7 @@ func (h *Handler) RequestGeminiCLIToken(c *gin.Context) {
 		return
 	}
 
-	c.JSON(200, gin.H{"status": "ok", "url": result.AuthURL, "state": result.State})
+	c.JSON(http.StatusOK, oauthStartPayload(oauthFlowRedirect, result.AuthURL, result.State, oauthSessionExpiry(time.Now()), nil))
 }
 
 func (h *Handler) RequestCodexToken(c *gin.Context) {
@@ -286,7 +291,7 @@ func (h *Handler) RequestCodexToken(c *gin.Context) {
 		return
 	}
 
-	c.JSON(200, gin.H{"status": "ok", "url": result.AuthURL, "state": result.State})
+	c.JSON(http.StatusOK, oauthStartPayload(oauthFlowRedirect, result.AuthURL, result.State, oauthSessionExpiry(time.Now()), nil))
 }
 
 func (h *Handler) RequestAntigravityToken(c *gin.Context) {
@@ -329,7 +334,7 @@ func (h *Handler) RequestAntigravityToken(c *gin.Context) {
 		return
 	}
 
-	c.JSON(200, gin.H{"status": "ok", "url": result.AuthURL, "state": result.State})
+	c.JSON(http.StatusOK, oauthStartPayload(oauthFlowRedirect, result.AuthURL, result.State, oauthSessionExpiry(time.Now()), nil))
 }
 
 func (h *Handler) RequestQwenToken(c *gin.Context) {
@@ -351,7 +356,7 @@ func (h *Handler) RequestQwenToken(c *gin.Context) {
 		return
 	}
 
-	c.JSON(200, gin.H{"status": "ok", "url": result.AuthURL, "state": result.State})
+	c.JSON(http.StatusOK, oauthStartPayload(oauthFlowDevice, result.AuthURL, result.State, deviceLoginExpiry(time.Now(), result.ExpiresIn), deviceLoginExtra(result.UserCode, result.VerificationURI, result.ExpiresIn)))
 }
 
 func (h *Handler) RequestKimiToken(c *gin.Context) {
@@ -374,7 +379,7 @@ func (h *Handler) RequestKimiToken(c *gin.Context) {
 		return
 	}
 
-	c.JSON(200, gin.H{"status": "ok", "url": result.AuthURL, "state": result.State})
+	c.JSON(http.StatusOK, oauthStartPayload(oauthFlowDevice, result.AuthURL, result.State, deviceLoginExpiry(time.Now(), result.ExpiresIn), deviceLoginExtra(result.UserCode, result.VerificationURI, result.ExpiresIn)))
 }
 
 func (h *Handler) RequestXAIToken(c *gin.Context) {
@@ -422,7 +427,7 @@ func (h *Handler) RequestXAIToken(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"status": "ok", "url": result.AuthURL, "state": result.State})
+	c.JSON(http.StatusOK, oauthStartPayload(oauthFlowRedirect, result.AuthURL, result.State, oauthSessionExpiry(time.Now()), nil))
 }
 
 func (h *Handler) RequestIFlowToken(c *gin.Context) {
@@ -459,7 +464,7 @@ func (h *Handler) RequestIFlowToken(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"status": "ok", "url": result.AuthURL, "state": result.State})
+	c.JSON(http.StatusOK, oauthStartPayload(oauthFlowRedirect, result.AuthURL, result.State, oauthSessionExpiry(time.Now()), nil))
 }
 
 func (h *Handler) RequestIFlowCookieToken(c *gin.Context) {
@@ -530,14 +535,22 @@ func (h *Handler) GetAuthStatus(c *gin.Context) {
 
 	_, tenantID, status, ok := GetOAuthSessionWithTenant(state)
 	if !ok {
-		c.JSON(http.StatusOK, gin.H{"status": "ok"})
+		// Every login registers its session (and a superseded one now leaves a
+		// tombstone, answered below), so an unknown state means the session
+		// expired or the process restarted and lost it. Answering "ok" here used
+		// to announce a login that never finished; report it the way the cluster
+		// store already does.
+		c.JSON(http.StatusNotFound, gin.H{"status": "error", "error": oauthsession.MessageExpired, "code": oauthCodeSessionExpired})
 		return
 	}
 	if tenantID != "" && tenantID != effectiveTenantID(c) {
 		c.JSON(http.StatusNotFound, gin.H{"status": "error", "error": "unknown or expired state"})
 		return
 	}
-	if status == oauthSessionStatusCompleted {
+	// A login replaced by another completed login of the same provider keeps
+	// answering "ok", as it always has: from the operator's point of view the
+	// provider is now signed in.
+	if status == oauthSessionStatusCompleted || status == oauthSessionStatusSuperseded {
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
 		return
 	}

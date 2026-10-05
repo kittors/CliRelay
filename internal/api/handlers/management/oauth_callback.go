@@ -75,11 +75,19 @@ func (h *Handler) PostOAuthCallback(c *gin.Context) {
 
 	sessionProvider, sessionTenantID, sessionStatus, ok := GetOAuthSessionWithTenant(state)
 	if !ok {
-		c.JSON(http.StatusNotFound, gin.H{"status": "error", "error": "unknown or expired state"})
+		if sharedOAuthStateSuperseded(c, state) {
+			c.JSON(http.StatusConflict, gin.H{"status": "error", "error": oauthSupersededMessage, "code": oauthCodeSessionSuperseded})
+			return
+		}
+		c.JSON(http.StatusNotFound, gin.H{"status": "error", "error": "unknown or expired state", "code": oauthCodeSessionExpired})
 		return
 	}
 	if sessionStatus == oauthSessionStatusCompleted {
 		c.JSON(http.StatusOK, gin.H{"status": "ok", "already_processed": true})
+		return
+	}
+	if sessionStatus == oauthSessionStatusSuperseded {
+		c.JSON(http.StatusConflict, gin.H{"status": "error", "error": oauthSupersededMessage, "code": oauthCodeSessionSuperseded})
 		return
 	}
 	if sessionStatus != "" {
@@ -106,6 +114,10 @@ func (h *Handler) PostOAuthCallback(c *gin.Context) {
 			_, latestStatus, okLatest := GetOAuthSession(state)
 			if okLatest && latestStatus == oauthSessionStatusCompleted {
 				c.JSON(http.StatusOK, gin.H{"status": "ok", "already_processed": true})
+				return
+			}
+			if okLatest && latestStatus == oauthSessionStatusSuperseded {
+				c.JSON(http.StatusConflict, gin.H{"status": "error", "error": oauthSupersededMessage, "code": oauthCodeSessionSuperseded})
 				return
 			}
 			if okLatest && latestStatus != "" {
