@@ -38,6 +38,12 @@ type DeviceLoginOptions struct {
 type DeviceLoginResult struct {
 	AuthURL string
 	State   string
+	// UserCode, VerificationURI and ExpiresIn come straight from the device
+	// authorization response so the panel can show the code the verification
+	// page asks for and count down its lifetime, instead of only a link.
+	UserCode        string
+	VerificationURI string
+	ExpiresIn       int
 }
 
 func StartDeviceLogin(ctx context.Context, opts DeviceLoginOptions) (DeviceLoginResult, error) {
@@ -67,7 +73,13 @@ func StartDeviceLogin(ctx context.Context, opts DeviceLoginOptions) (DeviceLogin
 	if authURL == "" {
 		authURL = deviceFlow.VerificationURI
 	}
-	result := DeviceLoginResult{AuthURL: authURL, State: state}
+	result := DeviceLoginResult{
+		AuthURL:         authURL,
+		State:           state,
+		UserCode:        deviceFlow.UserCode,
+		VerificationURI: deviceFlow.VerificationURI,
+		ExpiresIn:       deviceFlow.ExpiresIn,
+	}
 	opts.Sessions.register(state, "kimi")
 
 	go func() {

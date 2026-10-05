@@ -15,9 +15,9 @@ func TestCompleteProviderRetainsCompletedSessions(t *testing.T) {
 	store.Register("stale-state", "codex")
 
 	store.Complete("completed-state")
-	removed := store.CompleteProvider("codex")
-	if removed != 1 {
-		t.Fatalf("removed = %d, want 1", removed)
+	superseded := store.CompleteProvider("codex")
+	if superseded != 1 {
+		t.Fatalf("superseded = %d, want 1", superseded)
 	}
 
 	session, ok := store.Get("completed-state")
@@ -27,8 +27,20 @@ func TestCompleteProviderRetainsCompletedSessions(t *testing.T) {
 	if session.Provider != "codex" || session.Status != StatusCompleted {
 		t.Fatalf("session = %#v, want completed codex session", session)
 	}
-	if _, ok := store.Get("stale-state"); ok {
-		t.Fatal("expected stale pending session to be removed")
+	// The replaced pending login stays as a tombstone so a status poll can
+	// still tell it apart from an expired one; it is no longer pending.
+	stale, ok := store.Get("stale-state")
+	if !ok {
+		t.Fatal("expected the superseded session to remain queryable as a tombstone")
+	}
+	if stale.Status != StatusSuperseded {
+		t.Fatalf("stale status = %q, want %q", stale.Status, StatusSuperseded)
+	}
+	if store.IsPending("stale-state", "codex") {
+		t.Fatal("a superseded session must not accept callbacks")
+	}
+	if again := store.CompleteProvider("codex"); again != 0 {
+		t.Fatalf("second CompleteProvider superseded %d sessions, want 0", again)
 	}
 }
 

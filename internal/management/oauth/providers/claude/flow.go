@@ -48,11 +48,16 @@ type PKCEFunc func() (*internalclaude.PKCECodes, error)
 type StateFunc func() (string, error)
 
 type OAuthLoginOptions struct {
-	Config                *config.Config
-	Auth                  OAuthAuth
-	AuthDir               string
-	ProxyURL              string
-	WebUI                 bool
+	Config   *config.Config
+	Auth     OAuthAuth
+	AuthDir  string
+	ProxyURL string
+	WebUI    bool
+	// UsePlatformCallback redirects to Anthropic's own code page
+	// (PlatformRedirectURI) instead of a localhost forwarder. The page shows the
+	// authorization code for the operator to copy back, so a panel on a remote
+	// server never sends the browser to a localhost address it cannot open.
+	UsePlatformCallback   bool
 	PreferredCallbackPort int
 	CallbackWaitTimeout   time.Duration
 	CallbackTarget        CallbackTargetFunc
@@ -186,6 +191,9 @@ func resolveRedirectURI(opts OAuthLoginOptions) (string, CallbackForwarder, int)
 	callbackPort := opts.PreferredCallbackPort
 	if callbackPort == 0 {
 		callbackPort = defaultCallbackPort
+	}
+	if opts.UsePlatformCallback {
+		return internalclaude.PlatformRedirectURI, nil, callbackPort
 	}
 	if !opts.WebUI {
 		return redirectURI, nil, callbackPort

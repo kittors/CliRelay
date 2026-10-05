@@ -21,9 +21,9 @@ func TestCompleteOAuthSessionRetainsCompletedState(t *testing.T) {
 	RegisterOAuthSession(staleState, "codex")
 
 	CompleteOAuthSession(completedState)
-	removed := CompleteOAuthSessionsByProvider("codex")
-	if removed != 1 {
-		t.Fatalf("removed = %d, want 1", removed)
+	superseded := CompleteOAuthSessionsByProvider("codex")
+	if superseded != 1 {
+		t.Fatalf("superseded = %d, want 1", superseded)
 	}
 
 	provider, status, ok := GetOAuthSession(completedState)
@@ -37,7 +37,13 @@ func TestCompleteOAuthSessionRetainsCompletedState(t *testing.T) {
 		t.Fatalf("status = %q, want %q", status, oauthSessionStatusCompleted)
 	}
 
-	if _, _, ok := GetOAuthSession(staleState); ok {
-		t.Fatal("expected stale pending session to be removed")
+	// The replaced login stays as a non-pending tombstone, so a status poll can
+	// tell it apart from an expired one.
+	_, staleStatus, ok := GetOAuthSession(staleState)
+	if !ok || staleStatus != oauthSessionStatusSuperseded {
+		t.Fatalf("stale session = (%q, %v), want a %q tombstone", staleStatus, ok, oauthSessionStatusSuperseded)
+	}
+	if IsOAuthSessionPending(staleState, "codex") {
+		t.Fatal("a superseded session must not accept callbacks")
 	}
 }
