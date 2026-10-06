@@ -26,7 +26,7 @@ func TestRegisterManagementRouteTable(t *testing.T) {
 		routes[key] = route
 	}
 
-	if got, want := len(routes), 338; got != want {
+	if got, want := len(routes), 342; got != want {
 		t.Fatalf("route count = %d, want %d", got, want)
 	}
 	if got, want := sortedRouteKeys(routes), expectedManagementRoutes(); !slices.Equal(got, want) {
@@ -470,6 +470,10 @@ func expectedManagementRoutes() []string {
 		"POST /v0/management/model-configs",
 		"POST /v0/management/model-openrouter-sync/run",
 		"POST /v0/management/oauth-callback",
+		"POST /v0/management/oauth-import/anthropic-session",
+		"POST /v0/management/oauth-import/antigravity-refresh-token",
+		"POST /v0/management/oauth-import/codex-refresh-token",
+		"POST /v0/management/oauth-import/xai-sso",
 		"POST /v0/management/cline-api-key/usage",
 		"POST /v0/management/ollama-cloud-api-key/usage",
 		"POST /v0/management/opencode-go-api-key/usage",
