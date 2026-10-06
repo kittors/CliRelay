@@ -542,6 +542,9 @@ func isTenantScopedManagementPath(path string) bool {
 		relative == "/vertex/import",
 		strings.HasSuffix(relative, "-auth-url"),
 		relative == "/oauth-callback",
+		// Importing an account from a held credential is the same tenant-scoped
+		// operation as signing one in; a business tenant must be able to do both.
+		strings.HasPrefix(relative, "/oauth-import/"),
 		relative == "/get-auth-status":
 		return true
 	case strings.HasPrefix(relative, "/api-keys"),
