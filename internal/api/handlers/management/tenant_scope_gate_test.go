@@ -27,6 +27,11 @@ func TestDeniesTenantResourceScopeAllowsPlatformAdminOnGlobalLogs(t *testing.T) 
 	if deniesTenantResourceScope(tenantOperator, "/v0/management/usage/logs") {
 		t.Fatal("tenant-scoped request logs must stay available to business tenants")
 	}
+	for _, path := range []string{"/v0/management/usage/monitor/overview", "/v0/management/usage/monitor/realtime"} {
+		if deniesTenantResourceScope(tenantOperator, path) {
+			t.Fatalf("monitor center %s must stay available to business tenants", path)
+		}
+	}
 
 	systemSession := identity.Principal{
 		PlatformAdmin:   false,

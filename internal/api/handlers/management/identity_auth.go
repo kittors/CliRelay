@@ -596,6 +596,8 @@ func isTenantScopedManagementPath(path string) bool {
 		(strings.HasSuffix(relative, "/content") || strings.HasSuffix(relative, "/egress")) && strings.HasPrefix(relative, "/usage/logs/"),
 		relative == "/usage/chart-data",
 		relative == "/usage/entity-stats",
+		relative == "/usage/monitor/overview",
+		relative == "/usage/monitor/realtime",
 		relative == "/usage/auth-file-group-trend",
 		relative == "/usage/auth-file-trend",
 		relative == "/usage/auth-file-quota-snapshot",

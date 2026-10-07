@@ -110,6 +110,15 @@ func TestManagementAPIPostgresDataStackRegression(t *testing.T) {
 	client.expectBodyContains(t, http.MethodPost, fmt.Sprintf("/v0/management/public/usage/logs/%d/content", logID), `{"api_key":"sk-test-postgres-route"}`, http.StatusOK, "route-output")
 	client.expectBodyContains(t, http.MethodGet, "/v0/management/usage/chart-data?api_key=sk-test-postgres-route&days=1", "", http.StatusOK, "gpt-route-test")
 	client.expectBodyContains(t, http.MethodGet, "/v0/management/usage/entity-stats?api_key=sk-test-postgres-route&days=1", "", http.StatusOK, `"requests":1`)
+	// Monitor center SQL (rollup GROUP BYs, latency bins, recent failures) on
+	// real PostgreSQL, filtered and unfiltered.
+	client.expectBodyContains(t, http.MethodGet, "/v0/management/usage/monitor/overview?range=24h", "", http.StatusOK, `"key":"gpt-route-test"`)
+	client.expectBodyContains(t, http.MethodGet, "/v0/management/usage/monitor/overview?range=1h&model=gpt-route-test&channel=CODEX&consumer=key:key-route-test", "", http.StatusOK, `"samples":1`)
+	client.expectBodyContains(t, http.MethodGet, "/v0/management/usage/monitor/overview?range=30d", "", http.StatusOK, `"requests":1`)
+	client.expectBodyContains(t, http.MethodGet, "/v0/management/usage/monitor/realtime", "", http.StatusOK, `"last_5m":{"requests":1`)
+	// Averages and interpolated percentiles survive PostgreSQL's numeric types.
+	client.expectBodyContains(t, http.MethodGet, "/v0/management/usage/monitor/overview?range=today", "", http.StatusOK, `"latency_avg_ms":120`)
+	client.expectBodyContains(t, http.MethodGet, "/v0/management/usage/monitor/overview?range=7d", "", http.StatusOK, `"p50_ms":120`)
 	client.expectBodyContains(t, http.MethodGet, "/v0/management/dashboard-summary?days=1", "", http.StatusOK, "total_requests")
 	client.expectBodyContains(t, http.MethodPost, "/v0/management/public/usage/summary", `{"api_key":"sk-test-postgres-route","days":1}`, http.StatusOK, `"total_calls":1`)
 
@@ -202,10 +211,14 @@ func truncatePostgresManagementTables(t *testing.T, dsn string) {
 		t.Fatalf("open postgres for truncate: %v", err)
 	}
 	defer db.Close()
+	// usage_rollup_buckets outlives request_logs by design, so it has to be
+	// cleared here too: otherwise every rerun against the same database adds
+	// the fixture request to the rollups again and count assertions drift.
 	if _, err := db.Exec(`
 		TRUNCATE
 			request_log_content,
 			request_logs,
+			usage_rollup_buckets,
 			auth_file_quota_snapshot_points,
 			auth_file_quota_snapshots,
 			auth_subject_quota_cycles,
