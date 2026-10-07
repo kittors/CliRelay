@@ -19,6 +19,10 @@ func registerManagementUsageRoutes(group *gin.RouterGroup, h *managementhandlers
 	group.POST("/usage/auth-file-quota-snapshot", h.PostAuthFileQuotaSnapshot)
 	group.GET("/usage/chart-data", usageLogs.GetUsageChartData)
 	group.GET("/usage/entity-stats", usageLogs.GetEntityUsageStats)
+	// Monitor center: the full overview, and the per-minute live strip that
+	// the panel polls more often than the overview.
+	group.GET("/usage/monitor/overview", usageLogs.GetUsageMonitorOverview)
+	group.GET("/usage/monitor/realtime", usageLogs.GetUsageMonitorRealtime)
 
 	// Backend-owned AI account latest status (replaces browser fan-out).
 	group.GET("/ai-accounts/status", h.GetAIAccountStatus)
