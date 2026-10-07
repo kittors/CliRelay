@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -173,8 +174,39 @@ func TestClusterAuthStatusReportsUnknownExpiredSupersededAndFailedStates(t *test
 	nodeA.RegisterTenant("expiring", "gemini", "")
 	later := time.Now().Add(2 * time.Minute)
 	repo.SetClock(func() time.Time { return later })
-	if code, body := getAuthStatus(t, handlerB, "expiring"); code != http.StatusNotFound || body["error"] != oauthsession.MessageExpired {
+	if code, body := getAuthStatus(t, handlerB, "expiring"); code != http.StatusNotFound || body["error"] != oauthsession.MessageExpired || body["code"] != oauthCodeSessionExpired {
 		t.Fatalf("expired state = %d %v", code, body)
+	}
+	if code, body := getAuthStatus(t, handlerB, "never-started"); body["code"] != oauthCodeSessionExpired {
+		t.Fatalf("unknown state = %d %v, want code %q", code, body, oauthCodeSessionExpired)
+	}
+}
+
+// The shared store hides cancelled rows from Get, so without a Lookup a late
+// callback for a superseded login read as an unknown state. It now gets the
+// same answer as on a single node, but only within its own tenant.
+func TestClusterLateCallbackForSupersededLoginReportsSuperseded(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	nodeA, _, _ := clusterOAuthNodes(t)
+	handlerB := &Handler{cfg: &config.Config{AuthDir: t.TempDir()}}
+
+	nodeA.RegisterTenant("loser", "codex", "")
+	nodeA.RegisterTenant("winner", "codex", "")
+	nodeA.Complete("winner")
+	nodeA.CompleteProviderTenant("codex", "")
+
+	rec := postOAuthCallback(t, handlerB, `{"provider":"codex","code":"c","state":"loser"}`)
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), oauthCodeSessionSuperseded) {
+		t.Fatalf("late callback for superseded login = %d %s, want 409 %s", rec.Code, rec.Body.String(), oauthCodeSessionSuperseded)
+	}
+
+	nodeA.RegisterTenant("other-loser", "codex", "tenant-other")
+	nodeA.RegisterTenant("other-winner", "codex", "tenant-other")
+	nodeA.Complete("other-winner")
+	nodeA.CompleteProviderTenant("codex", "tenant-other")
+	rec = postOAuthCallback(t, handlerB, `{"provider":"codex","code":"c","state":"other-loser"}`)
+	if rec.Code != http.StatusNotFound || strings.Contains(rec.Body.String(), oauthCodeSessionSuperseded) {
+		t.Fatalf("another tenant's superseded login = %d %s, want a plain 404", rec.Code, rec.Body.String())
 	}
 }
 
@@ -188,16 +220,38 @@ func TestClusterOAuthCallbackForUnknownStateIsRejected(t *testing.T) {
 	}
 }
 
-// Without a shared store the node keeps the single-node answers, including
-// "ok" for a state it has never seen.
-func TestSingleNodeAuthStatusStillReportsUnknownStateAsOK(t *testing.T) {
+// A single node used to answer "ok" for a state it had never seen, because
+// it deleted superseded logins and could not tell them from expired ones. A
+// superseded login now leaves a tombstone and still answers "ok"; a state the
+// node has no record of is reported as expired, as the cluster store does.
+func TestSingleNodeAuthStatusSeparatesSupersededFromExpired(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	previous := oauthSessions
 	oauthSessions = newOAuthSessionStore(time.Minute)
 	t.Cleanup(func() { oauthSessions = previous })
 
 	h := &Handler{cfg: &config.Config{AuthDir: t.TempDir()}}
-	if code, body := getAuthStatus(t, h, "never-started"); code != http.StatusOK || body["status"] != "ok" {
-		t.Fatalf("single-node unknown state = %d %v", code, body)
+	code, body := getAuthStatus(t, h, "never-started")
+	if code != http.StatusNotFound || body["status"] != "error" || body["code"] != oauthCodeSessionExpired {
+		t.Fatalf("single-node unknown state = %d %v, want 404 session_expired", code, body)
+	}
+
+	RegisterOAuthSession("finished", "codex")
+	RegisterOAuthSession("replaced", "codex")
+	CompleteOAuthSession("finished")
+	if n := CompleteOAuthSessionsByProvider("codex"); n != 1 {
+		t.Fatalf("superseded %d sessions, want 1", n)
+	}
+	if code, body := getAuthStatus(t, h, "replaced"); code != http.StatusOK || body["status"] != "ok" {
+		t.Fatalf("superseded login status = %d %v, want ok", code, body)
+	}
+	if code, body := getAuthStatus(t, h, "finished"); code != http.StatusOK || body["status"] != "ok" {
+		t.Fatalf("completed login status = %d %v, want ok", code, body)
+	}
+
+	// A late callback for the replaced login is turned away with a readable reason.
+	rec := postOAuthCallback(t, h, `{"provider":"codex","code":"c","state":"replaced"}`)
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), oauthCodeSessionSuperseded) {
+		t.Fatalf("callback for superseded login = %d %s", rec.Code, rec.Body.String())
 	}
 }

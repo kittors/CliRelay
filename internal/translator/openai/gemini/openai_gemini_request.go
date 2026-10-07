@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/thinking"
+	translatorcommon "github.com/router-for-me/CLIProxyAPI/v6/internal/translator/common"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -232,13 +233,13 @@ func ConvertGeminiRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 						// Create tool message for function response
 						toolMsg := `{"role":"tool","tool_call_id":"","content":""}`
 
-						// Convert response.content to JSON string
-						if response := functionResponse.Get("response"); response.Exists() {
-							if contentField := response.Get("content"); contentField.Exists() {
-								toolMsg, _ = sjson.Set(toolMsg, "content", contentField.Raw)
-							} else {
-								toolMsg, _ = sjson.Set(toolMsg, "content", response.Raw)
-							}
+						parsed := translatorcommon.ParseGeminiFunctionResponse(functionResponse)
+						if parsed.HasImage() {
+							toolMsg, _ = sjson.SetRaw(toolMsg, "content", translatorcommon.ToChatContent(parsed))
+						} else if len(parsed.Parts) > 0 {
+							toolMsg, _ = sjson.Set(toolMsg, "content", parsed.Text())
+						} else if parsed.Raw.Exists() {
+							toolMsg, _ = sjson.Set(toolMsg, "content", parsed.Text())
 						}
 
 						// Try to match with previous tool call ID

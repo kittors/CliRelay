@@ -1,18 +1,20 @@
 <p align="center">
   <img src="https://img.shields.io/badge/Go-1.26+-00ADD8?style=for-the-badge&logo=go&logoColor=white" alt="Go">
+  <img src="https://img.shields.io/badge/PostgreSQL-15+-4169E1?style=for-the-badge&logo=postgresql&logoColor=white" alt="PostgreSQL">
   <img src="https://img.shields.io/badge/License-MIT-22c55e?style=for-the-badge" alt="License">
   <img src="https://img.shields.io/github/stars/kittors/CliRelay?style=for-the-badge&color=f59e0b" alt="Stars">
-  <img src="https://img.shields.io/github/forks/kittors/CliRelay?style=for-the-badge&color=8b5cf6" alt="Forks">
+  <img src="https://img.shields.io/github/v/release/kittors/CliRelay?style=for-the-badge&color=8b5cf6" alt="Release">
 </p>
 
-<h1 align="center">🔀 CliRelay</h1>
+<h1 align="center">CliRelay</h1>
 
 <p align="center">
-  <strong>A unified proxy server for AI CLI tools — use your <em>existing</em> subscriptions with any OpenAI / Gemini / Claude / Codex compatible client.</strong>
+  <strong>A self-hosted gateway that puts your AI coding subscriptions and API keys behind one endpoint — with a multi-tenant control panel to run it.</strong>
 </p>
 
 <p align="center">
-  Multi-tenant web panel · request logs & quotas · routing groups & failover · self-hosted
+  Route Claude Code, Codex, Gemini CLI and any OpenAI-compatible client through the accounts you already pay for.<br/>
+  See every request, cap every key, and fail over automatically when an account runs dry.
 </p>
 
 <p align="center">
@@ -20,250 +22,212 @@
 </p>
 
 <p align="center">
-  <a href="https://help.router-for.me/">📖 Docs</a> ·
-  <a href="https://github.com/kittors/codeProxy">🖥️ Management Panel</a> ·
-  <a href="https://github.com/kittors/CliRelay/issues">🐛 Report Bug</a> ·
-  <a href="https://github.com/kittors/CliRelay/pulls">✨ Request Feature</a>
+  <a href="https://help.router-for.me/">Docs</a> ·
+  <a href="https://github.com/kittors/codeProxy">Control panel</a> ·
+  <a href="https://github.com/kittors/CliRelay/releases">Releases</a> ·
+  <a href="https://github.com/kittors/CliRelay/issues">Report a bug</a>
 </p>
 
 <p align="center">
-  <img src="docs/images/readme-showcase/landing.png" width="100%" alt="CliRelay portal landing page" />
+  <img src="docs/images/readme-showcase/monitor-center.png" width="100%" alt="CliRelay monitor center: health score, live traffic and golden-signal tiles" />
 </p>
 
 ---
 
-## ⚡ What is CliRelay?
+## Contents
 
-> **✨ Heavily enhanced fork of the [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) project** — rebuilt with a production-grade management layer, web control panel hosting, and a terminal TUI for day-2 operations.
+- [What is CliRelay?](#what-is-clirelay)
+- [Highlights](#highlights)
+- [How a request flows](#how-a-request-flows)
+- [A tour of the control panel](#a-tour-of-the-control-panel)
+- [Supported providers](#supported-providers)
+- [Quick start](#quick-start)
+- [Connect your tools](#connect-your-tools)
+- [Configuration essentials](#configuration-essentials)
+- [Deployment options](#deployment-options)
+- [Architecture](#architecture)
+- [Documentation](#documentation)
+- [Contributing](#contributing)
+- [License and acknowledgements](#license-and-acknowledgements)
 
-CliRelay turns AI CLI subscriptions, OAuth credentials, API keys, and compatible upstream services into one managed API layer. It proxies Claude Code, Gemini CLI, OpenAI Codex, Qwen, iFlow, Kimi, Antigravity, xAI/Grok, OpenCode Go, ClinePass, Ollama Cloud, Bedrock, Amp, Vertex, OpenAI-compatible clients, and other AI coding tools through a unified endpoint, then adds routing groups, failover, request logging, quota control, model pricing, image-generation support, content moderation, online updates, `/manage` web hosting, and terminal management workflows around that traffic.
+## What is CliRelay?
 
-It is built to be **operated by more than one person**. Tenants, users, roles, and a fine-grained permission model (`governance.tenants`, `models.write`, `providers.test`, …) decide which pages, buttons, and actions each account gets, and every security-sensitive change lands in an audit log. Portal accounts let end users hold several API keys under one identity and check their own usage without an admin in the loop.
+> **A heavily extended fork of [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI)**, rebuilt around a production management layer, a web control panel and day-2 operations.
 
-The current runtime data stack is PostgreSQL 15+, Redis 7+, and Ent ORM. PostgreSQL is the source of truth for runtime data; Redis is used for cache, locks, limits, queues, and rebuildable state.
+CliRelay turns AI CLI subscriptions, OAuth credentials, provider API keys and OpenAI-compatible upstreams into **one managed API layer**. Clients talk to a single endpoint using the OpenAI, Anthropic or Gemini protocol; CliRelay authenticates them with its own client keys, picks a healthy upstream account, translates the request when needed, and records what happened.
 
+It is built to be **run by a team**. Tenants keep their accounts, keys and data apart; users get roles with fine-grained permissions; every security-sensitive change lands in an audit log; and portal accounts let end users hold several API keys and check their own usage without asking an admin.
+
+PostgreSQL 15+ is the source of truth for runtime data. Redis 7+ holds caches, locks, rate limits, queues and other rebuildable state.
+
+## Highlights
+
+| | |
+| :-- | :-- |
+| 🔌 **One endpoint, every provider** | Claude, Codex, Gemini CLI, Antigravity, Vertex, Bedrock, xAI/Grok, Qwen, Kimi, iFlow, OpenCode Go, ClinePass, Ollama Cloud, Command Code and any OpenAI-compatible upstream behind `http://your-host:8317`, speaking OpenAI Chat / Responses, Anthropic Messages and Gemini. |
+| 🧭 **Routing that survives bad days** | Channel groups and custom paths decide where traffic may go; round-robin, fill-first and session-sticky scheduling spread it; cooldowns and automatic failover move it off exhausted or failing accounts. |
+| 📈 **See everything** | A monitor center with a health score, per-minute live traffic, P50–P99 latency and time to first token, failure analysis and a portal user → model → channel traffic flow, plus a searchable log of every request with tokens, latency and cost. |
+| 💳 **Control spend** | Client keys grouped under portal accounts, reusable permission profiles, daily / period / lifetime quotas, RPM and TPM limits, per-model pricing and one-click period resets. |
+| 🏛️ **Built for teams** | Tenants, users, roles, `resource.action` permissions, a curated menu per tenant and an audit trail for security-sensitive changes. |
+| 🖥️ **Operate from the browser** | A `/manage` control panel to add accounts with guided sign-in or credential import, edit config visually, manage models and pricing, and check for updates — in English, Simplified Chinese and Russian. |
+
+## How a request flows
+
+```mermaid
+flowchart LR
+    subgraph clients["Your tools"]
+        cc["Claude Code"]
+        cx["Codex CLI"]
+        gc["Gemini CLI"]
+        oa["Any OpenAI-compatible client"]
+    end
+
+    subgraph relay["CliRelay :8317"]
+        auth["Client key<br/>portal account · permission profile"]
+        quota["Quotas & rate limits"]
+        route["Channel group routing<br/>scheduling · cooldown · failover"]
+        exec["Provider executors<br/>protocol translation"]
+        auth --> quota --> route --> exec
+    end
+
+    subgraph upstreams["Upstream accounts"]
+        oauth["OAuth accounts<br/>Claude · Codex · Gemini · Antigravity · Grok · Qwen · Kimi · iFlow"]
+        keys["Provider keys<br/>OpenAI-compatible · Vertex · Bedrock · OpenCode Go · ClinePass · Ollama Cloud"]
+    end
+
+    clients --> auth
+    exec --> oauth
+    exec --> keys
+    relay -. "request logs, usage rollups" .-> pg[("PostgreSQL")]
+    relay -. "cache, locks, limits" .-> rd[("Redis")]
 ```
-┌───────────────────────┐         ┌──────────────┐         ┌────────────────────┐
-│   AI Coding Tools     │         │              │         │  Upstream Providers │
-│                       │         │              │ ──────▶ │  Google Gemini      │
-│  Claude Code          │ ──────▶ │   CliRelay   │ ──────▶ │  OpenAI / Codex    │
-│  Gemini CLI           │         │   :8317      │ ──────▶ │  Anthropic Claude  │
-│  OpenAI Codex         │         │              │ ──────▶ │  Qwen / iFlow      │
-│  Amp CLI / IDE        │         │              │ ──────▶ │  Antigravity/xAI   │
-│  Any OAI-compatible   │         └──────────────┘         │  Vertex / Bedrock  │
-└───────────────────────┘                                  │  OpenCode/Cline    │
-                                                           │  Ollama / Amp      │
-                                                           └────────────────────┘
-```
 
-## ✨ Key Features
+1. **Authenticate.** A client key resolves to its portal account and permission profile, which decide the allowed channel groups, models and quotas.
+2. **Admit.** Daily, period and lifetime spending, request quotas, RPM, TPM and concurrency are checked before anything reaches an upstream — for HTTP and for Responses WebSocket turns alike.
+3. **Route.** The request goes to a healthy channel (an AI account or a provider key) inside the allowed groups, following the scheduling strategy; failures cool the channel down and fail over to the next one.
+4. **Translate and record.** The executor speaks the upstream's protocol, streams the answer back, and writes a request log row and usage rollups that power the dashboards.
 
-### 🔌 Multi-Provider Proxy Engine
+## A tour of the control panel
 
-| Feature | Description |
-|:--------|:------------|
-| 🌐 **Unified Endpoint** | One `http://localhost:8317` fronts Gemini, Claude, Codex, Qwen, iFlow, Kimi, Antigravity, xAI/Grok, Vertex, Bedrock, OpenCode Go, ClinePass, Ollama Cloud, OpenAI-compatible upstreams, and Amp integration |
-| ⚖️ **Smart Load Balancing** | Round-robin or fill-first scheduling across multiple API keys for the same provider |
-| 🧭 **Group & Path Routing** | Bind channels into groups, restrict API keys to allowed groups, and expose custom path namespaces for teams or workloads |
-| 🔄 **Auto Failover** | Automatically switches to backup channels when quotas are exhausted or errors occur |
-| 🧠 **Multimodal Support** | Full support for text + image inputs, image-generation routing, function calling (tools), and streaming SSE responses |
-| 🔗 **OpenAI-Compatible** | Works with any upstream that speaks the OpenAI Chat Completions protocol |
-
-### 📊 Request Logging & Monitoring (PostgreSQL)
-
-| Feature | Description |
-|:--------|:------------|
-| 📝 **Full Request Capture** | Every API request is logged to PostgreSQL with timestamp, model, tokens (in/out/reasoning/cache), latency, status, and source channel |
-| 💬 **Message Body Storage** | Full request/response message content captured in compressed PostgreSQL storage, with separate retention for content vs. metadata |
-| 🔍 **Advanced Querying** | Filter logs by API Key, model, status, time range with efficient pagination (LIMIT/OFFSET) |
-| 📈 **Analytics Aggregation** | Pre-computed dashboards: daily trends, model distribution, hourly heatmaps, per-key statistics |
-| 🏥 **Health Score Engine** | Real-time 0–100 health score considering success rate, latency, active channels, and error patterns |
-| 📡 **WebSocket Monitoring** | Live system stats streamed via WebSocket: CPU, memory, goroutines, network I/O, DB size |
-| 🗄️ **Ent + PostgreSQL** | Uses PostgreSQL 15+ as the runtime primary database with Ent-generated schema metadata |
-
-### 🏛️ Multi-Tenancy & Governance
-
-| Feature | Description |
-|:--------|:------------|
-| 🏢 **Tenant Lifecycle** | Create tenants and manage their lease periods; runtime data is scoped by tenant end to end |
-| 👤 **User Management** | Manage the accounts inside the active tenant, with password policy and reset flows |
-| 🎭 **Role Permissions** | Fine-grained resource.action permissions (`governance.tenants`, `models.write`, `providers.test`, …) decide which pages, buttons, and actions an account can reach |
-| 🧾 **Audit Logs** | Security-sensitive account and tenant changes are recorded and reviewable in the panel |
-| 🧭 **Menu Management** | Curate which navigation entries a tenant sees, keeping menus aligned with granted permissions |
-
-### 🔐 API Key & Portal Accounts
-
-| Feature | Description |
-|:--------|:------------|
-| 🔑 **API Key CRUD** | Create, edit, delete API keys via Management API — each with custom name, notes, and independent enable/disable toggle |
-| 🧑‍💼 **Portal Accounts** | Group several API keys under one end-user account, so a person is managed once instead of key by key |
-| 📊 **Per-Key Quotas** | Set max token / request quotas per key with automatic enforcement |
-| 🔁 **Period Quota Resets** | Reset spending quotas for a chosen period, for a whole account or a single owned key |
-| ⏱️ **Rate Limiting** | Per-key rate limiting (requests per minute/hour) |
-| 🧩 **Permission Profiles** | Reusable profiles bind scoped channel access and model permissions to keys |
-| 🔒 **Key Masking** | API keys are always displayed masked (`sk-***xxx`) in UI and logs |
-| 🌍 **Public Lookup Page** | End users can query their own usage stats and request logs via a public self-service page (no login required) |
-
-### 🔗 Provider Channel Management
-
-| Feature | Description |
-|:--------|:------------|
-| 📋 **Multi-Tab Config** | Manage channels organized by provider type: Gemini, Claude, Codex, OpenCode Go, ClinePass, Ollama Cloud, Vertex, Bedrock, OpenAI Compatible, and Ampcode |
-| 🏷️ **Channel Naming** | Each channel can have a custom name, notes, proxy URL, custom headers, and model alias mappings |
-| 🧩 **Reusable Proxy Pool** | Maintain outbound proxy entries once and attach them to OAuth/auth channels when needed |
-| ⏱️ **Latency Tracking** | Average latency (`latency_ms`) tracked per channel with visual indicators |
-| 🔄 **Enable/Disable** | Individually toggle channels on/off without deletion |
-| 🚫 **Model Exclusions** | Exclude specific models from a channel (e.g., block expensive models on backup keys) |
-| 🧾 **Model Library Sync** | Maintain custom models and sync model IDs/pricing from OpenRouter for quota accounting |
-| 📊 **Channel Stats** | Per-channel success/fail counts and model availability displayed on each channel card |
-
-### 🛡️ Security & Authentication
-
-| Feature | Description |
-|:--------|:------------|
-| 🔐 **OAuth Support** | Native OAuth flows for Gemini, Claude, Codex, Qwen, iFlow, Antigravity, Kimi, and xAI/Grok, plus device/browser/cookie variants where supported |
-| 🪪 **Identity Fingerprints** | Centralize upstream identity metadata so providers receive consistent client fingerprints |
-| 🧹 **Content Moderation** | Build reusable moderation profiles, test them against sample content, and bind them to AI accounts, provider keys, or a provider default |
-| 🔒 **TLS Handling** | Configurable TLS settings for upstream communication |
-| 🏠 **Panel Isolation** | Management panel access controlled independently with admin password |
-| 🌐 **Scoped CORS** | Browser and extension callers are allowlisted explicitly, including a controlled `chrome-extension://*` form; the preflight advertises every auth header the server actually accepts |
-| 🛡️ **Request Cloaking** | Upstream requests are stripped of client-identifying headers for privacy |
-
-### 🛠️ Operator Experience
-
-| Feature | Description |
-|:--------|:------------|
-| 🖥️ **Visual Management Panel** | Configure providers, auth, API keys, models, routing, logs, updates, and system status from `/manage` |
-| 🌐 **Trilingual UI** | Built-in i18n for the management panel — Simplified Chinese, English, and Russian — plus Compose/TUI language selection |
-| 🌙 **Dark Mode** | Full dark theme for long-running operational sessions |
-| 🧬 **Visual Config Editor** | Edit runtime config visually or inspect source YAML when you need exact control |
-| 🔄 **Online Update Flow** | Check versions, review update notes, trigger the updater sidecar, and wait for backend recovery from the panel |
-| 📥 **CC Switch Presets** | Build reusable CC Switch provider configs from a channel group, map each Claude role (main / Haiku / Sonnet / Opus / Fable) or Codex model to a real upstream model, and hand out a one-click import link |
-| 🛒 **Model Plaza** | Browse every model currently available to the active tenant in one place |
-
-### 🗄️ Data Persistence
-
-| Feature | Description |
-|:--------|:------------|
-| 💾 **PostgreSQL Storage** | Usage data, request logs, message bodies, API keys, routing, proxy pool, model config, and quota state are stored in PostgreSQL |
-| 🔄 **Redis Runtime State** | Redis 7+ handles cache, locks, limits, queues, and rebuildable snapshots; PostgreSQL remains the source of truth |
-| 🗃️ **Pluggable Auth/Config Backends** | Local files by default, with optional PostgreSQL, Git, or S3-compatible object storage backends for config/auth persistence |
-| 📦 **Config Snapshots** | Import/export entire system configuration as JSON for backup and migration |
-
-## 🛠️ Runtime & Tech Stack
-
-| Layer | Technology |
-|:------|:-----------|
-| Runtime | Go 1.26, Gin, Docker Compose |
-| Data | PostgreSQL 15+ via Ent ORM, Redis 7+ for rebuildable runtime state |
-| Auth / Config Storage | Local files, PostgreSQL, Git, or S3-compatible object storage |
-| Proxy Core | OpenAI Chat Completions / Responses, Anthropic Messages, Gemini, provider-specific executors, SSE and WebSocket paths |
-| Operations | Bubble Tea / Lipgloss TUI, `/manage` web panel hosting, updater sidecar |
-| Observability | PostgreSQL request logs, compressed message bodies, live logs, system stats WebSocket |
-
-## 📸 Management Panel Preview
-
-CliRelay can expose a built-in web control panel at `/manage`. The server can host bundled SPA assets or fall back to synced management assets from the configured panel repository.
-
-The gallery below follows the panel's own navigation, captured from a live deployment.
+The control panel ([kittors/codeProxy](https://github.com/kittors/codeProxy)) is served by CliRelay at `/manage`. The screenshots below follow its own navigation and were taken from a live deployment; names, keys, addresses and accounts are replaced with sample values.
 
 ### Observability
 
-| Dashboard | Monitor center |
-| :-------- | :------------- |
-| <img src="docs/images/readme-showcase/dashboard.png" width="100%" alt="Dashboard with request, token, cost and cache metrics" /> | <img src="docs/images/readme-showcase/monitor.png" width="100%" alt="Monitor center with model distribution and daily usage trend" /> |
+| Monitor center — traffic and reliability over time | Monitor center — rankings, traffic flow and active hours |
+| :-- | :-- |
+| <img src="docs/images/readme-showcase/monitor-center-trends.png" width="100%" alt="Traffic and reliability trend, latency distribution and failure analysis" /> | <img src="docs/images/readme-showcase/monitor-center-flow.png" width="100%" alt="Channel health, portal user ranking, traffic flow and weekday-hour heatmap" /> |
 
-| Request logs | Runtime logs |
-| :----------- | :----------- |
-| <img src="docs/images/readme-showcase/request-logs.png" width="100%" alt="Request log table with latency and token metrics per call" /> | <img src="docs/images/readme-showcase/runtime-logs.png" width="100%" alt="Runtime error logs with per-request diagnostics and download" /> |
+| Dashboard | Request logs |
+| :-- | :-- |
+| <img src="docs/images/readme-showcase/dashboard.png" width="100%" alt="Dashboard with request, token, cost and cache KPIs and a live system monitor" /> | <img src="docs/images/readme-showcase/request-logs.png" width="100%" alt="Request log table with channel, user, cache and token columns" /> |
 
-### Access & Credentials
+- **Monitor center** answers four questions at a glance: is it healthy, is it slow, what is failing, and where is traffic going.
+  - The health score combines success rate, the share of traffic on failing channels and P95 latency against the previous period, and explains each check.
+  - Six tiles cover requests, success rate, P95 latency, time to first token, tokens with cache hit rate, and cost — each with a period-over-period change and a sparkline.
+  - Below them: a trend view, the latency distribution (P50 / P90 / P95 / P99), failures by channel, model or portal user, model / channel / user rankings, a traffic-flow diagram and a weekday × hour heatmap. Click any row to filter the whole page.
+- **Dashboard** summarises requests, success rate, tokens, cost, failures and cache ratio for today, 7 or 30 days, next to a live system monitor (CPU, memory, disk, database and log storage).
+- **Request logs** list every call with its channel, portal user and key, cache / input / output tokens, latency and cost. Filter by user, model, channel and status, and open the request and response bodies when body storage is enabled.
 
-| AI providers | AI accounts |
-| :----------- | :---------- |
-| <img src="docs/images/readme-showcase/ai-providers.png" width="100%" alt="Provider channels grouped by upstream type" /> | <img src="docs/images/readme-showcase/ai-accounts.png" width="100%" alt="AI account cards with quota windows and health" /> |
+<details>
+<summary><b>More monitor-center views</b></summary>
+
+| Model performance, channel health and portal users | Dark theme |
+| :-- | :-- |
+| <img src="docs/images/readme-showcase/monitor-center-rankings.png" width="100%" alt="Model performance table with latency, first token, speed, tokens and cost" /> | <img src="docs/images/readme-showcase/monitor-center-dark.png" width="100%" alt="Monitor center in the dark theme" /> |
+
+</details>
+
+### Access and credentials
+
+| Add an AI account | Import credentials you already hold |
+| :-- | :-- |
+| <img src="docs/images/readme-showcase/add-ai-account.png" width="100%" alt="Add AI account dialog grouped by browser sign-in, device code and credential import" /> | <img src="docs/images/readme-showcase/credential-import.png" width="100%" alt="Refresh token import with risk notice, steps and bulk paste" /> |
+
+| AI accounts | AI providers |
+| :-- | :-- |
+| <img src="docs/images/readme-showcase/ai-accounts.png" width="100%" alt="AI account cards with plan badges, success rate and quota windows" /> | <img src="docs/images/readme-showcase/ai-providers.png" width="100%" alt="Provider key cards grouped by upstream type" /> |
 
 | Portal accounts | Portal account permissions |
-| :-------------- | :------------------------- |
-| <img src="docs/images/readme-showcase/portal-accounts.png" width="100%" alt="Portal accounts holding multiple API keys each" /> | <img src="docs/images/readme-showcase/portal-account-permissions.png" width="100%" alt="Reusable permission profiles with quotas and system prompts" /> |
+| :-- | :-- |
+| <img src="docs/images/readme-showcase/portal-accounts.png" width="100%" alt="Portal accounts with keys, permission profile, quota and spend" /> | <img src="docs/images/readme-showcase/portal-account-permissions.png" width="100%" alt="Reusable permission profiles with channel groups, quotas and system prompts" /> |
 
 | Content moderation | CC Switch config |
-| :----------------- | :--------------- |
-| <img src="docs/images/readme-showcase/content-moderation.png" width="100%" alt="Moderation profiles bound to accounts, keys or provider defaults" /> | <img src="docs/images/readme-showcase/cc-switch-config.png" width="100%" alt="Reusable CC Switch config presets per client" /> |
+| :-- | :-- |
+| <img src="docs/images/readme-showcase/content-moderation.png" width="100%" alt="Moderation profiles bound to accounts, keys or provider defaults" /> | <img src="docs/images/readme-showcase/cc-switch-config.png" width="100%" alt="CC Switch presets per client with model and channel group" /> |
 
-### Models & Routing
+- **Add AI account** groups every way in by what you will do — sign in with a browser, enter a device code, or import a credential — and walks through the steps that provider actually has, including which address to copy back and why the landing page does not load.
+- **Credential import** turns a held credential (Claude session key, Codex or Antigravity refresh token, Grok SSO cookie) into an account. It explains where to find each one and what handing it over means, accepts many at once, and retries failed rows on their own.
+- **AI accounts** show each OAuth account with its plan, quota windows, success rate and subscription expiry; **AI providers** hold API-key upstreams with base URL, headers, proxy binding and per-key model lists.
+- **Portal accounts** own one or more client keys and share a quota; **permission profiles** bundle channel groups, models, limits and an optional system prompt so a new user is set up in one pick.
+- **Content moderation** profiles can be tested against sample text and bound to accounts, keys or a provider default; **CC Switch config** builds one-click import presets for Claude Code and Codex.
+
+### Models and routing
 
 | Model plaza | Model catalog |
-| :---------- | :------------ |
-| <img src="docs/images/readme-showcase/model-plaza.png" width="100%" alt="Model plaza browsing models available to the tenant" /> | <img src="docs/images/readme-showcase/model-catalog.png" width="100%" alt="Model catalog with capabilities and per-million pricing" /> |
+| :-- | :-- |
+| <img src="docs/images/readme-showcase/model-plaza.png" width="100%" alt="Model plaza cards with capabilities, sources and per-million pricing" /> | <img src="docs/images/readme-showcase/model-catalog.png" width="100%" alt="Model catalog with owner, capabilities, billing and price" /> |
 
-| Image models | Channel groups |
-| :----------- | :------------- |
-| <img src="docs/images/readme-showcase/image-models.png" width="100%" alt="Image generation endpoints with ready-to-run curl samples" /> | <img src="docs/images/readme-showcase/channel-groups.png" width="100%" alt="Channel groups with health state and routing paths" /> |
+| Channel groups | Outbound proxies |
+| :-- | :-- |
+| <img src="docs/images/readme-showcase/channel-groups.png" width="100%" alt="Channel groups with health, members and scheduling" /> | <img src="docs/images/readme-showcase/outbound-proxies.png" width="100%" alt="Reusable outbound proxy pool with latency probes" /> |
 
-| Outbound proxies |
-| :--------------- |
-| <img src="docs/images/readme-showcase/outbound-proxies.png" width="100%" alt="Reusable outbound proxy pool with latency probes" /> |
+- **Model plaza** shows every model the current tenant can reach, with capabilities, the channels that serve it and its price per million tokens.
+- **Model catalog** is where models, owners, capabilities and pricing are maintained, with an optional OpenRouter sync and a built-in model test.
+- **Channel groups** decide which channels a key may use and how traffic is spread inside the group; groups can follow new upstream models automatically.
+- **Outbound proxies** are defined once and bound to the accounts or provider keys that need a fixed egress IP.
 
 ### Organization
 
-| Tenants | Tenant switcher |
-| :------ | :-------------- |
-| <img src="docs/images/readme-showcase/tenants.png" width="100%" alt="Tenant list with lifecycle and expiry" /> | <img src="docs/images/readme-showcase/tenant-switcher.png" width="100%" alt="Switching the effective tenant from the header" /> |
+| Tenants | Users |
+| :-- | :-- |
+| <img src="docs/images/readme-showcase/tenants.png" width="100%" alt="Tenant list with status, expiry and version" /> | <img src="docs/images/readme-showcase/users.png" width="100%" alt="Users inside the effective tenant with roles and last sign-in" /> |
 
-| Users | Roles & permissions |
-| :---- | :------------------ |
-| <img src="docs/images/readme-showcase/users.png" width="100%" alt="Users inside the effective tenant with assigned roles" /> | <img src="docs/images/readme-showcase/roles-permissions.png" width="100%" alt="Built-in and custom roles with permission counts" /> |
+| Roles and permissions | Audit logs |
+| :-- | :-- |
+| <img src="docs/images/readme-showcase/roles-permissions.png" width="100%" alt="Built-in and custom roles with permission counts" /> | <img src="docs/images/readme-showcase/audit-logs.png" width="100%" alt="Audit trail of security-sensitive changes with actor, action and result" /> |
 
-| Audit logs |
-| :--------- |
-| <img src="docs/images/readme-showcase/audit-logs.png" width="100%" alt="Audit trail of security-sensitive account and tenant changes" /> |
+- **Tenants** carry their own accounts, keys, routing and data, with a lease period; administrators switch the effective tenant from the header.
+- **Roles** grant `resource.action` permissions such as `providers.test` or `models.write`, which decide the pages, buttons and API calls each user gets.
+- **Audit logs** record who changed what, from where, and whether it succeeded.
 
-### System & Self-Service
+### System
 
-| Visual config editor | Menu management |
-| :------------------- | :-------------- |
-| <img src="docs/images/readme-showcase/config-visual-editor.png" width="100%" alt="Visual config editor with recommended production profile" /> | <img src="docs/images/readme-showcase/menu-management.png" width="100%" alt="Menu visibility, ordering and required permission per entry" /> |
+| Visual config editor | System info |
+| :-- | :-- |
+| <img src="docs/images/readme-showcase/config-visual-editor.png" width="100%" alt="Config page with group tabs, section chips and the low-resource profile" /> | <img src="docs/images/readme-showcase/system-info.png" width="100%" alt="System info with endpoints, versions and the update check" /> |
 
-| System info | User portal |
-| :---------- | :---------- |
-| <img src="docs/images/readme-showcase/system-info.png" width="100%" alt="System info with version, build time and update check" /> | <img src="docs/images/readme-showcase/user-portal.png" width="100%" alt="End-user portal with usage stats and request heatmap" /> |
+| Menu management | Sign-in |
+| :-- | :-- |
+| <img src="docs/images/readme-showcase/menu-management.png" width="100%" alt="Menu visibility, ordering and required permission per entry" /> | <img src="docs/images/readme-showcase/login.png" width="100%" alt="Sign-in page" /> |
 
-| Public API key lookup |
-| :-------------------- |
-| <img src="docs/images/readme-showcase/api-key-lookup.png" width="100%" alt="Public API key usage lookup without login" /> |
+- **Config** edits the running configuration through grouped forms with inline validation, or as YAML in the source editor; a recommended low-resource profile tunes small hosts in one click.
+- **System info** shows the API and management endpoints, backend and panel versions, and checks for updates.
+- **Menu management** curates which entries a tenant sees and which permission each requires.
 
-> 🔗 The runtime panel source is configurable via `remote-management.panel-github-repository`. The default repository is [kittors/codeProxy](https://github.com/kittors/codeProxy).
+## Supported providers
 
-## 🏗️ Supported Providers
+| Provider / channel | How it connects | Notes |
+| :-- | :-- | :-- |
+| Anthropic Claude | OAuth (browser or code page), session-key import, API key | Claude Code and Claude-compatible clients; Messages and Responses entrypoints |
+| OpenAI Codex | OAuth, refresh-token import, API key | Responses over HTTP and WebSocket, image generation bridge |
+| Google Gemini | OAuth (Gemini CLI), API key | Gemini CLI and AI Studio style flows |
+| Antigravity | OAuth, refresh-token import | Gemini and Claude model families, quota warmup |
+| Vertex AI | Service-account JSON, API key | Custom base URL, headers, aliases and exclusions |
+| AWS Bedrock | API key or SigV4 | Region-aware Bedrock Runtime with Claude model mappings |
+| xAI / Grok | OAuth, SSO-cookie import | Grok CLI identity and quota metadata |
+| Qwen | Device code | Qwen Code style sign-in |
+| Kimi | Device code | Kimi CLI identity headers |
+| iFlow | OAuth, cookie | iFlow and related model families |
+| OpenCode Go | API key | Usage windows read with the same key; vision fallback model |
+| ClinePass | API key | OpenAI-compatible routing with model-access control |
+| Ollama Cloud | API key | OpenAI-compatible routing with model-access control |
+| Command Code | API key | Plan usage windows and model access |
+| OpenAI-compatible upstreams | API key | OpenRouter and any service that speaks Chat Completions |
+| Amp | Upstream key and model mappings | Amp CLI and IDE integration |
 
-| Provider / Channel | Auth | Notes |
-|:-------------------|:-----|:------|
-| Google Gemini | OAuth + API Key | Gemini CLI / AI Studio style flows |
-| Anthropic Claude | OAuth + API Key | Claude Code and Claude-compatible clients |
-| OpenAI Codex | OAuth + API Key | Includes Responses and WebSocket bridging |
-| Qwen | OAuth | Qwen Code style login flow |
-| iFlow / GLM | OAuth + Cookie | Supports iFlow routing and related model families |
-| Kimi | OAuth | Browser-based login flow |
-| xAI / Grok | OAuth | Grok CLI-compatible OAuth and quota metadata |
-| Antigravity | OAuth | Dedicated OAuth channel with model backfill support |
-| Vertex-compatible endpoints | API Key | Custom base URL, headers, aliases, exclusions |
-| AWS Bedrock | API Key / SigV4 | Region-aware Bedrock Runtime access with Claude model aliases |
-| OpenCode Go | API Key | Fixed OpenCode Go upstream with usage query and vision fallback support |
-| ClinePass | API Key | OpenAI-compatible ClinePass routing with model-access controls |
-| Ollama Cloud | API Key | OpenAI-compatible Ollama Cloud routing with model-access controls |
-| OpenAI-compatible upstreams | API Key | OpenRouter, Grok-compatible endpoints, and custom providers |
-| Amp integration | Upstream API key + mappings | Direct Amp upstream fallback or mapped local routing |
+## Quick start
 
-## 🚀 Quick Start
-
-### 🐳 Install With Docker Compose
-
-For shared gateways and NAS installations, see the [team deployment checklist](docs/production-checklist.md).
-
-CliRelay runs as a single instance by default. To spread traffic over several machines and fail over automatically when one goes down, see [Multi-instance deployment](docs/multi-instance-deployment.md); single-node installs need no change.
-
-Docker Compose is the recommended installation path for CliRelay. The included `docker-compose.yml` starts CliRelay, PostgreSQL 15, Redis 7, and the updater sidecar. A `.env` file is optional: the `clirelay-init` service creates it on the first `docker compose up -d`, generates missing secrets such as `CLIRELAY_UPDATER_TOKEN`, `CLIRELAY_ADMIN_PASSWORD`, and `CLIRELAY_POSTGRES_PASSWORD`, preserves existing non-empty values, and creates `config.yaml` from `config.example.yaml` if it is missing. `CLIRELAY_ADMIN_PASSWORD` bootstraps the first `admin` user in an empty database; the init script generates a compliant random value, or you can pre-set your own of at least 12 characters containing an upper-case letter, a lower-case letter, and a non-alphanumeric character. A pre-set value that does not meet those rules is replaced on the next start, because bootstrap would otherwise reject it and the container would not come up. For production, pre-create `.env` only when you want to pin your own secrets or bind paths.
+Docker Compose is the recommended installation. It starts CliRelay, PostgreSQL 15, Redis 7 and the updater sidecar.
 
 ```bash
 git clone https://github.com/kittors/CliRelay.git
@@ -273,155 +237,156 @@ cd CliRelay
 docker compose up -d
 ```
 
-The application process runs as `10001:10001`. Ensure `config.yaml` is readable by that user; management-panel config saves also require write access. On Synology/DSM bind mounts, if the container entrypoint cannot apply `chown` because of the shared-folder ACL, fix the ACL/ownership on the host and restart `cli-proxy-api`.
+On the first start, the `clirelay-init` service creates `.env` and `config.yaml` if they are missing and generates the secrets it needs (`CLIRELAY_ADMIN_PASSWORD`, `CLIRELAY_POSTGRES_PASSWORD`, `CLIRELAY_UPDATER_TOKEN`). Existing non-empty values are kept.
 
-After the first start, edit the generated `config.yaml` to add your API keys or OAuth credentials, then restart the service:
+| What | Where |
+| :-- | :-- |
+| API endpoint | `http://localhost:8317` |
+| Control panel | `http://localhost:8317/manage` — sign in as `admin` with `CLIRELAY_ADMIN_PASSWORD` from `.env` |
+| Logs | `docker compose logs -f cli-proxy-api` |
+| Restart / stop | `docker compose restart cli-proxy-api` / `docker compose down` |
+| Terminal UI | `docker compose exec cli-proxy-api ./cli-proxy-api -tui` |
+
+Then, in the control panel:
+
+1. **Add an upstream** — *AI Accounts → Add AI account* to sign in with a subscription or import a credential, or *AI Providers* for an API key.
+2. **Create a client key** — *Portal Accounts → Create user*; each portal account holds one or more keys. A fresh install ships with no client key and rejects client requests until you create one; the `your-api-key-*` values in `config.example.yaml` are placeholders that are always rejected.
+3. **Point your tools at CliRelay** — see below.
+
+> [!NOTE]
+> The container runs as `10001:10001`; `config.yaml` must be readable by it, and writable if you want to save config from the panel. If a Synology/DSM shared-folder ACL blocks the entrypoint's `chown`, fix ownership on the host and restart `cli-proxy-api`. If you pre-set `CLIRELAY_ADMIN_PASSWORD`, use at least 12 characters with an upper-case letter, a lower-case letter and a symbol; a weaker value is replaced on the next start.
+
+## Connect your tools
+
+Use a client key created in the panel wherever a tool expects an API key.
+
+**Claude Code**
 
 ```bash
-docker compose restart cli-proxy-api
+export ANTHROPIC_BASE_URL=http://localhost:8317
+export ANTHROPIC_AUTH_TOKEN=sk-your-client-key
+claude
 ```
 
-By default, client API routes (`/v1`, `/v1beta`) require an API key. The generated `config.yaml` contains none, so every client request is rejected until you create one on the API Keys page of the web panel. The `your-api-key-*` values shown in `config.example.yaml` are placeholders and are always rejected. To run without client keys, set `allow-unauthenticated: true` in `config.yaml` (not recommended for production).
+**Codex CLI** (`~/.codex/config.toml`)
 
-After startup:
-
-- API endpoint: `http://localhost:8317`
-- Web panel: `http://localhost:8317/manage`
-- Logs: `docker compose logs -f cli-proxy-api`
-- Restart: `docker compose restart cli-proxy-api`
-- Stop: `docker compose down`
-- TUI: `docker compose exec cli-proxy-api ./cli-proxy-api -tui`
-- OAuth login modes: `docker compose exec cli-proxy-api ./cli-proxy-api -login`
-
-Set `CLIRELAY_LOCALE=en` or `CLIRELAY_LOCALE=zh` in your Compose environment to control the default TUI language.
-
-For cloud platforms that only allow one mounted directory, set `AUTH_PATH` to the authentication directory inside the container, for example `/CLIProxyAPI/auths`. `CLI_PROXY_AUTH_PATH` remains the host-side bind path, while `AUTH_PATH` is also used to override `auth-dir` at runtime.
-
-To disable automatic update prompts, set the following in `config.yaml` or turn off **Automatic Update Checks** in the Config page:
-
-```yaml
-auto-update:
-  enabled: false
-```
-
-Update checks follow the stable `main` Docker image by default. To test dev builds, set `channel: dev` in `config.yaml` or choose **Development (dev)** from **Update Channel** in the Config page:
-
-```yaml
-auto-update:
-  channel: dev
-```
-
-### 🗄️ Runtime Data Stack
-
-CliRelay uses PostgreSQL 15+, Redis 7+, and Ent ORM exclusively at runtime. PostgreSQL is the only source of truth for business data; Redis is limited to cache, locks, rate limits, queues, and rebuildable state.
-
-The standard Docker Compose stack starts `clirelay-init`, PostgreSQL, Redis, the application container, and the updater sidecar.
-
-The updater sidecar owns OTA task state and publishes it through SSE. The management panel renders only the updater-provided run ID, actual stage, completed steps, current and target backend/UI versions, target image, latest Release metadata, and final result; it no longer advances a timer-based percentage. If the API container restarts, the page reloads, or SSE disconnects briefly, the panel reconnects and receives the latest updater snapshot. Compose persists that snapshot in `.clirelay-updater-status.json`; if the updater itself restarts during a task, the interrupted task is explicitly marked failed instead of remaining stuck as running. After the application passes its health check, the current updater launches a detached helper from the target image; that helper safely recreates the updater sidecar so later OTA runs use the target updater implementation.
-
-For large installations, tune `request-log-storage` in `config.yaml` to control full request/response body retention. Full body storage is disabled by default. When `store-content` is enabled, bodies are compressed, kept for 30 days, and capped at ~1GB (1024MB), while lightweight request metadata and request details remain available for statistics and troubleshooting. Set `content-retention-days: 0` to keep full bodies indefinitely. Disabling body storage from the management panel also clears historical input and output bodies while preserving request details and request records.
-
-If you need non-local config/auth persistence, the server also supports PostgreSQL, Git-backed, and S3-compatible object-store backends through environment-based bootstrap settings.
-
-### 3️⃣ Point Your Tools
-
-Set your AI tool's API base to `http://localhost:8317` and start coding!
-
-**Example: OpenAI Codex (`~/.codex/config.toml`)**
 ```toml
-[model_providers.tabcode]
+model_provider = "clirelay"
+
+[model_providers.clirelay]
 name = "openai"
 base_url = "http://localhost:8317/v1"
 requires_openai_auth = true
 ```
 
-> 📖 **Full setup guides →** [help.router-for.me](https://help.router-for.me/)
-
-## 🖥️ Management Panel
-
-When the control panel is enabled, open:
+**Any OpenAI-compatible client**
 
 ```bash
-http://localhost:8317/manage
+curl http://localhost:8317/v1/chat/completions \
+  -H "Authorization: Bearer sk-your-client-key" \
+  -H "Content-Type: application/json" \
+  -d '{"model": "gpt-5.5", "messages": [{"role": "user", "content": "Hello"}]}'
 ```
 
-- `remote-management.disable-control-panel` defaults to `false` in the example config, so the control panel is reachable after a standard Docker Compose deployment.
-- When enabled, the current panel route is `/manage/login`. The old `management.html#/login` route is legacy-only.
-- Docker Compose deployments expose the panel at `/manage`.
-- The server can serve a bundled SPA directory or auto-fetch panel assets when needed.
-- This repository contains the hosting/update path for `/manage`; the standalone web panel source is maintained separately from the Go server code.
-- Make UI/interaction/copy changes in the panel source repository (default: `kittors/codeProxy`) and ship them via its release artifacts for the server to fetch.
-- Terminal-first management is also available through `docker compose exec cli-proxy-api ./cli-proxy-api -tui`.
-- If you want to customize the panel asset source, set `remote-management.panel-github-repository`.
+> [!TIP]
+> *CC Switch Config* in the panel builds a one-click import link for Claude Code and Codex, with the model mapping and channel group already filled in.
 
-## 📐 Architecture
+Full client guides: [help.router-for.me](https://help.router-for.me/).
+
+## Configuration essentials
+
+Everything below can be changed in the panel's **Config** page or in `config.yaml`.
+
+| Setting | What it controls |
+| :-- | :-- |
+| `port`, `host` | Where the API and panel listen (default `8317`, all interfaces). |
+| `remote-management` | Whether the management API accepts non-local callers, whether `/manage` is served, and which repository the panel updates from (`panel-github-repository`, default `kittors/codeProxy`). |
+| `routing.strategy` | Default scheduling inside a group: `round-robin`, `fill-first` or `session-sticky`. |
+| `request-retry`, `max-retry-interval`, `quota-exceeded` | How many times a failed request is retried and what happens when an account's quota runs out. |
+| `proxy-url`, proxy pool | Global and per-account outbound proxies. |
+| `request-log-storage` | Whether full request / response bodies are kept, for how long and up to what size. Off by default; metadata and request details are always recorded. |
+| `auto-update` | Update checks and the channel they follow (`main` by default, `dev` for preview builds). |
+| `cors-allow-origins` | Browser and extension origins allowed to call the API. |
+
+```yaml
+# Keep full bodies for 7 days, capped at 2 GB
+request-log-storage:
+  store-content: true
+  content-retention-days: 7
+  max-total-size-mb: 2048
+
+# Follow dev builds, or turn update checks off
+auto-update:
+  enabled: true
+  channel: dev
+```
+
+Config and credential storage can also live in PostgreSQL, Git or an S3-compatible object store instead of local files, selected through environment-based bootstrap settings.
+
+## Deployment options
+
+| Setup | When to use it | Guide |
+| :-- | :-- | :-- |
+| Single node, Docker Compose | Personal use, small teams, NAS | [Quick start](#quick-start) · [Production checklist](docs/production-checklist.md) |
+| Behind nginx or another reverse proxy | Public HTTPS, custom domain | [Reverse proxy (Chinese)](docs/reverse-proxy_CN.md) |
+| Several nodes on one shared PostgreSQL | Spreading traffic, automatic failover, rolling deploys | [Multi-instance deployment](docs/multi-instance-deployment.md) · [Node bootstrap (Chinese)](docs/multi-instance-node-bootstrap_CN.md) |
+
+Online updates run through the updater sidecar: the panel shows the target version, each stage as it happens, and the result, and reconnects on its own if the API restarts during the update.
+
+## Architecture
 
 ```text
 CliRelay/
-├── cmd/server/               # Binary entry point and CLI mode dispatch
+├── cmd/server/               # Binary entry point and CLI modes
 ├── internal/api/             # HTTP server, management routes, middleware
-├── internal/auth/            # Provider OAuth / cookie / browser auth flows
-├── internal/config/          # Config parsing, defaults, migrations
-├── internal/store/           # Local, Git, PostgreSQL, object-store auth/config persistence
+├── internal/auth/            # Provider OAuth, cookie and device-code flows
+├── internal/runtime/         # Executors per provider, scheduling, cooldown
+├── internal/translator/      # OpenAI ⇄ Anthropic ⇄ Gemini ⇄ Responses translation
 ├── internal/identity/        # Tenants, users, roles, permissions, menus, audit logs
-├── internal/tui/             # Terminal management UI
-├── internal/usage/           # PostgreSQL-backed usage data, retention, analytics
+├── internal/usage/           # Request logs, rollups, monitor endpoints, retention
+├── internal/config/          # Config parsing, defaults, migrations
+├── internal/store/           # Local, Git, PostgreSQL and object-store persistence
 ├── internal/managementasset/ # /manage panel hosting and asset sync
-├── sdk/                      # Reusable Go SDK, handlers, executors
-├── auths/                    # Local credential storage
-├── examples/                 # SDK / custom provider examples
-├── docs/                     # Local docs and panel screenshots
-└── docker-compose.yml        # Container deployment entry
+├── internal/tui/             # Terminal management UI
+├── sdk/                      # Embeddable Go SDK, handlers and executors
+├── deploy/                   # Cluster building blocks and deploy scripts
+└── docker-compose.yml        # Default container deployment
 ```
 
-## 📚 Documentation
+| Layer | Technology |
+| :-- | :-- |
+| Runtime | Go 1.26, Gin, Docker Compose |
+| Data | PostgreSQL 15+ via Ent, Redis 7+ for rebuildable state |
+| Proxy core | OpenAI Chat Completions and Responses, Anthropic Messages, Gemini; SSE and WebSocket |
+| Operations | `/manage` web panel, Bubble Tea terminal UI, updater sidecar |
 
-| Doc | Description |
-|:----|:------------|
-| [Getting Started](https://help.router-for.me/) | Full installation and setup guide |
-| [Management API](https://help.router-for.me/management/api) | REST API reference for management endpoints |
-| [Amp CLI Guide](https://help.router-for.me/agent-client/amp-cli.html) | Integrate with Amp CLI & IDE extensions |
-| [SDK Usage](docs/sdk-usage.md) | Embed the proxy in Go applications |
-| [SDK Advanced](docs/sdk-advanced.md) | Executors & translators deep-dive |
-| [SDK Access](docs/sdk-access.md) | Authentication in SDK context |
-| [SDK Watcher](docs/sdk-watcher.md) | Credential loading & hot-reload |
-| [PostgreSQL / Redis Runtime](docs/postgres-redis-migration.md) | Runtime data-stack setup and validation |
-| [Multi-instance Deployment](docs/multi-instance-deployment.md) | Run several nodes on one shared PostgreSQL: traffic spreading, automatic failover, zero-loss database switchover, rolling deploys |
-| [Node Bootstrap for Rolling Deploys](docs/multi-instance-node-bootstrap_CN.md) (Chinese) | What a server needs before the node-by-node deploy workflow can roll out to it |
+## Documentation
 
-## 🤝 Contributing
+| Document | Description |
+| :-- | :-- |
+| [Getting started](https://help.router-for.me/) | Installation and client setup guides |
+| [Management API](https://help.router-for.me/management/api) | REST reference for the management endpoints |
+| [Amp CLI](https://help.router-for.me/agent-client/amp-cli.html) | Using Amp CLI and IDE extensions with CliRelay |
+| [Production checklist](docs/production-checklist.md) | Shared gateways and NAS installations |
+| [PostgreSQL / Redis runtime](docs/postgres-redis-migration.md) | Runtime data stack setup and validation |
+| [Multi-instance deployment](docs/multi-instance-deployment.md) | Several nodes on one PostgreSQL: failover, switchover, rolling deploys |
+| [SDK usage](docs/sdk-usage.md) · [advanced](docs/sdk-advanced.md) · [access](docs/sdk-access.md) · [watcher](docs/sdk-watcher.md) | Embedding the proxy in Go applications |
 
-Contributions are welcome! Here's how to get started:
+## Contributing
 
 ```bash
-# 1. Clone the repository
 git clone https://github.com/kittors/CliRelay.git
 cd CliRelay
-
-# 2. Create a feature branch from the latest dev baseline
 git fetch origin
-git switch -c feature/amazing-feature origin/dev
-
-# 3. Make your changes & commit
-git commit -m "feat: add amazing feature"
-
-# 4. Push to your branch & open a PR targeting dev
-git push origin feature/amazing-feature
+git switch -c feature/your-change origin/dev
+# make your change, then
+git push origin feature/your-change   # and open a pull request against dev
 ```
 
-Please target pull requests at `dev`, not `main`. Maintainers merge verified changes into `dev` first; `main` is updated separately for release/stable integration. See [CONTRIBUTING.md](CONTRIBUTING.md) for the full branch and merge workflow.
+Please target pull requests at `dev`, not `main`; `main` is updated by releases. See [CONTRIBUTING.md](CONTRIBUTING.md) for the branch and merge workflow.
 
-## 📜 License
+## License and acknowledgements
 
-This project is licensed under the **MIT License** — see the [LICENSE](LICENSE) file for details.
+CliRelay is released under the [MIT License](LICENSE).
 
----
-
-## 🙏 Acknowledgements & Special Thanks
-
-This project is a deeply enhanced fork built upon the excellent core logic of the open-source **[router-for-me/CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI)** project.
-We want to express our deepest gratitude to the original **CLIProxyAPI** project and all its contributors!
-
-It is thanks to the solid, innovative proxy distribution foundation built by the upstream that we were able to stand on the shoulders of giants. This allowed us to develop unique advanced management features (like API Key tracking & control, full request logging, and real-time system monitoring) and rebuild an entirely new frontend dashboard from scratch.
-
-A huge salute to the spirit of open source! ❤️
+It stands on the core proxy logic of **[router-for-me/CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI)**. Our thanks to the original project and all its contributors — their foundation made it possible to build the management layer, request logging, quota control and the control panel on top.

@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/thinking"
+	translatorcommon "github.com/router-for-me/CLIProxyAPI/v6/internal/translator/common"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -165,11 +166,13 @@ func ConvertGeminiRequestToCodex(modelName string, inputRawJSON []byte, _ bool) 
 				// function response from user
 				if fr := p.Get("functionResponse"); fr.Exists() {
 					fno := `{"type":"function_call_output"}`
-					// Prefer a string result if present; otherwise embed the raw response as a string
-					if res := fr.Get("response.result"); res.Exists() {
-						fno, _ = sjson.Set(fno, "output", res.String())
-					} else if resp := fr.Get("response"); resp.Exists() {
-						fno, _ = sjson.Set(fno, "output", resp.Raw)
+					parsed := translatorcommon.ParseGeminiFunctionResponse(fr)
+					if parsed.HasImage() {
+						fno, _ = sjson.SetRaw(fno, "output", translatorcommon.ToResponsesOutput(parsed))
+					} else if len(parsed.Parts) > 0 {
+						fno, _ = sjson.Set(fno, "output", parsed.Text())
+					} else if parsed.Raw.Exists() {
+						fno, _ = sjson.Set(fno, "output", parsed.Text())
 					}
 					// fno, _ = sjson.Set(fno, "call_id", "call_W6nRJzFXyPM2LFBbfo98qAbq")
 					// attach the oldest queued call_id to pair the response

@@ -15,6 +15,12 @@ const (
 	DefaultTTL      = 10 * time.Minute
 	MaxStateLength  = 128
 	StatusCompleted = "__completed__"
+	// StatusSuperseded marks a pending login that another completed login of the
+	// same provider replaced (see CompleteProviderTenant). It is kept as a
+	// tombstone rather than deleted so a status poll can tell "replaced by a
+	// finished login" (reported as done, as before) apart from "expired or never
+	// seen" (reported as expired) — the two used to be indistinguishable.
+	StatusSuperseded = "__superseded__"
 )
 
 var (
@@ -153,17 +159,19 @@ func (s *Store) CompleteProviderTenant(provider, tenantID string) int {
 	defer s.mu.Unlock()
 
 	s.purgeExpiredLocked(now)
-	removed := 0
+	superseded := 0
 	for state, session := range s.sessions {
 		if strings.EqualFold(session.Provider, provider) && (tenantID == "" || session.TenantID == tenantID) {
-			if session.Status == StatusCompleted {
+			if session.Status == StatusCompleted || session.Status == StatusSuperseded {
 				continue
 			}
-			delete(s.sessions, state)
-			removed++
+			session.Status = StatusSuperseded
+			session.ExpiresAt = now.Add(s.ttl)
+			s.sessions[state] = session
+			superseded++
 		}
 	}
-	return removed
+	return superseded
 }
 
 func (s *Store) Get(state string) (Session, bool) {

@@ -138,6 +138,52 @@ func (o *AntigravityAuth) ExchangeCodeForTokens(ctx context.Context, code, redir
 	return &token, nil
 }
 
+// RefreshAccessToken trades a refresh token issued to the configured client for
+// a fresh access token. Google keeps refresh tokens stable, so the response
+// normally carries no new one and callers keep the token they sent.
+func (o *AntigravityAuth) RefreshAccessToken(ctx context.Context, refreshToken string) (*TokenResponse, error) {
+	clientID := strings.TrimSpace(o.clientID)
+	if clientID == "" {
+		return nil, fmt.Errorf("antigravity token refresh: missing oauth client-id (set config oauth-clients.antigravity.client-id or env %s)", config.EnvAntigravityOAuthClientID)
+	}
+	data := url.Values{}
+	data.Set("client_id", clientID)
+	data.Set("client_secret", strings.TrimSpace(o.secret))
+	data.Set("grant_type", "refresh_token")
+	data.Set("refresh_token", strings.TrimSpace(refreshToken))
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, TokenEndpoint, strings.NewReader(data.Encode()))
+	if err != nil {
+		return nil, fmt.Errorf("antigravity token refresh: create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("User-Agent", APIUserAgent)
+
+	resp, errDo := o.httpClient.Do(req)
+	if errDo != nil {
+		return nil, fmt.Errorf("antigravity token refresh: execute request: %w", errDo)
+	}
+	defer func() {
+		if errClose := resp.Body.Close(); errClose != nil {
+			log.Errorf("antigravity token refresh: close body error: %v", errClose)
+		}
+	}()
+
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		bodyBytes, errRead := io.ReadAll(io.LimitReader(resp.Body, 8<<10))
+		if errRead != nil {
+			return nil, fmt.Errorf("antigravity token refresh: read response: %w", errRead)
+		}
+		return nil, fmt.Errorf("antigravity token refresh: request failed: status %d: %s", resp.StatusCode, strings.TrimSpace(string(bodyBytes)))
+	}
+
+	var token TokenResponse
+	if errDecode := json.NewDecoder(resp.Body).Decode(&token); errDecode != nil {
+		return nil, fmt.Errorf("antigravity token refresh: decode response: %w", errDecode)
+	}
+	return &token, nil
+}
+
 // FetchUserInfo retrieves user email from Google
 func (o *AntigravityAuth) FetchUserInfo(ctx context.Context, accessToken string) (string, error) {
 	accessToken = strings.TrimSpace(accessToken)

@@ -2,6 +2,7 @@ package cliproxy
 
 import (
 	"context"
+	"strings"
 
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
@@ -114,22 +115,47 @@ func (s *Service) applyCoreAuthAddOrUpdate(ctx context.Context, auth *coreauth.A
 
 	// IMPORTANT: Update coreManager FIRST, before model registration.
 	// This ensures that configuration changes (proxy_url, prefix, etc.) take effect
-	// immediately for API calls, rather than waiting for model registration to complete.
-	// Model registration may involve network calls (e.g., FetchAntigravityModels) that
-	// could timeout if the new proxy_url is unreachable.
+	// immediately for API calls, and that the background model listing registration
+	// asks for reads the updated credential rather than the one it replaces.
 	op := "register"
 	var err error
-	if existing, ok := s.coreManager.GetByID(auth.ID); ok {
+	if _, ok := s.coreManager.GetByID(auth.ID); ok {
+		// Re-read under the same lock used by removal and fetch commits. A delete
+		// may have won the race after the optimistic lookup above; never turn this
+		// stale modify event into a fresh registration.
+		unlock := s.registrationLocks.lock(auth.ID)
+		latest, stillPresent := s.coreManager.GetByID(auth.ID)
+		if !stillPresent || latest == nil {
+			unlock()
+			return
+		}
+		existing := latest
 		if s.coreManager.CredentialsVersioned() && !acceptCredentialReload(auth, existing) {
+			unlock()
 			return
 		}
 		auth.CreatedAt = existing.CreatedAt
 		auth.LastRefreshedAt = existing.LastRefreshedAt
 		auth.NextRefreshAfter = existing.NextRefreshAfter
 		op = "update"
+		// Serialize the manager mutation with the final commit of an in-flight
+		// listing. The listing generation is advanced only after the update is
+		// accepted, so same-provider token/proxy edits invalidate old responses too.
 		_, err = s.coreManager.Update(ctx, auth)
+		if err == nil {
+			s.liveModels.invalidate(auth.ID, strings.TrimSpace(auth.Provider))
+			if !strings.EqualFold(strings.TrimSpace(existing.Provider), strings.TrimSpace(auth.Provider)) {
+				s.modelLists.forget(auth.ID)
+			}
+		}
+		unlock()
 	} else {
+		unlock := s.registrationLocks.lock(auth.ID)
 		_, err = s.coreManager.Register(ctx, auth)
+		if err == nil {
+			s.liveModels.invalidate(auth.ID, strings.TrimSpace(auth.Provider))
+		}
+		unlock()
 	}
 	if err != nil {
 		log.Errorf("failed to %s auth %s: %v", op, auth.ID, err)
@@ -141,9 +167,9 @@ func (s *Service) applyCoreAuthAddOrUpdate(ctx context.Context, auth *coreauth.A
 		auth = current
 	}
 
-	// Register models after auth is updated in coreManager.
-	// This operation may block on network calls, but the auth configuration
-	// is already effective at this point.
+	// Register models after auth is updated in coreManager. Registration does not
+	// wait on the upstream; a credential that lists its own models registers its
+	// last known list and refreshes it in the background.
 	s.registerModelsForAuth(ctx, auth)
 }
 
@@ -154,11 +180,19 @@ func (s *Service) applyCoreAuthRemoval(ctx context.Context, id string) {
 	if s.coreManager == nil {
 		return
 	}
+	// Serialize removal with registration. A startup/live registration that
+	// already read this credential must finish before the client is unregistered,
+	// otherwise it can repopulate models for an auth that was just deleted.
+	unlock := s.registrationLocks.lock(id)
+	defer unlock()
 	if _, err := s.coreManager.Delete(coreauth.WithSkipPersist(ctx), id); err != nil {
 		log.Errorf("failed to remove auth %s: %v", id, err)
 		return
 	}
 	GlobalModelRegistry().UnregisterClient(id)
+	s.modelLists.forget(id)
+	s.liveModels.forget(id)
+	s.saveModelLists()
 }
 
 // acceptCredentialReload guards reloads of a credential that is already in

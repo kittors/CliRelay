@@ -27,6 +27,11 @@ func TestDeniesTenantResourceScopeAllowsPlatformAdminOnGlobalLogs(t *testing.T) 
 	if deniesTenantResourceScope(tenantOperator, "/v0/management/usage/logs") {
 		t.Fatal("tenant-scoped request logs must stay available to business tenants")
 	}
+	for _, path := range []string{"/v0/management/usage/monitor/overview", "/v0/management/usage/monitor/realtime"} {
+		if deniesTenantResourceScope(tenantOperator, path) {
+			t.Fatalf("monitor center %s must stay available to business tenants", path)
+		}
+	}
 
 	systemSession := identity.Principal{
 		PlatformAdmin:   false,
@@ -50,6 +55,12 @@ func TestTenantScopedManagementPathIncludesProviderRuntimeRoutes(t *testing.T) {
 		"/v0/management/openai-compatibility",
 		"/v0/management/oauth-model-alias",
 		"/v0/management/codex-oauth-admission",
+		// Importing an account from a held credential is as tenant-scoped as
+		// signing one in, so a business tenant must reach every import route.
+		"/v0/management/oauth-import/anthropic-session",
+		"/v0/management/oauth-import/codex-refresh-token",
+		"/v0/management/oauth-import/antigravity-refresh-token",
+		"/v0/management/oauth-import/xai-sso",
 		// Auth-file quota preview for tenant-imported OAuth credentials.
 		"/v0/management/api-call",
 		// Per-account identity fingerprints must stay readable by tenant admins

@@ -94,13 +94,13 @@ func TestDefaultClaudeIdentityFingerprintMirrorsClaudeCode(t *testing.T) {
 	if !got.Enabled {
 		t.Fatalf("Enabled = false, want true by default")
 	}
-	if got.CLIVersion != "2.1.280" {
-		t.Fatalf("CLIVersion = %q, want 2.1.280", got.CLIVersion)
+	if got.CLIVersion != "2.1.284" {
+		t.Fatalf("CLIVersion = %q, want 2.1.284", got.CLIVersion)
 	}
 	if got.Entrypoint != "cli" {
 		t.Fatalf("Entrypoint = %q, want cli", got.Entrypoint)
 	}
-	if got.UserAgent != "claude-cli/2.1.280 (external, cli)" {
+	if got.UserAgent != "claude-cli/2.1.284 (external, cli)" {
 		t.Fatalf("UserAgent = %q, want Claude Code user agent", got.UserAgent)
 	}
 	if got.StainlessPackageVersion != "0.94.0" {
@@ -202,14 +202,14 @@ func TestDefaultXAIIdentityFingerprint(t *testing.T) {
 	if !got.Enabled {
 		t.Fatal("Enabled = false, want true by default")
 	}
-	if got.UserAgent != "grok-shell/0.2.93 (macos; aarch64)" {
+	if got.UserAgent != "grok-shell/1.0.46 (macos; aarch64)" {
 		t.Fatalf("UserAgent = %q, want Grok shell default", got.UserAgent)
 	}
 	if got.ClientIdentifier != "grok-shell" {
 		t.Fatalf("ClientIdentifier = %q, want grok-shell", got.ClientIdentifier)
 	}
-	if got.ClientVersion != "0.2.93" {
-		t.Fatalf("ClientVersion = %q, want 0.2.93", got.ClientVersion)
+	if got.ClientVersion != "1.0.46" {
+		t.Fatalf("ClientVersion = %q, want 1.0.46", got.ClientVersion)
 	}
 }
 

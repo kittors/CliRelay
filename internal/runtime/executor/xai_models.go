@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -97,23 +98,40 @@ func fallbackXAIModels() []*sdkmodelcatalog.ModelInfo {
 	return withXAIMediaModels(nil)
 }
 
+var (
+	errXAIModelsNoToken = errors.New("xai models: no access token")
+	errXAIModelsEmpty   = errors.New("xai models: upstream listed no models")
+)
+
 // FetchXAIModels retrieves the OAuth account's live model list from xAI.
 // Base URL follows the same using_api routing as chat/Responses traffic so
 // Grok Build OAuth (using_api=false) discovers models via CLIChatProxyBaseURL
 // instead of api.x.ai, which may reject personal-team tokens with 403.
+// When the upstream cannot be listed it answers with the last list fetched in
+// this process; DiscoverXAIModels reports the failure instead.
 func FetchXAIModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.Config) []*sdkmodelcatalog.ModelInfo {
+	models, err := DiscoverXAIModels(ctx, auth, cfg)
+	if err != nil {
+		return fallbackXAIModels()
+	}
+	return models
+}
+
+// DiscoverXAIModels asks xAI which models a credential can call. It never
+// substitutes a cached list, so a caller can tell a live answer from a failure.
+func DiscoverXAIModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.Config) ([]*sdkmodelcatalog.ModelInfo, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	token, _ := xaiCreds(auth)
 	if strings.TrimSpace(token) == "" {
-		return fallbackXAIModels()
+		return nil, errXAIModelsNoToken
 	}
 	baseURL := strings.TrimRight(xaiChatBaseURL(auth), "/")
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+xaiModelsPath, nil)
 	if err != nil {
-		return fallbackXAIModels()
+		return nil, err
 	}
 	// CLI chat proxy needs the same identity headers as Responses; official API keeps plain Bearer.
 	applyXAIChatHeaders(req, cfg, auth, token, false)
@@ -123,7 +141,7 @@ func FetchXAIModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.Co
 		if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 			log.Debugf("xai executor: models request failed: %v", err)
 		}
-		return fallbackXAIModels()
+		return nil, err
 	}
 	defer func() {
 		if errClose := resp.Body.Close(); errClose != nil {
@@ -134,22 +152,22 @@ func FetchXAIModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.Co
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		_, _ = io.Copy(io.Discard, resp.Body)
 		log.Debugf("xai executor: models request failed with status %d", resp.StatusCode)
-		return fallbackXAIModels()
+		return nil, fmt.Errorf("xai models: upstream answered status %d", resp.StatusCode)
 	}
 
 	body, err := readUpstreamResponseBody("xai", resp.Body)
 	if err != nil {
 		log.Debugf("xai executor: models response read failed: %v", err)
-		return fallbackXAIModels()
+		return nil, err
 	}
 
 	models, ok := parseXAIModels(body, time.Now().Unix())
 	if !ok {
 		log.Debug("xai executor: fetched empty or invalid model list; retaining cached model list")
-		return fallbackXAIModels()
+		return nil, errXAIModelsEmpty
 	}
 	storeXAIModels(models)
-	return withXAIMediaModels(models)
+	return withXAIMediaModels(models), nil
 }
 
 func parseXAIModels(body []byte, now int64) ([]*sdkmodelcatalog.ModelInfo, bool) {

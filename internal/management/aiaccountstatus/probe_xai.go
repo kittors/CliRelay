@@ -8,6 +8,7 @@ import (
 	"time"
 
 	xaiauth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/xai"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	managementapitools "github.com/router-for-me/CLIProxyAPI/v6/internal/management/apitools"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
@@ -19,16 +20,31 @@ const (
 	xaiBillingMonthlyURL = "https://cli-chat-proxy.grok.com/v1/billing"
 )
 
-func probeXAI(ctx context.Context, svc *managementapitools.Service, auth *coreauth.Auth) (ProbeResult, error) {
+// xaiProbeHeaders builds the billing probe headers.
+//
+// Both billing endpoints live on cli-chat-proxy.grok.com, which rejects a Grok
+// CLI version that is too old ("Your Grok CLI version (…) is outdated"). The
+// version therefore comes from the same constant the chat path advertises
+// (config.DefaultXAIFingerprintClientVersion) instead of a literal of its own:
+// a separate literal is how this probe was left on 0.2.91 when the chat path
+// moved on. The "grok-pager … grok-shell …" shape mirrors how the CLI's pager
+// process identifies itself on these calls.
+func xaiProbeHeaders(auth *coreauth.Auth) map[string]string {
+	version := config.DefaultXAIFingerprintClientVersion
 	headers := map[string]string{
 		"x-xai-token-auth":      "xai-grok-cli",
-		"x-grok-client-version": "0.2.91",
+		"x-grok-client-version": version,
 		"accept":                "*/*",
-		"user-agent":            "grok-pager/0.2.91 grok-shell/0.2.91 (macos; aarch64)",
+		"user-agent":            "grok-pager/" + version + " grok-shell/" + version + " (macos; aarch64)",
 	}
 	if userID := resolveXAIUserID(auth); userID != "" {
 		headers["x-userid"] = userID
 	}
+	return headers
+}
+
+func probeXAI(ctx context.Context, svc *managementapitools.Service, auth *coreauth.Auth) (ProbeResult, error) {
+	headers := xaiProbeHeaders(auth)
 	// Parallel weekly/monthly under the same probe slot (does not take extra global semaphore).
 	weeklyBody, weeklyErr, monthlyBody, monthlyErr := fetchXAIBillingParallel(ctx,
 		func(ctx context.Context) ([]byte, error) {

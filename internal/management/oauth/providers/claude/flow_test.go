@@ -180,6 +180,43 @@ func TestStartOAuthLoginFallsBackToPlatformRedirect(t *testing.T) {
 	}
 }
 
+// Code mode never starts a localhost forwarder: the operator copies the code
+// from Anthropic's own page, so the redirect must be the platform callback even
+// though a callback target and forwarder would be available.
+func TestStartOAuthLoginCodeModeUsesPlatformCallbackWithoutForwarder(t *testing.T) {
+	auth := &claudeOAuthAuthStub{}
+	forwarderStarted := false
+
+	_, err := StartOAuthLogin(context.Background(), OAuthLoginOptions{
+		Auth:                auth,
+		WebUI:               true,
+		UsePlatformCallback: true,
+		GeneratePKCE: func() (*internalclaude.PKCECodes, error) {
+			return &internalclaude.PKCECodes{CodeVerifier: "verifier", CodeChallenge: "challenge"}, nil
+		},
+		GenerateState: func() (string, error) { return "claude-state", nil },
+		CallbackTarget: func(string) (string, error) {
+			return "http://127.0.0.1:8317/anthropic/callback", nil
+		},
+		StartForwarder: func(int, string, string) (CallbackForwarder, int, error) {
+			forwarderStarted = true
+			return nil, 54545, nil
+		},
+		WaitCallback: func(string, string, string, time.Duration) (map[string]string, error) {
+			return nil, oauthsession.ErrNotPending
+		},
+	})
+	if err != nil {
+		t.Fatalf("StartOAuthLogin() error = %v", err)
+	}
+	if auth.lastRedirect != internalclaude.PlatformRedirectURI {
+		t.Fatalf("redirect = %q, want platform redirect", auth.lastRedirect)
+	}
+	if forwarderStarted {
+		t.Fatal("code mode must not start a localhost callback forwarder")
+	}
+}
+
 func TestStartOAuthLoginReturnsPKCEError(t *testing.T) {
 	wantErr := errors.New("rng")
 	_, err := StartOAuthLogin(context.Background(), OAuthLoginOptions{

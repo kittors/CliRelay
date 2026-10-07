@@ -26,7 +26,7 @@ func TestRegisterManagementRouteTable(t *testing.T) {
 		routes[key] = route
 	}
 
-	if got, want := len(routes), 338; got != want {
+	if got, want := len(routes), 344; got != want {
 		t.Fatalf("route count = %d, want %d", got, want)
 	}
 	if got, want := sortedRouteKeys(routes), expectedManagementRoutes(); !slices.Equal(got, want) {
@@ -52,6 +52,8 @@ func TestRegisterManagementRouteTable(t *testing.T) {
 		"PATCH /v0/management/proxy-pool/:id",
 		"GET /v0/management/usage/logs/:id/content",
 		"GET /v0/management/usage/logs/:id/egress",
+		"GET /v0/management/usage/monitor/overview",
+		"GET /v0/management/usage/monitor/realtime",
 		"POST /v0/management/ai-accounts/status-refresh",
 		"POST /v0/management/api-call",
 		"PATCH /v0/management/api-key-entries",
@@ -410,6 +412,8 @@ func expectedManagementRoutes() []string {
 		"GET /v0/management/usage/logs",
 		"GET /v0/management/usage/logs/:id/content",
 		"GET /v0/management/usage/logs/:id/egress",
+		"GET /v0/management/usage/monitor/overview",
+		"GET /v0/management/usage/monitor/realtime",
 		"GET /v0/management/usage-statistics-enabled",
 		"GET /v0/management/vertex-api-key",
 		"GET /v0/management/xai-auth-url",
@@ -470,6 +474,10 @@ func expectedManagementRoutes() []string {
 		"POST /v0/management/model-configs",
 		"POST /v0/management/model-openrouter-sync/run",
 		"POST /v0/management/oauth-callback",
+		"POST /v0/management/oauth-import/anthropic-session",
+		"POST /v0/management/oauth-import/antigravity-refresh-token",
+		"POST /v0/management/oauth-import/codex-refresh-token",
+		"POST /v0/management/oauth-import/xai-sso",
 		"POST /v0/management/cline-api-key/usage",
 		"POST /v0/management/ollama-cloud-api-key/usage",
 		"POST /v0/management/opencode-go-api-key/usage",

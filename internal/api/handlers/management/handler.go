@@ -55,6 +55,9 @@ type Handler struct {
 	aiAccountStatus      *aiaccountstatus.Service
 	statusScheduler      *aiaccountstatus.Scheduler
 	warmupSvc            *warmup.Service
+	// importKinds overrides the credential-import exchanges in tests; nil uses
+	// the package defaults that build real upstream clients.
+	importKinds map[string]credentialImportKind
 }
 
 type trendCacheEntry struct {
