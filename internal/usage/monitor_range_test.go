@@ -119,3 +119,28 @@ func TestMonitorHeatmapWindowCoversWholeLocalDays(t *testing.T) {
 		}
 	}
 }
+
+func TestMonitorTimezoneLabel(t *testing.T) {
+	at := time.Date(2026, 10, 7, 5, 47, 0, 0, time.UTC)
+	cases := []struct {
+		loc  *time.Location
+		want string
+	}{
+		// Production: with TZ unset Go names the /etc/localtime zone "Local".
+		{time.FixedZone("Local", 8*3600), "UTC+08:00"},
+		{time.FixedZone("Local", 5*3600+1800), "UTC+05:30"},
+		{time.FixedZone("Local", -3*3600), "UTC-03:00"},
+		{time.FixedZone("", 0), "UTC+00:00"},
+		{time.FixedZone("CST", 8*3600), "CST"},
+		{time.UTC, "UTC"},
+	}
+	for _, tc := range cases {
+		if got := monitorTimezoneLabel(tc.loc, at); got != tc.want {
+			t.Errorf("monitorTimezoneLabel(%q) = %q, want %q", tc.loc.String(), got, tc.want)
+		}
+	}
+	w := resolveMonitorWindow(MonitorRange24h, at, time.FixedZone("Local", 8*3600))
+	if got := w.describe().Timezone; got != "UTC+08:00" {
+		t.Errorf("describe().Timezone = %q, want UTC+08:00", got)
+	}
+}

@@ -111,7 +111,7 @@ func QueryMonitorRealtime(filter MonitorFilter, now time.Time) (MonitorRealtime,
 	w := resolveMonitorWindow(MonitorRange1h, now, getUsageLocation())
 	out := MonitorRealtime{
 		GeneratedAt: now.In(w.loc).Format(time.RFC3339),
-		Timezone:    w.loc.String(),
+		Timezone:    monitorTimezoneLabel(w.loc, now),
 	}
 	aggs := make([]monitorAgg, w.points())
 	if getReadDB() != nil {

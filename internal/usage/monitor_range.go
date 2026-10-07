@@ -179,8 +179,19 @@ func (w monitorWindow) describe() MonitorRange {
 		PreviousStart: w.prevStart.Format(time.RFC3339),
 		PreviousEnd:   w.prevEnd.Format(time.RFC3339),
 		StepSeconds:   w.stepSeconds(),
-		Timezone:      w.loc.String(),
+		Timezone:      monitorTimezoneLabel(w.loc, w.end),
 	}
+}
+
+// monitorTimezoneLabel names the usage timezone for the panel. Go calls the
+// zone it reads from /etc/localtime "Local" whenever TZ is unset — the normal
+// case for the production systemd services — which tells a reader nothing, so
+// that case reports the UTC offset in effect at the given instant instead.
+func monitorTimezoneLabel(loc *time.Location, at time.Time) string {
+	if name := loc.String(); name != "" && name != "Local" {
+		return name
+	}
+	return "UTC" + at.In(loc).Format("-07:00")
 }
 
 // heatmapWindow covers whole local days: at least a week so short ranges still
