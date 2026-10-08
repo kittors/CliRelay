@@ -201,6 +201,76 @@ func TestMenuCatalogReferencesExistingParents(t *testing.T) {
 	if moderation.PermissionCode != "content_moderation.read" {
 		t.Fatalf("%s permission = %q, want content_moderation.read", ContentModerationMenuCode, moderation.PermissionCode)
 	}
+	// Appearance is a per-browser preference page: no permission, so tenant users without any
+	// system permission still get it (and the 系统设置 group around it).
+	appearance, ok := seen[AppearanceMenuCode]
+	if !ok {
+		t.Fatalf("%s menu is missing", AppearanceMenuCode)
+	}
+	if appearance.ParentCode != "group.system" || appearance.Path != "/system/appearance" || appearance.Component != "appearance" {
+		t.Fatalf("%s = %+v, want group.system /system/appearance appearance", AppearanceMenuCode, appearance)
+	}
+	if appearance.PermissionCode != "" {
+		t.Fatalf("%s permission = %q, want empty so every user can open it", AppearanceMenuCode, appearance.PermissionCode)
+	}
+}
+
+func TestListPrincipalMenusShowsUnpermissionedMenusToEveryone(t *testing.T) {
+	dsn := fmt.Sprintf("file:identity_principal_menus_%d?mode=memory&cache=shared", time.Now().UnixNano())
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if closeErr := db.Close(); closeErr != nil {
+			t.Errorf("close sqlite menus db: %v", closeErr)
+		}
+	})
+	if _, err = db.Exec(`CREATE TABLE menus (
+		code TEXT PRIMARY KEY, parent_code TEXT, menu_type TEXT NOT NULL, path TEXT NOT NULL DEFAULT '',
+		component TEXT NOT NULL DEFAULT '', link_url TEXT NOT NULL DEFAULT '', label_key TEXT NOT NULL,
+		title TEXT NOT NULL DEFAULT '', icon TEXT NOT NULL DEFAULT '', permission_code TEXT,
+		sort_order INTEGER NOT NULL DEFAULT 0, visible BOOLEAN NOT NULL DEFAULT true,
+		enabled BOOLEAN NOT NULL DEFAULT true, badge_type TEXT NOT NULL DEFAULT '',
+		badge_content TEXT NOT NULL DEFAULT '', hide_menu BOOLEAN NOT NULL DEFAULT false,
+		system_protected BOOLEAN NOT NULL DEFAULT true, version INTEGER NOT NULL DEFAULT 1
+	)`); err != nil {
+		t.Fatalf("create sqlite menus schema: %v", err)
+	}
+	for _, menu := range MenuCatalog {
+		var parent, permission any
+		if menu.ParentCode != "" {
+			parent = menu.ParentCode
+		}
+		if menu.PermissionCode != "" {
+			permission = menu.PermissionCode
+		}
+		if _, err = db.Exec(
+			`INSERT INTO menus (code,parent_code,menu_type,path,component,label_key,icon,permission_code,sort_order,hide_menu) VALUES (?,?,?,?,?,?,?,?,?,?)`,
+			menu.Code, parent, menu.Type, menu.Path, menu.Component, menu.LabelKey, menu.Icon, permission, menu.SortOrder, menu.HideMenu,
+		); err != nil {
+			t.Fatalf("insert menu %s: %v", menu.Code, err)
+		}
+	}
+
+	menus, err := NewService(db).ListPrincipalMenus(context.Background(), Principal{Permissions: map[string]bool{}})
+	if err != nil {
+		t.Fatalf("ListPrincipalMenus: %v", err)
+	}
+	got := make(map[string]bool, len(menus))
+	for _, menu := range menus {
+		got[menu.Code] = true
+	}
+	for _, code := range []string{AppearanceMenuCode, "group.system"} {
+		if !got[code] {
+			t.Fatalf("principal without permissions is missing %s; got %v", code, got)
+		}
+	}
+	for _, code := range []string{"system.config", MenuManagementCode, "dashboard"} {
+		if got[code] {
+			t.Fatalf("principal without permissions must not see %s", code)
+		}
+	}
 }
 
 func TestGeneratedIdentifier(t *testing.T) {
