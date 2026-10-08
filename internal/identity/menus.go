@@ -10,6 +10,7 @@ import (
 const (
 	MenuManagementCode        = "system.menus"
 	ContentModerationMenuCode = "runtime.content-moderation"
+	AppearanceMenuCode        = "system.appearance"
 )
 
 type Menu struct {
@@ -77,7 +78,7 @@ type MenuInput struct {
 // 接入与凭证 — upstream providers, AI OAuth accounts, client API keys, key profiles
 // 模型与调度 — model plaza, catalog, image models, routing groups, outbound proxies
 // 组织与权限 — tenants, users, roles, audit
-// 系统设置 — global config, menu management
+// 系统设置 — global config, menu management, appearance (per-browser preferences, open to everyone)
 // 系统信息 — host/runtime status (top-level leaf, pinned last)
 var MenuCatalog = []MenuSeed{
 	{Code: "dashboard", Type: "menu", Path: "/dashboard", Component: "dashboard", LabelKey: "shell.nav_dashboard", Icon: "layout-dashboard", PermissionCode: "dashboard.read", SortOrder: 10},
@@ -124,6 +125,9 @@ var MenuCatalog = []MenuSeed{
 	// System settings only
 	{Code: "system.config", ParentCode: "group.system", Type: "menu", Path: "/system/config", Component: "config", LabelKey: "shell.nav_config", Icon: "settings", PermissionCode: "system.config.read", SortOrder: 10},
 	{Code: MenuManagementCode, ParentCode: "group.system", Type: "menu", Path: "/system/menu-management", Component: "menu-management", LabelKey: "shell.nav_menu_management", Icon: "menu", PermissionCode: "platform.menus.read", SortOrder: 20},
+	// Appearance only edits the viewer's own browser preferences (colors, bar thickness, text size);
+	// it calls no management API, so it carries no permission and every signed-in user sees it.
+	{Code: AppearanceMenuCode, ParentCode: "group.system", Type: "menu", Path: "/system/appearance", Component: "appearance", LabelKey: "shell.nav_appearance", Icon: "palette", SortOrder: 30},
 }
 
 const menuSelectSQL = `SELECT code,parent_code,menu_type,path,component,link_url,label_key,title,icon,permission_code,sort_order,visible,enabled,badge_type,badge_content,hide_menu,system_protected,version FROM menus`
