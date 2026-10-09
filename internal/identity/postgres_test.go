@@ -39,6 +39,72 @@ func TestPostgresBootstrapFreshAdminRequiresPassword(t *testing.T) {
 	}
 }
 
+func TestPostgresBootstrapRetiresAppearanceMenu(t *testing.T) {
+	dsn := os.Getenv("CLIRELAY_POSTGRES_TEST_DSN")
+	if dsn == "" {
+		t.Skip("CLIRELAY_POSTGRES_TEST_DSN is not set")
+	}
+	postgrestest.LockSharedRuntimeDB(t, dsn)
+	ctx := context.Background()
+	db, err := postgresstore.OpenRuntimeDB(ctx, config.PostgresConfig{DSN: dsn, MaxOpenConns: 4, MaxIdleConns: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err = db.Exec(`TRUNCATE audit_logs,user_sessions,user_roles,role_permissions,menus,users,roles,permissions,tenants CASCADE`); err != nil {
+		t.Fatal(err)
+	}
+	service := NewService(db)
+	if err = service.Bootstrap(ctx, "Bootstrap-Password-123!"); err != nil {
+		t.Fatal(err)
+	}
+	// The row CliRelay#1134 seeded: a deployment that ran that build still has it.
+	seedRetired := func() {
+		t.Helper()
+		if _, err := db.Exec(`
+			INSERT INTO menus (code,parent_code,menu_type,path,component,label_key,icon,sort_order,system_protected)
+			VALUES ('system.appearance','group.system','menu','/system/appearance','appearance','shell.nav_appearance','palette',30,true)
+		`); err != nil {
+			t.Fatalf("seed retired appearance menu: %v", err)
+		}
+	}
+	appearanceRows := func() int {
+		t.Helper()
+		var count int
+		if err := db.QueryRow(`SELECT count(*) FROM menus WHERE code = 'system.appearance'`).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		return count
+	}
+
+	seedRetired()
+	if err = service.Bootstrap(ctx, ""); err != nil {
+		t.Fatalf("bootstrap over the retired appearance menu: %v", err)
+	}
+	if got := appearanceRows(); got != 0 {
+		t.Fatalf("system.appearance rows after bootstrap = %d, want 0", got)
+	}
+
+	// An admin hung a menu under it: deleting would violate the parent_code RESTRICT, and a failed
+	// seed aborts startup, so the row stays and bootstrap still succeeds.
+	seedRetired()
+	if _, err = db.Exec(`
+		INSERT INTO menus (code,parent_code,menu_type,path,component,label_key,sort_order,system_protected)
+		VALUES ('custom.theme-notes','system.appearance','menu','/system/appearance/notes','embed','custom.theme-notes',1,false)
+	`); err != nil {
+		t.Fatalf("seed admin child menu: %v", err)
+	}
+	if err = service.Bootstrap(ctx, ""); err != nil {
+		t.Fatalf("bootstrap with a child under the retired menu: %v", err)
+	}
+	if got := appearanceRows(); got != 1 {
+		t.Fatalf("system.appearance rows with a child = %d, want 1 (kept)", got)
+	}
+	if _, err = db.Exec(`DELETE FROM menus WHERE code IN ('custom.theme-notes','system.appearance')`); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestPostgresIdentityLifecycle(t *testing.T) {
 	dsn := os.Getenv("CLIRELAY_POSTGRES_TEST_DSN")
 	if dsn == "" {

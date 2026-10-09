@@ -201,17 +201,12 @@ func TestMenuCatalogReferencesExistingParents(t *testing.T) {
 	if moderation.PermissionCode != "content_moderation.read" {
 		t.Fatalf("%s permission = %q, want content_moderation.read", ContentModerationMenuCode, moderation.PermissionCode)
 	}
-	// Appearance is a per-browser preference page: no permission, so tenant users without any
-	// system permission still get it (and the 系统设置 group around it).
-	appearance, ok := seen[AppearanceMenuCode]
-	if !ok {
-		t.Fatalf("%s menu is missing", AppearanceMenuCode)
-	}
-	if appearance.ParentCode != "group.system" || appearance.Path != "/system/appearance" || appearance.Component != "appearance" {
-		t.Fatalf("%s = %+v, want group.system /system/appearance appearance", AppearanceMenuCode, appearance)
-	}
-	if appearance.PermissionCode != "" {
-		t.Fatalf("%s permission = %q, want empty so every user can open it", AppearanceMenuCode, appearance.PermissionCode)
+	// Appearance settings open in a drawer from the panel's header; the sidebar page that
+	// CliRelay#1134 added is retired (seedMenus deletes its row).
+	for _, menu := range MenuCatalog {
+		if menu.Code == retiredAppearanceMenuCode || menu.Component == "appearance" {
+			t.Fatalf("appearance must not be a sidebar menu: %+v", menu)
+		}
 	}
 }
 
@@ -237,19 +232,26 @@ func TestListPrincipalMenusShowsUnpermissionedMenusToEveryone(t *testing.T) {
 	)`); err != nil {
 		t.Fatalf("create sqlite menus schema: %v", err)
 	}
-	for _, menu := range MenuCatalog {
+	// An admin-created link without a permission code sits next to permission-gated pages.
+	rows := []struct{ code, parent, menuType, path, permission string }{
+		{"dashboard", "", "menu", "/dashboard", "dashboard.read"},
+		{"group.system", "", "directory", "/system", ""},
+		{"system.config", "group.system", "menu", "/system/config", "system.config.read"},
+		{"system.handbook", "group.system", "menu", "/system/handbook", ""},
+	}
+	for index, row := range rows {
 		var parent, permission any
-		if menu.ParentCode != "" {
-			parent = menu.ParentCode
+		if row.parent != "" {
+			parent = row.parent
 		}
-		if menu.PermissionCode != "" {
-			permission = menu.PermissionCode
+		if row.permission != "" {
+			permission = row.permission
 		}
 		if _, err = db.Exec(
-			`INSERT INTO menus (code,parent_code,menu_type,path,component,label_key,icon,permission_code,sort_order,hide_menu) VALUES (?,?,?,?,?,?,?,?,?,?)`,
-			menu.Code, parent, menu.Type, menu.Path, menu.Component, menu.LabelKey, menu.Icon, permission, menu.SortOrder, menu.HideMenu,
+			`INSERT INTO menus (code,parent_code,menu_type,path,label_key,permission_code,sort_order) VALUES (?,?,?,?,?,?,?)`,
+			row.code, parent, row.menuType, row.path, row.code, permission, index,
 		); err != nil {
-			t.Fatalf("insert menu %s: %v", menu.Code, err)
+			t.Fatalf("insert menu %s: %v", row.code, err)
 		}
 	}
 
@@ -257,19 +259,14 @@ func TestListPrincipalMenusShowsUnpermissionedMenusToEveryone(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListPrincipalMenus: %v", err)
 	}
-	got := make(map[string]bool, len(menus))
+	got := make([]string, 0, len(menus))
 	for _, menu := range menus {
-		got[menu.Code] = true
+		got = append(got, menu.Code)
 	}
-	for _, code := range []string{AppearanceMenuCode, "group.system"} {
-		if !got[code] {
-			t.Fatalf("principal without permissions is missing %s; got %v", code, got)
-		}
-	}
-	for _, code := range []string{"system.config", MenuManagementCode, "dashboard"} {
-		if got[code] {
-			t.Fatalf("principal without permissions must not see %s", code)
-		}
+	// The unpermissioned leaf is visible to a principal without permissions, and so is the
+	// directory around it; permission-gated pages are not.
+	if strings.Join(got, ",") != "group.system,system.handbook" {
+		t.Fatalf("menus for a principal without permissions = %v, want [group.system system.handbook]", got)
 	}
 }
 
