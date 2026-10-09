@@ -37,7 +37,7 @@ func TestAntigravityBuildRequestKeepsClientUserAgentOutOfUpstream(t *testing.T) 
 		executor := &AntigravityExecutor{cfg: newAntigravityFingerprintConfig(true)}
 		auth := &cliproxyauth.Auth{ID: "account-under-test"}
 
-		req, _, err := executor.buildRequest(ctx, auth, "token", "gemini-3.7-flash-high", []byte(`{"request":{}}`), false, "", "https://example.com")
+		req, _, err := executor.buildRequest(ctx, auth, "token", "gemini-3.7-flash-high", []byte(`{"request":{}}`), false, "", "https://example.com", 0)
 		if err != nil {
 			t.Fatalf("buildRequest error: %v", err)
 		}
@@ -61,7 +61,7 @@ func TestAntigravityBuildRequestHonoursDisabledFingerprint(t *testing.T) {
 		Attributes: map[string]string{"user_agent": pinned},
 	}
 
-	req, _, err := executor.buildRequest(ctx, auth, "token", "gemini-3.7-flash-high", []byte(`{"request":{}}`), false, "", "https://example.com")
+	req, _, err := executor.buildRequest(ctx, auth, "token", "gemini-3.7-flash-high", []byte(`{"request":{}}`), false, "", "https://example.com", 0)
 	if err != nil {
 		t.Fatalf("buildRequest error: %v", err)
 	}

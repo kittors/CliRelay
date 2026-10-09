@@ -50,6 +50,8 @@ func (e *AntigravityExecutor) executeViaStreamEndpoint(ctx context.Context, auth
 
 	attempts := antigravityRetryAttempts(auth, e.cfg)
 	var locationGate antigravityLocationGateBudget
+	sessionGeneration := 0
+	sessionBumpsLeft := antigravitySessionBumpMaxAttempts
 
 attemptLoop:
 	for attempt := 0; attempt < attempts; attempt++ {
@@ -58,7 +60,7 @@ attemptLoop:
 		var lastErr error
 
 		for idx, baseURL := range baseURLs {
-			httpReq, requestBody, errReq := e.buildRequest(execCtx.Context, auth, token, execCtx.BaseModel, translated, true, opts.Alt, baseURL)
+			httpReq, requestBody, errReq := e.buildRequest(execCtx.Context, auth, token, execCtx.BaseModel, translated, true, opts.Alt, baseURL, sessionGeneration)
 			if errReq != nil {
 				err = errReq
 				return resp, err
@@ -113,6 +115,19 @@ attemptLoop:
 				lastStatus = httpResp.StatusCode
 				lastBody = append([]byte(nil), bodyBytes...)
 				lastErr = nil
+				// A long tool-loop eventually pushes the server-side session past
+				// the 1,048,576-token ceiling, after which every request on that
+				// session id fails 400. Rotate the session id and retry on a fresh
+				// upstream session. This is a recovery, not a capacity retry, so it
+				// keeps its own budget (sessionBumpsLeft) and does not consume an
+				// attempt.
+				if sessionBumpsLeft > 0 && antigravityShouldBumpSession(httpResp.StatusCode, bodyBytes) {
+					sessionGeneration++
+					sessionBumpsLeft--
+					attempt--
+					log.Debugf("antigravity executor: session input exceeds the 1M ceiling for model %s, rotating session id (generation %d) and retrying on a fresh session", execCtx.BaseModel, sessionGeneration)
+					continue attemptLoop
+				}
 				// 429 is an account-level RESOURCE_EXHAUSTED signal, not a
 				// host-specific hiccup: see antigravity_executor.go for the
 				// production trace that motivated dropping this fallback.

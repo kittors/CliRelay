@@ -15,7 +15,7 @@ import (
 	"github.com/tidwall/sjson"
 )
 
-func (e *AntigravityExecutor) buildRequest(ctx context.Context, auth *cliproxyauth.Auth, token, modelName string, payload []byte, stream bool, alt, baseURL string) (*http.Request, []byte, error) {
+func (e *AntigravityExecutor) buildRequest(ctx context.Context, auth *cliproxyauth.Auth, token, modelName string, payload []byte, stream bool, alt, baseURL string, sessionGeneration int) (*http.Request, []byte, error) {
 	if token == "" {
 		return nil, nil, statusErr{code: http.StatusUnauthorized, msg: "missing access token"}
 	}
@@ -49,7 +49,7 @@ func (e *AntigravityExecutor) buildRequest(ctx context.Context, auth *cliproxyau
 			projectID = strings.TrimSpace(pid)
 		}
 	}
-	payload = geminiToAntigravity(modelName, payload, projectID)
+	payload = geminiToAntigravity(modelName, payload, projectID, sessionGeneration)
 	payload, _ = sjson.SetBytes(payload, "model", modelName)
 
 	useAntigravitySchema := strings.Contains(modelName, "claude") || strings.Contains(modelName, "gemini-3-pro-high")
@@ -248,6 +248,27 @@ func antigravityShouldRetryHost(statusCode int, body []byte) bool {
 		return false
 	}
 	return strings.Contains(strings.ToLower(string(body)), "user location is not supported")
+}
+
+// antigravitySessionBumpMaxAttempts caps how many times a single request may
+// rotate its session id when it hits the per-session 1,048,576-token ceiling.
+// One bump starts a fresh upstream session and almost always clears it; the cap
+// stops a pathological request (one whose own input already exceeds the ceiling)
+// from looping.
+const antigravitySessionBumpMaxAttempts = 2
+
+// antigravityShouldBumpSession reports whether a 400 is the upstream "input
+// token count exceeds the maximum" wall. A stable sessionId makes the upstream
+// accumulate the conversation server-side (which is what gives prefix-cache
+// hits); once that accumulation passes 1,048,576 tokens every request on the
+// session keeps failing until the session id changes.
+func antigravityShouldBumpSession(statusCode int, body []byte) bool {
+	if statusCode != http.StatusBadRequest || len(body) == 0 {
+		return false
+	}
+	msg := strings.ToLower(string(body))
+	return strings.Contains(msg, "1048576") ||
+		strings.Contains(msg, "exceeds the maximum number of tokens")
 }
 
 // antigravityLocationGateMaxAttempts caps how many outer attempts (each one a
