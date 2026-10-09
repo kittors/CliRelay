@@ -1,9 +1,7 @@
 package executor
 
 import (
-	"fmt"
 	"net/http"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -118,17 +116,6 @@ func newUpstreamTransportCacheKey(proxyURL string, sdkCfg *config.SDKConfig) ups
 	key.preferIPv4 = sdkCfg.PreferIPv4
 	key.insecureSkipVerify = sdkCfg.InsecureSkipVerify
 	key.caCert = strings.TrimSpace(sdkCfg.CACert)
-	key.caCertStat = caCertStatFingerprint(key.caCert)
+	key.caCertStat = util.CACertStatFingerprint(key.caCert)
 	return key
-}
-
-func caCertStatFingerprint(path string) string {
-	if strings.TrimSpace(path) == "" {
-		return ""
-	}
-	info, err := os.Stat(path)
-	if err != nil {
-		return "missing"
-	}
-	return fmt.Sprintf("%d:%d", info.Size(), info.ModTime().UnixNano())
 }

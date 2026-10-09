@@ -22,6 +22,10 @@ type managementTransportKey struct {
 	preferIPv4         bool
 	insecureSkipVerify bool
 	caCert             string
+	// caCertStat changes when the bundle on disk is replaced. Both transport
+	// kinds read it once at construction, so without this a rotated bundle
+	// would keep being served by a transport pinned to the old trust root.
+	caCertStat string
 }
 
 type managementTransportEntry struct {
@@ -32,7 +36,30 @@ type managementTransportEntry struct {
 var (
 	managementTransportMu    sync.Mutex
 	managementTransportCache = map[managementTransportKey]*managementTransportEntry{}
+	// managementFingerprintTransports holds the utls transports used for Codex
+	// targets. Building one per call leaked a connection per call: every quota
+	// probe dialed its own HTTP/2 connection to chatgpt.com and abandoned it,
+	// and the transport's health-check PINGs kept each one open indefinitely.
+	//
+	// Entries are never evicted, as in the executor's fingerprint cache: a
+	// transport caches one connection per host and every connection closes
+	// itself once idle, so an unused entry costs only its struct, and the keys
+	// are bounded by the configured egress settings. Do not reuse the LRU's
+	// CloseIdleConnections here: on these transports it also closes
+	// connections that still carry requests.
+	managementFingerprintTransports = map[managementTransportKey]http.RoundTripper{}
 )
+
+func newManagementTransportKey(proxyStr string, sdkCfg *config.SDKConfig) managementTransportKey {
+	key := managementTransportKey{proxyURL: strings.TrimSpace(proxyStr)}
+	if sdkCfg != nil {
+		key.preferIPv4 = sdkCfg.PreferIPv4
+		key.insecureSkipVerify = sdkCfg.InsecureSkipVerify
+		key.caCert = strings.TrimSpace(sdkCfg.CACert)
+		key.caCertStat = util.CACertStatFingerprint(key.caCert)
+	}
+	return key
+}
 
 func (s *Service) AuthByIndex(authIndex string) *coreauth.Auth {
 	authIndex = strings.TrimSpace(authIndex)
@@ -112,24 +139,27 @@ func isCodexTargetURL(auth *coreauth.Auth, u *url.URL) bool {
 }
 
 func cachedManagementTLSFingerprintTransport(proxyStr string, sdkCfg *config.SDKConfig) http.RoundTripper {
-	key := managementTransportKey{proxyURL: strings.TrimSpace(proxyStr)}
-	if sdkCfg != nil {
-		key.preferIPv4 = sdkCfg.PreferIPv4
-		key.insecureSkipVerify = sdkCfg.InsecureSkipVerify
-		key.caCert = strings.TrimSpace(sdkCfg.CACert)
+	key := newManagementTransportKey(proxyStr, sdkCfg)
+
+	managementTransportMu.Lock()
+	defer managementTransportMu.Unlock()
+	if rt, ok := managementFingerprintTransports[key]; ok {
+		return rt
 	}
-	opts := tlsfingerprint.Options{
+	rt, err := tlsfingerprint.New(tlsfingerprint.Options{
 		Profile:            tlsfingerprint.DefaultProfile,
 		ProxyURL:           key.proxyURL,
 		PreferIPv4:         key.preferIPv4,
 		InsecureSkipVerify: key.insecureSkipVerify,
 		CACertPath:         key.caCert,
 		DialTimeout:        30 * time.Second,
-	}
-	rt, err := tlsfingerprint.New(opts)
+	})
 	if err != nil {
+		// Not cached, like a failed standard transport: the caller falls back
+		// to the standard path for this call.
 		return nil
 	}
+	managementFingerprintTransports[key] = rt
 	return rt
 }
 
@@ -138,12 +168,7 @@ func cachedManagementProxyTransport(proxyStr string, sdkCfg *config.SDKConfig) *
 	if proxyStr == "" {
 		return nil
 	}
-	key := managementTransportKey{proxyURL: proxyStr}
-	if sdkCfg != nil {
-		key.preferIPv4 = sdkCfg.PreferIPv4
-		key.insecureSkipVerify = sdkCfg.InsecureSkipVerify
-		key.caCert = strings.TrimSpace(sdkCfg.CACert)
-	}
+	key := newManagementTransportKey(proxyStr, sdkCfg)
 
 	now := time.Now()
 	managementTransportMu.Lock()

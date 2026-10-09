@@ -7,6 +7,7 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/tlsfingerprint"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
 )
@@ -81,7 +82,7 @@ func tlsFingerprintRoundTripper(cfg *config.Config, auth *cliproxyauth.Auth, pro
 		key.preferIPv4 = sdkCfg.PreferIPv4
 		key.insecureSkipVerify = sdkCfg.InsecureSkipVerify
 		key.caCert = strings.TrimSpace(sdkCfg.CACert)
-		key.caCertStat = caCertStatFingerprint(key.caCert)
+		key.caCertStat = util.CACertStatFingerprint(key.caCert)
 	}
 
 	tlsFingerprintTransports.Lock()

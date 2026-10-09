@@ -122,7 +122,7 @@ func TestRoundTripDetectsDeadHTTP2Peer(t *testing.T) {
 	// The failed connection must not stay in the cache, otherwise the next
 	// request repeats the stall.
 	rt.mu.Lock()
-	_, cached := rt.h2Conns["127.0.0.1"]
+	_, cached := rt.h2Conns[addr]
 	rt.mu.Unlock()
 	if cached {
 		t.Fatal("the dead connection is still cached for reuse")
@@ -145,6 +145,11 @@ func TestH2HealthCheckDefaultsAreBounded(t *testing.T) {
 	// has to land well inside both.
 	if total := h2ReadIdleTimeout + h2PingTimeout; total > time.Minute {
 		t.Fatalf("detection budget %s is too slow to beat a client timeout", total)
+	}
+	// The PINGs above keep an idle connection alive indefinitely; only the
+	// idle timeout ever closes one. See TestIdleConnectionClosesDespitePings.
+	if h2IdleConnTimeout <= 0 {
+		t.Fatal("IdleConnTimeout of zero lets the health check keep idle connections open forever")
 	}
 }
 
