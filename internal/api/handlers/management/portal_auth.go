@@ -22,9 +22,12 @@ const portalSessionKey = "portalSessionID"
 // guess budget for any 401 the route produced. That swept in the refresh
 // endpoint returning 401 for a session the server itself had just revoked: a
 // user whose password an admin had reset arrived at the login form having
-// already spent one attempt on a failure that was not theirs. A cooldown, a
-// disabled account and an infrastructure error carry no information about the
-// password either, so none of them may consume the budget.
+// already spent one attempt on a failure that was not theirs. A cooldown that
+// turned the request away, a disabled account and an infrastructure error carry
+// no information about the password either, so none of them may consume the
+// budget. The failure that arms a cooldown is different: its password was
+// compared, so it arrives as a *loginlockout.FailureError and is charged — it
+// used to arrive as a bare cooldown and was the one guess never counted.
 func isPortalGuessFailure(err error) bool {
 	return errors.Is(err, enduser.ErrInvalidCredentials)
 }
@@ -66,7 +69,7 @@ func (h *Handler) PostPortalLogin(c *gin.Context) {
 	result, err := svc.Login(c.Request.Context(), body.Username, body.Password, c.GetHeader("User-Agent"))
 	if err != nil {
 		if isPortalGuessFailure(err) {
-			h.throttleCharge(c, ipKey, now)
+			ipDecision := h.throttleCharge(c, ipKey, now)
 			d := h.throttleCharge(c, acctKey, now)
 			h.logAuthFailure(c, acctKey, d)
 			// One attempt, one record: the two charges above are two views of
@@ -74,6 +77,8 @@ func (h *Handler) PostPortalLogin(c *gin.Context) {
 			// can answer "why can this person not log in" from the attempt log
 			// instead of correlating web-server access logs by timestamp.
 			h.noteCredentialFailure(c, acctKey, d, body.Username, "invalid portal credentials")
+			h.respondCredentialFailure(c, err, acctKey, ipDecision, d)
+			return
 		}
 		endUserError(c, err)
 		return

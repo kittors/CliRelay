@@ -201,6 +201,73 @@ func TestMenuCatalogReferencesExistingParents(t *testing.T) {
 	if moderation.PermissionCode != "content_moderation.read" {
 		t.Fatalf("%s permission = %q, want content_moderation.read", ContentModerationMenuCode, moderation.PermissionCode)
 	}
+	// Appearance settings open in a drawer from the panel's header; the sidebar page that
+	// CliRelay#1134 added is retired (seedMenus deletes its row).
+	for _, menu := range MenuCatalog {
+		if menu.Code == retiredAppearanceMenuCode || menu.Component == "appearance" {
+			t.Fatalf("appearance must not be a sidebar menu: %+v", menu)
+		}
+	}
+}
+
+func TestListPrincipalMenusShowsUnpermissionedMenusToEveryone(t *testing.T) {
+	dsn := fmt.Sprintf("file:identity_principal_menus_%d?mode=memory&cache=shared", time.Now().UnixNano())
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if closeErr := db.Close(); closeErr != nil {
+			t.Errorf("close sqlite menus db: %v", closeErr)
+		}
+	})
+	if _, err = db.Exec(`CREATE TABLE menus (
+		code TEXT PRIMARY KEY, parent_code TEXT, menu_type TEXT NOT NULL, path TEXT NOT NULL DEFAULT '',
+		component TEXT NOT NULL DEFAULT '', link_url TEXT NOT NULL DEFAULT '', label_key TEXT NOT NULL,
+		title TEXT NOT NULL DEFAULT '', icon TEXT NOT NULL DEFAULT '', permission_code TEXT,
+		sort_order INTEGER NOT NULL DEFAULT 0, visible BOOLEAN NOT NULL DEFAULT true,
+		enabled BOOLEAN NOT NULL DEFAULT true, badge_type TEXT NOT NULL DEFAULT '',
+		badge_content TEXT NOT NULL DEFAULT '', hide_menu BOOLEAN NOT NULL DEFAULT false,
+		system_protected BOOLEAN NOT NULL DEFAULT true, version INTEGER NOT NULL DEFAULT 1
+	)`); err != nil {
+		t.Fatalf("create sqlite menus schema: %v", err)
+	}
+	// An admin-created link without a permission code sits next to permission-gated pages.
+	rows := []struct{ code, parent, menuType, path, permission string }{
+		{"dashboard", "", "menu", "/dashboard", "dashboard.read"},
+		{"group.system", "", "directory", "/system", ""},
+		{"system.config", "group.system", "menu", "/system/config", "system.config.read"},
+		{"system.handbook", "group.system", "menu", "/system/handbook", ""},
+	}
+	for index, row := range rows {
+		var parent, permission any
+		if row.parent != "" {
+			parent = row.parent
+		}
+		if row.permission != "" {
+			permission = row.permission
+		}
+		if _, err = db.Exec(
+			`INSERT INTO menus (code,parent_code,menu_type,path,label_key,permission_code,sort_order) VALUES (?,?,?,?,?,?,?)`,
+			row.code, parent, row.menuType, row.path, row.code, permission, index,
+		); err != nil {
+			t.Fatalf("insert menu %s: %v", row.code, err)
+		}
+	}
+
+	menus, err := NewService(db).ListPrincipalMenus(context.Background(), Principal{Permissions: map[string]bool{}})
+	if err != nil {
+		t.Fatalf("ListPrincipalMenus: %v", err)
+	}
+	got := make([]string, 0, len(menus))
+	for _, menu := range menus {
+		got = append(got, menu.Code)
+	}
+	// The unpermissioned leaf is visible to a principal without permissions, and so is the
+	// directory around it; permission-gated pages are not.
+	if strings.Join(got, ",") != "group.system,system.handbook" {
+		t.Fatalf("menus for a principal without permissions = %v, want [group.system system.handbook]", got)
+	}
 }
 
 func TestGeneratedIdentifier(t *testing.T) {

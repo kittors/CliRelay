@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -636,6 +637,73 @@ func TestAPICallRejectsLoopbackTarget(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "blocked url") {
 		t.Fatalf("expected blocked url error, got body=%s", rec.Body.String())
+	}
+}
+
+// postAPICallWithTokenPlaceholder sends a GET with "Authorization: Bearer
+// $TOKEN$" through the api-call tool. Egress is routed through a stand-in proxy
+// that counts every request reaching it, so a regression fails here instead of
+// dialing the public address in the URL.
+func postAPICallWithTokenPlaceholder(t *testing.T, authIndex string, manager *coreauth.Manager) (*httptest.ResponseRecorder, int32) {
+	t.Helper()
+	gin.SetMode(gin.TestMode)
+
+	var upstreamHits atomic.Int32
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHits.Add(1)
+		t.Errorf("upstream reached with Authorization=%q", r.Header.Get("Authorization"))
+		http.Error(w, "upstream must not be reached", http.StatusBadGateway)
+	}))
+	t.Cleanup(proxy.Close)
+
+	h := &Handler{cfg: &config.Config{SDKConfig: config.SDKConfig{ProxyURL: proxy.URL}}, authManager: manager}
+
+	payload := map[string]any{
+		"method": "GET",
+		"url":    "http://93.184.216.34/backend-api/wham/usage",
+		"header": map[string]string{"Authorization": "Bearer $TOKEN$"},
+	}
+	if authIndex != "" {
+		payload["authIndex"] = authIndex
+	}
+	requestBody, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal request body: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v0/management/api-call", bytes.NewReader(requestBody))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	h.APITools().APICall(c)
+	return rec, upstreamHits.Load()
+}
+
+// TestAPICallRejectsUnknownAuthIndexTokenPlaceholder covers a stale or
+// cross-tenant auth_index, which resolves to no credential. The tool used to
+// forward the header with the literal "$TOKEN$" still in it, and the upstream's
+// 401 then read as an expired credential.
+func TestAPICallRejectsUnknownAuthIndexTokenPlaceholder(t *testing.T) {
+	manager := coreauth.NewManager(&memoryAuthStore{}, nil, nil)
+	rec, hits := postAPICallWithTokenPlaceholder(t, "stale-or-cross-tenant-index", manager)
+
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "auth not found for index") {
+		t.Fatalf("got %d %s, want 400 with auth not found for index", rec.Code, rec.Body.String())
+	}
+	if hits != 0 {
+		t.Fatalf("upstream was reached %d time(s)", hits)
+	}
+}
+
+func TestAPICallRejectsMissingAuthIndexTokenPlaceholder(t *testing.T) {
+	rec, hits := postAPICallWithTokenPlaceholder(t, "", nil)
+
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "missing auth index") {
+		t.Fatalf("got %d %s, want 400 with missing auth index", rec.Code, rec.Body.String())
+	}
+	if hits != 0 {
+		t.Fatalf("upstream was reached %d time(s)", hits)
 	}
 }
 

@@ -23,3 +23,14 @@ issues:
       text: "SA1029"
       linters:
         - staticcheck
+    # golang.org/x/net v0.60.0 deprecates its HTTP/2 client (http2.Transport,
+    # http2.ClientConn, Transport.NewClientConn) in favour of net/http. These two
+    # transports dial with a uTLS fingerprint and hand the finished connection to
+    # http2.Transport.NewClientConn; the net/http replacement takes an address and
+    # dials it itself, so porting them means moving the uTLS handshake into the
+    # Transport's dial hooks, a change of its own. x/net still ships security fixes
+    # for http2 (v0.60.0 is one), so it stays until then. Delete this rule with the port.
+    - path: 'internal/(auth/claude/utls_transport|tlsfingerprint/roundtripper)\.go'
+      text: 'SA1019: (http2\.(ClientConn|Transport)|\w+\.NewClientConn) is deprecated'
+      linters:
+        - staticcheck

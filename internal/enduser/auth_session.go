@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/loginlockout"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -51,8 +52,11 @@ func (s *Service) Login(ctx context.Context, username, password, userAgent strin
 	if u.Status == "locked" {
 		return result, ErrAccountLocked
 	}
+	// The cooldown is enforced before the password is compared: during it no
+	// password is checked or counted, so retrying into a closed door can neither
+	// reveal which guess was right nor walk the account up the ladder.
 	if now := time.Now(); u.LockedUntil != nil && u.LockedUntil.After(now) {
-		return result, newCooldownError(*u.LockedUntil, now)
+		return result, loginlockout.NewCooldownError(*u.LockedUntil, now)
 	}
 	if bcrypt.CompareHashAndPassword([]byte(passwordHash), []byte(password)) != nil {
 		// Atomic increment to avoid lost updates under concurrent failures. The
@@ -70,21 +74,22 @@ func (s *Service) Login(ctx context.Context, username, password, userAgent strin
 			       last_failed_login_at = now(),
 			       updated_at = now()
 			WHERE id = ? RETURNING failed_login_count
-		`, endUserFailureWindow.Seconds(), u.ID).Scan(&newCount)
+		`, loginlockout.FailureWindow.Seconds(), u.ID).Scan(&newCount)
 		if newCount == 0 {
 			newCount = u.FailedLoginCount + 1
 		}
-		stage, wait, apply := lockPenalty(newCount)
-		if apply && wait > 0 {
-			now := time.Now().UTC()
-			until := now.Add(wait)
+		now := time.Now().UTC()
+		var armedUntil time.Time
+		if stage, wait, apply := loginlockout.Penalty(newCount); apply && wait > 0 {
+			armedUntil = now.Add(wait)
 			_, _ = s.db.ExecContext(ctx, `
 				UPDATE end_users SET lock_stage = ?, locked_until = ?, updated_at = now()
 				WHERE id = ?
-			`, stage, until, u.ID)
-			return result, newCooldownError(until, now)
+			`, stage, armedUntil, u.ID)
 		}
-		return result, ErrInvalidCredentials
+		// Still a wrong password even when it armed the cooldown, so the API
+		// layer charges its guess budget for it; the cooldown rides along.
+		return result, loginlockout.NewFailure(ErrInvalidCredentials, newCount, armedUntil, now)
 	}
 	if err := s.ensureTenantActive(ctx, u.TenantID); err != nil {
 		return result, err

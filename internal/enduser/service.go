@@ -26,7 +26,6 @@ var (
 	ErrInvalidCredentials      = errors.New("invalid credentials")
 	ErrAccountDisabled         = errors.New("account disabled")
 	ErrAccountLocked           = errors.New("account locked")
-	ErrLoginCooldowned         = errors.New("login cooldown")
 	ErrMustChangePassword      = errors.New("must change password")
 	ErrSessionExpired          = errors.New("session expired")
 	ErrSessionRevoked          = errors.New("session revoked")

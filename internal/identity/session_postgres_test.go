@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/loginlockout"
 	postgresstore "github.com/router-for-me/CLIProxyAPI/v6/internal/storage/postgres"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/testutil/postgrestest"
 )
@@ -396,14 +397,29 @@ func TestPostgresLoginFailureCountDecaysOutsideWindow(t *testing.T) {
 }
 
 // TestPostgresLoginLockoutIsTemporaryAndNeverFlipsStatus proves an automatic
-// cooldown stays distinguishable from an administrative lock, and clears itself.
+// cooldown stays distinguishable from an administrative lock, warns before it
+// arms, and clears itself.
 func TestPostgresLoginLockoutIsTemporaryAndNeverFlipsStatus(t *testing.T) {
 	service, db, userID := newSessionTestService(t)
 	ctx := context.Background()
 
-	for i := 0; i < 3; i++ {
-		if _, err := service.Login(ctx, "admin", "wrong-password", false, "test-agent"); err == nil {
-			t.Fatalf("failed login %d unexpectedly succeeded", i)
+	// Every failure short of the first rung says how many remain, so the lock
+	// is never the first sign that there is a limit; the fifth arms it and says
+	// for how long.
+	for i := 1; i <= 5; i++ {
+		_, err := service.Login(ctx, "admin", "wrong-password", false, "test-agent")
+		var failure *loginlockout.FailureError
+		if !errors.As(err, &failure) || !errors.Is(err, ErrInvalidCredentials) {
+			t.Fatalf("failed login %d = %v, want a *loginlockout.FailureError for ErrInvalidCredentials", i, err)
+		}
+		if i < 5 {
+			if failure.Cooldown != nil || failure.Remaining != 5-i {
+				t.Fatalf("failed login %d = {Remaining: %d, Cooldown: %v}, want {%d, nil}", i, failure.Remaining, failure.Cooldown, 5-i)
+			}
+			continue
+		}
+		if failure.Cooldown == nil || failure.Cooldown.RetryAfter != time.Minute {
+			t.Fatalf("fifth failed login armed %v, want a one-minute cooldown", failure.Cooldown)
 		}
 	}
 
@@ -424,8 +440,28 @@ func TestPostgresLoginLockoutIsTemporaryAndNeverFlipsStatus(t *testing.T) {
 		t.Fatalf("lock_stage = %d, want 1", lockStage)
 	}
 
-	if _, err := service.Login(ctx, "admin", sessionTestPassword, false, "test-agent"); !errors.Is(err, ErrAccountLocked) {
-		t.Fatalf("login during cooldown = %v, want ErrAccountLocked", err)
+	// During the cooldown no password is compared. The correct password used to
+	// answer "account locked" while a wrong one answered "invalid credentials":
+	// that told a guesser which guess was right, told the real user (who read
+	// "locked" as "disabled, contact your administrator") to try another
+	// password, and every wrong guess walked the account up the ladder. Now both
+	// get the cooldown and its wait, and neither moves the count.
+	for _, password := range []string{sessionTestPassword, "wrong-password"} {
+		_, err := service.Login(ctx, "admin", password, false, "test-agent")
+		var cooldown *loginlockout.CooldownError
+		if !errors.As(err, &cooldown) || errors.Is(err, ErrAccountLocked) || errors.Is(err, ErrInvalidCredentials) {
+			t.Fatalf("login during cooldown = %v, want only a *loginlockout.CooldownError", err)
+		}
+		if cooldown.RetryAfter <= 0 || cooldown.RetryAfter > time.Minute {
+			t.Fatalf("cooldown RetryAfter = %v, want within the one-minute rung", cooldown.RetryAfter)
+		}
+	}
+	var failedCount int
+	if err := db.QueryRowContext(ctx, `SELECT failed_login_count FROM users WHERE id = ?`, userID).Scan(&failedCount); err != nil {
+		t.Fatal(err)
+	}
+	if failedCount != 5 {
+		t.Fatalf("failed_login_count = %d after attempts during the cooldown, want 5 (a closed door must not count)", failedCount)
 	}
 
 	if _, err := db.ExecContext(ctx, `UPDATE users SET locked_until = now() - interval '1 second' WHERE id = ?`, userID); err != nil {
