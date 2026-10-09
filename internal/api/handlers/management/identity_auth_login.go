@@ -46,12 +46,14 @@ func (h *Handler) PostLogin(c *gin.Context) {
 	result, err := service.Login(c.Request.Context(), body.Username, body.Password, body.RememberMe, c.GetHeader("User-Agent"))
 	if err != nil {
 		if isCredentialGuessFailure(err) {
-			h.throttleCharge(c, ipKey, now)
+			ipDecision := h.throttleCharge(c, ipKey, now)
 			d := h.throttleCharge(c, acctKey, now)
 			h.logAuthFailure(c, acctKey, d)
 			// One attempt, one record: the two charges above are two views of the
 			// same failure.
 			h.noteCredentialFailure(c, acctKey, d, body.Username, "invalid password")
+			h.respondCredentialFailure(c, err, acctKey, ipDecision, d)
+			return
 		}
 		identityError(c, err)
 		return
@@ -65,21 +67,23 @@ func (h *Handler) PostLogin(c *gin.Context) {
 }
 
 // isCredentialGuessFailure reports whether a login error means a secret was
-// compared and did not match. Anything else must not consume the guess budget:
-// a suspended tenant, a disabled account and an infrastructure error all carry
-// zero information about the password, so counting them only produces lockouts
-// that the user cannot clear by typing the right password.
+// compared and did not match — including the failure that arms the account's
+// cooldown, which carries it as a *loginlockout.FailureError. Anything else must
+// not consume the guess budget: a cooldown, a suspended tenant, a disabled
+// account and an infrastructure error all carry zero information about the
+// password, so counting them only produces lockouts that the user cannot clear
+// by typing the right password.
 func isCredentialGuessFailure(err error) bool {
 	return errors.Is(err, identity.ErrInvalidCredentials)
 }
 
-// abortLoginThrottled rejects a throttled login attempt. The "login_rate_limited"
-// code is a cross-repo contract: the panel's login page maps exactly that string
-// to its "try again later" copy, and anything else surfaces as a raw error.
+// abortLoginThrottled rejects a login attempt an armed throttle bucket turned
+// away before any password was compared. The "login_rate_limited" code and
+// details.retry_after_seconds are a cross-repo contract: the panel's sign-in
+// forms map exactly that code to their lock copy and count down from the
+// seconds; anything else surfaces as a raw error.
 func abortLoginThrottled(c *gin.Context, d throttleDecision) {
-	retryAfter := d.RetryAfter.Round(time.Second)
-	c.Header("Retry-After", retryAfterSecondsHeader(retryAfter))
-	c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{"error": gin.H{"code": "login_rate_limited", "message": "too many login attempts"}})
+	abortLoginLocked(c, loginRateLimitedCode, loginRateLimitedMessage, d.RetryAfter)
 }
 
 // adminRefreshTokenLength is len("cpr_adm_") + base64.RawURLEncoding(32 bytes).

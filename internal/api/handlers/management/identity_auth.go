@@ -193,6 +193,13 @@ func identityError(c *gin.Context, err error) {
 	if writePasswordPolicyError(c, err) {
 		return
 	}
+	// An automatic cooldown is a temporary lock with a known end, not the
+	// administrative "account_locked": answering it as the latter is what told
+	// people to contact an administrator over a one-minute wait.
+	if isLoginCooldown(err) {
+		abortLoginCooldown(c, err)
+		return
+	}
 	status := http.StatusUnauthorized
 	code := "invalid_credentials"
 	switch {

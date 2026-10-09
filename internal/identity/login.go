@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/loginlockout"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -47,24 +48,36 @@ func (s *Service) Login(ctx context.Context, username, password string, remember
 	if err != nil {
 		return result, fmt.Errorf("identity: login lookup: %w", err)
 	}
-	// The password comparison stays ahead of the status checks so that
-	// ErrInvalidCredentials is the only error that can mean "a secret was guessed
-	// wrong". The API layer relies on exactly that to decide what consumes a
-	// guessing budget; a locked or suspended account must not.
+	now := time.Now()
+	// An automatic cooldown is enforced before the password is compared, the way
+	// the portal does it. Comparing first made the cooldown useless as a lock and
+	// confusing as a message: a wrong password still answered "invalid
+	// credentials" and kept counting (walking the account up the ladder), while
+	// only the correct password answered "account locked" — which told a guesser
+	// they had found it, and told the real user, who read it as "disabled,
+	// contact your administrator", to try another password.
+	//
+	// The cooldown is not a guess (no secret was compared), so it consumes no
+	// guessing budget, and a correct password still cannot heal it.
+	if lockedUntil.Valid && lockedUntil.Time.After(now) {
+		return result, loginlockout.NewCooldownError(lockedUntil.Time, now)
+	}
+	// The password comparison stays ahead of the status checks so that only a
+	// wrong password can produce ErrInvalidCredentials (here carried by a
+	// *loginlockout.FailureError). The API layer relies on exactly that to decide
+	// what consumes a guessing budget; a locked or suspended account must not.
 	if bcrypt.CompareHashAndPassword([]byte(passwordHash), []byte(password)) != nil {
-		if _, failErr := s.registerLoginFailure(ctx, tenant.ID, user.ID); failErr != nil {
+		failure, failErr := s.registerLoginFailure(ctx, tenant.ID, user.ID)
+		if failErr != nil {
 			return result, failErr
 		}
 		s.RecordAudit(ctx, AuditEvent{TenantID: tenant.ID, ActorKind: "system", Action: "auth.login", ResourceType: "user", ResourceID: user.ID, Result: "denied"})
-		return result, ErrInvalidCredentials
+		return result, failure
 	}
-	now := time.Now()
-	// Three separate judgements, deliberately not collapsed: an automatic cooldown
-	// expires on its own, an administrative lock does not, and neither is allowed
-	// to be healed by a successful password entry further down.
-	if lockedUntil.Valid && lockedUntil.Time.After(now) {
-		return result, ErrAccountLocked
-	}
+	// Two separate judgements, deliberately not collapsed with the cooldown
+	// above: an automatic cooldown expires on its own, an administrative lock
+	// does not, and neither is allowed to be healed by a successful password
+	// entry further down.
 	if user.Status == "locked" {
 		return result, ErrAccountLocked
 	}
