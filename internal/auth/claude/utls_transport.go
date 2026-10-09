@@ -21,6 +21,12 @@ import (
 const (
 	h2ReadIdleTimeout = 30 * time.Second
 	h2PingTimeout     = 15 * time.Second
+	// The health-check PINGs keep an idle connection alive indefinitely, so
+	// this is the only thing that ever closes one for idleness. Every token
+	// refresh builds a fresh round tripper and drops it without
+	// CloseIdleConnections; without the timeout each refresh would leave its
+	// connection open for good.
+	h2IdleConnTimeout = util.DefaultHTTPIdleConnTimeout
 )
 
 // utlsRoundTripper implements http.RoundTripper using utls with Firefox fingerprint
@@ -137,6 +143,7 @@ func (t *utlsRoundTripper) createConnection(host, addr string) (*http2.ClientCon
 	tr := &http2.Transport{
 		ReadIdleTimeout: h2ReadIdleTimeout,
 		PingTimeout:     h2PingTimeout,
+		IdleConnTimeout: h2IdleConnTimeout,
 	}
 	h2Conn, err := tr.NewClientConn(tlsConn)
 	if err != nil {
