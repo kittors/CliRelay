@@ -40,7 +40,7 @@ RUN bun install --frozen-lockfile
 RUN bun run build
 
 # ── Backend build ────────────────────────────────────────────────────────────
-FROM --platform=$BUILDPLATFORM golang:1.26.1-alpine AS backend-builder
+FROM --platform=$BUILDPLATFORM golang:1.26.9-alpine AS backend-builder
 
 WORKDIR /app
 
