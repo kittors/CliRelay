@@ -73,18 +73,24 @@ func (s *Service) APICall(ctx context.Context, body APICallRequest) (int, any) {
 		if !strings.Contains(value, "$TOKEN$") {
 			continue
 		}
+		// Never forward a literal "$TOKEN$" placeholder upstream. That happens when the
+		// client supplies a stale/wrong auth_index (e.g. cross-tenant cache) and AuthByIndex
+		// returns nil — upstream then returns a misleading 401 that looks like credential expiry.
+		if auth == nil {
+			if strings.TrimSpace(authIndex) == "" {
+				return http.StatusBadRequest, map[string]any{"error": "missing auth index"}
+			}
+			return http.StatusBadRequest, map[string]any{"error": "auth not found for index"}
+		}
 		if !tokenResolved {
 			token, tokenErr = s.ResolveTokenForAuth(ctx, auth)
 			tokenResolved = true
 		}
-		if auth != nil && token == "" {
+		if token == "" {
 			if tokenErr != nil {
 				return http.StatusBadRequest, map[string]any{"error": "auth token refresh failed"}
 			}
 			return http.StatusBadRequest, map[string]any{"error": "auth token not found"}
-		}
-		if token == "" {
-			continue
 		}
 		reqHeaders[key] = strings.ReplaceAll(value, "$TOKEN$", token)
 	}
