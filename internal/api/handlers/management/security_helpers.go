@@ -9,6 +9,13 @@ import (
 )
 
 func retryAfterSecondsHeader(duration time.Duration) string {
+	return strconv.Itoa(retryAfterSeconds(duration))
+}
+
+// retryAfterSeconds renders a lock's remaining time as whole seconds. It rounds
+// up, so a client that waits exactly that long never arrives a moment early, and
+// never goes below 1, so a live lock never reads as "retry in 0 seconds".
+func retryAfterSeconds(duration time.Duration) int {
 	seconds := int(duration / time.Second)
 	if duration%time.Second != 0 {
 		seconds++
@@ -16,7 +23,7 @@ func retryAfterSecondsHeader(duration time.Duration) string {
 	if seconds < 1 {
 		seconds = 1
 	}
-	return strconv.Itoa(seconds)
+	return seconds
 }
 
 func shouldReadManagementTokenFromQuery(c *gin.Context) bool {

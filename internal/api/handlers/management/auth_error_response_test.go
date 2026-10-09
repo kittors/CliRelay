@@ -11,6 +11,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/enduser"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/identity"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/loginlockout"
 )
 
 type errorEnvelope struct {
@@ -91,7 +92,7 @@ func TestEndUserErrorReportsCooldownRemainingTime(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 
-	endUserError(c, &enduser.CooldownError{RetryAfter: 5 * time.Minute})
+	endUserError(c, &loginlockout.CooldownError{RetryAfter: 5 * time.Minute})
 
 	if recorder.Code != http.StatusTooManyRequests {
 		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusTooManyRequests)
@@ -115,7 +116,12 @@ func TestEndUserErrorReportsCooldownRemainingTime(t *testing.T) {
 // the server itself had just revoked: resetting someone's password spent one of
 // their login attempts before they ever reached the form.
 func TestOnlyWrongPasswordConsumesThePortalGuessBudget(t *testing.T) {
-	charging := []error{enduser.ErrInvalidCredentials}
+	charging := []error{
+		enduser.ErrInvalidCredentials,
+		// The failure that arms the cooldown compared a password too. It used to
+		// arrive as a bare cooldown and was the one guess never charged.
+		loginlockout.NewFailure(enduser.ErrInvalidCredentials, 5, time.Now().Add(time.Minute), time.Now()),
+	}
 	for _, err := range charging {
 		if !isPortalGuessFailure(err) {
 			t.Fatalf("isPortalGuessFailure(%v) = false, want true", err)
@@ -125,8 +131,8 @@ func TestOnlyWrongPasswordConsumesThePortalGuessBudget(t *testing.T) {
 	free := []error{
 		enduser.ErrSessionRevoked,
 		enduser.ErrSessionExpired,
-		enduser.ErrLoginCooldowned,
-		&enduser.CooldownError{RetryAfter: time.Minute},
+		loginlockout.ErrCooldown,
+		&loginlockout.CooldownError{RetryAfter: time.Minute},
 		enduser.ErrAccountDisabled,
 		enduser.ErrAccountLocked,
 		enduser.ErrTenantSuspended,
@@ -136,6 +142,70 @@ func TestOnlyWrongPasswordConsumesThePortalGuessBudget(t *testing.T) {
 	for _, err := range free {
 		if isPortalGuessFailure(err) {
 			t.Fatalf("isPortalGuessFailure(%v) = true, want false: it carries no information about the password", err)
+		}
+	}
+}
+
+// The admin sign-in used to answer its automatic cooldown as "account_locked",
+// which the panel renders as "disabled or locked, contact your administrator".
+// People read that as a wrong password and kept guessing. A cooldown has a known
+// end, so it must arrive as one, with the wait.
+func TestIdentityErrorReportsCooldownNotAccountLocked(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+
+	identityError(c, &loginlockout.CooldownError{RetryAfter: 90 * time.Second})
+
+	if recorder.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusTooManyRequests)
+	}
+	if got := recorder.Header().Get("Retry-After"); got != "90" {
+		t.Fatalf("Retry-After = %q, want %q", got, "90")
+	}
+	envelope := decodeErrorEnvelope(t, recorder.Body.Bytes())
+	if envelope.Error.Code != "login_cooldown" {
+		t.Fatalf("code = %q, want login_cooldown", envelope.Error.Code)
+	}
+	if seconds, ok := envelope.Error.Details["retry_after_seconds"].(float64); !ok || int(seconds) != 90 {
+		t.Fatalf("details.retry_after_seconds = %v, want 90", envelope.Error.Details["retry_after_seconds"])
+	}
+
+	// An administrative lock has no end and keeps its own code.
+	recorder = httptest.NewRecorder()
+	c, _ = gin.CreateTestContext(recorder)
+	identityError(c, identity.ErrAccountLocked)
+	if envelope := decodeErrorEnvelope(t, recorder.Body.Bytes()); envelope.Error.Code != "account_locked" {
+		t.Fatalf("administrative lock code = %q, want account_locked", envelope.Error.Code)
+	}
+}
+
+// Mirrors the portal rule for the admin sign-in: only a compared password may
+// consume the guess budget, and that includes the failure that arms a cooldown.
+func TestOnlyWrongPasswordConsumesTheAdminGuessBudget(t *testing.T) {
+	now := time.Now()
+	charging := []error{
+		identity.ErrInvalidCredentials,
+		loginlockout.NewFailure(identity.ErrInvalidCredentials, 2, time.Time{}, now),
+		loginlockout.NewFailure(identity.ErrInvalidCredentials, 5, now.Add(time.Minute), now),
+	}
+	for _, err := range charging {
+		if !isCredentialGuessFailure(err) {
+			t.Fatalf("isCredentialGuessFailure(%v) = false, want true", err)
+		}
+	}
+	free := []error{
+		loginlockout.ErrCooldown,
+		loginlockout.NewCooldownError(now.Add(time.Minute), now),
+		identity.ErrAccountLocked,
+		identity.ErrAccountDisabled,
+		identity.ErrTenantSuspended,
+		errors.New("database unavailable"),
+	}
+	for _, err := range free {
+		if isCredentialGuessFailure(err) {
+			t.Fatalf("isCredentialGuessFailure(%v) = true, want false: it carries no information about the password", err)
 		}
 	}
 }

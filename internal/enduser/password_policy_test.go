@@ -4,7 +4,6 @@ import (
 	"errors"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/identity"
 	"golang.org/x/crypto/bcrypt"
@@ -77,37 +76,5 @@ func TestGeneratedResetPasswordCanBeHashedAndVerified(t *testing.T) {
 		if err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)); err != nil {
 			t.Fatalf("the stored hash does not verify the password it was derived from: %v", err)
 		}
-	}
-}
-
-// A cooldown must tell the caller how long it has to wait. Reporting only "not
-// now" left the panel with a single "too many attempts" string, so a five-minute
-// lock was indistinguishable from a one-minute or a one-hour one and users kept
-// retrying straight onto the next rung.
-func TestCooldownErrorCarriesRemainingTime(t *testing.T) {
-	t.Parallel()
-
-	now := time.Now()
-	err := newCooldownError(now.Add(5*time.Minute), now)
-	if !errors.Is(err, ErrLoginCooldowned) {
-		t.Fatalf("error = %v, want it to satisfy errors.Is(err, ErrLoginCooldowned)", err)
-	}
-	var cooldown *CooldownError
-	if !errors.As(err, &cooldown) {
-		t.Fatalf("error = %v, want it to unwrap to *CooldownError", err)
-	}
-	if cooldown.RetryAfter != 5*time.Minute {
-		t.Fatalf("RetryAfter = %v, want 5m", cooldown.RetryAfter)
-	}
-
-	// An already-elapsed deadline must never render as "retry after 0s" while
-	// the lock is still being reported.
-	past := newCooldownError(now.Add(-time.Hour), now)
-	var elapsed *CooldownError
-	if !errors.As(past, &elapsed) {
-		t.Fatalf("error = %v, want it to unwrap to *CooldownError", past)
-	}
-	if elapsed.RetryAfter < time.Second {
-		t.Fatalf("RetryAfter = %v, want at least 1s", elapsed.RetryAfter)
 	}
 }

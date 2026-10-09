@@ -46,8 +46,8 @@ func endUserError(c *gin.Context, err error) {
 		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": gin.H{"code": "account_disabled", "message": err.Error()}})
 	case errors.Is(err, enduser.ErrAccountLocked):
 		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": gin.H{"code": "account_locked", "message": err.Error()}})
-	case errors.Is(err, enduser.ErrLoginCooldowned):
-		abortPortalCooldown(c, err)
+	case isLoginCooldown(err):
+		abortLoginCooldown(c, err)
 	case errors.Is(err, enduser.ErrMustChangePassword):
 		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": gin.H{"code": "must_change_password", "message": err.Error()}})
 	case errors.Is(err, enduser.ErrSessionExpired):
