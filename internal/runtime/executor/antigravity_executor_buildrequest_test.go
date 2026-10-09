@@ -76,7 +76,7 @@ func buildRequestBodyFromPayload(t *testing.T, modelName string) map[string]any 
 		}
 	}`)
 
-	req, _, err := executor.buildRequest(context.Background(), auth, "token", modelName, payload, false, "", "https://example.com")
+	req, _, err := executor.buildRequest(context.Background(), auth, "token", modelName, payload, false, "", "https://example.com", 0)
 	if err != nil {
 		t.Fatalf("buildRequest error: %v", err)
 	}
