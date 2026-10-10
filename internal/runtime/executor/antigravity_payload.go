@@ -19,7 +19,7 @@ var (
 	randSourceMutex sync.Mutex
 )
 
-func geminiToAntigravity(modelName string, payload []byte, projectID string) []byte {
+func geminiToAntigravity(modelName string, payload []byte, projectID string, sessionGeneration int) []byte {
 	var requestRaw string
 	if reqNode := gjson.GetBytes(payload, "request"); reqNode.IsObject() {
 		requestRaw = reqNode.Raw
@@ -37,7 +37,7 @@ func geminiToAntigravity(modelName string, payload []byte, projectID string) []b
 	template, _ = sjson.Set(template, "model", modelName)
 	template, _ = sjson.Set(template, "requestId", generateRequestID())
 	template, _ = sjson.SetRaw(template, "request", requestRaw)
-	template, _ = sjson.Set(template, "request.sessionId", generateStableSessionID(payload))
+	template, _ = sjson.Set(template, "request.sessionId", generateStableSessionID(payload, sessionGeneration))
 
 	template, _ = sjson.Delete(template, "request.safetySettings")
 	if toolConfig := gjson.Get(template, "toolConfig"); toolConfig.Exists() && !gjson.Get(template, "request.toolConfig").Exists() {
@@ -58,7 +58,18 @@ func generateSessionID() string {
 	return "-" + strconv.FormatInt(n, 10)
 }
 
-func generateStableSessionID(payload []byte) string {
+// generateStableSessionID derives a deterministic session id from the first user
+// turn so that every request in a conversation reuses one upstream session and
+// benefits from server-side prefix caching.
+//
+// sessionGeneration lets the caller rotate that id without changing the
+// conversation. The upstream accumulates input server-side per session; once a
+// long tool-loop pushes the accumulated input past the 1,048,576-token ceiling,
+// every further request on that session fails with a 400 "input token count
+// exceeds the maximum". Bumping the generation derives a fresh session id from
+// the same first turn, so the conversation transparently continues on a new
+// upstream session. Generation 0 is unchanged for backward compatibility.
+func generateStableSessionID(payload []byte, sessionGeneration int) string {
 	contents := gjson.GetBytes(payload, "request.contents")
 	if !contents.Exists() {
 		contents = gjson.GetBytes(payload, "contents")
@@ -68,7 +79,11 @@ func generateStableSessionID(payload []byte) string {
 			if content.Get("role").String() == "user" {
 				text := content.Get("parts.0.text").String()
 				if text != "" {
-					h := sha256.Sum256([]byte(text))
+					seed := text
+					if sessionGeneration > 0 {
+						seed = text + "#clirelay-session-gen=" + strconv.Itoa(sessionGeneration)
+					}
+					h := sha256.Sum256([]byte(seed))
 					n := int64(binary.BigEndian.Uint64(h[:8])) & 0x7FFFFFFFFFFFFFFF
 					return "-" + strconv.FormatInt(n, 10)
 				}
