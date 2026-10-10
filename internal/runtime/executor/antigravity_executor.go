@@ -258,47 +258,88 @@ attemptLoop:
 
 			out := make(chan cliproxyexecutor.StreamChunk)
 			reporter.setInputContent(string(req.Payload))
+			reopener := antigravityReopener{
+				executor: e,
+				ctx:      execCtx.Context,
+				auth:     auth,
+				token:    token,
+				model:    execCtx.BaseModel,
+				alt:      opts.Alt,
+				payload:  translated,
+				baseURLs: append(append([]string(nil), baseURLs[idx:]...), baseURLs[:idx]...),
+				client:   httpClient,
+				recorder: recorder,
+			}
 			go func(resp *http.Response) {
 				defer close(out)
-				defer func() {
-					if errClose := resp.Body.Close(); errClose != nil {
-						log.Errorf("antigravity executor: close response body error: %v", errClose)
-					}
-				}()
-				scanner := bufio.NewScanner(resp.Body)
-				scanner.Buffer(nil, streamScannerBuffer)
 				var param any
-				for scanner.Scan() {
-					line := scanner.Bytes()
-					recorder.AppendResponseChunk(line)
-					reporter.appendOutputChunk(line)
-
-					line = FilterSSEUsageMetadata(line)
-
-					payload := jsonPayload(line)
-					if payload == nil {
-						continue
-					}
-
-					if detail, ok := parseAntigravityStreamUsage(payload); ok {
-						reporter.publish(execCtx.Context, detail)
-					}
-
-					chunks := sdktranslator.TranslateStream(execCtx.Context, execCtx.Execution.TargetFormat, execCtx.SourceFormat, req.Model, execCtx.OriginalPayload, translated, bytes.Clone(payload), &param)
+				translate := func(payload []byte) {
+					chunks := sdktranslator.TranslateStream(execCtx.Context, execCtx.Execution.TargetFormat, execCtx.SourceFormat, req.Model, execCtx.OriginalPayload, translated, payload, &param)
 					for i := range chunks {
 						out <- cliproxyexecutor.StreamChunk{Payload: []byte(chunks[i])}
 					}
 				}
-				tail := sdktranslator.TranslateStream(execCtx.Context, execCtx.Execution.TargetFormat, execCtx.SourceFormat, req.Model, execCtx.OriginalPayload, translated, []byte("[DONE]"), &param)
-				for i := range tail {
-					out <- cliproxyexecutor.StreamChunk{Payload: []byte(tail[i])}
-				}
-				if errScan := scanner.Err(); errScan != nil {
-					recorder.RecordResponseError(errScan)
-					reporter.publishFailure(execCtx.Context)
-					out <- cliproxyexecutor.StreamChunk{Err: errScan}
-				} else {
-					reporter.ensurePublished(execCtx.Context)
+				for retry := 0; ; retry++ {
+					var guard geminiMalformedCallGuard
+					var heldTerminal []byte
+					scanner := bufio.NewScanner(resp.Body)
+					scanner.Buffer(nil, streamScannerBuffer)
+					for scanner.Scan() {
+						line := scanner.Bytes()
+						recorder.AppendResponseChunk(line)
+						reporter.appendOutputChunk(line)
+
+						line = FilterSSEUsageMetadata(line)
+
+						payload := jsonPayload(line)
+						if payload == nil {
+							continue
+						}
+
+						// A malformed-call finish before any visible output: forward the
+						// thinking, hold the terminal, and ask upstream again. The translator
+						// state is kept, so the retry continues the same client response.
+						if retry < antigravityMalformedCallRetries && guard.observe(payload) {
+							heldTerminal = bytes.Clone(payload)
+							translate(stripGeminiTerminal(bytes.Clone(payload)))
+							break
+						}
+
+						if detail, ok := parseAntigravityStreamUsage(payload); ok {
+							reporter.publish(execCtx.Context, detail)
+						}
+						translate(bytes.Clone(payload))
+					}
+					errScan := scanner.Err()
+					if errClose := resp.Body.Close(); errClose != nil {
+						log.Errorf("antigravity executor: close response body error: %v", errClose)
+					}
+
+					if heldTerminal != nil {
+						log.Warnf("antigravity executor: %s for model %s before any output, re-requesting (%d/%d)", geminiFinishMalformedFunctionCall, execCtx.BaseModel, retry+1, antigravityMalformedCallRetries)
+						next, errOpen := reopener.open()
+						if errOpen == nil {
+							resp = next
+							continue
+						}
+						log.Warnf("antigravity executor: re-request after %s failed: %v", geminiFinishMalformedFunctionCall, errOpen)
+						// The retry could not be opened: deliver the held end of turn
+						// (its thinking already went out) so the response still terminates.
+						if detail, ok := parseAntigravityStreamUsage(heldTerminal); ok {
+							reporter.publish(execCtx.Context, detail)
+						}
+						translate(geminiTerminalOnly(heldTerminal))
+					}
+
+					translate([]byte("[DONE]"))
+					if errScan != nil {
+						recorder.RecordResponseError(errScan)
+						reporter.publishFailure(execCtx.Context)
+						out <- cliproxyexecutor.StreamChunk{Err: errScan}
+					} else {
+						reporter.ensurePublished(execCtx.Context)
+					}
+					return
 				}
 			}(httpResp)
 			return &cliproxyexecutor.StreamResult{Headers: httpResp.Header.Clone(), Chunks: out}, nil
