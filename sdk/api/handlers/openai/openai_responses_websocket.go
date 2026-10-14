@@ -103,6 +103,7 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 		// )
 		appendWebsocketEvent(&wsBodyLog, "request", payload)
 
+		pinnedAuthID = h.pinnedAuthForTurn(c, pinnedAuthID, payload, lastRequest, passthroughSessionID)
 		allowIncrementalInputWithPreviousResponseID := websocketUpstreamSupportsIncrementalInput(nil, nil)
 		if pinnedAuthID != "" && h != nil && h.AuthManager != nil {
 			if pinnedAuth, ok := h.AuthManager.GetByID(pinnedAuthID); ok && pinnedAuth != nil {
