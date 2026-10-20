@@ -15,16 +15,16 @@ import (
 func TestMiniMaxOllamaDiscovery(t *testing.T) {
 	for _, status := range []int{http.StatusOK, http.StatusBadGateway} {
 		t.Run(http.StatusText(status), func(t *testing.T) {
-			previousURL, previousClient := ollamaCloudTagsURL, ollamaCloudModelsClient
+			previousURL, previousClient := ollamaCloudModelsURL, ollamaCloudModelsClient
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.WriteHeader(status)
-				_, _ = w.Write([]byte(`{"models":[{"name":"minimax-m3.1-flash"},{"name":"minimax-m2.7"},{"name":"minimax-m3"},{"name":"gpt-oss:120b"}]}`))
+				_, _ = w.Write([]byte(`{"data":[{"id":"minimax-m3.1-flash"},{"id":"minimax-m2.7"},{"id":"minimax-m3"},{"id":"gpt-oss:120b"}]}`))
 			}))
 			t.Cleanup(func() {
 				server.Close()
-				ollamaCloudTagsURL, ollamaCloudModelsClient = previousURL, previousClient
+				ollamaCloudModelsURL, ollamaCloudModelsClient = previousURL, previousClient
 			})
-			ollamaCloudTagsURL, ollamaCloudModelsClient = server.URL, server.Client()
+			ollamaCloudModelsURL, ollamaCloudModelsClient = server.URL, server.Client()
 			h := NewHandler(&config.Config{}, "", nil)
 			rec := performModelDefinitionsRequest(h.GetStaticModelDefinitions, "ollama-cloud")
 			var payload struct {
