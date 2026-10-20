@@ -18,7 +18,7 @@ func TestMiniMaxOllamaDiscovery(t *testing.T) {
 			previousURL, previousClient := ollamaCloudModelsURL, ollamaCloudModelsClient
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.WriteHeader(status)
-				_, _ = w.Write([]byte(`{"data":[{"id":"minimax-m3.1-flash"},{"id":"minimax-m2.7"},{"id":"minimax-m3"},{"id":"gpt-oss:120b"}]}`))
+				_, _ = w.Write([]byte(`{"data":[{"id":"minimax-m3"},{"id":"minimax-m2.7"},{"id":"minimax-m3.1-flash"},{"id":"gpt-oss:120b"}]}`))
 			}))
 			t.Cleanup(func() {
 				server.Close()
@@ -56,9 +56,9 @@ func TestMiniMaxCommandCodeDiscovery(t *testing.T) {
 				w.WriteHeader(status)
 				_, _ = w.Write([]byte(`{"data":[
 					{"id":"unrelated-model","name":"Untouched","context_length":12345},
+					{"id":"MiniMaxAI/MiniMax-M3","name":"MiniMax M3","context_length":1000000},
 					{"id":"minimax/minimax-m3.1-flash","name":"MiniMax M3.1 Flash","context_length":1000000},
 					{"id":"minimax/minimax-m3.1-flash:free","name":"MiniMax M3.1 Flash","context_length":1000000},
-					{"id":"MiniMaxAI/MiniMax-M3","name":"MiniMax M3","context_length":1000000},
 					{"id":"MiniMaxAI/MiniMax-M2.7","context_length":200000},
 					{"id":"MiniMaxAI/MiniMax-M2.5","context_length":200000}
 				]}`))
