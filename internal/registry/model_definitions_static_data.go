@@ -1207,9 +1207,8 @@ func GetOpenCodeGoModels() []*ModelInfo {
 		id          string
 		displayName string
 	}{
+		{"minimax-m3.1-flash-free", "MiniMax M3.1 Flash"},
 		{"minimax-m3", "MiniMax M3"},
-		{"minimax-m2.7", "MiniMax M2.7"},
-		{"minimax-m2.5", "MiniMax M2.5"},
 		{"kimi-k2.7-code", "Kimi K2.7 Code"},
 		{"kimi-k2.6", "Kimi K2.6"},
 		{"kimi-k2.5", "Kimi K2.5"},
@@ -1278,6 +1277,22 @@ func GetClineModels() []*ModelInfo {
 // GetOllamaCloudModels returns Ollama Cloud model definitions documented by Ollama.
 func GetOllamaCloudModels() []*ModelInfo {
 	return []*ModelInfo{
+		{
+			ID:          "minimax-m3.1-flash",
+			Object:      "model",
+			Created:     1781751220,
+			OwnedBy:     "ollama",
+			Type:        "ollama-cloud",
+			DisplayName: "MiniMax M3.1 Flash",
+		},
+		{
+			ID:          "minimax-m3",
+			Object:      "model",
+			Created:     1781751220,
+			OwnedBy:     "ollama",
+			Type:        "ollama-cloud",
+			DisplayName: "MiniMax M3",
+		},
 		{
 			ID:          "gpt-oss:120b",
 			Object:      "model",
