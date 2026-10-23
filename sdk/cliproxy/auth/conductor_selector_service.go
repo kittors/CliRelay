@@ -14,6 +14,7 @@ type selectionScope struct {
 	model           string
 	modelKey        string
 	pinnedAuthID    string
+	allowedAuthIDs  map[string]struct{}
 	allowedChannels map[string]struct{}
 	allowedGroups   map[string]struct{}
 	routeGroup      string
@@ -33,6 +34,7 @@ func newSelectionScope(cfg *runtimeConfigSnapshot, model string, meta map[string
 		model:           model,
 		modelKey:        normalizeSelectionModelKey(model),
 		pinnedAuthID:    pinnedAuthIDFromMetadata(meta),
+		allowedAuthIDs:  allowedAuthIDsFromMetadata(meta),
 		allowedChannels: allowedChannelsFromMetadata(meta),
 		allowedGroups:   allowedChannelGroupsFromMetadata(meta),
 		routeGroup:      routeGroupFromMetadata(meta),
@@ -116,6 +118,9 @@ func (s selectionScope) allowsCandidate(candidate *Auth, scopedRouteGroup string
 	if s.pinnedAuthID != "" && candidate.ID != s.pinnedAuthID {
 		return false
 	}
+	if !s.authIDAllowed(candidate.ID) {
+		return false
+	}
 	if !authAllowedByChannels(candidate, s.allowedChannels) {
 		return false
 	}
@@ -132,6 +137,17 @@ func (s selectionScope) allowsCandidate(candidate *Auth, scopedRouteGroup string
 		return false
 	}
 	return true
+}
+
+// authIDAllowed reports whether the strict auth allowlist, if any, admits id.
+// allowedAuthIDs is nil when the request carries no allowlist; otherwise a
+// candidate must be listed, and an empty set admits nothing.
+func (s selectionScope) authIDAllowed(id string) bool {
+	if s.allowedAuthIDs == nil {
+		return true
+	}
+	_, ok := s.allowedAuthIDs[id]
+	return ok
 }
 
 type selectorService struct {
