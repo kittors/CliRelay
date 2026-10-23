@@ -33,7 +33,7 @@ func TestCodexDriverRealPipeline(t *testing.T) {
 		}
 
 		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = w.Write([]byte("data: {\"type\":\"response.completed\"}\n\ndata: [DONE]\n\n"))
+		_, _ = w.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\ndata: [DONE]\n\n"))
 	}))
 	defer server.Close()
 

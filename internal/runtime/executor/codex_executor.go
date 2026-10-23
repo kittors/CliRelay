@@ -227,7 +227,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 			}
 			continue
 		}
-		if gjson.GetBytes(line, "type").String() != "response.completed" {
+		if !isValidCodexResponsesCompleted(line) {
 			continue
 		}
 		line = mergeCodexResponsesCompletedOutput(line, pendingOutputItems, pendingOutputKeys)
@@ -445,6 +445,9 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 					data := bytes.TrimSpace(eventLine[len(dataTag):])
 					switch gjson.GetBytes(data, "type").String() {
 					case "response.completed":
+						if !isValidCodexResponsesCompleted(data) {
+							break
+						}
 						completed = true
 						if detail, ok := parseCodexUsage(data); ok {
 							reporter.publish(execCtx.Context, detail)
@@ -467,6 +470,14 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 			}
 		}
 		if errScan := scanner.Err(); errScan != nil {
+			// response.completed is the protocol terminal. A downstream client commonly
+			// closes immediately after receiving it while the provider keeps the HTTP body
+			// open; that cancellation must not retroactively turn a completed attempt into
+			// an account failure. Provider error events are handled above before this check.
+			if completed {
+				reporter.ensurePublished(execCtx.Context)
+				return
+			}
 			if shouldSuppressUsageFailure(errScan, "") {
 				out <- cliproxyexecutor.StreamChunk{Err: errScan}
 				return
@@ -486,6 +497,18 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 		out <- cliproxyexecutor.StreamChunk{Err: streamErr}
 	}()
 	return &cliproxyexecutor.StreamResult{Headers: httpResp.Header.Clone(), Chunks: out}, nil
+}
+
+func isValidCodexResponsesCompleted(payload []byte) bool {
+	if !gjson.ValidBytes(payload) {
+		return false
+	}
+	root := gjson.ParseBytes(payload)
+	if !root.IsObject() || root.Get("type").String() != "response.completed" {
+		return false
+	}
+	response := root.Get("response")
+	return response.IsObject() && response.Get("status").Type == gjson.String && response.Get("status").String() == "completed"
 }
 
 func newCodexResponsesIncompleteError() *cliproxyauth.Error {
