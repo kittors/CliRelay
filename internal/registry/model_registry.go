@@ -61,6 +61,8 @@ type ModelInfo struct {
 // ThinkingSupport describes a model family's supported internal reasoning budget range.
 // Values are interpreted in provider-native token units.
 type ThinkingSupport struct {
+	// AdaptiveEffort maps effort levels to Claude adaptive thinking, never a guessed token budget.
+	AdaptiveEffort bool `json:"-"`
 	// Min is the minimum allowed thinking budget (inclusive).
 	Min int `json:"min,omitempty"`
 	// Max is the maximum allowed thinking budget (inclusive).

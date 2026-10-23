@@ -176,6 +176,7 @@ func cloneInternalThinkingSupportToSDK(thinking *ThinkingSupport) *sdkmodelcatal
 		return nil
 	}
 	return &sdkmodelcatalog.ThinkingSupport{
+		AdaptiveEffort: thinking.AdaptiveEffort,
 		Min:            thinking.Min,
 		Max:            thinking.Max,
 		ZeroAllowed:    thinking.ZeroAllowed,
@@ -259,6 +260,7 @@ func cloneSDKThinkingSupportToInternal(thinking *sdkmodelcatalog.ThinkingSupport
 		return nil
 	}
 	return &ThinkingSupport{
+		AdaptiveEffort: thinking.AdaptiveEffort,
 		Min:            thinking.Min,
 		Max:            thinking.Max,
 		ZeroAllowed:    thinking.ZeroAllowed,

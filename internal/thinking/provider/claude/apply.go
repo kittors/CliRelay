@@ -1,8 +1,8 @@
 // Package claude implements thinking configuration scaffolding for Claude models.
 //
-// Claude models use the thinking.budget_tokens format with values in the range
+// Legacy Claude models use thinking.budget_tokens with values in the range
 // 1024-128000. Some Claude models support ZeroAllowed (sonnet-4-5, opus-4-5),
-// while older models do not.
+// while older models do not. Capable modern models use adaptive thinking and native effort.
 // See: _bmad-output/planning-artifacts/architecture.md#Epic-6
 package claude
 
@@ -34,7 +34,8 @@ func init() {
 //   - Budget clamping to model range
 //   - ZeroAllowed constraint enforcement
 //
-// Apply only processes ModeBudget and ModeNone; other modes are passed through unchanged.
+// Apply processes ModeBudget and ModeNone, plus ModeLevel as native adaptive effort
+// for models flagged AdaptiveEffort; other modes are passed through unchanged.
 //
 // Expected output format when enabled:
 //
@@ -60,6 +61,13 @@ func (a *Applier) Apply(body []byte, config thinking.ThinkingConfig, modelInfo *
 		return body, nil
 	}
 
+	if config.Mode == thinking.ModeLevel && modelInfo.Thinking.AdaptiveEffort {
+		result, _ := sjson.SetBytes(body, "thinking.type", "adaptive")
+		result, _ = sjson.DeleteBytes(result, "thinking.budget_tokens")
+		result, _ = sjson.SetBytes(result, "output_config.effort", string(config.Level))
+		return result, nil
+	}
+
 	// Only process ModeBudget and ModeNone; other modes pass through
 	// (caller should use ValidateConfig first to normalize modes)
 	if config.Mode != thinking.ModeBudget && config.Mode != thinking.ModeNone {
@@ -68,6 +76,12 @@ func (a *Applier) Apply(body []byte, config thinking.ThinkingConfig, modelInfo *
 
 	if len(body) == 0 || !gjson.ValidBytes(body) {
 		body = []byte(`{}`)
+	}
+
+	// An explicit budget/disable override must not retain the level that rode on
+	// adaptive thinking. Native manual-budget requests keep their own effort.
+	if modelInfo.Thinking.AdaptiveEffort && gjson.GetBytes(body, "thinking.type").String() == "adaptive" {
+		body, _ = sjson.DeleteBytes(body, "output_config.effort")
 	}
 
 	// Budget is expected to be pre-validated by ValidateConfig (clamped, ZeroAllowed enforced)

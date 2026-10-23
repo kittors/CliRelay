@@ -96,6 +96,7 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 	defer reporter.trackFailure(execCtx.Context, &err)
 	body, originalTranslated := execCtx.TranslateRequestPair(req.Payload)
 	body, _ = sjson.SetBytes(body, "model", execCtx.BaseModel)
+	body = thinking.ApplyClaudeNativeEffort(body, req.Payload, req.Model, execCtx.SourceFormat.String())
 
 	body, err = thinking.ApplyThinking(body, req.Model, execCtx.SourceFormat.String(), to.String(), e.Identifier())
 	if err != nil {
@@ -231,6 +232,7 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	defer reporter.trackFailure(execCtx.Context, &err)
 	body, originalTranslated := execCtx.TranslateRequestPair(req.Payload)
 	body, _ = sjson.SetBytes(body, "model", execCtx.BaseModel)
+	body = thinking.ApplyClaudeNativeEffort(body, req.Payload, req.Model, execCtx.SourceFormat.String())
 
 	body, err = thinking.ApplyThinking(body, req.Model, execCtx.SourceFormat.String(), to.String(), e.Identifier())
 	if err != nil {
