@@ -415,6 +415,7 @@ func (e *ClaudeExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Aut
 	if isClaudeOAuthToken(apiKey) && !auth.ToolPrefixDisabled() {
 		body = applyClaudeToolPrefix(body, claudeToolPrefix)
 	}
+	body = stripClaudeCountTokensMetadata(body)
 
 	url := fmt.Sprintf("%s/v1/messages/count_tokens?beta=true", baseURL)
 	httpReq, err := http.NewRequestWithContext(execCtx.Context, http.MethodPost, url, bytes.NewReader(body))
