@@ -272,6 +272,9 @@ func ollamaNativeMessages(raw any) []any {
 		}
 		content, images := ollamaNativeContent(msg["content"])
 		next := map[string]any{"role": role, "content": content}
+		if reasoning, ok := msg["reasoning_content"].(string); ok && reasoning != "" {
+			next["thinking"] = reasoning
+		}
 		if len(images) > 0 {
 			next["images"] = images
 		}
@@ -427,6 +430,9 @@ func ollamaNativeChatToOpenAI(native []byte, model string, estimator *ollamaProm
 	out, _ = sjson.Set(out, "created", time.Now().Unix())
 	out, _ = sjson.Set(out, "model", model)
 	out, _ = sjson.Set(out, "choices.0.message.content", root.Get("message.content").String())
+	if reasoning := root.Get("message.thinking").String(); reasoning != "" {
+		out, _ = sjson.Set(out, "choices.0.message.reasoning_content", reasoning)
+	}
 	if calls := root.Get("message.tool_calls"); calls.Exists() {
 		out, _ = sjson.SetRaw(out, "choices.0.message.tool_calls", calls.Raw)
 	}
@@ -450,6 +456,9 @@ func ollamaNativeStreamChunkToOpenAI(line []byte, model, responseID string, esti
 		*roleSent = true
 	}
 	delta := make(map[string]any)
+	if reasoning := root.Get("message.thinking").String(); reasoning != "" {
+		delta["reasoning_content"] = reasoning
+	}
 	if content := root.Get("message.content").String(); content != "" {
 		delta["content"] = content
 	}
