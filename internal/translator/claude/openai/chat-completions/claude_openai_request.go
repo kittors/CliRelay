@@ -136,9 +136,10 @@ func ConvertOpenAIRequestToClaude(modelName string, inputRawJSON []byte, stream 
 	// Stream configuration to enable or disable streaming responses
 	out, _ = sjson.Set(out, "stream", stream)
 
+	// Keep serialized messages separate until all other root fields are set.
+	var translatedMessages []string
 	// Process messages and transform them to Claude Code format
 	if messages := root.Get("messages"); messages.Exists() && messages.IsArray() {
-		messageIndex := 0
 		systemMessageIndex := -1
 		messages.ForEach(func(_, message gjson.Result) bool {
 			role := message.Get("role").String()
@@ -148,20 +149,19 @@ func ConvertOpenAIRequestToClaude(modelName string, inputRawJSON []byte, stream 
 			case "system":
 				if systemMessageIndex == -1 {
 					systemMsg := `{"role":"user","content":[]}`
-					out, _ = sjson.SetRaw(out, "messages.-1", systemMsg)
-					systemMessageIndex = messageIndex
-					messageIndex++
+					translatedMessages = append(translatedMessages, systemMsg)
+					systemMessageIndex = len(translatedMessages) - 1
 				}
 				if contentResult.Exists() && contentResult.Type == gjson.String && contentResult.String() != "" {
 					textPart := `{"type":"text","text":""}`
 					textPart, _ = sjson.Set(textPart, "text", contentResult.String())
-					out, _ = sjson.SetRaw(out, fmt.Sprintf("messages.%d.content.-1", systemMessageIndex), textPart)
+					translatedMessages[systemMessageIndex], _ = sjson.SetRaw(translatedMessages[systemMessageIndex], "content.-1", textPart)
 				} else if contentResult.Exists() && contentResult.IsArray() {
 					contentResult.ForEach(func(_, part gjson.Result) bool {
 						if part.Get("type").String() == "text" {
 							textPart := `{"type":"text","text":""}`
 							textPart, _ = sjson.Set(textPart, "text", part.Get("text").String())
-							out, _ = sjson.SetRaw(out, fmt.Sprintf("messages.%d.content.-1", systemMessageIndex), textPart)
+							translatedMessages[systemMessageIndex], _ = sjson.SetRaw(translatedMessages[systemMessageIndex], "content.-1", textPart)
 						}
 						return true
 					})
@@ -270,8 +270,7 @@ func ConvertOpenAIRequestToClaude(modelName string, inputRawJSON []byte, stream 
 					})
 				}
 
-				out, _ = sjson.SetRaw(out, "messages.-1", msg)
-				messageIndex++
+				translatedMessages = append(translatedMessages, msg)
 
 			case "tool":
 				// Handle tool result messages conversion
@@ -280,8 +279,7 @@ func ConvertOpenAIRequestToClaude(modelName string, inputRawJSON []byte, stream 
 				msg := `{"role":"user","content":[{"type":"tool_result","tool_use_id":"","content":""}]}`
 				msg, _ = sjson.Set(msg, "content.0.tool_use_id", toolCallID)
 				msg, _ = sjson.SetRaw(msg, "content.0.content", common.ToClaudeContent(common.ParseToolResult(message.Get("content"))))
-				out, _ = sjson.SetRaw(out, "messages.-1", msg)
-				messageIndex++
+				translatedMessages = append(translatedMessages, msg)
 			}
 			return true
 		})
@@ -345,5 +343,26 @@ func ConvertOpenAIRequestToClaude(modelName string, inputRawJSON []byte, stream 
 		}
 	}
 
-	return []byte(out)
+	if len(translatedMessages) == 0 {
+		return []byte(out)
+	}
+	// The root template retains messages:[] while other fields are written.
+	// Fill that array directly into the final byte buffer, preserving key order
+	// and each message's exact encoding without intermediate request copies.
+	array := gjson.Get(out, "messages")
+	size := len(out) + len(translatedMessages) - 1
+	for _, message := range translatedMessages {
+		size += len(message)
+	}
+	result := make([]byte, 0, size)
+	result = append(result, out[:array.Index]...)
+	result = append(result, '[')
+	for i, message := range translatedMessages {
+		if i > 0 {
+			result = append(result, ',')
+		}
+		result = append(result, message...)
+	}
+	result = append(result, ']')
+	return append(result, out[array.Index+len(array.Raw):]...)
 }
