@@ -36,8 +36,35 @@ func claudeIdentityFingerprint(cfg *config.Config, auth *cliproxyauth.Auth, ctx 
 		return config.ClaudeIdentityFingerprintConfig{}, false
 	}
 	learned := observeRuntimeIdentityFingerprint(identityfingerprint.ProviderClaude, auth, ctx)
+	if !claudeLearnedFingerprintMeetsGate(learned) {
+		learned = nil
+	}
 	resolved, _ := identityfingerprint.ResolveClaude(cfg.IdentityFingerprint.Claude, learned)
 	return resolved, true
+}
+
+// claudeLearnedFingerprintMeetsGate reports whether a learned Claude Code record
+// may shape outbound requests. A record learned from a client older than the
+// version gate (a stale entry, or traffic from an outdated CLI) would make every
+// gated model refuse the account, so it is ignored and the operator preset or the
+// builtin template applies instead. The record is kept in storage: it is replaced
+// as soon as a current client is observed. Pinned presets are not affected; those
+// are still reported by warnIfClaudeFingerprintBelowVersionGate.
+func claudeLearnedFingerprintMeetsGate(learned *identityfingerprint.LearnedRecord) bool {
+	if learned == nil {
+		return true
+	}
+	version := strings.TrimSpace(learned.Fields[identityfingerprint.FieldClaudeCLIVersion])
+	if version == "" {
+		version = strings.TrimSpace(learned.Version)
+	}
+	if version != "" && compareClaudeVersions(version, config.DefaultClaudeFingerprintCLIVersion) < 0 {
+		return false
+	}
+	if ua := strings.TrimSpace(learned.Fields[identityfingerprint.FieldUserAgent]); ua != "" && !claudeUserAgentMeetsGate(ua) {
+		return false
+	}
+	return true
 }
 
 func claudeServerStableSessionID() string {
