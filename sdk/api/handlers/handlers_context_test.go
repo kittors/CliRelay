@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
+	sdktranslator "github.com/router-for-me/CLIProxyAPI/v6/sdk/translator"
 )
 
 func TestRequestContextOrBackgroundUsesRequestContextWhenPresent(t *testing.T) {
@@ -27,6 +29,22 @@ func TestRequestContextOrBackgroundUsesRequestContextWhenPresent(t *testing.T) {
 	case <-ctx.Done():
 	case <-time.After(250 * time.Millisecond):
 		t.Fatal("expected requestContextOrBackground to return the request context when present")
+	}
+}
+
+func TestCompletedToolBlockNegotiationIsExact(t *testing.T) {
+	for _, values := range [][]string{{sdktranslator.CompletedToolBlocksVersion}, {"future-v2"}, {sdktranslator.CompletedToolBlocksVersion, sdktranslator.CompletedToolBlocksVersion}, nil} {
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+		for _, value := range values {
+			c.Request.Header.Add(sdktranslator.CompletedToolBlocksHeader, value)
+		}
+		c.Request.Header.Set("Authorization", "fixture-secret")
+		got := requestExecutionHeaders(context.WithValue(context.Background(), util.ContextKeyGin, c))
+		want := len(values) == 1 && values[0] == sdktranslator.CompletedToolBlocksVersion
+		if (got.Get(sdktranslator.CompletedToolBlocksHeader) == sdktranslator.CompletedToolBlocksVersion) != want || got.Get("Authorization") != "" {
+			t.Fatal("incorrect protocol extraction")
+		}
 	}
 }
 

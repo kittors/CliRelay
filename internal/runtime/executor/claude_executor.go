@@ -143,6 +143,7 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 		return resp, err
 	}
 	applyClaudeHeaders(httpReq, auth, apiKey, false, extraBetas, e.cfg, claudeFP, claudeFPEnabled, claudeFPSessionID)
+	httpReq.Header.Del(sdktranslator.CompletedToolBlocksHeader)
 	recorder := execCtx.Recorder()
 	recorder.RecordRequest(url, http.MethodPost, httpReq.Header.Clone(), bodyForUpstream)
 
@@ -213,6 +214,7 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 }
 
 func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (_ *cliproxyexecutor.StreamResult, err error) {
+	completedToolBlocks := opts.SourceFormat == sdktranslator.FormatOpenAI && len(opts.Headers.Values(sdktranslator.CompletedToolBlocksHeader)) == 1 && opts.Headers.Get(sdktranslator.CompletedToolBlocksHeader) == sdktranslator.CompletedToolBlocksVersion
 	if opts.Alt == "responses/compact" {
 		return nil, statusErr{code: http.StatusNotImplemented, msg: "/responses/compact not supported"}
 	}
@@ -278,6 +280,7 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 		return nil, err
 	}
 	applyClaudeHeaders(httpReq, auth, apiKey, true, extraBetas, e.cfg, claudeFP, claudeFPEnabled, claudeFPSessionID)
+	httpReq.Header.Del(sdktranslator.CompletedToolBlocksHeader)
 	recorder := execCtx.Recorder()
 	recorder.RecordRequest(url, http.MethodPost, httpReq.Header.Clone(), bodyForUpstream)
 
@@ -350,6 +353,18 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 		scanner := bufio.NewScanner(decodedBody)
 		scanner.Buffer(nil, 52_428_800) // 50MB
 		var param any
+		translateLine := func(raw []byte) []string {
+			return sdktranslator.TranslateStream(
+				execCtx.Context,
+				to,
+				execCtx.SourceFormat,
+				req.Model,
+				opts.OriginalRequest,
+				bodyForTranslation,
+				bytes.Clone(raw),
+				&param,
+			)
+		}
 		for scanner.Scan() {
 			line := scanner.Bytes()
 			recorder.AppendResponseChunk(line)
@@ -360,16 +375,12 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 			if !skipAnthropic && isClaudeOAuthToken(apiKey) && !auth.ToolPrefixDisabled() {
 				line = stripClaudeToolPrefixFromStreamLine(line, claudeToolPrefix)
 			}
-			chunks := sdktranslator.TranslateStream(
-				execCtx.Context,
-				to,
-				execCtx.SourceFormat,
-				req.Model,
-				opts.OriginalRequest,
-				bodyForTranslation,
-				bytes.Clone(line),
-				&param,
-			)
+			var chunks []string
+			if completedToolBlocks {
+				chunks = translateClaudeLineWithCompletedToolBlocks(line, translateLine)
+			} else {
+				chunks = translateLine(line)
+			}
 			for i := range chunks {
 				out <- cliproxyexecutor.StreamChunk{Payload: []byte(chunks[i])}
 			}
@@ -380,7 +391,12 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 			out <- cliproxyexecutor.StreamChunk{Err: errScan}
 		}
 	}()
-	return &cliproxyexecutor.StreamResult{Headers: httpResp.Header.Clone(), Chunks: out}, nil
+	responseHeaders := httpResp.Header.Clone()
+	responseHeaders.Del(sdktranslator.CompletedToolBlocksHeader)
+	if completedToolBlocks {
+		responseHeaders.Set(sdktranslator.CompletedToolBlocksHeader, sdktranslator.CompletedToolBlocksVersion)
+	}
+	return &cliproxyexecutor.StreamResult{Headers: responseHeaders, Chunks: out}, nil
 }
 
 func (e *ClaudeExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
