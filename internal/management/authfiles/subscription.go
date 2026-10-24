@@ -241,10 +241,19 @@ func MetadataString(metadata map[string]any, keys ...string) string {
 // SubscriptionExpirationFromStart derives the expiration timestamp for monthly
 // and yearly subscription periods.
 func SubscriptionExpirationFromStart(startedAt time.Time, period string) time.Time {
+	months := 1
 	if strings.EqualFold(period, "yearly") {
-		return startedAt.AddDate(1, 0, 0).UTC()
+		months = 12
 	}
-	return startedAt.AddDate(0, 1, 0).UTC()
+	// Add the period from day one so a short target month cannot overflow
+	// into the following month (for example, January 31 into March).
+	first := startedAt.AddDate(0, months, 1-startedAt.Day())
+	lastDay := first.AddDate(0, 1, -1).Day()
+	day := startedAt.Day()
+	if day > lastDay {
+		day = lastDay
+	}
+	return first.AddDate(0, 0, day-1).UTC()
 }
 
 // SubscriptionRemainingMinutes rounds away from zero to match the management API
