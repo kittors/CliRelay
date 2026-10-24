@@ -21,6 +21,44 @@ func ensureCacheControl(payload []byte) []byte {
 	return payload
 }
 
+// applyClaudeCacheControl injects cache_control breakpoints unless the client
+// already manages caching itself.
+//
+// The identity fingerprint prepends its own "You are Claude Code" system block
+// with a breakpoint. That breakpoint is ours, not the client's, so it must not
+// count: with it counted, ensureCacheControl never ran for any request on a
+// fingerprinted credential, and tools, the client's system prompt and the whole
+// conversation went uncached. The prefix ending at the identity block is far
+// below Anthropic's minimum cacheable length, so nothing was cached at all.
+func applyClaudeCacheControl(payload []byte) []byte {
+	if countClientCacheControls(payload) > 0 {
+		return payload
+	}
+	return ensureCacheControl(payload)
+}
+
+// countClientCacheControls counts breakpoints placed by the client, leaving out
+// the one the identity fingerprint adds to its own system block.
+func countClientCacheControls(payload []byte) int {
+	count := countCacheControls(payload)
+	system := gjson.GetBytes(payload, "system")
+	if system.IsArray() {
+		system.ForEach(func(_, item gjson.Result) bool {
+			if item.Get("cache_control").Exists() && isClaudeIdentityBlock(item) {
+				count--
+			}
+			return true
+		})
+	}
+	return count
+}
+
+// isClaudeIdentityBlock reports whether a system block is the one the identity
+// fingerprint prepends.
+func isClaudeIdentityBlock(item gjson.Result) bool {
+	return item.Get("text").String() == claudeCodeIdentityText
+}
+
 func countCacheControls(payload []byte) int {
 	count := 0
 
@@ -184,9 +222,11 @@ func injectSystemCacheControl(payload []byte) []byte {
 			return payload
 		}
 
+		// The identity fingerprint's own breakpoint ends a prefix far too short
+		// to cache, so it does not stand in for one on the client's system prompt.
 		hasCacheControlInSystem := false
 		system.ForEach(func(_, item gjson.Result) bool {
-			if item.Get("cache_control").Exists() {
+			if item.Get("cache_control").Exists() && !isClaudeIdentityBlock(item) {
 				hasCacheControlInSystem = true
 				return false
 			}
