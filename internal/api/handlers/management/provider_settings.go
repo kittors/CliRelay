@@ -101,9 +101,17 @@ func (h *ProviderKeysHandler) persistProviderSettings(c *gin.Context) bool {
 	return true
 }
 
+// providerListBody wraps a provider list with the per-channel fields this build
+// stores. The panel updates itself from the latest release and may run against
+// an older backend that silently drops fields it does not know, so it only
+// offers a field listed here.
+func providerListBody(key string, list any) gin.H {
+	return gin.H{key: list, "capabilities": gin.H{"disable-cooling": true}}
+}
+
 // gemini-api-key: []GeminiKey
 func (h *ProviderKeysHandler) GetGeminiKeys(c *gin.Context) {
-	h.jsonWithRequestVersion(c, settingsstore.RuntimeSettingGeminiKeys, gin.H{"gemini-api-key": providerSettingsService(h, c).GeminiKeys()})
+	h.jsonWithRequestVersion(c, settingsstore.RuntimeSettingGeminiKeys, providerListBody("gemini-api-key", providerSettingsService(h, c).GeminiKeys()))
 }
 
 func (h *ProviderKeysHandler) PutGeminiKeys(c *gin.Context) {
@@ -172,7 +180,7 @@ func (h *ProviderKeysHandler) DeleteGeminiKey(c *gin.Context) {
 
 // claude-api-key: []ClaudeKey
 func (h *ProviderKeysHandler) GetClaudeKeys(c *gin.Context) {
-	h.jsonWithRequestVersion(c, settingsstore.RuntimeSettingClaudeKeys, gin.H{"claude-api-key": providerSettingsService(h, c).ClaudeKeys()})
+	h.jsonWithRequestVersion(c, settingsstore.RuntimeSettingClaudeKeys, providerListBody("claude-api-key", providerSettingsService(h, c).ClaudeKeys()))
 }
 
 func (h *ProviderKeysHandler) PutClaudeKeys(c *gin.Context) {
@@ -239,7 +247,7 @@ func (h *ProviderKeysHandler) DeleteClaudeKey(c *gin.Context) {
 
 // bedrock-api-key: []BedrockKey
 func (h *ProviderKeysHandler) GetBedrockKeys(c *gin.Context) {
-	h.jsonWithRequestVersion(c, settingsstore.RuntimeSettingBedrockKeys, gin.H{"bedrock-api-key": providerSettingsService(h, c).BedrockKeys()})
+	h.jsonWithRequestVersion(c, settingsstore.RuntimeSettingBedrockKeys, providerListBody("bedrock-api-key", providerSettingsService(h, c).BedrockKeys()))
 }
 
 func (h *ProviderKeysHandler) PutBedrockKeys(c *gin.Context) {
@@ -324,7 +332,7 @@ func (h *ProviderKeysHandler) DeleteBedrockKey(c *gin.Context) {
 
 // opencode-go-api-key: []OpenCodeGoKey
 func (h *ProviderKeysHandler) GetOpenCodeGoKeys(c *gin.Context) {
-	h.jsonWithRequestVersion(c, settingsstore.RuntimeSettingOpenCodeGoKeys, gin.H{"opencode-go-api-key": providerSettingsService(h, c).OpenCodeGoKeys()})
+	h.jsonWithRequestVersion(c, settingsstore.RuntimeSettingOpenCodeGoKeys, providerListBody("opencode-go-api-key", providerSettingsService(h, c).OpenCodeGoKeys()))
 }
 
 func (h *ProviderKeysHandler) PutOpenCodeGoKeys(c *gin.Context) {
@@ -402,7 +410,7 @@ func (h *ProviderKeysHandler) DeleteOpenCodeGoKey(c *gin.Context) {
 
 // cline-api-key: []ClineKey
 func (h *ProviderKeysHandler) GetClineKeys(c *gin.Context) {
-	h.jsonWithRequestVersion(c, settingsstore.RuntimeSettingClineKeys, gin.H{"cline-api-key": providerSettingsService(h, c).ClineKeys()})
+	h.jsonWithRequestVersion(c, settingsstore.RuntimeSettingClineKeys, providerListBody("cline-api-key", providerSettingsService(h, c).ClineKeys()))
 }
 
 func (h *ProviderKeysHandler) PutClineKeys(c *gin.Context) {
@@ -480,7 +488,7 @@ func (h *ProviderKeysHandler) DeleteClineKey(c *gin.Context) {
 
 // ollama-cloud-api-key: []OllamaCloudKey
 func (h *ProviderKeysHandler) GetOllamaCloudKeys(c *gin.Context) {
-	h.jsonWithRequestVersion(c, settingsstore.RuntimeSettingOllamaCloudKeys, gin.H{"ollama-cloud-api-key": providerSettingsService(h, c).OllamaCloudKeys()})
+	h.jsonWithRequestVersion(c, settingsstore.RuntimeSettingOllamaCloudKeys, providerListBody("ollama-cloud-api-key", providerSettingsService(h, c).OllamaCloudKeys()))
 }
 
 func (h *ProviderKeysHandler) PutOllamaCloudKeys(c *gin.Context) {
@@ -558,7 +566,7 @@ func (h *ProviderKeysHandler) DeleteOllamaCloudKey(c *gin.Context) {
 
 // openai-compatibility: []OpenAICompatibility
 func (h *ProviderKeysHandler) GetOpenAICompat(c *gin.Context) {
-	h.jsonWithRequestVersion(c, settingsstore.RuntimeSettingOpenAICompatibility, gin.H{"openai-compatibility": providerSettingsService(h, c).OpenAICompatibility()})
+	h.jsonWithRequestVersion(c, settingsstore.RuntimeSettingOpenAICompatibility, providerListBody("openai-compatibility", providerSettingsService(h, c).OpenAICompatibility()))
 }
 
 func (h *ProviderKeysHandler) PutOpenAICompat(c *gin.Context) {
@@ -625,7 +633,7 @@ func (h *ProviderKeysHandler) DeleteOpenAICompat(c *gin.Context) {
 
 // vertex-api-key: []VertexCompatKey
 func (h *ProviderKeysHandler) GetVertexCompatKeys(c *gin.Context) {
-	h.jsonWithRequestVersion(c, settingsstore.RuntimeSettingVertexCompatKeys, gin.H{"vertex-api-key": providerSettingsService(h, c).VertexCompatKeys()})
+	h.jsonWithRequestVersion(c, settingsstore.RuntimeSettingVertexCompatKeys, providerListBody("vertex-api-key", providerSettingsService(h, c).VertexCompatKeys()))
 }
 
 func (h *ProviderKeysHandler) PutVertexCompatKeys(c *gin.Context) {
@@ -685,7 +693,7 @@ func (h *ProviderKeysHandler) DeleteVertexCompatKey(c *gin.Context) {
 
 // codex-api-key: []CodexKey
 func (h *ProviderKeysHandler) GetCodexKeys(c *gin.Context) {
-	h.jsonWithRequestVersion(c, settingsstore.RuntimeSettingCodexKeys, gin.H{"codex-api-key": providerSettingsService(h, c).CodexKeys()})
+	h.jsonWithRequestVersion(c, settingsstore.RuntimeSettingCodexKeys, providerListBody("codex-api-key", providerSettingsService(h, c).CodexKeys()))
 }
 
 func (h *ProviderKeysHandler) PutCodexKeys(c *gin.Context) {

@@ -26,6 +26,7 @@ const (
 	RuntimeSettingDebug              = "debug"
 	RuntimeSettingRequestRetry       = "request-retry"
 	RuntimeSettingMaxRetryInterval   = "max-retry-interval"
+	RuntimeSettingDisableCooling     = "disable-cooling"
 	RuntimeSettingQuotaExceeded      = "quota-exceeded"
 	RuntimeSettingForceModelPrefix   = "force-model-prefix"
 	RuntimeSettingWebsocketAuth      = "ws-auth"
@@ -65,6 +66,7 @@ func generalSpecs() []Spec {
 		valueSpec(RuntimeSettingDebug, func(c *config.Config) *bool { return &c.Debug }, isTrue),
 		valueSpec(RuntimeSettingRequestRetry, func(c *config.Config) *int { return &c.RequestRetry }, isNonZero),
 		valueSpec(RuntimeSettingMaxRetryInterval, func(c *config.Config) *int { return &c.MaxRetryInterval }, isNonZero),
+		valueSpec(RuntimeSettingDisableCooling, func(c *config.Config) *bool { return &c.DisableCooling }, isTrue),
 		valueSpec(RuntimeSettingQuotaExceeded, func(c *config.Config) *config.QuotaExceeded { return &c.QuotaExceeded },
 			func(v config.QuotaExceeded) bool { return v.SwitchProject || v.SwitchPreviewModel }),
 		valueSpec(RuntimeSettingForceModelPrefix, func(c *config.Config) *bool { return &c.ForceModelPrefix }, isTrue),

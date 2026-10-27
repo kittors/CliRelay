@@ -2,7 +2,6 @@ package auth
 
 import (
 	"fmt"
-	"net/http"
 	"strings"
 	"time"
 )
@@ -191,15 +190,7 @@ func peerCooldownSuppressed(auth *Auth, n CooldownNotice) bool {
 	if !quotaCooldownDisabledForAuth(auth) {
 		return false
 	}
-	if n.Quota {
-		return true
-	}
-	switch n.StatusCode {
-	case http.StatusTooManyRequests, http.StatusRequestTimeout, http.StatusInternalServerError,
-		http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
-		return true
-	}
-	return false
+	return n.Quota || coolingControlsStatus(n.StatusCode)
 }
 
 func extendModelCooldownLocked(auth *Auth, n CooldownNotice, until, now time.Time) bool {

@@ -144,6 +144,13 @@ func (s *Server) applyAuthRuntimeConfig(oldCfg, cfg *config.Config) {
 	}
 	if oldCfg == nil || oldCfg.DisableCooling != cfg.DisableCooling {
 		auth.SetQuotaCooldownDisabled(cfg.DisableCooling)
+		// The switch only governs failures recorded from now on; lift the
+		// cooldowns already running too, as switching one channel off does.
+		if oldCfg != nil && cfg.DisableCooling && s.handlers != nil && s.handlers.AuthManager != nil {
+			if released := s.handlers.AuthManager.ReleaseCoolingForDisabledAuths(); released > 0 {
+				log.Infof("disable-cooling turned on: released the cooldowns of %d credential(s)", released)
+			}
+		}
 	}
 	if s.handlers != nil && s.handlers.AuthManager != nil {
 		s.handlers.AuthManager.SetRetryConfig(cfg.RequestRetry, time.Duration(cfg.MaxRetryInterval)*time.Second)

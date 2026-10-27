@@ -270,6 +270,14 @@ request-retry: 3
 # Maximum wait time in seconds for a cooled-down credential before triggering a retry.
 max-retry-interval: 30
 
+# When true, a credential that answers 429, 408 or 5xx is not taken out of rotation:
+# the error goes back to the client and the next request may use it again. A reset
+# time the upstream announces with a usage limit (for example a Codex limit or a
+# Claude OAuth window) is still waited out. Each provider entry and each auth file can
+# override this with its own disable-cooling (auth files: "disable_cooling"); leave it
+# unset there to follow this value. 401, 403 and 404 still park a credential.
+disable-cooling: false
+
 # Behavior when an AI account reaches the `concurrency_limit` set on its auth file.
 # Requests first fail over to any account with a free slot; only when every candidate
 # is busy do they queue here, in arrival order, and resume as soon as a slot frees up.
@@ -480,6 +488,7 @@ streaming:
 #     headers:
 #       X-Custom-Header: "custom-value"
 #     codex-tool-bridge: false # opt in only for Codex Desktop Computer Use / Browser, see above
+#     disable-cooling: true # optional: keep sending to this provider when it answers 429/5xx; omit to follow the global disable-cooling
 #     api-key-entries:
 #       - api-key: "sk-or-v1-...b780"
 #         proxy-url: "socks5://proxy.example.com:1080" # optional: per-key proxy override

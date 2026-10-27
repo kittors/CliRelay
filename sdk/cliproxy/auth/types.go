@@ -237,18 +237,27 @@ func (a *Auth) ProxyInfo() string {
 	return "via proxy"
 }
 
-// DisableCoolingOverride returns the auth-file scoped disable_cooling override when present.
-// The value is read from metadata key "disable_cooling" (or legacy "disable-cooling").
+// DisableCoolingAttributeKey carries a channel's disable-cooling override onto
+// the credentials synthesized from a provider entry in the config. Credentials
+// loaded from auth files keep theirs in metadata instead.
+const DisableCoolingAttributeKey = "disable_cooling"
+
+// DisableCoolingOverride returns the credential's own disable_cooling override
+// when one is set. An auth file's metadata key "disable_cooling" (or legacy
+// "disable-cooling") wins over the attribute a provider entry writes, and
+// without either the credential follows the global disable-cooling switch.
 func (a *Auth) DisableCoolingOverride() (bool, bool) {
-	if a == nil || a.Metadata == nil {
+	if a == nil {
 		return false, false
 	}
-	if val, ok := a.Metadata["disable_cooling"]; ok {
-		if parsed, okParse := parseBoolAny(val); okParse {
-			return parsed, true
+	for _, key := range []string{"disable_cooling", "disable-cooling"} {
+		if val, ok := a.Metadata[key]; ok {
+			if parsed, okParse := parseBoolAny(val); okParse {
+				return parsed, true
+			}
 		}
 	}
-	if val, ok := a.Metadata["disable-cooling"]; ok {
+	if val, ok := a.Attributes[DisableCoolingAttributeKey]; ok {
 		if parsed, okParse := parseBoolAny(val); okParse {
 			return parsed, true
 		}

@@ -16,6 +16,12 @@ type ClaudeKey struct {
 	// Higher values are preferred; defaults to 0.
 	Priority int `yaml:"priority,omitempty" json:"priority,omitempty"`
 
+	// DisableCooling overrides the global disable-cooling switch for this
+	// channel: true keeps a 429 or 5xx from taking it out of rotation, false
+	// keeps cooldowns on even while the global switch is off, and leaving it
+	// unset follows the global switch.
+	DisableCooling *bool `yaml:"disable-cooling,omitempty" json:"disable-cooling,omitempty"`
+
 	// Prefix optionally namespaces models for this credential (e.g., "teamA/claude-sonnet-4").
 	Prefix string `yaml:"prefix,omitempty" json:"prefix,omitempty"`
 
@@ -79,6 +85,12 @@ type CodexKey struct {
 	// Higher values are preferred; defaults to 0.
 	Priority int `yaml:"priority,omitempty" json:"priority,omitempty"`
 
+	// DisableCooling overrides the global disable-cooling switch for this
+	// channel: true keeps a 429 or 5xx from taking it out of rotation, false
+	// keeps cooldowns on even while the global switch is off, and leaving it
+	// unset follows the global switch.
+	DisableCooling *bool `yaml:"disable-cooling,omitempty" json:"disable-cooling,omitempty"`
+
 	// Prefix optionally namespaces models for this credential (e.g., "teamA/gpt-5-codex").
 	Prefix string `yaml:"prefix,omitempty" json:"prefix,omitempty"`
 
@@ -140,6 +152,12 @@ type GeminiKey struct {
 	// Higher values are preferred; defaults to 0.
 	Priority int `yaml:"priority,omitempty" json:"priority,omitempty"`
 
+	// DisableCooling overrides the global disable-cooling switch for this
+	// channel: true keeps a 429 or 5xx from taking it out of rotation, false
+	// keeps cooldowns on even while the global switch is off, and leaving it
+	// unset follows the global switch.
+	DisableCooling *bool `yaml:"disable-cooling,omitempty" json:"disable-cooling,omitempty"`
+
 	// Prefix optionally namespaces models for this credential (e.g., "teamA/gemini-3-pro-preview").
 	Prefix string `yaml:"prefix,omitempty" json:"prefix,omitempty"`
 
@@ -192,6 +210,12 @@ type OpenAICompatibility struct {
 	// Priority controls selection preference when multiple providers or credentials match.
 	// Higher values are preferred; defaults to 0.
 	Priority int `yaml:"priority,omitempty" json:"priority,omitempty"`
+
+	// DisableCooling overrides the global disable-cooling switch for every API
+	// key of this provider: true keeps a 429 or 5xx from taking a key out of
+	// rotation, false keeps cooldowns on even while the global switch is off,
+	// and leaving it unset follows the global switch.
+	DisableCooling *bool `yaml:"disable-cooling,omitempty" json:"disable-cooling,omitempty"`
 
 	// Prefix optionally namespaces model aliases for this provider (e.g., "teamA/kimi-k2").
 	Prefix string `yaml:"prefix,omitempty" json:"prefix,omitempty"`
@@ -266,6 +290,12 @@ type OpenCodeGoKey struct {
 	// Higher values are preferred; defaults to 0.
 	Priority int `yaml:"priority,omitempty" json:"priority,omitempty"`
 
+	// DisableCooling overrides the global disable-cooling switch for this
+	// channel: true keeps a 429 or 5xx from taking it out of rotation, false
+	// keeps cooldowns on even while the global switch is off, and leaving it
+	// unset follows the global switch.
+	DisableCooling *bool `yaml:"disable-cooling,omitempty" json:"disable-cooling,omitempty"`
+
 	// Prefix optionally namespaces models for this credential.
 	Prefix string `yaml:"prefix,omitempty" json:"prefix,omitempty"`
 
@@ -319,6 +349,12 @@ type ClineKey struct {
 
 	// Priority controls selection preference when multiple credentials match.
 	Priority int `yaml:"priority,omitempty" json:"priority,omitempty"`
+
+	// DisableCooling overrides the global disable-cooling switch for this
+	// channel: true keeps a 429 or 5xx from taking it out of rotation, false
+	// keeps cooldowns on even while the global switch is off, and leaving it
+	// unset follows the global switch.
+	DisableCooling *bool `yaml:"disable-cooling,omitempty" json:"disable-cooling,omitempty"`
 
 	// Prefix optionally namespaces models for this credential.
 	Prefix string `yaml:"prefix,omitempty" json:"prefix,omitempty"`
@@ -374,6 +410,12 @@ type OllamaCloudKey struct {
 	// Priority controls selection preference when multiple credentials match.
 	// Higher values are preferred; defaults to 0.
 	Priority int `yaml:"priority,omitempty" json:"priority,omitempty"`
+
+	// DisableCooling overrides the global disable-cooling switch for this
+	// channel: true keeps a 429 or 5xx from taking it out of rotation, false
+	// keeps cooldowns on even while the global switch is off, and leaving it
+	// unset follows the global switch.
+	DisableCooling *bool `yaml:"disable-cooling,omitempty" json:"disable-cooling,omitempty"`
 
 	// Prefix optionally namespaces models for this credential.
 	Prefix string `yaml:"prefix,omitempty" json:"prefix,omitempty"`
@@ -435,6 +477,12 @@ type CommandCodeKey struct {
 
 	// Priority controls selection preference when multiple credentials match.
 	Priority int `yaml:"priority,omitempty" json:"priority,omitempty"`
+
+	// DisableCooling overrides the global disable-cooling switch for this
+	// channel: true keeps a 429 or 5xx from taking it out of rotation, false
+	// keeps cooldowns on even while the global switch is off, and leaving it
+	// unset follows the global switch.
+	DisableCooling *bool `yaml:"disable-cooling,omitempty" json:"disable-cooling,omitempty"`
 
 	// Prefix optionally namespaces models for this credential.
 	Prefix string `yaml:"prefix,omitempty" json:"prefix,omitempty"`

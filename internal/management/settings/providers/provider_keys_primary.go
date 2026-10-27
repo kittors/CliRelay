@@ -4,16 +4,18 @@ import (
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/management/patchfield"
 )
 
 type GeminiKeyPatch struct {
-	APIKey         *string            `json:"api-key"`
-	Prefix         *string            `json:"prefix"`
-	BaseURL        *string            `json:"base-url"`
-	ProxyURL       *string            `json:"proxy-url"`
-	ProxyID        *string            `json:"proxy-id"`
-	Headers        *map[string]string `json:"headers"`
-	ExcludedModels *[]string          `json:"excluded-models"`
+	APIKey         *string                 `json:"api-key"`
+	Prefix         *string                 `json:"prefix"`
+	BaseURL        *string                 `json:"base-url"`
+	ProxyURL       *string                 `json:"proxy-url"`
+	ProxyID        *string                 `json:"proxy-id"`
+	Headers        *map[string]string      `json:"headers"`
+	ExcludedModels *[]string               `json:"excluded-models"`
+	DisableCooling patchfield.NullableBool `json:"disable-cooling"`
 }
 
 func (s *Service) GeminiKeys() []config.GeminiKey {
@@ -89,6 +91,7 @@ func (s *Service) PatchGeminiKey(index *int, match *string, patch GeminiKeyPatch
 	if patch.ExcludedModels != nil {
 		entry.ExcludedModels = config.NormalizeExcludedModels(*patch.ExcludedModels)
 	}
+	patch.DisableCooling.Apply(&entry.DisableCooling)
 	prev := append([]config.GeminiKey(nil), s.cfg.GeminiKey...)
 	s.cfg.GeminiKey[targetIndex] = entry
 	s.cfg.SanitizeGeminiKeys()
@@ -131,15 +134,16 @@ func (s *Service) deleteGeminiKeyByIndex(index int) {
 }
 
 type ClaudeKeyPatch struct {
-	Name           *string               `json:"name"`
-	APIKey         *string               `json:"api-key"`
-	Prefix         *string               `json:"prefix"`
-	BaseURL        *string               `json:"base-url"`
-	ProxyURL       *string               `json:"proxy-url"`
-	ProxyID        *string               `json:"proxy-id"`
-	Models         *[]config.ClaudeModel `json:"models"`
-	Headers        *map[string]string    `json:"headers"`
-	ExcludedModels *[]string             `json:"excluded-models"`
+	Name           *string                 `json:"name"`
+	APIKey         *string                 `json:"api-key"`
+	Prefix         *string                 `json:"prefix"`
+	BaseURL        *string                 `json:"base-url"`
+	ProxyURL       *string                 `json:"proxy-url"`
+	ProxyID        *string                 `json:"proxy-id"`
+	Models         *[]config.ClaudeModel   `json:"models"`
+	Headers        *map[string]string      `json:"headers"`
+	ExcludedModels *[]string               `json:"excluded-models"`
+	DisableCooling patchfield.NullableBool `json:"disable-cooling"`
 }
 
 func (s *Service) ClaudeKeys() []config.ClaudeKey {
@@ -218,6 +222,7 @@ func (s *Service) PatchClaudeKey(index *int, match *string, patch ClaudeKeyPatch
 	if patch.ExcludedModels != nil {
 		entry.ExcludedModels = config.NormalizeExcludedModels(*patch.ExcludedModels)
 	}
+	patch.DisableCooling.Apply(&entry.DisableCooling)
 	NormalizeClaudeKey(&entry)
 	prev := append([]config.ClaudeKey(nil), s.cfg.ClaudeKey...)
 	s.cfg.ClaudeKey[targetIndex] = entry
@@ -253,15 +258,16 @@ func (s *Service) DeleteClaudeKeyByIndex(index int) bool {
 }
 
 type CodexKeyPatch struct {
-	AlphaSearch    *bool                `json:"alpha-search"`
-	APIKey         *string              `json:"api-key"`
-	Prefix         *string              `json:"prefix"`
-	BaseURL        *string              `json:"base-url"`
-	ProxyURL       *string              `json:"proxy-url"`
-	ProxyID        *string              `json:"proxy-id"`
-	Models         *[]config.CodexModel `json:"models"`
-	Headers        *map[string]string   `json:"headers"`
-	ExcludedModels *[]string            `json:"excluded-models"`
+	AlphaSearch    *bool                   `json:"alpha-search"`
+	APIKey         *string                 `json:"api-key"`
+	Prefix         *string                 `json:"prefix"`
+	BaseURL        *string                 `json:"base-url"`
+	ProxyURL       *string                 `json:"proxy-url"`
+	ProxyID        *string                 `json:"proxy-id"`
+	Models         *[]config.CodexModel    `json:"models"`
+	Headers        *map[string]string      `json:"headers"`
+	ExcludedModels *[]string               `json:"excluded-models"`
+	DisableCooling patchfield.NullableBool `json:"disable-cooling"`
 }
 
 func (s *Service) CodexKeys() []config.CodexKey {
@@ -349,6 +355,7 @@ func (s *Service) PatchCodexKey(index *int, match *string, patch CodexKeyPatch) 
 	if patch.ExcludedModels != nil {
 		entry.ExcludedModels = config.NormalizeExcludedModels(*patch.ExcludedModels)
 	}
+	patch.DisableCooling.Apply(&entry.DisableCooling)
 	NormalizeCodexKey(&entry)
 	prev := append([]config.CodexKey(nil), s.cfg.CodexKey...)
 	s.cfg.CodexKey[targetIndex] = entry

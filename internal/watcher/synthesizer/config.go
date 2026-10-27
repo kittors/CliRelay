@@ -87,6 +87,7 @@ func (s *ConfigSynthesizer) synthesizeGeminiKeys(ctx *SynthesisContext) []*corea
 			label = "gemini-apikey"
 		}
 		addProviderBindingAttrs(attrs, "", entry.ID)
+		addDisableCoolingAttr(attrs, entry.DisableCooling)
 		a := &coreauth.Auth{
 			ID:         id,
 			Provider:   "gemini",
@@ -146,6 +147,7 @@ func (s *ConfigSynthesizer) synthesizeClaudeKeys(ctx *SynthesisContext) []*corea
 			label = "claude-apikey"
 		}
 		addProviderBindingAttrs(attrs, "", ck.ID)
+		addDisableCoolingAttr(attrs, ck.DisableCooling)
 		a := &coreauth.Auth{
 			ID:         id,
 			Provider:   "claude",
@@ -232,6 +234,7 @@ func (s *ConfigSynthesizer) synthesizeBedrockKeys(ctx *SynthesisContext) []*core
 		}
 		addConfigHeadersToAttrs(entry.Headers, attrs)
 		addProviderBindingAttrs(attrs, "", entry.ID)
+		addDisableCoolingAttr(attrs, entry.DisableCooling)
 		id, token := idGen.Next("bedrock:apikey", idParts...)
 		attrs["source"] = fmt.Sprintf("config:bedrock[%s]", token)
 		label := strings.TrimSpace(entry.Name)
@@ -299,6 +302,7 @@ func (s *ConfigSynthesizer) synthesizeCodexKeys(ctx *SynthesisContext) []*coreau
 			label = "codex-apikey"
 		}
 		addProviderBindingAttrs(attrs, "", ck.ID)
+		addDisableCoolingAttr(attrs, ck.DisableCooling)
 		a := &coreauth.Auth{
 			ID:         id,
 			Provider:   "codex",
@@ -355,6 +359,7 @@ func (s *ConfigSynthesizer) synthesizeOpenCodeGoKeys(ctx *SynthesisContext) []*c
 			label = "opencode-go-apikey"
 		}
 		addProviderBindingAttrs(attrs, "", entry.ID)
+		addDisableCoolingAttr(attrs, entry.DisableCooling)
 		a := &coreauth.Auth{
 			ID:         id,
 			Provider:   "opencode-go",
@@ -418,6 +423,7 @@ func (s *ConfigSynthesizer) synthesizeClineKeys(ctx *SynthesisContext) []*coreau
 			label = "cline-apikey"
 		}
 		addProviderBindingAttrs(attrs, "", entry.ID)
+		addDisableCoolingAttr(attrs, entry.DisableCooling)
 		a := &coreauth.Auth{
 			ID:         id,
 			Provider:   "cline",
@@ -485,6 +491,7 @@ func (s *ConfigSynthesizer) synthesizeCommandCodeKeys(ctx *SynthesisContext) []*
 			label = "commandcode-apikey"
 		}
 		addProviderBindingAttrs(attrs, "", entry.ID)
+		addDisableCoolingAttr(attrs, entry.DisableCooling)
 		a := &coreauth.Auth{
 			ID:         id,
 			Provider:   "commandcode",
@@ -548,6 +555,7 @@ func (s *ConfigSynthesizer) synthesizeOllamaCloudKeys(ctx *SynthesisContext) []*
 			label = "ollama-cloud-apikey"
 		}
 		addProviderBindingAttrs(attrs, "", entry.ID)
+		addDisableCoolingAttr(attrs, entry.DisableCooling)
 		a := &coreauth.Auth{
 			ID:         id,
 			Provider:   "ollama-cloud",
@@ -616,6 +624,7 @@ func (s *ConfigSynthesizer) synthesizeOpenAICompat(ctx *SynthesisContext) []*cor
 			addCodexToolBridgeAttr(attrs, compat.CodexToolBridge)
 			addConfigHeadersToAttrs(compat.Headers, attrs)
 			addProviderBindingAttrs(attrs, compat.ID, entry.ID)
+			addDisableCoolingAttr(attrs, compat.DisableCooling)
 			a := &coreauth.Auth{
 				ID:         id,
 				Provider:   providerName,
@@ -649,6 +658,7 @@ func (s *ConfigSynthesizer) synthesizeOpenAICompat(ctx *SynthesisContext) []*cor
 			addCodexToolBridgeAttr(attrs, compat.CodexToolBridge)
 			addConfigHeadersToAttrs(compat.Headers, attrs)
 			addProviderBindingAttrs(attrs, compat.ID, "")
+			addDisableCoolingAttr(attrs, compat.DisableCooling)
 			a := &coreauth.Auth{
 				ID:         id,
 				Provider:   providerName,
@@ -699,6 +709,7 @@ func (s *ConfigSynthesizer) synthesizeVertexCompat(ctx *SynthesisContext) []*cor
 		}
 		addConfigHeadersToAttrs(compat.Headers, attrs)
 		addProviderBindingAttrs(attrs, "", compat.ID)
+		addDisableCoolingAttr(attrs, compat.DisableCooling)
 		a := &coreauth.Auth{
 			ID:         id,
 			Provider:   providerName,
