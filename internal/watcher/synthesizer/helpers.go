@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
@@ -153,6 +154,16 @@ func addProviderBindingAttrs(attrs map[string]string, providerConfigID, provider
 	if id := strings.TrimSpace(providerKeyID); id != "" {
 		attrs["provider_key_id"] = id
 	}
+}
+
+// addDisableCoolingAttr carries a provider entry's disable-cooling override onto
+// its credentials. Only an explicit choice is written: without the attribute the
+// credential follows the global disable-cooling switch.
+func addDisableCoolingAttr(attrs map[string]string, override *bool) {
+	if attrs == nil || override == nil {
+		return
+	}
+	attrs[coreauth.DisableCoolingAttributeKey] = strconv.FormatBool(*override)
 }
 
 // addCodexToolBridgeAttr marks credentials whose provider entry enables

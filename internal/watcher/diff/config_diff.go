@@ -118,6 +118,9 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 			if !equalStringMap(o.Headers, n.Headers) {
 				changes = append(changes, fmt.Sprintf("gemini[%d].headers: updated", i))
 			}
+			if formatCoolingOverride(o.DisableCooling) != formatCoolingOverride(n.DisableCooling) {
+				changes = append(changes, fmt.Sprintf("gemini[%d].disable-cooling: %s -> %s", i, formatCoolingOverride(o.DisableCooling), formatCoolingOverride(n.DisableCooling)))
+			}
 			oldModels := SummarizeGeminiModels(o.Models)
 			newModels := SummarizeGeminiModels(n.Models)
 			if oldModels.hash != newModels.hash {
@@ -152,6 +155,9 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 			}
 			if !equalStringMap(o.Headers, n.Headers) {
 				changes = append(changes, fmt.Sprintf("claude[%d].headers: updated", i))
+			}
+			if formatCoolingOverride(o.DisableCooling) != formatCoolingOverride(n.DisableCooling) {
+				changes = append(changes, fmt.Sprintf("claude[%d].disable-cooling: %s -> %s", i, formatCoolingOverride(o.DisableCooling), formatCoolingOverride(n.DisableCooling)))
 			}
 			oldModels := SummarizeClaudeModels(o.Models)
 			newModels := SummarizeClaudeModels(n.Models)
@@ -204,6 +210,9 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 			}
 			if !equalStringMap(o.Headers, n.Headers) {
 				changes = append(changes, fmt.Sprintf("codex[%d].headers: updated", i))
+			}
+			if formatCoolingOverride(o.DisableCooling) != formatCoolingOverride(n.DisableCooling) {
+				changes = append(changes, fmt.Sprintf("codex[%d].disable-cooling: %s -> %s", i, formatCoolingOverride(o.DisableCooling), formatCoolingOverride(n.DisableCooling)))
 			}
 			oldModels := SummarizeCodexModels(o.Models)
 			newModels := SummarizeCodexModels(n.Models)
@@ -316,6 +325,9 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 			if !equalStringMap(o.Headers, n.Headers) {
 				changes = append(changes, fmt.Sprintf("vertex[%d].headers: updated", i))
 			}
+			if formatCoolingOverride(o.DisableCooling) != formatCoolingOverride(n.DisableCooling) {
+				changes = append(changes, fmt.Sprintf("vertex[%d].disable-cooling: %s -> %s", i, formatCoolingOverride(o.DisableCooling), formatCoolingOverride(n.DisableCooling)))
+			}
 		}
 	}
 
@@ -340,6 +352,15 @@ func equalStringMap(a, b map[string]string) bool {
 		}
 	}
 	return true
+}
+
+// formatCoolingOverride renders a channel's disable-cooling override; unset
+// means the channel follows the global switch.
+func formatCoolingOverride(override *bool) string {
+	if override == nil {
+		return "inherit"
+	}
+	return fmt.Sprintf("%t", *override)
 }
 
 func formatProxyURL(raw string) string {

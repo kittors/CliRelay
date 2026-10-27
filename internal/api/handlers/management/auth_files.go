@@ -36,7 +36,9 @@ func (h *Handler) ListAuthFiles(c *gin.Context) {
 		},
 	})
 	h.enrichAuthFileIdentityFingerprintSummaries(files, auths)
-	body := gin.H{"files": files}
+	// capabilities lists the fields PATCH /auth-files/fields stores, so a panel
+	// newer than this backend does not offer one that would be dropped.
+	body := gin.H{"files": files, "capabilities": gin.H{"disable-cooling": true}}
 	h.decorateAuthFilesResponse(c, effectiveTenantID(c), files, body)
 	c.JSON(200, body)
 }

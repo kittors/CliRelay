@@ -81,6 +81,9 @@ func describeOpenAICompatibilityUpdate(oldEntry, newEntry config.OpenAICompatibi
 	if oldEntry.CodexToolBridge != newEntry.CodexToolBridge {
 		details = append(details, fmt.Sprintf("codex-tool-bridge %t -> %t", oldEntry.CodexToolBridge, newEntry.CodexToolBridge))
 	}
+	if formatCoolingOverride(oldEntry.DisableCooling) != formatCoolingOverride(newEntry.DisableCooling) {
+		details = append(details, fmt.Sprintf("disable-cooling %s -> %s", formatCoolingOverride(oldEntry.DisableCooling), formatCoolingOverride(newEntry.DisableCooling)))
+	}
 	if len(details) == 0 {
 		return ""
 	}

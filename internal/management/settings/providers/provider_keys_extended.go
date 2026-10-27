@@ -5,27 +5,29 @@ import (
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/management/patchfield"
 )
 
 var ErrProviderAPIKeyRequired = errors.New("api-key is required")
 
 type BedrockKeyPatch struct {
-	Name            *string                `json:"name"`
-	Priority        *int                   `json:"priority"`
-	Prefix          *string                `json:"prefix"`
-	AuthMode        *string                `json:"auth-mode"`
-	APIKey          *string                `json:"api-key"`
-	AccessKeyID     *string                `json:"access-key-id"`
-	SecretAccessKey *string                `json:"secret-access-key"`
-	SessionToken    *string                `json:"session-token"`
-	Region          *string                `json:"region"`
-	ForceGlobal     *bool                  `json:"force-global"`
-	BaseURL         *string                `json:"base-url"`
-	ProxyURL        *string                `json:"proxy-url"`
-	ProxyID         *string                `json:"proxy-id"`
-	Models          *[]config.BedrockModel `json:"models"`
-	Headers         *map[string]string     `json:"headers"`
-	ExcludedModels  *[]string              `json:"excluded-models"`
+	Name            *string                 `json:"name"`
+	Priority        *int                    `json:"priority"`
+	Prefix          *string                 `json:"prefix"`
+	AuthMode        *string                 `json:"auth-mode"`
+	APIKey          *string                 `json:"api-key"`
+	AccessKeyID     *string                 `json:"access-key-id"`
+	SecretAccessKey *string                 `json:"secret-access-key"`
+	SessionToken    *string                 `json:"session-token"`
+	Region          *string                 `json:"region"`
+	ForceGlobal     *bool                   `json:"force-global"`
+	BaseURL         *string                 `json:"base-url"`
+	ProxyURL        *string                 `json:"proxy-url"`
+	ProxyID         *string                 `json:"proxy-id"`
+	Models          *[]config.BedrockModel  `json:"models"`
+	Headers         *map[string]string      `json:"headers"`
+	ExcludedModels  *[]string               `json:"excluded-models"`
+	DisableCooling  patchfield.NullableBool `json:"disable-cooling"`
 }
 
 func (s *Service) BedrockKeys() []config.BedrockKey {
@@ -126,6 +128,7 @@ func (s *Service) PatchBedrockKey(index *int, match *string, patch BedrockKeyPat
 	if patch.ExcludedModels != nil {
 		entry.ExcludedModels = config.NormalizeExcludedModels(*patch.ExcludedModels)
 	}
+	patch.DisableCooling.Apply(&entry.DisableCooling)
 	NormalizeBedrockKey(&entry)
 	prev := append([]config.BedrockKey(nil), s.cfg.BedrockKey...)
 	s.cfg.BedrockKey[targetIndex] = entry
@@ -177,19 +180,20 @@ func (s *Service) deleteBedrockKeys(match func(config.BedrockKey) bool) bool {
 }
 
 type ClinePatch struct {
-	APIKey         *string              `json:"api-key"`
-	Name           *string              `json:"name"`
-	Disabled       *bool                `json:"disabled"`
-	Priority       *int                 `json:"priority"`
-	Prefix         *string              `json:"prefix"`
-	BaseURL        *string              `json:"base-url"`
-	ProxyURL       *string              `json:"proxy-url"`
-	ProxyID        *string              `json:"proxy-id"`
-	Headers        *map[string]string   `json:"headers"`
-	Models         *[]config.ClineModel `json:"models"`
-	ExcludedModels *[]string            `json:"excluded-models"`
-	VisionFallback *string              `json:"vision-fallback-model"`
-	AuthCookie     *string              `json:"auth-cookie"`
+	APIKey         *string                 `json:"api-key"`
+	Name           *string                 `json:"name"`
+	Disabled       *bool                   `json:"disabled"`
+	Priority       *int                    `json:"priority"`
+	Prefix         *string                 `json:"prefix"`
+	BaseURL        *string                 `json:"base-url"`
+	ProxyURL       *string                 `json:"proxy-url"`
+	ProxyID        *string                 `json:"proxy-id"`
+	Headers        *map[string]string      `json:"headers"`
+	Models         *[]config.ClineModel    `json:"models"`
+	ExcludedModels *[]string               `json:"excluded-models"`
+	VisionFallback *string                 `json:"vision-fallback-model"`
+	AuthCookie     *string                 `json:"auth-cookie"`
+	DisableCooling patchfield.NullableBool `json:"disable-cooling"`
 }
 
 func (s *Service) ClineKeys() []config.ClineKey {
@@ -298,6 +302,7 @@ func (s *Service) PatchClineKey(index *int, apiKey *string, name *string, patch 
 	if patch.AuthCookie != nil {
 		entry.AuthCookie = strings.TrimSpace(*patch.AuthCookie)
 	}
+	patch.DisableCooling.Apply(&entry.DisableCooling)
 	NormalizeClineKey(&entry)
 	if entry.APIKey == "" {
 		return ErrProviderAPIKeyRequired
@@ -368,6 +373,7 @@ type OllamaCloudPatch struct {
 	ExcludedModels *[]string                  `json:"excluded-models"`
 	VisionFallback *string                    `json:"vision-fallback-model"`
 	AuthCookie     *string                    `json:"auth-cookie"`
+	DisableCooling patchfield.NullableBool    `json:"disable-cooling"`
 }
 
 func (s *Service) OllamaCloudKeys() []config.OllamaCloudKey {
@@ -476,6 +482,7 @@ func (s *Service) PatchOllamaCloudKey(index *int, apiKey *string, name *string, 
 	if patch.AuthCookie != nil {
 		entry.AuthCookie = strings.TrimSpace(*patch.AuthCookie)
 	}
+	patch.DisableCooling.Apply(&entry.DisableCooling)
 	NormalizeOllamaCloudKey(&entry)
 	if entry.APIKey == "" {
 		return ErrProviderAPIKeyRequired

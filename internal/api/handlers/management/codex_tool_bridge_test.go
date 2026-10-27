@@ -94,11 +94,13 @@ func TestCodexToolBridgeManagementPersistence(t *testing.T) {
 				// A fresh handler must serve the persisted value through GET as well.
 				restored := NewHandler(&stored, path, nil)
 				get := performModelsRequest(http.MethodGet, tc.path, nil, tc.get(restored.ProviderKeys()))
-				var payload map[string][]map[string]any
-				if err := json.Unmarshal(get.Body.Bytes(), &payload); err != nil || len(payload[tc.listKey]) != 1 {
+				// The list sits next to other keys (capabilities), so read it by name.
+				var payload map[string]json.RawMessage
+				var list []map[string]any
+				if err := json.Unmarshal(get.Body.Bytes(), &payload); err != nil || json.Unmarshal(payload[tc.listKey], &list) != nil || len(list) != 1 {
 					t.Fatalf("%s: GET = %s", step, get.Body.String())
 				}
-				if got, _ := payload[tc.listKey][0]["codex-tool-bridge"].(bool); got != want {
+				if got, _ := list[0]["codex-tool-bridge"].(bool); got != want {
 					t.Fatalf("%s: GET codex-tool-bridge != %t: %s", step, want, get.Body.String())
 				}
 			}

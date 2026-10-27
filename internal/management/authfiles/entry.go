@@ -154,5 +154,9 @@ func BuildEntry(auth *coreauth.Auth, opts EntryOptions) map[string]any {
 	if tier := CodexServiceTierPayload(auth); tier != "" {
 		entry["codex_service_tier"] = tier
 	}
+	// Absent means the account follows the global disable-cooling switch.
+	if override, ok := auth.DisableCoolingOverride(); ok {
+		entry["disable_cooling"] = override
+	}
 	return entry
 }

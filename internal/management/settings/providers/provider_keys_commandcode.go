@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/management/patchfield"
 )
 
 // Command Code provider settings.
@@ -29,6 +30,7 @@ type CommandCodePatch struct {
 	Models         *[]config.CommandCodeModel `json:"models"`
 	ExcludedModels *[]string                  `json:"excluded-models"`
 	VisionFallback *string                    `json:"vision-fallback-model"`
+	DisableCooling patchfield.NullableBool    `json:"disable-cooling"`
 }
 
 func (s *Service) CommandCodeKeys() []config.CommandCodeKey {
@@ -134,6 +136,7 @@ func (s *Service) PatchCommandCodeKey(index *int, apiKey *string, name *string, 
 	if patch.VisionFallback != nil {
 		entry.VisionFallbackModel = strings.TrimSpace(*patch.VisionFallback)
 	}
+	patch.DisableCooling.Apply(&entry.DisableCooling)
 	NormalizeCommandCodeKey(&entry)
 	if entry.APIKey == "" {
 		return ErrProviderAPIKeyRequired
