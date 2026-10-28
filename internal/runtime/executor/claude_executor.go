@@ -33,6 +33,15 @@ func NewClaudeExecutor(cfg *config.Config) *ClaudeExecutor { return &ClaudeExecu
 
 func (e *ClaudeExecutor) Identifier() string { return "claude" }
 
+// claudeUpstreamBody returns how a request body is put on the wire: OAuth
+// tokens get the tool-name prefix unless the credential or processing opts out.
+func claudeUpstreamBody(auth *cliproxyauth.Auth, apiKey string, skipAnthropic bool) func([]byte) []byte {
+	if skipAnthropic || !isClaudeOAuthToken(apiKey) || auth.ToolPrefixDisabled() {
+		return func(body []byte) []byte { return body }
+	}
+	return func(body []byte) []byte { return applyClaudeToolPrefix(body, claudeToolPrefix) }
+}
+
 // PrepareRequest injects Claude credentials into the outgoing HTTP request.
 func (e *ClaudeExecutor) PrepareRequest(req *http.Request, auth *cliproxyauth.Auth) error {
 	if req == nil {
@@ -131,38 +140,27 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 	// Extract betas from body and convert to header
 	var extraBetas []string
 	extraBetas, body = extractAndRemoveBetas(body)
-	bodyForTranslation := body
-	bodyForUpstream := body
-	if !skipAnthropic && isClaudeOAuthToken(apiKey) && !auth.ToolPrefixDisabled() {
-		bodyForUpstream = applyClaudeToolPrefix(body, claudeToolPrefix)
-	}
 
 	url := fmt.Sprintf("%s/v1/messages?beta=true", baseURL)
-	httpReq, err := http.NewRequestWithContext(execCtx.Context, http.MethodPost, url, bytes.NewReader(bodyForUpstream))
+	httpReq, err := http.NewRequestWithContext(execCtx.Context, http.MethodPost, url, nil)
 	if err != nil {
 		return resp, err
 	}
 	applyClaudeHeaders(httpReq, auth, apiKey, false, extraBetas, e.cfg, claudeFP, claudeFPEnabled, claudeFPSessionID)
 	recorder := execCtx.Recorder()
-	recorder.RecordRequest(url, http.MethodPost, httpReq.Header.Clone(), bodyForUpstream)
 
-	httpClient := execCtx.HTTPClient(0)
-	httpResp, err := httpClient.Do(httpReq)
+	sent, err := e.sendClaudeMessages(execCtx, httpReq, body, claudeUpstreamBody(auth, apiKey, skipAnthropic))
 	if err != nil {
-		recorder.RecordResponseError(err)
 		reporter.publishFailureWithContent(execCtx.Context, string(req.Payload), err.Error())
 		return resp, err
 	}
-	recorder.RecordResponseMetadata(httpResp.StatusCode, httpResp.Header.Clone())
-	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
-		b := readDecodedUpstreamErrorBody(e.Identifier(), httpResp.Header, httpResp.Body)
-		recorder.AppendResponseChunk(b)
+	bodyForTranslation := sent.body
+	httpResp := sent.resp
+	if sent.failed() {
+		b := sent.errBody
 		logWithRequestID(execCtx.Context).Debugf("request error, error status: %d, error message: %s", httpResp.StatusCode, summarizeErrorBody(httpResp.Header.Get("Content-Type"), b))
 		reporter.publishFailureWithContent(execCtx.Context, string(req.Payload), string(b))
 		err = statusErr{code: httpResp.StatusCode, msg: string(b), headers: httpResp.Header.Clone()}
-		if errClose := httpResp.Body.Close(); errClose != nil {
-			log.Errorf("response body close error: %v", errClose)
-		}
 		return resp, err
 	}
 	decodedBody, err := decodeResponseBody(httpResp.Body, httpResp.Header.Get("Content-Encoding"))
@@ -266,37 +264,26 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	// Extract betas from body and convert to header
 	var extraBetas []string
 	extraBetas, body = extractAndRemoveBetas(body)
-	bodyForTranslation := body
-	bodyForUpstream := body
-	if !skipAnthropic && isClaudeOAuthToken(apiKey) && !auth.ToolPrefixDisabled() {
-		bodyForUpstream = applyClaudeToolPrefix(body, claudeToolPrefix)
-	}
 
 	url := fmt.Sprintf("%s/v1/messages?beta=true", baseURL)
-	httpReq, err := http.NewRequestWithContext(execCtx.Context, http.MethodPost, url, bytes.NewReader(bodyForUpstream))
+	httpReq, err := http.NewRequestWithContext(execCtx.Context, http.MethodPost, url, nil)
 	if err != nil {
 		return nil, err
 	}
 	applyClaudeHeaders(httpReq, auth, apiKey, true, extraBetas, e.cfg, claudeFP, claudeFPEnabled, claudeFPSessionID)
 	recorder := execCtx.Recorder()
-	recorder.RecordRequest(url, http.MethodPost, httpReq.Header.Clone(), bodyForUpstream)
 
-	httpClient := execCtx.HTTPClient(0)
-	httpResp, err := httpClient.Do(httpReq)
+	sent, err := e.sendClaudeMessages(execCtx, httpReq, body, claudeUpstreamBody(auth, apiKey, skipAnthropic))
 	if err != nil {
-		recorder.RecordResponseError(err)
 		reporter.publishFailureWithContent(execCtx.Context, string(req.Payload), err.Error())
 		return nil, err
 	}
-	recorder.RecordResponseMetadata(httpResp.StatusCode, httpResp.Header.Clone())
-	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
-		b := readDecodedUpstreamErrorBody(e.Identifier(), httpResp.Header, httpResp.Body)
-		recorder.AppendResponseChunk(b)
+	bodyForTranslation := sent.body
+	httpResp := sent.resp
+	if sent.failed() {
+		b := sent.errBody
 		logWithRequestID(execCtx.Context).Debugf("request error, error status: %d, error message: %s", httpResp.StatusCode, summarizeErrorBody(httpResp.Header.Get("Content-Type"), b))
 		reporter.publishFailureWithContent(execCtx.Context, string(req.Payload), string(b))
-		if errClose := httpResp.Body.Close(); errClose != nil {
-			log.Errorf("response body close error: %v", errClose)
-		}
 		err = statusErr{code: httpResp.StatusCode, msg: string(b), headers: httpResp.Header.Clone()}
 		return nil, err
 	}

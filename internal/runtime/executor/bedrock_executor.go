@@ -17,6 +17,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/thinking"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
@@ -126,7 +127,7 @@ func (e *BedrockExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, 
 	body = disableThinkingIfToolChoiceForced(body)
 	betaTokens := resolveBedrockBetaTokens(opts.Headers.Get("anthropic-beta"), body, mappedModel)
 	bodyForTranslation := body
-	body, err = prepareBedrockRequestBody(body, mappedModel, betaTokens)
+	body, err = prepareBedrockRequestBody(body, mappedModel, betaTokens, bedrockKeepsEffort(baseModel))
 	if err != nil {
 		return resp, err
 	}
@@ -192,7 +193,7 @@ func (e *BedrockExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.
 	bodyForTranslation = execCtx.ApplyPayloadConfig(bodyForTranslation, originalTranslated)
 	bodyForTranslation = disableThinkingIfToolChoiceForced(bodyForTranslation)
 	betaTokens := resolveBedrockBetaTokens(opts.Headers.Get("anthropic-beta"), bodyForTranslation, mappedModel)
-	body, err := prepareBedrockRequestBody(bodyForTranslation, mappedModel, betaTokens)
+	body, err := prepareBedrockRequestBody(bodyForTranslation, mappedModel, betaTokens, bedrockKeepsEffort(baseModel))
 	if err != nil {
 		return nil, err
 	}
@@ -494,8 +495,17 @@ func buildBedrockURL(baseURL, region, modelID string, stream bool) string {
 	return fmt.Sprintf("%s/model/%s/%s", baseURL, encodedModelID, endpoint)
 }
 
-func prepareBedrockRequestBody(body []byte, modelID string, betaTokens []string) ([]byte, error) {
+// bedrockKeepsEffort reports whether output_config.effort has to survive the
+// body cleanup below. Claude models that only take adaptive thinking reject
+// budget_tokens, so effort is the one depth control the thinking applier can
+// write for them, and Bedrock accepts it for these models.
+func bedrockKeepsEffort(model string) bool {
+	return thinking.AdaptiveThinkingOf(registry.LookupModelInfo(model, "bedrock")) != nil
+}
+
+func prepareBedrockRequestBody(body []byte, modelID string, betaTokens []string, keepEffort bool) ([]byte, error) {
 	var err error
+	effort := gjson.GetBytes(body, "output_config.effort")
 	body, err = sjson.SetBytes(body, "anthropic_version", "bedrock-2023-05-31")
 	if err != nil {
 		return nil, fmt.Errorf("inject anthropic_version: %w", err)
@@ -510,6 +520,14 @@ func prepareBedrockRequestBody(body []byte, modelID string, betaTokens []string)
 		body, err = sjson.DeleteBytes(body, path)
 		if err != nil {
 			return nil, fmt.Errorf("remove %s: %w", path, err)
+		}
+	}
+	if keepEffort && effort.Exists() {
+		// Only the effort is put back; the rest of output_config stays removed
+		// as before.
+		body, err = sjson.SetBytes(body, "output_config.effort", effort.String())
+		if err != nil {
+			return nil, fmt.Errorf("restore output_config.effort: %w", err)
 		}
 	}
 	body = removeBedrockToolCustomFields(body)

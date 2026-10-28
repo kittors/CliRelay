@@ -175,13 +175,19 @@ func cloneInternalThinkingSupportToSDK(thinking *ThinkingSupport) *sdkmodelcatal
 	if thinking == nil {
 		return nil
 	}
-	return &sdkmodelcatalog.ThinkingSupport{
+	out := &sdkmodelcatalog.ThinkingSupport{
 		Min:            thinking.Min,
 		Max:            thinking.Max,
 		ZeroAllowed:    thinking.ZeroAllowed,
 		DynamicAllowed: thinking.DynamicAllowed,
 		Levels:         append([]string(nil), thinking.Levels...),
 	}
+	// Claude registration goes through this bridge and back, so dropping the
+	// field here would send budget_tokens to models that reject it.
+	if thinking.Adaptive != nil {
+		out.Adaptive = &sdkmodelcatalog.AdaptiveThinking{Off: thinking.Adaptive.Off, OffMaxLevel: thinking.Adaptive.OffMaxLevel}
+	}
+	return out
 }
 
 // ModelInfosFromSDK converts SDK model metadata into registry entries, skipping
@@ -258,13 +264,17 @@ func cloneSDKThinkingSupportToInternal(thinking *sdkmodelcatalog.ThinkingSupport
 	if thinking == nil {
 		return nil
 	}
-	return &ThinkingSupport{
+	out := &ThinkingSupport{
 		Min:            thinking.Min,
 		Max:            thinking.Max,
 		ZeroAllowed:    thinking.ZeroAllowed,
 		DynamicAllowed: thinking.DynamicAllowed,
 		Levels:         append([]string(nil), thinking.Levels...),
 	}
+	if thinking.Adaptive != nil {
+		out.Adaptive = &AdaptiveThinking{Off: thinking.Adaptive.Off, OffMaxLevel: thinking.Adaptive.OffMaxLevel}
+	}
+	return out
 }
 
 func init() {
