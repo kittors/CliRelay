@@ -3,7 +3,6 @@ package modelcatalog
 import (
 	"strings"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/modeldiscovery"
 	internalrouting "github.com/router-for-me/CLIProxyAPI/v6/internal/routing"
 )
 
@@ -48,6 +47,7 @@ type routingModelGroupGate struct {
 	name     string
 	allowed  []string
 	excluded []string
+	follows  bool
 }
 
 // allows reports whether any scoped group would serve the model. The scoped
@@ -69,7 +69,7 @@ func (g routingModelGate) allows(model string) bool {
 		if len(group.allowed) == 0 || routingAllowedModelMatches(model, group.allowed) {
 			return true
 		}
-		if internalrouting.NormalizeGroupName(group.name) == "default" && modeldiscovery.Listed(g.tenantID, "codex", model) {
+		if internalrouting.GroupAdmitsDiscoveredModel(group.follows, g.tenantID, model) {
 			return true
 		}
 	}
@@ -113,6 +113,7 @@ func (s *Service) resolveRoutingModelGate(allowedGroupsRaw string) routingModelG
 			name:     groupName,
 			allowed:  group.AllowedModels,
 			excluded: group.ExcludedModels,
+			follows:  group.FollowsUpstreamModels(),
 		})
 	}
 	if len(gate.groups) == 0 {

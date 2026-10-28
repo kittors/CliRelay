@@ -51,6 +51,10 @@ type routingConfigResponse struct {
 
 type routingConfigCapabilities struct {
 	ChannelGroupExcludedModels bool `json:"channel-group-excluded-models"`
+	// ChannelGroupFollowUpstreamModels: channel groups store and enforce
+	// follow-upstream-models. An older backend drops the field on save, so the
+	// panel only shows the switch when this is advertised.
+	ChannelGroupFollowUpstreamModels bool `json:"channel-group-follow-upstream-models"`
 }
 
 func (h *Handler) GetRoutingConfig(c *gin.Context) {
@@ -68,8 +72,11 @@ func (h *Handler) GetRoutingConfig(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, routingConfigResponse{
 		RoutingConfig: routing,
-		Capabilities:  routingConfigCapabilities{ChannelGroupExcludedModels: true},
-		Version:       version,
+		Capabilities: routingConfigCapabilities{
+			ChannelGroupExcludedModels:       true,
+			ChannelGroupFollowUpstreamModels: true,
+		},
+		Version: version,
 	})
 }
 

@@ -139,8 +139,10 @@ func TestModelGateCoversEveryAcceptedWebsocketUpgrade(t *testing.T) {
 					t.Fatalf("store routing config: %v", err)
 				}
 			},
-			status:  http.StatusForbidden,
-			message: "is not allowed for this API key",
+			status: http.StatusForbidden,
+			// The group refused it; the key carries no model list here, so a
+			// message blaming the key would send the operator to the wrong place.
+			message: `is not in the allowed models of channel group "team-a"`,
 		},
 	}
 	for _, restriction := range restrictions {

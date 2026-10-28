@@ -335,7 +335,11 @@ func TestPiCatalogRequest(t *testing.T) {
 	}
 }
 
-func TestFilterCodexModelsForCcSwitchRouteReturnsRequestModels(t *testing.T) {
+// A preset's mappings rename models without narrowing the list: what the route
+// serves is its channel group, already applied by the scope filter. Listing only
+// the mapped models hid every model the upstream added after the preset was
+// saved, the same models the request gate used to refuse on the preset route.
+func TestFilterCodexModelsForCcSwitchRouteRenamesMappedModelsAndKeepsTheRest(t *testing.T) {
 	models := []map[string]interface{}{
 		{"id": "deepseek-chat", "object": "model", "owned_by": "deepseek"},
 		{"id": "kimi-k2", "object": "model", "owned_by": "moonshot"},
@@ -354,12 +358,35 @@ func TestFilterCodexModelsForCcSwitchRouteReturnsRequestModels(t *testing.T) {
 
 	filtered := filterModelsForCcSwitchRoute(models, route)
 	got := modelIDs(filtered)
-	want := []string{"deepseek-v4-flash", "deepseek-v4-pro"}
+	want := []string{"deepseek-v4-flash", "deepseek-v4-pro", "kimi-k2", "gpt-5.5"}
 	if !sameStrings(got, want) {
 		t.Fatalf("model ids = %#v, want %#v", got, want)
 	}
 	if filtered[0]["owned_by"] != "deepseek" {
 		t.Fatalf("owned_by = %v, want deepseek", filtered[0]["owned_by"])
+	}
+}
+
+// A request name that a mapping sends elsewhere reaches the mapping's target on
+// this route, so the model that owns that name must not be listed under it too.
+func TestFilterCodexModelsForCcSwitchRouteListsAShadowedNameOnce(t *testing.T) {
+	models := []map[string]interface{}{
+		{"id": "gpt-5.5", "object": "model", "owned_by": "openai"},
+		{"id": "deepseek-chat", "object": "model", "owned_by": "deepseek"},
+	}
+	route := &internalrouting.PathRouteContext{
+		CcSwitch: &internalrouting.CcSwitchRouteContext{
+			ClientType:    "codex",
+			ModelMappings: []internalrouting.CcSwitchModelMapping{{RequestModel: "gpt-5.5", TargetModel: "deepseek-chat"}},
+		},
+	}
+
+	filtered := filterModelsForCcSwitchRoute(models, route)
+	if got := modelIDs(filtered); !sameStrings(got, []string{"gpt-5.5"}) {
+		t.Fatalf("model ids = %#v, want only the mapped name", got)
+	}
+	if filtered[0]["owned_by"] != "deepseek" {
+		t.Fatalf("owned_by = %v, want the mapping target's deepseek", filtered[0]["owned_by"])
 	}
 }
 
@@ -472,6 +499,7 @@ func TestFilterModelsForCcSwitchRouteListsRequestNamesForOpenAIProtocolApps(t *t
 	models := []map[string]interface{}{
 		{"id": "deepseek-chat", "object": "model", "owned_by": "deepseek"},
 		{"id": "kimi-k2", "object": "model", "owned_by": "moonshot"},
+		{"id": "glm-5", "object": "model", "owned_by": "zhipu"},
 	}
 	mappings := []internalrouting.CcSwitchModelMapping{
 		{RequestModel: "gpt-5.4", TargetModel: "deepseek-chat"},
@@ -482,7 +510,7 @@ func TestFilterModelsForCcSwitchRouteListsRequestNamesForOpenAIProtocolApps(t *t
 			CcSwitch: &internalrouting.CcSwitchRouteContext{ClientType: clientType, DefaultModel: "kimi-k2", ModelMappings: mappings},
 		}
 		got := modelIDs(filterModelsForCcSwitchRoute(models, route))
-		if want := []string{"gpt-5.4", "kimi-k2"}; !sameStrings(got, want) {
+		if want := []string{"gpt-5.4", "kimi-k2", "glm-5"}; !sameStrings(got, want) {
 			t.Fatalf("%s model ids = %#v, want %#v", clientType, got, want)
 		}
 	}
@@ -492,7 +520,7 @@ func TestFilterModelsForCcSwitchRouteListsRequestNamesForOpenAIProtocolApps(t *t
 		CcSwitch: &internalrouting.CcSwitchRouteContext{ClientType: "gemini", DefaultModel: "kimi-k2", ModelMappings: mappings},
 	}
 	got := modelIDs(filterModelsForCcSwitchRoute(models, route))
-	if want := []string{"deepseek-chat", "kimi-k2"}; !sameStrings(got, want) {
+	if want := []string{"deepseek-chat", "kimi-k2", "glm-5"}; !sameStrings(got, want) {
 		t.Fatalf("gemini model ids = %#v, want %#v", got, want)
 	}
 }

@@ -379,45 +379,27 @@ func ccSwitchRequestModelAllowedForTarget(id string, route *internalrouting.Path
 	return false
 }
 
+// filterModelsForCcSwitchRoute shapes the listing of a CC Switch preset route.
+// A preset's mappings rename models; they do not narrow the list. The route
+// serves what its channel group serves, and the scope filter before this one
+// already applied the group, so a model the upstream adds later is listed here
+// as soon as the group admits it, the same way the request gate treats it.
 func filterModelsForCcSwitchRoute(models []map[string]interface{}, route *internalrouting.PathRouteContext) []map[string]interface{} {
 	if route == nil || route.CcSwitch == nil {
 		return models
 	}
 	// OpenAI-protocol apps send the request names and the route rewrites them
-	// (ccSwitchOpenAIModelMapping), so they are offered the request names.
+	// (ccSwitchOpenAIModelMapping), so a mapped model is offered under those.
+	// Other apps send real ids, which nothing rewrites, so they get the list as is.
 	if usage.CcSwitchClientUsesOpenAIProtocol(route.CcSwitch.ClientType) {
-		return filterRequestModelsForCcSwitchRoute(models, route.CcSwitch)
+		return renameMappedModelsForCcSwitchRoute(models, route.CcSwitch)
 	}
-	return filterTargetModelsForCcSwitchRoute(models, route.CcSwitch)
+	return models
 }
 
-func filterTargetModelsForCcSwitchRoute(models []map[string]interface{}, ccSwitch *internalrouting.CcSwitchRouteContext) []map[string]interface{} {
-	ccswitchModels := make(map[string]struct{})
-	for _, mapping := range ccSwitch.ModelMappings {
-		target := strings.TrimSpace(mapping.TargetModel)
-		if target != "" {
-			ccswitchModels[target] = struct{}{}
-		}
-	}
-	if dm := strings.TrimSpace(ccSwitch.DefaultModel); dm != "" {
-		ccswitchModels[dm] = struct{}{}
-	}
-	if len(ccswitchModels) == 0 {
-		return models
-	}
-	filtered := make([]map[string]interface{}, 0, len(models))
-	for _, model := range models {
-		if id, ok := model["id"].(string); ok {
-			if _, exists := ccswitchModels[id]; exists {
-				filtered = append(filtered, model)
-			}
-		}
-	}
-	return filtered
-}
-
-func filterRequestModelsForCcSwitchRoute(models []map[string]interface{}, ccSwitch *internalrouting.CcSwitchRouteContext) []map[string]interface{} {
+func renameMappedModelsForCcSwitchRoute(models []map[string]interface{}, ccSwitch *internalrouting.CcSwitchRouteContext) []map[string]interface{} {
 	targetToRequests := make(map[string][]string)
+	requestNames := make(map[string]struct{})
 	for _, mapping := range ccSwitch.ModelMappings {
 		request := strings.TrimSpace(mapping.RequestModel)
 		target := strings.TrimSpace(mapping.TargetModel)
@@ -426,30 +408,34 @@ func filterRequestModelsForCcSwitchRoute(models []map[string]interface{}, ccSwit
 		}
 		key := strings.ToLower(target)
 		targetToRequests[key] = appendUniqueModel(targetToRequests[key], request)
+		requestNames[strings.ToLower(request)] = struct{}{}
 	}
-	defaultModel := strings.TrimSpace(ccSwitch.DefaultModel)
-	if len(targetToRequests) == 0 && defaultModel == "" {
+	if len(targetToRequests) == 0 {
 		return models
 	}
 
-	filtered := make([]map[string]interface{}, 0, len(models))
+	listed := make([]map[string]interface{}, 0, len(models))
 	seen := make(map[string]struct{})
 	for _, model := range models {
 		id, ok := model["id"].(string)
 		if !ok {
 			continue
 		}
-		if requests := targetToRequests[strings.ToLower(strings.TrimSpace(id))]; len(requests) > 0 {
+		key := strings.ToLower(strings.TrimSpace(id))
+		if requests := targetToRequests[key]; len(requests) > 0 {
 			for _, request := range requests {
-				appendModelClone(&filtered, seen, model, request)
+				appendModelClone(&listed, seen, model, request)
 			}
 			continue
 		}
-		if defaultModel != "" && strings.EqualFold(strings.TrimSpace(id), defaultModel) {
-			appendModelClone(&filtered, seen, model, defaultModel)
+		// A mapping sends this name to another model, so on this route the name
+		// reaches the mapping's target; listing this model under it would lie.
+		if _, shadowed := requestNames[key]; shadowed {
+			continue
 		}
+		appendModelClone(&listed, seen, model, id)
 	}
-	return filtered
+	return listed
 }
 
 func appendUniqueModel(models []string, model string) []string {
