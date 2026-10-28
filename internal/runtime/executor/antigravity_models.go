@@ -238,8 +238,9 @@ func DiscoverAntigravityModels(ctx context.Context, auth *cliproxyauth.Auth, cfg
 				if modelCfg.MaxCompletionTokens > 0 {
 					modelInfo.MaxCompletionTokens = modelCfg.MaxCompletionTokens
 				}
-			} else if strings.Contains(strings.ToLower(modelID), "claude") || strings.Contains(strings.ToLower(modelID), "gemini-3") {
-				// Dynamic thinking defaults for newer discovered models
+			} else if id := strings.ToLower(modelID); strings.Contains(id, "claude") || strings.Contains(id, "gemini-3") || strings.Contains(id, "gemini-4") {
+				// Dynamic thinking defaults for newer discovered models; without
+				// them ApplyThinking drops the client's reasoning effort.
 				modelInfo.Thinking = &sdkmodelcatalog.ThinkingSupport{
 					DynamicAllowed: true,
 					Levels:         []string{"low", "medium", "high"},
