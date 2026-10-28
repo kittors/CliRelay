@@ -148,27 +148,24 @@ func (s selectorService) diagnoseEmptyCandidates(
 	}
 
 	excluded, notAllowed := rejection.modelExcludedByGroups, rejection.modelBlockedByGroups
-	var message string
-	switch {
-	case len(excluded) == 0 && len(notAllowed) == 0:
+	if len(excluded) == 0 && len(notAllowed) == 0 {
 		return nil
-	case len(excluded) == 0:
-		message = fmt.Sprintf(
-			"model %q is not in the allowed models of channel group %s; add it there or route the request to a group that permits it",
-			scope.modelKey, describeScopeNames(notAllowed),
-		)
-	case len(notAllowed) == 0:
-		message = fmt.Sprintf(
-			"model %q is excluded by channel group %s; remove it from the group's excluded models or route the request to a group that permits it",
-			scope.modelKey, describeScopeNames(excluded),
-		)
-	default:
-		message = fmt.Sprintf(
-			"model %q is excluded by channel group %s and not in the allowed models of channel group %s; change the group's model list or route the request to a group that permits it",
-			scope.modelKey, describeScopeNames(excluded), describeScopeNames(notAllowed),
-		)
 	}
-	return &Error{Code: "model_not_allowed_by_channel_group", Message: message}
+	return &Error{
+		Code: "model_not_allowed_by_channel_group",
+		Message: sdkrouting.ChannelGroupModelDenialMessage(
+			scope.modelKey, scopeNames(excluded), scopeNames(notAllowed),
+			sdkrouting.DiscoveredModel(scope.tenantID, scope.modelKey),
+		),
+	}
+}
+
+func scopeNames(scope map[string]struct{}) []string {
+	names := make([]string, 0, len(scope))
+	for name := range scope {
+		names = append(names, name)
+	}
+	return names
 }
 
 // candidateServesModel reports whether a credential can serve a model, ignoring
@@ -227,7 +224,7 @@ func blockingRouteGroups(
 		if len(group.AllowedModels) == 0 && len(group.ExcludedModels) == 0 {
 			continue
 		}
-		if routingGroupModelAllowed(name, group.AllowedModels, group.ExcludedModels, modelID, tenantID) {
+		if routingGroupModelAllowed(group, modelID, tenantID) {
 			continue
 		}
 		if sdkrouting.ChannelGroupExcludesModel(group.ExcludedModels, modelID) {

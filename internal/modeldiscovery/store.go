@@ -163,11 +163,11 @@ func Fresh(tenantID, provider string) []*sdkmodelcatalog.ModelInfo {
 }
 
 // Listed reports whether provider's stored list for the tenant contains modelID.
-// The root channel group uses the Codex list so a model Codex publishes is
-// reachable without an operator appending it to a frozen allow list. Other
-// providers stay behind that list: an xAI or Kimi id discovery happens to
-// return is not a model the root pool was asked to grow. Exclusions are the
-// caller's job.
+// A channel group that follows upstream (the root group unless an operator
+// changed it) uses the Codex list so a model Codex publishes is reachable
+// without an operator appending it to an allow list. Other providers stay
+// behind that list: an xAI or Kimi id discovery happens to return is not a
+// model the group was asked to grow. Exclusions are the caller's job.
 func Listed(tenantID, provider, modelID string) bool {
 	modelID = strings.ToLower(strings.TrimSpace(modelID))
 	provider = NormalizeProvider(provider)

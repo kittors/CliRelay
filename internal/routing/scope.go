@@ -32,6 +32,22 @@ func ChannelGroupExcludesModel(excluded []string, model string) bool {
 	return sdkrouting.ChannelGroupExcludesModel(excluded, model)
 }
 
+func FollowsUpstreamModels(groupName string, setting *bool) bool {
+	return sdkrouting.FollowsUpstreamModels(groupName, setting)
+}
+
+func GroupAdmitsDiscoveredModel(follows bool, tenantID, modelID string) bool {
+	return sdkrouting.GroupAdmitsDiscoveredModel(follows, tenantID, modelID)
+}
+
+func DiscoveredModel(tenantID, modelID string) bool {
+	return sdkrouting.DiscoveredModel(tenantID, modelID)
+}
+
+func ChannelGroupModelDenialMessage(model string, excludedBy, notAllowedBy []string, upstreamListed bool) string {
+	return sdkrouting.ChannelGroupModelDenialMessage(model, excludedBy, notAllowedBy, upstreamListed)
+}
+
 func NormalizeNamespacePath(value string) string {
 	return sdkrouting.NormalizeNamespacePath(value)
 }

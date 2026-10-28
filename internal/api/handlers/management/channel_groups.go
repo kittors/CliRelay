@@ -10,6 +10,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/identity"
 	managementauthfiles "github.com/router-for-me/CLIProxyAPI/v6/internal/management/authfiles"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/modeldiscovery"
 	internalrouting "github.com/router-for-me/CLIProxyAPI/v6/internal/routing"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 )
@@ -60,6 +61,16 @@ type channelGroupItem struct {
 	AllowedModels      []string                    `json:"allowed-models,omitempty"`
 	ExcludedModels     []string                    `json:"excluded-models,omitempty"`
 	PathRoutes         []string                    `json:"path-routes,omitempty"`
+	// FollowUpstreamModels is the resolved follow-upstream-models setting, an
+	// unset one already mapped to the group's default, so the panel shows what
+	// the gate does instead of re-deriving that default.
+	FollowUpstreamModels bool `json:"follow-upstream-models"`
+	// DiscoveredModels are what following upstream admits beyond the allow
+	// list: listed by discovery, served by the group's channels, not excluded.
+	// A following group serves them now; for a frozen one they are what turning
+	// the setting on would open, which the panel shows before it is turned on.
+	// Empty for a group without an allow list, which serves all of them anyway.
+	DiscoveredModels []string `json:"discovered-models,omitempty"`
 }
 
 func schedulingItemFrom(group config.RoutingChannelGroup) channelGroupScheduling {
@@ -231,7 +242,12 @@ func buildChannelGroupItems(cfg *config.Config, auths []*coreauth.Auth) []channe
 			}
 			return existing
 		}
-		item := &channelGroupItem{Name: name, Implicit: implicit, Scheduling: defaultSchedulingItem()}
+		item := &channelGroupItem{
+			Name:                 name,
+			Implicit:             implicit,
+			Scheduling:           defaultSchedulingItem(),
+			FollowUpstreamModels: internalrouting.FollowsUpstreamModels(name, nil),
+		}
 		groupMap[name] = item
 		return item
 	}
@@ -246,6 +262,7 @@ func buildChannelGroupItems(cfg *config.Config, auths []*coreauth.Auth) []channe
 		item.Scheduling = schedulingItemFrom(group)
 		item.Priority = group.Priority
 		item.ExcludeFromDefault = group.ExcludeFromDefault
+		item.FollowUpstreamModels = group.FollowsUpstreamModels()
 		item.AllowedModels = append(item.AllowedModels, group.AllowedModels...)
 		item.ExcludedModels = append(item.ExcludedModels, group.ExcludedModels...)
 		item.Prefixes = append(item.Prefixes, group.Match.Prefixes...)
@@ -425,7 +442,56 @@ func (h *Handler) GetChannelGroups(c *gin.Context) {
 	if tenantID != identity.SystemTenantID {
 		cfg = &config.Config{Routing: currentRoutingConfigForTenant(h.cfg, tenantID)}
 	}
-	c.JSON(http.StatusOK, gin.H{"items": buildChannelGroupItems(cfg, auths)})
+	items := buildChannelGroupItems(cfg, auths)
+	var canServe func(group, model string) bool
+	if h != nil && h.authManager != nil {
+		canServe = func(group, model string) bool {
+			// The group's own model lists are left out on purpose (see
+			// attachDiscoveredModels); its exclusions are checked there.
+			return h.authManager.CanServeModelWithScopesForTenantOpts(tenantID, model, nil, nil, group,
+				coreauth.ServeModelScopeOptions{IgnoreGroupAllowedModels: true})
+		}
+	}
+	attachDiscoveredModels(items, modeldiscovery.FollowedModelIDs(tenantID), canServe)
+	c.JSON(http.StatusOK, gin.H{"items": items})
+}
+
+// attachDiscoveredModels fills DiscoveredModels on each group with an allow
+// list, following or not: the listed ids the list does not name already, that
+// the group does not exclude, and that its channels can serve. The last check
+// matters because discovery is per tenant, not per group: a group of Claude
+// channels must not offer a Codex model it would then fail to route.
+//
+// canServe answers for the group as it is configured. For a frozen group it
+// refuses a model its allow list does not name, so it is asked as though the
+// group followed upstream; that is the question being answered.
+func attachDiscoveredModels(items []channelGroupItem, listed []string, canServe func(group, model string) bool) {
+	if len(listed) == 0 {
+		return
+	}
+	for i := range items {
+		item := &items[i]
+		if len(item.AllowedModels) == 0 {
+			continue
+		}
+		named := make(map[string]struct{}, len(item.AllowedModels))
+		for _, model := range item.AllowedModels {
+			named[strings.ToLower(strings.TrimSpace(model))] = struct{}{}
+		}
+		for _, model := range listed {
+			if _, ok := named[strings.ToLower(model)]; ok {
+				continue
+			}
+			if internalrouting.ChannelGroupExcludesModel(item.ExcludedModels, model) {
+				continue
+			}
+			if canServe != nil && !canServe(item.Name, model) {
+				continue
+			}
+			item.DiscoveredModels = append(item.DiscoveredModels, model)
+		}
+		sort.Strings(item.DiscoveredModels)
+	}
 }
 
 func reservedPathRoutePrefixes() []string {
