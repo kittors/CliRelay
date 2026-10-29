@@ -2,7 +2,7 @@
 //
 // Request logging is intentionally split across small files so each responsibility
 // has a stable owner:
-// - request_logger.go: top-level request/stream orchestration
+// - request_logger.go: top-level request/stream orchestration, scrubbed file writes
 // - request_logger_paths.go: log file naming, temp files, error-log cleanup
 // - request_logger_format.go: human-readable log formatting
 // - request_logger_decompress.go: response content codecs
@@ -10,13 +10,16 @@
 package logging
 
 import (
+	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/diagnostics"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/interfaces"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/secretscrub"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -65,54 +68,16 @@ func (l *FileRequestLogger) logRequest(url, method string, requestHeaders map[st
 	}
 	filePath := filepath.Join(l.logsDir, filename)
 
-	requestBodyPath, errTemp := l.writeRequestBodyTempFile(body)
-	if errTemp != nil {
-		log.WithError(errTemp).Warn("failed to create request body temp file, falling back to direct write")
-	}
-	if requestBodyPath != "" {
-		defer func() {
-			if errRemove := os.Remove(requestBodyPath); errRemove != nil {
-				log.WithError(errRemove).Warn("failed to remove request body temp file")
-			}
-		}()
-	}
-
 	responseToWrite, decompressErr := l.decompressResponse(responseHeaders, response)
 	if decompressErr != nil {
 		responseToWrite = response
 	}
 
-	logFile, errOpen := os.OpenFile(filePath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
-	if errOpen != nil {
-		return fmt.Errorf("failed to create log file: %w", errOpen)
-	}
-
-	writeErr := l.writeNonStreamingLog(
-		logFile,
-		logURL,
-		method,
-		requestHeaders,
-		body,
-		requestBodyPath,
-		apiRequest,
-		apiResponse,
-		apiResponseErrors,
-		statusCode,
-		responseHeaders,
-		responseToWrite,
-		decompressErr,
-		requestTimestamp,
-		apiResponseTimestamp,
-		diagnostic,
-	)
-	if errClose := logFile.Close(); errClose != nil {
-		log.WithError(errClose).Warn("failed to close request log file")
-		if writeErr == nil {
-			return errClose
-		}
-	}
-	if writeErr != nil {
-		return fmt.Errorf("failed to write log file: %w", writeErr)
+	if errWrite := writeScrubbedLogFile(filePath, func(w io.Writer) error {
+		return l.writeNonStreamingLog(w, logURL, method, requestHeaders, body, apiRequest, apiResponse, apiResponseErrors,
+			statusCode, responseHeaders, responseToWrite, decompressErr, requestTimestamp, apiResponseTimestamp, diagnostic)
+	}); errWrite != nil {
+		return errWrite
 	}
 
 	if force && !l.enabled {
@@ -125,6 +90,23 @@ func (l *FileRequestLogger) logRequest(url, method string, requestHeaders map[st
 		}
 	}
 
+	return nil
+}
+
+// writeScrubbedLogFile renders a request log in memory and writes it to path
+// with every credential it holds replaced by [REDACTED:<kind>] (see
+// secretscrub). A request log copies the client's request, what was sent
+// upstream and the responses, so it carries whatever keys the client's tools
+// read; scrubbing the rendered file as a whole covers every section, the
+// headers and diagnostics included.
+func writeScrubbedLogFile(path string, render func(io.Writer) error) error {
+	var rendered bytes.Buffer
+	if errRender := render(&rendered); errRender != nil {
+		return fmt.Errorf("failed to write log file: %w", errRender)
+	}
+	if errWrite := os.WriteFile(path, secretscrub.ScrubBytes(rendered.Bytes()), 0o644); errWrite != nil {
+		return fmt.Errorf("failed to write log file: %w", errWrite)
+	}
 	return nil
 }
 

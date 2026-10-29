@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/secretscrub"
 	coreusage "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/usage"
 	log "github.com/sirupsen/logrus"
 )
@@ -128,9 +129,9 @@ func insertRequestLogRowTx(tx usageWriteTx, plan requestLogWritePlan) error {
 	return nil
 }
 
-// normalizeRequestLogEntry trims identity fields and makes sure the entry
+// normalizeRequestLogEntry trims identity fields, makes sure the entry
 // carries an idempotency key before its first attempt, so every retry and
-// replay of it shares that key.
+// replay of it shares that key, and scrubs the content it stores.
 func normalizeRequestLogEntry(entry RequestLogEntry) RequestLogEntry {
 	entry.IdempotencyKey = strings.TrimSpace(entry.IdempotencyKey)
 	if entry.IdempotencyKey == "" {
@@ -143,6 +144,18 @@ func normalizeRequestLogEntry(entry RequestLogEntry) RequestLogEntry {
 	entry.UpstreamResponseModel = strings.TrimSpace(entry.UpstreamResponseModel)
 	entry.VisionFallbackModel = strings.TrimSpace(entry.VisionFallbackModel)
 	entry.ThinkingLevel = strings.TrimSpace(entry.ThinkingLevel)
+	return scrubRequestLogContent(entry)
+}
+
+// scrubRequestLogContent replaces the credentials in the stored request and
+// response bodies and diagnostics with [REDACTED:<kind>] (see secretscrub).
+// It runs before the entry is written or spooled, outside any transaction, so
+// neither the database nor the spool on disk keeps a key that a client's
+// prompt carried. What was sent upstream is not affected.
+func scrubRequestLogContent(entry RequestLogEntry) RequestLogEntry {
+	entry.InputContent = secretscrub.Scrub(entry.InputContent)
+	entry.OutputContent = secretscrub.Scrub(entry.OutputContent)
+	entry.DetailContent = secretscrub.Scrub(entry.DetailContent)
 	return entry
 }
 
