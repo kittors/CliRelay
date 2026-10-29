@@ -350,7 +350,10 @@ func TestQueryMonitorOverviewEmptyHasFullShape(t *testing.T) {
 			t.Fatalf("%s: %v", key, err)
 		}
 		raw, _ := json.Marshal(got)
-		if strings.Contains(string(raw), "null") {
+		// cache_hit_rate is the one field that is null by design: no request in
+		// the window reported its cache use. Every list and object is filled.
+		shape := strings.ReplaceAll(string(raw), `"cache_hit_rate":null`, `"cache_hit_rate":0`)
+		if strings.Contains(shape, "null") {
 			t.Fatalf("%s payload has null fields: %s", key, raw)
 		}
 		if len(got.Series) == 0 || len(got.Latency.Total.Histogram) != len(monitorLatencyBoundsMs)+1 {

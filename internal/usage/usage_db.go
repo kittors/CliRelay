@@ -17,15 +17,6 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-const cacheRateEffectiveInputSQL = "CASE WHEN cached_tokens > input_tokens THEN input_tokens + cached_tokens ELSE input_tokens END"
-
-func cacheRateFromTokenTotals(effectiveInputTokens, cachedTokens int64) float64 {
-	if effectiveInputTokens <= 0 {
-		return 0
-	}
-	return float64(cachedTokens) / float64(effectiveInputTokens) * 100
-}
-
 type ClearRequestLogsOptions struct {
 	TenantID            string `json:"-"`
 	ClearBodyContent    bool   `json:"clear_body_content"`
@@ -736,6 +727,8 @@ func initOpenedDBLocked(db, readDB *sql.DB, dbPath, driver string, storageCfg co
 		migrateRequestLogDetailColumn(db)
 		log.Debugf("usage: running request log content session_id column migration")
 		migrateRequestLogContentSessionIDColumn(db)
+		log.Debugf("usage: running request log cache and session column migration")
+		migrateRequestLogCacheColumns(db)
 		log.Debugf("usage: ensuring request log detail indexes")
 		ensureRequestLogDetailIndexes(db)
 		if err := ensureRequestLogIdempotencyTable(db); err != nil {

@@ -377,10 +377,14 @@ func refreshRequestLogContentBytes(q logContentQuerier) {
 }
 
 func insertLogContentTx(tx *sql.Tx, logID int64, timestamp time.Time, inputContent, outputContent, detailContent string) error {
-	return insertLogContentTenantTx(tx, "00000000-0000-0000-0000-000000000001", logID, timestamp, inputContent, outputContent, detailContent, false)
+	return insertLogContentTenantTx(tx, "00000000-0000-0000-0000-000000000001", logID, timestamp, inputContent, outputContent, detailContent, extractSessionIDFromDetails(detailContent), false)
 }
 
-func insertLogContentTenantTx(tx usageWriteTx, tenantID string, logID int64, timestamp time.Time, inputContent, outputContent, detailContent string, failed bool) error {
+// insertLogContentTenantTx stores the compressed bodies and detail of a log.
+// sessionID is the one the caller already extracted from detailContent for
+// request_logs.session_id; it is passed in rather than extracted again because
+// a detail can be large.
+func insertLogContentTenantTx(tx usageWriteTx, tenantID string, logID int64, timestamp time.Time, inputContent, outputContent, detailContent, sessionID string, failed bool) error {
 	if tx == nil || logID < 1 {
 		return nil
 	}
@@ -399,7 +403,6 @@ func insertLogContentTenantTx(tx usageWriteTx, tenantID string, logID int64, tim
 	if inputContent == "" && outputContent == "" && detailContent == "" {
 		return nil
 	}
-	sessionID := extractSessionIDFromDetails(detailContent)
 
 	inputCompressed, err := compressLogContent(inputContent)
 	if err != nil {

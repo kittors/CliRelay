@@ -77,6 +77,11 @@ type Detail struct {
 	CacheReadTokens          int64 // tokens served from cache (cache read / cache hit)
 	CacheWriteTokens         int64 // tokens written to cache (cache creation)
 	CacheReadIncludedInInput bool  // when true, CacheReadTokens is a subset of InputTokens (OpenAI-compatible style)
+	// CacheReported is true when the upstream's usage said how much of the
+	// prompt was read from or written to its cache, zero included. Upstreams
+	// that carry no cache accounting at all leave it false, and their requests
+	// count as "unknown" rather than as cache misses in hit rates.
+	CacheReported bool
 }
 
 // Plugin consumes usage records emitted by the proxy runtime.

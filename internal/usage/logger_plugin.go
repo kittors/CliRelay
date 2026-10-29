@@ -242,6 +242,10 @@ type TokenStats struct {
 	CacheReadTokens          int64 `json:"cache_read_tokens,omitempty"`
 	CacheWriteTokens         int64 `json:"cache_write_tokens,omitempty"`
 	CacheReadIncludedInInput bool  `json:"-"`
+	// CacheReported mirrors coreusage.Detail.CacheReported: false means the
+	// upstream said nothing about its cache, and the request is stored with
+	// unknown cache reads and writes instead of zeros.
+	CacheReported bool `json:"-"`
 }
 
 // StatisticsSnapshot represents an immutable view of the aggregated metrics.
@@ -658,6 +662,7 @@ func normaliseDetail(detail coreusage.Detail) TokenStats {
 		CacheReadTokens:          detail.CacheReadTokens,
 		CacheWriteTokens:         detail.CacheWriteTokens,
 		CacheReadIncludedInInput: detail.CacheReadIncludedInInput,
+		CacheReported:            detail.CacheReported,
 	}
 	if tokens.TotalTokens == 0 {
 		tokens.TotalTokens = detail.InputTokens + detail.OutputTokens + detail.ReasoningTokens

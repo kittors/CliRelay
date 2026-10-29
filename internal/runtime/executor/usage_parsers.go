@@ -22,6 +22,7 @@ func parseCodexUsage(data []byte) (usage.Detail, bool) {
 		detail.CacheReadTokens = cached.Int()
 		detail.CachedTokens = detail.CacheReadTokens
 		detail.CacheReadIncludedInInput = true
+		detail.CacheReported = true
 	}
 	if reasoning := usageNode.Get("output_tokens_details.reasoning_tokens"); reasoning.Exists() {
 		detail.ReasoningTokens = reasoning.Int()
@@ -55,6 +56,7 @@ func parseOpenAIUsage(data []byte) usage.Detail {
 		detail.CacheReadTokens = cached.Int()
 		detail.CachedTokens = detail.CacheReadTokens
 		detail.CacheReadIncludedInInput = true
+		detail.CacheReported = true
 	}
 	reasoning := usageNode.Get("completion_tokens_details.reasoning_tokens")
 	if !reasoning.Exists() {
@@ -99,11 +101,35 @@ func parseOpenAIStreamUsage(line []byte) (usage.Detail, bool) {
 		detail.CacheReadTokens = cached.Int()
 		detail.CachedTokens = detail.CacheReadTokens
 		detail.CacheReadIncludedInInput = true
+		detail.CacheReported = true
 	}
 	if reasoning := usageNode.Get("completion_tokens_details.reasoning_tokens"); reasoning.Exists() {
 		detail.ReasoningTokens = reasoning.Int()
 	}
 	return detail, true
+}
+
+// applyClaudeCacheUsage reads Anthropic's two cache counters. Its input_tokens
+// counts neither of them, so reads are not a subset of InputTokens.
+//
+// CachedTokens keeps its legacy meaning, reads or else writes, for the
+// request_logs.cached_tokens column and the clients that still show it. Hit
+// rates are computed from CacheReadTokens alone: a turn that only wrote the
+// cache is a miss, not a hit.
+func applyClaudeCacheUsage(detail *usage.Detail, usageNode gjson.Result) {
+	cacheRead := usageNode.Get("cache_read_input_tokens")
+	cacheCreate := usageNode.Get("cache_creation_input_tokens")
+	detail.CacheReported = cacheRead.Exists() || cacheCreate.Exists()
+	if cacheRead.Int() > 0 {
+		detail.CacheReadTokens = cacheRead.Int()
+		detail.CachedTokens = detail.CacheReadTokens
+	}
+	if cacheCreate.Int() > 0 {
+		detail.CacheWriteTokens = cacheCreate.Int()
+		if detail.CachedTokens == 0 {
+			detail.CachedTokens = detail.CacheWriteTokens
+		}
+	}
 }
 
 func parseClaudeUsage(data []byte) usage.Detail {
@@ -115,16 +141,7 @@ func parseClaudeUsage(data []byte) usage.Detail {
 		InputTokens:  usageNode.Get("input_tokens").Int(),
 		OutputTokens: usageNode.Get("output_tokens").Int(),
 	}
-	if cacheRead := usageNode.Get("cache_read_input_tokens"); cacheRead.Exists() && cacheRead.Int() > 0 {
-		detail.CacheReadTokens = cacheRead.Int()
-		detail.CachedTokens = detail.CacheReadTokens
-	}
-	if cacheCreate := usageNode.Get("cache_creation_input_tokens"); cacheCreate.Exists() && cacheCreate.Int() > 0 {
-		detail.CacheWriteTokens = cacheCreate.Int()
-		if detail.CachedTokens == 0 {
-			detail.CachedTokens = detail.CacheWriteTokens
-		}
-	}
+	applyClaudeCacheUsage(&detail, usageNode)
 	detail.TotalTokens = detail.InputTokens + detail.OutputTokens
 	return detail
 }
@@ -142,16 +159,7 @@ func parseClaudeStreamUsage(line []byte) (usage.Detail, bool) {
 		InputTokens:  usageNode.Get("input_tokens").Int(),
 		OutputTokens: usageNode.Get("output_tokens").Int(),
 	}
-	if cacheRead := usageNode.Get("cache_read_input_tokens"); cacheRead.Exists() && cacheRead.Int() > 0 {
-		detail.CacheReadTokens = cacheRead.Int()
-		detail.CachedTokens = detail.CacheReadTokens
-	}
-	if cacheCreate := usageNode.Get("cache_creation_input_tokens"); cacheCreate.Exists() && cacheCreate.Int() > 0 {
-		detail.CacheWriteTokens = cacheCreate.Int()
-		if detail.CachedTokens == 0 {
-			detail.CachedTokens = detail.CacheWriteTokens
-		}
-	}
+	applyClaudeCacheUsage(&detail, usageNode)
 	detail.TotalTokens = detail.InputTokens + detail.OutputTokens
 	return detail, true
 }
@@ -164,10 +172,16 @@ func parseGeminiFamilyUsageDetail(node gjson.Result) usage.Detail {
 		TotalTokens:     node.Get("totalTokenCount").Int(),
 		CachedTokens:    node.Get("cachedContentTokenCount").Int(),
 	}
-	if cached := node.Get("cachedContentTokenCount"); cached.Exists() && cached.Int() > 0 {
+	// promptTokenCount is the whole prompt, the cached part included ("when
+	// cachedContent is set, this is still the total effective prompt size"),
+	// so a cache read is a subset of InputTokens and must not be billed twice.
+	// Gemini drops zero-valued fields, so an absent cachedContentTokenCount
+	// means nothing was read from the cache: the accounting is still reported.
+	detail.CacheReported = true
+	detail.CacheReadIncludedInInput = true
+	if cached := node.Get("cachedContentTokenCount"); cached.Int() > 0 {
 		detail.CacheReadTokens = cached.Int()
 		detail.CachedTokens = detail.CacheReadTokens
-		detail.CacheReadIncludedInInput = false
 	}
 	if detail.TotalTokens == 0 {
 		detail.TotalTokens = detail.InputTokens + detail.OutputTokens + detail.ReasoningTokens
