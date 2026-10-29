@@ -3,6 +3,7 @@ package logging
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"sync/atomic"
 	"time"
@@ -123,20 +124,9 @@ func (w *FileStreamingLogWriter) Close() error {
 		return nil
 	}
 
-	logFile, errOpen := os.OpenFile(w.logFilePath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
-	if errOpen != nil {
-		w.cleanupTempFiles()
-		return fmt.Errorf("failed to create log file: %w", errOpen)
-	}
-
-	writeErr := w.writeFinalLog(logFile)
-	if errClose := logFile.Close(); errClose != nil {
-		log.WithError(errClose).Warn("failed to close request log file")
-		if writeErr == nil {
-			writeErr = errClose
-		}
-	}
-
+	// The temp files hold the request and the stream as they were until here;
+	// the log that stays is scrubbed and the temp files are removed.
+	writeErr := writeScrubbedLogFile(w.logFilePath, w.writeFinalLog)
 	w.cleanupTempFiles()
 	// Retain only completed logs, after the final file has been closed.
 	if writeErr == nil && w.logger != nil {
@@ -181,14 +171,14 @@ func (w *FileStreamingLogWriter) asyncWriter() {
 	w.responseBodyFile = nil
 }
 
-func (w *FileStreamingLogWriter) writeFinalLog(logFile *os.File) error {
-	if errWrite := writeRequestInfoWithBody(logFile, w.url, w.method, w.requestHeaders, nil, w.requestBodyPath, w.timestamp, diagnostics.Snapshot{}); errWrite != nil {
+func (w *FileStreamingLogWriter) writeFinalLog(out io.Writer) error {
+	if errWrite := writeRequestInfoWithBody(out, w.url, w.method, w.requestHeaders, nil, w.requestBodyPath, w.timestamp, diagnostics.Snapshot{}); errWrite != nil {
 		return errWrite
 	}
-	if errWrite := writeAPISection(logFile, "=== API REQUEST ===\n", "=== API REQUEST", w.apiRequest, time.Time{}); errWrite != nil {
+	if errWrite := writeAPISection(out, "=== API REQUEST ===\n", "=== API REQUEST", w.apiRequest, time.Time{}); errWrite != nil {
 		return errWrite
 	}
-	if errWrite := writeAPISection(logFile, "=== API RESPONSE ===\n", "=== API RESPONSE", w.apiResponse, w.apiResponseTimestamp); errWrite != nil {
+	if errWrite := writeAPISection(out, "=== API RESPONSE ===\n", "=== API RESPONSE", w.apiResponse, w.apiResponseTimestamp); errWrite != nil {
 		return errWrite
 	}
 
@@ -202,7 +192,7 @@ func (w *FileStreamingLogWriter) writeFinalLog(logFile *os.File) error {
 		}
 	}()
 
-	return writeResponseSection(logFile, w.responseStatus, w.statusWritten, w.responseHeaders, responseBodyFile, nil, false)
+	return writeResponseSection(out, w.responseStatus, w.statusWritten, w.responseHeaders, responseBodyFile, nil, false)
 }
 
 func (w *FileStreamingLogWriter) appendTruncationNote() {

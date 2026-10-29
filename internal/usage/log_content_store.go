@@ -11,6 +11,7 @@ import (
 	"github.com/klauspost/compress/zstd"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/cluster"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/secretscrub"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -539,6 +540,10 @@ func migrateLegacyContentBatch(db *sql.DB, batchSize int) (int, error) {
 		if err := rows.Scan(&row.ID, &row.Timestamp, &row.InputContent, &row.OutputContent); err != nil {
 			return 0, fmt.Errorf("usage: scan legacy content row: %w", err)
 		}
+		// Moved content is scrubbed like newly written content (see
+		// scrubRequestLogContent), before the transaction starts.
+		row.InputContent = secretscrub.Scrub(row.InputContent)
+		row.OutputContent = secretscrub.Scrub(row.OutputContent)
 		batch = append(batch, row)
 	}
 	if err := rows.Err(); err != nil {
