@@ -102,44 +102,6 @@ func QueryLogs(params LogQueryParams) (LogQueryResult, error) {
 	}, nil
 }
 
-// hydrateAPIKeyDisplayNames keeps account and credential identity separate.
-func hydrateAPIKeyDisplayNames(tenantID string, items []LogRow) {
-	if len(items) == 0 {
-		return
-	}
-	byID := currentAPIKeyRowsByIDForTenant(tenantID)
-	byKey := currentAPIKeyRowsByKeyForTenant(tenantID)
-	for i := range items {
-		var row *APIKeyRow
-		if r, ok := byID[strings.TrimSpace(items[i].APIKeyID)]; ok {
-			copy := r
-			row = &copy
-		} else if r, ok := byKey[strings.TrimSpace(items[i].APIKey)]; ok {
-			copy := r
-			row = &copy
-		} else {
-			// Fall back: resolve via secret lookup when tenant maps miss.
-			if live := GetAPIKey(items[i].APIKey); live != nil {
-				row = live
-			}
-		}
-		if row != nil {
-			items[i].APIKeyID = strings.TrimSpace(row.ID)
-			items[i].APIKeyOwnName = strings.TrimSpace(row.Name)
-			items[i].EndUserDisplayName = DisplayNameForEndUser(row.EndUserID)
-			if items[i].EndUserDisplayName != "" {
-				items[i].APIKeyName = items[i].EndUserDisplayName
-			} else if items[i].APIKeyOwnName != "" {
-				items[i].APIKeyName = items[i].APIKeyOwnName
-			}
-		} else {
-			// Legacy rows have only one snapshot label. Preserve it as the key name;
-			// no account identity is inferred without a trusted ownership row.
-			items[i].APIKeyOwnName = strings.TrimSpace(items[i].APIKeyName)
-		}
-	}
-}
-
 func hydrateStreamingFromContent(db *sql.DB, tenantID string, items []LogRow) {
 	if db == nil || len(items) == 0 {
 		return
@@ -221,9 +183,6 @@ func QueryFiltersForLogs(params LogQueryParams) (FilterOptions, error) {
 	if db == nil {
 		// Ensure stable JSON shape: slices => [] (not null), maps => {} (not null).
 		return FilterOptions{
-			APIKeys:        make([]string, 0),
-			APIKeyNames:    make(map[string]string),
-			APIKeyCounts:   make(map[string]int64),
 			APIKeyIDs:      make([]string, 0),
 			APIKeyIDNames:  make(map[string]string),
 			APIKeyIDCounts: make(map[string]int64),
@@ -235,11 +194,6 @@ func QueryFiltersForLogs(params LogQueryParams) (FilterOptions, error) {
 	}
 
 	params = normalizeLogQueryParams(params)
-	keys, keyNames, keyCounts, err := queryDistinctAPIKeys(db, params.withoutFacet("api_key"))
-	if err != nil {
-		log.Warnf("usage: query distinct api keys failed: %v", err)
-		return FilterOptions{}, err
-	}
 	keyIDs, keyIDNames, keyIDCounts, err := queryDistinctAPIKeyIDs(db, params.withoutFacet("api_key_id"))
 	if err != nil {
 		log.Warnf("usage: query distinct api key ids failed: %v", err)
@@ -280,9 +234,6 @@ func QueryFiltersForLogs(params LogQueryParams) (FilterOptions, error) {
 	}
 
 	return FilterOptions{
-		APIKeys:        keys,
-		APIKeyNames:    keyNames,
-		APIKeyCounts:   keyCounts,
 		APIKeyIDs:      keyIDs,
 		APIKeyIDNames:  keyIDNames,
 		APIKeyIDCounts: keyIDCounts,
@@ -297,11 +248,9 @@ func (params LogQueryParams) withoutFacet(facet string) LogQueryParams {
 	params.Page = 0
 	params.Size = 0
 	switch facet {
-	case "api_key":
-		params.APIKey = ""
-		params.APIKeys = nil
-		params.MatchNoAPIKeys = false
 	case "api_key_id":
+		// APIKey/APIKeys stay: for a public lookup they are the scope of the
+		// subject's own key, not a selection the user can widen.
 		params.APIKeyIDs = nil
 		params.MatchNoAPIKeyIDs = false
 	case "model":
@@ -411,46 +360,6 @@ func queryStatsFromDetails(params LogQueryParams) (LogStats, error) {
 		return LogStats{}, fmt.Errorf("usage: detail stats aggregate: %w", err)
 	}
 	return agg.toLogStats(), nil
-}
-
-// DeleteLogsByAPIKey removes all request_logs and request_log_content entries
-// for the given API key. Returns the number of deleted log rows.
-func DeleteLogsByAPIKey(apiKey string) (int64, error) {
-	return DeleteLogsByAPIKeyForTenant(systemTenantID, apiKey)
-}
-
-func DeleteLogsByAPIKeyForTenant(tenantID, apiKey string) (int64, error) {
-	db := getDB()
-	if db == nil {
-		return 0, fmt.Errorf("usage: database not initialised")
-	}
-	if apiKey == "" {
-		return 0, fmt.Errorf("usage: empty api_key")
-	}
-
-	// Delete associated content rows first (FK cascade may handle this,
-	// but be explicit to ensure cleanup even without FK enforcement).
-	tenantID = normalizeTenantID(tenantID)
-	clause, args := buildSingleAPIKeySelectorClauseForTenant(tenantID, apiKey)
-	predicate := strings.TrimPrefix(clause, " WHERE ")
-	args = append([]interface{}{tenantID}, args...)
-	clause = " WHERE tenant_id = ? AND " + predicate
-	_, _ = db.Exec(
-		`DELETE FROM request_log_content WHERE tenant_id = ? AND log_id IN
-		 (SELECT id FROM request_logs`+clause+`)`, append([]interface{}{tenantID}, args...)...)
-
-	result, err := db.Exec("DELETE FROM request_logs"+clause, args...)
-	if err != nil {
-		return 0, fmt.Errorf("usage: delete logs by api_key: %w", err)
-	}
-	deleted, err := result.RowsAffected()
-	if err != nil {
-		return 0, fmt.Errorf("usage: affected rows: %w", err)
-	}
-	if deleted > 0 {
-		log.Infof("usage: deleted %d request log(s) for api_key=%s", deleted, apiKey)
-	}
-	return deleted, nil
 }
 
 func rowsAffected(result sql.Result) (int64, error) {
@@ -707,75 +616,9 @@ func buildWhereClause(params LogQueryParams) (string, []interface{}) {
 		args = append(args, selectorArgs...)
 	}
 
-	// Stable key-id multi-value filter (public key facet; does not expand account pools).
-	if len(params.APIKeyIDs) > 0 {
-		idConds := make([]string, 0, len(params.APIKeyIDs))
-		for _, id := range params.APIKeyIDs {
-			id = strings.TrimSpace(id)
-			if id == "" {
-				continue
-			}
-			row := GetAPIKeyByIDForTenant(params.TenantID, id)
-			if row == nil {
-				row = GetAPIKeyByID(id)
-			}
-			if row != nil {
-				secret := strings.TrimSpace(row.Key)
-				if secret != "" {
-					idConds = append(idConds, "(api_key_id = ? OR (trim(coalesce(api_key_id, '')) = '' AND api_key = ?))")
-					args = append(args, id, secret)
-					continue
-				}
-			}
-			idConds = append(idConds, "api_key_id = ?")
-			args = append(args, id)
-		}
-		if len(idConds) == 1 {
-			conditions = append(conditions, idConds[0])
-		} else if len(idConds) > 1 {
-			conditions = append(conditions, "("+strings.Join(idConds, " OR ")+")")
-		}
-	}
-
-	// API Key multi-value filter
-	if len(params.APIKeys) > 0 {
-		apiKeyConds := make([]string, 0, len(params.APIKeys))
-		systemConds := make([]string, 0)
-		normalKeys := make([]string, 0, len(params.APIKeys))
-		for _, key := range params.APIKeys {
-			if key == systemRequestLogFilterValue {
-				systemConds = append(systemConds, `(
-					trim(coalesce(api_key_name, '')) = ''
-					AND (
-						trim(coalesce(api_key, '')) = ''
-						OR trim(coalesce(api_key, '')) LIKE '/%'
-						OR upper(trim(coalesce(api_key, ''))) LIKE 'GET /%'
-						OR upper(trim(coalesce(api_key, ''))) LIKE 'POST /%'
-						OR upper(trim(coalesce(api_key, ''))) LIKE 'PUT /%'
-						OR upper(trim(coalesce(api_key, ''))) LIKE 'PATCH /%'
-						OR upper(trim(coalesce(api_key, ''))) LIKE 'DELETE /%'
-						OR upper(trim(coalesce(api_key, ''))) LIKE 'OPTIONS /%'
-						OR upper(trim(coalesce(api_key, ''))) LIKE 'HEAD /%'
-					)
-				)`)
-			} else {
-				normalKeys = append(normalKeys, key)
-			}
-		}
-		if len(normalKeys) > 0 {
-			for _, k := range normalKeys {
-				clause, clauseArgs := buildSingleAPIKeySelectorClauseForTenant(params.TenantID, k)
-				apiKeyConds = append(apiKeyConds, strings.TrimPrefix(clause, " WHERE "))
-				args = append(args, clauseArgs...)
-			}
-		}
-		apiKeyConds = append(apiKeyConds, systemConds...)
-		if len(apiKeyConds) == 1 {
-			conditions = append(conditions, apiKeyConds[0])
-		} else if len(apiKeyConds) > 1 {
-			conditions = append(conditions, "("+strings.Join(apiKeyConds, " OR ")+")")
-		}
-	}
+	keyConds, keyArgs := apiKeyFilterConditions(params)
+	conditions = append(conditions, keyConds...)
+	args = append(args, keyArgs...)
 
 	// Model multi-value filter
 	if len(params.Models) > 0 {

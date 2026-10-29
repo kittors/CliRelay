@@ -10,6 +10,16 @@ import (
 )
 
 func TestBuildWhereClauseUsesParameterizedFilters(t *testing.T) {
+	// A key selector is a secret the caller holds; it is resolved to the key's id
+	// and the secret never reaches the SQL.
+	initTestUsageDB(t, config.RequestLogStorageConfig{})
+	if err := UpsertAPIKey(APIKeyRow{ID: "key-a", Key: "sk-a", Name: "A"}); err != nil {
+		t.Fatalf("UpsertAPIKey(sk-a): %v", err)
+	}
+	if err := UpsertAPIKey(APIKeyRow{ID: "key-b", Key: "sk-b", Name: "B"}); err != nil {
+		t.Fatalf("UpsertAPIKey(sk-b): %v", err)
+	}
+
 	where, args := buildWhereClause(LogQueryParams{
 		Days:                  3,
 		APIKeys:               []string{" sk-a ", "sk-b", "SK-B"},
@@ -21,7 +31,7 @@ func TestBuildWhereClauseUsesParameterizedFilters(t *testing.T) {
 		ChannelNames:          []string{" Codex ", ""},
 	})
 
-	wantWhere := " WHERE tenant_id = ? AND timestamp >= ? AND (api_key = ? OR api_key = ?) AND model IN (?,?) AND failed = 1 AND (auth_subject_id IN (?) OR auth_index IN (?) OR (auth_index = ? AND lower(trim(channel_name)) IN (?)) OR lower(trim(channel_name)) IN (?))"
+	wantWhere := " WHERE tenant_id = ? AND timestamp >= ? AND (api_key_id = ? OR api_key_id = ?) AND model IN (?,?) AND failed = 1 AND (auth_subject_id IN (?) OR auth_index IN (?) OR (auth_index = ? AND lower(trim(channel_name)) IN (?)) OR lower(trim(channel_name)) IN (?))"
 	if where != wantWhere {
 		t.Fatalf("where = %q, want %q", where, wantWhere)
 	}
@@ -39,7 +49,7 @@ func TestBuildWhereClauseUsesParameterizedFilters(t *testing.T) {
 		t.Fatalf("cutoff arg %q is not RFC3339: %v", cutoff, err)
 	}
 
-	wantArgs := []interface{}{"sk-a", "sk-b", "gpt-5", "gpt-4", "authsub_29b975703f03bde1", "auth-1", "auth-2", "legacy", "codex"}
+	wantArgs := []interface{}{"key-a", "key-b", "gpt-5", "gpt-4", "authsub_29b975703f03bde1", "auth-1", "auth-2", "legacy", "codex"}
 	if !reflect.DeepEqual(args[2:], wantArgs) {
 		t.Fatalf("args[2:] = %#v, want %#v", args[2:], wantArgs)
 	}
@@ -48,7 +58,7 @@ func TestBuildWhereClauseUsesParameterizedFilters(t *testing.T) {
 func TestBuildWhereClauseSupportsSystemRequestFilter(t *testing.T) {
 	where, args := buildWhereClause(LogQueryParams{
 		Days:    1,
-		APIKeys: []string{systemRequestLogFilterValue},
+		APIKeys: []string{SystemRequestLogFilterValue},
 	})
 
 	for _, want := range []string{
@@ -89,22 +99,61 @@ func TestBuildSingleAPIKeySelectorClauseUsesStableIdentityWhenAvailable(t *testi
 	}
 
 	clause, args := buildSingleAPIKeySelectorClause(" sk-live ")
-	wantClause := " WHERE (api_key_id = ? OR (api_key_id = '' AND api_key = ?))"
+	wantClause := " WHERE api_key_id = ?"
 	if clause != wantClause {
 		t.Fatalf("clause = %q, want %q", clause, wantClause)
 	}
-	wantArgs := []interface{}{"stable-key-1", "sk-live"}
+	wantArgs := []interface{}{"stable-key-1"}
 	if !reflect.DeepEqual(args, wantArgs) {
 		t.Fatalf("args = %#v, want %#v", args, wantArgs)
 	}
 
+	// A secret that is not a stored key cannot be matched against the api_key
+	// column (it holds a mask), so it must select nothing rather than everything.
 	clause, args = buildSingleAPIKeySelectorClause(" missing-key ")
-	if clause != " WHERE api_key = ?" {
-		t.Fatalf("missing key clause = %q, want raw api_key selector", clause)
+	if clause != " WHERE 1 = 0" {
+		t.Fatalf("missing key clause = %q, want a match-nothing selector", clause)
 	}
-	wantArgs = []interface{}{"missing-key"}
+	if args != nil {
+		t.Fatalf("missing key args = %#v, want none", args)
+	}
+
+	// A route or internal origin is stored verbatim and still selects its rows.
+	clause, args = buildSingleAPIKeySelectorClause(" POST /auth-files/warmup ")
+	if clause != " WHERE api_key = ?" {
+		t.Fatalf("label clause = %q, want a verbatim api_key selector", clause)
+	}
+	wantArgs = []interface{}{"POST /auth-files/warmup"}
 	if !reflect.DeepEqual(args, wantArgs) {
-		t.Fatalf("missing key args = %#v, want %#v", args, wantArgs)
+		t.Fatalf("label args = %#v, want %#v", args, wantArgs)
+	}
+}
+
+func TestBuildWhereClauseKeyIDFilter(t *testing.T) {
+	where, args := buildWhereClause(LogQueryParams{
+		Days:      1,
+		APIKeyIDs: []string{" key-a ", "", "key-b"},
+	})
+	if !strings.Contains(where, "api_key_id IN (?,?)") {
+		t.Fatalf("where = %q, want an api_key_id IN filter", where)
+	}
+	if strings.Contains(where, "api_key =") || strings.Contains(where, "api_key IN") {
+		t.Fatalf("where = %q, the key filter must not touch the api_key column", where)
+	}
+	if got := args[2:]; !reflect.DeepEqual(got, []interface{}{"key-a", "key-b"}) {
+		t.Fatalf("args[2:] = %#v, want the trimmed ids", got)
+	}
+
+	// The system-call entry rides along with ids as an alternative.
+	where, args = buildWhereClause(LogQueryParams{
+		Days:      1,
+		APIKeyIDs: []string{"key-a", SystemRequestLogFilterValue},
+	})
+	if !strings.Contains(where, "(api_key_id IN (?) OR (trim(coalesce(api_key_name, '')) = ''") {
+		t.Fatalf("where = %q, want ids OR the system-call predicate", where)
+	}
+	if got := args[2:]; !reflect.DeepEqual(got, []interface{}{"key-a"}) {
+		t.Fatalf("args[2:] = %#v, want only the real id bound", got)
 	}
 }
 

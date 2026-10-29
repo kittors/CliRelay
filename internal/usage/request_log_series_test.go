@@ -139,6 +139,8 @@ func TestQueryHourlySeriesKeysHoursInUsageTimezone(t *testing.T) {
 func assertHourlySeriesFollowsUsageTimezone(t *testing.T) {
 	t.Helper()
 	const apiKey = "sk-hourly-tz"
+	// The series selects the key's rows by its id, so the key has to exist.
+	registerTestAPIKey(t, "key-hourly-tz", apiKey, "Hourly TZ")
 	for _, row := range []struct {
 		at     time.Time
 		tokens int64

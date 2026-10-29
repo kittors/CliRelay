@@ -314,6 +314,9 @@ func initializeRuntimeDataStack(cfg *config.Config, configPath string, loc *time
 type runtimeDataStackMaintenanceOps struct {
 	runAIAccountSharedSubjectBackfill func() error
 	scheduleUsageRollupCatchup        func()
+	// scheduleRequestLogKeyMasking starts the background pass that replaces the
+	// client secrets older builds stored in request_logs.api_key with masks.
+	scheduleRequestLogKeyMasking func()
 	// withRepairLock serialises the one-time repairs across nodes; nil runs
 	// them directly.
 	withRepairLock func(func() error) error
@@ -344,8 +347,9 @@ func defaultRuntimeDataStackMaintenanceOps() runtimeDataStackMaintenanceOps {
 			// those held on a period the upstream refilled rather than spent out.
 			return usage.RunAIAccountSubjectCycleRefillRepairAtInit()
 		},
-		scheduleUsageRollupCatchup: usage.ScheduleUsageRollupBlueGreenCatchup,
-		withRepairLock:             withRepairLock,
+		scheduleUsageRollupCatchup:   usage.ScheduleUsageRollupBlueGreenCatchup,
+		scheduleRequestLogKeyMasking: usage.ScheduleRequestLogAPIKeyMasking,
+		withRepairLock:               withRepairLock,
 	}
 }
 
@@ -376,6 +380,12 @@ func runRuntimeDataStackPostStartMaintenance(ops runtimeDataStackMaintenanceOps)
 	// cannot block the HTTP listener or deployment readiness.
 	if ops.scheduleUsageRollupCatchup != nil {
 		ops.scheduleUsageRollupCatchup()
+	}
+	// The same old slot still writes the secret into request_logs.api_key; the
+	// masking pass holds off for longer than its drain window and then runs in
+	// small batches in the background.
+	if ops.scheduleRequestLogKeyMasking != nil {
+		ops.scheduleRequestLogKeyMasking()
 	}
 
 	log.Infof("usage: post-listen runtime data maintenance scheduled in %s", time.Since(startedAt).Round(time.Millisecond))

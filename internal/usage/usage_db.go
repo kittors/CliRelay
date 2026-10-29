@@ -33,8 +33,6 @@ type ClearRequestLogsOptions struct {
 	ClearRequestRecords bool   `json:"clear_request_records"`
 }
 
-const systemRequestLogFilterValue = "__system__"
-
 var (
 	usageDBLifecycleMu sync.Mutex
 	usageDB            *sql.DB

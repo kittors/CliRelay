@@ -304,11 +304,11 @@ func TestPatchEntryValidationFailureKeepsOriginalKey(t *testing.T) {
 
 func TestDeleteEntryByIndexDeletesLogsWhenRequested(t *testing.T) {
 	setupTestDB(t)
-	deletedKeys := make([]string, 0, 1)
+	deletedIDs := make([]string, 0, 1)
 	svc := NewService(
 		nil,
-		WithLogsDeleter(func(key string) (int64, error) {
-			deletedKeys = append(deletedKeys, key)
+		WithLogsDeleter(func(apiKeyID string) (int64, error) {
+			deletedIDs = append(deletedIDs, apiKeyID)
 			return 3, nil
 		}),
 	)
@@ -316,6 +316,9 @@ func TestDeleteEntryByIndexDeletesLogsWhenRequested(t *testing.T) {
 	if err := usage.UpsertAPIKey(usage.APIKeyRow{Key: "sk-delete"}); err != nil {
 		t.Fatalf("UpsertAPIKey(sk-delete): %v", err)
 	}
+	// The history is removed by the key's id: by then the key row is gone, so
+	// its secret can no longer be resolved.
+	wantID := usage.GetAPIKey("sk-delete").ID
 
 	result, err := svc.DeleteEntry("", nil, &[]int{0}[0], true)
 	if err != nil {
@@ -324,8 +327,8 @@ func TestDeleteEntryByIndexDeletesLogsWhenRequested(t *testing.T) {
 	if result.LogsDeleted != 3 {
 		t.Fatalf("LogsDeleted = %d, want 3", result.LogsDeleted)
 	}
-	if !reflect.DeepEqual(deletedKeys, []string{"sk-delete"}) {
-		t.Fatalf("deletedKeys = %#v, want sk-delete", deletedKeys)
+	if !reflect.DeepEqual(deletedIDs, []string{wantID}) {
+		t.Fatalf("deletedIDs = %#v, want the key id %q", deletedIDs, wantID)
 	}
 	if got := usage.GetAPIKey("sk-delete"); got != nil {
 		t.Fatalf("DeleteEntry() kept deleted key: %#v", got)

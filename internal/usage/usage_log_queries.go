@@ -40,6 +40,8 @@ func QueryLogRowByIDForTenant(tenantID string, id int64) (LogRow, error) {
 	row.Failed = failedInt != 0
 	row.Streaming = streamingInt != 0
 	row.HasContent = hasContentInt != 0
+	// Rows written before masking may still hold the secret; never hand it out.
+	row.APIKey = requestLogAPIKeyForDisplay(row.APIKey)
 	rows := []LogRow{row}
 	hydrateStreamingFromContent(db, tenantID, rows)
 	row = rows[0]

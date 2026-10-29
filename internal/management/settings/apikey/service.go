@@ -30,7 +30,11 @@ var (
 type ChannelSanitizer func([]string) ([]string, error)
 type ChannelGroupValidator func([]string) ([]string, error)
 type EntryValidator func(config.APIKeyEntry) error
-type LogsDeleter func(string) (int64, error)
+
+// LogsDeleter removes the request history of a key identified by its stable id.
+// It receives the id, not the secret: DeleteEntry deletes the key first, after
+// which the secret resolves to nothing and the stored log rows hold only a mask.
+type LogsDeleter func(apiKeyID string) (int64, error)
 type Option func(*Service)
 
 type Service struct {
@@ -526,7 +530,7 @@ func (s *Service) DeleteEntry(key string, id *string, index *int, deleteLogs boo
 
 	result := DeleteEntryResult{}
 	if deleteLogs && s != nil && s.deleteLogs != nil {
-		result.LogsDeleted, _ = s.deleteLogs(targetKey)
+		result.LogsDeleted, _ = s.deleteLogs(apiKeyID)
 	}
 	return result, nil
 }

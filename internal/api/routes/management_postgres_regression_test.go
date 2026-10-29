@@ -135,6 +135,14 @@ func TestManagementAPIPostgresDataStackRegression(t *testing.T) {
 	if got := usage.GetAPIKey("sk-test-postgres-route"); got != nil {
 		t.Fatalf("api key still exists after DELETE: %#v", got)
 	}
+	// delete_logs removes the key's history by its id, which outlives the secret.
+	var leftover int
+	if err := usage.RuntimeDB().QueryRow(`SELECT COUNT(*) FROM request_logs WHERE api_key_id = ?`, "key-route-test").Scan(&leftover); err != nil {
+		t.Fatalf("count the deleted key's logs: %v", err)
+	}
+	if leftover != 0 {
+		t.Fatalf("%d request logs of the deleted key remain", leftover)
+	}
 
 	// Last, as it replaces the handler's config: copies of the stored routing
 	// and proxy pool go through.
@@ -297,9 +305,10 @@ func (client postgresManagementClient) expectUsageLog(t *testing.T) int64 {
 	rec := client.expectStatus(t, http.MethodGet, "/v0/management/usage/logs?api_key=sk-test-postgres-route&days=1&page=1&size=10", "", http.StatusOK)
 	var payload struct {
 		Items []struct {
-			ID     int64  `json:"id"`
-			APIKey string `json:"api_key"`
-			Model  string `json:"model"`
+			ID       int64  `json:"id"`
+			APIKey   string `json:"api_key"`
+			APIKeyID string `json:"api_key_id"`
+			Model    string `json:"model"`
 		} `json:"items"`
 		Total int64 `json:"total"`
 	}
@@ -309,8 +318,15 @@ func (client postgresManagementClient) expectUsageLog(t *testing.T) int64 {
 	if payload.Total != 1 || len(payload.Items) != 1 {
 		t.Fatalf("usage logs total=%d len=%d body=%s", payload.Total, len(payload.Items), rec.Body.String())
 	}
-	if payload.Items[0].APIKey != "sk-test-postgres-route" || payload.Items[0].Model != "gpt-route-test" {
+	// The row is tied to the key by id and shows only the mask; the secret passed
+	// as the selector is not echoed back.
+	if payload.Items[0].APIKey != usage.MaskAPIKey("sk-test-postgres-route") ||
+		payload.Items[0].APIKeyID != "key-route-test" ||
+		payload.Items[0].Model != "gpt-route-test" {
 		t.Fatalf("usage log item = %#v", payload.Items[0])
+	}
+	if strings.Contains(rec.Body.String(), "sk-test-postgres-route") {
+		t.Fatalf("usage logs response carries the client secret: %s", rec.Body.String())
 	}
 	return payload.Items[0].ID
 }

@@ -389,12 +389,13 @@ func TestGetUsageLogs_EmptyDB_DoesNotReturnNullSlices(t *testing.T) {
 	var payload struct {
 		Items   []any `json:"items"`
 		Filters struct {
-			APIKeys      []string          `json:"api_keys"`
-			APIKeyNames  map[string]string `json:"api_key_names"`
-			APIKeyCounts map[string]int64  `json:"api_key_counts"`
-			Models       []string          `json:"models"`
-			Channels     []string          `json:"channels"`
+			APIKeyIDs      []string          `json:"api_key_ids"`
+			APIKeyIDNames  map[string]string `json:"api_key_id_names"`
+			APIKeyIDCounts map[string]int64  `json:"api_key_id_counts"`
+			Models         []string          `json:"models"`
+			Channels       []string          `json:"channels"`
 		} `json:"filters"`
+		Capabilities map[string]bool `json:"capabilities"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("unmarshal response: %v", err)
@@ -403,8 +404,8 @@ func TestGetUsageLogs_EmptyDB_DoesNotReturnNullSlices(t *testing.T) {
 	if payload.Items == nil {
 		t.Fatalf("items is null; expected []")
 	}
-	if payload.Filters.APIKeys == nil {
-		t.Fatalf("filters.api_keys is null; expected []")
+	if payload.Filters.APIKeyIDs == nil {
+		t.Fatalf("filters.api_key_ids is null; expected []")
 	}
 	if payload.Filters.Models == nil {
 		t.Fatalf("filters.models is null; expected []")
@@ -412,11 +413,22 @@ func TestGetUsageLogs_EmptyDB_DoesNotReturnNullSlices(t *testing.T) {
 	if payload.Filters.Channels == nil {
 		t.Fatalf("filters.channels is null; expected []")
 	}
-	if payload.Filters.APIKeyNames == nil {
-		t.Fatalf("filters.api_key_names is null; expected {}")
+	if payload.Filters.APIKeyIDNames == nil {
+		t.Fatalf("filters.api_key_id_names is null; expected {}")
 	}
-	if payload.Filters.APIKeyCounts == nil {
-		t.Fatalf("filters.api_key_counts is null; expected {}")
+	if payload.Filters.APIKeyIDCounts == nil {
+		t.Fatalf("filters.api_key_id_counts is null; expected {}")
+	}
+	// The secret-keyed facets are gone, not merely empty: a panel that still reads
+	// them must see them missing so it can fall back, and the capability flag
+	// says why.
+	for _, gone := range []string{`"api_keys"`, `"api_key_names"`, `"api_key_counts"`} {
+		if strings.Contains(rec.Body.String(), gone) {
+			t.Fatalf("response still carries %s: %s", gone, rec.Body.String())
+		}
+	}
+	if !payload.Capabilities["api-key-id-filters"] {
+		t.Fatalf("capabilities = %#v, want api-key-id-filters declared", payload.Capabilities)
 	}
 }
 
@@ -522,20 +534,41 @@ func TestGetUsageLogsCollapsesRenamedAPIKeysByStableIdentity(t *testing.T) {
 	}
 
 	var payload struct {
+		Items []struct {
+			APIKey   string `json:"api_key"`
+			APIKeyID string `json:"api_key_id"`
+		} `json:"items"`
 		Filters struct {
-			APIKeys     []string          `json:"api_keys"`
-			APIKeyNames map[string]string `json:"api_key_names"`
+			APIKeyIDs     []string          `json:"api_key_ids"`
+			APIKeyIDNames map[string]string `json:"api_key_id_names"`
 		} `json:"filters"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("unmarshal response: %v", err)
 	}
 
-	if len(payload.Filters.APIKeys) != 1 || payload.Filters.APIKeys[0] != "sk-new" {
-		t.Fatalf("filters.api_keys = %#v, want [sk-new]", payload.Filters.APIKeys)
+	// Both secrets belong to one key, so there is one option, named by the key id.
+	if len(payload.Filters.APIKeyIDs) != 1 || payload.Filters.APIKeyIDs[0] != stableID {
+		t.Fatalf("filters.api_key_ids = %#v, want [%s]", payload.Filters.APIKeyIDs, stableID)
 	}
-	if payload.Filters.APIKeyNames["sk-new"] != "袁蔚" {
-		t.Fatalf("filters.api_key_names[sk-new] = %q, want 袁蔚", payload.Filters.APIKeyNames["sk-new"])
+	if payload.Filters.APIKeyIDNames[stableID] != "袁蔚" {
+		t.Fatalf("filters.api_key_id_names[%s] = %q, want 袁蔚", stableID, payload.Filters.APIKeyIDNames[stableID])
+	}
+	if len(payload.Items) != 2 {
+		t.Fatalf("items = %d, want both requests of the key", len(payload.Items))
+	}
+	for _, item := range payload.Items {
+		if item.APIKeyID != stableID {
+			t.Fatalf("item api_key_id = %q, want %s", item.APIKeyID, stableID)
+		}
+		if item.APIKey != usage.MaskAPIKey("sk-new") && item.APIKey != usage.MaskAPIKey("sk-old") {
+			t.Fatalf("item api_key = %q, want a mask", item.APIKey)
+		}
+	}
+	for _, secret := range []string{"sk-old", "sk-new"} {
+		if strings.Contains(rec.Body.String(), `"`+secret+`"`) {
+			t.Fatalf("response carries the secret %q: %s", secret, rec.Body.String())
+		}
 	}
 }
 
@@ -1759,6 +1792,11 @@ func TestGetPublicUsageLogs_ReturnsChannelNameWithoutSensitiveFields(t *testing.
 		t.Fatalf("register auth: %v", err)
 	}
 
+	// A public lookup is answered for a key the system stores; its rows are tied
+	// to it by id.
+	if err := usage.UpsertAPIKey(usage.APIKeyRow{ID: "public-lookup-key", Key: "sk-test", Name: "Primary"}); err != nil {
+		t.Fatalf("UpsertAPIKey: %v", err)
+	}
 	usage.InsertLog(
 		"sk-test", "Primary", "gpt-5.5", "owner@example.com", "owner@example.com", auth.Index,
 		false, time.Now().UTC(), 123, 45,
@@ -1841,6 +1879,9 @@ func TestGetPublicUsageLogs_FiltersByDisplayedChannelName(t *testing.T) {
 		t.Fatalf("register auth: %v", err)
 	}
 
+	if err := usage.UpsertAPIKey(usage.APIKeyRow{ID: "public-lookup-filter-key", Key: "sk-test", Name: "Primary"}); err != nil {
+		t.Fatalf("UpsertAPIKey: %v", err)
+	}
 	now := time.Now().UTC()
 	usage.InsertLog("sk-test", "Primary", "gpt-5.5", "owner@example.com", "owner@example.com", auth.Index, false, now, 123, 45, usage.TokenStats{TotalTokens: 3}, "", "")
 	usage.InsertLog("sk-test", "Primary", "gpt-5.5", "other", "OpenCode", "auth-other", false, now.Add(time.Second), 123, 45, usage.TokenStats{TotalTokens: 3}, "", "")

@@ -231,33 +231,22 @@ func ResolveAPIKeyDisplayName(row *APIKeyRow, fallback string) string {
 	return strings.TrimSpace(fallback)
 }
 
+// buildEndUserAPIKeySelectorPredicate matches every row of the account's keys.
+// Rows are attributed by api_key_id; the api_key column holds only a mask, so
+// there is no secret to match a legacy row against.
 func buildEndUserAPIKeySelectorPredicate(tenantID, endUserID string) (string, []interface{}) {
 	ids := ListAPIKeyIDsForEndUserForTenant(tenantID, endUserID)
-	secrets := ListAPIKeySecretsForEndUserForTenant(tenantID, endUserID)
-	if len(ids) == 0 && len(secrets) == 0 {
+	if len(ids) == 0 {
 		// No keys yet: match nothing.
 		return "1 = 0", nil
 	}
-	parts := make([]string, 0, 2)
-	args := make([]interface{}, 0, len(ids)+len(secrets))
-	if len(ids) > 0 {
-		ph := make([]string, len(ids))
-		for i, id := range ids {
-			ph[i] = "?"
-			args = append(args, id)
-		}
-		parts = append(parts, `api_key_id IN (`+strings.Join(ph, ",")+`)`)
+	args := make([]interface{}, 0, len(ids))
+	ph := make([]string, len(ids))
+	for i, id := range ids {
+		ph[i] = "?"
+		args = append(args, id)
 	}
-	if len(secrets) > 0 {
-		ph := make([]string, len(secrets))
-		for i, key := range secrets {
-			ph[i] = "?"
-			args = append(args, key)
-		}
-		// Include legacy rows that only stored the raw secret.
-		parts = append(parts, `(trim(coalesce(api_key_id, '')) = '' AND api_key IN (`+strings.Join(ph, ",")+`))`)
-	}
-	return "(" + strings.Join(parts, " OR ") + ")", args
+	return "api_key_id IN (" + strings.Join(ph, ",") + ")", args
 }
 
 func buildEndUserAPIKeySelectorClause(endUserID string) (string, []interface{}) {

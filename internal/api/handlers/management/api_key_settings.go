@@ -75,8 +75,8 @@ func (h *Handler) apiKeySettingsForTenant(tenantID string, extra ...apikeysettin
 				return h.validateAllowedChannelGroupsForTenant(tenantID, values)
 			}),
 			apikeysettings.WithEntryValidator(validateEntry),
-			apikeysettings.WithLogsDeleter(func(apiKey string) (int64, error) {
-				return usage.DeleteLogsByAPIKeyForTenant(tenantID, apiKey)
+			apikeysettings.WithLogsDeleter(func(apiKeyID string) (int64, error) {
+				return usage.DeleteLogsByAPIKeyIDForTenant(tenantID, apiKeyID)
 			}),
 			apikeysettings.WithExpectedVersion(configsync.AnyVersion),
 		}, extra...)...,
