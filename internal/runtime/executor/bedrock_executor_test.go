@@ -138,21 +138,6 @@ func TestPrepareBedrockRequestBody_KeepsEffortForAdaptiveModels(t *testing.T) {
 	}
 }
 
-func TestBedrockKeepsEffortOnlyForAdaptiveModels(t *testing.T) {
-	for model, want := range map[string]bool{
-		"claude-opus-4-7":   true,
-		"claude-opus-4-8":   true,
-		"claude-opus-5-5":   true,
-		"claude-sonnet-5-5": true,
-		"claude-opus-4-6":   false,
-		"claude-sonnet-4-5": false,
-	} {
-		if got := bedrockKeepsEffort(model); got != want {
-			t.Errorf("bedrockKeepsEffort(%q) = %v, want %v", model, got, want)
-		}
-	}
-}
-
 func TestTransformBedrockInvocationMetrics(t *testing.T) {
 	input := []byte(`{"type":"message_delta","delta":{"stop_reason":"end_turn"},"amazon-bedrock-invocationMetrics":{"inputTokenCount":150,"outputTokenCount":42}}`)
 

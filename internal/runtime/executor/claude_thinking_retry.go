@@ -13,31 +13,6 @@ import (
 	"github.com/tidwall/sjson"
 )
 
-// Claude Opus 4.7 and later reject the budget form of thinking, and some of them
-// also reject thinking.type "disabled". The registry records which models those
-// are and the thinking applier writes the right shape for them. This file is the
-// safety net for the ones it cannot know about: configured names and aliases
-// that resolve to nothing in the catalog, and models released after this build.
-// The 400 says exactly what the upstream wants, so the request is rewritten the
-// way the error asks and sent once more.
-//
-// Anthropic's wording, which is matched literally:
-//
-//	"thinking.type.enabled" is not supported for this model. Use "thinking.type.adaptive" and "output_config.effort" to control thinking behavior.
-//	"thinking.type.disabled" is not supported for this model. Use "thinking.type.adaptive" and "output_config.effort" to control thinking behavior.
-//
-// Sonnet 5.5 words the second one differently and names its off switch, and
-// models that turn thinking off only up to effort "high" say so:
-//
-//	"thinking.type.disabled" is not supported for this model. Use "thinking.type.between_tools" for the lowest thinking setting, or ...
-//	output_config.effort 'xhigh' is not supported when thinking is disabled on this model. Use effort 'high' or below, or enable thinking.
-const (
-	claudeRejectsEnabledThinking  = `"thinking.type.enabled" is not supported`
-	claudeRejectsDisabledThinking = `"thinking.type.disabled" is not supported`
-	claudeSuggestsBetweenTools    = `"thinking.type.between_tools"`
-	claudeRejectsEffortWhenOff    = `is not supported when thinking is disabled`
-)
-
 // claudeMessagesResult is the outcome of posting to /v1/messages.
 type claudeMessagesResult struct {
 	// resp is the response of the last attempt. On a non-2xx status its body
@@ -45,7 +20,7 @@ type claudeMessagesResult struct {
 	resp    *http.Response
 	errBody []byte
 	// body is the request body of the last attempt, before the tool prefix.
-	// It differs from the caller's body when the thinking retry rewrote it.
+	// It differs from the caller's body when the request rules rewrote it.
 	body []byte
 }
 
@@ -53,22 +28,25 @@ func (r claudeMessagesResult) failed() bool {
 	return r.resp.StatusCode < http.StatusOK || r.resp.StatusCode >= http.StatusMultipleChoices
 }
 
-// sendClaudeMessages posts body with the method, URL and headers of tmpl. When
-// the upstream rejects the request's thinking shape, it rewrites the request
-// once (see rewriteRejectedClaudeThinking) and returns that attempt instead.
-// toUpstream turns the body into the bytes put on the wire (the OAuth tool
-// prefix); every attempt is recorded in the request log.
-func (e *ClaudeExecutor) sendClaudeMessages(execCtx *ExecutionContext, tmpl *http.Request, body []byte, toUpstream func([]byte) []byte) (claudeMessagesResult, error) {
-	result, err := e.postClaudeMessages(execCtx, tmpl, body, toUpstream)
-	if err != nil || !result.failed() {
-		return result, err
+// sendClaudeMessages posts body with the method, URL and headers of tmpl,
+// shaped for every rule plan knows for the model. When the upstream answers
+// with a 400 that names another rule the request broke, the request is shaped
+// for that one too and sent again (see claudeRequestPlan.retry). toUpstream
+// turns the body into the bytes put on the wire (the OAuth tool prefix); every
+// attempt is recorded in the request log.
+func (e *ClaudeExecutor) sendClaudeMessages(execCtx *ExecutionContext, tmpl *http.Request, body []byte, toUpstream func([]byte) []byte, plan *claudeRequestPlan) (claudeMessagesResult, error) {
+	body = plan.begin(execCtx, body)
+	for {
+		result, err := e.postClaudeMessages(execCtx, tmpl, body, toUpstream)
+		if err != nil || !result.failed() {
+			return result, err
+		}
+		retryBody, ok := plan.retry(execCtx, result.resp.StatusCode, result.errBody)
+		if !ok {
+			return result, nil
+		}
+		body = retryBody
 	}
-	retryBody, ok := rewriteRejectedClaudeThinking(body, execCtx.RequestedThinkingLevel(), result.resp.StatusCode, result.errBody)
-	if !ok {
-		return result, nil
-	}
-	logWithRequestID(execCtx.Context).Debugf("claude executor: upstream rejected the thinking shape for model %s, retrying once with adaptive thinking", execCtx.BaseModel)
-	return e.postClaudeMessages(execCtx, tmpl, retryBody, toUpstream)
 }
 
 func (e *ClaudeExecutor) postClaudeMessages(execCtx *ExecutionContext, tmpl *http.Request, body []byte, toUpstream func([]byte) []byte) (claudeMessagesResult, error) {
@@ -99,73 +77,78 @@ func (e *ClaudeExecutor) postClaudeMessages(execCtx *ExecutionContext, tmpl *htt
 	return result, nil
 }
 
-// rewriteRejectedClaudeThinking rewrites body the way a thinking-shape 400 asks
-// for. requested is the level the client asked for (RequestedThinkingLevel);
-// the budget in body may already be capped below max_tokens, so it is only the
-// fallback for the effort. ok is false when the error is something else or the
-// body does not carry the rejected shape, so there is nothing a retry could
-// change.
-func rewriteRejectedClaudeThinking(body []byte, requested string, status int, errBody []byte) ([]byte, bool) {
-	if status != http.StatusBadRequest {
-		return nil, false
+// fixClaudeBudgetThinking turns budget thinking into adaptive thinking with an
+// effort, for a model that rejects budgets. requested is the level the client
+// asked for (RequestedThinkingLevel); the budget in body may already be capped
+// below max_tokens, so it is only the fallback for the effort.
+func fixClaudeBudgetThinking(body []byte, requested string) ([]byte, bool) {
+	if gjson.GetBytes(body, "thinking.type").String() != "enabled" {
+		return body, false
 	}
-	// The message sits inside a JSON string, so its quotes arrive escaped.
-	message := strings.ReplaceAll(string(errBody), `\"`, `"`)
-	thinkingType := gjson.GetBytes(body, "thinking.type").String()
-	hasEffort := gjson.GetBytes(body, "output_config.effort").Exists()
-
-	switch {
-	case thinkingType == "enabled" && strings.Contains(message, claudeRejectsEnabledThinking):
-		effort := ""
-		if !hasEffort {
-			effort = claudeEffortForRequest(requested)
-			if budget := gjson.GetBytes(body, "thinking.budget_tokens"); effort == "" && budget.Exists() {
-				effort = claudeEffortForRequest(budget.String())
-			}
+	effort := ""
+	if !gjson.GetBytes(body, "output_config.effort").Exists() {
+		effort = claudeEffortForRequest(requested)
+		if budget := gjson.GetBytes(body, "thinking.budget_tokens"); effort == "" && budget.Exists() {
+			effort = claudeEffortForRequest(budget.String())
 		}
-		display := gjson.GetBytes(body, "thinking.display").String()
-		if display == "" {
-			// Same reason as the applier: the models that reject budgets
-			// default to "omitted", which streams empty thinking blocks.
-			display = "summarized"
-		}
-		out, _ := sjson.SetRawBytes(body, "thinking", []byte(`{"type":"adaptive"}`))
-		out, _ = sjson.SetBytes(out, "thinking.display", display)
-		if effort != "" {
-			out, _ = sjson.SetBytes(out, "output_config.effort", effort)
-		}
-		return out, true
-
-	case thinkingType == "disabled" && strings.Contains(message, claudeRejectsDisabledThinking):
-		if strings.Contains(message, claudeSuggestsBetweenTools) {
-			out, _ := sjson.SetRawBytes(body, "thinking", []byte(`{"type":"between_tools"}`))
-			// between_tools is accepted only at effort "high" or below.
-			return capClaudeEffortAtHigh(out), true
-		}
-		// The model cannot turn thinking off. Omitting thinking at the lowest
-		// effort is the closest thing, unless the request chose an effort.
-		out, _ := sjson.DeleteBytes(body, "thinking")
-		if !hasEffort {
-			out, _ = sjson.SetBytes(out, "output_config.effort", string(thinking.LevelLow))
-		}
-		return out, true
-
-	case (thinkingType == "disabled" || thinkingType == "between_tools") && strings.Contains(message, claudeRejectsEffortWhenOff):
-		if effort := gjson.GetBytes(body, "output_config.effort").String(); !thinking.LevelAbove(thinking.ThinkingLevel(effort), thinking.LevelHigh) {
-			return nil, false
-		}
-		return capClaudeEffortAtHigh(body), true
 	}
-	return nil, false
+	display := gjson.GetBytes(body, "thinking.display").String()
+	if display == "" {
+		// Same reason as the applier: the models that reject budgets
+		// default to "omitted", which streams empty thinking blocks.
+		display = "summarized"
+	}
+	out, _ := sjson.SetRawBytes(body, "thinking", []byte(`{"type":"adaptive"}`))
+	out, _ = sjson.SetBytes(out, "thinking.display", display)
+	if effort != "" {
+		out, _ = sjson.SetBytes(out, "output_config.effort", effort)
+	}
+	return out, true
 }
 
-// capClaudeEffortAtHigh lowers output_config.effort to "high" when it is above.
-func capClaudeEffortAtHigh(body []byte) []byte {
+// fixClaudeDisabledThinking rewrites thinking.type "disabled" for a model that
+// rejects it. betweenTools is set when the error names "between_tools", the
+// model's lowest setting (Sonnet 5.5).
+func fixClaudeDisabledThinking(body []byte, betweenTools bool) ([]byte, bool) {
+	if gjson.GetBytes(body, "thinking.type").String() != "disabled" {
+		return body, false
+	}
+	if betweenTools {
+		out, _ := sjson.SetRawBytes(body, "thinking", []byte(`{"type":"between_tools"}`))
+		// between_tools is accepted only at effort "high" or below.
+		return capClaudeEffortAt(out, thinking.LevelHigh), true
+	}
+	// The model cannot turn thinking off. Omitting thinking at the lowest
+	// effort is the closest thing, unless the request chose an effort.
+	out, _ := sjson.DeleteBytes(body, "thinking")
+	if !gjson.GetBytes(body, "output_config.effort").Exists() {
+		out, _ = sjson.SetBytes(out, "output_config.effort", string(thinking.LevelLow))
+	}
+	return out, true
+}
+
+// fixClaudeEffortWhenOff lowers an effort above "high" while thinking is off,
+// which some models only accept up to "high".
+func fixClaudeEffortWhenOff(body []byte) ([]byte, bool) {
+	switch gjson.GetBytes(body, "thinking.type").String() {
+	case "disabled", "between_tools":
+	default:
+		return body, false
+	}
 	effort := gjson.GetBytes(body, "output_config.effort").String()
 	if !thinking.LevelAbove(thinking.ThinkingLevel(effort), thinking.LevelHigh) {
+		return body, false
+	}
+	return capClaudeEffortAt(body, thinking.LevelHigh), true
+}
+
+// capClaudeEffortAt lowers output_config.effort to ceiling when it is above.
+func capClaudeEffortAt(body []byte, ceiling thinking.ThinkingLevel) []byte {
+	effort := gjson.GetBytes(body, "output_config.effort").String()
+	if !thinking.LevelAbove(thinking.ThinkingLevel(effort), ceiling) {
 		return body
 	}
-	out, _ := sjson.SetBytes(body, "output_config.effort", string(thinking.LevelHigh))
+	out, _ := sjson.SetBytes(body, "output_config.effort", string(ceiling))
 	return out
 }
 

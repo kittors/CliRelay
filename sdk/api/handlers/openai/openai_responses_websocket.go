@@ -656,7 +656,7 @@ func writeResponsesWebsocketError(conn *websocket.Conn, errMsg *interfaces.Error
 		}
 	}
 
-	body := handlers.BuildErrorResponseBody(status, errText)
+	status, body := handlers.FormatErrorBody(handlers.ErrorFormatOpenAI, status, errText)
 	payload := map[string]any{
 		"type":   wsEventTypeError,
 		"status": status,

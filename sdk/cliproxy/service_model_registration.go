@@ -43,6 +43,23 @@ func lookupStaticModelThinking(name string) *ModelThinkingSupport {
 	return upstream.Thinking
 }
 
+// lookupBedrockStaticModelThinking is lookupStaticModelThinking for the names
+// on a Bedrock key, which may be Bedrock ids ("us.anthropic.claude-opus-4-7-v1")
+// that the catalog lists under their Anthropic id. Without it such a model has
+// no thinking capabilities, its requests skip the adaptive-only conversion and
+// a budget reaches a model that rejects it.
+func lookupBedrockStaticModelThinking(name string) *ModelThinkingSupport {
+	if thinking := lookupStaticModelThinking(name); thinking != nil {
+		return thinking
+	}
+	for _, candidate := range sdkmodelcatalog.ClaudeModelCandidatesForBedrockID(name) {
+		if thinking := lookupStaticModelThinking(candidate); thinking != nil {
+			return thinking
+		}
+	}
+	return nil
+}
+
 // SetGlobalModelRegistryHook registers an optional hook on the shared global registry instance.
 func SetGlobalModelRegistryHook(hook ModelRegistryHook) {
 	reg := GlobalModelRegistry()
@@ -183,7 +200,7 @@ func (s *Service) registerModelsForAuth(ctx context.Context, a *coreauth.Auth) {
 		models = sdkmodelcatalog.StaticModelDefinitionsByChannel("bedrock")
 		if entry := s.resolveConfigBedrockKey(a); entry != nil {
 			if len(entry.Models) > 0 {
-				models = buildBedrockConfigModels(entry, lookupStaticModelThinking)
+				models = buildBedrockConfigModels(entry, lookupBedrockStaticModelThinking)
 			}
 			if authKind == "apikey" {
 				excluded = entry.ExcludedModels
