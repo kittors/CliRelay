@@ -307,16 +307,17 @@ func (s executionService) nextMixedCandidate(ctx context.Context, scope *mixedEx
 		auth:     auth,
 		executor: executor,
 		provider: provider,
-		execCtx:  s.executionContext(ctx, auth),
+		execCtx:  s.executionContext(ctx, auth, scope.routeModel),
 		execReq:  s.rewriteRequestForAuth(req, scope.routeModel, auth),
 	}, nil
 }
 
-func (s executionService) executionContext(ctx context.Context, auth *Auth) context.Context {
+func (s executionService) executionContext(ctx context.Context, auth *Auth, routeModel string) context.Context {
 	if rt := s.manager.roundTripperFor(auth); rt != nil {
 		ctx = context.WithValue(ctx, roundTripperContextKey{}, rt)
 		ctx = cliproxyexecutor.WithRoundTripper(ctx, rt)
 	}
+	ctx = cliproxyexecutor.WithQuotaObserver(ctx, s.manager.quotaObserverFor(auth.ID, routeModel))
 	return ctx
 }
 
