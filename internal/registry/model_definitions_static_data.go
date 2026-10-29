@@ -62,6 +62,7 @@ func claudeStaticSnapshot() []*ModelInfo {
 			ContextLength:       1000000,
 			MaxCompletionTokens: 128000,
 			Thinking:            adaptiveClaudeThinking(ClaudeThinkingOffDisabled, ""), // budget_tokens 400s; see thinking_adaptive.go
+			ClaudeRequest:       &ClaudeRequestRules{NoSampling: true},
 		},
 		{
 			ID:                  "claude-opus-4-8",
@@ -74,6 +75,7 @@ func claudeStaticSnapshot() []*ModelInfo {
 			ContextLength:       1000000,
 			MaxCompletionTokens: 128000,
 			Thinking:            adaptiveClaudeThinking(ClaudeThinkingOffDisabled, ""), // budget_tokens 400s; see thinking_adaptive.go
+			ClaudeRequest:       &ClaudeRequestRules{NoSampling: true},
 		},
 		{
 			ID:                  "claude-opus-4-5-20251101",

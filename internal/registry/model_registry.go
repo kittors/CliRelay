@@ -52,6 +52,12 @@ type ModelInfo struct {
 	// This is optional and currently used for Gemini thinking budget normalization.
 	Thinking *ThinkingSupport `json:"thinking,omitempty"`
 
+	// ClaudeRequest lists the request fields a Claude catalog model rejects.
+	// Only static catalog entries set it; executors look it up by upstream
+	// name with LookupClaudeModelInfo, so copies made for the dynamic registry
+	// do not need to carry it.
+	ClaudeRequest *ClaudeRequestRules `json:"-"`
+
 	// UserDefined indicates this model was defined through config file's models[]
 	// array (e.g., openai-compatibility.*.models[], *-api-key.models[]).
 	// UserDefined models have thinking configuration passed through without validation.

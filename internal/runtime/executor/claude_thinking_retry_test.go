@@ -24,6 +24,16 @@ const (
 	claudeEffortRejectedWhenOff  = `{"type":"error","error":{"type":"invalid_request_error","message":"output_config.effort 'xhigh' is not supported when thinking is disabled on this model. Use effort 'high' or below, or enable thinking."}}`
 )
 
+// rewriteRejectedClaudeRequest is what the executors do with a 400: read which
+// rule it names, then rewrite the body for that rule.
+func rewriteRejectedClaudeRequest(body []byte, requested string, status int, errBody []byte) ([]byte, bool) {
+	rule := classifyClaudeRejection(status, errBody)
+	if rule == 0 {
+		return nil, false
+	}
+	return fixClaudeRejection(body, rule, claudeFixContext{requested: requested})
+}
+
 func TestRewriteRejectedClaudeThinking(t *testing.T) {
 	cases := []struct {
 		name         string
@@ -60,7 +70,7 @@ func TestRewriteRejectedClaudeThinking(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			out, ok := rewriteRejectedClaudeThinking([]byte(tc.body), tc.requested, tc.status, []byte(tc.errBody))
+			out, ok := rewriteRejectedClaudeRequest([]byte(tc.body), tc.requested, tc.status, []byte(tc.errBody))
 			if ok != tc.wantOK {
 				t.Fatalf("ok = %v, want %v", ok, tc.wantOK)
 			}
@@ -119,6 +129,7 @@ const claudeOKMessage = `{"id":"msg_1","type":"message","model":"claude-opus-6",
 const claudeUnknownModelBudgetRequest = `{"model":"claude-opus-6","max_tokens":32000,"thinking":{"type":"enabled","budget_tokens":24576},"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`
 
 func TestClaudeExecutorRetriesRejectedBudgetAsAdaptive(t *testing.T) {
+	resetClaudeLearnedRules(t)
 	upstream := &claudeRecordingServer{responses: []claudeCannedResponse{
 		{status: http.StatusBadRequest, contentType: "application/json", body: claudeEnabledRejected},
 		{status: http.StatusOK, contentType: "application/json", body: claudeOKMessage},
@@ -154,6 +165,7 @@ func TestClaudeExecutorRetriesRejectedBudgetAsAdaptive(t *testing.T) {
 }
 
 func TestClaudeExecutorStreamRetriesRejectedDisabledThinking(t *testing.T) {
+	resetClaudeLearnedRules(t)
 	sse := strings.Join([]string{
 		`event: message_start`,
 		`data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"claude-opus-6","content":[],"usage":{"input_tokens":1,"output_tokens":1}}}`,
@@ -219,6 +231,7 @@ func TestClaudeExecutorThinkingRetryIsBounded(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			resetClaudeLearnedRules(t)
 			upstream := &claudeRecordingServer{responses: []claudeCannedResponse{
 				{status: http.StatusBadRequest, contentType: "application/json", body: tc.errBody},
 			}}
@@ -246,6 +259,7 @@ func TestClaudeExecutorThinkingRetryIsBounded(t *testing.T) {
 
 // A model the catalog knows gets adaptive thinking on the first attempt.
 func TestClaudeExecutorSendsAdaptiveThinkingToKnownModels(t *testing.T) {
+	resetClaudeLearnedRules(t)
 	upstream := &claudeRecordingServer{responses: []claudeCannedResponse{
 		{status: http.StatusOK, contentType: "application/json", body: claudeOKMessage},
 	}}
@@ -276,6 +290,7 @@ func TestClaudeExecutorSendsAdaptiveThinkingToKnownModels(t *testing.T) {
 // budget the proxy sends is capped below max_tokens, but the retry still asks
 // for the level the client chose.
 func TestClaudeExecutorRetryUsesTheClientsLevel(t *testing.T) {
+	resetClaudeLearnedRules(t)
 	sse := strings.Join([]string{
 		`event: message_start`,
 		`data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"claude-opus-6","content":[],"usage":{"input_tokens":1,"output_tokens":1}}}`,
