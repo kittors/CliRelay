@@ -16,6 +16,8 @@ func TestLogFormatterIncludesModerationFields(t *testing.T) {
 		Message: "content moderation failed open",
 		Data: log.Fields{
 			"error_class":       "timeout",
+			"tenant_id":         "tenant-requester",
+			"policy_tenant_id":  "tenant-owner",
 			"profile_id":        "profile-1",
 			"profile_version":   3,
 			"resolution_source": "provider_key",
@@ -35,6 +37,8 @@ func TestLogFormatterIncludesModerationFields(t *testing.T) {
 	output := string(formatted)
 	for _, field := range []string{
 		"error_class=timeout",
+		"tenant_id=tenant-requester",
+		"policy_tenant_id=tenant-owner",
 		"profile_id=profile-1",
 		"profile_version=3",
 		"resolution_source=provider_key",

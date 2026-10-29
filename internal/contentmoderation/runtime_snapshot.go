@@ -10,6 +10,12 @@ import (
 
 const ginRuntimeSnapshotKey = "content_moderation_runtime_snapshot"
 
+// ResolutionSourceCredentialOwner is the resolution source recorded when the
+// verdict came from the profile the credential's owner bound to a channel the
+// requesting tenant does not own, i.e. a platform-shared credential. It takes
+// the place of the channel type, which would identify the owner's configuration.
+const ResolutionSourceCredentialOwner = "credential_owner"
+
 // RuntimeSnapshot is the secret-free moderation outcome persisted with request details.
 type RuntimeSnapshot struct {
 	Evaluated        bool     `json:"evaluated"`
@@ -59,25 +65,33 @@ func RuntimeSnapshotFromGin(ginCtx *gin.Context) (RuntimeSnapshot, bool) {
 	return snapshot, ok
 }
 
-func (m *RuntimeModerator) setSnapshot(ctx context.Context, auth *coreauth.Auth, source string, profile Profile, decision Decision, evaluated, cached bool) {
-	channelType, channelID := resolvedChannel(auth, source)
+func (m *RuntimeModerator) setSnapshot(ctx context.Context, tenantID string, auth *coreauth.Auth, source string, profile Profile, decision Decision, evaluated, cached bool) {
 	snapshot := RuntimeSnapshot{
-		Evaluated:        evaluated,
-		ProfileID:        profile.ID,
-		ProfileName:      profile.Name,
-		ProfileVersion:   profile.Version,
-		Backend:          profile.Backend,
-		ResolutionSource: source,
-		ChannelType:      channelType,
-		ChannelID:        channelID,
-		Action:           decision.Action,
-		WouldBlock:       decision.WouldBlock,
-		MatchedKeyword:   decision.MatchedKeyword,
-		HighestCategory:  decision.HighestCategory,
-		Safety:           decision.Safety,
-		MatchedScanners:  decision.MatchedScanners,
-		LatencyMS:        decision.LatencyMS,
-		CacheHit:         cached,
+		Evaluated:       evaluated,
+		Action:          decision.Action,
+		WouldBlock:      decision.WouldBlock,
+		MatchedKeyword:  decision.MatchedKeyword,
+		HighestCategory: decision.HighestCategory,
+		Safety:          decision.Safety,
+		MatchedScanners: decision.MatchedScanners,
+		LatencyMS:       decision.LatencyMS,
+		CacheHit:        cached,
+	}
+	if credentialTenantID(auth) != tenantID {
+		// The profile is the credential owner's, yet the snapshot is stored in
+		// the requester's request log. The requester may learn the verdict and what
+		// it matched, as for its own profiles, but not which profile, backend or
+		// channel the owner configured.
+		snapshot.ResolutionSource = ResolutionSourceCredentialOwner
+	} else {
+		channelType, channelID := resolvedChannel(auth, source)
+		snapshot.ProfileID = profile.ID
+		snapshot.ProfileName = profile.Name
+		snapshot.ProfileVersion = profile.Version
+		snapshot.Backend = profile.Backend
+		snapshot.ResolutionSource = source
+		snapshot.ChannelType = channelType
+		snapshot.ChannelID = channelID
 	}
 	if decision.HighestCategory != "" {
 		score := decision.HighestScore

@@ -178,23 +178,6 @@ func TestRuntimeModeratorAuthOffOverridesProviderBinding(t *testing.T) {
 	}
 }
 
-func TestRuntimeModeratorTenantMismatchNeverQueriesResolver(t *testing.T) {
-	resolver := &runtimeResolverStub{fn: func() (Profile, string, error) {
-		return Profile{}, "", ErrNotFound
-	}}
-	moderator := NewRequestModerator(resolver, &runtimeEvaluatorStub{})
-	result := moderator.Moderate(context.Background(), &coreauth.Auth{ID: "auth", TenantID: "tenant-a"}, runtimeOptions("tenant-b", "hello"))
-	if result.Blocked {
-		t.Fatal("tenant mismatch must fail open")
-	}
-	if resolver.calls.Load() != 0 {
-		t.Fatalf("resolver calls = %d, want zero", resolver.calls.Load())
-	}
-	if moderator.Metrics().Errors != 1 {
-		t.Fatalf("metrics = %#v, want one error", moderator.Metrics())
-	}
-}
-
 func TestRuntimeModeratorBlocksOpenAIImagePrompt(t *testing.T) {
 	const tenantID = "tenant-image-prompt"
 	store := newTestStore(t)

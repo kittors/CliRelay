@@ -46,6 +46,8 @@ type tenantMetricCounters struct {
 	latencySamples atomic.Uint64
 }
 
+// resolutionKey identifies one channel binding lookup. tenantID is the tenant
+// that owns the binding (the credential's owner), not the one sending the request.
 type resolutionKey struct {
 	tenantID      string
 	authFileID    string
@@ -180,16 +182,26 @@ func (m *RuntimeModerator) Moderate(ctx context.Context, auth *coreauth.Auth, op
 	if m == nil || auth == nil || m.resolver == nil || m.evaluator == nil {
 		return coreauth.RequestModerationResult{}
 	}
+	// Two tenants can be involved. tenantID sent the request and owns the record of
+	// it: metrics, logs and the request log. The credential's owner owns the policy:
+	// a profile binds to a channel, and a channel belongs to whoever owns the
+	// credential, so the binding is resolved in the owner's scope.
+	//
+	// They differ for a platform-shared credential (sdk/cliproxy/auth/shared_grants.go),
+	// which stays one account on its owner's executor, so its owner's policy follows
+	// it whoever asks. Resolving in the requester's scope found nothing, because a
+	// tenant cannot bind a profile to a channel it does not own, and used to skip
+	// moderation altogether.
+	//
+	// No tenant-wide or API-key profile exists yet, so for a shared credential the
+	// owner's binding is the only policy there is. A requester-side layer
+	// (platform -> tenant -> key scopes) would be evaluated in addition to it.
 	tenantID := coreauth.NormalizedTenantID(metadataString(opts.Metadata, cliproxyexecutor.TenantMetadataKey))
 	counters := m.counters(tenantID)
 	counters.requests.Add(1)
-	if coreauth.NormalizedTenantID(auth.TenantID) != tenantID {
-		m.recordError(tenantID, auth, "", Profile{}, "tenant_mismatch", 0, false)
-		return coreauth.RequestModerationResult{}
-	}
 
 	authFileID, providerKeyID, providerID := runtimeChannelIDs(auth)
-	key := resolutionKey{tenantID: tenantID, authFileID: authFileID, providerKeyID: providerKeyID, providerID: providerID}
+	key := resolutionKey{tenantID: credentialTenantID(auth), authFileID: authFileID, providerKeyID: providerKeyID, providerID: providerID}
 	resolved, usedLastGood, err := m.resolve(ctx, key)
 	if errors.Is(err, ErrNotFound) {
 		counters.allows.Add(1)
@@ -206,7 +218,7 @@ func (m *RuntimeModerator) Moderate(ctx context.Context, auth *coreauth.Auth, op
 	if profile.Mode == ModeOff {
 		counters.allows.Add(1)
 		decision := Decision{Action: ActionAllow}
-		m.setSnapshot(ctx, auth, resolved.source, profile, decision, false, false)
+		m.setSnapshot(ctx, tenantID, auth, resolved.source, profile, decision, false, false)
 		m.logDecision(tenantID, auth, resolved.source, profile, decision, false)
 		return coreauth.RequestModerationResult{}
 	}
@@ -215,7 +227,7 @@ func (m *RuntimeModerator) Moderate(ctx context.Context, auth *coreauth.Auth, op
 	if input == "" {
 		counters.allows.Add(1)
 		decision := Decision{Action: ActionAllow}
-		m.setSnapshot(ctx, auth, resolved.source, profile, decision, false, false)
+		m.setSnapshot(ctx, tenantID, auth, resolved.source, profile, decision, false, false)
 		m.logDecision(tenantID, auth, resolved.source, profile, decision, false)
 		return coreauth.RequestModerationResult{}
 	}
@@ -275,11 +287,11 @@ func (m *RuntimeModerator) resultForDecision(ctx context.Context, tenantID strin
 	if decision.Action == ActionAPIError {
 		counters.allows.Add(1)
 		errorClass := moderationErrorClass(decision.ModerationError)
-		m.setSnapshot(ctx, auth, source, profile, decision, true, cached)
+		m.setSnapshot(ctx, tenantID, auth, source, profile, decision, true, cached)
 		m.recordError(tenantID, auth, source, profile, errorClass, decision.LatencyMS, cached)
 		return coreauth.RequestModerationResult{}
 	}
-	m.setSnapshot(ctx, auth, source, profile, decision, true, cached)
+	m.setSnapshot(ctx, tenantID, auth, source, profile, decision, true, cached)
 	if decision.WouldBlock {
 		counters.blocks.Add(1)
 		m.logDecision(tenantID, auth, source, profile, decision, cached)
@@ -330,7 +342,7 @@ func (m *RuntimeModerator) logDecision(tenantID string, auth *coreauth.Auth, sou
 
 func moderationLogFields(tenantID string, auth *coreauth.Auth, source string, profile Profile) log.Fields {
 	channelType, channelID := resolvedChannel(auth, source)
-	return log.Fields{
+	fields := log.Fields{
 		"tenant_id":         tenantID,
 		"profile_id":        profile.ID,
 		"profile_version":   profile.Version,
@@ -338,6 +350,21 @@ func moderationLogFields(tenantID string, auth *coreauth.Auth, source string, pr
 		"channel_type":      channelType,
 		"channel_id":        channelID,
 	}
+	if policyTenantID := credentialTenantID(auth); policyTenantID != tenantID {
+		// Operator log only: whose profile ran on this tenant's request.
+		fields["policy_tenant_id"] = policyTenantID
+	}
+	return fields
+}
+
+// credentialTenantID is the tenant that owns the credential, and with it the
+// channel bindings that govern requests running on it. Credentials stored without
+// a tenant belong to the system tenant, as everywhere else.
+func credentialTenantID(auth *coreauth.Auth) string {
+	if auth == nil {
+		return coreauth.NormalizedTenantID("")
+	}
+	return coreauth.NormalizedTenantID(auth.TenantID)
 }
 
 func resolvedChannel(auth *coreauth.Auth, source string) (string, string) {
