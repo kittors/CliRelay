@@ -94,6 +94,11 @@ func BuildOpenAIResponsesStreamErrorChunk(status int, errText string, sequenceNu
 	if strings.TrimSpace(code) == "" {
 		code = "unknown_error"
 	}
+	// Codex and other Responses clients recognise an over-long prompt by this
+	// code, whatever words the upstream used.
+	if isContextLengthExceeded(status, parseUpstreamError(errText)) {
+		code = "context_length_exceeded"
+	}
 
 	data, err := json.Marshal(openAIResponsesStreamErrorChunk{
 		Type:           "error",
