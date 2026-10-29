@@ -301,6 +301,8 @@ func initializeRuntimeDataStack(cfg *config.Config, configPath string, loc *time
 	middleware.InitQuotaEndUserUsageFuncs(usage.CountTodayByEndUser, usage.CountTotalByEndUser, usage.QueryTotalCostByEndUser, usage.QueryTodayCostByEndUser)
 	middleware.InitQuotaPeriodUsageFuncs(usage.QueryPeriodSpendingByAPIKeyIDForTenant, usage.QueryPeriodSpendingByEndUserForTenant)
 	middleware.InitQuotaSnapshotFuncs(usage.QueryEndUserQuotaUsageSnapshot, usage.QueryAPIKeyQuotaUsageSnapshot)
+	// Key-limit refusals tell the client when the day, week or month window ends.
+	middleware.InitQuotaPeriodResetFunc(usage.PeriodResetAt)
 	middleware.SetQuotaUsageStaleMaxAge(cfg.DBResilience.QuotaStaleMaxAge())
 	// The write path hands over the key's owner it already resolved, so TPM
 	// accounting needs no lookup of its own and keeps working while the
