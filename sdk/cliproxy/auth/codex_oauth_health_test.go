@@ -250,6 +250,27 @@ func TestCodexOAuthHealthOnlyAppliesToCodexOAuthAccounts(t *testing.T) {
 			t.Fatal("an API key account was put on the refresh path")
 		}
 	})
+	t.Run("api key account that also carries token fields", func(t *testing.T) {
+		// The key is what the account signs in with. Token fields left in its
+		// metadata (a hand-edited or migrated file) do not make it an OAuth
+		// account that a refresh could repair, so a 401 must not put it on the
+		// refresh path and wait for a renewal that cannot come.
+		m := NewManager(nil, nil, nil)
+		account := codexOAuthAccount("codex-both", "stable-refresh-token")
+		account.Attributes = map[string]string{"api_key": "sk-test"}
+		registerAuth(t, m, account)
+		if isCodexOAuthAuth(account) {
+			t.Fatal("an account holding an API key was taken for an OAuth account")
+		}
+		codex401(m, "codex-both", "gpt-5-codex", codexExpiredBody)
+		got, _ := m.GetByID("codex-both")
+		if _, ok := got.Metadata[CodexOAuthHealthMetadataKey]; ok {
+			t.Fatal("an API key account with token fields got an OAuth health entry")
+		}
+		if state := got.ModelStates["gpt-5-codex"]; state != nil && state.StatusMessage == codexOAuthRefreshPendingMessage {
+			t.Fatal("an API key account with token fields was put on the refresh path")
+		}
+	})
 	t.Run("another provider", func(t *testing.T) {
 		m := NewManager(nil, nil, nil)
 		registerAuth(t, m, &Auth{ID: "other", Provider: "openai-compatibility", Status: StatusActive, Attributes: map[string]string{"base_url": "https://x.example/v1"}})

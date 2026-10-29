@@ -135,3 +135,65 @@ func TestPeriodResetAtLocationMatchesTheWindowKeysTheUsageQueriesCountBy(t *test
 		}
 	}
 }
+
+// PeriodResetAt reads the zone the usage tables count by. Without it a daily
+// limit would tell the client to come back at UTC midnight while the counters
+// roll over at the operator's own.
+func TestPeriodResetAtUsesTheProjectUsageZone(t *testing.T) {
+	cst := time.FixedZone("CST", 8*3600)
+	usageDBMu.Lock()
+	previous := usageLoc
+	usageLoc = cst
+	usageDBMu.Unlock()
+	t.Cleanup(func() {
+		usageDBMu.Lock()
+		usageLoc = previous
+		usageDBMu.Unlock()
+	})
+
+	// Friday 20:30 UTC is already Saturday 04:30 in CST, on the last day of October.
+	now := time.Date(2026, 10, 30, 20, 30, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		period quota.Period
+		want   time.Time
+	}{
+		{quota.PeriodDay, time.Date(2026, 11, 1, 0, 0, 0, 0, cst)},
+		{quota.PeriodWeek, time.Date(2026, 11, 2, 0, 0, 0, 0, cst)},
+		{quota.PeriodMonth, time.Date(2026, 11, 1, 0, 0, 0, 0, cst)},
+	} {
+		got, ok := PeriodResetAt(tc.period, now)
+		if !ok || !got.Equal(tc.want) {
+			t.Fatalf("PeriodResetAt(%s, %s) = %s, %v; want %s", tc.period, now, got, ok, tc.want)
+		}
+	}
+}
+
+// A zone whose clocks skip midnight (Sao Paulo went from 00:00 straight to 01:00
+// on 2018-11-04, Havana still does) leaves the computed edge before now: time.Date
+// resolves the hour that does not exist to the one before it. An answer already
+// in the past would send the client away for a wait that is over, so it must be
+// withheld; the caller then sends no Retry-After rather than a wrong one.
+func TestPeriodResetAtLocationNeverAnswersWithAnInstantInThePast(t *testing.T) {
+	for _, tc := range []struct {
+		zone string
+		now  func(*time.Location) time.Time
+	}{
+		{"America/Sao_Paulo", func(loc *time.Location) time.Time { return time.Date(2018, 11, 3, 23, 30, 0, 0, loc) }},
+		{"America/Havana", func(loc *time.Location) time.Time { return time.Date(2023, 3, 11, 23, 30, 0, 0, loc) }},
+	} {
+		t.Run(tc.zone, func(t *testing.T) {
+			loc, err := time.LoadLocation(tc.zone)
+			if err != nil {
+				t.Fatalf("load zone: %v", err)
+			}
+			now := tc.now(loc)
+			got, ok := periodResetAtLocation(quota.PeriodDay, now, loc)
+			if ok && !got.After(now) {
+				t.Fatalf("day end at %s = %s, which is not after now", now, got)
+			}
+			if !ok && !got.IsZero() {
+				t.Fatalf("no answer, but a time came back: %s", got)
+			}
+		})
+	}
+}

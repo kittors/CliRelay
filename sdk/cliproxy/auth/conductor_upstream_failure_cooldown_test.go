@@ -312,3 +312,81 @@ func TestMarkResultFixedParksAreUnchanged(t *testing.T) {
 		})
 	}
 }
+
+// 529 is Anthropic's non-standard "overloaded". With cooling on it backs off
+// only when the upstream names a time. With cooling off it never does, not even
+// for a wait an executor published: a busy upstream is not an announced reset
+// that the operator's switch has to respect, the way an exhausted allowance is.
+func TestMarkResultOverload529FollowsDisableCooling(t *testing.T) {
+	setGlobalCoolingDisabled(t, false)
+	published := 45 * time.Second
+	overloaded := &Error{HTTPStatus: 529, Message: "overloaded_error"}
+
+	t.Run("model level, cooling on honours the published wait", func(t *testing.T) {
+		m := NewManager(nil, nil, nil)
+		registerAuth(t, m, channelAuth("relay", ""))
+		before := time.Now()
+		failWith(m, "relay", "glm-5", overloaded, nil, &published)
+		assertParkedFor(t, m, "relay", "glm-5", before, published)
+	})
+	t.Run("model level, cooling off ignores it", func(t *testing.T) {
+		m := NewManager(nil, nil, nil)
+		registerAuth(t, m, channelAuth("relay", "true"))
+		failWith(m, "relay", "glm-5", overloaded, nil, &published)
+		assertParkedFor(t, m, "relay", "glm-5", time.Now(), 0)
+	})
+	t.Run("account level, cooling on honours the published wait", func(t *testing.T) {
+		m := NewManager(nil, nil, nil)
+		registerAuth(t, m, channelAuth("relay", ""))
+		before := time.Now()
+		m.MarkResult(context.Background(), Result{AuthID: "relay", Provider: "openai-compatibility", Error: overloaded, RetryAfter: &published})
+		auth, _ := m.GetByID("relay")
+		if got := auth.NextRetryAfter.Sub(before); got < published-time.Second || got > published+3*time.Second {
+			t.Fatalf("account held back for %v, want about %v", got, published)
+		}
+	})
+	t.Run("account level, cooling off ignores it", func(t *testing.T) {
+		m := NewManager(nil, nil, nil)
+		registerAuth(t, m, channelAuth("relay", "true"))
+		m.MarkResult(context.Background(), Result{AuthID: "relay", Provider: "openai-compatibility", Error: overloaded, RetryAfter: &published})
+		if auth, _ := m.GetByID("relay"); !auth.NextRetryAfter.IsZero() {
+			t.Fatalf("account held back until %v with cooling off", auth.NextRetryAfter)
+		}
+	})
+}
+
+// Switching a channel's cooling off frees what a 529 parked, as it does for the
+// other overload statuses; only the authorization-class statuses stay put.
+func TestUpdateReleasesA529CooldownWhenChannelTurnsCoolingOff(t *testing.T) {
+	setGlobalCoolingDisabled(t, false)
+	overloaded := &Error{HTTPStatus: 529, Message: "overloaded_error"}
+
+	t.Run("model level", func(t *testing.T) {
+		m := NewManager(nil, nil, nil)
+		registerAuth(t, m, channelAuth("relay", ""))
+		failWith(m, "relay", "glm-5", overloaded, retryHeaders("Retry-After", "600"), nil)
+		if !blockedFor(t, m, "relay", "glm-5") {
+			t.Fatal("a 529 that names a wait did not park the model")
+		}
+		if _, err := m.Update(context.Background(), channelAuth("relay", "true")); err != nil {
+			t.Fatalf("update: %v", err)
+		}
+		if blockedFor(t, m, "relay", "glm-5") {
+			t.Fatal("a 529 cooldown survived switching cooling off")
+		}
+	})
+	t.Run("account level", func(t *testing.T) {
+		m := NewManager(nil, nil, nil)
+		registerAuth(t, m, channelAuth("relay", ""))
+		m.MarkResult(context.Background(), Result{AuthID: "relay", Provider: "openai-compatibility", Error: overloaded, Headers: retryHeaders("Retry-After", "600")})
+		if !blockedFor(t, m, "relay", "") {
+			t.Fatal("a 529 that names a wait did not park the account")
+		}
+		if _, err := m.Update(context.Background(), channelAuth("relay", "true")); err != nil {
+			t.Fatalf("update: %v", err)
+		}
+		if blockedFor(t, m, "relay", "") {
+			t.Fatal("an account-level 529 cooldown survived switching cooling off")
+		}
+	})
+}
