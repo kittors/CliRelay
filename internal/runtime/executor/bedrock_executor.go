@@ -17,7 +17,6 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/thinking"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
@@ -117,25 +116,34 @@ func (e *BedrockExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, 
 	reporter := execCtx.Reporter()
 	defer reporter.trackFailure(execCtx.Context, &err)
 
+	catalogModel := bedrockCatalogModel(mappedModel, baseModel)
 	body, originalTranslated := execCtx.TranslateRequestPair(req.Payload)
 	body, _ = sjson.SetBytes(body, "model", execCtx.BaseModel)
-	body, err = thinking.ApplyThinking(body, req.Model, execCtx.SourceFormat.String(), to.String(), e.Identifier())
+	body, err = thinking.ApplyThinking(body, bedrockThinkingModel(req.Model, catalogModel), execCtx.SourceFormat.String(), to.String(), e.Identifier())
 	if err != nil {
 		return resp, err
 	}
 	body = execCtx.ApplyPayloadConfig(body, originalTranslated)
-	body = disableThinkingIfToolChoiceForced(body)
+	plan := newClaudeRequestPlan(execCtx, claudeRequestTarget{
+		provider:                  e.Identifier(),
+		endpoint:                  bedrockEndpoint(auth, mappedModel),
+		model:                     mappedModel,
+		catalogModel:              catalogModel,
+		dropThinkingForForcedTool: true,
+	})
 	betaTokens := resolveBedrockBetaTokens(opts.Headers.Get("anthropic-beta"), body, mappedModel)
-	bodyForTranslation := body
-	body, err = prepareBedrockRequestBody(body, mappedModel, betaTokens, bedrockKeepsEffort(baseModel))
-	if err != nil {
-		return resp, err
-	}
 
 	recorder := execCtx.Recorder()
-	httpResp, err := e.doBedrockRequest(execCtx, mappedModel, false, body)
+	sent, err := e.invokeClaude(execCtx, mappedModel, false, body, betaTokens, plan)
 	if err != nil {
 		reporter.publishFailureWithContent(execCtx.Context, string(req.Payload), err.Error())
+		return resp, err
+	}
+	bodyForTranslation := sent.claudeBody
+	httpResp := sent.resp
+	if sent.failed() {
+		reporter.publishFailureWithContent(execCtx.Context, string(req.Payload), string(sent.errBody))
+		err = statusErr{code: httpResp.StatusCode, msg: string(sent.errBody)}
 		return resp, err
 	}
 	defer func() {
@@ -143,14 +151,6 @@ func (e *BedrockExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, 
 			log.Errorf("bedrock executor: close response body error: %v", errClose)
 		}
 	}()
-	recorder.RecordResponseMetadata(httpResp.StatusCode, httpResp.Header.Clone())
-	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
-		b := readUpstreamErrorBody(e.Identifier(), httpResp.Body)
-		recorder.AppendResponseChunk(b)
-		reporter.publishFailureWithContent(execCtx.Context, string(req.Payload), string(b))
-		err = statusErr{code: httpResp.StatusCode, msg: string(b)}
-		return resp, err
-	}
 	data, err := readUpstreamResponseBody(e.Identifier(), httpResp.Body)
 	if err != nil {
 		recorder.RecordResponseError(err)
@@ -184,35 +184,34 @@ func (e *BedrockExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.
 	reporter := execCtx.Reporter()
 	defer reporter.trackFailure(execCtx.Context, &err)
 
-	bodyForTranslation, originalTranslated := execCtx.TranslateRequestPair(req.Payload)
-	bodyForTranslation, _ = sjson.SetBytes(bodyForTranslation, "model", execCtx.BaseModel)
-	bodyForTranslation, err = thinking.ApplyThinking(bodyForTranslation, req.Model, execCtx.SourceFormat.String(), to.String(), e.Identifier())
+	catalogModel := bedrockCatalogModel(mappedModel, baseModel)
+	body, originalTranslated := execCtx.TranslateRequestPair(req.Payload)
+	body, _ = sjson.SetBytes(body, "model", execCtx.BaseModel)
+	body, err = thinking.ApplyThinking(body, bedrockThinkingModel(req.Model, catalogModel), execCtx.SourceFormat.String(), to.String(), e.Identifier())
 	if err != nil {
 		return nil, err
 	}
-	bodyForTranslation = execCtx.ApplyPayloadConfig(bodyForTranslation, originalTranslated)
-	bodyForTranslation = disableThinkingIfToolChoiceForced(bodyForTranslation)
-	betaTokens := resolveBedrockBetaTokens(opts.Headers.Get("anthropic-beta"), bodyForTranslation, mappedModel)
-	body, err := prepareBedrockRequestBody(bodyForTranslation, mappedModel, betaTokens, bedrockKeepsEffort(baseModel))
-	if err != nil {
-		return nil, err
-	}
+	body = execCtx.ApplyPayloadConfig(body, originalTranslated)
+	plan := newClaudeRequestPlan(execCtx, claudeRequestTarget{
+		provider:                  e.Identifier(),
+		endpoint:                  bedrockEndpoint(auth, mappedModel),
+		model:                     mappedModel,
+		catalogModel:              catalogModel,
+		dropThinkingForForcedTool: true,
+	})
+	betaTokens := resolveBedrockBetaTokens(opts.Headers.Get("anthropic-beta"), body, mappedModel)
 
 	recorder := execCtx.Recorder()
-	httpResp, err := e.doBedrockRequest(execCtx, mappedModel, true, body) //nolint:bodyclose // success body is consumed and closed by the stream goroutine below.
+	sent, err := e.invokeClaude(execCtx, mappedModel, true, body, betaTokens, plan) //nolint:bodyclose // success body is consumed and closed by the stream goroutine below.
 	if err != nil {
 		reporter.publishFailureWithContent(execCtx.Context, string(req.Payload), err.Error())
 		return nil, err
 	}
-	recorder.RecordResponseMetadata(httpResp.StatusCode, httpResp.Header.Clone())
-	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
-		b := readUpstreamErrorBody(e.Identifier(), httpResp.Body)
-		recorder.AppendResponseChunk(b)
-		reporter.publishFailureWithContent(execCtx.Context, string(req.Payload), string(b))
-		if errClose := httpResp.Body.Close(); errClose != nil {
-			log.Errorf("bedrock executor: close response body error: %v", errClose)
-		}
-		err = statusErr{code: httpResp.StatusCode, msg: string(b)}
+	bodyForTranslation := sent.claudeBody
+	httpResp := sent.resp
+	if sent.failed() {
+		reporter.publishFailureWithContent(execCtx.Context, string(req.Payload), string(sent.errBody))
+		err = statusErr{code: httpResp.StatusCode, msg: string(sent.errBody)}
 		return nil, err
 	}
 
@@ -478,6 +477,12 @@ func bedrockCrossRegionPrefix(region string) string {
 	}
 }
 
+// bedrockEndpoint is the invoke URL of modelID for auth, which identifies the
+// upstream for the request rules learned from its 400s.
+func bedrockEndpoint(auth *cliproxyauth.Auth, modelID string) string {
+	return buildBedrockURL(bedrockAttr(auth, "base_url"), bedrockRegion(auth), modelID, false)
+}
+
 func buildBedrockURL(baseURL, region, modelID string, stream bool) string {
 	if region == "" {
 		region = defaultBedrockRegion
@@ -493,14 +498,6 @@ func buildBedrockURL(baseURL, region, modelID string, stream bool) string {
 		baseURL = fmt.Sprintf("https://bedrock-runtime.%s.amazonaws.com", region)
 	}
 	return fmt.Sprintf("%s/model/%s/%s", baseURL, encodedModelID, endpoint)
-}
-
-// bedrockKeepsEffort reports whether output_config.effort has to survive the
-// body cleanup below. Claude models that only take adaptive thinking reject
-// budget_tokens, so effort is the one depth control the thinking applier can
-// write for them, and Bedrock accepts it for these models.
-func bedrockKeepsEffort(model string) bool {
-	return thinking.AdaptiveThinkingOf(registry.LookupModelInfo(model, "bedrock")) != nil
 }
 
 func prepareBedrockRequestBody(body []byte, modelID string, betaTokens []string, keepEffort bool) ([]byte, error) {
