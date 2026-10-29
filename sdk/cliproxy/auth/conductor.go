@@ -51,8 +51,15 @@ const (
 	refreshMaxConcurrency = 16
 	refreshPendingBackoff = time.Minute
 	refreshFailureBackoff = 5 * time.Minute
-	quotaBackoffBase      = time.Second
-	quotaBackoffMax       = 30 * time.Minute
+	// refreshWorkTimeout bounds a background refresh's exchange once it no
+	// longer follows the refresh loop. It exceeds refreshguard.ExchangeTimeout
+	// (2 minutes), which bounds the providers that rotate refresh tokens.
+	refreshWorkTimeout = 3 * time.Minute
+	// refreshStoreTimeout bounds storing a refresh result. It starts when the
+	// exchange returns, so a slow exchange cannot leave the write no time.
+	refreshStoreTimeout = 30 * time.Second
+	quotaBackoffBase    = time.Second
+	quotaBackoffMax     = 30 * time.Minute
 )
 
 // PermanentAuthError indicates a refresh failure that should be surfaced as
@@ -210,6 +217,9 @@ type Manager struct {
 	refreshCancel    context.CancelFunc
 	refreshSemaphore chan struct{}
 	quotaProbeAfter  map[string]time.Time
+	// refreshInflight counts the refreshes the auto-refresh loop started;
+	// WaitForRefreshes waits for them at shutdown.
+	refreshInflight sync.WaitGroup
 
 	// refreshCoordinator holds a refreshCoordinatorHolder; see SetRefreshCoordinator.
 	refreshCoordinator atomic.Value

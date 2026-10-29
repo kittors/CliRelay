@@ -46,6 +46,9 @@ const (
 	// credentialImportTimeout bounds the slowest exchange: Grok's device grant
 	// polls for up to ~75s before the user code expires.
 	credentialImportTimeout = 2 * time.Minute
+	// credentialImportSaveTimeout bounds saving the account once the exchange
+	// has succeeded; see importCredential.
+	credentialImportSaveTimeout = 30 * time.Second
 )
 
 // Codes the panel keys its messages on. A credential problem answers 422, never
@@ -218,7 +221,13 @@ func (h *Handler) importCredential(c *gin.Context, provider string) {
 	}
 
 	managementauthfiles.BindProxyID(record, strings.TrimSpace(payload.ProxyID))
-	savedPath, err := h.saveTenantTokenRecord(ctx, tenantID, record)
+	// The exchange may have spent the pasted credential: a Codex refresh token
+	// is retired the moment it is exchanged, and the record holds the only
+	// copy of its replacement. Save it even if the client has gone or the
+	// exchange used up the time budget.
+	saveCtx, cancelSave := context.WithTimeout(context.WithoutCancel(ctx), credentialImportSaveTimeout)
+	defer cancelSave()
+	savedPath, err := h.saveTenantTokenRecord(saveCtx, tenantID, record)
 	if err != nil {
 		log.WithError(err).WithField("provider", provider).Error("failed to save imported credential")
 		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "code": importCodeSaveFailed, "error": "failed to save the account"})

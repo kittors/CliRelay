@@ -2,7 +2,6 @@ package auth
 
 import (
 	"context"
-	"errors"
 	"time"
 
 	log "github.com/sirupsen/logrus"
@@ -116,7 +115,11 @@ func (s refreshService) checkRefreshes(ctx context.Context) {
 		if !s.markRefreshPending(auth.ID, now) {
 			continue
 		}
-		go s.refreshAuthWithLimit(ctx, auth.ID)
+		s.manager.refreshInflight.Add(1)
+		go func(id string) {
+			defer s.manager.refreshInflight.Done()
+			s.refreshAuthWithLimit(ctx, id)
+		}(auth.ID)
 	}
 	s.manager.checkQuotaRecoveries(ctx, snapshot, now)
 }
@@ -245,21 +248,54 @@ func (s refreshService) refreshAuth(ctx context.Context, id string) {
 		return
 	}
 	defer claim.done()
-	auth = claim.auth
-	cloned := auth.Clone()
-	before := s.manager.refreshBaseline(cloned)
-	updated, err := exec.Refresh(ctx, cloned)
-	if err != nil && errors.Is(err, context.Canceled) {
+	if ctx.Err() != nil {
+		// Stopping before the refresh token was spent: the next process
+		// refreshes it.
 		log.Debugf("refresh canceled for %s, %s", auth.Provider, auth.ID)
 		return
 	}
+	// From here on the refresh token may be spent, and most providers rotate
+	// it: the replacement exists only in the response. Shutdown cancels ctx,
+	// so the exchange and the write that keeps its result run on a context
+	// that does not follow it. Cutting either short after the upstream rotated
+	// left the credential with a retired token (refresh_token_reused on the
+	// next try) and the account needing a new login.
+	work, cancel := context.WithTimeout(context.WithoutCancel(ctx), refreshWorkTimeout)
+	defer cancel()
+	auth = claim.auth
+	cloned := auth.Clone()
+	before := s.manager.refreshBaseline(cloned)
+	updated, err := exec.Refresh(work, cloned)
 	log.Debugf("refreshed %s, %s, %v", auth.Provider, auth.ID, err)
+	store, cancelStore := context.WithTimeout(context.WithoutCancel(ctx), refreshStoreTimeout)
+	defer cancelStore()
 	now := time.Now()
 	if err != nil {
-		s.applyRefreshFailure(ctx, id, auth, cloned, now, err)
+		s.applyRefreshFailure(store, id, auth, cloned, now, err)
 		return
 	}
-	s.applyRefreshSuccess(ctx, auth, cloned, updated, now, before)
+	s.applyRefreshSuccess(store, auth, cloned, updated, now, before)
+}
+
+// WaitForRefreshes waits until the refreshes the auto-refresh loop started
+// have finished and stored their result, or until ctx ends. Call it after
+// StopAutoRefresh during shutdown, so a process does not exit holding the only
+// copy of a rotated refresh token.
+func (m *Manager) WaitForRefreshes(ctx context.Context) error {
+	if m == nil {
+		return nil
+	}
+	done := make(chan struct{})
+	go func() {
+		m.refreshInflight.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func (s refreshService) currentAuthAndExecutor(id string) (*Auth, ProviderExecutor) {

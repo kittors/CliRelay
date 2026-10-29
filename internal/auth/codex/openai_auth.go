@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/auth/refreshguard"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
@@ -191,11 +192,24 @@ func (o *CodexAuth) ExchangeCodeForTokensWithRedirect(ctx context.Context, code,
 // RefreshTokens refreshes an access token using a refresh token.
 // This method is called when an access token has expired. It makes a request to the
 // token endpoint to obtain a new set of tokens.
+//
+// OpenAI refresh tokens are single-use, so the exchange runs through
+// refreshguard: it finishes even if ctx ends, and concurrent refreshes of one
+// token share a single request.
 func (o *CodexAuth) RefreshTokens(ctx context.Context, refreshToken string) (*CodexTokenData, error) {
 	if refreshToken == "" {
 		return nil, fmt.Errorf("refresh token is required")
 	}
+	return refreshguard.Exchange(ctx, refreshGuardProvider, refreshToken, func(ctx context.Context) (*CodexTokenData, error) {
+		return o.refreshOnce(ctx, refreshToken)
+	})
+}
 
+// refreshGuardProvider scopes Codex exchanges in refreshguard; RefreshTokens and
+// RefreshTokensWithRetry share it, so either one joins the other's exchange.
+const refreshGuardProvider = "codex"
+
+func (o *CodexAuth) refreshOnce(ctx context.Context, refreshToken string) (*CodexTokenData, error) {
 	data := url.Values{
 		"client_id":     {ClientID},
 		"grant_type":    {"refresh_token"},
@@ -282,7 +296,20 @@ func (o *CodexAuth) CreateTokenStorage(bundle *CodexAuthBundle) *CodexTokenStora
 // RefreshTokensWithRetry refreshes tokens with a built-in retry mechanism.
 // It attempts to refresh the tokens up to a specified maximum number of retries,
 // with an exponential backoff strategy to handle transient network errors.
+//
+// The attempts run as one refreshguard exchange: they continue if ctx ends, and
+// a concurrent refresh of the same token waits for their result instead of
+// presenting the token a second time.
 func (o *CodexAuth) RefreshTokensWithRetry(ctx context.Context, refreshToken string, maxRetries int) (*CodexTokenData, error) {
+	if refreshToken == "" {
+		return nil, fmt.Errorf("refresh token is required")
+	}
+	return refreshguard.Exchange(ctx, refreshGuardProvider, refreshToken, func(ctx context.Context) (*CodexTokenData, error) {
+		return o.refreshWithRetry(ctx, refreshToken, maxRetries)
+	})
+}
+
+func (o *CodexAuth) refreshWithRetry(ctx context.Context, refreshToken string, maxRetries int) (*CodexTokenData, error) {
 	var lastErr error
 
 	for attempt := 0; attempt < maxRetries; attempt++ {
@@ -295,7 +322,7 @@ func (o *CodexAuth) RefreshTokensWithRetry(ctx context.Context, refreshToken str
 			}
 		}
 
-		tokenData, err := o.RefreshTokens(ctx, refreshToken)
+		tokenData, err := o.refreshOnce(ctx, refreshToken)
 		if err == nil {
 			return tokenData, nil
 		}
