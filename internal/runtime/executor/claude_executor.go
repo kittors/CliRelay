@@ -126,6 +126,9 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 	}
 
 	body = execCtx.ApplyPayloadConfig(body, originalTranslated)
+	if !skipAnthropic {
+		body = repairClaudeToolPairing(execCtx, body)
+	}
 
 	url := fmt.Sprintf("%s/v1/messages?beta=true", baseURL)
 	toUpstream := claudeUpstreamBody(auth, apiKey, skipAnthropic)
@@ -256,6 +259,9 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	}
 
 	body = execCtx.ApplyPayloadConfig(body, originalTranslated)
+	if !skipAnthropic {
+		body = repairClaudeToolPairing(execCtx, body)
+	}
 
 	url := fmt.Sprintf("%s/v1/messages?beta=true", baseURL)
 	toUpstream := claudeUpstreamBody(auth, apiKey, skipAnthropic)
@@ -404,6 +410,9 @@ func (e *ClaudeExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Aut
 	body, err := thinking.ApplyThinking(body, req.Model, execCtx.SourceFormat.String(), to.String(), e.Identifier())
 	if err != nil {
 		return cliproxyexecutor.Response{}, err
+	}
+	if !skipAnthropic {
+		body = repairClaudeToolPairing(execCtx, body)
 	}
 
 	if !strings.HasPrefix(execCtx.BaseModel, "claude-3-5-haiku") {
