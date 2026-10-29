@@ -22,7 +22,7 @@ type runtimeEvaluatorStub struct {
 	decision Decision
 }
 
-func (e *runtimeEvaluatorStub) Evaluate(context.Context, Profile, string) Decision {
+func (e *runtimeEvaluatorStub) Evaluate(context.Context, Profile, Input) Decision {
 	e.calls.Add(1)
 	return e.decision
 }
@@ -33,7 +33,7 @@ type blockingRuntimeEvaluator struct {
 	decision Decision
 }
 
-func (e *blockingRuntimeEvaluator) Evaluate(context.Context, Profile, string) Decision {
+func (e *blockingRuntimeEvaluator) Evaluate(context.Context, Profile, Input) Decision {
 	close(e.started)
 	<-e.release
 	return e.decision
@@ -458,5 +458,85 @@ func TestRuntimeModeratorUsesLastGoodResolutionOnStoreError(t *testing.T) {
 	}
 	if moderator.Metrics().Errors != 1 {
 		t.Fatalf("metrics = %#v, want last-good store error", moderator.Metrics())
+	}
+}
+
+// End to end through the runtime: a keyword in a tool result used to pass
+// unmoderated, zero-width space or not. It is now blocked, and the request log
+// records which class of text it was found in.
+func TestRuntimeModeratorBlocksKeywordHiddenInToolResult(t *testing.T) {
+	const tenantID = "tenant-tool-result"
+	store := newTestStore(t)
+	profile := createRuntimeProfile(t, store, tenantID, "profile-tool-result", CreateProfileInput{
+		Name:            "tool result",
+		Mode:            ModePreBlock,
+		KeywordMode:     KeywordModeKeywordOnly,
+		BlockedKeywords: []string{"forbidden"},
+	})
+	bindRuntimeChannel(t, store, tenantID, ChannelTypeProviderKey, "key-a", profile.ID)
+	moderator := NewRequestModerator(store, NewEvaluator(nil))
+	auth := &coreauth.Auth{ID: "auth-a", TenantID: tenantID, Attributes: map[string]string{"provider_key_id": "key-a"}}
+	ctx, ginCtx := snapshotContext(t)
+	result := moderator.Moderate(ctx, auth, cliproxyexecutor.Options{
+		OriginalRequest: []byte(`{"messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"for\u200bbidden"},{"type":"text","text":"summarize"}]}]}`),
+		SourceFormat:    sdktranslator.FormatClaude,
+		Metadata:        map[string]any{cliproxyexecutor.TenantMetadataKey: tenantID},
+	})
+	if !result.Blocked {
+		t.Fatal("keyword in a tool result was not blocked")
+	}
+	snapshot, ok := RuntimeSnapshotFromGin(ginCtx)
+	if !ok || snapshot.MatchedKeyword != "forbidden" || snapshot.MatchedSource != ClassToolOutput.String() {
+		t.Fatalf("snapshot = %#v", snapshot)
+	}
+}
+
+// keyword_and_api: a keyword hit never reaches the backend, so it is neither
+// in flight nor a latency sample, and the runtime's pre-check reuses the
+// evaluator's scan instead of normalizing the request twice.
+func TestRuntimeModeratorKeywordHitSkipsBackendMetrics(t *testing.T) {
+	const tenantID = "tenant-keyword-and-api"
+	profile, err := NewProfile(tenantID, "profile-keyword-and-api", CreateProfileInput{
+		Name:            "keyword and api",
+		Mode:            ModePreBlock,
+		KeywordMode:     KeywordModeKeywordAndAPI,
+		BlockedKeywords: []string{"forbidden"},
+		APIKey:          "moderation-secret",
+	}, time.Now())
+	if err != nil {
+		t.Fatalf("NewProfile: %v", err)
+	}
+	moderator := NewRequestModerator(&runtimeResolverStub{fn: func() (Profile, string, error) {
+		return profile, ChannelTypeProviderKey, nil
+	}}, NewEvaluator(nil))
+	auth := &coreauth.Auth{ID: "auth", TenantID: tenantID, Attributes: map[string]string{"provider_key_id": "key"}}
+	body := `{"messages":[{"role":"assistant","content":"a forbidden reply"},{"role":"user","content":"continue"}]}`
+	result := moderator.Moderate(context.Background(), auth, cliproxyexecutor.Options{
+		OriginalRequest: []byte(body),
+		SourceFormat:    sdktranslator.FormatOpenAI,
+		Metadata:        map[string]any{cliproxyexecutor.TenantMetadataKey: tenantID},
+	})
+	if !result.Blocked {
+		t.Fatal("keyword in assistant history was not blocked")
+	}
+	if metrics := moderator.Metrics(); metrics.Blocks != 1 || metrics.LatencySamples != 0 || metrics.InFlight != 0 {
+		t.Fatalf("metrics = %#v", metrics)
+	}
+}
+
+func TestDecisionCacheKeyCoversClassesAndTurns(t *testing.T) {
+	profile := Profile{ID: "profile", Version: 3}
+	base := decisionCacheKey(profile, NewInput([]Segment{{Class: ClassPrimary, User: true, Turn: 1, Text: "same"}}))
+	if same := decisionCacheKey(profile, NewInput([]Segment{{Class: ClassPrimary, User: true, Turn: 1, Text: "same"}})); same != base {
+		t.Fatal("identical inputs got different cache keys")
+	}
+	for _, other := range []Segment{
+		{Class: ClassToolOutput, Turn: 1, Text: "same"},
+		{Class: ClassPrimary, User: false, Turn: 1, Text: "same"},
+		{Class: ClassPrimary, User: true, Turn: 2, Text: "same"},
+	} {
+		if decisionCacheKey(profile, NewInput([]Segment{other})) == base {
+			t.Fatalf("%+v shares the cache key of a different input", other)
+		}
 	}
 }

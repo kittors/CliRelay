@@ -66,10 +66,20 @@ type Profile struct {
 	APIKeySecret string `json:"-"`
 	// TimeoutMS is the budget for the whole evaluation, not for one HTTP call:
 	// the Qwen3Guard backend may issue several chunk requests under it.
-	TimeoutMS       int                `json:"timeout_ms"`
-	KeywordMode     string             `json:"keyword_mode"`
-	BlockedKeywords []string           `json:"blocked_keywords"`
-	Thresholds      map[string]float64 `json:"thresholds"`
+	TimeoutMS       int      `json:"timeout_ms"`
+	KeywordMode     string   `json:"keyword_mode"`
+	BlockedKeywords []string `json:"blocked_keywords"`
+	// KeywordFoldTraditionalChinese folds Traditional Chinese characters into
+	// Simplified on both sides of keyword matching, so one list catches both
+	// scripts. Off by default: a character-level fold can merge characters a
+	// list means to keep apart.
+	KeywordFoldTraditionalChinese bool `json:"keyword_fold_traditional_chinese"`
+	// APIIncludesToolOutput also sends tool output (tool results, attached
+	// documents, client-injected context) to the moderation backend. Off by
+	// default: it is often most of an agent's request and the backend is paid
+	// for or rate limited per token, while keyword checks read it regardless.
+	APIIncludesToolOutput bool               `json:"api_includes_tool_output"`
+	Thresholds            map[string]float64 `json:"thresholds"`
 	// Scanners lists the Qwen3Guard categories this profile acts on. Empty
 	// means every category in the catalog.
 	Scanners            []string  `json:"scanners"`
@@ -102,6 +112,10 @@ type CreateProfileInput struct {
 	MaxChunks           int                `json:"max_chunks"`
 	BlockHTTPStatus     int                `json:"block_http_status"`
 	BlockMessage        string             `json:"block_message"`
+	// Both default to false when omitted, as for profiles stored before the
+	// fields existed.
+	KeywordFoldTraditionalChinese bool `json:"keyword_fold_traditional_chinese"`
+	APIIncludesToolOutput         bool `json:"api_includes_tool_output"`
 }
 
 type PatchProfileInput struct {
@@ -123,7 +137,12 @@ type PatchProfileInput struct {
 	MaxChunks           *int                `json:"max_chunks"`
 	BlockHTTPStatus     *int                `json:"block_http_status"`
 	BlockMessage        *string             `json:"block_message"`
-	Version             int64               `json:"version"`
+	// Omitted means unchanged, like every field here. A panel release that
+	// predates these fields can therefore save a profile without switching
+	// them off.
+	KeywordFoldTraditionalChinese *bool `json:"keyword_fold_traditional_chinese"`
+	APIIncludesToolOutput         *bool `json:"api_includes_tool_output"`
+	Version                       int64 `json:"version"`
 }
 
 type Binding struct {
@@ -211,6 +230,9 @@ func NewProfile(tenantID, id string, input CreateProfileInput, now time.Time) (P
 		Version:             1,
 		CreatedAt:           now.UTC(),
 		UpdatedAt:           now.UTC(),
+
+		KeywordFoldTraditionalChinese: input.KeywordFoldTraditionalChinese,
+		APIIncludesToolOutput:         input.APIIncludesToolOutput,
 	}
 	applyProfileDefaults(&profile)
 	return profile, ValidateProfile(profile)
@@ -275,6 +297,12 @@ func ApplyProfilePatch(profile Profile, patch PatchProfileInput, now time.Time) 
 	}
 	if patch.BlockMessage != nil {
 		profile.BlockMessage = *patch.BlockMessage
+	}
+	if patch.KeywordFoldTraditionalChinese != nil {
+		profile.KeywordFoldTraditionalChinese = *patch.KeywordFoldTraditionalChinese
+	}
+	if patch.APIIncludesToolOutput != nil {
+		profile.APIIncludesToolOutput = *patch.APIIncludesToolOutput
 	}
 	applyProfileDefaults(&profile)
 	profile.Version++
