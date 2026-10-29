@@ -1,0 +1,12 @@
+# Offsite copy of the backup set (see offsite-pull.sh). Runs on the offsite
+# host, never on the database host.
+[Unit]
+Description=CliRelay offsite backup pull
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/clirelay-cluster/backup/offsite-pull.sh
+Nice=10
+IOSchedulingClass=idle

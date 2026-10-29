@@ -14,6 +14,6 @@ the failure scenarios and the runbook are in
 | `redis/` | Shared cluster Redis (TLS only) on the arbiter |
 | `nginx/` | Local-first vhost with spill-over to the peer node |
 | `dnswatch/` | systemd unit and example config for `cmd/clirelay-dnswatch` |
-| `backup/` | Daily verified base backups, the continuous WAL archive (point-in-time recovery) and a weekly restore drill |
+| `backup/` | Daily verified base backups, the continuous WAL archive (point-in-time recovery) and a weekly restore drill; with `PG_CONTAINER` set the same scripts back up a single-node database container, and `offsite-pull.sh` keeps the offsite copy |
 | `bin/` | `cluster-status.sh`, `etcdctl.sh` |
 | `lab/lab.sh` | Disposable rehearsal of the database migration and failover drills on one Docker host |
