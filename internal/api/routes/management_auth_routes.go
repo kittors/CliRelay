@@ -22,6 +22,8 @@ func registerManagementAuthRoutes(group *gin.RouterGroup, h *managementhandlers.
 	group.DELETE("/auth-files", h.DeleteAuthFile)
 	group.PATCH("/auth-files/status", h.PatchAuthFileStatus)
 	group.PATCH("/auth-files/fields", h.PatchAuthFileFields)
+	// Lifts the cooldown of one model on one account ("retry this model now").
+	group.POST("/auth-files/model-cooldown/clear", h.PostAuthFileModelCooldownClear)
 	// Platform sharing of the system tenant's credentials (platform admins only).
 	group.PUT("/auth-files/sharing", h.PutAuthFileSharing)
 	group.POST("/vertex/import", h.ImportVertexCredential)
