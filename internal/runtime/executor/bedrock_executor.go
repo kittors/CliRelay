@@ -124,6 +124,7 @@ func (e *BedrockExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, 
 		return resp, err
 	}
 	body = execCtx.ApplyPayloadConfig(body, originalTranslated)
+	body = repairClaudeToolPairing(execCtx, body)
 	plan := newClaudeRequestPlan(execCtx, claudeRequestTarget{
 		provider:                  e.Identifier(),
 		endpoint:                  bedrockEndpoint(auth, mappedModel),
@@ -192,6 +193,7 @@ func (e *BedrockExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.
 		return nil, err
 	}
 	body = execCtx.ApplyPayloadConfig(body, originalTranslated)
+	body = repairClaudeToolPairing(execCtx, body)
 	plan := newClaudeRequestPlan(execCtx, claudeRequestTarget{
 		provider:                  e.Identifier(),
 		endpoint:                  bedrockEndpoint(auth, mappedModel),
