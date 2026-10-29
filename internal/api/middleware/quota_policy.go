@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/accesspolicy"
@@ -74,6 +75,18 @@ func (u *policyUsage) accountSnapshot() (quota.UsageSnapshot, error) {
 	return snapshot, nil
 }
 
+// fiveHourWindowStart is the 5h window anchor of the snapshot already read for
+// scope, zero when none was read or the window is not open.
+func (u *policyUsage) fiveHourWindowStart(scope quota.RuleScope) time.Time {
+	switch {
+	case scope == quota.RuleScopeAccount && u.account != nil:
+		return u.account.FiveHourWindowStart
+	case scope == quota.RuleScopeKey && u.key != nil:
+		return u.key.FiveHourWindowStart
+	}
+	return time.Time{}
+}
+
 func (u *policyUsage) keySnapshot() (quota.UsageSnapshot, error) {
 	if u.key != nil {
 		return *u.key, nil
@@ -104,7 +117,7 @@ func (p *quotaPolicy) checkPolicyCells() *quotaVerdict {
 		if err != nil {
 			return quotaUsageUnavailableVerdict("account", "policy", p.access.TenantID, p.access.EndUserID, err)
 		}
-		if verdict := policyCellVerdict("account", cells, used.Total); verdict != nil {
+		if verdict := policyCellVerdict("account", cells, used.Total, used.FiveHourWindowStart); verdict != nil {
 			return verdict
 		}
 	}
@@ -113,7 +126,7 @@ func (p *quotaPolicy) checkPolicyCells() *quotaVerdict {
 		if err != nil {
 			return quotaUsageUnavailableVerdict("key", "policy", p.access.TenantID, p.access.APIKeyID, err)
 		}
-		if verdict := policyCellVerdict("key", cells, used.Total); verdict != nil {
+		if verdict := policyCellVerdict("key", cells, used.Total, used.FiveHourWindowStart); verdict != nil {
 			return verdict
 		}
 	}
@@ -128,7 +141,7 @@ func (p *quotaPolicy) policyUsage() *policyUsage {
 	return p.usage
 }
 
-func policyCellVerdict(scope string, cells []quota.Cell, used quota.Matrix) *quotaVerdict {
+func policyCellVerdict(scope string, cells []quota.Cell, used quota.Matrix, fiveHourStart time.Time) *quotaVerdict {
 	for _, cell := range cells {
 		current := used.Value(cell.Metric, cell.Window)
 		if current < cell.Value {
@@ -138,7 +151,7 @@ func policyCellVerdict(scope string, cells []quota.Cell, used quota.Matrix) *quo
 		return matrixQuotaVerdict(matrixVerdictInput{
 			rejectedBy: "quota_limits", code: code, message: message,
 			scope: scope, metric: cell.Metric, window: cell.Window, limit: cell.Value, current: current,
-		})
+		}).withRetryAfter(windowResetWait(cell.Window, fiveHourStart, time.Now()))
 	}
 	return nil
 }
@@ -234,8 +247,9 @@ func matrixQuotaVerdict(in matrixVerdictInput) *quotaVerdict {
 	}
 }
 
-// modelRuleVerdict 渲染按模型规则触顶的拒绝。
-func modelRuleVerdict(exceeded *quota.RuleExceeded) *quotaVerdict {
+// modelRuleVerdict 渲染按模型规则触顶的拒绝。fiveHourStart 是同一份快照里的 5h 窗口锚点，
+// 用来给 5h 窗口的规则算出 Retry-After。
+func modelRuleVerdict(exceeded *quota.RuleExceeded, fiveHourStart time.Time) *quotaVerdict {
 	scope := string(exceeded.Scope)
 	name := strings.TrimSpace(exceeded.Rule.Name)
 	ruleLabel := exceeded.Rule.ID
@@ -248,5 +262,5 @@ func modelRuleVerdict(exceeded *quota.RuleExceeded) *quotaVerdict {
 		rejectedBy: "model_quota", code: "model_quota_exceeded", message: message,
 		scope: scope, metric: exceeded.Metric, window: exceeded.Window, limit: exceeded.Limit, current: exceeded.Current,
 		model: exceeded.Model, ruleID: exceeded.Rule.ID, ruleName: name,
-	})
+	}).withRetryAfter(windowResetWait(exceeded.Window, fiveHourStart, time.Now()))
 }

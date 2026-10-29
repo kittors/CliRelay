@@ -149,7 +149,7 @@ func resolveModelPolicy(access *accesspolicy.Policy, usage *policyUsage, model s
 		return decision, quotaUsageUnavailableVerdict("model", "policy", access.TenantID, access.APIKeyID, err)
 	}
 	if decision.Exceeded != nil {
-		return decision, modelRuleVerdict(decision.Exceeded)
+		return decision, modelRuleVerdict(decision.Exceeded, usage.fiveHourWindowStart(decision.Exceeded.Scope))
 	}
 	return decision, nil
 }

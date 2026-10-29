@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/accesspolicy"
@@ -133,17 +134,19 @@ func (p *quotaPolicy) admitLocal() (release func(), verdict *quotaVerdict) {
 func (p *quotaPolicy) checkRates() *quotaVerdict {
 	// --- RPM check (sliding window, in-memory) ---
 	if p.rpmLimit > 0 {
-		currentRPM := getRPMTracker(p.subject).count()
+		tracker := getRPMTracker(p.subject)
+		currentRPM := tracker.count()
 		if currentRPM > p.rpmLimit {
-			return rpmLimitVerdict(currentRPM, p.rpmLimit)
+			return rpmLimitVerdict(currentRPM, p.rpmLimit).withRetryAfter(tracker.retryAfter(p.rpmLimit, time.Now()))
 		}
 	}
 
 	// --- TPM check (sliding window, in-memory) ---
 	if p.tpmLimit > 0 {
-		currentTPM := getTPMTracker(p.subject).sum()
+		tracker := getTPMTracker(p.subject)
+		currentTPM := tracker.sum()
 		if currentTPM >= int64(p.tpmLimit) {
-			return tpmLimitVerdict(currentTPM, p.tpmLimit)
+			return tpmLimitVerdict(currentTPM, p.tpmLimit).withRetryAfter(tracker.retryAfter(int64(p.tpmLimit), time.Now()))
 		}
 	}
 	return nil
@@ -181,7 +184,8 @@ func (p *quotaPolicy) checkBudgets() *quotaVerdict {
 			return quotaUsageUnavailableVerdict(quotaScope(p.endUserID), "day", p.tenantID, stableQuotaSubject(p.apiKeyID, p.endUserID), err)
 		} else if todayCount >= int64(p.dailyLimit) {
 			return quotaLimitVerdict("daily", float64(p.dailyLimit), float64(todayCount), "daily_limit_exceeded",
-				fmt.Sprintf("Daily request limit exceeded: %d/%d requests used today. Raise the daily request limit in the permission profile, or wait until the next project day.", todayCount, p.dailyLimit))
+				fmt.Sprintf("Daily request limit exceeded: %d/%d requests used today. Raise the daily request limit in the permission profile, or wait until the next project day.", todayCount, p.dailyLimit)).
+				withRetryAfter(windowResetWait(quota.PeriodDay, time.Time{}, time.Now()))
 		}
 	}
 
@@ -220,7 +224,8 @@ func (p *quotaPolicy) checkBudgets() *quotaVerdict {
 			return quotaUsageUnavailableVerdict(quotaScope(p.endUserID), "day", p.tenantID, stableQuotaSubject(p.apiKeyID, p.endUserID), err)
 		} else if todayCost >= p.dailySpendingLimit {
 			return quotaLimitVerdict("daily_spending", p.dailySpendingLimit, todayCost, "daily_spending_limit_exceeded",
-				fmt.Sprintf("Daily spending limit exceeded: $%.2f of $%.2f used today. Raise the daily spending limit in the permission profile, reset today's spending, or wait until the next project day.", todayCost, p.dailySpendingLimit))
+				fmt.Sprintf("Daily spending limit exceeded: $%.2f of $%.2f used today. Raise the daily spending limit in the permission profile, reset today's spending, or wait until the next project day.", todayCost, p.dailySpendingLimit)).
+				withRetryAfter(windowResetWait(quota.PeriodDay, time.Time{}, time.Now()))
 		}
 	}
 
@@ -267,7 +272,8 @@ func configuredPeriodVerdict(scope string, limits quota.PeriodSpendingLimits, us
 			scopeLabel = "Account"
 		}
 		message := fmt.Sprintf("%s %s spending limit exceeded: $%.2f of $%.2f used.", scopeLabel, period, current, limit)
-		return periodQuotaVerdict(scope, period, limit, current, code, message)
+		return periodQuotaVerdict(scope, period, limit, current, code, message).
+			withRetryAfter(windowResetWait(period, used.FiveHourWindowStart, time.Now()))
 	}
 	return nil
 }
