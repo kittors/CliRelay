@@ -390,6 +390,13 @@ streaming:
 # only to pin a specific carrier, e.g. to control cost.
 # codex-image-base-model: "gpt-5.5"
 
+# Compress the request body of Codex OAuth (ChatGPT account) POST /responses calls
+# with zstd, as the official Codex client does. On by default. It only applies to
+# chatgpt.com; API-key accounts, custom base URLs, /responses/compact and
+# websockets are unaffected, and request logs keep the plain JSON. Set false to
+# send plain JSON, e.g. to read the bytes on the wire through an inspecting proxy.
+# codex-request-zstd: false
+
 # Codex API keys
 # codex-api-key:
 #   - api-key: "sk-atSM..."

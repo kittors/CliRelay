@@ -27,6 +27,9 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 	if strings.TrimSpace(oldCfg.CodexImageBaseModel) != strings.TrimSpace(newCfg.CodexImageBaseModel) {
 		changes = append(changes, fmt.Sprintf("codex-image-base-model: %s -> %s", strings.TrimSpace(oldCfg.CodexImageBaseModel), strings.TrimSpace(newCfg.CodexImageBaseModel)))
 	}
+	if oldCfg.CodexRequestZstdEnabled() != newCfg.CodexRequestZstdEnabled() {
+		changes = append(changes, fmt.Sprintf("codex-request-zstd: %t -> %t", oldCfg.CodexRequestZstdEnabled(), newCfg.CodexRequestZstdEnabled()))
+	}
 	if oldCfg.Debug != newCfg.Debug {
 		changes = append(changes, fmt.Sprintf("debug: %t -> %t", oldCfg.Debug, newCfg.Debug))
 	}
