@@ -322,6 +322,11 @@ func (s *RequestStatistics) ingest(ctx context.Context, record coreusage.Record)
 	if statsKey == "" {
 		statsKey = resolveAPIIdentifier(ctx, record)
 	}
+	// The aggregates are keyed by the key's stable id, never by its secret: the
+	// snapshot is served by /usage, exported and mirrored to Redis. statsKey stays
+	// the raw value because the log write resolves the key from it, and masks it
+	// before anything is persisted.
+	bucketKey := statsBucketKey(statsKey, record.APIKeyID)
 	failed := record.Failed || record.ResponseStatus >= httpStatusBadRequest
 	if !failed && record.ResponseStatus == 0 {
 		failed = !resolveSuccess(ctx)
@@ -345,10 +350,10 @@ func (s *RequestStatistics) ingest(ctx context.Context, record coreusage.Record)
 		}
 		s.totalTokens += totalTokens
 
-		stats, ok := s.apis[statsKey]
+		stats, ok := s.apis[bucketKey]
 		if !ok {
 			stats = &apiStats{Models: make(map[string]*modelStats)}
-			s.apis[statsKey] = stats
+			s.apis[bucketKey] = stats
 		}
 		s.updateAPIStats(stats, modelName, RequestDetail{
 			Timestamp:    timestamp,
@@ -507,7 +512,7 @@ func (s *RequestStatistics) MergeSnapshot(snapshot StatisticsSnapshot) MergeResu
 	// No details loop required anymore
 
 	for apiName, apiSnapshot := range snapshot.APIs {
-		apiName = strings.TrimSpace(apiName)
+		apiName = snapshotBucketKey(apiName)
 		if apiName == "" {
 			continue
 		}

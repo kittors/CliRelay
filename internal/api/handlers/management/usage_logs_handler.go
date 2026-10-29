@@ -89,18 +89,20 @@ func (h *UsageLogsHandler) GetUsageLogs(c *gin.Context) {
 	}
 
 	payload, err := h.service(c).ManagementLogs(managementusagelogs.ManagementLogQueryInput{
-		Page:            intQueryDefault(c, "page", 1),
-		Size:            intQueryDefault(c, "size", 50),
-		Days:            intQueryDefault(c, "days", 7),
-		APIKeys:         queryStringListMulti(c, "api_key", "api_keys"),
-		EndUserID:       strings.TrimSpace(c.Query("end_user_id")),
-		Models:          queryStringListMulti(c, "model", "models"),
-		Statuses:        queryStringListMulti(c, "status", "statuses"),
-		Channels:        deduped,
-		MatchNoAPIKeys:  queryBool(c, "api_keys_empty"),
-		MatchNoModels:   queryBool(c, "models_empty"),
-		MatchNoStatuses: queryBool(c, "statuses_empty"),
-		MatchNoChannels: queryBool(c, "channels_empty"),
+		Page:             intQueryDefault(c, "page", 1),
+		Size:             intQueryDefault(c, "size", 50),
+		Days:             intQueryDefault(c, "days", 7),
+		APIKeys:          queryStringListMulti(c, "api_key", "api_keys"),
+		APIKeyIDs:        queryStringListMulti(c, "api_key_id", "api_key_ids"),
+		EndUserID:        strings.TrimSpace(c.Query("end_user_id")),
+		Models:           queryStringListMulti(c, "model", "models"),
+		Statuses:         queryStringListMulti(c, "status", "statuses"),
+		Channels:         deduped,
+		MatchNoAPIKeys:   queryBool(c, "api_keys_empty"),
+		MatchNoAPIKeyIDs: queryBool(c, "api_key_ids_empty"),
+		MatchNoModels:    queryBool(c, "models_empty"),
+		MatchNoStatuses:  queryBool(c, "statuses_empty"),
+		MatchNoChannels:  queryBool(c, "channels_empty"),
 	})
 	if err != nil {
 		log.Warnf("management usage logs: get usage logs failed: %v", err)

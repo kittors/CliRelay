@@ -962,54 +962,14 @@ func replaceHeader(dst http.Header, src http.Header) {
 	}
 }
 
-// WriteErrorResponse writes an error message to the response writer using the HTTP status embedded in the message.
+// WriteErrorResponse writes msg with the HTTP status it carries. An upstream
+// JSON error body is passed through as it is and anything else becomes an
+// OpenAI error; handlers that know their client's protocol use
+// WriteErrorResponseAs instead.
 func (h *BaseAPIHandler) WriteErrorResponse(c *gin.Context, msg *interfaces.ErrorMessage) {
-	status := http.StatusInternalServerError
-	if msg != nil && msg.StatusCode > 0 {
-		status = msg.StatusCode
-	}
-	if msg != nil && msg.Addon != nil && PassthroughHeadersEnabled(h.Cfg) {
-		for key, values := range msg.Addon {
-			if len(values) == 0 {
-				continue
-			}
-			c.Writer.Header().Del(key)
-			for _, value := range values {
-				c.Writer.Header().Add(key, value)
-			}
-		}
-	}
-
-	errText := http.StatusText(status)
-	if msg != nil && msg.Error != nil {
-		if v := strings.TrimSpace(msg.Error.Error()); v != "" {
-			errText = v
-		}
-	}
-
-	body := BuildErrorResponseBody(status, errText)
-	// Append first to preserve upstream response logs, then drop duplicate payloads if already recorded.
-	var previous []byte
-	if existing, exists := c.Get("API_RESPONSE"); exists {
-		if existingBytes, ok := existing.([]byte); ok && len(existingBytes) > 0 {
-			previous = existingBytes
-		}
-	}
-	appendAPIResponse(c, body)
-	trimmedErrText := strings.TrimSpace(errText)
-	trimmedBody := bytes.TrimSpace(body)
-	if len(previous) > 0 {
-		if (trimmedErrText != "" && bytes.Contains(previous, []byte(trimmedErrText))) ||
-			(len(trimmedBody) > 0 && bytes.Contains(previous, trimmedBody)) {
-			c.Set("API_RESPONSE", previous)
-		}
-	}
-
-	if !c.Writer.Written() {
-		c.Writer.Header().Set("Content-Type", "application/json")
-	}
-	c.Status(status)
-	_, _ = c.Writer.Write(body)
+	h.writeErrorResponse(c, msg, func(status int, errText string) (int, []byte) {
+		return status, BuildErrorResponseBody(status, errText)
+	})
 }
 
 func (h *BaseAPIHandler) LoggingAPIResponseError(ctx context.Context, err *interfaces.ErrorMessage) {

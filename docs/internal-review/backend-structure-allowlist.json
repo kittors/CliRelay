@@ -26,7 +26,7 @@
       },
       {
         "path": "internal/management/usagelogs/list.go",
-        "max_lines": 1169
+        "max_lines": 882
       },
       {
         "path": "internal/storage/sqlstore/apikey/store.go",
@@ -46,15 +46,15 @@
       },
       {
         "path": "internal/usage/request_log_query.go",
-        "max_lines": 1055
+        "max_lines": 898
       },
       {
         "path": "internal/usage/usage_db.go",
-        "max_lines": 1022
+        "max_lines": 1015
       },
       {
         "path": "sdk/api/handlers/handlers.go",
-        "max_lines": 1033
+        "max_lines": 993
       }
     ]
   },

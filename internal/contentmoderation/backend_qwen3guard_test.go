@@ -11,6 +11,10 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	sdktranslator "github.com/router-for-me/CLIProxyAPI/v6/sdk/translator"
+	log "github.com/sirupsen/logrus"
+	logtest "github.com/sirupsen/logrus/hooks/test"
 )
 
 func decodeJSON(r *http.Request, target any) error {
@@ -268,25 +272,6 @@ func TestDecideGuardVerdict(t *testing.T) {
 	}
 }
 
-func TestSplitForGuardChunksAndTruncates(t *testing.T) {
-	// Multi-byte runes must not be split mid-character.
-	input := strings.Repeat("中", 10)
-	chunks, truncated := splitForGuard(input, 4, 2)
-	if len(chunks) != 2 || truncated != 2 {
-		t.Fatalf("chunks = %v truncated = %d", chunks, truncated)
-	}
-	if chunks[0] != strings.Repeat("中", 4) || chunks[1] != strings.Repeat("中", 4) {
-		t.Fatalf("chunks = %v", chunks)
-	}
-	chunks, truncated = splitForGuard("short", 4000, 4)
-	if len(chunks) != 1 || truncated != 0 {
-		t.Fatalf("chunks = %v truncated = %d", chunks, truncated)
-	}
-	if chunks, truncated = splitForGuard("", 4000, 4); len(chunks) != 0 || truncated != 0 {
-		t.Fatalf("empty input produced chunks = %v truncated = %d", chunks, truncated)
-	}
-}
-
 func TestGuardBackendUsesChatCompletionsAndStopsAtFirstBlock(t *testing.T) {
 	server, paths, calls := guardServer(t,
 		"Safety: Safe\nCategories: None",
@@ -296,7 +281,7 @@ func TestGuardBackendUsesChatCompletionsAndStopsAtFirstBlock(t *testing.T) {
 	profile := guardProfile(t, server.URL)
 	profile.InputLimit = MinInputLimit
 	profile.MaxChunks = 4
-	decision := NewEvaluator(server.Client()).Evaluate(context.Background(), profile, strings.Repeat("a", MinInputLimit*3))
+	decision := NewEvaluator(server.Client()).Evaluate(context.Background(), profile, TextInput(strings.Repeat("a", MinInputLimit*3)))
 	if !decision.WouldBlock || decision.Action != ActionGuardBlock {
 		t.Fatalf("decision = %#v", decision)
 	}
@@ -316,7 +301,7 @@ func TestGuardBackendUsesChatCompletionsAndStopsAtFirstBlock(t *testing.T) {
 func TestGuardBackendNeverCallsModerationsEndpoint(t *testing.T) {
 	server, paths, _ := guardServer(t, "Safety: Safe\nCategories: None")
 	profile := guardProfile(t, server.URL)
-	NewEvaluator(server.Client()).Evaluate(context.Background(), profile, "hello")
+	NewEvaluator(server.Client()).Evaluate(context.Background(), profile, TextInput("hello"))
 	for _, path := range paths.snapshot() {
 		if strings.Contains(path, "moderations") {
 			t.Fatalf("qwen3guard backend must not call %q", path)
@@ -336,7 +321,7 @@ func TestGuardBackendRequestShape(t *testing.T) {
 	}))
 	defer server.Close()
 	profile := guardProfile(t, server.URL)
-	NewEvaluator(server.Client()).Evaluate(context.Background(), profile, "hello")
+	NewEvaluator(server.Client()).Evaluate(context.Background(), profile, TextInput("hello"))
 	if _, exists := body["seed"]; exists {
 		t.Fatal("seed must not be sent: it is non-standard and some servers reject it")
 	}
@@ -358,7 +343,7 @@ func TestGuardBackendSendsBearerWhenConfigured(t *testing.T) {
 	defer server.Close()
 	profile := guardProfile(t, server.URL)
 	profile.APIKeySecret = "guard-token"
-	NewEvaluator(server.Client()).Evaluate(context.Background(), profile, "hello")
+	NewEvaluator(server.Client()).Evaluate(context.Background(), profile, TextInput("hello"))
 	if authHeader != "Bearer guard-token" {
 		t.Fatalf("Authorization = %q", authHeader)
 	}
@@ -397,7 +382,7 @@ func TestGuardBackendFailsOpen(t *testing.T) {
 			server := httptest.NewServer(tt.handler)
 			defer server.Close()
 			profile := guardProfile(t, server.URL)
-			decision := NewEvaluator(server.Client()).Evaluate(context.Background(), profile, "hello")
+			decision := NewEvaluator(server.Client()).Evaluate(context.Background(), profile, TextInput("hello"))
 			if decision.WouldBlock || decision.Action != ActionAPIError {
 				t.Fatalf("decision = %#v, want fail-open", decision)
 			}
@@ -422,7 +407,7 @@ func TestGuardBackendBudgetsAllChunks(t *testing.T) {
 	profile.MaxChunks = 8
 	profile.TimeoutMS = 200
 	start := time.Now()
-	decision := NewEvaluator(server.Client()).Evaluate(context.Background(), profile, strings.Repeat("a", MinInputLimit*8))
+	decision := NewEvaluator(server.Client()).Evaluate(context.Background(), profile, TextInput(strings.Repeat("a", MinInputLimit*8)))
 	elapsed := time.Since(start)
 	if decision.WouldBlock || decision.Action != ActionAPIError {
 		t.Fatalf("decision = %#v, want fail-open on budget exhaustion", decision)
@@ -441,7 +426,7 @@ func TestGuardBackendAggregatesAcrossChunks(t *testing.T) {
 	profile := guardProfile(t, server.URL)
 	profile.InputLimit = MinInputLimit
 	profile.MaxChunks = 3
-	decision := NewEvaluator(server.Client()).Evaluate(context.Background(), profile, strings.Repeat("a", MinInputLimit*3))
+	decision := NewEvaluator(server.Client()).Evaluate(context.Background(), profile, TextInput(strings.Repeat("a", MinInputLimit*3)))
 	if decision.WouldBlock {
 		t.Fatalf("decision = %#v, want allow (violent is not elevated)", decision)
 	}
@@ -469,5 +454,88 @@ func TestExtractChatContentAcceptsStringAndBlocks(t *testing.T) {
 		if _, err = extractChatContent([]byte(body)); err == nil {
 			t.Fatalf("expected error for %s", body)
 		}
+	}
+}
+
+// claudeAgentRequest builds a coding-agent request in the Claude format: a
+// system prompt several times the default scan budget, a history of questions
+// and tool results, and a short final question.
+func claudeAgentRequest(t *testing.T, final string) []byte {
+	t.Helper()
+	messages := make([]map[string]any, 0, 41)
+	for turn := 0; turn < 20; turn++ {
+		messages = append(messages,
+			map[string]any{"role": "user", "content": []map[string]any{
+				{"type": "tool_result", "tool_use_id": "t", "content": strings.Repeat("file contents ", 200)},
+				{"type": "text", "text": strings.Repeat("earlier question ", 20)},
+			}},
+			map[string]any{"role": "assistant", "content": strings.Repeat("earlier answer ", 20)},
+		)
+	}
+	messages = append(messages, map[string]any{"role": "user", "content": final})
+	body, err := json.Marshal(map[string]any{
+		"model":    "claude-sonnet",
+		"system":   strings.Repeat("system prompt ", 5000),
+		"messages": messages,
+	})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	return body
+}
+
+// The scan used to start at the oldest text, so a system prompt longer than
+// input_limit x max_chunks kept the final question from ever being scanned.
+// Now the newest user message is the first chunk sent.
+func TestGuardBackendScansTheNewestUserMessageOfAnOverlongRequest(t *testing.T) {
+	var mu sync.Mutex
+	var scanned []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Messages []struct {
+				Content string `json:"content"`
+			} `json:"messages"`
+		}
+		_ = decodeJSON(r, &body)
+		mu.Lock()
+		scanned = append(scanned, body.Messages[0].Content)
+		mu.Unlock()
+		verdict := "Safety: Safe\nCategories: None"
+		if strings.Contains(body.Messages[0].Content, "FINAL QUESTION") {
+			verdict = "Safety: Unsafe\nCategories: Violent"
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":` + jsonString(verdict) + `}}]}`))
+	}))
+	defer server.Close()
+	hook := logtest.NewLocal(log.StandardLogger())
+	defer hook.Reset()
+
+	profile := guardProfile(t, server.URL)
+	input := ExtractModerationInput(sdktranslator.FormatClaude, claudeAgentRequest(t, "FINAL QUESTION"))
+	decision := NewEvaluator(server.Client()).Evaluate(context.Background(), profile, input)
+	if !decision.WouldBlock || decision.Action != ActionGuardBlock {
+		t.Fatalf("decision = %#v, want the final question scanned and blocked", decision)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(scanned) != 1 || scanned[0] != "FINAL QUESTION" {
+		t.Fatalf("scanned %d chunks, first %.40q; want the final question first, then stop", len(scanned), scanned)
+	}
+
+	var skippedLog *log.Entry
+	for _, entry := range hook.AllEntries() {
+		if entry.Message == "content moderation skipped the oldest input before qwen3guard scan" {
+			skippedLog = entry
+		}
+	}
+	if skippedLog == nil {
+		t.Fatal("the skipped input was not logged")
+	}
+	primary, _ := skippedLog.Data["skipped_primary_chars"].(int)
+	toolOutput, _ := skippedLog.Data["skipped_tool_output_chars"].(int)
+	if primary == 0 || toolOutput != 0 {
+		// Tool output is not sent to the backend by default, so none of it is skipped.
+		t.Fatalf("skipped primary=%v tool_output=%v, fields %v", skippedLog.Data["skipped_primary_chars"], skippedLog.Data["skipped_tool_output_chars"], skippedLog.Data)
 	}
 }
