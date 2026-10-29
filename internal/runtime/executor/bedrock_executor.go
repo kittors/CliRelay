@@ -144,7 +144,7 @@ func (e *BedrockExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, 
 	httpResp := sent.resp
 	if sent.failed() {
 		reporter.publishFailureWithContent(execCtx.Context, string(req.Payload), string(sent.errBody))
-		err = statusErr{code: httpResp.StatusCode, msg: string(sent.errBody)}
+		err = statusErr{code: httpResp.StatusCode, msg: string(sent.errBody), headers: failureHeaders(httpResp.Header)}
 		return resp, err
 	}
 	defer func() {
@@ -213,7 +213,7 @@ func (e *BedrockExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.
 	httpResp := sent.resp
 	if sent.failed() {
 		reporter.publishFailureWithContent(execCtx.Context, string(req.Payload), string(sent.errBody))
-		err = statusErr{code: httpResp.StatusCode, msg: string(sent.errBody)}
+		err = statusErr{code: httpResp.StatusCode, msg: string(sent.errBody), headers: failureHeaders(httpResp.Header)}
 		return nil, err
 	}
 

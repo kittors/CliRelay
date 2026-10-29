@@ -79,7 +79,7 @@ func (e *OpenCodeGoExecutor) executeMessages(ctx context.Context, auth *cliproxy
 		b := readUpstreamErrorBody(e.Identifier(), httpResp.Body)
 		recorder.AppendResponseChunk(b)
 		reporter.publishFailureWithContent(execCtx.Context, string(req.Payload), string(b))
-		return resp, statusErr{code: httpResp.StatusCode, msg: string(b)}
+		return resp, statusErr{code: httpResp.StatusCode, msg: string(b), headers: failureHeaders(httpResp.Header)}
 	}
 	data, err := readUpstreamResponseBody(e.Identifier(), httpResp.Body)
 	if err != nil {
@@ -165,7 +165,7 @@ func (e *OpenCodeGoExecutor) executeMessagesStream(ctx context.Context, auth *cl
 		if errClose := httpResp.Body.Close(); errClose != nil {
 			log.Errorf("opencode go executor: close response body error: %v", errClose)
 		}
-		return nil, statusErr{code: httpResp.StatusCode, msg: string(b)}
+		return nil, statusErr{code: httpResp.StatusCode, msg: string(b), headers: failureHeaders(httpResp.Header)}
 	}
 
 	out := make(chan cliproxyexecutor.StreamChunk)

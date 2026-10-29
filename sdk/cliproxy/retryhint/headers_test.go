@@ -216,3 +216,45 @@ func TestRetryAfterHeaderAppliesNoPolicyBound(t *testing.T) {
 		t.Fatal("nil headers must give no wait")
 	}
 }
+
+func TestHintHeadersKeepsOnlyWhatParseReads(t *testing.T) {
+	src := headers(
+		"Retry-After", "30",
+		"Retry-After-Ms", "2500",
+		"X-RateLimit-Reset-Requests", "20s",
+		"X-RateLimit-Remaining-Requests", "0",
+		"X-Ratelimit-Limit-Requests", "100",
+		"RateLimit-Reset", "9",
+		"Anthropic-Ratelimit-Tokens-Reset", "2026-10-30T12:01:00Z",
+		"Anthropic-Ratelimit-Tokens-Remaining", "0",
+		"Anthropic-Ratelimit-Unified-5h-Reset", "1",
+		"Set-Cookie", "session=secret",
+		"Content-Length", "123",
+		"X-Request-Id", "req-1",
+	)
+	got := HintHeaders(src)
+	want := []string{
+		"Retry-After", "Retry-After-Ms", "X-Ratelimit-Reset-Requests", "X-Ratelimit-Remaining-Requests",
+		"Ratelimit-Reset", "Anthropic-Ratelimit-Tokens-Reset", "Anthropic-Ratelimit-Tokens-Remaining",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("HintHeaders() kept %v, want exactly %v", got, want)
+	}
+	for _, name := range want {
+		if got.Get(name) == "" {
+			t.Fatalf("HintHeaders() dropped %s", name)
+		}
+	}
+	// What it keeps is enough to give the same answer as the whole response.
+	if a, b := Parse(http.StatusTooManyRequests, src, nil, testNow), Parse(http.StatusTooManyRequests, got, nil, testNow); a != b {
+		t.Fatalf("Parse on the subset = %+v, on the whole = %+v", b, a)
+	}
+	if HintHeaders(headers("Set-Cookie", "x")) != nil || HintHeaders(nil) != nil {
+		t.Fatal("no hint headers must give nil")
+	}
+	// The copy does not alias the response.
+	got["Retry-After"][0] = "changed"
+	if src.Get("Retry-After") != "30" {
+		t.Fatal("HintHeaders must copy values")
+	}
+}

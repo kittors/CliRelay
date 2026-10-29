@@ -136,7 +136,7 @@ func (e *KimiExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 		recorder.AppendResponseChunk(b)
 		logWithRequestID(execCtx.Context).Debugf("request error, error status: %d, error message: %s", httpResp.StatusCode, summarizeErrorBody(httpResp.Header.Get("Content-Type"), b))
 		reporter.publishFailureWithContent(execCtx.Context, string(req.Payload), string(b))
-		err = statusErr{code: httpResp.StatusCode, msg: string(b)}
+		err = statusErr{code: httpResp.StatusCode, msg: string(b), headers: failureHeaders(httpResp.Header)}
 		return resp, err
 	}
 	data, err := readUpstreamResponseBody(e.Identifier(), httpResp.Body)
@@ -236,7 +236,7 @@ func (e *KimiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 		if errClose := httpResp.Body.Close(); errClose != nil {
 			log.Errorf("kimi executor: close response body error: %v", errClose)
 		}
-		err = statusErr{code: httpResp.StatusCode, msg: string(b)}
+		err = statusErr{code: httpResp.StatusCode, msg: string(b), headers: failureHeaders(httpResp.Header)}
 		return nil, err
 	}
 	out := make(chan cliproxyexecutor.StreamChunk)

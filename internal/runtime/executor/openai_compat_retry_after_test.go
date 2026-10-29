@@ -34,7 +34,12 @@ func TestOpenAICompatRetryAfterControlsManagerCooldown(t *testing.T) {
 			{"overflow", "9223372037", time.Minute, http.StatusTooManyRequests},
 			{"max integer", "9223372036854775807", time.Minute, http.StatusTooManyRequests},
 			{"positive wrap", "18446744074", time.Minute, http.StatusTooManyRequests},
-			{"non429 unchanged", "120", time.Minute, http.StatusServiceUnavailable},
+			// A 503 that names a time is believed too (bounded by the scheduler);
+			// without one it keeps the minute it always had.
+			{"503 follows Retry-After", "120", 120 * time.Second, http.StatusServiceUnavailable},
+			{"503 without Retry-After", "", time.Minute, http.StatusServiceUnavailable},
+			{"503 with overflow", "9223372037", time.Minute, http.StatusServiceUnavailable},
+			{"500 ignores Retry-After", "120", time.Minute, http.StatusInternalServerError},
 		} {
 			t.Run(fmt.Sprintf("stream=%v/%s", stream, tt.name), func(t *testing.T) {
 				var calls atomic.Int32
@@ -85,8 +90,10 @@ func TestOpenAICompatRetryAfterControlsManagerCooldown(t *testing.T) {
 				if details.StatusCode() != tt.status || details.Headers().Get("Retry-After") != tt.header || err.Error() != `{"error":{"message":"rate limit exceeded"}}` {
 					t.Fatalf("status/header/body changed: %v", err)
 				}
-				if tt.status != http.StatusTooManyRequests && details.RetryAfter() != nil {
-					t.Error("non-429 gained retry metadata")
+				// The executor publishes nothing; the scheduler reads the response
+				// itself, so the error handed back to callers is exactly as received.
+				if details.RetryAfter() != nil {
+					t.Error("executor published a retry wait of its own")
 				}
 				if calls.Load() != 1 {
 					t.Fatalf("upstream calls=%d, want 1", calls.Load())

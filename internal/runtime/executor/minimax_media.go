@@ -133,7 +133,7 @@ func (e *MiniMaxExecutor) executeImageGeneration(ctx context.Context, auth *clip
 			httpResp.StatusCode, summarizeErrorBody(httpResp.Header.Get("Content-Type"), body),
 		)
 		reporter.publishFailureWithContentBytes(execCtx.Context, req.Payload, string(body))
-		return resp, statusErr{code: httpResp.StatusCode, msg: string(body), upstreamBody: body}
+		return resp, statusErr{code: httpResp.StatusCode, msg: string(body), upstreamBody: body, headers: failureHeaders(httpResp.Header)}
 	}
 
 	data, err := readUpstreamResponseBody(e.Identifier(), httpResp.Body)

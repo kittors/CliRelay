@@ -173,7 +173,7 @@ func (e *GeminiExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 		recorder.AppendResponseChunk(b)
 		logWithRequestID(execCtx.Context).Debugf("request error, error status: %d, error message: %s", httpResp.StatusCode, summarizeErrorBody(httpResp.Header.Get("Content-Type"), b))
 		reporter.publishFailureWithContent(execCtx.Context, string(req.Payload), string(b))
-		err = statusErr{code: httpResp.StatusCode, msg: string(b)}
+		err = statusErr{code: httpResp.StatusCode, msg: string(b), headers: failureHeaders(httpResp.Header)}
 		return resp, err
 	}
 	data, err := readUpstreamResponseBody(e.Identifier(), httpResp.Body)
@@ -256,7 +256,7 @@ func (e *GeminiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 		if errClose := httpResp.Body.Close(); errClose != nil {
 			log.Errorf("gemini executor: close response body error: %v", errClose)
 		}
-		err = statusErr{code: httpResp.StatusCode, msg: string(b)}
+		err = statusErr{code: httpResp.StatusCode, msg: string(b), headers: failureHeaders(httpResp.Header)}
 		return nil, err
 	}
 	out := make(chan cliproxyexecutor.StreamChunk)
@@ -357,7 +357,7 @@ func (e *GeminiExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Aut
 	recorder.AppendResponseChunk(data)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		logWithRequestID(execCtx.Context).Debugf("request error, error status: %d, error message: %s", resp.StatusCode, summarizeErrorBody(resp.Header.Get("Content-Type"), data))
-		return cliproxyexecutor.Response{}, statusErr{code: resp.StatusCode, msg: string(data)}
+		return cliproxyexecutor.Response{}, statusErr{code: resp.StatusCode, msg: string(data), headers: failureHeaders(resp.Header)}
 	}
 
 	count := gjson.GetBytes(data, "totalTokens").Int()

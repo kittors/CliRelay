@@ -114,6 +114,16 @@ type Result struct {
 	Success bool
 	// RetryAfter carries a provider supplied retry hint (e.g. 429 retryDelay).
 	RetryAfter *time.Duration
+	// RetryAfterAdvisory marks RetryAfter as the manager's own reading of the
+	// upstream response (headers, error fields, message text) rather than a value
+	// the executor published after parsing the provider's documented format.
+	//
+	// The difference matters for disable-cooling: an operator who switched
+	// cooling off for an account has asked for failures to be retried at once, and
+	// a generic guess must not override that. A value an executor published
+	// itself (Codex's resets_at, xAI's weekly window) states when an allowance
+	// comes back and is honoured either way, as it always was.
+	RetryAfterAdvisory bool
 	// Headers carries upstream response headers used for provider-specific
 	// runtime health decisions such as Anthropic rate-limit windows.
 	Headers http.Header

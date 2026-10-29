@@ -22,6 +22,37 @@ func RetryAfterHeader(headers http.Header, now time.Time) (time.Duration, bool) 
 	return parseRetryAfterValue(raw, now)
 }
 
+// HintHeaders returns the response headers Parse reads: Retry-After and its
+// millisecond twin, the vendor rate-limit reset headers and the remaining
+// counters they are paired with. An executor that attaches headers to a failed
+// upstream call only so the scheduler can read the wait can attach this subset
+// instead of the whole response, and keep cookies and per-response framing
+// headers out of an error that may be forwarded to the client.
+//
+// It returns nil when none of the headers is present.
+func HintHeaders(src http.Header) http.Header {
+	var dst http.Header
+	for key, values := range src {
+		lower := strings.ToLower(key)
+		if len(values) == 0 || !isHintHeader(lower) {
+			continue
+		}
+		if dst == nil {
+			dst = make(http.Header)
+		}
+		dst[key] = append([]string(nil), values...)
+	}
+	return dst
+}
+
+func isHintHeader(lower string) bool {
+	if lower == "retry-after" || lower == "retry-after-ms" {
+		return true
+	}
+	return isRateLimitResetHeader(lower) ||
+		(strings.Contains(lower, "remaining") && isRateLimitResetHeader(strings.Replace(lower, "remaining", "reset", 1)))
+}
+
 // hintFromRetryAfterHeaders reads Retry-After and its millisecond twin.
 // retry-after-ms is what Azure and the OpenAI SDKs send next to Retry-After
 // (whose resolution is whole seconds), so the more precise one wins.
