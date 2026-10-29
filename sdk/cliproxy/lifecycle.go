@@ -205,6 +205,23 @@ func (s *Service) Shutdown(ctx context.Context) error {
 			}
 		}
 
+		if s.coreManager != nil {
+			// StopAutoRefresh above only stops new refreshes. One already
+			// exchanging a refresh token runs on (the upstream may have
+			// rotated it) and must store the result before the process exits.
+			// Waiting after the drain lets it run alongside the drain
+			// instead of adding to it.
+			waitCtx := ctx
+			if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+				var cancel context.CancelFunc
+				waitCtx, cancel = context.WithTimeout(ctx, shutdownGracePeriod())
+				defer cancel()
+			}
+			if err := s.coreManager.WaitForRefreshes(waitCtx); err != nil {
+				log.Warnf("credential refreshes still running at shutdown: %v", err)
+			}
+		}
+
 		usage.StopDefault()
 	})
 	return shutdownErr

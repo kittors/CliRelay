@@ -142,3 +142,55 @@ func TestResolveTokenWithoutCoordinatorRefreshesDirectly(t *testing.T) {
 		t.Fatalf("single-node refresh: token=%q err=%v refreshes=%d", token, err, calls.Load())
 	}
 }
+
+// cancelSensitiveStore fails a write whose context has ended, as a database
+// write does.
+type cancelSensitiveStore struct {
+	mu    sync.Mutex
+	saved []*coreauth.Auth
+}
+
+func (s *cancelSensitiveStore) List(context.Context) ([]*coreauth.Auth, error) { return nil, nil }
+func (s *cancelSensitiveStore) Delete(context.Context, string) error           { return nil }
+
+func (s *cancelSensitiveStore) Save(ctx context.Context, auth *coreauth.Auth) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.saved = append(s.saved, auth.Clone())
+	return "", nil
+}
+
+// hangUpClaudeRefresher rotates the refresh token, then the management request
+// that asked for it ends.
+type hangUpClaudeRefresher struct{ hangUp func() }
+
+func (r hangUpClaudeRefresher) RefreshTokens(context.Context, string) (*claudeauth.ClaudeTokenData, error) {
+	r.hangUp()
+	return &claudeauth.ClaudeTokenData{AccessToken: "at-new", RefreshToken: "rt-new", Expire: time.Now().Add(time.Hour).Format(time.RFC3339)}, nil
+}
+
+func TestResolveTokenStoresTheRotatedTokenAfterTheRequestEnds(t *testing.T) {
+	store := &cancelSensitiveStore{}
+	mgr := coreauth.NewManager(store, nil, nil)
+	ctx, hangUp := context.WithCancel(context.Background())
+	defer hangUp()
+	svc := New(&config.Config{}, mgr, Dependencies{NewClaudeOAuthRefresher: func(*config.Config) ClaudeOAuthRefresher {
+		return hangUpClaudeRefresher{hangUp: hangUp}
+	}})
+	expired := claudeCredential(0, "at-expired", time.Now().Add(-time.Minute))
+	delete(expired.Metadata, coreauth.CredentialVersionMetadataKey)
+	if _, err := mgr.Register(coreauth.WithSkipPersist(context.Background()), expired.Clone()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.ResolveTokenForAuth(ctx, expired); err != nil {
+		t.Fatalf("ResolveTokenForAuth: %v", err)
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if len(store.saved) != 1 || store.saved[0].Metadata["refresh_token"] != "rt-new" {
+		t.Fatalf("saved = %v; the old refresh token is retired upstream, so the rotated one must be stored", store.saved)
+	}
+}
