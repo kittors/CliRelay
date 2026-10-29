@@ -22,7 +22,8 @@ func (h *Handler) PostContentModerationProfileTest(c *gin.Context) {
 		return
 	}
 	// Dry-run evaluates the saved configuration without enabling it for live traffic.
+	// The text is checked as a user turn, with the same normalization as live requests.
 	profile.Mode = contentmoderation.ModePreBlock
-	decision := contentmoderation.NewEvaluator(nil).Evaluate(c.Request.Context(), profile, body.Input)
+	decision := contentmoderation.NewEvaluator(nil).Evaluate(c.Request.Context(), profile, contentmoderation.TextInput(body.Input))
 	c.JSON(http.StatusOK, decision)
 }

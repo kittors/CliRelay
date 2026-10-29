@@ -25,7 +25,7 @@ func (h *OpenAIResponsesAPIHandler) AlphaSearch(c *gin.Context) {
 	ctx, cancel := h.GetContextWithCancel(h, c, c.Request.Context())
 	resp, headers, errMsg := h.ExecuteWithAuthManager(ctx, h.HandlerType(), gjson.GetBytes(body, "model").String(), body, "alpha/search")
 	if errMsg != nil {
-		h.WriteErrorResponse(c, errMsg)
+		h.WriteErrorResponseAs(c, errMsg, handlers.ErrorFormatOpenAI)
 		cancel(errMsg.Error)
 		return
 	}

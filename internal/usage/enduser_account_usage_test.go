@@ -125,13 +125,16 @@ func TestEndUserAccountUsageAggregatesBusinessTenantKeysAndSurvivesRotate(t *tes
 		t.Fatalf("ExpandPublicLookupAPIKeys = %v, want [sk-business-a] only", expanded)
 	}
 
-	// Modern rows match stable key ids; the legacy row matches the current raw secret.
+	// Rows belong to a key by its stable id. The legacy row has the secret and no
+	// id; startup attributes it to the key that owns that secret (InitDB runs the
+	// same backfill on every boot), after which it is an ordinary id row.
 	insertEndUserAccountLog(t, tenantID, "sk-business-a", keyAID, "old snapshot", 1)
 	insertEndUserAccountLog(t, tenantID, "sk-business-b", keyBID, "old snapshot", 2)
 	insertEndUserAccountLog(t, tenantID, "sk-business-b", "", "legacy snapshot", 3)
 	insertEndUserAccountLog(t, tenantID, "sk-business-other", otherKeyID, "other", 50)
 	insertEndUserAccountLog(t, tenantID, "sk-business-standalone", standaloneKeyID, "standalone", 60)
 	insertEndUserAccountLog(t, otherTenantID, "sk-business-cross-tenant", crossTenantKeyID, "cross tenant", 70)
+	backfillRequestLogAPIKeyIDs(getDB())
 
 	params := LogQueryParams{TenantID: tenantID, EndUserID: endUserID, Page: 1, Size: 20, Days: 1}
 	result, err := QueryLogs(params)

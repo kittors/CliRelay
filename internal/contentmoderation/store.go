@@ -31,6 +31,8 @@ CREATE TABLE IF NOT EXISTS content_moderation_profiles (
   max_chunks INTEGER NOT NULL DEFAULT 4,
   block_http_status INTEGER NOT NULL DEFAULT 403,
   block_message TEXT NOT NULL DEFAULT '',
+  keyword_fold_traditional_chinese INTEGER NOT NULL DEFAULT 0,
+  api_includes_tool_output INTEGER NOT NULL DEFAULT 0,
   version INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL DEFAULT '',
   updated_at TEXT NOT NULL DEFAULT '',
@@ -66,6 +68,13 @@ var profileColumnMigrations = []string{
 	`ALTER TABLE content_moderation_profiles ADD COLUMN elevated_categories_json TEXT NOT NULL DEFAULT '["jailbreak","pii","suicide_and_self_harm"]'`,
 	`ALTER TABLE content_moderation_profiles ADD COLUMN input_limit INTEGER NOT NULL DEFAULT 4000`,
 	`ALTER TABLE content_moderation_profiles ADD COLUMN max_chunks INTEGER NOT NULL DEFAULT 4`,
+	// Text coverage options. Both default to off (0), which is what profiles
+	// stored before them get: the text-coverage fixes themselves apply to every
+	// profile, these only widen what reaches the backend or the keyword match.
+	// The columns are integers rather than BOOLEAN because the same statements
+	// run on SQLite and PostgreSQL.
+	`ALTER TABLE content_moderation_profiles ADD COLUMN keyword_fold_traditional_chinese INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE content_moderation_profiles ADD COLUMN api_includes_tool_output INTEGER NOT NULL DEFAULT 0`,
 }
 
 func InitTables(db *sql.DB) error {
@@ -128,12 +137,14 @@ func (s *Store) CreateProfile(ctx context.Context, profile Profile) error {
 	}
 	_, err = s.db.ExecContext(ctx, `INSERT INTO content_moderation_profiles
 		(tenant_id,id,name,mode,backend,base_url,model,api_key_secret,timeout_ms,keyword_mode,blocked_keywords_json,thresholds_json,
-		 scanners_json,controversial_action,elevated_categories_json,input_limit,max_chunks,block_http_status,block_message,version,created_at,updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)`,
+		 scanners_json,controversial_action,elevated_categories_json,input_limit,max_chunks,block_http_status,block_message,
+		 keyword_fold_traditional_chinese,api_includes_tool_output,version,created_at,updated_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24)`,
 		profile.TenantID, profile.ID, profile.Name, profile.Mode, profile.Backend, profile.BaseURL, profile.Model, profile.APIKeySecret,
 		profile.TimeoutMS, profile.KeywordMode, columns.Keywords, columns.Thresholds,
 		columns.Scanners, profile.ControversialAction, columns.Elevated, profile.InputLimit, profile.MaxChunks,
 		profile.BlockHTTPStatus, profile.BlockMessage,
+		boolColumn(profile.KeywordFoldTraditionalChinese), boolColumn(profile.APIIncludesToolOutput),
 		profile.Version, formatTime(profile.CreatedAt), formatTime(profile.UpdatedAt))
 	if isUniqueViolation(err) {
 		return ErrNameConflict
@@ -152,11 +163,14 @@ func (s *Store) UpdateProfile(ctx context.Context, profile Profile, expectedVers
 	result, err := s.db.ExecContext(ctx, `UPDATE content_moderation_profiles SET
 		name=$1,mode=$2,backend=$3,base_url=$4,model=$5,api_key_secret=$6,timeout_ms=$7,keyword_mode=$8,
 		blocked_keywords_json=$9,thresholds_json=$10,scanners_json=$11,controversial_action=$12,elevated_categories_json=$13,
-		input_limit=$14,max_chunks=$15,block_http_status=$16,block_message=$17,version=$18,updated_at=$19
-		WHERE tenant_id=$20 AND id=$21 AND version=$22`,
+		input_limit=$14,max_chunks=$15,block_http_status=$16,block_message=$17,
+		keyword_fold_traditional_chinese=$18,api_includes_tool_output=$19,version=$20,updated_at=$21
+		WHERE tenant_id=$22 AND id=$23 AND version=$24`,
 		profile.Name, profile.Mode, profile.Backend, profile.BaseURL, profile.Model, profile.APIKeySecret, profile.TimeoutMS, profile.KeywordMode,
 		columns.Keywords, columns.Thresholds, columns.Scanners, profile.ControversialAction, columns.Elevated,
-		profile.InputLimit, profile.MaxChunks, profile.BlockHTTPStatus, profile.BlockMessage, profile.Version, formatTime(profile.UpdatedAt),
+		profile.InputLimit, profile.MaxChunks, profile.BlockHTTPStatus, profile.BlockMessage,
+		boolColumn(profile.KeywordFoldTraditionalChinese), boolColumn(profile.APIIncludesToolOutput),
+		profile.Version, formatTime(profile.UpdatedAt),
 		profile.TenantID, profile.ID, expectedVersion)
 	if isUniqueViolation(err) {
 		return ErrNameConflict
@@ -343,19 +357,23 @@ func (s *Store) ResolveProfile(ctx context.Context, tenantID, authFileID, provid
 	return Profile{}, "", ErrNotFound
 }
 
-const profileSelectSQL = `SELECT content_moderation_profiles.tenant_id,content_moderation_profiles.id,content_moderation_profiles.name,content_moderation_profiles.mode,content_moderation_profiles.backend,content_moderation_profiles.base_url,content_moderation_profiles.model,content_moderation_profiles.api_key_secret,content_moderation_profiles.timeout_ms,content_moderation_profiles.keyword_mode,content_moderation_profiles.blocked_keywords_json,content_moderation_profiles.thresholds_json,content_moderation_profiles.scanners_json,content_moderation_profiles.controversial_action,content_moderation_profiles.elevated_categories_json,content_moderation_profiles.input_limit,content_moderation_profiles.max_chunks,content_moderation_profiles.block_http_status,content_moderation_profiles.block_message,content_moderation_profiles.version,content_moderation_profiles.created_at,content_moderation_profiles.updated_at FROM content_moderation_profiles`
+const profileSelectSQL = `SELECT content_moderation_profiles.tenant_id,content_moderation_profiles.id,content_moderation_profiles.name,content_moderation_profiles.mode,content_moderation_profiles.backend,content_moderation_profiles.base_url,content_moderation_profiles.model,content_moderation_profiles.api_key_secret,content_moderation_profiles.timeout_ms,content_moderation_profiles.keyword_mode,content_moderation_profiles.blocked_keywords_json,content_moderation_profiles.thresholds_json,content_moderation_profiles.scanners_json,content_moderation_profiles.controversial_action,content_moderation_profiles.elevated_categories_json,content_moderation_profiles.input_limit,content_moderation_profiles.max_chunks,content_moderation_profiles.block_http_status,content_moderation_profiles.block_message,content_moderation_profiles.keyword_fold_traditional_chinese,content_moderation_profiles.api_includes_tool_output,content_moderation_profiles.version,content_moderation_profiles.created_at,content_moderation_profiles.updated_at FROM content_moderation_profiles`
 
 func scanProfile(scanner interface{ Scan(...any) error }) (Profile, error) {
 	var profile Profile
 	var keywordsJSON, thresholdsJSON, scannersJSON, elevatedJSON, createdAt, updatedAt string
+	var foldTraditional, includeToolOutput int
 	if err := scanner.Scan(
 		&profile.TenantID, &profile.ID, &profile.Name, &profile.Mode, &profile.Backend, &profile.BaseURL, &profile.Model, &profile.APIKeySecret,
 		&profile.TimeoutMS, &profile.KeywordMode, &keywordsJSON, &thresholdsJSON, &scannersJSON, &profile.ControversialAction, &elevatedJSON,
 		&profile.InputLimit, &profile.MaxChunks, &profile.BlockHTTPStatus, &profile.BlockMessage,
+		&foldTraditional, &includeToolOutput,
 		&profile.Version, &createdAt, &updatedAt,
 	); err != nil {
 		return Profile{}, err
 	}
+	profile.KeywordFoldTraditionalChinese = foldTraditional != 0
+	profile.APIIncludesToolOutput = includeToolOutput != 0
 	if err := json.Unmarshal([]byte(keywordsJSON), &profile.BlockedKeywords); err != nil {
 		return Profile{}, fmt.Errorf("decode blocked keywords: %w", err)
 	}
@@ -407,6 +425,13 @@ func profileJSON(profile Profile) (profileJSONColumns, error) {
 }
 
 func formatTime(value time.Time) string { return value.UTC().Format(time.RFC3339Nano) }
+
+func boolColumn(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
+}
 
 func parseTime(value string) time.Time {
 	parsed, _ := time.Parse(time.RFC3339Nano, strings.TrimSpace(value))

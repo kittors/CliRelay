@@ -68,7 +68,7 @@ func (r managementMetricsResolver) ResolveProfile(context.Context, string, strin
 
 type managementMetricsEvaluator struct{}
 
-func (managementMetricsEvaluator) Evaluate(context.Context, contentmoderation.Profile, string) contentmoderation.Decision {
+func (managementMetricsEvaluator) Evaluate(context.Context, contentmoderation.Profile, contentmoderation.Input) contentmoderation.Decision {
 	return contentmoderation.Decision{Action: contentmoderation.ActionAllow}
 }
 
@@ -288,5 +288,108 @@ func TestProviderDeleteRemovesContentModerationBindings(t *testing.T) {
 	}
 	if _, _, err = store.ResolveProfile(context.Background(), tenantID, "", "11111111-1111-4111-8111-111111111111", ""); !errors.Is(err, contentmoderation.ErrNotFound) {
 		t.Fatalf("ResolveProfile error=%v, want ErrNotFound", err)
+	}
+}
+
+// The panel detects the text-coverage options by their presence in the profile
+// JSON, so they are always serialized. A save that omits them, as an older
+// panel release does, leaves them unchanged.
+func TestContentModerationProfileTextCoverageOptionsRoundTrip(t *testing.T) {
+	h, tenantID := setupContentModerationHandlerTest(t)
+	decodeProfile := func(t *testing.T, rec *httptest.ResponseRecorder) map[string]any {
+		t.Helper()
+		var body map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+			t.Fatalf("decode profile: %v (%s)", err, rec.Body.String())
+		}
+		return body
+	}
+	requireOptions := func(t *testing.T, body map[string]any, toolOutput, foldTraditional bool) {
+		t.Helper()
+		for key, want := range map[string]bool{"api_includes_tool_output": toolOutput, "keyword_fold_traditional_chinese": foldTraditional} {
+			got, present := body[key]
+			if !present || got != want {
+				t.Fatalf("%s = %v (present %v), want %v; body %v", key, got, present, want, body)
+			}
+		}
+	}
+
+	c, rec := moderationContext(tenantID, http.MethodPost, "/v0/management/content-moderation/profiles", `{"name":"coverage","api_includes_tool_output":true}`)
+	h.PostContentModerationProfile(c)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("POST status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	created := decodeProfile(t, rec)
+	requireOptions(t, created, true, false)
+	id := created["id"].(string)
+
+	c, rec = moderationContext(tenantID, http.MethodPatch, "/v0/management/content-moderation/profiles/"+id, `{"name":"renamed","version":1}`)
+	c.Params = gin.Params{{Key: "id", Value: id}}
+	h.PatchContentModerationProfile(c)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PATCH without options status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	requireOptions(t, decodeProfile(t, rec), true, false)
+
+	c, rec = moderationContext(tenantID, http.MethodPatch, "/v0/management/content-moderation/profiles/"+id,
+		`{"api_includes_tool_output":false,"keyword_fold_traditional_chinese":true,"version":2}`)
+	c.Params = gin.Params{{Key: "id", Value: id}}
+	h.PatchContentModerationProfile(c)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PATCH with options status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	requireOptions(t, decodeProfile(t, rec), false, true)
+
+	c, rec = moderationContext(tenantID, http.MethodGet, "/v0/management/content-moderation/profiles/"+id, "")
+	c.Params = gin.Params{{Key: "id", Value: id}}
+	h.GetContentModerationProfile(c)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	requireOptions(t, decodeProfile(t, rec), false, true)
+
+	// The list declares both fields, which is how the panel tells this build
+	// from an older one that would drop them.
+	c, rec = moderationContext(tenantID, http.MethodGet, "/v0/management/content-moderation/profiles", "")
+	h.GetContentModerationProfiles(c)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET list status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var list struct {
+		Items        []map[string]any `json:"items"`
+		Capabilities map[string]bool  `json:"capabilities"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	if !list.Capabilities["api_includes_tool_output"] || !list.Capabilities["keyword_fold_traditional_chinese"] || len(list.Items) != 1 {
+		t.Fatalf("list = %s", rec.Body.String())
+	}
+	requireOptions(t, list.Items[0], false, true)
+}
+
+// The test endpoint applies the same normalization as live traffic.
+func TestContentModerationProfileTestNormalizesInput(t *testing.T) {
+	h, tenantID := setupContentModerationHandlerTest(t)
+	profile, err := contentmoderation.NewProfile(tenantID, "profile-normalized-test", contentmoderation.CreateProfileInput{
+		Name:            "normalized test",
+		KeywordMode:     contentmoderation.KeywordModeKeywordOnly,
+		BlockedKeywords: []string{"blocked"},
+	}, time.Now())
+	if err != nil {
+		t.Fatalf("NewProfile: %v", err)
+	}
+	if err = h.contentModerationStore().CreateProfile(context.Background(), profile); err != nil {
+		t.Fatalf("CreateProfile: %v", err)
+	}
+	c, rec := moderationContext(tenantID, http.MethodPost, "/v0/management/content-moderation/profiles/"+profile.ID+"/test", `{"input":"contains BLO\u200bCKED text"}`)
+	c.Params = gin.Params{{Key: "id", Value: profile.ID}}
+	h.PostContentModerationProfileTest(c)
+	var decision contentmoderation.Decision
+	if err = json.Unmarshal(rec.Body.Bytes(), &decision); err != nil {
+		t.Fatalf("decode decision: %v", err)
+	}
+	if !decision.WouldBlock || decision.MatchedKeyword != "blocked" || decision.MatchedSource != "primary" {
+		t.Fatalf("decision = %#v", decision)
 	}
 }

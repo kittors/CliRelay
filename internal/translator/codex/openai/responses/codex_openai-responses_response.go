@@ -17,7 +17,7 @@ func ConvertCodexResponseToOpenAIResponses(ctx context.Context, modelName string
 		rawJSON = bytes.TrimSpace(rawJSON[5:])
 		if typeResult := gjson.GetBytes(rawJSON, "type"); typeResult.Exists() {
 			typeStr := typeResult.String()
-			if typeStr == "response.created" || typeStr == "response.in_progress" || typeStr == "response.completed" {
+			if typeStr == "response.created" || typeStr == "response.in_progress" || typeStr == "response.completed" || typeStr == "response.incomplete" {
 				if gjson.GetBytes(rawJSON, "response.instructions").Exists() {
 					instructions := gjson.GetBytes(originalRequestRawJSON, "instructions").String()
 					rawJSON, _ = sjson.SetBytes(rawJSON, "response.instructions", instructions)
@@ -34,8 +34,9 @@ func ConvertCodexResponseToOpenAIResponses(ctx context.Context, modelName string
 // from a non-streaming OpenAI Chat Completions response.
 func ConvertCodexResponseToOpenAIResponsesNonStream(_ context.Context, modelName string, originalRequestRawJSON, requestRawJSON, rawJSON []byte, _ *any) string {
 	rootResult := gjson.ParseBytes(rawJSON)
-	// Verify this is a response.completed event
-	if rootResult.Get("type").String() != "response.completed" {
+	// Verify this is the final event: response.completed, or response.incomplete
+	// for a reply the upstream cut short, which a Responses client reads as is.
+	if typ := rootResult.Get("type").String(); typ != "response.completed" && typ != "response.incomplete" {
 		return ""
 	}
 	responseResult := rootResult.Get("response")

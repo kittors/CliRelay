@@ -139,6 +139,7 @@ func uniqueRequestLogAPIKeyIDByKeyFromDB(db *sql.DB) map[string]string {
 			FROM request_logs
 			WHERE api_key_id = ''
 			  AND api_key != ''
+			  AND api_key NOT LIKE '%***%'
 		) AS missing ON missing.api_key = existing.api_key
 		WHERE existing.api_key_id != ''
 	`)
@@ -236,6 +237,8 @@ func backfillRequestLogAPIKeyIDs(db *sql.DB) {
 		return
 	}
 
+	// Only for rows that still hold a secret: a mask is shared by any two keys
+	// that start and end alike, so it cannot say which key a row belongs to.
 	keyToID := uniqueRequestLogAPIKeyIDByKeyFromDB(db)
 	if len(keyToID) == 0 {
 		return
@@ -248,11 +251,11 @@ func backfillRequestLogAPIKeyIDs(db *sql.DB) {
 			  AND api_key = ?
 		`, id, rawKey)
 		if err != nil {
-			log.Warnf("usage: backfill request_logs api_key_id by historical raw key failed for %q: %v", rawKey, err)
+			log.Warnf("usage: backfill request_logs api_key_id by historical raw key failed for %q: %v", MaskAPIKey(rawKey), err)
 			continue
 		}
 		if rows, rowsErr := result.RowsAffected(); rowsErr == nil && rows > 0 {
-			log.Infof("usage: backfilled api_key_id for %d request_logs by historical raw api_key=%q", rows, rawKey)
+			log.Infof("usage: backfilled api_key_id for %d request_logs by historical raw api_key=%q", rows, MaskAPIKey(rawKey))
 		}
 	}
 }

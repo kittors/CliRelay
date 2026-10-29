@@ -29,6 +29,7 @@ type RuntimeSnapshot struct {
 	Action           string   `json:"action"`
 	WouldBlock       bool     `json:"would_block"`
 	MatchedKeyword   string   `json:"matched_keyword,omitempty"`
+	MatchedSource    string   `json:"matched_source,omitempty"`
 	HighestCategory  string   `json:"highest_category,omitempty"`
 	HighestScore     *float64 `json:"highest_score,omitempty"`
 	// Safety and MatchedScanners describe a guard verdict; a guard can block
@@ -71,6 +72,7 @@ func (m *RuntimeModerator) setSnapshot(ctx context.Context, tenantID string, aut
 		Action:          decision.Action,
 		WouldBlock:      decision.WouldBlock,
 		MatchedKeyword:  decision.MatchedKeyword,
+		MatchedSource:   decision.MatchedSource,
 		HighestCategory: decision.HighestCategory,
 		Safety:          decision.Safety,
 		MatchedScanners: decision.MatchedScanners,
