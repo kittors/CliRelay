@@ -13,17 +13,13 @@ package registry
 
 // latestClaudeModels returns Claude models newer than the upstream static
 // snapshot. Unexported: callers use GetClaudeModels, which includes these.
+//
+// All of them take adaptive thinking only. How thinking is turned off is per
+// model, from Anthropic's model table: Opus 5.5 and Fable cannot turn it off,
+// Opus 5 accepts "disabled" only at effort "high" or below, Sonnet 5.5 rejects
+// "disabled" and uses "between_tools" (also "high" or below), and Sonnet 5
+// accepts "disabled" at every level.
 func latestClaudeModels() []*ModelInfo {
-	thinking := func() *ThinkingSupport {
-		return &ThinkingSupport{
-			Min:            1024,
-			Max:            128000,
-			ZeroAllowed:    true,
-			DynamicAllowed: false,
-			Levels:         []string{"low", "medium", "high", "xhigh", "max"},
-		}
-	}
-
 	return []*ModelInfo{
 		{
 			ID:                  "claude-opus-5-5",
@@ -35,7 +31,7 @@ func latestClaudeModels() []*ModelInfo {
 			Description:         "Latest generation Claude Opus frontier model",
 			ContextLength:       1000000,
 			MaxCompletionTokens: 128000,
-			Thinking:            thinking(),
+			Thinking:            adaptiveClaudeThinking(ClaudeThinkingAlwaysOn, ""),
 		},
 		{
 			ID:                  "claude-opus-5",
@@ -47,7 +43,7 @@ func latestClaudeModels() []*ModelInfo {
 			Description:         "Previous generation Claude Opus frontier model",
 			ContextLength:       1000000,
 			MaxCompletionTokens: 128000,
-			Thinking:            thinking(),
+			Thinking:            adaptiveClaudeThinking(ClaudeThinkingOffDisabled, "high"),
 		},
 		{
 			ID:                  "claude-sonnet-5-5",
@@ -59,7 +55,7 @@ func latestClaudeModels() []*ModelInfo {
 			Description:         "Latest generation Claude Sonnet balanced model",
 			ContextLength:       1000000,
 			MaxCompletionTokens: 128000,
-			Thinking:            thinking(),
+			Thinking:            adaptiveClaudeThinking(ClaudeThinkingOffBetweenTools, "high"),
 		},
 		{
 			ID:                  "claude-sonnet-5",
@@ -71,7 +67,7 @@ func latestClaudeModels() []*ModelInfo {
 			Description:         "Previous generation Claude Sonnet balanced model",
 			ContextLength:       1000000,
 			MaxCompletionTokens: 128000,
-			Thinking:            thinking(),
+			Thinking:            adaptiveClaudeThinking(ClaudeThinkingOffDisabled, ""),
 		},
 		{
 			ID:                  "claude-fable-5-1",
@@ -83,7 +79,7 @@ func latestClaudeModels() []*ModelInfo {
 			Description:         "Claude Fable long-horizon agentic model",
 			ContextLength:       1000000,
 			MaxCompletionTokens: 128000,
-			Thinking:            thinking(),
+			Thinking:            adaptiveClaudeThinking(ClaudeThinkingAlwaysOn, ""),
 		},
 		{
 			ID:                  "claude-fable-5",
@@ -95,7 +91,7 @@ func latestClaudeModels() []*ModelInfo {
 			Description:         "Claude Fable long-horizon agentic model",
 			ContextLength:       1000000,
 			MaxCompletionTokens: 128000,
-			Thinking:            thinking(),
+			Thinking:            adaptiveClaudeThinking(ClaudeThinkingAlwaysOn, ""),
 		},
 	}
 }

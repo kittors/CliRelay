@@ -201,7 +201,16 @@ func convertAutoToMidRange(config ThinkingConfig, support *registry.ThinkingSupp
 }
 
 // standardLevelOrder defines the canonical ordering of thinking levels from lowest to highest.
-var standardLevelOrder = []ThinkingLevel{LevelMinimal, LevelLow, LevelMedium, LevelHigh, LevelXHigh}
+// "max" is last so a model without it clamps "max" down to its highest level.
+var standardLevelOrder = []ThinkingLevel{LevelMinimal, LevelLow, LevelMedium, LevelHigh, LevelXHigh, LevelMax}
+
+// LevelAbove reports whether level ranks above ceiling in the standard order
+// minimal < low < medium < high < xhigh < max. Levels outside that order
+// (none, auto, unknown values) never rank above anything.
+func LevelAbove(level, ceiling ThinkingLevel) bool {
+	pos, limit := levelIndex(string(level)), levelIndex(string(ceiling))
+	return pos >= 0 && limit >= 0 && pos > limit
+}
 
 // clampLevel clamps the given level to the nearest supported level.
 // On tie, prefers the lower level.

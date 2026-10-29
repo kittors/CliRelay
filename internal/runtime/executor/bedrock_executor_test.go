@@ -79,7 +79,7 @@ func TestPrepareBedrockRequestBody_AdaptsClaudePayload(t *testing.T) {
 		"output_config": {"enabled": true}
 	}`)
 
-	got, err := prepareBedrockRequestBody(input, "us.anthropic.claude-sonnet-4-5-20250929-v1:0", []string{"fine-grained-tool-streaming-2025-05-14"})
+	got, err := prepareBedrockRequestBody(input, "us.anthropic.claude-sonnet-4-5-20250929-v1:0", []string{"fine-grained-tool-streaming-2025-05-14"}, false)
 	if err != nil {
 		t.Fatalf("prepareBedrockRequestBody() error = %v", err)
 	}
@@ -101,6 +101,54 @@ func TestPrepareBedrockRequestBody_AdaptsClaudePayload(t *testing.T) {
 	} {
 		if gjson.GetBytes(got, path).Exists() {
 			t.Fatalf("expected %s to be removed from body: %s", path, got)
+		}
+	}
+}
+
+// Effort is the only depth control adaptive-only Claude models take, so it has
+// to survive the cleanup for them while the rest of output_config still goes.
+func TestPrepareBedrockRequestBody_KeepsEffortForAdaptiveModels(t *testing.T) {
+	input := []byte(`{"model":"claude-opus-4-7","thinking":{"type":"adaptive","display":"summarized"},"output_config":{"effort":"xhigh","format":{"type":"json_schema"}},"messages":[]}`)
+
+	kept, err := prepareBedrockRequestBody(input, "us.anthropic.claude-opus-4-7-v1", nil, true)
+	if err != nil {
+		t.Fatalf("prepareBedrockRequestBody() error = %v", err)
+	}
+	if got := gjson.GetBytes(kept, "output_config").Raw; got != `{"effort":"xhigh"}` {
+		t.Fatalf("output_config = %s, want only the effort", got)
+	}
+	if got := gjson.GetBytes(kept, "thinking.type").String(); got != "adaptive" {
+		t.Fatalf("thinking.type = %q", got)
+	}
+
+	dropped, err := prepareBedrockRequestBody(input, "us.anthropic.claude-opus-4-7-v1", nil, false)
+	if err != nil {
+		t.Fatalf("prepareBedrockRequestBody() error = %v", err)
+	}
+	if gjson.GetBytes(dropped, "output_config").Exists() {
+		t.Fatalf("output_config kept without keepEffort: %s", dropped)
+	}
+
+	noEffort, err := prepareBedrockRequestBody([]byte(`{"output_config":{"format":{"type":"json_schema"}}}`), "us.anthropic.claude-opus-4-7-v1", nil, true)
+	if err != nil {
+		t.Fatalf("prepareBedrockRequestBody() error = %v", err)
+	}
+	if gjson.GetBytes(noEffort, "output_config").Exists() {
+		t.Fatalf("output_config recreated without an effort: %s", noEffort)
+	}
+}
+
+func TestBedrockKeepsEffortOnlyForAdaptiveModels(t *testing.T) {
+	for model, want := range map[string]bool{
+		"claude-opus-4-7":   true,
+		"claude-opus-4-8":   true,
+		"claude-opus-5-5":   true,
+		"claude-sonnet-5-5": true,
+		"claude-opus-4-6":   false,
+		"claude-sonnet-4-5": false,
+	} {
+		if got := bedrockKeepsEffort(model); got != want {
+			t.Errorf("bedrockKeepsEffort(%q) = %v, want %v", model, got, want)
 		}
 	}
 }

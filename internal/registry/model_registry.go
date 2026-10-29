@@ -72,6 +72,10 @@ type ThinkingSupport struct {
 	// Levels defines discrete reasoning effort levels (e.g., "low", "medium", "high").
 	// When set, the model uses level-based reasoning instead of token budgets.
 	Levels []string `json:"levels,omitempty"`
+	// Adaptive is set for Claude models that only take adaptive thinking with
+	// output_config.effort (Opus 4.7 and later) and says how each one turns
+	// thinking off. Nil for every other model.
+	Adaptive *AdaptiveThinking `json:"adaptive,omitempty"`
 }
 
 // ModelRegistration tracks a model's availability
