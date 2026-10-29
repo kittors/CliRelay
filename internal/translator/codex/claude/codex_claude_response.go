@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"strings"
 
+	translatorcommon "github.com/router-for-me/CLIProxyAPI/v6/internal/translator/common"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -150,18 +151,10 @@ func ConvertCodexResponseToClaude(_ context.Context, _ string, originalRequestRa
 		if params.OpenBlockType == codexClaudeTextBlock {
 			output += closeCodexClaudeContentBlock(params)
 		}
-	} else if typeStr == "response.completed" {
+	} else if typeStr == "response.completed" || typeStr == "response.incomplete" {
 		output += closeCodexClaudeContentBlock(params)
-		template = `{"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null},"usage":{"input_tokens":0,"output_tokens":0}}`
-		p := params.HasToolCall
-		stopReason := rootResult.Get("response.stop_reason").String()
-		if p {
-			template, _ = sjson.Set(template, "delta.stop_reason", "tool_use")
-		} else if stopReason == "max_tokens" || stopReason == "stop" {
-			template, _ = sjson.Set(template, "delta.stop_reason", stopReason)
-		} else {
-			template, _ = sjson.Set(template, "delta.stop_reason", "end_turn")
-		}
+		template = `{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"input_tokens":0,"output_tokens":0}}`
+		template, _ = sjson.Set(template, "delta.stop_reason", codexClaudeStopReason(rootResult.Get("response"), params.HasToolCall))
 		inputTokens, outputTokens, cachedTokens := extractResponsesUsage(rootResult.Get("response.usage"))
 		template, _ = sjson.Set(template, "usage.input_tokens", inputTokens)
 		template, _ = sjson.Set(template, "usage.output_tokens", outputTokens)
@@ -340,7 +333,7 @@ func ConvertCodexResponseToClaudeNonStream(_ context.Context, _ string, original
 	revNames := buildReverseMapFromClaudeOriginalShortToOriginal(originalRequestRawJSON)
 
 	rootResult := gjson.ParseBytes(rawJSON)
-	if rootResult.Get("type").String() != "response.completed" {
+	if typ := rootResult.Get("type").String(); typ != "response.completed" && typ != "response.incomplete" {
 		return ""
 	}
 
@@ -455,17 +448,7 @@ func ConvertCodexResponseToClaudeNonStream(_ context.Context, _ string, original
 		})
 	}
 
-	if stopReason := responseData.Get("stop_reason"); stopReason.Exists() && stopReason.String() != "" {
-		if stopReason.String() == "tool_use" && !hasToolCall {
-			out, _ = sjson.Set(out, "stop_reason", "end_turn")
-		} else {
-			out, _ = sjson.Set(out, "stop_reason", stopReason.String())
-		}
-	} else if hasToolCall {
-		out, _ = sjson.Set(out, "stop_reason", "tool_use")
-	} else {
-		out, _ = sjson.Set(out, "stop_reason", "end_turn")
-	}
+	out, _ = sjson.Set(out, "stop_reason", codexClaudeStopReason(responseData, hasToolCall))
 
 	if stopSequence := responseData.Get("stop_sequence"); stopSequence.Exists() && stopSequence.String() != "" {
 		out, _ = sjson.SetRaw(out, "stop_sequence", stopSequence.Raw)
@@ -520,4 +503,30 @@ func buildReverseMapFromClaudeOriginalShortToOriginal(original []byte) map[strin
 
 func ClaudeTokenCount(ctx context.Context, count int64) string {
 	return fmt.Sprintf(`{"input_tokens":%d}`, count)
+}
+
+// codexClaudeStopReason is the Anthropic stop_reason for a finished Responses
+// response. An incomplete response says why it stopped early, which wins: a
+// reply cut off in the middle of a tool call stops for max_tokens, as
+// Anthropic's own would. Otherwise a reply that called tools stops for tool use.
+// Some Responses-compatible upstreams add a stop_reason field of their own:
+// one of Anthropic's names goes on as it is (stop_sequence among them), and
+// OpenAI's are mapped; anything else ends the turn.
+func codexClaudeStopReason(response gjson.Result, hasToolCall bool) string {
+	reason := translatorcommon.StopReasonFromResponses(response.Get("status").String(), response.Get("incomplete_details.reason").String())
+	if reason != translatorcommon.StopEndTurn {
+		return reason.Claude()
+	}
+	if hasToolCall {
+		return translatorcommon.StopToolUse.Claude()
+	}
+	native := response.Get("stop_reason").String()
+	switch reason = translatorcommon.StopReasonFromClaude(native); {
+	case reason == translatorcommon.StopToolUse:
+		// A stop_reason naming tool use with no tool call in the reply.
+		return translatorcommon.StopEndTurn.Claude()
+	case translatorcommon.IsClaudeStopReason(native):
+		return native
+	}
+	return reason.Claude()
 }

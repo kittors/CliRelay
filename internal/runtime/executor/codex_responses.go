@@ -193,8 +193,17 @@ func extractCodexResponsesOutputItemDone(payload []byte) ([]byte, string, bool) 
 	return []byte(item.Raw), key, true
 }
 
+// codexResponseFinished reports whether eventType ends a Responses stream with a
+// reply: response.completed, or response.incomplete for one the upstream cut
+// short (max_output_tokens, content_filter). The translators turn the latter
+// into the client's own reason for a cut-short reply, so it is a result to
+// pass on, not an error.
+func codexResponseFinished(eventType string) bool {
+	return eventType == "response.completed" || eventType == "response.incomplete"
+}
+
 func mergeCodexResponsesCompletedOutput(payload []byte, pendingItems [][]byte, pendingKeys []string) []byte {
-	if len(pendingItems) == 0 || gjson.GetBytes(payload, "type").String() != "response.completed" {
+	if len(pendingItems) == 0 || !codexResponseFinished(gjson.GetBytes(payload, "type").String()) {
 		return payload
 	}
 

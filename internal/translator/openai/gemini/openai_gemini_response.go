@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 
+	translatorcommon "github.com/router-for-me/CLIProxyAPI/v6/internal/translator/common"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -206,7 +207,7 @@ func ConvertOpenAIResponseToGemini(_ context.Context, _ string, originalRequestR
 
 			// Handle finish reason
 			if finishReason := choice.Get("finish_reason"); finishReason.Exists() {
-				geminiFinishReason := mapOpenAIFinishReasonToGemini(finishReason.String())
+				geminiFinishReason := translatorcommon.StopReasonFromOpenAI(finishReason.String()).Gemini()
 				template, _ = sjson.Set(template, "candidates.0.finishReason", geminiFinishReason)
 
 				// If we have accumulated tool calls, output them now
@@ -245,22 +246,6 @@ func ConvertOpenAIResponseToGemini(_ context.Context, _ string, originalRequestR
 		return results
 	}
 	return []string{}
-}
-
-// mapOpenAIFinishReasonToGemini maps OpenAI finish reasons to Gemini finish reasons
-func mapOpenAIFinishReasonToGemini(openAIReason string) string {
-	switch openAIReason {
-	case "stop":
-		return "STOP"
-	case "length":
-		return "MAX_TOKENS"
-	case "tool_calls":
-		return "STOP" // Gemini doesn't have a specific tool_calls finish reason
-	case "content_filter":
-		return "SAFETY"
-	default:
-		return "STOP"
-	}
 }
 
 // parseArgsToObjectRaw safely parses a JSON string of function arguments into an object JSON string.
@@ -596,7 +581,7 @@ func ConvertOpenAIResponseToGeminiNonStream(_ context.Context, _ string, origina
 
 			// Handle finish reason
 			if finishReason := choice.Get("finish_reason"); finishReason.Exists() {
-				geminiFinishReason := mapOpenAIFinishReasonToGemini(finishReason.String())
+				geminiFinishReason := translatorcommon.StopReasonFromOpenAI(finishReason.String()).Gemini()
 				out, _ = sjson.Set(out, "candidates.0.finishReason", geminiFinishReason)
 			}
 
