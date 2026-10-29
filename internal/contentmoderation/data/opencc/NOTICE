@@ -1,0 +1,12 @@
+This directory contains data from Open Chinese Convert (OpenCC).
+
+  Project:  https://github.com/BYVoid/OpenCC
+  File:     data/dictionary/TSCharacters.txt (Traditional -> Simplified, per character)
+  Commit:   9e9d730659fc7db366b43b4437b307444d87e23e (2026-10-28)
+  SHA-256:  9ff46a7d30e5765375eb13d33f2b03a34d298913caf2b120380679f33ae1642d
+  License:  Apache License 2.0, reproduced in LICENSE next to this file.
+
+TSCharacters.txt is included unmodified. CliRelay embeds it into the binary
+(internal/contentmoderation/normalize.go) and reads the first candidate of
+each single-character entry to fold Traditional Chinese into Simplified before
+keyword matching, when a content moderation profile enables that option.

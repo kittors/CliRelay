@@ -2,7 +2,6 @@ package contentmoderation
 
 import (
 	"context"
-	"crypto/sha256"
 	"errors"
 	"fmt"
 	"strings"
@@ -21,7 +20,7 @@ type ProfileResolver interface {
 }
 
 type DecisionEvaluator interface {
-	Evaluate(ctx context.Context, profile Profile, input string) Decision
+	Evaluate(ctx context.Context, profile Profile, input Input) Decision
 }
 
 type RuntimeModerator struct {
@@ -223,8 +222,8 @@ func (m *RuntimeModerator) Moderate(ctx context.Context, auth *coreauth.Auth, op
 		return coreauth.RequestModerationResult{}
 	}
 
-	input := ExtractModeratableText(opts.SourceFormat, opts.OriginalRequest)
-	if input == "" {
+	input := ExtractModerationInput(opts.SourceFormat, opts.OriginalRequest)
+	if input.Empty() {
 		counters.allows.Add(1)
 		decision := Decision{Action: ActionAllow}
 		m.setSnapshot(ctx, tenantID, auth, resolved.source, profile, decision, false, false)
@@ -320,6 +319,7 @@ func (m *RuntimeModerator) logDecision(tenantID string, auth *coreauth.Auth, sou
 	if decision.Action == ActionKeywordBlock {
 		fields["category"] = "keyword"
 		fields["score"] = 1.0
+		fields["matched_source"] = decision.MatchedSource
 	} else if decision.HighestCategory != "" {
 		fields["category"] = decision.HighestCategory
 		fields["score"] = decision.HighestScore
@@ -396,20 +396,21 @@ func runtimeChannelIDs(auth *coreauth.Auth) (authFileID, providerKeyID, provider
 	return authFileID, providerKeyID, providerID
 }
 
-func moderationAPIPath(profile Profile, input string) bool {
-	if profile.Mode != ModePreBlock || profile.KeywordMode == KeywordModeKeywordOnly || strings.TrimSpace(input) == "" {
+// moderationAPIPath predicts whether Evaluate will call the backend, so the
+// in-flight gauge and latency samples count backend calls only. The keyword
+// verdict is memoized on the input, so the evaluator does not scan again.
+func moderationAPIPath(profile Profile, input Input) bool {
+	if profile.Mode != ModePreBlock || profile.KeywordMode == KeywordModeKeywordOnly || !input.hasBackendText(profile.APIIncludesToolOutput) {
 		return false
 	}
 	if profile.KeywordMode == KeywordModeKeywordAndAPI {
-		_, keywordHit := matchKeyword(input, profile.BlockedKeywords)
-		return !keywordHit
+		return !input.matchKeywords(profileKeywordSet(profile)).matched
 	}
 	return true
 }
 
-func decisionCacheKey(profile Profile, input string) string {
-	hash := sha256.Sum256([]byte(input))
-	return fmt.Sprintf("%s:%d:%x", profile.ID, profile.Version, hash)
+func decisionCacheKey(profile Profile, input Input) string {
+	return fmt.Sprintf("%s:%d:%x", profile.ID, profile.Version, input.digest())
 }
 
 func decisionCacheFromMetadata(metadata map[string]any) *requestDecisionCache {

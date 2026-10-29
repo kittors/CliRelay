@@ -7,7 +7,25 @@ import (
 	"fmt"
 	"net/http"
 	"time"
+	"unicode/utf8"
+
+	log "github.com/sirupsen/logrus"
 )
+
+// openAIModerationMaxInputChars caps the text sent in one moderations call.
+//
+// OpenAI documents no text length limit for omni-moderation-latest: the model
+// page, the moderation guide and the API reference (checked 2026-10-29) only
+// limit image size. Third-party model catalogs list a 32,768-token context,
+// and the model page's default rate limits are 10,000 tokens per minute on the
+// free tier and 20,000 on the first paid tier, which a single oversized call
+// can exceed by itself. Either failure used to fail open, so an over-long
+// request went unmoderated. 8,000 characters stays inside 32,768 tokens even
+// at four tokens per character, the worst case for rare CJK characters and
+// emoji, and is a small share of a paid tier's minute budget. The older OpenAI
+// guide also advised chunks under about 2,000 characters for accuracy, so this
+// is not a limit to raise lightly.
+const openAIModerationMaxInputChars = 8000
 
 // openaiModerationsBackend targets the OpenAI /v1/moderations API, which
 // returns a per-category score map compared against the profile thresholds.
@@ -15,7 +33,16 @@ type openaiModerationsBackend struct {
 	httpClient *http.Client
 }
 
-func (b *openaiModerationsBackend) Check(ctx context.Context, profile Profile, input string) (backendResult, error) {
+func (b *openaiModerationsBackend) Check(ctx context.Context, profile Profile, segments []Segment) (backendResult, error) {
+	// One string per call: a single input keeps OpenAI-compatible endpoints
+	// that do not accept the array form working. Past the cap, the oldest text
+	// is skipped and the newest user message always stays in.
+	input, skipped := selectNewestText(segments, openAIModerationMaxInputChars)
+	if input == "" {
+		return backendResult{}, nil
+	}
+	logSkipped(profile, skipped, utf8.RuneCountInString(input), "content moderation skipped the oldest input before openai moderations scan",
+		log.Fields{"max_input_chars": openAIModerationMaxInputChars})
 	endpoint, err := moderationEndpointURL(profile.BaseURL, "/v1/moderations")
 	if err != nil {
 		return backendResult{}, err

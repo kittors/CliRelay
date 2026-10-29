@@ -68,7 +68,15 @@ func (h *Handler) GetContentModerationProfiles(c *gin.Context) {
 	for _, profile := range profiles {
 		items = append(items, contentModerationProfileView(profile, counts[profile.ID]))
 	}
-	c.JSON(http.StatusOK, gin.H{"items": items})
+	c.JSON(http.StatusOK, gin.H{"items": items, "capabilities": contentModerationProfileCapabilities()})
+}
+
+// contentModerationProfileCapabilities lists the profile fields this build
+// stores beyond the original set. The panel updates itself from the latest
+// release and may run against an older backend, which silently drops fields it
+// does not know, so it only offers a field listed here.
+func contentModerationProfileCapabilities() gin.H {
+	return gin.H{"keyword_fold_traditional_chinese": true, "api_includes_tool_output": true}
 }
 
 func (h *Handler) PostContentModerationProfile(c *gin.Context) {
