@@ -32,11 +32,20 @@ type ModelInfo struct {
 
 // ThinkingSupport describes a model family's supported reasoning budget range.
 type ThinkingSupport struct {
-	Min            int      `json:"min,omitempty"`
-	Max            int      `json:"max,omitempty"`
-	ZeroAllowed    bool     `json:"zero_allowed,omitempty"`
-	DynamicAllowed bool     `json:"dynamic_allowed,omitempty"`
-	Levels         []string `json:"levels,omitempty"`
+	Min            int               `json:"min,omitempty"`
+	Max            int               `json:"max,omitempty"`
+	ZeroAllowed    bool              `json:"zero_allowed,omitempty"`
+	DynamicAllowed bool              `json:"dynamic_allowed,omitempty"`
+	Levels         []string          `json:"levels,omitempty"`
+	Adaptive       *AdaptiveThinking `json:"adaptive,omitempty"`
+}
+
+// AdaptiveThinking marks a Claude model that only takes adaptive thinking with
+// output_config.effort and records how it turns thinking off. It mirrors the
+// registry type of the same name.
+type AdaptiveThinking struct {
+	Off         string `json:"off,omitempty"`
+	OffMaxLevel string `json:"off_max_level,omitempty"`
 }
 
 // RegistryHook observes shared model registry changes.

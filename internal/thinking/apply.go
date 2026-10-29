@@ -118,7 +118,7 @@ func ApplyThinking(body []byte, model string, fromFormat string, toFormat string
 		return applyUserDefinedModel(body, modelInfo, fromFormat, providerFormat, suffixResult)
 	}
 	if modelInfo.Thinking == nil {
-		config := extractThinkingConfig(body, providerFormat)
+		config := extractThinkingConfigForModel(body, providerFormat, modelInfo)
 		if hasThinkingConfig(config) {
 			log.WithFields(log.Fields{
 				"model":    baseModel,
@@ -145,7 +145,7 @@ func ApplyThinking(body []byte, model string, fromFormat string, toFormat string
 			"level":    config.Level,
 		}).Debug("thinking: config from model suffix |")
 	} else {
-		config = extractThinkingConfig(body, providerFormat)
+		config = extractThinkingConfigForModel(body, providerFormat, modelInfo)
 		if hasThinkingConfig(config) {
 			log.WithFields(log.Fields{
 				"provider": providerFormat,
@@ -257,7 +257,7 @@ func applyUserDefinedModel(body []byte, modelInfo *registry.ModelInfo, fromForma
 	if suffixResult.HasSuffix {
 		config = parseSuffixToConfig(suffixResult.RawSuffix, toFormat, modelID)
 	} else {
-		config = extractThinkingConfig(body, toFormat)
+		config = extractThinkingConfigForModel(body, toFormat, modelInfo)
 	}
 
 	if !hasThinkingConfig(config) {
@@ -285,11 +285,18 @@ func applyUserDefinedModel(body []byte, modelInfo *registry.ModelInfo, fromForma
 		"level":    config.Level,
 	}).Debug("thinking: applying config for user-defined model (skip validation)")
 
-	config = normalizeUserDefinedConfig(config, fromFormat, toFormat)
+	config = normalizeUserDefinedConfig(config, modelInfo, fromFormat, toFormat)
 	return applier.Apply(body, config, modelInfo)
 }
 
-func normalizeUserDefinedConfig(config ThinkingConfig, fromFormat, toFormat string) ThinkingConfig {
+func normalizeUserDefinedConfig(config ThinkingConfig, modelInfo *registry.ModelInfo, fromFormat, toFormat string) ThinkingConfig {
+	if toFormat == "claude" && AdaptiveThinkingOf(modelInfo) != nil {
+		// A configured model whose upstream name is an adaptive-only Claude
+		// model (its Thinking comes from the static catalog). The translators
+		// write every effort as budget_tokens, which these models reject, so
+		// turn it back into a level instead of the other way round.
+		return adaptiveLevelConfig(config, modelInfo, toFormat)
+	}
 	if config.Mode != ModeLevel {
 		return config
 	}
@@ -300,9 +307,82 @@ func normalizeUserDefinedConfig(config ThinkingConfig, fromFormat, toFormat stri
 	if !ok {
 		return config
 	}
+	// "max" converts to the largest Claude budget. When the upstream name
+	// resolved to a catalog model, its own ceiling is what "max" means there
+	// (Gemini 2.5 Pro stops at 32768).
+	if modelInfo != nil && modelInfo.Thinking != nil && modelInfo.Thinking.Max > 0 && budget > modelInfo.Thinking.Max {
+		budget = modelInfo.Thinking.Max
+	}
 	config.Mode = ModeBudget
 	config.Budget = budget
 	config.Level = ""
+	return config
+}
+
+// adaptiveLevelConfig converts a budget to the nearest level the model lists
+// and moves a level onto that list the same way; budgets 0 and -1 become
+// ModeNone and ModeAuto. A level outside the standard order is left for the
+// upstream to judge.
+func adaptiveLevelConfig(config ThinkingConfig, modelInfo *registry.ModelInfo, provider string) ThinkingConfig {
+	switch config.Mode {
+	case ModeLevel:
+		config.Level = clampLevel(config.Level, modelInfo, provider)
+		return config
+	case ModeBudget:
+	default:
+		return config
+	}
+	level, ok := ConvertBudgetToLevel(config.Budget)
+	if !ok {
+		return config
+	}
+	switch ThinkingLevel(level) {
+	case LevelNone:
+		return ThinkingConfig{Mode: ModeNone}
+	case LevelAuto:
+		return ThinkingConfig{Mode: ModeAuto, Budget: -1}
+	}
+	return ThinkingConfig{Mode: ModeLevel, Level: clampLevel(ThinkingLevel(level), modelInfo, provider)}
+}
+
+// AdaptiveThinkingOf returns how a Claude model that only takes adaptive
+// thinking turns thinking off, or nil for every other model.
+func AdaptiveThinkingOf(modelInfo *registry.ModelInfo) *registry.AdaptiveThinking {
+	if modelInfo == nil || modelInfo.Thinking == nil {
+		return nil
+	}
+	return modelInfo.Thinking.Adaptive
+}
+
+// extractThinkingConfigForModel extracts the thinking config the way the target
+// model reads it. For Claude:
+//   - thinking.type "adaptive" is forwarded untouched on every model. It is
+//     already what the adaptive-only models take, Opus 4.6 and Sonnet 4.6
+//     accept it too (turning it into a budget would drop the interleaved
+//     thinking it enables), and the upstream is the one to judge its effort.
+//   - "between_tools" is read as thinking off only for adaptive models, which
+//     then get their own off switch; for the rest it passes through as before.
+//   - On adaptive models an explicit output_config.effort beats a budget sent
+//     next to it: effort is the only depth control they have.
+func extractThinkingConfigForModel(body []byte, provider string, modelInfo *registry.ModelInfo) ThinkingConfig {
+	config := extractThinkingConfig(body, provider)
+	if provider != "claude" {
+		return config
+	}
+	adaptive := AdaptiveThinkingOf(modelInfo) != nil
+	switch gjson.GetBytes(body, "thinking.type").String() {
+	case "adaptive":
+		return ThinkingConfig{}
+	case "between_tools":
+		if !adaptive {
+			return ThinkingConfig{}
+		}
+	}
+	if adaptive && (config.Mode == ModeBudget || config.Mode == ModeAuto) {
+		if effort := strings.TrimSpace(gjson.GetBytes(body, "output_config.effort").String()); effort != "" {
+			return ThinkingConfig{Mode: ModeLevel, Level: ThinkingLevel(effort)}
+		}
+	}
 	return config
 }
 
@@ -342,16 +422,27 @@ func hasThinkingConfig(config ThinkingConfig) bool {
 // extractClaudeConfig extracts thinking configuration from Claude format request body.
 //
 // Claude API format:
-//   - thinking.type: "enabled" or "disabled"
+//   - thinking.type: "enabled", "disabled", "adaptive" or "between_tools"
 //   - thinking.budget_tokens: integer (-1=auto, 0=disabled, >0=budget)
+//   - output_config.effort: level used with thinking.type="adaptive"
 //
 // Priority: thinking.type="disabled" takes precedence over budget_tokens.
 // When type="enabled" without budget_tokens, returns ModeAuto to indicate
-// the user wants thinking enabled but didn't specify a budget.
+// the user wants thinking enabled but didn't specify a budget. "adaptive"
+// reads as the effort level, or ModeAuto without one; "between_tools" is
+// Claude Sonnet 5.5's thinking-off setting. An effort without adaptive
+// thinking is not a thinking config: on Opus 4.7 and 4.8 it sets effort while
+// thinking stays off.
 func extractClaudeConfig(body []byte) ThinkingConfig {
 	thinkingType := gjson.GetBytes(body, "thinking.type").String()
-	if thinkingType == "disabled" {
+	switch thinkingType {
+	case "disabled", "between_tools":
 		return ThinkingConfig{Mode: ModeNone, Budget: 0}
+	case "adaptive":
+		if effort := strings.TrimSpace(gjson.GetBytes(body, "output_config.effort").String()); effort != "" {
+			return ThinkingConfig{Mode: ModeLevel, Level: ThinkingLevel(effort)}
+		}
+		return ThinkingConfig{Mode: ModeAuto, Budget: -1}
 	}
 
 	// Check budget_tokens
