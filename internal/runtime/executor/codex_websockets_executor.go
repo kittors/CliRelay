@@ -161,6 +161,8 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 	if respHS != nil {
 		recorder.RecordResponseMetadata(respHS.StatusCode, respHS.Header.Clone())
 	}
+	chatGPTBackend := isCodexChatGPTBackendBaseURL(auth, baseURL)
+	observeCodexWebsocketHandshake(execCtx.Context, chatGPTBackend, respHS)
 	if errDial != nil {
 		bodyErr := websocketHandshakeBody(respHS)
 		if len(bodyErr) > 0 {
@@ -259,6 +261,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 			continue
 		}
 		recorder.AppendResponseChunk(payload)
+		observeCodexWebsocketMessage(execCtx.Context, chatGPTBackend, payload)
 
 		if wsErr, ok := parseCodexWebsocketError(payload); ok {
 			if sess != nil {
@@ -361,6 +364,8 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 		upstreamHeaders = respHS.Header.Clone()
 		recorder.RecordResponseMetadata(respHS.StatusCode, respHS.Header.Clone())
 	}
+	chatGPTBackend := isCodexChatGPTBackendBaseURL(auth, baseURL)
+	observeCodexWebsocketHandshake(execCtx.Context, chatGPTBackend, respHS)
 	if errDial != nil {
 		bodyErr := websocketHandshakeBody(respHS)
 		if len(bodyErr) > 0 {
@@ -506,6 +511,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 				continue
 			}
 			recorder.AppendResponseChunk(payload)
+			observeCodexWebsocketMessage(execCtx.Context, chatGPTBackend, payload)
 
 			if wsErr, ok := parseCodexWebsocketError(payload); ok {
 				terminateReason = "upstream_error"

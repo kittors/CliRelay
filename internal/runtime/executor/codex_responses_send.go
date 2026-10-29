@@ -29,7 +29,19 @@ const codexErrorPeekBytes = 64 << 10
 //     reasoning instead of failing a turn the model could have answered.
 //
 // fallbackBody is logged when the request body cannot be read back.
+//
+// Whatever comes back, the quota windows it reports are passed on to the
+// scheduler (codex_rate_limits.go). That is done here, once, for every kind of
+// Responses call, and only for the answer the caller actually receives.
 func (e *CodexExecutor) doCodexResponses(execCtx *ExecutionContext, recorder UpstreamRecorder, httpReq *http.Request, fallbackBody []byte) (*http.Response, error) {
+	resp, err := e.sendCodexResponses(execCtx, recorder, httpReq, fallbackBody)
+	if err == nil {
+		observeCodexRateLimits(execCtx.Context, execCtx.Auth, httpReq.URL, resp)
+	}
+	return resp, err
+}
+
+func (e *CodexExecutor) sendCodexResponses(execCtx *ExecutionContext, recorder UpstreamRecorder, httpReq *http.Request, fallbackBody []byte) (*http.Response, error) {
 	auth := execCtx.Auth
 	plain := codexRequestPlainBody(httpReq)
 	if plain == nil {

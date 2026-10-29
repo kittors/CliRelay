@@ -3,7 +3,6 @@ package aiaccountstatus
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"sort"
 	"strings"
@@ -94,19 +93,16 @@ func parseCodexWhamQuotas(body []byte) []usage.QuotaWindowDTO {
 				}
 			}
 		}
+		// The key and label come from usage.CodexQuotaWindowKey, the same function
+		// the live path uses for windows read off request responses, so a window
+		// reported by either lands on the same card entry.
 		if fiveHour.Exists() {
-			label := "m_quota.code_5h"
-			if prefix == "review" {
-				label = "m_quota.review_5h"
-			}
-			items = append(items, codexWindowDTO(limit, fiveHour, prefix+"_5h", label, 18000))
+			key, label := usage.CodexQuotaWindowKey(prefix, 18000)
+			items = append(items, codexWindowDTO(limit, fiveHour, key, label, 18000))
 		}
 		if weekly.Exists() {
-			label := "m_quota.code_weekly"
-			if prefix == "review" {
-				label = "m_quota.review_weekly"
-			}
-			items = append(items, codexWindowDTO(limit, weekly, prefix+"_week", label, 604800))
+			key, label := usage.CodexQuotaWindowKey(prefix, 604800)
+			items = append(items, codexWindowDTO(limit, weekly, key, label, 604800))
 		}
 		if !includeNonStandard {
 			return
@@ -116,11 +112,7 @@ func parseCodexWhamQuotas(body []byte) []usage.QuotaWindowDTO {
 			if seconds <= 0 || seconds == 18000 || seconds == 604800 {
 				continue
 			}
-			label := "m_quota.code_subscription"
-			if prefix == "review" {
-				label = "m_quota.review_subscription"
-			}
-			key := fmt.Sprintf("%s_subscription_%d", prefix, seconds)
+			key, label := usage.CodexQuotaWindowKey(prefix, seconds)
 			items = append(items, codexWindowDTO(limit, window, key, label, seconds))
 		}
 	}
