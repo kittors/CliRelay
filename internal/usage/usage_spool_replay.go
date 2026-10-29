@@ -185,6 +185,9 @@ func (r *usageSpoolReplayer) replayLine(seg usageSpoolSegment, line []byte, comp
 		log.Errorf("usage: skipped an unreadable record in spool segment %s: %v", seg.path, err)
 		return nil
 	}
+	// A record spooled by a build that did not scrub content yet still holds
+	// it as it arrived; scrubbing is a no-op for everything spooled since.
+	entry = scrubRequestLogContent(entry)
 	if age := time.Since(record.SpooledAt); age > requestLogIdempotencyRetention {
 		log.Warnf("usage: replaying request log %s spooled %s ago, past the %s duplicate-detection window; if its first attempt had in fact committed it is now counted twice",
 			record.Key, age.Round(time.Minute), requestLogIdempotencyRetention)

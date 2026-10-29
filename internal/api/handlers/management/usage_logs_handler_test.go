@@ -624,7 +624,10 @@ func TestGetLogContent_ReturnsRequestDetailsPart(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("unmarshal response: %v", err)
 	}
-	if payload.Part != "details" || payload.Content != details {
+	// Credentials are scrubbed when the log is written; the rest comes back
+	// as stored.
+	want := strings.NewReplacer("sk-client-plaintext", "[REDACTED:authorization]", "sk-upstream-plaintext", "[REDACTED:authorization]").Replace(details)
+	if payload.Part != "details" || payload.Content != want {
 		t.Fatalf("unexpected details payload: %+v", payload)
 	}
 }

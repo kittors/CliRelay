@@ -693,8 +693,11 @@ func TestQueryLogContentPartReturnsStoredRequestDetails(t *testing.T) {
 	if part.Part != "details" {
 		t.Fatalf("part.Part = %q, want details", part.Part)
 	}
-	if part.Content != details {
-		t.Fatalf("details content = %q, want %q", part.Content, details)
+	// Credentials are scrubbed when the entry is written (see
+	// scrubRequestLogContent); everything else comes back as stored.
+	want := strings.NewReplacer("sk-client-plaintext", "[REDACTED:authorization]", "sk-upstream-plaintext", "[REDACTED:authorization]").Replace(details)
+	if part.Content != want {
+		t.Fatalf("details content = %q, want %q", part.Content, want)
 	}
 }
 
