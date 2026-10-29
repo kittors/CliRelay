@@ -16,6 +16,7 @@ package registry
 func latestClaudeModels() []*ModelInfo {
 	thinking := func() *ThinkingSupport {
 		return &ThinkingSupport{
+			AdaptiveEffort: true,
 			Min:            1024,
 			Max:            128000,
 			ZeroAllowed:    true,

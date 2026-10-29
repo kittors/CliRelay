@@ -32,6 +32,8 @@ type ModelInfo struct {
 
 // ThinkingSupport describes a model family's supported reasoning budget range.
 type ThinkingSupport struct {
+	// AdaptiveEffort preserves native Claude effort across catalog registration.
+	AdaptiveEffort bool     `json:"-"`
 	Min            int      `json:"min,omitempty"`
 	Max            int      `json:"max,omitempty"`
 	ZeroAllowed    bool     `json:"zero_allowed,omitempty"`
