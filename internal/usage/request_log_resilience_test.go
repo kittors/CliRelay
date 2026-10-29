@@ -655,7 +655,7 @@ func TestUsageSpoolRecordRoundTripKeepsCostInputs(t *testing.T) {
 		Source: "source-a", ChannelName: "channel-a", AuthIndex: "auth-a", Failed: true, Streaming: true,
 		Timestamp: time.Date(2026, 9, 24, 8, 0, 0, 123, time.UTC), LatencyMs: 12, FirstTokenMs: 3,
 		Tokens: TokenStats{InputTokens: 1, OutputTokens: 2, ReasoningTokens: 3, CachedTokens: 4, TotalTokens: 10,
-			CacheReadTokens: 5, CacheWriteTokens: 6, CacheReadIncludedInInput: true},
+			CacheReadTokens: 5, CacheWriteTokens: 6, CacheReadIncludedInInput: true, CacheReported: true},
 		InputContent: `{"input":true}`, OutputContent: `{"error":"boom"}`, DetailContent: `{"detail":1}`,
 	}
 	line, err := encodeUsageSpoolRecord(entry, usageSpoolReasonWriteFailed, time.Time{}, time.Now())

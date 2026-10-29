@@ -44,6 +44,10 @@ func laterRuntimeMigrations() []Migration {
 		// Per-window request/token limits, per-model quota rules and model routes
 		// for accounts, keys and permission profiles. See access_policy_migrations.go.
 		{Version: "202610190001_access_policy", SQL: accessPolicySQL},
+		// Cache reads, cache writes, prompt size and client session on
+		// request_logs, and cache totals on usage_rollup_buckets. See
+		// request_log_cache_migrations.go.
+		{Version: "202610300001_request_log_cache_and_session", SQL: requestLogCacheAndSessionSQL},
 	}
 }
 

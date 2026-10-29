@@ -142,6 +142,10 @@ func (h *Handler) GetDashboardSummary(c *gin.Context) {
 			"total_tokens":     kpi.TotalTokens,
 			"total_cost":       kpi.TotalCost,
 			"cache_rate":       kpi.CacheRate,
+			// Null when no request in the window reported its cache use.
+			"cache_hit_rate":     kpi.CacheHitRate,
+			"cache_read_tokens":  kpi.CacheReadTokens,
+			"cache_write_tokens": kpi.CacheWriteTokens,
 		},
 		"counts": gin.H{
 			"api_keys":         apiKeyCount,

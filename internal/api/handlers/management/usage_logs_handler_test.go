@@ -1800,11 +1800,11 @@ func TestGetPublicUsageLogs_ReturnsChannelNameWithoutSensitiveFields(t *testing.
 	if err := usage.UpsertAPIKey(usage.APIKeyRow{ID: "public-lookup-key", Key: "sk-test", Name: "Primary"}); err != nil {
 		t.Fatalf("UpsertAPIKey: %v", err)
 	}
-	usage.InsertLog(
-		"sk-test", "Primary", "gpt-5.5", "owner@example.com", "owner@example.com", auth.Index,
+	usage.InsertLogWithDetailsIdentity(
+		"sk-test", "public-lookup-key", "Primary", "gpt-5.5", "owner@example.com", "owner@example.com", auth.Index,
 		false, time.Now().UTC(), 123, 45,
 		usage.TokenStats{InputTokens: 1, OutputTokens: 2, TotalTokens: 3},
-		"", "",
+		"", "", `{"client":{"headers":{"Session_id":["public-lookup-session"]}}}`,
 	)
 
 	h := &Handler{
@@ -1851,6 +1851,9 @@ func TestGetPublicUsageLogs_ReturnsChannelNameWithoutSensitiveFields(t *testing.
 	// Raw api_key / source / auth_index must still be scrubbed.
 	if item.APIKey != "" || item.Source != "" || item.AuthIndex != "" {
 		t.Fatalf("sensitive fields not scrubbed: %+v", item)
+	}
+	if strings.Contains(rec.Body.String(), "public-lookup-session") {
+		t.Fatalf("public rows carry the client session id: %s", rec.Body.String())
 	}
 }
 

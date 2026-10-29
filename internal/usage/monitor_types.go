@@ -24,8 +24,10 @@ type MonitorTotals struct {
 	Cost            float64 `json:"cost"`
 	// SuccessRate and CacheRate are percentages (0-100). SuccessRate is 0 when
 	// there was no traffic; callers tell "idle" from "all failed" by Requests.
+	// CacheRate is deprecated; see LogStats.CacheRate.
 	SuccessRate float64 `json:"success_rate"`
 	CacheRate   float64 `json:"cache_rate"`
+	CacheUsage
 	// Averages only count requests that reported the measurement: latency 0
 	// means "not recorded", and first-token time only exists for streams.
 	LatencyAvgMs    float64 `json:"latency_avg_ms"`

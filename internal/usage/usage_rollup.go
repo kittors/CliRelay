@@ -59,6 +59,9 @@ CREATE TABLE IF NOT EXISTS usage_rollup_buckets (
   latency_count           INTEGER NOT NULL DEFAULT 0,
   first_token_sum_ms      INTEGER NOT NULL DEFAULT 0,
   first_token_count       INTEGER NOT NULL DEFAULT 0,
+  cache_read_tokens       INTEGER NOT NULL DEFAULT 0,
+  cache_write_tokens      INTEGER NOT NULL DEFAULT 0,
+  cache_known_prompt_tokens INTEGER NOT NULL DEFAULT 0,
   updated_at              DATETIME NOT NULL,
   PRIMARY KEY (
     tenant_id, bucket_kind, bucket_start,
@@ -94,8 +97,12 @@ type rollupEvent struct {
 	LatencyMs     int64
 	FirstTokenMs  int64
 	Tokens        TokenStats
-	Cost          float64
-	At            time.Time
+	// Cache is the request's contribution to the cache columns. The live path
+	// derives it from Tokens; a rebuild reads it back from request_logs, which
+	// does not keep everything Tokens would need to recompute it.
+	Cache cacheTotals
+	Cost  float64
+	At    time.Time
 }
 
 func ensureUsageRollupTables(db *sql.DB) error {
@@ -105,6 +112,7 @@ func ensureUsageRollupTables(db *sql.DB) error {
 	if _, err := db.Exec(usageRollupSchemaSQL); err != nil {
 		return fmt.Errorf("usage: create usage_rollup_buckets: %w", err)
 	}
+	migrateUsageRollupCacheColumns(db)
 	return nil
 }
 
@@ -262,7 +270,8 @@ func runUsageRollupBackfillAtInitDB(db *sql.DB, loc *time.Location, finalMarker 
 		       COALESCE(model,''), COALESCE(source,''), COALESCE(channel_name,''),
 		       failed, streaming, latency_ms, first_token_ms,
 		       input_tokens, output_tokens, reasoning_tokens, cached_tokens, total_tokens,
-		       cost, timestamp, COALESCE(api_key,'')
+		       cost, timestamp, COALESCE(api_key,''),
+		       cache_read_tokens, cache_write_tokens, prompt_tokens
 		FROM request_logs
 		ORDER BY timestamp ASC, id ASC
 	`)
@@ -277,12 +286,14 @@ func runUsageRollupBackfillAtInitDB(db *sql.DB, loc *time.Location, finalMarker 
 			latencyMs, firstTokenMs                                               int64
 			inTok, outTok, reasonTok, cachedTok, totalTok                         int64
 			cost                                                                  float64
+			cacheRead, cacheWrite, promptTok                                      sql.NullInt64
 		)
 		if err = rows.Scan(
 			&tenantID, &apiKeyID, &authSubjectID, &model, &source, &channel,
 			&failed, &streaming, &latencyMs, &firstTokenMs,
 			&inTok, &outTok, &reasonTok, &cachedTok, &totalTok,
 			&cost, &ts, &apiKey,
+			&cacheRead, &cacheWrite, &promptTok,
 		); err != nil {
 			_ = rows.Close()
 			return fmt.Errorf("usage: rollup backfill scan: %w", err)
@@ -319,8 +330,9 @@ func runUsageRollupBackfillAtInitDB(db *sql.DB, loc *time.Location, finalMarker 
 				InputTokens: inTok, OutputTokens: outTok, ReasoningTokens: reasonTok,
 				CachedTokens: cachedTok, TotalTokens: totalTok,
 			},
-			Cost: cost,
-			At:   at,
+			Cache: cacheTotalsFromStoredRow(cacheRead, cacheWrite, promptTok),
+			Cost:  cost,
+			At:    at,
 		}})
 	}
 	if err = rows.Err(); err != nil {
@@ -403,6 +415,9 @@ func projectUsageRollupTx(tx usageWriteTx, ev rollupEvent) error {
 	if ev.Streaming {
 		streamingInc = 1
 	}
+	// cached_tokens and effective_input_tokens only feed the cache rate of
+	// builds older than the cache columns; they keep their meaning so that a
+	// rollback to such a build reads what it expects.
 	effectiveInput := effectiveInputTokenTotal(ev.Tokens.InputTokens, ev.Tokens.CachedTokens)
 	latencyCount := int64(0)
 	if ev.LatencyMs > 0 {
@@ -429,6 +444,7 @@ func projectUsageRollupTx(tx usageWriteTx, ev rollupEvent) error {
 			input_tokens, output_tokens, reasoning_tokens, cached_tokens,
 			effective_input_tokens, total_tokens, cost_total,
 			latency_sum_ms, latency_count, first_token_sum_ms, first_token_count,
+			cache_read_tokens, cache_write_tokens, cache_known_prompt_tokens,
 			updated_at
 		) VALUES (
 			?, ?, ?,
@@ -438,6 +454,7 @@ func projectUsageRollupTx(tx usageWriteTx, ev rollupEvent) error {
 			?, ?, ?, ?,
 			?, ?, ?,
 			?, ?, ?, ?,
+			?, ?, ?,
 			?
 		)
 		ON CONFLICT(
@@ -460,6 +477,9 @@ func projectUsageRollupTx(tx usageWriteTx, ev rollupEvent) error {
 			latency_count = usage_rollup_buckets.latency_count + excluded.latency_count,
 			first_token_sum_ms = usage_rollup_buckets.first_token_sum_ms + excluded.first_token_sum_ms,
 			first_token_count = usage_rollup_buckets.first_token_count + excluded.first_token_count,
+			cache_read_tokens = usage_rollup_buckets.cache_read_tokens + excluded.cache_read_tokens,
+			cache_write_tokens = usage_rollup_buckets.cache_write_tokens + excluded.cache_write_tokens,
+			cache_known_prompt_tokens = usage_rollup_buckets.cache_known_prompt_tokens + excluded.cache_known_prompt_tokens,
 			updated_at = excluded.updated_at
 	`
 
@@ -474,6 +494,7 @@ func projectUsageRollupTx(tx usageWriteTx, ev rollupEvent) error {
 			ev.Tokens.InputTokens, ev.Tokens.OutputTokens, ev.Tokens.ReasoningTokens, ev.Tokens.CachedTokens,
 			effectiveInput, ev.Tokens.TotalTokens, ev.Cost,
 			ev.LatencyMs, latencyCount, ev.FirstTokenMs, firstTokenCount,
+			ev.Cache.ReadTokens, ev.Cache.WriteTokens, ev.Cache.KnownPromptTokens,
 			now,
 		); err != nil {
 			return fmt.Errorf("usage: project rollup %s: %w", kind, err)

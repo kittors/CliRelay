@@ -473,6 +473,7 @@ func ollamaNativeStreamChunkToOpenAI(line []byte, model, responseID string, esti
 		CacheReadTokens:          cachedTokens,
 		CachedTokens:             cachedTokens,
 		CacheReadIncludedInInput: true,
+		CacheReported:            estimator != nil,
 	}
 	out = append(out, ollamaOpenAIStreamLine(responseID, model, created, nil, &usage))
 	out = append(out, []byte("data: [DONE]\n\n"))

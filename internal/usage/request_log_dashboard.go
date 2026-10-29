@@ -19,7 +19,9 @@ type DashboardKPI struct {
 	CachedTokens    int64   `json:"cached_tokens"`
 	TotalTokens     int64   `json:"total_tokens"`
 	TotalCost       float64 `json:"total_cost"`
-	CacheRate       float64 `json:"cache_rate"`
+	// CacheRate is deprecated; see LogStats.CacheRate.
+	CacheRate float64 `json:"cache_rate"`
+	CacheUsage
 }
 
 type DashboardTrendPoint struct {
