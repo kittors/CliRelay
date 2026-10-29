@@ -21,6 +21,8 @@ type authChannelMeta struct {
 }
 
 type nameMaps struct {
+	// keyNameMap is the display name of a key (its account's name when owned),
+	// keyed by the key's stable id.
 	keyNameMap                   map[string]string
 	channelNameMap               map[string]string
 	authIndexChannelMap          map[string]string
@@ -591,20 +593,22 @@ func (s *Service) buildNameMaps() nameMaps {
 	}
 
 	for _, row := range apikeysettings.NewService(nil, apikeysettings.WithTenantID(s.tenantID)).ListRows() {
-		key := strings.TrimSpace(row.Key)
-		if key == "" {
+		// Keyed by the stable id: log rows and facet options carry the id, and
+		// the secret is not part of any response.
+		id := strings.TrimSpace(row.ID)
+		if id == "" {
 			continue
 		}
 		// Owned multi-key accounts: filter/list labels are end-user display names,
 		// never the individual key name (e.g. LYDing1 must not appear as a user).
 		if eu := strings.TrimSpace(row.EndUserID); eu != "" {
 			if label := usage.DisplayNameForEndUser(eu); label != "" {
-				maps.keyNameMap[key] = label
+				maps.keyNameMap[id] = label
 				continue
 			}
 		}
 		if name := strings.TrimSpace(row.Name); name != "" {
-			maps.keyNameMap[key] = name
+			maps.keyNameMap[id] = name
 		}
 	}
 

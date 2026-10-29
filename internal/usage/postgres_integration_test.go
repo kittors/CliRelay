@@ -211,7 +211,7 @@ func TestPostgresRuntimeDataStackConcurrencyConstraintsAndHotPaths(t *testing.T)
 	if wantTokens := int64(workers * perWorker * 7); stats.TotalTokens != wantTokens {
 		t.Fatalf("QueryStats total_tokens = %d, want %d", stats.TotalTokens, wantTokens)
 	}
-	if filters, err := QueryFilters(1); err != nil || len(filters.APIKeys) != 1 || filters.APIKeys[0] != "sk-hotpath" {
+	if filters, err := QueryFilters(1); err != nil || len(filters.APIKeyIDs) != 1 || filters.APIKeyIDs[0] != "hotpath" {
 		t.Fatalf("QueryFilters filters=%#v err=%v", filters, err)
 	}
 
@@ -478,7 +478,7 @@ func assertPostgresRequestLogQueries(t *testing.T, logID int64, apiKey string) {
 	if part, err := QueryLogContentPartForKey(logID, apiKey, "input"); err != nil || part.Content == "" {
 		t.Fatalf("QueryLogContentPartForKey(input) part=%#v err=%v", part, err)
 	}
-	if filters, err := QueryFilters(1); err != nil || len(filters.APIKeys) == 0 || len(filters.Models) == 0 {
+	if filters, err := QueryFilters(1); err != nil || len(filters.APIKeyIDs) == 0 || len(filters.Models) == 0 {
 		t.Fatalf("QueryFilters() filters=%#v err=%v", filters, err)
 	}
 	if series, err := QueryDailySeries(apiKey, 1); err != nil || len(series) == 0 {

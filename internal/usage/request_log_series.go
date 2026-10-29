@@ -1,7 +1,6 @@
 package usage
 
 import (
-	"database/sql"
 	"fmt"
 	"sort"
 	"strings"
@@ -405,15 +404,19 @@ func QueryModelDistributionForTenant(tenantID, apiKey string, days int) ([]Model
 	return queryRollupModelDistribution(filter)
 }
 
-// APIKeyDistributionPoint holds aggregated usage data for a single API key.
+// APIKeyDistributionPoint holds aggregated usage data for a single API key, or
+// for one end-user account when it owns several keys.
 type APIKeyDistributionPoint struct {
+	// APIKey is a mask of the key (the account's representative key for an
+	// account); APIKeyID is the key itself. Never a secret.
 	APIKey   string `json:"api_key"`
+	APIKeyID string `json:"api_key_id,omitempty"`
 	Name     string `json:"name"`
 	Requests int64  `json:"requests"`
 	Tokens   int64  `json:"tokens"`
 }
 
-// QueryAPIKeyDistribution returns request count and token usage grouped by api_key.
+// QueryAPIKeyDistribution returns request count and token usage grouped by key.
 func QueryAPIKeyDistribution(days int) ([]APIKeyDistributionPoint, error) {
 	return QueryAPIKeyDistributionForTenant(systemTenantID, days)
 }
@@ -430,26 +433,20 @@ func QueryAPIKeyDistributionForTenant(tenantID string, days int) ([]APIKeyDistri
 	params := LogQueryParams{TenantID: tenantID, Days: days}
 	where, args := buildWhereClause(params)
 	currentByID := currentAPIKeyRowsByIDForTenant(tenantID)
-	currentByKey := currentAPIKeyRowsByKeyForTenant(tenantID)
 
-	// Group by id-or-raw so logs that predate api_key_id still contribute.
-	// Post-scan we resolve raw secrets via the live key table and merge
-	// id-group + raw-group of the same key into one distribution point.
-	// Without that merge, monitor "API Key usage" shows duplicate names
-	// (e.g. 袁蔚 16.1k + 袁蔚 177) for a single key.
-	q := `SELECT
-	             CASE
-	               WHEN trim(coalesce(api_key_id, '')) <> '' THEN api_key_id
-	               ELSE 'raw:' || api_key
-	             END as logical_selector,
-	             COALESCE(MAX(NULLIF(trim(coalesce(api_key_id, '')), '')), '') as logical_id,
+	// Rows are attributed to a key by api_key_id. The stored api_key is only a
+	// mask or a label, kept as the display fallback. A row with no id (the key was
+	// deleted before ids existed, or it is a route/internal label) keeps its own
+	// slice per stored value, as it always has.
+	q := `SELECT trim(coalesce(api_key_id, '')) as key_id,
+	             CASE WHEN trim(coalesce(api_key_id, '')) = '' THEN api_key ELSE '' END as unattributed_key,
 	             MAX(api_key) as snapshot_key,
 	             COALESCE(NULLIF(MAX(api_key_name),''), '') as snapshot_name,
 	             COUNT(*) as reqs,
 	             COALESCE(SUM(total_tokens),0)
 	      FROM request_logs` + where + `
-	      AND api_key != ''
-	      GROUP BY logical_selector ORDER BY reqs DESC`
+	      AND (trim(coalesce(api_key_id, '')) <> '' OR api_key <> '')
+	      GROUP BY key_id, unattributed_key ORDER BY reqs DESC`
 
 	rows, err := db.Query(q, args...)
 	if err != nil {
@@ -461,50 +458,42 @@ func QueryAPIKeyDistributionForTenant(tenantID string, days int) ([]APIKeyDistri
 	merged := make(map[string]*APIKeyDistributionPoint)
 	order := make([]string, 0)
 	for rows.Next() {
-		var logicalSelector string
-		var logicalID sql.NullString
-		var snapshotKey string
-		var snapshotName string
+		var keyID, unattributedKey, snapshotKey, snapshotName string
 		var p APIKeyDistributionPoint
-		if err := rows.Scan(&logicalSelector, &logicalID, &snapshotKey, &snapshotName, &p.Requests, &p.Tokens); err != nil {
+		if err := rows.Scan(&keyID, &unattributedKey, &snapshotKey, &snapshotName, &p.Requests, &p.Tokens); err != nil {
 			return nil, fmt.Errorf("usage: apikey distribution scan: %w", err)
 		}
-		p.APIKey = strings.TrimSpace(snapshotKey)
+		keyID = strings.TrimSpace(keyID)
+		p.APIKeyID = keyID
+		p.APIKey = requestLogAPIKeyForDisplay(snapshotKey)
 		p.Name = strings.TrimSpace(snapshotName)
 
-		// Prefer stable id identity; fall back to exact raw-key match for
-		// legacy rows that never received api_key_id backfill.
-		var live *APIKeyRow
-		if row, ok := currentByID[trimNullString(logicalID)]; ok {
-			copy := row
-			live = &copy
-		} else if row, ok := currentByKey[p.APIKey]; ok {
-			copy := row
-			live = &copy
-		}
-		mergeKey := p.APIKey
-		if live != nil {
-			if trimmed := strings.TrimSpace(live.Key); trimmed != "" {
-				p.APIKey = trimmed
-				mergeKey = trimmed
+		mergeKey := keyID
+		if keyID == "" {
+			mergeKey = "raw:" + strings.TrimSpace(unattributedKey)
+		} else if live, ok := currentByID[keyID]; ok {
+			if secret := strings.TrimSpace(live.Key); secret != "" {
+				p.APIKey = MaskAPIKey(secret)
 			}
 			if eu := strings.TrimSpace(live.EndUserID); eu != "" {
 				// Collapse multi-key accounts into one distribution slice.
 				mergeKey = "eu:" + eu
 				if rep := strings.TrimSpace(repByEndUser[eu]); rep != "" {
-					p.APIKey = rep
+					p.APIKeyID = rep
+					if repRow, ok := currentByID[rep]; ok {
+						if secret := strings.TrimSpace(repRow.Key); secret != "" {
+							p.APIKey = MaskAPIKey(secret)
+						}
+					}
 				}
 				if label := strings.TrimSpace(nameByEndUser[eu]); label != "" {
 					p.Name = label
-				} else if label := ResolveAPIKeyDisplayName(live, p.Name); label != "" {
+				} else if label := ResolveAPIKeyDisplayName(&live, p.Name); label != "" {
 					p.Name = label
 				}
-			} else if label := ResolveAPIKeyDisplayName(live, p.Name); label != "" {
+			} else if label := ResolveAPIKeyDisplayName(&live, p.Name); label != "" {
 				p.Name = label
 			}
-		}
-		if p.APIKey == "" {
-			continue
 		}
 
 		if existing, ok := merged[mergeKey]; ok {
@@ -530,6 +519,9 @@ func QueryAPIKeyDistributionForTenant(tenantID string, days int) ([]APIKeyDistri
 	sort.SliceStable(result, func(i, j int) bool {
 		if result[i].Requests != result[j].Requests {
 			return result[i].Requests > result[j].Requests
+		}
+		if result[i].APIKeyID != result[j].APIKeyID {
+			return result[i].APIKeyID < result[j].APIKeyID
 		}
 		return result[i].APIKey < result[j].APIKey
 	})
@@ -587,13 +579,9 @@ func queryHourlySeriesAt(tenantID, apiKey string, hours int, now time.Time, loc 
 	args = append(args, hourArgs...)
 	args = append(args, tenantID, cutoff.UTC().Format(time.RFC3339), bounds[len(bounds)-1].UTC().Format(time.RFC3339))
 	if apiKey != "" {
-		if identity := GetAPIKeyForTenant(tenantID, apiKey); identity != nil {
-			conditions = append(conditions, "(api_key_id = ? OR (trim(coalesce(api_key_id, '')) = '' AND api_key = ?))")
-			args = append(args, identity.ID, identity.Key)
-		} else {
-			conditions = append(conditions, "api_key = ?")
-			args = append(args, apiKey)
-		}
+		clause, clauseArgs := buildSingleAPIKeySelectorClauseForTenant(tenantID, apiKey)
+		conditions = append(conditions, strings.TrimPrefix(clause, " WHERE "))
+		args = append(args, clauseArgs...)
 	}
 	where := " WHERE " + strings.Join(conditions, " AND ")
 

@@ -183,9 +183,6 @@ func QueryFiltersForLogs(params LogQueryParams) (FilterOptions, error) {
 	if db == nil {
 		// Ensure stable JSON shape: slices => [] (not null), maps => {} (not null).
 		return FilterOptions{
-			APIKeys:        make([]string, 0),
-			APIKeyNames:    make(map[string]string),
-			APIKeyCounts:   make(map[string]int64),
 			APIKeyIDs:      make([]string, 0),
 			APIKeyIDNames:  make(map[string]string),
 			APIKeyIDCounts: make(map[string]int64),
@@ -197,11 +194,6 @@ func QueryFiltersForLogs(params LogQueryParams) (FilterOptions, error) {
 	}
 
 	params = normalizeLogQueryParams(params)
-	keys, keyNames, keyCounts, err := queryDistinctAPIKeys(db, params.withoutFacet("api_key"))
-	if err != nil {
-		log.Warnf("usage: query distinct api keys failed: %v", err)
-		return FilterOptions{}, err
-	}
 	keyIDs, keyIDNames, keyIDCounts, err := queryDistinctAPIKeyIDs(db, params.withoutFacet("api_key_id"))
 	if err != nil {
 		log.Warnf("usage: query distinct api key ids failed: %v", err)
@@ -242,9 +234,6 @@ func QueryFiltersForLogs(params LogQueryParams) (FilterOptions, error) {
 	}
 
 	return FilterOptions{
-		APIKeys:        keys,
-		APIKeyNames:    keyNames,
-		APIKeyCounts:   keyCounts,
 		APIKeyIDs:      keyIDs,
 		APIKeyIDNames:  keyIDNames,
 		APIKeyIDCounts: keyIDCounts,
@@ -259,11 +248,9 @@ func (params LogQueryParams) withoutFacet(facet string) LogQueryParams {
 	params.Page = 0
 	params.Size = 0
 	switch facet {
-	case "api_key":
-		params.APIKey = ""
-		params.APIKeys = nil
-		params.MatchNoAPIKeys = false
 	case "api_key_id":
+		// APIKey/APIKeys stay: for a public lookup they are the scope of the
+		// subject's own key, not a selection the user can widen.
 		params.APIKeyIDs = nil
 		params.MatchNoAPIKeyIDs = false
 	case "model":

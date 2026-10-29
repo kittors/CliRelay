@@ -317,6 +317,12 @@ func planRequestLogWrite(db *sql.DB, entry RequestLogEntry, timeout time.Duratio
 		}
 		plan.endUserID = identity.endUserID
 	}
+	// request_logs.api_key never holds a client secret: the row is tied to its
+	// key by api_key_id and keeps only a mask for display. Routes and internal
+	// origins ("POST /v1/models", "warmup") are labels, not secrets, and stay
+	// readable. plan.entry is a copy; entry (still carrying the secret) is what
+	// the TPM hook and the spool receive.
+	plan.entry.APIKey = storedRequestLogAPIKey(entry.APIKey, identity.found || plan.entry.APIKeyID != "")
 	// Cost always follows Model, never the model the upstream echoed back.
 	plan.cost = CalculateCostV2ForTenant(plan.tenantID, plan.entry.Model, plan.entry.Tokens)
 	plan.storeContent = requestLogShouldStoreContent(plan.entry)

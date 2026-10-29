@@ -27,7 +27,7 @@ func (s *Service) ManagementLogs(input ManagementLogQueryInput) (map[string]any,
 	for i := range result.Items {
 		item := &result.Items[i]
 		if item.APIKeyName == "" {
-			if name, ok := maps.keyNameMap[item.APIKey]; ok {
+			if name, ok := maps.keyNameMap[item.APIKeyID]; ok {
 				item.APIKeyName = name
 			}
 		}
@@ -37,20 +37,17 @@ func (s *Service) ManagementLogs(input ManagementLogQueryInput) (map[string]any,
 		enrichLogRowChannelMeta(item, maps.authMetaByIndex, maps.authMetaBySubject)
 	}
 
-	if filters.APIKeyNames == nil {
-		filters.APIKeyNames = make(map[string]string, len(filters.APIKeys))
+	if filters.APIKeyIDNames == nil {
+		filters.APIKeyIDNames = make(map[string]string, len(filters.APIKeyIDs))
 	}
-	if filters.APIKeyCounts == nil {
-		filters.APIKeyCounts = make(map[string]int64, len(filters.APIKeys))
-	}
-	// Prefer account display names already resolved by queryDistinctAPIKeys.
-	// Only fill gaps from keyNameMap; never overwrite end-user labels with key names.
-	for _, key := range filters.APIKeys {
-		if strings.TrimSpace(filters.APIKeyNames[key]) != "" {
+	// Prefer the account display names already resolved by the key facet. Only
+	// fill gaps from keyNameMap; never overwrite end-user labels with key names.
+	for _, id := range filters.APIKeyIDs {
+		if strings.TrimSpace(filters.APIKeyIDNames[id]) != "" {
 			continue
 		}
-		if name, ok := maps.keyNameMap[key]; ok {
-			filters.APIKeyNames[key] = name
+		if name, ok := maps.keyNameMap[id]; ok {
+			filters.APIKeyIDNames[id] = name
 		}
 	}
 	filters.ChannelOptions = enrichChannelFilterOptions(
@@ -67,8 +64,11 @@ func (s *Service) ManagementLogs(input ManagementLogQueryInput) (map[string]any,
 	if result.Items == nil {
 		result.Items = make([]usage.LogRow, 0)
 	}
-	if filters.APIKeys == nil {
-		filters.APIKeys = make([]string, 0)
+	if filters.APIKeyIDs == nil {
+		filters.APIKeyIDs = make([]string, 0)
+	}
+	if filters.APIKeyIDCounts == nil {
+		filters.APIKeyIDCounts = make(map[string]int64)
 	}
 	if filters.Models == nil {
 		filters.Models = make([]string, 0)
@@ -82,12 +82,6 @@ func (s *Service) ManagementLogs(input ManagementLogQueryInput) (map[string]any,
 	if filters.Statuses == nil {
 		filters.Statuses = make([]string, 0)
 	}
-	if filters.APIKeyNames == nil {
-		filters.APIKeyNames = make(map[string]string)
-	}
-	if filters.APIKeyCounts == nil {
-		filters.APIKeyCounts = make(map[string]int64)
-	}
 
 	return map[string]any{
 		"items":   result.Items,
@@ -96,8 +90,18 @@ func (s *Service) ManagementLogs(input ManagementLogQueryInput) (map[string]any,
 		"size":    result.Size,
 		"filters": filters,
 		"stats":   stats,
+		// The panel reads this to tell a backend that has dropped the secret-keyed
+		// filter facets (api_keys, api_key_names, api_key_counts) from an older one.
+		"capabilities": map[string]bool{CapabilityAPIKeyIDFilters: true},
 	}, nil
 }
+
+// CapabilityAPIKeyIDFilters is declared by /usage/logs once the key filter is
+// id-based only: filters.api_key_ids / api_key_id_names / api_key_id_counts
+// describe the keys (with "__system__" for system calls), the api_key_ids and
+// api_key_ids_empty query parameters select them, every row's api_key is a mask,
+// and the secret-keyed facets no longer exist.
+const CapabilityAPIKeyIDFilters = "api-key-id-filters"
 
 func (s *Service) ClearAllRequestLogs() (any, error) {
 	return usage.ClearAllRequestLogsForTenant(s.tenantID)
@@ -193,9 +197,6 @@ func (s *Service) PublicUsageLogs(input PublicLogQueryInput) (map[string]any, er
 	for i := range result.Items {
 		keyOwnName := strings.TrimSpace(result.Items[i].APIKeyOwnName)
 		if keyOwnName == "" {
-			keyOwnName = usage.ResolveAPIKeyOwnName(result.Items[i].APIKey)
-		}
-		if keyOwnName == "" {
 			keyOwnName = strings.TrimSpace(result.Items[i].APIKeyName)
 		}
 		userName := strings.TrimSpace(result.Items[i].EndUserDisplayName)
@@ -207,7 +208,8 @@ func (s *Service) PublicUsageLogs(input PublicLogQueryInput) (map[string]any, er
 		}
 		// Do not overwrite top-level apiKeyName with per-row user/key labels.
 		channelName := displayChannelNameForLog(result.Items[i], maps.channelNameMap, maps.authIndexChannelMap, maps.ambiguousAuthIndexChannelMap)
-		result.Items[i].APIKeyMasked = maskPublicAPIKey(result.Items[i].APIKey)
+		// APIKeyMasked was set with the row's display key; the secret itself is not
+		// part of a public row.
 		result.Items[i].Source = ""
 		result.Items[i].AuthIndex = ""
 		result.Items[i].AuthSubjectID = ""
@@ -281,18 +283,4 @@ func (s *Service) PublicUsageLogs(input PublicLogQueryInput) (map[string]any, er
 			"statuses":          filters.Statuses,
 		},
 	}, nil
-}
-
-func maskPublicAPIKey(value string) string {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return ""
-	}
-	if len(value) <= 10 {
-		if len(value) <= 4 {
-			return "***"
-		}
-		return value[:2] + "***" + value[len(value)-2:]
-	}
-	return value[:6] + "***" + value[len(value)-4:]
 }
