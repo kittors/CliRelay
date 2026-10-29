@@ -617,6 +617,11 @@ func (e *CodexExecutor) cacheHelper(ctx context.Context, auth *cliproxyauth.Auth
 			// derive one the same way selection derives the sticky binding.
 			cache.ID = codexSyntheticSessionID(auth, req.Model, codexSessionPromptCacheSeed(opts, req.Payload))
 		}
+	} else if from == "openai" {
+		// Chat Completions carries no Codex session identity of its own; see
+		// codex_chat_cache_key.go for how one is derived and why only part of the
+		// usual header set goes with it.
+		cache.ID = codexChatPromptCacheKey(ctx, auth, req.Model, opts, req.Payload)
 	}
 
 	if cache.ID != "" {
@@ -627,8 +632,14 @@ func (e *CodexExecutor) cacheHelper(ctx context.Context, auth *cliproxyauth.Auth
 		return nil, err
 	}
 	if cache.ID != "" {
-		httpReq.Header.Set("Conversation_id", cache.ID)
-		httpReq.Header.Set("Session_id", cache.ID)
+		if from == "openai" {
+			if codexChatSessionHeaderApplies(e.cfg) {
+				httpReq.Header.Set("Session_id", cache.ID)
+			}
+		} else {
+			httpReq.Header.Set("Conversation_id", cache.ID)
+			httpReq.Header.Set("Session_id", cache.ID)
+		}
 	}
 	return httpReq, nil
 }
