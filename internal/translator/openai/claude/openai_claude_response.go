@@ -9,7 +9,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"sort"
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/openaicompat"
@@ -32,14 +31,8 @@ type ConvertOpenAIResponseToAnthropicParams struct {
 	ContentAccumulator strings.Builder
 	// Tool calls accumulator for streaming
 	ToolCallsAccumulator map[int]*ToolCallAccumulator
-	// Track if text content block has been started
-	TextContentBlockStarted bool
-	// Track if thinking content block has been started
-	ThinkingContentBlockStarted bool
 	// Track finish reason for later use
 	FinishReason string
-	// Track if content blocks have been stopped
-	ContentBlocksStopped bool
 	// Track if message_delta has been sent
 	MessageDeltaSent bool
 	// Track if message_start has been sent
@@ -48,14 +41,11 @@ type ConvertOpenAIResponseToAnthropicParams struct {
 	MessageStopSent bool
 	// Track whether a valid tool_use block has actually been emitted
 	HasToolUse bool
-	// Tool call content block index mapping
-	ToolCallBlockIndexes map[int]int
-	// Index assigned to text content block
-	TextContentBlockIndex int
-	// Index assigned to thinking content block
-	ThinkingContentBlockIndex int
 	// Next available content block index
 	NextContentBlockIndex int
+	// The open content block and the blocks waiting behind it; see
+	// openai_claude_response_blocks.go.
+	blocks contentBlocks
 }
 
 // ToolCallAccumulator holds the state for accumulating tool call data
@@ -65,6 +55,11 @@ type ToolCallAccumulator struct {
 	Arguments  strings.Builder
 	Started    bool
 	BlockIndex int
+	// held is set while the call waits for its block to open.
+	held bool
+	// emitted is how much of Arguments has gone out as input_json_delta.
+	emitted int
+	args    toolArgsScanner
 }
 
 // ConvertOpenAIResponseToClaude converts OpenAI streaming response format to Anthropic API format.
@@ -81,23 +76,7 @@ type ToolCallAccumulator struct {
 //   - []string: A slice of strings, each containing an Anthropic-compatible JSON response.
 func ConvertOpenAIResponseToClaude(_ context.Context, _ string, originalRequestRawJSON, requestRawJSON, rawJSON []byte, param *any) []string {
 	if *param == nil {
-		*param = &ConvertOpenAIResponseToAnthropicParams{
-			MessageID:                   "",
-			Model:                       "",
-			CreatedAt:                   0,
-			ContentAccumulator:          strings.Builder{},
-			ToolCallsAccumulator:        nil,
-			TextContentBlockStarted:     false,
-			ThinkingContentBlockStarted: false,
-			FinishReason:                "",
-			ContentBlocksStopped:        false,
-			MessageDeltaSent:            false,
-			HasToolUse:                  false,
-			ToolCallBlockIndexes:        make(map[int]int),
-			TextContentBlockIndex:       -1,
-			ThinkingContentBlockIndex:   -1,
-			NextContentBlockIndex:       0,
-		}
+		*param = &ConvertOpenAIResponseToAnthropicParams{}
 	}
 
 	if !bytes.HasPrefix(rawJSON, dataTag) {
@@ -152,111 +131,22 @@ func convertOpenAIStreamingChunkToAnthropic(rawJSON []byte, param *ConvertOpenAI
 		// Handle reasoning content delta
 		if reasoning := delta.Get("reasoning_content"); reasoning.Exists() {
 			for _, reasoningText := range collectOpenAIReasoningTexts(reasoning) {
-				if reasoningText == "" {
-					continue
+				if reasoningText != "" {
+					param.deliverText(blockThinking, reasoningText, &results)
 				}
-				stopTextContentBlock(param, &results)
-				if !param.ThinkingContentBlockStarted {
-					if param.ThinkingContentBlockIndex == -1 {
-						param.ThinkingContentBlockIndex = param.NextContentBlockIndex
-						param.NextContentBlockIndex++
-					}
-					contentBlockStartJSON := `{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}`
-					contentBlockStartJSON, _ = sjson.Set(contentBlockStartJSON, "index", param.ThinkingContentBlockIndex)
-					results = append(results, "event: content_block_start\ndata: "+contentBlockStartJSON+"\n\n")
-					param.ThinkingContentBlockStarted = true
-				}
-
-				thinkingDeltaJSON := `{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":""}}`
-				thinkingDeltaJSON, _ = sjson.Set(thinkingDeltaJSON, "index", param.ThinkingContentBlockIndex)
-				thinkingDeltaJSON, _ = sjson.Set(thinkingDeltaJSON, "delta.thinking", reasoningText)
-				results = append(results, "event: content_block_delta\ndata: "+thinkingDeltaJSON+"\n\n")
 			}
 		}
 
 		// Handle content delta
 		if content := delta.Get("content"); content.Exists() && content.String() != "" {
-			// Send content_block_start for text if not already sent
-			if !param.TextContentBlockStarted {
-				stopThinkingContentBlock(param, &results)
-				if param.TextContentBlockIndex == -1 {
-					param.TextContentBlockIndex = param.NextContentBlockIndex
-					param.NextContentBlockIndex++
-				}
-				contentBlockStartJSON := `{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`
-				contentBlockStartJSON, _ = sjson.Set(contentBlockStartJSON, "index", param.TextContentBlockIndex)
-				results = append(results, "event: content_block_start\ndata: "+contentBlockStartJSON+"\n\n")
-				param.TextContentBlockStarted = true
-			}
-
-			contentDeltaJSON := `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":""}}`
-			contentDeltaJSON, _ = sjson.Set(contentDeltaJSON, "index", param.TextContentBlockIndex)
-			contentDeltaJSON, _ = sjson.Set(contentDeltaJSON, "delta.text", content.String())
-			results = append(results, "event: content_block_delta\ndata: "+contentDeltaJSON+"\n\n")
-
-			// Accumulate content
+			param.deliverText(blockText, content.String(), &results)
 			param.ContentAccumulator.WriteString(content.String())
 		}
 
 		// Handle tool calls
 		if toolCalls := delta.Get("tool_calls"); toolCalls.Exists() && toolCalls.IsArray() {
-			if param.ToolCallsAccumulator == nil {
-				param.ToolCallsAccumulator = make(map[int]*ToolCallAccumulator)
-			}
-
 			toolCalls.ForEach(func(_, toolCall gjson.Result) bool {
-				index := int(toolCall.Get("index").Int())
-
-				// Initialize accumulator if needed
-				if _, exists := param.ToolCallsAccumulator[index]; !exists {
-					param.ToolCallsAccumulator[index] = &ToolCallAccumulator{
-						BlockIndex: -1,
-					}
-				}
-
-				accumulator := param.ToolCallsAccumulator[index]
-
-				// Handle tool call ID
-				if id := toolCall.Get("id"); id.Exists() {
-					accumulator.ID = id.String()
-				}
-
-				// Handle function name
-				if function := toolCall.Get("function"); function.Exists() {
-					if name := function.Get("name"); name.Exists() {
-						toolName := strings.TrimSpace(name.String())
-						if toolName != "" {
-							accumulator.Name = toolName
-
-							if !accumulator.Started {
-								blockIndex := param.toolContentBlockIndex(index)
-								accumulator.BlockIndex = blockIndex
-
-								stopThinkingContentBlock(param, &results)
-
-								stopTextContentBlock(param, &results)
-
-								// Send content_block_start for tool_use
-								contentBlockStartJSON := `{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"","name":"","input":{}}}`
-								contentBlockStartJSON, _ = sjson.Set(contentBlockStartJSON, "index", blockIndex)
-								contentBlockStartJSON, _ = sjson.Set(contentBlockStartJSON, "content_block.id", accumulator.ID)
-								contentBlockStartJSON, _ = sjson.Set(contentBlockStartJSON, "content_block.name", accumulator.Name)
-								results = append(results, "event: content_block_start\ndata: "+contentBlockStartJSON+"\n\n")
-								accumulator.Started = true
-								param.HasToolUse = true
-							}
-						}
-					}
-
-					// Handle function arguments
-					if args := function.Get("arguments"); args.Exists() {
-						argsText := args.String()
-						if argsText != "" {
-							accumulator.Arguments.WriteString(argsText)
-						}
-					}
-				}
-
+				param.deliverToolCall(toolCall, &results)
 				return true
 			})
 		}
@@ -264,23 +154,8 @@ func convertOpenAIStreamingChunkToAnthropic(rawJSON []byte, param *ConvertOpenAI
 
 	// Handle finish_reason (but don't send message_delta/message_stop yet)
 	if finishReason := root.Get("choices.0.finish_reason"); finishReason.Exists() && finishReason.String() != "" {
-		reason := finishReason.String()
-		param.FinishReason = reason
-
-		// Send content_block_stop for thinking content if needed
-		if param.ThinkingContentBlockStarted {
-			contentBlockStopJSON := `{"type":"content_block_stop","index":0}`
-			contentBlockStopJSON, _ = sjson.Set(contentBlockStopJSON, "index", param.ThinkingContentBlockIndex)
-			results = append(results, "event: content_block_stop\ndata: "+contentBlockStopJSON+"\n\n")
-			param.ThinkingContentBlockStarted = false
-			param.ThinkingContentBlockIndex = -1
-		}
-
-		// Send content_block_stop for text if text content block was started
-		stopTextContentBlock(param, &results)
-
-		finalizeToolContentBlocks(param, &results)
-
+		param.FinishReason = finishReason.String()
+		param.closeAllBlocks(&results)
 		// Don't send message_delta here - wait for usage info or [DONE]
 	}
 
@@ -314,17 +189,7 @@ func convertOpenAIDoneToAnthropic(param *ConvertOpenAIResponseToAnthropicParams)
 	var results []string
 
 	// Ensure all content blocks are stopped before final events
-	if param.ThinkingContentBlockStarted {
-		contentBlockStopJSON := `{"type":"content_block_stop","index":0}`
-		contentBlockStopJSON, _ = sjson.Set(contentBlockStopJSON, "index", param.ThinkingContentBlockIndex)
-		results = append(results, "event: content_block_stop\ndata: "+contentBlockStopJSON+"\n\n")
-		param.ThinkingContentBlockStarted = false
-		param.ThinkingContentBlockIndex = -1
-	}
-
-	stopTextContentBlock(param, &results)
-
-	finalizeToolContentBlocks(param, &results)
+	param.closeAllBlocks(&results)
 
 	// If we haven't sent message_delta yet (no usage info was received), send it now
 	if param.FinishReason != "" && !param.MessageDeltaSent {
@@ -429,56 +294,6 @@ func mapOpenAIFinishReasonToAnthropicWithToolState(openAIReason string, hasToolU
 	}
 }
 
-func (p *ConvertOpenAIResponseToAnthropicParams) toolContentBlockIndex(openAIToolIndex int) int {
-	if idx, ok := p.ToolCallBlockIndexes[openAIToolIndex]; ok {
-		return idx
-	}
-	idx := p.NextContentBlockIndex
-	p.NextContentBlockIndex++
-	p.ToolCallBlockIndexes[openAIToolIndex] = idx
-	return idx
-}
-
-func finalizeToolContentBlocks(param *ConvertOpenAIResponseToAnthropicParams, results *[]string) {
-	if param.ContentBlocksStopped {
-		return
-	}
-	param.ContentBlocksStopped = true
-	if param.ToolCallsAccumulator == nil {
-		return
-	}
-
-	indexes := make([]int, 0, len(param.ToolCallsAccumulator))
-	for index := range param.ToolCallsAccumulator {
-		indexes = append(indexes, index)
-	}
-	sort.Ints(indexes)
-
-	for _, index := range indexes {
-		accumulator := param.ToolCallsAccumulator[index]
-		if accumulator == nil || !accumulator.Started {
-			continue
-		}
-
-		blockIndex := accumulator.BlockIndex
-		if blockIndex < 0 {
-			blockIndex = param.toolContentBlockIndex(index)
-		}
-
-		if accumulator.Arguments.Len() > 0 {
-			inputDeltaJSON := `{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":""}}`
-			inputDeltaJSON, _ = sjson.Set(inputDeltaJSON, "index", blockIndex)
-			inputDeltaJSON, _ = sjson.Set(inputDeltaJSON, "delta.partial_json", util.FixJSON(accumulator.Arguments.String()))
-			*results = append(*results, "event: content_block_delta\ndata: "+inputDeltaJSON+"\n\n")
-		}
-
-		contentBlockStopJSON := `{"type":"content_block_stop","index":0}`
-		contentBlockStopJSON, _ = sjson.Set(contentBlockStopJSON, "index", blockIndex)
-		*results = append(*results, "event: content_block_stop\ndata: "+contentBlockStopJSON+"\n\n")
-		delete(param.ToolCallBlockIndexes, index)
-	}
-}
-
 func collectOpenAIReasoningTexts(node gjson.Result) []string {
 	var texts []string
 	if !node.Exists() {
@@ -511,34 +326,12 @@ func collectOpenAIReasoningTexts(node gjson.Result) []string {
 	return texts
 }
 
-func stopThinkingContentBlock(param *ConvertOpenAIResponseToAnthropicParams, results *[]string) {
-	if !param.ThinkingContentBlockStarted {
-		return
-	}
-	contentBlockStopJSON := `{"type":"content_block_stop","index":0}`
-	contentBlockStopJSON, _ = sjson.Set(contentBlockStopJSON, "index", param.ThinkingContentBlockIndex)
-	*results = append(*results, "event: content_block_stop\ndata: "+contentBlockStopJSON+"\n\n")
-	param.ThinkingContentBlockStarted = false
-	param.ThinkingContentBlockIndex = -1
-}
-
 func emitMessageStopIfNeeded(param *ConvertOpenAIResponseToAnthropicParams, results *[]string) {
 	if param.MessageStopSent {
 		return
 	}
 	*results = append(*results, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
 	param.MessageStopSent = true
-}
-
-func stopTextContentBlock(param *ConvertOpenAIResponseToAnthropicParams, results *[]string) {
-	if !param.TextContentBlockStarted {
-		return
-	}
-	contentBlockStopJSON := `{"type":"content_block_stop","index":0}`
-	contentBlockStopJSON, _ = sjson.Set(contentBlockStopJSON, "index", param.TextContentBlockIndex)
-	*results = append(*results, "event: content_block_stop\ndata: "+contentBlockStopJSON+"\n\n")
-	param.TextContentBlockStarted = false
-	param.TextContentBlockIndex = -1
 }
 
 // ConvertOpenAIResponseToClaudeNonStream converts a non-streaming OpenAI response to a non-streaming Anthropic response.
