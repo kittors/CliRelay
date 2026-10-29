@@ -218,7 +218,7 @@ func TestCalendarLimitRefusalUsesTheUsagePackageBoundary(t *testing.T) {
 		if !ok {
 			t.Fatal("the usage package reports no end for the day")
 		}
-		want := int(end.Sub(time.Now())/time.Second) + 1
+		want := int(time.Until(end)/time.Second) + 1
 		assertRefusedWithRetryAfter(t, postQuota(quotaRouter(map[string]string{"daily-limit": "5"}, nil)), "daily_limit_exceeded", want)
 	})
 }
