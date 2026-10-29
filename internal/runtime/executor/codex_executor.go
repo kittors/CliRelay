@@ -227,7 +227,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 			}
 			continue
 		}
-		if gjson.GetBytes(line, "type").String() != "response.completed" {
+		if !codexResponseFinished(gjson.GetBytes(line, "type").String()) {
 			continue
 		}
 		line = mergeCodexResponsesCompletedOutput(line, pendingOutputItems, pendingOutputKeys)
@@ -444,7 +444,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 				if bytes.HasPrefix(eventLine, dataTag) {
 					data := bytes.TrimSpace(eventLine[len(dataTag):])
 					switch gjson.GetBytes(data, "type").String() {
-					case "response.completed":
+					case "response.completed", "response.incomplete":
 						completed = true
 						if detail, ok := parseCodexUsage(data); ok {
 							reporter.publish(execCtx.Context, detail)
