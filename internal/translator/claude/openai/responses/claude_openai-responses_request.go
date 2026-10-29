@@ -415,5 +415,5 @@ func ConvertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 		}
 	}
 
-	return []byte(out)
+	return common.OutputFormatFromResponses(root).WriteClaude([]byte(out))
 }

@@ -10,6 +10,7 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/cache"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/thinking"
+	translatorcommon "github.com/router-for-me/CLIProxyAPI/v6/internal/translator/common"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/translator/gemini/common"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	"github.com/tidwall/gjson"
@@ -461,6 +462,7 @@ func ConvertClaudeRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 	}
 
 	outBytes := []byte(out)
+	outBytes = translatorcommon.OutputFormatFromClaude(gjson.ParseBytes(rawJSON)).WriteGemini(outBytes, "request.")
 	outBytes = common.AttachDefaultSafetySettings(outBytes, "request.safetySettings")
 
 	return outBytes

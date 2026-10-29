@@ -290,7 +290,7 @@ func ConvertGeminiRequestToCodex(modelName string, inputRawJSON []byte, _ bool) 
 		out, _ = sjson.Set(out, fullPath, strings.ToLower(gjson.Get(out, fullPath).String()))
 	}
 
-	return []byte(out)
+	return translatorcommon.OutputFormatFromGemini(root).WriteResponses([]byte(out))
 }
 
 // shortenNameIfNeeded applies the simple shortening rule for a single name.

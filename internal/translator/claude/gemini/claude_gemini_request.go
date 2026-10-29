@@ -373,5 +373,5 @@ func ConvertGeminiRequestToClaude(modelName string, inputRawJSON []byte, stream 
 		out, _ = sjson.Set(out, fullPath, strings.ToLower(gjson.Get(out, fullPath).String()))
 	}
 
-	return []byte(out)
+	return translatorcommon.OutputFormatFromGemini(root).WriteClaude([]byte(out))
 }
