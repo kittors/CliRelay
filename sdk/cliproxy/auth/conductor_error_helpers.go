@@ -191,22 +191,57 @@ func isInvalidRequestSignal(raw string) bool {
 		strings.Contains(signal, "total pixels") && strings.Contains(signal, "minimum"),
 		// Prompt/context length is a property of the request body. Retrying on
 		// another auth only re-runs multi-MB translation without fixing the body.
-		strings.Contains(signal, "context_length_exceeded"),
-		strings.Contains(signal, "prompt_too_long"),
-		strings.Contains(signal, "maximum context length"),
-		strings.Contains(signal, "maximum prompt length"),
-		strings.Contains(signal, "prompt is too long"),
-		strings.Contains(signal, "prompt too long"),
+		// Besides the phrasings IsContextLengthExceeded knows, looser ones are
+		// enough here: the status is already a 400.
+		IsContextLengthExceeded(signal),
 		strings.Contains(signal, "too many tokens"),
 		strings.Contains(signal, "tokens > max"),
 		strings.Contains(signal, "tokens exceeds"),
-		// Observed Grok: "maximum prompt length is 500000 but the request contains 816381 tokens"
-		strings.Contains(signal, "maximum prompt") && strings.Contains(signal, "tokens"),
 		strings.Contains(signal, "prompt length") && strings.Contains(signal, "tokens"):
 		return true
 	default:
 		return false
 	}
+}
+
+// contextLengthPhrases are what upstreams say when a request does not fit the
+// model's context window, for example:
+//
+//   - OpenAI, vLLM, DeepSeek: "This model's maximum context length is 128000
+//     tokens. However, your messages resulted in 130512 tokens." (code
+//     context_length_exceeded)
+//   - Anthropic: "prompt is too long: 210450 tokens > 200000 maximum"
+//   - Codex: "Your input exceeds the context window of this model."
+//   - Gemini: "The input token count (1048577) exceeds the maximum number of
+//     tokens allowed (1048576)."
+//   - Bedrock: "Input is too long for requested model."
+//   - Grok: "This model's maximum prompt length is 500000 but the request
+//     contains 816381 tokens."
+var contextLengthPhrases = []string{
+	"context_length_exceeded",
+	"prompt_too_long",
+	"prompt is too long",
+	"prompt too long",
+	"maximum context length",
+	"maximum prompt length",
+	"exceeds the context window",
+	"exceeds the maximum number of tokens",
+	"input is too long",
+}
+
+// IsContextLengthExceeded reports whether an upstream error text says the
+// request does not fit the model's context window. No other account can serve
+// such a request, and clients react to it by shortening the conversation, so
+// the API handlers rewrite it into the wording each protocol's clients
+// recognise.
+func IsContextLengthExceeded(text string) bool {
+	signal := strings.ToLower(text)
+	for _, phrase := range contextLengthPhrases {
+		if strings.Contains(signal, phrase) {
+			return true
+		}
+	}
+	return strings.Contains(signal, "maximum prompt") && strings.Contains(signal, "tokens")
 }
 
 func nestedString(payload map[string]any, keys ...string) string {

@@ -222,6 +222,43 @@ func TestIsRequestInvalidError_RecognizesContextLengthExceededCode(t *testing.T)
 	}
 }
 
+func TestIsContextLengthExceeded(t *testing.T) {
+	t.Parallel()
+
+	for _, text := range []string{
+		`{"error":{"message":"This model's maximum context length is 128000 tokens. However, your messages resulted in 130512 tokens.","type":"invalid_request_error","param":"messages","code":"context_length_exceeded"}}`,
+		`{"type":"error","error":{"type":"invalid_request_error","message":"prompt is too long: 210450 tokens > 200000 maximum"}}`,
+		`{"error":{"message":"Your input exceeds the context window of this model. Please adjust your input and try again.","type":"invalid_request_error","param":"input","code":"context_length_exceeded"}}`,
+		`{"error":{"code":400,"message":"The input token count (1048577) exceeds the maximum number of tokens allowed (1048576).","status":"INVALID_ARGUMENT"}}`,
+		`{"message":"Input is too long for requested model."}`,
+		"This model's maximum prompt length is 500000 but the request contains 816381 tokens.",
+	} {
+		if !IsContextLengthExceeded(text) {
+			t.Errorf("IsContextLengthExceeded(%s) = false", text)
+		}
+	}
+	for _, text := range []string{
+		`{"error":{"message":"You exceeded your current quota.","type":"insufficient_quota","code":"insufficient_quota"}}`,
+		`{"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed the rate limit for your organization of 40,000 input tokens per minute."}}`,
+		"invalid request: unknown field",
+	} {
+		if IsContextLengthExceeded(text) {
+			t.Errorf("IsContextLengthExceeded(%s) = true", text)
+		}
+	}
+}
+
+// Bedrock's context error carries no invalid-request type or code, so only its
+// message says that no other account can serve the request.
+func TestIsRequestInvalidError_RecognizesBedrockInputTooLong(t *testing.T) {
+	t.Parallel()
+
+	err := &Error{HTTPStatus: http.StatusBadRequest, Message: `{"message":"Input is too long for requested model."}`}
+	if !isRequestInvalidError(err) {
+		t.Fatal("expected Bedrock's over-long input 400 to be treated as invalid request")
+	}
+}
+
 func TestMarkResult_RequestInvalidErrorDoesNotCooldownAuth(t *testing.T) {
 	t.Parallel()
 
