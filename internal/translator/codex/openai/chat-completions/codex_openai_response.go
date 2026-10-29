@@ -10,6 +10,7 @@ import (
 	"context"
 	"time"
 
+	translatorcommon "github.com/router-for-me/CLIProxyAPI/v6/internal/translator/common"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -95,13 +96,9 @@ func ConvertCodexResponseToOpenAI(_ context.Context, modelName string, originalR
 			template, _ = sjson.Set(template, "choices.0.delta.content", deltaResult.String())
 		}
 		return []string{template}
-	} else if dataType == "response.completed" {
+	} else if dataType == "response.completed" || dataType == "response.incomplete" {
 		template := buildCodexChatChunk(state)
-		finishReason := "stop"
-		if state.FunctionCallIndex != -1 {
-			finishReason = "tool_calls"
-		}
-		template, _ = sjson.Set(template, "choices.0.finish_reason", finishReason)
+		template, _ = sjson.Set(template, "choices.0.finish_reason", codexChatFinishReason(rootResult.Get("response"), state.FunctionCallIndex != -1))
 		outputs := []string{template}
 		if includeUsageInChatStream(originalRequestRawJSON) {
 			if usageChunk := buildCodexChatUsageChunk(state, rootResult.Get("response.usage")); usageChunk != "" {
@@ -229,8 +226,9 @@ func ConvertCodexResponseToOpenAI(_ context.Context, modelName string, originalR
 //   - string: An OpenAI-compatible JSON response containing all message content and metadata
 func ConvertCodexResponseToOpenAINonStream(_ context.Context, _ string, originalRequestRawJSON, requestRawJSON, rawJSON []byte, _ *any) string {
 	rootResult := gjson.ParseBytes(rawJSON)
-	// Verify this is a response.completed event
-	if rootResult.Get("type").String() != "response.completed" {
+	// Verify this is the final event: response.completed, or response.incomplete
+	// for a reply the upstream cut short.
+	if typ := rootResult.Get("type").String(); typ != "response.completed" && typ != "response.incomplete" {
 		return ""
 	}
 
@@ -277,11 +275,11 @@ func ConvertCodexResponseToOpenAINonStream(_ context.Context, _ string, original
 	}
 
 	// Process the output array for content and function calls
+	var toolCalls []string
 	outputResult := responseResult.Get("output")
 	if outputResult.IsArray() {
 		outputArray := outputResult.Array()
 		var contentText string
-		var toolCalls []string
 
 		for _, outputItem := range outputArray {
 			outputType := outputItem.Get("type").String()
@@ -339,13 +337,7 @@ func ConvertCodexResponseToOpenAINonStream(_ context.Context, _ string, original
 		}
 	}
 
-	// Extract and set the finish reason based on status
-	if statusResult := responseResult.Get("status"); statusResult.Exists() {
-		status := statusResult.String()
-		if status == "completed" {
-			template, _ = sjson.Set(template, "choices.0.finish_reason", "stop")
-		}
-	}
+	template, _ = sjson.Set(template, "choices.0.finish_reason", codexChatFinishReason(responseResult, len(toolCalls) > 0))
 
 	return template
 }
@@ -439,4 +431,16 @@ func buildReverseMapFromOriginalOpenAI(original []byte) map[string]string {
 		}
 	}
 	return rev
+}
+
+// codexChatFinishReason is the Chat finish_reason for a finished Responses
+// response. An incomplete response says why it stopped early, which wins over
+// tool calls: a reply cut off in the middle of one stops for length, as an
+// OpenAI Chat reply would. Otherwise a reply that called tools stops for them.
+func codexChatFinishReason(response gjson.Result, hasToolCall bool) string {
+	reason := translatorcommon.StopReasonFromResponses(response.Get("status").String(), response.Get("incomplete_details.reason").String())
+	if reason == translatorcommon.StopEndTurn && hasToolCall {
+		reason = translatorcommon.StopToolUse
+	}
+	return reason.OpenAI()
 }

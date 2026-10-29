@@ -8,206 +8,146 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-// queryDistinctAPIKeys returns one filter option per account (owned multi-key
-// end users collapse onto a representative secret + display name). Standalone
-// keys stay one option each so "测试 key" never sits next to "Kittors".
-func queryDistinctAPIKeys(db *sql.DB, params LogQueryParams) ([]string, map[string]string, map[string]int64, error) {
+// queryDistinctAPIKeyIDs returns one filter option per concrete key: the stable
+// api_key_id, the key's own name and the number of matching rows. A row is
+// attributed to a key by its api_key_id alone; the api_key column holds only a
+// mask, so there is no secret to group by or hand back.
+//
+// With params.CollapseAccountKeys the keys of one end-user account fold into a
+// single option (the account's default key as representative, the account's
+// display name, summed counts), which is how the management UI lists them.
+// The "__system__" entry counts the rows that carry no key at all (system calls).
+func queryDistinctAPIKeyIDs(db *sql.DB, params LogQueryParams) ([]string, map[string]string, map[string]int64, error) {
 	tenantID := normalizeTenantID(params.TenantID)
 	currentByID := currentAPIKeyRowsByIDForTenant(tenantID)
-	currentByKey := currentAPIKeyRowsByKeyForTenant(tenantID)
-	repByEndUser, nameByEndUser := accountFilterRepresentatives(tenantID)
 	where, args := buildWhereClause(params)
 	if where == "" {
-		where = " WHERE api_key != ''"
+		where = " WHERE"
 	} else {
-		where += " AND api_key != ''"
+		where += " AND"
 	}
 	rows, err := db.Query(`
 		SELECT
-			CASE
-				WHEN trim(coalesce(api_key_id, '')) <> '' THEN api_key_id
-				ELSE 'raw:' || api_key
-			END AS logical_selector,
-			COALESCE(MAX(NULLIF(trim(coalesce(api_key_id, '')), '')), '') AS logical_id,
-			MAX(api_key) AS snapshot_key,
+			trim(coalesce(api_key_id, '')) AS key_id,
 			COALESCE(NULLIF(MAX(api_key_name), ''), '') AS snapshot_name,
+			COALESCE(MAX(api_key), '') AS sample_key,
 			COUNT(*) AS request_count
 		FROM request_logs
-		`+where+`
-		GROUP BY logical_selector
-		ORDER BY logical_selector
+		`+where+` trim(coalesce(api_key_id, '')) <> ''
+		GROUP BY key_id
+		ORDER BY key_id
 	`, args...)
 	if err != nil {
-		log.Warnf("usage: distinct api_key logical groups query failed: %v", err)
-		return nil, nil, nil, fmt.Errorf("usage: distinct api_key logical groups: %w", err)
+		log.Warnf("usage: distinct api_key_id groups query failed: %v", err)
+		return nil, nil, nil, fmt.Errorf("usage: distinct api_key_id groups: %w", err)
 	}
 	defer rows.Close()
 
 	values := make([]string, 0)
 	names := make(map[string]string)
 	counts := make(map[string]int64)
-	seenAccount := make(map[string]struct{})
 	for rows.Next() {
-		var logicalSelector string
-		var logicalID sql.NullString
-		var snapshotKey string
-		var snapshotName string
+		var id, snapshotName, sampleKey string
 		var requestCount int64
-		if err := rows.Scan(&logicalSelector, &logicalID, &snapshotKey, &snapshotName, &requestCount); err != nil {
-			log.Warnf("usage: distinct api_key scan failed: %v", err)
+		if err := rows.Scan(&id, &snapshotName, &sampleKey, &requestCount); err != nil {
+			log.Warnf("usage: distinct api_key_id scan failed: %v", err)
 			return nil, nil, nil, err
 		}
-
-		value := strings.TrimSpace(snapshotKey)
-		name := strings.TrimSpace(snapshotName)
-		var row *APIKeyRow
-		if r, ok := currentByID[trimNullString(logicalID)]; ok {
-			copy := r
-			row = &copy
-		} else if r, ok := currentByKey[value]; ok {
-			copy := r
-			row = &copy
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
 		}
-		accountID := ""
-		if row != nil {
-			if trimmed := strings.TrimSpace(row.Key); trimmed != "" {
-				value = trimmed
+		name := strings.TrimSpace(snapshotName)
+		// Persist-time snapshot is only the fallback for keys that no longer exist.
+		if row, ok := currentByID[id]; ok {
+			if own := strings.TrimSpace(row.Name); own != "" {
+				name = own
 			}
+		}
+		if name == "" {
+			// An unnamed key used to be listed by its masked secret. The facet no
+			// longer carries secrets, so it borrows the mask its own rows show
+			// instead of an opaque id.
+			name = maskedKeyLabelForFacet(sampleKey)
+		}
+		values = append(values, id)
+		counts[id] = requestCount
+		if name != "" {
+			names[id] = name
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, nil, nil, err
+	}
+
+	if params.CollapseAccountKeys {
+		values, names, counts = collapseAccountKeyOptions(tenantID, values, names, counts, currentByID)
+	}
+
+	var systemCount int64
+	if err := db.QueryRow(
+		"SELECT COUNT(*) FROM request_logs"+where+" "+systemRequestLogPredicate(), args...,
+	).Scan(&systemCount); err != nil {
+		log.Warnf("usage: distinct system call count failed: %v", err)
+		return nil, nil, nil, fmt.Errorf("usage: distinct system call count: %w", err)
+	}
+	if systemCount > 0 {
+		values = append(values, SystemRequestLogFilterValue)
+		counts[SystemRequestLogFilterValue] = systemCount
+	}
+	return values, names, counts, nil
+}
+
+// collapseAccountKeyOptions folds the options of keys owned by one end-user
+// account into one option. Standalone keys stay one option each, so a "test key"
+// never sits next to the account that owns it. Soft-deleted keys keep their
+// ownership for the fold but never become the representative.
+func collapseAccountKeyOptions(
+	tenantID string,
+	ids []string,
+	names map[string]string,
+	counts map[string]int64,
+	currentByID map[string]APIKeyRow,
+) ([]string, map[string]string, map[string]int64) {
+	repByEndUser, nameByEndUser := accountFilterRepresentatives(tenantID)
+	outIDs := make([]string, 0, len(ids))
+	outNames := make(map[string]string, len(names))
+	outCounts := make(map[string]int64, len(counts))
+	seen := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		value := id
+		name := names[id]
+		if row, ok := currentByID[id]; ok {
 			if eu := strings.TrimSpace(row.EndUserID); eu != "" {
-				accountID = eu
 				if rep := strings.TrimSpace(repByEndUser[eu]); rep != "" {
 					value = rep
 				}
 				if label := strings.TrimSpace(nameByEndUser[eu]); label != "" {
 					name = label
-				} else if label := ResolveAPIKeyDisplayName(row, name); label != "" {
+				} else if label := ResolveAPIKeyDisplayName(&row, name); label != "" {
 					name = label
 				}
-			} else if label := ResolveAPIKeyDisplayName(row, name); label != "" {
-				name = label
 			}
 		}
-		if value == "" {
-			continue
-		}
-		// Dedupe: end-user account id when owned, else raw key secret.
-		dedupeKey := value
-		if accountID != "" {
-			dedupeKey = "eu:" + accountID
-		}
-		// Legacy raw-key and stable-id groups can resolve to the same account.
-		// Sum before deduping so the UI count matches every retained log for that account.
-		counts[value] += requestCount
-		if _, ok := seenAccount[dedupeKey]; ok {
-			if name != "" && names[value] == "" {
-				names[value] = name
+		// Sum before deduping: every retained log of the account must be counted.
+		outCounts[value] += counts[id]
+		if _, ok := seen[value]; ok {
+			if name != "" && outNames[value] == "" {
+				outNames[value] = name
 			}
 			continue
 		}
-		seenAccount[dedupeKey] = struct{}{}
-		values = append(values, value)
+		seen[value] = struct{}{}
+		outIDs = append(outIDs, value)
 		if name != "" {
-			names[value] = name
+			outNames[value] = name
 		}
 	}
-	return values, names, counts, rows.Err()
+	return outIDs, outNames, outCounts
 }
 
-// queryDistinctAPIKeyIDs returns one public-safe filter option per concrete key
-// (stable api_key_id + own name). Unlike queryDistinctAPIKeys it does not collapse
-// multi-key end-user accounts onto a representative secret.
-func queryDistinctAPIKeyIDs(db *sql.DB, params LogQueryParams) ([]string, map[string]string, map[string]int64, error) {
-	tenantID := normalizeTenantID(params.TenantID)
-	currentByID := currentAPIKeyRowsByIDForTenant(tenantID)
-	currentByKey := currentAPIKeyRowsByKeyForTenant(tenantID)
-	where, args := buildWhereClause(params)
-	if where == "" {
-		where = " WHERE api_key != ''"
-	} else {
-		where += " AND api_key != ''"
-	}
-	rows, err := db.Query(`
-		SELECT
-			CASE
-				WHEN trim(coalesce(api_key_id, '')) <> '' THEN api_key_id
-				ELSE 'raw:' || api_key
-			END AS logical_selector,
-			COALESCE(MAX(NULLIF(trim(coalesce(api_key_id, '')), '')), '') AS logical_id,
-			MAX(api_key) AS snapshot_key,
-			COALESCE(NULLIF(MAX(api_key_name), ''), '') AS snapshot_name,
-			COUNT(*) AS request_count
-		FROM request_logs
-		`+where+`
-		GROUP BY logical_selector
-		ORDER BY logical_selector
-	`, args...)
-	if err != nil {
-		log.Warnf("usage: distinct api_key_id logical groups query failed: %v", err)
-		return nil, nil, nil, fmt.Errorf("usage: distinct api_key_id logical groups: %w", err)
-	}
-	defer rows.Close()
-
-	values := make([]string, 0)
-	names := make(map[string]string)
-	counts := make(map[string]int64)
-	seen := make(map[string]struct{})
-	for rows.Next() {
-		var logicalSelector string
-		var logicalID sql.NullString
-		var snapshotKey string
-		var snapshotName string
-		var requestCount int64
-		if err := rows.Scan(&logicalSelector, &logicalID, &snapshotKey, &snapshotName, &requestCount); err != nil {
-			log.Warnf("usage: distinct api_key_id scan failed: %v", err)
-			return nil, nil, nil, err
-		}
-
-		id := strings.TrimSpace(trimNullString(logicalID))
-		value := strings.TrimSpace(snapshotKey)
-		name := strings.TrimSpace(snapshotName)
-		var row *APIKeyRow
-		if id != "" {
-			if r, ok := currentByID[id]; ok {
-				copy := r
-				row = &copy
-			}
-		}
-		if row == nil {
-			if r, ok := currentByKey[value]; ok {
-				copy := r
-				row = &copy
-			}
-		}
-		if row != nil {
-			if trimmed := strings.TrimSpace(row.ID); trimmed != "" {
-				id = trimmed
-			}
-			if own := strings.TrimSpace(row.Name); own != "" {
-				name = own
-			}
-		}
-		// Public filter values must be stable ids, never secrets.
-		if id == "" {
-			continue
-		}
-		// Stable-id and legacy raw-key groups can map to the same current key.
-		counts[id] += requestCount
-		if _, ok := seen[id]; ok {
-			if name != "" && names[id] == "" {
-				names[id] = name
-			}
-			continue
-		}
-		seen[id] = struct{}{}
-		values = append(values, id)
-		if name != "" {
-			names[id] = name
-		}
-	}
-	return values, names, counts, rows.Err()
-}
-
-// accountFilterRepresentatives picks one filter value per end-user (prefer default key).
+// accountFilterRepresentatives picks one filter value per end-user: the id of the
+// account's default key (else its first live key), plus the account's label.
 func accountFilterRepresentatives(tenantID string) (repByEndUser map[string]string, nameByEndUser map[string]string) {
 	rows := ListAPIKeysForTenant(tenantID)
 	repByEndUser = make(map[string]string)
@@ -223,15 +163,15 @@ func accountFilterRepresentatives(tenantID string) (repByEndUser map[string]stri
 		if eu == "" {
 			continue
 		}
-		key := strings.TrimSpace(row.Key)
-		if key == "" {
+		id := strings.TrimSpace(row.ID)
+		if id == "" {
 			continue
 		}
 		if _, ok := repByEndUser[eu]; !ok {
-			repByEndUser[eu] = key
+			repByEndUser[eu] = id
 			defaultPicked[eu] = row.IsDefault
 		} else if row.IsDefault && !defaultPicked[eu] {
-			repByEndUser[eu] = key
+			repByEndUser[eu] = id
 			defaultPicked[eu] = true
 		}
 		if _, ok := nameByEndUser[eu]; !ok {
@@ -263,13 +203,17 @@ func buildSingleAPIKeySelectorClauseForTenant(tenantID, selector string) (string
 	// Always key-scoped. Account-wide views use EndUserID on LogQueryParams, not secret expansion.
 	if row != nil {
 		if id := strings.TrimSpace(row.ID); id != "" {
-			return " WHERE (api_key_id = ? OR (api_key_id = '' AND api_key = ?))", []interface{}{id, strings.TrimSpace(row.Key)}
-		}
-		if k := strings.TrimSpace(row.Key); k != "" {
-			return " WHERE api_key = ?", []interface{}{k}
+			return " WHERE api_key_id = ?", []interface{}{id}
 		}
 	}
-	return " WHERE api_key = ?", []interface{}{trimmed}
+	// Not a stored key. A route or internal origin is stored verbatim and can be
+	// matched as such. Anything else is a secret the system no longer knows: its
+	// rows hold a mask, which says nothing about which secret it was, so it must
+	// match nothing instead of falling back to a column compare.
+	if IsRequestLogLabel(trimmed) {
+		return " WHERE api_key = ?", []interface{}{trimmed}
+	}
+	return " WHERE 1 = 0", nil
 }
 
 // buildPublicLookupAPIKeySelectorClause matches any key in the end-user account pool

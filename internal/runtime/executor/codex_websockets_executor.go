@@ -269,7 +269,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 
 		payload = normalizeCodexWebsocketCompletion(payload)
 		eventType := gjson.GetBytes(payload, "type").String()
-		if eventType == "response.completed" {
+		if codexResponseFinished(eventType) {
 			if detail, ok := parseCodexUsage(payload); ok {
 				reporter.publish(execCtx.Context, detail)
 			}
@@ -524,7 +524,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 			}
 			for _, eventPayload := range normalizedEvents {
 				eventType := gjson.GetBytes(eventPayload, "type").String()
-				if eventType == "response.completed" || eventType == "response.done" {
+				if codexResponseFinished(eventType) || eventType == "response.done" {
 					if detail, ok := parseCodexUsage(eventPayload); ok {
 						reporter.publish(execCtx.Context, detail)
 					}
@@ -539,7 +539,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 						return
 					}
 				}
-				if eventType == "response.completed" || eventType == "response.done" {
+				if codexResponseFinished(eventType) || eventType == "response.done" {
 					return
 				}
 			}

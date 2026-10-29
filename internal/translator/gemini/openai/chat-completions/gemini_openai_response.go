@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	translatorcommon "github.com/router-for-me/CLIProxyAPI/v6/internal/translator/common"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -231,11 +232,10 @@ func ConvertGeminiResponseToOpenAI(_ context.Context, _ string, originalRequestR
 				template, _ = sjson.Set(template, "choices.0.finish_reason", "tool_calls")
 				template, _ = sjson.Set(template, "choices.0.native_finish_reason", "tool_calls")
 			} else if finishReason != "" {
-				// Only pass through specific finish reasons
-				if finishReason == "max_tokens" || finishReason == "stop" {
-					template, _ = sjson.Set(template, "choices.0.finish_reason", finishReason)
-					template, _ = sjson.Set(template, "choices.0.native_finish_reason", finishReason)
-				}
+				// finish_reason uses Chat's names; native_finish_reason keeps the
+				// upstream's own.
+				template, _ = sjson.Set(template, "choices.0.finish_reason", translatorcommon.StopReasonFromGemini(finishReason).OpenAI())
+				template, _ = sjson.Set(template, "choices.0.native_finish_reason", finishReason)
 			}
 
 			responseStrings = append(responseStrings, template)
@@ -323,7 +323,7 @@ func ConvertGeminiResponseToOpenAINonStream(_ context.Context, _ string, origina
 
 			// Set finish reason.
 			if finishReasonResult := candidate.Get("finishReason"); finishReasonResult.Exists() {
-				choiceTemplate, _ = sjson.Set(choiceTemplate, "finish_reason", strings.ToLower(finishReasonResult.String()))
+				choiceTemplate, _ = sjson.Set(choiceTemplate, "finish_reason", translatorcommon.StopReasonFromGemini(finishReasonResult.String()).OpenAI())
 				choiceTemplate, _ = sjson.Set(choiceTemplate, "native_finish_reason", strings.ToLower(finishReasonResult.String()))
 			}
 

@@ -454,7 +454,7 @@ func TestQueryLogsSupportsSystemRequestLogFilterValue(t *testing.T) {
 		Page:   1,
 		Size:   10,
 		Days:   1,
-		APIKey: systemRequestLogFilterValue,
+		APIKey: SystemRequestLogFilterValue,
 	})
 	if err != nil {
 		t.Fatalf("QueryLogs() error = %v", err)
@@ -597,14 +597,15 @@ func TestQueryLogsReturnsThinkingLevel(t *testing.T) {
 	for _, row := range result.Items {
 		rowsByKey[row.APIKey] = row
 	}
-	thinkingRow := rowsByKey["sk-thinking"]
+	// Rows carry the mask of the key, never the key.
+	thinkingRow := rowsByKey[MaskAPIKey("sk-thinking")]
 	if thinkingRow.Model != "gpt-5.6-sol" {
 		t.Fatalf("Model = %q, want gpt-5.6-sol", thinkingRow.Model)
 	}
 	if thinkingRow.ThinkingLevel != "max" {
 		t.Fatalf("ThinkingLevel = %q, want max", thinkingRow.ThinkingLevel)
 	}
-	noThinkingRow := rowsByKey["sk-no-thinking"]
+	noThinkingRow := rowsByKey[MaskAPIKey("sk-no-thinking")]
 	if noThinkingRow.ThinkingLevel != "" {
 		t.Fatalf("ThinkingLevel without suffix = %q, want empty", noThinkingRow.ThinkingLevel)
 	}
@@ -1681,6 +1682,8 @@ func TestDeleteLogsByAPIKeyRemovesLogsAndContent(t *testing.T) {
 	timestamp := time.Now().UTC()
 	input := `{"messages":[{"role":"user","content":"hello"}]}`
 	output := `{"id":"resp_1","output":"done"}`
+	registerTestAPIKey(t, "key-target", "sk-target", "Target")
+	registerTestAPIKey(t, "key-other", "sk-other", "Other")
 
 	// Insert 3 logs: 2 for "sk-target", 1 for "sk-other"
 	InsertLog("sk-target", "", "gpt-test", "source", "channel", "auth-1", false, timestamp, 100, 10, TokenStats{
@@ -1719,8 +1722,8 @@ func TestDeleteLogsByAPIKeyRemovesLogsAndContent(t *testing.T) {
 	if len(result.Items) != 1 {
 		t.Fatalf("expected 1 log row after delete, got %d", len(result.Items))
 	}
-	if result.Items[0].APIKey != "sk-other" {
-		t.Fatalf("remaining log api_key = %q, want sk-other", result.Items[0].APIKey)
+	if result.Items[0].APIKey != MaskAPIKey("sk-other") {
+		t.Fatalf("remaining log api_key = %q, want the mask of sk-other", result.Items[0].APIKey)
 	}
 
 	// Verify content rows are also deleted for sk-target
@@ -1733,6 +1736,49 @@ func TestDeleteLogsByAPIKeyRemovesLogsAndContent(t *testing.T) {
 	// Only sk-other's content should remain (1 row)
 	if contentCount != 1 {
 		t.Fatalf("expected 1 content row (sk-other only), got %d", contentCount)
+	}
+}
+
+func TestDeleteLogsByAPIKeyIDFollowsTheKeyThroughRotation(t *testing.T) {
+	initTestUsageDB(t, config.RequestLogStorageConfig{
+		StoreContent:           true,
+		ContentRetentionDays:   30,
+		CleanupIntervalMinutes: 1440,
+	})
+
+	const keyID = "key-rotated"
+	registerTestAPIKey(t, keyID, "sk-before-rotation", "Rotated")
+	registerTestAPIKey(t, "key-bystander", "sk-bystander", "Bystander")
+	timestamp := time.Now().UTC()
+	InsertLog("sk-before-rotation", "", "gpt-test", "source", "channel", "auth-1", false, timestamp, 100, 10, TokenStats{TotalTokens: 30}, "in", "out")
+	InsertLog("sk-bystander", "", "gpt-test", "source", "channel", "auth-1", false, timestamp, 100, 10, TokenStats{TotalTokens: 30}, "in", "out")
+	if err := UpdateAPIKeyByID(APIKeyRow{ID: keyID, Key: "sk-after-rotation", Name: "Rotated"}); err != nil {
+		t.Fatalf("UpdateAPIKeyByID: %v", err)
+	}
+	InsertLog("sk-after-rotation", "", "gpt-test", "source", "channel", "auth-1", false, timestamp, 100, 10, TokenStats{TotalTokens: 30}, "in", "out")
+
+	// The history belongs to the key, whatever its secret was when each row was
+	// written, and a masked row has no secret to delete by.
+	deleted, err := DeleteLogsByAPIKeyIDForTenant(systemTenantID, keyID)
+	if err != nil {
+		t.Fatalf("DeleteLogsByAPIKeyIDForTenant() error = %v", err)
+	}
+	if deleted != 2 {
+		t.Fatalf("deleted = %d, want both rows of the key", deleted)
+	}
+	result, err := QueryLogs(LogQueryParams{Page: 1, Size: 10, Days: 1})
+	if err != nil {
+		t.Fatalf("QueryLogs() error = %v", err)
+	}
+	if len(result.Items) != 1 || result.Items[0].APIKeyID != "key-bystander" {
+		t.Fatalf("remaining rows = %#v, want only the bystander's", result.Items)
+	}
+	var contentCount int
+	if err := getDB().QueryRow("SELECT COUNT(*) FROM request_log_content").Scan(&contentCount); err != nil {
+		t.Fatalf("count content rows: %v", err)
+	}
+	if contentCount != 1 {
+		t.Fatalf("content rows = %d, want only the bystander's", contentCount)
 	}
 }
 
@@ -1817,18 +1863,15 @@ func TestUniqueRequestLogAPIKeyIDByKeyOnlyChecksMissingRawKeys(t *testing.T) {
 
 	db := getDB()
 	now := time.Now().UTC()
-	InsertLogWithDetailsIdentity("sk-missing", "missing-id", "", "gpt-test", "source", "channel", "auth-1", false, now, 1, 1, TokenStats{TotalTokens: 1}, "", "", "")
-	InsertLogWithDetailsIdentity("sk-unrelated", "unrelated-id", "", "gpt-test", "source", "channel", "auth-1", false, now, 1, 1, TokenStats{TotalTokens: 1}, "", "", "")
-	if _, err := db.Exec(
-		`INSERT INTO request_logs
-			(timestamp, api_key, api_key_id, api_key_name, model, source, channel_name, auth_index,
-			 failed, latency_ms, first_token_ms, input_tokens, output_tokens, reasoning_tokens, cached_tokens, total_tokens, cost)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		now.Add(time.Second).Format(time.RFC3339Nano), "sk-missing", "", "", "gpt-test", "source", "channel", "auth-1",
-		0, 123, 45, 10, 20, 0, 0, 30, 0,
-	); err != nil {
-		t.Fatalf("insert missing api_key_id request_log: %v", err)
-	}
+	// Rows as older builds stored them: the secret itself in api_key.
+	insertRawRequestLog(t, "sk-missing", "missing-id", "", now)
+	insertRawRequestLog(t, "sk-unrelated", "unrelated-id", "", now)
+	insertRawRequestLog(t, "sk-missing", "", "", now.Add(time.Second))
+	// A mask does not say which secret it came from (two keys can share one), so
+	// it must never be used to carry an id from one row to another.
+	masked := MaskAPIKey("sk-shared-mask-0001")
+	insertRawRequestLog(t, masked, "masked-id", "", now)
+	insertRawRequestLog(t, masked, "", "", now.Add(time.Second))
 
 	got := uniqueRequestLogAPIKeyIDByKeyFromDB(db)
 	if got["sk-missing"] != "missing-id" {
@@ -1837,33 +1880,53 @@ func TestUniqueRequestLogAPIKeyIDByKeyOnlyChecksMissingRawKeys(t *testing.T) {
 	if _, ok := got["sk-unrelated"]; ok {
 		t.Fatalf("sk-unrelated should not be queried when it has no missing api_key_id rows")
 	}
+	if _, ok := got[masked]; ok {
+		t.Fatalf("masked value %q must not be treated as a raw key: %#v", masked, got)
+	}
 }
 
 func TestQueryAPIKeySelectorsHandleLegacyRowsWithoutAPIKeyID(t *testing.T) {
 	initTestUsageDB(t, config.RequestLogStorageConfig{})
 
 	db := getDB()
+	const secret = "sk-legacy-secret-0001"
+	registerTestAPIKey(t, "legacy-key-id", secret, "袁蔚")
 	timestamp := time.Now().UTC().Format(time.RFC3339Nano)
+	// A row written by a build that stored the secret and had no api_key_id yet.
 	if _, err := db.Exec(
 		`INSERT INTO request_logs
 			(timestamp, api_key, api_key_name, model, source, channel_name, auth_index,
 			 failed, latency_ms, first_token_ms, input_tokens, output_tokens, reasoning_tokens, cached_tokens, total_tokens, cost)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		timestamp, "sk-legacy", "袁蔚", "gpt-test", "source", "channel", "auth-1",
+		timestamp, secret, "袁蔚", "gpt-test", "source", "channel", "auth-1",
 		0, 123, 45, 10, 20, 0, 0, 30, 0,
 	); err != nil {
 		t.Fatalf("insert legacy request_log: %v", err)
 	}
 
+	// Until the row is attributed to its key it has no identity to filter by.
 	filters, err := QueryFilters(7)
 	if err != nil {
 		t.Fatalf("QueryFilters() error = %v", err)
 	}
-	if len(filters.APIKeys) != 1 || filters.APIKeys[0] != "sk-legacy" {
-		t.Fatalf("filters.APIKeys = %#v, want [sk-legacy]", filters.APIKeys)
+	if len(filters.APIKeyIDs) != 0 {
+		t.Fatalf("filters.APIKeyIDs = %#v, want no option for a row without a key id", filters.APIKeyIDs)
 	}
-	if filters.APIKeyNames["sk-legacy"] != "袁蔚" {
-		t.Fatalf("filters.APIKeyNames[sk-legacy] = %q, want 袁蔚", filters.APIKeyNames["sk-legacy"])
+
+	backfillRequestLogAPIKeyIDs(db)
+
+	filters, err = QueryFilters(7)
+	if err != nil {
+		t.Fatalf("QueryFilters() after backfill error = %v", err)
+	}
+	if len(filters.APIKeyIDs) != 1 || filters.APIKeyIDs[0] != "legacy-key-id" {
+		t.Fatalf("filters.APIKeyIDs = %#v, want [legacy-key-id]", filters.APIKeyIDs)
+	}
+	if filters.APIKeyIDNames["legacy-key-id"] != "袁蔚" {
+		t.Fatalf("filters.APIKeyIDNames[legacy-key-id] = %q, want 袁蔚", filters.APIKeyIDNames["legacy-key-id"])
+	}
+	if filters.APIKeyIDCounts["legacy-key-id"] != 1 {
+		t.Fatalf("filters.APIKeyIDCounts = %#v, want one request", filters.APIKeyIDCounts)
 	}
 
 	dist, err := QueryAPIKeyDistribution(7)
@@ -1873,8 +1936,11 @@ func TestQueryAPIKeySelectorsHandleLegacyRowsWithoutAPIKeyID(t *testing.T) {
 	if len(dist) != 1 {
 		t.Fatalf("distribution len = %d, want 1: %#v", len(dist), dist)
 	}
-	if dist[0].APIKey != "sk-legacy" {
-		t.Fatalf("distribution api_key = %q, want sk-legacy", dist[0].APIKey)
+	if dist[0].APIKeyID != "legacy-key-id" {
+		t.Fatalf("distribution api_key_id = %q, want legacy-key-id", dist[0].APIKeyID)
+	}
+	if dist[0].APIKey != MaskAPIKey(secret) {
+		t.Fatalf("distribution api_key = %q, want the mask %q", dist[0].APIKey, MaskAPIKey(secret))
 	}
 	if dist[0].Name != "袁蔚" {
 		t.Fatalf("distribution name = %q, want 袁蔚", dist[0].Name)
@@ -1882,25 +1948,41 @@ func TestQueryAPIKeySelectorsHandleLegacyRowsWithoutAPIKeyID(t *testing.T) {
 	if dist[0].Requests != 1 || dist[0].Tokens != 30 {
 		t.Fatalf("distribution point = %#v, want one request and 30 tokens", dist[0])
 	}
+
+	// The row still stores the secret (nothing has masked it yet), but no read
+	// path hands it out.
+	result, err := QueryLogs(LogQueryParams{Page: 1, Size: 10, Days: 7, APIKeyIDs: []string{"legacy-key-id"}})
+	if err != nil {
+		t.Fatalf("QueryLogs() error = %v", err)
+	}
+	if len(result.Items) != 1 || result.Items[0].APIKey != MaskAPIKey(secret) || result.Items[0].APIKeyMasked != MaskAPIKey(secret) {
+		t.Fatalf("QueryLogs items = %#v, want one row carrying only the mask", result.Items)
+	}
 }
 
 func TestQueryFiltersForLogsLinksFilterFacets(t *testing.T) {
 	initTestUsageDB(t, config.RequestLogStorageConfig{})
+	registerTestAPIKey(t, "key-a", "sk-a-secret-0001", "A")
+	registerTestAPIKey(t, "key-b", "sk-b-secret-0002", "B")
+	registerTestAPIKey(t, "key-c", "sk-c-secret-0003", "C")
 
 	now := time.Now().UTC()
-	InsertLog("sk-a", "A", "glm-5.2", "source-a", "OpenCode", "auth-a", false, now, 1, 1, TokenStats{TotalTokens: 1}, "", "")
-	InsertLog("sk-b", "B", "gpt-4.1", "source-b", "Codex", "auth-b", false, now, 1, 1, TokenStats{TotalTokens: 1}, "", "")
-	InsertLog("sk-c", "C", "glm-5.2", "source-c", "Anthropic", "auth-c", true, now, 1, 1, TokenStats{TotalTokens: 1}, "", "")
+	InsertLog("sk-a-secret-0001", "A", "glm-5.2", "source-a", "OpenCode", "auth-a", false, now, 1, 1, TokenStats{TotalTokens: 1}, "", "")
+	InsertLog("sk-b-secret-0002", "B", "gpt-4.1", "source-b", "Codex", "auth-b", false, now, 1, 1, TokenStats{TotalTokens: 1}, "", "")
+	InsertLog("sk-c-secret-0003", "C", "glm-5.2", "source-c", "Anthropic", "auth-c", true, now, 1, 1, TokenStats{TotalTokens: 1}, "", "")
 
 	filters, err := QueryFiltersForLogs(LogQueryParams{Days: 7, Models: []string{"glm-5.2"}})
 	if err != nil {
 		t.Fatalf("QueryFiltersForLogs() error = %v", err)
 	}
-	if !slices.Equal(filters.APIKeys, []string{"sk-a", "sk-c"}) {
-		t.Fatalf("filters.APIKeys = %#v, want [sk-a sk-c]", filters.APIKeys)
+	if !slices.Equal(filters.APIKeyIDs, []string{"key-a", "key-c"}) {
+		t.Fatalf("filters.APIKeyIDs = %#v, want [key-a key-c]", filters.APIKeyIDs)
 	}
-	if filters.APIKeyCounts["sk-a"] != 1 || filters.APIKeyCounts["sk-c"] != 1 {
-		t.Fatalf("filters.APIKeyCounts = %#v, want one matching request per key", filters.APIKeyCounts)
+	if filters.APIKeyIDCounts["key-a"] != 1 || filters.APIKeyIDCounts["key-c"] != 1 {
+		t.Fatalf("filters.APIKeyIDCounts = %#v, want one matching request per key", filters.APIKeyIDCounts)
+	}
+	if filters.APIKeyIDNames["key-a"] != "A" || filters.APIKeyIDNames["key-c"] != "C" {
+		t.Fatalf("filters.APIKeyIDNames = %#v, want the keys' own names", filters.APIKeyIDNames)
 	}
 	if !slices.Equal(filters.Channels, []string{"Anthropic", "OpenCode"}) {
 		t.Fatalf("filters.Channels = %#v, want [Anthropic OpenCode]", filters.Channels)
@@ -1913,15 +1995,15 @@ func TestQueryFiltersForLogsLinksFilterFacets(t *testing.T) {
 	}
 
 	filters, err = QueryFiltersForLogs(LogQueryParams{
-		Days:    7,
-		APIKeys: []string{"sk-a"},
-		Models:  []string{"glm-5.2"},
+		Days:      7,
+		APIKeyIDs: []string{"key-a"},
+		Models:    []string{"glm-5.2"},
 	})
 	if err != nil {
 		t.Fatalf("QueryFiltersForLogs(api key + model) error = %v", err)
 	}
-	if !slices.Equal(filters.APIKeys, []string{"sk-a", "sk-c"}) {
-		t.Fatalf("filters.APIKeys = %#v, want model-compatible keys", filters.APIKeys)
+	if !slices.Equal(filters.APIKeyIDs, []string{"key-a", "key-c"}) {
+		t.Fatalf("filters.APIKeyIDs = %#v, want model-compatible keys", filters.APIKeyIDs)
 	}
 	if !slices.Equal(filters.Models, []string{"glm-5.2"}) {
 		t.Fatalf("filters.Models = %#v, want key-compatible models", filters.Models)
@@ -1998,41 +2080,59 @@ func TestQueryFiltersCollapsesOwnedKeysToOneAccountOption(t *testing.T) {
 	InsertLogWithDetailsIdentity("sk-kittors-test", extraID, "测试 key", "gpt-b", "src", "ch", "a2", false, ts.Add(time.Second), 1, 1, TokenStats{TotalTokens: 20}, "", "", "")
 	InsertLogWithDetailsIdentity("sk-solo", "key-solo", "zbb", "gpt-c", "src", "ch", "a3", false, ts.Add(2*time.Second), 1, 1, TokenStats{TotalTokens: 5}, "", "", "")
 
-	filters, err := QueryFilters(7)
+	filters, err := QueryFiltersForLogs(LogQueryParams{Days: 7, CollapseAccountKeys: true})
 	if err != nil {
-		t.Fatalf("QueryFilters() error = %v", err)
+		t.Fatalf("QueryFiltersForLogs() error = %v", err)
 	}
-	if len(filters.APIKeys) != 2 {
-		t.Fatalf("filters.APIKeys = %#v, want 2 options (account + solo)", filters.APIKeys)
+	if len(filters.APIKeyIDs) != 2 {
+		t.Fatalf("filters.APIKeyIDs = %#v, want 2 options (account + solo)", filters.APIKeyIDs)
 	}
-	if !slices.Contains(filters.APIKeys, "sk-kittors-default") {
-		t.Fatalf("filters.APIKeys = %#v, want representative sk-kittors-default", filters.APIKeys)
+	if !slices.Contains(filters.APIKeyIDs, defaultID) {
+		t.Fatalf("filters.APIKeyIDs = %#v, want representative %s", filters.APIKeyIDs, defaultID)
 	}
-	if slices.Contains(filters.APIKeys, "sk-kittors-test") {
-		t.Fatalf("filters.APIKeys = %#v, must not list owned non-representative key", filters.APIKeys)
+	if slices.Contains(filters.APIKeyIDs, extraID) {
+		t.Fatalf("filters.APIKeyIDs = %#v, must not list owned non-representative key", filters.APIKeyIDs)
 	}
-	if filters.APIKeyNames["sk-kittors-default"] != "Kittors" {
-		t.Fatalf("filters.APIKeyNames[sk-kittors-default] = %q, want Kittors", filters.APIKeyNames["sk-kittors-default"])
+	if filters.APIKeyIDNames[defaultID] != "Kittors" {
+		t.Fatalf("filters.APIKeyIDNames[%s] = %q, want Kittors", defaultID, filters.APIKeyIDNames[defaultID])
 	}
-	if filters.APIKeyCounts["sk-kittors-default"] != 2 {
-		t.Fatalf("filters.APIKeyCounts[sk-kittors-default] = %d, want 2 account requests", filters.APIKeyCounts["sk-kittors-default"])
+	if filters.APIKeyIDCounts[defaultID] != 2 {
+		t.Fatalf("filters.APIKeyIDCounts[%s] = %d, want 2 account requests", defaultID, filters.APIKeyIDCounts[defaultID])
 	}
-	if filters.APIKeyCounts["sk-solo"] != 1 {
-		t.Fatalf("filters.APIKeyCounts[sk-solo] = %d, want 1", filters.APIKeyCounts["sk-solo"])
+	if filters.APIKeyIDCounts["key-solo"] != 1 {
+		t.Fatalf("filters.APIKeyIDCounts[key-solo] = %d, want 1", filters.APIKeyIDCounts["key-solo"])
 	}
-	for _, name := range filters.APIKeyNames {
+	for _, name := range filters.APIKeyIDNames {
 		if name == "测试 key" {
-			t.Fatalf("filters.APIKeyNames leaked key label %q", name)
+			t.Fatalf("filters.APIKeyIDNames leaked key label %q", name)
 		}
 	}
 
-	// Selecting a concrete secret is key-scoped; account-wide needs EndUserID.
-	logs, err := QueryLogs(LogQueryParams{Page: 1, Size: 50, Days: 7, APIKeys: []string{"sk-kittors-default"}})
+	// Without the flag every concrete key is its own option (the shape the public
+	// lookup page lists).
+	perKey, err := QueryFiltersForLogs(LogQueryParams{Days: 7})
 	if err != nil {
-		t.Fatalf("QueryLogs(key filter) error = %v", err)
+		t.Fatalf("QueryFiltersForLogs(per key) error = %v", err)
+	}
+	if !slices.Equal(perKey.APIKeyIDs, []string{defaultID, extraID, "key-solo"}) {
+		t.Fatalf("per-key filters.APIKeyIDs = %#v, want every concrete key", perKey.APIKeyIDs)
+	}
+
+	// Selecting a concrete key id is key-scoped; account-wide needs EndUserID.
+	logs, err := QueryLogs(LogQueryParams{Page: 1, Size: 50, Days: 7, APIKeyIDs: []string{defaultID}})
+	if err != nil {
+		t.Fatalf("QueryLogs(key id filter) error = %v", err)
 	}
 	if logs.Total != 1 {
-		t.Fatalf("QueryLogs total = %d, want 1 (presented key only)", logs.Total)
+		t.Fatalf("QueryLogs total = %d, want 1 (selected key only)", logs.Total)
+	}
+	// The legacy selector (a secret the caller holds) resolves to the same key.
+	bySecret, err := QueryLogs(LogQueryParams{Page: 1, Size: 50, Days: 7, APIKeys: []string{"sk-kittors-default"}})
+	if err != nil {
+		t.Fatalf("QueryLogs(key selector) error = %v", err)
+	}
+	if bySecret.Total != 1 {
+		t.Fatalf("QueryLogs(selector) total = %d, want 1 (presented key only)", bySecret.Total)
 	}
 	accountLogs, err := QueryLogs(LogQueryParams{Page: 1, Size: 50, Days: 7, EndUserID: endUserID})
 	if err != nil {
@@ -2051,13 +2151,18 @@ func TestQueryFiltersCollapsesOwnedKeysToOneAccountOption(t *testing.T) {
 	}
 	var account *APIKeyDistributionPoint
 	for i := range dist {
-		if dist[i].APIKey == "sk-kittors-default" || dist[i].Name == "Kittors" {
+		if dist[i].APIKey == "sk-kittors-default" || dist[i].APIKey == "sk-solo" {
+			t.Fatalf("distribution leaked a client secret: %#v", dist[i])
+		}
+		if dist[i].APIKeyID == defaultID {
 			account = &dist[i]
-			break
 		}
 	}
 	if account == nil {
 		t.Fatalf("missing account distribution point in %#v", dist)
+	}
+	if account.APIKey != MaskAPIKey("sk-kittors-default") {
+		t.Fatalf("account api_key = %q, want the representative's mask", account.APIKey)
 	}
 	if account.Name != "Kittors" {
 		t.Fatalf("account name = %q, want Kittors", account.Name)
@@ -2121,22 +2226,25 @@ func TestQueryFiltersUsesActiveRepAfterSoftDeletedOwnedKey(t *testing.T) {
 	InsertLogWithDetailsIdentity("sk-old-plain", "key-dead", "LYDing", "gpt-a", "src", "ch", "a1", false, ts, 1, 1, TokenStats{TotalTokens: 1}, "", "", "")
 	InsertLogWithDetailsIdentity("sk-live-new", "key-live", "LYDing1", "gpt-b", "src", "ch", "a2", false, ts.Add(time.Second), 1, 1, TokenStats{TotalTokens: 1}, "", "", "")
 
-	filters, err := QueryFilters(7)
+	filters, err := QueryFiltersForLogs(LogQueryParams{Days: 7, CollapseAccountKeys: true})
 	if err != nil {
-		t.Fatalf("QueryFilters: %v", err)
+		t.Fatalf("QueryFiltersForLogs: %v", err)
 	}
-	if len(filters.APIKeys) != 1 {
-		t.Fatalf("filters.APIKeys = %#v, want one account option", filters.APIKeys)
+	if len(filters.APIKeyIDs) != 1 {
+		t.Fatalf("filters.APIKeyIDs = %#v, want one account option", filters.APIKeyIDs)
 	}
-	if filters.APIKeys[0] != "sk-live-new" {
-		t.Fatalf("representative = %q, want sk-live-new (active)", filters.APIKeys[0])
+	if filters.APIKeyIDs[0] != "key-live" {
+		t.Fatalf("representative = %q, want key-live (active)", filters.APIKeyIDs[0])
 	}
-	if filters.APIKeyNames["sk-live-new"] != "LYDing" {
-		t.Fatalf("filter name = %q, want account display LYDing not key name", filters.APIKeyNames["sk-live-new"])
+	if filters.APIKeyIDNames["key-live"] != "LYDing" {
+		t.Fatalf("filter name = %q, want account display LYDing not key name", filters.APIKeyIDNames["key-live"])
 	}
-	for _, name := range filters.APIKeyNames {
+	if filters.APIKeyIDCounts["key-live"] != 2 {
+		t.Fatalf("filter count = %d, want both the soft-deleted key's and the live key's requests", filters.APIKeyIDCounts["key-live"])
+	}
+	for _, name := range filters.APIKeyIDNames {
 		if name == "LYDing1" {
-			t.Fatalf("filters leaked key name LYDing1: %#v", filters.APIKeyNames)
+			t.Fatalf("filters leaked key name LYDing1: %#v", filters.APIKeyIDNames)
 		}
 	}
 }
@@ -2183,12 +2291,13 @@ func TestQueryAPIKeyDistributionMergesRawAndIDGroupsForSameKey(t *testing.T) {
 	}
 	InsertLogWithDetailsIdentity("sk-other", "other-id", "Other", "gpt-test", "source", "channel", "auth-2", false, now, 1, 1, TokenStats{TotalTokens: 5}, "", "", "")
 
+	// Startup attributes the legacy rows to their key (InitDB does this on every
+	// boot), after which the key reads as one identity.
+	backfillRequestLogAPIKeyIDs(db)
+
 	filters, err := QueryFilters(7)
 	if err != nil {
 		t.Fatalf("QueryFilters() error = %v", err)
-	}
-	if filters.APIKeyCounts[rawKey] != 5 {
-		t.Fatalf("filters.APIKeyCounts[%s] = %d, want 5 merged requests", rawKey, filters.APIKeyCounts[rawKey])
 	}
 	if filters.APIKeyIDCounts[stableID] != 5 {
 		t.Fatalf("filters.APIKeyIDCounts[%s] = %d, want 5 merged requests", stableID, filters.APIKeyIDCounts[stableID])
@@ -2204,13 +2313,18 @@ func TestQueryAPIKeyDistributionMergesRawAndIDGroupsForSameKey(t *testing.T) {
 
 	var primary *APIKeyDistributionPoint
 	for i := range dist {
-		if dist[i].APIKey == rawKey {
+		if dist[i].APIKey == rawKey || dist[i].APIKey == "sk-other" {
+			t.Fatalf("distribution leaked a client secret: %#v", dist[i])
+		}
+		if dist[i].APIKeyID == stableID {
 			primary = &dist[i]
-			break
 		}
 	}
 	if primary == nil {
-		t.Fatalf("missing merged point for %q in %#v", rawKey, dist)
+		t.Fatalf("missing merged point for %q in %#v", stableID, dist)
+	}
+	if primary.APIKey != MaskAPIKey(rawKey) {
+		t.Fatalf("merged api_key = %q, want the mask %q", primary.APIKey, MaskAPIKey(rawKey))
 	}
 	if primary.Name != name {
 		t.Fatalf("merged name = %q, want %q", primary.Name, name)
@@ -2223,7 +2337,7 @@ func TestQueryAPIKeyDistributionMergesRawAndIDGroupsForSameKey(t *testing.T) {
 	if primary.Tokens != 180 {
 		t.Fatalf("merged tokens = %d, want 180", primary.Tokens)
 	}
-	if dist[0].APIKey != rawKey {
+	if dist[0].APIKeyID != stableID {
 		t.Fatalf("expected primary key first by request count, got %#v", dist)
 	}
 }
@@ -2260,22 +2374,29 @@ func TestRequestStatisticsPersistsAPIKeyIdentitySnapshotAcrossRename(t *testing.
 	if err != nil {
 		t.Fatalf("QueryFilters() error = %v", err)
 	}
-	if len(filters.APIKeys) != 1 || filters.APIKeys[0] != "sk-new" {
-		t.Fatalf("filters.APIKeys = %#v, want [sk-new]", filters.APIKeys)
+	if len(filters.APIKeyIDs) != 1 || filters.APIKeyIDs[0] != stableID {
+		t.Fatalf("filters.APIKeyIDs = %#v, want [%s]", filters.APIKeyIDs, stableID)
 	}
-	if filters.APIKeyNames["sk-new"] != "袁蔚" {
-		t.Fatalf("filters.APIKeyNames[sk-new] = %q, want 袁蔚", filters.APIKeyNames["sk-new"])
+	if filters.APIKeyIDNames[stableID] != "袁蔚" {
+		t.Fatalf("filters.APIKeyIDNames[%s] = %q, want 袁蔚", stableID, filters.APIKeyIDNames[stableID])
 	}
 
 	dist, err := QueryAPIKeyDistribution(7)
 	if err != nil {
 		t.Fatalf("QueryAPIKeyDistribution() error = %v", err)
 	}
-	if len(dist) != 1 || dist[0].APIKey != "sk-new" {
-		t.Fatalf("distribution = %#v, want one sk-new point", dist)
+	if len(dist) != 1 || dist[0].APIKeyID != stableID || dist[0].APIKey != MaskAPIKey("sk-new") {
+		t.Fatalf("distribution = %#v, want one point for %s showing the current key's mask", dist, stableID)
 	}
 	if dist[0].Name != "袁蔚" {
 		t.Fatalf("distribution name = %q, want 袁蔚", dist[0].Name)
+	}
+
+	// The in-memory statistics follow the key's id, so a rotation does not split
+	// the counters and the secret never appears in the snapshot.
+	snapshot := stats.Snapshot()
+	if _, ok := snapshot.APIs[stableID]; !ok || len(snapshot.APIs) != 1 {
+		t.Fatalf("snapshot.APIs = %#v, want a single bucket named after the key id", snapshot.APIs)
 	}
 }
 
@@ -2307,7 +2428,7 @@ func TestRequestStatisticsPersistsRequestLogWhenStatisticsDisabled(t *testing.T)
 	}
 
 	var count int
-	if err := getDB().QueryRow("SELECT COUNT(*) FROM request_logs WHERE api_key = ?", "sk-disabled-stats").Scan(&count); err != nil {
+	if err := getDB().QueryRow("SELECT COUNT(*) FROM request_logs WHERE api_key = ?", MaskAPIKey("sk-disabled-stats")).Scan(&count); err != nil {
 		t.Fatalf("query persisted request log: %v", err)
 	}
 	if count != 1 {

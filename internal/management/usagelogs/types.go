@@ -3,20 +3,27 @@ package usagelogs
 import "github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 
 type ManagementLogQueryInput struct {
-	Page    int
-	Size    int
-	Days    int
+	Page int
+	Size int
+	Days int
+	// APIKeyIDs selects keys by stable id as the key facet offers them (an
+	// account's representative id expands to the whole account; "__system__"
+	// selects system calls).
+	APIKeyIDs []string
+	// APIKeys are selectors the caller already holds (secrets). They are resolved
+	// to key ids and never compared with the stored column.
 	APIKeys []string
 	// EndUserID 按门户账号过滤（账号名下全部 Key 的稳定 ID，含已删除 Key 的历史日志）。
 	// 面板查看某个账号的用量时不必再拉取这些 Key 的明文、把它们放进查询串。
-	EndUserID       string
-	Models          []string
-	Statuses        []string
-	Channels        []string
-	MatchNoAPIKeys  bool
-	MatchNoModels   bool
-	MatchNoStatuses bool
-	MatchNoChannels bool
+	EndUserID        string
+	Models           []string
+	Statuses         []string
+	Channels         []string
+	MatchNoAPIKeys   bool
+	MatchNoAPIKeyIDs bool
+	MatchNoModels    bool
+	MatchNoStatuses  bool
+	MatchNoChannels  bool
 }
 
 type PublicLogQueryInput struct {

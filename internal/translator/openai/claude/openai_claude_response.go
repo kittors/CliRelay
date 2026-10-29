@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/openaicompat"
+	translatorcommon "github.com/router-for-me/CLIProxyAPI/v6/internal/translator/common"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -416,24 +417,6 @@ func convertOpenAINonStreamingToAnthropic(rawJSON []byte) []string {
 	return []string{out}
 }
 
-// mapOpenAIFinishReasonToAnthropic maps OpenAI finish reasons to Anthropic equivalents
-func mapOpenAIFinishReasonToAnthropic(openAIReason string) string {
-	switch openAIReason {
-	case "stop":
-		return "end_turn"
-	case "length":
-		return "max_tokens"
-	case "tool_calls":
-		return "tool_use"
-	case "content_filter":
-		return "end_turn" // Anthropic doesn't have direct equivalent
-	case "function_call": // Legacy OpenAI
-		return "tool_use"
-	default:
-		return "end_turn"
-	}
-}
-
 func mapOpenAIFinishReasonToAnthropicWithToolState(openAIReason string, hasToolUse bool) string {
 	switch openAIReason {
 	case "tool_calls", "function_call":
@@ -442,7 +425,7 @@ func mapOpenAIFinishReasonToAnthropicWithToolState(openAIReason string, hasToolU
 		}
 		return "end_turn"
 	default:
-		return mapOpenAIFinishReasonToAnthropic(openAIReason)
+		return translatorcommon.StopReasonFromOpenAI(openAIReason).Claude()
 	}
 }
 

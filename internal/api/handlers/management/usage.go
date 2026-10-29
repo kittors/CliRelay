@@ -3,6 +3,7 @@ package management
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -64,18 +65,22 @@ func (h *Handler) GetPublicUsageByAPIKey(c *gin.Context) {
 		snapshot = h.usageStats.Snapshot()
 	}
 
-	keys := []string{subject.APIKey}
+	// The snapshot's buckets are keyed by key id, so the subject is resolved to
+	// ids first: the account's keys for a portal session, the presented key
+	// otherwise. A secret that resolves to no stored key has no bucket to read.
+	var buckets []string
 	if subject.EndUserID != "" {
-		keys = usage.ListAPIKeySecretsForEndUserForTenant(subject.TenantID, subject.EndUserID)
+		buckets = usage.ListAPIKeyIDsForEndUserForTenant(subject.TenantID, subject.EndUserID)
+	} else if subject.APIKeyRow != nil {
+		buckets = []string{strings.TrimSpace(subject.APIKeyRow.ID)}
 	}
-	apiData, hasUsage := aggregatePublicAPISnapshots(snapshot.APIs, keys)
+	apiData, hasUsage := aggregatePublicAPISnapshots(snapshot.APIs, buckets)
 	found := hasUsage
 	if subject.EndUserID != "" && subject.APIKey == "" {
 		found = true
 	} else if subject.APIKeyRow != nil {
 		// A persisted disabled key must not be revived merely because the in-memory
-		// snapshot still contains older usage. Unknown legacy keys remain supported
-		// when the snapshot itself proves that the presented secret has usage.
+		// snapshot still contains older usage.
 		found = !subject.APIKeyRow.Disabled
 	}
 	maskedAPIKey := maskKey(subject.APIKey)
@@ -114,11 +119,11 @@ func (h *Handler) GetPublicUsageByAPIKey(c *gin.Context) {
 	})
 }
 
-func aggregatePublicAPISnapshots(items map[string]usage.APISnapshot, keys []string) (usage.APISnapshot, bool) {
+func aggregatePublicAPISnapshots(items map[string]usage.APISnapshot, buckets []string) (usage.APISnapshot, bool) {
 	result := usage.APISnapshot{Models: make(map[string]usage.ModelSnapshot)}
 	found := false
-	for _, key := range keys {
-		item, ok := items[key]
+	for _, bucket := range buckets {
+		item, ok := items[bucket]
 		if !ok {
 			continue
 		}
