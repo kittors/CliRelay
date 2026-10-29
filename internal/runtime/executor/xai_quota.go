@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -108,7 +109,7 @@ func parseHTTPRetryAfterHeader(header http.Header, now time.Time) *time.Duration
 		return nil
 	}
 	if seconds, err := strconv.ParseInt(raw, 10, 64); err == nil {
-		if seconds <= 0 {
+		if seconds <= 0 || seconds > math.MaxInt64/int64(time.Second) {
 			return nil
 		}
 		retryAfter := time.Duration(seconds) * time.Second
