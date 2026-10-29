@@ -11,8 +11,8 @@ import (
 
 func TestRuntimeMigrationsCoverCoreTables(t *testing.T) {
 	migrations := RuntimeMigrations()
-	if len(migrations) != 42 {
-		t.Fatalf("RuntimeMigrations len = %d, want 42", len(migrations))
+	if len(migrations) != 43 {
+		t.Fatalf("RuntimeMigrations len = %d, want 43", len(migrations))
 	}
 	// Membership table of multi-instance deployments.
 	if migrations[31].Version != "202609250001_cluster_nodes" {
@@ -71,6 +71,28 @@ func TestRuntimeMigrationsCoverCoreTables(t *testing.T) {
 			if !strings.Contains(got.SQL, "ALTER TABLE "+table+" ADD COLUMN IF NOT EXISTS access_policy TEXT NOT NULL DEFAULT '{}'") {
 				t.Fatalf("access policy migration does not add the column to %s", table)
 			}
+		}
+	}
+	// Cache reads, cache writes, prompt size and session on request_logs, cache
+	// totals on rollups. Catalog-only ALTERs: an index on request_logs would
+	// block log writes for the whole build, and an UPDATE would rewrite every
+	// row; the session backfill runs in the background instead.
+	if got := migrations[42]; got.Version != "202610300001_request_log_cache_and_session" {
+		t.Fatalf("cache and session migration = %q", got.Version)
+	} else {
+		for _, fragment := range []string{
+			"ADD COLUMN IF NOT EXISTS cache_read_tokens BIGINT,",
+			"ADD COLUMN IF NOT EXISTS cache_write_tokens BIGINT,",
+			"ADD COLUMN IF NOT EXISTS prompt_tokens BIGINT,",
+			"ADD COLUMN IF NOT EXISTS session_id TEXT NOT NULL DEFAULT ''",
+			"ADD COLUMN IF NOT EXISTS cache_known_prompt_tokens BIGINT NOT NULL DEFAULT 0",
+		} {
+			if !strings.Contains(got.SQL, fragment) {
+				t.Fatalf("cache and session migration missing %q", fragment)
+			}
+		}
+		if strings.Contains(got.SQL, "INDEX") || strings.Contains(got.SQL, "UPDATE") {
+			t.Fatalf("cache and session migration must only change the catalog: %q", got.SQL)
 		}
 	}
 	// Appended from laterRuntimeMigrations() because migrations.go sits at its

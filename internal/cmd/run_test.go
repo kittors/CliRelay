@@ -111,6 +111,7 @@ func TestRuntimeDataStackPostStartHooksRunMaintenanceAsynchronously(t *testing.T
 	sharedBackfillRan := make(chan struct{}, 1)
 	catchupScheduled := make(chan struct{}, 1)
 	keyMaskingScheduled := make(chan struct{}, 1)
+	sessionBackfillScheduled := make(chan struct{}, 1)
 
 	hooks := runtimeDataStackPostStartHooks(runtimeDataStackMaintenanceOps{
 		runAIAccountSharedSubjectBackfill: func() error {
@@ -124,6 +125,9 @@ func TestRuntimeDataStackPostStartHooksRunMaintenanceAsynchronously(t *testing.T
 		},
 		scheduleRequestLogKeyMasking: func() {
 			keyMaskingScheduled <- struct{}{}
+		},
+		scheduleRequestLogSessionBackfill: func() {
+			sessionBackfillScheduled <- struct{}{}
 		},
 	})
 
@@ -157,6 +161,8 @@ func TestRuntimeDataStackPostStartHooksRunMaintenanceAsynchronously(t *testing.T
 	select {
 	case <-keyMaskingScheduled:
 		t.Fatal("request log key masking was scheduled before the repairs finished")
+	case <-sessionBackfillScheduled:
+		t.Fatal("request log session backfill was scheduled before the repairs finished")
 	default:
 	}
 
@@ -175,6 +181,11 @@ func TestRuntimeDataStackPostStartHooksRunMaintenanceAsynchronously(t *testing.T
 	case <-keyMaskingScheduled:
 	case <-time.After(time.Second):
 		t.Fatal("request log key masking was not scheduled")
+	}
+	select {
+	case <-sessionBackfillScheduled:
+	case <-time.After(time.Second):
+		t.Fatal("request log session backfill was not scheduled")
 	}
 }
 

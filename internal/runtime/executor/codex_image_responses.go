@@ -42,7 +42,6 @@ func (e *CodexExecutor) executeCodexImageViaResponses(
 	}
 	url := strings.TrimSuffix(baseURL, "/") + "/responses"
 	recorder := execCtx.Recorder()
-	httpClient := execCtx.HTTPClient(0)
 	var lastErr error
 	for attempt := 1; attempt <= codexImageResponsesMaxTries; attempt++ {
 		httpReq, err := http.NewRequestWithContext(execCtx.Context, http.MethodPost, url, bytes.NewReader(body))
@@ -51,9 +50,8 @@ func (e *CodexExecutor) executeCodexImageViaResponses(
 		}
 		httpReq = httpReq.WithContext(withCodexRequestModel(httpReq.Context(), e.resolveCodexImageBaseModel()))
 		applyCodexHeaders(httpReq, e.cfg, execCtx.Auth, apiKey, true)
-		recorder.RecordRequest(url, http.MethodPost, httpReq.Header.Clone(), body)
 
-		httpResp, err := httpClient.Do(httpReq)
+		httpResp, err := e.doCodexResponses(execCtx, recorder, httpReq, body)
 		if err != nil {
 			recorder.RecordResponseError(err)
 			return nil, nil, err

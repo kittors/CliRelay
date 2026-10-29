@@ -41,6 +41,17 @@ type LogRow struct {
 	TotalTokens           int64   `json:"total_tokens"`
 	Cost                  float64 `json:"cost"`
 	HasContent            bool    `json:"has_content"`
+	// CacheReadTokens and CacheWriteTokens are null when the request's cache
+	// use is unknown: logged before they were stored, or an upstream that
+	// reports no cache accounting. CachedTokens keeps its legacy meaning
+	// (reads, else writes).
+	CacheReadTokens  *int64 `json:"cache_read_tokens"`
+	CacheWriteTokens *int64 `json:"cache_write_tokens"`
+	// PromptTokens is the prompt the model processed, cached part included;
+	// null on rows logged before it was stored.
+	PromptTokens *int64 `json:"prompt_tokens"`
+	// SessionID is the client's session identifier, empty when it sent none.
+	SessionID string `json:"session_id,omitempty"`
 }
 
 // LogQueryParams holds filter/pagination parameters for QueryLogs.
@@ -117,7 +128,10 @@ type LogStats struct {
 	TotalTokens   int64   `json:"total_tokens"`
 	TotalSessions int64   `json:"total_sessions"`
 	TotalCost     float64 `json:"total_cost"`
-	CacheRate     float64 `json:"cache_rate"`
+	// CacheRate is deprecated: it is CacheHitRate, with 0 where that is
+	// unknown, for panels that read it as a number.
+	CacheRate float64 `json:"cache_rate"`
+	CacheUsage
 }
 
 type ClearRequestLogsResult struct {

@@ -107,8 +107,7 @@ func queryPublicChartData(params LogQueryParams, days int) (PublicChartData, err
 	dailyByDate := make(map[string]*DailySeriesPoint)
 	heatmapByDate := make(map[string]*DailyHeatmapPoint)
 	var stats LogStats
-	var effectiveInputTokens int64
-	var cachedTokens int64
+	var cache cacheTotals
 	var successCount int64
 	for _, p := range points {
 		heat := heatmapByDate[p.Date]
@@ -119,7 +118,7 @@ func queryPublicChartData(params LogQueryParams, days int) (PublicChartData, err
 		heat.Requests += p.Requests
 		heat.Tokens += p.TotalTokens
 		heat.Cost += p.Cost
-		// Sessions only available within detail retention; leave 0 outside that window.
+		// Sessions only cover the request_logs retention window; days before it keep 0.
 		if p.Date < statsStartDay {
 			continue
 		}
@@ -136,8 +135,7 @@ func queryPublicChartData(params LogQueryParams, days int) (PublicChartData, err
 		stats.TotalTokens += p.TotalTokens
 		stats.TotalCost += p.Cost
 		successCount += p.SuccessCount
-		effectiveInputTokens += p.EffectiveInput
-		cachedTokens += p.CachedTokens
+		cache.add(p.Cache)
 	}
 	models, err := queryRollupModelDistribution(rollupFilter{
 		TenantID:   tenantID,
@@ -159,8 +157,10 @@ func queryPublicChartData(params LogQueryParams, days int) (PublicChartData, err
 	if stats.Total > 0 {
 		stats.SuccessRate = float64(successCount) / float64(stats.Total) * 100
 	}
-	stats.CacheRate = cacheRateFromTokenTotals(effectiveInputTokens, cachedTokens)
-	// Distinct sessions remain detail-retention diagnostics only.
+	stats.CacheUsage = cache.usage()
+	stats.CacheRate = stats.legacyCacheRate()
+	// Distinct sessions come from request_logs, so they cover its retention
+	// window (7 days by default), not the 365 days of the heatmap.
 	if sessionsByDate, sessErr := querySessionSetsByDate(params); sessErr == nil {
 		statsStart := LocalDayKeyAt(CutoffStartUTC(days))
 		totalSessions := make(map[string]struct{})
@@ -278,10 +278,7 @@ func querySessionSetsByDate(params LogQueryParams) (map[string]map[string]struct
 
 	where, args := buildWhereClause(params)
 	rows, err := db.Query(
-		`SELECT logs.timestamp, content.session_id
-		   FROM (SELECT tenant_id, id, timestamp FROM request_logs`+where+`) logs
-		   JOIN request_log_content content ON content.tenant_id = logs.tenant_id AND content.log_id = logs.id
-		  WHERE content.session_id <> ''`,
+		`SELECT timestamp, session_id FROM request_logs`+where+` AND session_id <> ''`,
 		args...,
 	)
 	if err != nil {
@@ -536,6 +533,10 @@ type HourlyTokenPoint struct {
 	ReasoningTokens int64  `json:"reasoning_tokens"`
 	CachedTokens    int64  `json:"cached_tokens"`
 	TotalTokens     int64  `json:"total_tokens"`
+	// CacheReadTokens and CacheWriteTokens only count requests whose cache use
+	// is known (see CacheUsage).
+	CacheReadTokens  int64 `json:"cache_read_tokens"`
+	CacheWriteTokens int64 `json:"cache_write_tokens"`
 }
 
 // HourlyModelPoint holds model request counts per hour.
@@ -588,7 +589,8 @@ func queryHourlySeriesAt(tenantID, apiKey string, hours int, now time.Time, loc 
 	// query tokens by hour
 	tokenQuery := `SELECT ` + hourExpr + ` as h,
 	                      COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0),
-	                      COALESCE(SUM(reasoning_tokens),0), COALESCE(SUM(cached_tokens),0), COALESCE(SUM(total_tokens),0)
+	                      COALESCE(SUM(reasoning_tokens),0), COALESCE(SUM(cached_tokens),0), COALESCE(SUM(total_tokens),0),
+	                      COALESCE(SUM(cache_read_tokens),0), COALESCE(SUM(cache_write_tokens),0)
 	               FROM request_logs` + where + ` GROUP BY h ORDER BY h`
 	tokenRows, err := db.Query(tokenQuery, args...)
 	if err != nil {
@@ -600,7 +602,7 @@ func queryHourlySeriesAt(tenantID, apiKey string, hours int, now time.Time, loc 
 	for tokenRows.Next() {
 		var hour int
 		var p HourlyTokenPoint
-		if err := tokenRows.Scan(&hour, &p.InputTokens, &p.OutputTokens, &p.ReasoningTokens, &p.CachedTokens, &p.TotalTokens); err != nil {
+		if err := tokenRows.Scan(&hour, &p.InputTokens, &p.OutputTokens, &p.ReasoningTokens, &p.CachedTokens, &p.TotalTokens, &p.CacheReadTokens, &p.CacheWriteTokens); err != nil {
 			return nil, nil, fmt.Errorf("usage: hourly token scan: %w", err)
 		}
 		p.Hour = hourKeys[hour]

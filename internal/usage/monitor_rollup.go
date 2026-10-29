@@ -16,13 +16,13 @@ type monitorAgg struct {
 	OutputTokens    int64
 	ReasoningTokens int64
 	CachedTokens    int64
-	EffectiveInput  int64
 	TotalTokens     int64
 	Cost            float64
 	LatencySum      int64
 	LatencyCount    int64
 	FirstTokenSum   int64
 	FirstTokenCount int64
+	Cache           cacheTotals
 }
 
 // monitorAggColumns must stay in the order of monitorAgg.scanTargets.
@@ -35,21 +35,20 @@ const monitorAggColumns = `
 	COALESCE(SUM(output_tokens), 0),
 	COALESCE(SUM(reasoning_tokens), 0),
 	COALESCE(SUM(cached_tokens), 0),
-	COALESCE(SUM(effective_input_tokens), 0),
 	COALESCE(SUM(total_tokens), 0),
 	COALESCE(SUM(cost_total), 0),
 	COALESCE(SUM(latency_sum_ms), 0),
 	COALESCE(SUM(latency_count), 0),
 	COALESCE(SUM(first_token_sum_ms), 0),
-	COALESCE(SUM(first_token_count), 0)`
+	COALESCE(SUM(first_token_count), 0),` + rollupCacheSumsSQL
 
 func (a *monitorAgg) scanTargets() []any {
-	return []any{
+	return append([]any{
 		&a.Requests, &a.Success, &a.Failed, &a.Streaming,
 		&a.InputTokens, &a.OutputTokens, &a.ReasoningTokens, &a.CachedTokens,
-		&a.EffectiveInput, &a.TotalTokens, &a.Cost,
+		&a.TotalTokens, &a.Cost,
 		&a.LatencySum, &a.LatencyCount, &a.FirstTokenSum, &a.FirstTokenCount,
-	}
+	}, a.Cache.scanTargets()...)
 }
 
 func (a *monitorAgg) add(o monitorAgg) {
@@ -61,13 +60,13 @@ func (a *monitorAgg) add(o monitorAgg) {
 	a.OutputTokens += o.OutputTokens
 	a.ReasoningTokens += o.ReasoningTokens
 	a.CachedTokens += o.CachedTokens
-	a.EffectiveInput += o.EffectiveInput
 	a.TotalTokens += o.TotalTokens
 	a.Cost += o.Cost
 	a.LatencySum += o.LatencySum
 	a.LatencyCount += o.LatencyCount
 	a.FirstTokenSum += o.FirstTokenSum
 	a.FirstTokenCount += o.FirstTokenCount
+	a.Cache.add(o.Cache)
 }
 
 func (a monitorAgg) totals() MonitorTotals {
@@ -82,8 +81,9 @@ func (a monitorAgg) totals() MonitorTotals {
 		CachedTokens:    a.CachedTokens,
 		TotalTokens:     a.TotalTokens,
 		Cost:            a.Cost,
-		CacheRate:       cacheRateFromTokenTotals(a.EffectiveInput, a.CachedTokens),
+		CacheUsage:      a.Cache.usage(),
 	}
+	t.CacheRate = t.legacyCacheRate()
 	if a.Requests > 0 {
 		t.SuccessRate = float64(a.Success) / float64(a.Requests) * 100
 	}

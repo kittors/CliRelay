@@ -216,6 +216,9 @@ func (s *Service) PublicUsageLogs(input PublicLogQueryInput) (map[string]any, er
 		result.Items[i].ChannelName = channelName
 		result.Items[i].APIKey = ""
 		result.Items[i].APIKeyID = ""
+		// The client session id is kept for the console; the public lookup has
+		// no use for it and does not hand it out.
+		result.Items[i].SessionID = ""
 		result.Items[i].APIKeyName = userName
 		result.Items[i].EndUserDisplayName = userName
 		result.Items[i].APIKeyOwnName = keyOwnName

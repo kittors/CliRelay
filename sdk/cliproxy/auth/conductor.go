@@ -223,6 +223,10 @@ type Manager struct {
 	// see conductor_cooldown_cluster.go.
 	cooldownPublisher atomic.Pointer[cooldownPublisherRef]
 
+	// quotaObservations coalesces the quota windows executors observe on live
+	// answers before they reach the host's hook; see quota_observation.go.
+	quotaObservations quotaObservationBook
+
 	// Auto refresh state
 	refreshCancel    context.CancelFunc
 	refreshSemaphore chan struct{}

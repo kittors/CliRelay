@@ -319,6 +319,9 @@ type runtimeDataStackMaintenanceOps struct {
 	// scheduleRequestLogKeyMasking starts the background pass that replaces the
 	// client secrets older builds stored in request_logs.api_key with masks.
 	scheduleRequestLogKeyMasking func()
+	// scheduleRequestLogSessionBackfill starts the background pass that copies
+	// the session id of older rows from request_log_content onto request_logs.
+	scheduleRequestLogSessionBackfill func()
 	// withRepairLock serialises the one-time repairs across nodes; nil runs
 	// them directly.
 	withRepairLock func(func() error) error
@@ -349,9 +352,10 @@ func defaultRuntimeDataStackMaintenanceOps() runtimeDataStackMaintenanceOps {
 			// those held on a period the upstream refilled rather than spent out.
 			return usage.RunAIAccountSubjectCycleRefillRepairAtInit()
 		},
-		scheduleUsageRollupCatchup:   usage.ScheduleUsageRollupBlueGreenCatchup,
-		scheduleRequestLogKeyMasking: usage.ScheduleRequestLogAPIKeyMasking,
-		withRepairLock:               withRepairLock,
+		scheduleUsageRollupCatchup:        usage.ScheduleUsageRollupBlueGreenCatchup,
+		scheduleRequestLogKeyMasking:      usage.ScheduleRequestLogAPIKeyMasking,
+		scheduleRequestLogSessionBackfill: usage.ScheduleRequestLogSessionBackfill,
+		withRepairLock:                    withRepairLock,
 	}
 }
 
@@ -388,6 +392,11 @@ func runRuntimeDataStackPostStartMaintenance(ops runtimeDataStackMaintenanceOps)
 	// small batches in the background.
 	if ops.scheduleRequestLogKeyMasking != nil {
 		ops.scheduleRequestLogKeyMasking()
+	}
+	// Rows that old slot writes have no session_id either, so the session
+	// backfill waits out the same drain window.
+	if ops.scheduleRequestLogSessionBackfill != nil {
+		ops.scheduleRequestLogSessionBackfill()
 	}
 
 	log.Infof("usage: post-listen runtime data maintenance scheduled in %s", time.Since(startedAt).Round(time.Millisecond))

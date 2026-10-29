@@ -52,7 +52,7 @@ func QueryLogs(params LogQueryParams) (LogQueryResult, error) {
 	offset := (params.Page - 1) * params.Size
 	querySQL := "SELECT id, timestamp, api_key, api_key_id, api_key_name, model, thinking_level, upstream_model, upstream_response_model, vision_fallback_model, source, channel_name, auth_index, auth_subject_id, " +
 		"failed, streaming, latency_ms, first_token_ms, input_tokens, output_tokens, reasoning_tokens, cached_tokens, total_tokens, " +
-		"cost, " +
+		"cost, cache_read_tokens, cache_write_tokens, prompt_tokens, session_id, " +
 		"(CASE WHEN EXISTS (SELECT 1 FROM request_log_content content WHERE content.tenant_id = request_logs.tenant_id AND content.log_id = request_logs.id) " +
 		"OR length(input_content) > 0 OR length(output_content) > 0 THEN 1 ELSE 0 END) as has_content " +
 		"FROM request_logs" + where +
@@ -71,11 +71,13 @@ func QueryLogs(params LogQueryParams) (LogQueryResult, error) {
 		var row LogRow
 		var ts storedTime
 		var failedInt, streamingInt, hasContentInt int
+		var cacheRead, cacheWrite, promptTokens sql.NullInt64
 		if err := rows.Scan(
 			&row.ID, &ts, &row.APIKey, &row.APIKeyID, &row.APIKeyName, &row.Model, &row.ThinkingLevel, &row.UpstreamModel, &row.UpstreamResponseModel, &row.VisionFallbackModel, &row.Source, &row.ChannelName,
 			&row.AuthIndex, &row.AuthSubjectID, &failedInt, &streamingInt, &row.LatencyMs, &row.FirstTokenMs,
 			&row.InputTokens, &row.OutputTokens, &row.ReasoningTokens,
-			&row.CachedTokens, &row.TotalTokens, &row.Cost, &hasContentInt,
+			&row.CachedTokens, &row.TotalTokens, &row.Cost,
+			&cacheRead, &cacheWrite, &promptTokens, &row.SessionID, &hasContentInt,
 		); err != nil {
 			log.Warnf("usage: scan log row failed: %v", err)
 			return LogQueryResult{}, fmt.Errorf("usage: scan row: %w", err)
@@ -86,6 +88,9 @@ func QueryLogs(params LogQueryParams) (LogQueryResult, error) {
 		row.Failed = failedInt != 0
 		row.Streaming = streamingInt != 0
 		row.HasContent = hasContentInt != 0
+		row.CacheReadTokens = nullableInt64(cacheRead)
+		row.CacheWriteTokens = nullableInt64(cacheWrite)
+		row.PromptTokens = nullableInt64(promptTokens)
 		// Derived on read so every row is judged by the current alias rule rather
 		// than by whatever it was when the row was written.
 		row.UpstreamModelMismatch = UpstreamModelMismatch(row.Model, row.UpstreamModel, row.UpstreamResponseModel)
@@ -269,97 +274,6 @@ func (params LogQueryParams) withoutFacet(facet string) LogQueryParams {
 		params.MatchNoStatuses = false
 	}
 	return params
-}
-
-// QueryStats returns aggregated statistics for the same filters as QueryLogs.
-// It prefers usage rollups, falling back to request_logs only when the rollup
-// dimensions cannot express the requested filter without changing its meaning.
-func QueryStats(params LogQueryParams) (LogStats, error) {
-	if getReadDB() == nil {
-		return LogStats{CacheRate: 0}, nil
-	}
-	params = normalizeLogQueryParams(params)
-	// Explicit empty multi-selects match no rows.
-	if params.MatchNoAPIKeys || params.MatchNoAPIKeyIDs || params.MatchNoModels || params.MatchNoStatuses || params.MatchNoChannels {
-		return LogStats{CacheRate: 0}, nil
-	}
-
-	filter, ok := rollupIdentityFilter(params)
-	if !ok {
-		// Preserve fail-closed identity behavior before considering a detail fallback.
-		return LogStats{CacheRate: 0}, nil
-	}
-
-	var (
-		stats LogStats
-		err   error
-	)
-	if queryStatsRequiresDetailAggregation(params) {
-		stats, err = queryStatsFromDetails(params)
-	} else {
-		stats, err = queryStatsFromRollupFilter(params, filter)
-	}
-	if err != nil {
-		log.Warnf("usage: stats query failed: %v", err)
-		return LogStats{}, err
-	}
-	return stats, nil
-}
-
-func queryStatsRequiresDetailAggregation(params LogQueryParams) bool {
-	// auth_index is not a rollup dimension, and precise legacy channel pairs
-	// cannot be represented by the rollup dimensions.
-	if len(params.AuthIndexes) > 0 || len(params.AuthIndexChannelNames) > 0 {
-		return true
-	}
-
-	// QueryLogs combines channel selector kinds with OR, while rollup dimensions
-	// are conjunctive. A mixed selector therefore needs the shared detail WHERE.
-	channelSelectorKinds := 0
-	if len(dedupeExactStrings(params.AuthSubjectIDs)) > 0 {
-		channelSelectorKinds++
-	}
-	if len(dedupeLowerTrimmedStrings(params.ChannelNames)) > 0 {
-		channelSelectorKinds++
-	}
-	if channelSelectorKinds > 1 {
-		return true
-	}
-
-	// Rollup buckets keep status counts, but token/cost/cache totals are not split
-	// by status. Use details for an exact single-status aggregate.
-	hasSuccess, hasFailed := requestedStatusFilter(params.Statuses)
-	return hasSuccess != hasFailed
-}
-
-func queryStatsFromDetails(params LogQueryParams) (LogStats, error) {
-	db := getReadDB()
-	if db == nil {
-		return LogStats{CacheRate: 0}, nil
-	}
-	where, args := buildWhereClause(params)
-
-	var agg rollupAgg
-	query := `
-		SELECT
-			COUNT(*),
-			COALESCE(SUM(CASE WHEN failed = 0 THEN 1 ELSE 0 END), 0),
-			COALESCE(SUM(total_tokens), 0),
-			COALESCE(SUM(cost), 0),
-			COALESCE(SUM(cached_tokens), 0),
-			COALESCE(SUM(` + cacheRateEffectiveInputSQL + `), 0)
-		FROM request_logs` + where
-	if err := db.QueryRow(query, args...).Scan(
-		&agg.RequestCount,
-		&agg.SuccessCount,
-		&agg.TotalTokens,
-		&agg.CostTotal,
-		&agg.CachedTokens,
-		&agg.EffectiveInputTokens,
-	); err != nil {
-		return LogStats{}, fmt.Errorf("usage: detail stats aggregate: %w", err)
-	}
-	return agg.toLogStats(), nil
 }
 
 func rowsAffected(result sql.Result) (int64, error) {

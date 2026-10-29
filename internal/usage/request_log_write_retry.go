@@ -247,6 +247,11 @@ type requestLogWritePlan struct {
 	endUserID    string
 	cost         float64
 	storeContent bool
+	// sessionID is the client session the request belongs to, read from its
+	// detail. It is stored on request_logs, whether or not the content row is
+	// kept, so session counts no longer depend on content retention, the
+	// content size cap or "clear details".
+	sessionID string
 }
 
 // requestLogKeyIdentity is the api_keys row the write attributes a log to.
@@ -326,6 +331,7 @@ func planRequestLogWrite(db *sql.DB, entry RequestLogEntry, timeout time.Duratio
 	// Cost always follows Model, never the model the upstream echoed back.
 	plan.cost = CalculateCostV2ForTenant(plan.tenantID, plan.entry.Model, plan.entry.Tokens)
 	plan.storeContent = requestLogShouldStoreContent(plan.entry)
+	plan.sessionID = extractSessionIDFromDetails(plan.entry.DetailContent)
 	return plan, nil
 }
 
@@ -410,6 +416,7 @@ func (p requestLogWritePlan) rollupEvent() rollupEvent {
 		LatencyMs:     p.entry.LatencyMs,
 		FirstTokenMs:  p.entry.FirstTokenMs,
 		Tokens:        p.entry.Tokens,
+		Cache:         requestCacheTotals(p.entry.Tokens),
 		Cost:          p.cost,
 		At:            p.entry.Timestamp,
 	}
