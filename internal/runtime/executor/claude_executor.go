@@ -127,10 +127,17 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 
 	body = execCtx.ApplyPayloadConfig(body, originalTranslated)
 
+	url := fmt.Sprintf("%s/v1/messages?beta=true", baseURL)
+	toUpstream := claudeUpstreamBody(auth, apiKey, skipAnthropic)
+	plan := newClaudeRequestPlan(execCtx, claudeRequestTarget{
+		provider:                  e.Identifier(),
+		endpoint:                  url,
+		model:                     execCtx.BaseModel,
+		catalogModel:              execCtx.BaseModel,
+		toUpstream:                toUpstream,
+		dropThinkingForForcedTool: !skipAnthropic,
+	})
 	if !skipAnthropic {
-		// Disable thinking if tool_choice forces tool use (Anthropic API constraint)
-		body = disableThinkingIfToolChoiceForced(body)
-
 		// Auto-inject cache_control if missing (optimization for ClawdBot/clients without caching support)
 		if countCacheControls(body) == 0 {
 			body = ensureCacheControl(body)
@@ -141,7 +148,6 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 	var extraBetas []string
 	extraBetas, body = extractAndRemoveBetas(body)
 
-	url := fmt.Sprintf("%s/v1/messages?beta=true", baseURL)
 	httpReq, err := http.NewRequestWithContext(execCtx.Context, http.MethodPost, url, nil)
 	if err != nil {
 		return resp, err
@@ -149,7 +155,7 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 	applyClaudeHeaders(httpReq, auth, apiKey, false, extraBetas, e.cfg, claudeFP, claudeFPEnabled, claudeFPSessionID)
 	recorder := execCtx.Recorder()
 
-	sent, err := e.sendClaudeMessages(execCtx, httpReq, body, claudeUpstreamBody(auth, apiKey, skipAnthropic))
+	sent, err := e.sendClaudeMessages(execCtx, httpReq, body, toUpstream, plan)
 	if err != nil {
 		reporter.publishFailureWithContent(execCtx.Context, string(req.Payload), err.Error())
 		return resp, err
@@ -251,10 +257,17 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 
 	body = execCtx.ApplyPayloadConfig(body, originalTranslated)
 
+	url := fmt.Sprintf("%s/v1/messages?beta=true", baseURL)
+	toUpstream := claudeUpstreamBody(auth, apiKey, skipAnthropic)
+	plan := newClaudeRequestPlan(execCtx, claudeRequestTarget{
+		provider:                  e.Identifier(),
+		endpoint:                  url,
+		model:                     execCtx.BaseModel,
+		catalogModel:              execCtx.BaseModel,
+		toUpstream:                toUpstream,
+		dropThinkingForForcedTool: !skipAnthropic,
+	})
 	if !skipAnthropic {
-		// Disable thinking if tool_choice forces tool use (Anthropic API constraint)
-		body = disableThinkingIfToolChoiceForced(body)
-
 		// Auto-inject cache_control if missing (optimization for ClawdBot/clients without caching support)
 		if countCacheControls(body) == 0 {
 			body = ensureCacheControl(body)
@@ -265,7 +278,6 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	var extraBetas []string
 	extraBetas, body = extractAndRemoveBetas(body)
 
-	url := fmt.Sprintf("%s/v1/messages?beta=true", baseURL)
 	httpReq, err := http.NewRequestWithContext(execCtx.Context, http.MethodPost, url, nil)
 	if err != nil {
 		return nil, err
@@ -273,7 +285,7 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	applyClaudeHeaders(httpReq, auth, apiKey, true, extraBetas, e.cfg, claudeFP, claudeFPEnabled, claudeFPSessionID)
 	recorder := execCtx.Recorder()
 
-	sent, err := e.sendClaudeMessages(execCtx, httpReq, body, claudeUpstreamBody(auth, apiKey, skipAnthropic))
+	sent, err := e.sendClaudeMessages(execCtx, httpReq, body, toUpstream, plan)
 	if err != nil {
 		reporter.publishFailureWithContent(execCtx.Context, string(req.Payload), err.Error())
 		return nil, err
@@ -375,6 +387,7 @@ func (e *ClaudeExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Aut
 	if baseURL == "" {
 		baseURL = "https://api.anthropic.com"
 	}
+	skipAnthropic := auth != nil && auth.Attributes != nil && auth.Attributes["skip_anthropic_processing"] == "true"
 
 	to := sdktranslator.FromString("claude")
 	// Use streaming translation to preserve function calling, except for claude.
@@ -385,6 +398,13 @@ func (e *ClaudeExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Aut
 	})
 	body, _ := execCtx.TranslateRequestPair(req.Payload)
 	body, _ = sjson.SetBytes(body, "model", execCtx.BaseModel)
+
+	// count_tokens validates thinking, sampling and tool_choice the way
+	// /v1/messages does, so the body gets the same shaping as Execute.
+	body, err := thinking.ApplyThinking(body, req.Model, execCtx.SourceFormat.String(), to.String(), e.Identifier())
+	if err != nil {
+		return cliproxyexecutor.Response{}, err
+	}
 
 	if !strings.HasPrefix(execCtx.BaseModel, "claude-3-5-haiku") {
 		body = checkSystemInstructions(body)
@@ -399,33 +419,34 @@ func (e *ClaudeExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Aut
 		claudeFPSessionID = claudeFingerprintSessionID(claudeFP)
 		body = applyClaudeIdentityFingerprintPayload(auth, body, claudeFP, claudeFPSessionID)
 	}
-	if isClaudeOAuthToken(apiKey) && !auth.ToolPrefixDisabled() {
-		body = applyClaudeToolPrefix(body, claudeToolPrefix)
-	}
 
 	url := fmt.Sprintf("%s/v1/messages/count_tokens?beta=true", baseURL)
-	httpReq, err := http.NewRequestWithContext(execCtx.Context, http.MethodPost, url, bytes.NewReader(body))
+	// count_tokens has always applied the OAuth tool prefix, third-party
+	// Claude-compatible APIs included.
+	toUpstream := claudeUpstreamBody(auth, apiKey, false)
+	plan := newClaudeRequestPlan(execCtx, claudeRequestTarget{
+		provider:                  e.Identifier(),
+		endpoint:                  url,
+		model:                     execCtx.BaseModel,
+		catalogModel:              execCtx.BaseModel,
+		toUpstream:                toUpstream,
+		dropThinkingForForcedTool: !skipAnthropic,
+	})
+
+	httpReq, err := http.NewRequestWithContext(execCtx.Context, http.MethodPost, url, nil)
 	if err != nil {
 		return cliproxyexecutor.Response{}, err
 	}
 	applyClaudeHeaders(httpReq, auth, apiKey, false, extraBetas, e.cfg, claudeFP, claudeFPEnabled, claudeFPSessionID)
 	recorder := execCtx.Recorder()
-	recorder.RecordRequest(url, http.MethodPost, httpReq.Header.Clone(), body)
 
-	httpClient := execCtx.HTTPClient(0)
-	resp, err := httpClient.Do(httpReq)
+	sent, err := e.sendClaudeMessages(execCtx, httpReq, body, toUpstream, plan)
 	if err != nil {
-		recorder.RecordResponseError(err)
 		return cliproxyexecutor.Response{}, err
 	}
-	recorder.RecordResponseMetadata(resp.StatusCode, resp.Header.Clone())
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		b := readDecodedUpstreamErrorBody(e.Identifier(), resp.Header, resp.Body)
-		recorder.AppendResponseChunk(b)
-		if errClose := resp.Body.Close(); errClose != nil {
-			log.Errorf("response body close error: %v", errClose)
-		}
-		return cliproxyexecutor.Response{}, statusErr{code: resp.StatusCode, msg: string(b), headers: resp.Header.Clone()}
+	resp := sent.resp
+	if sent.failed() {
+		return cliproxyexecutor.Response{}, statusErr{code: resp.StatusCode, msg: string(sent.errBody), headers: resp.Header.Clone()}
 	}
 	decodedBody, err := decodeResponseBody(resp.Body, resp.Header.Get("Content-Encoding"))
 	if err != nil {

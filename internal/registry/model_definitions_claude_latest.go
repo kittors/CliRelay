@@ -19,6 +19,10 @@ package registry
 // Opus 5 accepts "disabled" only at effort "high" or below, Sonnet 5.5 rejects
 // "disabled" and uses "between_tools" (also "high" or below), and Sonnet 5
 // accepts "disabled" at every level.
+//
+// None of them takes sampling parameters, and the newest of each line (Opus
+// 5.5, Sonnet 5.5, Fable 5.1) also rejects a forced tool_choice; see
+// ClaudeRequestRules.
 func latestClaudeModels() []*ModelInfo {
 	return []*ModelInfo{
 		{
@@ -32,6 +36,7 @@ func latestClaudeModels() []*ModelInfo {
 			ContextLength:       1000000,
 			MaxCompletionTokens: 128000,
 			Thinking:            adaptiveClaudeThinking(ClaudeThinkingAlwaysOn, ""),
+			ClaudeRequest:       &ClaudeRequestRules{NoSampling: true, NoForcedToolChoice: true},
 		},
 		{
 			ID:                  "claude-opus-5",
@@ -44,6 +49,7 @@ func latestClaudeModels() []*ModelInfo {
 			ContextLength:       1000000,
 			MaxCompletionTokens: 128000,
 			Thinking:            adaptiveClaudeThinking(ClaudeThinkingOffDisabled, "high"),
+			ClaudeRequest:       &ClaudeRequestRules{NoSampling: true},
 		},
 		{
 			ID:                  "claude-sonnet-5-5",
@@ -56,6 +62,7 @@ func latestClaudeModels() []*ModelInfo {
 			ContextLength:       1000000,
 			MaxCompletionTokens: 128000,
 			Thinking:            adaptiveClaudeThinking(ClaudeThinkingOffBetweenTools, "high"),
+			ClaudeRequest:       &ClaudeRequestRules{NoSampling: true, NoForcedToolChoice: true},
 		},
 		{
 			ID:                  "claude-sonnet-5",
@@ -68,6 +75,7 @@ func latestClaudeModels() []*ModelInfo {
 			ContextLength:       1000000,
 			MaxCompletionTokens: 128000,
 			Thinking:            adaptiveClaudeThinking(ClaudeThinkingOffDisabled, ""),
+			ClaudeRequest:       &ClaudeRequestRules{NoSampling: true},
 		},
 		{
 			ID:                  "claude-fable-5-1",
@@ -80,6 +88,7 @@ func latestClaudeModels() []*ModelInfo {
 			ContextLength:       1000000,
 			MaxCompletionTokens: 128000,
 			Thinking:            adaptiveClaudeThinking(ClaudeThinkingAlwaysOn, ""),
+			ClaudeRequest:       &ClaudeRequestRules{NoSampling: true, NoForcedToolChoice: true},
 		},
 		{
 			ID:                  "claude-fable-5",
@@ -92,6 +101,7 @@ func latestClaudeModels() []*ModelInfo {
 			ContextLength:       1000000,
 			MaxCompletionTokens: 128000,
 			Thinking:            adaptiveClaudeThinking(ClaudeThinkingAlwaysOn, ""),
+			ClaudeRequest:       &ClaudeRequestRules{NoSampling: true},
 		},
 	}
 }
