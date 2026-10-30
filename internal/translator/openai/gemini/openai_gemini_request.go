@@ -318,5 +318,5 @@ func ConvertGeminiRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 		}
 	}
 
-	return []byte(out)
+	return translatorcommon.OutputFormatFromGemini(root).WriteChat([]byte(out))
 }

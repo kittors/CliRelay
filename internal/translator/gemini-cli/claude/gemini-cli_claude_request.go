@@ -203,6 +203,7 @@ func ConvertClaudeRequestToCLI(modelName string, inputRawJSON []byte, _ bool) []
 	}
 
 	outBytes := []byte(out)
+	outBytes = translatorcommon.OutputFormatFromClaude(gjson.ParseBytes(rawJSON)).WriteGemini(outBytes, "request.", modelName)
 	outBytes = common.AttachDefaultSafetySettings(outBytes, "request.safetySettings")
 
 	return outBytes
