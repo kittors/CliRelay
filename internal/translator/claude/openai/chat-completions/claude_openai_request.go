@@ -345,5 +345,5 @@ func ConvertOpenAIRequestToClaude(modelName string, inputRawJSON []byte, stream 
 		}
 	}
 
-	return common.OutputFormatFromChat(root).WriteClaude([]byte(out))
+	return common.OutputFormatFromChat(root).WriteClaude([]byte(out), modelName)
 }

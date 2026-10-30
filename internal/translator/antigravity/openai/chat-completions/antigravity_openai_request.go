@@ -423,7 +423,7 @@ func ConvertOpenAIRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 		}
 	}
 
-	out = translatorcommon.OutputFormatFromChat(gjson.ParseBytes(rawJSON)).WriteGemini(out, "request.")
+	out = translatorcommon.OutputFormatFromChat(gjson.ParseBytes(rawJSON)).WriteGemini(out, "request.", modelName)
 	return common.AttachDefaultSafetySettings(out, "request.safetySettings")
 }
 

@@ -209,7 +209,7 @@ func ConvertClaudeRequestToGemini(modelName string, inputRawJSON []byte, _ bool)
 	}
 
 	result := []byte(out)
-	result = translatorcommon.OutputFormatFromClaude(gjson.ParseBytes(rawJSON)).WriteGemini(result, "")
+	result = translatorcommon.OutputFormatFromClaude(gjson.ParseBytes(rawJSON)).WriteGemini(result, "", modelName)
 	result = common.AttachDefaultSafetySettings(result, "safetySettings")
 
 	return result

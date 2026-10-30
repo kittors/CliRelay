@@ -9,10 +9,12 @@ import (
 )
 
 // This matrix sends one structured output requirement, a JSON Schema and a
-// bare JSON object, through every registered request translator and checks
+// bare JSON object, through every registered request translator, for models
+// that take the target's native field and models that do not, and checks
 // that the upstream request still asks for it: in the target protocol's own
-// field where it has one, and in the system prompt where it has none (an
-// Anthropic request cannot ask for a bare JSON object). Anthropic has no
+// field where the model is known to take it, and in the system prompt
+// everywhere else (an Anthropic request cannot ask for a bare JSON object,
+// and OpenAI-compatible Chat upstreams are always asked). Anthropic has no
 // json_object form, so a Claude client only sends the schema.
 
 const matrixOutputSchema = `{"type":"object","properties":{"city":{"type":"string","description":"City name"},"temp_c":{"type":"number"}},"required":["city","temp_c"],"additionalProperties":false}`
@@ -62,8 +64,54 @@ func geminiStructuredRequest(kind string) string {
 	return `{"contents":[{"role":"user","parts":[{"text":"What is the weather?"}]}],"generationConfig":` + config + `}`
 }
 
-// structuredCheck asserts the translated request still asks for kind.
-type structuredCheck func(t *testing.T, out []byte, kind string)
+// expectation is how a target model should be sent the requirement.
+type expectation int
+
+const (
+	// expectNative is the target's own field.
+	expectNative expectation = iota
+	// expectPrompt is an instruction in the system prompt and nothing else.
+	expectPrompt
+	// expectJSONMode is Gemini before 2.5: responseMimeType, and a schema
+	// asked for in the system instruction.
+	expectJSONMode
+)
+
+// targetModel is a model behind a target and how it should be sent the
+// requirement.
+type targetModel struct {
+	model  string
+	expect expectation
+}
+
+// targetModels pairs, for every target, models that take its native field
+// with models that do not. Codex has no model without text.format, and
+// OpenAI-compatible Chat upstreams are asked whatever the model, gpt-4o
+// included: the relay does not know what is behind a channel.
+var targetModels = map[string][]targetModel{
+	"claude":      {{"claude-sonnet-4-5-20250929", expectNative}, {"claude-sonnet-4-20250514", expectPrompt}, {"kimi-k2", expectPrompt}},
+	"codex":       {{"gpt-5-codex", expectNative}, {"gpt-5.1-codex-mini", expectNative}},
+	"openai":      {{"gpt-4o", expectPrompt}, {"deepseek-chat", expectPrompt}},
+	"gemini":      {{"gemini-2.5-pro", expectNative}, {"gemini-2.0-flash", expectJSONMode}},
+	"gemini-cli":  {{"gemini-3-pro-preview", expectNative}, {"gemini-2.0-flash", expectJSONMode}},
+	"antigravity": {{"gemini-3.1-pro-high", expectNative}, {"claude-sonnet-4-5-thinking", expectPrompt}, {"gpt-oss-120b-medium", expectPrompt}},
+}
+
+// passThrough are the registered pairs that share one wire schema: the
+// translator only re-wraps the body, and the client's own field goes through
+// as the client wrote it, whatever the model. Nothing is gated there.
+var passThrough = map[[2]string]bool{
+	{"openai", "openai"}:         true,
+	{"openai-response", "codex"}: true,
+	{"gemini", "gemini"}:         true,
+	{"gemini", "gemini-cli"}:     true,
+	{"gemini-cli", "gemini"}:     true,
+	{"gemini", "antigravity"}:    true,
+}
+
+// structuredCheck asserts the translated request still asks for kind, the
+// way expect says.
+type structuredCheck func(t *testing.T, out []byte, kind string, expect expectation)
 
 var structuredChecks = map[string]structuredCheck{
 	"claude":      checkClaudeStructured,
@@ -85,6 +133,31 @@ func assertMatrixSchema(t *testing.T, field string, schema gjson.Result) {
 	}
 }
 
+// instructionMarker begins every instruction the translators write.
+const instructionMarker = "Respond with only"
+
+// assertInstruction checks that prompt asks for kind: a JSON object, or JSON
+// that conforms to the schema, which ends the instruction.
+func assertInstruction(t *testing.T, where, prompt, kind string) {
+	t.Helper()
+	at := strings.Index(prompt, instructionMarker)
+	if at < 0 {
+		t.Fatalf("%s does not ask for JSON: %q", where, prompt)
+	}
+	instruction := prompt[at:]
+	if kind != "json_schema" {
+		if !strings.Contains(instruction, "JSON object") {
+			t.Fatalf("%s does not ask for a JSON object: %q", where, instruction)
+		}
+		return
+	}
+	if !strings.Contains(instruction, "JSON Schema") {
+		t.Fatalf("%s does not ask for the schema: %q", where, instruction)
+	}
+	schema := instruction[strings.LastIndex(instruction, "\n\n")+2:]
+	assertMatrixSchema(t, where, gjson.Parse(strings.TrimSpace(schema)))
+}
+
 // claudeSystemText joins the system prompt, which Anthropic takes as a
 // string or as text blocks.
 func claudeSystemText(out []byte) string {
@@ -100,26 +173,28 @@ func claudeSystemText(out []byte) string {
 	return b.String()
 }
 
-func checkClaudeStructured(t *testing.T, out []byte, kind string) {
+func checkClaudeStructured(t *testing.T, out []byte, kind string, expect expectation) {
 	t.Helper()
-	if kind == "json_schema" {
-		format := gjson.GetBytes(out, "output_config.format")
+	format := gjson.GetBytes(out, "output_config.format")
+	system := claudeSystemText(out)
+	if kind == "json_schema" && expect == expectNative {
 		if got := format.Get("type").String(); got != "json_schema" {
 			t.Fatalf("output_config.format.type = %q, want json_schema: %s", got, out)
 		}
 		assertMatrixSchema(t, "output_config.format.schema", format.Get("schema"))
+		if strings.Contains(system, instructionMarker) {
+			t.Fatalf("schema sent natively is also asked for: %q", system)
+		}
 		return
 	}
-	// Anthropic has no JSON mode: the requirement goes into the system prompt.
-	if format := gjson.GetBytes(out, "output_config.format"); format.Exists() {
-		t.Fatalf("json_object must not reach Anthropic as output_config.format: %s", format.Raw)
+	// Anthropic has no JSON mode, and a model without the field is asked.
+	if format.Exists() {
+		t.Fatalf("output_config.format sent: %s", format.Raw)
 	}
-	if system := claudeSystemText(out); !strings.Contains(system, "JSON") {
-		t.Fatalf("system prompt does not ask for JSON: %q", system)
-	}
+	assertInstruction(t, "system prompt", system, kind)
 }
 
-func checkResponsesStructured(t *testing.T, out []byte, kind string) {
+func checkResponsesStructured(t *testing.T, out []byte, kind string, _ expectation) {
 	t.Helper()
 	format := gjson.GetBytes(out, "text.format")
 	if got := format.Get("type").String(); got != kind {
@@ -133,35 +208,89 @@ func checkResponsesStructured(t *testing.T, out []byte, kind string) {
 	}
 }
 
-func checkChatStructured(t *testing.T, out []byte, kind string) {
+func checkChatStructured(t *testing.T, out []byte, kind string, expect expectation) {
 	t.Helper()
 	format := gjson.GetBytes(out, "response_format")
-	if got := format.Get("type").String(); got != kind {
-		t.Fatalf("response_format.type = %q, want %s: %s", got, kind, out)
-	}
-	if kind == "json_schema" {
-		if format.Get("json_schema.name").String() == "" {
-			t.Fatalf("response_format.json_schema.name is required by Chat Completions: %s", format.Raw)
+	if expect == expectNative {
+		// Only on the Chat pass-through, where the client wrote it.
+		if got := format.Get("type").String(); got != kind {
+			t.Fatalf("response_format.type = %q, want %s: %s", got, kind, out)
 		}
-		assertMatrixSchema(t, "response_format.json_schema.schema", format.Get("json_schema.schema"))
+		if kind == "json_schema" {
+			assertMatrixSchema(t, "response_format.json_schema.schema", format.Get("json_schema.schema"))
+		}
+		return
 	}
+	if format.Exists() {
+		t.Fatalf("response_format sent to an OpenAI-compatible upstream: %s", format.Raw)
+	}
+	first := gjson.GetBytes(out, "messages.0")
+	if first.Get("role").String() != "system" {
+		t.Fatalf("first message is not a system message: %s", out)
+	}
+	content := first.Get("content")
+	text := content.String()
+	if content.IsArray() {
+		var b strings.Builder
+		for _, part := range content.Array() {
+			b.WriteString(part.Get("text").String())
+		}
+		text = b.String()
+	}
+	assertInstruction(t, "system message", text, kind)
+}
+
+// geminiSystemText joins the parts of a Gemini system instruction, under
+// either spelling.
+func geminiSystemText(out []byte, prefix string) string {
+	instruction := gjson.GetBytes(out, prefix+"systemInstruction")
+	if !instruction.Exists() {
+		instruction = gjson.GetBytes(out, prefix+"system_instruction")
+	}
+	var b strings.Builder
+	for _, part := range instruction.Get("parts").Array() {
+		b.WriteString(part.Get("text").String())
+		b.WriteByte('\n')
+	}
+	return b.String()
 }
 
 func checkGeminiStructured(prefix string) structuredCheck {
-	return func(t *testing.T, out []byte, kind string) {
+	return func(t *testing.T, out []byte, kind string, expect expectation) {
 		t.Helper()
 		config := gjson.GetBytes(out, prefix+"generationConfig")
-		if got := config.Get("responseMimeType").String(); got != "application/json" {
-			t.Fatalf("%sgenerationConfig.responseMimeType = %q, want application/json: %s", prefix, got, out)
-		}
-		if kind != "json_schema" {
-			return
-		}
+		mime := config.Get("responseMimeType").String()
 		schema := config.Get("responseJsonSchema")
-		if !schema.Exists() {
-			schema = config.Get("responseSchema")
+		system := geminiSystemText(out, prefix)
+		switch expect {
+		case expectNative:
+			if mime != "application/json" {
+				t.Fatalf("%sgenerationConfig.responseMimeType = %q, want application/json: %s", prefix, mime, out)
+			}
+			if kind == "json_schema" {
+				assertMatrixSchema(t, prefix+"generationConfig.responseJsonSchema", schema)
+			}
+			if strings.Contains(system, instructionMarker) {
+				t.Fatalf("requirement sent natively is also asked for: %q", system)
+			}
+		case expectJSONMode:
+			if mime != "application/json" {
+				t.Fatalf("%sgenerationConfig.responseMimeType = %q, want application/json: %s", prefix, mime, out)
+			}
+			if schema.Exists() || config.Get("responseSchema").Exists() {
+				t.Fatalf("schema sent to a model before Gemini 2.5: %s", config.Raw)
+			}
+			if kind == "json_schema" {
+				assertInstruction(t, "system instruction", system, kind)
+			} else if strings.Contains(system, instructionMarker) {
+				t.Fatalf("JSON mode sent natively is also asked for: %q", system)
+			}
+		case expectPrompt:
+			if config.Get("responseMimeType").Exists() || schema.Exists() {
+				t.Fatalf("native fields sent to a model that is not Gemini: %s", config.Raw)
+			}
+			assertInstruction(t, "system instruction", system, kind)
 		}
-		assertMatrixSchema(t, prefix+"generationConfig.responseJsonSchema", schema)
 	}
 }
 
@@ -173,8 +302,8 @@ func TestStructuredOutputSurvivesEveryRequestTranslator(t *testing.T) {
 				continue
 			}
 			paths++
-			build, check := structuredRequests[from], structuredChecks[to]
-			if build == nil || check == nil {
+			build, check, models := structuredRequests[from], structuredChecks[to], targetModels[to]
+			if build == nil || check == nil || len(models) == 0 {
 				t.Errorf("%s -> %s is registered but not covered by this matrix", from, to)
 				continue
 			}
@@ -183,18 +312,24 @@ func TestStructuredOutputSurvivesEveryRequestTranslator(t *testing.T) {
 				if !ok {
 					continue
 				}
-				for _, stream := range []bool{false, true} {
-					name := from + "->" + to + "/" + kind
-					if stream {
-						name += "/stream"
+				for _, target := range models {
+					expect := target.expect
+					if passThrough[[2]string{from, to}] {
+						expect = expectNative
 					}
-					t.Run(name, func(t *testing.T) {
-						out := translator.Request(from, to, "m", []byte(body), stream)
-						if !gjson.ValidBytes(out) {
-							t.Fatalf("translated request is not valid JSON: %.300s", out)
+					for _, stream := range []bool{false, true} {
+						name := from + "->" + to + "/" + kind + "/" + target.model
+						if stream {
+							name += "/stream"
 						}
-						check(t, out, kind)
-					})
+						t.Run(name, func(t *testing.T) {
+							out := translator.Request(from, to, target.model, []byte(body), stream)
+							if !gjson.ValidBytes(out) {
+								t.Fatalf("translated request is not valid JSON: %.300s", out)
+							}
+							check(t, out, kind, expect)
+						})
+					}
 				}
 			}
 		}
@@ -211,10 +346,12 @@ func TestStructuredOutputSurvivesEveryRequestTranslator(t *testing.T) {
 func TestGeminiResponseSchemaArrivesAsJSONSchema(t *testing.T) {
 	request := `{"contents":[{"role":"user","parts":[{"text":"What is the weather?"}]}],"generationConfig":{"responseMimeType":"application/json","responseSchema":{"type":"OBJECT","properties":{"city":{"type":"STRING","description":"City name"},"temp_c":{"type":"NUMBER"}},"required":["city","temp_c"],"propertyOrdering":["city","temp_c"]}}}`
 	for _, to := range []string{"claude", "codex", "openai"} {
-		t.Run(to, func(t *testing.T) {
-			out := translator.Request("gemini", to, "m", []byte(request), false)
-			structuredChecks[to](t, out, "json_schema")
-		})
+		for _, target := range targetModels[to] {
+			t.Run(to+"/"+target.model, func(t *testing.T) {
+				out := translator.Request("gemini", to, target.model, []byte(request), false)
+				structuredChecks[to](t, out, "json_schema", target.expect)
+			})
+		}
 	}
 }
 
@@ -223,7 +360,7 @@ func TestGeminiResponseSchemaArrivesAsJSONSchema(t *testing.T) {
 // is asked for it in the system prompt instead.
 func TestUncompilableSchemaReachesAnthropicAsInstruction(t *testing.T) {
 	request := `{"model":"m","messages":[{"role":"user","content":"Score the teams."}],"response_format":{"type":"json_schema","json_schema":{"name":"scores","schema":{"type":"object","additionalProperties":{"type":"number"}}}}}`
-	out := translator.Request("openai", "claude", "m", []byte(request), false)
+	out := translator.Request("openai", "claude", "claude-opus-4-5", []byte(request), false)
 	if format := gjson.GetBytes(out, "output_config.format"); format.Exists() {
 		t.Fatalf("uncompilable schema sent as output_config.format: %s", format.Raw)
 	}

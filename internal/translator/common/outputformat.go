@@ -2,6 +2,7 @@ package common
 
 import (
 	"encoding/json"
+	"strconv"
 	"strings"
 
 	"github.com/tidwall/gjson"
@@ -18,11 +19,18 @@ import (
 //
 // Every request translator reads the requirement with one of the
 // OutputFormatFrom* functions and writes it with one of the OutputFormat
-// Write* methods, so every pair of protocols carries it the same way. Where
-// the target protocol has no field for what was asked (Anthropic has no JSON
-// mode, and compiles only a subset of JSON Schema), the requirement goes into
-// the system prompt instead: the model is then asked rather than constrained,
-// which is still what the client asked for, where dropping it is not.
+// Write* methods, so every pair of protocols carries it the same way.
+//
+// The target's own field is only written where it is known to be taken: an
+// upstream that does not know it fails the request with a 400, and the
+// request used to be served with the requirement dropped. So Anthropic gets
+// output_config.format, and Gemini responseJsonSchema, only for the models
+// documented to take them (outputformat_models.go); OpenAI-compatible Chat
+// upstreams never get response_format; Codex always gets text.format. Every
+// other case, and what a target cannot express at all (Anthropic has no JSON
+// mode and compiles only a subset of JSON Schema), goes into the system
+// prompt: the model is then asked rather than constrained, which is still
+// what the client asked for, where dropping it is not.
 
 // OutputFormatKind is the shape of reply a request asks for.
 type OutputFormatKind int
@@ -152,16 +160,16 @@ func firstExisting(node gjson.Result, paths ...string) gjson.Result {
 	return gjson.Result{}
 }
 
-// WriteChat writes f into a Chat Completions request as response_format. A
-// request for plain text writes nothing: it is the default, and some
-// OpenAI-compatible upstreams reject response_format altogether.
+// WriteChat writes f into a Chat Completions request for an OpenAI-compatible
+// upstream, as an instruction in the system message. It never writes
+// response_format: the upstreams behind these channels take it unevenly
+// (DeepSeek only json_object, some reject the field outright), the relay does
+// not know which one a channel leads to, and a field the upstream rejects
+// fails a request that would otherwise be served. A request for plain text
+// writes nothing.
 func (f OutputFormat) WriteChat(out []byte) []byte {
-	switch f.Kind {
-	case OutputFormatJSONObject:
-		out, _ = sjson.SetRawBytes(out, "response_format", []byte(`{"type":"json_object"}`))
-		return ensureChatMentionsJSON(out)
-	case OutputFormatJSONSchema:
-		out, _ = sjson.SetRawBytes(out, "response_format", []byte(`{"type":"json_schema","json_schema":`+f.openAISchemaSpec(false)+`}`))
+	if text := f.instruction(); text != "" {
+		return appendChatSystemText(out, text)
 	}
 	return out
 }
@@ -177,7 +185,7 @@ func (f OutputFormat) ResponsesFormat() (format string, ok bool) {
 	case OutputFormatJSONObject:
 		return `{"type":"json_object"}`, true
 	case OutputFormatJSONSchema:
-		return f.openAISchemaSpec(true), true
+		return f.responsesSchemaFormat(), true
 	}
 	return "", false
 }
@@ -196,50 +204,60 @@ func (f OutputFormat) WriteResponses(out []byte) []byte {
 	return out
 }
 
-// WriteClaude writes f into an Anthropic request: a schema as
-// output_config.format when Anthropic can compile it, and everything else
-// into the system prompt.
-func (f OutputFormat) WriteClaude(out []byte) []byte {
-	switch f.Kind {
-	case OutputFormatJSONSchema:
+// WriteClaude writes f into an Anthropic request for model: a schema as
+// output_config.format when the model takes the field and Anthropic can
+// compile the schema, and everything else into the system prompt.
+func (f OutputFormat) WriteClaude(out []byte, model string) []byte {
+	if f.Kind == OutputFormatJSONSchema && claudeModelTakesOutputFormat(model) {
 		if schema, ok := anthropicOutputSchema(f.Schema); ok {
 			// output_config may already carry the effort; only format is set.
 			out, _ = sjson.SetRawBytes(out, "output_config.format", []byte(`{"type":"json_schema","schema":`+schema+`}`))
 			return out
 		}
-		return appendClaudeSystemText(out, f.schemaInstruction())
-	case OutputFormatJSONObject:
-		return appendClaudeSystemText(out, jsonOnlyInstruction)
+	}
+	if text := f.instruction(); text != "" {
+		return appendClaudeSystemText(out, text)
 	}
 	return out
 }
 
-// WriteGemini writes f into a Gemini request's generationConfig. prefix is
-// "request." for Gemini CLI and Antigravity, which wrap the Gemini body.
-// The schema goes in responseJsonSchema, which takes JSON Schema as every
-// other protocol writes it; responseSchema would need Gemini's OpenAPI
-// subset.
-func (f OutputFormat) WriteGemini(out []byte, prefix string) []byte {
-	if f.Kind != OutputFormatJSONObject && f.Kind != OutputFormatJSONSchema {
+// WriteGemini writes f into a Gemini request for model. prefix is "request."
+// for Gemini CLI and Antigravity, which wrap the Gemini body. Gemini 2.5 and
+// later get responseMimeType and responseJsonSchema, which takes JSON Schema
+// as every other protocol writes it (responseSchema would need Gemini's
+// OpenAPI subset); earlier Gemini models get responseMimeType, with a schema
+// asked for in systemInstruction; other models are asked in the prompt.
+// geminiOutputSupport has the exceptions: Gemma, and models that answer with
+// images, speech or embeddings.
+func (f OutputFormat) WriteGemini(out []byte, prefix, model string) []byte {
+	text := f.instruction()
+	if text == "" {
 		return out
 	}
-	out, _ = sjson.SetBytes(out, prefix+"generationConfig.responseMimeType", "application/json")
-	if f.Kind == OutputFormatJSONSchema {
-		out, _ = sjson.SetRawBytes(out, prefix+"generationConfig.responseJsonSchema", []byte(f.Schema))
+	switch geminiStructuredOutputSupport(model) {
+	case geminiJSONSchema:
+		out, _ = sjson.SetBytes(out, prefix+"generationConfig.responseMimeType", "application/json")
+		if f.Kind == OutputFormatJSONSchema {
+			out, _ = sjson.SetRawBytes(out, prefix+"generationConfig.responseJsonSchema", []byte(f.Schema))
+		}
+	case geminiJSONMode:
+		out, _ = sjson.SetBytes(out, prefix+"generationConfig.responseMimeType", "application/json")
+		if f.Kind == OutputFormatJSONSchema {
+			out = appendGeminiSystemText(out, prefix, text)
+		}
+	case geminiAskInSystem:
+		out = appendGeminiSystemText(out, prefix, text)
+	case geminiAskInUserTurn:
+		out = prependGeminiUserText(out, prefix, text)
 	}
 	return out
 }
 
-// openAISchemaSpec writes the json_schema object Chat Completions nests under
-// response_format.json_schema, or, with withType, the text.format object of
-// the Responses API, which carries the same fields beside its type.
-func (f OutputFormat) openAISchemaSpec(withType bool) string {
+// responsesSchemaFormat writes the text.format object of the Responses API for
+// a schema: its name, description, schema and strict flag beside the type.
+func (f OutputFormat) responsesSchemaFormat() string {
 	var b strings.Builder
-	b.WriteByte('{')
-	if withType {
-		b.WriteString(`"type":"json_schema",`)
-	}
-	b.WriteString(`"name":`)
+	b.WriteString(`{"type":"json_schema","name":`)
 	b.WriteString(jsonString(openAISchemaName(f.Name)))
 	if f.Description != "" {
 		b.WriteString(`,"description":`)
@@ -258,9 +276,9 @@ func (f OutputFormat) openAISchemaSpec(withType bool) string {
 	return b.String()
 }
 
-// openAISchemaName returns a schema name OpenAI accepts: it requires one, of
-// at most 64 letters, digits, underscores and dashes. Clients of other
-// protocols have no name to give.
+// openAISchemaName returns a schema name the Responses API accepts: it
+// requires one, of at most 64 letters, digits, underscores and dashes.
+// Clients of other protocols have no name to give.
 func openAISchemaName(name string) string {
 	var b strings.Builder
 	for _, r := range name {
@@ -277,6 +295,18 @@ func openAISchemaName(name string) string {
 		return "response"
 	}
 	return b.String()
+}
+
+// instruction is f put into words, for a target that is asked rather than
+// given a field; empty when f asks for nothing beyond plain text.
+func (f OutputFormat) instruction() string {
+	switch f.Kind {
+	case OutputFormatJSONObject:
+		return jsonOnlyInstruction
+	case OutputFormatJSONSchema:
+		return f.schemaInstruction()
+	}
+	return ""
 }
 
 // schemaInstruction asks for JSON that conforms to the schema, for a target
@@ -317,23 +347,76 @@ func appendClaudeSystemText(out []byte, text string) []byte {
 	return out
 }
 
-// OpenAI rejects JSON mode unless the word "json" appears in the
-// conversation, and so does the Responses API. A client of another protocol
-// never had to write it, so a request that lacks it is given an instruction
-// that has it.
-
-func ensureChatMentionsJSON(out []byte) []byte {
-	mentions := false
-	gjson.GetBytes(out, "messages").ForEach(func(_, message gjson.Result) bool {
-		mentions = mentionsJSON(message.Get("content"))
-		return !mentions
-	})
-	if mentions {
-		return out
+// appendChatSystemText adds text to the system message that opens a Chat
+// Completions conversation: at the end of its content when it has one (a new
+// paragraph of a string, a new text part of a list), or as a system message
+// put first.
+func appendChatSystemText(out []byte, text string) []byte {
+	first := gjson.GetBytes(out, "messages.0")
+	if first.Get("role").String() != "system" {
+		return prependArrayItem(out, "messages", `{"role":"system","content":`+jsonString(text)+`}`)
 	}
-	return prependArrayItem(out, "messages", `{"role":"system","content":`+jsonString(jsonOnlyInstruction)+`}`)
+	content := first.Get("content")
+	switch {
+	case content.IsArray():
+		out, _ = sjson.SetRawBytes(out, "messages.0.content.-1", []byte(`{"type":"text","text":`+jsonString(text)+`}`))
+	case content.Type == gjson.String && content.String() != "":
+		out, _ = sjson.SetBytes(out, "messages.0.content", content.String()+"\n\n"+text)
+	default:
+		out, _ = sjson.SetBytes(out, "messages.0.content", text)
+	}
+	return out
 }
 
+// appendGeminiSystemText adds text as a part at the end of a Gemini request's
+// system instruction, under either spelling the request already uses, or in
+// a new one spelled the way the target's translators write it.
+func appendGeminiSystemText(out []byte, prefix, text string) []byte {
+	part := []byte(`{"text":` + jsonString(text) + `}`)
+	for _, key := range []string{"systemInstruction", "system_instruction"} {
+		instruction := gjson.GetBytes(out, prefix+key)
+		if !instruction.IsObject() {
+			continue
+		}
+		if instruction.Get("parts").IsArray() {
+			out, _ = sjson.SetRawBytes(out, prefix+key+".parts.-1", part)
+		} else {
+			out, _ = sjson.SetRawBytes(out, prefix+key+".parts", append(append([]byte{'['}, part...), ']'))
+		}
+		return out
+	}
+	// The Gemini translators write system_instruction; the Gemini CLI and
+	// Antigravity ones systemInstruction, which the Antigravity executor
+	// reads back when it adds its own.
+	key := "system_instruction"
+	if prefix != "" {
+		key = "systemInstruction"
+	}
+	out, _ = sjson.SetRawBytes(out, prefix+key, []byte(`{"role":"user","parts":[`+string(part)+`]}`))
+	return out
+}
+
+// prependGeminiUserText puts text as the first part of the first user turn,
+// for a model that takes no system instruction.
+func prependGeminiUserText(out []byte, prefix, text string) []byte {
+	part := `{"text":` + jsonString(text) + `}`
+	turn := -1
+	gjson.GetBytes(out, prefix+"contents").ForEach(func(key, content gjson.Result) bool {
+		if role := content.Get("role").String(); role == "" || role == "user" {
+			turn = int(key.Int())
+			return false
+		}
+		return true
+	})
+	if turn < 0 {
+		return prependArrayItem(out, prefix+"contents", `{"role":"user","parts":[`+part+`]}`)
+	}
+	return prependArrayItem(out, prefix+"contents."+strconv.Itoa(turn)+".parts", part)
+}
+
+// The Responses API rejects JSON mode unless the word "json" appears in the
+// conversation. A client of another protocol never had to write it, so a
+// request that lacks it is given an instruction that has it.
 func ensureResponsesMentionsJSON(out []byte) []byte {
 	if mentionsJSON(gjson.GetBytes(out, "instructions")) {
 		return out
