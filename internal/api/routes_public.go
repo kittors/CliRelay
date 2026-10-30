@@ -54,6 +54,17 @@ func (s *Server) setupRoutes() {
 		group.POST("/responses", openaiResponsesHandlers.Responses)
 		group.POST("/responses/compact", openaiResponsesHandlers.Compact)
 		group.POST("/alpha/search", openaiResponsesHandlers.AlphaSearch)
+		group.POST("/voice/grok/session", s.handleGrokVoiceSession)
+		group.GET("/voice/grok", s.handleGrokVoiceWebsocket)
+		group.POST("/voice/claude/session", s.handleClaudeVoiceSession)
+		group.GET("/voice/claude", s.handleClaudeVoiceWebsocket)
+		group.GET("/voice/claude/stt", s.handleClaudeVoiceWebsocket)
+		group.POST("/live", s.handleChatGPTLiveOffer)
+		group.GET("/live", s.handleRealtimeWebsocket)
+		group.GET("/live/:call_id", s.handleChatGPTLiveSidebandWebsocket)
+		group.POST("/realtime/calls", s.handleChatGPTLiveOffer)
+		group.GET("/realtime/calls/:call_id", s.handleChatGPTLiveSidebandWebsocket)
+		group.GET("/realtime", s.handleRealtimeWebsocket)
 	}
 	registerV1BetaRoutes := func(group *gin.RouterGroup) {
 		group.GET("/models", geminiHandlers.GeminiModels)
@@ -107,7 +118,16 @@ func (s *Server) setupRoutes() {
 		codexDirect.POST("/responses", openaiResponsesHandlers.Responses)
 		codexDirect.POST("/responses/compact", openaiResponsesHandlers.Compact)
 		codexDirect.POST("/alpha/search", openaiResponsesHandlers.AlphaSearch)
+		codexDirect.POST("/v1/live", s.handleChatGPTLiveOffer)
+		codexDirect.GET("/v1/live/:call_id", s.handleChatGPTLiveSidebandWebsocket)
 	}
+
+	claudeVoiceDirect := s.engine.Group("/api/ws/speech_to_text")
+	claudeVoiceDirect.Use(AuthMiddleware(s.accessManager))
+	claudeVoiceDirect.Use(rewrittenGroupRoutingMiddleware(resolveRoute))
+	claudeVoiceDirect.Use(channelGroupAuthorizationMiddleware())
+	claudeVoiceDirect.Use(middleware.QuotaMiddleware())
+	claudeVoiceDirect.GET("/voice_stream", s.handleClaudeVoiceWebsocket)
 
 	v1beta := s.engine.Group("/v1beta")
 	v1beta.Use(AuthMiddleware(s.accessManager))
