@@ -18,6 +18,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/api/handlers"
+	sdktranslator "github.com/router-for-me/CLIProxyAPI/v6/sdk/translator"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 )
@@ -179,6 +180,10 @@ func (h *ClaudeCodeAPIHandler) handleNonStreamingResponse(c *gin.Context, rawJSO
 		}
 	}
 
+	// Claude clients only take tool_use ids made of letters, digits, _ and -;
+	// other upstreams' ids are encoded here and decoded when they come back.
+	resp = sdktranslator.EncodeClaudeResponseToolIDs(resp)
+
 	handlers.WriteUpstreamHeaders(c.Writer.Header(), upstreamHeaders)
 	_, _ = c.Writer.Write(resp)
 	cliCancel()
@@ -232,7 +237,9 @@ func (h *ClaudeCodeAPIHandler) forwardClaudeStream(c *gin.Context, flusher http.
 			if len(chunk) == 0 {
 				return
 			}
-			_, _ = c.Writer.Write(chunk)
+			// Tool_use ids outside the alphabet Claude clients accept are
+			// encoded, as in the non-streaming response.
+			_, _ = c.Writer.Write(sdktranslator.EncodeClaudeStreamToolIDs(chunk))
 		},
 		WriteTerminalError: func(errMsg *interfaces.ErrorMessage) {
 			if errMsg == nil {
