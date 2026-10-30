@@ -60,6 +60,11 @@ type RoutingChannelGroup struct {
 	AllowedModels        []string          `yaml:"allowed-models,omitempty" json:"allowed-models,omitempty"`
 	ExcludedModels       []string          `yaml:"excluded-models,omitempty" json:"excluded-models,omitempty"`
 	FollowUpstreamModels *bool             `yaml:"follow-upstream-models,omitempty" json:"follow-upstream-models,omitempty"`
+	// FirstTokenTimeoutSeconds and BusyWaitMaxSeconds are the group's stream
+	// guards (routing_stream_guards.go). BusyWaitMaxSeconds is a pointer because
+	// unset takes the default while 0 turns the wait off.
+	FirstTokenTimeoutSeconds int  `yaml:"first-token-timeout-seconds,omitempty" json:"first-token-timeout-seconds,omitempty"`
+	BusyWaitMaxSeconds       *int `yaml:"busy-wait-max-seconds,omitempty" json:"busy-wait-max-seconds,omitempty"`
 }
 
 // FollowsUpstreamModels reports whether the group's allow list also admits
@@ -192,6 +197,7 @@ func (cfg *Config) SanitizeRouting() {
 		group.Match.Tags = normalizeStringList(group.Match.Tags, NormalizeRoutingTag)
 		group.ChannelPriorities = normalizeChannelPriorities(group.ChannelPriorities)
 		sanitizeScheduling(&group)
+		sanitizeStreamGuards(&group)
 		group.AllowedModels = normalizeStringList(group.AllowedModels, func(value string) string {
 			return strings.TrimSpace(value)
 		})

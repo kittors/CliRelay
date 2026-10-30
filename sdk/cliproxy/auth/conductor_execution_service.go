@@ -181,7 +181,7 @@ func (s executionService) executeStreamMixedOnce(ctx context.Context, providers 
 			return nil, errReady
 		}
 
-		streamResult, errStream := candidate.executor.ExecuteStream(candidate.execCtx, candidate.auth, candidate.execReq, scope.opts)
+		streamResult, errStream := s.executeStreamAttempt(candidate, &scope)
 		if errStream != nil {
 			releaseSlot()
 			if errCtx := candidate.execCtx.Err(); errCtx != nil {

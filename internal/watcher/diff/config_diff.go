@@ -96,6 +96,7 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 	if oldCfg.Routing.Strategy != newCfg.Routing.Strategy {
 		changes = append(changes, fmt.Sprintf("routing.strategy: %s -> %s", oldCfg.Routing.Strategy, newCfg.Routing.Strategy))
 	}
+	changes = append(changes, channelGroupStreamGuardChanges(oldCfg.Routing.ChannelGroups, newCfg.Routing.ChannelGroups)...)
 
 	// API keys (redacted) and counts
 	if len(oldCfg.APIKeys) != len(newCfg.APIKeys) {
@@ -358,6 +359,27 @@ func equalStringMap(a, b map[string]string) bool {
 		}
 	}
 	return true
+}
+
+// channelGroupStreamGuardChanges reports changes to a group's first-token
+// timeout and busy-wait cap. A group that is new compares against an unset one.
+func channelGroupStreamGuardChanges(oldGroups, newGroups []config.RoutingChannelGroup) []string {
+	previous := make(map[string]config.RoutingChannelGroup, len(oldGroups))
+	for _, group := range oldGroups {
+		previous[strings.ToLower(strings.TrimSpace(group.Name))] = group
+	}
+	var changes []string
+	for _, group := range newGroups {
+		name := strings.ToLower(strings.TrimSpace(group.Name))
+		before := previous[name]
+		if before.FirstTokenTimeoutSeconds != group.FirstTokenTimeoutSeconds {
+			changes = append(changes, fmt.Sprintf("routing.channel-groups[%s].first-token-timeout-seconds: %d -> %d", name, before.FirstTokenTimeoutSeconds, group.FirstTokenTimeoutSeconds))
+		}
+		if formatOptionalInt(before.BusyWaitMaxSeconds) != formatOptionalInt(group.BusyWaitMaxSeconds) {
+			changes = append(changes, fmt.Sprintf("routing.channel-groups[%s].busy-wait-max-seconds: %s -> %s", name, formatOptionalInt(before.BusyWaitMaxSeconds), formatOptionalInt(group.BusyWaitMaxSeconds)))
+		}
+	}
+	return changes
 }
 
 // formatOptionalInt renders a setting where unset differs from 0: unset takes

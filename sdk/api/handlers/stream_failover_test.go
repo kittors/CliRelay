@@ -114,13 +114,16 @@ type streamOutcome struct {
 
 func drainStream(t *testing.T, dataChan <-chan []byte, errChan <-chan *StreamErrorMessage) streamOutcome {
 	t.Helper()
-	if dataChan == nil || errChan == nil {
-		t.Fatalf("expected non-nil channels")
+	if errChan == nil {
+		t.Fatalf("expected a non-nil error channel")
 	}
 	var out streamOutcome
 	var payload []byte
-	for chunk := range dataChan {
-		payload = append(payload, chunk...)
+	// A request that failed before streaming has no data channel at all.
+	if dataChan != nil {
+		for chunk := range dataChan {
+			payload = append(payload, chunk...)
+		}
 	}
 	for msg := range errChan {
 		if msg != nil && msg.Error != nil {

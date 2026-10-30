@@ -49,3 +49,19 @@ func TestBuildConfigChangeDetailsReportsBootstrapRetries(t *testing.T) {
 		t.Fatalf("an unchanged value was reported: %v", details)
 	}
 }
+
+func TestBuildConfigChangeDetailsReportsChannelGroupStreamGuards(t *testing.T) {
+	oldCfg := &config.Config{Routing: config.RoutingConfig{ChannelGroups: []config.RoutingChannelGroup{{Name: "team"}}}}
+	newCfg := &config.Config{Routing: config.RoutingConfig{ChannelGroups: []config.RoutingChannelGroup{
+		{Name: "team", FirstTokenTimeoutSeconds: 30, BusyWaitMaxSeconds: new(0)},
+	}}}
+	details := BuildConfigChangeDetails(oldCfg, newCfg)
+	for _, want := range []string{
+		"routing.channel-groups[team].first-token-timeout-seconds: 0 -> 30",
+		"routing.channel-groups[team].busy-wait-max-seconds: default -> 0",
+	} {
+		if !slices.Contains(details, want) {
+			t.Fatalf("%q missing from %v", want, details)
+		}
+	}
+}
