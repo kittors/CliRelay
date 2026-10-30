@@ -362,7 +362,10 @@ nonstream-keepalive-interval: 0
 # Streaming behavior (SSE keep-alives + safe bootstrap retries).
 streaming:
   keepalive-seconds: 15   # Default: 15. Set < 0 to disable keep-alives.
-  bootstrap-retries: 1    # Default: 1. Retries before first byte is sent.
+  # How many times a stream that fails before its first byte moves to another
+  # account. Leave it unset for the default (2, and never more than the accounts
+  # that can serve the request); 0 turns it off.
+  # bootstrap-retries: 2
 
 # Gemini API keys
 # gemini-api-key:

@@ -205,7 +205,9 @@ func (s executionService) executeStreamMixedOnce(ctx context.Context, providers 
 			continue
 		}
 
-		return s.wrapStreamResult(candidate.execCtx, candidate.auth, candidate.provider, scope.routeModel, scope.opts.SourceFormat, streamResult, releaseSlot), nil
+		wrapped := s.wrapStreamResult(candidate.execCtx, candidate.auth, candidate.provider, scope.routeModel, scope.opts.SourceFormat, streamResult, releaseSlot)
+		wrapped.AuthID = candidate.auth.ID
+		return wrapped, nil
 	}
 }
 
@@ -217,13 +219,15 @@ func (s executionService) newMixedScope(providers []string, req cliproxyexecutor
 	routeModel := req.Model
 	opts = ensureRequestedModelMetadata(opts, routeModel)
 
-	return mixedExecutionScope{
+	scope := mixedExecutionScope{
 		providers:       providers,
 		routeModel:      routeModel,
 		opts:            opts,
 		singlePickRoute: isSinglePickRouteRequest(opts.Metadata),
 		tried:           make(map[string]struct{}),
-	}, nil
+	}
+	applyRetryExclusions(&scope)
+	return scope, nil
 }
 
 // nextReadyCandidate returns the next candidate that already owns a concurrency

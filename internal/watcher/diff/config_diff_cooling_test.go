@@ -34,3 +34,18 @@ func TestBuildConfigChangeDetailsReportsDisableCooling(t *testing.T) {
 		t.Fatalf("openai-compatibility change missing from %v", details)
 	}
 }
+
+// Unset and 0 mean different things for streaming.bootstrap-retries (default
+// on versus off), so the reload log has to show which one took effect.
+func TestBuildConfigChangeDetailsReportsBootstrapRetries(t *testing.T) {
+	oldCfg := &config.Config{}
+	newCfg := &config.Config{}
+	newCfg.Streaming.BootstrapRetries = new(0)
+	if details := BuildConfigChangeDetails(oldCfg, newCfg); !slices.Contains(details, "streaming.bootstrap-retries: default -> 0") {
+		t.Fatalf("unset -> 0 missing from %v", details)
+	}
+	oldCfg.Streaming.BootstrapRetries = new(0)
+	if details := BuildConfigChangeDetails(oldCfg, newCfg); slices.ContainsFunc(details, func(d string) bool { return strings.Contains(d, "bootstrap-retries") }) {
+		t.Fatalf("an unchanged value was reported: %v", details)
+	}
+}

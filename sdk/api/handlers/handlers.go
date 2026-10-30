@@ -53,10 +53,7 @@ type StreamErrorMessage = interfaces.ErrorMessage
 
 const idempotencyKeyMetadataKey = "idempotency_key"
 
-const (
-	defaultStreamingKeepAliveSeconds = 15
-	defaultStreamingBootstrapRetries = 0
-)
+const defaultStreamingKeepAliveSeconds = 15
 
 type pinnedAuthContextKey struct{}
 type selectedAuthCallbackContextKey struct{}
@@ -216,18 +213,6 @@ func NonStreamingKeepAliveInterval(cfg *config.SDKConfig) time.Duration {
 		return 0
 	}
 	return time.Duration(seconds) * time.Second
-}
-
-// StreamingBootstrapRetries returns how many times a streaming request may be retried before any bytes are sent.
-func StreamingBootstrapRetries(cfg *config.SDKConfig) int {
-	retries := defaultStreamingBootstrapRetries
-	if cfg != nil {
-		retries = cfg.Streaming.BootstrapRetries
-	}
-	if retries < 0 {
-		retries = 0
-	}
-	return retries
 }
 
 // PassthroughHeadersEnabled returns whether upstream response headers should be forwarded to clients.
@@ -812,6 +797,15 @@ func scopedProvidersForModel(modelName string, groups []string) []string {
 	return providers
 }
 
+// ginContextFrom returns the gin context GetContextWithCancel stored in ctx.
+func ginContextFrom(ctx context.Context) *gin.Context {
+	if ctx == nil {
+		return nil
+	}
+	ginCtx, _ := ctx.Value(util.ContextKeyGin).(*gin.Context)
+	return ginCtx
+}
+
 func routeContextFromExecutionContext(ctx context.Context) *internalrouting.PathRouteContext {
 	if ctx == nil {
 		return nil
@@ -819,8 +813,8 @@ func routeContextFromExecutionContext(ctx context.Context) *internalrouting.Path
 	if route := internalrouting.PathRouteContextFromContext(ctx); route != nil {
 		return route
 	}
-	ginCtx, ok := ctx.Value(util.ContextKeyGin).(*gin.Context)
-	if !ok || ginCtx == nil {
+	ginCtx := ginContextFrom(ctx)
+	if ginCtx == nil {
 		return nil
 	}
 	raw, exists := ginCtx.Get(internalrouting.GinPathRouteContextKey)

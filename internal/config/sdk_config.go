@@ -106,10 +106,14 @@ type StreamingConfig struct {
 	// < 0 disables keep-alives. Default is 15.
 	KeepAliveSeconds int `yaml:"keepalive-seconds,omitempty" json:"keepalive-seconds,omitempty"`
 
-	// BootstrapRetries controls how many times the server may retry a streaming request before any bytes are sent,
-	// to allow auth rotation / transient recovery.
-	// <= 0 disables bootstrap retries. Default is 0.
-	BootstrapRetries int `yaml:"bootstrap-retries,omitempty" json:"bootstrap-retries,omitempty"`
+	// BootstrapRetries controls how many times a streaming request may move to another account when the
+	// upstream fails before any byte has reached the client.
+	//
+	// It is a pointer because "not configured" and "configured as 0" mean different things: nil takes the
+	// built-in default (handlers.StreamingBootstrapRetries, on by default), while an explicit 0 or a
+	// negative value turns the retries off. An int with omitempty could not tell the two apart, so a
+	// config that had written 0 to switch them off would silently turn them back on.
+	BootstrapRetries *int `yaml:"bootstrap-retries,omitempty" json:"bootstrap-retries,omitempty"`
 }
 
 // APIKeyEntry represents an API key with optional metadata for advanced management.

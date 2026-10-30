@@ -360,7 +360,7 @@ func TestExecuteStreamWithAuthManager_RetriesBeforeFirstByte(t *testing.T) {
 	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{
 		PassthroughHeaders: true,
 		Streaming: sdkconfig.StreamingConfig{
-			BootstrapRetries: 1,
+			BootstrapRetries: new(1),
 		},
 	}, manager)
 	dataChan, upstreamHeaders, errChan := handler.ExecuteStreamWithAuthManager(context.Background(), "openai", "test-model", []byte(`{"model":"test-model"}`), "")
@@ -425,7 +425,7 @@ func TestExecuteStreamWithAuthManager_HeaderPassthroughDisabledByDefault(t *test
 
 	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{
 		Streaming: sdkconfig.StreamingConfig{
-			BootstrapRetries: 1,
+			BootstrapRetries: new(1),
 		},
 	}, manager)
 	dataChan, upstreamHeaders, errChan := handler.ExecuteStreamWithAuthManager(context.Background(), "openai", "test-model", []byte(`{"model":"test-model"}`), "")
@@ -485,7 +485,7 @@ func TestExecuteStreamWithAuthManager_DoesNotRetryAfterFirstByte(t *testing.T) {
 
 	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{
 		Streaming: sdkconfig.StreamingConfig{
-			BootstrapRetries: 1,
+			BootstrapRetries: new(1),
 		},
 	}, manager)
 	dataChan, _, errChan := handler.ExecuteStreamWithAuthManager(context.Background(), "openai", "test-model", []byte(`{"model":"test-model"}`), "")
@@ -555,7 +555,7 @@ func TestExecuteStreamWithAuthManager_PinnedAuthKeepsSameUpstream(t *testing.T) 
 
 	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{
 		Streaming: sdkconfig.StreamingConfig{
-			BootstrapRetries: 1,
+			BootstrapRetries: new(1),
 		},
 	}, manager)
 	ctx := WithPinnedAuthID(context.Background(), "auth1")
@@ -641,7 +641,7 @@ func TestExecuteStreamWithAuthManager_GroupedRouteRetriesWithinGroupBeforeFirstB
 
 	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{
 		Streaming: sdkconfig.StreamingConfig{
-			BootstrapRetries: 1,
+			BootstrapRetries: new(1),
 		},
 	}, manager)
 	dataChan, _, errChan := handler.ExecuteStreamWithAuthManager(ctx, "openai", "test-model", []byte(`{"model":"test-model"}`), "")
@@ -723,7 +723,7 @@ func TestExecuteStreamWithAuthManager_GroupedRouteRequestContextDoesNotRetryInva
 
 	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{
 		Streaming: sdkconfig.StreamingConfig{
-			BootstrapRetries: 1,
+			BootstrapRetries: new(1),
 		},
 	}, manager)
 	dataChan, _, errChan := handler.ExecuteStreamWithAuthManager(ctx, "openai-response", "gpt-5.1-codex", []byte(`{"model":"gpt-5.1-codex","stream":true}`), "")
@@ -783,7 +783,7 @@ func TestExecuteStreamWithAuthManager_SelectedAuthCallbackReceivesAuthID(t *test
 
 	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{
 		Streaming: sdkconfig.StreamingConfig{
-			BootstrapRetries: 0,
+			BootstrapRetries: new(0),
 		},
 	}, manager)
 

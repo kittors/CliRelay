@@ -98,6 +98,7 @@ func (h *BaseAPIHandler) StartStreamWithAuthManager(ctx context.Context, handler
 			dataChan,
 			errChan,
 			maxBootstrapRetries,
+			streamResult.AuthID,
 		)
 	}
 	return dataChan, upstreamHeaders, errChan, nil
@@ -149,11 +150,13 @@ func forwardStreamWithBootstrapRetry(
 	dataChan chan<- []byte,
 	errChan chan<- *StreamErrorMessage,
 	maxBootstrapRetries int,
+	servedBy string,
 ) {
 	defer close(dataChan)
 	defer close(errChan)
 	sentPayload := false
 	bootstrapRetries := 0
+	failover := newStreamFailover(h, servedBy)
 
 outer:
 	for {
@@ -165,10 +168,11 @@ outer:
 			if chunk.Err != nil {
 				streamErr := chunk.Err
 				// Safe bootstrap recovery: if the upstream fails before any payload bytes are sent,
-				// retry a few times (to allow auth rotation / transient recovery).
+				// retry on another account (the failover excludes every account that already
+				// failed this request, so the candidate count bounds the retries too).
 				if !sentPayload && bootstrapRetries < maxBootstrapRetries && bootstrapEligibleStreamErr(streamErr) {
 					bootstrapRetries++
-					retryResult, retryErr := h.AuthManager.ExecuteStream(ctx, providers, req, opts)
+					retryResult, retryErr := failover.retry(ctx, providers, req, opts, streamErr, bootstrapRetries, maxBootstrapRetries)
 					if retryErr == nil {
 						if passthroughHeadersEnabled {
 							replaceHeader(upstreamHeaders, FilterUpstreamHeaders(retryResult.Headers))

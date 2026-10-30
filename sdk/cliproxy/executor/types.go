@@ -95,6 +95,10 @@ type StreamResult struct {
 	Headers http.Header
 	// Chunks is the channel of streaming payload units.
 	Chunks <-chan StreamChunk
+	// AuthID names the credential serving this stream. The auth manager fills it
+	// in; executors leave it empty. A caller that abandons the stream before the
+	// first byte uses it to keep the retry away from the same account.
+	AuthID string
 }
 
 // StatusError represents an error that carries an HTTP-like status code.

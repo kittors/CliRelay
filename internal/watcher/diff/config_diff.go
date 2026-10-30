@@ -78,6 +78,9 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 	if oldCfg.NonStreamKeepAliveInterval != newCfg.NonStreamKeepAliveInterval {
 		changes = append(changes, fmt.Sprintf("nonstream-keepalive-interval: %d -> %d", oldCfg.NonStreamKeepAliveInterval, newCfg.NonStreamKeepAliveInterval))
 	}
+	if formatOptionalInt(oldCfg.Streaming.BootstrapRetries) != formatOptionalInt(newCfg.Streaming.BootstrapRetries) {
+		changes = append(changes, fmt.Sprintf("streaming.bootstrap-retries: %s -> %s", formatOptionalInt(oldCfg.Streaming.BootstrapRetries), formatOptionalInt(newCfg.Streaming.BootstrapRetries)))
+	}
 
 	// Quota-exceeded behavior
 	if oldCfg.QuotaExceeded.SwitchProject != newCfg.QuotaExceeded.SwitchProject {
@@ -355,6 +358,15 @@ func equalStringMap(a, b map[string]string) bool {
 		}
 	}
 	return true
+}
+
+// formatOptionalInt renders a setting where unset differs from 0: unset takes
+// the built-in default, while 0 is an explicit value (often "off").
+func formatOptionalInt(value *int) string {
+	if value == nil {
+		return "default"
+	}
+	return fmt.Sprintf("%d", *value)
 }
 
 // formatCoolingOverride renders a channel's disable-cooling override; unset
