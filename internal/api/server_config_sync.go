@@ -15,6 +15,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/ipaccess"
 	modelconfigsettings "github.com/router-for-me/CLIProxyAPI/v6/internal/management/settings/modelconfig"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/management/settings/runtimeconfig"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/observability"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
@@ -99,6 +100,9 @@ func (s *Server) configSyncHandlers() map[string]configsync.Handler {
 		},
 		configsync.DomainTenants:        s.reloadTenants,
 		configsync.DomainResourceGrants: s.reloadResourceGrants,
+		configsync.DomainObservability: func(context.Context, []cluster.ConfigEvent) error {
+			return observability.Default().Reload()
+		},
 	}
 }
 
@@ -408,6 +412,9 @@ func (s *Server) fullConfigReload(ctx context.Context) error {
 	ipaccess.Default().ReloadPolicy(ctx)
 	if err := ipaccess.Default().Refresh(ctx); err != nil {
 		log.WithError(err).Debug("config sync: ip access refresh failed")
+	}
+	if err := observability.Default().Reload(); err != nil {
+		log.WithError(err).Debug("config sync: observability settings reload failed")
 	}
 	if err := s.reloadAccessProviders(); err != nil {
 		return err

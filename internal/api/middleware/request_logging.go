@@ -244,6 +244,10 @@ func shouldLogRequest(path string) bool {
 	if strings.HasPrefix(path, "/v0/management") || strings.HasPrefix(path, "/management") {
 		return false
 	}
+	// A metrics scrape carries a bearer token and repeats every few seconds.
+	if path == "/metrics" {
+		return false
+	}
 
 	if strings.HasPrefix(path, "/api") {
 		return strings.HasPrefix(path, "/api/provider")

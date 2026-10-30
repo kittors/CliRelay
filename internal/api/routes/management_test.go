@@ -26,7 +26,7 @@ func TestRegisterManagementRouteTable(t *testing.T) {
 		routes[key] = route
 	}
 
-	if got, want := len(routes), 350; got != want {
+	if got, want := len(routes), 353; got != want {
 		t.Fatalf("route count = %d, want %d", got, want)
 	}
 	if got, want := sortedRouteKeys(routes), expectedManagementRoutes(); !slices.Equal(got, want) {
@@ -93,6 +93,9 @@ func TestRegisterManagementRouteTable(t *testing.T) {
 		"PUT /v0/management/codex-oauth-admission",
 		"POST /v0/management/quota/clear-status",
 		"POST /v0/management/auth-files/model-cooldown/clear",
+		"GET /v0/management/observability/metrics",
+		"PUT /v0/management/observability/metrics",
+		"POST /v0/management/observability/metrics/token",
 		"POST /v0/management/oauth-callback",
 		"GET /v0/management/public/ping",
 		"GET /v0/management/public/usage/logs/:id/content",
@@ -154,6 +157,10 @@ func TestManagementRoutePermissionsComplete(t *testing.T) {
 		{http.MethodPost, "/v0/management/ai-accounts/status-refresh", "auth_files.write"},
 		{http.MethodGet, "/v0/management/ai-accounts/status-refresh/job-1", "auth_files.read"},
 		{http.MethodGet, "/v0/management/cluster", "system.status.read"},
+		// /metrics exposes every tenant's traffic: platform operators only.
+		{http.MethodGet, "/v0/management/observability/metrics", "system.config.read"},
+		{http.MethodPut, "/v0/management/observability/metrics", "system.config.write"},
+		{http.MethodPost, "/v0/management/observability/metrics/token", "system.config.write"},
 		{http.MethodGet, "/v0/management/totally-unknown-route", ""},
 	}
 	for _, item := range locked {
@@ -377,6 +384,9 @@ func expectedManagementRoutes() []string {
 		"POST /v0/management/models/test",
 		"GET /v0/management/oauth-excluded-models",
 		"GET /v0/management/oauth-model-alias",
+		"GET /v0/management/observability/metrics",
+		"PUT /v0/management/observability/metrics",
+		"POST /v0/management/observability/metrics/token",
 		"GET /v0/management/ollama-cloud-api-key",
 		"GET /v0/management/opencode-go-api-key",
 		"GET /v0/management/openai-compatibility",

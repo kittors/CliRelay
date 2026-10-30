@@ -29,6 +29,9 @@ const (
 	// shared proxies and AI account credentials. It is always announced under
 	// the system tenant, which owns every shared resource.
 	DomainResourceGrants = "resource_grants"
+	// DomainObservability covers the metrics endpoint settings (on/off and
+	// the scrape token's hash).
+	DomainObservability = "observability"
 )
 
 // systemTenantID mirrors identity.SystemTenantID. It is duplicated rather than

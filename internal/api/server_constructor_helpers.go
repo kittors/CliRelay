@@ -19,6 +19,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/identity"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/managementasset"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/observability"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v6/sdk/access"
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/api/handlers"
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
@@ -58,6 +59,9 @@ func newServerEngine(cfg *config.Config, optionState *serverOptionConfig) *gin.E
 
 	engine.Use(clusterNodeHeaderMiddleware())
 	engine.Use(logging.GinLogrusLogger())
+	// Outside the recovery middleware, so a recovered panic is counted with
+	// the 500 it was answered with; ahead of admission, so refusals count too.
+	engine.Use(observability.Default().HTTPMiddleware())
 	engine.Use(logging.GinLogrusRecovery())
 	// Admission runs before any body handling: a denied source must not be able
 	// to make the process decompress or buffer what it sent.
