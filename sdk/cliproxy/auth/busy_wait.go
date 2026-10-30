@@ -26,7 +26,8 @@ import (
 //   - If any usable account is not cooling at all, the failure was not "the
 //     pool is busy" and nothing is waited for. That also keeps accounts with
 //     cooling disabled from turning this into a hot retry loop.
-//   - The budget is per request and shared by every retry of it.
+//   - The budget is per request and shared by every retry of it, and never
+//     reaches past the request's own deadline.
 //
 // When it gives up, the request fails exactly as it did before, including the
 // Retry-After the scheduler derives from the cooldowns.
@@ -165,6 +166,11 @@ func (m *Manager) busyWaitFor(ctx context.Context, err error, providers []string
 		return 0, false
 	}
 	remaining := budget.remaining(limit)
+	if deadline, ok := ctx.Deadline(); ok {
+		// Waiting past the request's own deadline would only turn the
+		// upstream's error, and its Retry-After, into a bare timeout.
+		remaining = min(remaining, time.Until(deadline))
+	}
 	if remaining <= 0 {
 		return 0, false
 	}

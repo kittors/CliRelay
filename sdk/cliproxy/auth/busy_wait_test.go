@@ -210,6 +210,42 @@ func TestBusyWaitStopsAsSoonAsTheClientLeaves(t *testing.T) {
 	})
 }
 
+// A caller with a deadline (a panel probe, an internal check) keeps the
+// upstream's error instead of a timeout when the recovery comes too late.
+func TestBusyWaitNeverOutlastsTheRequestDeadline(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		exec := &scriptedExecutor{}
+		mgr := newBusyWaitManager(t, exec, "bw-deadline")
+		park(mgr, "bw-deadline", upstreamDown, 15*time.Second)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		start := time.Now()
+		err := execute(mgr, ctx)
+		if waited := time.Since(start); waited != 0 {
+			t.Fatalf("waited %s for a recovery after the deadline", waited)
+		}
+		if statusCodeFromError(err) != http.StatusServiceUnavailable {
+			t.Fatalf("err = %v, want the 503 rather than a timeout", err)
+		}
+	})
+	synctest.Test(t, func(t *testing.T) {
+		exec := &scriptedExecutor{}
+		mgr := newBusyWaitManager(t, exec, "bw-in-time")
+		park(mgr, "bw-in-time", upstreamDown, 15*time.Second)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		start := time.Now()
+		if err := execute(mgr, ctx); err != nil {
+			t.Fatalf("Execute: %v", err)
+		}
+		if waited := time.Since(start); waited < 15*time.Second || waited > 18*time.Second {
+			t.Fatalf("waited %s, want the 15s recovery, which the deadline leaves room for", waited)
+		}
+	})
+}
+
 // The cap bounds the whole request, retries included: after waiting 40s and
 // failing again, 20s are left, too few for the next 30s cooldown.
 func TestBusyWaitBudgetCoversTheWholeRequest(t *testing.T) {
