@@ -24,6 +24,9 @@ func newCodexStatusErr(statusCode int, body []byte, headers ...http.Header) stat
 		err.quotaWindow = window
 		err.quotaWindowMinutes = minutes
 	}
+	// Codex's own reset fields (parsed above) win. A failure without them still
+	// may carry a plain Retry-After, which the scheduler reads from the headers.
+	err.headers = failureHeaders(header)
 	return err
 }
 

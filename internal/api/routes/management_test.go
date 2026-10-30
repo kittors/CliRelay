@@ -26,7 +26,7 @@ func TestRegisterManagementRouteTable(t *testing.T) {
 		routes[key] = route
 	}
 
-	if got, want := len(routes), 349; got != want {
+	if got, want := len(routes), 350; got != want {
 		t.Fatalf("route count = %d, want %d", got, want)
 	}
 	if got, want := sortedRouteKeys(routes), expectedManagementRoutes(); !slices.Equal(got, want) {
@@ -92,6 +92,7 @@ func TestRegisterManagementRouteTable(t *testing.T) {
 		"GET /v0/management/codex-oauth-admission",
 		"PUT /v0/management/codex-oauth-admission",
 		"POST /v0/management/quota/clear-status",
+		"POST /v0/management/auth-files/model-cooldown/clear",
 		"POST /v0/management/oauth-callback",
 		"GET /v0/management/public/ping",
 		"GET /v0/management/public/usage/logs/:id/content",
@@ -468,6 +469,7 @@ func expectedManagementRoutes() []string {
 		"POST /v0/management/api-key-entries/daily-spending/reset",
 		"POST /v0/management/api-key-entries/period-spending/reset",
 		"POST /v0/management/auth-files",
+		"POST /v0/management/auth-files/model-cooldown/clear",
 		"POST /v0/management/auth-files/warmup/batch",
 		"POST /v0/management/auth-files/warmup/policies",
 		"POST /v0/management/auth-files/warmup/run",

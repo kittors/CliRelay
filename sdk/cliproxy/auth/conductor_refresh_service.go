@@ -170,6 +170,9 @@ func (s refreshService) shouldRefresh(auth *Auth, now time.Time) bool {
 	if claudeOAuthRefreshPending(auth) {
 		return true
 	}
+	if codexOAuthRefreshPending(auth) {
+		return true
+	}
 
 	lastRefresh := auth.LastRefreshedAt
 	if lastRefresh.IsZero() {
@@ -350,6 +353,7 @@ func (s refreshService) applyRefreshSuccess(ctx context.Context, auth *Auth, clo
 	updated.LastError = nil
 	updated.UpdatedAt = now
 	markClaudeOAuthHealthRefreshSuccessLocked(updated, now)
+	markCodexOAuthHealthRefreshSuccessLocked(updated, now)
 	s.manager.persistRefreshResult(ctx, updated, before)
 }
 

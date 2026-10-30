@@ -138,7 +138,7 @@ func (e *IFlowExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		recorder.AppendResponseChunk(b)
 		logWithRequestID(execCtx.Context).Debugf("request error, error status: %d error message: %s", httpResp.StatusCode, summarizeErrorBody(httpResp.Header.Get("Content-Type"), b))
 		reporter.publishFailureWithContent(execCtx.Context, string(req.Payload), string(b))
-		err = statusErr{code: httpResp.StatusCode, msg: string(b)}
+		err = statusErr{code: httpResp.StatusCode, msg: string(b), headers: failureHeaders(httpResp.Header)}
 		return resp, err
 	}
 
@@ -241,7 +241,7 @@ func (e *IFlowExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 		recorder.AppendResponseChunk(data)
 		logWithRequestID(execCtx.Context).Debugf("request error, error status: %d error message: %s", httpResp.StatusCode, summarizeErrorBody(httpResp.Header.Get("Content-Type"), data))
 		reporter.publishFailureWithContent(execCtx.Context, string(req.Payload), string(data))
-		err = statusErr{code: httpResp.StatusCode, msg: string(data)}
+		err = statusErr{code: httpResp.StatusCode, msg: string(data), headers: failureHeaders(httpResp.Header)}
 		return nil, err
 	}
 

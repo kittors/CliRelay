@@ -76,6 +76,7 @@ type RefreshCoordinator interface {
 // constants in internal/auth/antigravity, which the SDK cannot import.
 var runtimeMetadataKeys = []string{
 	ClaudeOAuthHealthMetadataKey,
+	CodexOAuthHealthMetadataKey,
 	persistedQuotaRuntimeMetadataKey,
 	"antigravity_project_id_unavailable",
 	"antigravity_project_id_probed_at",

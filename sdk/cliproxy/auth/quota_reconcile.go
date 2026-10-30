@@ -392,6 +392,9 @@ func clearManualRuntimeStatusForAuth(auth *Auth, now time.Time) (bool, []string)
 	if clearClaudeOAuthRuntimeRestrictionLocked(auth, now) {
 		changed = true
 	}
+	if clearCodexOAuthRuntimeRestrictionLocked(auth, now) {
+		changed = true
+	}
 	return changed, recoveredModels
 }
 

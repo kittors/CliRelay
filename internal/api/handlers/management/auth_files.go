@@ -36,9 +36,10 @@ func (h *Handler) ListAuthFiles(c *gin.Context) {
 		},
 	})
 	h.enrichAuthFileIdentityFingerprintSummaries(files, auths)
-	// capabilities lists the fields PATCH /auth-files/fields stores, so a panel
-	// newer than this backend does not offer one that would be dropped.
-	body := gin.H{"files": files, "capabilities": gin.H{"disable-cooling": true}}
+	// capabilities lists what this backend can do, so a panel newer than it does
+	// not offer one that would fail: the fields PATCH /auth-files/fields stores,
+	// and the per-model "retry now" action (POST /auth-files/model-cooldown/clear).
+	body := gin.H{"files": files, "capabilities": gin.H{"disable-cooling": true, "model-cooldown-clear": true}}
 	h.decorateAuthFilesResponse(c, effectiveTenantID(c), files, body)
 	c.JSON(200, body)
 }

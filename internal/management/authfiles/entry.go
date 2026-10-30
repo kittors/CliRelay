@@ -99,6 +99,9 @@ func BuildEntry(auth *coreauth.Auth, opts EntryOptions) map[string]any {
 	if health := ClaudeOAuthHealth(auth); len(health) > 0 {
 		entry["claude_oauth_health"] = health
 	}
+	if health := CodexOAuthHealth(auth); len(health) > 0 {
+		entry["codex_oauth_health"] = health
+	}
 	if !auth.CreatedAt.IsZero() {
 		entry["created_at"] = auth.CreatedAt
 	}
@@ -114,6 +117,9 @@ func BuildEntry(auth *coreauth.Auth, opts EntryOptions) map[string]any {
 	}
 	if restrictions := BuildRestrictionPayload(auth, now); len(restrictions) > 0 {
 		entry["restrictions"] = restrictions
+	}
+	if cooldowns := BuildModelCooldownPayload(auth, now); len(cooldowns) > 0 {
+		entry["model_cooldowns"] = cooldowns
 	}
 	if path != "" {
 		entry["path"] = path

@@ -13,11 +13,13 @@ import (
 
 // coolingControlsStatus reports whether disable-cooling governs the cooldown a
 // failure with this status starts. 401, 402, 403 and 404 park a credential
-// whatever the switch says.
+// whatever the switch says. 529 only starts a cooldown when the upstream names a
+// time, and that one is governed like the other overload statuses.
 func coolingControlsStatus(status int) bool {
 	switch status {
 	case http.StatusTooManyRequests, http.StatusRequestTimeout, http.StatusInternalServerError,
-		http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout,
+		statusSiteOverloaded:
 		return true
 	default:
 		return false
