@@ -12,9 +12,12 @@ import (
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
 )
 
-// silentStreamExecutor accepts every stream and then sends nothing until its
-// context ends.
-type silentStreamExecutor struct{ provider string }
+// silentStreamExecutor accepts every stream and then sends nothing (or only
+// its preamble) until its context ends.
+type silentStreamExecutor struct {
+	provider string
+	preamble []byte
+}
 
 func (e silentStreamExecutor) Identifier() string { return e.provider }
 
@@ -26,6 +29,9 @@ func (e silentStreamExecutor) ExecuteStream(ctx context.Context, _ *Auth, _ clip
 	ch := make(chan cliproxyexecutor.StreamChunk)
 	go func() {
 		defer close(ch)
+		if e.preamble != nil {
+			ch <- cliproxyexecutor.StreamChunk{Payload: e.preamble}
+		}
 		<-ctx.Done()
 		ch <- cliproxyexecutor.StreamChunk{Err: ctx.Err()}
 	}()
@@ -85,6 +91,35 @@ func TestFirstTokenTimeoutParksTheAccountBriefly(t *testing.T) {
 		}
 		if got := state.NextRetryAfter.Sub(timedOutAt); got != firstTokenTimeoutCooldown {
 			t.Fatalf("back-off = %s, want %s", got, firstTokenTimeoutCooldown)
+		}
+	})
+}
+
+// Blank lines carry nothing a client can show, so an upstream that only sends
+// those (some proxies pad an idle stream with them) is still stalled.
+func TestFirstTokenTimeoutIgnoresBlankChunks(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		mgr := NewManager(nil, nil, nil)
+		mgr.RegisterExecutor(silentStreamExecutor{provider: "silent", preamble: []byte("\n\r\n \t")})
+		if _, err := mgr.Register(context.Background(), &Auth{ID: "ftt-blank", Provider: "silent", Status: StatusActive}); err != nil {
+			t.Fatal(err)
+		}
+		mgr.SetConfig(&sdkconfig.Config{Routing: sdkconfig.RoutingConfig{
+			ChannelGroups: []sdkconfig.RoutingChannelGroup{{Name: "default", FirstTokenTimeoutSeconds: 5, BusyWaitMaxSeconds: new(0)}},
+		}})
+
+		result, err := mgr.ExecuteStream(context.Background(), []string{"silent"}, cliproxyexecutor.Request{Model: "test-model"}, cliproxyexecutor.Options{Stream: true})
+		if err != nil {
+			t.Fatalf("ExecuteStream: %v", err)
+		}
+		var streamErr error
+		for chunk := range result.Chunks {
+			if chunk.Err != nil {
+				streamErr = chunk.Err
+			}
+		}
+		if !IsFirstTokenTimeout(streamErr) {
+			t.Fatalf("stream error = %v, want the first-token timeout despite the blank chunk", streamErr)
 		}
 	})
 }
