@@ -297,6 +297,8 @@ func initializeRuntimeDataStack(cfg *config.Config, configPath string, loc *time
 	settingsstore.ApplyStoredRuntimeSettings(cfg)
 	// After the settings store is live: the protection policy is read from it.
 	initializeIPAccessControl(context.Background(), cfg)
+	// Likewise the metrics endpoint settings.
+	initializeObservability()
 	middleware.InitQuotaUsageFuncs(usage.CountTodayByKey, usage.CountTotalByKey, usage.QueryTotalCostByKey, usage.QueryTodayCostByKey)
 	middleware.InitQuotaEndUserUsageFuncs(usage.CountTodayByEndUser, usage.CountTotalByEndUser, usage.QueryTotalCostByEndUser, usage.QueryTodayCostByEndUser)
 	middleware.InitQuotaPeriodUsageFuncs(usage.QueryPeriodSpendingByAPIKeyIDForTenant, usage.QueryPeriodSpendingByEndUserForTenant)

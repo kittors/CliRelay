@@ -19,6 +19,7 @@ import (
 	imagegeneration "github.com/router-for-me/CLIProxyAPI/v6/internal/management/imagegeneration"
 	settingsstore "github.com/router-for-me/CLIProxyAPI/v6/internal/management/settings/store"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/management/warmup"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/observability"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v6/sdk/access"
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v6/sdk/auth"
@@ -58,6 +59,8 @@ type Handler struct {
 	// importKinds overrides the credential-import exchanges in tests; nil uses
 	// the package defaults that build real upstream clients.
 	importKinds map[string]credentialImportKind
+	// metrics overrides the process-wide metrics exporter in tests.
+	metrics *observability.Exporter
 }
 
 type trendCacheEntry struct {
@@ -73,6 +76,7 @@ func NewHandler(cfg *config.Config, configFilePath string, manager *coreauth.Man
 	// caller that assembles the management API itself must get a working registry
 	// rather than 503 on every rule endpoint.
 	ensureIPAccessRuntime(cfg)
+	ensureObservabilityRuntime()
 
 	h := &Handler{
 		cfg:                 cfg,
