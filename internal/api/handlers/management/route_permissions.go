@@ -102,6 +102,13 @@ func permissionForManagementRequest(method, path string) string {
 		return "dashboard.read"
 	case strings.HasPrefix(relative, "/system-stats"), relative == "/cluster":
 		return "system.status.read"
+	// /metrics reports the whole platform's traffic, so only platform
+	// operators may switch it on or mint its token.
+	case strings.HasPrefix(relative, "/observability"):
+		if write {
+			return "system.config.write"
+		}
+		return "system.config.read"
 	// Sensitive request/error log files — not system.config.
 	case strings.HasPrefix(relative, "/request-error-logs"), strings.HasPrefix(relative, "/request-log-by-id"):
 		return "system.logs.read"

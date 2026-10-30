@@ -7,6 +7,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/api/middleware"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/diagnostics"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/observability"
 	internalrouting "github.com/router-for-me/CLIProxyAPI/v6/internal/routing"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/api/handlers/claude"
@@ -22,6 +23,7 @@ func (s *Server) setupRoutes() {
 	})
 	s.engine.GET("/readyz", s.handleReadyz)
 	s.engine.GET("/readyz/egress", s.handleReadyzEgress)
+	s.engine.GET(observability.MetricsPath, s.metricsHandler())
 
 	s.engine.GET("/management.html", s.serveManagementControlPanel)
 	s.engine.GET("/manage", s.serveManagementControlPanel)
