@@ -22,6 +22,9 @@ import (
 type scriptedStreamExecutor struct {
 	provider string
 	steps    []streamStep
+	// failToOpen makes a failing step reject the request before the stream
+	// opens (an HTTP error) instead of failing inside an accepted stream.
+	failToOpen bool
 
 	mu      sync.Mutex
 	authIDs []string
@@ -55,6 +58,9 @@ func (e *scriptedStreamExecutor) ExecuteStream(_ context.Context, auth *coreauth
 	step := succeed("ok")
 	if call <= len(e.steps) {
 		step = e.steps[call-1]
+	}
+	if e.failToOpen && step.err != nil && len(step.payloads) == 0 {
+		return nil, step.err
 	}
 	ch := make(chan coreexecutor.StreamChunk, len(step.payloads)+1)
 	for _, payload := range step.payloads {

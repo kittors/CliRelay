@@ -48,7 +48,9 @@ func (h *BaseAPIHandler) StartStreamWithAuthManager(ctx context.Context, handler
 		SourceFormat:    sdktranslator.FromString(handlerType),
 	}
 	opts.Metadata = reqMeta
+	ctx, waits := h.startStreamWaits(ctx, alt)
 	streamResult, err := h.AuthManager.ExecuteStream(ctx, providers, req, opts)
+	committed := waits.handOver()
 	if err != nil {
 		status := http.StatusInternalServerError
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
@@ -63,6 +65,9 @@ func (h *BaseAPIHandler) StartStreamWithAuthManager(ctx context.Context, handler
 			if hdr := he.Headers(); hdr != nil {
 				addon = hdr.Clone()
 			}
+		}
+		if committed {
+			return failedAfterCommit(&StreamErrorMessage{StatusCode: status, Error: err, Addon: addon})
 		}
 		return nil, nil, nil, &StreamErrorMessage{StatusCode: status, Error: err, Addon: addon}
 	}

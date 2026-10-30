@@ -110,11 +110,14 @@ func (e *stallingStreamExecutor) attempts() ([]string, []error) {
 }
 
 // withFirstTokenTimeout gives the default group (which governs requests that
-// no single group does) a first-token timeout.
-func withFirstTokenTimeout(manager *coreauth.Manager, seconds int) {
-	manager.SetConfig(&sdkconfig.Config{Routing: sdkconfig.RoutingConfig{
-		ChannelGroups: []sdkconfig.RoutingChannelGroup{{Name: "default", FirstTokenTimeoutSeconds: seconds}},
-	}})
+// no single group does) a first-token timeout. busyWait, when given, sets the
+// group's busy-wait cap too.
+func withFirstTokenTimeout(manager *coreauth.Manager, seconds int, busyWait ...int) {
+	group := sdkconfig.RoutingChannelGroup{Name: "default", FirstTokenTimeoutSeconds: seconds}
+	if len(busyWait) > 0 {
+		group.BusyWaitMaxSeconds = new(busyWait[0])
+	}
+	manager.SetConfig(&sdkconfig.Config{Routing: sdkconfig.RoutingConfig{ChannelGroups: []sdkconfig.RoutingChannelGroup{group}}})
 }
 
 func streamOnce(t *testing.T, handler *BaseAPIHandler) streamOutcome {
@@ -176,7 +179,9 @@ func TestFirstTokenTimeoutWithoutAnotherAccountReturns504(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
 			executor := &stallingStreamExecutor{modes: []stallMode{mode}}
 			manager := newFailoverTestManager(t, executor, "codex", "ftt-alone")
-			withFirstTokenTimeout(manager, 5)
+			// Busy waiting off: with it the lone account is retried once its
+			// short back-off ends (covered by the busy-wait tests).
+			withFirstTokenTimeout(manager, 5, 0)
 			handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager)
 
 			out := streamOnce(t, handler)

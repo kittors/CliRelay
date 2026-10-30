@@ -45,15 +45,17 @@ func newExecutionService(manager *Manager) executionService {
 }
 
 func (s executionService) execute(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
-	return runExecutionWithRetry(s.manager, ctx, providers, req, opts, s.executeMixedOnce)
+	return runExecutionWithRetry(s.manager, ctx, providers, req, opts, true, s.executeMixedOnce)
 }
 
+// executeCount never busy-waits: a token count is a quick side query, and a
+// client asking for one would rather hear the pool is busy than wait for it.
 func (s executionService) executeCount(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
-	return runExecutionWithRetry(s.manager, ctx, providers, req, opts, s.executeCountMixedOnce)
+	return runExecutionWithRetry(s.manager, ctx, providers, req, opts, false, s.executeCountMixedOnce)
 }
 
 func (s executionService) executeStream(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
-	return runExecutionWithRetry(s.manager, ctx, providers, req, opts, s.executeStreamMixedOnce)
+	return runExecutionWithRetry(s.manager, ctx, providers, req, opts, true, s.executeStreamMixedOnce)
 }
 
 func runExecutionWithRetry[T any](
@@ -62,6 +64,7 @@ func runExecutionWithRetry[T any](
 	providers []string,
 	req cliproxyexecutor.Request,
 	opts cliproxyexecutor.Options,
+	busyWait bool,
 	executeOnce func(context.Context, []string, cliproxyexecutor.Request, cliproxyexecutor.Options) (T, error),
 ) (T, error) {
 	var zero T
@@ -75,6 +78,7 @@ func runExecutionWithRetry[T any](
 	}
 
 	_, maxWait := manager.retrySettings()
+	budget := retryWaitBudgetFor(ctx)
 
 	var lastErr error
 	for attempt := 0; ; attempt++ {
@@ -83,11 +87,11 @@ func runExecutionWithRetry[T any](
 			return resp, nil
 		}
 		lastErr = errExec
-		wait, shouldRetry := manager.shouldRetryAfterError(errExec, attempt, normalized, req.Model, maxWait, opts.Metadata)
+		plan, shouldRetry := manager.nextRetryPlan(ctx, errExec, attempt, normalized, req.Model, maxWait, opts, budget, busyWait)
 		if !shouldRetry {
 			break
 		}
-		if errWait := waitForCooldown(ctx, wait); errWait != nil {
+		if errWait := plan.run(ctx); errWait != nil {
 			return zero, errWait
 		}
 	}

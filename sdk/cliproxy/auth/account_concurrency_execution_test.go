@@ -285,6 +285,9 @@ func TestManagerExecute_QueuedRequestDoesNotLoopOnFailure(t *testing.T) {
 	auth := queueTestAuth("auth-queue-no-loop", 1)
 	mgr := NewManager(nil, &FillFirstSelector{}, nil)
 	mgr.SetAccountConcurrencyConfig(5*time.Second, 0)
+	// This is about the concurrency queue; with busy waiting on, the lone
+	// account would be retried once its cooldown ends.
+	disableBusyWait(mgr)
 	if _, err := mgr.Register(context.Background(), auth); err != nil {
 		t.Fatalf("register auth: %v", err)
 	}

@@ -188,6 +188,8 @@ type Manager struct {
 	// Retry controls request retry behavior.
 	requestRetry     atomic.Int32
 	maxRetryInterval atomic.Int64
+	// busyWaiters counts requests waiting for a cooling account; see busy_wait.go.
+	busyWaiters atomic.Int32
 
 	// accountConcurrencyWait is how long a request may queue for a saturated
 	// account before failing, in nanoseconds. Zero disables queuing.
