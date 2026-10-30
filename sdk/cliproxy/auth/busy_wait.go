@@ -175,7 +175,7 @@ func (m *Manager) busyWaitFor(ctx context.Context, err error, providers []string
 		return 0, false
 	}
 	now := time.Now()
-	next, ok := m.soonestRecoveryLocked(providers, model, opts.Metadata, now)
+	next, ok := m.soonestRecoveryLocked(providers, model, opts, now)
 	if !ok {
 		return 0, false
 	}
@@ -206,7 +206,8 @@ func spreadBusyWait(wait, remaining time.Duration) time.Duration {
 // soonestRecoveryLocked reports when the first account this request may use
 // recovers, provided every such account is cooling and at least one of them
 // for a recoverable reason.
-func (m *Manager) soonestRecoveryLocked(providers []string, model string, meta map[string]any, now time.Time) (time.Time, bool) {
+func (m *Manager) soonestRecoveryLocked(providers []string, model string, opts cliproxyexecutor.Options, now time.Time) (time.Time, bool) {
+	meta := opts.Metadata
 	scope := newSelectionScope(m.currentRuntimeConfigForTenant(tenantIDFromMetadata(meta)), model, meta)
 	scope.grants = m.sharedGrantIndex()
 	excluded := make(map[string]struct{})
@@ -224,14 +225,25 @@ func (m *Manager) soonestRecoveryLocked(providers []string, model string, meta m
 
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	var soonest time.Time
+	includeCandidate := withSelectionCapabilities(opts, func(candidate *Auth) bool {
+		providerKey := strings.TrimSpace(strings.ToLower(candidate.Provider))
+		_, ok := providerSet[providerKey]
+		return ok && m.executorForAuthLocked(candidate, providerKey) != nil
+	})
+	selector := newSelectorService(m)
 	for _, routeGroup := range scope.routeGroupsToTry() {
-		for _, candidate := range m.auths {
-			if !scope.allowsCandidate(candidate, routeGroup, excluded, m.modelRegistry) || !authParticipatesInSelection(candidate) {
-				continue
-			}
-			providerKey := strings.TrimSpace(strings.ToLower(candidate.Provider))
-			if _, ok := providerSet[providerKey]; !ok || m.executorForAuthLocked(candidate, providerKey) == nil {
+		// Reuse the selector's scope gates and effective group weights rather
+		// than evaluating the raw credentials with a different eligibility rule.
+		candidates := selector.buildCandidatesLocked(scope, routeGroup, excluded, m.modelRegistry, includeCandidate)
+		if len(candidates) == 0 {
+			continue
+		}
+		if m.concurrencyLimiter != nil {
+			candidates = m.concurrencyLimiter.FilterAvailableCandidates(candidates)
+		}
+		var soonest time.Time
+		for _, candidate := range candidates {
+			if !authParticipatesInSelection(candidate) {
 				continue
 			}
 			// The same model key the selector checks availability with.
@@ -248,8 +260,11 @@ func (m *Manager) soonestRecoveryLocked(providers []string, model string, meta m
 				soonest = next
 			}
 		}
+		// Selection only tries a fallback when this route group has no
+		// candidates, not when its candidates are cooling or weighted out.
+		return soonest, !soonest.IsZero()
 	}
-	return soonest, !soonest.IsZero()
+	return time.Time{}, false
 }
 
 // recoverableCooldown reports whether an account is parked for a reason that
