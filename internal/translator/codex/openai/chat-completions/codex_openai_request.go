@@ -195,44 +195,13 @@ func ConvertOpenAIRequestToCodex(modelName string, inputRawJSON []byte, stream b
 	out, _ = sjson.Set(out, "store", false)
 	out, _ = sjson.SetRaw(out, "input", inputBuf.String())
 
-	// Map response_format and text settings to Responses API text.format
-	rf := gjson.GetBytes(rawJSON, "response_format")
-	text := gjson.GetBytes(rawJSON, "text")
-	if rf.Exists() {
-		if !gjson.Get(out, "text").Exists() {
-			out, _ = sjson.SetRaw(out, "text", `{}`)
-		}
-		rft := rf.Get("type").String()
-		switch rft {
-		case "text":
-			out, _ = sjson.Set(out, "text.format.type", "text")
-		case "json_schema":
-			js := rf.Get("json_schema")
-			if js.Exists() {
-				out, _ = sjson.Set(out, "text.format.type", "json_schema")
-				if v := js.Get("name"); v.Exists() {
-					out, _ = sjson.Set(out, "text.format.name", v.Value())
-				}
-				if v := js.Get("strict"); v.Exists() {
-					out, _ = sjson.Set(out, "text.format.strict", v.Value())
-				}
-				if v := js.Get("schema"); v.Exists() {
-					out, _ = sjson.SetRaw(out, "text.format.schema", v.Raw)
-				}
-			}
-		}
-		if text.Exists() {
-			if v := text.Get("verbosity"); v.Exists() {
-				out, _ = sjson.Set(out, "text.verbosity", v.Value())
-			}
-		}
-	} else if text.Exists() {
-		if v := text.Get("verbosity"); v.Exists() {
-			if !gjson.Get(out, "text").Exists() {
-				out, _ = sjson.SetRaw(out, "text", `{}`)
-			}
-			out, _ = sjson.Set(out, "text.verbosity", v.Value())
-		}
+	// Map response_format to the Responses API text.format, then the verbosity
+	// a client may have set for a Responses upstream.
+	if format := common.OutputFormatFromChat(gjson.ParseBytes(rawJSON)); format.Kind != common.OutputFormatNone {
+		out = string(format.WriteResponses([]byte(out)))
+	}
+	if v := gjson.GetBytes(rawJSON, "text.verbosity"); v.Exists() {
+		out, _ = sjson.Set(out, "text.verbosity", v.Value())
 	}
 
 	// Map tools (flatten function fields) once.
