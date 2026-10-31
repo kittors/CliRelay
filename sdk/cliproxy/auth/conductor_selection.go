@@ -80,6 +80,9 @@ func (m *Manager) SetSelector(selector Selector) {
 	if m.leastLoadSelector == nil {
 		m.leastLoadSelector = &LeastLoadSelector{}
 	}
+	if m.resetAwareSelector == nil {
+		m.resetAwareSelector = &ResetAwareSelector{}
+	}
 	if m.sessionStickySelector == nil {
 		m.sessionStickySelector = NewSessionStickySelector(m.roundRobinSelector)
 	}
@@ -89,6 +92,7 @@ func (m *Manager) SetSelector(selector Selector) {
 		m.roundRobinSelector.deps = m.scheduler
 		m.fillFirstSelector.deps = m.scheduler
 		m.leastLoadSelector.deps = m.scheduler
+		m.resetAwareSelector.deps = m.scheduler
 		m.sessionStickySelector.deps = m.scheduler
 	}
 	if m.sessionStickySelector.distribution == nil {
@@ -101,7 +105,9 @@ func (m *Manager) SetSelector(selector Selector) {
 
 // SetQuotaLoadSource wires the usage layer's quota snapshot into scheduling.
 // Least-load uses it to steer traffic away from accounts nearing their window
-// ceiling, and session stickiness uses it for early binding release.
+// ceiling, session stickiness uses it for early binding release, and the
+// reset-aware distribution orders accounts by its windows when the source
+// implements QuotaWindowSource.
 func (m *Manager) SetQuotaLoadSource(source QuotaLoadSource) {
 	if m == nil {
 		return
@@ -133,6 +139,11 @@ func (m *Manager) distributionSelectorLocked(distribution string) Selector {
 			return m.leastLoadSelector
 		}
 		return &LeastLoadSelector{}
+	case sdkconfig.DistributionResetAware:
+		if m.resetAwareSelector != nil {
+			return m.resetAwareSelector
+		}
+		return &ResetAwareSelector{}
 	default:
 		if m.roundRobinSelector != nil {
 			return m.roundRobinSelector

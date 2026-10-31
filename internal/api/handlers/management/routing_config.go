@@ -61,6 +61,10 @@ type routingConfigCapabilities struct {
 	// older backend drops them on save.
 	ChannelGroupFirstTokenTimeout bool `json:"channel-group-first-token-timeout"`
 	ChannelGroupBusyWait          bool `json:"channel-group-busy-wait"`
+	// ChannelGroupResetAwareDistribution: channel groups accept the
+	// reset-aware distribution. An older backend reads the unknown value as
+	// weighted, so the panel only offers it when this is advertised.
+	ChannelGroupResetAwareDistribution bool `json:"channel-group-distribution-reset-aware"`
 }
 
 func (h *Handler) GetRoutingConfig(c *gin.Context) {
@@ -79,10 +83,11 @@ func (h *Handler) GetRoutingConfig(c *gin.Context) {
 	c.JSON(http.StatusOK, routingConfigResponse{
 		RoutingConfig: routing,
 		Capabilities: routingConfigCapabilities{
-			ChannelGroupExcludedModels:       true,
-			ChannelGroupFollowUpstreamModels: true,
-			ChannelGroupFirstTokenTimeout:    true,
-			ChannelGroupBusyWait:             true,
+			ChannelGroupExcludedModels:         true,
+			ChannelGroupFollowUpstreamModels:   true,
+			ChannelGroupFirstTokenTimeout:      true,
+			ChannelGroupBusyWait:               true,
+			ChannelGroupResetAwareDistribution: true,
 		},
 		Version: version,
 	})

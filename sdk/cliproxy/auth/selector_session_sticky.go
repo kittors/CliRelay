@@ -66,7 +66,7 @@ func (s *SessionStickySelector) Pick(ctx context.Context, provider, model string
 	available = preferCodexWebsocketAuths(ctx, provider, available)
 
 	limits := stickyLimitsFromMetadata(opts.Metadata)
-	if bound := s.honour(ctx, key, available, limits, now); bound != nil {
+	if bound := s.honour(ctx, key, model, available, limits, now); bound != nil {
 		return bound, nil
 	}
 
@@ -84,7 +84,7 @@ func (s *SessionStickySelector) Pick(ctx context.Context, provider, model string
 // releases it otherwise. Releasing here (rather than only when the account goes
 // unavailable) is what stops a long session from burning one account until it
 // hits a 429.
-func (s *SessionStickySelector) honourBinding(key string, available []*Auth, limits stickyLimits, now time.Time) *Auth {
+func (s *SessionStickySelector) honourBinding(key, model string, available []*Auth, limits stickyLimits, now time.Time) *Auth {
 	if s == nil || key == "" {
 		return nil
 	}
@@ -114,7 +114,7 @@ func (s *SessionStickySelector) honourBinding(key string, available []*Auth, lim
 		delete(s.bindings, key)
 		return nil
 	}
-	if limits.releaseAtLoad > 0 && s.deps.loadRatio(bound) >= limits.releaseAtLoad {
+	if limits.releaseAtLoad > 0 && s.deps.loadRatio(bound, model) >= limits.releaseAtLoad {
 		delete(s.bindings, key)
 		return nil
 	}
