@@ -115,6 +115,34 @@ for ch := range chunks { /* ... */ }
 
 说明：运行 `Service` 时会自动注册内置的提供商执行器；若仅单独使用 `Manager` 而不启动 HTTP 服务器，则需要自行实现并注册满足 `auth.ProviderExecutor` 的执行器。
 
+### 将选择限制为指定凭据
+
+可以通过严格允许列表把请求限制在一组确切的 auth ID 上。直接调用管理器时，在 `Options.Metadata` 中设置 `executor.AllowedAuthIDsMetadataKey`（`[]string`）：
+
+```go
+opts := cliproxyexecutor.Options{Metadata: map[string]any{
+    cliproxyexecutor.AllowedAuthIDsMetadataKey: []string{"team-a.json", "team-b.json"},
+}}
+resp, err := core.Execute(ctx, []string{"my-provider"}, req, opts)
+```
+
+在 HTTP 服务器后面，可在受信任的中间件中通过 `handlers.WithAllowedAuthIDs` 附加：
+
+```go
+cliproxy.WithMiddleware(func(c *gin.Context) {
+    ids := lookupCredentialsFor(c) // 你自己的受信任策略，切勿直接使用客户端输入
+    c.Request = c.Request.WithContext(handlers.WithAllowedAuthIDs(c.Request.Context(), ids))
+    c.Next()
+})
+```
+
+与 `allowed-channels`（空列表表示“不限制”）不同，该允许列表默认拒绝：
+
+- 未设置时，选择逻辑不变。
+- 设置后，只有列出的 auth ID 可被选中，重试时同样如此。
+- 已设置但为空或无法解析时，没有任何凭据可用，请求以 `auth_not_found` 失败，且不会调用任何执行器。
+- 它只会收窄其他范围（租户、渠道、渠道分组、路由分组、固定凭据），不会放宽。不在列表中的固定凭据不会被选中。
+
 ## 自定义凭据来源
 
 当凭据不在本地文件系统时，替换默认加载器：
