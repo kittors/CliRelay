@@ -5,10 +5,8 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/api/middleware"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/diagnostics"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/observability"
-	internalrouting "github.com/router-for-me/CLIProxyAPI/v6/internal/routing"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/api/handlers/claude"
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/api/handlers/gemini"
@@ -60,44 +58,19 @@ func (s *Server) setupRoutes() {
 		group.POST("/models/*action", geminiHandlers.GeminiHandler)
 		group.GET("/models/*action", geminiHandlers.GeminiGetHandler)
 	}
-	resolveRoute := func(tenantID, rawGroup string) (*internalrouting.PathRouteContext, bool) {
-		return resolvePathRouteContext(s.cfg, s.handlers.AuthManager, tenantID, rawGroup)
-	}
-
 	v1 := s.engine.Group("/v1")
-	v1.Use(AuthMiddleware(s.accessManager))
-	v1.Use(rewrittenGroupRoutingMiddleware(resolveRoute))
-	v1.Use(channelGroupAuthorizationMiddleware())
-	v1.Use(middleware.QuotaMiddleware())
-	v1.Use(middleware.ModelPolicyMiddleware(s.modelPolicyEffectiveModel))
-	v1.Use(s.modelRestrictionMiddleware())
-	v1.Use(ccSwitchOpenAIModelMappingMiddleware())
-	v1.Use(SystemPromptMiddleware())
+	useRequestStages(v1, s.v1RequestStages(rewrittenGroupRoutingMiddleware(s.resolveRoute)))
 	registerV1Routes(v1)
 
 	groupedV1 := s.engine.Group("/:group/v1")
-	groupedV1.Use(AuthMiddleware(s.accessManager))
-	groupedV1.Use(groupRoutingMiddleware(resolveRoute))
-	groupedV1.Use(channelGroupAuthorizationMiddleware())
-	groupedV1.Use(middleware.QuotaMiddleware())
-	groupedV1.Use(middleware.ModelPolicyMiddleware(s.modelPolicyEffectiveModel))
-	groupedV1.Use(s.modelRestrictionMiddleware())
-	groupedV1.Use(ccSwitchOpenAIModelMappingMiddleware())
-	groupedV1.Use(SystemPromptMiddleware())
+	useRequestStages(groupedV1, s.v1RequestStages(groupRoutingMiddleware(s.resolveRoute)))
 	registerV1Routes(groupedV1)
 
 	// Codex CLI direct route aliases (chatgpt_base_url compatible). Upstream
 	// CLIProxyAPI exposes these; clients such as the Codex CLI and the pi
 	// CLIProxyAPI provider address inference as {root}/backend-api/codex/...
 	codexDirect := s.engine.Group("/backend-api/codex")
-	codexDirect.Use(AuthMiddleware(s.accessManager))
-	codexDirect.Use(rewrittenGroupRoutingMiddleware(resolveRoute))
-	codexDirect.Use(channelGroupAuthorizationMiddleware())
-	codexDirect.Use(middleware.QuotaMiddleware())
-	codexDirect.Use(middleware.ModelPolicyMiddleware(s.modelPolicyEffectiveModel))
-	codexDirect.Use(s.modelRestrictionMiddleware())
-	codexDirect.Use(ccSwitchOpenAIModelMappingMiddleware())
-	codexDirect.Use(SystemPromptMiddleware())
+	useRequestStages(codexDirect, s.v1RequestStages(rewrittenGroupRoutingMiddleware(s.resolveRoute)))
 	{
 		codexDirect.GET("/models", s.unifiedModelsHandler(openaiHandlers, claudeCodeHandlers))
 		codexDirect.GET("/responses", func(c *gin.Context) {
@@ -110,22 +83,15 @@ func (s *Server) setupRoutes() {
 	}
 
 	v1beta := s.engine.Group("/v1beta")
-	v1beta.Use(AuthMiddleware(s.accessManager))
-	v1beta.Use(rewrittenGroupRoutingMiddleware(resolveRoute))
-	v1beta.Use(channelGroupAuthorizationMiddleware())
-	v1beta.Use(middleware.QuotaMiddleware())
-	v1beta.Use(middleware.ModelPolicyMiddleware(s.modelPolicyEffectiveModel))
-	v1beta.Use(s.modelRestrictionMiddleware())
+	useRequestStages(v1beta, s.requestStages(rewrittenGroupRoutingMiddleware(s.resolveRoute)))
 	registerV1BetaRoutes(v1beta)
 
 	groupedV1Beta := s.engine.Group("/:group/v1beta")
-	groupedV1Beta.Use(AuthMiddleware(s.accessManager))
-	groupedV1Beta.Use(groupRoutingMiddleware(resolveRoute))
-	groupedV1Beta.Use(channelGroupAuthorizationMiddleware())
-	groupedV1Beta.Use(middleware.QuotaMiddleware())
-	groupedV1Beta.Use(middleware.ModelPolicyMiddleware(s.modelPolicyEffectiveModel))
-	groupedV1Beta.Use(s.modelRestrictionMiddleware())
+	useRequestStages(groupedV1Beta, s.requestStages(groupRoutingMiddleware(s.resolveRoute)))
 	registerV1BetaRoutes(groupedV1Beta)
+
+	// Built from the same stage list as /v1 above; see routing_simulation.go.
+	s.routingSimulation = s.newRoutingSimulation()
 
 	s.engine.NoRoute(func(c *gin.Context) {
 		if _, rewritten := c.Get("cliproxy.grouped_path_rewrite"); rewritten {

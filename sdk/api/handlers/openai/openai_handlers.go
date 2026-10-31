@@ -99,6 +99,14 @@ func rewriteCcSwitchOpenAIRequestModel(rawJSON []byte, c *gin.Context) ([]byte, 
 	return rewritten, targetModel, true
 }
 
+// ChatCompletionsModel is the model ChatCompletions runs rawJSON with: the body's
+// model after the route's CC Switch mapping. The routing simulator reads it so
+// it simulates the model a real request would run.
+func ChatCompletionsModel(c *gin.Context, rawJSON []byte) string {
+	rawJSON, _, _ = rewriteCcSwitchOpenAIRequestModel(rawJSON, c)
+	return gjson.GetBytes(rawJSON, "model").String()
+}
+
 // OpenAIModels handles the /v1/models endpoint.
 // It returns a list of available AI models with their capabilities
 // and specifications in OpenAI-compatible format.

@@ -238,6 +238,17 @@ func (m *Manager) BusyWaitMaxWaiters() int {
 // back, when every usable account is cooling and one recovers within the
 // request's remaining budget and rounds.
 func (m *Manager) busyWaitFor(ctx context.Context, err error, providers []string, model string, opts cliproxyexecutor.Options, budget *retryWaitBudget) (time.Duration, bool) {
+	wait, ok := m.busyWaitUntilRecovery(ctx, err, providers, model, opts, budget)
+	if !ok {
+		return 0, false
+	}
+	return wait + m.wakeSpread(ctx, wait), true
+}
+
+// busyWaitUntilRecovery is busyWaitFor's decision, with the wait up to the
+// soonest recovery and before the spread a waiter resumes within. The routing
+// simulator reports it as is.
+func (m *Manager) busyWaitUntilRecovery(ctx context.Context, err error, providers []string, model string, opts cliproxyexecutor.Options, budget *retryWaitBudget) (time.Duration, bool) {
 	if err == nil || ctx.Err() != nil || isSinglePickRouteRequest(opts.Metadata) {
 		return 0, false
 	}
@@ -266,7 +277,7 @@ func (m *Manager) busyWaitFor(ctx context.Context, err error, providers []string
 	if wait > remaining {
 		return 0, false
 	}
-	return wait + m.wakeSpread(ctx, wait), true
+	return wait, true
 }
 
 // wakeSpread is how long after the soonest recovery a waiter resumes: a
