@@ -76,7 +76,13 @@ func (h *Handler) GetContentModerationProfiles(c *gin.Context) {
 // release and may run against an older backend, which silently drops fields it
 // does not know, so it only offers a field listed here.
 func contentModerationProfileCapabilities() gin.H {
-	return gin.H{"keyword_fold_traditional_chinese": true, "api_includes_tool_output": true}
+	return gin.H{
+		"keyword_fold_traditional_chinese": true,
+		"api_includes_tool_output":         true,
+		// word_guard: the /content-moderation/word-policies endpoints exist. An
+		// older backend does not list it, and the panel then offers no word rules.
+		"word_guard": true,
+	}
 }
 
 func (h *Handler) PostContentModerationProfile(c *gin.Context) {
