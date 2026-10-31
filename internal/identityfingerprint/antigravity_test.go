@@ -52,6 +52,24 @@ func TestAntigravityObservationAndResolution(t *testing.T) {
 	}
 }
 
+// The identity this proxy presents is itself a Hub User-Agent, so the guard that
+// keeps foreign agents out of the resolver must recognise it, or a learned or
+// stored copy of our own identity would be discarded as foreign.
+func TestIsAntigravityClientUserAgentAcceptsHubAndCLI(t *testing.T) {
+	for _, ua := range []string{
+		"antigravity/hub/2.26.0 darwin/arm64",
+		"antigravity/cli/1.4.8 (aidev_client; os_type=darwin; arch=arm64)",
+		"vscode/1.96.0 (Antigravity/4.3.0)",
+	} {
+		if !IsAntigravityClientUserAgent(ua) {
+			t.Errorf("IsAntigravityClientUserAgent(%q) = false, want true", ua)
+		}
+	}
+	if IsAntigravityClientUserAgent("antigravity/hub/ darwin/arm64") {
+		t.Error("a Hub User-Agent without a version must not count as the client")
+	}
+}
+
 // Any client can reach the proxy, and most send a User-Agent of their own: a
 // Node SDK sends a bare "node". Learning one of those pinned the account to an
 // identity Antigravity refuses, taking every later request to 403 (#3501).
