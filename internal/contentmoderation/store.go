@@ -84,6 +84,9 @@ func InitTables(db *sql.DB) error {
 	if _, err := db.Exec(createTablesSQL); err != nil {
 		return fmt.Errorf("create content moderation tables: %w", err)
 	}
+	if _, err := db.Exec(wordPolicyTablesSQL); err != nil {
+		return fmt.Errorf("create word policy tables: %w", err)
+	}
 	for _, stmt := range profileColumnMigrations {
 		_, _ = db.Exec(stmt) // ignore duplicate-column errors on already-migrated installs
 	}
@@ -92,6 +95,8 @@ func InitTables(db *sql.DB) error {
 
 type Store struct {
 	db *sql.DB
+	// wordPolicies caches decoded word policies by version; see LoadWordPolicies.
+	wordPolicies wordPolicyCache
 }
 
 func NewStore(db *sql.DB) *Store { return &Store{db: db} }
