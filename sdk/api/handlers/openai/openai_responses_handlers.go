@@ -195,6 +195,12 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesStream(c *gin.Context, flush
 				_, _ = c.Writer.Write([]byte("\n"))
 			}
 			_, _ = c.Writer.Write(chunk)
+			// Translators return complete event/data pairs or data-only frames without a trailing
+			// newline. Close that event now: one newline alone makes an SSE
+			// reader wait for the next provider chunk before dispatching it.
+			if !bytes.HasSuffix(chunk, []byte("\n")) {
+				_, _ = c.Writer.Write([]byte("\n"))
+			}
 			_, _ = c.Writer.Write([]byte("\n"))
 		},
 		WriteTerminalError: func(errMsg *interfaces.ErrorMessage) {
