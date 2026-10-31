@@ -470,12 +470,17 @@ type wordKeyPolicyBrief struct {
 // wordPolicyOverview is what the panel's word rules page loads first.
 type wordPolicyOverview struct {
 	// Defaults are what a setting left empty means; Limits bound a save.
-	Defaults          contentmoderation.WordSettings     `json:"defaults"`
-	Limits            contentmoderation.WordPolicyLimits `json:"limits"`
-	CanManagePlatform bool                               `json:"can_manage_platform"`
-	Platform          wordPolicyBrief                    `json:"platform"`
-	Tenant            wordPolicyBrief                    `json:"tenant"`
-	Keys              []wordKeyPolicyBrief               `json:"keys"`
+	Defaults contentmoderation.WordSettings     `json:"defaults"`
+	Limits   contentmoderation.WordPolicyLimits `json:"limits"`
+	// GuardEnabled is false when the operator has switched the guard off
+	// (contentmoderation.WordGuardEnvVar): no request is checked, whatever is
+	// saved. The panel says so above the rules instead of letting them look as if
+	// they applied.
+	GuardEnabled      bool                 `json:"guard_enabled"`
+	CanManagePlatform bool                 `json:"can_manage_platform"`
+	Platform          wordPolicyBrief      `json:"platform"`
+	Tenant            wordPolicyBrief      `json:"tenant"`
+	Keys              []wordKeyPolicyBrief `json:"keys"`
 }
 
 // GetWordPolicies summarizes the policies that apply to the effective tenant:
@@ -494,6 +499,7 @@ func (h *Handler) GetWordPolicies(c *gin.Context) {
 	overview := wordPolicyOverview{
 		Defaults:          contentmoderation.WordDefaults(),
 		Limits:            contentmoderation.WordLimits(),
+		GuardEnabled:      contentmoderation.Runtime().WordGuardEnabled(),
 		CanManagePlatform: canManageWordPlatform(c),
 		Platform:          wordPolicyBrief{WordPolicySummary: contentmoderation.WordPolicySummary{ScopeType: contentmoderation.WordScopePlatform}},
 		Tenant:            wordPolicyBrief{WordPolicySummary: contentmoderation.WordPolicySummary{ScopeType: contentmoderation.WordScopeTenant}},

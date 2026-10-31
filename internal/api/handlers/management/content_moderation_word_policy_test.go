@@ -460,6 +460,38 @@ func TestWordPolicyKeyOverride(t *testing.T) {
 	}
 }
 
+// The overview says whether the guard is checking requests at all, so the panel
+// can warn that rules saved while the operator has it switched off do nothing.
+func TestWordPolicyOverviewSaysWhetherTheGuardIsOn(t *testing.T) {
+	h := setupWordPolicyTest(t)
+	previous := contentmoderation.Runtime()
+	t.Cleanup(func() { contentmoderation.SetRuntime(previous) })
+
+	guardEnabled := func() any {
+		_, overview := wordTenantAUser.call(h.GetWordPolicies, http.MethodGet, "", "")
+		return overview["guard_enabled"]
+	}
+	// No moderator in the process (as in these tests): nothing is checking requests.
+	contentmoderation.SetRuntime(nil)
+	if got := guardEnabled(); got != false {
+		t.Fatalf("guard_enabled without a moderator = %v, want false", got)
+	}
+
+	moderator := contentmoderation.NewRequestModerator(contentmoderation.NewStore(usage.RuntimeDB()), nil)
+	contentmoderation.SetRuntime(moderator)
+	if got := guardEnabled(); got != true {
+		t.Fatalf("guard_enabled with the guard on = %v, want true", got)
+	}
+	moderator.SetWordGuardEnabled(false)
+	if got := guardEnabled(); got != false {
+		t.Fatalf("guard_enabled with the guard switched off = %v, want false", got)
+	}
+	moderator.SetWordGuardEnabled(true)
+	if got := guardEnabled(); got != true {
+		t.Fatalf("guard_enabled after switching it back on = %v, want true", got)
+	}
+}
+
 func TestWordPolicyOverview(t *testing.T) {
 	h := setupWordPolicyTest(t)
 	_, overview := wordTenantAUser.call(h.GetWordPolicies, http.MethodGet, "", "")

@@ -164,7 +164,7 @@ type WordRuleProblem struct {
 	Pattern string `json:"pattern"`
 	// Code is one of: empty, too_long, unknown_kind, invalid_regex,
 	// matches_empty, regex_too_complex, too_many_rules, too_many_regex,
-	// control_characters, invalid_text.
+	// control_characters, invalid_text, only_separators, invalid_option.
 	Code    string `json:"code"`
 	Message string `json:"message"`
 }
