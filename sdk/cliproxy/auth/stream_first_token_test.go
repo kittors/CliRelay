@@ -76,7 +76,7 @@ func TestFirstTokenTimeoutParksTheAccountBriefly(t *testing.T) {
 			}
 		}
 		timedOutAt := time.Now()
-		if !IsFirstTokenTimeout(streamErr) || statusCodeFromError(streamErr) != http.StatusGatewayTimeout {
+		if !isFirstTokenTimeout(streamErr) || statusCodeFromError(streamErr) != http.StatusGatewayTimeout {
 			t.Fatalf("stream error = %v, want a 504 first-token timeout", streamErr)
 		}
 		synctest.Wait()
@@ -86,7 +86,7 @@ func TestFirstTokenTimeoutParksTheAccountBriefly(t *testing.T) {
 			t.Fatal("account vanished")
 		}
 		state := auth.ModelStates["test-model"]
-		if state == nil || state.LastError == nil || state.LastError.Code != "first_token_timeout" || state.LastError.HTTPStatus != http.StatusGatewayTimeout {
+		if state == nil || state.LastError == nil || state.LastError.Code != FirstTokenTimeoutCode || state.LastError.HTTPStatus != http.StatusGatewayTimeout {
 			t.Fatalf("model state = %+v, want the first-token timeout recorded", state)
 		}
 		if got := state.NextRetryAfter.Sub(timedOutAt); got != firstTokenTimeoutCooldown {
@@ -105,7 +105,7 @@ func TestFirstTokenTimeoutIgnoresBlankChunks(t *testing.T) {
 			t.Fatal(err)
 		}
 		mgr.SetConfig(&sdkconfig.Config{Routing: sdkconfig.RoutingConfig{
-			ChannelGroups: []sdkconfig.RoutingChannelGroup{{Name: "default", FirstTokenTimeoutSeconds: 5, BusyWaitMaxSeconds: new(0)}},
+			ChannelGroups: []sdkconfig.RoutingChannelGroup{{Name: "default", FirstTokenTimeoutSeconds: 5}},
 		}})
 
 		result, err := mgr.ExecuteStream(context.Background(), []string{"silent"}, cliproxyexecutor.Request{Model: "test-model"}, cliproxyexecutor.Options{Stream: true})
@@ -118,7 +118,7 @@ func TestFirstTokenTimeoutIgnoresBlankChunks(t *testing.T) {
 				streamErr = chunk.Err
 			}
 		}
-		if !IsFirstTokenTimeout(streamErr) {
+		if !isFirstTokenTimeout(streamErr) {
 			t.Fatalf("stream error = %v, want the first-token timeout despite the blank chunk", streamErr)
 		}
 	})
@@ -175,4 +175,11 @@ func TestFirstTokenWatchdogFirstTokenWinsForGood(t *testing.T) {
 			t.Fatalf("attempt context = %v, want DeadlineExceeded", watchdog.ctx.Err())
 		}
 	})
+}
+
+// isFirstTokenTimeout reports whether err is the error a missed first token
+// produces: a 504 whose code says so.
+func isFirstTokenTimeout(err error) bool {
+	var authErr *Error
+	return errors.As(err, &authErr) && authErr.Code == FirstTokenTimeoutCode
 }

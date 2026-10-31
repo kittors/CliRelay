@@ -14,12 +14,19 @@ import (
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
 )
 
-// disableBusyWait turns busy waiting off for every request of the manager's
-// default tenant, for tests about something else.
-func disableBusyWait(mgr *Manager) {
+// enableBusyWait lets every request of the manager's default tenant wait up to
+// the given number of seconds for a cooling account. Waiting is off unless a
+// group asks for it, so the tests about waiting ask.
+func enableBusyWait(mgr *Manager, seconds int) {
 	mgr.SetConfig(&sdkconfig.Config{Routing: sdkconfig.RoutingConfig{
-		ChannelGroups: []sdkconfig.RoutingChannelGroup{{Name: "default", BusyWaitMaxSeconds: new(0)}},
+		ChannelGroups: []sdkconfig.RoutingChannelGroup{{Name: "default", BusyWaitMaxSeconds: new(seconds)}},
 	}})
+}
+
+// fixedSpread makes every waiter resume the same amount after the soonest
+// recovery, so a test can state the exact time it expects.
+func fixedSpread(d time.Duration) func(time.Duration) time.Duration {
+	return func(window time.Duration) time.Duration { return min(d, window) }
 }
 
 // retryAfterError is an upstream failure that names how long to back off.
@@ -89,7 +96,18 @@ func (e *scriptedExecutor) Calls() []string {
 	return append([]string(nil), e.calls...)
 }
 
+// newBusyWaitManager is a manager whose requests may busy-wait for up to a
+// minute, the usual setting of a group that opts in.
 func newBusyWaitManager(t *testing.T, exec *scriptedExecutor, ids ...string) *Manager {
+	t.Helper()
+	mgr := newPlainManager(t, exec, ids...)
+	enableBusyWait(mgr, 60)
+	return mgr
+}
+
+// newPlainManager has no routing configuration at all: whatever it does is what
+// a deployment does that never touched the stream guards.
+func newPlainManager(t *testing.T, exec *scriptedExecutor, ids ...string) *Manager {
 	t.Helper()
 	mgr := NewManager(nil, nil, nil)
 	mgr.RegisterExecutor(exec)
@@ -136,8 +154,8 @@ func TestBusyWaitServesTheRequestOnceTheSoonestAccountRecovers(t *testing.T) {
 			t.Fatalf("Execute: %v", err)
 		}
 		waited := time.Since(start)
-		if waited < 15*time.Second || waited > 18*time.Second {
-			t.Fatalf("waited %s, want the 15s until bw-a recovers plus at most a fifth of it", waited)
+		if waited < 15*time.Second || waited >= 15*time.Second+busyWaitJitter {
+			t.Fatalf("waited %s, want the 15s until bw-a recovers plus less than the %s wake-up window", waited, busyWaitJitter)
 		}
 		if calls := exec.Calls(); len(calls) != 1 || calls[0] != "bw-a" {
 			t.Fatalf("calls = %v, want one call on the account that recovered first", calls)
@@ -240,7 +258,7 @@ func TestBusyWaitNeverOutlastsTheRequestDeadline(t *testing.T) {
 		if err := execute(mgr, ctx); err != nil {
 			t.Fatalf("Execute: %v", err)
 		}
-		if waited := time.Since(start); waited < 15*time.Second || waited > 18*time.Second {
+		if waited := time.Since(start); waited < 15*time.Second || waited >= 15*time.Second+busyWaitJitter {
 			t.Fatalf("waited %s, want the 15s recovery, which the deadline leaves room for", waited)
 		}
 	})
@@ -252,6 +270,7 @@ func TestBusyWaitBudgetCoversTheWholeRequest(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		exec := &scriptedExecutor{script: []error{&retryAfterError{status: http.StatusBadGateway, message: "bad gateway", retryAfter: 30 * time.Second}}}
 		mgr := newBusyWaitManager(t, exec, "bw-budget")
+		mgr.busyWaitSpread = fixedSpread(time.Second)
 		park(mgr, "bw-budget", upstreamDown, 40*time.Second)
 
 		ctx := WithRetryWaitBudget(context.Background())
@@ -260,12 +279,11 @@ func TestBusyWaitBudgetCoversTheWholeRequest(t *testing.T) {
 		if statusCodeFromError(err) != http.StatusBadGateway {
 			t.Fatalf("err = %v, want the second failure", err)
 		}
-		waited := time.Since(start)
-		if waited < 40*time.Second || waited > 48*time.Second {
-			t.Fatalf("request took %s, want one wait of 40s plus spread and no second wait", waited)
+		if waited := time.Since(start); waited != 41*time.Second {
+			t.Fatalf("request took %s, want one wait of 40s plus the 1s wake-up offset and no second wait", waited)
 		}
-		if remaining := retryWaitBudgetFor(ctx).remaining(time.Minute); remaining >= 20*time.Second {
-			t.Fatalf("budget left = %s, want the first wait charged", remaining)
+		if remaining := retryWaitBudgetFor(ctx).remaining(time.Minute); remaining != 19*time.Second {
+			t.Fatalf("budget left = %s, want the first wait (41s) charged", remaining)
 		}
 	})
 }
@@ -274,7 +292,7 @@ func TestBusyWaitCanBeTurnedOffAndIsBounded(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		exec := &scriptedExecutor{}
 		mgr := newBusyWaitManager(t, exec, "bw-off")
-		disableBusyWait(mgr)
+		enableBusyWait(mgr, 0)
 		park(mgr, "bw-off", upstreamDown, 15*time.Second)
 		start := time.Now()
 		if err := execute(mgr, context.Background()); err == nil || time.Since(start) != 0 {
@@ -285,7 +303,8 @@ func TestBusyWaitCanBeTurnedOffAndIsBounded(t *testing.T) {
 		exec := &scriptedExecutor{}
 		mgr := newBusyWaitManager(t, exec, "bw-full")
 		park(mgr, "bw-full", upstreamDown, 15*time.Second)
-		mgr.busyWaiters.Store(maxConcurrentBusyWaiters)
+		mgr.SetBusyWaitConfig(2)
+		mgr.busyWaiters.Store(2)
 		start := time.Now()
 		if err := execute(mgr, context.Background()); err == nil || time.Since(start) != 0 {
 			t.Fatalf("with every waiter slot taken: err = %v after %s, want an immediate failure", err, time.Since(start))

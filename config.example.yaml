@@ -366,6 +366,17 @@ streaming:
   # account. Leave it unset for the default (2, and never more than the accounts
   # that can serve the request); 0 turns it off.
   # bootstrap-retries: 2
+  # Process-wide cap on requests waiting at once for a cooling account. It only
+  # matters when a channel group turns busy waiting on (busy-wait-max-seconds in
+  # the group's settings, off by default). Every waiter holds its client
+  # connection open, idle, and counts against the reverse proxy's limit on
+  # connections to this process (nginx max_conns), so keep it well below that
+  # limit. Unset, 0 or negative take the default (64); it never means unlimited.
+  # A request over the cap fails at once, as if the group had waiting off.
+  # Streaming clients get keep-alive comments while they wait; non-streaming
+  # requests and image/video submissions wait silently, so a client whose own
+  # timeout is shorter than the group's wait counts the wait as a failure.
+  # busy-wait-max-waiters: 64
 
 # Gemini API keys
 # gemini-api-key:

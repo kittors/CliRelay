@@ -65,3 +65,26 @@ func TestBuildConfigChangeDetailsReportsChannelGroupStreamGuards(t *testing.T) {
 		}
 	}
 }
+
+// A reload that changes the waiter cap has to say so in the log, and 0, unset
+// and a negative number are all "the default", so moving between them is not a
+// change.
+func TestBuildConfigChangeDetailsReportsBusyWaitMaxWaiters(t *testing.T) {
+	oldCfg := &config.Config{}
+	newCfg := &config.Config{}
+	newCfg.Streaming.BusyWaitMaxWaiters = 32
+	details := BuildConfigChangeDetails(oldCfg, newCfg)
+	if !slices.Contains(details, "streaming.busy-wait-max-waiters: default -> 32") {
+		t.Fatalf("unset -> 32 missing from %v", details)
+	}
+	oldCfg.Streaming.BusyWaitMaxWaiters = 32
+	newCfg.Streaming.BusyWaitMaxWaiters = 8
+	if details := BuildConfigChangeDetails(oldCfg, newCfg); !slices.Contains(details, "streaming.busy-wait-max-waiters: 32 -> 8") {
+		t.Fatalf("32 -> 8 missing from %v", details)
+	}
+	oldCfg.Streaming.BusyWaitMaxWaiters = -3
+	newCfg.Streaming.BusyWaitMaxWaiters = 0
+	if details := BuildConfigChangeDetails(oldCfg, newCfg); slices.ContainsFunc(details, func(d string) bool { return strings.Contains(d, "busy-wait-max-waiters") }) {
+		t.Fatalf("a move between two spellings of the default was reported: %v", details)
+	}
+}

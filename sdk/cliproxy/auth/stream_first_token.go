@@ -39,10 +39,14 @@ type firstTokenTimeoutError struct {
 	cooldown time.Duration
 }
 
+// FirstTokenTimeoutCode is the Error.Code of a first-token timeout, for callers
+// that need to tell it from another 504 (errors.As to *Error, then Code).
+const FirstTokenTimeoutCode = "first_token_timeout"
+
 func newFirstTokenTimeoutError(timeout time.Duration) *firstTokenTimeoutError {
 	return &firstTokenTimeoutError{
 		err: &Error{
-			Code:       "first_token_timeout",
+			Code:       FirstTokenTimeoutCode,
 			Message:    fmt.Sprintf("upstream sent no data within %s (channel group first-token timeout)", timeout),
 			Retryable:  true,
 			HTTPStatus: http.StatusGatewayTimeout,
@@ -59,12 +63,6 @@ func (e *firstTokenTimeoutError) Unwrap() error   { return e.err }
 func (e *firstTokenTimeoutError) RetryAfter() *time.Duration {
 	cooldown := e.cooldown
 	return &cooldown
-}
-
-// IsFirstTokenTimeout reports whether err is a first-token timeout.
-func IsFirstTokenTimeout(err error) bool {
-	_, ok := err.(*firstTokenTimeoutError)
-	return ok
 }
 
 // executeStreamAttempt runs one upstream stream attempt, under the governing

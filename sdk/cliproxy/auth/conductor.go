@@ -188,8 +188,13 @@ type Manager struct {
 	// Retry controls request retry behavior.
 	requestRetry     atomic.Int32
 	maxRetryInterval atomic.Int64
-	// busyWaiters counts requests waiting for a cooling account; see busy_wait.go.
-	busyWaiters atomic.Int32
+	// busyWaiters counts requests waiting for a cooling account, capped by
+	// maxBusyWaiters; see busy_wait.go.
+	busyWaiters    atomic.Int32
+	maxBusyWaiters atomic.Int32
+	// busyWaitSpread picks where in the wake-up window a waiter resumes; nil
+	// means uniformly at random. Tests replace it to make the spread exact.
+	busyWaitSpread func(window time.Duration) time.Duration
 
 	// accountConcurrencyWait is how long a request may queue for a saturated
 	// account before failing, in nanoseconds. Zero disables queuing.

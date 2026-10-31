@@ -7,13 +7,16 @@ import (
 	"time"
 )
 
+// Both guards are opt-in: a group that sets neither behaves as it did before
+// they existed. Busy waiting in particular holds client connections open, so a
+// group must ask for it.
 func TestChannelGroupStreamGuardDefaults(t *testing.T) {
 	var group RoutingChannelGroup
 	if got := group.FirstTokenTimeout(); got != 0 {
 		t.Fatalf("unset first-token timeout = %s, want off", got)
 	}
-	if got := group.BusyWaitMax(); got != DefaultBusyWaitMaxSeconds*time.Second {
-		t.Fatalf("unset busy wait = %s, want the %ds default", got, DefaultBusyWaitMaxSeconds)
+	if got := group.BusyWaitMax(); got != 0 {
+		t.Fatalf("unset busy wait = %s, want off", got)
 	}
 	group.BusyWaitMaxSeconds = new(0)
 	if got := group.BusyWaitMax(); got != 0 {
@@ -84,9 +87,11 @@ func TestSanitizeRoutingClampsStreamGuards(t *testing.T) {
 	}
 }
 
-// Unset and 0 differ for busy-wait-max-seconds (default versus off), so the
+// Unset and 0 behave alike for busy-wait-max-seconds (both are off), but the
 // stored form, the JSON the panel reads and the comparison used to detect a
-// change all have to keep them apart.
+// change keep them apart: clearing the field must delete the key, and a 0 the
+// operator typed must survive a save, so that what is stored stays what was
+// entered and does not depend on what the default happens to be.
 func TestBusyWaitUnsetAndZeroStayDistinct(t *testing.T) {
 	unset := RoutingConfig{ChannelGroups: []RoutingChannelGroup{{Name: "team"}}}
 	off := RoutingConfig{ChannelGroups: []RoutingChannelGroup{{Name: "team", BusyWaitMaxSeconds: new(0)}}}

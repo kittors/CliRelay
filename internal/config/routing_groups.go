@@ -61,8 +61,9 @@ type RoutingChannelGroup struct {
 	ExcludedModels       []string          `yaml:"excluded-models,omitempty" json:"excluded-models,omitempty"`
 	FollowUpstreamModels *bool             `yaml:"follow-upstream-models,omitempty" json:"follow-upstream-models,omitempty"`
 	// FirstTokenTimeoutSeconds and BusyWaitMaxSeconds are the group's stream
-	// guards (routing_stream_guards.go). BusyWaitMaxSeconds is a pointer because
-	// unset takes the default while 0 turns the wait off.
+	// guards (routing_stream_guards.go); both are off unless set. BusyWaitMaxSeconds
+	// is a pointer so an explicit 0 is stored apart from "never set": they behave
+	// alike today, but what the operator typed is kept as typed.
 	FirstTokenTimeoutSeconds int  `yaml:"first-token-timeout-seconds,omitempty" json:"first-token-timeout-seconds,omitempty"`
 	BusyWaitMaxSeconds       *int `yaml:"busy-wait-max-seconds,omitempty" json:"busy-wait-max-seconds,omitempty"`
 }

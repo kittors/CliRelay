@@ -16,6 +16,14 @@ import (
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
 )
 
+// enableBusyWait lets requests wait up to a minute for a cooling account, which
+// a channel group has to ask for.
+func enableBusyWait(manager *coreauth.Manager) {
+	manager.SetConfig(&sdkconfig.Config{Routing: sdkconfig.RoutingConfig{
+		ChannelGroups: []sdkconfig.RoutingChannelGroup{{Name: "default", BusyWaitMaxSeconds: new(60)}},
+	}})
+}
+
 // parkAccount leaves an account cooling for d after a recoverable 503.
 func parkAccount(manager *coreauth.Manager, id string, d time.Duration) {
 	manager.MarkResult(context.Background(), coreauth.Result{
@@ -60,7 +68,10 @@ func TestBusyWaitShorterThanAKeepAliveKeepsTheErrorStatus(t *testing.T) {
 		executor := &scriptedStreamExecutor{provider: "codex", steps: []streamStep{failBeforeFirstByte(http.StatusServiceUnavailable)}}
 		executor.failToOpen = true
 		manager := newFailoverTestManager(t, executor, "codex", "bw-short")
-		parkAccount(manager, "bw-short", 12*time.Second)
+		enableBusyWait(manager)
+		// 11s plus the up to 3s the wake-up is spread over stays under the 15s
+		// keep-alive interval, and is past the selector's optimistic window.
+		parkAccount(manager, "bw-short", 11*time.Second)
 		handler := NewBaseAPIHandlers(keepAliveConfig(), manager)
 
 		req := startBusyStream(handler, "", nil)
@@ -83,6 +94,7 @@ func TestBusyWaitLongerThanAKeepAliveSendsHeartbeats(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		executor := &scriptedStreamExecutor{provider: "codex"}
 		manager := newFailoverTestManager(t, executor, "codex", "bw-long")
+		enableBusyWait(manager)
 		parkAccount(manager, "bw-long", 40*time.Second)
 		handler := NewBaseAPIHandlers(keepAliveConfig(), manager)
 
@@ -94,8 +106,8 @@ func TestBusyWaitLongerThanAKeepAliveSendsHeartbeats(t *testing.T) {
 			t.Fatalf("outcome = %+v, want ok once the account recovered", out)
 		}
 		body := req.recorder.Body.String()
-		if beats := strings.Count(body, sseKeepAliveComment); beats < 2 || beats > 3 {
-			t.Fatalf("heartbeats = %d in %q, want one per 15s of a 40-48s wait", beats, body)
+		if beats := strings.Count(body, sseKeepAliveComment); beats != 2 {
+			t.Fatalf("heartbeats = %d in %q, want one per 15s of a 40-43s wait", beats, body)
 		}
 		if got := req.recorder.Header().Get("Content-Type"); got != "text/event-stream" || req.recorder.Code != http.StatusOK {
 			t.Fatalf("committed as %d %q, want 200 text/event-stream", req.recorder.Code, got)
@@ -110,6 +122,7 @@ func TestBusyWaitFailureAfterAHeartbeatIsReportedInTheStream(t *testing.T) {
 		executor := &scriptedStreamExecutor{provider: "codex", steps: []streamStep{failBeforeFirstByte(http.StatusServiceUnavailable)}}
 		executor.failToOpen = true
 		manager := newFailoverTestManager(t, executor, "codex", "bw-late-fail")
+		enableBusyWait(manager)
 		parkAccount(manager, "bw-late-fail", 40*time.Second)
 		handler := NewBaseAPIHandlers(keepAliveConfig(), manager)
 
@@ -140,6 +153,7 @@ func TestBusyWaitHeartbeatsOnlyForSSE(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
 			executor := &scriptedStreamExecutor{provider: "codex"}
 			manager := newFailoverTestManager(t, executor, "codex", "bw-quiet")
+			enableBusyWait(manager)
 			parkAccount(manager, "bw-quiet", 40*time.Second)
 			handler := NewBaseAPIHandlers(keepAliveConfig(), manager)
 

@@ -81,6 +81,9 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 	if formatOptionalInt(oldCfg.Streaming.BootstrapRetries) != formatOptionalInt(newCfg.Streaming.BootstrapRetries) {
 		changes = append(changes, fmt.Sprintf("streaming.bootstrap-retries: %s -> %s", formatOptionalInt(oldCfg.Streaming.BootstrapRetries), formatOptionalInt(newCfg.Streaming.BootstrapRetries)))
 	}
+	if formatPositiveOrDefault(oldCfg.Streaming.BusyWaitMaxWaiters) != formatPositiveOrDefault(newCfg.Streaming.BusyWaitMaxWaiters) {
+		changes = append(changes, fmt.Sprintf("streaming.busy-wait-max-waiters: %s -> %s", formatPositiveOrDefault(oldCfg.Streaming.BusyWaitMaxWaiters), formatPositiveOrDefault(newCfg.Streaming.BusyWaitMaxWaiters)))
+	}
 
 	// Quota-exceeded behavior
 	if oldCfg.QuotaExceeded.SwitchProject != newCfg.QuotaExceeded.SwitchProject {
@@ -389,6 +392,16 @@ func formatOptionalInt(value *int) string {
 		return "default"
 	}
 	return fmt.Sprintf("%d", *value)
+}
+
+// formatPositiveOrDefault renders a count where 0, unset and negative all mean
+// "take the built-in default", so those never show up as a change among
+// themselves.
+func formatPositiveOrDefault(value int) string {
+	if value <= 0 {
+		return "default"
+	}
+	return fmt.Sprintf("%d", value)
 }
 
 // formatCoolingOverride renders a channel's disable-cooling override; unset

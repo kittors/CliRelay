@@ -114,6 +114,35 @@ type StreamingConfig struct {
 	// negative value turns the retries off. An int with omitempty could not tell the two apart, so a
 	// config that had written 0 to switch them off would silently turn them back on.
 	BootstrapRetries *int `yaml:"bootstrap-retries,omitempty" json:"bootstrap-retries,omitempty"`
+
+	// BusyWaitMaxWaiters caps how many requests, across the whole process, may sit in a busy wait at
+	// once (a channel group's busy-wait-max-seconds); a request that would be the next one fails at
+	// once instead, as if the group had waiting off. Streaming or not, they all count.
+	//
+	// A waiting request keeps its client connection open and idle, and it counts against the reverse
+	// proxy's limit on connections to this process like any other request: with nginx's max_conns on
+	// the upstream (400 in the production deployment), every waiter is a slot taken from traffic that
+	// is not waiting. Keep this well below that limit. The cap is for the whole process, not per
+	// tenant: one tenant's waiters can use up all of it.
+	//
+	// 0, unset or negative takes the default (DefaultBusyWaitMaxWaiters); it does not mean unlimited.
+	// It only matters while some group has busy waiting on. A reload applies it to waits that start
+	// afterwards; requests already waiting keep their slot.
+	BusyWaitMaxWaiters int `yaml:"busy-wait-max-waiters,omitempty" json:"busy-wait-max-waiters,omitempty"`
+}
+
+// DefaultBusyWaitMaxWaiters is how many requests may wait for a cooling account at once when
+// streaming.busy-wait-max-waiters is not set: about a sixth of the 400 connections nginx lets
+// through to the process in the production deployment, so a pool-wide stall cannot fill that
+// allowance with idle waiters.
+const DefaultBusyWaitMaxWaiters = 64
+
+// BusyWaiters returns the cap on requests in a busy wait at once.
+func (c StreamingConfig) BusyWaiters() int {
+	if c.BusyWaitMaxWaiters <= 0 {
+		return DefaultBusyWaitMaxWaiters
+	}
+	return c.BusyWaitMaxWaiters
 }
 
 // APIKeyEntry represents an API key with optional metadata for advanced management.

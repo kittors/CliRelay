@@ -146,13 +146,6 @@ func TestOpenAIResponsesStreamingStartFailureReturnsJSONErrorBeforeSSE(t *testin
 	executor := &startFailureResponsesStreamExecutor{}
 	manager := coreauth.NewManager(nil, nil, nil)
 	manager.RegisterExecutor(executor)
-	// With busy waiting on, this request would wait out the account's
-	// one-minute cooldown and then report the failure inside the committed
-	// stream (handlers/stream_busy_wait_test.go covers that); this test is
-	// about the start failure itself, which is what 0 restores.
-	manager.SetConfig(&sdkconfig.Config{Routing: sdkconfig.RoutingConfig{
-		ChannelGroups: []sdkconfig.RoutingChannelGroup{{Name: "default", BusyWaitMaxSeconds: new(0)}},
-	}})
 
 	auth := &coreauth.Auth{ID: "auth-start-failure", Provider: executor.Identifier(), Status: coreauth.StatusActive}
 	if _, err := manager.Register(context.Background(), auth); err != nil {

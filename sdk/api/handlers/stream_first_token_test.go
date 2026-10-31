@@ -120,6 +120,13 @@ func withFirstTokenTimeout(manager *coreauth.Manager, seconds int, busyWait ...i
 	manager.SetConfig(&sdkconfig.Config{Routing: sdkconfig.RoutingConfig{ChannelGroups: []sdkconfig.RoutingChannelGroup{group}}})
 }
 
+// isFirstTokenTimeout reports whether err is the error a missed first token
+// produces: a 504 whose code says so.
+func isFirstTokenTimeout(err error) bool {
+	var authErr *coreauth.Error
+	return errors.As(err, &authErr) && authErr.Code == coreauth.FirstTokenTimeoutCode
+}
+
 func streamOnce(t *testing.T, handler *BaseAPIHandler) streamOutcome {
 	t.Helper()
 	dataChan, _, errChan := handler.ExecuteStreamWithAuthManager(context.Background(), "openai", "test-model", []byte(`{}`), "")
@@ -179,14 +186,12 @@ func TestFirstTokenTimeoutWithoutAnotherAccountReturns504(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
 			executor := &stallingStreamExecutor{modes: []stallMode{mode}}
 			manager := newFailoverTestManager(t, executor, "codex", "ftt-alone")
-			// Busy waiting off: with it the lone account is retried once its
-			// short back-off ends (covered by the busy-wait tests).
-			withFirstTokenTimeout(manager, 5, 0)
+			withFirstTokenTimeout(manager, 5)
 			handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager)
 
 			out := streamOnce(t, handler)
 
-			if out.status != http.StatusGatewayTimeout || !coreauth.IsFirstTokenTimeout(out.err) {
+			if out.status != http.StatusGatewayTimeout || !isFirstTokenTimeout(out.err) {
 				t.Fatalf("mode %d: outcome = %+v, want a 504 first-token timeout", mode, out)
 			}
 			if ids, _ := executor.attempts(); len(ids) != 1 {
@@ -194,6 +199,32 @@ func TestFirstTokenTimeoutWithoutAnotherAccountReturns504(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A group that turned busy waiting on still does not wait out a first-token
+// timeout: the account sits out five seconds, the provider is slow right now,
+// and sending the same request back after the wait would only repeat the stall
+// (and make the client wait through another timeout). One attempt, one 504.
+func TestFirstTokenTimeoutIsNotBusyWaitedFor(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		executor := &stallingStreamExecutor{modes: []stallMode{stallBeforeHeaders, stallBeforeHeaders, stallBeforeHeaders}}
+		manager := newFailoverTestManager(t, executor, "codex", "ftt-no-wait")
+		withFirstTokenTimeout(manager, 5, 60)
+		handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager)
+
+		start := time.Now()
+		out := streamOnce(t, handler)
+
+		if out.status != http.StatusGatewayTimeout || !isFirstTokenTimeout(out.err) {
+			t.Fatalf("outcome = %+v, want a 504 first-token timeout", out)
+		}
+		if ids, _ := executor.attempts(); len(ids) != 1 {
+			t.Fatalf("attempts = %v, want the one that timed out", ids)
+		}
+		if took := time.Since(start); took != 5*time.Second {
+			t.Fatalf("took %s, want the 5s of the one attempt and no wait after it", took)
+		}
+	})
 }
 
 // The timeout only covers the first token: a long pause after it is the

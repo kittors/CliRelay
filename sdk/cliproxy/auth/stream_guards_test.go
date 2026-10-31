@@ -13,13 +13,14 @@ func TestStreamGuardsFollowTheGoverningGroup(t *testing.T) {
 	if got := mgr.streamGuardsFor(nil); got != builtInStreamGuards {
 		t.Fatalf("no config: %+v, want the built-in defaults", got)
 	}
-	if builtInStreamGuards.firstTokenTimeout != 0 || builtInStreamGuards.busyWaitMax != 60*time.Second {
-		t.Fatalf("built-in defaults = %+v, want timeout off and a 60s wait", builtInStreamGuards)
+	// Both guards are opt-in: a group nobody configured behaves as it did before.
+	if builtInStreamGuards.firstTokenTimeout != 0 || builtInStreamGuards.busyWaitMax != 0 {
+		t.Fatalf("built-in defaults = %+v, want both guards off", builtInStreamGuards)
 	}
 
 	mgr.SetConfig(&sdkconfig.Config{Routing: sdkconfig.RoutingConfig{ChannelGroups: []sdkconfig.RoutingChannelGroup{
 		{Name: "default", FirstTokenTimeoutSeconds: 20, BusyWaitMaxSeconds: new(0)},
-		{Name: "team", FirstTokenTimeoutSeconds: 45},
+		{Name: "team", FirstTokenTimeoutSeconds: 45, BusyWaitMaxSeconds: new(60)},
 		{Name: "other", BusyWaitMaxSeconds: new(120)},
 	}}})
 	cases := []struct {
