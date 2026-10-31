@@ -18,11 +18,31 @@ import (
 // written by the client and can carry anything. Only binary payloads (images,
 // audio, files) and opaque signatures are left out.
 func ExtractModerationInput(format sdktranslator.Format, payload []byte) Input {
-	if len(payload) == 0 || !gjson.ValidBytes(payload) {
+	x := &extraction{}
+	if !x.run(format, payload) {
 		return NewInput(nil)
 	}
+	return NewInput(x.segments)
+}
+
+// extractWordUnits reads a request the way ExtractModerationInput does, and
+// also records where each piece of text sits in the payload, so the word guard
+// can rewrite it in place. The classification and the order are the same by
+// construction: it is one walk.
+func extractWordUnits(format sdktranslator.Format, payload []byte) []wordUnit {
+	x := &extraction{locate: true, doc: &wordDoc{data: payload, located: true}}
+	if !x.run(format, payload) {
+		return nil
+	}
+	return x.units
+}
+
+// run walks payload in the layout of format and reports whether it was JSON.
+func (x *extraction) run(format sdktranslator.Format, payload []byte) bool {
+	if len(payload) == 0 || !gjson.ValidBytes(payload) {
+		return false
+	}
 	root := gjson.ParseBytes(payload)
-	x := &extraction{}
 	switch format {
 	case sdktranslator.FormatOpenAIResponse:
 		x.responses(root)
@@ -42,7 +62,7 @@ func ExtractModerationInput(format sdktranslator.Format, payload []byte) Input {
 	default:
 		x.openAI(root)
 	}
-	return NewInput(x.segments)
+	return true
 }
 
 type extraction struct {
@@ -50,6 +70,15 @@ type extraction struct {
 	turn     int
 	// claudeReminders reclassifies Claude Code's <system-reminder> blocks; see add.
 	claudeReminders bool
+	// locate makes the walk also record wordUnits. doc is the document the gjson
+	// results index into, which a unit's position is checked against: the request,
+	// or while the arguments of a tool call are read, the JSON inside the string
+	// that holds them.
+	locate bool
+	doc    *wordDoc
+	units  []wordUnit
+	// signed is set while reading text a signature covers (see wordUnit.signed).
+	signed bool
 }
 
 func (x *extraction) nextTurn() { x.turn++ }
@@ -59,15 +88,40 @@ func (x *extraction) add(class Class, user bool, text string) {
 	if text == "" {
 		return
 	}
+	class, user = x.classify(class, user, text)
+	x.segments = append(x.segments, Segment{Class: class, User: user, Turn: x.turn, Text: text})
+}
+
+// classify applies the one reclassification the extractor makes on the text
+// itself. text is whitespace-collapsed.
+func (x *extraction) classify(class Class, user bool, text string) (Class, bool) {
 	if x.claudeReminders && class == ClassPrimary && strings.HasPrefix(text, "<system-reminder>") {
 		// Claude Code injects <system-reminder> blocks into user turns: context
 		// the client attaches, often large, not what the user typed. They used
 		// to be skipped outright, which let any caller hide text behind the
 		// prefix. As tool output they get keyword checks, reach the backend only
 		// on opt-in, and are never taken for the newest user message.
-		class, user = ClassToolOutput, false
+		return ClassToolOutput, false
 	}
-	x.segments = append(x.segments, Segment{Class: class, User: user, Turn: x.turn, Text: text})
+	return class, user
+}
+
+// addValue adds the text of a JSON string value, and when locating records
+// the value's place in the payload so the word guard can rewrite it. A value
+// that is not a string adds nothing, as before.
+func (x *extraction) addValue(class Class, user bool, value gjson.Result) {
+	text := stringValue(value)
+	x.add(class, user, text)
+	if x.locate {
+		x.recordUnit(class, user, text, value, gjson.Result{}, unitText)
+	}
+}
+
+// addSigned is addValue for text a signature covers (see wordUnit.signed).
+func (x *extraction) addSigned(class Class, user bool, value gjson.Result) {
+	x.signed = true
+	x.addValue(class, user, value)
+	x.signed = false
 }
 
 // roleClass maps a message role onto a class. Roles that are neither caller
@@ -95,8 +149,8 @@ func (x *extraction) openAI(root gjson.Result) {
 		if class != ClassAssistantHistory {
 			continue
 		}
-		x.add(class, false, stringValue(message.Get("refusal")))
-		x.add(class, false, stringValue(message.Get("reasoning_content")))
+		x.addValue(class, false, message.Get("refusal"))
+		x.addValue(class, false, message.Get("reasoning_content"))
 		for _, call := range arrayItems(message.Get("tool_calls")) {
 			x.arguments(call.Get("function.arguments"), class)
 		}
@@ -109,12 +163,12 @@ func (x *extraction) openAI(root gjson.Result) {
 	prompt := root.Get("prompt")
 	if prompt.IsArray() {
 		for _, item := range prompt.Array() {
-			x.add(ClassPrimary, true, stringValue(item))
+			x.addValue(ClassPrimary, true, item)
 		}
 	} else {
-		x.add(ClassPrimary, true, stringValue(prompt))
+		x.addValue(ClassPrimary, true, prompt)
 	}
-	x.add(ClassPrimary, true, stringValue(root.Get("suffix")))
+	x.addValue(ClassPrimary, true, root.Get("suffix"))
 }
 
 // claude reads the Anthropic Messages format.
@@ -139,7 +193,7 @@ func (x *extraction) responses(root gjson.Result) {
 			x.responsesItem(item)
 		}
 	} else {
-		x.add(ClassPrimary, false, stringValue(instructions))
+		x.addValue(ClassPrimary, false, instructions)
 	}
 	// Prompt template variables are substituted into the prompt the model reads.
 	if variables := root.Get("prompt.variables"); variables.IsObject() {
@@ -163,7 +217,7 @@ func (x *extraction) responses(root gjson.Result) {
 func (x *extraction) responsesItem(item gjson.Result) {
 	x.nextTurn()
 	if item.Type == gjson.String {
-		x.add(ClassPrimary, true, item.String())
+		x.addValue(ClassPrimary, true, item)
 		return
 	}
 	switch typeName := normalizedField(item, "type"); {
@@ -181,7 +235,7 @@ func (x *extraction) responsesItem(item gjson.Result) {
 	case typeName == "mcp_call":
 		x.arguments(item.Get("arguments"), ClassAssistantHistory)
 		x.content(item.Get("output"), ClassToolOutput, false)
-		x.add(ClassToolOutput, false, stringValue(item.Get("error")))
+		x.addValue(ClassToolOutput, false, item.Get("error"))
 	case strings.HasSuffix(typeName, "_output"):
 		// function_call_output, custom_tool_call_output and the built-in tools'
 		// outputs: a string, a list of content blocks, or an object.
@@ -220,7 +274,13 @@ func (x *extraction) gemini(root gjson.Result) {
 
 func (x *extraction) geminiParts(content gjson.Result, class Class, user bool) {
 	for _, part := range arrayItems(content.Get("parts")) {
-		x.add(class, user, stringValue(part.Get("text")))
+		if part.Get("thought").Bool() {
+			// A thought summary comes with a thought signature that Gemini checks
+			// when the conversation is sent back: read, not rewritten.
+			x.addSigned(class, user, part.Get("text"))
+		} else {
+			x.addValue(class, user, part.Get("text"))
+		}
 		if response := firstField(part, "functionResponse", "function_response"); response.Exists() {
 			// Arbitrary JSON the model reads serialized, keys included.
 			x.jsonText(response.Get("response"), ClassToolOutput)
@@ -229,10 +289,10 @@ func (x *extraction) geminiParts(content gjson.Result, class Class, user bool) {
 			x.jsonText(call.Get("args"), ClassAssistantHistory)
 		}
 		if code := firstField(part, "executableCode", "executable_code"); code.Exists() {
-			x.add(ClassAssistantHistory, false, stringValue(code.Get("code")))
+			x.addValue(ClassAssistantHistory, false, code.Get("code"))
 		}
 		if result := firstField(part, "codeExecutionResult", "code_execution_result"); result.Exists() {
-			x.add(ClassToolOutput, false, stringValue(result.Get("output")))
+			x.addValue(ClassToolOutput, false, result.Get("output"))
 		}
 	}
 }
@@ -258,7 +318,7 @@ var protocolKeys = map[string]bool{
 func (x *extraction) content(value gjson.Result, class Class, user bool) {
 	switch {
 	case value.Type == gjson.String:
-		x.add(class, user, value.String())
+		x.addValue(class, user, value)
 	case value.IsArray():
 		for _, block := range value.Array() {
 			x.content(block, class, user)
@@ -277,31 +337,33 @@ func (x *extraction) block(block gjson.Result, class Class, user bool) {
 			x.jsonText(block, class)
 			return
 		}
-		x.add(class, user, stringValue(text))
+		x.addValue(class, user, text)
 		x.content(content, class, user)
 	case "refusal":
-		x.add(class, user, stringValue(block.Get("refusal")))
+		x.addValue(class, user, block.Get("refusal"))
 	case "thinking":
-		x.add(ClassAssistantHistory, false, stringValue(block.Get("thinking")))
+		// The block carries a signature over this text, which the API checks when
+		// the conversation is sent back: it is read, but not rewritten.
+		x.addSigned(ClassAssistantHistory, false, block.Get("thinking"))
 	case "tool_use", "server_tool_use", "mcp_tool_use":
 		x.jsonText(block.Get("input"), ClassAssistantHistory)
 	case "tool_result":
 		// Claude: the content is a string or a list of blocks.
 		x.content(block.Get("content"), ClassToolOutput, false)
 	case "document":
-		x.add(ClassToolOutput, false, stringValue(block.Get("title")))
-		x.add(ClassToolOutput, false, stringValue(block.Get("context")))
+		x.addValue(ClassToolOutput, false, block.Get("title"))
+		x.addValue(ClassToolOutput, false, block.Get("context"))
 		// Plain-text sources carry their text inline and content sources hold
 		// blocks; base64 PDFs and URLs carry nothing readable here.
 		source := block.Get("source")
 		switch normalizedField(source, "type") {
 		case "text":
-			x.add(ClassToolOutput, false, stringValue(source.Get("data")))
+			x.addValue(ClassToolOutput, false, source.Get("data"))
 		case "content":
 			x.content(source.Get("content"), ClassToolOutput, false)
 		}
 	case "search_result":
-		x.add(ClassToolOutput, false, stringValue(block.Get("title")))
+		x.addValue(ClassToolOutput, false, block.Get("title"))
 		x.content(block.Get("content"), ClassToolOutput, false)
 	default:
 		if binaryBlockTypes[typeName] {
@@ -328,10 +390,18 @@ func (x *extraction) arguments(value gjson.Result, class Class) {
 	}
 	raw := value.String()
 	if decoded := gjson.Parse(raw); gjson.Valid(raw) && (decoded.IsObject() || decoded.IsArray()) {
+		// The decoded document is a different text from the request, so its
+		// offsets mean nothing there: its words are read as a document of their own
+		// (see wordDoc), which is written back into this string when they change.
+		outer := x.doc
+		if x.locate {
+			x.doc = nestedDoc(outer, value, raw)
+		}
 		x.jsonText(decoded, class)
+		x.doc = outer
 		return
 	}
-	x.add(class, false, raw)
+	x.addValue(class, false, value)
 }
 
 // maxJSONTextDepth bounds the recursion of jsonText. Deeper values are read as
@@ -343,11 +413,46 @@ const maxJSONTextDepth = 64
 // so a key is as visible to it as a value.
 func (x *extraction) jsonText(value gjson.Result, class Class) {
 	var b strings.Builder
-	writeJSONText(&b, value, 0)
+	walkJSONText(value, 0, false, func(text string, at gjson.Result, kind jsonTextKind, owner gjson.Result) {
+		b.WriteString(text)
+		b.WriteByte(' ')
+		if !x.locate || kind == jsonTextProtocol {
+			return
+		}
+		unit := unitText
+		switch kind {
+		case jsonTextKey:
+			unit = unitKey
+		case jsonTextRaw:
+			// A whole deep subtree: matched, but changing it would change the
+			// structure of the document, not just its words.
+			unit = unitOpaque
+		}
+		x.recordUnit(class, false, text, at, owner, unit)
+	})
 	x.add(class, false, b.String())
 }
 
-func writeJSONText(b *strings.Builder, value gjson.Result, depth int) {
+// jsonTextKind says what walkJSONText found.
+type jsonTextKind uint8
+
+const (
+	// jsonTextValue is a string value.
+	jsonTextValue jsonTextKind = iota
+	// jsonTextProtocol is a string value under one of protocolKeys: an
+	// identifier or a type tag. It is read as text for keyword checks, as it
+	// always was, but it is not prose a person wrote.
+	jsonTextProtocol
+	// jsonTextKey is an object key.
+	jsonTextKey
+	// jsonTextRaw is a subtree below maxJSONTextDepth, read as raw JSON.
+	jsonTextRaw
+)
+
+// walkJSONText visits the text in a JSON value in document order. at is the
+// JSON value the text was read from (the key itself for a key, and then owner
+// is the object the key belongs to).
+func walkJSONText(value gjson.Result, depth int, protocol bool, visit func(text string, at gjson.Result, kind jsonTextKind, owner gjson.Result)) {
 	switch {
 	case value.Type == gjson.String:
 		text := value.String()
@@ -355,26 +460,30 @@ func writeJSONText(b *strings.Builder, value gjson.Result, depth int) {
 		if strings.HasPrefix(text, "data:") && strings.Contains(text, ";base64,") {
 			return
 		}
-		b.WriteString(text)
-		b.WriteByte(' ')
+		if protocol {
+			visit(text, value, jsonTextProtocol, gjson.Result{})
+			return
+		}
+		visit(text, value, jsonTextValue, gjson.Result{})
 	case value.IsArray() || value.IsObject():
 		if depth >= maxJSONTextDepth {
-			b.WriteString(value.Raw)
-			b.WriteByte(' ')
+			visit(value.Raw, value, jsonTextRaw, gjson.Result{})
 			return
 		}
 		if value.IsObject() && binaryBlockTypes[normalizedField(value, "type")] {
 			return
 		}
 		value.ForEach(func(key, item gjson.Result) bool {
+			underProtocolKey := false
 			if key.Type == gjson.String {
-				if key.String() == "signature" || key.String() == "encrypted_content" {
+				name := key.String()
+				if name == "signature" || name == "encrypted_content" {
 					return true
 				}
-				b.WriteString(key.String())
-				b.WriteByte(' ')
+				visit(name, key, jsonTextKey, value)
+				underProtocolKey = protocolKeys[name]
 			}
-			writeJSONText(b, item, depth+1)
+			walkJSONText(item, depth+1, protocol || underProtocolKey, visit)
 			return true
 		})
 	}

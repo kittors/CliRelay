@@ -134,6 +134,11 @@ func buildRequestDetailContent(ctx context.Context, includeBodies ...bool) strin
 	if moderation, ok := contentmoderation.RuntimeSnapshotFromGin(ginCtx); ok {
 		detail["moderation"] = moderation
 	}
+	// Only a request the word guard acted on (or filtered the reply of) is kept;
+	// the snapshot may still be counting reply hits, and marshals itself safely.
+	if wordGuard, ok := contentmoderation.WordGuardSnapshotFromGin(ginCtx); ok {
+		detail["word_guard"] = wordGuard
+	}
 
 	data, err := json.Marshal(detail)
 	if err != nil {
