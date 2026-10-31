@@ -287,12 +287,78 @@ func TestSimulateSelectionReportsCooldownErrorAndRetryWait(t *testing.T) {
 	if sim.Error.RetryAfter <= 3*time.Minute || sim.Error.RetryAfter > 4*time.Minute {
 		t.Fatalf("retry-after = %v, want the soonest cooldown, about 4m", sim.Error.RetryAfter)
 	}
-	if sim.RetryWait <= 3*time.Minute || sim.RetryWait > 4*time.Minute {
-		t.Fatalf("retry wait = %v, want the soonest cooldown within max-retry-interval", sim.RetryWait)
+	if sim.RetryWait <= 3*time.Minute || sim.RetryWait > 4*time.Minute || sim.RetryWaitKind != SimulatedRetryWaitRequestRetry {
+		t.Fatalf("retry wait = %v (%q), want the soonest cooldown within max-retry-interval", sim.RetryWait, sim.RetryWaitKind)
 	}
 
 	manager.SetRetryConfig(1, time.Minute)
-	if sim := manager.SimulateSelection(context.Background(), []string{"simprov"}, simulationTestModel, map[string]any{}); sim.RetryWait != 0 {
-		t.Fatalf("retry wait = %v with a 1m max-retry-interval, want none", sim.RetryWait)
+	if sim := manager.SimulateSelection(context.Background(), []string{"simprov"}, simulationTestModel, map[string]any{}); sim.RetryWait != 0 || sim.RetryWaitKind != "" {
+		t.Fatalf("retry wait = %v (%q) with a 1m max-retry-interval, want none", sim.RetryWait, sim.RetryWaitKind)
+	}
+}
+
+// rateLimitedAuth is parked for a while after a 429 that spent no quota: the
+// kind of cooldown a busy wait waits for.
+func rateLimitedAuth(id string, now time.Time, until time.Time) *Auth {
+	return &Auth{
+		ID: id,
+		ModelStates: map[string]*ModelState{simulationTestModel: {
+			Status:         StatusError,
+			Unavailable:    true,
+			NextRetryAfter: until,
+			UpdatedAt:      now,
+			LastError:      &Error{HTTPStatus: http.StatusTooManyRequests, Message: "rate limited"},
+		}},
+	}
+}
+
+// A group that busy-waits makes a request whose every candidate is cooling
+// wait for the soonest one instead of failing, and the simulation says so,
+// without taking a waiter slot or a round of any request's budget.
+func TestSimulateSelectionReportsTheGroupsBusyWait(t *testing.T) {
+	now := time.Now()
+	until := now.Add(40 * time.Second)
+	manager := newSimulationTestManager(t, "",
+		rateLimitedAuth("sim-busy-a", now, until), rateLimitedAuth("sim-busy-b", now, until.Add(time.Minute)))
+	busyWait := func(seconds *int) {
+		manager.SetConfig(&internalconfig.Config{Routing: internalconfig.RoutingConfig{
+			IncludeDefaultGroup: true,
+			ChannelGroups: []internalconfig.RoutingChannelGroup{{
+				Name:               simulationPoolGroup,
+				Match:              internalconfig.ChannelGroupMatch{Channels: []string{"sim-busy-a", "sim-busy-b"}},
+				BusyWaitMaxSeconds: seconds,
+			}},
+		}})
+	}
+
+	cases := []struct {
+		name     string
+		seconds  *int
+		wantKind string
+	}{
+		{"group waits a minute", new(60), SimulatedRetryWaitBusyWait},
+		{"group does not wait", nil, ""},
+		{"recovery beyond the group's budget", new(20), ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			busyWait(tc.seconds)
+			sim := manager.SimulateSelection(context.Background(), []string{"simprov"}, simulationTestModel, poolMeta())
+			if len(sim.Attempts) != 0 || sim.Error == nil {
+				t.Fatalf("attempts %v, error %+v: want every candidate cooling", simulatedOrder(sim), sim.Error)
+			}
+			if sim.RetryWaitKind != tc.wantKind {
+				t.Fatalf("retry wait kind = %q, want %q", sim.RetryWaitKind, tc.wantKind)
+			}
+			if tc.wantKind == "" && sim.RetryWait != 0 {
+				t.Fatalf("retry wait = %v, want none", sim.RetryWait)
+			}
+			if tc.wantKind != "" && (sim.RetryWait <= 30*time.Second || sim.RetryWait > 40*time.Second) {
+				t.Fatalf("retry wait = %v, want the time to the soonest recovery, about 40s", sim.RetryWait)
+			}
+			if waiting := manager.busyWaiters.Load(); waiting != 0 {
+				t.Fatalf("%d waiter slots held after a simulation", waiting)
+			}
+		})
 	}
 }

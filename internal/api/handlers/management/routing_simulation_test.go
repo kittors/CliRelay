@@ -73,8 +73,9 @@ func TestGetRoutingSimulationRunsTheSimulatorForATenantKey(t *testing.T) {
 					{AuthID: "codex-a", Label: "A", Provider: "codex", Weight: 1, Attempt: 1},
 					{AuthID: "codex-b", Label: "B", Provider: "codex", Weight: 1, Blocked: coreauth.SimulatedBlockCooldown, BlockedUntil: until, BlockCause: coreauth.CooldownReasonRateLimited, BlockHTTPStatus: 429},
 				}}},
-				Attempts:  []coreauth.SimulatedAttempt{{AuthID: "codex-a", Group: "team", UpstreamModel: "gpt-5"}},
-				RetryWait: 1500 * time.Millisecond,
+				Attempts:      []coreauth.SimulatedAttempt{{AuthID: "codex-a", Group: "team", UpstreamModel: "gpt-5"}},
+				RetryWait:     1500 * time.Millisecond,
+				RetryWaitKind: coreauth.SimulatedRetryWaitBusyWait,
 			},
 		}, nil
 	})
@@ -116,7 +117,8 @@ func TestGetRoutingSimulationRunsTheSimulatorForATenantKey(t *testing.T) {
 			Attempts []struct {
 				AuthID string `json:"auth-id"`
 			}
-			RetryWaitMS int64 `json:"retry-wait-ms"`
+			RetryWaitMS   int64  `json:"retry-wait-ms"`
+			RetryWaitKind string `json:"retry-wait-kind"`
 		}
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
@@ -132,8 +134,8 @@ func TestGetRoutingSimulationRunsTheSimulatorForATenantKey(t *testing.T) {
 	if cooling.Blocked != "cooldown" || cooling.BlockedUntil != "2026-11-01T08:30:00Z" || cooling.BlockCause != coreauth.CooldownReasonRateLimited || cooling.Attempt != 0 {
 		t.Fatalf("cooling credential = %+v", cooling)
 	}
-	if len(resp.Selection.Attempts) != 1 || resp.Selection.Attempts[0].AuthID != "codex-a" || resp.Selection.RetryWaitMS != 1500 {
-		t.Fatalf("attempts %+v, retry wait %d", resp.Selection.Attempts, resp.Selection.RetryWaitMS)
+	if len(resp.Selection.Attempts) != 1 || resp.Selection.Attempts[0].AuthID != "codex-a" || resp.Selection.RetryWaitMS != 1500 || resp.Selection.RetryWaitKind != "busy-wait" {
+		t.Fatalf("attempts %+v, retry wait %d (%q)", resp.Selection.Attempts, resp.Selection.RetryWaitMS, resp.Selection.RetryWaitKind)
 	}
 }
 

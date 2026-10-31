@@ -70,6 +70,9 @@ type routingSimulationSelectionDTO struct {
 	Attempts    []routingSimulationAttempt  `json:"attempts"`
 	Error       *routingSimulationErrorDTO  `json:"error,omitempty"`
 	RetryWaitMS int64                       `json:"retry-wait-ms,omitempty"`
+	// RetryWaitKind is "request-retry" or "busy-wait" when the request waits
+	// before selection runs again, absent when it fails at once.
+	RetryWaitKind string `json:"retry-wait-kind,omitempty"`
 }
 
 type routingSimulationGroupDTO struct {
@@ -179,13 +182,14 @@ func newRoutingSimulationResponse(key routingSimulationKey, endpoint, requestedM
 
 func newRoutingSimulationSelection(sim *coreauth.SelectionSimulation) *routingSimulationSelectionDTO {
 	out := &routingSimulationSelectionDTO{
-		Model:       sim.Model,
-		ModelKey:    sim.ModelKey,
-		Providers:   append([]string{}, sim.Providers...),
-		Groups:      make([]routingSimulationGroupDTO, 0, len(sim.Groups)),
-		Attempts:    make([]routingSimulationAttempt, 0, len(sim.Attempts)),
-		Error:       simulatedErrorDTO(sim.Error),
-		RetryWaitMS: sim.RetryWait.Milliseconds(),
+		Model:         sim.Model,
+		ModelKey:      sim.ModelKey,
+		Providers:     append([]string{}, sim.Providers...),
+		Groups:        make([]routingSimulationGroupDTO, 0, len(sim.Groups)),
+		Attempts:      make([]routingSimulationAttempt, 0, len(sim.Attempts)),
+		Error:         simulatedErrorDTO(sim.Error),
+		RetryWaitMS:   sim.RetryWait.Milliseconds(),
+		RetryWaitKind: sim.RetryWaitKind,
 	}
 	for _, group := range sim.Groups {
 		dto := routingSimulationGroupDTO{

@@ -88,9 +88,25 @@ type SelectionSimulation struct {
 	// Error is what the request gets when no credential can take it.
 	Error *SimulatedError
 	// RetryWait is how long a request that gets Error waits for the soonest
-	// cooldown to end before selection runs again; zero when it does not wait.
+	// cooldown to end before selection runs again.
 	RetryWait time.Duration
+	// RetryWaitKind says which wait the request takes; empty when it fails
+	// with Error at once.
+	RetryWaitKind string
 }
+
+// Which wait a request that finds no credential takes before selection runs
+// again (RetryWaitKind).
+const (
+	// SimulatedRetryWaitRequestRetry is the request-retry wait (request-retry
+	// and max-retry-interval in config.yaml), consulted first.
+	SimulatedRetryWaitRequestRetry = "request-retry"
+	// SimulatedRetryWaitBusyWait is the governing channel group's busy wait
+	// (busy-wait-max-seconds). The live wait ends at a random point up to
+	// busyWaitJitter after the reported one, and is taken only while one of
+	// the process's waiter slots is free.
+	SimulatedRetryWaitBusyWait = "busy-wait"
+)
 
 // RouteGroupSimulation is one route group selection tries.
 type RouteGroupSimulation struct {
@@ -219,9 +235,7 @@ func (m *Manager) SimulateSelection(ctx context.Context, providers []string, mod
 
 	if len(sim.Attempts) == 0 && pickErr != nil {
 		sim.Error = simulatedErrorOf(pickErr)
-		if wait, retry := m.simulatedRetryWait(pickErr, sim.Providers, model, meta); retry {
-			sim.RetryWait = wait
-		}
+		sim.RetryWait, sim.RetryWaitKind = m.simulatedRetryWait(ctx, pickErr, sim.Providers, model, meta)
 	}
 	// Alias lookups read configuration under the manager's own locks, so they
 	// run after the read lock above is released.
@@ -433,11 +447,20 @@ func candidateByID(candidates []*Auth, id string) *Auth {
 }
 
 // simulatedRetryWait reports whether a request that failed with err would wait
-// for a cooldown and run selection again, the way runExecutionWithRetry does
-// on its first failure, and for how long.
-func (m *Manager) simulatedRetryWait(err error, providers []string, model string, meta map[string]any) (time.Duration, bool) {
+// for a cooldown and run selection again, and which wait, the way
+// nextRetryPlan decides on the first failure of a request that may busy-wait
+// (chat and messages requests may; token counts may not). It takes no waiter
+// slot and no round of the request's budget.
+func (m *Manager) simulatedRetryWait(ctx context.Context, err error, providers []string, model string, meta map[string]any) (time.Duration, string) {
 	_, maxWait := m.retrySettings()
-	return m.shouldRetryAfterError(err, 0, providers, model, maxWait, meta)
+	if wait, ok := m.shouldRetryAfterError(err, 0, providers, model, maxWait, meta); ok {
+		return wait, SimulatedRetryWaitRequestRetry
+	}
+	opts := cliproxyexecutor.Options{Metadata: meta}
+	if wait, ok := m.busyWaitUntilRecovery(ctx, err, providers, model, opts, &retryWaitBudget{}); ok {
+		return wait, SimulatedRetryWaitBusyWait
+	}
+	return 0, ""
 }
 
 // simulatedErrorOf renders what a selection error tells the client.
