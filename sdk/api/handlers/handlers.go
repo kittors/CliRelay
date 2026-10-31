@@ -218,24 +218,6 @@ func NonStreamingKeepAliveInterval(cfg *config.SDKConfig) time.Duration {
 	return time.Duration(seconds) * time.Second
 }
 
-// StreamingBootstrapRetries returns how many times a streaming request may be retried before any bytes are sent.
-func StreamingBootstrapRetries(cfg *config.SDKConfig) int {
-	retries := defaultStreamingBootstrapRetries
-	if cfg != nil {
-		retries = cfg.Streaming.BootstrapRetries
-	}
-	if retries < 0 {
-		retries = 0
-	}
-	return retries
-}
-
-// PassthroughHeadersEnabled returns whether upstream response headers should be forwarded to clients.
-// Default is false.
-func PassthroughHeadersEnabled(cfg *config.SDKConfig) bool {
-	return cfg != nil && cfg.PassthroughHeaders
-}
-
 func requestExecutionMetadata(ctx context.Context) map[string]any {
 	// Idempotency-Key is an optional client-supplied header used to correlate retries.
 	// It is forwarded as execution metadata; when absent we generate a UUID.
@@ -315,6 +297,21 @@ func requestExecutionMetadata(ctx context.Context) map[string]any {
 		meta[coreexecutor.SessionStickyMetadataKey] = sessionStickyKey
 	}
 	return meta
+}
+
+func requestExecutionHeaders(ctx context.Context) http.Header {
+	if ctx == nil {
+		return nil
+	}
+	c, ok := ctx.Value(util.ContextKeyGin).(*gin.Context)
+	if !ok || c == nil || c.Request == nil {
+		return nil
+	}
+	values := c.Request.Header.Values(sdktranslator.CompletedToolBlocksHeader)
+	if len(values) != 1 || values[0] != sdktranslator.CompletedToolBlocksVersion {
+		return nil
+	}
+	return http.Header{sdktranslator.CompletedToolBlocksHeader: []string{sdktranslator.CompletedToolBlocksVersion}}
 }
 
 func pinnedAuthIDFromContext(ctx context.Context) string {

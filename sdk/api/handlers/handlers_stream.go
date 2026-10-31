@@ -46,6 +46,7 @@ func (h *BaseAPIHandler) StartStreamWithAuthManager(ctx context.Context, handler
 		Alt:             alt,
 		OriginalRequest: rawJSON,
 		SourceFormat:    sdktranslator.FromString(handlerType),
+		Headers:         requestExecutionHeaders(ctx),
 	}
 	opts.Metadata = reqMeta
 	streamResult, err := h.AuthManager.ExecuteStream(ctx, providers, req, opts)
@@ -75,6 +76,12 @@ func (h *BaseAPIHandler) StartStreamWithAuthManager(ctx context.Context, handler
 		if upstreamHeaders == nil {
 			upstreamHeaders = make(http.Header)
 		}
+	}
+	if opts.Headers.Get(sdktranslator.CompletedToolBlocksHeader) == sdktranslator.CompletedToolBlocksVersion && streamResult.Headers.Get(sdktranslator.CompletedToolBlocksHeader) == sdktranslator.CompletedToolBlocksVersion {
+		if upstreamHeaders == nil {
+			upstreamHeaders = make(http.Header)
+		}
+		upstreamHeaders.Set(sdktranslator.CompletedToolBlocksHeader, sdktranslator.CompletedToolBlocksVersion)
 	}
 	chunks := streamResult.Chunks
 	dataChan := make(chan []byte)
@@ -172,6 +179,10 @@ outer:
 					if retryErr == nil {
 						if passthroughHeadersEnabled {
 							replaceHeader(upstreamHeaders, FilterUpstreamHeaders(retryResult.Headers))
+						}
+						upstreamHeaders.Del(sdktranslator.CompletedToolBlocksHeader)
+						if upstreamHeaders != nil && opts.Headers.Get(sdktranslator.CompletedToolBlocksHeader) == sdktranslator.CompletedToolBlocksVersion && retryResult.Headers.Get(sdktranslator.CompletedToolBlocksHeader) == sdktranslator.CompletedToolBlocksVersion {
+							upstreamHeaders.Set(sdktranslator.CompletedToolBlocksHeader, sdktranslator.CompletedToolBlocksVersion)
 						}
 						chunks = retryResult.Chunks
 						continue outer
