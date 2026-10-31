@@ -92,21 +92,29 @@ func (h *BaseAPIHandler) StartStreamWithAuthManager(ctx context.Context, handler
 	} else {
 		go forwardStreamWithBootstrapRetry(
 			ctx,
-			h,
 			handlerType,
-			providers,
-			req,
-			opts,
+			&streamRetryState{providers: providers, req: req, opts: opts},
 			passthroughHeadersEnabled,
 			upstreamHeaders,
 			chunks,
 			dataChan,
 			errChan,
 			maxBootstrapRetries,
-			streamResult.AuthID,
+			newStreamFailover(h, streamResult),
 		)
 	}
 	return dataChan, upstreamHeaders, errChan, nil
+}
+
+// streamRetryState is what a bootstrap retry needs to start the request again.
+// req and opts carry the inbound body (several MB for a large prompt) twice
+// over, so the forwarding goroutine reaches them only through this pointer and
+// lets go of it with the first payload, after which no retry is possible:
+// a stream that runs for minutes must not keep its request alive all along.
+type streamRetryState struct {
+	providers []string
+	req       coreexecutor.Request
+	opts      coreexecutor.Options
 }
 
 func forwardStreamWithoutBootstrapRetry(
@@ -144,24 +152,20 @@ func forwardStreamWithoutBootstrapRetry(
 
 func forwardStreamWithBootstrapRetry(
 	ctx context.Context,
-	h *BaseAPIHandler,
 	handlerType string,
-	providers []string,
-	req coreexecutor.Request,
-	opts coreexecutor.Options,
+	retry *streamRetryState,
 	passthroughHeadersEnabled bool,
 	upstreamHeaders http.Header,
 	chunks <-chan coreexecutor.StreamChunk,
 	dataChan chan<- []byte,
 	errChan chan<- *StreamErrorMessage,
 	maxBootstrapRetries int,
-	servedBy string,
+	failover *streamFailover,
 ) {
 	defer close(dataChan)
 	defer close(errChan)
 	sentPayload := false
 	bootstrapRetries := 0
-	failover := newStreamFailover(h, servedBy)
 
 outer:
 	for {
@@ -177,7 +181,7 @@ outer:
 				// failed this request, so the candidate count bounds the retries too).
 				if !sentPayload && bootstrapRetries < maxBootstrapRetries && bootstrapEligibleStreamErr(streamErr) {
 					bootstrapRetries++
-					retryResult, retryErr := failover.retry(ctx, providers, req, opts, streamErr, bootstrapRetries, maxBootstrapRetries)
+					retryResult, retryErr := failover.retry(ctx, retry.providers, retry.req, retry.opts, streamErr, bootstrapRetries, maxBootstrapRetries)
 					if retryErr == nil {
 						if passthroughHeadersEnabled {
 							replaceHeader(upstreamHeaders, FilterUpstreamHeaders(retryResult.Headers))
@@ -200,6 +204,9 @@ outer:
 				}
 			}
 			sentPayload = true
+			// Past the first byte there is no retry, so nothing needs the request
+			// any more (see streamRetryState).
+			retry = nil
 			if !sendStreamData(ctx, dataChan, cloneBytes(chunk.Payload)) {
 				return
 			}

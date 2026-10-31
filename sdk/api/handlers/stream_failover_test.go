@@ -33,6 +33,15 @@ type scriptedStreamExecutor struct {
 type streamStep struct {
 	payloads [][]byte
 	err      error
+	// failOpen rejects this attempt before the stream opens (an HTTP error),
+	// whatever the executor's failToOpen says.
+	failOpen bool
+}
+
+// failToOpen is an attempt the upstream refuses outright, so the scheduler
+// itself fails on the account while looking for a stream to hand over.
+func failToOpen(status int) streamStep {
+	return streamStep{failOpen: true, err: &coreauth.Error{Code: "upstream_error", Message: "upstream refused", HTTPStatus: status}}
 }
 
 func failBeforeFirstByte(status int) streamStep {
@@ -59,7 +68,7 @@ func (e *scriptedStreamExecutor) ExecuteStream(_ context.Context, auth *coreauth
 	if call <= len(e.steps) {
 		step = e.steps[call-1]
 	}
-	if e.failToOpen && step.err != nil && len(step.payloads) == 0 {
+	if (e.failToOpen || step.failOpen) && step.err != nil && len(step.payloads) == 0 {
 		return nil, step.err
 	}
 	ch := make(chan coreexecutor.StreamChunk, len(step.payloads)+1)
@@ -95,10 +104,17 @@ func (e *scriptedStreamExecutor) AuthIDs() []string {
 // serving test-model, and removes them from the global registry afterwards.
 func newFailoverTestManager(t *testing.T, executor coreauth.ProviderExecutor, provider string, authIDs ...string) *coreauth.Manager {
 	t.Helper()
+	return newFailoverTestManagerWithAttributes(t, executor, provider, nil, authIDs...)
+}
+
+// newFailoverTestManagerWithAttributes gives every account the same attributes
+// (for instance cooling switched off).
+func newFailoverTestManagerWithAttributes(t *testing.T, executor coreauth.ProviderExecutor, provider string, attributes map[string]string, authIDs ...string) *coreauth.Manager {
+	t.Helper()
 	manager := coreauth.NewManager(nil, nil, nil)
 	manager.RegisterExecutor(executor)
 	for _, id := range authIDs {
-		auth := &coreauth.Auth{ID: id, Provider: provider, Status: coreauth.StatusActive}
+		auth := &coreauth.Auth{ID: id, Provider: provider, Status: coreauth.StatusActive, Attributes: attributes}
 		if _, err := manager.Register(context.Background(), auth); err != nil {
 			t.Fatalf("register %s: %v", id, err)
 		}

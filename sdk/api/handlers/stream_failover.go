@@ -39,15 +39,32 @@ func StreamingBootstrapRetries(cfg *config.SDKConfig) int {
 
 // streamFailover moves a stream that failed before its first byte to another
 // account. It remembers every account that already failed the request so a
-// retry never lands on one of them again.
+// retry never lands on one of them again: the ones whose streams it abandoned,
+// and the ones the scheduler itself failed on while looking for a stream to
+// hand over (StreamResult.FailedAuthIDs). Without the latter an account that
+// failed with no cooldown behind it would be picked again by the retry.
 type streamFailover struct {
 	h        *BaseAPIHandler
 	servedBy string
 	failed   []string
 }
 
-func newStreamFailover(h *BaseAPIHandler, servedBy string) *streamFailover {
-	return &streamFailover{h: h, servedBy: strings.TrimSpace(servedBy)}
+// newStreamFailover starts from the stream the scheduler handed over first.
+func newStreamFailover(h *BaseAPIHandler, first *coreexecutor.StreamResult) *streamFailover {
+	f := &streamFailover{h: h}
+	f.adopt(first)
+	return f
+}
+
+// adopt takes over a stream handed over by the scheduler: its account is the
+// one being served, and the accounts the scheduler failed on to get there are
+// failed for this request.
+func (f *streamFailover) adopt(result *coreexecutor.StreamResult) {
+	if result == nil {
+		return
+	}
+	f.servedBy = strings.TrimSpace(result.AuthID)
+	f.failed = append(f.failed, result.FailedAuthIDs...)
 }
 
 // retry starts the request again without the accounts that failed it so far.
@@ -73,7 +90,7 @@ func (f *streamFailover) retry(
 	if err != nil {
 		return nil, err
 	}
-	f.servedBy = strings.TrimSpace(result.AuthID)
+	f.adopt(result)
 	return result, nil
 }
 

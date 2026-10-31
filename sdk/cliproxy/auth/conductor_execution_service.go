@@ -23,6 +23,11 @@ type mixedExecutionScope struct {
 	opts            cliproxyexecutor.Options
 	singlePickRoute bool
 	tried           map[string]struct{}
+	// failed lists, in order, the accounts a streaming attempt of this pass
+	// failed on before its first byte. tried also holds accounts that were only
+	// picked (queued behind their concurrency limit) or excluded up front; those
+	// did not fail this pass, so they must not be reported as failures.
+	failed []string
 	// saturated collects candidates skipped because their account was already at
 	// its concurrency limit. Once no idle candidate is left they become the queue
 	// this request waits on.
@@ -205,12 +210,14 @@ func (s executionService) executeStreamMixedOnce(ctx context.Context, providers 
 			if isRequestInvalidError(errStream) || scope.singlePickRoute {
 				return nil, errStream
 			}
+			scope.failed = append(scope.failed, candidate.auth.ID)
 			scope.lastErr = errStream
 			continue
 		}
 
 		wrapped := s.wrapStreamResult(candidate.execCtx, candidate.auth, candidate.provider, scope.routeModel, scope.opts.SourceFormat, streamResult, releaseSlot)
 		wrapped.AuthID = candidate.auth.ID
+		wrapped.FailedAuthIDs = scope.failed
 		return wrapped, nil
 	}
 }
