@@ -16,6 +16,7 @@ import (
 	internalrouting "github.com/router-for-me/CLIProxyAPI/v6/internal/routing"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/api/handlers"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v6/sdk/translator"
 	"github.com/tidwall/gjson"
@@ -84,6 +85,11 @@ func (h *OpenAIImagesAPIHandler) executeImages(c *gin.Context, rawJSON []byte, a
 
 	payloads := make([][]byte, 0, imageCount)
 	var responseHeaders http.Header
+	// The client sent one request; n > 1 only means it is run as n executions of
+	// one image each. The request guard looks at the prompt once, not n times: the
+	// first execution's metadata holds what it decided, and the others are given
+	// that.
+	var firstMeta map[string]any
 	for i := 0; i < imageCount; i++ {
 		execPayload := rawJSON
 		if imageCount > 1 {
@@ -94,6 +100,11 @@ func (h *OpenAIImagesAPIHandler) executeImages(c *gin.Context, rawJSON []byte, a
 				return
 			}
 		}
+		execMeta := cloneImageExecutionMetadata(meta)
+		coreauth.ShareRequestGuardOutcome(execMeta, firstMeta)
+		if firstMeta == nil {
+			firstMeta = execMeta
+		}
 		resp, err := h.AuthManager.Execute(cliCtx, []string{provider}, coreexecutor.Request{
 			Model:   modelName,
 			Payload: execPayload,
@@ -102,7 +113,7 @@ func (h *OpenAIImagesAPIHandler) executeImages(c *gin.Context, rawJSON []byte, a
 			Alt:             alt,
 			OriginalRequest: rawJSON,
 			SourceFormat:    sdktranslator.FromString("openai"),
-			Metadata:        cloneImageExecutionMetadata(meta),
+			Metadata:        execMeta,
 		})
 		if err != nil {
 			status := http.StatusBadGateway

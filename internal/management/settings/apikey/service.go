@@ -12,6 +12,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/quota"
 	internalrouting "github.com/router-for-me/CLIProxyAPI/v6/internal/routing"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
+	log "github.com/sirupsen/logrus"
 )
 
 var (
@@ -35,6 +36,12 @@ type EntryValidator func(config.APIKeyEntry) error
 // It receives the id, not the secret: DeleteEntry deletes the key first, after
 // which the secret resolves to nothing and the stored log rows hold only a mask.
 type LogsDeleter func(apiKeyID string) (int64, error)
+
+// KeyPolicyDeleter removes what other features keep for keys that were deleted,
+// identified by their stable ids: the word guard's override of a key, for one.
+// A key created again under an id it had before (an import, a restore) must not
+// take over what its predecessor was configured with.
+type KeyPolicyDeleter func(apiKeyIDs []string) error
 type Option func(*Service)
 
 type Service struct {
@@ -43,6 +50,7 @@ type Service struct {
 	validateChannelGroup ChannelGroupValidator
 	validateEntry        EntryValidator
 	deleteLogs           LogsDeleter
+	deleteKeyPolicies    KeyPolicyDeleter
 	// expectedVersion is the api_keys / permission-profile collection version
 	// a full replacement was computed from; configsync.AnyVersion when the
 	// client sent none.
@@ -99,6 +107,13 @@ func WithLogsDeleter(fn LogsDeleter) Option {
 	}
 }
 
+// WithKeyPolicyDeleter sets what runs after keys are deleted, with their ids.
+func WithKeyPolicyDeleter(fn KeyPolicyDeleter) Option {
+	return func(s *Service) {
+		s.deleteKeyPolicies = fn
+	}
+}
+
 // WithExpectedVersion makes full replacements fail with a version conflict
 // unless the collection is still at version.
 func WithExpectedVersion(version int64) Option {
@@ -148,8 +163,63 @@ func (s *Service) ReplaceKeys(keys []string) error {
 			rows = append(rows, usage.APIKeyRow{Key: trimmed})
 		}
 	}
+	before := s.keyIDs()
 	_, err := usage.ReplaceAllAPIKeysForTenantExpect(context.Background(), s.tenantID, rows, s.expectedVersion)
+	if err == nil {
+		s.forgetRemovedKeys(before)
+	}
 	return err
+}
+
+// keyIDs is the set of ids of the tenant's keys, or nil when nothing needs
+// them (no one is waiting to hear of deleted keys).
+func (s *Service) keyIDs() map[string]struct{} {
+	if s.deleteKeyPolicies == nil {
+		return nil
+	}
+	ids := map[string]struct{}{}
+	for _, row := range usage.ListAPIKeysForTenant(s.tenantID) {
+		if id := strings.TrimSpace(row.ID); id != "" {
+			ids[id] = struct{}{}
+		}
+	}
+	return ids
+}
+
+// forgetRemovedKeys passes on the keys that were in before and no longer are.
+func (s *Service) forgetRemovedKeys(before map[string]struct{}) {
+	if len(before) == 0 {
+		return
+	}
+	var removed []string
+	for id := range s.keyIDs() {
+		delete(before, id)
+	}
+	for id := range before {
+		removed = append(removed, id)
+	}
+	s.forgetKeys(removed...)
+}
+
+// forgetKeys tells the features that keep something per key that these keys are
+// gone. The keys are already deleted, so a failure here is logged and not
+// returned: the caller asked for a key to be deleted, and it was.
+func (s *Service) forgetKeys(ids ...string) {
+	if s.deleteKeyPolicies == nil {
+		return
+	}
+	var known []string
+	for _, id := range ids {
+		if id = strings.TrimSpace(id); id != "" {
+			known = append(known, id)
+		}
+	}
+	if len(known) == 0 {
+		return
+	}
+	if err := s.deleteKeyPolicies(known); err != nil {
+		log.WithError(err).Warnf("api key: deleted %d key(s) but could not delete what was configured for them", len(known))
+	}
 }
 
 func (s *Service) PatchKey(oldKey string, newKey string) error {
@@ -169,7 +239,11 @@ func (s *Service) PatchKey(oldKey string, newKey string) error {
 		return usage.UpsertAPIKeyForTenant(s.tenantID, usage.APIKeyRow{Key: newKey})
 	}
 	if newKey == "" {
-		return usage.DeleteAPIKeyByIDForTenant(s.tenantID, existing.ID)
+		if err := usage.DeleteAPIKeyByIDForTenant(s.tenantID, existing.ID); err != nil {
+			return err
+		}
+		s.forgetKeys(strings.TrimSpace(existing.ID))
+		return nil
 	}
 	updated := *existing
 	updated.Key = newKey
@@ -181,7 +255,15 @@ func (s *Service) DeleteKey(key string) error {
 	if key == "" {
 		return ErrMissingValue
 	}
-	return usage.DeleteAPIKeyForTenant(s.tenantID, key)
+	id := ""
+	if existing := usage.GetAPIKeyForTenant(s.tenantID, key); existing != nil {
+		id = strings.TrimSpace(existing.ID)
+	}
+	if err := usage.DeleteAPIKeyForTenant(s.tenantID, key); err != nil {
+		return err
+	}
+	s.forgetKeys(id)
+	return nil
 }
 
 func (s *Service) PermissionProfiles() []usage.APIKeyPermissionProfileRow {
@@ -402,7 +484,11 @@ func (s *Service) ReplaceEntries(entries []config.APIKeyEntry) error {
 		}
 		rows = append(rows, usage.APIKeyRowFromConfig(normalized))
 	}
+	before := s.keyIDs()
 	_, err := usage.ReplaceAllAPIKeysForTenantExpect(context.Background(), s.tenantID, rows, s.expectedVersion)
+	if err == nil {
+		s.forgetRemovedKeys(before)
+	}
 	return err
 }
 
@@ -525,6 +611,7 @@ func (s *Service) DeleteEntry(key string, id *string, index *int, deleteLogs boo
 	if err := usage.DeleteAPIKeyByIDForTenant(s.tenantID, row.ID); err != nil {
 		return DeleteEntryResult{}, err
 	}
+	s.forgetKeys(apiKeyID)
 	_ = usage.DeleteDailySpendingReset(s.tenantID, apiKeyID)
 	_ = usage.DeleteDailySpendingResetEvents(s.tenantID, apiKeyID)
 

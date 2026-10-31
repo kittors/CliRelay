@@ -1,6 +1,7 @@
 package management
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	configaccess "github.com/router-for-me/CLIProxyAPI/v6/internal/access/config_access"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/configsync"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/contentmoderation"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/identity"
 	apikeysettings "github.com/router-for-me/CLIProxyAPI/v6/internal/management/settings/apikey"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/quota"
@@ -77,6 +79,15 @@ func (h *Handler) apiKeySettingsForTenant(tenantID string, extra ...apikeysettin
 			apikeysettings.WithEntryValidator(validateEntry),
 			apikeysettings.WithLogsDeleter(func(apiKeyID string) (int64, error) {
 				return usage.DeleteLogsByAPIKeyIDForTenant(tenantID, apiKeyID)
+			}),
+			// The word guard's override of a deleted key goes with it, so that a key
+			// created later under the same id does not inherit it.
+			apikeysettings.WithKeyPolicyDeleter(func(apiKeyIDs []string) error {
+				_, err := h.contentModerationStore().DeleteWordPoliciesForKeys(context.Background(), tenantID, apiKeyIDs)
+				if errors.Is(err, contentmoderation.ErrUnavailable) {
+					return nil // no database, no policies
+				}
+				return err
 			}),
 			apikeysettings.WithExpectedVersion(configsync.AnyVersion),
 		}, extra...)...,
