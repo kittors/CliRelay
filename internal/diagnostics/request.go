@@ -40,6 +40,7 @@ type RequestDiagnostic struct {
 	Auth        *AuthSnapshot
 	Quota       *QuotaSnapshot
 	ModelPolicy *ModelPolicySnapshot
+	LoopGuard   *LoopGuardSnapshot
 	Upstream    *UpstreamSnapshot
 	Egress      map[string]any
 	Response    *ResponseSnapshot
@@ -72,6 +73,7 @@ type Snapshot struct {
 	Auth           *AuthSnapshot        `json:"auth,omitempty"`
 	Quota          *QuotaSnapshot       `json:"quota,omitempty"`
 	ModelPolicy    *ModelPolicySnapshot `json:"model_policy,omitempty"`
+	LoopGuard      *LoopGuardSnapshot   `json:"loop_guard,omitempty"`
 	Upstream       *UpstreamSnapshot    `json:"upstream,omitempty"`
 	Egress         map[string]any       `json:"egress,omitempty"`
 	Response       *ResponseSnapshot    `json:"response,omitempty"`
@@ -519,6 +521,7 @@ func (d *RequestDiagnostic) Snapshot() Snapshot {
 		Auth:           cloneAuth(d.Auth),
 		Quota:          cloneQuota(d.Quota),
 		ModelPolicy:    cloneModelPolicy(d.ModelPolicy),
+		LoopGuard:      cloneLoopGuard(d.LoopGuard),
 		Upstream:       cloneUpstream(d.Upstream),
 		Egress:         cloneAnyMap(d.Egress),
 		Response:       cloneResponse(d.Response),
@@ -549,6 +552,7 @@ func (s Snapshot) IsZero() bool {
 		s.Auth == nil &&
 		s.Quota == nil &&
 		s.ModelPolicy == nil &&
+		s.LoopGuard == nil &&
 		s.Upstream == nil &&
 		s.Egress == nil &&
 		s.Response == nil &&

@@ -200,6 +200,9 @@ type MonitorOverview struct {
 	Flows          MonitorFlowGraph     `json:"flows"`
 	RecentFailures []MonitorFailure     `json:"recent_failures"`
 	Filters        MonitorFilterOptions `json:"filters"`
+	// LoopGuard is what loop protection ended in the window; see
+	// MonitorLoopGuard. Backends without loop protection send no such field.
+	LoopGuard MonitorLoopGuard `json:"loop_guard"`
 }
 
 // MonitorRealtime is the last hour at one-minute resolution for the live strip.

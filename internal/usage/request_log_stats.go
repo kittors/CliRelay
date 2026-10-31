@@ -48,6 +48,11 @@ func queryStatsRequiresDetailAggregation(params LogQueryParams) bool {
 		return true
 	}
 
+	// Which check ended a request is a column of the detail rows only.
+	if condition, _ := guardKindCondition(params.GuardKinds); condition != "" {
+		return true
+	}
+
 	// QueryLogs combines channel selector kinds with OR, while rollup dimensions
 	// are conjunctive. A mixed selector therefore needs the shared detail WHERE.
 	channelSelectorKinds := 0

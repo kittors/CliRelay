@@ -128,6 +128,19 @@ func permissionForManagementRequest(method, path string) string {
 			return "system.config.write"
 		}
 		return "system.config.read"
+	// Loop protection is a tenant setting; the override of one API key is edited
+	// in that key's editor, so it follows the key permissions. Listed before the
+	// substring matches below: the :id of a key is not ours to keep out of them.
+	case strings.HasPrefix(relative, "/loop-guard/keys/"):
+		if write {
+			return "api_keys.write"
+		}
+		return "api_keys.read"
+	case relative == "/loop-guard":
+		if write {
+			return "tenant_settings.write"
+		}
+		return "tenant_settings.read"
 	// Sensitive request/error log files — not system.config.
 	case strings.HasPrefix(relative, "/request-error-logs"), strings.HasPrefix(relative, "/request-log-by-id"):
 		return "system.logs.read"

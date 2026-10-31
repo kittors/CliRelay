@@ -401,6 +401,7 @@ func (s *RequestStatistics) ingest(ctx context.Context, record coreusage.Record)
 		AuthIndex:             record.AuthIndex,
 		Failed:                failed,
 		Streaming:             record.Streaming,
+		GuardKind:             record.GuardKind,
 		Timestamp:             timestamp,
 		LatencyMs:             record.LatencyMs,
 		FirstTokenMs:          record.FirstTokenMs,

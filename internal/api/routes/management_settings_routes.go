@@ -52,6 +52,12 @@ func registerManagementSettingsRoutes(group *gin.RouterGroup, h *managementhandl
 	group.PUT("/observability/metrics", h.PutObservabilityMetrics)
 	group.POST("/observability/metrics/token", h.PostObservabilityMetricsToken)
 
+	// Loop protection of the tenant, and the override of one of its API keys.
+	group.GET("/loop-guard", h.GetLoopGuard)
+	group.PUT("/loop-guard", h.PutLoopGuard)
+	group.GET("/loop-guard/keys/:id", h.GetLoopGuardKey)
+	group.PUT("/loop-guard/keys/:id", h.PutLoopGuardKey)
+
 	group.GET("/proxy-url", h.GetProxyURL)
 	group.PUT("/proxy-url", h.PutProxyURL)
 	group.PATCH("/proxy-url", h.PutProxyURL)

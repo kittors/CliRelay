@@ -3,11 +3,18 @@ package handlers
 import (
 	"context"
 	"net/http"
+
+	"github.com/router-for-me/CLIProxyAPI/v6/sdk/loopdetect"
 )
 
 // ExecuteWithAuthManager executes a non-streaming request via the core auth
 // manager. A model that names a virtual model runs on its members in turn.
 func (h *BaseAPIHandler) ExecuteWithAuthManager(ctx context.Context, handlerType, modelName string, rawJSON []byte, alt string) ([]byte, http.Header, *StreamErrorMessage) {
+	// A conversation stuck in a tool-call loop is answered here, not sent
+	// upstream: for a virtual model once, whichever member would have run it.
+	if reply, ok := toolLoopReply(ctx, handlerType, modelName, rawJSON, alt, false); ok {
+		return reply.JSON(), loopGuardHeaders(loopdetect.KindToolLoop), nil
+	}
 	plan := virtualModelPlanFor(ctx, modelName)
 	if plan == nil {
 		return h.executeModel(ctx, handlerType, modelName, rawJSON, alt)
@@ -60,7 +67,7 @@ func (h *BaseAPIHandler) executeVirtualModel(
 // The response headers name the member the stream started on. A member that
 // takes over before the first byte cannot change them: the protocol handler
 // sends them as soon as this returns. The route trace records the change.
-func (h *BaseAPIHandler) startVirtualModelStream(ctx context.Context, waits *streamStartWaits, plan *VirtualModelPlan, handlerType string, rawJSON []byte, alt string) (<-chan []byte, http.Header, <-chan *StreamErrorMessage, *StreamErrorMessage) {
+func (h *BaseAPIHandler) startVirtualModelStream(ctx context.Context, waits *streamStartWaits, guard *replyGuard, plan *VirtualModelPlan, handlerType string, rawJSON []byte, alt string) (<-chan []byte, http.Header, <-chan *StreamErrorMessage, *StreamErrorMessage) {
 	run := h.newVirtualModelRun(ctx, plan, true)
 	begin := func() (*startedStream, virtualModelTry, *StreamErrorMessage) {
 		for {
@@ -97,6 +104,6 @@ func (h *BaseAPIHandler) startVirtualModelStream(ctx context.Context, waits *str
 		run.served(try)
 		return stream, nil
 	}
-	dataChan, upstreamHeaders, errChan := h.forwardStream(handlerType, stream, next)
+	dataChan, upstreamHeaders, errChan := h.forwardStream(handlerType, stream, guard, next)
 	return dataChan, upstreamHeaders, errChan, nil
 }

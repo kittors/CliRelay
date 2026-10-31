@@ -32,6 +32,9 @@ const (
 	// DomainObservability covers the metrics endpoint settings (on/off and
 	// the scrape token's hash).
 	DomainObservability = "observability"
+	// DomainLoopGuard covers a tenant's loop protection settings, its own and
+	// those of its API keys.
+	DomainLoopGuard = "loop_guard"
 )
 
 // systemTenantID mirrors identity.SystemTenantID. It is duplicated rather than

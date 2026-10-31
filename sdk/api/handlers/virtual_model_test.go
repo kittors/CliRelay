@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -18,6 +19,7 @@ import (
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/routetrace"
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/sdk/loopdetect"
 	sdkrouting "github.com/router-for-me/CLIProxyAPI/v6/sdk/routing"
 )
 
@@ -29,6 +31,8 @@ type vmOutcome struct {
 	// alone when there is no payload (a failure before the first byte).
 	payload   string
 	streamErr error
+	// chunks, for a stream, are sent one by one before streamErr.
+	chunks []string
 }
 
 func vmFail(status int) vmOutcome {
@@ -82,9 +86,12 @@ func (e *vmExecutor) ExecuteStream(_ context.Context, _ *coreauth.Auth, req core
 	if out.err != nil {
 		return nil, out.err
 	}
-	ch := make(chan coreexecutor.StreamChunk, 2)
+	ch := make(chan coreexecutor.StreamChunk, len(out.chunks)+2)
 	if out.payload != "" {
 		ch <- coreexecutor.StreamChunk{Payload: []byte(out.payload)}
+	}
+	for _, chunk := range out.chunks {
+		ch <- coreexecutor.StreamChunk{Payload: []byte(chunk)}
 	}
 	if out.streamErr != nil {
 		ch <- coreexecutor.StreamChunk{Err: out.streamErr}
@@ -157,8 +164,12 @@ func plan(name string, models ...string) *VirtualModelPlan {
 }
 
 func memberSteps(trace *routetrace.Recorder) []routetrace.Step {
+	snapshot := trace.Snapshot()
+	if snapshot == nil {
+		return nil // nothing was recorded
+	}
 	var out []routetrace.Step
-	for _, step := range trace.Snapshot().Steps {
+	for _, step := range snapshot.Steps {
 		if step.Kind == routetrace.KindMember {
 			out = append(out, step)
 		}
@@ -480,6 +491,73 @@ func TestVirtualModelDoesNotWaitForACoolingMember(t *testing.T) {
 			t.Fatalf("calls = %v, want beta, then alpha after its cooldown", calls)
 		}
 	})
+}
+
+// chatToolLoop is a Chat Completions request whose conversation ends in n
+// identical tool turns.
+func chatToolLoop(n int) []byte {
+	var b strings.Builder
+	b.WriteString(`{"model":"smart","messages":[{"role":"user","content":"fix it"}`)
+	for i := 0; i < n; i++ {
+		fmt.Fprintf(&b, `,{"role":"assistant","content":null,"tool_calls":[{"id":"call_%d","type":"function","function":{"name":"Read","arguments":"{\"file_path\":\"/a.go\"}"}}]}`, i)
+		fmt.Fprintf(&b, `,{"role":"tool","tool_call_id":"call_%d","content":"package a"}`, i)
+	}
+	b.WriteString(`]}`)
+	return []byte(b.String())
+}
+
+// Loop protection sees a virtual model as the one request it is: the tool-loop
+// check answers before any member runs, and the reply check follows a stream
+// across a member that took over before the first byte.
+func TestVirtualModelUnderLoopProtection(t *testing.T) {
+	policy := &loopdetect.Policy{Tool: &loopdetect.ToolLimits{Repeats: 3}, Reply: &loopdetect.ReplyLimits{}}
+	protected := func(plan *VirtualModelPlan) (context.Context, *routetrace.Recorder) {
+		ctx, c, _, trace := virtualModelContext(plan)
+		c.Set(LoopGuardGateContextKey, LoopGuardGate(func() *loopdetect.Policy { return policy }))
+		return ctx, trace
+	}
+
+	exec := &vmExecutor{}
+	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, newVirtualModelManager(t, exec, "alpha", "beta"))
+	ctx, trace := protected(plan("smart", "alpha", "beta"))
+	_, headers, errMsg := handler.ExecuteWithAuthManager(ctx, "openai", "smart", chatToolLoop(3), "")
+	if errMsg != nil || strings.Join(headers[LoopGuardHeader], ",") != string(loopdetect.KindToolLoop) {
+		t.Fatalf("headers = %v, %+v, want the tool loop answered locally", headers, errMsg)
+	}
+	ctx, _ = protected(plan("smart", "alpha", "beta"))
+	dataChan, headers, errChan, startErr := handler.StartStreamWithAuthManager(ctx, "openai", "smart", chatToolLoop(3), "")
+	if startErr != nil || strings.Join(headers[LoopGuardHeader], ",") != string(loopdetect.KindToolLoop) {
+		t.Fatalf("stream headers = %v, %+v, want the tool loop answered locally", headers, startErr)
+	}
+	drainStream(t, dataChan, errChan)
+	if calls := exec.Calls(); len(calls) != 0 {
+		t.Fatalf("calls = %v, want no member asked to answer a tool loop", calls)
+	}
+	if steps := memberSteps(trace); len(steps) != 0 {
+		t.Fatalf("member steps = %+v, want none for a request answered locally", steps)
+	}
+
+	var looping []string
+	for i := 0; i < 400; i++ {
+		looping = append(looping, fmt.Sprintf(`{"id":"c","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":%q}}]}`, []string{"Okay.\n", "Hmm.\n"}[i%2]))
+	}
+	exec = &vmExecutor{outcomes: map[string][]vmOutcome{
+		"alpha": {vmFail(http.StatusServiceUnavailable)},
+		"beta":  {{chunks: looping}},
+	}}
+	handler = NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, newVirtualModelManager(t, exec, "alpha", "beta"))
+	ctx, _ = protected(plan("smart", "alpha", "beta"))
+	dataChan, _, errChan, startErr = handler.StartStreamWithAuthManager(ctx, "openai", "smart", []byte(`{"model":"smart"}`), "")
+	if startErr != nil {
+		t.Fatalf("StartStreamWithAuthManager: %v", startErr.Error)
+	}
+	out := drainStream(t, dataChan, errChan)
+	if out.status != http.StatusUnprocessableEntity || strings.Count(out.payload, "Okay.") > 200 {
+		t.Fatalf("outcome = status %d, %d lines, want beta's looping reply cut", out.status, strings.Count(out.payload, "\\n"))
+	}
+	if calls := exec.Calls(); strings.Join(calls, ",") != "alpha,beta" {
+		t.Fatalf("calls = %v, want alpha then beta", calls)
+	}
 }
 
 // guardCounter is a request guard that counts how often it looks at a body.

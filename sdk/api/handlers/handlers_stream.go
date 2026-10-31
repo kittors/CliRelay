@@ -2,10 +2,10 @@ package handlers
 
 import (
 	"context"
-	"errors"
 	"net/http"
 
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
+	"github.com/router-for-me/CLIProxyAPI/v6/sdk/loopdetect"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v6/sdk/translator"
 )
 
@@ -27,9 +27,19 @@ func (h *BaseAPIHandler) ExecuteStreamWithAuthManager(ctx context.Context, handl
 // Errors returned directly from this method happen before any downstream stream
 // bytes are written, so HTTP handlers can still return a normal JSON error.
 func (h *BaseAPIHandler) StartStreamWithAuthManager(ctx context.Context, handlerType, modelName string, rawJSON []byte, alt string) (<-chan []byte, http.Header, <-chan *StreamErrorMessage, *StreamErrorMessage) {
+	// A conversation stuck in a tool-call loop is answered here, not sent
+	// upstream: for a virtual model once, whichever member would have run it.
+	if reply, ok := toolLoopReply(ctx, handlerType, modelName, rawJSON, alt, true); ok {
+		data, errs := localStream(reply.Stream())
+		return data, loopGuardHeaders(loopdetect.KindToolLoop), errs, nil
+	}
+	// The guard's mark rides on ctx into the executor, whose usage reporter reads
+	// it when a cut reply's upstream request is canceled. Nothing is counted
+	// before the first byte, so a virtual model's members share one guard.
+	ctx, guard := newReplyGuard(ctx, modelName)
 	ctx, waits := h.startStreamWaits(ctx, alt)
 	if plan := virtualModelPlanFor(ctx, modelName); plan != nil {
-		return h.startVirtualModelStream(ctx, waits, plan, handlerType, rawJSON, alt)
+		return h.startVirtualModelStream(ctx, waits, guard, plan, handlerType, rawJSON, alt)
 	}
 	stream, errMsg := h.beginStream(ctx, handlerType, modelName, rawJSON, alt)
 	if committed := waits.handOver(); errMsg != nil {
@@ -38,7 +48,7 @@ func (h *BaseAPIHandler) StartStreamWithAuthManager(ctx context.Context, handler
 		}
 		return nil, nil, nil, errMsg
 	}
-	dataChan, upstreamHeaders, errChan := h.forwardStream(handlerType, stream, nil)
+	dataChan, upstreamHeaders, errChan := h.forwardStream(handlerType, stream, guard, nil)
 	return dataChan, upstreamHeaders, errChan, nil
 }
 
@@ -77,21 +87,7 @@ func (h *BaseAPIHandler) beginStream(ctx context.Context, handlerType, modelName
 	opts.Metadata = reqMeta
 	streamResult, err := h.AuthManager.ExecuteStream(ctx, providers, req, opts)
 	if err != nil {
-		status := http.StatusInternalServerError
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			status = 499 // Client Closed Request
-		} else if se, ok := err.(interface{ StatusCode() int }); ok && se != nil {
-			if code := se.StatusCode(); code > 0 {
-				status = code
-			}
-		}
-		var addon http.Header
-		if he, ok := err.(interface{ Headers() http.Header }); ok && he != nil {
-			if hdr := he.Headers(); hdr != nil {
-				addon = hdr.Clone()
-			}
-		}
-		return nil, &StreamErrorMessage{StatusCode: status, Error: err, Addon: addon}
+		return nil, executionError(err)
 	}
 	return &startedStream{
 		ctx:    ctx,
@@ -102,9 +98,9 @@ func (h *BaseAPIHandler) beginStream(ctx context.Context, handlerType, modelName
 
 // forwardStream hands a started stream to a goroutine that forwards it to the
 // protocol handler, retrying on another account while nothing has reached the
-// client. next, when set, moves a virtual model on to its next member once
-// those retries are used up.
-func (h *BaseAPIHandler) forwardStream(handlerType string, stream *startedStream, next streamNextMember) (<-chan []byte, http.Header, <-chan *StreamErrorMessage) {
+// client. guard ends a reply that has become a loop; next, when set, moves a
+// virtual model on to its next member once those retries are used up.
+func (h *BaseAPIHandler) forwardStream(handlerType string, stream *startedStream, guard *replyGuard, next streamNextMember) (<-chan []byte, http.Header, <-chan *StreamErrorMessage) {
 	passthroughHeadersEnabled := PassthroughHeadersEnabled(h.Cfg)
 	// Capture upstream headers from the initial connection synchronously before the goroutine starts.
 	// Keep a mutable map so bootstrap retries can replace it before first payload is sent.
@@ -121,7 +117,7 @@ func (h *BaseAPIHandler) forwardStream(handlerType string, stream *startedStream
 	maxBootstrapRetries := StreamingBootstrapRetries(h.Cfg)
 	if maxBootstrapRetries <= 0 && next == nil {
 		// The no-retry path does not close over the request (see streamRetryState).
-		go forwardStreamWithoutBootstrapRetry(stream.ctx, handlerType, chunks, dataChan, errChan)
+		go forwardStreamWithoutBootstrapRetry(stream.ctx, handlerType, chunks, dataChan, errChan, guard)
 	} else {
 		go forwardStreamWithBootstrapRetry(
 			stream.ctx,
@@ -134,6 +130,7 @@ func (h *BaseAPIHandler) forwardStream(handlerType string, stream *startedStream
 			errChan,
 			max(maxBootstrapRetries, 0),
 			newStreamFailover(h, stream.result),
+			guard,
 			next,
 		)
 	}
@@ -162,6 +159,7 @@ func forwardStreamWithoutBootstrapRetry(
 	chunks <-chan coreexecutor.StreamChunk,
 	dataChan chan<- []byte,
 	errChan chan<- *StreamErrorMessage,
+	guard *replyGuard,
 ) {
 	defer close(dataChan)
 	defer close(errChan)
@@ -183,6 +181,10 @@ func forwardStreamWithoutBootstrapRetry(
 				return
 			}
 		}
+		if cut := guard.inspect(chunk.Payload); cut != nil {
+			_ = sendStreamErr(ctx, errChan, cut)
+			return
+		}
 		if !sendStreamData(ctx, dataChan, cloneBytes(chunk.Payload)) {
 			return
 		}
@@ -200,6 +202,7 @@ func forwardStreamWithBootstrapRetry(
 	errChan chan<- *StreamErrorMessage,
 	maxBootstrapRetries int,
 	failover *streamFailover,
+	guard *replyGuard,
 	next streamNextMember,
 ) {
 	defer close(dataChan)
@@ -258,6 +261,10 @@ outer:
 					_ = sendStreamErr(ctx, errChan, &StreamErrorMessage{StatusCode: http.StatusBadGateway, Error: err})
 					return
 				}
+			}
+			if cut := guard.inspect(chunk.Payload); cut != nil {
+				_ = sendStreamErr(ctx, errChan, cut)
+				return
 			}
 			sentPayload = true
 			// Past the first byte there is no retry, so nothing needs the request
