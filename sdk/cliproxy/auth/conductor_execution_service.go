@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
+	"github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/routetrace"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v6/sdk/translator"
 )
 
@@ -41,8 +42,10 @@ type mixedExecutionCandidate struct {
 	auth     *Auth
 	executor ProviderExecutor
 	provider string
-	execCtx  context.Context
-	execReq  cliproxyexecutor.Request
+	// group is the route group the credential was picked in.
+	group   string
+	execCtx context.Context
+	execReq cliproxyexecutor.Request
 }
 
 func newExecutionService(manager *Manager) executionService {
@@ -84,6 +87,11 @@ func runExecutionWithRetry[T any](
 
 	_, maxWait := manager.retrySettings()
 	budget := retryWaitBudgetFor(ctx)
+	trace := routetrace.FromContext(ctx)
+	trace.SetRequest(req.Model, opts.Stream, isSinglePickRouteRequest(opts.Metadata))
+	// A failed attempt waits for the decision after it (see routetrace); the
+	// last one has none but returning.
+	defer trace.SettlePending()
 
 	var lastErr error
 	for attempt := 0; ; attempt++ {
@@ -96,7 +104,10 @@ func runExecutionWithRetry[T any](
 		if !shouldRetry {
 			break
 		}
-		if errWait := plan.run(ctx); errWait != nil {
+		wait := trace.BeginWait(plan.kind, plan.wait)
+		errWait := plan.run(ctx)
+		wait.End(errWait)
+		if errWait != nil {
 			return zero, errWait
 		}
 	}
@@ -118,6 +129,7 @@ func (s executionService) executeMixedOnce(ctx context.Context, providers []stri
 			return cliproxyexecutor.Response{}, errReady
 		}
 
+		attempt := beginTracedAttempt(ctx, candidate, scope.routeModel)
 		resp, errExec := candidate.executor.Execute(candidate.execCtx, candidate.auth, candidate.execReq, scope.opts)
 		releaseSlot()
 		result := Result{
@@ -128,6 +140,7 @@ func (s executionService) executeMixedOnce(ctx context.Context, providers []stri
 		}
 		if errExec != nil {
 			if errCtx := candidate.execCtx.Err(); errCtx != nil {
+				attempt.Finish(canceledOutcome(errCtx))
 				return cliproxyexecutor.Response{}, errCtx
 			}
 			result.Error = errorFromExecution(errExec)
@@ -136,6 +149,7 @@ func (s executionService) executeMixedOnce(ctx context.Context, providers []stri
 				result.RetryAfter = ra
 			}
 			s.manager.MarkResult(candidate.execCtx, result)
+			s.manager.finishTracedAttempt(attempt, candidate.auth.ID, scope.routeModel, errExec, false)
 			if isRequestInvalidError(errExec) || scope.singlePickRoute {
 				return cliproxyexecutor.Response{}, errExec
 			}
@@ -145,6 +159,7 @@ func (s executionService) executeMixedOnce(ctx context.Context, providers []stri
 
 		result.Headers = resp.Headers.Clone()
 		s.manager.MarkResult(candidate.execCtx, result)
+		attempt.Finish(routetrace.Outcome{Outcome: routetrace.OutcomeSuccess})
 		return resp, nil
 	}
 }
@@ -161,12 +176,17 @@ func (s executionService) executeCountMixedOnce(ctx context.Context, providers [
 			return cliproxyexecutor.Response{}, errReady
 		}
 
+		attempt := beginTracedAttempt(ctx, candidate, scope.routeModel)
 		resp, errExec := candidate.executor.CountTokens(candidate.execCtx, candidate.auth, candidate.execReq, scope.opts)
 		releaseSlot()
 		if errExec != nil {
 			if errCtx := candidate.execCtx.Err(); errCtx != nil {
+				attempt.Finish(canceledOutcome(errCtx))
 				return cliproxyexecutor.Response{}, errCtx
 			}
+			// A token count leaves the account's state alone (no MarkResult),
+			// so its failure is described from the error alone.
+			attempt.Finish(tracedFailure(errExec))
 			if isRequestInvalidError(errExec) || scope.singlePickRoute {
 				return cliproxyexecutor.Response{}, errExec
 			}
@@ -174,6 +194,7 @@ func (s executionService) executeCountMixedOnce(ctx context.Context, providers [
 			continue
 		}
 
+		attempt.Finish(routetrace.Outcome{Outcome: routetrace.OutcomeSuccess})
 		return resp, nil
 	}
 }
@@ -190,10 +211,12 @@ func (s executionService) executeStreamMixedOnce(ctx context.Context, providers 
 			return nil, errReady
 		}
 
+		attempt := beginTracedAttempt(ctx, candidate, scope.routeModel)
 		streamResult, errStream := s.executeStreamAttempt(candidate, &scope)
 		if errStream != nil {
 			releaseSlot()
 			if errCtx := candidate.execCtx.Err(); errCtx != nil {
+				attempt.Finish(canceledOutcome(errCtx))
 				return nil, errCtx
 			}
 			rerr := errorFromExecution(errStream)
@@ -207,6 +230,7 @@ func (s executionService) executeStreamMixedOnce(ctx context.Context, providers 
 				Headers:    headersFromError(errStream),
 			}
 			s.manager.MarkResult(candidate.execCtx, result)
+			s.manager.finishTracedAttempt(attempt, candidate.auth.ID, scope.routeModel, errStream, true)
 			if isRequestInvalidError(errStream) || scope.singlePickRoute {
 				return nil, errStream
 			}
@@ -215,7 +239,8 @@ func (s executionService) executeStreamMixedOnce(ctx context.Context, providers 
 			continue
 		}
 
-		wrapped := s.wrapStreamResult(candidate.execCtx, candidate.auth, candidate.provider, scope.routeModel, scope.opts.SourceFormat, streamResult, releaseSlot)
+		attempt.Streaming()
+		wrapped := s.wrapStreamResult(candidate.execCtx, candidate.auth, candidate.provider, scope.routeModel, scope.opts.SourceFormat, streamResult, releaseSlot, attempt)
 		wrapped.AuthID = candidate.auth.ID
 		wrapped.FailedAuthIDs = scope.failed
 		return wrapped, nil
@@ -260,7 +285,9 @@ func (s executionService) nextReadyCandidate(ctx context.Context, scope *mixedEx
 			if !errors.Is(errWait, errNoSaturatedCandidate) {
 				scope.lastErr = errWait
 			}
-			return nil, nil, resolveMixedPickError(scope.lastErr, errPick)
+			errExhausted := resolveMixedPickError(scope.lastErr, errPick)
+			s.traceExhausted(ctx, scope, errExhausted)
+			return nil, nil, errExhausted
 		}
 		if errModeration := s.manager.moderateRequest(candidate.execCtx, candidate.auth, scope.opts); errModeration != nil {
 			return nil, nil, errModeration
@@ -273,6 +300,7 @@ func (s executionService) nextReadyCandidate(ctx context.Context, scope *mixedEx
 		if isRequestInvalidError(errSlot) {
 			return nil, nil, errSlot
 		}
+		traceSkip(ctx, candidate)
 		scope.saturated = append(scope.saturated, candidate)
 		scope.lastErr = errSlot
 	}
@@ -288,14 +316,18 @@ func (s executionService) waitForSaturatedSlot(ctx context.Context, scope *mixed
 	for _, candidate := range scope.saturated {
 		auths = append(auths, candidate.auth)
 	}
+	queue := routetrace.FromContext(ctx).BeginQueue(len(auths))
 	releaseSlot, authID, err := s.manager.waitAccountSlot(ctx, auths)
 	if err != nil {
+		queue.End(err)
 		return nil, nil, err
 	}
 	for i, candidate := range scope.saturated {
 		if candidate.auth.ID != authID {
 			continue
 		}
+		queue.Granted(tracedAttemptInfo(candidate))
+		queue.End(nil)
 		// Consume the entry: an account that has had its turn must not be queued
 		// for again, otherwise a candidate whose request keeps failing would loop
 		// through the queue instead of failing over or giving up.
@@ -304,11 +336,12 @@ func (s executionService) waitForSaturatedSlot(ctx context.Context, scope *mixed
 	}
 	// Unreachable in practice; release rather than leak the slot we were granted.
 	releaseSlot()
+	queue.End(errNoSaturatedCandidate)
 	return nil, nil, errNoSaturatedCandidate
 }
 
 func (s executionService) nextMixedCandidate(ctx context.Context, scope *mixedExecutionScope, req cliproxyexecutor.Request) (*mixedExecutionCandidate, error) {
-	auth, executor, provider, errPick := s.manager.pickNextMixed(ctx, scope.providers, scope.routeModel, scope.opts, scope.tried)
+	auth, executor, provider, routeGroup, errPick := newSelectorService(s.manager).pickMixed(ctx, scope.providers, scope.routeModel, scope.opts, scope.tried)
 	if errPick != nil {
 		return nil, errPick
 	}
@@ -322,6 +355,7 @@ func (s executionService) nextMixedCandidate(ctx context.Context, scope *mixedEx
 		auth:     auth,
 		executor: executor,
 		provider: provider,
+		group:    routeGroup,
 		execCtx:  s.executionContext(ctx, auth, scope.routeModel),
 		execReq:  s.rewriteRequestForAuth(req, scope.routeModel, auth),
 	}, nil
@@ -352,6 +386,7 @@ func (s executionService) wrapStreamResult(
 	sourceFormat sdktranslator.Format,
 	streamResult *cliproxyexecutor.StreamResult,
 	releaseSlot func(),
+	attempt *routetrace.Attempt,
 ) *cliproxyexecutor.StreamResult {
 	out := make(chan cliproxyexecutor.StreamChunk)
 	streamHeaders := streamResult.Headers.Clone()
@@ -361,9 +396,16 @@ func (s executionService) wrapStreamResult(
 			defer releaseSlot()
 		}
 		var failed bool
+		// delivered is whether data reached the handler, which is what lets a
+		// handler still move a failed stream to another account.
+		delivered := false
 		forward := true
 		completionTracker := newResponsesStreamCompletionTracker(sourceFormat)
 		for chunk := range streamChunks {
+			if chunk.Err == nil && !delivered && hasFirstToken(chunk.Payload) {
+				delivered = true
+				attempt.FirstToken()
+			}
 			if chunk.Err == nil && completionTracker != nil && len(chunk.Payload) > 0 {
 				completionTracker.Observe(chunk.Payload)
 			}
@@ -383,6 +425,7 @@ func (s executionService) wrapStreamResult(
 					RetryAfter: retryAfterFromError(chunk.Err),
 					Headers:    chunkHeaders,
 				})
+				s.manager.finishTracedAttempt(attempt, streamAuth.ID, routeModel, chunk.Err, !delivered)
 			}
 			if !forward {
 				continue
@@ -410,6 +453,7 @@ func (s executionService) wrapStreamResult(
 					RetryAfter: retryAfterFromError(err),
 					Headers:    headers.Clone(),
 				})
+				s.manager.finishTracedAttempt(attempt, streamAuth.ID, routeModel, err, !delivered)
 				if forward {
 					chunk := cliproxyexecutor.StreamChunk{Err: err}
 					if streamCtx == nil {
@@ -431,6 +475,15 @@ func (s executionService) wrapStreamResult(
 				Success:  true,
 				Headers:  headers.Clone(),
 			})
+			attempt.Finish(routetrace.Outcome{Outcome: routetrace.OutcomeSuccess})
+		}
+		// The stream is over. One that failed before anything reached the
+		// handler may still be moved to another account by the handler's
+		// bootstrap retry, so it waits for that decision as a failed attempt
+		// waits for the scheduler's; the request's end settles it at the
+		// latest. Any other stream is settled now.
+		if !failed || delivered {
+			attempt.Settle()
 		}
 	}(execCtx, auth.Clone(), provider, streamResult.Chunks, streamHeaders)
 	return &cliproxyexecutor.StreamResult{

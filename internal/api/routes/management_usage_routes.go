@@ -23,6 +23,8 @@ func registerManagementUsageRoutes(group *gin.RouterGroup, h *managementhandlers
 	// the panel polls more often than the overview.
 	group.GET("/usage/monitor/overview", usageLogs.GetUsageMonitorOverview)
 	group.GET("/usage/monitor/realtime", usageLogs.GetUsageMonitorRealtime)
+	// The requests this process is serving now, with the stage each is in.
+	group.GET("/usage/monitor/in-flight", usageLogs.GetInFlightRequests)
 
 	// Backend-owned AI account latest status (replaces browser fan-out).
 	group.GET("/ai-accounts/status", h.GetAIAccountStatus)

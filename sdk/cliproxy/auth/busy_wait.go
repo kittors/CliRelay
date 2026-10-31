@@ -152,6 +152,8 @@ func (b *retryWaitBudget) charge(waited time.Duration) {
 
 // retryPlan is a decided wait. A busy wait holds a waiter slot until it ends.
 type retryPlan struct {
+	// kind is SimulatedRetryWaitRequestRetry or SimulatedRetryWaitBusyWait.
+	kind    string
 	wait    time.Duration
 	budget  *retryWaitBudget
 	release func()
@@ -187,7 +189,7 @@ func (m *Manager) nextRetryPlan(
 	// request-retry wait cannot tell them apart.
 	if _, excluding := retryExclusionsFromMetadata(opts.Metadata); !excluding {
 		if wait, ok := m.shouldRetryAfterError(err, attempt, providers, model, maxWait, opts.Metadata); ok {
-			return retryPlan{wait: wait}, true
+			return retryPlan{kind: SimulatedRetryWaitRequestRetry, wait: wait}, true
 		}
 	}
 	if !busyWait {
@@ -205,7 +207,7 @@ func (m *Manager) nextRetryPlan(
 		release()
 		return retryPlan{}, false
 	}
-	return retryPlan{wait: wait, budget: budget, release: release}, true
+	return retryPlan{kind: SimulatedRetryWaitBusyWait, wait: wait, budget: budget, release: release}, true
 }
 
 // acquireBusyWaiter takes one of the process-wide waiter slots, if any is

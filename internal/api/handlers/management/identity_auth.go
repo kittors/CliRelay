@@ -605,6 +605,7 @@ func isTenantScopedManagementPath(path string) bool {
 		relative == "/usage/entity-stats",
 		relative == "/usage/monitor/overview",
 		relative == "/usage/monitor/realtime",
+		relative == "/usage/monitor/in-flight",
 		relative == "/usage/auth-file-group-trend",
 		relative == "/usage/auth-file-trend",
 		relative == "/usage/auth-file-quota-snapshot",

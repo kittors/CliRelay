@@ -98,7 +98,7 @@ func (e *scriptedExecutor) Calls() []string {
 
 // newBusyWaitManager is a manager whose requests may busy-wait for up to a
 // minute, the usual setting of a group that opts in.
-func newBusyWaitManager(t *testing.T, exec *scriptedExecutor, ids ...string) *Manager {
+func newBusyWaitManager(t *testing.T, exec ProviderExecutor, ids ...string) *Manager {
 	t.Helper()
 	mgr := newPlainManager(t, exec, ids...)
 	enableBusyWait(mgr, 60)
@@ -107,7 +107,7 @@ func newBusyWaitManager(t *testing.T, exec *scriptedExecutor, ids ...string) *Ma
 
 // newPlainManager has no routing configuration at all: whatever it does is what
 // a deployment does that never touched the stream guards.
-func newPlainManager(t *testing.T, exec *scriptedExecutor, ids ...string) *Manager {
+func newPlainManager(t *testing.T, exec ProviderExecutor, ids ...string) *Manager {
 	t.Helper()
 	mgr := NewManager(nil, nil, nil)
 	mgr.RegisterExecutor(exec)

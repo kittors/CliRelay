@@ -149,6 +149,20 @@ type wsTurnServer struct {
 
 func newWSTurnServer(t *testing.T, exec *wsTurnExecutor, quotaGate handlers.QuotaGate, modelGate handlers.ModelGate) *wsTurnServer {
 	t.Helper()
+	return newWSTurnServerWith(t, exec, func(c *gin.Context) {
+		if quotaGate != nil {
+			c.Set(handlers.QuotaGateContextKey, quotaGate)
+		}
+		if modelGate != nil {
+			c.Set(handlers.ModelGateContextKey, modelGate)
+		}
+	})
+}
+
+// newWSTurnServerWith serves ResponsesWebsocket after prepare has set up the
+// upgrade request, the way the middleware in front of the handler does.
+func newWSTurnServerWith(t *testing.T, exec *wsTurnExecutor, prepare func(c *gin.Context)) *wsTurnServer {
+	t.Helper()
 	gin.SetMode(gin.TestMode)
 	manager := coreauth.NewManager(nil, nil, nil)
 	manager.RegisterExecutor(exec)
@@ -163,12 +177,7 @@ func newWSTurnServer(t *testing.T, exec *wsTurnExecutor, quotaGate handlers.Quot
 	s := &wsTurnServer{t: t, handlerDone: make(chan struct{}, 4)}
 	engine := gin.New()
 	engine.GET("/v1/responses", func(c *gin.Context) {
-		if quotaGate != nil {
-			c.Set(handlers.QuotaGateContextKey, quotaGate)
-		}
-		if modelGate != nil {
-			c.Set(handlers.ModelGateContextKey, modelGate)
-		}
+		prepare(c)
 		h.ResponsesWebsocket(c)
 		s.handlerDone <- struct{}{}
 	})
