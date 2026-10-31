@@ -29,9 +29,10 @@ type RuntimeModerator struct {
 	// words supplies the platform, tenant and API key word policies (see
 	// wordguard_runtime.go). It is the profile resolver itself when that can also
 	// load them; nil disables the word guard.
-	words          WordPolicyResolver
-	wordContexts   wordContextCache
-	policyWarnedAt atomic.Int64
+	words        WordPolicyResolver
+	wordContexts wordContextCache
+	// logs spaces the word guard's process log lines (see logLimiter).
+	logs logLimiter
 
 	lastGoodMu sync.RWMutex
 	lastGood   map[resolutionKey]resolvedProfile

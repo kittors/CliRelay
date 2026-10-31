@@ -3,8 +3,6 @@ package contentmoderation
 import (
 	"errors"
 	"fmt"
-	"regexp"
-	"regexp/syntax"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -76,11 +74,23 @@ const (
 
 	MaxWordRulesPerPolicy = 10000
 	MaxWordRegexPerPolicy = 50
+	// MaxWordRegexProgram bounds the compiled program of one regular expression,
+	// in instructions, and MaxWordRegexProgramTotal the sum over a policy. The
+	// source is short but its program is not: `(?:a{1000}){100}` is 16 bytes and
+	// a hundred thousand instructions, and the engine pays the program's size for
+	// every byte of text it reads. An ordinary expression (a phone number, an
+	// address) is a few dozen.
+	MaxWordRegexProgram      = 500
+	MaxWordRegexProgramTotal = 2000
 	// MaxWordKeywordRunes bounds a keyword; MaxWordRegexBytes a regular
 	// expression's source.
 	MaxWordKeywordRunes = 128
 	MaxWordRegexBytes   = 512
 	MaxWordNoteRunes    = 200
+	// MaxWordRuleIDBytes bounds a rule id a client supplies. The server issues
+	// uuids (36 bytes); the bound keeps a client from filling a policy with ids of
+	// any length it likes.
+	MaxWordRuleIDBytes = 64
 	// MaxWordReplacementRunes bounds the replacement text.
 	MaxWordReplacementRunes  = 64
 	MaxWordBlockMessageRunes = 500
@@ -149,7 +159,8 @@ type WordRuleProblem struct {
 	Kind    string `json:"kind"`
 	Pattern string `json:"pattern"`
 	// Code is one of: empty, too_long, unknown_kind, invalid_regex,
-	// matches_empty, too_many_rules, too_many_regex, control_characters.
+	// matches_empty, regex_too_complex, too_many_rules, too_many_regex,
+	// control_characters, invalid_text.
 	Code    string `json:"code"`
 	Message string `json:"message"`
 }
@@ -249,7 +260,7 @@ func normalizeWordRules(rules []WordRule) ([]WordRule, []WordRuleProblem) {
 	out := make([]WordRule, 0, len(rules))
 	seen := make(map[string]struct{}, len(rules))
 	usedIDs := make(map[string]struct{}, len(rules))
-	regexCount := 0
+	regexCount, programTotal := 0, 0
 	for index, rule := range rules {
 		rule.Kind = strings.TrimSpace(rule.Kind)
 		if rule.Kind == "" {
@@ -258,23 +269,28 @@ func normalizeWordRules(rules []WordRule) ([]WordRule, []WordRuleProblem) {
 		problem := func(code, message string) {
 			problems = append(problems, WordRuleProblem{Index: index, ID: rule.ID, Kind: rule.Kind, Pattern: rule.Pattern, Code: code, Message: message})
 		}
-		key, code, message := checkWordRule(&rule)
-		if code != "" {
-			problem(code, message)
-			continue
-		}
 		if rule.Kind == WordRuleRegex {
+			// Counted before the expression is compiled: a list of thousands of
+			// expressions is refused without compiling any beyond the limit.
 			if regexCount++; regexCount > MaxWordRegexPerPolicy {
 				problem("too_many_regex", fmt.Sprintf("a policy holds at most %d regular expressions", MaxWordRegexPerPolicy))
 				continue
 			}
 		}
-		if _, duplicate := seen[key]; duplicate {
+		checked, code, message := checkWordRule(&rule)
+		if code != "" {
+			problem(code, message)
+			continue
+		}
+		if _, duplicate := seen[checked.key]; duplicate {
 			// The same rule twice means the same thing; keep the first.
 			continue
 		}
-		seen[key] = struct{}{}
-		rule.ID = strings.TrimSpace(rule.ID)
+		if programTotal += checked.program; programTotal > MaxWordRegexProgramTotal {
+			problem("regex_too_complex", fmt.Sprintf("the policy's regular expressions together compile to more than %d instructions; simplify or remove some (counted repetitions such as {100} are the usual cause)", MaxWordRegexProgramTotal))
+			continue
+		}
+		seen[checked.key] = struct{}{}
 		if _, taken := usedIDs[rule.ID]; rule.ID == "" || taken {
 			rule.ID = uuid.NewString()
 		}
@@ -284,118 +300,63 @@ func normalizeWordRules(rules []WordRule) ([]WordRule, []WordRuleProblem) {
 	return out, problems
 }
 
-// checkWordRule validates and trims one rule in place. It returns the key two
-// rules with the same effect share, or the code and message of the problem.
-func checkWordRule(rule *WordRule) (key, code, message string) {
+// checkedWordRule is what checkWordRule learns about a rule that can be saved.
+type checkedWordRule struct {
+	// key is what two rules with the same effect share.
+	key string
+	// program is the size of a regular expression's compiled program, in
+	// instructions; zero for a keyword.
+	program int
+}
+
+// checkWordRule validates and trims one rule in place. It returns what the rule
+// amounts to, or the code and message of the problem.
+func checkWordRule(rule *WordRule) (checkedWordRule, string, string) {
+	rule.ID = strings.TrimSpace(rule.ID)
+	if len(rule.ID) > MaxWordRuleIDBytes {
+		return checkedWordRule{}, "too_long", fmt.Sprintf("the rule id is longer than %d bytes", MaxWordRuleIDBytes)
+	}
 	rule.Note = strings.TrimSpace(rule.Note)
 	if utf8.RuneCountInString(rule.Note) > MaxWordNoteRunes {
-		return "", "too_long", fmt.Sprintf("the note is longer than %d characters", MaxWordNoteRunes)
+		return checkedWordRule{}, "too_long", fmt.Sprintf("the note is longer than %d characters", MaxWordNoteRunes)
 	}
-	if !utf8.ValidString(rule.Pattern) || !utf8.ValidString(rule.Note) {
-		return "", "invalid_text", "the rule must be valid UTF-8"
+	if !utf8.ValidString(rule.ID) || !utf8.ValidString(rule.Pattern) || !utf8.ValidString(rule.Note) {
+		return checkedWordRule{}, "invalid_text", "the rule must be valid UTF-8"
 	}
 	switch rule.Kind {
 	case WordRuleKeyword:
 		rule.Pattern = strings.TrimSpace(rule.Pattern)
 		if rule.Pattern == "" {
-			return "", "empty", "the keyword is empty"
+			return checkedWordRule{}, "empty", "the keyword is empty"
 		}
 		if utf8.RuneCountInString(rule.Pattern) > MaxWordKeywordRunes {
-			return "", "too_long", fmt.Sprintf("a keyword is at most %d characters", MaxWordKeywordRunes)
+			return checkedWordRule{}, "too_long", fmt.Sprintf("a keyword is at most %d characters", MaxWordKeywordRunes)
 		}
 		normalized := normalizeForMatch(rule.Pattern, false)
 		if normalized == "" {
 			// Only zero-width characters and spaces: it would match every request.
-			return "", "empty", "the keyword has no visible characters"
+			return checkedWordRule{}, "empty", "the keyword has no visible characters"
 		}
-		return WordRuleKeyword + "\x00" + normalized, "", ""
+		return checkedWordRule{key: WordRuleKeyword + "\x00" + normalized}, "", ""
 	case WordRuleRegex:
 		// Only the line break a text file adds is stripped: a space can be part of
 		// a pattern.
 		rule.Pattern = strings.Trim(rule.Pattern, "\r\n")
 		if rule.Pattern == "" {
-			return "", "empty", "the regular expression is empty"
+			return checkedWordRule{}, "empty", "the regular expression is empty"
 		}
 		if strings.ContainsAny(rule.Pattern, "\r\n") {
-			return "", "control_characters", "a regular expression must be on one line"
+			return checkedWordRule{}, "control_characters", "a regular expression must be on one line"
 		}
 		if len(rule.Pattern) > MaxWordRegexBytes {
-			return "", "too_long", fmt.Sprintf("a regular expression is at most %d bytes", MaxWordRegexBytes)
+			return checkedWordRule{}, "too_long", fmt.Sprintf("a regular expression is at most %d bytes", MaxWordRegexBytes)
 		}
-		if _, code, message := compileWordRegex(rule.Pattern); code != "" {
-			return "", code, message
+		compiled, code, message := compileWordRegex(rule.Pattern)
+		if code != "" {
+			return checkedWordRule{}, code, message
 		}
-		return WordRuleRegex + "\x00" + rule.Pattern, "", ""
+		return checkedWordRule{key: WordRuleRegex + "\x00" + rule.Pattern, program: compiled.program}, "", ""
 	default:
-		return "", "unknown_kind", "the kind must be keyword or regex"
-	}
-}
-
-// compileWordRegex compiles a rule's expression the way matching will use it:
-// case-insensitive, leftmost-longest, run against normalized text. The (?i) is
-// a prefix rather than a wrapping group so that a pattern cannot close the
-// group itself and smuggle in an alternative.
-//
-// Go's regexp is RE2: matching time is linear in the text, so no pattern can
-// stall a request (there is no catastrophic backtracking to guard against).
-// The cost that remains is the pattern count times the text size, which the
-// per-policy limits bound.
-func compileWordRegex(pattern string) (*regexp.Regexp, string, string) {
-	const flags = "(?i)"
-	parsed, err := syntax.Parse(flags+pattern, syntax.Perl)
-	if err != nil {
-		return nil, "invalid_regex", cleanRegexError(err)
-	}
-	if minRegexLen(parsed) == 0 {
-		return nil, "matches_empty", "the expression can match an empty string, which would match every request"
-	}
-	compiled, err := regexp.Compile(flags + pattern)
-	if err != nil {
-		return nil, "invalid_regex", cleanRegexError(err)
-	}
-	compiled.Longest()
-	return compiled, "", ""
-}
-
-// cleanRegexError drops the prefix the standard library adds and the (?i)
-// this package puts in front of the operator's pattern.
-func cleanRegexError(err error) string {
-	message := strings.TrimPrefix(err.Error(), "error parsing regexp: ")
-	return strings.ReplaceAll(message, "(?i)", "")
-}
-
-// minRegexLen is the fewest characters a match of re can have. Zero-width
-// assertions (anchors, word boundaries) count as nothing, so an expression made
-// only of them, or that can skip everything it names, reports zero.
-func minRegexLen(re *syntax.Regexp) int {
-	switch re.Op {
-	case syntax.OpLiteral:
-		return len(re.Rune)
-	case syntax.OpCharClass, syntax.OpAnyChar, syntax.OpAnyCharNotNL:
-		return 1
-	case syntax.OpCapture, syntax.OpPlus:
-		return minRegexLen(re.Sub[0])
-	case syntax.OpRepeat:
-		return re.Min * minRegexLen(re.Sub[0])
-	case syntax.OpConcat:
-		total := 0
-		for _, sub := range re.Sub {
-			total += minRegexLen(sub)
-		}
-		return total
-	case syntax.OpAlternate:
-		shortest := -1
-		for _, sub := range re.Sub {
-			if n := minRegexLen(sub); shortest < 0 || n < shortest {
-				shortest = n
-			}
-		}
-		return max(shortest, 0)
-	case syntax.OpNoMatch:
-		// Matches nothing at all, which is harmless; it is not "empty".
-		return 1
-	default:
-		// Empty match, anchors, word boundaries, star and quest.
-		return 0
+		return checkedWordRule{}, "unknown_kind", "the kind must be keyword or regex"
 	}
 }

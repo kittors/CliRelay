@@ -2,7 +2,6 @@ package contentmoderation
 
 import (
 	"hash/maphash"
-	"regexp"
 	"sort"
 	"sync"
 	"unicode/utf8"
@@ -45,11 +44,6 @@ type wordMatcher struct {
 	regexes []compiledWordRegex
 }
 
-type compiledWordRegex struct {
-	re   *regexp.Regexp
-	rule int
-}
-
 // findOptions tunes a scan.
 type findOptions struct {
 	// more says the text may be followed by more of the same stream, so a match
@@ -57,6 +51,11 @@ type findOptions struct {
 	more bool
 	// limit stops the scan after that many hits. Zero means no limit.
 	limit int
+	// budget is charged for every regular expression run over the text, and an
+	// expression it cannot pay for is not run (see regexBudget). Nil means the
+	// scan is not limited, which only tests rely on: a request or a reply always
+	// brings its own.
+	budget *regexBudget
 }
 
 // find scans normalized text for the matcher's rules.
@@ -78,7 +77,17 @@ func (m *wordMatcher) find(text string, options findOptions) wordFind {
 		if options.limit > 0 && len(hits) >= options.limit && !options.more {
 			break
 		}
-		for _, loc := range compiled.re.FindAllStringIndex(text, -1) {
+		if !options.budget.take(int64(compiled.program) * int64(len(text))) {
+			continue // fail open: this expression sees none of this text
+		}
+		// With a limit and no more text to come, only the first few matches can
+		// matter; a text made of nothing but matches should not build a list of
+		// them all.
+		count := -1
+		if options.limit > 0 && !options.more {
+			count = options.limit
+		}
+		for _, loc := range compiled.re.FindAllStringIndex(text, count) {
 			if loc[1] <= loc[0] {
 				continue // validated away at save time; never act on an empty match
 			}
@@ -233,8 +242,9 @@ func compileWordMatcher(refs []wordRuleRef, fold bool) *wordMatcher {
 	for index, ref := range matcher.rules {
 		switch ref.Kind {
 		case WordRuleRegex:
-			if re, code, _ := compileWordRegex(ref.Pattern); code == "" {
-				matcher.regexes = append(matcher.regexes, compiledWordRegex{re: re, rule: index})
+			if compiled, code, _ := compileWordRegex(ref.Pattern); code == "" {
+				compiled.rule = index
+				matcher.regexes = append(matcher.regexes, compiled)
 			}
 		default:
 			if normalized := normalizeForMatch(ref.Pattern, fold); normalized != "" {

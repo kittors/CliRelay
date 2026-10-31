@@ -41,10 +41,14 @@ func ResolveWordSettings(below, policy *WordPolicy) WordSettings {
 
 // WordPolicyLimits are the bounds a policy is saved within.
 type WordPolicyLimits struct {
-	MaxRules             int `json:"max_rules"`
-	MaxRegex             int `json:"max_regex"`
-	MaxKeywordChars      int `json:"max_keyword_chars"`
-	MaxRegexBytes        int `json:"max_regex_bytes"`
+	MaxRules        int `json:"max_rules"`
+	MaxRegex        int `json:"max_regex"`
+	MaxKeywordChars int `json:"max_keyword_chars"`
+	MaxRegexBytes   int `json:"max_regex_bytes"`
+	// MaxRegexProgram and MaxRegexProgramTotal bound the compiled size of one
+	// expression and of all of a policy's, in instructions.
+	MaxRegexProgram      int `json:"max_regex_program"`
+	MaxRegexProgramTotal int `json:"max_regex_program_total"`
 	MaxNoteChars         int `json:"max_note_chars"`
 	MaxReplacementChars  int `json:"max_replacement_chars"`
 	MaxBlockMessageChars int `json:"max_block_message_chars"`
@@ -57,6 +61,8 @@ func WordLimits() WordPolicyLimits {
 		MaxRegex:             MaxWordRegexPerPolicy,
 		MaxKeywordChars:      MaxWordKeywordRunes,
 		MaxRegexBytes:        MaxWordRegexBytes,
+		MaxRegexProgram:      MaxWordRegexProgram,
+		MaxRegexProgramTotal: MaxWordRegexProgramTotal,
 		MaxNoteChars:         MaxWordNoteRunes,
 		MaxReplacementChars:  MaxWordReplacementRunes,
 		MaxBlockMessageChars: MaxWordBlockMessageRunes,

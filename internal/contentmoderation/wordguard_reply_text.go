@@ -23,6 +23,11 @@ const maxReplyHold = 4096
 type replyEngine struct {
 	contexts []wordContext
 	snapshot *WordGuardSnapshot
+	// budget limits the regular expressions' work over the whole reply, however
+	// many pieces it arrives in. A reply is not bounded the way a request is by
+	// its body, so this is the bound that keeps a long answer from costing more
+	// than a request may.
+	budget *regexBudget
 }
 
 // newReplyEngine returns the engine for the contexts that filter replies, or
@@ -37,7 +42,7 @@ func newReplyEngine(contexts []wordContext, snapshot *WordGuardSnapshot) *replyE
 	if len(chosen) == 0 {
 		return nil
 	}
-	return &replyEngine{contexts: chosen, snapshot: snapshot}
+	return &replyEngine{contexts: chosen, snapshot: snapshot, budget: newRegexBudget()}
 }
 
 // replyText is the outcome of filtering one text.
@@ -64,7 +69,7 @@ func (e *replyEngine) filterText(text string, more bool) replyText {
 	skipped := ""
 	for ci, context := range e.contexts {
 		rewrites := context.action != WordActionLog
-		options := findOptions{more: more && rewrites}
+		options := findOptions{more: more && rewrites, budget: e.budget}
 		if !rewrites {
 			options.limit = maxLoggedHitsPerUnit
 		}
@@ -137,6 +142,9 @@ func (e *replyEngine) filterText(text string, more bool) replyText {
 	out.WriteString(text[pos:cut])
 	e.snapshot.addReply(applied+logged, applied)
 	e.snapshot.skipReply(skipped)
+	if e.budget.wasExceeded() {
+		e.snapshot.skipReply(ReplySkipRegexBudget)
+	}
 	return replyText{out: out.String(), held: text[cut:]}
 }
 

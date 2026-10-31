@@ -38,6 +38,12 @@ type wordGuardView struct {
 	Replaced   int         `json:"replaced"`
 	Matches    []WordMatch `json:"matches,omitempty"`
 	LatencyMS  int64       `json:"latency_ms"`
+	// Field names the text a replace could not rewrite, when Reason says so.
+	Field string `json:"field,omitempty"`
+	// RegexSkipped says some regular expressions were not run on this request
+	// because it is larger than the work they are allowed (see regexBudget): a
+	// failed open.
+	RegexSkipped bool `json:"regex_skipped,omitempty"`
 	// PolicyError is set when the policies could not be read from the database
 	// and the guard worked from the ones it saw last (or none): a failed open.
 	PolicyError string `json:"policy_error,omitempty"`
@@ -45,6 +51,13 @@ type wordGuardView struct {
 	// work.
 	Reply *WordGuardReply `json:"reply,omitempty"`
 }
+
+// Reasons part of a reply was left unfiltered, besides the ones the codec names.
+const (
+	// ReplySkipRegexBudget: the reply is longer than the work the regular
+	// expressions are allowed, so they stopped being run on it.
+	ReplySkipRegexBudget = "regex_budget"
+)
 
 // WordGuardReply is what the reply filter did.
 type WordGuardReply struct {
@@ -60,14 +73,16 @@ type WordGuardReply struct {
 // newWordGuardSnapshot describes a request-side verdict.
 func newWordGuardSnapshot(verdict WordVerdict, contexts []wordContext, policyError string) *WordGuardSnapshot {
 	view := wordGuardView{
-		Action:      verdict.Action,
-		Blocked:     verdict.Blocked,
-		Reason:      verdict.Reason,
-		MatchCount:  verdict.MatchCount,
-		Replaced:    verdict.Replaced,
-		Matches:     verdict.Matches,
-		LatencyMS:   verdict.LatencyMS,
-		PolicyError: policyError,
+		Action:       verdict.Action,
+		Blocked:      verdict.Blocked,
+		Reason:       verdict.Reason,
+		MatchCount:   verdict.MatchCount,
+		Replaced:     verdict.Replaced,
+		Matches:      verdict.Matches,
+		LatencyMS:    verdict.LatencyMS,
+		Field:        verdict.Field,
+		RegexSkipped: verdict.RegexSkipped,
+		PolicyError:  policyError,
 	}
 	for _, context := range contexts {
 		view.Layers = append(view.Layers, context.layer)
@@ -115,7 +130,7 @@ func (s *WordGuardSnapshot) Notable() bool {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.view.MatchCount > 0 || s.view.Blocked || s.view.PolicyError != "" || s.view.Reply != nil
+	return s.view.MatchCount > 0 || s.view.Blocked || s.view.PolicyError != "" || s.view.RegexSkipped || s.view.Reply != nil
 }
 
 // MarshalJSON writes a consistent copy while the reply may still be counting.

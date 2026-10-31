@@ -34,6 +34,10 @@ type WordDryRun struct {
 	ReplyFilter bool   `json:"reply_filter"`
 	ReplyOutput string `json:"reply_output,omitempty"`
 	LatencyMS   int64  `json:"latency_ms"`
+	// RegexSkipped says the text is larger than the work the regular expressions
+	// are allowed, so some of them were not run on it (see regexBudget). A real
+	// request would be checked the same way.
+	RegexSkipped bool `json:"regex_skipped,omitempty"`
 }
 
 // DryRunWordPolicies runs text through the policies as a request from the user
@@ -53,12 +57,14 @@ func DryRunWordPolicies(policies WordPolicies, text string) WordDryRun {
 	verdict := evaluateWords(sdktranslator.FormatOpenAI, body, contexts, wordEvalOptions{positions: true})
 	result.Action, result.Blocked, result.BlockMessage, result.Reason = verdict.Action, verdict.Blocked, verdict.BlockMessage, verdict.Reason
 	result.Matches, result.MatchCount, result.Replaced, result.LatencyMS = verdict.Matches, verdict.MatchCount, verdict.Replaced, verdict.LatencyMS
+	result.RegexSkipped = verdict.RegexSkipped
 	if verdict.Payload != nil {
 		result.Output = gjson.GetBytes(verdict.Payload, "messages.0.content").String()
 	}
 	if engine := newReplyEngine(contexts, nil); engine != nil {
 		result.ReplyFilter = true
 		result.ReplyOutput = engine.filterText(text, false).out
+		result.RegexSkipped = result.RegexSkipped || engine.budget.wasExceeded()
 	}
 	return result
 }
@@ -79,13 +85,26 @@ const (
 type WordRuleReview struct {
 	Index  int    `json:"index"`
 	Status string `json:"status"`
-	// Rule is the rule as it would be stored (trimmed), for a new one.
-	Rule *WordRule `json:"rule,omitempty"`
+	// Rule is the rule as it would be stored (trimmed), for a new one. Program is
+	// the size of its compiled regular expression (see MaxWordRegexProgramTotal).
+	Rule    *WordRule `json:"rule,omitempty"`
+	Program int       `json:"-"`
 	// DuplicateOf is the index of the earlier submitted rule with the same effect.
 	DuplicateOf *int `json:"duplicate_of,omitempty"`
 	// ExistingID is the id of the rule the policy already has.
 	ExistingID string           `json:"existing_id,omitempty"`
 	Problem    *WordRuleProblem `json:"problem,omitempty"`
+}
+
+// WordRegexProgram is the size of a regular expression's compiled program, the
+// unit MaxWordRegexProgramTotal is counted in, or zero when it cannot be
+// compiled.
+func WordRegexProgram(pattern string) int {
+	compiled, code, _ := compileWordRegex(pattern)
+	if code != "" {
+		return 0
+	}
+	return compiled.program
 }
 
 // ReviewWordRules checks rules submitted for import the way a save would, and
@@ -96,8 +115,8 @@ func ReviewWordRules(incoming []WordRule, existing []WordRule) []WordRuleReview 
 	have := make(map[string]string, len(existing))
 	for _, rule := range existing {
 		rule := rule
-		if key, code, _ := checkWordRule(&rule); code == "" {
-			have[key] = rule.ID
+		if checked, code, _ := checkWordRule(&rule); code == "" {
+			have[checked.key] = rule.ID
 		}
 	}
 	seen := make(map[string]int, len(incoming))
@@ -107,7 +126,8 @@ func ReviewWordRules(incoming []WordRule, existing []WordRule) []WordRuleReview 
 			rule.Kind = WordRuleKeyword
 		}
 		review := WordRuleReview{Index: index}
-		key, code, message := checkWordRule(&rule)
+		checked, code, message := checkWordRule(&rule)
+		key := checked.key
 		switch {
 		case code != "":
 			review.Status = WordReviewInvalid
@@ -121,7 +141,7 @@ func ReviewWordRules(incoming []WordRule, existing []WordRule) []WordRuleReview 
 		default:
 			review.Status = WordReviewNew
 			stored := rule
-			review.Rule = &stored
+			review.Rule, review.Program = &stored, checked.program
 			seen[key] = index + 1
 		}
 		out = append(out, review)

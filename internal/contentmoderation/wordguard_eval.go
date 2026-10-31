@@ -82,11 +82,21 @@ type WordVerdict struct {
 	// was replaced.
 	Payload   []byte `json:"-"`
 	LatencyMS int64  `json:"latency_ms"`
+	// Field names the text a replace could not rewrite (Reason unrewritable): where
+	// it sits in the request, never what it says.
+	Field string `json:"field,omitempty"`
+	// RegexSkipped says the regular expressions could not all be run: the request
+	// is larger than the work they are allowed (see regexBudget), so some of its
+	// text was checked by keywords only. The request went on.
+	RegexSkipped bool `json:"regex_skipped,omitempty"`
 }
 
 type wordEvalOptions struct {
 	// positions asks for the location of each recorded hit (see WordMatch).
 	positions bool
+	// budget limits the regular expressions' work. It is shared when one request
+	// is evaluated more than once; nil gives the evaluation a budget of its own.
+	budget *regexBudget
 }
 
 // wordUnitHit is a hit in the normalized text of one unit.
@@ -106,6 +116,15 @@ func evaluateWords(format sdktranslator.Format, payload []byte, contexts []wordC
 }
 
 func evaluateWordsUnits(units []wordUnit, payload []byte, contexts []wordContext, options wordEvalOptions) WordVerdict {
+	if options.budget == nil {
+		options.budget = newRegexBudget()
+	}
+	verdict := scanWordUnits(units, payload, contexts, options)
+	verdict.RegexSkipped = options.budget.wasExceeded()
+	return verdict
+}
+
+func scanWordUnits(units []wordUnit, payload []byte, contexts []wordContext, options wordEvalOptions) WordVerdict {
 	verdict := WordVerdict{Action: WordVerdictAllow, Matches: []WordMatch{}}
 	if len(units) == 0 || len(contexts) == 0 {
 		return verdict
@@ -122,11 +141,17 @@ func evaluateWordsUnits(units []wordUnit, payload []byte, contexts []wordContext
 	}
 
 	var hits []wordUnitHit
+	// replaceHits lists, per unit, the replace contexts that hit it and where.
+	// Which contexts hit which text is decided here, with the whole request in
+	// view (the "newest user message" scope cannot be judged from one text
+	// alone). The rewrite uses these hits as they are: they were found in the
+	// text that is mapped back to the original, so it does not search again.
+	replaceHits := make(map[int][]replaceTarget)
 	for ci, context := range contexts {
 		if context.matcher == nil {
 			continue
 		}
-		find := findOptions{}
+		find := findOptions{budget: options.budget}
 		switch context.action {
 		case WordActionBlock:
 			find.limit = 1
@@ -142,6 +167,9 @@ func evaluateWordsUnits(units []wordUnit, payload []byte, contexts []wordContext
 			for _, hit := range found {
 				hits = append(hits, wordUnitHit{context: ci, unit: ui, hit: hit})
 			}
+			if len(found) > 0 && context.action == WordActionReplace {
+				replaceHits[ui] = append(replaceHits[ui], replaceTarget{context: ci, hits: found})
+			}
 			if len(found) > 0 && context.action == WordActionBlock {
 				verdict.Action, verdict.Blocked, verdict.BlockMessage = WordVerdictBlock, true, context.blockMessage
 				verdict.MatchCount = len(hits)
@@ -155,20 +183,11 @@ func evaluateWordsUnits(units []wordUnit, payload []byte, contexts []wordContext
 	}
 	verdict.MatchCount = len(hits)
 	verdict.Action = WordVerdictLog
-	// replaceHits lists, per unit, the replace contexts that hit it. Which
-	// contexts hit which text is decided here, with the whole request in view
-	// (the "newest user message" scope cannot be judged from one text alone).
-	replaceHits := make(map[int][]int)
-	for _, h := range hits {
-		if contexts[h.context].action == WordActionReplace {
-			verdict.Action = WordVerdictReplace
-			if list := replaceHits[h.unit]; len(list) == 0 || list[len(list)-1] != h.context {
-				replaceHits[h.unit] = append(list, h.context)
-			}
-		}
+	if len(replaceHits) > 0 {
+		verdict.Action = WordVerdictReplace
 	}
 	if verdict.Action == WordVerdictReplace {
-		rewritten, replaced, reason := rewriteWordUnits(units, payload, contexts, replaceHits)
+		rewritten, replaced, reason := rewriteWordUnits(units, payload, contexts, replaceHits, normalizedText)
 		if reason != "" {
 			verdict.Action, verdict.Blocked, verdict.Reason = WordVerdictBlock, true, reason
 			verdict.BlockMessage = firstReplaceContext(contexts).blockMessage
@@ -263,7 +282,7 @@ type replacement struct {
 // into the unit's string literal. The result is the whole request body, byte
 // for byte as it was outside those literals. A non-empty reason means the
 // request could not be rewritten safely.
-func rewriteWordUnits(units []wordUnit, payload []byte, contexts []wordContext, wanted map[int][]int) ([]byte, int, string) {
+func rewriteWordUnits(units []wordUnit, payload []byte, contexts []wordContext, wanted map[int][]replaceTarget, normalizedText func(int, bool) string) ([]byte, int, string) {
 	type patch struct {
 		lit0, lit1 int
 		literal    []byte
@@ -298,7 +317,7 @@ func rewriteWordUnits(units []wordUnit, payload []byte, contexts []wordContext, 
 		}
 		var spans []replacement
 		for _, ui := range byLiteral[lit0] {
-			found, reason := replacementsForUnit(units[ui], wanted[ui], contexts)
+			found, reason := replacementsForUnit(units[ui], ui, wanted[ui], contexts, normalizedText)
 			if reason != "" {
 				return nil, 0, reason
 			}
@@ -332,30 +351,34 @@ func rewriteWordUnits(units []wordUnit, payload []byte, contexts []wordContext, 
 	return out, replaced, ""
 }
 
-// replacementsForUnit finds, for the replace contexts that hit the unit, the
-// spans of the text as written that their rules matched.
-func replacementsForUnit(unit wordUnit, hitBy []int, contexts []wordContext) ([]replacement, string) {
+// replaceTarget is what one replace context found in one unit.
+type replaceTarget struct {
+	context int
+	// hits are byte ranges of the unit's normalized text.
+	hits []wordHit
+}
+
+// replacementsForUnit maps the hits of the replace contexts that hit the unit
+// back onto the text as written.
+func replacementsForUnit(unit wordUnit, ui int, targets []replaceTarget, contexts []wordContext, normalizedText func(int, bool) string) ([]replacement, string) {
 	var out []replacement
 	mappedByFold := make(map[bool]foldedText)
-	for _, ci := range hitBy {
-		context := contexts[ci]
+	for _, target := range targets {
+		context := contexts[target.context]
 		mapped, ok := mappedByFold[context.fold]
 		if !ok {
 			mapped = normalizeMapped(unit.text, context.fold)
 			mappedByFold[context.fold] = mapped
 		}
-		if !mapped.exact {
-			// The text is not valid UTF-8, so normalization cannot be traced back.
+		// The hits are offsets into the normalized text. The mapped text is the
+		// same string by construction; if it ever is not, the offsets mean
+		// nothing in it and the request is not rewritten on a guess. A text that
+		// is not valid UTF-8 cannot be traced back at all.
+		if !mapped.exact || mapped.text != normalizedText(ui, context.fold) {
 			return nil, WordReasonUnrewritable
 		}
-		found := context.matcher.find(mapped.text, findOptions{}).hits
-		if len(found) == 0 {
-			// The first pass saw a hit here and this one does not: the two
-			// normalizations disagree. Do not guess.
-			return nil, WordReasonUnrewritable
-		}
-		spans := make([]textSpan, 0, len(found))
-		for _, hit := range found {
+		spans := make([]textSpan, 0, len(target.hits))
+		for _, hit := range target.hits {
 			spans = append(spans, textSpan{start: hit.start, end: hit.end})
 		}
 		original, ok := mapped.originalSpans(spans)
@@ -363,7 +386,7 @@ func replacementsForUnit(unit wordUnit, hitBy []int, contexts []wordContext) ([]
 			return nil, WordReasonUnrewritable
 		}
 		for _, span := range original {
-			out = append(out, replacement{start: span.start, end: span.end, text: context.replacement, order: ci})
+			out = append(out, replacement{start: span.start, end: span.end, text: context.replacement, order: target.context})
 		}
 	}
 	return out, ""
