@@ -52,7 +52,7 @@ func QueryLogs(params LogQueryParams) (LogQueryResult, error) {
 	offset := (params.Page - 1) * params.Size
 	querySQL := "SELECT id, timestamp, api_key, api_key_id, api_key_name, model, thinking_level, upstream_model, upstream_response_model, vision_fallback_model, source, channel_name, auth_index, auth_subject_id, " +
 		"failed, streaming, latency_ms, first_token_ms, input_tokens, output_tokens, reasoning_tokens, cached_tokens, total_tokens, " +
-		"cost, cache_read_tokens, cache_write_tokens, prompt_tokens, session_id, " +
+		"cost, cache_read_tokens, cache_write_tokens, prompt_tokens, session_id, guard_kind, " +
 		"(CASE WHEN EXISTS (SELECT 1 FROM request_log_content content WHERE content.tenant_id = request_logs.tenant_id AND content.log_id = request_logs.id) " +
 		"OR length(input_content) > 0 OR length(output_content) > 0 THEN 1 ELSE 0 END) as has_content " +
 		"FROM request_logs" + where +
@@ -77,7 +77,7 @@ func QueryLogs(params LogQueryParams) (LogQueryResult, error) {
 			&row.AuthIndex, &row.AuthSubjectID, &failedInt, &streamingInt, &row.LatencyMs, &row.FirstTokenMs,
 			&row.InputTokens, &row.OutputTokens, &row.ReasoningTokens,
 			&row.CachedTokens, &row.TotalTokens, &row.Cost,
-			&cacheRead, &cacheWrite, &promptTokens, &row.SessionID, &hasContentInt,
+			&cacheRead, &cacheWrite, &promptTokens, &row.SessionID, &row.GuardKind, &hasContentInt,
 		); err != nil {
 			log.Warnf("usage: scan log row failed: %v", err)
 			return LogQueryResult{}, fmt.Errorf("usage: scan row: %w", err)
@@ -195,6 +195,7 @@ func QueryFiltersForLogs(params LogQueryParams) (FilterOptions, error) {
 			Channels:       make([]string, 0),
 			ChannelOptions: make([]ChannelFilterOption, 0),
 			Statuses:       make([]string, 0),
+			GuardKinds:     make([]string, 0),
 		}, nil
 	}
 
@@ -217,6 +218,10 @@ func QueryFiltersForLogs(params LogQueryParams) (FilterOptions, error) {
 	statuses, err := queryDistinctStatuses(db, params.withoutFacet("status"))
 	if err != nil {
 		log.Warnf("usage: query distinct statuses failed: %v", err)
+		return FilterOptions{}, err
+	}
+	guardKinds, err := queryDistinct(db, "guard_kind", params.withoutFacet("guard_kind"))
+	if err != nil {
 		return FilterOptions{}, err
 	}
 
@@ -246,6 +251,7 @@ func QueryFiltersForLogs(params LogQueryParams) (FilterOptions, error) {
 		Channels:       channelNames,
 		ChannelOptions: channelRows,
 		Statuses:       statuses,
+		GuardKinds:     guardKinds,
 	}, nil
 }
 
@@ -272,6 +278,8 @@ func (params LogQueryParams) withoutFacet(facet string) LogQueryParams {
 		params.Status = ""
 		params.Statuses = nil
 		params.MatchNoStatuses = false
+	case "guard_kind":
+		params.GuardKinds = nil
 	}
 	return params
 }
@@ -554,6 +562,10 @@ func buildWhereClause(params LogQueryParams) (string, []interface{}) {
 		}
 		// Both success and failed: no status filter needed (equivalent to "all")
 	}
+	if condition, guardArgs := guardKindCondition(params.GuardKinds); condition != "" {
+		conditions = append(conditions, condition)
+		args = append(args, guardArgs...)
+	}
 	if len(params.AuthSubjectIDs) > 0 || len(params.AuthIndexes) > 0 || len(params.ChannelNames) > 0 {
 		filterConditions := make([]string, 0, 3)
 
@@ -769,44 +781,4 @@ func queryDistinctStatuses(db *sql.DB, params LogQueryParams) ([]string, error) 
 		}
 	}
 	return result, rows.Err()
-}
-
-func trimNullString(value sql.NullString) string {
-	if !value.Valid {
-		return ""
-	}
-	return strings.TrimSpace(value.String)
-}
-
-// QueryModelsForKey returns the distinct models used by a specific API key within the time range.
-func QueryModelsForKey(apiKey string, days int) ([]string, error) {
-	db := getReadDB()
-	if db == nil {
-		return make([]string, 0), nil
-	}
-	if days < 1 {
-		days = 7
-	}
-	params := LogQueryParams{TenantID: ResolveAPIKeyTenant(apiKey), APIKey: apiKey, Days: days}
-	where, args := buildWhereClause(params)
-	rows, err := db.Query(
-		"SELECT DISTINCT model FROM request_logs"+where+" AND model != '' ORDER BY model",
-		args...,
-	)
-	if err != nil {
-		log.Warnf("usage: distinct models for key query failed: %v", err)
-		return nil, fmt.Errorf("usage: distinct models for key: %w", err)
-	}
-	defer rows.Close()
-
-	result := make([]string, 0)
-	for rows.Next() {
-		var v string
-		if err := rows.Scan(&v); err != nil {
-			log.Warnf("usage: distinct models for key scan failed: %v", err)
-			return nil, err
-		}
-		result = append(result, v)
-	}
-	return result, nil
 }

@@ -59,18 +59,18 @@ func (s *Server) setupRoutes() {
 		group.GET("/models/*action", geminiHandlers.GeminiGetHandler)
 	}
 	v1 := s.engine.Group("/v1")
-	useRequestStages(v1, s.v1RequestStages(rewrittenGroupRoutingMiddleware(s.resolveRoute)))
+	s.useInferenceMiddleware(v1, s.v1RequestStages(rewrittenGroupRoutingMiddleware(s.resolveRoute)))
 	registerV1Routes(v1)
 
 	groupedV1 := s.engine.Group("/:group/v1")
-	useRequestStages(groupedV1, s.v1RequestStages(groupRoutingMiddleware(s.resolveRoute)))
+	s.useInferenceMiddleware(groupedV1, s.v1RequestStages(groupRoutingMiddleware(s.resolveRoute)))
 	registerV1Routes(groupedV1)
 
 	// Codex CLI direct route aliases (chatgpt_base_url compatible). Upstream
 	// CLIProxyAPI exposes these; clients such as the Codex CLI and the pi
 	// CLIProxyAPI provider address inference as {root}/backend-api/codex/...
 	codexDirect := s.engine.Group("/backend-api/codex")
-	useRequestStages(codexDirect, s.v1RequestStages(rewrittenGroupRoutingMiddleware(s.resolveRoute)))
+	s.useInferenceMiddleware(codexDirect, s.v1RequestStages(rewrittenGroupRoutingMiddleware(s.resolveRoute)))
 	{
 		codexDirect.GET("/models", s.unifiedModelsHandler(openaiHandlers, claudeCodeHandlers))
 		codexDirect.GET("/responses", func(c *gin.Context) {
@@ -83,11 +83,11 @@ func (s *Server) setupRoutes() {
 	}
 
 	v1beta := s.engine.Group("/v1beta")
-	useRequestStages(v1beta, s.requestStages(rewrittenGroupRoutingMiddleware(s.resolveRoute)))
+	s.useInferenceMiddleware(v1beta, s.requestStages(rewrittenGroupRoutingMiddleware(s.resolveRoute)))
 	registerV1BetaRoutes(v1beta)
 
 	groupedV1Beta := s.engine.Group("/:group/v1beta")
-	useRequestStages(groupedV1Beta, s.requestStages(groupRoutingMiddleware(s.resolveRoute)))
+	s.useInferenceMiddleware(groupedV1Beta, s.requestStages(groupRoutingMiddleware(s.resolveRoute)))
 	registerV1BetaRoutes(groupedV1Beta)
 
 	// Built from the same stage list as /v1 above; see routing_simulation.go.

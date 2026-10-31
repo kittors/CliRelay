@@ -11,8 +11,8 @@ import (
 
 func TestRuntimeMigrationsCoverCoreTables(t *testing.T) {
 	migrations := RuntimeMigrations()
-	if len(migrations) != 43 {
-		t.Fatalf("RuntimeMigrations len = %d, want 43", len(migrations))
+	if len(migrations) != 44 {
+		t.Fatalf("RuntimeMigrations len = %d, want 44", len(migrations))
 	}
 	// Membership table of multi-instance deployments.
 	if migrations[31].Version != "202609250001_cluster_nodes" {
@@ -94,6 +94,14 @@ func TestRuntimeMigrationsCoverCoreTables(t *testing.T) {
 		if strings.Contains(got.SQL, "INDEX") || strings.Contains(got.SQL, "UPDATE") {
 			t.Fatalf("cache and session migration must only change the catalog: %q", got.SQL)
 		}
+	}
+	// Which loop protection check ended a request: one constant-default column,
+	// no index (it would block log writes for the whole build) and no backfill.
+	if got := migrations[43]; got.Version != "202611010001_request_log_guard_kind" ||
+		!strings.Contains(got.SQL, "ADD COLUMN IF NOT EXISTS guard_kind TEXT NOT NULL DEFAULT ''") {
+		t.Fatalf("guard kind migration = %q: %q", got.Version, got.SQL)
+	} else if strings.Contains(got.SQL, "INDEX") || strings.Contains(got.SQL, "UPDATE") {
+		t.Fatalf("guard kind migration must only change the catalog: %q", got.SQL)
 	}
 	// Appended from laterRuntimeMigrations() because migrations.go sits at its
 	// structure-gate size ceiling.

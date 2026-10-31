@@ -18,6 +18,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/identity"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/logging"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/loopguard"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/managementasset"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/observability"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v6/sdk/access"
@@ -242,7 +243,13 @@ func (s *Server) registerBuiltinModules(cfg *config.Config, accessManager *sdkac
 	if s == nil || s.engine == nil || cfg == nil {
 		return
 	}
-	s.ampModule = ampmodule.NewLegacy(accessManager, AuthMiddleware(accessManager))
+	// The Amp provider routes call the same handlers as /v1, so they publish the
+	// same loop protection; they skip the request stages, as they always have.
+	s.ampModule = ampmodule.New(
+		ampmodule.WithAccessManager(accessManager),
+		ampmodule.WithAuthMiddleware(AuthMiddleware(accessManager)),
+		ampmodule.WithInferenceMiddleware(loopGuardMiddleware(loopguard.Default())),
+	)
 	ctx := modules.Context{
 		Engine:         s.engine,
 		BaseHandler:    s.handlers,

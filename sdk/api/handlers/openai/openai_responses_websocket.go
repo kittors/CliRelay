@@ -540,6 +540,18 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 						StatusCode: http.StatusRequestTimeout,
 						Error:      fmt.Errorf("stream closed before response.completed"),
 					}
+					// A stream that ends with an error closes its data channel in the
+					// same moment, and this select picks among ready cases at random:
+					// the error, which says why the reply stopped (a loop cut by the
+					// loop protection, an upstream failure), must win over the generic
+					// one, as it does in ForwardStream for the HTTP entries.
+					select {
+					case pending, ok := <-errs:
+						if ok && pending != nil {
+							errMsg = pending
+						}
+					default:
+					}
 					h.LoggingAPIResponseError(context.WithValue(c.Request.Context(), util.ContextKeyGin, c), errMsg)
 					markAPIResponseTimestamp(c)
 					errorPayload, errWrite := writeResponsesWebsocketError(conn, errMsg)

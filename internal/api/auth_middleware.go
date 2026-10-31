@@ -86,6 +86,9 @@ func AuthMiddleware(manager *sdkaccess.Manager) gin.HandlerFunc {
 					c.Set("tenantID", tenantID)
 				}
 				diagnostics.SetAuth(c, result.Provider, result.Principal, apiKeyID, apiKeyName)
+				if apiKeyID != "" {
+					c.Set(apiKeyIDContextKey, apiKeyID)
+				}
 				if len(result.Metadata) > 0 {
 					c.Set("accessMetadata", result.Metadata)
 				}

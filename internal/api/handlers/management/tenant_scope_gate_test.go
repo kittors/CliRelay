@@ -74,6 +74,10 @@ func TestTenantScopedManagementPathIncludesProviderRuntimeRoutes(t *testing.T) {
 		"/v0/management/end-users/eu-1",
 		"/v0/management/end-users/eu-1/api-keys",
 		"/v0/management/end-users/eu-1/api-keys/k1/default",
+		// Loop protection is each tenant's own: the settings row is the
+		// caller's effective tenant's, so a business tenant manages its own.
+		"/v0/management/loop-guard",
+		"/v0/management/loop-guard/keys/k1",
 	} {
 		if !isTenantScopedManagementPath(path) {
 			t.Errorf("isTenantScopedManagementPath(%q) = false", path)

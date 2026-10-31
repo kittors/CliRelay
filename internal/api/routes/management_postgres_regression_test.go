@@ -54,6 +54,15 @@ func TestManagementAPIPostgresDataStackRegression(t *testing.T) {
 	}
 	client.expectBodyContains(t, http.MethodGet, "/v0/management/routing-simulation?api-key-id=key-route-missing&model=gpt-route-test", "", http.StatusNotFound, "api_key_not_found")
 
+	// Loop protection is a runtime_settings row written with a compare-and-swap;
+	// a key's override is checked against the key stored just above.
+	client.expectBodyContains(t, http.MethodGet, "/v0/management/loop-guard", "", http.StatusOK, `"persistent":true`)
+	client.expectStatus(t, http.MethodPut, "/v0/management/loop-guard", `{"reply":{"enabled":true,"window":512,"max_distinct":40}}`, http.StatusOK)
+	client.expectBodyContains(t, http.MethodPut, "/v0/management/loop-guard/keys/key-route-test", `{"tool":{"enabled":true,"repeats":5}}`, http.StatusOK, `"source":"api_key"`)
+	client.expectBodyContains(t, http.MethodGet, "/v0/management/loop-guard", "", http.StatusOK, `"window":512`)
+	client.expectBodyContains(t, http.MethodGet, "/v0/management/loop-guard/keys/key-route-test", "", http.StatusOK, `"repeats":5`)
+	client.expectBodyContains(t, http.MethodPut, "/v0/management/loop-guard/keys/key-route-missing", `{}`, http.StatusNotFound, "api_key_not_found")
+
 	client.expectStatus(t, http.MethodPost, "/v0/management/model-configs", `{
 		"id":"gpt-route-test",
 		"owned_by":"route-owner",

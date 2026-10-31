@@ -40,6 +40,10 @@ type usageReporter struct {
 	once                sync.Once
 	contentMu           sync.Mutex
 	captureFullContent  bool
+	// guardKind is the loop protection check that ended a request the gateway
+	// answered itself; a cut reply is found on the context instead (see
+	// guardOutcome). Set before the usage is published, never after.
+	guardKind string
 	// streamingRequest records what the client asked for, so it is fixed at
 	// construction from the client payload and never revised afterwards.
 	//
@@ -370,6 +374,7 @@ func (r *usageReporter) publishWithOutcome(ctx context.Context, detail coreusage
 	if r == nil {
 		return
 	}
+	failed, guardKind := r.guardOutcome(ctx, failed)
 	detail = applyOllamaPromptCacheEstimate(ctx, detail)
 	if detail.TotalTokens == 0 {
 		total := detail.InputTokens + detail.OutputTokens + detail.ReasoningTokens
@@ -409,6 +414,7 @@ func (r *usageReporter) publishWithOutcome(ctx context.Context, detail coreusage
 			LatencyMs:             latencyMs,
 			FirstTokenMs:          firstTokenMs,
 			Failed:                failed,
+			GuardKind:             guardKind,
 			APIIdentifier:         apiIdentifier,
 			RequestID:             requestID,
 			ResponseStatus:        responseStatus,
@@ -432,6 +438,7 @@ func (r *usageReporter) ensurePublished(ctx context.Context) {
 	if r == nil {
 		return
 	}
+	failed, guardKind := r.guardOutcome(ctx, false)
 	r.once.Do(func() {
 		inputContent, outputContent, inputPath, outputPath := r.finalizeContentForOutcome(false)
 		detailContent, detailPath := deferLargeContent("cliproxy-usage-detail-*", buildRequestDetailContent(ctx, r.captureFullContent))
@@ -460,7 +467,8 @@ func (r *usageReporter) ensurePublished(ctx context.Context) {
 			RequestedAt:           r.requestedAt,
 			LatencyMs:             latencyMs,
 			FirstTokenMs:          firstTokenMs,
-			Failed:                false,
+			Failed:                failed,
+			GuardKind:             guardKind,
 			APIIdentifier:         apiIdentifier,
 			RequestID:             requestID,
 			ResponseStatus:        responseStatus,

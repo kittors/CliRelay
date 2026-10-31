@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
+	"github.com/router-for-me/CLIProxyAPI/v6/sdk/loopdetect"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v6/sdk/translator"
 )
 
@@ -31,6 +32,11 @@ func (h *BaseAPIHandler) StartStreamWithAuthManager(ctx context.Context, handler
 	if errMsg != nil {
 		return nil, nil, nil, errMsg
 	}
+	// A conversation stuck in a tool-call loop is answered here, not sent upstream.
+	if reply, ok := toolLoopReply(ctx, handlerType, modelName, rawJSON, alt, true); ok {
+		data, errs := localStream(reply.Stream())
+		return data, loopGuardHeaders(loopdetect.KindToolLoop), errs, nil
+	}
 	reqMeta := requestExecutionMetadata(ctx)
 	reqMeta[coreexecutor.RequestedModelMetadataKey] = normalizedModel
 	payload := rawJSON
@@ -48,6 +54,9 @@ func (h *BaseAPIHandler) StartStreamWithAuthManager(ctx context.Context, handler
 		SourceFormat:    sdktranslator.FromString(handlerType),
 	}
 	opts.Metadata = reqMeta
+	// The guard's mark rides on ctx into the executor, whose usage reporter reads
+	// it when a cut reply's upstream request is canceled.
+	ctx, guard := newReplyGuard(ctx, modelName)
 	ctx, waits := h.startStreamWaits(ctx, alt)
 	streamResult, err := h.AuthManager.ExecuteStream(ctx, providers, req, opts)
 	committed := waits.handOver()
@@ -88,7 +97,7 @@ func (h *BaseAPIHandler) StartStreamWithAuthManager(ctx context.Context, handler
 	// over req/opts (those hold multi-MB inbound bodies for the whole SSE lifetime).
 	maxBootstrapRetries := StreamingBootstrapRetries(h.Cfg)
 	if maxBootstrapRetries <= 0 {
-		go forwardStreamWithoutBootstrapRetry(ctx, handlerType, chunks, dataChan, errChan)
+		go forwardStreamWithoutBootstrapRetry(ctx, handlerType, chunks, dataChan, errChan, guard)
 	} else {
 		go forwardStreamWithBootstrapRetry(
 			ctx,
@@ -101,6 +110,7 @@ func (h *BaseAPIHandler) StartStreamWithAuthManager(ctx context.Context, handler
 			errChan,
 			maxBootstrapRetries,
 			newStreamFailover(h, streamResult),
+			guard,
 		)
 	}
 	return dataChan, upstreamHeaders, errChan, nil
@@ -123,6 +133,7 @@ func forwardStreamWithoutBootstrapRetry(
 	chunks <-chan coreexecutor.StreamChunk,
 	dataChan chan<- []byte,
 	errChan chan<- *StreamErrorMessage,
+	guard *replyGuard,
 ) {
 	defer close(dataChan)
 	defer close(errChan)
@@ -144,6 +155,10 @@ func forwardStreamWithoutBootstrapRetry(
 				return
 			}
 		}
+		if cut := guard.inspect(chunk.Payload); cut != nil {
+			_ = sendStreamErr(ctx, errChan, cut)
+			return
+		}
 		if !sendStreamData(ctx, dataChan, cloneBytes(chunk.Payload)) {
 			return
 		}
@@ -161,6 +176,7 @@ func forwardStreamWithBootstrapRetry(
 	errChan chan<- *StreamErrorMessage,
 	maxBootstrapRetries int,
 	failover *streamFailover,
+	guard *replyGuard,
 ) {
 	defer close(dataChan)
 	defer close(errChan)
@@ -202,6 +218,10 @@ outer:
 					_ = sendStreamErr(ctx, errChan, &StreamErrorMessage{StatusCode: http.StatusBadGateway, Error: err})
 					return
 				}
+			}
+			if cut := guard.inspect(chunk.Payload); cut != nil {
+				_ = sendStreamErr(ctx, errChan, cut)
+				return
 			}
 			sentPayload = true
 			// Past the first byte there is no retry, so nothing needs the request

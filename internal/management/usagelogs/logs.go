@@ -82,6 +82,9 @@ func (s *Service) ManagementLogs(input ManagementLogQueryInput) (map[string]any,
 	if filters.Statuses == nil {
 		filters.Statuses = make([]string, 0)
 	}
+	if filters.GuardKinds == nil {
+		filters.GuardKinds = make([]string, 0)
+	}
 
 	return map[string]any{
 		"items":   result.Items,
@@ -91,10 +94,18 @@ func (s *Service) ManagementLogs(input ManagementLogQueryInput) (map[string]any,
 		"filters": filters,
 		"stats":   stats,
 		// The panel reads this to tell a backend that has dropped the secret-keyed
-		// filter facets (api_keys, api_key_names, api_key_counts) from an older one.
-		"capabilities": map[string]bool{CapabilityAPIKeyIDFilters: true},
+		// filter facets (api_keys, api_key_names, api_key_counts) from an older one,
+		// and one that has loop protection from one that has not.
+		"capabilities": map[string]bool{CapabilityAPIKeyIDFilters: true, CapabilityLoopGuard: true},
 	}, nil
 }
+
+// CapabilityLoopGuard is declared by /usage/logs once the backend has loop
+// protection: rows carry guard_kind, the guard_kind query parameter selects the
+// requests it ended, filters.guard_kinds lists the outcomes in the window, and
+// /usage/monitor/overview carries loop_guard. The same name is the one the panel
+// looks for before it shows the settings of loop protection.
+const CapabilityLoopGuard = "loop-guard"
 
 // CapabilityAPIKeyIDFilters is declared by /usage/logs once the key filter is
 // id-based only: filters.api_key_ids / api_key_id_names / api_key_id_counts
