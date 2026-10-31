@@ -240,7 +240,7 @@ func TestVirtualModelStopsWhenMovingOnCannotHelp(t *testing.T) {
 		onCall:   func(string) { cancel() },
 	}
 	handler = NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, newVirtualModelManager(t, gone, "alpha", "beta"))
-	ctx, c, _, _ := virtualModelContext(plan("smart", "alpha", "beta"))
+	_, c, _, _ := virtualModelContext(plan("smart", "alpha", "beta"))
 	ctx = context.WithValue(cancelCtx, util.ContextKeyGin, c)
 	if _, _, errMsg = handler.ExecuteWithAuthManager(ctx, "openai", "smart", []byte(`{}`), ""); errMsg == nil {
 		t.Fatal("a request whose client went away must fail")
@@ -521,12 +521,12 @@ func TestVirtualModelUnderLoopProtection(t *testing.T) {
 	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, newVirtualModelManager(t, exec, "alpha", "beta"))
 	ctx, trace := protected(plan("smart", "alpha", "beta"))
 	_, headers, errMsg := handler.ExecuteWithAuthManager(ctx, "openai", "smart", chatToolLoop(3), "")
-	if errMsg != nil || strings.Join(headers[LoopGuardHeader], ",") != string(loopdetect.KindToolLoop) {
+	if errMsg != nil || headers.Get(LoopGuardHeader) != string(loopdetect.KindToolLoop) {
 		t.Fatalf("headers = %v, %+v, want the tool loop answered locally", headers, errMsg)
 	}
 	ctx, _ = protected(plan("smart", "alpha", "beta"))
 	dataChan, headers, errChan, startErr := handler.StartStreamWithAuthManager(ctx, "openai", "smart", chatToolLoop(3), "")
-	if startErr != nil || strings.Join(headers[LoopGuardHeader], ",") != string(loopdetect.KindToolLoop) {
+	if startErr != nil || headers.Get(LoopGuardHeader) != string(loopdetect.KindToolLoop) {
 		t.Fatalf("stream headers = %v, %+v, want the tool loop answered locally", headers, startErr)
 	}
 	drainStream(t, dataChan, errChan)
