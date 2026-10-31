@@ -31,11 +31,21 @@ func (d *schedulerDeps) observeSelection(auth *Auth, now time.Time) {
 	d.tracker.observe(auth.ID, now)
 }
 
-func (d *schedulerDeps) loadRatio(auth *Auth) float64 {
+func (d *schedulerDeps) loadRatio(auth *Auth, model string) float64 {
 	if d == nil {
 		return 0
 	}
-	return accountLoadRatio(auth, d.limiter, d.quota)
+	return accountLoadRatio(auth, model, d.limiter, d.quota)
+}
+
+// quotaWindows returns the quota source's window view, or nil when the source
+// only reports ratios.
+func (d *schedulerDeps) quotaWindows() QuotaWindowSource {
+	if d == nil || d.quota == nil {
+		return nil
+	}
+	source, _ := d.quota.(QuotaWindowSource)
+	return source
 }
 
 func (d *schedulerDeps) pressure(auth *Auth, now time.Time) float64 {
@@ -204,7 +214,7 @@ func (s *FillFirstSelector) Pick(ctx context.Context, provider, model string, op
 	var fallback *Auth
 	fallbackLoad := 0.0
 	for _, candidate := range ordered {
-		load := s.deps.loadRatio(candidate)
+		load := s.deps.loadRatio(candidate, model)
 		if load < fillFirstSwitchLoad {
 			s.deps.observeSelection(candidate, now)
 			return candidate, nil

@@ -135,7 +135,7 @@ func parseCodexWhamQuotas(body []byte) []usage.QuotaWindowDTO {
 			keyPart := strings.TrimSpace(firstJSONResult(entry, "metered_feature", "meteredFeature").String())
 			if keyPart == "" {
 				if strings.EqualFold(name, "gpt-5.3-codex-spark") {
-					keyPart = "codex_bengalfox"
+					keyPart = codexSparkFeatureKey
 				} else {
 					keyPart = normalizeQuotaKeyPart(name)
 				}

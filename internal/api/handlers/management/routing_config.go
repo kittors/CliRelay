@@ -55,6 +55,10 @@ type routingConfigCapabilities struct {
 	// follow-upstream-models. An older backend drops the field on save, so the
 	// panel only shows the switch when this is advertised.
 	ChannelGroupFollowUpstreamModels bool `json:"channel-group-follow-upstream-models"`
+	// ChannelGroupResetAwareDistribution: channel groups accept the
+	// reset-aware distribution. An older backend reads the unknown value as
+	// weighted, so the panel only offers it when this is advertised.
+	ChannelGroupResetAwareDistribution bool `json:"channel-group-distribution-reset-aware"`
 }
 
 func (h *Handler) GetRoutingConfig(c *gin.Context) {
@@ -73,8 +77,9 @@ func (h *Handler) GetRoutingConfig(c *gin.Context) {
 	c.JSON(http.StatusOK, routingConfigResponse{
 		RoutingConfig: routing,
 		Capabilities: routingConfigCapabilities{
-			ChannelGroupExcludedModels:       true,
-			ChannelGroupFollowUpstreamModels: true,
+			ChannelGroupExcludedModels:         true,
+			ChannelGroupFollowUpstreamModels:   true,
+			ChannelGroupResetAwareDistribution: true,
 		},
 		Version: version,
 	})

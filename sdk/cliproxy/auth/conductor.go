@@ -177,6 +177,7 @@ type Manager struct {
 	roundRobinSelector    *RoundRobinSelector
 	fillFirstSelector     *FillFirstSelector
 	leastLoadSelector     *LeastLoadSelector
+	resetAwareSelector    *ResetAwareSelector
 	sessionStickySelector *SessionStickySelector
 	scheduler             *schedulerDeps
 	hook                  Hook
@@ -261,6 +262,7 @@ func NewManager(store Store, selector Selector, hook Hook) *Manager {
 	}
 	fillFirstSelector.deps = deps
 	leastLoadSelector := &LeastLoadSelector{deps: deps}
+	resetAwareSelector := &ResetAwareSelector{deps: deps}
 	sessionStickySelector, _ := selector.(*SessionStickySelector)
 	if sessionStickySelector == nil {
 		sessionStickySelector = NewSessionStickySelector(roundRobinSelector)
@@ -275,6 +277,7 @@ func NewManager(store Store, selector Selector, hook Hook) *Manager {
 		roundRobinSelector:    roundRobinSelector,
 		fillFirstSelector:     fillFirstSelector,
 		leastLoadSelector:     leastLoadSelector,
+		resetAwareSelector:    resetAwareSelector,
 		sessionStickySelector: sessionStickySelector,
 		scheduler:             deps,
 		hook:                  hook,

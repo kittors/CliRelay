@@ -57,6 +57,7 @@ const (
 	DistributionWeighted     = internalconfig.DistributionWeighted
 	DistributionLeastLoad    = internalconfig.DistributionLeastLoad
 	DistributionFillFirst    = internalconfig.DistributionFillFirst
+	DistributionResetAware   = internalconfig.DistributionResetAware
 	DefaultStickyMaxRequests = internalconfig.DefaultStickyMaxRequests
 )
 
