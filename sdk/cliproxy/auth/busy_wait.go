@@ -387,7 +387,10 @@ func cooldownKindOf(auth *Auth, model string, next time.Time) cooldownKind {
 	if state := modelStateFor(auth, model); state != nil {
 		lastErr, quota, recordedAt = state.LastError, state.Quota, state.UpdatedAt
 	}
-	if quota.Exceeded || auth.Quota.Exceeded {
+	// The account-wide quota blocks every model whatever the model's own last
+	// error was (isAuthBlockedForModel looks at it first). A model's own spent
+	// quota is a reason of its own below.
+	if auth.Quota.Exceeded {
 		return cooldownOther
 	}
 	switch CooldownReasonOf(lastErr, quota) {
