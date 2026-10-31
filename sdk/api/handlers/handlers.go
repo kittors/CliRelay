@@ -299,7 +299,7 @@ func requestExecutionMetadata(ctx context.Context) map[string]any {
 	if sessionStickyKey != "" {
 		meta[coreexecutor.SessionStickyMetadataKey] = sessionStickyKey
 	}
-	return meta
+	return withAllowedAuthIDsMetadata(ctx, meta)
 }
 
 func pinnedAuthIDFromContext(ctx context.Context) string {
