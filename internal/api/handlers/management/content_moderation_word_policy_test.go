@@ -168,6 +168,35 @@ func TestWordPolicyTenantLifecycle(t *testing.T) {
 	}
 }
 
+// A reply that streams can have the start of a match held back only for a
+// regular expression with a longest match. The policy view says which of the
+// enabled expressions have none, so the panel can warn about them.
+func TestWordPolicyViewListsRegexesWithoutALongestMatch(t *testing.T) {
+	h := setupWordPolicyTest(t)
+	save := `{"reply_filter":true,"rules":[
+		{"id":"fixed","kind":"regex","pattern":"\\d{11}"},
+		{"id":"open","kind":"regex","pattern":"\\d{11,}"},
+		{"id":"star","kind":"regex","pattern":"foo.*bar"},
+		{"id":"off","kind":"regex","pattern":"\\d+","enabled":false},
+		{"id":"word","kind":"keyword","pattern":"a+b"}]}`
+	rec, body := wordTenantAUser.call(h.PutWordPolicyTenant, http.MethodPut, save, "")
+	wordExpectStatus(t, rec, http.StatusOK)
+	for _, view := range []map[string]any{body, func() map[string]any {
+		_, again := wordTenantAUser.call(h.GetWordPolicyTenant, http.MethodGet, "", "")
+		return again
+	}()} {
+		ids, _ := view["unbounded_regex_ids"].([]any)
+		if len(ids) != 2 || ids[0] != "open" || ids[1] != "star" {
+			t.Fatalf("unbounded_regex_ids = %v, want the enabled expressions without a longest match", view["unbounded_regex_ids"])
+		}
+	}
+	// A policy never saved has an empty list, not a missing one.
+	_, empty := wordTenantBUser.call(h.GetWordPolicyTenant, http.MethodGet, "", "")
+	if ids, ok := empty["unbounded_regex_ids"].([]any); !ok || len(ids) != 0 {
+		t.Fatalf("unbounded_regex_ids = %v", empty["unbounded_regex_ids"])
+	}
+}
+
 func TestWordPolicyRefusesBadInputAndNamesTheRule(t *testing.T) {
 	h := setupWordPolicyTest(t)
 

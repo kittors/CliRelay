@@ -186,6 +186,11 @@ type wordPolicyResponse struct {
 	contentmoderation.WordPolicy
 	// Effective is what the policy's empty settings resolve to.
 	Effective contentmoderation.WordSettings `json:"effective"`
+	// UnboundedRegexIDs lists the enabled regular expressions whose matches can
+	// be of any length (\d+, \d{11,}). A reply that streams cannot have the start
+	// of such a match held back, so a match split between two stream events can
+	// get through; the panel says so next to them.
+	UnboundedRegexIDs []string `json:"unbounded_regex_ids"`
 	// CanEdit says whether the caller may change this policy. The panel offers
 	// the platform policy read-only to everyone else.
 	CanEdit bool   `json:"can_edit"`
@@ -326,12 +331,19 @@ func (h *Handler) wordPolicyView(ctx context.Context, c *gin.Context, store *con
 			return wordPolicyResponse{}, err
 		}
 	}
+	unbounded := []string{}
+	for _, rule := range policy.Rules {
+		if rule.Enabled && rule.Kind == contentmoderation.WordRuleRegex && !contentmoderation.WordRegexIsBounded(rule.Pattern) {
+			unbounded = append(unbounded, rule.ID)
+		}
+	}
 	return wordPolicyResponse{
-		Exists:     found,
-		WordPolicy: policy,
-		Effective:  contentmoderation.ResolveWordSettings(below, &policy),
-		CanEdit:    target.scopeType != contentmoderation.WordScopePlatform || canManageWordPlatform(c),
-		KeyName:    target.keyName,
+		Exists:            found,
+		WordPolicy:        policy,
+		Effective:         contentmoderation.ResolveWordSettings(below, &policy),
+		UnboundedRegexIDs: unbounded,
+		CanEdit:           target.scopeType != contentmoderation.WordScopePlatform || canManageWordPlatform(c),
+		KeyName:           target.keyName,
 	}, nil
 }
 

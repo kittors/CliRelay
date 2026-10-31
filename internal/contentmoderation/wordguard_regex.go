@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"unicode"
+	"unicode/utf8"
 )
 
 // Go's regexp is RE2: matching time is linear in the text, so no pattern can
@@ -82,6 +83,50 @@ func compileWordRegex(pattern string) (compiledWordRegex, string, string) {
 		maxLen:  maxRegexLen(parsed),
 		first:   regexFirstRunes(parsed),
 	}, "", ""
+}
+
+// holdFrom is where, in text that more text may follow, a match of the
+// expression could still begin without being visible yet, or -1.
+//
+// RE2 cannot say whether the end of a text is the start of a match, but an
+// expression whose matches are at most maxLen characters long makes it a matter
+// of counting: a match that begins with fewer than maxLen characters left could
+// run past the end of the text, so every place in the last maxLen-1 characters
+// where a match can begin is undecided. (A match that does not reach the end is
+// already found, and one that does is held back by the caller.) Without this a
+// number split across stream events, \d{11} read one digit at a time, would be
+// let through ten digits at a time before the eleventh shows it was one.
+//
+// An expression whose matches have no longest length (\d+, \d{11,}) cannot be
+// held back this way, and the caller holds back only a match it can see. That is
+// a limit of streaming, not of the expression: it is shown beside such
+// expressions in the panel.
+func (c compiledWordRegex) holdFrom(text string) int {
+	if c.maxLen < 0 {
+		return -1
+	}
+	start := len(text)
+	for left := c.maxLen - 1; left > 0 && start > 0; left-- {
+		_, size := utf8.DecodeLastRuneInString(text[:start])
+		start -= size
+	}
+	for p := start; p < len(text); {
+		r, size := utf8.DecodeRuneInString(text[p:])
+		if c.first.contains(r) {
+			return p
+		}
+		p += size
+	}
+	return -1
+}
+
+// WordRegexIsBounded reports whether a usable expression has a longest match,
+// which is what lets the reply filter hold back the start of a match across
+// stream events (see compiledWordRegex.holdFrom). An expression that cannot be
+// used as a rule (it does not parse, or can match nothing) is not bounded.
+func WordRegexIsBounded(pattern string) bool {
+	parsed, err := syntax.Parse("(?i)"+pattern, syntax.Perl)
+	return err == nil && minRegexLen(parsed) > 0 && maxRegexLen(parsed) >= 0
 }
 
 func regexTooComplex(size int) string {

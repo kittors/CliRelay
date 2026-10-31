@@ -87,6 +87,11 @@ func (m *wordMatcher) find(text string, options findOptions) wordFind {
 		if options.limit > 0 && !options.more {
 			count = options.limit
 		}
+		if options.more {
+			if from := compiled.holdFrom(text); from >= 0 && (result.undecided < 0 || from < result.undecided) {
+				result.undecided = from
+			}
+		}
 		for _, loc := range compiled.re.FindAllStringIndex(text, count) {
 			if loc[1] <= loc[0] {
 				continue // validated away at save time; never act on an empty match
@@ -94,9 +99,10 @@ func (m *wordMatcher) find(text string, options findOptions) wordFind {
 			if options.more && loc[1] == len(text) {
 				// A match that runs to the end of the text may be the beginning of
 				// a longer one. RE2 cannot say whether a text is the start of a
-				// match, so this is as much as can be held back for a regex: a
-				// match that stops short of the end, or a prefix that is not yet a
-				// match, is not.
+				// match, so for an expression whose matches can be of any length
+				// this is as much as can be held back: a match that stops short of
+				// the end, or a prefix that is not yet a match, is not. (An
+				// expression with a longest match is held back further, by holdFrom.)
 				if result.undecided < 0 || loc[0] < result.undecided {
 					result.undecided = loc[0]
 				}
