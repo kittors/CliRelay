@@ -276,26 +276,62 @@ type WordPolicies struct {
 // with the API key keyID (empty when unknown). The result is shared and must
 // not be modified.
 //
-// If the database cannot be read, the policies last seen are returned together
-// with the error, so a database outage does not switch the guard off for
-// requests it already knew how to judge.
+// It waits for the read of the policies for as long as ctx allows, which for a
+// request is a few tens of milliseconds (see RuntimeModerator.GuardRequest). If
+// the database cannot be read in that time, or at all, the policies last seen
+// are returned together with the error, so that a database outage does not
+// switch the guard off for requests it already knew how to judge. The read goes
+// on in the background (see wordPolicyReads).
 func (s *Store) LoadWordPolicies(ctx context.Context, tenantID, keyID string) (WordPolicies, error) {
 	if s == nil || s.db == nil {
 		return WordPolicies{}, ErrUnavailable
 	}
 	tenantID, keyID = strings.TrimSpace(tenantID), strings.TrimSpace(keyID)
-	platformKey := wordPolicyKey{platformWordTenantID(), WordScopePlatform, ""}
-	tenantKey := wordPolicyKey{tenantID, WordScopeTenant, ""}
-	keyKey := wordPolicyKey{tenantID, WordScopeKey, keyID}
-	remembered := WordPolicies{Platform: s.wordPolicies.get(platformKey), Tenant: s.wordPolicies.get(tenantKey)}
-	if keyID != "" {
-		remembered.Key = s.wordPolicies.get(keyKey)
+	read := s.wordReads.join(wordReadKey{tenantID, keyID}, func(readCtx context.Context) (WordPolicies, error) {
+		return s.readWordPolicies(readCtx, tenantID, keyID)
+	})
+	if s.wordReads.slow(time.Now()) {
+		select {
+		case <-read.done:
+			return read.policies, read.err
+		default:
+			return s.rememberedWordPolicies(tenantID, keyID), errWordPolicySlow
+		}
 	}
+	select {
+	case <-read.done:
+		return read.policies, read.err
+	case <-ctx.Done():
+		err := ctx.Err()
+		if errors.Is(err, context.DeadlineExceeded) {
+			s.wordReads.markSlow(time.Now())
+		}
+		return s.rememberedWordPolicies(tenantID, keyID), err
+	}
+}
+
+// rememberedWordPolicies returns the policies of the cache for a request.
+func (s *Store) rememberedWordPolicies(tenantID, keyID string) WordPolicies {
+	remembered := WordPolicies{
+		Platform: s.wordPolicies.get(wordPolicyKey{platformWordTenantID(), WordScopePlatform, ""}),
+		Tenant:   s.wordPolicies.get(wordPolicyKey{tenantID, WordScopeTenant, ""}),
+	}
+	if keyID != "" {
+		remembered.Key = s.wordPolicies.get(wordPolicyKey{tenantID, WordScopeKey, keyID})
+	}
+	return remembered
+}
+
+// readWordPolicies reads the policies from the database, using the cached copy
+// of each whose version is unchanged. On a failure it returns the cached ones
+// with the error.
+func (s *Store) readWordPolicies(ctx context.Context, tenantID, keyID string) (WordPolicies, error) {
+	remembered := s.rememberedWordPolicies(tenantID, keyID)
 	rows, err := s.db.QueryContext(ctx, `SELECT tenant_id,scope_type,scope_id,version,updated_at FROM content_moderation_word_policies
 		WHERE (tenant_id=$1 AND scope_type=$2 AND scope_id='')
 		   OR (tenant_id=$3 AND scope_type=$4 AND scope_id='')
 		   OR (tenant_id=$3 AND scope_type=$5 AND scope_id=$6)`,
-		platformKey.tenantID, WordScopePlatform, tenantID, WordScopeTenant, WordScopeKey, keyID)
+		platformWordTenantID(), WordScopePlatform, tenantID, WordScopeTenant, WordScopeKey, keyID)
 	if err != nil {
 		return remembered, err
 	}

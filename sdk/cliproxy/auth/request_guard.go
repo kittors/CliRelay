@@ -2,10 +2,15 @@ package auth
 
 import (
 	"context"
+	"fmt"
 	"net/http"
+	"runtime/debug"
 	"strings"
+	"sync/atomic"
+	"time"
 
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
+	log "github.com/sirupsen/logrus"
 )
 
 // requestGuardMetadataKey remembers, in the request's metadata, what the guard
@@ -75,7 +80,7 @@ func (m *Manager) guardRequest(ctx context.Context, req cliproxyexecutor.Request
 		// remember it in (the execution would allocate one anyway).
 		opts.Metadata = make(map[string]any)
 	}
-	result := guard.GuardRequest(ctx, req, opts)
+	result := runRequestGuard(guard, ctx, req, opts)
 	if result.Blocked {
 		status := result.HTTPStatus
 		if status < 400 || status > 599 {
@@ -91,6 +96,79 @@ func (m *Manager) guardRequest(ctx context.Context, req cliproxyexecutor.Request
 	opts.Metadata[requestGuardMetadataKey] = outcome
 	req, opts = applyGuardedRequest(req, opts, outcome)
 	return req, opts, outcome.reply, nil
+}
+
+// ShareRequestGuardOutcome copies what the request guard decided from the
+// metadata of one execution of a request to the metadata of another execution of
+// the same request (same OriginalRequest slice), so a handler that runs one
+// client request as several executions has it guarded once, not once for each.
+// src must be the metadata map the first execution was given; it holds the
+// outcome after that execution has run.
+func ShareRequestGuardOutcome(dst, src map[string]any) {
+	if dst == nil || src == nil {
+		return
+	}
+	if outcome, ok := src[requestGuardMetadataKey]; ok {
+		dst[requestGuardMetadataKey] = outcome
+	}
+}
+
+// guardPanicLogInterval spaces the log lines of a guard that panics on every
+// request; the ones in between are only counted.
+const guardPanicLogInterval = 10 * time.Second
+
+// guardPanicLog is the limiter for those lines. A package variable so a test can
+// start from a clean one.
+var guardPanicLog guardPanicLimiter
+
+type guardPanicLimiter struct {
+	last       atomic.Int64
+	suppressed atomic.Int64
+}
+
+// allow reports whether a line may be written now, and how many were dropped
+// since the last one.
+func (l *guardPanicLimiter) allow(now time.Time) (ok bool, dropped int64) {
+	at := now.UnixNano()
+	last := l.last.Load()
+	if (last != 0 && at-last < int64(guardPanicLogInterval)) || !l.last.CompareAndSwap(last, at) {
+		l.suppressed.Add(1)
+		return false, 0
+	}
+	return true, l.suppressed.Swap(0)
+}
+
+// runRequestGuard calls the host's guard. The guard is a check in front of every
+// request; a bug in it must not take the request down with it, nor the process
+// (a panic in a goroutine that nothing recovers ends it). A panic leaves the
+// request as it came, as any other failure of the guard's dependencies would,
+// and is logged at error level: a guard that panics on every request is a guard
+// that is switched off, and an operator has to hear of it.
+func runRequestGuard(guard RequestGuard, ctx context.Context, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (result RequestGuardResult) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			logGuardPanic(guard, req.Model, recovered)
+			result = RequestGuardResult{}
+		}
+	}()
+	return guard.GuardRequest(ctx, req, opts)
+}
+
+func logGuardPanic(guard RequestGuard, model string, recovered any) {
+	ok, dropped := guardPanicLog.allow(time.Now())
+	if !ok {
+		return
+	}
+	value := fmt.Sprint(recovered)
+	if len(value) > 300 {
+		value = value[:300] + "..."
+	}
+	log.WithFields(log.Fields{
+		"guard":      fmt.Sprintf("%T", guard),
+		"model":      model,
+		"panic":      value,
+		"suppressed": dropped,
+	}).Errorf("request guard panicked; this request goes on unguarded\n%s", debug.Stack())
 }
 
 func applyGuardedRequest(req cliproxyexecutor.Request, opts cliproxyexecutor.Options, outcome *guardedRequest) (cliproxyexecutor.Request, cliproxyexecutor.Options) {

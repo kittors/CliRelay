@@ -3,6 +3,8 @@ package contentmoderation
 import (
 	"bytes"
 	"context"
+	"errors"
+	"os"
 	"strings"
 	"time"
 
@@ -23,6 +25,48 @@ type WordPolicyResolver interface {
 }
 
 var _ coreauth.RequestGuard = (*RuntimeModerator)(nil)
+
+// WordGuardEnvVar is the operator's switch for the word guard. Set to off (or
+// 0, false, no, disabled) the guard lets every request through unchecked and
+// filters no reply; anything else leaves it on, which is the default. It is read
+// when the server starts, so it takes effect with the next restart.
+//
+// It exists for the day the guard itself is the problem: it sits in front of
+// every request, and a fault in it should not need a rebuild to get past.
+const WordGuardEnvVar = "CLIRELAY_WORD_GUARD"
+
+// wordGuardSwitchedOff reads WordGuardEnvVar.
+func wordGuardSwitchedOff() bool {
+	raw := strings.ToLower(strings.TrimSpace(os.Getenv(WordGuardEnvVar)))
+	switch raw {
+	case "", "on", "1", "true", "yes", "enabled", "enable":
+		return false
+	case "off", "0", "false", "no", "disabled", "disable":
+		return true
+	}
+	log.Warnf("ignoring %s=%q: use off to switch the word guard off; it stays on", WordGuardEnvVar, raw)
+	return false
+}
+
+// WordGuardEnabled reports whether the word guard is checking requests: it has a
+// policy store and has not been switched off.
+func (m *RuntimeModerator) WordGuardEnabled() bool {
+	return m != nil && m.words != nil && !m.wordsOff.Load()
+}
+
+// SetWordGuardEnabled switches the word guard on or off for this process,
+// whatever WordGuardEnvVar said at start.
+func (m *RuntimeModerator) SetWordGuardEnabled(enabled bool) {
+	if m != nil {
+		m.wordsOff.Store(!enabled)
+	}
+}
+
+// wordPolicyWait is how long a request waits for the policies that apply to it.
+// A request that has not got them by then goes on with the ones remembered from
+// earlier requests (see wordPolicyReads); it is long enough for a database that
+// is working, and short enough that one that is not costs a request little.
+const wordPolicyWait = 75 * time.Millisecond
 
 // How often the word guard writes the same kind of line to the process log. The
 // request log keeps every hit; these lines only tell an operator it is
@@ -63,17 +107,26 @@ func wordGuardKeyID(ctx context.Context) string {
 // and either refuses it, hands back a copy with the hits replaced, or lets it
 // through (noting hits in the request log).
 //
-// It fails open: policies that cannot be read leave the request as it is,
-// unless some were read before, in which case those still apply.
+// It fails open: policies that cannot be read in time leave the request as it
+// is, unless some were read before, in which case those still apply.
 func (m *RuntimeModerator) GuardRequest(ctx context.Context, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) coreauth.RequestGuardResult {
-	if m == nil || m.words == nil {
+	if !m.WordGuardEnabled() {
 		return coreauth.RequestGuardResult{}
 	}
 	tenantID := coreauth.NormalizedTenantID(metadataString(opts.Metadata, cliproxyexecutor.TenantMetadataKey))
-	policies, err := m.words.LoadWordPolicies(ctx, tenantID, wordGuardKeyID(ctx))
+	wait := m.wordLoadTimeout
+	if wait <= 0 {
+		wait = wordPolicyWait
+	}
+	loadCtx, cancel := context.WithTimeout(ctx, wait)
+	policies, err := m.words.LoadWordPolicies(loadCtx, tenantID, wordGuardKeyID(ctx))
+	cancel()
 	policyError := ""
 	if err != nil {
 		policyError = "policy_store_error"
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, errWordPolicySlow) {
+			policyError = "policy_store_timeout"
+		}
 		m.warnPolicyStore(tenantID, err)
 	}
 	contexts := m.wordContexts.contextsFor(policies.Platform, policies.Tenant, policies.Key)
@@ -143,7 +196,7 @@ func (m *RuntimeModerator) warnPolicyStore(tenantID string, err error) {
 	if !ok {
 		return
 	}
-	log.WithFields(log.Fields{"tenant_id": tenantID, "suppressed": dropped}).WithError(err).Warn("word guard could not read its policies; using the ones it last saw")
+	log.WithFields(log.Fields{"tenant_id": tenantID, "suppressed": dropped}).WithError(err).Warn("word guard could not read its policies in time; using the ones it last saw")
 }
 
 // logWordVerdict logs what the guard did with a request. It names rules and

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
@@ -33,6 +34,11 @@ type RuntimeModerator struct {
 	wordContexts wordContextCache
 	// logs spaces the word guard's process log lines (see logLimiter).
 	logs logLimiter
+	// wordsOff is the operator's switch for the word guard (see WordGuardEnvVar).
+	wordsOff atomic.Bool
+	// wordLoadTimeout is how long a request waits for its policies; zero means
+	// wordPolicyWait. Tests shorten or lengthen it.
+	wordLoadTimeout time.Duration
 
 	lastGoodMu sync.RWMutex
 	lastGood   map[resolutionKey]resolvedProfile
@@ -106,6 +112,10 @@ func NewRequestModerator(resolver ProfileResolver, evaluator DecisionEvaluator) 
 	}
 	if words, ok := resolver.(WordPolicyResolver); ok {
 		moderator.words = words
+	}
+	if wordGuardSwitchedOff() {
+		moderator.wordsOff.Store(true)
+		log.Warnf("word guard is switched off by %s: requests are not checked against word policies", WordGuardEnvVar)
 	}
 	return moderator
 }

@@ -38,3 +38,7 @@ services:
 遇到 dirty migration 时，先备份，再对照所安装版本的准确迁移 SQL 和 checksum 检查实际 schema。不要只清除 `dirty`、盲目重放 SQL、修改 checksum 或删除数据卷，因为超时可能发生在 SQL 提交之前或之后。保持 PostgreSQL 的 `fsync`、`synchronous_commit` 和 `full_page_writes` 开启，关闭持久性保护不是推荐的慢盘修复方式。
 
 `CLIRELAY_ADMIN_PASSWORD` 用于空数据库首次创建管理员，标准安装流程会生成有效密码；修改该变量不会轮换已有管理员密码。updater sidecar 会禁用应用镜像继承的 healthcheck，避免探测该容器内不存在的应用端口，也不能用其他容器的健康状态证明 updater 自身健康。
+
+## 敏感词守卫开关
+
+敏感词守卫在选择账号之前，按平台、租户、API Key 三层词表检查每个请求。读取词表时只等很短的时间（75 毫秒）：数据库超时未答，请求就沿用守卫上次见过的词表继续，从未见过则不做检查。若守卫本身出现故障，给应用进程设置 `CLIRELAY_WORD_GUARD=off` 并重启即可绕过：在去掉该变量之前，不检查任何请求，也不过滤任何回复。其他取值（包括写错）都会保持守卫开启。启动时会记一条日志（`word guard is switched off by CLIRELAY_WORD_GUARD`）。

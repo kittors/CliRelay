@@ -45,7 +45,8 @@ type wordGuardView struct {
 	// failed open.
 	RegexSkipped bool `json:"regex_skipped,omitempty"`
 	// PolicyError is set when the policies could not be read from the database
-	// and the guard worked from the ones it saw last (or none): a failed open.
+	// in time (policy_store_timeout) or at all (policy_store_error), and the
+	// guard worked from the ones it saw last, or none: a failed open.
 	PolicyError string `json:"policy_error,omitempty"`
 	// Reply is present once the reply filter has found a hit or could not do its
 	// work.

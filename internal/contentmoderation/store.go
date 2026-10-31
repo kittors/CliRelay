@@ -97,6 +97,8 @@ type Store struct {
 	db *sql.DB
 	// wordPolicies caches decoded word policies by version; see LoadWordPolicies.
 	wordPolicies wordPolicyCache
+	// wordReads runs the reads that LoadWordPolicies waits for.
+	wordReads wordPolicyReads
 }
 
 func NewStore(db *sql.DB) *Store { return &Store{db: db} }
