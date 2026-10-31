@@ -273,6 +273,52 @@ func TestWordPolicyTestKeepsThePlatformWordsToItself(t *testing.T) {
 	}
 }
 
+// A keyword may ask to be matched with separators between its characters. The
+// option is saved and read back, refused where it makes no sense, and a test
+// shows where in the text it hit.
+func TestWordRuleThatIgnoresSeparators(t *testing.T) {
+	h := setupWordPolicyTest(t)
+	rec, body := wordTenantAUser.call(h.PutWordPolicyTenant, http.MethodPut,
+		`{"action":"replace","rules":[{"pattern":"敏感词","ignore_separators":true},{"pattern":"plain"}]}`, "")
+	wordExpectStatus(t, rec, http.StatusOK)
+	rules := wordRuleList(t, body)
+	if len(rules) != 2 || rules[0]["ignore_separators"] != true || rules[1]["ignore_separators"] != nil {
+		t.Fatalf("saved rules = %v: the option belongs on the rule that asked for it", rules)
+	}
+	_, got := wordTenantAUser.call(h.GetWordPolicyTenant, http.MethodGet, "", "")
+	if rules := wordRuleList(t, got); rules[0]["ignore_separators"] != true || rules[1]["ignore_separators"] != nil {
+		t.Fatalf("read back = %v", rules)
+	}
+
+	rec, got = wordTenantAUser.call(h.PostWordPolicyTest, http.MethodPost, `{"input":"请勿 敏 感，词 和 p l a i n"}`, "")
+	wordExpectStatus(t, rec, http.StatusOK)
+	matches, _ := got["matches"].([]any)
+	if got["output"] != "请勿 *** 和 p l a i n" || len(matches) != 1 {
+		t.Fatalf("test result = %v", got)
+	}
+	match := matches[0].(map[string]any)
+	if match["start"] != float64(3) || match["end"] != float64(8) || match["normalized_only"] != true || match["pattern"] != "敏感词" {
+		t.Fatalf("match = %v", match)
+	}
+
+	// Refused where it means nothing, naming the rule.
+	for name, tt := range map[string]struct{ rule, code string }{
+		"a regular expression": {`{"kind":"regex","pattern":"a+b","ignore_separators":true}`, "invalid_option"},
+		"only separators":      {`{"pattern":" - . ","ignore_separators":true}`, "only_separators"},
+	} {
+		rec, got = wordTenantAUser.call(h.PutWordPolicyTenant, http.MethodPut, `{"rules":[`+tt.rule+`]}`, "")
+		wordExpectStatus(t, rec, http.StatusUnprocessableEntity)
+		problems, _ := got["error"].(map[string]any)["rules"].([]any)
+		if len(problems) != 1 || problems[0].(map[string]any)["code"] != tt.code {
+			t.Errorf("%s: body = %v", name, got)
+		}
+	}
+	// A save that was refused left the policy as it was.
+	if _, got := wordTenantAUser.call(h.GetWordPolicyTenant, http.MethodGet, "", ""); got["version"] != float64(1) {
+		t.Fatalf("a refused save changed the policy: %v", got)
+	}
+}
+
 func TestWordPolicyTestWithADraft(t *testing.T) {
 	h := setupWordPolicyTest(t)
 	createPolicyKeyFor(t, wordTenantA)

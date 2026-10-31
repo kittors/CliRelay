@@ -39,6 +39,10 @@ type wordMatcher struct {
 	fold  bool
 	rules []wordRuleRef // enabled rules in the order they were given
 	trie  wordTrie
+	// loose holds the keywords that ignore separators, written without any, and
+	// is scanned in the text with its separators taken out (see
+	// wordguard_separators.go). Empty when no rule asks for it.
+	loose wordTrie
 	// regexes pairs each compiled expression with its index in rules.
 	regexes []compiledWordRegex
 }
@@ -71,6 +75,21 @@ func (m *wordMatcher) find(text string, options findOptions) wordFind {
 		return result
 	}
 	hits, undecided := m.trie.scan(text, options)
+	if len(m.loose.nodes) > 0 {
+		// The keywords that ignore separators are looked for in the text without
+		// them, and their hits are traced back into this text, where they run from
+		// the first character to the last with the separators in between.
+		stripped, runs := stripSeparators(text)
+		looseHits, looseUndecided := m.loose.scan(stripped, options)
+		for _, hit := range looseHits {
+			hits = append(hits, wordHit{start: runs.original(hit.start, true), end: runs.original(hit.end, false), rule: hit.rule})
+		}
+		if looseUndecided >= 0 {
+			if from := runs.original(looseUndecided, true); undecided < 0 || from < undecided {
+				undecided = from
+			}
+		}
+	}
 	result.undecided = undecided
 	for _, compiled := range m.regexes {
 		if options.limit > 0 && len(hits) >= options.limit && !options.more {
@@ -211,7 +230,12 @@ func (m *wordMatcher) size() int64 {
 		rule := &m.rules[i]
 		total += int64(len(rule.ID) + len(rule.Kind) + len(rule.Pattern) + len(rule.Note) + len(rule.Layer))
 	}
-	total += int64(cap(m.trie.nodes))*trieNodeBytes + int64(cap(m.trie.edges))*trieEdgeBytes + int64(len(m.trie.root))*4
+	for _, trie := range []*wordTrie{&m.trie, &m.loose} {
+		total += int64(cap(trie.nodes))*trieNodeBytes + int64(cap(trie.edges))*trieEdgeBytes
+		if len(trie.nodes) > 0 {
+			total += int64(len(trie.root)) * 4
+		}
+	}
 	for _, compiled := range m.regexes {
 		total += wordRegexBaseBytes + int64(compiled.program)*wordRegexInstBytes + int64(len(compiled.first.ranges))*4
 	}
@@ -223,7 +247,7 @@ func (m *wordMatcher) size() int64 {
 // skipped rather than failing the request.
 func compileWordMatcher(refs []wordRuleRef, fold bool) *wordMatcher {
 	matcher := &wordMatcher{fold: fold, rules: append([]wordRuleRef(nil), refs...)}
-	var builder wordTrieBuilder
+	var builder, looseBuilder wordTrieBuilder
 	for index, ref := range matcher.rules {
 		switch ref.Kind {
 		case WordRuleRegex:
@@ -232,12 +256,19 @@ func compileWordMatcher(refs []wordRuleRef, fold bool) *wordMatcher {
 				matcher.regexes = append(matcher.regexes, compiled)
 			}
 		default:
-			if normalized := normalizeForMatch(ref.Pattern, fold); normalized != "" {
+			normalized := normalizeForMatch(ref.Pattern, fold)
+			if ref.IgnoreSeparators {
+				// Without its separators, like the text it is looked for in.
+				if stripped, _ := stripSeparators(normalized); stripped != "" {
+					looseBuilder.add(stripped, index)
+				}
+			} else if normalized != "" {
 				builder.add(normalized, index)
 			}
 		}
 	}
 	matcher.trie = builder.build()
+	matcher.loose = looseBuilder.build()
 	return matcher
 }
 

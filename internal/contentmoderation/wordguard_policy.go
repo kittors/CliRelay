@@ -114,6 +114,10 @@ type WordRule struct {
 	Pattern string `json:"pattern"`
 	Enabled bool   `json:"enabled"`
 	Note    string `json:"note,omitempty"`
+	// IgnoreSeparators makes a keyword match even with spaces, punctuation or
+	// symbols between its characters (敏 感 词, 敏-感-词). Off unless asked for, and
+	// for keywords only (see wordguard_separators.go).
+	IgnoreSeparators bool `json:"ignore_separators,omitempty"`
 }
 
 // WordPolicy is the word guard configuration of one scope.
@@ -337,8 +341,20 @@ func checkWordRule(rule *WordRule) (checkedWordRule, string, string) {
 			// Only zero-width characters and spaces: it would match every request.
 			return checkedWordRule{}, "empty", "the keyword has no visible characters"
 		}
+		if rule.IgnoreSeparators {
+			stripped, _ := stripSeparators(normalized)
+			if stripped == "" {
+				return checkedWordRule{}, "only_separators", "the keyword is made of spaces and punctuation only, so with separators ignored there would be nothing to match"
+			}
+			// Written with or without its separators it is the same rule, but it is
+			// not the rule of the same keyword that does not ignore them.
+			return checkedWordRule{key: WordRuleKeyword + "\x00ignore-separators\x00" + stripped}, "", ""
+		}
 		return checkedWordRule{key: WordRuleKeyword + "\x00" + normalized}, "", ""
 	case WordRuleRegex:
+		if rule.IgnoreSeparators {
+			return checkedWordRule{}, "invalid_option", "ignoring separators applies to keywords; a regular expression can match them itself"
+		}
 		// Only the line break a text file adds is stripped: a space can be part of
 		// a pattern.
 		rule.Pattern = strings.Trim(rule.Pattern, "\r\n")

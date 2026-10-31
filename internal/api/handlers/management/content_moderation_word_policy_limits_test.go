@@ -153,6 +153,7 @@ func worstKeywordRule(i int) string {
 		`      "kind": "keyword",` + "\n" +
 		`      "pattern": "` + jsonEscapeAll(string(pattern)) + "\",\n" +
 		`      "enabled": false,` + "\n" +
+		`      "ignore_separators": false,` + "\n" +
 		`      "note": "` + jsonEscapeAll(note) + "\"\n" +
 		"    }"
 }

@@ -57,8 +57,9 @@ type WordMatch struct {
 	// locate the hit in that text, in UTF-16 code units like a JavaScript
 	// string index; NormalizedOnly says the text as written differs from what
 	// matched (it was found only after case, width, zero-width characters and
-	// whitespace were normalized). They are filled in only when asked for, as
-	// the panel's test dialog does.
+	// whitespace were normalized, or, for a keyword that ignores separators,
+	// with separators in it that the keyword lacks). They are filled in only
+	// when asked for, as the panel's test dialog does.
 	Unit           int  `json:"unit"`
 	Start          int  `json:"start"`
 	End            int  `json:"end"`
@@ -264,15 +265,16 @@ func describeWordHits(units []wordUnit, contexts []wordContext, hits []wordUnitH
 			Unit:    h.unit,
 		}
 		if options.positions {
-			locateWordHit(&match, units[h.unit], context.fold, h.hit, normalizedText(h.unit, context.fold))
+			locateWordHit(&match, units[h.unit], context.fold, h.hit, normalizedText(h.unit, context.fold), rule)
 		}
 		matches = append(matches, match)
 	}
 	return matches
 }
 
-// locateWordHit fills in where a hit is in the text as written.
-func locateWordHit(match *WordMatch, unit wordUnit, fold bool, hit wordHit, normalizedText string) {
+// locateWordHit fills in where a hit is in the text as written. rule is the one
+// the hit is attributed to.
+func locateWordHit(match *WordMatch, unit wordUnit, fold bool, hit wordHit, normalizedText string, rule wordRuleRef) {
 	mapped := normalizeMapped(unit.text, fold)
 	if !mapped.exact {
 		return
@@ -285,6 +287,12 @@ func locateWordHit(match *WordMatch, unit wordUnit, fold bool, hit wordHit, norm
 	match.Start = utf16Offset(unit.text, span.start)
 	match.End = utf16Offset(unit.text, span.end)
 	match.NormalizedOnly = unit.text[span.start:span.end] != normalizedText[hit.start:hit.end]
+	if rule.IgnoreSeparators && !match.NormalizedOnly {
+		// The text is the same as the normalized text, but a keyword that ignores
+		// separators matched it with something between its characters that the
+		// keyword does not have: it is not the keyword as written either.
+		match.NormalizedOnly = normalizedText[hit.start:hit.end] != normalizeForMatch(rule.Pattern, fold)
+	}
 }
 
 // utf16Offset converts a byte offset in text to a count of UTF-16 code units.

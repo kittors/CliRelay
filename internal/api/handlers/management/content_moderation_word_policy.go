@@ -74,6 +74,8 @@ type wordRuleInput struct {
 	Pattern string `json:"pattern"`
 	Enabled *bool  `json:"enabled"`
 	Note    string `json:"note"`
+	// IgnoreSeparators is for keywords only; a rule that does not say is strict.
+	IgnoreSeparators bool `json:"ignore_separators"`
 }
 
 // wordRuleInputs is the rules of a request. It counts them as they are read and
@@ -123,7 +125,7 @@ func (r *wordRuleInputs) UnmarshalJSON(data []byte) error {
 }
 
 func (r wordRuleInput) rule() contentmoderation.WordRule {
-	return contentmoderation.WordRule{ID: r.ID, Kind: r.Kind, Pattern: r.Pattern, Enabled: r.Enabled == nil || *r.Enabled, Note: r.Note}
+	return contentmoderation.WordRule{ID: r.ID, Kind: r.Kind, Pattern: r.Pattern, Enabled: r.Enabled == nil || *r.Enabled, Note: r.Note, IgnoreSeparators: r.IgnoreSeparators}
 }
 
 func wordRulesFromInput(in []wordRuleInput) []contentmoderation.WordRule {
