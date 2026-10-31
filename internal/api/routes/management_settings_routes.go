@@ -9,6 +9,7 @@ func registerManagementSettingsRoutes(group *gin.RouterGroup, h *managementhandl
 	group.GET("/config", h.GetConfig)
 	group.GET("/config.yaml", h.GetConfigYAML)
 	group.PUT("/config.yaml", h.PutConfigYAML)
+	group.POST("/payload-rules/dry-run", h.PostPayloadRulesDryRun)
 	group.GET("/latest-version", h.GetLatestVersion)
 	group.GET("/update/check", h.CheckUpdate)
 	group.GET("/update/current", h.GetCurrentUpdateState)

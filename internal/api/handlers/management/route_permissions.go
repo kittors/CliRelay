@@ -244,6 +244,11 @@ func permissionForManagementRequest(method, path string) string {
 	// Process-global config knobs (explicit so default stays fail-closed).
 	case relative == "/config":
 		return "tenant_settings.read"
+	// The dry run is a tool for editing the payload rules on the config page.
+	// It changes nothing, but a POST never maps to a read permission, so it
+	// takes the one saving the rules takes.
+	case relative == "/payload-rules/dry-run":
+		return "system.config.write"
 	case relative == "/debug", relative == "/logging-to-file", relative == "/logs-max-total-size-mb",
 		relative == "/error-logs-max-files", relative == "/usage-statistics-enabled",
 		relative == "/request-log", strings.HasPrefix(relative, "/request-log-storage"),

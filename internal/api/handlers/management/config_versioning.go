@@ -296,11 +296,24 @@ func (h *Handler) liveSettingVersion(key string) int64 {
 // someone else changed the setting in between.
 type configResponse struct {
 	*config.Config
-	RuntimeSettingVersions map[string]int64 `json:"runtime-setting-versions,omitempty"`
+	RuntimeSettingVersions map[string]int64   `json:"runtime-setting-versions,omitempty"`
+	Capabilities           configCapabilities `json:"capabilities"`
 }
 
-func withSettingVersions(cfg *config.Config, versions map[string]int64) configResponse {
-	return configResponse{Config: cfg, RuntimeSettingVersions: versions}
+// configCapabilities says which config-page tools this backend has. The panel
+// follows the latest codeProxy release, not this binary, so it offers a tool
+// only when the backend it talks to says so.
+type configCapabilities struct {
+	// PayloadRulesDryRun: POST /payload-rules/dry-run.
+	PayloadRulesDryRun bool `json:"payload-rules-dry-run"`
+}
+
+func newConfigResponse(cfg *config.Config, versions map[string]int64) configResponse {
+	return configResponse{
+		Config:                 cfg,
+		RuntimeSettingVersions: versions,
+		Capabilities:           configCapabilities{PayloadRulesDryRun: true},
+	}
 }
 
 // WithLiveConfig runs fn with this node's live configuration while holding the
