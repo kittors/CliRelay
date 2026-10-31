@@ -332,6 +332,18 @@ func normalizeResponseSubsequentRequest(rawJSON []byte, lastRequest []byte, last
 		}
 	}
 
+	// A client that sends its whole transcript is not appending to the last turn.
+	// pi (websocket-cached) does this on a reused socket whenever a field other
+	// than input changes, most often when tools are added mid-session: the input
+	// then repeats every earlier turn. Merging it onto the previous turn would
+	// submit the same function_call twice without its function_call_output in
+	// between, which Anthropic rejects with
+	// `messages.N: tool_use ids were found without tool_result blocks`.
+	if shouldReplaceWebsocketTranscript(rawJSON, nextInput) {
+		normalized := normalizeResponseTranscriptReplacement(rawJSON, lastRequest)
+		return normalized, bytes.Clone(normalized), nil
+	}
+
 	// Websocket v2 mode uses response.create with previous_response_id + incremental input.
 	// Do not expand it into a full input transcript; upstream expects the incremental payload.
 	if allowIncrementalInputWithPreviousResponseID {
