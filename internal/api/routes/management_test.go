@@ -26,7 +26,7 @@ func TestRegisterManagementRouteTable(t *testing.T) {
 		routes[key] = route
 	}
 
-	if got, want := len(routes), 353; got != want {
+	if got, want := len(routes), 354; got != want {
 		t.Fatalf("route count = %d, want %d", got, want)
 	}
 	if got, want := sortedRouteKeys(routes), expectedManagementRoutes(); !slices.Equal(got, want) {
@@ -157,6 +157,7 @@ func TestManagementRoutePermissionsComplete(t *testing.T) {
 		{http.MethodPost, "/v0/management/ai-accounts/status-refresh", "auth_files.write"},
 		{http.MethodGet, "/v0/management/ai-accounts/status-refresh/job-1", "auth_files.read"},
 		{http.MethodGet, "/v0/management/cluster", "system.status.read"},
+		{http.MethodPost, "/v0/management/payload-rules/dry-run", "system.config.write"},
 		// /metrics exposes every tenant's traffic: platform operators only.
 		{http.MethodGet, "/v0/management/observability/metrics", "system.config.read"},
 		{http.MethodPut, "/v0/management/observability/metrics", "system.config.write"},
@@ -390,6 +391,7 @@ func expectedManagementRoutes() []string {
 		"GET /v0/management/ollama-cloud-api-key",
 		"GET /v0/management/opencode-go-api-key",
 		"GET /v0/management/openai-compatibility",
+		"POST /v0/management/payload-rules/dry-run",
 		"GET /v0/management/proxy-pool",
 		"GET /v0/management/proxy-url",
 		"GET /v0/management/public/ccswitch-import-configs",
