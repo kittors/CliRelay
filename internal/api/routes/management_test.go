@@ -186,6 +186,18 @@ func TestManagementRoutePermissionsComplete(t *testing.T) {
 		{http.MethodDelete, "/v0/management/content-moderation/word-policies/keys/sample-id", "content_moderation.write"},
 		{http.MethodPost, "/v0/management/content-moderation/word-policies/validate", "content_moderation.write"},
 		{http.MethodPost, "/v0/management/content-moderation/word-policies/test", "content_moderation.test"},
+		{http.MethodPost, "/v0/management/content-moderation/profiles/profile-1/test", "content_moderation.test"},
+		// An API key whose id is "test" must not turn its policy's routes into
+		// the dry-run permission: reading it is a read, changing it a write.
+		{http.MethodGet, "/v0/management/content-moderation/word-policies/keys/test", "content_moderation.read"},
+		{http.MethodPut, "/v0/management/content-moderation/word-policies/keys/test", "content_moderation.write"},
+		{http.MethodDelete, "/v0/management/content-moderation/word-policies/keys/test", "content_moderation.write"},
+		{http.MethodGet, "/v0/management/content-moderation/profiles/test", "content_moderation.read"},
+		{http.MethodPatch, "/v0/management/content-moderation/profiles/test", "content_moderation.write"},
+		{http.MethodDelete, "/v0/management/content-moderation/profiles/test", "content_moderation.write"},
+		// Only a POST to the dry-run route is a dry run.
+		{http.MethodGet, "/v0/management/content-moderation/word-policies/test", "content_moderation.read"},
+		{http.MethodPut, "/v0/management/content-moderation/word-policies/test", "content_moderation.write"},
 		{http.MethodGet, "/v0/management/totally-unknown-route", ""},
 	}
 	for _, item := range locked {
