@@ -184,7 +184,8 @@ func (m *Manager) pickNext(ctx context.Context, provider, model string, opts cli
 }
 
 func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model string, opts cliproxyexecutor.Options, tried map[string]struct{}) (*Auth, ProviderExecutor, string, error) {
-	return newSelectorService(m).pickMixed(ctx, providers, model, opts, tried)
+	auth, executor, provider, _, err := newSelectorService(m).pickMixed(ctx, providers, model, opts, tried)
+	return auth, executor, provider, err
 }
 
 func (s selectorService) pickProvider(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, tried map[string]struct{}) (*Auth, ProviderExecutor, error) {
@@ -218,7 +219,8 @@ func (s selectorService) pickProvider(ctx context.Context, provider, model strin
 	return s.ensureSelectedAuthIndex(authCopy, selected), executor, nil
 }
 
-func (s selectorService) pickMixed(ctx context.Context, providers []string, model string, opts cliproxyexecutor.Options, tried map[string]struct{}) (*Auth, ProviderExecutor, string, error) {
+// pickMixed also returns the route group the credential was picked in.
+func (s selectorService) pickMixed(ctx context.Context, providers []string, model string, opts cliproxyexecutor.Options, tried map[string]struct{}) (*Auth, ProviderExecutor, string, string, error) {
 	scope := newSelectionScope(s.manager.currentRuntimeConfigForTenant(tenantIDFromMetadata(opts.Metadata)), model, opts.Metadata)
 	scope.grants = s.manager.sharedGrantIndex()
 	providerSet := make(map[string]struct{}, len(providers))
@@ -230,14 +232,14 @@ func (s selectorService) pickMixed(ctx context.Context, providers []string, mode
 		providerSet[p] = struct{}{}
 	}
 	if len(providerSet) == 0 {
-		return nil, nil, "", &Error{Code: "provider_not_found", Message: "no provider supplied"}
+		return nil, nil, "", "", &Error{Code: "provider_not_found", Message: "no provider supplied"}
 	}
 
 	s.manager.mu.RLock()
-	selected, _, err := s.pickLocked(ctx, scope, "mixed", opts, tried, s.mixedCandidateFilterLocked(providerSet), s.manager.selectorForRoutingScopeLocked)
+	selected, routeGroup, err := s.pickLocked(ctx, scope, "mixed", opts, tried, s.mixedCandidateFilterLocked(providerSet), s.manager.selectorForRoutingScopeLocked)
 	if err != nil {
 		s.manager.mu.RUnlock()
-		return nil, nil, "", err
+		return nil, nil, "", "", err
 	}
 
 	providerKey := strings.TrimSpace(strings.ToLower(selected.Provider))
@@ -245,12 +247,12 @@ func (s selectorService) pickMixed(ctx context.Context, providers []string, mode
 	okExecutor := executor != nil
 	if !okExecutor {
 		s.manager.mu.RUnlock()
-		return nil, nil, "", &Error{Code: "executor_not_found", Message: "executor not registered"}
+		return nil, nil, "", "", &Error{Code: "executor_not_found", Message: "executor not registered"}
 	}
 	authCopy := selected.Clone()
 	s.manager.mu.RUnlock()
 
-	return s.ensureSelectedAuthIndex(authCopy, selected), executor, providerKey, nil
+	return s.ensureSelectedAuthIndex(authCopy, selected), executor, providerKey, routeGroup, nil
 }
 
 // mixedCandidateFilterLocked admits the credentials of the given providers that

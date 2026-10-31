@@ -384,31 +384,43 @@ func (m *Manager) describeRouteGroupLocked(scope selectionScope, routeGroup stri
 // describeCandidate fills in why a candidate can or cannot take a request now.
 func describeCandidate(entry *CredentialSimulation, candidate *Auth, model string, deps *schedulerDeps, limiter *AccountConcurrencyLimiter, now time.Time) {
 	entry.Weight = authSelectionWeight(candidate)
-	block := authBlockForModel(candidate, model, now)
-	switch {
-	case block.blocked && block.reason == blockReasonDisabled:
-		entry.Blocked = SimulatedBlockDisabled
-	case block.blocked && block.reason == blockReasonCooldown:
-		entry.Blocked = SimulatedBlockCooldown
-	case block.blocked:
-		entry.Blocked = SimulatedBlockUnavailable
-	case entry.Weight <= 0:
+	entry.Blocked, entry.BlockedUntil, entry.BlockCause, entry.BlockHTTPStatus = candidateBlockOf(candidate, model, now)
+	if entry.Blocked == "" && entry.Weight <= 0 {
 		entry.Blocked = SimulatedBlockWeight
-	}
-	if block.blocked {
-		entry.BlockedUntil = block.next
-		var quota QuotaState
-		if block.quota != nil {
-			quota = *block.quota
-		}
-		entry.BlockCause = CooldownReasonOf(block.lastErr, quota)
-		if block.lastErr != nil {
-			entry.BlockHTTPStatus = block.lastErr.HTTPStatus
-		}
 	}
 	entry.InFlight, entry.ConcurrencyLimit = limiter.usage(candidate)
 	entry.Saturated = entry.ConcurrencyLimit > 0 && entry.InFlight >= entry.ConcurrencyLimit
 	entry.LoadRatio = deps.loadRatio(candidate, model)
+}
+
+// candidateBlockOf says why auth cannot take a request for model now, as a
+// SimulatedBlock* value (empty when it can), when the block ends (zero when it
+// waits for a probe or names no time), the CooldownReason* code of the failure
+// behind it and that failure's HTTP status. The routing simulator and the
+// route trace both describe accounts with it. A weight of 0 is the caller's
+// to add: it depends on the group the account is seen in.
+func candidateBlockOf(auth *Auth, model string, now time.Time) (blocked string, until time.Time, cause string, status int) {
+	block := authBlockForModel(auth, model, now)
+	if !block.blocked {
+		return "", time.Time{}, "", 0
+	}
+	switch block.reason {
+	case blockReasonDisabled:
+		blocked = SimulatedBlockDisabled
+	case blockReasonCooldown:
+		blocked = SimulatedBlockCooldown
+	default:
+		blocked = SimulatedBlockUnavailable
+	}
+	var quota QuotaState
+	if block.quota != nil {
+		quota = *block.quota
+	}
+	cause = CooldownReasonOf(block.lastErr, quota)
+	if block.lastErr != nil {
+		status = block.lastErr.HTTPStatus
+	}
+	return blocked, block.next, cause, status
 }
 
 func resetStandingOf(standing resetAwareStanding, source QuotaWindowSource, model string) *ResetStanding {
