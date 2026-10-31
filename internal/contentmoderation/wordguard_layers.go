@@ -1,6 +1,9 @@
 package contentmoderation
 
-import "strings"
+import (
+	"strings"
+	"sync"
+)
 
 // wordContext is what applies together to one request: a set of rules and the
 // settings that say how to scan for them and what a hit does.
@@ -133,4 +136,81 @@ func newWordContext(layer string, settings wordSettings, matcher *wordMatcher) w
 		reply:        settings.reply,
 		matcher:      matcher,
 	}
+}
+
+// maxCachedWordContexts bounds wordContextCache. The entries alive at one time
+// are about as many as there are tenants and API keys with a policy; when the
+// bound is reached the cache starts over and the next requests rebuild what they
+// need. It matches the bound on compiled matchers (maxCachedWordMatchers),
+// which the entries keep alive.
+const maxCachedWordContexts = maxCachedWordMatchers
+
+// wordPolicyStamp names one saved state of a stored policy. Every save raises
+// the version and sets the time of the last save, and a policy that is deleted
+// and created again starts over at version 1 with a new time, so the two
+// together tell states apart (the policy cache in the store relies on the same
+// pair). The zero stamp stands for a policy that does not exist.
+type wordPolicyStamp struct {
+	tenantID, scopeType, scopeID string
+	version                      int64
+	savedAt                      int64 // Unix nanoseconds
+}
+
+// stampWordPolicy returns the stamp of a policy read from the store. A policy
+// without a version or a save time (a draft, a policy built by hand) cannot be
+// told apart from a changed copy of itself, so it has no stamp and is never
+// cached.
+func stampWordPolicy(p *WordPolicy) (wordPolicyStamp, bool) {
+	if p == nil {
+		return wordPolicyStamp{}, true
+	}
+	if p.Version <= 0 || p.UpdatedAt.IsZero() {
+		return wordPolicyStamp{}, false
+	}
+	return wordPolicyStamp{p.TenantID, p.ScopeType, p.ScopeID, p.Version, p.UpdatedAt.UnixNano()}, true
+}
+
+type wordContextKey struct{ platform, tenant, key wordPolicyStamp }
+
+// wordContextCache remembers the contexts built from stored policies. Building
+// them copies and fingerprints every rule of every layer (with a full-size list
+// of 10,000 rules that is over a millisecond and a couple of megabytes of
+// garbage per request) only to arrive at the matcher the previous request
+// already used. Stored policies change only when saved, and a save changes the
+// stamp, so a request that finds its stamps here can use the contexts as they
+// are. The zero value is ready to use.
+type wordContextCache struct {
+	mu      sync.Mutex
+	entries map[wordContextKey][]wordContext
+}
+
+// contextsFor is buildWordContexts with the result remembered while the
+// policies keep the stamps it was built for. The result is shared between
+// requests and must not be modified.
+func (c *wordContextCache) contextsFor(platform, tenant, key *WordPolicy) []wordContext {
+	if platform == nil && tenant == nil && key == nil {
+		return nil
+	}
+	var k wordContextKey
+	var okPlatform, okTenant, okKey bool
+	k.platform, okPlatform = stampWordPolicy(platform)
+	k.tenant, okTenant = stampWordPolicy(tenant)
+	k.key, okKey = stampWordPolicy(key)
+	if !okPlatform || !okTenant || !okKey {
+		return buildWordContexts(platform, tenant, key)
+	}
+	c.mu.Lock()
+	cached, found := c.entries[k]
+	c.mu.Unlock()
+	if found {
+		return cached
+	}
+	built := buildWordContexts(platform, tenant, key)
+	c.mu.Lock()
+	if c.entries == nil || len(c.entries) >= maxCachedWordContexts {
+		c.entries = make(map[wordContextKey][]wordContext)
+	}
+	c.entries[k] = built
+	c.mu.Unlock()
+	return built
 }

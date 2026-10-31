@@ -246,6 +246,31 @@ func runWordPolicyStoreChecks(t *testing.T, store *Store) {
 			t.Fatalf("the cached copy of the deleted policy was served: %+v", got.Tenant)
 		}
 	})
+
+	// The moderator keeps what it builds from a policy under the policy's stamp
+	// (see wordContextCache). A policy read back from either database has to carry
+	// one, or the cache would quietly never hit and every request would rebuild
+	// its contexts.
+	t.Run("policies read back can have their contexts cached", func(t *testing.T) {
+		saved := savedWordPolicy(t, store, "tenant-c", WordPolicy{ScopeType: WordScopeTenant, Enabled: true, Rules: []WordRule{kw("alphaword")}}, nil)
+		var cache wordContextCache
+		contexts := func() []wordContext {
+			got, err := store.LoadWordPolicies(ctx, "tenant-c", "")
+			if err != nil {
+				t.Fatalf("LoadWordPolicies: %v", err)
+			}
+			return cache.contextsFor(got.Platform, got.Tenant, got.Key)
+		}
+		first, second := contexts(), contexts()
+		if len(first) == 0 || &first[0] != &second[0] {
+			t.Fatal("a policy read back from the store has no stamp, so its contexts would be rebuilt on every request")
+		}
+		savedWordPolicy(t, store, "tenant-c", WordPolicy{ScopeType: WordScopeTenant, Enabled: true, Rules: []WordRule{kw("betaword")}}, int64Ptr(saved.Version))
+		third := contexts()
+		if anyContextMatches(third, "an alphaword here") || !anyContextMatches(third, "a betaword here") {
+			t.Fatal("a save did not reach the contexts built for the next request")
+		}
+	})
 }
 
 func TestWordPolicyStoreSQLite(t *testing.T) {

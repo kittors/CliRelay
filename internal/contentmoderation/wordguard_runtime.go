@@ -15,7 +15,9 @@ import (
 
 // WordPolicyResolver loads the word policies that govern one request. *Store
 // implements it; the moderator picks it up from the profile resolver it is
-// built with, so no wiring changes where the moderator is created.
+// built with, so no wiring changes where the moderator is created. The policies
+// it returns are shared and must not be modified: the moderator keeps what it
+// built from a policy for as long as its version and save time stay the same.
 type WordPolicyResolver interface {
 	LoadWordPolicies(ctx context.Context, tenantID, keyID string) (WordPolicies, error)
 }
@@ -62,7 +64,7 @@ func (m *RuntimeModerator) GuardRequest(ctx context.Context, req cliproxyexecuto
 		policyError = "policy_store_error"
 		m.warnPolicyStore(tenantID, err)
 	}
-	contexts := buildWordContexts(policies.Platform, policies.Tenant, policies.Key)
+	contexts := m.wordContexts.contextsFor(policies.Platform, policies.Tenant, policies.Key)
 	if len(contexts) == 0 {
 		return coreauth.RequestGuardResult{}
 	}

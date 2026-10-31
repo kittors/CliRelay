@@ -30,6 +30,7 @@ type RuntimeModerator struct {
 	// wordguard_runtime.go). It is the profile resolver itself when that can also
 	// load them; nil disables the word guard.
 	words          WordPolicyResolver
+	wordContexts   wordContextCache
 	policyWarnedAt atomic.Int64
 
 	lastGoodMu sync.RWMutex
