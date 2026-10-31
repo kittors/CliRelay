@@ -49,3 +49,36 @@ func TestLoadReportsARowItCannotRead(t *testing.T) {
 		t.Fatal("a failed query must be reported, not read as no routing")
 	}
 }
+
+// The stream guards of a channel group survive the database: an explicit 0
+// busy wait (off) must not come back unset (the 60 s default), and the
+// first-token timeout must not be dropped.
+func TestStoreKeepsChannelGroupStreamGuards(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	db.SetMaxOpenConns(1)
+	t.Cleanup(func() { _ = db.Close() })
+	InitTable(db)
+	store := NewStore(db)
+
+	want := config.RoutingConfig{IncludeDefaultGroup: true, ChannelGroups: []config.RoutingChannelGroup{
+		{Name: "default", FirstTokenTimeoutSeconds: 30, BusyWaitMaxSeconds: new(0)},
+		{Name: "team", BusyWaitMaxSeconds: new(120)},
+		{Name: "plain"},
+	}}
+	if err := store.Upsert(want); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	got, _, err := store.Load(context.Background())
+	if err != nil || got == nil {
+		t.Fatalf("Load = %+v, %v", got, err)
+	}
+	if !config.SameRoutingConfig(*got, want) {
+		t.Fatalf("stored %+v, read back %+v", want, *got)
+	}
+	if got.ChannelGroups[2].BusyWaitMaxSeconds != nil {
+		t.Fatalf("an unset busy wait came back as %d", *got.ChannelGroups[2].BusyWaitMaxSeconds)
+	}
+}

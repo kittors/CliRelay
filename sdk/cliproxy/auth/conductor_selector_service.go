@@ -288,14 +288,7 @@ func (s selectorService) pickLocked(
 	includeCandidate func(candidate *Auth) bool,
 	selectorFor selectorSource,
 ) (*Auth, string, error) {
-	// Capability filtering happens before scheduling and after the same tenant,
-	// channel and model gates as every other execution path.
-	if opts.Alt == "alpha/search" {
-		original := includeCandidate
-		includeCandidate = func(candidate *Auth) bool {
-			return SupportsCodexAlphaSearch(candidate) && (original == nil || original(candidate))
-		}
-	}
+	includeCandidate = withSelectionCapabilities(opts, includeCandidate)
 	registryRef := s.manager.modelRegistry
 	var diagnosis error
 	for _, selectorRouteGroup := range scope.routeGroupsToTry() {
@@ -329,6 +322,17 @@ func (s selectorService) pickLocked(
 		return nil, "", &Error{Code: "alpha_search_auth_unavailable", Message: "no eligible Codex Alpha Search credential for this model and scope; use Codex OAuth or an API key with alpha-search enabled and a base-url", HTTPStatus: 503}
 	}
 	return nil, "", &Error{Code: "auth_not_found", Message: "no auth available"}
+}
+
+// withSelectionCapabilities keeps scheduling and retry planning on the same
+// protocol-specific candidate set, after the tenant, channel and model gates.
+func withSelectionCapabilities(opts cliproxyexecutor.Options, includeCandidate func(*Auth) bool) func(*Auth) bool {
+	if opts.Alt != "alpha/search" {
+		return includeCandidate
+	}
+	return func(candidate *Auth) bool {
+		return SupportsCodexAlphaSearch(candidate) && (includeCandidate == nil || includeCandidate(candidate))
+	}
 }
 
 func (s selectorService) buildCandidatesLocked(
