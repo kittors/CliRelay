@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/secretscrub"
@@ -20,6 +21,10 @@ import (
 // New columns now go here instead of adding another wrapper and another word to
 // that name. The legacy wrappers are retained below for existing callers.
 type RequestLogEntry struct {
+	// RequestID is the gateway request the entry bills. It is not stored: the
+	// settled hook hands it to the budget reservations (SetRequestLogSettledHook).
+	RequestID string
+
 	// IdempotencyKey makes the write exactly-once: a retry or spool replay of
 	// an entry whose earlier attempt already committed is skipped. Records from
 	// the usage queue carry the key assigned when they were published;
@@ -174,8 +179,11 @@ func InsertRequestLog(entry RequestLogEntry) {
 	entry = normalizeRequestLogEntry(entry)
 	spool := activeUsageSpool()
 	if spool == nil && getDB() == nil {
+		settleRequestLog(entry, false, 0)
 		return
 	}
+	// A spooled entry is written later, if at all; the reservation of its
+	// request runs out on its own (internal/quota/inflight).
 	if spool != nil && usageDBHealth.down() {
 		spoolLiveRequestLog(spool, entry, usageSpoolReasonDBUnavailable, time.Time{}, nil)
 		return
@@ -184,6 +192,7 @@ func InsertRequestLog(entry RequestLogEntry) {
 	switch outcome {
 	case requestLogWriteCommitted:
 		usageDBHealth.markUp()
+		settleRequestLog(entry, !entry.Failed, result.cost)
 		if spool != nil && result.duplicateNeedsRecheck(time.Now()) {
 			// The key found may be our own commit that a failover is about to
 			// discard; the replayer checks it again after the settle window.
@@ -194,12 +203,37 @@ func InsertRequestLog(entry RequestLogEntry) {
 	case requestLogWriteTransient:
 		if spool == nil {
 			log.Errorf("usage: insert log after retries: %v", err)
+			settleRequestLog(entry, false, 0)
 			return
 		}
 		usageDBHealth.markDown(err)
 		spoolLiveRequestLog(spool, entry, usageSpoolReasonWriteFailed, result.commitUncertainAt, err)
 	default:
 		log.Errorf("usage: insert log: %v", err)
+		settleRequestLog(entry, false, 0)
+	}
+}
+
+// RequestLogSettledFunc is told when a gateway request's log has been
+// committed, which is when the budget checks start counting it, or was dropped
+// and never will be. billed marks a committed log of a successful request;
+// cost and tokens are what it was billed.
+type RequestLogSettledFunc func(requestID string, billed bool, cost float64, tokens int64)
+
+var requestLogSettled atomic.Pointer[RequestLogSettledFunc]
+
+// SetRequestLogSettledHook installs fn, or removes the hook when fn is nil.
+func SetRequestLogSettledHook(fn RequestLogSettledFunc) {
+	if fn == nil {
+		requestLogSettled.Store(nil)
+		return
+	}
+	requestLogSettled.Store(&fn)
+}
+
+func settleRequestLog(entry RequestLogEntry, billed bool, cost float64) {
+	if fn := requestLogSettled.Load(); fn != nil && entry.RequestID != "" {
+		(*fn)(entry.RequestID, billed, cost, entry.Tokens.TotalTokens)
 	}
 }
 

@@ -9,6 +9,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/accesspolicy"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/quota"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/quota/inflight"
 )
 
 // ─── Access policy admission ────────────────────────────────────────────────
@@ -117,7 +118,8 @@ func (p *quotaPolicy) checkPolicyCells() *quotaVerdict {
 		if err != nil {
 			return quotaUsageUnavailableVerdict("account", "policy", p.access.TenantID, p.access.EndUserID, err)
 		}
-		if verdict := policyCellVerdict("account", cells, used.Total, used.FiveHourWindowStart); verdict != nil {
+		held := p.inflight.Before(inflight.ScopeAccount)
+		if verdict := policyCellVerdict("account", cells, used.Total, held, used.FiveHourWindowStart); verdict != nil {
 			return verdict
 		}
 	}
@@ -126,7 +128,8 @@ func (p *quotaPolicy) checkPolicyCells() *quotaVerdict {
 		if err != nil {
 			return quotaUsageUnavailableVerdict("key", "policy", p.access.TenantID, p.access.APIKeyID, err)
 		}
-		if verdict := policyCellVerdict("key", cells, used.Total, used.FiveHourWindowStart); verdict != nil {
+		held := p.inflight.Before(inflight.ScopeKey)
+		if verdict := policyCellVerdict("key", cells, used.Total, held, used.FiveHourWindowStart); verdict != nil {
 			return verdict
 		}
 	}
@@ -141,13 +144,15 @@ func (p *quotaPolicy) policyUsage() *policyUsage {
 	return p.usage
 }
 
-func policyCellVerdict(scope string, cells []quota.Cell, used quota.Matrix, fiveHourStart time.Time) *quotaVerdict {
+func policyCellVerdict(scope string, cells []quota.Cell, used quota.Matrix, held inflight.Amounts, fiveHourStart time.Time) *quotaVerdict {
+	used = used.Add(held.Matrix())
 	for _, cell := range cells {
 		current := used.Value(cell.Metric, cell.Window)
 		if current < cell.Value {
 			continue
 		}
 		code, message := matrixLimitMessage(scope, cell.Metric, cell.Window, cell.Value, current)
+		message += inFlightNote(cell.Metric, held)
 		return matrixQuotaVerdict(matrixVerdictInput{
 			rejectedBy: "quota_limits", code: code, message: message,
 			scope: scope, metric: cell.Metric, window: cell.Window, limit: cell.Value, current: current,
@@ -249,7 +254,7 @@ func matrixQuotaVerdict(in matrixVerdictInput) *quotaVerdict {
 
 // modelRuleVerdict 渲染按模型规则触顶的拒绝。fiveHourStart 是同一份快照里的 5h 窗口锚点，
 // 用来给 5h 窗口的规则算出 Retry-After。
-func modelRuleVerdict(exceeded *quota.RuleExceeded, fiveHourStart time.Time) *quotaVerdict {
+func modelRuleVerdict(exceeded *quota.RuleExceeded, fiveHourStart time.Time, held inflight.Amounts) *quotaVerdict {
 	scope := string(exceeded.Scope)
 	name := strings.TrimSpace(exceeded.Rule.Name)
 	ruleLabel := exceeded.Rule.ID
@@ -257,7 +262,8 @@ func modelRuleVerdict(exceeded *quota.RuleExceeded, fiveHourStart time.Time) *qu
 		ruleLabel = name
 	}
 	message := fmt.Sprintf("%s model quota exceeded for %s (rule %q): %s used.",
-		scopeLabel(scope), exceeded.Model, ruleLabel, describeUsage(exceeded.Metric, exceeded.Window, exceeded.Limit, exceeded.Current))
+		scopeLabel(scope), exceeded.Model, ruleLabel, describeUsage(exceeded.Metric, exceeded.Window, exceeded.Limit, exceeded.Current)) +
+		inFlightNote(exceeded.Metric, held)
 	return matrixQuotaVerdict(matrixVerdictInput{
 		rejectedBy: "model_quota", code: "model_quota_exceeded", message: message,
 		scope: scope, metric: exceeded.Metric, window: exceeded.Window, limit: exceeded.Limit, current: exceeded.Current,

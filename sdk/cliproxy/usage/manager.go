@@ -96,6 +96,10 @@ type Plugin interface {
 // was kept; a false return means the record is lost.
 type OverflowHandler func(Record) bool
 
+// PublishObserver is told about each record as it is published, on the
+// publishing goroutine, before any plugin can see the record.
+type PublishObserver func(Record)
+
 type queueItem struct {
 	record Record
 }
@@ -115,6 +119,7 @@ type Manager struct {
 	closed   bool
 
 	overflow atomic.Pointer[OverflowHandler]
+	observer atomic.Pointer[PublishObserver]
 
 	pluginsMu sync.RWMutex
 	plugins   []Plugin
@@ -162,6 +167,21 @@ func (m *Manager) overflowHandler() OverflowHandler {
 		return *fn
 	}
 	return nil
+}
+
+// SetPublishObserver installs fn, or removes the observer when fn is nil. The
+// gateway uses it to know that a request has usage on its way to the
+// database: the request keeps its budget reservation until the record is
+// committed.
+func (m *Manager) SetPublishObserver(fn PublishObserver) {
+	if m == nil {
+		return
+	}
+	if fn == nil {
+		m.observer.Store(nil)
+	} else {
+		m.observer.Store(&fn)
+	}
 }
 
 // Start launches the background dispatcher. Calling Start multiple times is safe.
@@ -252,6 +272,11 @@ func (m *Manager) Publish(ctx context.Context, record Record) {
 	if record.IdempotencyKey == "" {
 		record.IdempotencyKey = NewIdempotencyKey()
 	}
+	// Before the record is queued, so the observer always hears of a record
+	// before any plugin has committed it.
+	if observe := m.observer.Load(); observe != nil {
+		invokeObserver(*observe, record)
+	}
 	m.mu.Lock()
 	for !m.closed && len(m.queue) >= m.capacity && m.overflowHandler() == nil {
 		m.cond.Wait()
@@ -267,6 +292,15 @@ func (m *Manager) Publish(ctx context.Context, record Record) {
 	m.queue = append(m.queue, queueItem{record: record})
 	m.mu.Unlock()
 	m.cond.Signal()
+}
+
+func invokeObserver(fn PublishObserver, record Record) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Errorf("usage: publish observer panic recovered: %v", r)
+		}
+	}()
+	fn(record)
 }
 
 func invokeOverflow(fn OverflowHandler, record Record) {
@@ -352,6 +386,9 @@ func StopDefault() { DefaultManager().Stop() }
 
 // SetOverflowHandler installs fn on the default manager; see Manager.SetOverflowHandler.
 func SetOverflowHandler(fn OverflowHandler) { DefaultManager().SetOverflowHandler(fn) }
+
+// SetPublishObserver installs fn on the default manager; see Manager.SetPublishObserver.
+func SetPublishObserver(fn PublishObserver) { DefaultManager().SetPublishObserver(fn) }
 
 // WaitDefault waits for the default manager's dispatcher; see Manager.Wait.
 func WaitDefault(ctx context.Context) bool { return DefaultManager().Wait(ctx) }
