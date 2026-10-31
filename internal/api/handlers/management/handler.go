@@ -61,6 +61,9 @@ type Handler struct {
 	importKinds map[string]credentialImportKind
 	// metrics overrides the process-wide metrics exporter in tests.
 	metrics *observability.Exporter
+	// routingSimulator runs GET /routing-simulation; nil until the API server
+	// sets it, and the endpoint answers 503 until then.
+	routingSimulator RoutingSimulator
 }
 
 type trendCacheEntry struct {

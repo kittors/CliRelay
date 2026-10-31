@@ -46,6 +46,13 @@ func TestManagementAPIPostgresDataStackRegression(t *testing.T) {
 		"permission-profile-id":"profile-route-test"
 	}]}`, http.StatusOK)
 	client.expectBodyContains(t, http.MethodGet, "/v0/management/api-key-entries", "", http.StatusOK, "Postgres Route Key")
+	// The simulator reads the key by id from PostgreSQL; the response names the
+	// key without its secret.
+	simulated := client.expectStatus(t, http.MethodGet, "/v0/management/routing-simulation?api-key-id=key-route-test&model=gpt-route-test", "", http.StatusOK).Body.String()
+	if !strings.Contains(simulated, `"name":"Postgres Route Key"`) || strings.Contains(simulated, "sk-test-postgres-route") {
+		t.Fatalf("routing simulation = %s, want the key named without its secret", simulated)
+	}
+	client.expectBodyContains(t, http.MethodGet, "/v0/management/routing-simulation?api-key-id=key-route-missing&model=gpt-route-test", "", http.StatusNotFound, "api_key_not_found")
 
 	client.expectStatus(t, http.MethodPost, "/v0/management/model-configs", `{
 		"id":"gpt-route-test",
@@ -229,6 +236,11 @@ func setupPostgresManagementClient(t *testing.T) postgresManagementClient {
 	}, configPath, nil)
 	handler.SetLocalPassword(postgresManagementKey)
 	handler.SetLogDirectory(logDir)
+	// The server wires its simulator into every handler it builds; a stand-in
+	// keeps the route answering as it does there, for requests that reach it.
+	handler.SetRoutingSimulator(func(_ context.Context, req managementhandlers.RoutingSimulationRequest) (*managementhandlers.RoutingSimulationResult, error) {
+		return &managementhandlers.RoutingSimulationResult{Model: req.Model}, nil
+	})
 	t.Cleanup(handler.Close)
 
 	gin.SetMode(gin.TestMode)
