@@ -229,6 +229,7 @@ func (s *Server) configureManagementHandler(
 	if optionState != nil && optionState.modelConfigMutatedCallback != nil {
 		s.mgmt.SetModelConfigMutatedHook(optionState.modelConfigMutatedCallback)
 	}
+	s.mgmt.SetRoutingSimulator(s.simulateRouting)
 	// Quota snapshots have to keep advancing for accounts nobody is watching;
 	// see config.AccountStatusRefreshConfig.
 	s.mgmt.StartAccountStatusScheduler()

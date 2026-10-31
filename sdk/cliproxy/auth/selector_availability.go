@@ -283,11 +283,29 @@ func earliestOptimisticCandidate(auths []*Auth, model string, now time.Time) *Au
 }
 
 func isAuthBlockedForModel(auth *Auth, model string, now time.Time) (bool, blockReason, time.Time) {
+	block := authBlockForModel(auth, model, now)
+	return block.blocked, block.reason, block.next
+}
+
+// authBlock is why a credential cannot serve a model right now. lastErr and
+// quota point at the failure state that decided it (the model's own state, one
+// of the same Antigravity quota family, or the account's), so the routing
+// simulator can name the cause with CooldownReasonOf instead of guessing which
+// state the selector read. They are nil when the block has no failure state.
+type authBlock struct {
+	blocked bool
+	reason  blockReason
+	next    time.Time
+	lastErr *Error
+	quota   *QuotaState
+}
+
+func authBlockForModel(auth *Auth, model string, now time.Time) authBlock {
 	if auth == nil {
-		return true, blockReasonOther, time.Time{}
+		return authBlock{blocked: true, reason: blockReasonOther}
 	}
 	if auth.Disabled || auth.Status == StatusDisabled {
-		return true, blockReasonDisabled, time.Time{}
+		return authBlock{blocked: true, reason: blockReasonDisabled}
 	}
 
 	// Quota exceeded is an auth-level cooldown signal. Once we know an auth is cooling down,
@@ -305,7 +323,7 @@ func isAuthBlockedForModel(auth *Auth, model string, now time.Time) (bool, block
 			if !next.After(now) {
 				next = time.Time{}
 			}
-			return true, blockReasonCooldown, next
+			return authBlock{blocked: true, reason: blockReasonCooldown, next: next, lastErr: auth.LastError, quota: &auth.Quota}
 		}
 	}
 
@@ -320,7 +338,7 @@ func isAuthBlockedForModel(auth *Auth, model string, now time.Time) (bool, block
 			}
 			if ok && state != nil {
 				if state.Status == StatusDisabled {
-					return true, blockReasonDisabled, time.Time{}
+					return authBlock{blocked: true, reason: blockReasonDisabled, lastErr: state.LastError, quota: &state.Quota}
 				}
 				if quotaNeedsConfirmedRecovery(state.Quota, now) {
 					next := state.Quota.NextRecoverAt
@@ -330,11 +348,11 @@ func isAuthBlockedForModel(auth *Auth, model string, now time.Time) (bool, block
 					if !next.After(now) {
 						next = time.Time{}
 					}
-					return true, blockReasonCooldown, next
+					return authBlock{blocked: true, reason: blockReasonCooldown, next: next, lastErr: state.LastError, quota: &state.Quota}
 				}
 				if state.Unavailable {
 					if state.NextRetryAfter.IsZero() {
-						return false, blockReasonNone, time.Time{}
+						return authBlock{}
 					}
 					if state.NextRetryAfter.After(now) {
 						next := state.NextRetryAfter
@@ -345,12 +363,12 @@ func isAuthBlockedForModel(auth *Auth, model string, now time.Time) (bool, block
 							next = now
 						}
 						if state.Quota.Exceeded {
-							return true, blockReasonCooldown, next
+							return authBlock{blocked: true, reason: blockReasonCooldown, next: next, lastErr: state.LastError, quota: &state.Quota}
 						}
-						return true, blockReasonOther, next
+						return authBlock{blocked: true, reason: blockReasonOther, next: next, lastErr: state.LastError, quota: &state.Quota}
 					}
 				}
-				return false, blockReasonNone, time.Time{}
+				return authBlock{}
 			}
 			// If this specific model has no state yet, check if other models in the same Antigravity family are in cooldown
 			if IsAntigravityAuth(auth) {
@@ -364,12 +382,12 @@ func isAuthBlockedForModel(auth *Auth, model string, now time.Time) (bool, block
 						if s.NextRetryAfter.After(now) && (next.IsZero() || s.NextRetryAfter.Before(next)) {
 							next = s.NextRetryAfter
 						}
-						return true, blockReasonCooldown, next
+						return authBlock{blocked: true, reason: blockReasonCooldown, next: next, lastErr: s.LastError, quota: &s.Quota}
 					}
 				}
 			}
 		}
-		return false, blockReasonNone, time.Time{}
+		return authBlock{}
 	}
 	if auth.Unavailable && auth.NextRetryAfter.After(now) {
 		next := auth.NextRetryAfter
@@ -380,11 +398,11 @@ func isAuthBlockedForModel(auth *Auth, model string, now time.Time) (bool, block
 			next = now
 		}
 		if auth.Quota.Exceeded {
-			return true, blockReasonCooldown, next
+			return authBlock{blocked: true, reason: blockReasonCooldown, next: next, lastErr: auth.LastError, quota: &auth.Quota}
 		}
-		return true, blockReasonOther, next
+		return authBlock{blocked: true, reason: blockReasonOther, next: next, lastErr: auth.LastError, quota: &auth.Quota}
 	}
-	return false, blockReasonNone, time.Time{}
+	return authBlock{}
 }
 
 func isAntigravityExhaustedForModel(auth *Auth, model string, now time.Time) bool {

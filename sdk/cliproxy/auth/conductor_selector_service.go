@@ -107,31 +107,39 @@ func (s selectionScope) routeGroupsToTry() []string {
 }
 
 func (s selectionScope) allowsCandidate(candidate *Auth, scopedRouteGroup string, tried map[string]struct{}, registryRef ModelRegistry) bool {
+	return s.candidateExclusion(candidate, scopedRouteGroup, tried, registryRef) == ""
+}
+
+// candidateExclusion names the first gate that keeps candidate out of selection
+// in this scope, or returns "" for a candidate. Selection and the routing
+// simulator read the same verdict, so the simulator cannot explain a decision
+// selection did not make.
+func (s selectionScope) candidateExclusion(candidate *Auth, scopedRouteGroup string, tried map[string]struct{}, registryRef ModelRegistry) CandidateExclusion {
 	if candidate == nil || candidate.Disabled || candidate.Status == StatusDisabled {
-		return false
+		return ExcludedDisabled
 	}
 	if !authUsableByTenant(candidate, s.tenantID, s.grants) {
-		return false
+		return ExcludedTenant
 	}
 	if s.pinnedAuthID != "" && candidate.ID != s.pinnedAuthID {
-		return false
+		return ExcludedPinned
 	}
 	if !authAllowedByChannels(candidate, s.allowedChannels) {
-		return false
+		return ExcludedChannel
 	}
 	if !authAllowedByGroups(s.cfg, candidate, s.allowedGroups) {
-		return false
+		return ExcludedAllowedGroups
 	}
 	if scopedRouteGroup != "" && !authInRouteGroup(s.cfg, candidate, scopedRouteGroup) {
-		return false
+		return ExcludedRouteGroup
 	}
 	if _, used := tried[candidate.ID]; used {
-		return false
+		return ExcludedTried
 	}
 	if s.modelKey != "" && !candidateSupportsModel(s.cfg, registryRef, candidate, s.modelKey, scopedRouteGroup, s.allowedGroups) {
-		return false
+		return ExcludedModel
 	}
-	return true
+	return ""
 }
 
 type selectorService struct {
@@ -190,7 +198,7 @@ func (s selectorService) pickProvider(ctx context.Context, provider, model strin
 	tenantHasExecutor := s.manager.executorForTenantLocked(scope.tenantID, provider) != nil
 	selected, _, err := s.pickLocked(ctx, scope, provider, opts, tried, func(candidate *Auth) bool {
 		return candidate != nil && candidate.Provider == provider && s.manager.executorForAuthLocked(candidate, provider) != nil
-	})
+	}, s.manager.selectorForRoutingScopeLocked)
 	if err != nil {
 		notServed := !tenantHasExecutor && !s.manager.sharesProviderWithTenantLocked(scope.tenantID, provider, scope.grants)
 		s.manager.mu.RUnlock()
@@ -226,22 +234,7 @@ func (s selectorService) pickMixed(ctx context.Context, providers []string, mode
 	}
 
 	s.manager.mu.RLock()
-	selected, _, err := s.pickLocked(ctx, scope, "mixed", opts, tried, func(candidate *Auth) bool {
-		if candidate == nil {
-			return false
-		}
-		providerKey := strings.TrimSpace(strings.ToLower(candidate.Provider))
-		if providerKey == "" {
-			return false
-		}
-		if _, ok := providerSet[providerKey]; !ok {
-			return false
-		}
-		if s.manager.executorForAuthLocked(candidate, providerKey) == nil {
-			return false
-		}
-		return true
-	})
+	selected, _, err := s.pickLocked(ctx, scope, "mixed", opts, tried, s.mixedCandidateFilterLocked(providerSet), s.manager.selectorForRoutingScopeLocked)
 	if err != nil {
 		s.manager.mu.RUnlock()
 		return nil, nil, "", err
@@ -260,6 +253,32 @@ func (s selectorService) pickMixed(ctx context.Context, providers []string, mode
 	return s.ensureSelectedAuthIndex(authCopy, selected), executor, providerKey, nil
 }
 
+// mixedCandidateFilterLocked admits the credentials of the given providers that
+// have an executor, the candidate set of a mixed-provider request.
+func (s selectorService) mixedCandidateFilterLocked(providerSet map[string]struct{}) func(candidate *Auth) bool {
+	return func(candidate *Auth) bool {
+		if candidate == nil {
+			return false
+		}
+		providerKey := strings.TrimSpace(strings.ToLower(candidate.Provider))
+		if providerKey == "" {
+			return false
+		}
+		if _, ok := providerSet[providerKey]; !ok {
+			return false
+		}
+		if s.manager.executorForAuthLocked(candidate, providerKey) == nil {
+			return false
+		}
+		return true
+	}
+}
+
+// selectorSource returns the selector that serves one routing scope. Requests
+// get the manager's live selectors; the routing simulator passes copies whose
+// scheduling state it may advance without touching live traffic.
+type selectorSource func(cfg *runtimeConfigSnapshot, routeGroup string, allowedGroups map[string]struct{}) Selector
+
 func (s selectorService) pickLocked(
 	ctx context.Context,
 	scope selectionScope,
@@ -267,6 +286,7 @@ func (s selectorService) pickLocked(
 	opts cliproxyexecutor.Options,
 	tried map[string]struct{},
 	includeCandidate func(candidate *Auth) bool,
+	selectorFor selectorSource,
 ) (*Auth, string, error) {
 	// Capability filtering happens before scheduling and after the same tenant,
 	// channel and model gates as every other execution path.
@@ -287,7 +307,7 @@ func (s selectorService) pickLocked(
 			continue
 		}
 		scheduling := scopedScheduling(scope.cfg, selectorRouteGroup, scope.allowedGroups)
-		selector := s.manager.selectorForRoutingScopeLocked(scope.cfg, selectorRouteGroup, scope.allowedGroups)
+		selector := selectorFor(scope.cfg, selectorRouteGroup, scope.allowedGroups)
 		if s.manager.concurrencyLimiter != nil {
 			candidates = s.manager.concurrencyLimiter.FilterAvailableCandidates(candidates)
 		}
