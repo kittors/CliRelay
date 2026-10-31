@@ -2,6 +2,7 @@ package auth
 
 import (
 	"strings"
+	"time"
 
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
 )
@@ -39,6 +40,10 @@ type runtimeRoutingChannelGroup struct {
 	// FollowUpstreamModels is the resolved setting, unset already mapped to the
 	// group's default (RoutingChannelGroup.FollowsUpstreamModels).
 	FollowUpstreamModels bool
+	// FirstTokenTimeout and BusyWaitMax are the group's stream guards with
+	// unset values already resolved (0 means off); see stream_guards.go.
+	FirstTokenTimeout time.Duration
+	BusyWaitMax       time.Duration
 }
 
 type runtimeGroupScheduling struct {
@@ -157,6 +162,8 @@ func cloneRuntimeRoutingChannelGroups(groups []sdkconfig.RoutingChannelGroup) []
 			AllowedModels:        cloneStringSlice(group.AllowedModels),
 			ExcludedModels:       cloneStringSlice(group.ExcludedModels),
 			FollowUpstreamModels: group.FollowsUpstreamModels(),
+			FirstTokenTimeout:    group.FirstTokenTimeout(),
+			BusyWaitMax:          group.BusyWaitMax(),
 		})
 	}
 	return out

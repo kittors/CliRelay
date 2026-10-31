@@ -55,6 +55,12 @@ type routingConfigCapabilities struct {
 	// follow-upstream-models. An older backend drops the field on save, so the
 	// panel only shows the switch when this is advertised.
 	ChannelGroupFollowUpstreamModels bool `json:"channel-group-follow-upstream-models"`
+	// ChannelGroupFirstTokenTimeout and ChannelGroupBusyWait: channel groups
+	// store and enforce first-token-timeout-seconds and busy-wait-max-seconds.
+	// The panel only shows those fields when these are advertised, because an
+	// older backend drops them on save.
+	ChannelGroupFirstTokenTimeout bool `json:"channel-group-first-token-timeout"`
+	ChannelGroupBusyWait          bool `json:"channel-group-busy-wait"`
 	// ChannelGroupResetAwareDistribution: channel groups accept the
 	// reset-aware distribution. An older backend reads the unknown value as
 	// weighted, so the panel only offers it when this is advertised.
@@ -79,6 +85,8 @@ func (h *Handler) GetRoutingConfig(c *gin.Context) {
 		Capabilities: routingConfigCapabilities{
 			ChannelGroupExcludedModels:         true,
 			ChannelGroupFollowUpstreamModels:   true,
+			ChannelGroupFirstTokenTimeout:      true,
+			ChannelGroupBusyWait:               true,
 			ChannelGroupResetAwareDistribution: true,
 		},
 		Version: version,
@@ -90,6 +98,12 @@ func (h *Handler) PutRoutingConfig(c *gin.Context) {
 	var body config.RoutingConfig
 	if err := c.ShouldBindJSON(&body); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		return
+	}
+	// Checked before SanitizeRouting, which would quietly clamp what the
+	// operator typed into range.
+	if err := config.ValidateRoutingStreamGuards(body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
