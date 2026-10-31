@@ -65,6 +65,9 @@ type routingConfigCapabilities struct {
 	// reset-aware distribution. An older backend reads the unknown value as
 	// weighted, so the panel only offers it when this is advertised.
 	ChannelGroupResetAwareDistribution bool `json:"channel-group-distribution-reset-aware"`
+	// RoutingSimulation: GET /routing-simulation answers. The panel only offers
+	// the simulator when this is advertised.
+	RoutingSimulation bool `json:"routing-simulation"`
 }
 
 func (h *Handler) GetRoutingConfig(c *gin.Context) {
@@ -88,6 +91,7 @@ func (h *Handler) GetRoutingConfig(c *gin.Context) {
 			ChannelGroupFirstTokenTimeout:      true,
 			ChannelGroupBusyWait:               true,
 			ChannelGroupResetAwareDistribution: true,
+			RoutingSimulation:                  h.routingSimulationAvailable(),
 		},
 		Version: version,
 	})
