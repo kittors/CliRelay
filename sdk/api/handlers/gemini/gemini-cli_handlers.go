@@ -226,7 +226,12 @@ func (h *GeminiCLIAPIHandler) handleInternalStreamGenerateContent(c *gin.Context
 	modelName := modelResult.String()
 
 	cliCtx, cliCancel := h.GetContextWithCancel(h, c, c.Request.Context())
-	dataChan, upstreamHeaders, errChan, startErr := h.StartStreamWithAuthManager(cliCtx, h.HandlerType(), modelName, rawJSON, "")
+	// The real alt, as the public Gemini handler passes it: the scheduler's waits
+	// before the stream starts send SSE heartbeats (and commit the response as
+	// 200 text/event-stream) only when alt is empty, i.e. when the client asked
+	// for SSE. With "" always, a client that asked for another format would get
+	// SSE comments written into its response while a stream waited to start.
+	dataChan, upstreamHeaders, errChan, startErr := h.StartStreamWithAuthManager(cliCtx, h.HandlerType(), modelName, rawJSON, alt)
 	if startErr != nil {
 		h.WriteErrorResponseAs(c, startErr, handlers.ErrorFormatGemini)
 		cliCancel(startErr.Error)
@@ -236,7 +241,7 @@ func (h *GeminiCLIAPIHandler) handleInternalStreamGenerateContent(c *gin.Context
 		handlers.PrepareStreamingResponse(c)
 	}
 	handlers.WriteUpstreamHeaders(c.Writer.Header(), upstreamHeaders)
-	h.forwardCLIStream(c, flusher, "", func(err error) { cliCancel(err) }, dataChan, errChan)
+	h.forwardCLIStream(c, flusher, alt, func(err error) { cliCancel(err) }, dataChan, errChan)
 }
 
 // handleInternalGenerateContent handles non-streaming content generation requests.

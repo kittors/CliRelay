@@ -23,6 +23,11 @@ type mixedExecutionScope struct {
 	opts            cliproxyexecutor.Options
 	singlePickRoute bool
 	tried           map[string]struct{}
+	// failed lists, in order, the accounts a streaming attempt of this pass
+	// failed on before its first byte. tried also holds accounts that were only
+	// picked (queued behind their concurrency limit) or excluded up front; those
+	// did not fail this pass, so they must not be reported as failures.
+	failed []string
 	// saturated collects candidates skipped because their account was already at
 	// its concurrency limit. Once no idle candidate is left they become the queue
 	// this request waits on.
@@ -45,15 +50,17 @@ func newExecutionService(manager *Manager) executionService {
 }
 
 func (s executionService) execute(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
-	return runExecutionWithRetry(s.manager, ctx, providers, req, opts, s.executeMixedOnce)
+	return runExecutionWithRetry(s.manager, ctx, providers, req, opts, true, s.executeMixedOnce)
 }
 
+// executeCount never busy-waits: a token count is a quick side query, and a
+// client asking for one would rather hear the pool is busy than wait for it.
 func (s executionService) executeCount(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
-	return runExecutionWithRetry(s.manager, ctx, providers, req, opts, s.executeCountMixedOnce)
+	return runExecutionWithRetry(s.manager, ctx, providers, req, opts, false, s.executeCountMixedOnce)
 }
 
 func (s executionService) executeStream(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
-	return runExecutionWithRetry(s.manager, ctx, providers, req, opts, s.executeStreamMixedOnce)
+	return runExecutionWithRetry(s.manager, ctx, providers, req, opts, true, s.executeStreamMixedOnce)
 }
 
 func runExecutionWithRetry[T any](
@@ -62,6 +69,7 @@ func runExecutionWithRetry[T any](
 	providers []string,
 	req cliproxyexecutor.Request,
 	opts cliproxyexecutor.Options,
+	busyWait bool,
 	executeOnce func(context.Context, []string, cliproxyexecutor.Request, cliproxyexecutor.Options) (T, error),
 ) (T, error) {
 	var zero T
@@ -75,6 +83,7 @@ func runExecutionWithRetry[T any](
 	}
 
 	_, maxWait := manager.retrySettings()
+	budget := retryWaitBudgetFor(ctx)
 
 	var lastErr error
 	for attempt := 0; ; attempt++ {
@@ -83,11 +92,11 @@ func runExecutionWithRetry[T any](
 			return resp, nil
 		}
 		lastErr = errExec
-		wait, shouldRetry := manager.shouldRetryAfterError(errExec, attempt, normalized, req.Model, maxWait, opts.Metadata)
+		plan, shouldRetry := manager.nextRetryPlan(ctx, errExec, attempt, normalized, req.Model, maxWait, opts, budget, busyWait)
 		if !shouldRetry {
 			break
 		}
-		if errWait := waitForCooldown(ctx, wait); errWait != nil {
+		if errWait := plan.run(ctx); errWait != nil {
 			return zero, errWait
 		}
 	}
@@ -181,7 +190,7 @@ func (s executionService) executeStreamMixedOnce(ctx context.Context, providers 
 			return nil, errReady
 		}
 
-		streamResult, errStream := candidate.executor.ExecuteStream(candidate.execCtx, candidate.auth, candidate.execReq, scope.opts)
+		streamResult, errStream := s.executeStreamAttempt(candidate, &scope)
 		if errStream != nil {
 			releaseSlot()
 			if errCtx := candidate.execCtx.Err(); errCtx != nil {
@@ -201,11 +210,15 @@ func (s executionService) executeStreamMixedOnce(ctx context.Context, providers 
 			if isRequestInvalidError(errStream) || scope.singlePickRoute {
 				return nil, errStream
 			}
+			scope.failed = append(scope.failed, candidate.auth.ID)
 			scope.lastErr = errStream
 			continue
 		}
 
-		return s.wrapStreamResult(candidate.execCtx, candidate.auth, candidate.provider, scope.routeModel, scope.opts.SourceFormat, streamResult, releaseSlot), nil
+		wrapped := s.wrapStreamResult(candidate.execCtx, candidate.auth, candidate.provider, scope.routeModel, scope.opts.SourceFormat, streamResult, releaseSlot)
+		wrapped.AuthID = candidate.auth.ID
+		wrapped.FailedAuthIDs = scope.failed
+		return wrapped, nil
 	}
 }
 
@@ -217,13 +230,15 @@ func (s executionService) newMixedScope(providers []string, req cliproxyexecutor
 	routeModel := req.Model
 	opts = ensureRequestedModelMetadata(opts, routeModel)
 
-	return mixedExecutionScope{
+	scope := mixedExecutionScope{
 		providers:       providers,
 		routeModel:      routeModel,
 		opts:            opts,
 		singlePickRoute: isSinglePickRouteRequest(opts.Metadata),
 		tried:           make(map[string]struct{}),
-	}, nil
+	}
+	applyRetryExclusions(&scope)
+	return scope, nil
 }
 
 // nextReadyCandidate returns the next candidate that already owns a concurrency
