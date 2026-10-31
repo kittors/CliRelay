@@ -187,3 +187,22 @@ func TestNewWordReplyIsNilWithoutAContextThatAsked(t *testing.T) {
 		t.Fatal("a reply filter exists although no policy asked for one")
 	}
 }
+
+// When the SDK gives up on a filter that panicked, the request log says the
+// reply was not filtered, whichever form the reply took.
+func TestAbandonedFilterIsReportedInTheRequestLog(t *testing.T) {
+	filter, snapshot := replyFilterOf(t, sdktranslator.FormatClaude, WordActionReplace, kw("secret"))
+	filter.Abandoned("boom")
+	if view := snapshot.view.Reply; view == nil || view.Skipped != "filter_error" {
+		t.Fatalf("the failure was not reported: %+v", view)
+	}
+	if !snapshot.Notable() {
+		t.Fatal("a failed filter is worth a place in the log")
+	}
+
+	filter, snapshot = replyFilterOf(t, sdktranslator.FormatClaude, WordActionReplace, kw("secret"))
+	filter.NewStream().(interface{ Abandoned(any) }).Abandoned("boom")
+	if view := snapshot.view.Reply; view == nil || view.Skipped != "filter_error" {
+		t.Fatalf("the stream's failure was not reported: %+v", view)
+	}
+}

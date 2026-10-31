@@ -2,9 +2,11 @@ package auth
 
 import (
 	"context"
+	"runtime/debug"
 	"time"
 
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
+	log "github.com/sirupsen/logrus"
 )
 
 // replyHoldLimit bounds how long a stream filter may keep part of a reply back
@@ -20,6 +22,13 @@ const replyHoldLimit = 2 * time.Second
 //
 // What the filter may change is the host's business: it is handed the
 // executor's output in the client's protocol and returns the same protocol.
+//
+// A filter must not panic, but a bug in one must not cost the client its reply
+// (and, for a stream, the process: the stream filter runs in a goroutine of
+// its own). The manager therefore recovers from a panic, logs it, and sends the
+// rest of that reply on unfiltered. A filter or stream filter that also has an
+// Abandoned(recovered any) method is told when that happens, so the host can
+// note it where it keeps its own records.
 type ReplyFilter interface {
 	// FilterResponse rewrites a complete (non-streaming) reply. The returned
 	// response replaces the original; headers that no longer describe the body
@@ -49,10 +58,11 @@ type StreamReplyFilter interface {
 // filter returns keep the order they were pushed in; errors and the end of the
 // stream release whatever the filter holds first, so no text is lost behind
 // them.
-func filterReplyStream(ctx context.Context, filter StreamReplyFilter, result *cliproxyexecutor.StreamResult) *cliproxyexecutor.StreamResult {
-	if filter == nil || result == nil {
+func filterReplyStream(ctx context.Context, stream StreamReplyFilter, result *cliproxyexecutor.StreamResult) *cliproxyexecutor.StreamResult {
+	if stream == nil || result == nil {
 		return result
 	}
+	filter := &guardedStream{filter: stream}
 	out := make(chan cliproxyexecutor.StreamChunk)
 	in := result.Chunks
 	go func() {
@@ -90,7 +100,7 @@ func filterReplyStream(ctx context.Context, filter StreamReplyFilter, result *cl
 		for {
 			// While text is held back, the wait for the next chunk has a deadline.
 			var expired <-chan time.Time
-			if since, held := filter.HeldSince(); held && forward {
+			if since, held := filter.heldSince(); held && forward {
 				wait := max(time.Until(since.Add(replyHoldLimit)), 0)
 				if timer == nil {
 					timer = time.NewTimer(wait)
@@ -108,22 +118,127 @@ func filterReplyStream(ctx context.Context, filter StreamReplyFilter, result *cl
 			select {
 			case chunk, ok := <-in:
 				if !ok {
-					sendAll(filter.Flush())
+					sendAll(filter.flush())
 					return
 				}
 				if !forward {
 					continue
 				}
 				if chunk.Err != nil {
-					sendAll(filter.Flush())
+					sendAll(filter.flush())
 					send(chunk)
 					continue
 				}
-				sendAll(filter.Push(chunk.Payload))
+				sendAll(filter.push(chunk.Payload))
 			case <-expired:
-				sendAll(filter.Flush())
+				sendAll(filter.flush())
 			}
 		}
 	}()
 	return &cliproxyexecutor.StreamResult{Headers: result.Headers, Chunks: out}
+}
+
+// abandonNotifier is implemented by a reply filter that wants to be told the
+// manager stopped using it because it panicked.
+type abandonNotifier interface{ Abandoned(recovered any) }
+
+// replyFilterFailed records a filter panic: loudly in the log, and with the
+// filter if it asked to hear of it.
+func replyFilterFailed(filter any, recovered any) {
+	log.WithField("panic", recovered).Errorf("reply filter panicked; the rest of this reply is sent unfiltered\n%s", debug.Stack())
+	if notifier, ok := filter.(abandonNotifier); ok {
+		func() {
+			defer func() { _ = recover() }()
+			notifier.Abandoned(recovered)
+		}()
+	}
+}
+
+// filterReplyResponse applies the filter to a complete reply. A filter that
+// panics costs the client nothing: the reply goes on as it came.
+func filterReplyResponse(filter ReplyFilter, resp cliproxyexecutor.Response) (out cliproxyexecutor.Response) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			replyFilterFailed(filter, recovered)
+			out = resp
+		}
+	}()
+	return filter.FilterResponse(resp)
+}
+
+// newReplyStreamFilter starts the filter for a stream, or returns nil if it
+// cannot.
+func newReplyStreamFilter(filter ReplyFilter) (stream StreamReplyFilter) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			replyFilterFailed(filter, recovered)
+			stream = nil
+		}
+	}()
+	return filter.NewStream()
+}
+
+// guardedStream keeps a stream filter's panics from reaching the goroutine
+// that drives it, where nothing would catch them and the process would end.
+// After a panic the filter's state cannot be trusted: whatever it still holds
+// is released if it will give it up, and every later chunk passes unchanged.
+type guardedStream struct {
+	filter StreamReplyFilter
+	failed bool
+}
+
+func (g *guardedStream) fail(recovered any) {
+	g.failed = true
+	replyFilterFailed(g.filter, recovered)
+}
+
+func (g *guardedStream) heldSince() (since time.Time, held bool) {
+	if g.failed {
+		return time.Time{}, false
+	}
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			g.fail(recovered)
+			since, held = time.Time{}, false
+		}
+	}()
+	return g.filter.HeldSince()
+}
+
+func (g *guardedStream) push(chunk []byte) (out [][]byte) {
+	if g.failed {
+		return [][]byte{chunk}
+	}
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			g.fail(recovered)
+			// What was held back precedes the chunk that broke the filter.
+			out = append(g.release(), chunk)
+		}
+	}()
+	return g.filter.Push(chunk)
+}
+
+func (g *guardedStream) flush() (out [][]byte) {
+	if g.failed {
+		return nil
+	}
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			g.fail(recovered)
+			out = nil
+		}
+	}()
+	return g.filter.Flush()
+}
+
+// release asks a failed filter for what it holds, once, giving up silently if
+// it cannot.
+func (g *guardedStream) release() (out [][]byte) {
+	defer func() {
+		if recover() != nil {
+			out = nil
+		}
+	}()
+	return g.filter.Flush()
 }

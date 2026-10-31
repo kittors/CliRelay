@@ -125,7 +125,7 @@ func (m *Manager) executeGuarded(ctx context.Context, providers []string, req cl
 	}
 	resp, err := newExecutionService(m).execute(ctx, providers, req, opts)
 	if err == nil && reply != nil {
-		resp = reply.FilterResponse(resp)
+		resp = filterReplyResponse(reply, resp)
 	}
 	return resp, err
 }
@@ -147,7 +147,7 @@ func (m *Manager) executeStreamGuarded(ctx context.Context, providers []string, 
 	}
 	result, err := newExecutionService(m).executeStream(ctx, providers, req, opts)
 	if err == nil && reply != nil {
-		result = filterReplyStream(ctx, reply.NewStream(), result)
+		result = filterReplyStream(ctx, newReplyStreamFilter(reply), result)
 	}
 	return result, err
 }

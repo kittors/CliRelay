@@ -47,6 +47,11 @@ func newWordReplyStream(engine *replyEngine, format sdktranslator.Format) *wordR
 	return &wordReplyStream{engine: engine, format: format}
 }
 
+// Abandoned is called by the SDK when it stopped using this filter because it
+// panicked: the rest of the reply goes out unfiltered, and the request log says
+// so.
+func (s *wordReplyStream) Abandoned(any) { s.engine.snapshot.skipReply("filter_error") }
+
 // Push implements the SDK's StreamReplyFilter.
 func (s *wordReplyStream) Push(chunk []byte) [][]byte {
 	if len(s.rest) == 0 {

@@ -195,3 +195,132 @@ func TestFilterReplyStreamDrainsTheInputAfterTheReaderLeaves(t *testing.T) {
 		}
 	})
 }
+
+// brokenFilter is a stream filter with a bug: it panics where told to.
+type brokenFilter struct {
+	delayFilter
+	panicPush  string
+	panicFlush bool
+	panicHeld  bool
+	abandoned  []any
+}
+
+func (f *brokenFilter) Push(chunk []byte) [][]byte {
+	if string(chunk) == f.panicPush {
+		panic("push bug")
+	}
+	return f.delayFilter.Push(chunk)
+}
+
+func (f *brokenFilter) Flush() [][]byte {
+	if f.panicFlush {
+		panic("flush bug")
+	}
+	return f.delayFilter.Flush()
+}
+
+func (f *brokenFilter) HeldSince() (time.Time, bool) {
+	if f.panicHeld {
+		panic("held bug")
+	}
+	return f.delayFilter.HeldSince()
+}
+
+func (f *brokenFilter) Abandoned(recovered any) { f.abandoned = append(f.abandoned, recovered) }
+
+// A filter that panics in its own goroutine would end the process. Instead the
+// reply goes on unfiltered: what the filter held comes first, then the chunk
+// that broke it, then everything after as it arrives.
+func TestFilterReplyStreamSurvivesAFilterThatPanics(t *testing.T) {
+	filter := &brokenFilter{panicPush: "bad"}
+	result := filterReplyStream(context.Background(), filter, feed(text("a"), text("b"), text("bad"), text("c"), text("d")))
+	got, errs := drain(result)
+	if len(errs) != 0 {
+		t.Fatal(errs)
+	}
+	// "a" was released when "b" arrived; "b" was held; the panic releases "b",
+	// and "bad", "c", "d" pass as they are.
+	if want := "a,b,bad,c,d"; strings.Join(got, ",") != want {
+		t.Fatalf("got %v, want %s", got, want)
+	}
+	if len(filter.abandoned) != 1 || filter.abandoned[0] != "push bug" {
+		t.Fatalf("the filter was told %v", filter.abandoned)
+	}
+}
+
+func TestFilterReplyStreamSurvivesAFilterThatPanicsOnFlush(t *testing.T) {
+	filter := &brokenFilter{panicFlush: true}
+	result := filterReplyStream(context.Background(), filter, feed(text("a"), cliproxyexecutor.StreamChunk{Err: errors.New("boom")}))
+	got, errs := drain(result)
+	// Nothing held can be recovered from a filter that will not give it up, but
+	// the error still reaches the client.
+	if len(errs) != 1 || len(got) != 0 {
+		t.Fatalf("got %v and %v", got, errs)
+	}
+	if len(filter.abandoned) != 1 {
+		t.Fatalf("abandoned %v", filter.abandoned)
+	}
+	// A stream that merely ends must close too.
+	filter = &brokenFilter{panicFlush: true}
+	got, errs = drain(filterReplyStream(context.Background(), filter, feed(text("x"), text("y"))))
+	if len(errs) != 0 || strings.Join(got, ",") != "x" {
+		t.Fatalf("got %v and %v", got, errs)
+	}
+}
+
+func TestFilterReplyStreamSurvivesAFilterThatPanicsOnHeldSince(t *testing.T) {
+	filter := &brokenFilter{panicHeld: true}
+	got, errs := drain(filterReplyStream(context.Background(), filter, feed(text("a"), text("b"))))
+	if len(errs) != 0 || strings.Join(got, ",") != "a,b" {
+		t.Fatalf("got %v and %v", got, errs)
+	}
+	if len(filter.abandoned) != 1 {
+		t.Fatalf("abandoned %v", filter.abandoned)
+	}
+}
+
+type panickyReply struct {
+	panicResponse, panicStream bool
+	abandoned                  []any
+}
+
+func (r *panickyReply) FilterResponse(resp cliproxyexecutor.Response) cliproxyexecutor.Response {
+	if r.panicResponse {
+		panic("response bug")
+	}
+	return resp
+}
+
+func (r *panickyReply) NewStream() StreamReplyFilter {
+	if r.panicStream {
+		panic("stream bug")
+	}
+	return &delayFilter{}
+}
+
+func (r *panickyReply) Abandoned(recovered any) { r.abandoned = append(r.abandoned, recovered) }
+
+func TestAFilterThatPanicsOnAWholeReplyLeavesItAsItWas(t *testing.T) {
+	reply := &panickyReply{panicResponse: true}
+	in := cliproxyexecutor.Response{Payload: []byte("body")}
+	if got := filterReplyResponse(reply, in); string(got.Payload) != "body" {
+		t.Fatalf("got %q", got.Payload)
+	}
+	if len(reply.abandoned) != 1 {
+		t.Fatalf("abandoned %v", reply.abandoned)
+	}
+}
+
+func TestAFilterThatCannotStartAStreamLeavesTheStreamAlone(t *testing.T) {
+	reply := &panickyReply{panicStream: true}
+	if stream := newReplyStreamFilter(reply); stream != nil {
+		t.Fatalf("got %v", stream)
+	}
+	in := feed(text("a"))
+	if filterReplyStream(context.Background(), newReplyStreamFilter(reply), in) != in {
+		t.Fatal("a stream whose filter could not start must come back unchanged")
+	}
+	if len(reply.abandoned) != 2 {
+		t.Fatalf("abandoned %v", reply.abandoned)
+	}
+}

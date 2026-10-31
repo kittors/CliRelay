@@ -36,6 +36,11 @@ func (w *wordReply) NewStream() coreauth.StreamReplyFilter {
 	return newWordReplyStream(w.engine, w.format)
 }
 
+// Abandoned is called by the SDK when it stopped using this filter because it
+// panicked: the rest of the reply goes out unfiltered, and the request log says
+// so.
+func (w *wordReply) Abandoned(any) { w.engine.snapshot.skipReply("filter_error") }
+
 // FilterResponse implements coreauth.ReplyFilter for a reply that arrives in
 // one piece.
 //
