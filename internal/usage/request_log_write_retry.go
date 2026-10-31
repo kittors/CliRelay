@@ -185,6 +185,8 @@ type requestLogWriteResult struct {
 	endUserID string
 	// duplicate is set when the idempotency key was already claimed.
 	duplicate bool
+	// cost is what the entry was billed.
+	cost float64
 	// commitUncertainAt is when an attempt last lost its COMMIT reply; zero
 	// when none did. A duplicate close after it may be that very commit, still
 	// exposed to a failover discarding it (see requestLogCommitSettleWindow).
@@ -356,7 +358,7 @@ func writeRequestLogAttempt(entry RequestLogEntry, timeout time.Duration) (reque
 	if err != nil {
 		return requestLogWriteResult{}, err
 	}
-	result := requestLogWriteResult{endUserID: plan.endUserID}
+	result := requestLogWriteResult{endUserID: plan.endUserID, cost: plan.cost}
 
 	// Shared projection lock before opening a DB tx so exclusive rebuilds never
 	// leave writers holding connections while waiting on the mutex (pool deadlock).

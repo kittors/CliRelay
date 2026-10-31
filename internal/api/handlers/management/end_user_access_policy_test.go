@@ -17,6 +17,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/enduser"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/identity"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/quota"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/quota/inflight"
 	sqlapikey "github.com/router-for-me/CLIProxyAPI/v6/internal/storage/sqlstore/apikey"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 )
@@ -126,6 +127,30 @@ func TestGetEndUsersReturnsEffectivePolicyUsageAndCapabilities(t *testing.T) {
 	}
 	if user.QuotaUsage.Total.Requests.Week != 7 || len(user.QuotaUsage.Rules) != 1 || user.QuotaUsage.Rules[0].Used.Requests.Day != 7 {
 		t.Fatalf("usage view = %+v", user.QuotaUsage)
+	}
+}
+
+func TestGetEndUsersShowsWhatTheAccountHasInFlight(t *testing.T) {
+	f := newAccessPolicyFixture(t)
+	list := func() *enduser.User {
+		t.Helper()
+		rec := f.call(t, f.h.GetEndUsers, http.MethodGet, "/v0/management/end-users", "", nil)
+		var body struct {
+			Items []enduser.User `json:"items"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil || len(body.Items) != 1 {
+			t.Fatalf("status = %d body = %s", rec.Code, rec.Body)
+		}
+		return &body.Items[0]
+	}
+	r := inflight.Default().Reserve("", inflight.Owner{Key: inflight.KeyName("key-in-flight"), Account: inflight.AccountName(f.userID)})
+	t.Cleanup(r.Finish)
+	if user := list(); user.QuotaUsage == nil || user.QuotaUsage.InFlight == nil || user.QuotaUsage.InFlight.Requests != 1 {
+		t.Fatalf("usage view = %+v, want the account's request in flight", user.QuotaUsage)
+	}
+	r.Finish()
+	if user := list(); user.QuotaUsage == nil || user.QuotaUsage.InFlight != nil {
+		t.Fatalf("usage view = %+v, want nothing in flight", user.QuotaUsage)
 	}
 }
 

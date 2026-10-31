@@ -11,6 +11,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/enduser"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/identity"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/quota"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/quota/inflight"
 	sqlapikey "github.com/router-for-me/CLIProxyAPI/v6/internal/storage/sqlstore/apikey"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 )
@@ -65,6 +66,9 @@ func decorateEndUsers(items []enduser.User) error {
 			items[i].LifetimeSpendingUsed = used.Lifetime
 			items[i].PeriodSpending = quota.BuildPeriodSpending(items[i].PeriodSpendingLimits, used)
 			view := snapshot.UsageView(effective.AccessPolicy.ModelRules)
+			// What the account's requests in flight on this node hold; the
+			// admission checks count it as used.
+			view.InFlight = inflight.Default().Held(inflight.AccountName(items[i].ID)).Usage()
 			items[i].QuotaUsage = &view
 			items[i].DailySpendingResetCount = resetCounts[items[i].ID]
 		}

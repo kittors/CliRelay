@@ -221,7 +221,7 @@ func TestModelPolicyTurnGateRoutesAndRejects(t *testing.T) {
 		Routes:   []quota.ModelRoute{{ID: "r", From: []string{"gpt-5"}, To: "gpt-5-mini"}},
 		KeyRules: []quota.ModelRule{{ID: "mini", Models: []string{"gpt-5-mini"}, Limits: costWeek(5)}},
 	}, nil, map[string]quota.Matrix{"gpt-5-mini": costWeek(1)}, quota.Matrix{}, quota.Matrix{})
-	gate := modelPolicyTurnGate(accesspolicy.Lookup(policyTestKey))
+	gate := modelPolicyTurnGate(accesspolicy.Lookup(policyTestKey), nil)
 	if model, rejection := gate("gpt-5"); rejection != nil || model != "gpt-5-mini" {
 		t.Fatalf("turn = %q, %+v", model, rejection)
 	}

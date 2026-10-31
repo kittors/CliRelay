@@ -523,7 +523,7 @@ func TestWebsocketTurnRefusalCarriesRetryAfter(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		resetQuotaMiddlewareState(t)
 		policy := parseQuotaPolicy("sk-ws-turn", map[string]string{"rpm-limit": "1"})
-		gate := policy.turnGate()
+		gate := policy.turnGate(nil)
 		release, rejection := gate()
 		if rejection != nil {
 			t.Fatalf("first turn refused: %+v", rejection)

@@ -384,6 +384,7 @@ func (s *RequestStatistics) ingest(ctx context.Context, record coreusage.Record)
 	outputContent := resolveDeferredUsageContent(record.OutputContent, record.OutputContentPath)
 	detailContent := resolveDeferredUsageContent(record.DetailContent, record.DetailContentPath)
 	return RequestLogEntry{
+		RequestID:             strings.TrimSpace(record.RequestID),
 		IdempotencyKey:        record.IdempotencyKey,
 		TrustedTenantID:       record.TrustedTenantID,
 		APIKey:                statsKey,
