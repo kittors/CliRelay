@@ -231,6 +231,43 @@ func TestWordPolicyBodyJustOverTheLimitIsRefused(t *testing.T) {
 	}
 }
 
+// The validation and the dry run read a body as large as a save does, so they
+// are held to a limit as well: a body is read into memory before anything can be
+// said about it.
+func TestWordPolicyValidateAndTestBodiesAreBounded(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds 44 MiB requests")
+	}
+	h := setupWordPolicyTest(t)
+	rec, body := wordTenantAUser.call(h.PostWordPolicyValidate, http.MethodPost, `{"rules":[]`+strings.Repeat(" ", maxWordPolicyBodyBytes)+`}`, "")
+	wordExpectStatus(t, rec, http.StatusRequestEntityTooLarge)
+	if wordErrorCode(body) != "word_policy_too_large" {
+		t.Fatalf("validate: body = %v", body)
+	}
+	rec, body = wordTenantAUser.call(h.PostWordPolicyTest, http.MethodPost, `{"input":"x"`+strings.Repeat(" ", maxWordTestBodyBytes)+`}`, "")
+	wordExpectStatus(t, rec, http.StatusRequestEntityTooLarge)
+	if wordErrorCode(body) != "word_policy_too_large" {
+		t.Fatalf("test: body = %v", body)
+	}
+}
+
+func TestWordPolicyRefusalListsOnlyTheFirstOfManyBadRules(t *testing.T) {
+	h := setupWordPolicyTest(t)
+	bad := maxReportedRuleProblems + 50
+	rules := strings.TrimSuffix(strings.Repeat(`{"pattern":"   "},`, bad), ",")
+	rec, body := wordTenantAUser.call(h.PutWordPolicyTenant, http.MethodPut, `{"rules":[`+rules+`]}`, "")
+	wordExpectStatus(t, rec, http.StatusUnprocessableEntity)
+	errBody, _ := body["error"].(map[string]any)
+	listed, _ := errBody["rules"].([]any)
+	if len(listed) != maxReportedRuleProblems || errBody["rules_total"] != float64(bad) {
+		t.Fatalf("%d problems listed of %v, want %d of %d", len(listed), errBody["rules_total"], maxReportedRuleProblems, bad)
+	}
+	// They are the first ones, in the order the rules were sent.
+	if first, last := listed[0].(map[string]any), listed[len(listed)-1].(map[string]any); first["index"] != float64(0) || last["index"] != float64(maxReportedRuleProblems-1) {
+		t.Fatalf("first = %v, last = %v", first, last)
+	}
+}
+
 func TestWordPolicyTestAcceptsTheLargestInputWrittenAsEscapes(t *testing.T) {
 	h := setupWordPolicyTest(t)
 	input := strings.Repeat("a", maxWordTestInputBytes)

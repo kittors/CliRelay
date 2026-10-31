@@ -39,6 +39,10 @@ type RuntimeModerator struct {
 	// wordLoadTimeout is how long a request waits for its policies; zero means
 	// wordPolicyWait. Tests shorten or lengthen it.
 	wordLoadTimeout time.Duration
+	// regexWork is the work budget of one request's regular expressions, in steps;
+	// zero means maxRegexWork. Tests shrink it, because spending the real one
+	// takes half a second of CPU.
+	regexWork int64
 
 	lastGoodMu sync.RWMutex
 	lastGood   map[resolutionKey]resolvedProfile

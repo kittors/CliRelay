@@ -320,6 +320,13 @@ func TestWordGuardLayerSettings(t *testing.T) {
 		{"key opts out of the tenant rules", nil, tenant, policyOf(t, WordScopeKey, "k", func(p *WordPolicy) { p.InheritTenant = false }, kw("worse")), WordVerdictReplace, `{"messages":[{"role":"user","content":"a bad word and a *** one"}]}`},
 		{"key escalates to block", nil, tenant, policyOf(t, WordScopeKey, "k", func(p *WordPolicy) { p.Action = WordActionBlock }), WordVerdictBlock, ""},
 		{"key alone, tenant has no policy", nil, nil, policyOf(t, WordScopeKey, "k", func(p *WordPolicy) { p.Action = WordActionReplace }, kw("worse")), WordVerdictReplace, `{"messages":[{"role":"user","content":"a bad word and a *** one"}]}`},
+		// A policy that is switched off contributes nothing to the context it would
+		// have joined, not its rules and not its settings: what a key inherits from
+		// a tenant policy that is off is the defaults.
+		{"disabled tenant policy lends no action to a key", nil, policyOf(t, WordScopeTenant, "", func(p *WordPolicy) { p.Enabled = false; p.Action = WordActionLog }, kw("bad")), policyOf(t, WordScopeKey, "k", nil, kw("worse")), WordVerdictBlock, ""},
+		{"disabled tenant policy lends nothing to a key with its own rules", nil, policyOf(t, WordScopeTenant, "", func(p *WordPolicy) { p.Enabled = false; p.Action = WordActionLog }, kw("bad")), policyOf(t, WordScopeKey, "k", func(p *WordPolicy) { p.InheritTenant = false }, kw("worse")), WordVerdictBlock, ""},
+		{"disabled tenant policy lends no replacement to a key", nil, policyOf(t, WordScopeTenant, "", func(p *WordPolicy) { p.Enabled = false; p.Replacement = "[off]" }, kw("bad")), policyOf(t, WordScopeKey, "k", func(p *WordPolicy) { p.Action = WordActionReplace }, kw("worse")), WordVerdictReplace, `{"messages":[{"role":"user","content":"a bad word and a *** one"}]}`},
+		{"disabled key policy lends nothing to the tenant", nil, tenant, policyOf(t, WordScopeKey, "k", func(p *WordPolicy) { p.Enabled = false; p.Action = WordActionLog; p.Replacement = "[off]" }, kw("worse")), WordVerdictReplace, `{"messages":[{"role":"user","content":"a *** word and a worse one"}]}`},
 		{"platform replaces, tenant would block: block wins", policyOf(t, WordScopePlatform, "", func(p *WordPolicy) { p.Action = WordActionReplace }, kw("word")), tenantOf(t, "", kw("bad")), nil, WordVerdictBlock, ""},
 		{"platform and tenant both replace", policyOf(t, WordScopePlatform, "", func(p *WordPolicy) { p.Action = WordActionReplace; p.Replacement = "<P>" }, kw("word")), tenant, nil, WordVerdictReplace, `{"messages":[{"role":"user","content":"a *** <P> and a worse one"}]}`},
 	}

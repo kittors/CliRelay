@@ -199,10 +199,11 @@ func TestFilterReplyStreamDrainsTheInputAfterTheReaderLeaves(t *testing.T) {
 // brokenFilter is a stream filter with a bug: it panics where told to.
 type brokenFilter struct {
 	delayFilter
-	panicPush  string
-	panicFlush bool
-	panicHeld  bool
-	abandoned  []any
+	panicPush      string
+	panicFlush     bool
+	panicHeld      bool
+	panicAbandoned bool
+	abandoned      []any
 }
 
 func (f *brokenFilter) Push(chunk []byte) [][]byte {
@@ -226,7 +227,12 @@ func (f *brokenFilter) HeldSince() (time.Time, bool) {
 	return f.delayFilter.HeldSince()
 }
 
-func (f *brokenFilter) Abandoned(recovered any) { f.abandoned = append(f.abandoned, recovered) }
+func (f *brokenFilter) Abandoned(recovered any) {
+	f.abandoned = append(f.abandoned, recovered)
+	if f.panicAbandoned {
+		panic("abandoned bug")
+	}
+}
 
 // A filter that panics in its own goroutine would end the process. Instead the
 // reply goes on unfiltered: what the filter held comes first, then the chunk
@@ -265,6 +271,37 @@ func TestFilterReplyStreamSurvivesAFilterThatPanicsOnFlush(t *testing.T) {
 	got, errs = drain(filterReplyStream(context.Background(), filter, feed(text("x"), text("y"))))
 	if len(errs) != 0 || strings.Join(got, ",") != "x" {
 		t.Fatalf("got %v and %v", got, errs)
+	}
+}
+
+// A filter that has just broken may break again when it is asked for what it
+// still holds: it is given up on, and the reply goes on without it.
+func TestFilterReplyStreamSurvivesAFilterThatPanicsAgainGivingUpWhatItHolds(t *testing.T) {
+	filter := &brokenFilter{panicPush: "bad", panicFlush: true}
+	got, errs := drain(filterReplyStream(context.Background(), filter, feed(text("a"), text("b"), text("bad"), text("c"), text("d"))))
+	if len(errs) != 0 {
+		t.Fatal(errs)
+	}
+	// "a" came out when "b" arrived; "b" is held by a filter that will not give it
+	// up; the chunk that broke the filter and the rest pass as they are.
+	if want := "a,bad,c,d"; strings.Join(got, ",") != want {
+		t.Fatalf("got %v, want %s", got, want)
+	}
+}
+
+// ...and one that cannot take the news that it was given up on does not take the
+// stream down with it either.
+func TestFilterReplyStreamSurvivesAFilterThatPanicsWhenToldItWasAbandoned(t *testing.T) {
+	filter := &brokenFilter{panicPush: "bad", panicAbandoned: true}
+	got, errs := drain(filterReplyStream(context.Background(), filter, feed(text("a"), text("b"), text("bad"), text("c"), text("d"))))
+	if len(errs) != 0 {
+		t.Fatal(errs)
+	}
+	if want := "a,b,bad,c,d"; strings.Join(got, ",") != want {
+		t.Fatalf("got %v, want %s", got, want)
+	}
+	if len(filter.abandoned) != 1 {
+		t.Fatalf("the filter was told %v", filter.abandoned)
 	}
 }
 

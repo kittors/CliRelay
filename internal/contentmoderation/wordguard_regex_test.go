@@ -1,12 +1,16 @@
 package contentmoderation
 
 import (
+	"encoding/json"
+	"math"
 	"regexp/syntax"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v6/sdk/translator"
+	"github.com/tidwall/gjson"
 )
 
 // The expressions a review found to cost a request seconds: a short source whose
@@ -47,6 +51,35 @@ func TestWordRegexTooComplexIsRefusedQuickly(t *testing.T) {
 	}
 	if elapsed := time.Since(started); elapsed > 2*time.Second {
 		t.Fatalf("refusing %d heavy expressions took %v", len(heavyRegexes), elapsed)
+	}
+}
+
+func TestWordRegexIsJudgedBeforeItIsExpanded(t *testing.T) {
+	// A few dozen bytes of source that write out to ten thousand instructions or
+	// more. Their size is worked out from the syntax tree, so refusing them costs
+	// a few kilobytes; expanding one first costs megabytes (the measurement the
+	// bound below sits between: about 5 KB with the check, 0.6 to 3.4 MB without).
+	// The least of several tries is taken, so an allocation made by something
+	// else in the process cannot fail it.
+	for _, pattern := range []string{
+		`(?:a{1000}b{1000}c{1000}d{1000}e{1000}f{1000}g{1000}h{1000}i{1000}j{1000})`,
+		`a{1000}b{1000}c{1000}d{1000}e{1000}f{1000}g{1000}h{1000}i{1000}j{1000}k{1000}l{1000}m{1000}n{1000}o{1000}p{1000}`,
+		`(?:a{500}|b{500}|c{500}|d{500}|e{500}|f{500}|g{500}|h{500})`,
+	} {
+		least := uint64(math.MaxUint64)
+		for try := 0; try < 5; try++ {
+			var before, after runtime.MemStats
+			runtime.ReadMemStats(&before)
+			_, code, _ := compileWordRegex(pattern)
+			runtime.ReadMemStats(&after)
+			if code != "regex_too_complex" {
+				t.Fatalf("%s: code = %q, want regex_too_complex", pattern, code)
+			}
+			least = min(least, after.TotalAlloc-before.TotalAlloc)
+		}
+		if least > 100<<10 {
+			t.Errorf("refusing %s allocated %d KB: it was expanded before its size was judged", pattern, least>>10)
+		}
 	}
 }
 
@@ -315,6 +348,68 @@ func TestWordRegexLogLimitStopsAtTheFirstMatches(t *testing.T) {
 	verdict := evaluateWords(sdktranslator.FormatOpenAI, []byte(body), contexts, wordEvalOptions{})
 	if !verdict.Blocked || verdict.MatchCount != 1 {
 		t.Fatalf("verdict = %+v", verdict)
+	}
+}
+
+func TestWordLogActionStopsCountingInATextThatIsNothingButHits(t *testing.T) {
+	// The log action keeps the first few matches and the count of them; a text of
+	// a million hits must not be collected whole to say "a million". The cap is
+	// per text, and it holds for both kinds of rule.
+	text := heavyText(1 << 20)
+	body := []byte(`{"messages":[{"role":"user","content":"` + text + `"}]}`)
+	for name, rule := range map[string]WordRule{"regular expression": rx(`a`), "keyword": kw("a")} {
+		contexts := buildWordContexts(nil, tenantOf(t, WordActionLog, rule), nil)
+		verdict := evaluateWords(sdktranslator.FormatOpenAI, body, contexts, wordEvalOptions{})
+		if verdict.Blocked || verdict.MatchCount != maxLoggedHitsPerUnit {
+			t.Errorf("%s: blocked = %v, match count = %d, want %d", name, verdict.Blocked, verdict.MatchCount, maxLoggedHitsPerUnit)
+		}
+		if len(verdict.Matches) != maxRecordedWordMatches {
+			t.Errorf("%s: %d matches kept for the log, want %d", name, len(verdict.Matches), maxRecordedWordMatches)
+		}
+	}
+}
+
+// The budget belongs to the request, whichever of its bodies is read: the guard
+// gives the payload the executors translate and the original request they read
+// one budget between them, and says so when a scan had to be left out.
+func TestGuardRequestSpendsOneRegexBudgetOnAllItsBodies(t *testing.T) {
+	// One scan of a 600 byte text by a{400}b costs 403 * 600 = 241,800 steps.
+	tenant := tenantOf(t, WordActionLog, rx(`a{400}b`))
+	original := chatRequest(heavyText(600))
+	payload := chatRequest(heavyText(600) + "c") // the same cost, in a slice of its own
+
+	run := func(work int64) (skipped bool, recorded bool) {
+		t.Helper()
+		moderator := guardModerator(&wordResolverStub{policies: WordPolicies{Tenant: tenant}})
+		moderator.regexWork = work
+		ctx, ginCtx := snapshotContext(t)
+		req, opts := guardOptions("tenant-a", original)
+		req.Payload = payload
+		if result := moderator.GuardRequest(ctx, req, opts); result.Blocked || result.Payload != nil {
+			t.Fatalf("result = %+v", result)
+		}
+		snapshot, ok := WordGuardSnapshotFromGin(ginCtx)
+		if !ok {
+			return false, false
+		}
+		encoded, err := json.Marshal(snapshot)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return gjson.GetBytes(encoded, "regex_skipped").Bool(), true
+	}
+
+	if skipped, recorded := run(500_000); skipped || recorded {
+		t.Fatalf("both bodies fit in 500,000 steps: skipped = %v, recorded = %v", skipped, recorded)
+	}
+	// 300,000 steps pay for one scan and not for two: the second body is the one
+	// left out, and the request log says that some expressions did not run.
+	if skipped, recorded := run(300_000); !skipped || !recorded {
+		t.Fatalf("the second body drew on what the first left: skipped = %v, recorded = %v", skipped, recorded)
+	}
+	// Not enough for either: the first body is left out.
+	if skipped, recorded := run(100_000); !skipped || !recorded {
+		t.Fatalf("skipped = %v, recorded = %v", skipped, recorded)
 	}
 }
 

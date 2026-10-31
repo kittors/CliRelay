@@ -120,6 +120,36 @@ func TestGuardRequestLogOnlyLeavesTheBody(t *testing.T) {
 	}
 }
 
+// The request log is read by the tenant, who may not read the platform's word
+// list: a hit on one of its rules is logged with the rule's id and not its text.
+func TestGuardRequestKeepsThePlatformWordsOutOfTheRequestLog(t *testing.T) {
+	policies := WordPolicies{
+		Platform: policyOf(t, WordScopePlatform, "", func(p *WordPolicy) { p.Action = WordActionLog }, kw("platformword")),
+		Tenant:   tenantOf(t, WordActionLog, kw("tenantword")),
+	}
+	ctx, ginCtx := snapshotContext(t)
+	req, opts := guardOptions("tenant-a", chatRequest("a platformword and a tenantword"))
+	guardModerator(&wordResolverStub{policies: policies}).GuardRequest(ctx, req, opts)
+	snapshot, ok := WordGuardSnapshotFromGin(ginCtx)
+	if !ok {
+		t.Fatal("two hits left nothing for the request log")
+	}
+	encoded, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc := string(encoded)
+	if strings.Contains(doc, "platformword") {
+		t.Fatalf("the platform's word is in the request log: %s", doc)
+	}
+	if gjson.Get(doc, "matches.0.layer").String() != "platform" || !gjson.Get(doc, "matches.0.pattern_hidden").Bool() || gjson.Get(doc, "matches.0.rule_id").String() == "" {
+		t.Fatalf("the platform hit keeps its rule id and says its text is hidden: %s", doc)
+	}
+	if gjson.Get(doc, "matches.1.pattern").String() != "tenantword" {
+		t.Fatalf("the tenant's own word stays readable: %s", doc)
+	}
+}
+
 func TestGuardRequestRecordsNothingForACleanRequest(t *testing.T) {
 	ctx, ginCtx := snapshotContext(t)
 	req, opts := guardOptions("tenant-a", chatRequest("all good here"))

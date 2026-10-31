@@ -141,6 +141,9 @@ func (m *RuntimeModerator) GuardRequest(ctx context.Context, req cliproxyexecuto
 	}
 	// One budget for the whole request, however many bodies are checked.
 	budget := newRegexBudget()
+	if m.regexWork > 0 {
+		budget.left.Store(m.regexWork)
+	}
 	verdict := evaluateWords(format, body, contexts, wordEvalOptions{budget: budget})
 	// The executors translate req.Payload and read opts.OriginalRequest. They are
 	// the same bytes unless a caller set them apart, in which case the payload is
