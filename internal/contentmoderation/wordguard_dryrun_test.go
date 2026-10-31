@@ -8,7 +8,7 @@ func TestDryRunReplacesAndLocatesHitsInUTF16(t *testing.T) {
 	}, kw("badword"))
 	// An emoji is two UTF-16 code units, so the hit starts at 5, not at 3.
 	text := "😀 ok BADWORD and ｂａｄｗｏｒｄ"
-	result := DryRunWordPolicies(WordPolicies{Tenant: tenant}, text)
+	result := DryRunWordPolicies(WordPolicies{Tenant: tenant}, text, false)
 	if result.Action != WordVerdictReplace || result.Blocked || result.Output != "😀 ok [x] and [x]" || result.Replaced != 2 {
 		t.Fatalf("result = %+v", result)
 	}
@@ -28,7 +28,7 @@ func TestDryRunReplacesAndLocatesHitsInUTF16(t *testing.T) {
 }
 
 func TestDryRunReportsAMatchThatIsTheSameAsWritten(t *testing.T) {
-	result := DryRunWordPolicies(WordPolicies{Tenant: tenantOf(t, WordActionLog, kw("bad"))}, "so bad")
+	result := DryRunWordPolicies(WordPolicies{Tenant: tenantOf(t, WordActionLog, kw("bad"))}, "so bad", false)
 	if result.Action != WordVerdictLog || result.Output != "so bad" || len(result.Matches) != 1 || result.Matches[0].NormalizedOnly {
 		t.Fatalf("result = %+v", result)
 	}
@@ -38,7 +38,7 @@ func TestDryRunReportsAMatchThatIsTheSameAsWritten(t *testing.T) {
 }
 
 func TestDryRunBlock(t *testing.T) {
-	result := DryRunWordPolicies(WordPolicies{Platform: policyOf(t, WordScopePlatform, "", nil, kw("bad"))}, "so bad")
+	result := DryRunWordPolicies(WordPolicies{Platform: policyOf(t, WordScopePlatform, "", nil, kw("bad"))}, "so bad", true)
 	if !result.Blocked || result.Action != WordVerdictBlock || result.Output != "so bad" || result.BlockMessage != DefaultBlockMessage {
 		t.Fatalf("result = %+v", result)
 	}
@@ -48,7 +48,7 @@ func TestDryRunBlock(t *testing.T) {
 }
 
 func TestDryRunWithoutPoliciesAllows(t *testing.T) {
-	result := DryRunWordPolicies(WordPolicies{}, "anything")
+	result := DryRunWordPolicies(WordPolicies{}, "anything", false)
 	if result.Action != WordVerdictAllow || result.Output != "anything" || len(result.Matches) != 0 || len(result.Layers) != 0 {
 		t.Fatalf("result = %+v", result)
 	}
@@ -94,5 +94,46 @@ func TestReviewWordRules(t *testing.T) {
 	}
 	if reviews[4].Problem.Code != "invalid_regex" || reviews[7].Problem.Code != "matches_empty" || reviews[5].Problem.Code != "empty" {
 		t.Errorf("problem codes = %q %q %q", reviews[4].Problem.Code, reviews[7].Problem.Code, reviews[5].Problem.Code)
+	}
+}
+
+func TestDryRunKeepsPlatformWordsFromWhoeverMayNotReadThem(t *testing.T) {
+	policies := WordPolicies{
+		Platform: policyOf(t, WordScopePlatform, "", func(p *WordPolicy) { p.Action = WordActionLog }, kw("platformword")),
+		Tenant:   tenantOf(t, WordActionLog, kw("tenantword")),
+	}
+	text := "a platformword and a tenantword"
+	hidden := DryRunWordPolicies(policies, text, false)
+	if len(hidden.Matches) != 2 {
+		t.Fatalf("matches = %+v", hidden.Matches)
+	}
+	platform, tenant := hidden.Matches[0], hidden.Matches[1]
+	if platform.Layer != WordScopePlatform || platform.Pattern != "" || !platform.PatternHidden || platform.RuleID == "" || platform.Start != 2 || platform.End != 14 {
+		t.Fatalf("platform match = %+v: the rule id and place stay, the text goes", platform)
+	}
+	if tenant.Pattern != "tenantword" || tenant.PatternHidden {
+		t.Fatalf("tenant match = %+v", tenant)
+	}
+	shown := DryRunWordPolicies(policies, text, true)
+	if shown.Matches[0].Pattern != "platformword" || shown.Matches[0].PatternHidden {
+		t.Fatalf("revealed match = %+v", shown.Matches[0])
+	}
+}
+
+func TestWithoutPlatformPatternsDoesNotChangeItsArgument(t *testing.T) {
+	matches := []WordMatch{{Layer: WordScopeTenant, Pattern: "a"}, {Layer: WordScopePlatform, Pattern: "b"}, {Layer: WordScopeKey, Pattern: "c"}}
+	got := withoutPlatformPatterns(matches)
+	if got[0].Pattern != "a" || got[1].Pattern != "" || !got[1].PatternHidden || got[2].Pattern != "c" {
+		t.Fatalf("got %+v", got)
+	}
+	if matches[1].Pattern != "b" || matches[1].PatternHidden {
+		t.Fatalf("the argument was changed: %+v", matches)
+	}
+	clean := []WordMatch{{Layer: WordScopeTenant, Pattern: "a"}}
+	if again := withoutPlatformPatterns(clean); &again[0] != &clean[0] {
+		t.Fatal("a list without platform matches should be returned as it is")
+	}
+	if withoutPlatformPatterns(nil) != nil {
+		t.Fatal("nil in, nil out")
 	}
 }

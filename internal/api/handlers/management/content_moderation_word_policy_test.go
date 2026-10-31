@@ -299,25 +299,31 @@ func TestPlatformWordPolicyIsOnlyForPlatformAdministrators(t *testing.T) {
 		t.Fatalf("platform save = %v", body)
 	}
 
-	// Everyone can read it, and sees it cannot be edited from where they are.
+	// Everyone sees that it exists, what it is set to and how many rules it has,
+	// and that it cannot be edited from where they are. Its words are the
+	// platform's to keep: nobody but whoever may change it reads them.
 	for name, caller := range map[string]wordCaller{"tenant": wordTenantAUser, "other tenant": wordTenantBUser, "admin inside a tenant": wordAdminInTenantA, "plain system user": wordPlainSystem} {
 		rec, body = caller.call(h.GetWordPolicyPlatform, http.MethodGet, "", "")
 		wordExpectStatus(t, rec, http.StatusOK)
-		rules := wordRuleList(t, body)
-		if body["exists"] != true || len(rules) != 1 || rules[0]["pattern"] != "platformword" || body["can_edit"] != false && caller == wordPlatformAdmin {
+		if body["exists"] != true || body["action"] != "block" || body["rule_count"] != float64(1) || body["rules_hidden"] != true || len(wordRuleList(t, body)) != 0 {
 			t.Errorf("%s reads %v", name, body)
+		}
+		if strings.Contains(rec.Body.String(), "platformword") {
+			t.Errorf("%s was sent the platform's word list: %s", name, rec.Body.String())
 		}
 		if body["can_edit"] != false {
 			t.Errorf("%s may not edit the platform policy but is told it may", name)
 		}
 	}
-	if _, body = wordPlatformAdmin.call(h.GetWordPolicyPlatform, http.MethodGet, "", ""); body["can_edit"] != true {
-		t.Fatalf("the platform administrator cannot edit: %v", body)
+	rec, body = wordPlatformAdmin.call(h.GetWordPolicyPlatform, http.MethodGet, "", "")
+	wordExpectStatus(t, rec, http.StatusOK)
+	if rules := wordRuleList(t, body); body["can_edit"] != true || body["rules_hidden"] != false || body["rule_count"] != float64(1) || len(rules) != 1 || rules[0]["pattern"] != "platformword" {
+		t.Fatalf("the platform administrator reads %v", body)
 	}
 
 	// The refused writes left it as it was.
 	_, body = wordTenantBUser.call(h.GetWordPolicyPlatform, http.MethodGet, "", "")
-	if body["version"] != float64(1) || len(wordRuleList(t, body)) != 1 {
+	if body["version"] != float64(1) || body["rule_count"] != float64(1) {
 		t.Fatalf("platform policy changed under a refused write: %v", body)
 	}
 

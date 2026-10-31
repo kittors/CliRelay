@@ -41,8 +41,10 @@ type WordDryRun struct {
 }
 
 // DryRunWordPolicies runs text through the policies as a request from the user
-// would be, without sending it anywhere.
-func DryRunWordPolicies(policies WordPolicies, text string) WordDryRun {
+// would be, without sending it anywhere. A match of the platform policy comes
+// back with its rule id only, unless revealPlatform says the caller may read
+// that policy.
+func DryRunWordPolicies(policies WordPolicies, text string, revealPlatform bool) WordDryRun {
 	contexts := buildWordContexts(policies.Platform, policies.Tenant, policies.Key)
 	result := WordDryRun{Action: WordVerdictAllow, Output: text, Matches: []WordMatch{}, Layers: []string{}}
 	for _, context := range contexts {
@@ -58,6 +60,9 @@ func DryRunWordPolicies(policies WordPolicies, text string) WordDryRun {
 	result.Action, result.Blocked, result.BlockMessage, result.Reason = verdict.Action, verdict.Blocked, verdict.BlockMessage, verdict.Reason
 	result.Matches, result.MatchCount, result.Replaced, result.LatencyMS = verdict.Matches, verdict.MatchCount, verdict.Replaced, verdict.LatencyMS
 	result.RegexSkipped = verdict.RegexSkipped
+	if !revealPlatform {
+		result.Matches = withoutPlatformPatterns(result.Matches)
+	}
 	if verdict.Payload != nil {
 		result.Output = gjson.GetBytes(verdict.Payload, "messages.0.content").String()
 	}

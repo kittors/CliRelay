@@ -74,12 +74,14 @@ type WordGuardReply struct {
 // newWordGuardSnapshot describes a request-side verdict.
 func newWordGuardSnapshot(verdict WordVerdict, contexts []wordContext, policyError string) *WordGuardSnapshot {
 	view := wordGuardView{
-		Action:       verdict.Action,
-		Blocked:      verdict.Blocked,
-		Reason:       verdict.Reason,
-		MatchCount:   verdict.MatchCount,
-		Replaced:     verdict.Replaced,
-		Matches:      verdict.Matches,
+		Action:     verdict.Action,
+		Blocked:    verdict.Blocked,
+		Reason:     verdict.Reason,
+		MatchCount: verdict.MatchCount,
+		Replaced:   verdict.Replaced,
+		// The request log is read by the tenant, who may not read the platform's
+		// word list: it keeps the rule's id and not its text.
+		Matches:      withoutPlatformPatterns(verdict.Matches),
 		LatencyMS:    verdict.LatencyMS,
 		Field:        verdict.Field,
 		RegexSkipped: verdict.RegexSkipped,

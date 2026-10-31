@@ -220,6 +220,59 @@ func TestWordPolicyTestLayersPlatformTenantAndKey(t *testing.T) {
 	}
 }
 
+// A tenant may not read the platform's word list, so a test must not hand it
+// back piece by piece: a hit of the platform policy comes with its rule id.
+func TestWordPolicyTestKeepsThePlatformWordsToItself(t *testing.T) {
+	h := setupWordPolicyTest(t)
+	rec, platform := wordPlatformAdmin.call(h.PutWordPolicyPlatform, http.MethodPut, `{"action":"log","rules":[{"id":"p-rule","pattern":"platformword"}]}`, "")
+	wordExpectStatus(t, rec, http.StatusOK)
+	_ = platform
+	rec, _ = wordTenantAUser.call(h.PutWordPolicyTenant, http.MethodPut, `{"action":"log","rules":[{"id":"t-rule","pattern":"tenantword"}]}`, "")
+	wordExpectStatus(t, rec, http.StatusOK)
+
+	input := `{"input":"a platformword and a tenantword"}`
+	for name, caller := range map[string]wordCaller{"tenant": wordTenantAUser, "admin inside a tenant": wordAdminInTenantA, "plain system user": wordPlainSystem} {
+		rec, got := caller.call(h.PostWordPolicyTest, http.MethodPost, input, "")
+		wordExpectStatus(t, rec, http.StatusOK)
+		if strings.Contains(rec.Body.String(), "platformword\"") && strings.Contains(rec.Body.String(), `"pattern":"platformword"`) {
+			t.Errorf("%s was sent a platform word: %s", name, rec.Body.String())
+		}
+		matches, _ := got["matches"].([]any)
+		byRule := map[string]map[string]any{}
+		for _, item := range matches {
+			match := item.(map[string]any)
+			byRule[match["rule_id"].(string)] = match
+		}
+		hidden, shown := byRule["p-rule"], byRule["t-rule"]
+		if name == "plain system user" {
+			// The system tenant's own policy is not the one the tenant test reads.
+			shown = nil
+		}
+		if hidden == nil || hidden["layer"] != "platform" || hidden["pattern"] != "" || hidden["pattern_hidden"] != true || hidden["start"] != float64(2) {
+			t.Errorf("%s: the platform match = %v", name, hidden)
+		}
+		if name == "tenant" && (shown == nil || shown["pattern"] != "tenantword" || shown["pattern_hidden"] != nil) {
+			t.Errorf("%s: its own rule must keep its text: %v", name, shown)
+		}
+	}
+
+	// Whoever may change the platform policy reads it, so a test shows them which of its rules hit.
+	rec, got := wordPlatformAdmin.call(h.PostWordPolicyTest, http.MethodPost, input, "")
+	wordExpectStatus(t, rec, http.StatusOK)
+	var seen bool
+	for _, item := range got["matches"].([]any) {
+		if match := item.(map[string]any); match["rule_id"] == "p-rule" {
+			seen = true
+			if match["pattern"] != "platformword" || match["pattern_hidden"] != nil {
+				t.Errorf("the platform administrator's match = %v", match)
+			}
+		}
+	}
+	if !seen {
+		t.Fatalf("no platform match for the platform administrator: %v", got)
+	}
+}
+
 func TestWordPolicyTestWithADraft(t *testing.T) {
 	h := setupWordPolicyTest(t)
 	createPolicyKeyFor(t, wordTenantA)

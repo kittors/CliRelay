@@ -186,6 +186,11 @@ type wordPolicyResponse struct {
 	contentmoderation.WordPolicy
 	// Effective is what the policy's empty settings resolve to.
 	Effective contentmoderation.WordSettings `json:"effective"`
+	// RuleCount is how many rules the policy has. RulesHidden says the rules are
+	// not listed because the caller may not read them: the platform's word list is
+	// kept from the tenants it is applied to, who see its settings and its size.
+	RuleCount   int  `json:"rule_count"`
+	RulesHidden bool `json:"rules_hidden"`
 	// UnboundedRegexIDs lists the enabled regular expressions whose matches can
 	// be of any length (\d+, \d{11,}). A reply that streams cannot have the start
 	// of such a match held back, so a match split between two stream events can
@@ -331,6 +336,11 @@ func (h *Handler) wordPolicyView(ctx context.Context, c *gin.Context, store *con
 			return wordPolicyResponse{}, err
 		}
 	}
+	ruleCount := len(policy.Rules)
+	hidden := target.scopeType == contentmoderation.WordScopePlatform && !canManageWordPlatform(c)
+	if hidden {
+		policy.Rules = []contentmoderation.WordRule{}
+	}
 	unbounded := []string{}
 	for _, rule := range policy.Rules {
 		if rule.Enabled && rule.Kind == contentmoderation.WordRuleRegex && !contentmoderation.WordRegexIsBounded(rule.Pattern) {
@@ -341,6 +351,8 @@ func (h *Handler) wordPolicyView(ctx context.Context, c *gin.Context, store *con
 		Exists:            found,
 		WordPolicy:        policy,
 		Effective:         contentmoderation.ResolveWordSettings(below, &policy),
+		RuleCount:         ruleCount,
+		RulesHidden:       hidden,
 		UnboundedRegexIDs: unbounded,
 		CanEdit:           target.scopeType != contentmoderation.WordScopePlatform || canManageWordPlatform(c),
 		KeyName:           target.keyName,

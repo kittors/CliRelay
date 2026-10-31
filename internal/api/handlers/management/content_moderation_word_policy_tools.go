@@ -219,5 +219,7 @@ func (h *Handler) PostWordPolicyTest(c *gin.Context) {
 			policies.Key = &draft
 		}
 	}
-	c.JSON(http.StatusOK, contentmoderation.DryRunWordPolicies(policies, body.Input))
+	// Whoever may read the platform policy sees which of its rules matched; for
+	// anyone else a match of it is a rule id, as in their request log.
+	c.JSON(http.StatusOK, contentmoderation.DryRunWordPolicies(policies, body.Input, canManageWordPlatform(c)))
 }

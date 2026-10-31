@@ -40,10 +40,14 @@ const (
 // WordMatch describes one hit.
 type WordMatch struct {
 	// Layer is the policy layer of the rule that matched: platform, tenant or key.
-	Layer   string `json:"layer"`
-	RuleID  string `json:"rule_id"`
-	Kind    string `json:"kind"`
-	Pattern string `json:"pattern"`
+	Layer  string `json:"layer"`
+	RuleID string `json:"rule_id"`
+	Kind   string `json:"kind"`
+	// Pattern is the rule's text. It is left out of a match of the platform
+	// policy that is shown to someone who may not read that policy, and
+	// PatternHidden says so (see withoutPlatformPatterns).
+	Pattern       string `json:"pattern"`
+	PatternHidden bool   `json:"pattern_hidden,omitempty"`
 	// Action is what the hit led to: block, replace or log.
 	Action string `json:"action"`
 	// Source is the class of the text that held it: primary, tool_output or
@@ -210,6 +214,30 @@ func firstReplaceContext(contexts []wordContext) wordContext {
 		}
 	}
 	return contexts[0]
+}
+
+// withoutPlatformPatterns returns matches with the text of the platform policy's
+// rules taken out, keeping the rule id. The platform's word list is the
+// platform's to keep: a tenant may not read it (see the policy view), so it must
+// not read it back out of a test result or of its own request log either. The
+// argument is not changed.
+func withoutPlatformPatterns(matches []WordMatch) []WordMatch {
+	var out []WordMatch
+	for i, match := range matches {
+		if match.Layer == WordScopePlatform {
+			if out == nil {
+				out = append(make([]WordMatch, 0, len(matches)), matches[:i]...)
+			}
+			match.Pattern, match.PatternHidden = "", true
+		}
+		if out != nil {
+			out = append(out, match)
+		}
+	}
+	if out == nil {
+		return matches
+	}
+	return out
 }
 
 // describeWordHits turns the first hits into WordMatches.
