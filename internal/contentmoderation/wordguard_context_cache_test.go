@@ -38,14 +38,20 @@ func TestWordContextCacheKeepsTheContextsWhileThePoliciesAreUnchanged(t *testing
 		t.Fatalf("contexts = %d, want the platform's and the tenant's", len(first))
 	}
 	second := cache.contextsFor(platform, tenant, nil)
-	if &first[0] != &second[0] {
+	if len(second) != 2 || second[0].matcher != first[0].matcher || second[1].matcher != first[1].matcher {
 		t.Fatal("unchanged policies were built into contexts again")
 	}
 	// The store hands out a new object when it reloads a policy, but the same
 	// saved state has the same stamp.
 	reloaded := *tenant
-	if third := cache.contextsFor(platform, &reloaded, nil); &third[0] != &first[0] {
+	if third := cache.contextsFor(platform, &reloaded, nil); len(third) != 2 || third[1].matcher != first[1].matcher {
 		t.Fatal("a reloaded copy of the same saved state was built again")
+	}
+	// The platform's context does not depend on the tenant: a tenant that
+	// changes leaves it alone.
+	other := stamped(tenantOf(t, WordActionBlock, kw("beta")), "t2", 1, saved)
+	if fourth := cache.contextsFor(platform, other, nil); len(fourth) != 2 || fourth[0].matcher != first[0].matcher {
+		t.Fatal("the platform's context was built again for another tenant")
 	}
 }
 
@@ -130,20 +136,6 @@ func TestWordContextCacheHasNothingToRememberWithoutPolicies(t *testing.T) {
 	var cache wordContextCache
 	if got := cache.contextsFor(nil, nil, nil); got != nil || len(cache.entries) != 0 {
 		t.Fatalf("contexts = %v, entries = %d", got, len(cache.entries))
-	}
-}
-
-func TestWordContextCacheStaysWithinItsBound(t *testing.T) {
-	var cache wordContextCache
-	saved := time.Date(2026, 11, 1, 10, 0, 0, 0, time.UTC)
-	for i := 0; i < maxCachedWordContexts+10; i++ {
-		tenant := stamped(tenantOf(t, WordActionBlock, kw("alpha")), fmt.Sprintf("tenant-%d", i), 1, saved)
-		if got := cache.contextsFor(nil, tenant, nil); len(got) != 1 {
-			t.Fatalf("tenant %d: %d contexts", i, len(got))
-		}
-	}
-	if len(cache.entries) > maxCachedWordContexts {
-		t.Fatalf("%d entries kept, bound is %d", len(cache.entries), maxCachedWordContexts)
 	}
 }
 

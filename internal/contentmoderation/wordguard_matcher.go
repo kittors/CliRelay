@@ -1,9 +1,8 @@
 package contentmoderation
 
 import (
-	"hash/maphash"
+	"reflect"
 	"sort"
-	"sync"
 	"unicode/utf8"
 )
 
@@ -162,24 +161,13 @@ func mergeWordHits(hits []wordHit) []wordHit {
 	return merged
 }
 
-// wordMatcherCache keeps compiled matchers off the per-request path: rules are
-// read from the store on every request, but a list is only compiled the first
-// time it is seen, keyed by its exact content.
-var wordMatcherCache = struct {
-	mu       sync.Mutex
-	seed     maphash.Seed
-	matchers map[uint64]*wordMatcher
-}{seed: maphash.MakeSeed(), matchers: make(map[uint64]*wordMatcher)}
-
-// maxCachedWordMatchers bounds the cache. Each distinct rule list takes one
-// entry, so the bound is only reached by an unusual number of policies; the
-// cache then starts over rather than grow.
-const maxCachedWordMatchers = 512
-
-// compiledWordMatcher returns the matcher for a rule list, compiling it if no
-// identical list was compiled before. A list without an enabled rule has no
-// matcher (nil).
-func compiledWordMatcher(refs []wordRuleRef, fold bool) *wordMatcher {
+// newWordMatcher compiles the enabled rules of a list into a matcher. A list
+// without an enabled rule has no matcher (nil).
+//
+// Compiling is not cheap (a full list of 10,000 keywords takes milliseconds and
+// a few megabytes), so it is not done per request: wordContextCache keeps the
+// result for as long as the stored policy stays as it was saved.
+func newWordMatcher(refs []wordRuleRef, fold bool) *wordMatcher {
 	enabled := make([]wordRuleRef, 0, len(refs))
 	for _, ref := range refs {
 		if ref.Enabled && ref.Pattern != "" {
@@ -189,54 +177,45 @@ func compiledWordMatcher(refs []wordRuleRef, fold bool) *wordMatcher {
 	if len(enabled) == 0 {
 		return nil
 	}
-	fingerprint := wordRulesFingerprint(enabled, fold)
-	wordMatcherCache.mu.Lock()
-	cached := wordMatcherCache.matchers[fingerprint]
-	wordMatcherCache.mu.Unlock()
-	if cached != nil && cached.compiledFrom(enabled, fold) {
-		return cached
-	}
-	matcher := compileWordMatcher(enabled, fold)
-	wordMatcherCache.mu.Lock()
-	if len(wordMatcherCache.matchers) >= maxCachedWordMatchers {
-		wordMatcherCache.matchers = make(map[uint64]*wordMatcher)
-	}
-	wordMatcherCache.matchers[fingerprint] = matcher
-	wordMatcherCache.mu.Unlock()
-	return matcher
+	return compileWordMatcher(enabled, fold)
 }
 
-func wordRulesFingerprint(refs []wordRuleRef, fold bool) uint64 {
-	var hash maphash.Hash
-	hash.SetSeed(wordMatcherCache.seed)
-	if fold {
-		_ = hash.WriteByte(1)
-	} else {
-		_ = hash.WriteByte(0)
-	}
-	for _, ref := range refs {
-		_, _ = hash.WriteString(ref.Layer)
-		_ = hash.WriteByte(0)
-		_, _ = hash.WriteString(ref.ID)
-		_ = hash.WriteByte(0)
-		_, _ = hash.WriteString(ref.Kind)
-		_ = hash.WriteByte(0)
-		_, _ = hash.WriteString(ref.Pattern)
-		_ = hash.WriteByte(1)
-	}
-	return hash.Sum64()
-}
+// The sizes of the structures a matcher is made of, for size.
+var (
+	wordMatcherHeaderBytes = int64(reflect.TypeFor[wordMatcher]().Size())
+	wordRuleRefBytes       = int64(reflect.TypeFor[wordRuleRef]().Size())
+	trieNodeBytes          = int64(reflect.TypeFor[trieNode]().Size())
+	trieEdgeBytes          = int64(reflect.TypeFor[trieEdge]().Size())
+)
 
-func (m *wordMatcher) compiledFrom(refs []wordRuleRef, fold bool) bool {
-	if m.fold != fold || len(m.rules) != len(refs) {
-		return false
+// wordRegexBaseBytes and wordRegexInstBytes estimate what a compiled expression
+// keeps alive: Go's regexp holds the program in more than one form (and a
+// one-pass or backtracking copy), so an instruction costs more than its own
+// size. The expressions of a policy are limited to MaxWordRegexProgramTotal
+// instructions between them, which makes this a small part of a matcher.
+const (
+	wordRegexBaseBytes = 512
+	wordRegexInstBytes = 96
+)
+
+// size estimates the bytes a matcher keeps alive, which is what the cache of
+// matchers is bounded by. It counts the rule strings as well: a matcher holds
+// on to them after the policy they were read from is replaced. The estimate
+// errs on the high side of what the heap shows; a test holds it to that.
+func (m *wordMatcher) size() int64 {
+	if m == nil {
+		return 0
 	}
-	for i, ref := range refs {
-		if m.rules[i] != ref {
-			return false
-		}
+	total := wordMatcherHeaderBytes + int64(cap(m.rules))*wordRuleRefBytes
+	for i := range m.rules {
+		rule := &m.rules[i]
+		total += int64(len(rule.ID) + len(rule.Kind) + len(rule.Pattern) + len(rule.Note) + len(rule.Layer))
 	}
-	return true
+	total += int64(cap(m.trie.nodes))*trieNodeBytes + int64(cap(m.trie.edges))*trieEdgeBytes + int64(len(m.trie.root))*4
+	for _, compiled := range m.regexes {
+		total += wordRegexBaseBytes + int64(compiled.program)*wordRegexInstBytes + int64(len(compiled.first.ranges))*4
+	}
+	return total
 }
 
 // compileWordMatcher builds a matcher from enabled rules. A rule that cannot be

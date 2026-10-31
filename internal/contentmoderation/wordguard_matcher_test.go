@@ -186,31 +186,13 @@ func TestWordMatcherLimitStopsEarly(t *testing.T) {
 func TestWordMatcherIgnoresDisabledAndBrokenRules(t *testing.T) {
 	off := kw("secret")
 	off.Enabled = false
-	if m := compiledWordMatcher(refs("tenant", off), false); m != nil {
+	if m := newWordMatcher(refs("tenant", off), false); m != nil {
 		t.Fatalf("a list without an enabled rule has no matcher")
 	}
 	// A regex that does not compile (stored by some other build) is skipped.
 	m := compileWordMatcher(refs("tenant", rx(`(`), kw("fine")), false)
 	if got := m.find("a fine day", findOptions{}); len(got.hits) != 1 {
 		t.Fatalf("the valid rule must still work: %+v", got)
-	}
-}
-
-func TestCompiledWordMatcherIsCachedByContent(t *testing.T) {
-	list := refs("tenant", kw("alpha"), rx(`be+ta`))
-	first := compiledWordMatcher(list, false)
-	if again := compiledWordMatcher(refs("tenant", kw("alpha"), rx(`be+ta`)), false); again != first {
-		t.Fatalf("the same rules must reuse the compiled matcher")
-	}
-	if compiledWordMatcher(list, true) == first {
-		t.Fatalf("the fold setting changes the compiled form")
-	}
-	if compiledWordMatcher(refs("key", kw("alpha"), rx(`be+ta`)), false) == first {
-		t.Fatalf("the layer is part of the attribution")
-	}
-	changed := refs("tenant", kw("alpha"), rx(`be+ta`), kw("gamma"))
-	if compiledWordMatcher(changed, false) == first {
-		t.Fatalf("a different list must compile again")
 	}
 }
 

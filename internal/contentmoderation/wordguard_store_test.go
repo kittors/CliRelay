@@ -262,7 +262,7 @@ func runWordPolicyStoreChecks(t *testing.T, store *Store) {
 			return cache.contextsFor(got.Platform, got.Tenant, got.Key)
 		}
 		first, second := contexts(), contexts()
-		if len(first) == 0 || &first[0] != &second[0] {
+		if len(first) == 0 || len(second) == 0 || first[0].matcher != second[0].matcher {
 			t.Fatal("a policy read back from the store has no stamp, so its contexts would be rebuilt on every request")
 		}
 		savedWordPolicy(t, store, "tenant-c", WordPolicy{ScopeType: WordScopeTenant, Enabled: true, Rules: []WordRule{kw("betaword")}}, int64Ptr(saved.Version))
