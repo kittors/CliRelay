@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -204,6 +205,42 @@ func (s *Store) DeleteWordPolicy(ctx context.Context, tenantID, scopeType, scope
 		return ErrWordPolicyNotFound
 	}
 	return nil
+}
+
+// DeleteWordPoliciesForKeys removes the policies of API keys that no longer
+// exist. A key created again under the same id (an import, a restore) would
+// otherwise take over what the deleted one was configured with. It reports how
+// many policies were removed; a key without one is not an error.
+func (s *Store) DeleteWordPoliciesForKeys(ctx context.Context, tenantID string, keyIDs []string) (int64, error) {
+	if s == nil || s.db == nil {
+		return 0, ErrUnavailable
+	}
+	tenantID = strings.TrimSpace(tenantID)
+	const batch = 200 // the number of parameters of one statement stays small
+	var removed int64
+	for start := 0; start < len(keyIDs); start += batch {
+		args := []any{tenantID, WordScopeKey}
+		var placeholders []string
+		for _, id := range keyIDs[start:min(start+batch, len(keyIDs))] {
+			if id = strings.TrimSpace(id); id != "" {
+				args = append(args, id)
+				placeholders = append(placeholders, "$"+strconv.Itoa(len(args)))
+			}
+		}
+		if len(placeholders) == 0 {
+			continue
+		}
+		result, err := s.db.ExecContext(ctx, `DELETE FROM content_moderation_word_policies WHERE tenant_id=$1 AND scope_type=$2 AND scope_id IN (`+strings.Join(placeholders, ",")+`)`, args...)
+		if err != nil {
+			return removed, err
+		}
+		rows, err := result.RowsAffected()
+		if err != nil {
+			return removed, err
+		}
+		removed += rows
+	}
+	return removed, nil
 }
 
 // ListWordPolicySummaries lists, without their rules, the policies a tenant's
