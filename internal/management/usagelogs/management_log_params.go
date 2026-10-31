@@ -32,6 +32,7 @@ func (s *Service) managementLogParams(input ManagementLogQueryInput, maps nameMa
 		CollapseAccountKeys:   true,
 		Models:                input.Models,
 		Statuses:              input.Statuses,
+		GuardKinds:            input.GuardKinds,
 		MatchNoAPIKeys:        input.MatchNoAPIKeys,
 		MatchNoAPIKeyIDs:      input.MatchNoAPIKeyIDs,
 		MatchNoModels:         input.MatchNoModels,

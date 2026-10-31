@@ -97,6 +97,7 @@ func (h *UsageLogsHandler) GetUsageLogs(c *gin.Context) {
 		EndUserID:        strings.TrimSpace(c.Query("end_user_id")),
 		Models:           queryStringListMulti(c, "model", "models"),
 		Statuses:         queryStringListMulti(c, "status", "statuses"),
+		GuardKinds:       queryStringListMulti(c, "guard_kind", "guard_kinds"),
 		Channels:         deduped,
 		MatchNoAPIKeys:   queryBool(c, "api_keys_empty"),
 		MatchNoAPIKeyIDs: queryBool(c, "api_key_ids_empty"),

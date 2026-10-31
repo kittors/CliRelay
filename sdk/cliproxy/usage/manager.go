@@ -40,6 +40,12 @@ type Record struct {
 	Streaming             bool
 	Detail                Detail
 
+	// GuardKind names the loop protection check that ended this request:
+	// "reply_loop" (the reply was cut) or "tool_loop" (the gateway answered
+	// itself and sent nothing upstream). It is empty for every other request,
+	// and a request it is set on is Failed.
+	GuardKind string
+
 	// TrustedTenantID is set only by authenticated internal execution paths.
 	// When empty, persistence resolves the tenant from the real API key.
 	TrustedTenantID string

@@ -15,10 +15,13 @@ type ManagementLogQueryInput struct {
 	APIKeys []string
 	// EndUserID 按门户账号过滤（账号名下全部 Key 的稳定 ID，含已删除 Key 的历史日志）。
 	// 面板查看某个账号的用量时不必再拉取这些 Key 的明文、把它们放进查询串。
-	EndUserID        string
-	Models           []string
-	Statuses         []string
-	Channels         []string
+	EndUserID string
+	Models    []string
+	Statuses  []string
+	Channels  []string
+	// GuardKinds selects the requests loop protection ended ("reply_loop",
+	// "tool_loop"); empty selects all.
+	GuardKinds       []string
 	MatchNoAPIKeys   bool
 	MatchNoAPIKeyIDs bool
 	MatchNoModels    bool

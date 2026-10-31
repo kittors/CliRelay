@@ -48,6 +48,9 @@ func laterRuntimeMigrations() []Migration {
 		// request_logs, and cache totals on usage_rollup_buckets. See
 		// request_log_cache_migrations.go.
 		{Version: "202610300001_request_log_cache_and_session", SQL: requestLogCacheAndSessionSQL},
+		// Which loop protection check ended a request, so the log can show and
+		// filter it and the monitor can count it.
+		{Version: "202611010001_request_log_guard_kind", SQL: requestLogGuardKindSQL},
 	}
 }
 

@@ -26,7 +26,7 @@ func TestRegisterManagementRouteTable(t *testing.T) {
 		routes[key] = route
 	}
 
-	if got, want := len(routes), 368; got != want {
+	if got, want := len(routes), 372; got != want {
 		t.Fatalf("route count = %d, want %d", got, want)
 	}
 	if got, want := sortedRouteKeys(routes), expectedManagementRoutes(); !slices.Equal(got, want) {
@@ -174,6 +174,14 @@ func TestManagementRoutePermissionsComplete(t *testing.T) {
 		{http.MethodGet, "/v0/management/observability/metrics", "system.config.read"},
 		{http.MethodPut, "/v0/management/observability/metrics", "system.config.write"},
 		{http.MethodPost, "/v0/management/observability/metrics/token", "system.config.write"},
+		// Loop protection: the tenant's switches are a tenant setting, a key's
+		// override belongs to the key editor. An id that looks like another route
+		// must not change which permission applies.
+		{http.MethodGet, "/v0/management/loop-guard", "tenant_settings.read"},
+		{http.MethodPut, "/v0/management/loop-guard", "tenant_settings.write"},
+		{http.MethodGet, "/v0/management/loop-guard/keys/key-1", "api_keys.read"},
+		{http.MethodPut, "/v0/management/loop-guard/keys/key-1", "api_keys.write"},
+		{http.MethodPut, "/v0/management/loop-guard/keys/model-oauth-api-key", "api_keys.write"},
 		// Word policies: reading is the moderation read permission, every change
 		// (including the import preview, a POST) the write permission, and only the
 		// dry-run dialog maps to the test permission. Editing the platform policy
@@ -414,6 +422,8 @@ func expectedManagementRoutes() []string {
 		"GET /v0/management/logging-to-file",
 		"GET /v0/management/logs",
 		"GET /v0/management/logs-max-total-size-mb",
+		"GET /v0/management/loop-guard",
+		"GET /v0/management/loop-guard/keys/:id",
 		"GET /v0/management/max-retry-interval",
 		"GET /v0/management/model-configs",
 		"GET /v0/management/model-definitions/:channel",
@@ -591,6 +601,8 @@ func expectedManagementRoutes() []string {
 		"PUT /v0/management/image-generation/size-presets",
 		"PUT /v0/management/logging-to-file",
 		"PUT /v0/management/logs-max-total-size-mb",
+		"PUT /v0/management/loop-guard",
+		"PUT /v0/management/loop-guard/keys/:id",
 		"PUT /v0/management/max-retry-interval",
 		"PUT /v0/management/model-configs/*id",
 		"PUT /v0/management/model-openrouter-sync",
