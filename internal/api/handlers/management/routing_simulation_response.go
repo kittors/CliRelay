@@ -145,7 +145,7 @@ func newRoutingSimulationResponse(key routingSimulationKey, endpoint, requestedM
 	}
 	rejectedBy := ""
 	for _, stage := range result.Stages {
-		out.Stages = append(out.Stages, routingSimulationStageDTO{Name: stage.Name, Outcome: stage.Outcome})
+		out.Stages = append(out.Stages, routingSimulationStageDTO(stage))
 		if stage.Outcome == RoutingStageRejected {
 			rejectedBy = stage.Name
 		}
