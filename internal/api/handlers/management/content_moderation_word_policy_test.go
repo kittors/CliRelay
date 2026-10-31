@@ -328,7 +328,7 @@ func TestWordPoliciesAreIsolatedBetweenTenants(t *testing.T) {
 	}
 
 	// B cannot reach A's key policy by guessing its id, nor create one for it.
-	rec, body = wordTenantBUser.call(h.GetWordPolicyKey, http.MethodGet, "", "key-a")
+	rec, _ = wordTenantBUser.call(h.GetWordPolicyKey, http.MethodGet, "", "key-a")
 	wordExpectStatus(t, rec, http.StatusNotFound)
 	rec, _ = wordTenantBUser.call(h.PutWordPolicyKey, http.MethodPut, `{"rules":[{"pattern":"planted"}]}`, "key-a")
 	wordExpectStatus(t, rec, http.StatusNotFound)
@@ -340,7 +340,7 @@ func TestWordPoliciesAreIsolatedBetweenTenants(t *testing.T) {
 	if body["exists"] != true || len(wordRuleList(t, body)) != 1 || wordRuleList(t, body)[0]["pattern"] != "key-secret-of-a" {
 		t.Fatalf("tenant A's key policy was touched by tenant B: %v", body)
 	}
-	rec, body = wordTenantAUser.call(h.GetWordPolicyKey, http.MethodGet, "", "key-b")
+	rec, _ = wordTenantAUser.call(h.GetWordPolicyKey, http.MethodGet, "", "key-b")
 	wordExpectStatus(t, rec, http.StatusNotFound)
 
 	// Validation and the test dialog resolve keys in the caller's tenant only.

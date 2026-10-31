@@ -153,9 +153,10 @@ func (c *mappedCollapser) emit(r rune, from, to int) {
 func (c *mappedCollapser) writeSimple(s string, lo, hi int, table map[rune]rune) {
 	for i := lo; i < hi; {
 		b := s[i]
-		start, size := i, 1
+		start := i
 		var r rune
 		if b >= utf8.RuneSelf {
+			var size int
 			r, size = utf8.DecodeRuneInString(s[i:hi])
 			i += size
 			if r < 0xFF01 || r > 0xFF5E {
