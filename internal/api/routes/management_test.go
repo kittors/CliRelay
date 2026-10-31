@@ -26,7 +26,7 @@ func TestRegisterManagementRouteTable(t *testing.T) {
 		routes[key] = route
 	}
 
-	if got, want := len(routes), 368; got != want {
+	if got, want := len(routes), 370; got != want {
 		t.Fatalf("route count = %d, want %d", got, want)
 	}
 	if got, want := sortedRouteKeys(routes), expectedManagementRoutes(); !slices.Equal(got, want) {
@@ -454,6 +454,7 @@ func expectedManagementRoutes() []string {
 		"GET /v0/management/request-log-by-id/:id",
 		"GET /v0/management/request-retry",
 		"GET /v0/management/routing-config",
+		"GET /v0/management/routing-config/virtual-models",
 		"GET /v0/management/routing-simulation",
 		"GET /v0/management/routing/strategy",
 		"GET /v0/management/system-stats",
@@ -609,6 +610,7 @@ func expectedManagementRoutes() []string {
 		"PUT /v0/management/request-log-storage/store-content",
 		"PUT /v0/management/request-retry",
 		"PUT /v0/management/routing-config",
+		"PUT /v0/management/routing-config/virtual-models",
 		"PUT /v0/management/routing/strategy",
 		"PUT /v0/management/usage-statistics-enabled",
 		"PUT /v0/management/vertex-api-key",

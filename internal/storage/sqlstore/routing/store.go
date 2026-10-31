@@ -55,7 +55,7 @@ func normalize(input config.RoutingConfig) config.RoutingConfig {
 }
 
 func meaningful(cfg config.RoutingConfig) bool {
-	return cfg.Strategy != "" || !cfg.IncludeDefaultGroup || len(cfg.ChannelGroups) > 0 || len(cfg.PathRoutes) > 0
+	return cfg.Strategy != "" || !cfg.IncludeDefaultGroup || len(cfg.ChannelGroups) > 0 || len(cfg.PathRoutes) > 0 || len(cfg.VirtualModels) > 0
 }
 
 func (s Store) Get() *config.RoutingConfig {

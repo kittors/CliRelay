@@ -27,11 +27,38 @@ func (h *BaseAPIHandler) ExecuteStreamWithAuthManager(ctx context.Context, handl
 // Errors returned directly from this method happen before any downstream stream
 // bytes are written, so HTTP handlers can still return a normal JSON error.
 func (h *BaseAPIHandler) StartStreamWithAuthManager(ctx context.Context, handlerType, modelName string, rawJSON []byte, alt string) (<-chan []byte, http.Header, <-chan *StreamErrorMessage, *StreamErrorMessage) {
-	providers, normalizedModel, errMsg := h.getRequestDetails(ctx, modelName)
-	if errMsg != nil {
+	ctx, waits := h.startStreamWaits(ctx, alt)
+	if plan := virtualModelPlanFor(ctx, modelName); plan != nil {
+		return h.startVirtualModelStream(ctx, waits, plan, handlerType, rawJSON, alt)
+	}
+	stream, errMsg := h.beginStream(ctx, handlerType, modelName, rawJSON, alt)
+	if committed := waits.handOver(); errMsg != nil {
+		if committed {
+			return failedAfterCommit(errMsg)
+		}
 		return nil, nil, nil, errMsg
 	}
-	reqMeta := requestExecutionMetadata(ctx)
+	dataChan, upstreamHeaders, errChan := h.forwardStream(handlerType, stream, nil)
+	return dataChan, upstreamHeaders, errChan, nil
+}
+
+// startedStream is a stream the scheduler handed over: the context it runs
+// under, and what a bootstrap retry needs to start it again.
+type startedStream struct {
+	ctx    context.Context
+	result *coreexecutor.StreamResult
+	retry  *streamRetryState
+}
+
+// beginStream asks the scheduler for a stream of modelName. ctx carries the
+// waits of startStreamWaits; once they are handed over (a virtual model's next
+// member, started from the forwarding goroutine) the scheduler waits silently.
+func (h *BaseAPIHandler) beginStream(ctx context.Context, handlerType, modelName string, rawJSON []byte, alt string) (*startedStream, *StreamErrorMessage) {
+	providers, normalizedModel, errMsg := h.getRequestDetails(ctx, modelName)
+	if errMsg != nil {
+		return nil, errMsg
+	}
+	reqMeta := executionMetadata(ctx)
 	reqMeta[coreexecutor.RequestedModelMetadataKey] = normalizedModel
 	payload := rawJSON
 	if len(payload) == 0 {
@@ -48,9 +75,7 @@ func (h *BaseAPIHandler) StartStreamWithAuthManager(ctx context.Context, handler
 		SourceFormat:    sdktranslator.FromString(handlerType),
 	}
 	opts.Metadata = reqMeta
-	ctx, waits := h.startStreamWaits(ctx, alt)
 	streamResult, err := h.AuthManager.ExecuteStream(ctx, providers, req, opts)
-	committed := waits.handOver()
 	if err != nil {
 		status := http.StatusInternalServerError
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
@@ -66,45 +91,59 @@ func (h *BaseAPIHandler) StartStreamWithAuthManager(ctx context.Context, handler
 				addon = hdr.Clone()
 			}
 		}
-		if committed {
-			return failedAfterCommit(&StreamErrorMessage{StatusCode: status, Error: err, Addon: addon})
-		}
-		return nil, nil, nil, &StreamErrorMessage{StatusCode: status, Error: err, Addon: addon}
+		return nil, &StreamErrorMessage{StatusCode: status, Error: err, Addon: addon}
 	}
+	return &startedStream{
+		ctx:    ctx,
+		result: streamResult,
+		retry:  &streamRetryState{providers: providers, req: req, opts: opts},
+	}, nil
+}
+
+// forwardStream hands a started stream to a goroutine that forwards it to the
+// protocol handler, retrying on another account while nothing has reached the
+// client. next, when set, moves a virtual model on to its next member once
+// those retries are used up.
+func (h *BaseAPIHandler) forwardStream(handlerType string, stream *startedStream, next streamNextMember) (<-chan []byte, http.Header, <-chan *StreamErrorMessage) {
 	passthroughHeadersEnabled := PassthroughHeadersEnabled(h.Cfg)
 	// Capture upstream headers from the initial connection synchronously before the goroutine starts.
 	// Keep a mutable map so bootstrap retries can replace it before first payload is sent.
 	var upstreamHeaders http.Header
 	if passthroughHeadersEnabled {
-		upstreamHeaders = cloneHeader(FilterUpstreamHeaders(streamResult.Headers))
+		upstreamHeaders = cloneHeader(FilterUpstreamHeaders(stream.result.Headers))
 		if upstreamHeaders == nil {
 			upstreamHeaders = make(http.Header)
 		}
 	}
-	chunks := streamResult.Chunks
+	chunks := stream.result.Chunks
 	dataChan := make(chan []byte)
 	errChan := make(chan *StreamErrorMessage, 1)
-	// Capture retry budget before the goroutine so the no-retry path does not close
-	// over req/opts (those hold multi-MB inbound bodies for the whole SSE lifetime).
 	maxBootstrapRetries := StreamingBootstrapRetries(h.Cfg)
-	if maxBootstrapRetries <= 0 {
-		go forwardStreamWithoutBootstrapRetry(ctx, handlerType, chunks, dataChan, errChan)
+	if maxBootstrapRetries <= 0 && next == nil {
+		// The no-retry path does not close over the request (see streamRetryState).
+		go forwardStreamWithoutBootstrapRetry(stream.ctx, handlerType, chunks, dataChan, errChan)
 	} else {
 		go forwardStreamWithBootstrapRetry(
-			ctx,
+			stream.ctx,
 			handlerType,
-			&streamRetryState{providers: providers, req: req, opts: opts},
+			stream.retry,
 			passthroughHeadersEnabled,
 			upstreamHeaders,
 			chunks,
 			dataChan,
 			errChan,
-			maxBootstrapRetries,
-			newStreamFailover(h, streamResult),
+			max(maxBootstrapRetries, 0),
+			newStreamFailover(h, stream.result),
+			next,
 		)
 	}
-	return dataChan, upstreamHeaders, errChan, nil
+	return dataChan, upstreamHeaders, errChan
 }
+
+// streamNextMember starts the next member of a virtual model after cause ended
+// the current one before its first byte. It returns the member's stream, or
+// the error to report when no member is left to take over.
+type streamNextMember func(cause error) (*startedStream, *StreamErrorMessage)
 
 // streamRetryState is what a bootstrap retry needs to start the request again.
 // req and opts carry the inbound body (several MB for a large prompt) twice
@@ -161,6 +200,7 @@ func forwardStreamWithBootstrapRetry(
 	errChan chan<- *StreamErrorMessage,
 	maxBootstrapRetries int,
 	failover *streamFailover,
+	next streamNextMember,
 ) {
 	defer close(dataChan)
 	defer close(errChan)
@@ -191,6 +231,22 @@ outer:
 					}
 					streamErr = retryErr
 				}
+				// A virtual model turns to its next member while nothing has
+				// reached the client; that member gets its own retries.
+				if !sentPayload && next != nil {
+					member, msg := next(streamErr)
+					if member == nil {
+						_ = sendStreamErr(ctx, errChan, msg)
+						return
+					}
+					if passthroughHeadersEnabled {
+						replaceHeader(upstreamHeaders, FilterUpstreamHeaders(member.result.Headers))
+					}
+					ctx, retry, chunks = member.ctx, member.retry, member.result.Chunks
+					failover = newStreamFailover(failover.h, member.result)
+					bootstrapRetries = 0
+					continue outer
+				}
 				_ = sendStreamErr(ctx, errChan, streamErrorMessageFromErr(streamErr))
 				return
 			}
@@ -206,7 +262,7 @@ outer:
 			sentPayload = true
 			// Past the first byte there is no retry, so nothing needs the request
 			// any more (see streamRetryState).
-			retry = nil
+			retry, next = nil, nil
 			if !sendStreamData(ctx, dataChan, cloneBytes(chunk.Payload)) {
 				return
 			}

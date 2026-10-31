@@ -154,10 +154,23 @@ func (s *Server) unifiedModelsHandler(openaiHandler *openai.OpenAIAPIHandler, cl
 				}
 			}
 			resp.Data = filtered
-
-			if routeCtx != nil && routeCtx.CcSwitch != nil {
-				resp.Data = filterModelsForCcSwitchRoute(resp.Data, routeCtx)
-			}
+		}
+		// Virtual models are listed by their own rules (listVirtualModels); the
+		// channel-group editor only picks real models.
+		if !ignoreGroupAllowedModels {
+			resp.Data = appendVirtualModelEntries(resp.Data, s.listVirtualModels(virtualModelListing{
+				scope: virtualModelScope{
+					tenantID:      tenantID,
+					routeGroup:    internalrouting.NormalizeGroupName(routeGroup),
+					allowedGroups: allowedChannelGroups,
+				},
+				allowedModels:   allowedModels,
+				allowedChannels: allowedChannels,
+				claude:          strings.HasPrefix(userAgent, "claude-cli"),
+			}))
+		}
+		if needsScopeFilter && routeCtx != nil && routeCtx.CcSwitch != nil {
+			resp.Data = filterModelsForCcSwitchRoute(resp.Data, routeCtx)
 		}
 
 		// Models switched off in the catalog leave the listing for every caller,
