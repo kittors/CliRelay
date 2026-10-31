@@ -30,7 +30,7 @@ func ExtractModerationInput(format sdktranslator.Format, payload []byte) Input {
 // can rewrite it in place. The classification and the order are the same by
 // construction: it is one walk.
 func extractWordUnits(format sdktranslator.Format, payload []byte) []wordUnit {
-	x := &extraction{locate: true, payload: payload}
+	x := &extraction{locate: true, doc: &wordDoc{data: payload, located: true}}
 	if !x.run(format, payload) {
 		return nil
 	}
@@ -70,15 +70,13 @@ type extraction struct {
 	turn     int
 	// claudeReminders reclassifies Claude Code's <system-reminder> blocks; see add.
 	claudeReminders bool
-	// locate makes the walk also record wordUnits. payload is the document the
-	// gjson results index into, which a unit's position is checked against.
-	locate  bool
-	payload []byte
-	units   []wordUnit
-	// nested is above zero while reading JSON that was found inside a string
-	// (tool-call arguments): its offsets belong to the decoded string, not to
-	// the payload, so its text can be matched but not rewritten.
-	nested int
+	// locate makes the walk also record wordUnits. doc is the document the gjson
+	// results index into, which a unit's position is checked against: the request,
+	// or while the arguments of a tool call are read, the JSON inside the string
+	// that holds them.
+	locate bool
+	doc    *wordDoc
+	units  []wordUnit
 	// signed is set while reading text a signature covers (see wordUnit.signed).
 	signed bool
 }
@@ -115,8 +113,15 @@ func (x *extraction) addValue(class Class, user bool, value gjson.Result) {
 	text := stringValue(value)
 	x.add(class, user, text)
 	if x.locate {
-		x.recordUnit(class, user, text, value, unitText)
+		x.recordUnit(class, user, text, value, gjson.Result{}, unitText)
 	}
+}
+
+// addSigned is addValue for text a signature covers (see wordUnit.signed).
+func (x *extraction) addSigned(class Class, user bool, value gjson.Result) {
+	x.signed = true
+	x.addValue(class, user, value)
+	x.signed = false
 }
 
 // roleClass maps a message role onto a class. Roles that are neither caller
@@ -269,7 +274,13 @@ func (x *extraction) gemini(root gjson.Result) {
 
 func (x *extraction) geminiParts(content gjson.Result, class Class, user bool) {
 	for _, part := range arrayItems(content.Get("parts")) {
-		x.addValue(class, user, part.Get("text"))
+		if part.Get("thought").Bool() {
+			// A thought summary comes with a thought signature that Gemini checks
+			// when the conversation is sent back: read, not rewritten.
+			x.addSigned(class, user, part.Get("text"))
+		} else {
+			x.addValue(class, user, part.Get("text"))
+		}
 		if response := firstField(part, "functionResponse", "function_response"); response.Exists() {
 			// Arbitrary JSON the model reads serialized, keys included.
 			x.jsonText(response.Get("response"), ClassToolOutput)
@@ -331,7 +342,9 @@ func (x *extraction) block(block gjson.Result, class Class, user bool) {
 	case "refusal":
 		x.addValue(class, user, block.Get("refusal"))
 	case "thinking":
-		x.addValue(ClassAssistantHistory, false, block.Get("thinking"))
+		// The block carries a signature over this text, which the API checks when
+		// the conversation is sent back: it is read, but not rewritten.
+		x.addSigned(ClassAssistantHistory, false, block.Get("thinking"))
 	case "tool_use", "server_tool_use", "mcp_tool_use":
 		x.jsonText(block.Get("input"), ClassAssistantHistory)
 	case "tool_result":
@@ -377,11 +390,15 @@ func (x *extraction) arguments(value gjson.Result, class Class) {
 	}
 	raw := value.String()
 	if decoded := gjson.Parse(raw); gjson.Valid(raw) && (decoded.IsObject() || decoded.IsArray()) {
-		// The decoded document is a different text from the payload, so its
-		// offsets mean nothing there: its words are matched, not rewritten.
-		x.nested++
+		// The decoded document is a different text from the request, so its
+		// offsets mean nothing there: its words are read as a document of their own
+		// (see wordDoc), which is written back into this string when they change.
+		outer := x.doc
+		if x.locate {
+			x.doc = nestedDoc(outer, value, raw)
+		}
 		x.jsonText(decoded, class)
-		x.nested--
+		x.doc = outer
 		return
 	}
 	x.addValue(class, false, value)
@@ -396,19 +413,22 @@ const maxJSONTextDepth = 64
 // so a key is as visible to it as a value.
 func (x *extraction) jsonText(value gjson.Result, class Class) {
 	var b strings.Builder
-	walkJSONText(value, 0, false, func(text string, at gjson.Result, kind jsonTextKind) {
+	walkJSONText(value, 0, false, func(text string, at gjson.Result, kind jsonTextKind, owner gjson.Result) {
 		b.WriteString(text)
 		b.WriteByte(' ')
 		if !x.locate || kind == jsonTextProtocol {
 			return
 		}
 		unit := unitText
-		if kind != jsonTextValue {
-			// A key or a whole deep subtree: matched, but changing it would change
-			// the structure of the document, not just its words.
+		switch kind {
+		case jsonTextKey:
+			unit = unitKey
+		case jsonTextRaw:
+			// A whole deep subtree: matched, but changing it would change the
+			// structure of the document, not just its words.
 			unit = unitOpaque
 		}
-		x.recordUnit(class, false, text, at, unit)
+		x.recordUnit(class, false, text, at, owner, unit)
 	})
 	x.add(class, false, b.String())
 }
@@ -430,8 +450,9 @@ const (
 )
 
 // walkJSONText visits the text in a JSON value in document order. at is the
-// JSON value the text was read from (the key itself for a key).
-func walkJSONText(value gjson.Result, depth int, protocol bool, visit func(text string, at gjson.Result, kind jsonTextKind)) {
+// JSON value the text was read from (the key itself for a key, and then owner
+// is the object the key belongs to).
+func walkJSONText(value gjson.Result, depth int, protocol bool, visit func(text string, at gjson.Result, kind jsonTextKind, owner gjson.Result)) {
 	switch {
 	case value.Type == gjson.String:
 		text := value.String()
@@ -440,13 +461,13 @@ func walkJSONText(value gjson.Result, depth int, protocol bool, visit func(text 
 			return
 		}
 		if protocol {
-			visit(text, value, jsonTextProtocol)
+			visit(text, value, jsonTextProtocol, gjson.Result{})
 			return
 		}
-		visit(text, value, jsonTextValue)
+		visit(text, value, jsonTextValue, gjson.Result{})
 	case value.IsArray() || value.IsObject():
 		if depth >= maxJSONTextDepth {
-			visit(value.Raw, value, jsonTextRaw)
+			visit(value.Raw, value, jsonTextRaw, gjson.Result{})
 			return
 		}
 		if value.IsObject() && binaryBlockTypes[normalizedField(value, "type")] {
@@ -459,7 +480,7 @@ func walkJSONText(value gjson.Result, depth int, protocol bool, visit func(text 
 				if name == "signature" || name == "encrypted_content" {
 					return true
 				}
-				visit(name, key, jsonTextKey)
+				visit(name, key, jsonTextKey, value)
 				underProtocolKey = protocolKeys[name]
 			}
 			walkJSONText(item, depth+1, protocol || underProtocolKey, visit)

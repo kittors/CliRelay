@@ -16,6 +16,9 @@ func describeUnits(units []wordUnit) []string {
 		if u.rewritable {
 			flag = "w"
 		}
+		if u.signed {
+			flag += "S"
+		}
 		user := "s"
 		if u.user {
 			user = "u"
@@ -31,9 +34,15 @@ func checkLiterals(t *testing.T, payload []byte, units []wordUnit) {
 		if !u.rewritable {
 			continue
 		}
-		got, ok := decodeJSONLiteral(payload[u.lit0:u.lit1])
+		// A unit in a document of its own (a tool call's arguments) is checked in
+		// that document.
+		data := u.doc.data
+		if u.doc.parent == nil && string(data) != string(payload) {
+			t.Fatalf("unit %q: the request document is not the payload", u.text)
+		}
+		got, ok := decodeJSONLiteral(data[u.lit0:u.lit1])
 		if !ok || got != u.text {
-			t.Fatalf("unit %q: literal %s decodes to %q", u.text, payload[u.lit0:u.lit1], got)
+			t.Fatalf("unit %q: literal %s decodes to %q", u.text, data[u.lit0:u.lit1], got)
 		}
 	}
 }
@@ -56,7 +65,7 @@ func TestExtractWordUnitsByProtocol(t *testing.T) {
 				{"role":"user","content":[{"type":"text","text":"look"},{"type":"image_url","image_url":{"url":"data:image/png;base64,AAAA"}},{"type":"text","text":"at this"}]}
 			]}`,
 			want: []string{
-				"Ps1w:be nice", "Pu2w:hello 你好", "As3w:hi there", "As3-:city", "As3-:Paris", "Ts4w:result text", "Pu5w:look", "Pu5w:at this",
+				"Ps1w:be nice", "Pu2w:hello 你好", "As3w:hi there", "As3w:city", "As3w:Paris", "Ts4w:result text", "Pu5w:look", "Pu5w:at this",
 			},
 		},
 		{
@@ -68,7 +77,7 @@ func TestExtractWordUnitsByProtocol(t *testing.T) {
 				{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"found cats"},{"type":"text","text":"<system-reminder>be careful</system-reminder>"},{"type":"text","text":"thanks"}]}
 			]}`,
 			want: []string{
-				"Ps0w:sys one", "Pu1w:first", "As2w:hmm", "As2w:answer", "As2-:q", "As2w:cats", "As2-:opts", "As2-:deep", "As2w:yes",
+				"Ps0w:sys one", "Pu1w:first", "As2wS:hmm", "As2w:answer", "As2w:q", "As2w:cats", "As2w:opts", "As2w:deep", "As2w:yes",
 				"Ts3w:found cats", "Ts3w:<system-reminder>be careful</system-reminder>", "Pu3w:thanks",
 			},
 		},
@@ -81,7 +90,7 @@ func TestExtractWordUnitsByProtocol(t *testing.T) {
 				{"type":"function_call_output","call_id":"c1","output":"the output"}
 			]}`,
 			want: []string{
-				"Ps0w:follow the rules", "Pu1w:question", "As2-:k", "As2-:v", "As2w:lookup", "Ts3w:the output",
+				"Ps0w:follow the rules", "Pu1w:question", "As2w:k", "As2w:v", "As2w:lookup", "Ts3w:the output",
 			},
 		},
 		{
@@ -93,7 +102,7 @@ func TestExtractWordUnitsByProtocol(t *testing.T) {
 				{"role":"user","parts":[{"functionResponse":{"name":"f","response":{"r":"value"}}},{"text":"more"}]}
 			]}`,
 			want: []string{
-				"Ps0w:system text", "Pu1w:ask", "As2w:reply", "As2-:a", "As2w:b", "Ts3-:r", "Ts3w:value", "Pu3w:more",
+				"Ps0w:system text", "Pu1w:ask", "As2w:reply", "As2w:a", "As2w:b", "Ts3w:r", "Ts3w:value", "Pu3w:more",
 			},
 		},
 		{
@@ -108,8 +117,8 @@ func TestExtractWordUnitsByProtocol(t *testing.T) {
 			payload := []byte(tt.payload)
 			units := extractWordUnits(tt.format, payload)
 			got := describeUnits(units)
-			// The nested and key entries are matched but never rewritten, and the
-			// order of keys and values is the order of the document.
+			// Keys and the JSON inside a tool call's arguments are units like any
+			// other, and the order of keys and values is the order of the document.
 			if fmt.Sprint(got) != fmt.Sprint(tt.want) {
 				t.Fatalf("units:\n got  %q\n want %q", got, tt.want)
 			}
@@ -148,9 +157,9 @@ func TestExtractWordUnitsSkipsProtocolValuesAndSignatures(t *testing.T) {
 	payload := []byte(`{"messages":[{"role":"assistant","content":[{"type":"mystery","id":"id-1","status":"done","signature":"SIG","encrypted_content":"ENC","note":"visible"}]}]}`)
 	units := extractWordUnits(sdktranslator.FormatClaude, payload)
 	got := describeUnits(units)
-	// Keys are matched; "id-1", "done" and the type tag are identifiers, and the
+	// Keys are read; "id-1", "done" and the type tag are identifiers, and the
 	// signature and encrypted blob are opaque: none of them is text.
-	want := []string{"As1-:type", "As1-:id", "As1-:status", "As1-:note", "As1w:visible"}
+	want := []string{"As1w:type", "As1w:id", "As1w:status", "As1w:note", "As1w:visible"}
 	if fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("units = %q, want %q", got, want)
 	}
@@ -238,7 +247,7 @@ func TestRecordUnitDistrustsAWrongIndex(t *testing.T) {
 	// A unit whose position does not hold its text is matched but never
 	// rewritten.
 	payload := []byte(`{"messages":[{"role":"user","content":"hello"}]}`)
-	x := &extraction{locate: true, payload: []byte(`{"messages":[{"role":"user","content":"HELLO"}]}`)}
+	x := &extraction{locate: true, doc: &wordDoc{data: []byte(`{"messages":[{"role":"user","content":"HELLO"}]}`), located: true}}
 	x.run(sdktranslator.FormatOpenAI, payload)
 	if len(x.units) != 1 || x.units[0].rewritable {
 		t.Fatalf("units = %+v: the bytes at the index differ, so it must not be rewritable", x.units)

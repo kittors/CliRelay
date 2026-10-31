@@ -360,24 +360,34 @@ func TestWordGuardFoldIsPerContext(t *testing.T) {
 }
 
 func TestWordGuardUnrewritableHitsFailClosed(t *testing.T) {
+	deep := strings.Repeat(`{"a":`, maxJSONTextDepth+6) + `"a bad word"` + strings.Repeat(`}`, maxJSONTextDepth+6)
 	tests := []struct {
 		name    string
 		format  sdktranslator.Format
 		payload string
-		scope   string
+		field   string
+		why     string
 	}{
-		{"object key", sdktranslator.FormatClaude, `{"messages":[{"role":"assistant","content":[{"type":"tool_use","id":"t","name":"n","input":{"bad":1}}]}]}`, WordScanWithTools},
-		{"arguments encoded in a string", sdktranslator.FormatOpenAI, `{"messages":[{"role":"assistant","content":"x","tool_calls":[{"id":"c","type":"function","function":{"name":"f","arguments":"{\"q\":\"a bad word\"}"}}]}]}`, WordScanWithTools},
+		{"text that is not UTF-8", sdktranslator.FormatOpenAI, "{\"messages\":[{\"role\":\"user\",\"content\":\"a \xff bad\"}]}", "messages[0].content", whyInvalid},
+		{"nested too deeply", sdktranslator.FormatClaude, `{"messages":[{"role":"assistant","content":[{"type":"tool_use","id":"t","name":"n","input":` + deep + `}]}]}`, "messages[0].content[0].input" + strings.Repeat(".a", maxJSONTextDepth), whyTooDeep},
+		{"in arguments that are not UTF-8", sdktranslator.FormatOpenAI, "{\"messages\":[{\"role\":\"assistant\",\"content\":\"x\",\"tool_calls\":[{\"function\":{\"arguments\":\"{\\\"q\\\":\\\"\xff bad\\\"}\"}}]}]}", "messages[0].tool_calls[0].function.arguments.q", whyInvalid},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			tenant := policyOf(t, WordScopeTenant, "", func(p *WordPolicy) { p.Action = WordActionReplace; p.ScanScope = tt.scope }, kw("bad"))
+			tenant := policyOf(t, WordScopeTenant, "", func(p *WordPolicy) { p.Action = WordActionReplace; p.ScanScope = WordScanWithTools }, kw("bad"))
 			verdict := evalOne(t, tt.format, tt.payload, buildWordContexts(nil, tenant, nil))
 			if !verdict.Blocked || verdict.Reason != WordReasonUnrewritable || verdict.Payload != nil {
 				t.Fatalf("verdict = %+v", verdict)
 			}
+			// The client is told where, and why, and the policy's own words stay out of it.
+			if verdict.Field != tt.field {
+				t.Fatalf("field = %q, want %q", verdict.Field, tt.field)
+			}
+			if !strings.Contains(verdict.BlockMessage, tt.field) || !strings.Contains(verdict.BlockMessage, tt.why) || !strings.HasPrefix(verdict.BlockMessage, DefaultBlockMessage) {
+				t.Fatalf("block message = %q", verdict.BlockMessage)
+			}
 			// The same hit is only logged when the action says log: nothing to rewrite.
-			logTenant := policyOf(t, WordScopeTenant, "", func(p *WordPolicy) { p.Action = WordActionLog; p.ScanScope = tt.scope }, kw("bad"))
+			logTenant := policyOf(t, WordScopeTenant, "", func(p *WordPolicy) { p.Action = WordActionLog; p.ScanScope = WordScanWithTools }, kw("bad"))
 			if v := evalOne(t, tt.format, tt.payload, buildWordContexts(nil, logTenant, nil)); v.Blocked || v.MatchCount != 1 {
 				t.Fatalf("log verdict = %+v", v)
 			}

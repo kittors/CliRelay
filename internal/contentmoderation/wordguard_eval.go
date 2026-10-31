@@ -1,12 +1,10 @@
 package contentmoderation
 
 import (
-	"sort"
 	"time"
 	"unicode/utf16"
 
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v6/sdk/translator"
-	"github.com/tidwall/gjson"
 )
 
 // What the word guard did to a request, as the request log and the panel's test
@@ -110,21 +108,21 @@ type wordUnitHit struct {
 // action, rewrites it. payload is the request body in the layout of format.
 func evaluateWords(format sdktranslator.Format, payload []byte, contexts []wordContext, options wordEvalOptions) WordVerdict {
 	started := time.Now()
-	verdict := evaluateWordsUnits(extractWordUnits(format, payload), payload, contexts, options)
+	verdict := evaluateWordsUnits(extractWordUnits(format, payload), contexts, options)
 	verdict.LatencyMS = time.Since(started).Milliseconds()
 	return verdict
 }
 
-func evaluateWordsUnits(units []wordUnit, payload []byte, contexts []wordContext, options wordEvalOptions) WordVerdict {
+func evaluateWordsUnits(units []wordUnit, contexts []wordContext, options wordEvalOptions) WordVerdict {
 	if options.budget == nil {
 		options.budget = newRegexBudget()
 	}
-	verdict := scanWordUnits(units, payload, contexts, options)
+	verdict := scanWordUnits(units, contexts, options)
 	verdict.RegexSkipped = options.budget.wasExceeded()
 	return verdict
 }
 
-func scanWordUnits(units []wordUnit, payload []byte, contexts []wordContext, options wordEvalOptions) WordVerdict {
+func scanWordUnits(units []wordUnit, contexts []wordContext, options wordEvalOptions) WordVerdict {
 	verdict := WordVerdict{Action: WordVerdictAllow, Matches: []WordMatch{}}
 	if len(units) == 0 || len(contexts) == 0 {
 		return verdict
@@ -167,7 +165,8 @@ func scanWordUnits(units []wordUnit, payload []byte, contexts []wordContext, opt
 			for _, hit := range found {
 				hits = append(hits, wordUnitHit{context: ci, unit: ui, hit: hit})
 			}
-			if len(found) > 0 && context.action == WordActionReplace {
+			if len(found) > 0 && context.action == WordActionReplace && !units[ui].signed {
+				// A signed text is only recorded: see wordUnit.signed.
 				replaceHits[ui] = append(replaceHits[ui], replaceTarget{context: ci, hits: found})
 			}
 			if len(found) > 0 && context.action == WordActionBlock {
@@ -187,10 +186,10 @@ func scanWordUnits(units []wordUnit, payload []byte, contexts []wordContext, opt
 		verdict.Action = WordVerdictReplace
 	}
 	if verdict.Action == WordVerdictReplace {
-		rewritten, replaced, reason := rewriteWordUnits(units, payload, contexts, replaceHits, normalizedText)
-		if reason != "" {
-			verdict.Action, verdict.Blocked, verdict.Reason = WordVerdictBlock, true, reason
-			verdict.BlockMessage = firstReplaceContext(contexts).blockMessage
+		rewritten, replaced, failure := rewriteWordUnits(units, contexts, replaceHits, normalizedText)
+		if failure != nil {
+			verdict.Action, verdict.Blocked, verdict.Reason, verdict.Field = WordVerdictBlock, true, failure.reason, failure.field
+			verdict.BlockMessage = unrewritableMessage(firstReplaceContext(contexts).blockMessage, failure)
 		} else {
 			verdict.Payload, verdict.Replaced = rewritten, replaced
 		}
@@ -222,12 +221,17 @@ func describeWordHits(units []wordUnit, contexts []wordContext, hits []wordUnitH
 		}
 		context := contexts[h.context]
 		rule := context.matcher.rules[h.hit.rule]
+		action := context.action
+		if action == WordActionReplace && units[h.unit].signed {
+			// Found, and recorded, but left as it is.
+			action = WordActionLog
+		}
 		match := WordMatch{
 			Layer:   rule.Layer,
 			RuleID:  rule.ID,
 			Kind:    rule.Kind,
 			Pattern: rule.Pattern,
-			Action:  context.action,
+			Action:  action,
 			Source:  units[h.unit].class.String(),
 			Unit:    h.unit,
 		}
@@ -266,158 +270,4 @@ func utf16Offset(text string, offset int) int {
 		}
 	}
 	return count
-}
-
-// replacement is a span of a unit's text to be replaced.
-type replacement struct {
-	start, end int
-	text       string
-	// order ranks contexts, so that where spans overlap the platform's
-	// replacement text wins.
-	order int
-}
-
-// rewriteWordUnits applies the replace action: for every unit that has a hit,
-// it maps the hits back onto the text as written and splices the replacement
-// into the unit's string literal. The result is the whole request body, byte
-// for byte as it was outside those literals. A non-empty reason means the
-// request could not be rewritten safely.
-func rewriteWordUnits(units []wordUnit, payload []byte, contexts []wordContext, wanted map[int][]replaceTarget, normalizedText func(int, bool) string) ([]byte, int, string) {
-	type patch struct {
-		lit0, lit1 int
-		literal    []byte
-	}
-	// Units that share a literal (the same string reached twice) are rewritten
-	// once, with the hits of all of them.
-	byLiteral := make(map[int][]int)
-	var literals []int
-	for ui := range units {
-		if len(wanted[ui]) == 0 {
-			continue
-		}
-		unit := units[ui]
-		if !unit.rewritable {
-			return nil, 0, WordReasonUnrewritable
-		}
-		if _, seen := byLiteral[unit.lit0]; !seen {
-			literals = append(literals, unit.lit0)
-		}
-		byLiteral[unit.lit0] = append(byLiteral[unit.lit0], ui)
-	}
-	sort.Ints(literals)
-	patches := make([]patch, 0, len(literals))
-	replaced := 0
-	for _, lit0 := range literals {
-		first := units[byLiteral[lit0][0]]
-		lit := payload[first.lit0:first.lit1]
-		// The extractor read this text through gjson; the splice reads the raw
-		// bytes. They must agree on what the string says, or offsets would not.
-		if text, ok := decodeJSONLiteral(lit); !ok || text != first.text {
-			return nil, 0, WordReasonUnrewritable
-		}
-		var spans []replacement
-		for _, ui := range byLiteral[lit0] {
-			found, reason := replacementsForUnit(units[ui], ui, wanted[ui], contexts, normalizedText)
-			if reason != "" {
-				return nil, 0, reason
-			}
-			spans = append(spans, found...)
-		}
-		edits := mergeReplacements(spans)
-		if len(edits) == 0 {
-			return nil, 0, WordReasonUnrewritable
-		}
-		literal, ok := spliceLiteral(lit, edits)
-		if !ok {
-			return nil, 0, WordReasonUnrewritable
-		}
-		replaced += len(edits)
-		patches = append(patches, patch{lit0: first.lit0, lit1: first.lit1, literal: literal})
-	}
-	out := make([]byte, 0, len(payload)+64)
-	cursor := 0
-	for _, p := range patches {
-		if p.lit0 < cursor {
-			return nil, 0, WordReasonRewriteInvalid
-		}
-		out = append(out, payload[cursor:p.lit0]...)
-		out = append(out, p.literal...)
-		cursor = p.lit1
-	}
-	out = append(out, payload[cursor:]...)
-	if !gjson.ValidBytes(out) {
-		return nil, 0, WordReasonRewriteInvalid
-	}
-	return out, replaced, ""
-}
-
-// replaceTarget is what one replace context found in one unit.
-type replaceTarget struct {
-	context int
-	// hits are byte ranges of the unit's normalized text.
-	hits []wordHit
-}
-
-// replacementsForUnit maps the hits of the replace contexts that hit the unit
-// back onto the text as written.
-func replacementsForUnit(unit wordUnit, ui int, targets []replaceTarget, contexts []wordContext, normalizedText func(int, bool) string) ([]replacement, string) {
-	var out []replacement
-	mappedByFold := make(map[bool]foldedText)
-	for _, target := range targets {
-		context := contexts[target.context]
-		mapped, ok := mappedByFold[context.fold]
-		if !ok {
-			mapped = normalizeMapped(unit.text, context.fold)
-			mappedByFold[context.fold] = mapped
-		}
-		// The hits are offsets into the normalized text. The mapped text is the
-		// same string by construction; if it ever is not, the offsets mean
-		// nothing in it and the request is not rewritten on a guess. A text that
-		// is not valid UTF-8 cannot be traced back at all.
-		if !mapped.exact || mapped.text != normalizedText(ui, context.fold) {
-			return nil, WordReasonUnrewritable
-		}
-		spans := make([]textSpan, 0, len(target.hits))
-		for _, hit := range target.hits {
-			spans = append(spans, textSpan{start: hit.start, end: hit.end})
-		}
-		original, ok := mapped.originalSpans(spans)
-		if !ok {
-			return nil, WordReasonUnrewritable
-		}
-		for _, span := range original {
-			out = append(out, replacement{start: span.start, end: span.end, text: context.replacement, order: target.context})
-		}
-	}
-	return out, ""
-}
-
-// mergeReplacements orders spans and joins the ones that overlap or touch the
-// same character. Where they overlap, the replacement of the span that begins
-// first (the platform's, on a tie) is used.
-func mergeReplacements(spans []replacement) []literalEdit {
-	if len(spans) == 0 {
-		return nil
-	}
-	sort.SliceStable(spans, func(i, j int) bool {
-		if spans[i].start != spans[j].start {
-			return spans[i].start < spans[j].start
-		}
-		if spans[i].order != spans[j].order {
-			return spans[i].order < spans[j].order
-		}
-		return spans[i].end > spans[j].end
-	})
-	edits := []literalEdit{{start: spans[0].start, end: spans[0].end, text: spans[0].text}}
-	for _, span := range spans[1:] {
-		last := &edits[len(edits)-1]
-		if span.start < last.end {
-			if span.end > last.end {
-				last.end = span.end
-			}
-			continue
-		}
-		edits = append(edits, literalEdit{start: span.start, end: span.end, text: span.text})
-	}
-	return edits
 }
