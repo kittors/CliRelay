@@ -39,8 +39,9 @@ func TestGetRoutingConfigAdvertisesGroupExclusions(t *testing.T) {
 			ExcludedModels []string `json:"excluded-models"`
 		} `json:"channel-groups"`
 		Capabilities struct {
-			ChannelGroupExcludedModels       bool `json:"channel-group-excluded-models"`
-			ChannelGroupFollowUpstreamModels bool `json:"channel-group-follow-upstream-models"`
+			ChannelGroupExcludedModels         bool `json:"channel-group-excluded-models"`
+			ChannelGroupFollowUpstreamModels   bool `json:"channel-group-follow-upstream-models"`
+			ChannelGroupResetAwareDistribution bool `json:"channel-group-distribution-reset-aware"`
 		} `json:"capabilities"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
@@ -52,6 +53,10 @@ func TestGetRoutingConfigAdvertisesGroupExclusions(t *testing.T) {
 	// Same reasoning for follow-upstream-models: an older backend drops it.
 	if !body.Capabilities.ChannelGroupFollowUpstreamModels {
 		t.Fatalf("follow-upstream-models not advertised: %s", w.Body.String())
+	}
+	// An older backend reads reset-aware as weighted without saying so.
+	if !body.Capabilities.ChannelGroupResetAwareDistribution {
+		t.Fatalf("reset-aware distribution not advertised: %s", w.Body.String())
 	}
 	// The config itself must stay at the top level, where every existing
 	// client reads it.

@@ -18,6 +18,36 @@ type QuotaLoadSource interface {
 	QuotaLoadRatio(auth *Auth) (float64, bool)
 }
 
+// ModelQuotaLoadSource is a QuotaLoadSource that can also answer for one model.
+// Accounts carry windows that only some models draw from (Claude's Opus week,
+// Gemini's per-model buckets), so the account-wide ratio either ignores them or
+// lets one model's allowance shed traffic for every other model.
+type ModelQuotaLoadSource interface {
+	QuotaLoadRatioForModel(auth *Auth, model string) (float64, bool)
+}
+
+// QuotaWindow is one quota window of an account as scheduling reads it.
+type QuotaWindow struct {
+	// Key is the provider's name for the window, e.g. "code_week".
+	Key string
+	// Span is the window's length, zero when the provider does not say.
+	Span time.Duration
+	// Used is the share of the window already spent, in [0,1].
+	Used float64
+	// ResetAt is when the window renews, zero when unknown. A window that has
+	// not started yet, or has renewed since it was read, reports now+Span:
+	// sending the account traffic now is what starts it.
+	ResetAt time.Time
+}
+
+// QuotaWindowSource reports the windows of an account that limit requests for
+// model. The reset-aware distribution orders accounts by them. Like
+// QuotaLoadSource it runs on the selection hot path and must serve from a
+// cached snapshot; false means "no data".
+type QuotaWindowSource interface {
+	QuotaWindows(auth *Auth, model string) ([]QuotaWindow, bool)
+}
+
 const (
 	// selectionDecayHalfLife controls how fast recent-selection pressure fades.
 	// Five minutes is long enough to spread a burst of turns from one agent
@@ -118,8 +148,9 @@ func (t *selectionPressureTracker) evictIfNeededLocked(incoming string, now time
 // accountLoadRatio reports a candidate's overall load in [0,1], combining the
 // in-flight concurrency ratio with the quota ratio when a source is available.
 // The larger of the two wins: an account that is either saturated by concurrent
-// requests or near its quota ceiling should attract less new traffic.
-func accountLoadRatio(auth *Auth, limiter *AccountConcurrencyLimiter, quota QuotaLoadSource) float64 {
+// requests or near its quota ceiling should attract less new traffic. The quota
+// ratio counts the windows that limit model when the source can tell them apart.
+func accountLoadRatio(auth *Auth, model string, limiter *AccountConcurrencyLimiter, quota QuotaLoadSource) float64 {
 	if auth == nil {
 		return 0
 	}
@@ -128,7 +159,13 @@ func accountLoadRatio(auth *Auth, limiter *AccountConcurrencyLimiter, quota Quot
 		ratio = limiter.GetLoadRate(auth.ID, auth.ConcurrencyLimit())
 	}
 	if quota != nil {
-		if quotaRatio, ok := quota.QuotaLoadRatio(auth); ok && quotaRatio > ratio {
+		quotaRatio, ok := 0.0, false
+		if byModel, supports := quota.(ModelQuotaLoadSource); supports && canonicalModelKey(model) != "" {
+			quotaRatio, ok = byModel.QuotaLoadRatioForModel(auth, canonicalModelKey(model))
+		} else {
+			quotaRatio, ok = quota.QuotaLoadRatio(auth)
+		}
+		if ok && quotaRatio > ratio {
 			ratio = quotaRatio
 		}
 	}
