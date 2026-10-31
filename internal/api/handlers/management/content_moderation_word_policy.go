@@ -1,11 +1,14 @@
 package management
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
+	"reflect"
 	"sort"
 	"strings"
 
@@ -26,9 +29,37 @@ import (
 // A tenant can never switch the platform policy off or edit it: the platform
 // layer is evaluated on its own, ahead of the tenant and key layers.
 
-// maxWordPolicyBodyBytes bounds a request body. A full policy of
-// MaxWordRulesPerPolicy rules of the longest allowed kind fits well within it.
-const maxWordPolicyBodyBytes = 16 << 20
+// The size of the largest request that can still be a legal one, which is what
+// bounds a request body.
+//
+// A rule is at most an id, a keyword and a note (a regular expression has more
+// to say but a policy holds few of them), and a client may write every
+// character of them as a JSON escape: six bytes for most, twelve for a character
+// outside the Basic Multilingual Plane, which takes a surrogate pair. Python's
+// json.dumps does that to everything that is not ASCII by default.
+const (
+	jsonEscapeBytes     = 6
+	jsonEscapePairBytes = 12
+	// wordRuleJSONSlack covers the field names, quotes, commas and the white space
+	// a pretty-printing client puts around one rule.
+	wordRuleJSONSlack = 256
+
+	maxKeywordRuleJSONBytes = jsonEscapeBytes*contentmoderation.MaxWordRuleIDBytes +
+		jsonEscapePairBytes*(contentmoderation.MaxWordKeywordRunes+contentmoderation.MaxWordNoteRunes) + wordRuleJSONSlack
+	maxRegexRuleJSONBytes = jsonEscapeBytes*(contentmoderation.MaxWordRuleIDBytes+contentmoderation.MaxWordRegexBytes) +
+		jsonEscapePairBytes*contentmoderation.MaxWordNoteRunes + wordRuleJSONSlack
+	// maxWordSettingsJSONBytes is the rest of a policy: the replacement and block
+	// messages, and a few thousand bytes for its other fields.
+	maxWordSettingsJSONBytes = jsonEscapePairBytes*(contentmoderation.MaxWordReplacementRunes+contentmoderation.MaxWordBlockMessageRunes) + 4096
+
+	// maxWordPolicyBodyBytes bounds the body of a policy save, or of a validation
+	// of the rules of one: the largest policy there can be, about 44 MiB with every
+	// rule at its longest and every character escaped. A body larger than that
+	// cannot hold a policy that would be stored, and one smaller is not refused
+	// for its size.
+	maxWordPolicyBodyBytes = (contentmoderation.MaxWordRulesPerPolicy-contentmoderation.MaxWordRegexPerPolicy)*maxKeywordRuleJSONBytes +
+		contentmoderation.MaxWordRegexPerPolicy*maxRegexRuleJSONBytes + maxWordSettingsJSONBytes
+)
 
 // maxReportedRuleProblems bounds the rule problems listed in one error: an
 // import of a wrong file would otherwise answer with a reply as large as the
@@ -43,6 +74,52 @@ type wordRuleInput struct {
 	Pattern string `json:"pattern"`
 	Enabled *bool  `json:"enabled"`
 	Note    string `json:"note"`
+}
+
+// wordRuleInputs is the rules of a request. It counts them as they are read and
+// gives up at the first one past the limit, so that a body of millions of empty
+// rules ({},{},{}...) is refused after ten thousand instead of being decoded
+// whole: a decoded rule takes more than a hundred bytes of memory for the three
+// it takes on the wire.
+type wordRuleInputs []wordRuleInput
+
+// tooManyWordRulesError is what decoding wordRuleInputs fails with when the list
+// is longer than a request may carry.
+type tooManyWordRulesError struct{ limit int }
+
+func (e *tooManyWordRulesError) Error() string {
+	return fmt.Sprintf("more than %d rules in one request", e.limit)
+}
+
+func (r *wordRuleInputs) UnmarshalJSON(data []byte) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	token, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	if token == nil { // JSON null
+		*r = nil
+		return nil
+	}
+	if delim, ok := token.(json.Delim); !ok || delim != '[' {
+		return &json.UnmarshalTypeError{Value: "non-array", Type: reflect.TypeOf(*r)}
+	}
+	rules := wordRuleInputs{}
+	for decoder.More() {
+		if len(rules) == contentmoderation.MaxWordRulesPerPolicy {
+			return &tooManyWordRulesError{limit: contentmoderation.MaxWordRulesPerPolicy}
+		}
+		var rule wordRuleInput
+		if err := decoder.Decode(&rule); err != nil {
+			return err
+		}
+		rules = append(rules, rule)
+	}
+	if _, err := decoder.Token(); err != nil { // the closing bracket
+		return err
+	}
+	*r = rules
+	return nil
 }
 
 func (r wordRuleInput) rule() contentmoderation.WordRule {
@@ -61,16 +138,16 @@ func wordRulesFromInput(in []wordRuleInput) []contentmoderation.WordRule {
 // replaces the stored one. Version, when sent, is the version the client read;
 // the save is refused if the policy has changed since.
 type wordPolicyInput struct {
-	Enabled                *bool           `json:"enabled"`
-	Action                 string          `json:"action"`
-	Replacement            string          `json:"replacement"`
-	ScanScope              string          `json:"scan_scope"`
-	ReplyFilter            *bool           `json:"reply_filter"`
-	FoldTraditionalChinese *bool           `json:"fold_traditional_chinese"`
-	InheritTenant          *bool           `json:"inherit_tenant"`
-	BlockMessage           string          `json:"block_message"`
-	Rules                  []wordRuleInput `json:"rules"`
-	Version                *int64          `json:"version"`
+	Enabled                *bool          `json:"enabled"`
+	Action                 string         `json:"action"`
+	Replacement            string         `json:"replacement"`
+	ScanScope              string         `json:"scan_scope"`
+	ReplyFilter            *bool          `json:"reply_filter"`
+	FoldTraditionalChinese *bool          `json:"fold_traditional_chinese"`
+	InheritTenant          *bool          `json:"inherit_tenant"`
+	BlockMessage           string         `json:"block_message"`
+	Rules                  wordRuleInputs `json:"rules"`
+	Version                *int64         `json:"version"`
 }
 
 // policy builds the policy a save would store, before it is checked.
@@ -170,16 +247,27 @@ func requireWordPolicyEditor(c *gin.Context, target wordPolicyTarget) bool {
 	return true
 }
 
-// readJSONBody decodes a request body of bounded size and answers the request
-// itself (returning false) when it cannot.
-func readJSONBody(c *gin.Context, v any) bool {
-	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxWordPolicyBodyBytes)
+// readJSONBody decodes a request body of at most limit bytes and answers the
+// request itself (returning false) when it cannot.
+func readJSONBody(c *gin.Context, v any, limit int64) bool {
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, limit)
 	err := json.NewDecoder(c.Request.Body).Decode(v)
 	if err == nil {
 		return true
 	}
 	var tooLarge *http.MaxBytesError
+	var tooMany *tooManyWordRulesError
 	switch {
+	case errors.As(err, &tooMany):
+		// The same answer a save gives for a list that is too long once it has been
+		// read, so the panel has one case to handle.
+		wordPolicyError(c, &contentmoderation.WordPolicyError{
+			Message: "too many rules in one request",
+			Rules: []contentmoderation.WordRuleProblem{{
+				Index: tooMany.limit, Code: "too_many_rules",
+				Message: fmt.Sprintf("a request carries at most %d rules (a policy holds at most %d); split the list", tooMany.limit, contentmoderation.MaxWordRulesPerPolicy),
+			}},
+		})
 	case errors.As(err, &tooLarge):
 		c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": gin.H{"code": "word_policy_too_large", "message": "the request body is too large"}})
 	case errors.Is(err, io.EOF):
@@ -273,7 +361,7 @@ func (h *Handler) putWordPolicy(c *gin.Context, scopeType string) {
 		return
 	}
 	var input wordPolicyInput
-	if !readJSONBody(c, &input) {
+	if !readJSONBody(c, &input, maxWordPolicyBodyBytes) {
 		return
 	}
 	policy := input.policy(target)

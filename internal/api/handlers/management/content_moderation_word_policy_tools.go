@@ -3,29 +3,27 @@ package management
 import (
 	"errors"
 	"net/http"
-	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/contentmoderation"
 )
 
-// maxWordValidateRules bounds the rules one validation looks at: twice what a
-// policy can hold, so that an import of a full list on top of a full policy is
-// still judged (and turned down) rather than refused unread.
-const maxWordValidateRules = 2 * contentmoderation.MaxWordRulesPerPolicy
-
 // maxWordTestInputBytes bounds the text the test dialog checks.
 const maxWordTestInputBytes = 1 << 20
+
+// maxWordTestBodyBytes bounds the body of a test: a draft policy of the largest
+// size there can be, and the text with every byte of it written as an escape.
+const maxWordTestBodyBytes = maxWordPolicyBodyBytes + jsonEscapeBytes*maxWordTestInputBytes + 4096
 
 // wordValidateRequest asks what saving the submitted rules into a policy would
 // do with each of them.
 type wordValidateRequest struct {
 	// Scope is platform, tenant or key; the rules are compared with that
 	// policy's stored rules. KeyID names the key for a key policy.
-	Scope string          `json:"scope"`
-	KeyID string          `json:"key_id"`
-	Rules []wordRuleInput `json:"rules"`
+	Scope string         `json:"scope"`
+	KeyID string         `json:"key_id"`
+	Rules wordRuleInputs `json:"rules"`
 }
 
 // wordValidateSummary counts the verdicts and says whether the new rules fit.
@@ -40,6 +38,10 @@ type wordValidateSummary struct {
 	ExistingRules int `json:"existing_rules"`
 	ExistingRegex int `json:"existing_regex"`
 	NewRegex      int `json:"new_regex"`
+	// ExistingRegexProgram and NewRegexProgram are the compiled sizes of those
+	// regular expressions, which a policy holds a limited total of.
+	ExistingRegexProgram int `json:"existing_regex_program"`
+	NewRegexProgram      int `json:"new_regex_program"`
 	// Fits says whether adding the new rules to the stored ones stays within
 	// the limits of a policy.
 	Fits bool `json:"fits"`
@@ -52,17 +54,7 @@ type wordValidateSummary struct {
 // and new are not listed; the panel has them in the file it parsed.
 func (h *Handler) PostWordPolicyValidate(c *gin.Context) {
 	var body wordValidateRequest
-	if !readJSONBody(c, &body) {
-		return
-	}
-	if len(body.Rules) > maxWordValidateRules {
-		wordPolicyError(c, &contentmoderation.WordPolicyError{
-			Message: "too many rules in one request",
-			Rules: []contentmoderation.WordRuleProblem{{
-				Index: maxWordValidateRules, Code: "too_many_rules",
-				Message: "at most " + strconv.Itoa(maxWordValidateRules) + " rules can be checked at once; split the file",
-			}},
-		})
+	if !readJSONBody(c, &body, maxWordPolicyBodyBytes) {
 		return
 	}
 	scope := strings.TrimSpace(body.Scope)
@@ -97,6 +89,7 @@ func (h *Handler) PostWordPolicyValidate(c *gin.Context) {
 	for _, rule := range existing {
 		if rule.Kind == contentmoderation.WordRuleRegex {
 			summary.ExistingRegex++
+			summary.ExistingRegexProgram += contentmoderation.WordRegexProgram(rule.Pattern)
 		}
 	}
 	listed := make([]contentmoderation.WordRuleReview, 0)
@@ -106,6 +99,7 @@ func (h *Handler) PostWordPolicyValidate(c *gin.Context) {
 			summary.New++
 			if review.Rule != nil && review.Rule.Kind == contentmoderation.WordRuleRegex {
 				summary.NewRegex++
+				summary.NewRegexProgram += review.Program
 			}
 			continue
 		case contentmoderation.WordReviewDuplicate:
@@ -119,7 +113,8 @@ func (h *Handler) PostWordPolicyValidate(c *gin.Context) {
 		listed = append(listed, review)
 	}
 	summary.Fits = summary.ExistingRules+summary.New <= contentmoderation.MaxWordRulesPerPolicy &&
-		summary.ExistingRegex+summary.NewRegex <= contentmoderation.MaxWordRegexPerPolicy
+		summary.ExistingRegex+summary.NewRegex <= contentmoderation.MaxWordRegexPerPolicy &&
+		summary.ExistingRegexProgram+summary.NewRegexProgram <= contentmoderation.MaxWordRegexProgramTotal
 	c.JSON(http.StatusOK, gin.H{"summary": summary, "reviews": listed})
 }
 
@@ -140,7 +135,7 @@ type wordTestRequest struct {
 // request would be, and reports the outcome without sending anything anywhere.
 func (h *Handler) PostWordPolicyTest(c *gin.Context) {
 	var body wordTestRequest
-	if !readJSONBody(c, &body) {
+	if !readJSONBody(c, &body, maxWordTestBodyBytes) {
 		return
 	}
 	if strings.TrimSpace(body.Input) == "" {
