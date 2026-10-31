@@ -26,7 +26,10 @@ func (h *UsageLogsHandler) GetUsageMonitorOverview(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, payload)
+	c.JSON(http.StatusOK, monitorOverviewResponse{
+		MonitorOverview: payload,
+		Capabilities:    monitorCapabilities{InFlightRequests: true},
+	})
 }
 
 // GetUsageMonitorRealtime serves the live strip: the last hour per minute.

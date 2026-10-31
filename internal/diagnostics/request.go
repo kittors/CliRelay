@@ -7,10 +7,12 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	internalrouting "github.com/router-for-me/CLIProxyAPI/v6/internal/routing"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
+	"github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/routetrace"
 )
 
 const GinKey = "cliproxy.request_diagnostic"
@@ -43,6 +45,14 @@ type RequestDiagnostic struct {
 	Egress      map[string]any
 	Response    *ResponseSnapshot
 	Body        *BodySnapshot
+
+	// trace is set once at creation and never replaced, so it is read without
+	// mu; see route_trace.go for it and the fields below.
+	trace         *routetrace.Recorder
+	startedAt     time.Time
+	tenantID      string
+	authenticated bool
+	inflightSeq   uint64
 }
 
 type Snapshot struct {
@@ -68,6 +78,7 @@ type Snapshot struct {
 	Egress         map[string]any       `json:"egress,omitempty"`
 	Response       *ResponseSnapshot    `json:"response,omitempty"`
 	Body           *BodySnapshot        `json:"body,omitempty"`
+	RouteTrace     *routetrace.Trace    `json:"route_trace,omitempty"`
 }
 
 type RouteSnapshot struct {
@@ -152,12 +163,12 @@ func EnsureGin(c *gin.Context, requestID string) *RequestDiagnostic {
 		existing.UpdateRequest(c.Request)
 		return existing
 	}
-	d := &RequestDiagnostic{}
+	d := newRequestDiagnostic()
 	d.SetRequestID(requestID)
 	d.UpdateRequest(c.Request)
 	c.Set(GinKey, d)
 	if c.Request != nil {
-		c.Request = c.Request.WithContext(WithContext(c.Request.Context(), d))
+		c.Request = c.Request.WithContext(routetrace.WithRecorder(WithContext(c.Request.Context(), d), d.trace))
 	}
 	return d
 }
@@ -309,6 +320,7 @@ func SetAuth(c *gin.Context, provider, apiKey, apiKeyID, apiKeyName string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.Auth = auth
+	d.authenticated = true
 }
 
 func SetQuotaLimits(c *gin.Context, quota QuotaSnapshot) {
@@ -514,6 +526,7 @@ func (d *RequestDiagnostic) Snapshot() Snapshot {
 		Egress:         cloneAnyMap(d.Egress),
 		Response:       cloneResponse(d.Response),
 		Body:           cloneBody(d.Body),
+		RouteTrace:     d.trace.Snapshot(),
 	}
 }
 
@@ -543,7 +556,8 @@ func (s Snapshot) IsZero() bool {
 		s.Upstream == nil &&
 		s.Egress == nil &&
 		s.Response == nil &&
-		s.Body == nil
+		s.Body == nil &&
+		s.RouteTrace == nil
 }
 
 func FormatBodySummary(snapshot *BodySnapshot) []byte {
