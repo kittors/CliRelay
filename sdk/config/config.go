@@ -60,6 +60,7 @@ const (
 	DistributionWeighted     = bridgeconfig.DistributionWeighted
 	DistributionLeastLoad    = bridgeconfig.DistributionLeastLoad
 	DistributionFillFirst    = bridgeconfig.DistributionFillFirst
+	DistributionResetAware   = bridgeconfig.DistributionResetAware
 	DefaultStickyMaxRequests = bridgeconfig.DefaultStickyMaxRequests
 )
 
