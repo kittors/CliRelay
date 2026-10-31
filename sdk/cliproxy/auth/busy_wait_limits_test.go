@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"math"
 	"net/http"
 	"strconv"
 	"sync"
@@ -379,4 +380,31 @@ func setDefaultGroup(mgr *Manager, firstTokenSeconds int, busyWaitSeconds *int) 
 	mgr.SetConfig(&sdkconfig.Config{Routing: sdkconfig.RoutingConfig{ChannelGroups: []sdkconfig.RoutingChannelGroup{
 		{Name: "default", FirstTokenTimeoutSeconds: firstTokenSeconds, BusyWaitMaxSeconds: busyWaitSeconds},
 	}}})
+}
+
+// The cap is stored as an int32, and a hand-edited YAML can say anything: an
+// out-of-range setting must end up as the default or the largest cap, never as
+// a small positive number left over from the narrowing.
+func TestBusyWaitCapSurvivesAbsurdSettings(t *testing.T) {
+	if strconv.IntSize < 64 {
+		t.Skip("the values below need a 64-bit int")
+	}
+	mgr := &Manager{}
+	for _, tc := range []struct {
+		name  string
+		value int64
+		want  int
+	}{
+		{"far above what an int32 holds", 1 << 40, math.MaxInt32},
+		{"negative that narrows to +1", -(1 << 32) + 1, 64},
+		{"negative that narrows to 0", -(1 << 32), 64},
+		{"the smallest int", math.MinInt64, 64},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mgr.SetBusyWaitConfig(int(tc.value))
+			if got := mgr.BusyWaitMaxWaiters(); got != tc.want {
+				t.Fatalf("cap after SetBusyWaitConfig(%d) = %d, want %d", tc.value, got, tc.want)
+			}
+		})
+	}
 }
