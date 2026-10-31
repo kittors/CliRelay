@@ -12,6 +12,12 @@ import (
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
 )
 
+// promisedBusyWaitRounds is the contract the tests below hold the scheduler to:
+// one request waits at most twice. It is a literal here, not the scheduler's own
+// constant, so that raising the constant fails these tests instead of moving
+// them along.
+const promisedBusyWaitRounds = 2
+
 // Busy waiting is opt-in: a deployment that never configured a group, and a
 // group that configured something else, behave as they did before it existed.
 func TestBusyWaitIsOffUnlessAGroupAsksForIt(t *testing.T) {
@@ -163,10 +169,10 @@ func TestBusyWaitWaitsAtMostTwicePerRequest(t *testing.T) {
 		if statusCodeFromError(err) != http.StatusServiceUnavailable {
 			t.Fatalf("err = %v, want the 503", err)
 		}
-		if took := time.Since(start); took != maxBusyWaitRounds*12*time.Second {
-			t.Fatalf("took %s, want %d waits of 12s", took, maxBusyWaitRounds)
+		if took := time.Since(start); took != promisedBusyWaitRounds*12*time.Second {
+			t.Fatalf("took %s, want %d waits of 12s", took, promisedBusyWaitRounds)
 		}
-		if calls := exec.Calls(); len(calls) != maxBusyWaitRounds+1 {
+		if calls := exec.Calls(); len(calls) != promisedBusyWaitRounds+1 {
 			t.Fatalf("upstream calls = %v, want the first attempt and one after each wait", calls)
 		}
 	})
@@ -184,7 +190,7 @@ func TestBusyWaitRoundsAreSharedAcrossSchedulingPasses(t *testing.T) {
 		// once instead of leaving the request to wait.
 		const cooldown = 12 * time.Second
 
-		for pass := 1; pass <= maxBusyWaitRounds; pass++ {
+		for pass := 1; pass <= promisedBusyWaitRounds; pass++ {
 			park(mgr, "shared", upstreamDown, cooldown)
 			start := time.Now()
 			if err := execute(mgr, ctx); err != nil || time.Since(start) != cooldown {
@@ -194,7 +200,7 @@ func TestBusyWaitRoundsAreSharedAcrossSchedulingPasses(t *testing.T) {
 		park(mgr, "shared", upstreamDown, cooldown)
 		start := time.Now()
 		if err := execute(mgr, ctx); err == nil || time.Since(start) != 0 {
-			t.Fatalf("after %d waits: err = %v after %s, want an immediate failure", maxBusyWaitRounds, err, time.Since(start))
+			t.Fatalf("after %d waits: err = %v after %s, want an immediate failure", promisedBusyWaitRounds, err, time.Since(start))
 		}
 
 		// A request of its own starts with all its rounds again.
@@ -231,11 +237,11 @@ func TestShortRateLimitsCostAtMostThreeAttemptsPerAccount(t *testing.T) {
 		if statusCodeFromError(err) != http.StatusTooManyRequests {
 			t.Fatalf("err = %v, want the 429", err)
 		}
-		if calls := exec.Calls(); len(calls) != (maxBusyWaitRounds+1)*accounts {
-			t.Fatalf("upstream calls = %d, want %d (a pass per round, plus the first)", len(calls), (maxBusyWaitRounds+1)*accounts)
+		if calls := exec.Calls(); len(calls) != (promisedBusyWaitRounds+1)*accounts {
+			t.Fatalf("upstream calls = %d, want %d (a pass per round, plus the first)", len(calls), (promisedBusyWaitRounds+1)*accounts)
 		}
-		if took := time.Since(start); took != maxBusyWaitRounds*8*time.Second {
-			t.Fatalf("took %s, want %d waits of 8s", took, maxBusyWaitRounds)
+		if took := time.Since(start); took != promisedBusyWaitRounds*8*time.Second {
+			t.Fatalf("took %s, want %d waits of 8s", took, promisedBusyWaitRounds)
 		}
 	})
 
