@@ -18,6 +18,20 @@ type QuotaLoadSource interface {
 	QuotaLoadRatio(auth *Auth) (float64, bool)
 }
 
+// QuotaResetUrgencySource is an optional extension of QuotaLoadSource that
+// reports when an account has expiring quota due for reset soon.
+//
+// QuotaResetState returns:
+//   - remaining: share of usable quota remaining in [0,1] (bounded by both
+//     long and short windows so a short-window-exhausted account is not
+//     treated as having burnable headroom)
+//   - urgency: how close the long-window reset is in [0,1], where 0 means
+//     beyond the discount horizon and 1 means within the full-burn window
+//   - ok: true when quota state is known for auth.
+type QuotaResetUrgencySource interface {
+	QuotaResetState(auth *Auth) (remaining float64, urgency float64, ok bool)
+}
+
 const (
 	// selectionDecayHalfLife controls how fast recent-selection pressure fades.
 	// Five minutes is long enough to spread a burst of turns from one agent
@@ -29,6 +43,22 @@ const (
 	// the coldest entries rather than clearing the whole map, so live accounts
 	// keep their pressure history.
 	selectionTrackerMaxKeys = 4096
+
+	// minResetDrainRemaining is the minimum usable remaining quota share in
+	// [0,1] required for an expiring account to actively pull traffic toward
+	// itself before reset.
+	minResetDrainRemaining = 0.25
+
+	// resetDrainGapThreshold is the minimum gap (25 percentage points) in
+	// expiring quota reserve or remaining quota required for an account due
+	// for reset to preempt lower-priority candidates, including existing
+	// sticky conversations.
+	resetDrainGapThreshold = 0.25
+
+	// resetUrgencyBonus rewards accounts with expiring quota in least-load
+	// scoring so they attract new work even before the hard preemption gap
+	// is reached and rank ahead of non-expiring idle accounts.
+	resetUrgencyBonus = 6.0
 )
 
 type decayCounter struct {
@@ -139,4 +169,114 @@ func accountLoadRatio(auth *Auth, limiter *AccountConcurrencyLimiter, quota Quot
 		return 1
 	}
 	return ratio
+}
+
+func clampUnitRatio(v float64) float64 {
+	if math.IsNaN(v) || v < 0 {
+		return 0
+	}
+	if v > 1 {
+		return 1
+	}
+	return v
+}
+
+func (d *schedulerDeps) resetState(auth *Auth) (remaining float64, urgency float64, ok bool) {
+	if d == nil || auth == nil || d.quota == nil {
+		return 0, 0, false
+	}
+	if source, hasUrgency := d.quota.(QuotaResetUrgencySource); hasUrgency {
+		if rem, urg, found := source.QuotaResetState(auth); found {
+			return clampUnitRatio(rem), clampUnitRatio(urg), true
+		}
+	}
+	if load, found := d.quota.QuotaLoadRatio(auth); found {
+		return clampUnitRatio(1 - load), 0, true
+	}
+	return 0, 0, false
+}
+
+// preferResetDrainAuths narrows available candidates when one or more healthy
+// accounts are approaching their quota reset with plenty of remaining quota
+// and open a large gap (>= resetDrainGapThreshold) over other candidates.
+//
+// Filtering before session-sticky honour and fallback selection ensures that:
+//  1. New requests across weighted, fill-first, and least-load distributions
+//     prioritize the expiring account(s).
+//  2. Existing sticky conversations pinned to an account that trails the
+//     expiring account by >= resetDrainGapThreshold (in expiring quota reserve
+//     or remaining quota) release their old binding and re-pin to the expiring
+//     account, while conversations already on an expiring account within the
+//     threshold stay sticky without thrashing.
+func preferResetDrainAuths(available []*Auth, deps *schedulerDeps) []*Auth {
+	if len(available) <= 1 || deps == nil || deps.quota == nil {
+		return available
+	}
+	if _, hasUrgency := deps.quota.(QuotaResetUrgencySource); !hasUrgency {
+		return available
+	}
+
+	var (
+		leader         *Auth
+		leaderRem      float64
+		leaderUrg      float64
+		leaderExpiring float64
+	)
+	for _, candidate := range available {
+		if candidate == nil {
+			continue
+		}
+		if deps.loadRatio(candidate) >= fillFirstSwitchLoad {
+			continue
+		}
+		rem, urg, ok := deps.resetState(candidate)
+		if !ok || urg <= 0 || rem < minResetDrainRemaining {
+			continue
+		}
+		expiring := urg * rem
+		if leader == nil || expiring > leaderExpiring || (expiring == leaderExpiring && rem > leaderRem) {
+			leader = candidate
+			leaderRem = rem
+			leaderUrg = urg
+			leaderExpiring = expiring
+		}
+	}
+	if leader == nil {
+		return available
+	}
+
+	preferred := make([]*Auth, 0, len(available))
+	for _, candidate := range available {
+		if candidate == nil {
+			continue
+		}
+		if !hasResetDrainGap(deps, leader, leaderRem, leaderUrg, leaderExpiring, candidate) {
+			preferred = append(preferred, candidate)
+		}
+	}
+	if len(preferred) > 0 && len(preferred) < len(available) {
+		return preferred
+	}
+	return available
+}
+
+func hasResetDrainGap(deps *schedulerDeps, leader *Auth, leaderRem, leaderUrg, leaderExpiring float64, candidate *Auth) bool {
+	if candidate == nil || leader == nil || candidate.ID == leader.ID {
+		return false
+	}
+	if deps.loadRatio(candidate) >= fillFirstSwitchLoad {
+		return true
+	}
+	cRem, cUrg, ok := deps.resetState(candidate)
+	if !ok {
+		return leaderExpiring >= resetDrainGapThreshold
+	}
+	cExpiring := cUrg * cRem
+	if leaderExpiring-cExpiring >= resetDrainGapThreshold {
+		return true
+	}
+	if leaderUrg >= cUrg && leaderRem-cRem >= resetDrainGapThreshold {
+		return true
+	}
+	return false
 }

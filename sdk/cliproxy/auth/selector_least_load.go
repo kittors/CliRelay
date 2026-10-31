@@ -37,6 +37,7 @@ func (s *LeastLoadSelector) Pick(ctx context.Context, provider, model string, op
 		return nil, err
 	}
 	available = preferCodexWebsocketAuths(ctx, provider, available)
+	available = preferResetDrainAuths(available, s.deps)
 
 	var best *Auth
 	bestScore := 0.0
@@ -67,6 +68,9 @@ func (s *LeastLoadSelector) score(candidate *Auth, now time.Time) float64 {
 	if s.deps != nil && s.deps.limiter != nil {
 		load += float64(s.deps.limiter.GetInFlight(candidate.ID))
 	}
-	score := load / float64(weight)
-	return score * (1 + quotaLoadPenalty*s.deps.loadRatio(candidate))
+	score := (load / float64(weight)) * (1 + quotaLoadPenalty*s.deps.loadRatio(candidate))
+	if rem, urg, ok := s.deps.resetState(candidate); ok && urg > 0 && rem > 0 && s.deps.loadRatio(candidate) < fillFirstSwitchLoad {
+		score -= resetUrgencyBonus * urg * rem
+	}
+	return score
 }

@@ -88,6 +88,7 @@ func (s *RoundRobinSelector) Pick(ctx context.Context, provider, model string, o
 		return nil, err
 	}
 	available = preferCodexWebsocketAuths(ctx, provider, available)
+	available = preferResetDrainAuths(available, s.deps)
 	key := tenantSelectionPrefix(opts.Metadata) + provider + ":" + canonicalModelKey(model)
 	s.mu.Lock()
 	if s.cursors == nil {
@@ -192,6 +193,7 @@ func (s *FillFirstSelector) Pick(ctx context.Context, provider, model string, op
 		return nil, err
 	}
 	available = preferCodexWebsocketAuths(ctx, provider, available)
+	available = preferResetDrainAuths(available, s.deps)
 
 	ordered := make([]*Auth, len(available))
 	copy(ordered, available)

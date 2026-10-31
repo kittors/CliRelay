@@ -372,3 +372,128 @@ func TestSessionStickyDelegatesNewSessionsToDistribution(t *testing.T) {
 		}
 	}
 }
+
+type stubResetUrgencyQuotaSource struct {
+	loads     map[string]float64
+	remaining map[string]float64
+	urgency   map[string]float64
+}
+
+func (s stubResetUrgencyQuotaSource) QuotaLoadRatio(auth *Auth) (float64, bool) {
+	if auth == nil {
+		return 0, false
+	}
+	v, ok := s.loads[auth.ID]
+	return v, ok
+}
+
+func (s stubResetUrgencyQuotaSource) QuotaResetState(auth *Auth) (float64, float64, bool) {
+	if auth == nil {
+		return 0, 0, false
+	}
+	rem, rok := s.remaining[auth.ID]
+	urg, uok := s.urgency[auth.ID]
+	if !rok && !uok {
+		return 0, 0, false
+	}
+	return rem, urg, true
+}
+
+func TestLeastLoadPrioritizesAccountDueForResetWithRemainingQuota(t *testing.T) {
+	t.Parallel()
+
+	quota := stubResetUrgencyQuotaSource{
+		loads:     map[string]float64{"a": 0.10, "b": 0.05},
+		remaining: map[string]float64{"a": 0.90, "b": 0.75},
+		urgency:   map[string]float64{"a": 0.0, "b": 1.0},
+	}
+	deps := &schedulerDeps{
+		tracker: newSelectionPressureTracker(),
+		limiter: NewAccountConcurrencyLimiter(),
+		quota:   quota,
+	}
+	selector := &LeastLoadSelector{deps: deps}
+	auths := []*Auth{{ID: "a", Provider: "codex"}, {ID: "b", Provider: "codex"}}
+
+	for i := 0; i < 4; i++ {
+		picked, err := selector.Pick(context.Background(), "codex", "gpt-5.6-sol", cliproxyexecutor.Options{}, auths)
+		if err != nil {
+			t.Fatalf("Pick() #%d error = %v", i, err)
+		}
+		if picked.ID != "b" {
+			t.Fatalf("Pick() #%d = %q, want expiring account b", i, picked.ID)
+		}
+	}
+}
+
+func TestSessionStickyPreemptsExistingConvoOnBigResetGapWithoutThrashing(t *testing.T) {
+	t.Parallel()
+
+	quota := &stubResetUrgencyQuotaSource{
+		loads:     map[string]float64{"a": 0.30, "b": 0.05, "c": 0.05},
+		remaining: map[string]float64{"a": 0.70, "b": 0.70, "c": 0.60},
+		urgency:   map[string]float64{"a": 0.0, "b": 0.0, "c": 0.0},
+	}
+	deps := &schedulerDeps{
+		tracker: newSelectionPressureTracker(),
+		limiter: NewAccountConcurrencyLimiter(),
+		quota:   quota,
+	}
+	selector := NewSessionStickySelector(&RoundRobinSelector{deps: deps})
+	selector.deps = deps
+	auths := []*Auth{
+		{ID: "a", Provider: "codex"},
+		{ID: "b", Provider: "codex"},
+		{ID: "c", Provider: "codex"},
+	}
+
+	opts := stickyOptions("convo-1", nil)
+	first, err := selector.Pick(context.Background(), "codex", "gpt-5.6-sol", opts, auths)
+	if err != nil {
+		t.Fatalf("Pick() first error = %v", err)
+	}
+	if first.ID != "a" {
+		t.Fatalf("Pick() first = %q, want a", first.ID)
+	}
+
+	// Account "b" enters its reset drain window with 80% remaining (urgency=1.0),
+	// creating a >=25% expiring reserve gap over "a" (urgency=0). The existing
+	// conversation on "a" must break affinity and re-pin to "b".
+	quota.remaining["b"] = 0.80
+	quota.urgency["b"] = 1.0
+	// Account "c" is also expiring with 65% remaining (only a 15% gap behind "b").
+	quota.remaining["c"] = 0.65
+	quota.urgency["c"] = 1.0
+
+	second, err := selector.Pick(context.Background(), "codex", "gpt-5.6-sol", opts, auths)
+	if err != nil {
+		t.Fatalf("Pick() second error = %v", err)
+	}
+	if second.ID != "b" && second.ID != "c" {
+		t.Fatalf("Pick() second = %q, want expiring account b or c", second.ID)
+	}
+
+	// Pin another conversation directly to "c" (which has 0.65 expiring reserve vs
+	// "b"'s 0.80 -> 0.15 gap < 0.25 threshold). It must stay sticky on "c" rather
+	// than thrashing onto "b".
+	opts2 := stickyOptions("convo-on-c", nil)
+	selector.bindSelected(context.Background(), sessionStickySelectionKey("codex", opts2, sessionStickyKey(opts2)), auths[2], auths, time.Now())
+	stayOnC, err := selector.Pick(context.Background(), "codex", "gpt-5.6-sol", opts2, auths)
+	if err != nil {
+		t.Fatalf("Pick() stayOnC error = %v", err)
+	}
+	if stayOnC.ID != "c" {
+		t.Fatalf("Pick() stayOnC = %q, want c (gap 0.15 < 0.25 must not break affinity)", stayOnC.ID)
+	}
+
+	// Once "c" drains down to 45% remaining (0.80 - 0.45 = 0.35 >= 0.25 gap),
+	// convo-on-c must break affinity from "c" and re-pin to "b".
+	quota.remaining["c"] = 0.45
+	movedToB, err := selector.Pick(context.Background(), "codex", "gpt-5.6-sol", opts2, auths)
+	if err != nil {
+		t.Fatalf("Pick() movedToB error = %v", err)
+	}
+	if movedToB.ID != "b" {
+		t.Fatalf("Pick() movedToB = %q, want b once gap >= 0.25", movedToB.ID)
+	}
+}

@@ -64,6 +64,7 @@ func (s *SessionStickySelector) Pick(ctx context.Context, provider, model string
 		return nil, err
 	}
 	available = preferCodexWebsocketAuths(ctx, provider, available)
+	available = preferResetDrainAuths(available, s.deps)
 
 	limits := stickyLimitsFromMetadata(opts.Metadata)
 	if bound := s.honour(ctx, key, available, limits, now); bound != nil {
