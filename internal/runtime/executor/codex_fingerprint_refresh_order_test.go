@@ -213,6 +213,7 @@ func resetIdentityFingerprintRuntimeStateForTest() {
 	runtimeIdentityFingerprintAsync.loads = map[string]struct{}{}
 	runtimeIdentityFingerprintAsync.persists = map[string]struct{}{}
 	runtimeIdentityFingerprintAsync.Unlock()
+	resetRuntimeIdentityFingerprintColdLoaded()
 
 	codexIdentityFingerprintSelectionCache.Lock()
 	codexIdentityFingerprintSelectionCache.entries = map[string]codexIdentityFingerprintSelectionEntry{}
