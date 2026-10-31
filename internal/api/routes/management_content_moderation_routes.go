@@ -16,9 +16,10 @@ func registerManagementContentModerationRoutes(group *gin.RouterGroup, h *manage
 	group.GET("/content-moderation/channels", h.GetContentModerationChannels)
 	group.PATCH("/content-moderation/channel-bindings", h.PatchContentModerationChannelBindings)
 
-	// Sensitive-word policies: the platform's (readable by every tenant, editable
-	// only by a platform administrator in the system tenant), the effective
-	// tenant's and one API key's. validate and test change nothing.
+	// Sensitive-word policies: the platform's (its settings are readable by every
+	// tenant, its word list and the right to edit it belong to a platform
+	// administrator in the system tenant), the effective tenant's and one API
+	// key's. validate and test change nothing.
 	group.GET("/content-moderation/word-policies", h.GetWordPolicies)
 	group.GET("/content-moderation/word-policies/platform", h.GetWordPolicyPlatform)
 	group.PUT("/content-moderation/word-policies/platform", h.PutWordPolicyPlatform)
