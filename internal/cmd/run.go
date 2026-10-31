@@ -21,8 +21,10 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/enduser"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/identity"
 	settingsstore "github.com/router-for-me/CLIProxyAPI/v6/internal/management/settings/store"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/quota/inflight"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy"
+	coreusage "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/usage"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -305,6 +307,10 @@ func initializeRuntimeDataStack(cfg *config.Config, configPath string, loc *time
 	middleware.InitQuotaSnapshotFuncs(usage.QueryEndUserQuotaUsageSnapshot, usage.QueryAPIKeyQuotaUsageSnapshot)
 	// Key-limit refusals tell the client when the day, week or month window ends.
 	middleware.InitQuotaPeriodResetFunc(usage.PeriodResetAt)
+	// Admitted requests hold a reservation on their budgets until their usage
+	// records are committed; see internal/quota/inflight.
+	coreusage.SetPublishObserver(func(record coreusage.Record) { inflight.Default().Published(record.RequestID) })
+	usage.SetRequestLogSettledHook(inflight.Default().Settle)
 	middleware.SetQuotaUsageStaleMaxAge(cfg.DBResilience.QuotaStaleMaxAge())
 	// The write path hands over the key's owner it already resolved, so TPM
 	// accounting needs no lookup of its own and keeps working while the

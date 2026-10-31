@@ -14,6 +14,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/quota"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/quota/inflight"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 )
 
@@ -259,7 +260,12 @@ func resetQuotaMiddlewareState(t *testing.T) {
 	queryTodayCostByEndUserFunc = func(string) (float64, error) { return 0, nil }
 	queryPeriodByKeyFunc = func(string, string) (quota.PeriodSpendingUsage, error) { return quota.PeriodSpendingUsage{}, nil }
 	queryPeriodByEndUserFunc = func(string, string) (quota.PeriodSpendingUsage, error) { return quota.PeriodSpendingUsage{}, nil }
+	// Reservations outlive the requests that took them until their usage is
+	// settled; each test starts from an empty ledger.
+	previousLedger := quotaLedger
+	quotaLedger = inflight.NewLedger(time.Minute)
 	t.Cleanup(func() {
+		quotaLedger = previousLedger
 		countTodayByKeyFunc = func(string) (int64, error) { return 0, nil }
 		countTotalByKeyFunc = func(string) (int64, error) { return 0, nil }
 		queryTotalCostByKeyFunc = func(string) (float64, error) { return 0, nil }

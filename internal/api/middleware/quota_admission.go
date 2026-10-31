@@ -11,6 +11,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/accesspolicy"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/diagnostics"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/quota"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/quota/inflight"
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/api/handlers"
 	log "github.com/sirupsen/logrus"
 )
@@ -43,6 +44,14 @@ type quotaPolicy struct {
 	access *accesspolicy.Policy
 	// usage 缓存本次准入读到的用量快照，总额度检查与模型策略检查共用。
 	usage *policyUsage
+
+	// requestID ties this admission's reservation to the usage records that
+	// settle it (see internal/quota/inflight).
+	requestID string
+	// inflight is this admission's reservation; the budget checks count what
+	// the requests admitted before it still hold. Nil outside admit, so a check
+	// that admits nothing (a WebSocket handshake) counts no reservations.
+	inflight *inflight.Reservation
 }
 
 func parseQuotaPolicy(apiKey string, metadata map[string]string) quotaPolicy {
@@ -75,6 +84,12 @@ func (p *quotaPolicy) hasLimits() bool {
 		p.hasPolicyCells()
 }
 
+// hasModelRules reports per-model rules, which the model policy middleware
+// checks once it knows the model.
+func (p *quotaPolicy) hasModelRules() bool {
+	return p.access != nil && (len(p.access.KeyRules) > 0 || (p.access.Owned() && len(p.access.AccountRules) > 0))
+}
+
 // record publishes the limits to the request diagnostics and caches the RPM/TPM
 // limits for the dashboard snapshot.
 func (p *quotaPolicy) record(c *gin.Context) {
@@ -103,11 +118,58 @@ func (p *quotaPolicy) record(c *gin.Context) {
 // run on this node's counters with this node's share of each limit; outside a
 // cluster the share is the whole limit.
 func (p *quotaPolicy) admit() (release func(), verdict *quotaVerdict) {
+	// The reservation is taken before the checks read usage, so of two
+	// requests admitted at the same moment the later one always sees the
+	// earlier one, without holding a lock across the usage reads.
+	reservation := p.reserve()
 	if release, verdict, ok := p.admitShared(); ok {
-		return release, verdict
+		return holdReservation(release, verdict, reservation)
 	}
 	share := p.nodeShare()
-	return share.admitLocal()
+	release, verdict = share.admitLocal()
+	return holdReservation(release, verdict, reservation)
+}
+
+// holdReservation keeps the reservation of an admitted request until the
+// request is released, and drops the reservation of a refused one.
+func holdReservation(release func(), verdict *quotaVerdict, reservation *inflight.Reservation) (func(), *quotaVerdict) {
+	if verdict != nil {
+		reservation.Cancel()
+		return nil, verdict
+	}
+	return func() {
+		release()
+		reservation.Finish()
+	}, nil
+}
+
+// quotaLedger holds the reservations of admitted requests; tests replace it.
+var quotaLedger = inflight.Default()
+
+// reserve takes this request's reservation on the budgets of its key and of
+// the account the key belongs to. A key without a stable id (one defined in
+// the config file) is named by its admission subject, as its other counters
+// are.
+func (p *quotaPolicy) reserve() *inflight.Reservation {
+	owner := inflight.Owner{Key: "subject:" + p.subject}
+	if p.apiKeyID != "" {
+		owner.Key = inflight.KeyName(p.apiKeyID)
+	}
+	if p.endUserID != "" {
+		owner.Account = inflight.AccountName(p.endUserID)
+	}
+	p.inflight = quotaLedger.Reserve(p.requestID, owner)
+	return p.inflight
+}
+
+// usageScope is the scope of the budgets that count usage by account when the
+// key has one and by key otherwise: the request counts and the lifetime and
+// daily spending limits.
+func (p *quotaPolicy) usageScope() inflight.Scope {
+	if p.endUserID != "" {
+		return inflight.ScopeAccount
+	}
+	return inflight.ScopeKey
 }
 
 // admitLocal runs every check against the node-local counters.
@@ -174,6 +236,9 @@ func (p *quotaPolicy) checkBudgets() *quotaVerdict {
 	// Reads that fail fall back to the last successful one for a short while;
 	// see quota_outage.go.
 	subject, logSubject := p.usageSubjects()
+	// Requests admitted before this one and not billed yet count as used: see
+	// internal/quota/inflight.
+	held := p.inflight.Before(p.usageScope())
 
 	// --- Daily limit check (from usage DB) ---
 	if p.dailyLimit > 0 {
@@ -182,9 +247,9 @@ func (p *quotaPolicy) checkBudgets() *quotaVerdict {
 		})
 		if err != nil {
 			return quotaUsageUnavailableVerdict(quotaScope(p.endUserID), "day", p.tenantID, stableQuotaSubject(p.apiKeyID, p.endUserID), err)
-		} else if todayCount >= int64(p.dailyLimit) {
-			return quotaLimitVerdict("daily", float64(p.dailyLimit), float64(todayCount), "daily_limit_exceeded",
-				fmt.Sprintf("Daily request limit exceeded: %d/%d requests used today. Raise the daily request limit in the permission profile, or wait until the next project day.", todayCount, p.dailyLimit)).
+		} else if current := todayCount + int64(held.Requests); current >= int64(p.dailyLimit) {
+			return quotaLimitVerdict("daily", float64(p.dailyLimit), float64(current), "daily_limit_exceeded",
+				fmt.Sprintf("Daily request limit exceeded: %d/%d requests used today.%s Raise the daily request limit in the permission profile, or wait until the next project day.", current, p.dailyLimit, inFlightNote(quota.MetricRequests, held))).
 				withRetryAfter(windowResetWait(quota.PeriodDay, time.Time{}, time.Now()))
 		}
 	}
@@ -196,9 +261,9 @@ func (p *quotaPolicy) checkBudgets() *quotaVerdict {
 		})
 		if err != nil {
 			return quotaUsageUnavailableVerdict(quotaScope(p.endUserID), "lifetime", p.tenantID, stableQuotaSubject(p.apiKeyID, p.endUserID), err)
-		} else if totalCount >= int64(p.totalQuota) {
-			return quotaLimitVerdict("total", float64(p.totalQuota), float64(totalCount), "total_quota_exceeded",
-				fmt.Sprintf("Total request quota exhausted: %d/%d lifetime requests used. Raise the total request quota in the permission profile to continue.", totalCount, p.totalQuota))
+		} else if current := totalCount + int64(held.Requests); current >= int64(p.totalQuota) {
+			return quotaLimitVerdict("total", float64(p.totalQuota), float64(current), "total_quota_exceeded",
+				fmt.Sprintf("Total request quota exhausted: %d/%d lifetime requests used.%s Raise the total request quota in the permission profile to continue.", current, p.totalQuota, inFlightNote(quota.MetricRequests, held)))
 		}
 	}
 
@@ -209,9 +274,9 @@ func (p *quotaPolicy) checkBudgets() *quotaVerdict {
 		})
 		if err != nil {
 			return quotaUsageUnavailableVerdict(quotaScope(p.endUserID), "lifetime", p.tenantID, stableQuotaSubject(p.apiKeyID, p.endUserID), err)
-		} else if totalCost >= p.spendingLimit {
-			return quotaLimitVerdict("spending", p.spendingLimit, totalCost, "spending_limit_exceeded",
-				fmt.Sprintf("Lifetime spending limit exceeded: $%.2f of $%.2f used. Raise the spending limit to continue.", totalCost, p.spendingLimit))
+		} else if current := totalCost + held.Cost; current >= p.spendingLimit {
+			return quotaLimitVerdict("spending", p.spendingLimit, current, "spending_limit_exceeded",
+				fmt.Sprintf("Lifetime spending limit exceeded: $%.2f of $%.2f used.%s Raise the spending limit to continue.", current, p.spendingLimit, inFlightNote(quota.MetricCost, held)))
 		}
 	}
 
@@ -222,9 +287,9 @@ func (p *quotaPolicy) checkBudgets() *quotaVerdict {
 		})
 		if err != nil {
 			return quotaUsageUnavailableVerdict(quotaScope(p.endUserID), "day", p.tenantID, stableQuotaSubject(p.apiKeyID, p.endUserID), err)
-		} else if todayCost >= p.dailySpendingLimit {
-			return quotaLimitVerdict("daily_spending", p.dailySpendingLimit, todayCost, "daily_spending_limit_exceeded",
-				fmt.Sprintf("Daily spending limit exceeded: $%.2f of $%.2f used today. Raise the daily spending limit in the permission profile, reset today's spending, or wait until the next project day.", todayCost, p.dailySpendingLimit)).
+		} else if current := todayCost + held.Cost; current >= p.dailySpendingLimit {
+			return quotaLimitVerdict("daily_spending", p.dailySpendingLimit, current, "daily_spending_limit_exceeded",
+				fmt.Sprintf("Daily spending limit exceeded: $%.2f of $%.2f used today.%s Raise the daily spending limit in the permission profile, reset today's spending, or wait until the next project day.", current, p.dailySpendingLimit, inFlightNote(quota.MetricCost, held))).
 				withRetryAfter(windowResetWait(quota.PeriodDay, time.Time{}, time.Now()))
 		}
 	}
@@ -238,7 +303,7 @@ func (p *quotaPolicy) checkBudgets() *quotaVerdict {
 		if err != nil {
 			return quotaUsageUnavailableVerdict("account", "period", p.tenantID, p.endUserID, err)
 		}
-		if verdict := configuredPeriodVerdict("account", p.accountPeriod, used); verdict != nil {
+		if verdict := configuredPeriodVerdict("account", p.accountPeriod, used, p.inflight.Before(inflight.ScopeAccount)); verdict != nil {
 			return verdict
 		}
 	}
@@ -249,17 +314,17 @@ func (p *quotaPolicy) checkBudgets() *quotaVerdict {
 		if err != nil {
 			return quotaUsageUnavailableVerdict("key", "period", p.tenantID, p.apiKeyID, err)
 		}
-		if verdict := configuredPeriodVerdict("key", p.keyPeriod, used); verdict != nil {
+		if verdict := configuredPeriodVerdict("key", p.keyPeriod, used, p.inflight.Before(inflight.ScopeKey)); verdict != nil {
 			return verdict
 		}
 	}
 	return p.checkPolicyCells()
 }
 
-func configuredPeriodVerdict(scope string, limits quota.PeriodSpendingLimits, used quota.PeriodSpendingUsage) *quotaVerdict {
+func configuredPeriodVerdict(scope string, limits quota.PeriodSpendingLimits, used quota.PeriodSpendingUsage, held inflight.Amounts) *quotaVerdict {
 	for _, period := range quota.OrderedPeriods {
 		limit := limits.Value(period)
-		current := used.Value(period)
+		current := used.Value(period) + held.Cost
 		if limit <= 0 || current < limit {
 			continue
 		}
@@ -271,11 +336,38 @@ func configuredPeriodVerdict(scope string, limits quota.PeriodSpendingLimits, us
 		if scope == "account" {
 			scopeLabel = "Account"
 		}
-		message := fmt.Sprintf("%s %s spending limit exceeded: $%.2f of $%.2f used.", scopeLabel, period, current, limit)
+		message := fmt.Sprintf("%s %s spending limit exceeded: $%.2f of $%.2f used.%s", scopeLabel, period, current, limit, inFlightNote(quota.MetricCost, held))
 		return periodQuotaVerdict(scope, period, limit, current, code, message).
 			withRetryAfter(windowResetWait(period, used.FiveHourWindowStart, time.Now()))
 	}
 	return nil
+}
+
+// inFlightNote says how much of a refused total is held by requests that are
+// still running, so a refusal caused by a burst does not read like usage the
+// key never had. It is empty when the requests in flight added nothing that
+// shows at the precision of the message.
+func inFlightNote(metric quota.Metric, held inflight.Amounts) string {
+	requests := "requests"
+	if held.Requests < 1.5 {
+		requests = "request"
+	}
+	switch {
+	case held.Requests < 0.5:
+		return ""
+	case metric == quota.MetricCost:
+		if held.Cost < 0.005 {
+			return ""
+		}
+		return fmt.Sprintf(" This includes about $%.2f reserved by %.0f %s still in flight.", held.Cost, held.Requests, requests)
+	case metric == quota.MetricTokens:
+		if held.Tokens < 0.5 {
+			return ""
+		}
+		return fmt.Sprintf(" This includes about %.0f tokens reserved by %.0f %s still in flight.", held.Tokens, held.Requests, requests)
+	default:
+		return fmt.Sprintf(" This includes %.0f %s still in flight.", held.Requests, requests)
+	}
 }
 
 // ─── Verdicts ───────────────────────────────────────────────────────────────

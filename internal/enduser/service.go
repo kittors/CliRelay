@@ -763,7 +763,7 @@ func (s *Service) ListKeys(ctx context.Context, tenantID, endUserID string) ([]A
 		out[i].DailySpendingUsed = used.Day
 		out[i].LifetimeSpendingUsed = used.Lifetime
 		out[i].PeriodSpending = quota.BuildPeriodSpending(out[i].PeriodSpendingLimits, used)
-		view := snapshot.UsageView(out[i].ModelRules)
+		view := keyUsageView(out[i].ID, snapshot, out[i].ModelRules)
 		out[i].QuotaUsage = &view
 		out[i].DailySpendingResetCount = resetCounts[out[i].ID]
 	}
