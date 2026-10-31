@@ -79,6 +79,8 @@ type extraction struct {
 	// (tool-call arguments): its offsets belong to the decoded string, not to
 	// the payload, so its text can be matched but not rewritten.
 	nested int
+	// signed is set while reading text a signature covers (see wordUnit.signed).
+	signed bool
 }
 
 func (x *extraction) nextTurn() { x.turn++ }

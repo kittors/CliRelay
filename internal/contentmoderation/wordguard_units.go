@@ -23,9 +23,26 @@ const (
 // one JSON string, and a word is not split across the strings of a request in
 // any way the model reads as one word.
 type wordUnit struct {
+	// class and user classify the text as the moderation backends see it; they
+	// are what a match reports as its source.
 	class Class
 	// user marks primary text of a user turn; see Segment.User.
 	user bool
+	// scopeClass and scopeUser are the role of the message the text came from,
+	// before the extractor reclassified it. The scan scopes are judged by these:
+	// a Claude Code <system-reminder> block is moved out of the user's own text
+	// for the backends (class says tool output), but it is still a block of a
+	// user message, and a caller who starts a text with that tag must not be able
+	// to take it out of a scope that covers the user's messages.
+	scopeClass Class
+	scopeUser  bool
+	// reminder says the extractor reclassified the text (it is a
+	// <system-reminder> block).
+	reminder bool
+	// signed says the text is covered by a signature the upstream checks (a
+	// replayed thinking block): changing a character of it makes the upstream
+	// refuse the request, so it is matched but never rewritten.
+	signed bool
 	// turn numbers the message the text came from; see Segment.Turn.
 	turn int
 	// text is the string's text as the client wrote it. It is not
@@ -44,8 +61,14 @@ func (x *extraction) recordUnit(class Class, user bool, text string, at gjson.Re
 	if collapsed == "" {
 		return
 	}
+	scopeClass, scopeUser := class, user
 	class, user = x.classify(class, user, collapsed)
-	unit := wordUnit{class: class, user: user, turn: x.turn, text: text}
+	unit := wordUnit{
+		class: class, user: user, turn: x.turn, text: text,
+		scopeClass: scopeClass, scopeUser: scopeUser,
+		reminder: class != scopeClass || user != scopeUser,
+		signed:   x.signed,
+	}
 	if kind == unitText && x.nested == 0 && at.Type == gjson.String && at.Index > 0 {
 		// The index gjson reports is trusted only after looking at the bytes it
 		// points at: a splice at a wrong offset would corrupt the request.
@@ -60,15 +83,23 @@ func (x *extraction) recordUnit(class Class, user bool, text string, at gjson.Re
 // newestUserTurn returns the turn of the newest user message. A request
 // without any user text falls back to its newest primary message, as the
 // moderation backends do (see splitNewestUserMessage).
+//
+// A <system-reminder> block does not make its message the newest one: Claude
+// Code attaches them to messages of its own, after the one the person typed.
+// They only decide when there is nothing else, so a request made of nothing but
+// such blocks still has a newest message to check.
 func newestUserTurn(units []wordUnit) (turn int, found bool) {
-	for i := len(units) - 1; i >= 0; i-- {
-		if units[i].class == ClassPrimary && units[i].user {
-			return units[i].turn, true
-		}
-	}
-	for i := len(units) - 1; i >= 0; i-- {
-		if units[i].class == ClassPrimary {
-			return units[i].turn, true
+	type pick func(wordUnit) bool
+	for _, accept := range []pick{
+		func(u wordUnit) bool { return !u.reminder && u.scopeClass == ClassPrimary && u.scopeUser },
+		func(u wordUnit) bool { return !u.reminder && u.scopeClass == ClassPrimary },
+		func(u wordUnit) bool { return u.scopeClass == ClassPrimary && u.scopeUser },
+		func(u wordUnit) bool { return u.scopeClass == ClassPrimary },
+	} {
+		for i := len(units) - 1; i >= 0; i-- {
+			if accept(units[i]) {
+				return units[i].turn, true
+			}
 		}
 	}
 	return 0, false
@@ -85,11 +116,15 @@ func unitsInScope(units []wordUnit, scope string) []int {
 		covered := true
 		switch scope {
 		case WordScanLastUser:
-			covered = found && unit.class == ClassPrimary && unit.turn == newest
+			// The newest message, and any reminder the caller put after it: such a
+			// block is not the newest message, but it is not for hiding text from
+			// a check of the newest one either.
+			covered = found && unit.scopeClass == ClassPrimary &&
+				(unit.turn == newest || (unit.reminder && unit.scopeUser && unit.turn > newest))
 		case WordScanAllUser:
-			covered = unit.class == ClassPrimary && unit.user
+			covered = unit.scopeClass == ClassPrimary && unit.scopeUser
 		case WordScanWithSystem:
-			covered = unit.class == ClassPrimary
+			covered = unit.scopeClass == ClassPrimary
 		}
 		if covered {
 			in = append(in, i)

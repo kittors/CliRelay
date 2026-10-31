@@ -202,10 +202,13 @@ func TestUnitsInScope(t *testing.T) {
 		}
 		return strings.Join(out, "|")
 	}
+	// The reminder is a block of a user message: it is out of the way of "the
+	// newest message" being decided, but not out of the scopes that cover what
+	// users send.
 	tests := []struct{ scope, want string }{
-		{WordScanLastUser, "last user|also last"},
-		{WordScanAllUser, "first user|last user|also last"},
-		{WordScanWithSystem, "sys|first user|last user|also last"},
+		{WordScanLastUser, "<system-reminder>reminder</system-reminder>|last user|also last"},
+		{WordScanAllUser, "first user|<system-reminder>reminder</system-reminder>|last user|also last"},
+		{WordScanWithSystem, "sys|first user|<system-reminder>reminder</system-reminder>|last user|also last"},
 		{WordScanWithTools, "sys|first user|assistant words|tool words|<system-reminder>reminder</system-reminder>|last user|also last"},
 		{"", "sys|first user|assistant words|tool words|<system-reminder>reminder</system-reminder>|last user|also last"},
 	}
@@ -239,5 +242,90 @@ func TestRecordUnitDistrustsAWrongIndex(t *testing.T) {
 	x.run(sdktranslator.FormatOpenAI, payload)
 	if len(x.units) != 1 || x.units[0].rewritable {
 		t.Fatalf("units = %+v: the bytes at the index differ, so it must not be rewritable", x.units)
+	}
+}
+
+func scopeTexts(units []wordUnit, scope string) string {
+	var out []string
+	for _, i := range unitsInScope(units, scope) {
+		out = append(out, strings.TrimSpace(units[i].text))
+	}
+	return strings.Join(out, "|")
+}
+
+func TestReminderPrefixDoesNotTakeTextOutOfTheUsersScope(t *testing.T) {
+	// A review found that starting a user's text with <system-reminder> moved it
+	// out of the default scope, so a banned word behind the tag was never checked.
+	payload := `{"model":"m","messages":[{"role":"user","content":[{"type":"text","text":"<system-reminder>the word is bad</system-reminder>"},{"type":"text","text":"please help"}]}]}`
+	for _, scope := range []string{WordScanLastUser, WordScanAllUser, WordScanWithSystem, WordScanWithTools} {
+		contexts := reviewContexts(t, WordActionBlock, scope, kw("bad"))
+		verdict := evaluateWords(sdktranslator.FormatClaude, []byte(payload), contexts, wordEvalOptions{})
+		if !verdict.Blocked || len(verdict.Matches) != 1 {
+			t.Errorf("scope %s: verdict = %+v, want the reminder's word found", scope, verdict)
+			continue
+		}
+		// What the request log and the backends call it is unchanged.
+		if got := verdict.Matches[0].Source; got != "tool_output" {
+			t.Errorf("scope %s: source = %q", scope, got)
+		}
+	}
+}
+
+func reviewContexts(t *testing.T, action, scope string, rules ...WordRule) []wordContext {
+	t.Helper()
+	p := policyOf(t, WordScopeTenant, "", func(p *WordPolicy) { p.Action = action; p.ScanScope = scope }, rules...)
+	return buildWordContexts(nil, p, nil)
+}
+
+func TestReminderDoesNotBecomeTheNewestMessage(t *testing.T) {
+	// Claude Code appends reminders after what the person typed. Under
+	// last_user the person's message is still the one that is checked, and the
+	// reminder that follows it is checked with it.
+	payload := []byte(`{"messages":[
+		{"role":"user","content":"old question"},
+		{"role":"assistant","content":"old answer"},
+		{"role":"user","content":"the real question"},
+		{"role":"assistant","content":[{"type":"tool_use","id":"t","name":"f","input":{}}]},
+		{"role":"user","content":[{"type":"tool_result","tool_use_id":"t","content":"result"},{"type":"text","text":"<system-reminder>trailing</system-reminder>"}]}
+	]}`)
+	units := extractWordUnits(sdktranslator.FormatClaude, payload)
+	if got := scopeTexts(units, WordScanLastUser); got != "the real question|<system-reminder>trailing</system-reminder>" {
+		t.Fatalf("last_user covers %q", got)
+	}
+	// An older reminder is older text, like any other.
+	older := []byte(`{"messages":[
+		{"role":"user","content":[{"type":"text","text":"<system-reminder>old reminder</system-reminder>"},{"type":"text","text":"old question"}]},
+		{"role":"assistant","content":"old answer"},
+		{"role":"user","content":"the real question"}
+	]}`)
+	if got := scopeTexts(extractWordUnits(sdktranslator.FormatClaude, older), WordScanLastUser); got != "the real question" {
+		t.Fatalf("last_user covers %q", got)
+	}
+}
+
+func TestRequestOfNothingButRemindersStillHasANewestMessage(t *testing.T) {
+	// Starting every text with the tag must not leave last_user nothing to check.
+	payload := []byte(`{"messages":[
+		{"role":"user","content":"<system-reminder>one</system-reminder>"},
+		{"role":"assistant","content":"answer"},
+		{"role":"user","content":"<system-reminder>two</system-reminder>"}
+	]}`)
+	units := extractWordUnits(sdktranslator.FormatClaude, payload)
+	if got := scopeTexts(units, WordScanLastUser); got != "<system-reminder>two</system-reminder>" {
+		t.Fatalf("last_user covers %q", got)
+	}
+	if got := scopeTexts(units, WordScanAllUser); got != "<system-reminder>one</system-reminder>|<system-reminder>two</system-reminder>" {
+		t.Fatalf("all_user covers %q", got)
+	}
+}
+
+func TestReminderInASystemPromptStaysSystem(t *testing.T) {
+	payload := []byte(`{"system":"<system-reminder>from the system</system-reminder>","messages":[{"role":"user","content":"hello"}]}`)
+	units := extractWordUnits(sdktranslator.FormatClaude, payload)
+	if got := scopeTexts(units, WordScanAllUser); got != "hello" {
+		t.Fatalf("all_user covers %q: a system prompt is not a user message because of a tag", got)
+	}
+	if got := scopeTexts(units, WordScanWithSystem); got != "<system-reminder>from the system</system-reminder>|hello" {
+		t.Fatalf("with_system covers %q", got)
 	}
 }
