@@ -8,6 +8,8 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -120,13 +122,51 @@ func runWordPolicyStoreChecks(t *testing.T, store *Store) {
 		if _, err := store.GetWordPolicy(ctx, "tenant-b", WordScopeKey, "key-1"); !errors.Is(err, ErrWordPolicyNotFound) {
 			t.Fatalf("tenant b read tenant a's key policy: %v", err)
 		}
-		list, err := store.ListWordKeyPolicies(ctx, "tenant-b")
-		if err != nil || len(list) != 0 {
-			t.Fatalf("tenant b key policies = %+v, %v", list, err)
+		// The listing holds the platform policy, the tenant's own and its keys', and
+		// nobody else's.
+		savedWordPolicy(t, store, platformWordTenantID(), WordPolicy{ScopeType: WordScopePlatform, Enabled: true, Action: WordActionLog, Rules: []WordRule{kw("p1"), kw("p2")}}, nil)
+		scopes := func(list []WordPolicySummary) string {
+			var out []string
+			for _, item := range list {
+				out = append(out, item.ScopeType+":"+item.ScopeID)
+			}
+			sort.Strings(out)
+			return strings.Join(out, ",")
 		}
-		list, err = store.ListWordKeyPolicies(ctx, "tenant-a")
-		if err != nil || len(list) != 1 || list[0].ScopeID != "key-1" || list[0].RuleCount != 1 || !list[0].Enabled {
-			t.Fatalf("tenant a key policies = %+v, %v", list, err)
+		list, err := store.ListWordPolicySummaries(ctx, "tenant-b")
+		if err != nil || scopes(list) != "platform:,tenant:" {
+			t.Fatalf("tenant b policies = %+v, %v", list, err)
+		}
+		list, err = store.ListWordPolicySummaries(ctx, "tenant-a")
+		if err != nil || scopes(list) != "key:key-1,platform:,tenant:" {
+			t.Fatalf("tenant a policies = %+v, %v", list, err)
+		}
+		for _, item := range list {
+			switch item.ScopeType {
+			case WordScopeKey:
+				if item.RuleCount != 1 || !item.Enabled || item.ReplyFilter != nil {
+					t.Fatalf("tenant a key policy = %+v", item)
+				}
+			case WordScopePlatform:
+				if item.RuleCount != 2 || item.Action != WordActionLog {
+					t.Fatalf("platform policy = %+v", item)
+				}
+			}
+		}
+		if list, err = store.ListWordPolicySummaries(ctx, "tenant-nobody"); err != nil || scopes(list) != "platform:" {
+			t.Fatalf("a tenant without policies sees %+v, %v", list, err)
+		}
+		// In the system tenant the platform policy and the tenant policy are two
+		// rows of one tenant; each is listed once.
+		savedWordPolicy(t, store, platformWordTenantID(), WordPolicy{ScopeType: WordScopeTenant, Enabled: true, ReplyFilter: boolPtr(true), Rules: []WordRule{kw("s1")}}, nil)
+		list, err = store.ListWordPolicySummaries(ctx, platformWordTenantID())
+		if err != nil || scopes(list) != "platform:,tenant:" {
+			t.Fatalf("system tenant policies = %+v, %v", list, err)
+		}
+		for _, item := range list {
+			if item.ScopeType == WordScopeTenant && (item.ReplyFilter == nil || !*item.ReplyFilter) {
+				t.Fatalf("the tenant policy lost its reply filter setting: %+v", item)
+			}
 		}
 	})
 

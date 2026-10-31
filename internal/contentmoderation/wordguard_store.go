@@ -18,8 +18,8 @@ import (
 // is one row with its rules as a JSON array: saving replaces the whole list
 // atomically, and the rules are only ever read as a list.
 //
-// The migration adds two tables and nothing else; no existing table or row is
-// touched, so an old build keeps running on the upgraded database.
+// The migration adds this one table and nothing else; no existing table or row
+// is touched, so an old build keeps running on the upgraded database.
 const wordPolicyTablesSQL = `
 CREATE TABLE IF NOT EXISTS content_moderation_word_policies (
   tenant_id TEXT NOT NULL,
@@ -47,13 +47,16 @@ func platformWordTenantID() string { return coreauth.NormalizedTenantID("") }
 
 // WordPolicySummary is a policy without its rules, for listings.
 type WordPolicySummary struct {
-	ScopeType string    `json:"scope_type"`
-	ScopeID   string    `json:"scope_id,omitempty"`
-	Enabled   bool      `json:"enabled"`
-	Action    string    `json:"action"`
-	RuleCount int       `json:"rule_count"`
-	Version   int64     `json:"version"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ScopeType string `json:"scope_type"`
+	ScopeID   string `json:"scope_id,omitempty"`
+	Enabled   bool   `json:"enabled"`
+	Action    string `json:"action"`
+	ScanScope string `json:"scan_scope"`
+	// ReplyFilter is nil when the policy leaves it to the layer below.
+	ReplyFilter *bool     `json:"reply_filter"`
+	RuleCount   int       `json:"rule_count"`
+	Version     int64     `json:"version"`
+	UpdatedAt   time.Time `json:"updated_at"`
 }
 
 const wordPolicyColumns = `tenant_id,scope_type,scope_id,enabled,action,replacement,scan_scope,reply_filter,fold_traditional_chinese,inherit_tenant,block_message,rules_json,version,created_at,updated_at`
@@ -203,26 +206,30 @@ func (s *Store) DeleteWordPolicy(ctx context.Context, tenantID, scopeType, scope
 	return nil
 }
 
-// ListWordKeyPolicies lists the API key policies of a tenant, without rules.
-func (s *Store) ListWordKeyPolicies(ctx context.Context, tenantID string) ([]WordPolicySummary, error) {
+// ListWordPolicySummaries lists, without their rules, the policies a tenant's
+// management view is made of: the platform policy, the tenant's own policy and
+// the policies of its API keys. Policies that were never saved are absent.
+func (s *Store) ListWordPolicySummaries(ctx context.Context, tenantID string) ([]WordPolicySummary, error) {
 	if s == nil || s.db == nil {
 		return nil, ErrUnavailable
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT scope_id,enabled,action,rule_count,version,updated_at FROM content_moderation_word_policies
-		WHERE tenant_id=$1 AND scope_type=$2 ORDER BY scope_id`, strings.TrimSpace(tenantID), WordScopeKey)
+	rows, err := s.db.QueryContext(ctx, `SELECT scope_type,scope_id,enabled,action,scan_scope,reply_filter,rule_count,version,updated_at FROM content_moderation_word_policies
+		WHERE (tenant_id=$1 AND scope_type=$2) OR (tenant_id=$3 AND (scope_type=$4 OR scope_type=$5))
+		ORDER BY scope_type, scope_id`,
+		platformWordTenantID(), WordScopePlatform, strings.TrimSpace(tenantID), WordScopeTenant, WordScopeKey)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	out := make([]WordPolicySummary, 0)
 	for rows.Next() {
-		summary := WordPolicySummary{ScopeType: WordScopeKey}
-		var enabled int
+		var summary WordPolicySummary
+		var enabled, reply int
 		var updatedAt string
-		if err := rows.Scan(&summary.ScopeID, &enabled, &summary.Action, &summary.RuleCount, &summary.Version, &updatedAt); err != nil {
+		if err := rows.Scan(&summary.ScopeType, &summary.ScopeID, &enabled, &summary.Action, &summary.ScanScope, &reply, &summary.RuleCount, &summary.Version, &updatedAt); err != nil {
 			return nil, err
 		}
-		summary.Enabled = enabled != 0
+		summary.Enabled, summary.ReplyFilter = enabled != 0, triFromColumn(reply)
 		summary.UpdatedAt = parseTime(updatedAt)
 		out = append(out, summary)
 	}
