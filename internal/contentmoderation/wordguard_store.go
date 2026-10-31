@@ -284,7 +284,7 @@ func (s *Store) LoadWordPolicies(ctx context.Context, tenantID, keyID string) (W
 	if keyID != "" {
 		remembered.Key = s.wordPolicies.get(keyKey)
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT tenant_id,scope_type,scope_id,version FROM content_moderation_word_policies
+	rows, err := s.db.QueryContext(ctx, `SELECT tenant_id,scope_type,scope_id,version,updated_at FROM content_moderation_word_policies
 		WHERE (tenant_id=$1 AND scope_type=$2 AND scope_id='')
 		   OR (tenant_id=$3 AND scope_type=$4 AND scope_id='')
 		   OR (tenant_id=$3 AND scope_type=$5 AND scope_id=$6)`,
@@ -292,17 +292,23 @@ func (s *Store) LoadWordPolicies(ctx context.Context, tenantID, keyID string) (W
 	if err != nil {
 		return remembered, err
 	}
+	// A policy that is deleted and created again starts over at version 1, so the
+	// version alone cannot say whether a cached copy is still the stored one: the
+	// time of the last save must match as well.
 	type header struct {
-		key     wordPolicyKey
-		version int64
+		key       wordPolicyKey
+		version   int64
+		updatedAt time.Time
 	}
 	var headers []header
 	for rows.Next() {
 		var h header
-		if err := rows.Scan(&h.key.tenantID, &h.key.scopeType, &h.key.scopeID, &h.version); err != nil {
+		var updatedAt string
+		if err := rows.Scan(&h.key.tenantID, &h.key.scopeType, &h.key.scopeID, &h.version, &updatedAt); err != nil {
 			_ = rows.Close()
 			return remembered, err
 		}
+		h.updatedAt = parseTime(updatedAt)
 		headers = append(headers, h)
 	}
 	if err := rows.Err(); err != nil {
@@ -313,7 +319,7 @@ func (s *Store) LoadWordPolicies(ctx context.Context, tenantID, keyID string) (W
 	var found WordPolicies
 	for _, h := range headers {
 		policy := s.wordPolicies.get(h.key)
-		if policy == nil || policy.Version != h.version {
+		if policy == nil || policy.Version != h.version || !policy.UpdatedAt.Equal(h.updatedAt) {
 			loaded, err := s.GetWordPolicy(ctx, h.key.tenantID, h.key.scopeType, h.key.scopeID)
 			if errors.Is(err, ErrWordPolicyNotFound) {
 				continue // deleted since the listing

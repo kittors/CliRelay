@@ -26,6 +26,11 @@ type DecisionEvaluator interface {
 type RuntimeModerator struct {
 	resolver  ProfileResolver
 	evaluator DecisionEvaluator
+	// words supplies the platform, tenant and API key word policies (see
+	// wordguard_runtime.go). It is the profile resolver itself when that can also
+	// load them; nil disables the word guard.
+	words          WordPolicyResolver
+	policyWarnedAt atomic.Int64
 
 	lastGoodMu sync.RWMutex
 	lastGood   map[resolutionKey]resolvedProfile
@@ -92,11 +97,15 @@ func NewRequestModerator(resolver ProfileResolver, evaluator DecisionEvaluator) 
 	if evaluator == nil {
 		evaluator = NewEvaluator(nil)
 	}
-	return &RuntimeModerator{
+	moderator := &RuntimeModerator{
 		resolver:  resolver,
 		evaluator: evaluator,
 		lastGood:  make(map[resolutionKey]resolvedProfile),
 	}
+	if words, ok := resolver.(WordPolicyResolver); ok {
+		moderator.words = words
+	}
+	return moderator
 }
 
 func (m *RuntimeModerator) counters(tenantID string) *tenantMetricCounters {

@@ -186,6 +186,26 @@ func runWordPolicyStoreChecks(t *testing.T, store *Store) {
 			t.Fatalf("a deleted policy must stop applying: %+v", got.Tenant)
 		}
 	})
+
+	// A policy that is deleted and created again starts over at version 1. A copy
+	// cached before must not be mistaken for it.
+	t.Run("a recreated policy is not served from a stale copy", func(t *testing.T) {
+		first := savedWordPolicy(t, store, "tenant-r", WordPolicy{ScopeType: WordScopeTenant, Enabled: true, Rules: []WordRule{kw("old")}}, nil)
+		if got, _ := store.LoadWordPolicies(ctx, "tenant-r", ""); got.Tenant == nil || got.Tenant.Rules[0].Pattern != "old" {
+			t.Fatalf("tenant = %+v", got.Tenant)
+		}
+		if err := NewStore(store.db).DeleteWordPolicy(ctx, "tenant-r", WordScopeTenant, ""); err != nil {
+			t.Fatal(err)
+		}
+		second := savedWordPolicy(t, NewStore(store.db), "tenant-r", WordPolicy{ScopeType: WordScopeTenant, Enabled: true, Rules: []WordRule{kw("new")}}, nil)
+		if second.Version != first.Version {
+			t.Fatalf("the test needs the same version twice: %d and %d", first.Version, second.Version)
+		}
+		got, _ := store.LoadWordPolicies(ctx, "tenant-r", "")
+		if got.Tenant == nil || got.Tenant.Rules[0].Pattern != "new" {
+			t.Fatalf("the cached copy of the deleted policy was served: %+v", got.Tenant)
+		}
+	})
 }
 
 func TestWordPolicyStoreSQLite(t *testing.T) {
