@@ -6,6 +6,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -222,56 +223,147 @@ func TestRegistryReadFailureKeepsWhatWasRead(t *testing.T) {
 }
 
 func TestRegistrySharesOneReadBetweenConcurrentRequests(t *testing.T) {
-	store := newMemStore()
-	store.put("tenant-a", toolOn())
-	store.loadGate = make(chan struct{})
-	r, _ := newTestRegistry(store)
+	synctest.Test(t, func(t *testing.T) {
+		store := newMemStore()
+		store.put("tenant-a", toolOn())
+		store.loadGate = make(chan struct{})
+		r, _ := newTestRegistry(store)
 
-	var wg sync.WaitGroup
-	results := make(chan bool, 20)
-	for i := 0; i < 20; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			results <- r.Effective("tenant-a", "").Any()
-		}()
-	}
-	// Let the goroutines pile up behind the one read.
-	time.Sleep(50 * time.Millisecond)
-	close(store.loadGate)
-	wg.Wait()
-	close(results)
-	for on := range results {
-		if !on {
-			t.Fatal("a request did not see the stored settings")
+		var wg sync.WaitGroup
+		results := make(chan bool, 20)
+		for i := 0; i < 20; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				results <- r.Effective("tenant-a", "").Any()
+			}()
 		}
-	}
-	if n := store.loads.Load(); n != 1 {
-		t.Fatalf("20 concurrent requests read the store %d times", n)
-	}
+		// Let the goroutines pile up behind the one read, which answers within
+		// the time a request waits for it.
+		time.Sleep(loadWait / 2)
+		close(store.loadGate)
+		wg.Wait()
+		close(results)
+		for on := range results {
+			if !on {
+				t.Fatal("a request did not see the stored settings")
+			}
+		}
+		if n := store.loads.Load(); n != 1 {
+			t.Fatalf("20 concurrent requests read the store %d times", n)
+		}
+	})
 }
 
-// A read that was in flight when the settings were invalidated must not put what
-// it read back: that is the row from before the change.
+// A read that was in flight when the settings were invalidated returns the row
+// from before the change: it must not put it back in the cache, and a request
+// that came after the invalidation must not be given it.
 func TestRegistryDoesNotCacheAReadThatRacedAnInvalidation(t *testing.T) {
-	store := newMemStore()
-	store.put("tenant-a", Settings{})
-	store.loadGate = make(chan struct{})
-	r, _ := newTestRegistry(store)
+	synctest.Test(t, func(t *testing.T) {
+		store := newMemStore()
+		store.put("tenant-a", Settings{})
+		store.loadGate = make(chan struct{})
+		r, _ := newTestRegistry(store)
 
-	done := make(chan Effective)
-	go func() { done <- r.Effective("tenant-a", "") }()
-	time.Sleep(50 * time.Millisecond) // the read is waiting on the gate, holding the old row
-	store.mu.Lock()
-	store.rows["tenant-a"] = Stored{Settings: toolOn(), Version: 2}
-	store.mu.Unlock()
-	r.Invalidate("tenant-a")
-	close(store.loadGate)
-	<-done
+		before := make(chan Effective)
+		go func() { before <- r.Effective("tenant-a", "") }()
+		synctest.Wait() // the read is waiting on the gate, holding the old row
+		store.mu.Lock()
+		store.rows["tenant-a"] = Stored{Settings: toolOn(), Version: 2}
+		store.mu.Unlock()
+		r.Invalidate("tenant-a")
+		after := make(chan Effective)
+		go func() { after <- r.Effective("tenant-a", "") }()
+		synctest.Wait()
+		close(store.loadGate)
+		<-before
 
-	if !r.Effective("tenant-a", "").Any() {
-		t.Fatal("the read that raced the invalidation put the old row back in the cache")
-	}
+		if !(<-after).Any() {
+			t.Fatal("a request after the invalidation was given the read that started before it")
+		}
+		if !r.Effective("tenant-a", "").Any() {
+			t.Fatal("the read that raced the invalidation put the old row back in the cache")
+		}
+	})
+}
+
+// The settings are read on the path of every inference request. A store that is
+// slow to answer costs a request at most loadWait: it goes on with what was read
+// before, or with everything off for a tenant never read, and the read that was
+// started finishes for the requests after it.
+func TestRegistryDoesNotHoldRequestsBehindASlowStore(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		store := newMemStore()
+		store.put("tenant-a", toolOn())
+		r, clock := newTestRegistry(store)
+		if !r.Effective("tenant-a", "").Any() {
+			t.Fatal("setup")
+		}
+
+		store.loadGate = make(chan struct{})
+		store.put("tenant-a", Settings{})
+		clock.advance(cacheTTL + time.Second)
+		for i := 0; i < 3; i++ {
+			start := time.Now()
+			if !r.Effective("tenant-a", "").Any() {
+				t.Fatal("a request waiting on a slow store lost the settings read before")
+			}
+			if waited := time.Since(start); waited != loadWait {
+				t.Fatalf("waited %s for a slow store, want %s", waited, loadWait)
+			}
+		}
+		if n := store.loads.Load(); n != 2 {
+			t.Fatalf("store read %d times, want the first read and one shared reload", n)
+		}
+
+		start := time.Now()
+		if r.Effective("tenant-new", "").Any() {
+			t.Fatal("a tenant never read must be off while its read is pending")
+		}
+		if waited := time.Since(start); waited != loadWait {
+			t.Fatalf("waited %s for a tenant never read, want %s", waited, loadWait)
+		}
+
+		store.put("tenant-new", toolOn())
+		close(store.loadGate)
+		synctest.Wait()
+		loads := store.loads.Load()
+		if r.Effective("tenant-a", "").Any() {
+			t.Fatal("the reload that finished in the background was not cached")
+		}
+		if r.Effective("tenant-new", "").Any() {
+			// Its read started before the row was written: it is the row the
+			// store had then, cached for the TTL like any other.
+			t.Fatal("tenant-new got a row written after its read started")
+		}
+		if n := store.loads.Load(); n != loads {
+			t.Fatalf("%d store reads after the background reads finished, want none", n-loads)
+		}
+	})
+}
+
+// An invalidation expires the entry rather than dropping it: a store that
+// cannot answer right after it falls back on what was read, as after an expiry.
+func TestRegistryInvalidationKeepsAFallback(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		store := newMemStore()
+		store.put("tenant-a", toolOn())
+		r, _ := newTestRegistry(store)
+		if !r.Effective("tenant-a", "").Any() {
+			t.Fatal("setup")
+		}
+		store.loadGate = make(chan struct{})
+		r.Invalidate("tenant-a")
+		if !r.Effective("tenant-a", "").Any() {
+			t.Fatal("an invalidation followed by a slow store switched protection off")
+		}
+		r.InvalidateAll()
+		if !r.Effective("tenant-a", "").Any() {
+			t.Fatal("InvalidateAll followed by a slow store switched protection off")
+		}
+		close(store.loadGate)
+		synctest.Wait()
+	})
 }
 
 func TestRegistryUpdate(t *testing.T) {

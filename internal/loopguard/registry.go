@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -23,6 +24,13 @@ const (
 	// outage does not add a failing query to every request.
 	retryAfterFailure = 2 * time.Second
 	loadTimeout       = 3 * time.Second
+	// loadWait bounds how long a request waits for a read of its tenant's
+	// settings. The settings are read on the path of every inference request,
+	// including the requests of tenants that never turned anything on, so a
+	// store that is slow to answer must not hold them: past loadWait the request
+	// goes on with the settings read before (everything off when there are
+	// none), and the read finishes in the background for the requests after it.
+	loadWait = 75 * time.Millisecond
 	// updateAttempts is how often an update is recomputed on top of a
 	// concurrent one before it gives up.
 	updateAttempts = 4
@@ -109,25 +117,33 @@ func (r *Registry) Persistent() bool {
 	return r.store != nil
 }
 
-// Invalidate drops tenantID's cached settings, for a change made by another
-// node: the next request reads them again.
+// Invalidate expires tenantID's cached settings, for a change made by another
+// node: the next request reads them again. What was read stays as the fallback
+// for a store that cannot answer in time, as it does when an entry expires.
 func (r *Registry) Invalidate(tenantID string) {
 	if r == nil {
 		return
 	}
+	tenantID = normalizeTenant(tenantID)
 	r.mu.Lock()
-	delete(r.entries, normalizeTenant(tenantID))
+	if cached, ok := r.entries[tenantID]; ok {
+		cached.until = time.Time{}
+		r.entries[tenantID] = cached
+	}
 	r.gen++
 	r.mu.Unlock()
 }
 
-// InvalidateAll drops every cached tenant, for a resync after missed events.
+// InvalidateAll expires every cached tenant, for a resync after missed events.
 func (r *Registry) InvalidateAll() {
 	if r == nil {
 		return
 	}
 	r.mu.Lock()
-	r.entries = make(map[string]entry)
+	for tenantID, cached := range r.entries {
+		cached.until = time.Time{}
+		r.entries[tenantID] = cached
+	}
 	r.gen++
 	r.mu.Unlock()
 }
@@ -141,7 +157,7 @@ func (r *Registry) Effective(tenantID, keyID string) Effective {
 
 // For returns the settings of tenantID: those it has stored, or none (everything
 // off) when it has stored nothing or the store cannot be read and nothing was
-// read before.
+// read before. It waits for the store at most loadWait.
 func (r *Registry) For(tenantID string) Settings {
 	if r == nil {
 		return Settings{}
@@ -156,13 +172,22 @@ func (r *Registry) For(tenantID string) Settings {
 	if now := r.now(); now.Before(cached.until) {
 		return cached.settings
 	}
-	// Expired or absent. Concurrent callers share one read; those that have an
-	// expired entry to fall back on still wait for it, which is one query per
-	// tenant per TTL.
-	v, _, _ := r.loads.Do(tenantID, func() (any, error) {
+	// Expired, invalidated or never read. Concurrent callers share one read,
+	// which is one query per tenant per TTL. The generation is part of the key:
+	// a read that started before an invalidation or a write returns the row as
+	// it was then, so a request that came after must not join it.
+	key := tenantID + "\x00" + strconv.FormatUint(gen, 10)
+	loaded := r.loads.DoChan(key, func() (any, error) {
 		return r.reload(tenantID, store, gen, cached), nil
 	})
-	return v.(Settings)
+	wait := time.NewTimer(loadWait)
+	defer wait.Stop()
+	select {
+	case result := <-loaded:
+		return result.Val.(Settings)
+	case <-wait.C:
+		return cached.settings
+	}
 }
 
 func (r *Registry) reload(tenantID string, store Store, gen uint64, previous entry) Settings {
