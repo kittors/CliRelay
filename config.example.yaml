@@ -462,20 +462,20 @@ streaming:
 #     base-url: "https://api.minimax.io/anthropic"
 #     skip-anthropic-processing: true
 #     models:
+#       - name: "MiniMax-M3.1-Flash"
+#         alias: "MiniMax-M3.1-Flash"
 #       - name: "MiniMax-M3"
 #         alias: "MiniMax-M3"
-#       - name: "MiniMax-M2.7"
-#         alias: "MiniMax-M2.7"
 #   # MiniMax China API docs: https://platform.minimaxi.com/docs/api-reference/api-overview
 #   - name: "minimax-cn-anthropic"
 #     api-key: "<MINIMAX_API_KEY>"
 #     base-url: "https://api.minimaxi.com/anthropic"
 #     skip-anthropic-processing: true
 #     models:
+#       - name: "MiniMax-M3.1-Flash"
+#         alias: "MiniMax-M3.1-Flash"
 #       - name: "MiniMax-M3"
 #         alias: "MiniMax-M3"
-#       - name: "MiniMax-M2.7"
-#         alias: "MiniMax-M2.7"
 
 # Default headers for Claude API requests. Update when Claude Code releases new versions.
 # These are used as fallbacks when the client does not send its own headers.
@@ -522,19 +522,19 @@ streaming:
 #     api-key-entries:
 #       - api-key: "<MINIMAX_API_KEY>"
 #     models:
+#       - name: "MiniMax-M3.1-Flash"
+#         alias: "MiniMax-M3.1-Flash"
 #       - name: "MiniMax-M3"
 #         alias: "MiniMax-M3"
-#       - name: "MiniMax-M2.7"
-#         alias: "MiniMax-M2.7"
 #   - name: "minimax-cn"
 #     base-url: "https://api.minimaxi.com/v1"
 #     api-key-entries:
 #       - api-key: "<MINIMAX_API_KEY>"
 #     models:
+#       - name: "MiniMax-M3.1-Flash"
+#         alias: "MiniMax-M3.1-Flash"
 #       - name: "MiniMax-M3"
 #         alias: "MiniMax-M3"
-#       - name: "MiniMax-M2.7"
-#         alias: "MiniMax-M2.7"
 
 # Vertex API keys (Vertex-compatible endpoints, use API key + base URL)
 # vertex-api-key:
