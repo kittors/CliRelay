@@ -41,7 +41,7 @@ var (
 	geminiUARe       = regexp.MustCompile(`(?i)^google-api-nodejs-client/([0-9]+(?:\.[0-9]+){0,3})`)
 	xaiTokenVerRe    = regexp.MustCompile(`(?i)\b([a-z0-9_.-]*(?:grok|xai)[a-z0-9_.-]*)/([0-9]+(?:\.[0-9]+){0,3})(?:[-+][a-z0-9_.-]+)?`)
 	kimiTokenVerRe   = regexp.MustCompile(`(?i)\b([a-z0-9_.-]*kimi[a-z0-9_.-]*)/([0-9]+(?:\.[0-9]+){0,3})(?:[-+][a-z0-9_.-]+)?`)
-	antigravityUARe  = regexp.MustCompile(`(?i)(?:vscode/[^\s]+\s+)?\(?antigravity/([0-9]+(?:\.[0-9]+){0,3})\)?`)
+	antigravityUARe  = regexp.MustCompile(`(?i)(?:vscode/[^\s]+\s+)?\(?antigravity/(?:(?:hub|cli)/)?([0-9]+(?:\.[0-9]+){0,3})\)?`)
 )
 
 func ExtractObservation(input LearnInput) (Observation, bool) {

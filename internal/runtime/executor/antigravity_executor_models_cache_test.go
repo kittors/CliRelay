@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -183,5 +184,37 @@ func TestFetchAntigravityModels_UsesProjectAndParsesCurrentCatalog(t *testing.T)
 	}
 	if _, ok := ids["chat_23310"]; ok {
 		t.Fatalf("internal chat model should not be registered")
+	}
+}
+
+// Without thinking support on a discovered model, ApplyThinking drops the
+// client's reasoning effort, which Gemini 4 Argon takes in low/medium/high.
+func TestFetchAntigravityModels_DiscoveredGemini4KeepsThinkingLevels(t *testing.T) {
+	resetAntigravityPrimaryModelsCacheForTest()
+	t.Cleanup(resetAntigravityPrimaryModelsCacheForTest)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"models": {"gemini-4-argon-high": {"displayName": "Gemini 4 Argon (High)", "maxTokens": 1048576}}}`))
+	}))
+	defer srv.Close()
+
+	auth := &cliproxyauth.Auth{
+		ID:         "ag-gemini4",
+		Provider:   "antigravity",
+		Attributes: map[string]string{"base_url": srv.URL},
+		Metadata: map[string]any{
+			"access_token": "access-token",
+			"expired":      time.Now().Add(time.Hour).Format(time.RFC3339),
+		},
+	}
+
+	models := FetchAntigravityModels(context.Background(), auth, nil)
+	if len(models) != 1 || models[0].ID != "gemini-4-argon-high" {
+		t.Fatalf("models = %#v, want gemini-4-argon-high", models)
+	}
+	thinking := models[0].Thinking
+	if thinking == nil || strings.Join(thinking.Levels, ",") != "low,medium,high" {
+		t.Fatalf("gemini-4-argon-high thinking = %+v, want levels low,medium,high", thinking)
 	}
 }
