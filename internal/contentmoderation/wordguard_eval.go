@@ -20,9 +20,11 @@ const (
 // Reasons a request is blocked other than a hit under the block action.
 const (
 	// WordReasonUnrewritable: a hit under the replace action sits where it
-	// cannot be replaced (an object key, JSON nested in a string, text that is not
-	// valid UTF-8). Letting it through would defeat the policy, so the request is
-	// refused instead.
+	// cannot be replaced (text that is not valid UTF-8, JSON nested too deeply, a
+	// place in the request that could not be determined). Object keys and the JSON
+	// inside a tool call's arguments are not among these: they are rewritten, see
+	// rewriteWordUnits. Letting an unrewritable hit through would defeat the
+	// policy, so the request is refused instead.
 	WordReasonUnrewritable = "unrewritable"
 	// WordReasonRewriteInvalid: the rewritten body failed its checks. It is
 	// refused rather than sent on.
