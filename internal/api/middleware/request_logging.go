@@ -48,6 +48,10 @@ func RequestLoggingMiddleware(logger logging.RequestLogger) gin.HandlerFunc {
 		diagnostic := diagnostics.EnsureGin(c, requestID)
 		if diagnostic != nil {
 			diagnostic.UpdateRequest(c.Request)
+			// Deferred so the request leaves the in-flight list, and any usage
+			// record its scheduler still holds goes out, however it ends.
+			endInFlight := diagnostics.BeginInFlight(diagnostic)
+			defer endInFlight()
 		}
 
 		if wrapper := requestLoggingExistingWrapper(c); wrapper != nil {
