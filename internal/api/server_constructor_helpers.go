@@ -21,6 +21,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/loopguard"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/managementasset"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/observability"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v6/sdk/access"
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/api/handlers"
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
@@ -167,6 +168,7 @@ func (s *Server) applyInitialRuntimeConfig(cfg *config.Config, authManager *auth
 	s.oldConfigYaml, _ = yaml.Marshal(cfg)
 	s.applyAccessConfig(nil, cfg)
 	if authManager != nil {
+		usage.InstallSharedAccountMasking(authManager)
 		authManager.SetRetryConfig(cfg.RequestRetry, time.Duration(cfg.MaxRetryInterval)*time.Second)
 		authManager.SetAccountConcurrencyConfig(cfg.AccountConcurrency.WaitTimeout(), cfg.AccountConcurrency.QueueDepth())
 		authManager.SetBusyWaitConfig(cfg.Streaming.BusyWaitMaxWaiters)

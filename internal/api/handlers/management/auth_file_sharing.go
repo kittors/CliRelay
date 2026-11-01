@@ -54,6 +54,12 @@ var sharedAuthFileKeys = []string{
 }
 
 func sharedAuthFileEntries(auths []*coreauth.Auth) []map[string]any {
+	byID := make(map[string]*coreauth.Auth, len(auths))
+	for _, auth := range auths {
+		if auth != nil {
+			byID[auth.ID] = auth
+		}
+	}
 	entries := managementauthfiles.ListEntries(auths, managementauthfiles.EntryOptions{})
 	out := make([]map[string]any, 0, len(entries))
 	for _, entry := range entries {
@@ -63,10 +69,37 @@ func sharedAuthFileEntries(auths []*coreauth.Auth) []map[string]any {
 				shared[key] = value
 			}
 		}
+		if auth := byID[fmt.Sprint(entry["id"])]; auth != nil {
+			hideSharedAccountIdentity(shared, auth)
+		}
 		shared["shared"] = true
 		out = append(out, shared)
 	}
 	return out
+}
+
+// hideSharedAccountIdentity replaces what identifies a shared account at its
+// upstream (the login email, and the credential id and file name built from
+// it) with the stand-ins every tenant view uses (coreauth.Auth.SharedName and
+// SharedID); status messages that quote the account are rewritten the same way.
+func hideSharedAccountIdentity(entry map[string]any, auth *coreauth.Auth) {
+	delete(entry, "email")
+	if pairs := auth.SharedStandIns(); len(pairs) > 0 {
+		args := make([]string, 0, 2*len(pairs))
+		for _, pair := range pairs {
+			args = append(args, pair[0], pair[1])
+		}
+		replacer := strings.NewReplacer(args...)
+		for key, value := range entry {
+			if text, ok := value.(string); ok {
+				entry[key] = replacer.Replace(text)
+			}
+		}
+	}
+	name := auth.SharedName()
+	entry["id"] = auth.SharedID()
+	entry["name"] = name
+	entry["label"] = name
 }
 
 // decorateAuthFilesResponse adds the sharing view to a GET /auth-files body:

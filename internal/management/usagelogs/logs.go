@@ -34,6 +34,9 @@ func (s *Service) ManagementLogs(input ManagementLogQueryInput) (map[string]any,
 		if channelName := displayChannelNameForLog(*item, maps.channelNameMap, maps.authIndexChannelMap, maps.ambiguousAuthIndexChannelMap); channelName != "" {
 			item.ChannelName = channelName
 		}
+		if name, shared := maps.sharedAuthIndexName[item.AuthIndex]; shared {
+			item.ChannelName, item.Source = name, name
+		}
 		enrichLogRowChannelMeta(item, maps.authMetaByIndex, maps.authMetaBySubject)
 	}
 

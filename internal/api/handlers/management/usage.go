@@ -8,7 +8,21 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 )
+
+// systemUsageOnly answers 403 unless the caller acts for the system tenant.
+// The in-memory statistics behind /usage, /usage/export and /usage/import are
+// one process-wide aggregate of every tenant's requests (keys, accounts and
+// their sources), so monitor.read in a tenant must not reach them; tenants read
+// their own usage from the request log endpoints.
+func systemUsageOnly(c *gin.Context) bool {
+	if coreauth.NormalizedTenantID(effectiveTenantID(c)) == coreauth.NormalizedTenantID("") {
+		return true
+	}
+	c.JSON(http.StatusForbidden, gin.H{"error": "the process-wide usage statistics are only available to the platform"})
+	return false
+}
 
 type usageExportPayload struct {
 	Version    int                      `json:"version"`
@@ -23,6 +37,9 @@ type usageImportPayload struct {
 
 // GetUsageStatistics returns the in-memory request statistics snapshot.
 func (h *Handler) GetUsageStatistics(c *gin.Context) {
+	if !systemUsageOnly(c) {
+		return
+	}
 	var snapshot usage.StatisticsSnapshot
 	if h != nil && h.usageStats != nil {
 		snapshot = h.usageStats.Snapshot()
@@ -35,6 +52,9 @@ func (h *Handler) GetUsageStatistics(c *gin.Context) {
 
 // ExportUsageStatistics returns a complete usage snapshot for backup/migration.
 func (h *Handler) ExportUsageStatistics(c *gin.Context) {
+	if !systemUsageOnly(c) {
+		return
+	}
 	var snapshot usage.StatisticsSnapshot
 	if h != nil && h.usageStats != nil {
 		snapshot = h.usageStats.Snapshot()
@@ -142,6 +162,9 @@ func aggregatePublicAPISnapshots(items map[string]usage.APISnapshot, buckets []s
 
 // ImportUsageStatistics merges a previously exported usage snapshot into memory.
 func (h *Handler) ImportUsageStatistics(c *gin.Context) {
+	if !systemUsageOnly(c) {
+		return
+	}
 	if h == nil || h.usageStats == nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "usage statistics unavailable"})
 		return

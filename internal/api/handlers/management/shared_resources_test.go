@@ -370,8 +370,16 @@ func TestAuthFileSharingGrantsSystemCredentialsReadOnly(t *testing.T) {
 		t.Fatalf("tenant A shared files = %v", tenantView.SharedFiles)
 	}
 	shared := tenantView.SharedFiles[0]
-	if shared["id"] != "codex-platform.json" || shared["shared"] != true || shared["label"] != "acct-codex-platform.json" {
+	// The tenant sees the platform's label, not who the account is: the
+	// credential id becomes a stand-in and the login email is dropped.
+	if id, _ := shared["id"].(string); !strings.HasPrefix(id, "shared-") || shared["shared"] != true || shared["label"] != "acct-codex-platform.json" {
 		t.Fatalf("shared entry = %v", shared)
+	}
+	if _, leaked := shared["email"]; leaked {
+		t.Fatalf("shared entry carries the account's email: %v", shared)
+	}
+	if encoded, _ := json.Marshal(shared); strings.Contains(string(encoded), "@example.com") {
+		t.Fatalf("shared entry names the account's address: %s", encoded)
 	}
 	if _, leaked := shared["path"]; leaked {
 		t.Fatalf("shared entry carries the owner's file path: %v", shared)
