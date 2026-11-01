@@ -284,8 +284,9 @@ func TestMarkResultClientErrorsAndTransportFailuresDoNotCool(t *testing.T) {
 	}
 }
 
-// The authorization-class statuses keep their fixed parks; a hint on them is not
-// read (a 401 is not going to clear itself in the seconds a header names).
+// The authorization-class statuses park for a fixed time the first time; a hint
+// on them is not read (a 401 is not going to clear itself in the seconds a
+// header names). A bare 404 starts short: it may be a relay's routing miss.
 func TestMarkResultFixedParksAreUnchanged(t *testing.T) {
 	setGlobalCoolingDisabled(t, false)
 	cases := []struct {
@@ -298,9 +299,9 @@ func TestMarkResultFixedParksAreUnchanged(t *testing.T) {
 		{name: "401 with Retry-After", err: &Error{HTTPStatus: 401, Message: "invalid api key"}, headers: retryHeaders("Retry-After", "5"), want: 30 * time.Minute},
 		{name: "402", err: &Error{HTTPStatus: 402, Message: "payment required"}, want: 30 * time.Minute},
 		{name: "403", err: &Error{HTTPStatus: 403, Message: "forbidden"}, want: 30 * time.Minute},
-		{name: "bare 404", err: &Error{HTTPStatus: 404, Message: "not found"}, want: 12 * time.Hour},
+		{name: "bare 404", err: &Error{HTTPStatus: 404, Message: "not found"}, want: 10 * time.Minute},
 		{name: "404 that says the model is missing", err: &Error{HTTPStatus: 404, Message: `{"error":{"code":"model_not_found","message":"The model glm-5 does not exist"}}`}, want: 12 * time.Hour},
-		{name: "404 with Retry-After", err: &Error{HTTPStatus: 404, Message: "not found"}, headers: retryHeaders("Retry-After", "5"), want: 12 * time.Hour},
+		{name: "404 with Retry-After", err: &Error{HTTPStatus: 404, Message: "not found"}, headers: retryHeaders("Retry-After", "5"), want: 10 * time.Minute},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

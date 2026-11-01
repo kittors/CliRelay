@@ -88,6 +88,9 @@ type Detail struct {
 	// that carry no cache accounting at all leave it false, and their requests
 	// count as "unknown" rather than as cache misses in hit rates.
 	CacheReported bool
+	// CacheWrite1hTokens is the part of CacheWriteTokens written to Anthropic's
+	// one-hour cache, which costs more to write than the five-minute one.
+	CacheWrite1hTokens int64
 }
 
 // Plugin consumes usage records emitted by the proxy runtime.

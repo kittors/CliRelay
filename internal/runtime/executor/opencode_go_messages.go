@@ -180,11 +180,12 @@ func (e *OpenCodeGoExecutor) executeMessagesStream(ctx context.Context, auth *cl
 		scanner := bufio.NewScanner(httpResp.Body)
 		scanner.Buffer(nil, 52_428_800)
 		var param any
+		streamUsage := &claudeStreamUsage{}
 		for scanner.Scan() {
 			line := scanner.Bytes()
 			recorder.AppendResponseChunk(line)
 			reporter.appendOutputChunk(line)
-			if detail, ok := parseClaudeStreamUsage(line); ok {
+			if detail, ok := streamUsage.observe(line); ok {
 				reporter.publish(execCtx.Context, detail)
 			}
 			if execCtx.SourceFormat == execCtx.Execution.TargetFormat {
