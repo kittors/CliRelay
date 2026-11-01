@@ -365,3 +365,26 @@ func TestSecretMaskingRegistryCachesAndKeepsTheLastReadOnFailure(t *testing.T) {
 		t.Fatal("a failed read switched masking off")
 	}
 }
+
+// One request's executions share its reply filter; their streams restore at
+// the same time. Run with -race.
+func TestSecretReplyIsSafeToShareBetweenStreams(t *testing.T) {
+	table := testTable(1)
+	key := table.placeholder(secretAPIKey, testOpenAIKey)
+	reply := newSecretReply(table, sdktranslator.FormatClaude)
+	var wg sync.WaitGroup
+	for range 4 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			stream := reply.NewStream()
+			var out [][]byte
+			out = append(out, stream.Push([]byte(claudeText(0, "k="+key)))...)
+			out = append(out, stream.Flush()...)
+			if got := readerOf(sdktranslator.FormatClaude, out); got != "k="+testOpenAIKey {
+				t.Errorf("the client reads %q", got)
+			}
+		}()
+	}
+	wg.Wait()
+}

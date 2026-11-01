@@ -61,13 +61,21 @@ func (t *secretTable) restore(text string) string {
 		return text
 	}
 	if t.replacer == nil {
-		pairs := make([]string, 0, 2*len(t.values))
-		for p, value := range t.values {
-			pairs = append(pairs, p, value)
-		}
-		t.replacer = strings.NewReplacer(pairs...)
+		t.seal()
 	}
 	return t.replacer.Replace(text)
+}
+
+// seal makes the replacer restore uses. The table is read-only after it: the
+// reply filters of every execution of one request share the table (the
+// request guard's outcome is handed from one execution to the next), and must
+// not build it at the same time.
+func (t *secretTable) seal() {
+	pairs := make([]string, 0, 2*len(t.values))
+	for p, value := range t.values {
+		pairs = append(pairs, p, value)
+	}
+	t.replacer = strings.NewReplacer(pairs...)
 }
 
 // partialTail returns where the end of text could be the start of one of the
