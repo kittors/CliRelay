@@ -51,7 +51,12 @@ func (h *Handler) secretMaskingView(settings contentmoderation.SecretMaskingSett
 // GetSecretMasking returns the secret masking switch of the tenant the session
 // acts in.
 func (h *Handler) GetSecretMasking(c *gin.Context) {
-	c.JSON(http.StatusOK, h.secretMaskingView(h.secretMaskingRegistry().For(effectiveTenantID(c))))
+	settings, err := h.secretMaskingRegistry().For(effectiveTenantID(c))
+	if err != nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": gin.H{"code": "secret_masking_unavailable", "message": "Secret masking settings are temporarily unavailable; retry after the settings store recovers."}})
+		return
+	}
+	c.JSON(http.StatusOK, h.secretMaskingView(settings))
 }
 
 // PutSecretMasking switches the tenant's secret masking on or off.

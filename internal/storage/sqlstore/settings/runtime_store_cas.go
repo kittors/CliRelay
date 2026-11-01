@@ -37,6 +37,9 @@ func (s RuntimeSettingsStore) TenantID() string { return s.tenantID }
 // Load returns one stored setting. A read that fails is logged and reported as
 // no setting; LoadContext tells the two apart.
 func (s RuntimeSettingsStore) Load(key string) (Entry, bool) {
+	if s.db == nil {
+		return Entry{}, false
+	}
 	entry, ok, err := s.LoadContext(context.Background(), key)
 	if err != nil {
 		log.Warnf("sqlite/settings: load runtime setting %s: %v", key, err)
@@ -45,10 +48,10 @@ func (s RuntimeSettingsStore) Load(key string) (Entry, bool) {
 }
 
 // LoadContext returns one stored setting, false when there is none, and the
-// error of a read that failed.
+// error of a read that failed (including an unavailable database).
 func (s RuntimeSettingsStore) LoadContext(ctx context.Context, key string) (Entry, bool, error) {
 	if s.db == nil {
-		return Entry{}, false, nil
+		return Entry{}, false, errors.New("runtime settings store is unavailable")
 	}
 	var (
 		payload string

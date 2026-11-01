@@ -60,6 +60,11 @@ var ErrSecretMaskingNotPersistent = errors.New("secret masking settings cannot b
 // stored settings are no longer at the version they were read at.
 var ErrSecretMaskingConflict = errors.New("secret masking settings were changed by someone else while being saved")
 
+// ErrSecretMaskingUnavailable means the stored policy could not be established.
+// Callers may keep masking with a previously enabled policy, but must not treat
+// an unknown or stale-disabled policy as permission to send plaintext.
+var ErrSecretMaskingUnavailable = errors.New("secret masking settings are temporarily unavailable")
+
 // SecretMaskingStore loads and saves a tenant's settings. It is an interface
 // so this package, which sits on the request path, does not depend on the
 // settings store that implements it.
@@ -85,14 +90,14 @@ const (
 	// secretMaskingRefreshWait bounds how long a request waits for its tenant's
 	// settings to be read again. Every inference request reads them, those of
 	// tenants that never switched masking on included, so a slow store must not
-	// hold them: the request goes on with the settings read before, and the read
-	// finishes in the background.
+	// hold them indefinitely: only a previously enabled policy can continue
+	// masking while the refresh finishes; an uncertain disabled policy refuses.
 	secretMaskingRefreshWait = 75 * time.Millisecond
 	// secretMaskingFirstReadWait is the wait while nothing has been read for the
 	// tenant yet. Masking may be on, and going on without the settings would
 	// send the tenant's secrets upstream, so the first request waits for a slow
-	// store. A store that does not answer at all is taken as masking off for as
-	// long as it fails: the word guard fails open the same way.
+	// store. A timeout or failed first read is unknown, never masking off; the
+	// request is refused until the settings can be established.
 	secretMaskingFirstReadWait = time.Second
 	// secretMaskingUpdateAttempts is how often a write is retried on top of a
 	// concurrent one before it gives up.
@@ -101,6 +106,7 @@ const (
 
 type secretMaskingEntry struct {
 	settings SecretMaskingSettings
+	err      error // an unknown policy must not be mistaken for masking disabled
 	// until is when the entry stops being served without a read.
 	until time.Time
 	// read says the settings came from the store at least once.
@@ -187,20 +193,22 @@ func (r *SecretMaskingRegistry) InvalidateAll() {
 
 // For returns the settings of tenantID, from the cache unless the entry has
 // expired; see secretMaskingRefreshWait and secretMaskingFirstReadWait for how
-// long it waits for the store.
-func (r *SecretMaskingRegistry) For(tenantID string) SecretMaskingSettings {
+// long it waits for the store. Errors remain explicit even when last-known
+// settings are available. An enabled last-known policy can still mask safely;
+// an unknown/stale-disabled policy must not authorize unmasked forwarding.
+func (r *SecretMaskingRegistry) For(tenantID string) (SecretMaskingSettings, error) {
 	if r == nil {
-		return SecretMaskingSettings{}
+		return SecretMaskingSettings{}, nil
 	}
 	tenantID = configsync.NormalizeTenantID(tenantID)
 	r.mu.RLock()
 	store, cached, gen := r.store, r.entries[tenantID], r.gen
 	r.mu.RUnlock()
 	if store == nil {
-		return SecretMaskingSettings{}
+		return SecretMaskingSettings{}, nil
 	}
 	if r.now().Before(cached.until) {
-		return cached.settings
+		return cached.settings, cached.err
 	}
 	// Concurrent callers share one read. The generation is part of the key: a
 	// read that started before an invalidation or a write returns the row as it
@@ -217,13 +225,14 @@ func (r *SecretMaskingRegistry) For(tenantID string) SecretMaskingSettings {
 	defer wait.Stop()
 	select {
 	case result := <-loaded:
-		return result.Val.(SecretMaskingSettings)
+		entry := result.Val.(secretMaskingEntry)
+		return entry.settings, entry.err
 	case <-wait.C:
-		return cached.settings
+		return cached.settings, ErrSecretMaskingUnavailable
 	}
 }
 
-func (r *SecretMaskingRegistry) reload(tenantID string, store SecretMaskingStore, gen uint64, previous secretMaskingEntry) SecretMaskingSettings {
+func (r *SecretMaskingRegistry) reload(tenantID string, store SecretMaskingStore, gen uint64, previous secretMaskingEntry) secretMaskingEntry {
 	ctx, cancel := context.WithTimeout(context.Background(), secretMaskingLoadTimeout)
 	defer cancel()
 	settings, _, err := store.Load(ctx, tenantID)
@@ -233,14 +242,14 @@ func (r *SecretMaskingRegistry) reload(tenantID string, store SecretMaskingStore
 		// Keep what was last read, if anything: a store that cannot be read for a
 		// moment must not switch a tenant's masking off.
 		log.WithError(err).WithField("tenant_id", tenantID).Warn("secret masking: stored settings are unreadable; using the last ones read")
-		next = secretMaskingEntry{settings: previous.settings, until: now.Add(secretMaskingRetryAfterFailure), read: previous.read}
+		next = secretMaskingEntry{settings: previous.settings, until: now.Add(secretMaskingRetryAfterFailure), read: previous.read, err: ErrSecretMaskingUnavailable}
 	}
 	r.mu.Lock()
 	if r.gen == gen {
 		r.entries[tenantID] = next
 	}
 	r.mu.Unlock()
-	return next.settings
+	return next
 }
 
 // SetEnabled switches masking on or off for tenantID and returns the settings

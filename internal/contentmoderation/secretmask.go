@@ -107,9 +107,9 @@ func (t *secretTable) partialTail(text string) int {
 // failure says why a request that holds a secret could not be rewritten; such
 // a request must not be sent.
 //
-// It reads the request as the word guard does (extractWordUnits), so it sees
-// the same text the model reads, the arguments of tool calls included, and
-// leaves the protocol alone. Text a signature covers (a replayed thinking
+// It shares the word guard conversation walk, adds tool descriptions, and treats
+// arbitrary tool arguments as data rather than protocol metadata. The actual
+// protocol is left alone. Text a signature covers (a replayed thinking
 // block) is never changed: the upstream would refuse the request.
 func maskRequestSecrets(format sdktranslator.Format, body []byte, table *secretTable) (out []byte, masked int, failure string) {
 	type slot struct {
@@ -118,7 +118,7 @@ func maskRequestSecrets(format sdktranslator.Format, body []byte, table *secretT
 	}
 	done := make(map[slot]bool)
 	var patches docPatches
-	for _, unit := range extractWordUnits(format, body) {
+	for _, unit := range extractSecretUnits(format, body) {
 		if unit.signed {
 			continue
 		}
