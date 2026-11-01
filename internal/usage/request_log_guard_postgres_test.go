@@ -33,6 +33,9 @@ func TestPostgresRequestLogGuardKind(t *testing.T) {
 
 	now := time.Now().UTC()
 	at := func(offset time.Duration) time.Time { return now.Add(-2*time.Hour + offset) }
+	// Days counts calendar days from midnight, not hours: between 00:00 and
+	// 02:00 the rows above fall on yesterday, so the queries look back two.
+	const days = 2
 	// The rows loop protection ends go through the write path itself.
 	insert := func(model, kind string, failed bool, offset time.Duration) {
 		t.Helper()
@@ -56,7 +59,7 @@ func TestPostgresRequestLogGuardKind(t *testing.T) {
 
 	models := func(params LogQueryParams) []string {
 		t.Helper()
-		params.Days = 1
+		params.Days = days
 		params.Size = 50
 		result, err := QueryLogs(params)
 		if err != nil {
@@ -91,14 +94,14 @@ func TestPostgresRequestLogGuardKind(t *testing.T) {
 		}
 	})
 	t.Run("stats and the facet follow", func(t *testing.T) {
-		stats, err := QueryStats(LogQueryParams{Days: 1, GuardKinds: []string{"reply_loop", "tool_loop"}})
+		stats, err := QueryStats(LogQueryParams{Days: days, GuardKinds: []string{"reply_loop", "tool_loop"}})
 		if err != nil {
 			t.Fatal(err)
 		}
 		if stats.Total != 3 || stats.SuccessRate != 0 {
 			t.Fatalf("stats = %+v", stats)
 		}
-		filters, err := QueryFiltersForLogs(LogQueryParams{Days: 1, GuardKinds: []string{"reply_loop"}})
+		filters, err := QueryFiltersForLogs(LogQueryParams{Days: days, GuardKinds: []string{"reply_loop"}})
 		if err != nil {
 			t.Fatal(err)
 		}
