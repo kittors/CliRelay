@@ -115,6 +115,7 @@ func (h *Handler) decorateAuthFilesResponse(c *gin.Context, tenantID string, fil
 		shared := sharedAuthFileEntries(h.authManager.ListSharedWithTenant(tenantID))
 		body["shared_files"] = shared
 		markCopiesOfSharedCredentials(files, shared)
+		h.markCopiesInOtherTenants(c, tenantID, files, shared)
 		return
 	}
 	h.markTenantCopies(c, files)
@@ -154,6 +155,94 @@ func markCopiesOfSharedCredentials(files, shared []map[string]any) {
 			file["duplicates_shared"] = true
 		}
 	}
+}
+
+// markCopiesInOtherTenants counts, on each of a tenant's own credentials, the
+// other tenants that hold a credential for the same upstream account
+// (copies_elsewhere). They draw on one account's quota, and where they are
+// copies of one credential file each refresh revokes the other's refresh
+// token, so the account keeps dropping out for all of them. The tenant learns
+// how many other tenants there are, not which; a platform administrator acting
+// in the tenant also gets their names (copies_elsewhere_tenants), to ask one
+// of them to remove theirs.
+//
+// The platform's credential shared with the tenant is not counted: it is
+// flagged as duplicates_shared, with what to do about it. Neither are disabled
+// credentials, which do not refresh, nor API keys, which never refresh and
+// would only make the warning wrong.
+func (h *Handler) markCopiesInOtherTenants(c *gin.Context, tenantID string, files, shared []map[string]any) {
+	if h == nil || h.authManager == nil || len(files) == 0 {
+		return
+	}
+	tenantID = coreauth.NormalizedTenantID(tenantID)
+	ours := make(map[string]struct{}, len(files))
+	for _, file := range files {
+		if subject := entrySubject(file); subject != "" {
+			ours[subject] = struct{}{}
+		}
+	}
+	if len(ours) == 0 {
+		return
+	}
+	sharedSubjects := make(map[string]struct{}, len(shared))
+	for _, entry := range shared {
+		if subject := entrySubject(entry); subject != "" {
+			sharedSubjects[subject] = struct{}{}
+		}
+	}
+	holders := make(map[string]map[string]struct{})
+	for _, auth := range h.authManager.List() {
+		if auth == nil || auth.Disabled {
+			continue
+		}
+		holder := coreauth.NormalizedTenantID(auth.TenantID)
+		if holder == tenantID {
+			continue
+		}
+		subject := usage.ResolveAuthSubjectIdentity(auth)
+		if subject == nil || !identifiesAccount(subject) {
+			continue
+		}
+		if _, ok := ours[subject.ID]; !ok {
+			continue
+		}
+		if _, isShared := sharedSubjects[subject.ID]; isShared && holder == identity.SystemTenantID {
+			continue
+		}
+		if holders[subject.ID] == nil {
+			holders[subject.ID] = make(map[string]struct{})
+		}
+		holders[subject.ID][holder] = struct{}{}
+	}
+	if len(holders) == 0 {
+		return
+	}
+	named := callerIsPlatformAdmin(c)
+	ctx := sharingContext(c)
+	for _, file := range files {
+		tenants := holders[entrySubject(file)]
+		if len(tenants) == 0 {
+			continue
+		}
+		file["copies_elsewhere"] = len(tenants)
+		if named {
+			ids := make([]string, 0, len(tenants))
+			for tenant := range tenants {
+				ids = append(ids, tenant)
+			}
+			file["copies_elsewhere_tenants"] = tenantRefs(ctx, ids)
+		}
+	}
+}
+
+// identifiesAccount reports whether a subject stands for an upstream account
+// (its id, or its login email), not for one API key or one local file.
+func identifiesAccount(subject *usage.AuthSubjectIdentity) bool {
+	switch subject.SeedKind {
+	case "account_user_id", "account_id", "email":
+		return true
+	}
+	return false
 }
 
 // markTenantCopies lists, on each of the system tenant's credentials, the
