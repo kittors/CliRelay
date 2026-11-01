@@ -163,6 +163,53 @@ func decodeClaudeRequestToolIDs(body []byte) []byte {
 	return applyStringEdits(body, edits)
 }
 
+// EncodeClaudeRequestToolIDs makes the tool ids of a Claude Messages request,
+// about to go to a Claude upstream, ones the upstream accepts. A conversation
+// held on another upstream and continued on Claude (a client switching models,
+// a virtual model whose members come from different vendors) reaches the
+// Claude executor with the ids the other upstream wrote, functions.<name>:<n>
+// for Kimi, and Anthropic answers a 400 for them. Those ids are encoded as for
+// a Claude client: deterministically, so a call and its result keep matching
+// and a replayed history keeps its prompt cache prefix. Nothing has to be
+// decoded afterwards: the upstream's reply carries ids of its own. Ids already
+// in the alphabet are sent as they are, the encoded ones a Claude client
+// returns included.
+func EncodeClaudeRequestToolIDs(body []byte) []byte {
+	if !bytes.Contains(body, claudeToolUseMarker) {
+		return body
+	}
+	var edits []stringEdit
+	gjson.GetBytes(body, "messages").ForEach(func(_, message gjson.Result) bool {
+		message.Get("content").ForEach(func(_, block gjson.Result) bool {
+			var value gjson.Result
+			switch block.Get("type").String() {
+			case "tool_use":
+				value = block.Get("id")
+			case "tool_result":
+				value = block.Get("tool_use_id")
+			default:
+				return true
+			}
+			if value.Type == gjson.String && !isClaudeToolID(value.Str) {
+				edits = appendStringEdit(edits, body, value, encodeClaudeToolID(value.Str), 0)
+			}
+			return true
+		})
+		return true
+	})
+	return applyStringEdits(body, edits)
+}
+
+// isClaudeToolID reports whether a Claude upstream accepts id as it is.
+func isClaudeToolID(id string) bool {
+	for i := 0; i < len(id); i++ {
+		if !isClaudeToolIDChar(id[i]) {
+			return false
+		}
+	}
+	return id != ""
+}
+
 // stringEdit replaces the JSON string at src[start:end] with value.
 type stringEdit struct {
 	start, end int

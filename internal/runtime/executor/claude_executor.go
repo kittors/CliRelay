@@ -127,7 +127,7 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 
 	body = execCtx.ApplyPayloadConfig(body, originalTranslated)
 	if !skipAnthropic {
-		body = repairClaudeToolPairing(execCtx, body)
+		body = repairClaudeToolUse(execCtx, body)
 	}
 
 	url := fmt.Sprintf("%s/v1/messages?beta=true", baseURL)
@@ -193,8 +193,9 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 	recorder.AppendResponseChunk(data)
 	if stream {
 		lines := bytes.Split(data, []byte("\n"))
+		streamUsage := &claudeStreamUsage{}
 		for _, line := range lines {
-			if detail, ok := parseClaudeStreamUsage(line); ok {
+			if detail, ok := streamUsage.observe(line); ok {
 				reporter.publish(execCtx.Context, detail)
 			}
 		}
@@ -260,7 +261,7 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 
 	body = execCtx.ApplyPayloadConfig(body, originalTranslated)
 	if !skipAnthropic {
-		body = repairClaudeToolPairing(execCtx, body)
+		body = repairClaudeToolUse(execCtx, body)
 	}
 
 	url := fmt.Sprintf("%s/v1/messages?beta=true", baseURL)
@@ -327,11 +328,12 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 		if execCtx.SourceFormat == to {
 			scanner := bufio.NewScanner(decodedBody)
 			scanner.Buffer(nil, 52_428_800) // 50MB
+			streamUsage := &claudeStreamUsage{}
 			for scanner.Scan() {
 				line := scanner.Bytes()
 				recorder.AppendResponseChunk(line)
 				reporter.appendOutputChunk(line)
-				if detail, ok := parseClaudeStreamUsage(line); ok {
+				if detail, ok := streamUsage.observe(line); ok {
 					reporter.publish(execCtx.Context, detail)
 				}
 				if !skipAnthropic && isClaudeOAuthToken(apiKey) && !auth.ToolPrefixDisabled() {
@@ -355,11 +357,12 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 		scanner := bufio.NewScanner(decodedBody)
 		scanner.Buffer(nil, 52_428_800) // 50MB
 		var param any
+		streamUsage := &claudeStreamUsage{}
 		for scanner.Scan() {
 			line := scanner.Bytes()
 			recorder.AppendResponseChunk(line)
 			reporter.appendOutputChunk(line)
-			if detail, ok := parseClaudeStreamUsage(line); ok {
+			if detail, ok := streamUsage.observe(line); ok {
 				reporter.publish(execCtx.Context, detail)
 			}
 			if !skipAnthropic && isClaudeOAuthToken(apiKey) && !auth.ToolPrefixDisabled() {
@@ -412,7 +415,7 @@ func (e *ClaudeExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Aut
 		return cliproxyexecutor.Response{}, err
 	}
 	if !skipAnthropic {
-		body = repairClaudeToolPairing(execCtx, body)
+		body = repairClaudeToolUse(execCtx, body)
 	}
 
 	if !strings.HasPrefix(execCtx.BaseModel, "claude-3-5-haiku") {

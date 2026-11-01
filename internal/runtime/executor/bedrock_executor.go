@@ -124,7 +124,7 @@ func (e *BedrockExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, 
 		return resp, err
 	}
 	body = execCtx.ApplyPayloadConfig(body, originalTranslated)
-	body = repairClaudeToolPairing(execCtx, body)
+	body = repairClaudeToolUse(execCtx, body)
 	plan := newClaudeRequestPlan(execCtx, claudeRequestTarget{
 		provider:                  e.Identifier(),
 		endpoint:                  bedrockEndpoint(auth, mappedModel),
@@ -193,7 +193,7 @@ func (e *BedrockExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.
 		return nil, err
 	}
 	body = execCtx.ApplyPayloadConfig(body, originalTranslated)
-	body = repairClaudeToolPairing(execCtx, body)
+	body = repairClaudeToolUse(execCtx, body)
 	plan := newClaudeRequestPlan(execCtx, claudeRequestTarget{
 		provider:                  e.Identifier(),
 		endpoint:                  bedrockEndpoint(auth, mappedModel),
@@ -229,6 +229,7 @@ func (e *BedrockExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.
 
 		decoder := newBedrockEventStreamDecoder(httpResp.Body)
 		var param any
+		streamUsage := &claudeStreamUsage{}
 		for {
 			payload, errDecode := decoder.Decode()
 			if errDecode != nil {
@@ -249,7 +250,7 @@ func (e *BedrockExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.
 			sseData = transformBedrockInvocationMetrics(sseData)
 			line := []byte("data: " + string(sseData))
 			reporter.appendOutputChunk(line)
-			if detail, ok := parseClaudeStreamUsage(line); ok {
+			if detail, ok := streamUsage.observe(line); ok {
 				reporter.publish(execCtx.Context, detail)
 			}
 			if execCtx.SourceFormat == to {

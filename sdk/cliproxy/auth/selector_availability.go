@@ -370,6 +370,11 @@ func authBlockForModel(auth *Auth, model string, now time.Time) authBlock {
 				}
 				return authBlock{}
 			}
+			// A 401 rejects the credential, so a model the account has not
+			// served yet is held back with the ones it has.
+			if credentialRejected(auth, now) {
+				return authBlock{blocked: true, reason: blockReasonOther, next: auth.NextRetryAfter, lastErr: auth.LastError, quota: &auth.Quota}
+			}
 			// If this specific model has no state yet, check if other models in the same Antigravity family are in cooldown
 			if IsAntigravityAuth(auth) {
 				fam := ModelAntigravityQuotaFamily(model)
@@ -403,6 +408,13 @@ func authBlockForModel(auth *Auth, model string, now time.Time) authBlock {
 		return authBlock{blocked: true, reason: blockReasonOther, next: next, lastErr: auth.LastError, quota: &auth.Quota}
 	}
 	return authBlock{}
+}
+
+// credentialRejected reports whether auth is held back as a whole because the
+// upstream rejected its credential: every model it has state for is held back
+// (see updateAggregatedAvailability) and the latest failure was a 401.
+func credentialRejected(auth *Auth, now time.Time) bool {
+	return auth.Unavailable && auth.NextRetryAfter.After(now) && statusCodeFromResult(auth.LastError) == 401
 }
 
 func isAntigravityExhaustedForModel(auth *Auth, model string, now time.Time) bool {

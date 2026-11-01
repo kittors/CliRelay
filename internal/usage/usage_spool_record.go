@@ -92,6 +92,9 @@ type usageSpoolTokens struct {
 	// CacheReported is absent from records spooled by builds that did not have
 	// it; they replay as "cache unknown", like every row written before it.
 	CacheReported bool `json:"cache_reported,omitempty"`
+	// CacheWrite1h is absent from records spooled by older builds; they replay
+	// with every cache write priced as a five-minute one.
+	CacheWrite1h int64 `json:"cache_write_1h,omitempty"`
 }
 
 // encodeUsageSpoolRecord renders entry as one newline-terminated spool line.
@@ -136,6 +139,7 @@ func encodeUsageSpoolRecord(entry RequestLogEntry, reason usageSpoolReason, comm
 			CacheWrite:               entry.Tokens.CacheWriteTokens,
 			CacheReadIncludedInInput: entry.Tokens.CacheReadIncludedInInput,
 			CacheReported:            entry.Tokens.CacheReported,
+			CacheWrite1h:             entry.Tokens.CacheWrite1hTokens,
 		},
 	}
 	if strings.TrimSpace(record.Key) == "" {
@@ -226,6 +230,7 @@ func decodeUsageSpoolRecord(line []byte) (RequestLogEntry, usageSpoolRecord, err
 			CacheWriteTokens:         record.Tokens.CacheWrite,
 			CacheReadIncludedInInput: record.Tokens.CacheReadIncludedInInput,
 			CacheReported:            record.Tokens.CacheReported,
+			CacheWrite1hTokens:       record.Tokens.CacheWrite1h,
 		},
 	}
 	var err error

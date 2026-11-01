@@ -3,6 +3,7 @@ package executor
 import (
 	"strings"
 
+	sdktranslator "github.com/router-for-me/CLIProxyAPI/v6/sdk/translator"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -89,12 +90,20 @@ func pairClaudeToolBlocks(body []byte) ([]byte, claudeToolPairingRepair) {
 	return updated, repair
 }
 
-// repairClaudeToolPairing applies pairClaudeToolBlocks to a request about to
-// go to a Claude upstream and logs what it changed.
-func repairClaudeToolPairing(execCtx *ExecutionContext, body []byte) []byte {
+// repairClaudeToolUse fixes what a Claude upstream would reject in the tool
+// calls of a request about to go to it, and logs what it changed: the pairing
+// of calls and results (pairClaudeToolBlocks), ids another upstream wrote
+// (sdktranslator.EncodeClaudeRequestToolIDs) and calls in the history of a
+// request that declares no tools (declareClaudeHistoryTools).
+func repairClaudeToolUse(execCtx *ExecutionContext, body []byte) []byte {
 	repaired, repair := pairClaudeToolBlocks(body)
 	if repair.changed() {
 		logWithRequestID(execCtx.Context).Debugf("claude tool pairing: added %d missing tool results, turned %d results without a call into text, moved tool results first in %d user turns", repair.synthesized, repair.orphaned, repair.reordered)
+	}
+	repaired = sdktranslator.EncodeClaudeRequestToolIDs(repaired)
+	repaired, declared := declareClaudeHistoryTools(repaired)
+	if len(declared) > 0 {
+		logWithRequestID(execCtx.Context).Debugf("claude tool declarations: declared %d tools the history calls, tool_choice none", len(declared))
 	}
 	return repaired
 }
