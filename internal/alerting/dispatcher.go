@@ -56,13 +56,6 @@ func NewDispatcher() *Dispatcher {
 	return &Dispatcher{direct: newClient(false), proxied: newClient(true), now: time.Now}
 }
 
-// newDispatcherWith builds a dispatcher whose requests all go through rt, for
-// tests that answer for the receivers.
-func newDispatcherWith(rt http.RoundTripper) *Dispatcher {
-	client := &http.Client{Transport: rt, Timeout: deliveryTimeout, CheckRedirect: noRedirect}
-	return &Dispatcher{direct: client, proxied: client, now: time.Now}
-}
-
 func noRedirect(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 
 func newClient(proxied bool) *http.Client {

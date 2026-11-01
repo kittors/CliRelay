@@ -15,7 +15,6 @@ import (
 	"net"
 	"net/http"
 	"strconv"
-	"strings"
 	"syscall"
 	"time"
 )
@@ -24,8 +23,6 @@ import (
 const (
 	DeliverySent   = "sent"
 	DeliveryFailed = "failed"
-	// DeliveryDropped marks a message that was discarded rather than delayed.
-	DeliveryDropped = "dropped"
 )
 
 // telegramAPIBase is where Telegram bots are called. A variable so the tests
@@ -246,18 +243,4 @@ func transportReason(err error) string {
 func readLimited(r io.Reader) []byte {
 	data, _ := io.ReadAll(io.LimitReader(r, responseLimit))
 	return bytes.TrimSpace(data)
-}
-
-// describeKind names a channel kind for the operator.
-func describeKind(kind string) string {
-	switch kind {
-	case KindWebhook:
-		return "Webhook"
-	case KindFeishu:
-		return "Feishu"
-	case KindTelegram:
-		return "Telegram"
-	default:
-		return strings.ToUpper(kind)
-	}
 }

@@ -269,3 +269,10 @@ func TestDeliveryHonoursTheTimeout(t *testing.T) {
 		t.Fatalf("a slow receiver was not cut off: %+v after %s", got[0], time.Since(started))
 	}
 }
+
+// newDispatcherWith builds a dispatcher whose requests all go through rt, for
+// tests that answer for the receivers.
+func newDispatcherWith(rt http.RoundTripper) *Dispatcher {
+	client := &http.Client{Transport: rt, Timeout: deliveryTimeout, CheckRedirect: noRedirect}
+	return &Dispatcher{direct: client, proxied: client, now: time.Now}
+}
