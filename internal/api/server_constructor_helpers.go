@@ -236,6 +236,9 @@ func (s *Server) configureManagementHandler(
 	s.mgmt.StartAccountStatusScheduler()
 	// Stored warmup policies run from startup, not from the first panel visit.
 	s.mgmt.StartWarmupScheduler()
+	// Alert rules are judged for tenants nobody is looking at, and nothing is sent
+	// for a tenant that has not switched alerting on and added a channel.
+	s.mgmt.StartAlertEngine()
 }
 
 func (s *Server) registerBuiltinModules(cfg *config.Config, accessManager *sdkaccess.Manager) {

@@ -123,6 +123,10 @@ func (s *Service) ListDailySpendingResetHistory(id *string, match *string, limit
 	return usage.ListDailySpendingResetEvents(s.tenantID, row.ID, limit)
 }
 
+// KeyQuotaMatrix 返回 Key 的完整额度矩阵，供包外按同一口径判断用量（告警规则）。
+// 传入的行必须已叠加权限模板（usage.EffectiveAPIKeyRowWithProfiles）。
+func KeyQuotaMatrix(row usage.APIKeyRow) quota.Matrix { return keyQuotaMatrix(row) }
+
 // keyQuotaMatrix 是 Key 的完整额度矩阵：账号下的 Key 只有美元四周期列，其余子额度在
 // 访问策略里；独立 Key 拥有全部固定列。
 func keyQuotaMatrix(row usage.APIKeyRow) quota.Matrix {

@@ -75,6 +75,12 @@ func registerManagementSettingsRoutes(group *gin.RouterGroup, h *managementhandl
 	group.PATCH("/quota-exceeded/switch-preview-model", h.PutSwitchPreviewModel)
 	group.POST("/quota/reconcile", h.PostQuotaReconcile)
 	group.POST("/quota/clear-status", h.PostQuotaClearStatus)
+
+	// Alerting: rules, delivery channels, a test send and the recent history.
+	group.GET("/alerts/settings", h.GetAlertSettings)
+	group.PUT("/alerts/settings", h.PutAlertSettings)
+	group.POST("/alerts/test", h.PostAlertTest)
+	group.GET("/alerts/events", h.GetAlertEvents)
 }
 
 func registerManagementRuntimeTuningRoutes(group *gin.RouterGroup, h *managementhandlers.Handler) {

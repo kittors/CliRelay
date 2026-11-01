@@ -68,6 +68,29 @@ func RuntimeSettingVersion(tenantID, key string) int64 {
 	return entry.Version
 }
 
+// LoadRuntimeSettingForTenant returns the stored payload of key of tenantID
+// together with the version it was read at, for read-modify-write callers that
+// then save against that version.
+func LoadRuntimeSettingForTenant(tenantID, key string) (json.RawMessage, int64, bool) {
+	if !ConfigStoreAvailable() {
+		return nil, 0, false
+	}
+	entry, ok := runtimeSettingsStoreForTenant(tenantID).Load(key)
+	if !ok {
+		return nil, 0, false
+	}
+	return entry.Payload, entry.Version, true
+}
+
+// RuntimeSettingPayloadsByKey returns the payload of key for every tenant that
+// has one, keyed by tenant id.
+func RuntimeSettingPayloadsByKey(key string) (map[string]json.RawMessage, error) {
+	if !ConfigStoreAvailable() {
+		return nil, nil
+	}
+	return runtimeSettingsStore().PayloadsByKey(key)
+}
+
 // CompareAndSwapRuntimeSetting writes one key of tenantID if it is still at
 // expected (0: absent, AnyVersion: unchecked) and returns the new version.
 func CompareAndSwapRuntimeSetting(ctx context.Context, tenantID, key string, value any, expected int64) (int64, error) {

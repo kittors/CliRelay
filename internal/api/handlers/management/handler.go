@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/alerting"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/identity"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/management/aiaccountstatus"
@@ -56,6 +57,15 @@ type Handler struct {
 	aiAccountStatus      *aiaccountstatus.Service
 	statusScheduler      *aiaccountstatus.Scheduler
 	warmupSvc            *warmup.Service
+	// alertService serves the /alerts routes, alertEngine evaluates the rules in
+	// the background and alertSender delivers for both. All three are built on
+	// first use (see alerts_bootstrap.go).
+	alertService *alerting.Service
+	alertEngine  *alerting.Engine
+	alertSender  *alerting.Dispatcher
+	// poolCache keeps GET /ai-accounts/pool-capacity answers for a few seconds
+	// (see pool_capacity.go).
+	poolCache poolCapacityCache
 	// importKinds overrides the credential-import exchanges in tests; nil uses
 	// the package defaults that build real upstream clients.
 	importKinds map[string]credentialImportKind
@@ -154,6 +164,7 @@ func (h *Handler) Close() {
 	h.loginThrottle.close()
 	h.stopAccountStatusScheduler()
 	h.stopWarmupScheduler()
+	h.stopAlertEngine()
 }
 
 // NewHandler creates a new management handler instance.

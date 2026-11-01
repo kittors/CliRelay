@@ -26,7 +26,7 @@ func TestRegisterManagementRouteTable(t *testing.T) {
 		routes[key] = route
 	}
 
-	if got, want := len(routes), 356; got != want {
+	if got, want := len(routes), 361; got != want {
 		t.Fatalf("route count = %d, want %d", got, want)
 	}
 	if got, want := sortedRouteKeys(routes), expectedManagementRoutes(); !slices.Equal(got, want) {
@@ -55,6 +55,11 @@ func TestRegisterManagementRouteTable(t *testing.T) {
 		"GET /v0/management/usage/monitor/overview",
 		"GET /v0/management/usage/monitor/realtime",
 		"POST /v0/management/ai-accounts/status-refresh",
+		"GET /v0/management/ai-accounts/pool-capacity",
+		"GET /v0/management/alerts/settings",
+		"PUT /v0/management/alerts/settings",
+		"POST /v0/management/alerts/test",
+		"GET /v0/management/alerts/events",
 		"POST /v0/management/api-call",
 		"PATCH /v0/management/api-key-entries",
 		"GET /v0/management/end-users/:id/daily-spending/reset-history",
@@ -156,6 +161,12 @@ func TestManagementRoutePermissionsComplete(t *testing.T) {
 		{http.MethodGet, "/v0/management/ai-accounts/status", "auth_files.read"},
 		{http.MethodPost, "/v0/management/ai-accounts/status-refresh", "auth_files.write"},
 		{http.MethodGet, "/v0/management/ai-accounts/status-refresh/job-1", "auth_files.read"},
+		{http.MethodGet, "/v0/management/ai-accounts/pool-capacity", "auth_files.read"},
+		// Alerting is tenant-level; sending a test makes the server call out, so it is a write.
+		{http.MethodGet, "/v0/management/alerts/settings", "tenant_settings.read"},
+		{http.MethodPut, "/v0/management/alerts/settings", "tenant_settings.write"},
+		{http.MethodPost, "/v0/management/alerts/test", "tenant_settings.write"},
+		{http.MethodGet, "/v0/management/alerts/events", "tenant_settings.read"},
 		{http.MethodGet, "/v0/management/cluster", "system.status.read"},
 		{http.MethodPost, "/v0/management/payload-rules/dry-run", "system.config.write"},
 		// /metrics exposes every tenant's traffic: platform operators only.
@@ -311,9 +322,14 @@ func expectedManagementRoutes() []string {
 		"DELETE /v0/management/proxy-url",
 		"DELETE /v0/management/usage/logs",
 		"DELETE /v0/management/vertex-api-key",
+		"GET /v0/management/ai-accounts/pool-capacity",
 		"GET /v0/management/ai-accounts/status",
 		"GET /v0/management/ai-accounts/status-refresh/:job_id",
 		"POST /v0/management/ai-accounts/status-refresh",
+		"GET /v0/management/alerts/events",
+		"GET /v0/management/alerts/settings",
+		"POST /v0/management/alerts/test",
+		"PUT /v0/management/alerts/settings",
 		"GET /v0/management/ampcode",
 		"GET /v0/management/ampcode/force-model-mappings",
 		"GET /v0/management/ampcode/model-mappings",

@@ -32,6 +32,10 @@ const (
 	// DomainObservability covers the metrics endpoint settings (on/off and
 	// the scrape token's hash).
 	DomainObservability = "observability"
+	// DomainAlerts covers a tenant's alert settings, history and dedupe table.
+	// Every node reads them from the database when it needs them, so a notice
+	// needs no work on the receiving side.
+	DomainAlerts = "alerts"
 )
 
 // systemTenantID mirrors identity.SystemTenantID. It is duplicated rather than
