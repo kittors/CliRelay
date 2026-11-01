@@ -133,6 +133,10 @@ type RoutingConfig struct {
 
 	// PathRoutes maps URL path namespaces to channel groups.
 	PathRoutes []RoutingPathRoute `yaml:"path-routes,omitempty" json:"path-routes,omitempty"`
+
+	// VirtualModels are model names served from one of several real models
+	// (routing_virtual_models.go).
+	VirtualModels []VirtualModel `yaml:"virtual-models,omitempty" json:"virtual-models,omitempty"`
 }
 
 // OAuthModelAlias defines a model ID alias for a specific channel.

@@ -32,6 +32,8 @@ func registerManagementModelRoutes(group *gin.RouterGroup, h *managementhandlers
 	group.PUT("/ccswitch-import-configs", h.PutCcSwitchImportConfigs)
 	group.GET("/routing-config", h.GetRoutingConfig)
 	group.PUT("/routing-config", h.PutRoutingConfig)
+	group.GET("/routing-config/virtual-models", h.GetRoutingVirtualModels)
+	group.PUT("/routing-config/virtual-models", h.PutRoutingVirtualModels)
 	group.GET("/routing-simulation", h.GetRoutingSimulation)
 	group.GET("/identity-fingerprint", h.GetIdentityFingerprint)
 	group.GET("/identity-fingerprint/account", h.GetIdentityFingerprintAccount)

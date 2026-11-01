@@ -91,8 +91,13 @@ func TestStreamFailoverContinuesTheRouteTrace(t *testing.T) {
 	if len(rows) != 3 {
 		t.Fatalf("published %d records, want 3", len(rows))
 	}
+	// A stream's record goes out from its executor's goroutine once the handler
+	// has moved on, so it names the account it moved to. A goroutine that is
+	// slower than the handler publishes after a later attempt began, and its
+	// row shows that attempt as well: the records may come in any order and
+	// with more steps, but never before the next attempt.
 	for i := 0; i < 2; i++ {
-		if row := rows[i].Steps; len(row) != i+2 || row[i+1].AuthID != ids[i+1] {
+		if row := rows[i].Steps; len(row) < i+2 || row[i+1].AuthID != ids[i+1] {
 			t.Fatalf("row %d = %+v, want it to name the next account %s", i, row, ids[i+1])
 		}
 	}

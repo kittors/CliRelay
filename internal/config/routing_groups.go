@@ -243,6 +243,7 @@ func (cfg *Config) SanitizeRouting() {
 		pathRoutes = append(pathRoutes, route)
 	}
 	cfg.Routing.PathRoutes = pathRoutes
+	sanitizeVirtualModels(&cfg.Routing)
 }
 
 // SanitizeAPIKeyEntries normalizes API key channel-group restrictions.

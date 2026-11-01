@@ -53,7 +53,11 @@ func loopGuardPolicy(ctx context.Context) *loopdetect.Policy {
 const LoopGuardHeader = "X-CliRelay-Loop-Guard"
 
 func loopGuardHeaders(kind loopdetect.Kind) http.Header {
-	return http.Header{LoopGuardHeader: {string(kind)}}
+	// Set stores the canonical key, so headers.Get finds it; a literal keyed
+	// by LoopGuardHeader would not.
+	headers := make(http.Header, 1)
+	headers.Set(LoopGuardHeader, string(kind))
+	return headers
 }
 
 // toolLoopReply answers a request whose conversation ends in a tool-call loop:
