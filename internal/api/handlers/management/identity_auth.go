@@ -595,6 +595,10 @@ func isTenantScopedManagementPath(path string) bool {
 		relative == "/proxy-pool",
 		strings.HasPrefix(relative, "/proxy-pool/"):
 		return true
+	// Alert channels and thresholds belong to the tenant: it is told about its own
+	// accounts, keys and end users and nothing else (see package alerting).
+	case relative == "/alerts", strings.HasPrefix(relative, "/alerts/"):
+		return true
 	// Tenant auth-file quota/connectivity probes use /api-call with a
 	// tenant-scoped auth_index (AuthByIndex + ListForTenant). Blocking this
 	// path leaves imported OAuth cards stuck on "错误 / --" even when the
@@ -614,6 +618,7 @@ func isTenantScopedManagementPath(path string) bool {
 		relative == "/quota/reconcile",
 		relative == "/quota/clear-status",
 		relative == "/ai-accounts/status",
+		relative == "/ai-accounts/pool-capacity",
 		relative == "/ai-accounts/status-refresh",
 		strings.HasPrefix(relative, "/ai-accounts/status-refresh/"):
 		return true

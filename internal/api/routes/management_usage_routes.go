@@ -28,6 +28,8 @@ func registerManagementUsageRoutes(group *gin.RouterGroup, h *managementhandlers
 
 	// Backend-owned AI account latest status (replaces browser fan-out).
 	group.GET("/ai-accounts/status", h.GetAIAccountStatus)
+	// What is left across the accounts of each provider, and how fast it is going.
+	group.GET("/ai-accounts/pool-capacity", h.GetPoolCapacity)
 	group.POST("/ai-accounts/status-refresh", h.PostAIAccountStatusRefresh)
 	group.GET("/ai-accounts/status-refresh/:job_id", h.GetAIAccountStatusRefreshJob)
 }

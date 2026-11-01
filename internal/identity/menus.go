@@ -126,6 +126,10 @@ var MenuCatalog = []MenuSeed{
 	{Code: "governance.ip-access", ParentCode: "group.governance", Type: "menu", Path: "/governance/ip-access", Component: "ip-access", LabelKey: "shell.nav_ip_access", Icon: "shield-ban", PermissionCode: "platform.ip_access.read", SortOrder: 50},
 	// System settings only
 	{Code: "system.config", ParentCode: "group.system", Type: "menu", Path: "/system/config", Component: "config", LabelKey: "shell.nav_config", Icon: "settings", PermissionCode: "system.config.read", SortOrder: 10},
+	// Tenant-scoped, like the /alerts API it edits (tenant_settings.read/write): every tenant
+	// sets its own channels and thresholds. Must not use platform system.config.read, or
+	// ordinary tenants never see this menu.
+	{Code: "system.alerts", ParentCode: "group.system", Type: "menu", Path: "/system/alerts", Component: "alerts", LabelKey: "shell.nav_alerts", Icon: "bell", PermissionCode: "tenant_settings.read", SortOrder: 15},
 	{Code: MenuManagementCode, ParentCode: "group.system", Type: "menu", Path: "/system/menu-management", Component: "menu-management", LabelKey: "shell.nav_menu_management", Icon: "menu", PermissionCode: "platform.menus.read", SortOrder: 20},
 }
 

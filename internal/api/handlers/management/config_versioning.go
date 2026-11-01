@@ -306,13 +306,17 @@ type configResponse struct {
 type configCapabilities struct {
 	// PayloadRulesDryRun: POST /payload-rules/dry-run.
 	PayloadRulesDryRun bool `json:"payload-rules-dry-run"`
+	// Alerts: the /alerts routes (settings, test send, history).
+	Alerts bool `json:"alerts"`
+	// PoolCapacity: GET /ai-accounts/pool-capacity.
+	PoolCapacity bool `json:"pool-capacity"`
 }
 
 func newConfigResponse(cfg *config.Config, versions map[string]int64) configResponse {
 	return configResponse{
 		Config:                 cfg,
 		RuntimeSettingVersions: versions,
-		Capabilities:           configCapabilities{PayloadRulesDryRun: true},
+		Capabilities:           configCapabilities{PayloadRulesDryRun: true, Alerts: true, PoolCapacity: true},
 	}
 }
 
