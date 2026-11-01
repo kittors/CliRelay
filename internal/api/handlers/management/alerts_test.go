@@ -118,7 +118,9 @@ type apiError struct {
 	Error struct {
 		Code    string `json:"code"`
 		Message string `json:"message"`
-		Field   string `json:"field"`
+		Details struct {
+			Field string `json:"field"`
+		} `json:"details"`
 	} `json:"error"`
 }
 
@@ -238,7 +240,7 @@ func TestAlertSettingsRejectInvalidWritesWithTheFieldNamed(t *testing.T) {
 			api := newAlertAPI(t, alertTenantA)
 			rec := api.expect(http.MethodPut, "/alerts/settings", c.body, http.StatusBadRequest)
 			got := decode[apiError](t, rec)
-			if got.Error.Code != "invalid_alert_settings" || got.Error.Field != c.field || got.Error.Message == "" {
+			if got.Error.Code != "invalid_alert_settings" || got.Error.Details.Field != c.field || got.Error.Message == "" {
 				t.Fatalf("error = %+v, want invalid_alert_settings on %s", got.Error, c.field)
 			}
 			if _, _, found, _ := api.store.LoadSettings(alertTenantA); found {
@@ -265,7 +267,7 @@ func TestOnlyThePlatformOperatorMayAimAWebhookInward(t *testing.T) {
 
 	tenant := newAlertAPI(t, alertTenantA)
 	rec := tenant.expect(http.MethodPut, "/alerts/settings", `{"channels":[{"kind":"webhook","name":"local relay","url":"http://127.0.0.1:9000/alerts"}]}`, http.StatusBadRequest)
-	if got := decode[apiError](t, rec); got.Error.Field != "channels[0].url" {
+	if got := decode[apiError](t, rec); got.Error.Details.Field != "channels[0].url" {
 		t.Fatalf("error = %+v", got.Error)
 	}
 }
@@ -380,11 +382,11 @@ func TestAlertTestReportsAFailureWithoutFailingTheRequest(t *testing.T) {
 func TestAlertTestRefusalsAreStructured(t *testing.T) {
 	api := newAlertAPI(t, alertTenantA)
 	rec := api.expect(http.MethodPost, "/alerts/test", `{}`, http.StatusBadRequest)
-	if got := decode[apiError](t, rec); got.Error.Code != "invalid_alert_settings" || got.Error.Field != "channels" {
+	if got := decode[apiError](t, rec); got.Error.Code != "invalid_alert_settings" || got.Error.Details.Field != "channels" {
 		t.Fatalf("error = %+v, want a refusal to send when there is no channel", got.Error)
 	}
 	rec = api.expect(http.MethodPost, "/alerts/test", `{"channel_id":"nope"}`, http.StatusBadRequest)
-	if got := decode[apiError](t, rec); got.Error.Field != "channel_id" {
+	if got := decode[apiError](t, rec); got.Error.Details.Field != "channel_id" {
 		t.Fatalf("error = %+v, want channel_id", got.Error)
 	}
 	if len(api.sender.calls) != 0 {

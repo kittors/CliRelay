@@ -94,7 +94,9 @@ func respondAlertError(c *gin.Context, err error) {
 	var fieldErr *alerting.FieldError
 	switch {
 	case errors.As(err, &fieldErr):
-		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"code": "invalid_alert_settings", "message": fieldErr.Error(), "field": fieldErr.Field}})
+		// The field goes under details, where the panel (and the other settings
+		// endpoints) put it, so it can point at the input that was refused.
+		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"code": "invalid_alert_settings", "message": fieldErr.Error(), "details": gin.H{"field": fieldErr.Field}}})
 	case errors.Is(err, alerting.ErrNotPersistent):
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": gin.H{"code": "alerts_unavailable", "message": err.Error()}})
 	case errors.Is(err, alerting.ErrConflict):
