@@ -102,6 +102,9 @@ func TestWordGuardIsAdvertisedAsACapability(t *testing.T) {
 	rec, body := wordTenantAUser.call(h.GetContentModerationProfiles, http.MethodGet, "", "")
 	wordExpectStatus(t, rec, http.StatusOK)
 	capabilities, _ := body["capabilities"].(map[string]any)
+	if capabilities["secret_masking"] != true {
+		t.Fatalf("capabilities = %v, want secret_masking declared", capabilities)
+	}
 	if capabilities["word_guard"] != true {
 		t.Fatalf("capabilities = %v", capabilities)
 	}

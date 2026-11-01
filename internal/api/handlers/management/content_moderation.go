@@ -82,6 +82,8 @@ func contentModerationProfileCapabilities() gin.H {
 		// word_guard: the /content-moderation/word-policies endpoints exist. An
 		// older backend does not list it, and the panel then offers no word rules.
 		"word_guard": true,
+		// secret_masking: GET/PUT /content-moderation/secret-masking exist.
+		"secret_masking": true,
 	}
 }
 
