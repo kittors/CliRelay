@@ -11,6 +11,7 @@ import (
 	"github.com/gin-gonic/gin"
 	imagegeneration "github.com/router-for-me/CLIProxyAPI/v6/internal/management/imagegeneration"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
 	sdkmodelcatalog "github.com/router-for-me/CLIProxyAPI/v6/sdk/modelcatalog"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v6/sdk/translator"
@@ -179,6 +180,11 @@ func modelTestProviders(model string) []string {
 func (h *Handler) runSynchronousModelTest(c *gin.Context, body modelTestRequest, mode modelTestMode, upstream []byte) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), modelTestTimeout)
 	defer cancel()
+	// Same request identity as the asynchronous tests (imagegeneration.Service):
+	// without it the request log row has no key to resolve a tenant from and is
+	// filed, and priced, under the system tenant instead of the tenant testing.
+	ctx = context.WithValue(ctx, util.ContextKeyTrustedTenantID, effectiveTenantID(c))
+	ctx = context.WithValue(ctx, util.ContextKeyAPIKey, modelTestSystemAPIKey)
 
 	startedAt := time.Now()
 	resp, execErr := h.authManager.Execute(ctx, modelTestProviders(body.Model), coreexecutor.Request{

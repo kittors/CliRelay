@@ -245,6 +245,7 @@ func (m *Manager) SimulateSelection(ctx context.Context, providers []string, mod
 		sim.Attempts[i].UpstreamModel = m.applyAPIKeyModelAlias(selected, upstream)
 	}
 	sim.markAttempts()
+	m.maskSharedCredentials(sim)
 	return sim
 }
 

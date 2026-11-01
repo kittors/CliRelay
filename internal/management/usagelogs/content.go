@@ -46,6 +46,8 @@ func (s *Service) LogContent(id int64, part, format string) LogContentResponse {
 			}
 			return LogContentResponse{Status: http.StatusInternalServerError, Payload: map[string]any{"error": err.Error()}}
 		}
+		result.InputContent = usage.MaskSharedAccountText(s.tenantID, result.InputContent)
+		result.OutputContent = usage.MaskSharedAccountText(s.tenantID, result.OutputContent)
 		return LogContentResponse{Status: http.StatusOK, Payload: result}
 	}
 
@@ -57,6 +59,7 @@ func (s *Service) LogContent(id int64, part, format string) LogContentResponse {
 		return LogContentResponse{Status: http.StatusInternalServerError, Payload: map[string]any{"error": err.Error()}}
 	}
 
+	result.Content = usage.MaskSharedAccountText(s.tenantID, result.Content)
 	if format == "text" {
 		headers := map[string]string{
 			"X-Log-Id":   strconv.FormatInt(result.ID, 10),

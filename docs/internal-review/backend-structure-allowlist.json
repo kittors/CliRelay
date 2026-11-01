@@ -14,19 +14,15 @@
       },
       {
         "path": "internal/identity/service.go",
-        "max_lines": 932
+        "max_lines": 893
       },
       {
         "path": "internal/management/aiaccountstatus/service.go",
-        "max_lines": 910
+        "max_lines": 836
       },
       {
         "path": "internal/management/modelcatalog/availability.go",
-        "max_lines": 987
-      },
-      {
-        "path": "internal/management/usagelogs/list.go",
-        "max_lines": 882
+        "max_lines": 965
       },
       {
         "path": "internal/storage/sqlstore/apikey/store.go",
@@ -34,7 +30,7 @@
       },
       {
         "path": "internal/storage/sqlstore/modelconfig/store.go",
-        "max_lines": 931
+        "max_lines": 895
       },
       {
         "path": "internal/usage/ai_account_subject_store.go",
@@ -42,7 +38,7 @@
       },
       {
         "path": "internal/usage/openrouter_model_sync.go",
-        "max_lines": 1060
+        "max_lines": 1047
       },
       {
         "path": "internal/usage/usage_db.go",

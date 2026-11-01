@@ -79,7 +79,7 @@ func (s *Service) monitorAuthMetaBySubject() map[string]authChannelMeta {
 			continue
 		}
 		out[subjectID] = authChannelMeta{
-			label:    strings.TrimSpace(auth.ChannelName()),
+			label:    channelLabelForTenant(auth, s.tenantID),
 			provider: normalizeProviderKey(auth.Provider),
 			authType: resolveAuthType(auth),
 		}
