@@ -21,7 +21,9 @@ type secretReply struct {
 	format sdktranslator.Format
 }
 
+// newSecretReply returns the filter for table, which masking no longer adds to.
 func newSecretReply(table *secretTable, format sdktranslator.Format) *secretReply {
+	table.seal()
 	return &secretReply{table: table, format: format}
 }
 
