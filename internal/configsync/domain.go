@@ -36,6 +36,9 @@ const (
 	// Every node reads them from the database when it needs them, so a notice
 	// needs no work on the receiving side.
 	DomainAlerts = "alerts"
+	// DomainLoopGuard covers a tenant's loop protection settings, its own and
+	// those of its API keys.
+	DomainLoopGuard = "loop_guard"
 )
 
 // systemTenantID mirrors identity.SystemTenantID. It is duplicated rather than

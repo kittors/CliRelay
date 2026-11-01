@@ -41,6 +41,10 @@ type usageReporter struct {
 	once                sync.Once
 	contentMu           sync.Mutex
 	captureFullContent  bool
+	// guardKind is the loop protection check that ended a request the gateway
+	// answered itself; a cut reply is found on the context instead (see
+	// guardOutcome). Set before the usage is published, never after.
+	guardKind string
 	// streamingRequest records what the client asked for, so it is fixed at
 	// construction from the client payload and never revised afterwards.
 	//
@@ -371,6 +375,7 @@ func (r *usageReporter) publishWithOutcome(ctx context.Context, detail coreusage
 	if r == nil {
 		return
 	}
+	failed, guardKind := r.guardOutcome(ctx, failed)
 	detail = applyOllamaPromptCacheEstimate(ctx, detail)
 	if detail.TotalTokens == 0 {
 		total := detail.InputTokens + detail.OutputTokens + detail.ReasoningTokens
@@ -381,7 +386,7 @@ func (r *usageReporter) publishWithOutcome(ctx context.Context, detail coreusage
 	if detail.InputTokens == 0 && detail.OutputTokens == 0 && detail.ReasoningTokens == 0 && detail.CachedTokens == 0 && detail.TotalTokens == 0 && !failed {
 		return
 	}
-	r.once.Do(func() { r.emit(ctx, detail, failed) })
+	r.once.Do(func() { r.emit(ctx, detail, failed, guardKind) })
 }
 
 // ensurePublished guarantees that a usage record is emitted exactly once.
@@ -392,7 +397,9 @@ func (r *usageReporter) ensurePublished(ctx context.Context) {
 	if r == nil {
 		return
 	}
-	r.once.Do(func() { r.emit(ctx, coreusage.Detail{}, false) })
+	// Loop protection may have ended the request without the executor knowing.
+	failed, guardKind := r.guardOutcome(ctx, false)
+	r.once.Do(func() { r.emit(ctx, coreusage.Detail{}, failed, guardKind) })
 }
 
 // emit builds the usage record of this reporter's attempt and publishes it.
@@ -402,7 +409,7 @@ func (r *usageReporter) ensurePublished(ctx context.Context) {
 // routetrace.DeferPublish), so that the detail's route trace says how the
 // attempt ended, what it left the account in and what the request did next.
 // Everything else is taken now, as the attempt ends.
-func (r *usageReporter) emit(ctx context.Context, detail coreusage.Detail, failed bool) {
+func (r *usageReporter) emit(ctx context.Context, detail coreusage.Detail, failed bool, guardKind string) {
 	inputContent, outputContent, inputPath, outputPath := r.finalizeContentForOutcome(failed)
 	latencyMs := time.Since(r.requestedAt).Milliseconds()
 	if latencyMs < 0 {
@@ -430,6 +437,7 @@ func (r *usageReporter) emit(ctx context.Context, detail coreusage.Detail, faile
 		LatencyMs:             latencyMs,
 		FirstTokenMs:          firstTokenMs,
 		Failed:                failed,
+		GuardKind:             guardKind,
 		APIIdentifier:         apiIdentifier,
 		RequestID:             requestID,
 		ResponseStatus:        responseStatus,

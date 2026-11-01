@@ -68,10 +68,11 @@ func RuntimeSettingVersion(tenantID, key string) int64 {
 	return entry.Version
 }
 
-// LoadRuntimeSettingForTenant returns the stored payload of key of tenantID
-// together with the version it was read at, for read-modify-write callers that
-// then save against that version.
-func LoadRuntimeSettingForTenant(tenantID, key string) (json.RawMessage, int64, bool) {
+// LoadRuntimeSettingForTenant returns the stored payload of one key of tenantID
+// together with the version it is at, for a read-modify-write that is saved
+// with CompareAndSwapRuntimeSetting. ok is false when the key has no row (or no
+// database is attached), which is version 0 to a compare-and-swap.
+func LoadRuntimeSettingForTenant(tenantID, key string) (payload json.RawMessage, version int64, ok bool) {
 	if !ConfigStoreAvailable() {
 		return nil, 0, false
 	}

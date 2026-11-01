@@ -538,6 +538,8 @@ func isTenantScopedManagementPath(path string) bool {
 		return true
 	case strings.HasPrefix(relative, "/auth-files"),
 		strings.HasPrefix(relative, "/content-moderation"),
+		// Each tenant's own switches and its API keys' overrides.
+		strings.HasPrefix(relative, "/loop-guard"),
 		strings.HasPrefix(relative, "/identity-fingerprint"),
 		strings.HasPrefix(relative, "/model-definitions/"),
 		strings.HasPrefix(relative, "/image-generation"),

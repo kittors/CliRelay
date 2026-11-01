@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
@@ -26,6 +27,22 @@ type DecisionEvaluator interface {
 type RuntimeModerator struct {
 	resolver  ProfileResolver
 	evaluator DecisionEvaluator
+	// words supplies the platform, tenant and API key word policies (see
+	// wordguard_runtime.go). It is the profile resolver itself when that can also
+	// load them; nil disables the word guard.
+	words        WordPolicyResolver
+	wordContexts wordContextCache
+	// logs spaces the word guard's process log lines (see logLimiter).
+	logs logLimiter
+	// wordsOff is the operator's switch for the word guard (see WordGuardEnvVar).
+	wordsOff atomic.Bool
+	// wordLoadTimeout is how long a request waits for its policies; zero means
+	// wordPolicyWait. Tests shorten or lengthen it.
+	wordLoadTimeout time.Duration
+	// regexWork is the work budget of one request's regular expressions, in steps;
+	// zero means maxRegexWork. Tests shrink it, because spending the real one
+	// takes half a second of CPU.
+	regexWork int64
 
 	lastGoodMu sync.RWMutex
 	lastGood   map[resolutionKey]resolvedProfile
@@ -92,11 +109,19 @@ func NewRequestModerator(resolver ProfileResolver, evaluator DecisionEvaluator) 
 	if evaluator == nil {
 		evaluator = NewEvaluator(nil)
 	}
-	return &RuntimeModerator{
+	moderator := &RuntimeModerator{
 		resolver:  resolver,
 		evaluator: evaluator,
 		lastGood:  make(map[resolutionKey]resolvedProfile),
 	}
+	if words, ok := resolver.(WordPolicyResolver); ok {
+		moderator.words = words
+	}
+	if wordGuardSwitchedOff() {
+		moderator.wordsOff.Store(true)
+		log.Warnf("word guard is switched off by %s: requests are not checked against word policies", WordGuardEnvVar)
+	}
+	return moderator
 }
 
 func (m *RuntimeModerator) counters(tenantID string) *tenantMetricCounters {

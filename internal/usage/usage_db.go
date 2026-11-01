@@ -17,13 +17,6 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-type ClearRequestLogsOptions struct {
-	TenantID            string `json:"-"`
-	ClearBodyContent    bool   `json:"clear_body_content"`
-	ClearDetailContent  bool   `json:"clear_detail_content"`
-	ClearRequestRecords bool   `json:"clear_request_records"`
-}
-
 var (
 	usageDBLifecycleMu sync.Mutex
 	usageDB            *sql.DB
@@ -729,6 +722,8 @@ func initOpenedDBLocked(db, readDB *sql.DB, dbPath, driver string, storageCfg co
 		migrateRequestLogContentSessionIDColumn(db)
 		log.Debugf("usage: running request log cache and session column migration")
 		migrateRequestLogCacheColumns(db)
+		log.Debugf("usage: running request log guard_kind column migration")
+		migrateRequestLogGuardKindColumn(db)
 		log.Debugf("usage: ensuring request log detail indexes")
 		ensureRequestLogDetailIndexes(db)
 		if err := ensureRequestLogIdempotencyTable(db); err != nil {

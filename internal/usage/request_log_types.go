@@ -52,6 +52,10 @@ type LogRow struct {
 	PromptTokens *int64 `json:"prompt_tokens"`
 	// SessionID is the client's session identifier, empty when it sent none.
 	SessionID string `json:"session_id,omitempty"`
+	// GuardKind is the loop protection check that ended the request
+	// ("reply_loop" or "tool_loop"), empty for every other request. A request
+	// it is set on is also Failed.
+	GuardKind string `json:"guard_kind,omitempty"`
 }
 
 // LogQueryParams holds filter/pagination parameters for QueryLogs.
@@ -82,6 +86,9 @@ type LogQueryParams struct {
 	// Optional precise legacy matches for renamed auth channels whose stored
 	// channel_name was a shared provider/source value.
 	AuthIndexChannelNames map[string][]string
+	// GuardKinds selects the requests loop protection ended ("reply_loop",
+	// "tool_loop"); empty selects all requests.
+	GuardKinds []string
 }
 
 // LogQueryResult holds the paginated query result.
@@ -107,6 +114,8 @@ type FilterOptions struct {
 	Channels       []string              `json:"channels"`
 	ChannelOptions []ChannelFilterOption `json:"channel_options,omitempty"`
 	Statuses       []string              `json:"statuses"`
+	// GuardKinds lists the loop protection outcomes present in the window.
+	GuardKinds []string `json:"guard_kinds"`
 }
 
 // ChannelFilterOption is one selectable channel in request-log filters.
@@ -132,6 +141,14 @@ type LogStats struct {
 	// unknown, for panels that read it as a number.
 	CacheRate float64 `json:"cache_rate"`
 	CacheUsage
+}
+
+// ClearRequestLogsOptions selects what ClearRequestLogs removes.
+type ClearRequestLogsOptions struct {
+	TenantID            string `json:"-"`
+	ClearBodyContent    bool   `json:"clear_body_content"`
+	ClearDetailContent  bool   `json:"clear_detail_content"`
+	ClearRequestRecords bool   `json:"clear_request_records"`
 }
 
 type ClearRequestLogsResult struct {

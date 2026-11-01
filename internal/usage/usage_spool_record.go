@@ -65,6 +65,7 @@ type usageSpoolRecord struct {
 	AuthIndex             string           `json:"auth_index,omitempty"`
 	Failed                bool             `json:"failed,omitempty"`
 	Streaming             bool             `json:"streaming,omitempty"`
+	GuardKind             string           `json:"guard_kind,omitempty"`
 	Timestamp             time.Time        `json:"timestamp"`
 	LatencyMs             int64            `json:"latency_ms,omitempty"`
 	FirstTokenMs          int64            `json:"first_token_ms,omitempty"`
@@ -121,6 +122,7 @@ func encodeUsageSpoolRecord(entry RequestLogEntry, reason usageSpoolReason, comm
 		AuthIndex:             entry.AuthIndex,
 		Failed:                entry.Failed,
 		Streaming:             entry.Streaming,
+		GuardKind:             entry.GuardKind,
 		Timestamp:             entry.Timestamp.UTC(),
 		LatencyMs:             entry.LatencyMs,
 		FirstTokenMs:          entry.FirstTokenMs,
@@ -210,6 +212,7 @@ func decodeUsageSpoolRecord(line []byte) (RequestLogEntry, usageSpoolRecord, err
 		AuthIndex:             record.AuthIndex,
 		Failed:                record.Failed,
 		Streaming:             record.Streaming,
+		GuardKind:             record.GuardKind,
 		Timestamp:             record.Timestamp,
 		LatencyMs:             record.LatencyMs,
 		FirstTokenMs:          record.FirstTokenMs,

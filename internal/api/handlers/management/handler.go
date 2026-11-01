@@ -16,6 +16,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/alerting"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/identity"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/loopguard"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/management/aiaccountstatus"
 	imagegeneration "github.com/router-for-me/CLIProxyAPI/v6/internal/management/imagegeneration"
 	settingsstore "github.com/router-for-me/CLIProxyAPI/v6/internal/management/settings/store"
@@ -74,6 +75,8 @@ type Handler struct {
 	// routingSimulator runs GET /routing-simulation; nil until the API server
 	// sets it, and the endpoint answers 503 until then.
 	routingSimulator RoutingSimulator
+	// loopGuard overrides the process-wide loop protection settings in tests.
+	loopGuard *loopguard.Registry
 }
 
 type trendCacheEntry struct {
@@ -90,6 +93,8 @@ func NewHandler(cfg *config.Config, configFilePath string, manager *coreauth.Man
 	// rather than 503 on every rule endpoint.
 	ensureIPAccessRuntime(cfg)
 	ensureObservabilityRuntime()
+	// Same for the loop protection settings the inference path reads.
+	settingsstore.AttachLoopGuardSettings()
 
 	h := &Handler{
 		cfg:                 cfg,

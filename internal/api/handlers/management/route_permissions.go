@@ -14,6 +14,25 @@ func ManagementRequestPermission(method, path string) string {
 	return permissionForManagementRequest(method, path)
 }
 
+// isContentModerationTestRoute reports whether relative is one of the two
+// routes that try content moderation out without changing it: the test of a
+// profile and the dry run of a word policy. It matches them whole. A suffix
+// check would also match a route whose last segment merely is "test" (the
+// policy of an API key whose id is "test"), and give whoever may only try things
+// out the right to change or delete that policy.
+func isContentModerationTestRoute(relative string) bool {
+	relative = strings.TrimSuffix(relative, "/")
+	if relative == "/content-moderation/word-policies/test" {
+		return true
+	}
+	rest, ok := strings.CutPrefix(relative, "/content-moderation/profiles/")
+	if !ok {
+		return false
+	}
+	id, ok := strings.CutSuffix(rest, "/test")
+	return ok && id != "" && !strings.Contains(id, "/")
+}
+
 func principalHasManagementRequestPermission(principal identity.Principal, method, path, permission string) bool {
 	if permission != "" && principal.Has(permission) {
 		return true
@@ -109,6 +128,19 @@ func permissionForManagementRequest(method, path string) string {
 			return "system.config.write"
 		}
 		return "system.config.read"
+	// Loop protection is a tenant setting; the override of one API key is edited
+	// in that key's editor, so it follows the key permissions. Listed before the
+	// substring matches below: the :id of a key is not ours to keep out of them.
+	case strings.HasPrefix(relative, "/loop-guard/keys/"):
+		if write {
+			return "api_keys.write"
+		}
+		return "api_keys.read"
+	case relative == "/loop-guard":
+		if write {
+			return "tenant_settings.write"
+		}
+		return "tenant_settings.read"
 	// Sensitive request/error log files — not system.config.
 	case strings.HasPrefix(relative, "/request-error-logs"), strings.HasPrefix(relative, "/request-log-by-id"):
 		return "system.logs.read"
@@ -182,7 +214,7 @@ func permissionForManagementRequest(method, path string) string {
 		}
 		return "models.read"
 	case strings.HasPrefix(relative, "/content-moderation"):
-		if strings.HasSuffix(relative, "/test") {
+		if method == http.MethodPost && isContentModerationTestRoute(relative) {
 			return "content_moderation.test"
 		}
 		if write {

@@ -13,6 +13,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/configsync"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/identity"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/ipaccess"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/loopguard"
 	modelconfigsettings "github.com/router-for-me/CLIProxyAPI/v6/internal/management/settings/modelconfig"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/management/settings/runtimeconfig"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/observability"
@@ -103,6 +104,10 @@ func (s *Server) configSyncHandlers() map[string]configsync.Handler {
 		configsync.DomainResourceGrants: s.reloadResourceGrants,
 		configsync.DomainObservability: func(context.Context, []cluster.ConfigEvent) error {
 			return observability.Default().Reload()
+		},
+		configsync.DomainLoopGuard: func(_ context.Context, events []cluster.ConfigEvent) error {
+			reloadLoopGuardSettings(events)
+			return nil
 		},
 	}
 }
@@ -417,6 +422,7 @@ func (s *Server) fullConfigReload(ctx context.Context) error {
 	if err := observability.Default().Reload(); err != nil {
 		log.WithError(err).Debug("config sync: observability settings reload failed")
 	}
+	loopguard.Default().InvalidateAll()
 	if err := s.reloadAccessProviders(); err != nil {
 		return err
 	}

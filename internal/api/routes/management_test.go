@@ -26,7 +26,7 @@ func TestRegisterManagementRouteTable(t *testing.T) {
 		routes[key] = route
 	}
 
-	if got, want := len(routes), 361; got != want {
+	if got, want := len(routes), 377; got != want {
 		t.Fatalf("route count = %d, want %d", got, want)
 	}
 	if got, want := sortedRouteKeys(routes), expectedManagementRoutes(); !slices.Equal(got, want) {
@@ -43,6 +43,18 @@ func TestRegisterManagementRouteTable(t *testing.T) {
 		"POST /v0/management/content-moderation/profiles/:id/test",
 		"GET /v0/management/content-moderation/channels",
 		"PATCH /v0/management/content-moderation/channel-bindings",
+		"GET /v0/management/content-moderation/word-policies",
+		"GET /v0/management/content-moderation/word-policies/platform",
+		"PUT /v0/management/content-moderation/word-policies/platform",
+		"DELETE /v0/management/content-moderation/word-policies/platform",
+		"GET /v0/management/content-moderation/word-policies/tenant",
+		"PUT /v0/management/content-moderation/word-policies/tenant",
+		"DELETE /v0/management/content-moderation/word-policies/tenant",
+		"GET /v0/management/content-moderation/word-policies/keys/:id",
+		"PUT /v0/management/content-moderation/word-policies/keys/:id",
+		"DELETE /v0/management/content-moderation/word-policies/keys/:id",
+		"POST /v0/management/content-moderation/word-policies/validate",
+		"POST /v0/management/content-moderation/word-policies/test",
 		"GET /v0/management/dashboard-summary",
 		"GET /v0/management/system-stats/ws",
 		"GET /v0/management/cluster",
@@ -173,6 +185,38 @@ func TestManagementRoutePermissionsComplete(t *testing.T) {
 		{http.MethodGet, "/v0/management/observability/metrics", "system.config.read"},
 		{http.MethodPut, "/v0/management/observability/metrics", "system.config.write"},
 		{http.MethodPost, "/v0/management/observability/metrics/token", "system.config.write"},
+		// Loop protection: the tenant's switches are a tenant setting, a key's
+		// override belongs to the key editor. An id that looks like another route
+		// must not change which permission applies.
+		{http.MethodGet, "/v0/management/loop-guard", "tenant_settings.read"},
+		{http.MethodPut, "/v0/management/loop-guard", "tenant_settings.write"},
+		{http.MethodGet, "/v0/management/loop-guard/keys/key-1", "api_keys.read"},
+		{http.MethodPut, "/v0/management/loop-guard/keys/key-1", "api_keys.write"},
+		{http.MethodPut, "/v0/management/loop-guard/keys/model-oauth-api-key", "api_keys.write"},
+		// Word policies: reading is the moderation read permission, every change
+		// (including the import preview, a POST) the write permission, and only the
+		// dry-run dialog maps to the test permission. Editing the platform policy
+		// additionally needs a platform administrator, which the handler checks.
+		{http.MethodGet, "/v0/management/content-moderation/word-policies", "content_moderation.read"},
+		{http.MethodGet, "/v0/management/content-moderation/word-policies/platform", "content_moderation.read"},
+		{http.MethodGet, "/v0/management/content-moderation/word-policies/keys/sample-id", "content_moderation.read"},
+		{http.MethodPut, "/v0/management/content-moderation/word-policies/platform", "content_moderation.write"},
+		{http.MethodPut, "/v0/management/content-moderation/word-policies/tenant", "content_moderation.write"},
+		{http.MethodDelete, "/v0/management/content-moderation/word-policies/keys/sample-id", "content_moderation.write"},
+		{http.MethodPost, "/v0/management/content-moderation/word-policies/validate", "content_moderation.write"},
+		{http.MethodPost, "/v0/management/content-moderation/word-policies/test", "content_moderation.test"},
+		{http.MethodPost, "/v0/management/content-moderation/profiles/profile-1/test", "content_moderation.test"},
+		// An API key whose id is "test" must not turn its policy's routes into
+		// the dry-run permission: reading it is a read, changing it a write.
+		{http.MethodGet, "/v0/management/content-moderation/word-policies/keys/test", "content_moderation.read"},
+		{http.MethodPut, "/v0/management/content-moderation/word-policies/keys/test", "content_moderation.write"},
+		{http.MethodDelete, "/v0/management/content-moderation/word-policies/keys/test", "content_moderation.write"},
+		{http.MethodGet, "/v0/management/content-moderation/profiles/test", "content_moderation.read"},
+		{http.MethodPatch, "/v0/management/content-moderation/profiles/test", "content_moderation.write"},
+		{http.MethodDelete, "/v0/management/content-moderation/profiles/test", "content_moderation.write"},
+		// Only a POST to the dry-run route is a dry run.
+		{http.MethodGet, "/v0/management/content-moderation/word-policies/test", "content_moderation.read"},
+		{http.MethodPut, "/v0/management/content-moderation/word-policies/test", "content_moderation.write"},
 		{http.MethodGet, "/v0/management/totally-unknown-route", ""},
 	}
 	for _, item := range locked {
@@ -304,6 +348,9 @@ func expectedManagementRoutes() []string {
 		"DELETE /v0/management/cline-api-key",
 		"DELETE /v0/management/codex-api-key",
 		"DELETE /v0/management/content-moderation/profiles/:id",
+		"DELETE /v0/management/content-moderation/word-policies/keys/:id",
+		"DELETE /v0/management/content-moderation/word-policies/platform",
+		"DELETE /v0/management/content-moderation/word-policies/tenant",
 		"DELETE /v0/management/gemini-api-key",
 		"DELETE /v0/management/identity-fingerprint/account/profile",
 		"DELETE /v0/management/identity-fingerprint/learned",
@@ -366,6 +413,10 @@ func expectedManagementRoutes() []string {
 		"GET /v0/management/content-moderation/metrics",
 		"GET /v0/management/content-moderation/profiles",
 		"GET /v0/management/content-moderation/profiles/:id",
+		"GET /v0/management/content-moderation/word-policies",
+		"GET /v0/management/content-moderation/word-policies/keys/:id",
+		"GET /v0/management/content-moderation/word-policies/platform",
+		"GET /v0/management/content-moderation/word-policies/tenant",
 		"GET /v0/management/dashboard-summary",
 		"GET /v0/management/debug",
 		"GET /v0/management/error-logs-max-files",
@@ -387,6 +438,8 @@ func expectedManagementRoutes() []string {
 		"GET /v0/management/logging-to-file",
 		"GET /v0/management/logs",
 		"GET /v0/management/logs-max-total-size-mb",
+		"GET /v0/management/loop-guard",
+		"GET /v0/management/loop-guard/keys/:id",
 		"GET /v0/management/max-retry-interval",
 		"GET /v0/management/model-configs",
 		"GET /v0/management/model-definitions/:channel",
@@ -496,6 +549,8 @@ func expectedManagementRoutes() []string {
 		"POST /v0/management/api-call",
 		"POST /v0/management/content-moderation/profiles",
 		"POST /v0/management/content-moderation/profiles/:id/test",
+		"POST /v0/management/content-moderation/word-policies/test",
+		"POST /v0/management/content-moderation/word-policies/validate",
 		"POST /v0/management/api-key-entries/daily-spending/reset",
 		"POST /v0/management/api-key-entries/period-spending/reset",
 		"POST /v0/management/auth-files",
@@ -549,6 +604,9 @@ func expectedManagementRoutes() []string {
 		"PUT /v0/management/cline-api-key",
 		"PUT /v0/management/codex-api-key",
 		"PUT /v0/management/codex-oauth-admission",
+		"PUT /v0/management/content-moderation/word-policies/keys/:id",
+		"PUT /v0/management/content-moderation/word-policies/platform",
+		"PUT /v0/management/content-moderation/word-policies/tenant",
 		"PUT /v0/management/config.yaml",
 		"PUT /v0/management/debug",
 		"PUT /v0/management/error-logs-max-files",
@@ -559,6 +617,8 @@ func expectedManagementRoutes() []string {
 		"PUT /v0/management/image-generation/size-presets",
 		"PUT /v0/management/logging-to-file",
 		"PUT /v0/management/logs-max-total-size-mb",
+		"PUT /v0/management/loop-guard",
+		"PUT /v0/management/loop-guard/keys/:id",
 		"PUT /v0/management/max-retry-interval",
 		"PUT /v0/management/model-configs/*id",
 		"PUT /v0/management/model-openrouter-sync",

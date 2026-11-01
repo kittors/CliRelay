@@ -102,6 +102,9 @@ func QueryMonitorOverview(filter MonitorFilter, rangeKey string, now time.Time) 
 	out.RecentFailures = monitorSection("recent failures", empty.RecentFailures, func() ([]MonitorFailure, error) {
 		return monitorRecentFailures(filter, w.start, w.end, names.label)
 	})
+	out.LoopGuard = monitorSection("loop guard", empty.LoopGuard, func() (MonitorLoopGuard, error) {
+		return monitorLoopGuard(filter, w.start, w.end)
+	})
 	return out, nil
 }
 
