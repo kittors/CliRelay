@@ -62,6 +62,11 @@ func TestManagementAPIPostgresDataStackRegression(t *testing.T) {
 	client.expectBodyContains(t, http.MethodGet, "/v0/management/loop-guard", "", http.StatusOK, `"window":512`)
 	client.expectBodyContains(t, http.MethodGet, "/v0/management/loop-guard/keys/key-route-test", "", http.StatusOK, `"repeats":5`)
 	client.expectBodyContains(t, http.MethodPut, "/v0/management/loop-guard/keys/key-route-missing", `{}`, http.StatusNotFound, "api_key_not_found")
+	client.expectBodyContains(t, http.MethodGet, "/v0/management/content-moderation/secret-masking", "", http.StatusOK, `"persistent":true`)
+	client.expectBodyContains(t, http.MethodPut, "/v0/management/content-moderation/secret-masking", `{"enabled":true}`, http.StatusOK, `"enabled":true`)
+	client.expectBodyContains(t, http.MethodGet, "/v0/management/content-moderation/secret-masking", "", http.StatusOK, `"enabled":true`)
+	client.expectBodyContains(t, http.MethodPut, "/v0/management/content-moderation/secret-masking", `{}`, http.StatusBadRequest, "invalid_request")
+	client.expectBodyContains(t, http.MethodPut, "/v0/management/content-moderation/secret-masking", `{"enabled":false}`, http.StatusOK, `"enabled":false`)
 
 	client.expectStatus(t, http.MethodPost, "/v0/management/model-configs", `{
 		"id":"gpt-route-test",

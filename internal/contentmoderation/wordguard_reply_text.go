@@ -3,6 +3,8 @@ package contentmoderation
 import (
 	"strings"
 	"unicode/utf8"
+
+	sdktranslator "github.com/router-for-me/CLIProxyAPI/v6/sdk/translator"
 )
 
 // maxReplyHold bounds how much text one stream position keeps back while it
@@ -44,6 +46,12 @@ func newReplyEngine(contexts []wordContext, snapshot *WordGuardSnapshot) *replyE
 	}
 	return &replyEngine{contexts: chosen, snapshot: snapshot, budget: newRegexBudget()}
 }
+
+func (e *replyEngine) pieces(format sdktranslator.Format, doc []byte, stream bool) ([]replyPiece, int) {
+	return replyPieces(format, doc, stream)
+}
+
+func (e *replyEngine) skipReply(reason string) { e.snapshot.skipReply(reason) }
 
 // replyText is the outcome of filtering one text.
 type replyText struct {

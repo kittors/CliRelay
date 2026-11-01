@@ -109,6 +109,10 @@ func (s *Server) configSyncHandlers() map[string]configsync.Handler {
 			reloadLoopGuardSettings(events)
 			return nil
 		},
+		configsync.DomainSecretMasking: func(_ context.Context, events []cluster.ConfigEvent) error {
+			reloadSecretMaskingSettings(events)
+			return nil
+		},
 	}
 }
 
