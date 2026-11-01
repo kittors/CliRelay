@@ -426,15 +426,22 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 		var param any
 		completed := false
 		imageStream := newCodexImageStreamNormalizer()
-		for scanner.Scan() {
-			line := scanner.Bytes()
-			normalizedEvents := normalizeCodexImageGenerationOutboundEventWithState(imageStream, bytes.Clone(line))
-			if len(normalizedEvents) == 0 {
-				normalizedEvents = [][]byte{bytes.Clone(line)}
+		send := func(chunk cliproxyexecutor.StreamChunk) bool {
+			if execCtx.Context.Err() != nil {
+				return false
 			}
-
-			var terminalErr error
-			for _, eventLine := range normalizedEvents {
+			select {
+			case out <- chunk:
+				return true
+			case <-execCtx.Context.Done():
+				return false
+			}
+		}
+		emit := func(eventLines [][]byte) (terminalErr error) {
+			for _, eventLine := range eventLines {
+				if err := execCtx.Context.Err(); err != nil {
+					return err
+				}
 				recorder.AppendResponseChunk(eventLine)
 				reporter.appendOutputChunk(eventLine)
 
@@ -453,24 +460,48 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 
 				chunks := sdktranslator.TranslateStream(execCtx.Context, to, execCtx.SourceFormat, req.Model, execCtx.OriginalPayload, body, eventLine, &param)
 				for i := range chunks {
-					out <- cliproxyexecutor.StreamChunk{Payload: []byte(chunks[i])}
+					if !send(cliproxyexecutor.StreamChunk{Payload: []byte(chunks[i])}) {
+						return execCtx.Context.Err()
+					}
 				}
 			}
-			if terminalErr != nil {
+			return terminalErr
+		}
+		framer := codexImageSSEFramer{normalizer: imageStream}
+		for scanner.Scan() {
+			lines, frameErr := framer.push(scanner.Bytes())
+			if frameErr != nil {
+				recorder.RecordResponseError(frameErr)
+				reporter.publishFailure(execCtx.Context)
+				send(cliproxyexecutor.StreamChunk{Err: frameErr})
+				return
+			}
+			if terminalErr := emit(lines); terminalErr != nil {
 				recorder.RecordResponseError(terminalErr)
 				reporter.publishFailure(execCtx.Context)
-				out <- cliproxyexecutor.StreamChunk{Err: terminalErr}
+				send(cliproxyexecutor.StreamChunk{Err: terminalErr})
 				return
 			}
 		}
 		if errScan := scanner.Err(); errScan != nil {
 			if shouldSuppressUsageFailure(errScan, "") {
-				out <- cliproxyexecutor.StreamChunk{Err: errScan}
+				send(cliproxyexecutor.StreamChunk{Err: errScan})
 				return
 			}
 			recorder.RecordResponseError(errScan)
 			reporter.publishFailure(execCtx.Context)
-			out <- cliproxyexecutor.StreamChunk{Err: errScan}
+			send(cliproxyexecutor.StreamChunk{Err: errScan})
+			return
+		}
+		// Do not turn an interrupted, partially buffered event into a completed one.
+		if errContext := execCtx.Context.Err(); errContext != nil {
+			send(cliproxyexecutor.StreamChunk{Err: errContext})
+			return
+		}
+		if terminalErr := emit(framer.finish(false)); terminalErr != nil {
+			recorder.RecordResponseError(terminalErr)
+			reporter.publishFailure(execCtx.Context)
+			send(cliproxyexecutor.StreamChunk{Err: terminalErr})
 			return
 		}
 		if completed {
@@ -480,7 +511,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 		streamErr := newCodexResponsesIncompleteError()
 		recorder.RecordResponseError(streamErr)
 		reporter.publishFailure(execCtx.Context)
-		out <- cliproxyexecutor.StreamChunk{Err: streamErr}
+		send(cliproxyexecutor.StreamChunk{Err: streamErr})
 	}()
 	return &cliproxyexecutor.StreamResult{Headers: httpResp.Header.Clone(), Chunks: out}, nil
 }
