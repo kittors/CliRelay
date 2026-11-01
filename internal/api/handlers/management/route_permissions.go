@@ -167,6 +167,10 @@ func permissionForManagementRequest(method, path string) string {
 	// Exact /usage* stats paths only — /usage-statistics-enabled is config.
 	case relative == "/usage" || strings.HasPrefix(relative, "/usage/"):
 		return "monitor.read"
+	// The pool capacity view adds up the same account status the list shows, so it
+	// is read with the same permission.
+	case relative == "/ai-accounts/pool-capacity":
+		return "auth_files.read"
 	// AI account status read model: same capability surface as auth-files list.
 	case strings.HasPrefix(relative, "/ai-accounts/status-refresh") && write:
 		return "auth_files.write"
@@ -290,6 +294,14 @@ func permissionForManagementRequest(method, path string) string {
 		}
 		return "system.config.read"
 	case strings.HasPrefix(relative, "/proxy-url"), strings.HasPrefix(relative, "/quota"), strings.HasPrefix(relative, "/request-retry"), strings.HasPrefix(relative, "/max-retry"), strings.HasPrefix(relative, "/force-model-prefix"):
+		if write {
+			return "tenant_settings.write"
+		}
+		return "tenant_settings.read"
+	// Alerting is a tenant-level setting: each tenant picks its own channels and
+	// thresholds. Sending a test message is a POST, so it takes the write
+	// permission: it makes the server call out to an address the caller chose.
+	case relative == "/alerts" || strings.HasPrefix(relative, "/alerts/"):
 		if write {
 			return "tenant_settings.write"
 		}

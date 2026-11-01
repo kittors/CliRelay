@@ -78,6 +78,30 @@ func (s RuntimeSettingsStore) LoadAll() (map[string]Entry, error) {
 	return out, rows.Err()
 }
 
+// PayloadsByKey returns the payload of key for every tenant that has a row for
+// it. It is the one read that is not scoped to the store's tenant: a background
+// loop that serves all tenants (alert evaluation) must find which of them have
+// anything configured without asking tenant by tenant.
+func (s RuntimeSettingsStore) PayloadsByKey(key string) (map[string]json.RawMessage, error) {
+	if s.db == nil {
+		return nil, nil
+	}
+	rows, err := s.db.Query(`SELECT tenant_id, payload FROM runtime_settings WHERE setting_key = ?`, key)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make(map[string]json.RawMessage)
+	for rows.Next() {
+		var tenantID, payload string
+		if err := rows.Scan(&tenantID, &payload); err != nil {
+			return nil, err
+		}
+		out[tenantID] = normalizePayload(payload)
+	}
+	return out, rows.Err()
+}
+
 func normalizePayload(payload string) json.RawMessage {
 	payload = strings.TrimSpace(payload)
 	if payload == "" {

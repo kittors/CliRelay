@@ -88,6 +88,7 @@ func (s *Server) configSyncHandlers() map[string]configsync.Handler {
 		configsync.DomainModelConfigs:       s.reloadModelConfigs,
 		configsync.DomainModelOwnerPresets:  readOnDemand,
 		configsync.DomainCcSwitch:           readOnDemand,
+		configsync.DomainAlerts:             readOnDemand,
 		configsync.DomainPricing: func(context.Context, []cluster.ConfigEvent) error {
 			usage.ReloadPricingCache()
 			return nil
