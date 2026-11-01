@@ -25,6 +25,7 @@ func (h *UsageLogsHandler) GetInFlightRequests(c *gin.Context) {
 	requests, total := diagnostics.InFlight(func(requestTenant string) bool {
 		return coreauth.NormalizedTenantID(requestTenant) == tenantID
 	}, now)
+	h.maskSharedInFlightAccounts(tenantID, requests)
 	c.JSON(http.StatusOK, gin.H{
 		"requests":     requests,
 		"total":        total,
@@ -44,4 +45,31 @@ type monitorOverviewResponse struct {
 type monitorCapabilities struct {
 	// InFlightRequests: GET /usage/monitor/in-flight answers.
 	InFlightRequests bool `json:"in-flight-requests"`
+}
+
+// maskSharedInFlightAccounts names the platform accounts shared with tenantID
+// by their stand-ins (coreauth.Auth.SharedName), as the tenant's request log
+// rows do once the requests finish.
+func (h *UsageLogsHandler) maskSharedInFlightAccounts(tenantID string, requests []diagnostics.InFlightRequest) {
+	if h == nil || h.authManager == nil || len(requests) == 0 {
+		return
+	}
+	var shared map[string]*coreauth.Auth
+	for i := range requests {
+		account := requests[i].Account
+		if account == nil || account.AuthID == "" {
+			continue
+		}
+		if shared == nil {
+			shared = make(map[string]*coreauth.Auth)
+			for _, auth := range h.authManager.ListSharedWithTenant(tenantID) {
+				if auth != nil && auth.SharedWith(tenantID) {
+					shared[auth.ID] = auth
+				}
+			}
+		}
+		if auth, ok := shared[account.AuthID]; ok {
+			account.AuthID, account.Label = auth.SharedID(), auth.SharedName()
+		}
+	}
 }

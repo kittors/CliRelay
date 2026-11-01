@@ -313,6 +313,7 @@ func planRequestLogWrite(db *sql.DB, entry RequestLogEntry, timeout time.Duratio
 		tenantID = identity.tenantID
 	}
 	plan := requestLogWritePlan{entry: entry, tenantID: normalizeTenantID(tenantID)}
+	maskSharedAccountRow(&plan.entry, plan.tenantID)
 	if identity.found {
 		if plan.entry.APIKeyID == "" {
 			plan.entry.APIKeyID = identity.id

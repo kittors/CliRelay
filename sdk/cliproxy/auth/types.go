@@ -180,7 +180,32 @@ func (a *Auth) EnsureIndex() string {
 	if a.indexAssigned && a.Index != "" {
 		return a.Index
 	}
+	seed := a.indexSeed()
+	if seed == "" {
+		return ""
+	}
+	idx := stableAuthIndex(seed)
+	a.Index = idx
+	a.indexAssigned = true
+	return idx
+}
 
+// currentIndex is EnsureIndex without assigning it: safe on an Auth other
+// goroutines read, such as the manager's own copy under its read lock.
+func (a *Auth) currentIndex() string {
+	if a == nil {
+		return ""
+	}
+	if a.indexAssigned && a.Index != "" {
+		return a.Index
+	}
+	if seed := a.indexSeed(); seed != "" {
+		return stableAuthIndex(seed)
+	}
+	return ""
+}
+
+func (a *Auth) indexSeed() string {
 	seed := strings.TrimSpace(a.FileName)
 	if seed != "" {
 		seed = "file:" + seed
@@ -197,10 +222,7 @@ func (a *Auth) EnsureIndex() string {
 		}
 	}
 
-	idx := stableAuthIndex(seed)
-	a.Index = idx
-	a.indexAssigned = true
-	return idx
+	return seed
 }
 
 // Clone duplicates a model state including nested error details.
