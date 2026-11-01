@@ -246,6 +246,9 @@ type TokenStats struct {
 	// upstream said nothing about its cache, and the request is stored with
 	// unknown cache reads and writes instead of zeros.
 	CacheReported bool `json:"-"`
+	// CacheWrite1hTokens mirrors coreusage.Detail.CacheWrite1hTokens. It only
+	// affects the cost: request_logs keeps every write in one column.
+	CacheWrite1hTokens int64 `json:"cache_write_1h_tokens,omitempty"`
 }
 
 // StatisticsSnapshot represents an immutable view of the aggregated metrics.
@@ -665,6 +668,7 @@ func normaliseDetail(detail coreusage.Detail) TokenStats {
 		CacheWriteTokens:         detail.CacheWriteTokens,
 		CacheReadIncludedInInput: detail.CacheReadIncludedInInput,
 		CacheReported:            detail.CacheReported,
+		CacheWrite1hTokens:       detail.CacheWrite1hTokens,
 	}
 	if tokens.TotalTokens == 0 {
 		tokens.TotalTokens = detail.InputTokens + detail.OutputTokens + detail.ReasoningTokens

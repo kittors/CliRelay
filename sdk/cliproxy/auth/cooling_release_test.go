@@ -160,27 +160,37 @@ func TestUpdateReleasesCooldownsWhenChannelTurnsCoolingOff(t *testing.T) {
 		Error: &Error{HTTPStatus: 429, Message: "quota"}, RetryAfter: &tenMinutes,
 	})
 	fail(m, "relay", "overloaded", &Error{HTTPStatus: 503, Message: "upstream unavailable"})
-	fail(m, "relay", "revoked", &Error{HTTPStatus: 401, Message: "invalid api key"})
-	for _, model := range []string{"throttled", "retry-after", "overloaded", "revoked"} {
+	// A 401 holds back every model of its key, so it gets a key of its own.
+	registerAuth(t, m, channelAuth("revoked", ""))
+	fail(m, "revoked", "glm-5", &Error{HTTPStatus: 401, Message: "invalid api key"})
+	for _, model := range []string{"throttled", "retry-after", "overloaded"} {
 		if !blockedFor(t, m, "relay", model) {
 			t.Fatalf("%s not blocked before the switch", model)
 		}
 	}
+	if !blockedFor(t, m, "revoked", "glm-5") {
+		t.Fatal("the revoked key is not blocked before the switch")
+	}
 
-	// The config sync re-synthesizes the credential with the new override.
-	if _, err := m.Update(context.Background(), channelAuth("relay", "true")); err != nil {
-		t.Fatalf("update: %v", err)
+	// The config sync re-synthesizes the credentials with the new override.
+	for _, id := range []string{"relay", "revoked"} {
+		if _, err := m.Update(context.Background(), channelAuth(id, "true")); err != nil {
+			t.Fatalf("update %s: %v", id, err)
+		}
 	}
 
 	for model, wantBlocked := range map[string]bool{
 		"throttled":   false,
 		"retry-after": false,
 		"overloaded":  false,
-		"revoked":     true, // a 401 parks the key whatever the switch says
 	} {
 		if got := blockedFor(t, m, "relay", model); got != wantBlocked {
 			t.Fatalf("%s blocked = %t after the switch, want %t", model, got, wantBlocked)
 		}
+	}
+	// A 401 parks the key whatever the switch says.
+	if !blockedFor(t, m, "revoked", "glm-5") {
+		t.Fatal("the switch released a revoked key")
 	}
 	want := []string{"relay/overloaded", "relay/retry-after", "relay/throttled"}
 	if got := registry.resumedModels(); !equalStrings(got, want) {

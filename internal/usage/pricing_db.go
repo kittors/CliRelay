@@ -332,7 +332,7 @@ func resolveCachePrices(cachedPrice, cacheReadPrice, cacheWritePrice, inputPrice
 
 // calculateTokenCostV2 is the semantic-driven cost calculator.
 // It separates cache read, cache write, and handles the cache_read_included_in_input flag.
-func calculateTokenCostV2(inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens int64, cacheReadIncludedInInput bool, inputPrice, outputPrice, cachedPrice, cacheReadPrice, cacheWritePrice float64) float64 {
+func calculateTokenCostV2(inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, cacheWrite1hTokens int64, cacheReadIncludedInInput bool, inputPrice, outputPrice, cachedPrice, cacheReadPrice, cacheWritePrice float64) float64 {
 	var billableInputTokens int64
 	if cacheReadIncludedInInput && cacheReadTokens > 0 && inputTokens >= cacheReadTokens {
 		billableInputTokens = inputTokens - cacheReadTokens
@@ -350,10 +350,18 @@ func calculateTokenCostV2(inputTokens, outputTokens, cacheReadTokens, cacheWrite
 	}
 	if cacheWriteTokens > 0 {
 		total += float64(cacheWriteTokens) / 1_000_000 * writePrice
+		if cacheWrite1hTokens > 0 {
+			total += float64(min(cacheWrite1hTokens, cacheWriteTokens)) / 1_000_000 * writePrice * (cacheWrite1hPriceRatio - 1)
+		}
 	}
 
 	return total
 }
+
+// cacheWrite1hPriceRatio is what a write to Anthropic's one-hour cache costs
+// relative to the cache write price, which is the five-minute cache's: two
+// times the input price against one and a quarter.
+const cacheWrite1hPriceRatio = 2.0 / 1.25
 
 func modelPricingLookupModelIDs(modelID string) []string {
 	modelID = strings.TrimSpace(modelID)
@@ -557,6 +565,7 @@ func CalculateCostV2ForTenant(tenantID, modelID string, tokens TokenStats) float
 		tokens.OutputTokens,
 		cacheReadTokens,
 		cacheWriteTokens,
+		tokens.CacheWrite1hTokens,
 		cacheReadIncludedInInput,
 		inputPrice,
 		outputPrice,

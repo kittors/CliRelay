@@ -133,6 +133,10 @@ type ModelState struct {
 	Quota QuotaState `json:"quota"`
 	// UpdatedAt tracks the last update timestamp for this model state.
 	UpdatedAt time.Time `json:"updated_at"`
+	// FailureStreak counts the failures in a row, since the last success, that
+	// had the same HTTP status. Cooldowns that lengthen when a failure keeps
+	// coming back (repeatedFailureBackoff) read it.
+	FailureStreak int `json:"failure_streak,omitempty"`
 }
 
 // Clone shallow copies the Auth structure, duplicating maps to avoid accidental mutation.

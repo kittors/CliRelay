@@ -243,6 +243,7 @@ func (s cooldownService) applyFailureLocked(auth *Auth, result Result, now time.
 
 func (s cooldownService) applyModelFailureLocked(auth *Auth, result Result, now time.Time, effects *resultStateEffects) {
 	state := ensureModelState(auth, result.Model)
+	previousStatus := statusCodeFromResult(state.LastError)
 	state.Unavailable = true
 	state.Status = StatusError
 	state.UpdatedAt = now
@@ -262,6 +263,11 @@ func (s cooldownService) applyModelFailureLocked(auth *Auth, result Result, now 
 	}
 
 	statusCode := statusCodeFromResult(result.Error)
+	if statusCode != 0 && statusCode == previousStatus {
+		state.FailureStreak++
+	} else {
+		state.FailureStreak = 1
+	}
 	// xAI Grok Build returns HTTP 402 for weekly usage balance exhaustion.
 	// Route those as quota cooldowns (window/retry metadata from executor),
 	// not the generic 30m payment_required probe loop.
@@ -270,18 +276,24 @@ func (s cooldownService) applyModelFailureLocked(auth *Auth, result Result, now 
 	} else {
 		switch statusCode {
 		case 401:
+			// The upstream rejected the credential, not this model, so every
+			// model of the account is held back with it: the ones it has state
+			// for here, the others by the selector (credentialRejected). A dead
+			// key is then not tried once per model.
 			next := now.Add(30 * time.Minute)
 			state.NextRetryAfter = next
+			holdCredentialModelsLocked(auth, state, result.Error, next, now)
 			effects.suspendReason = "unauthorized"
 			effects.shouldSuspendModel = true
 		case 402, 403:
-			next := now.Add(30 * time.Minute)
-			state.NextRetryAfter = next
+			// A billing or permission refusal can be about this model alone (a
+			// relay key not allowed to use it), so it stays per model. One that
+			// keeps coming back is retried less often.
+			state.NextRetryAfter = now.Add(repeatedFailureBackoff(30*time.Minute, 2*time.Hour, state.FailureStreak))
 			effects.suspendReason = "payment_required"
 			effects.shouldSuspendModel = true
 		case 404:
-			next := now.Add(12 * time.Hour)
-			state.NextRetryAfter = next
+			state.NextRetryAfter = now.Add(notFoundCooldown(result.Error, state.FailureStreak))
 			effects.suspendReason = "not_found"
 			effects.shouldSuspendModel = true
 		case 429:
@@ -499,5 +511,49 @@ func (s cooldownService) applyRegistryEffects(result Result, effects resultState
 		registryRef.ResumeClientModel(result.AuthID, result.Model)
 	} else if effects.shouldSuspendModel {
 		registryRef.SuspendClientModel(result.AuthID, result.Model, effects.suspendReason)
+	}
+}
+
+// notFoundCooldown is how long a model stays held back after a 404. A 404
+// that says the model does not exist or the plan leaves it out holds for 12
+// hours. A bare one may be a relay's passing routing miss, so it holds for 10
+// minutes the first time and twice as long each time it comes back without a
+// success in between, up to the same 12 hours.
+func notFoundCooldown(failure *Error, streak int) time.Duration {
+	const limit = 12 * time.Hour
+	if failure != nil && isModelUnavailableMessage(failure.Message) {
+		return limit
+	}
+	return repeatedFailureBackoff(10*time.Minute, limit, streak)
+}
+
+// repeatedFailureBackoff is base for the first failure of a streak, doubled
+// for each repeat, and never more than limit.
+func repeatedFailureBackoff(base, limit time.Duration, streak int) time.Duration {
+	wait := base
+	for i := 1; i < streak && wait < limit; i++ {
+		wait *= 2
+	}
+	return min(wait, limit)
+}
+
+// holdCredentialModelsLocked gives every other model auth has state for the
+// cooldown of a 401 one of them got, unless it is held back longer already.
+func holdCredentialModelsLocked(auth *Auth, failed *ModelState, failure *Error, until, now time.Time) {
+	for _, state := range auth.ModelStates {
+		if state == nil || state == failed || state.Status == StatusDisabled {
+			continue
+		}
+		if state.Unavailable && !state.NextRetryAfter.Before(until) {
+			continue
+		}
+		state.Unavailable = true
+		state.Status = StatusError
+		state.NextRetryAfter = until
+		state.UpdatedAt = now
+		if failure != nil {
+			state.LastError = cloneError(failure)
+			state.StatusMessage = failure.Message
+		}
 	}
 }
