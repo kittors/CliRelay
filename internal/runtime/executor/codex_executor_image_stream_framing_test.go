@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"net/http"
@@ -44,17 +45,23 @@ func parseFramedSSE(raw string) []framedSSEEvent {
 		}
 		name, data = "", nil
 	}
-	for _, line := range strings.Split(raw, "\n") {
-		switch {
-		case line == "":
+	scanner := bufio.NewScanner(strings.NewReader(raw))
+	for scanner.Scan() {
+		line := scanner.Text()
+		if line == "" {
 			dispatch()
-		case strings.HasPrefix(line, "event:"):
-			name = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
-		case strings.HasPrefix(line, "data:"):
-			data = append(data, strings.TrimPrefix(strings.TrimPrefix(line, "data:"), " "))
+			continue
+		}
+		field, value, _ := strings.Cut(line, ":")
+		value = strings.TrimPrefix(value, " ")
+		switch field {
+		case "event":
+			name = value
+		case "data":
+			data = append(data, value)
 		}
 	}
-	dispatch()
+	// EOF alone does not dispatch an incomplete event under the SSE rules.
 	return events
 }
 
@@ -172,32 +179,22 @@ func TestFrameCodexImageStreamEvents(t *testing.T) {
 	held := []byte("event: response.completed")
 	completed := []byte(`data: {"type":"response.completed","response":{}}`)
 	fallback := []byte(`data: {"type":"response.output_item.done","item":{"id":"msg_image_display"}}`)
-
 	tests := []struct {
-		name   string
-		held   []byte
-		events [][]byte
-		want   []string
+		name                string
+		original, synthetic [][]byte
+		want                []string
 	}{
-		{name: "nothing", want: nil},
-		{name: "held event line only", held: held, want: []string{string(held)}},
-		{name: "plain line", events: [][]byte{completed}, want: []string{string(completed)}},
-		{name: "plain line after event line", held: held, events: [][]byte{completed}, want: []string{string(held), string(completed)}},
-		{
-			name:   "synthetic event goes out whole before the held event line",
-			held:   held,
-			events: [][]byte{fallback, completed},
-			want:   []string{"event: response.output_item.done", string(fallback), "", string(held), string(completed)},
-		},
-		{
-			name:   "synthetic event without a held event line",
-			events: [][]byte{fallback, completed},
-			want:   []string{"event: response.output_item.done", string(fallback), "", string(completed)},
-		},
+		{name: "nothing"},
+		{name: "event line only", original: [][]byte{held}, want: []string{string(held)}},
+		{name: "plain data", original: [][]byte{completed}, want: []string{string(completed)}},
+		{name: "plain named event", original: [][]byte{held, completed}, want: []string{string(held), string(completed)}},
+		{name: "synthetic before named event", original: [][]byte{held, completed}, synthetic: [][]byte{fallback}, want: []string{"event: response.output_item.done", string(fallback), "", string(held), string(completed)}},
+		{name: "synthetic before data only", original: [][]byte{completed}, synthetic: [][]byte{fallback}, want: []string{"event: response.output_item.done", string(fallback), "", string(completed)}},
+		{name: "late event metadata moves before data", original: [][]byte{completed, held, []byte("id: terminal")}, synthetic: [][]byte{fallback}, want: []string{"event: response.output_item.done", string(fallback), "", string(held), "id: terminal", string(completed)}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := frameCodexImageStreamEvents(tt.held, tt.events)
+			got := frameCodexImageStreamEvents(tt.original, tt.synthetic)
 			if len(got) != len(tt.want) {
 				t.Fatalf("lines = %q, want %q", got, tt.want)
 			}

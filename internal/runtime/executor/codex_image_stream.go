@@ -80,37 +80,6 @@ func normalizeCodexImageGenerationOutboundEventWithState(n *codexImageStreamNorm
 	return [][]byte{normalized}
 }
 
-// frameCodexImageStreamEvents frames the lines the stateful normalizer returned for one
-// upstream SSE line. heldEventLine is the "event:" line that preceded that line, if any.
-//
-// The normalizer works on single lines, but an SSE event is an "event:" line, its "data:"
-// lines and a blank line. Everything the normalizer returns ahead of the original line is a
-// synthetic event of its own, so it must leave before the held "event:" line: written after
-// it, the synthetic data joins the original event, and at response.completed that makes the
-// terminal event two JSON documents that no SSE client can parse. Each synthetic event gets
-// its own "event:" line and terminating blank line; the original line follows its own
-// "event:" line unchanged.
-func frameCodexImageStreamEvents(heldEventLine []byte, events [][]byte) [][]byte {
-	if len(events) == 0 {
-		if heldEventLine == nil {
-			return nil
-		}
-		return [][]byte{heldEventLine}
-	}
-	synthetic, original := events[:len(events)-1], events[len(events)-1]
-	out := make([][]byte, 0, 3*len(synthetic)+2)
-	for _, event := range synthetic {
-		if eventType := gjson.GetBytes(sseJSONBody(event), "type").String(); eventType != "" {
-			out = append(out, []byte("event: "+eventType))
-		}
-		out = append(out, event, []byte{})
-	}
-	if heldEventLine != nil {
-		out = append(out, heldEventLine)
-	}
-	return append(out, original)
-}
-
 // displayFallbackFor returns a synthetic assistant message carrying the generated images,
 // but only at the end of a response that never inlined them into real assistant text.
 func (n *codexImageStreamNormalizer) displayFallbackFor(payload []byte) []byte {
