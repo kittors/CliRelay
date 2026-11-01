@@ -301,8 +301,10 @@ func initializeRuntimeDataStack(cfg *config.Config, configPath string, loc *time
 	initializeIPAccessControl(context.Background(), cfg)
 	// Likewise the metrics endpoint settings.
 	initializeObservability()
-	// And the loop protection settings every inference request resolves.
+	// And the loop protection and secret masking settings every inference
+	// request resolves.
 	settingsstore.AttachLoopGuardSettings()
+	settingsstore.AttachSecretMaskingSettings()
 	middleware.InitQuotaUsageFuncs(usage.CountTodayByKey, usage.CountTotalByKey, usage.QueryTotalCostByKey, usage.QueryTodayCostByKey)
 	middleware.InitQuotaEndUserUsageFuncs(usage.CountTodayByEndUser, usage.CountTotalByEndUser, usage.QueryTotalCostByEndUser, usage.QueryTodayCostByEndUser)
 	middleware.InitQuotaPeriodUsageFuncs(usage.QueryPeriodSpendingByAPIKeyIDForTenant, usage.QueryPeriodSpendingByEndUserForTenant)

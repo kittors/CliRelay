@@ -133,16 +133,7 @@ func rewriteWordUnits(units []wordUnit, contexts []wordContext, wanted map[int][
 		return nil, 0, &rewriteFailure{reason: WordReasonUnrewritable, why: whyUnlocated}
 	}
 
-	patches := make(map[*wordDoc][]patch)
-	byDepth := make(map[int][]*wordDoc)
-	deepest := 0
-	addPatch := func(doc *wordDoc, p patch) {
-		if len(patches[doc]) == 0 {
-			byDepth[doc.depth] = append(byDepth[doc.depth], doc)
-			deepest = max(deepest, doc.depth)
-		}
-		patches[doc] = append(patches[doc], p)
-	}
+	var patches docPatches
 
 	replaced := 0
 	var groups []keyGroup
@@ -181,26 +172,55 @@ func rewriteWordUnits(units []wordUnit, contexts []wordContext, wanted map[int][
 		if !ok {
 			return nil, 0, fail(first, WordReasonUnrewritable, whyEscapes)
 		}
-		addPatch(sl.doc, patch{lit0: unit.lit0, lit1: unit.lit1, literal: literal})
+		patches.add(sl.doc, patch{lit0: unit.lit0, lit1: unit.lit1, literal: literal})
 	}
 	for _, group := range groups {
 		for _, p := range renameKeys(group, renames[group]) {
-			addPatch(group.doc, p)
+			patches.add(group.doc, p)
 		}
 	}
 
+	out, failure := patches.write()
+	if failure != nil {
+		return nil, 0, failure
+	}
+	return out, replaced, nil
+}
+
+// docPatches collects the literal patches of a rewrite by document and writes
+// them back into the request.
+type docPatches struct {
+	patches map[*wordDoc][]patch
+	byDepth map[int][]*wordDoc
+	deepest int
+}
+
+func (d *docPatches) add(doc *wordDoc, p patch) {
+	if d.patches == nil {
+		d.patches = make(map[*wordDoc][]patch)
+		d.byDepth = make(map[int][]*wordDoc)
+	}
+	if len(d.patches[doc]) == 0 {
+		d.byDepth[doc.depth] = append(d.byDepth[doc.depth], doc)
+		d.deepest = max(d.deepest, doc.depth)
+	}
+	d.patches[doc] = append(d.patches[doc], p)
+}
+
+// write returns the request with the patches applied.
+func (d *docPatches) write() ([]byte, *rewriteFailure) {
 	// Innermost documents first: one that changed is written back into the string
 	// it is the content of, which is a change to the document above it.
 	var out []byte
-	for depth := deepest; depth >= 0; depth-- {
-		for _, doc := range byDepth[depth] {
-			ps := patches[doc]
+	for depth := d.deepest; depth >= 0; depth-- {
+		for _, doc := range d.byDepth[depth] {
+			ps := d.patches[doc]
 			sort.SliceStable(ps, func(i, j int) bool { return ps[i].lit0 < ps[j].lit0 })
 			changed := make([]byte, 0, len(doc.data)+64)
 			cursor := 0
 			for _, p := range ps {
 				if p.lit0 < cursor {
-					return nil, 0, &rewriteFailure{reason: WordReasonRewriteInvalid, field: doc.path(), why: whyOverlap}
+					return nil, &rewriteFailure{reason: WordReasonRewriteInvalid, field: doc.path(), why: whyOverlap}
 				}
 				changed = append(changed, doc.data[cursor:p.lit0]...)
 				changed = append(changed, p.literal...)
@@ -208,7 +228,7 @@ func rewriteWordUnits(units []wordUnit, contexts []wordContext, wanted map[int][
 			}
 			changed = append(changed, doc.data[cursor:]...)
 			if !gjson.ValidBytes(changed) {
-				return nil, 0, &rewriteFailure{reason: WordReasonRewriteInvalid, field: doc.path(), why: whyInvalidJSON}
+				return nil, &rewriteFailure{reason: WordReasonRewriteInvalid, field: doc.path(), why: whyInvalidJSON}
 			}
 			if doc.parent == nil {
 				out = changed
@@ -220,15 +240,15 @@ func rewriteWordUnits(units []wordUnit, contexts []wordContext, wanted map[int][
 			}
 			literal, ok := spliceLiteral(doc.parent.data[doc.lit0:doc.lit1], edits)
 			if !ok {
-				return nil, 0, &rewriteFailure{reason: WordReasonUnrewritable, field: doc.path(), why: whyEscapes}
+				return nil, &rewriteFailure{reason: WordReasonUnrewritable, field: doc.path(), why: whyEscapes}
 			}
-			addPatch(doc.parent, patch{lit0: doc.lit0, lit1: doc.lit1, literal: literal})
+			d.add(doc.parent, patch{lit0: doc.lit0, lit1: doc.lit1, literal: literal})
 		}
 	}
 	if out == nil {
-		return nil, 0, &rewriteFailure{reason: WordReasonRewriteInvalid, why: whyInvalidJSON}
+		return nil, &rewriteFailure{reason: WordReasonRewriteInvalid, why: whyInvalidJSON}
 	}
-	return out, replaced, nil
+	return out, nil
 }
 
 // renameKeys writes the new names of the keys of one object. Two keys that

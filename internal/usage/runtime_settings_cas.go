@@ -83,6 +83,19 @@ func LoadRuntimeSettingForTenant(tenantID, key string) (payload json.RawMessage,
 	return entry.Payload, entry.Version, true
 }
 
+// LoadRuntimeSettingForTenantContext is LoadRuntimeSettingForTenant for a
+// caller that must not take a failed read for a missing row.
+func LoadRuntimeSettingForTenantContext(ctx context.Context, tenantID, key string) (payload json.RawMessage, version int64, ok bool, err error) {
+	if !ConfigStoreAvailable() {
+		return nil, 0, false, nil
+	}
+	entry, ok, err := runtimeSettingsStoreForTenant(tenantID).LoadContext(ctx, key)
+	if err != nil || !ok {
+		return nil, 0, false, err
+	}
+	return entry.Payload, entry.Version, true, nil
+}
+
 // RuntimeSettingPayloadsByKey returns the payload of key for every tenant that
 // has one, keyed by tenant id.
 func RuntimeSettingPayloadsByKey(key string) (map[string]json.RawMessage, error) {

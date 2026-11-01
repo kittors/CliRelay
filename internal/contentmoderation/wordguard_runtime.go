@@ -102,14 +102,14 @@ func wordGuardKeyID(ctx context.Context) string {
 	return strings.TrimSpace(metadata["api-key-id"])
 }
 
-// GuardRequest implements coreauth.RequestGuard. It checks the request against
-// the platform, tenant and API key word policies before any account is chosen,
-// and either refuses it, hands back a copy with the hits replaced, or lets it
-// through (noting hits in the request log).
+// guardWords is the word guard's part of GuardRequest. It checks the request
+// against the platform, tenant and API key word policies before any account is
+// chosen, and either refuses it, hands back a copy with the hits replaced, or
+// lets it through (noting hits in the request log).
 //
 // It fails open: policies that cannot be read in time leave the request as it
 // is, unless some were read before, in which case those still apply.
-func (m *RuntimeModerator) GuardRequest(ctx context.Context, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) coreauth.RequestGuardResult {
+func (m *RuntimeModerator) guardWords(ctx context.Context, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) coreauth.RequestGuardResult {
 	if !m.WordGuardEnabled() {
 		return coreauth.RequestGuardResult{}
 	}

@@ -15,6 +15,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/alerting"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/contentmoderation"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/identity"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/loopguard"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/management/aiaccountstatus"
@@ -77,6 +78,8 @@ type Handler struct {
 	routingSimulator RoutingSimulator
 	// loopGuard overrides the process-wide loop protection settings in tests.
 	loopGuard *loopguard.Registry
+	// secretMasking overrides the process-wide secret masking settings in tests.
+	secretMasking *contentmoderation.SecretMaskingRegistry
 }
 
 type trendCacheEntry struct {
@@ -93,8 +96,10 @@ func NewHandler(cfg *config.Config, configFilePath string, manager *coreauth.Man
 	// rather than 503 on every rule endpoint.
 	ensureIPAccessRuntime(cfg)
 	ensureObservabilityRuntime()
-	// Same for the loop protection settings the inference path reads.
+	// Same for the loop protection and secret masking settings the inference
+	// path reads.
 	settingsstore.AttachLoopGuardSettings()
+	settingsstore.AttachSecretMaskingSettings()
 
 	h := &Handler{
 		cfg:                 cfg,

@@ -43,6 +43,9 @@ type RuntimeModerator struct {
 	// zero means maxRegexWork. Tests shrink it, because spending the real one
 	// takes half a second of CPU.
 	regexWork int64
+	// secretMasking holds the tenants' secret masking settings; nil means the
+	// process's registry (SecretMasking). Tests supply their own.
+	secretMasking *SecretMaskingRegistry
 
 	lastGoodMu sync.RWMutex
 	lastGood   map[resolutionKey]resolvedProfile

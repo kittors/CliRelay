@@ -26,7 +26,7 @@ func TestRegisterManagementRouteTable(t *testing.T) {
 		routes[key] = route
 	}
 
-	if got, want := len(routes), 379; got != want {
+	if got, want := len(routes), 381; got != want {
 		t.Fatalf("route count = %d, want %d", got, want)
 	}
 	if got, want := sortedRouteKeys(routes), expectedManagementRoutes(); !slices.Equal(got, want) {
@@ -53,6 +53,8 @@ func TestRegisterManagementRouteTable(t *testing.T) {
 		"GET /v0/management/content-moderation/word-policies/keys/:id",
 		"PUT /v0/management/content-moderation/word-policies/keys/:id",
 		"DELETE /v0/management/content-moderation/word-policies/keys/:id",
+		"GET /v0/management/content-moderation/secret-masking",
+		"PUT /v0/management/content-moderation/secret-masking",
 		"POST /v0/management/content-moderation/word-policies/validate",
 		"POST /v0/management/content-moderation/word-policies/test",
 		"GET /v0/management/dashboard-summary",
@@ -202,6 +204,8 @@ func TestManagementRoutePermissionsComplete(t *testing.T) {
 		{http.MethodGet, "/v0/management/content-moderation/word-policies/keys/sample-id", "content_moderation.read"},
 		{http.MethodPut, "/v0/management/content-moderation/word-policies/platform", "content_moderation.write"},
 		{http.MethodPut, "/v0/management/content-moderation/word-policies/tenant", "content_moderation.write"},
+		{http.MethodGet, "/v0/management/content-moderation/secret-masking", "content_moderation.read"},
+		{http.MethodPut, "/v0/management/content-moderation/secret-masking", "content_moderation.write"},
 		{http.MethodDelete, "/v0/management/content-moderation/word-policies/keys/sample-id", "content_moderation.write"},
 		{http.MethodPost, "/v0/management/content-moderation/word-policies/validate", "content_moderation.write"},
 		{http.MethodPost, "/v0/management/content-moderation/word-policies/test", "content_moderation.test"},
@@ -551,6 +555,8 @@ func expectedManagementRoutes() []string {
 		"POST /v0/management/content-moderation/profiles",
 		"POST /v0/management/content-moderation/profiles/:id/test",
 		"POST /v0/management/content-moderation/word-policies/test",
+		"GET /v0/management/content-moderation/secret-masking",
+		"PUT /v0/management/content-moderation/secret-masking",
 		"POST /v0/management/content-moderation/word-policies/validate",
 		"POST /v0/management/api-key-entries/daily-spending/reset",
 		"POST /v0/management/api-key-entries/period-spending/reset",
