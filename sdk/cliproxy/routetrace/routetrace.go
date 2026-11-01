@@ -46,6 +46,9 @@ const (
 	// KindExhausted is a scheduling pass that found no account to take the
 	// request; Candidates says why.
 	KindExhausted = "exhausted"
+	// KindMember is a member of a virtual model the request turned to, or
+	// passed over (member.go).
+	KindMember = "member"
 )
 
 // Outcomes of an attempt, a queue or a wait.
@@ -177,6 +180,14 @@ type Step struct {
 	// the scheduler meant it (the auth package's SimulatedRetryWait* values).
 	WaitKind  string `json:"wait_kind,omitempty"`
 	PlannedMs int64  `json:"planned_ms,omitempty"`
+
+	// The virtual model of a member step: the member's 1-based position among
+	// Members. Group and Model name the member; Reason says why the request
+	// turned to it or passed it over, and Status and Cause carry the failure
+	// that made the request leave the member before it.
+	VirtualModel string `json:"virtual_model,omitempty"`
+	Member       int    `json:"member,omitempty"`
+	Members      int    `json:"members,omitempty"`
 
 	// What an exhausted pass returns, and the state of its candidates.
 	ErrorCode         string      `json:"error_code,omitempty"`

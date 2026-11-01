@@ -23,6 +23,11 @@ func TestPostgresQuotaUsageSnapshotAndReset(t *testing.T) {
 	if err := InitPostgres(config.PostgresConfig{DSN: dsn, MaxOpenConns: 4, MaxIdleConns: 1}, config.RequestLogStorageConfig{}, time.UTC); err != nil {
 		t.Fatalf("InitPostgres: %v", err)
 	}
+	// The minute bucket below is months old, and the maintenance pass InitPostgres
+	// starts prunes minute buckets older than a day: landing between the insert
+	// and the read, it took the five-hour total to 0. Stopping it waits for that
+	// pass to finish.
+	stopRequestLogMaintenance()
 	db := getDB()
 	if _, err := db.Exec(`TRUNCATE usage_rollup_buckets, period_spending_resets, period_spending_reset_events, period_window_anchors`); err != nil {
 		t.Fatalf("truncate: %v", err)

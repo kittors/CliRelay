@@ -90,8 +90,15 @@ func runExecutionWithRetry[T any](
 	trace := routetrace.FromContext(ctx)
 	trace.SetRequest(req.Model, opts.Stream, isSinglePickRouteRequest(opts.Metadata))
 	// A failed attempt waits for the decision after it (see routetrace); the
-	// last one has none but returning.
-	defer trace.SettlePending()
+	// last one has none but returning, unless the caller still has one to take
+	// (a virtual model turning to its next member). Such a caller has
+	// somewhere else to go, so it hears of the failure at once instead of
+	// busy-waiting for this pool to recover.
+	callerDecides := routetrace.CallerDecides(ctx)
+	if !callerDecides {
+		defer trace.SettlePending()
+	}
+	busyWait = busyWait && !callerDecides
 
 	var lastErr error
 	for attempt := 0; ; attempt++ {

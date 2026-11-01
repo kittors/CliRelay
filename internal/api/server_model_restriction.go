@@ -28,8 +28,12 @@ func (s *Server) modelRestrictionMiddleware() gin.HandlerFunc {
 			// recognised with the same check the upgrader uses, so every
 			// accepted upgrade is gated.
 			if middleware.IsWebsocketUpgrade(c.Request) {
-				if gate := s.buildModelGate(c); gate != nil {
+				gate, planner := s.buildModelGates(c)
+				if gate != nil {
 					c.Set(handlers.ModelGateContextKey, gate)
+				}
+				if planner != nil {
+					c.Set(handlers.VirtualModelPlannerContextKey, planner)
 				}
 			}
 			c.Next()
@@ -39,7 +43,10 @@ func (s *Server) modelRestrictionMiddleware() gin.HandlerFunc {
 			return
 		}
 
-		gate := s.buildModelGate(c)
+		gate, planner := s.buildModelGates(c)
+		if planner != nil {
+			c.Set(handlers.VirtualModelPlannerContextKey, planner)
+		}
 		if gate == nil {
 			c.Next()
 			return
@@ -77,6 +84,15 @@ func (s *Server) modelRestrictionMiddleware() gin.HandlerFunc {
 // The verdict is an *interfaces.ErrorMessage whose Error is a *modelGateError,
 // so both the HTTP path and the WebSocket path can render the same code/type.
 func (s *Server) buildModelGate(c *gin.Context) handlers.ModelGate {
+	gate, _ := s.buildModelGates(c)
+	return gate
+}
+
+// buildModelGates is buildModelGate with the planner the handlers run the
+// tenant's virtual models with, nil when it has none. A tenant with virtual
+// models always gets a gate: a virtual model none of whose members the request
+// may use is refused here, as a model it may not use is.
+func (s *Server) buildModelGates(c *gin.Context) (handlers.ModelGate, handlers.VirtualModelPlanner) {
 	allowedStr := ""
 	if metadataVal, exists := c.Get("accessMetadata"); exists {
 		if metadata, ok := metadataVal.(map[string]string); ok {
@@ -98,13 +114,16 @@ func (s *Server) buildModelGate(c *gin.Context) handlers.ModelGate {
 	// on the preset route while the group itself served it.
 
 	tenantID := requestTenantID(c)
-	hasScopedRestriction := s.hasScopedRoutingModelRestrictionForTenant(tenantID, routeGroup, allowedGroups)
+	routing := s.routingConfigForTenant(tenantID)
+	hasScopedRestriction := !scopedRoutingModelGateFor(routing, tenantID, routeGroup, allowedGroups).unrestricted
+	scope := virtualModelScope{tenantID: tenantID, routeGroup: internalrouting.NormalizeGroupName(routeGroup), allowedGroups: allowedGroups}
+	planner := s.virtualModelPlanner(scope, routing)
 	// A model switched off in the catalog is refused for everyone, so this
 	// middleware has to inspect the body even when the key itself carries no
 	// allowed-models restriction.
 	disabledModels := modelconfigsettings.DisabledModelIDsForTenant(tenantID)
-	if allowedStr == "" && !hasScopedRestriction && len(disabledModels) == 0 {
-		return nil
+	if allowedStr == "" && !hasScopedRestriction && len(disabledModels) == 0 && planner == nil {
+		return nil, nil
 	}
 
 	var allowedModels map[string]struct{}
@@ -133,13 +152,20 @@ func (s *Server) buildModelGate(c *gin.Context) handlers.ModelGate {
 		if len(allowedModels) > 0 && !modelInSet(requestedModel, allowedModels) && !modelInSet(routingModel, allowedModels) {
 			return modelNotAllowedError(requestedModel)
 		}
-		// Built per call rather than once per gate: a WebSocket connection keeps
+		// Read per call rather than once per gate: a WebSocket connection keeps
 		// its gate across turns and must see a channel group edited meanwhile.
-		if denial := s.scopedRoutingModelGateForTenant(tenantID, routeGroup, allowedGroups).denial(routingModel); denial != nil {
+		routing := s.routingConfigForTenant(tenantID)
+		// The key's allowed-models decide who may ask for a virtual model by its
+		// name; the channel groups are checked for each member instead
+		// (virtualModelMemberRefusal), since those are what it runs on.
+		if plan := s.planVirtualModel(scope, routing, routingModel); plan != nil {
+			return virtualModelUnavailable(plan)
+		}
+		if denial := scopedRoutingModelGateFor(routing, tenantID, routeGroup, allowedGroups).denial(routingModel); denial != nil {
 			return modelNotAllowedByChannelGroupError(tenantID, requestedModel, routingModel, denial)
 		}
 		return nil
-	}
+	}, planner
 }
 
 // modelGateError carries the OpenAI-style error triple so the HTTP and
@@ -323,8 +349,13 @@ func (g scopedRoutingModelGate) denial(model string) *modelGroupDenial {
 }
 
 func (s *Server) scopedRoutingModelGateForTenant(tenantID, routeGroup string, allowedGroups map[string]struct{}) scopedRoutingModelGate {
+	return scopedRoutingModelGateFor(s.routingConfigForTenant(tenantID), tenantID, routeGroup, allowedGroups)
+}
+
+// scopedRoutingModelGateFor is scopedRoutingModelGateForTenant over a routing
+// config the caller already read.
+func scopedRoutingModelGateFor(routing *config.RoutingConfig, tenantID, routeGroup string, allowedGroups map[string]struct{}) scopedRoutingModelGate {
 	unrestricted := scopedRoutingModelGate{unrestricted: true}
-	routing := s.routingConfigForTenant(tenantID)
 	if routing == nil {
 		return unrestricted
 	}

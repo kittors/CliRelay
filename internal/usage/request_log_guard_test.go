@@ -64,6 +64,9 @@ func TestGuardKindIsStoredFilteredAndFaceted(t *testing.T) {
 		t.Fatalf("UpsertAPIKey: %v", err)
 	}
 	now := time.Now().UTC().Add(-time.Minute)
+	// Days counts calendar days from midnight: in the first minute of a day the
+	// rows fall on yesterday, so the queries look back two.
+	const days = 2
 	insertGuardRow(t, "m-plain", "", false, now)
 	insertGuardRow(t, "m-reply", "reply_loop", true, now.Add(time.Millisecond))
 	insertGuardRow(t, "m-tool", "tool_loop", true, now.Add(2*time.Millisecond))
@@ -73,7 +76,7 @@ func TestGuardKindIsStoredFilteredAndFaceted(t *testing.T) {
 
 	models := func(params LogQueryParams) []string {
 		t.Helper()
-		params.Days = 1
+		params.Days = days
 		result, err := QueryLogs(params)
 		if err != nil {
 			t.Fatalf("QueryLogs: %v", err)
@@ -116,7 +119,7 @@ func TestGuardKindIsStoredFilteredAndFaceted(t *testing.T) {
 		}
 	})
 	t.Run("stats follow the filter", func(t *testing.T) {
-		stats, err := QueryStats(LogQueryParams{Days: 1, GuardKinds: []string{"reply_loop", "tool_loop"}})
+		stats, err := QueryStats(LogQueryParams{Days: days, GuardKinds: []string{"reply_loop", "tool_loop"}})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -126,7 +129,7 @@ func TestGuardKindIsStoredFilteredAndFaceted(t *testing.T) {
 	})
 	t.Run("the facet lists the kinds present and ignores its own selection", func(t *testing.T) {
 		for _, selected := range [][]string{nil, {"reply_loop"}} {
-			filters, err := QueryFiltersForLogs(LogQueryParams{Days: 1, GuardKinds: selected})
+			filters, err := QueryFiltersForLogs(LogQueryParams{Days: days, GuardKinds: selected})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -135,7 +138,7 @@ func TestGuardKindIsStoredFilteredAndFaceted(t *testing.T) {
 			}
 		}
 		// Other facets narrow it: the window of one model holds no loop-ended request.
-		filters, err := QueryFiltersForLogs(LogQueryParams{Days: 1, Models: []string{"m-plain"}})
+		filters, err := QueryFiltersForLogs(LogQueryParams{Days: days, Models: []string{"m-plain"}})
 		if err != nil {
 			t.Fatal(err)
 		}

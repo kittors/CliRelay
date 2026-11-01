@@ -113,6 +113,24 @@ func statusCodeFromResult(err *Error) int {
 	return err.StatusCode()
 }
 
+// IsRequestFault reports whether err is the upstream refusing the request
+// itself: a malformed request, or a content-policy block. Another account
+// would refuse it as well, and so would another model; a virtual model does
+// not move on to its next member after one.
+func IsRequestFault(err error) bool {
+	return isRequestInvalidError(err) || isContentPolicyViolation(err)
+}
+
+// FailureCause classifies a failed execution as the route trace does an
+// attempt (a routetrace Cause* value, a cooldown reason, or empty), for a caller
+// that records why it gave up on one.
+func FailureCause(err error) string {
+	if err == nil {
+		return ""
+	}
+	return failureCause(err)
+}
+
 // isRequestInvalidError returns true if the error represents a client request
 // error that should not be retried or failed over to another auth. Switching
 // credentials cannot fix a malformed request body (for example an image that is
