@@ -34,23 +34,34 @@ type Change struct {
 // TenantID reports the tenant this store reads and writes.
 func (s RuntimeSettingsStore) TenantID() string { return s.tenantID }
 
-// Load returns one stored setting.
+// Load returns one stored setting. A read that fails is logged and reported as
+// no setting; LoadContext tells the two apart.
 func (s RuntimeSettingsStore) Load(key string) (Entry, bool) {
+	entry, ok, err := s.LoadContext(context.Background(), key)
+	if err != nil {
+		log.Warnf("sqlite/settings: load runtime setting %s: %v", key, err)
+	}
+	return entry, ok
+}
+
+// LoadContext returns one stored setting, false when there is none, and the
+// error of a read that failed.
+func (s RuntimeSettingsStore) LoadContext(ctx context.Context, key string) (Entry, bool, error) {
 	if s.db == nil {
-		return Entry{}, false
+		return Entry{}, false, nil
 	}
 	var (
 		payload string
 		version int64
 	)
-	err := s.db.QueryRow(`SELECT payload, version FROM runtime_settings WHERE tenant_id = ? AND setting_key = ?`, s.tenantID, key).Scan(&payload, &version)
-	if err != nil {
-		if !errors.Is(err, sql.ErrNoRows) {
-			log.Warnf("sqlite/settings: load runtime setting %s: %v", key, err)
-		}
-		return Entry{}, false
+	err := s.db.QueryRowContext(ctx, `SELECT payload, version FROM runtime_settings WHERE tenant_id = ? AND setting_key = ?`, s.tenantID, key).Scan(&payload, &version)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Entry{}, false, nil
 	}
-	return Entry{Payload: normalizePayload(payload), Version: version}, true
+	if err != nil {
+		return Entry{}, false, err
+	}
+	return Entry{Payload: normalizePayload(payload), Version: version}, true, nil
 }
 
 // LoadAll returns every stored setting of the tenant in one query, so a

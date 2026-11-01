@@ -49,6 +49,12 @@ func (w *wordReply) Abandoned(any) { w.engine.snapshot.skipReply("filter_error")
 // payload that is still gzip is unpacked, filtered and returned plain, with the
 // encoding header gone; any other encoding cannot be read and is left alone.
 func (w *wordReply) FilterResponse(resp cliproxyexecutor.Response) cliproxyexecutor.Response {
+	return filterWholeReply(w.engine, w.format, resp)
+}
+
+// filterWholeReply applies f to a reply that arrives in one piece; see
+// wordReply.FilterResponse.
+func filterWholeReply(f replyTextFilter, format sdktranslator.Format, resp cliproxyexecutor.Response) cliproxyexecutor.Response {
 	doc := resp.Payload
 	if len(doc) == 0 {
 		return resp
@@ -57,18 +63,18 @@ func (w *wordReply) FilterResponse(resp cliproxyexecutor.Response) cliproxyexecu
 	if bytes.HasPrefix(doc, []byte{0x1f, 0x8b}) {
 		plain, err := gunzipLimited(doc, maxReplyBody)
 		if err != nil {
-			w.engine.snapshot.skipReply("compressed_body")
+			f.skipReply("compressed_body")
 			return resp
 		}
 		doc, unpacked = plain, true
 	}
-	pieces, untraced := replyPieces(w.format, doc, false)
+	pieces, untraced := f.pieces(format, doc, false)
 	if untraced > 0 {
-		w.engine.snapshot.skipReply("untraceable_text")
+		f.skipReply("untraceable_text")
 	}
 	if len(pieces) == 0 {
 		if enc := resp.Headers.Get("Content-Encoding"); enc != "" && enc != "identity" && !unpacked && !looksLikeJSON(doc) {
-			w.engine.snapshot.skipReply("unsupported_encoding")
+			f.skipReply("unsupported_encoding")
 		}
 		return resp
 	}
@@ -79,7 +85,7 @@ func (w *wordReply) FilterResponse(resp cliproxyexecutor.Response) cliproxyexecu
 		tail:   make([]string, len(pieces)),
 	}
 	for i, piece := range pieces {
-		h.out[i] = w.engine.filterText(piece.text, false).out
+		h.out[i] = f.filterText(piece.text, false).out
 	}
 	if !h.changed() {
 		return resp

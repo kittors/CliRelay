@@ -32,4 +32,8 @@ func registerManagementContentModerationRoutes(group *gin.RouterGroup, h *manage
 	group.DELETE("/content-moderation/word-policies/keys/:id", h.DeleteWordPolicyKey)
 	group.POST("/content-moderation/word-policies/validate", h.PostWordPolicyValidate)
 	group.POST("/content-moderation/word-policies/test", h.PostWordPolicyTest)
+
+	// Outbound secret masking: the tenant's switch.
+	group.GET("/content-moderation/secret-masking", h.GetSecretMasking)
+	group.PUT("/content-moderation/secret-masking", h.PutSecretMasking)
 }

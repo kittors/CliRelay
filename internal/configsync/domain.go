@@ -39,6 +39,9 @@ const (
 	// DomainLoopGuard covers a tenant's loop protection settings, its own and
 	// those of its API keys.
 	DomainLoopGuard = "loop_guard"
+	// DomainSecretMasking covers a tenant's outbound secret masking switch and
+	// placeholder key.
+	DomainSecretMasking = "secret_masking"
 )
 
 // systemTenantID mirrors identity.SystemTenantID. It is duplicated rather than

@@ -24,7 +24,7 @@ import (
 // comes for a while (see HeldSince), the event is sent with its text as it was,
 // the end now settled. Comments and pings pass at once and change nothing.
 type wordReplyStream struct {
-	engine *replyEngine
+	engine replyTextFilter
 	format sdktranslator.Format
 
 	// rest is the start of an event whose end has not arrived yet.
@@ -43,14 +43,28 @@ type heldReply struct {
 	out, tail []string
 }
 
-func newWordReplyStream(engine *replyEngine, format sdktranslator.Format) *wordReplyStream {
+// replyTextFilter is what a reply filter does to the strings of a reply: the
+// word guard replaces words (replyEngine), the secret masker puts its
+// placeholders' values back (secretReply). The stream and the whole-reply
+// handling around it are the same for both.
+type replyTextFilter interface {
+	// pieces returns the strings of a reply document the filter works on, in
+	// document order, and how many it could not locate (see replyPieces).
+	pieces(format sdktranslator.Format, doc []byte, stream bool) ([]replyPiece, int)
+	// filterText rewrites one string; see replyEngine.filterText.
+	filterText(text string, more bool) replyText
+	// skipReply notes that part of the reply went out unfiltered, and why.
+	skipReply(reason string)
+}
+
+func newWordReplyStream(engine replyTextFilter, format sdktranslator.Format) *wordReplyStream {
 	return &wordReplyStream{engine: engine, format: format}
 }
 
 // Abandoned is called by the SDK when it stopped using this filter because it
 // panicked: the rest of the reply goes out unfiltered, and the request log says
 // so.
-func (s *wordReplyStream) Abandoned(any) { s.engine.snapshot.skipReply("filter_error") }
+func (s *wordReplyStream) Abandoned(any) { s.engine.skipReply("filter_error") }
 
 // Push implements the SDK's StreamReplyFilter.
 func (s *wordReplyStream) Push(chunk []byte) [][]byte {
@@ -108,9 +122,9 @@ func (s *wordReplyStream) frame(f replyFrame) [][]byte {
 		out, _ := s.release(nil)
 		return append(out, f.raw)
 	}
-	pieces, untraced := replyPieces(s.format, f.data, true)
+	pieces, untraced := s.engine.pieces(s.format, f.data, true)
 	if untraced > 0 {
-		s.engine.snapshot.skipReply("untraceable_text")
+		s.engine.skipReply("untraceable_text")
 	}
 	if len(pieces) == 0 {
 		if isPingEvent(f.data) {

@@ -51,6 +51,12 @@ func replyPieces(format sdktranslator.Format, doc []byte, stream bool) (pieces [
 		return nil, 0
 	}
 	r := &replyReader{doc: doc, root: gjson.ParseBytes(doc)}
+	r.text(format, stream)
+	return r.sorted()
+}
+
+// text reads the answer text of the document.
+func (r *replyReader) text(format sdktranslator.Format, stream bool) {
 	switch format {
 	case sdktranslator.FormatClaude:
 		r.claude(stream)
@@ -61,6 +67,10 @@ func replyPieces(format sdktranslator.Format, doc []byte, stream bool) (pieces [
 	case sdktranslator.FormatGemini, sdktranslator.FormatGeminiCLI, sdktranslator.FormatAntigravity:
 		r.gemini(stream)
 	}
+}
+
+// sorted returns the pieces in document order, each string once.
+func (r *replyReader) sorted() ([]replyPiece, int) {
 	// Splicing walks the document once, front to back.
 	sort.SliceStable(r.pieces, func(i, j int) bool { return r.pieces[i].lit0 < r.pieces[j].lit0 })
 	kept := r.pieces[:0]
