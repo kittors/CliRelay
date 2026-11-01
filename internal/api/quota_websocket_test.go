@@ -20,6 +20,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/api/middleware"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/quota"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/quota/inflight"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/api/handlers"
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/api/handlers/openai"
@@ -301,6 +302,24 @@ func (h *quotaWSHarness) mustComplete(conn *websocket.Conn) {
 	}
 }
 
+// waitTurnsSettled waits until the turns run so far have given back their
+// reservations. A turn gives its reservation back when it ends, a moment after
+// the client has read its reply; a check made before that counts the turn as
+// a request still running, one more than the usage shows.
+func (h *quotaWSHarness) waitTurnsSettled() {
+	h.t.Helper()
+	// QuotaMiddleware reserves for a key without an id under its admission
+	// subject, which is the key itself here (quotaPolicy.reserve).
+	name := "subject:" + h.apiKey
+	deadline := time.Now().Add(5 * time.Second)
+	for held := inflight.Default().Held(name); !held.IsZero(); held = inflight.Default().Held(name) {
+		if time.Now().After(deadline) {
+			h.t.Fatalf("the turns never settled: %s still holds %+v", name, held)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 // post sends the same turn as a POST /v1/responses.
 func (h *quotaWSHarness) post() (int, []byte, http.Header) {
 	h.t.Helper()
@@ -451,6 +470,9 @@ func TestResponsesWebsocketTurnRefusedOnceBudgetRunsOut(t *testing.T) {
 	h := newQuotaWSHarness(t, map[string]string{"daily-limit": "5"})
 	conn := h.mustDial()
 	h.mustComplete(conn)
+	// The POST and the turn below must see the same usage: neither may count
+	// the turn above as still running.
+	h.waitTurnsSettled()
 
 	h.usage.set(func(u *quotaWSUsage) { u.today = 5 })
 	postStatus, postBody, postHeader := h.post()
