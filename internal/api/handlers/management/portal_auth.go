@@ -172,7 +172,10 @@ func (h *Handler) GetPortalMe(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"user": user, "capabilities": accessPolicyCapabilities()})
+	// word_policy_allowed says whether the portal offers the user sensitive
+	// words of their own; an older backend does not send it and the portal then
+	// offers none.
+	c.JSON(http.StatusOK, gin.H{"user": user, "capabilities": accessPolicyCapabilities(), "word_policy_allowed": h.portalWordAllowed(c, user)})
 }
 
 func (h *Handler) PutPortalPassword(c *gin.Context) {

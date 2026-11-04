@@ -22,12 +22,13 @@ type wordResolverStub struct {
 	err      error
 	tenants  []string
 	keys     []string
+	endUsers []string
 }
 
-func (r *wordResolverStub) LoadWordPolicies(_ context.Context, tenantID, keyID string) (WordPolicies, error) {
+func (r *wordResolverStub) LoadWordPolicies(_ context.Context, tenantID, keyID, endUserID string) (WordPolicies, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.tenants, r.keys = append(r.tenants, tenantID), append(r.keys, keyID)
+	r.tenants, r.keys, r.endUsers = append(r.tenants, tenantID), append(r.keys, keyID), append(r.endUsers, endUserID)
 	return r.policies, r.err
 }
 

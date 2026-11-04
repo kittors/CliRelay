@@ -87,6 +87,9 @@ func InitTables(db *sql.DB) error {
 	if _, err := db.Exec(wordPolicyTablesSQL); err != nil {
 		return fmt.Errorf("create word policy tables: %w", err)
 	}
+	if _, err := db.Exec(wordPortalTablesSQL); err != nil {
+		return fmt.Errorf("create word portal access table: %w", err)
+	}
 	for _, stmt := range profileColumnMigrations {
 		_, _ = db.Exec(stmt) // ignore duplicate-column errors on already-migrated installs
 	}
@@ -99,6 +102,9 @@ type Store struct {
 	wordPolicies wordPolicyCache
 	// wordReads runs the reads that LoadWordPolicies waits for.
 	wordReads wordPolicyReads
+	// wordPortal remembers which portal users were last found allowed a word
+	// policy; see rememberedWordPolicies.
+	wordPortal wordPortalCache
 }
 
 func NewStore(db *sql.DB) *Store { return &Store{db: db} }

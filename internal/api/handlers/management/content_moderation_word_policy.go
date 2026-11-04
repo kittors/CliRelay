@@ -21,13 +21,17 @@ import (
 // and of one of its API keys (see internal/contentmoderation). They are managed
 // under /content-moderation/word-policies:
 //
-//	platform   the deployment-wide policy. Every tenant may read it; only a
-//	           platform administrator working in the system tenant may change it.
-//	tenant     the effective tenant's default policy.
-//	keys/:id   the override of one API key of the effective tenant.
+//	platform       the deployment-wide policy. Every tenant may read it; only a
+//	               platform administrator working in the system tenant may change it.
+//	tenant         the effective tenant's default policy.
+//	keys/:id       the override of one API key of the effective tenant.
+//	end-users/:id  the own policy of one portal user of the effective tenant,
+//	               which the user keeps in the portal while the tenant allows it
+//	               (see content_moderation_word_portal.go).
 //
 // A tenant can never switch the platform policy off or edit it: the platform
-// layer is evaluated on its own, ahead of the tenant and key layers.
+// layer is evaluated on its own, ahead of the tenant and key layers. A portal
+// user's policy is evaluated on its own as well, after them.
 
 // The size of the largest request that can still be a legal one, which is what
 // bounds a request body.
@@ -178,6 +182,8 @@ type wordPolicyTarget struct {
 	scopeType string
 	scopeID   string
 	keyName   string
+	// endUserName is the display name of the portal user of an end_user policy.
+	endUserName string
 }
 
 // wordPolicyResponse is a policy as the panel sees it.
@@ -202,6 +208,14 @@ type wordPolicyResponse struct {
 	// the platform policy read-only to everyone else.
 	CanEdit bool   `json:"can_edit"`
 	KeyName string `json:"key_name,omitempty"`
+	// Limits bound a save of this policy: a portal user's policy holds fewer
+	// rules than the others.
+	Limits contentmoderation.WordPolicyLimits `json:"limits"`
+	// EndUserName names the portal user of an end_user policy, and EndUserAllowed
+	// says whether the tenant lets the user keep it: one that is not allowed is
+	// kept but does not apply.
+	EndUserName    string `json:"end_user_name,omitempty"`
+	EndUserAllowed *bool  `json:"end_user_allowed,omitempty"`
 }
 
 // canManageWordPlatform reports whether the caller may change the platform
@@ -219,6 +233,8 @@ func (h *Handler) wordPolicyTargetFor(c *gin.Context, scopeType, keyID string, c
 	switch scopeType {
 	case contentmoderation.WordScopePlatform:
 		return wordPolicyTarget{tenantID: contentmoderation.PlatformWordTenantID(), scopeType: scopeType}, true
+	case contentmoderation.WordScopeEndUser:
+		return h.endUserWordPolicyTarget(c, keyID, checkKey)
 	case contentmoderation.WordScopeKey:
 		target := wordPolicyTarget{tenantID: effectiveTenantID(c), scopeType: scopeType, scopeID: strings.TrimSpace(keyID)}
 		if target.scopeID == "" {
@@ -349,7 +365,7 @@ func (h *Handler) wordPolicyView(ctx context.Context, c *gin.Context, store *con
 			unbounded = append(unbounded, rule.ID)
 		}
 	}
-	return wordPolicyResponse{
+	view := wordPolicyResponse{
 		Exists:            found,
 		WordPolicy:        policy,
 		Effective:         contentmoderation.ResolveWordSettings(below, &policy),
@@ -358,7 +374,17 @@ func (h *Handler) wordPolicyView(ctx context.Context, c *gin.Context, store *con
 		UnboundedRegexIDs: unbounded,
 		CanEdit:           target.scopeType != contentmoderation.WordScopePlatform || canManageWordPlatform(c),
 		KeyName:           target.keyName,
-	}, nil
+		Limits:            contentmoderation.WordLimitsFor(target.scopeType),
+		EndUserName:       target.endUserName,
+	}
+	if target.scopeType == contentmoderation.WordScopeEndUser {
+		allowed, err := store.WordPortalAllowed(ctx, target.tenantID, target.scopeID)
+		if err != nil {
+			return wordPolicyResponse{}, err
+		}
+		view.EndUserAllowed = &allowed
+	}
+	return view, nil
 }
 
 func (h *Handler) getWordPolicy(c *gin.Context, scopeType string) {
@@ -366,6 +392,12 @@ func (h *Handler) getWordPolicy(c *gin.Context, scopeType string) {
 	if !ok {
 		return
 	}
+	h.getWordPolicyOf(c, target)
+}
+
+// getWordPolicyOf answers with the policy target addresses, which the caller
+// has resolved and may read.
+func (h *Handler) getWordPolicyOf(c *gin.Context, target wordPolicyTarget) {
 	ctx, store := c.Request.Context(), h.contentModerationStore()
 	policy, err := store.GetWordPolicy(ctx, target.tenantID, target.scopeType, target.scopeID)
 	found := err == nil
@@ -386,6 +418,12 @@ func (h *Handler) putWordPolicy(c *gin.Context, scopeType string) {
 	if !ok || !requireWordPolicyEditor(c, target) {
 		return
 	}
+	h.putWordPolicyOf(c, target)
+}
+
+// putWordPolicyOf saves the policy target addresses, which the caller has
+// resolved and may change.
+func (h *Handler) putWordPolicyOf(c *gin.Context, target wordPolicyTarget) {
 	var input wordPolicyInput
 	if !readJSONBody(c, &input, maxWordPolicyBodyBytes) {
 		return
@@ -417,6 +455,12 @@ func (h *Handler) deleteWordPolicy(c *gin.Context, scopeType string) {
 	if !ok || !requireWordPolicyEditor(c, target) {
 		return
 	}
+	h.deleteWordPolicyOf(c, target)
+}
+
+// deleteWordPolicyOf removes the policy target addresses, which the caller has
+// resolved and may change.
+func (h *Handler) deleteWordPolicyOf(c *gin.Context, target wordPolicyTarget) {
 	err := h.contentModerationStore().DeleteWordPolicy(c.Request.Context(), target.tenantID, target.scopeType, target.scopeID)
 	if err != nil && !errors.Is(err, contentmoderation.ErrWordPolicyNotFound) {
 		wordPolicyError(c, err)
@@ -481,13 +525,29 @@ type wordPolicyOverview struct {
 	Platform          wordPolicyBrief      `json:"platform"`
 	Tenant            wordPolicyBrief      `json:"tenant"`
 	Keys              []wordKeyPolicyBrief `json:"keys"`
+	// Portal sums up the portal users' own words; GET .../portal lists them.
+	Portal wordPortalBrief `json:"portal"`
+}
+
+// wordPortalBrief is the tenant's default for its portal users and how many of
+// them keep words, of whom how many may (and so have them applied).
+type wordPortalBrief struct {
+	DefaultAllowed bool `json:"default_allowed"`
+	Policies       int  `json:"policies"`
+	ActivePolicies int  `json:"active_policies"`
 }
 
 // GetWordPolicies summarizes the policies that apply to the effective tenant:
 // the platform's, the tenant's own and those of its API keys.
 func (h *Handler) GetWordPolicies(c *gin.Context) {
 	tenantID := effectiveTenantID(c)
-	summaries, err := h.contentModerationStore().ListWordPolicySummaries(c.Request.Context(), tenantID)
+	store := h.contentModerationStore()
+	summaries, err := store.ListWordPolicySummaries(c.Request.Context(), tenantID)
+	if err != nil {
+		wordPolicyError(c, err)
+		return
+	}
+	access, err := store.GetWordPortalAccess(c.Request.Context(), tenantID)
 	if err != nil {
 		wordPolicyError(c, err)
 		return
@@ -504,6 +564,7 @@ func (h *Handler) GetWordPolicies(c *gin.Context) {
 		Platform:          wordPolicyBrief{WordPolicySummary: contentmoderation.WordPolicySummary{ScopeType: contentmoderation.WordScopePlatform}},
 		Tenant:            wordPolicyBrief{WordPolicySummary: contentmoderation.WordPolicySummary{ScopeType: contentmoderation.WordScopeTenant}},
 		Keys:              []wordKeyPolicyBrief{},
+		Portal:            wordPortalBrief{DefaultAllowed: access.DefaultAllowed},
 	}
 	for _, summary := range summaries {
 		switch summary.ScopeType {
@@ -516,6 +577,11 @@ func (h *Handler) GetWordPolicies(c *gin.Context) {
 			// can use it and the panel has no key to show it under.
 			if name, exists := names[summary.ScopeID]; exists {
 				overview.Keys = append(overview.Keys, wordKeyPolicyBrief{WordPolicySummary: summary, KeyID: summary.ScopeID, KeyName: name})
+			}
+		case contentmoderation.WordScopeEndUser:
+			overview.Portal.Policies++
+			if access.Allowed(summary.ScopeID) {
+				overview.Portal.ActivePolicies++
 			}
 		}
 	}

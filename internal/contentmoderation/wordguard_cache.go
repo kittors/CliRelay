@@ -71,11 +71,14 @@ func stampWordPolicy(p *WordPolicy) (wordPolicyStamp, bool) {
 // wordCacheKey names a context by the saved states of the policies it is built
 // from.
 type wordCacheKey struct {
-	platform bool
-	// stamps are the platform policy, for the platform's context, and the tenant
-	// and key policies for the other. A policy that is not enabled does not take
-	// part in the context it would have joined, so its stamp is left out: saving
-	// a disabled policy must not make anything compile again.
+	// layer is the layer of a context built from one policy on its own, the
+	// platform's or a portal user's, and empty for the tenant's context.
+	layer string
+	// stamps are the platform policy, for the platform's context, the portal
+	// user's policy for the user's, and the tenant and key policies for the
+	// tenant's. A policy that is not enabled does not take part in the context it
+	// would have joined, so its stamp is left out: saving a disabled policy must
+	// not make anything compile again.
 	stamps [2]wordPolicyStamp
 }
 
@@ -125,22 +128,19 @@ type wordContextCache struct {
 // policies keep the stamps it was built for. The result is shared between
 // requests and must not be modified.
 func (c *wordContextCache) contextsFor(platform, tenant, key *WordPolicy) []wordContext {
-	if platform == nil && tenant == nil && key == nil {
+	return c.policyContexts(WordPolicies{Platform: platform, Tenant: tenant, Key: key})
+}
+
+// policyContexts is buildPolicyContexts with the result remembered, as
+// contextsFor.
+func (c *wordContextCache) policyContexts(policies WordPolicies) []wordContext {
+	platform, tenant, key := policies.Platform, policies.Tenant, policies.Key
+	if platform == nil && tenant == nil && key == nil && policies.EndUser == nil {
 		return nil
 	}
-	contexts := make([]wordContext, 0, 2)
-	if platform != nil && platform.Enabled {
-		var context wordContext
-		var ok bool
-		if stamp, stamped := stampWordPolicy(platform); stamped {
-			cacheKey := wordCacheKey{platform: true, stamps: [2]wordPolicyStamp{stamp}}
-			context, ok = c.context(cacheKey, func() (wordContext, bool) { return buildPlatformContext(platform) })
-		} else {
-			context, ok = buildPlatformContext(platform)
-		}
-		if ok {
-			contexts = append(contexts, context)
-		}
+	contexts := make([]wordContext, 0, 3)
+	if context, ok := c.standaloneContext(platform, WordScopePlatform); ok {
+		contexts = append(contexts, context)
 	}
 	tenantActive := tenant != nil && tenant.Enabled
 	keyActive := key != nil && key.Enabled
@@ -168,10 +168,28 @@ func (c *wordContextCache) contextsFor(platform, tenant, key *WordPolicy) []word
 			contexts = append(contexts, context)
 		}
 	}
+	if context, ok := c.standaloneContext(policies.EndUser, WordScopeEndUser); ok {
+		contexts = append(contexts, context)
+	}
 	if len(contexts) == 0 {
 		return nil
 	}
 	return contexts
+}
+
+// standaloneContext is the context of a policy applied on its own (the
+// platform's or a portal user's), from the cache when it has one built from the
+// policy's present state.
+func (c *wordContextCache) standaloneContext(policy *WordPolicy, layer string) (wordContext, bool) {
+	if policy == nil || !policy.Enabled {
+		return wordContext{}, false
+	}
+	build := func() (wordContext, bool) { return buildStandaloneContext(policy, layer) }
+	stamp, stamped := stampWordPolicy(policy)
+	if !stamped {
+		return build()
+	}
+	return c.context(wordCacheKey{layer: layer, stamps: [2]wordPolicyStamp{stamp}}, build)
 }
 
 // context returns the context for key, which build makes if the cache has none.

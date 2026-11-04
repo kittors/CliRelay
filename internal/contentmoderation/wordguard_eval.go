@@ -41,7 +41,8 @@ const (
 
 // WordMatch describes one hit.
 type WordMatch struct {
-	// Layer is the policy layer of the rule that matched: platform, tenant or key.
+	// Layer is the policy layer of the rule that matched: platform, tenant, key
+	// or end_user.
 	Layer  string `json:"layer"`
 	RuleID string `json:"rule_id"`
 	Kind   string `json:"kind"`

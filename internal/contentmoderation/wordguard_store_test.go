@@ -177,7 +177,7 @@ func runWordPolicyStoreChecks(t *testing.T, store *Store) {
 		savedWordPolicy(t, store, "tenant-l", WordPolicy{ScopeType: WordScopeKey, ScopeID: "k-2", Enabled: true, Rules: []WordRule{kw("other-key-word")}}, nil)
 		savedWordPolicy(t, store, "tenant-other", WordPolicy{ScopeType: WordScopeKey, ScopeID: "k-1", Enabled: true, Rules: []WordRule{kw("foreign-word")}}, nil)
 
-		got, err := store.LoadWordPolicies(ctx, "tenant-l", "k-1")
+		got, err := store.LoadWordPolicies(ctx, "tenant-l", "k-1", "")
 		if err != nil {
 			t.Fatalf("LoadWordPolicies: %v", err)
 		}
@@ -192,36 +192,36 @@ func runWordPolicyStoreChecks(t *testing.T, store *Store) {
 		}
 		// A request made without a key id, or with a key that has no policy.
 		for _, keyID := range []string{"", "k-none"} {
-			got, err = store.LoadWordPolicies(ctx, "tenant-l", keyID)
+			got, err = store.LoadWordPolicies(ctx, "tenant-l", keyID, "")
 			if err != nil || got.Key != nil || got.Tenant == nil || got.Platform == nil {
 				t.Fatalf("key %q: %+v, %v", keyID, got, err)
 			}
 		}
 		// The platform policy applies to a tenant with no policy of its own.
-		got, err = store.LoadWordPolicies(ctx, "tenant-fresh", "k-9")
+		got, err = store.LoadWordPolicies(ctx, "tenant-fresh", "k-9", "")
 		if err != nil || got.Platform == nil || got.Tenant != nil || got.Key != nil {
 			t.Fatalf("fresh tenant: %+v, %v", got, err)
 		}
 	})
 
 	t.Run("load follows saves and deletes", func(t *testing.T) {
-		if _, err := store.LoadWordPolicies(ctx, "tenant-f", ""); err != nil {
+		if _, err := store.LoadWordPolicies(ctx, "tenant-f", "", ""); err != nil {
 			t.Fatal(err)
 		}
 		saved := savedWordPolicy(t, store, "tenant-f", WordPolicy{ScopeType: WordScopeTenant, Enabled: true, Rules: []WordRule{kw("first")}}, nil)
-		got, _ := store.LoadWordPolicies(ctx, "tenant-f", "")
+		got, _ := store.LoadWordPolicies(ctx, "tenant-f", "", "")
 		if got.Tenant == nil || got.Tenant.Rules[0].Pattern != "first" {
 			t.Fatalf("tenant = %+v", got.Tenant)
 		}
 		savedWordPolicy(t, store, "tenant-f", WordPolicy{ScopeType: WordScopeTenant, Enabled: true, Rules: []WordRule{kw("second")}}, int64Ptr(saved.Version))
-		got, _ = store.LoadWordPolicies(ctx, "tenant-f", "")
+		got, _ = store.LoadWordPolicies(ctx, "tenant-f", "", "")
 		if got.Tenant == nil || got.Tenant.Rules[0].Pattern != "second" {
 			t.Fatalf("a save must show up on the next request: %+v", got.Tenant)
 		}
 		if err := store.DeleteWordPolicy(ctx, "tenant-f", WordScopeTenant, ""); err != nil {
 			t.Fatal(err)
 		}
-		got, _ = store.LoadWordPolicies(ctx, "tenant-f", "")
+		got, _ = store.LoadWordPolicies(ctx, "tenant-f", "", "")
 		if got.Tenant != nil {
 			t.Fatalf("a deleted policy must stop applying: %+v", got.Tenant)
 		}
@@ -231,7 +231,7 @@ func runWordPolicyStoreChecks(t *testing.T, store *Store) {
 	// cached before must not be mistaken for it.
 	t.Run("a recreated policy is not served from a stale copy", func(t *testing.T) {
 		first := savedWordPolicy(t, store, "tenant-r", WordPolicy{ScopeType: WordScopeTenant, Enabled: true, Rules: []WordRule{kw("old")}}, nil)
-		if got, _ := store.LoadWordPolicies(ctx, "tenant-r", ""); got.Tenant == nil || got.Tenant.Rules[0].Pattern != "old" {
+		if got, _ := store.LoadWordPolicies(ctx, "tenant-r", "", ""); got.Tenant == nil || got.Tenant.Rules[0].Pattern != "old" {
 			t.Fatalf("tenant = %+v", got.Tenant)
 		}
 		if err := NewStore(store.db).DeleteWordPolicy(ctx, "tenant-r", WordScopeTenant, ""); err != nil {
@@ -241,7 +241,7 @@ func runWordPolicyStoreChecks(t *testing.T, store *Store) {
 		if second.Version != first.Version {
 			t.Fatalf("the test needs the same version twice: %d and %d", first.Version, second.Version)
 		}
-		got, _ := store.LoadWordPolicies(ctx, "tenant-r", "")
+		got, _ := store.LoadWordPolicies(ctx, "tenant-r", "", "")
 		if got.Tenant == nil || got.Tenant.Rules[0].Pattern != "new" {
 			t.Fatalf("the cached copy of the deleted policy was served: %+v", got.Tenant)
 		}
@@ -255,7 +255,7 @@ func runWordPolicyStoreChecks(t *testing.T, store *Store) {
 		saved := savedWordPolicy(t, store, "tenant-c", WordPolicy{ScopeType: WordScopeTenant, Enabled: true, Rules: []WordRule{kw("alphaword")}}, nil)
 		var cache wordContextCache
 		contexts := func() []wordContext {
-			got, err := store.LoadWordPolicies(ctx, "tenant-c", "")
+			got, err := store.LoadWordPolicies(ctx, "tenant-c", "", "")
 			if err != nil {
 				t.Fatalf("LoadWordPolicies: %v", err)
 			}
@@ -385,11 +385,11 @@ func TestLoadWordPoliciesFallsBackToWhatItLastSaw(t *testing.T) {
 	}
 	store := NewStore(db)
 	savedWordPolicy(t, store, "tenant-o", WordPolicy{ScopeType: WordScopeTenant, Enabled: true, Rules: []WordRule{kw("remembered")}}, nil)
-	if got, err := store.LoadWordPolicies(context.Background(), "tenant-o", ""); err != nil || got.Tenant == nil {
+	if got, err := store.LoadWordPolicies(context.Background(), "tenant-o", "", ""); err != nil || got.Tenant == nil {
 		t.Fatalf("first load: %+v, %v", got, err)
 	}
 	_ = db.Close()
-	got, err := store.LoadWordPolicies(context.Background(), "tenant-o", "")
+	got, err := store.LoadWordPolicies(context.Background(), "tenant-o", "", "")
 	if err == nil {
 		t.Fatalf("a closed database must report an error")
 	}
@@ -397,14 +397,14 @@ func TestLoadWordPoliciesFallsBackToWhatItLastSaw(t *testing.T) {
 		t.Fatalf("the last known policy must still be returned: %+v", got)
 	}
 	// A tenant it never saw is simply unguarded.
-	if got, _ = store.LoadWordPolicies(context.Background(), "tenant-unknown", ""); got.Tenant != nil {
+	if got, _ = store.LoadWordPolicies(context.Background(), "tenant-unknown", "", ""); got.Tenant != nil {
 		t.Fatalf("got %+v", got)
 	}
 }
 
 func TestWordPolicyStoreRejectsNilStore(t *testing.T) {
 	var store *Store
-	if _, err := store.LoadWordPolicies(context.Background(), "t", ""); !errors.Is(err, ErrUnavailable) {
+	if _, err := store.LoadWordPolicies(context.Background(), "t", "", ""); !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("err = %v", err)
 	}
 	if _, err := store.GetWordPolicy(context.Background(), "t", WordScopeTenant, ""); !errors.Is(err, ErrUnavailable) {
