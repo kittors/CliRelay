@@ -355,7 +355,7 @@ func (s *Store) LoadWordPolicies(ctx context.Context, tenantID, keyID, endUserID
 
 // rememberedWordPolicies returns the policies of the cache for a request. A
 // portal user's policy is among them only if the last read found the user
-// allowed one: not knowing is not being allowed.
+// allowed one; a user no read has seen has no policy in the cache either.
 func (s *Store) rememberedWordPolicies(tenantID, keyID, endUserID string) WordPolicies {
 	remembered := WordPolicies{
 		Platform: s.wordPolicies.get(wordPolicyKey{platformWordTenantID(), WordScopePlatform, ""}),

@@ -32,15 +32,16 @@ func TestWordPortalIsAdvertisedAndSummed(t *testing.T) {
 
 	rec, body = wordTenantAUser.call(h.GetWordPolicies, http.MethodGet, "", "")
 	wordExpectStatus(t, rec, http.StatusOK)
-	if portal, _ := body["portal"].(map[string]any); portal["default_allowed"] != false || portal["policies"] != float64(0) {
+	// Portal accounts may keep words of their own until the tenant says otherwise.
+	if portal, _ := body["portal"].(map[string]any); portal["default_allowed"] != true || portal["policies"] != float64(0) {
 		t.Fatalf("a tenant that decided nothing: portal = %v", body["portal"])
 	}
 
 	rec, _ = wordTenantAUser.call(h.PutWordPortal, http.MethodPut, `{}`, "")
 	wordExpectStatus(t, rec, http.StatusBadRequest)
-	rec, body = wordTenantAUser.call(h.PutWordPortal, http.MethodPut, `{"default_allowed":true}`, "")
+	rec, body = wordTenantBUser.call(h.PutWordPortal, http.MethodPut, `{"default_allowed":false}`, "")
 	wordExpectStatus(t, rec, http.StatusOK)
-	if body["default_allowed"] != true {
+	if body["default_allowed"] != false {
 		t.Fatalf("put default = %v", body)
 	}
 
@@ -59,9 +60,10 @@ func TestWordPortalIsAdvertisedAndSummed(t *testing.T) {
 	if portal, _ := body["portal"].(map[string]any); portal["default_allowed"] != true || portal["policies"] != float64(1) || portal["active_policies"] != float64(1) {
 		t.Fatalf("tenant A: portal = %v", body["portal"])
 	}
+	// Tenant B closed it for its own accounts, and sees nothing of tenant A's.
 	_, body = wordTenantBUser.call(h.GetWordPolicies, http.MethodGet, "", "")
 	if portal, _ := body["portal"].(map[string]any); portal["default_allowed"] != false || portal["policies"] != float64(0) {
-		t.Fatalf("tenant B sees tenant A's portal users: %v", body["portal"])
+		t.Fatalf("tenant B: portal = %v", body["portal"])
 	}
 }
 
@@ -162,18 +164,27 @@ func TestPostgresPortalUserKeepsWordsWhileAllowed(t *testing.T) {
 	h := &Handler{cfg: &config.Config{}}
 	admin := wordCaller{tenant: tenantID, admin: true}
 
-	// Not allowed: the portal does not offer it and refuses it.
+	// Nothing decided: every portal account may, without an administrator
+	// doing anything.
 	status, body := portalWordCall(t, h, http.MethodGet, "/v0/portal/auth/me", token, "")
-	if status != http.StatusOK || body["word_policy_allowed"] != false {
-		t.Fatalf("me before = %d %v", status, body)
+	if status != http.StatusOK || body["word_policy_allowed"] != true {
+		t.Fatalf("me by default = %d %v", status, body)
+	}
+
+	// Closed for the tenant: the portal does not offer it and refuses it.
+	rec, _ := admin.call(h.PutWordPortal, http.MethodPut, `{"default_allowed":false}`, "")
+	wordExpectStatus(t, rec, http.StatusOK)
+	status, body = portalWordCall(t, h, http.MethodGet, "/v0/portal/auth/me", token, "")
+	if body["word_policy_allowed"] != false {
+		t.Fatalf("me when closed = %d %v", status, body)
 	}
 	status, body = portalWordCall(t, h, http.MethodGet, "/v0/portal/word-policy", token, "")
 	if status != http.StatusForbidden || wordErrorCode(body) != "word_policy_portal_forbidden" {
-		t.Fatalf("get before = %d %v", status, body)
+		t.Fatalf("get when closed = %d %v", status, body)
 	}
 
-	// The tenant allows its portal users.
-	rec, _ := admin.call(h.PutWordPortal, http.MethodPut, `{"default_allowed":true}`, "")
+	// Opened again.
+	rec, _ = admin.call(h.PutWordPortal, http.MethodPut, `{"default_allowed":true}`, "")
 	wordExpectStatus(t, rec, http.StatusOK)
 	status, body = portalWordCall(t, h, http.MethodGet, "/v0/portal/auth/me", token, "")
 	if body["word_policy_allowed"] != true {
