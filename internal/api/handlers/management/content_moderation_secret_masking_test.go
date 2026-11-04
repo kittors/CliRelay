@@ -61,7 +61,7 @@ func TestSecretMaskingSwitchIsPerTenantAndNeverShowsTheKey(t *testing.T) {
 	// A fresh registry, as on another node, reads what was saved.
 	fresh := contentmoderation.NewSecretMaskingRegistry()
 	fresh.SetStore(settingsstore.SecretMaskingSettings{})
-	if got := fresh.For(identity.SystemTenantID); !got.Enabled || got.Key != stored.Key {
+	if got, err := fresh.For(identity.SystemTenantID); err != nil || !got.Enabled || got.Key != stored.Key {
 		t.Fatalf("read back %+v", got)
 	}
 }

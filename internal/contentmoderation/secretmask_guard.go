@@ -40,7 +40,11 @@ func (m *RuntimeModerator) secretMaskingRegistry() *SecretMaskingRegistry {
 // for its secrets to stay here.
 func (m *RuntimeModerator) maskSecrets(ctx context.Context, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, result coreauth.RequestGuardResult) coreauth.RequestGuardResult {
 	tenantID := coreauth.NormalizedTenantID(metadataString(opts.Metadata, cliproxyexecutor.TenantMetadataKey))
-	settings := m.secretMaskingRegistry().For(tenantID)
+	settings, err := m.secretMaskingRegistry().For(tenantID)
+	if err != nil && !settings.Enabled {
+		return coreauth.RequestGuardResult{Blocked: true, HTTPStatus: http.StatusServiceUnavailable,
+			Message: "Secret masking settings are temporarily unavailable, so the request was not sent. Retry after the settings store recovers."}
+	}
 	if !settings.Enabled {
 		return result
 	}

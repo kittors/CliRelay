@@ -43,6 +43,10 @@ func (x *extraction) run(format sdktranslator.Format, payload []byte) bool {
 		return false
 	}
 	root := gjson.ParseBytes(payload)
+	if x.secrets {
+		x.secretToolDescriptions(root.Get("tools"), 0)
+		x.secretToolDescriptions(root.Get("functions"), 0)
+	}
 	switch format {
 	case sdktranslator.FormatOpenAIResponse:
 		x.responses(root)
@@ -57,6 +61,9 @@ func (x *extraction) run(format sdktranslator.Format, payload []byte) bool {
 		if request := root.Get("request"); request.IsObject() {
 			x.gemini(root)
 			root = request
+			if x.secrets {
+				x.secretToolDescriptions(root.Get("tools"), 0)
+			}
 		}
 		x.gemini(root)
 	default:
@@ -79,6 +86,8 @@ type extraction struct {
 	units  []wordUnit
 	// signed is set while reading text a signature covers (see wordUnit.signed).
 	signed bool
+	// secrets enables secret-mask-only coverage without changing word policies.
+	secrets bool
 }
 
 func (x *extraction) nextTurn() { x.turn++ }
@@ -283,10 +292,10 @@ func (x *extraction) geminiParts(content gjson.Result, class Class, user bool) {
 		}
 		if response := firstField(part, "functionResponse", "function_response"); response.Exists() {
 			// Arbitrary JSON the model reads serialized, keys included.
-			x.jsonText(response.Get("response"), ClassToolOutput)
+			x.secretToolData(response.Get("response"), ClassToolOutput)
 		}
 		if call := firstField(part, "functionCall", "function_call"); call.Exists() {
-			x.jsonText(call.Get("args"), ClassAssistantHistory)
+			x.secretToolData(call.Get("args"), ClassAssistantHistory)
 		}
 		if code := firstField(part, "executableCode", "executable_code"); code.Exists() {
 			x.addValue(ClassAssistantHistory, false, code.Get("code"))
@@ -346,7 +355,7 @@ func (x *extraction) block(block gjson.Result, class Class, user bool) {
 		// the conversation is sent back: it is read, but not rewritten.
 		x.addSigned(ClassAssistantHistory, false, block.Get("thinking"))
 	case "tool_use", "server_tool_use", "mcp_tool_use":
-		x.jsonText(block.Get("input"), ClassAssistantHistory)
+		x.secretToolData(block.Get("input"), ClassAssistantHistory)
 	case "tool_result":
 		// Claude: the content is a string or a list of blocks.
 		x.content(block.Get("content"), ClassToolOutput, false)
@@ -385,7 +394,7 @@ func (x *extraction) block(block gjson.Result, class Class, user bool) {
 // \u4f60 (for 你) hides a keyword from a substring scan.
 func (x *extraction) arguments(value gjson.Result, class Class) {
 	if value.Type != gjson.String {
-		x.jsonText(value, class)
+		x.secretToolData(value, class)
 		return
 	}
 	raw := value.String()
@@ -397,7 +406,7 @@ func (x *extraction) arguments(value gjson.Result, class Class) {
 		if x.locate {
 			x.doc = nestedDoc(outer, value, raw)
 		}
-		x.jsonText(decoded, class)
+		x.secretToolData(decoded, class)
 		x.doc = outer
 		return
 	}
@@ -412,8 +421,12 @@ const maxJSONTextDepth = 64
 // included: tool arguments and function responses reach the model serialized,
 // so a key is as visible to it as a value.
 func (x *extraction) jsonText(value gjson.Result, class Class) {
+	x.jsonTextMode(value, class, false)
+}
+
+func (x *extraction) jsonTextMode(value gjson.Result, class Class, plainToolData bool) {
 	var b strings.Builder
-	walkJSONText(value, 0, false, func(text string, at gjson.Result, kind jsonTextKind, owner gjson.Result) {
+	visit := func(text string, at gjson.Result, kind jsonTextKind, owner gjson.Result) {
 		b.WriteString(text)
 		b.WriteByte(' ')
 		if !x.locate || kind == jsonTextProtocol {
@@ -429,7 +442,12 @@ func (x *extraction) jsonText(value gjson.Result, class Class) {
 			unit = unitOpaque
 		}
 		x.recordUnit(class, false, text, at, owner, unit)
-	})
+	}
+	if plainToolData {
+		walkSecretToolData(value, 0, visit)
+	} else {
+		walkJSONText(value, 0, false, visit)
+	}
 	x.add(class, false, b.String())
 }
 

@@ -2,9 +2,9 @@ package usage
 
 import (
 	"encoding/json"
+	"slices"
 	"strings"
 	"sync"
-	"time"
 
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 )
@@ -26,10 +26,23 @@ type SharedAccountLister interface {
 	ListSharedWithTenant(tenantID string) []*coreauth.Auth
 }
 
-// sharedAccountMaskTTL bounds how long a tenant's shared accounts are reused
-// between log writes. A share granted or revoked meanwhile is picked up on the
-// next refresh; listing the accounts on every write would clone them each time.
-const sharedAccountMaskTTL = 30 * time.Second
+// Implemented by the manager to avoid cloning credential/model-state maps.
+type sharedAccountIdentityLister interface {
+	ListSharedIdentitiesForTenant(tenantID string) []coreauth.SharedAccountIdentity
+}
+
+func sharedIdentitiesForTenant(lister SharedAccountLister, tenantID string) []coreauth.SharedAccountIdentity {
+	if live, ok := lister.(sharedAccountIdentityLister); ok {
+		return live.ListSharedIdentitiesForTenant(tenantID)
+	}
+	var identities []coreauth.SharedAccountIdentity
+	for _, a := range lister.ListSharedWithTenant(tenantID) {
+		if a != nil && a.SharedWith(tenantID) {
+			identities = append(identities, coreauth.SharedAccountIdentity{AuthID: a.ID, Index: a.EnsureIndex(), Name: a.SharedName(), StandIns: a.SharedStandIns()})
+		}
+	}
+	return identities
+}
 
 type sharedAccountMask struct {
 	index string
@@ -40,20 +53,22 @@ type sharedAccountMask struct {
 	replacer *strings.Replacer
 }
 
-type sharedAccountMaskCache struct {
-	lister SharedAccountLister
-	mu     sync.Mutex
-	byTen  map[string]sharedAccountMaskEntry
+type sharedAccountMaskSource struct {
+	lister   SharedAccountLister
+	mu       sync.Mutex
+	compiled map[string]compiledSharedAccountMask
 }
 
-type sharedAccountMaskEntry struct {
-	masks   []sharedAccountMask
-	expires time.Time
+const maxCompiledSharedAccountMasks = 4096
+
+type compiledSharedAccountMask struct {
+	pairs [][2]string
+	mask  sharedAccountMask
 }
 
 var sharedAccountMasks struct {
-	mu    sync.RWMutex
-	cache *sharedAccountMaskCache
+	mu     sync.RWMutex
+	source *sharedAccountMaskSource
 }
 
 // InstallSharedAccountMasking makes request log writes mask the platform
@@ -63,35 +78,47 @@ func InstallSharedAccountMasking(lister SharedAccountLister) {
 	sharedAccountMasks.mu.Lock()
 	defer sharedAccountMasks.mu.Unlock()
 	if lister == nil {
-		sharedAccountMasks.cache = nil
-		return
+		sharedAccountMasks.source = nil
+	} else {
+		sharedAccountMasks.source = &sharedAccountMaskSource{lister: lister, compiled: make(map[string]compiledSharedAccountMask)}
 	}
-	sharedAccountMasks.cache = &sharedAccountMaskCache{lister: lister, byTen: make(map[string]sharedAccountMaskEntry)}
 }
 
-func (c *sharedAccountMaskCache) masksFor(tenantID string, now time.Time) []sharedAccountMask {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if entry, ok := c.byTen[tenantID]; ok && now.Before(entry.expires) {
-		return entry.masks
-	}
-	var masks []sharedAccountMask
-	for _, auth := range c.lister.ListSharedWithTenant(tenantID) {
-		if auth == nil || !auth.SharedWith(tenantID) {
+// Build from the current grants and identities on every operation. A TTL cache
+// (including an empty result) can disclose a newly shared account's login for
+// its entire TTL. Refreshes, registrations and identity edits also change the
+// strings to hide, so invalidating only on grant writes is not sufficient.
+func (s *sharedAccountMaskSource) masksFor(tenantID string) []sharedAccountMask {
+	// Never cache the authorized account list. Reuse only compiled replacements
+	// whose exact live identity still matches; registration, refresh and grant
+	// updates therefore take effect on the next operation without invalidation hooks.
+	identities := sharedIdentitiesForTenant(s.lister, tenantID)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	// Bound retained identities after credential churn; a full cache only skips
+	// the optimization for new IDs, never masking itself.
+	masks := make([]sharedAccountMask, 0, len(identities))
+	for _, identity := range identities {
+		pairs := identity.StandIns
+		index, name := identity.Index, identity.Name
+		cached, known := s.compiled[identity.AuthID]
+		if known && cached.mask.index == index && cached.mask.name == name && slices.Equal(cached.pairs, pairs) {
+			masks = append(masks, cached.mask)
 			continue
 		}
-		pairs := auth.SharedStandIns()
 		args := make([]string, 0, 2*len(pairs))
 		for _, pair := range pairs {
 			args = append(args, jsonEscaped(pair[0]), jsonEscaped(pair[1]))
 		}
-		mask := sharedAccountMask{index: auth.EnsureIndex(), name: auth.SharedName()}
+		mask := sharedAccountMask{index: index, name: name}
 		if len(args) > 0 {
 			mask.replacer = strings.NewReplacer(args...)
 		}
+		if known || len(s.compiled) < maxCompiledSharedAccountMasks {
+			s.compiled[identity.AuthID] = compiledSharedAccountMask{pairs: pairs, mask: mask}
+		}
 		masks = append(masks, mask)
 	}
-	c.byTen[tenantID] = sharedAccountMaskEntry{masks: masks, expires: now.Add(sharedAccountMaskTTL)}
 	return masks
 }
 
@@ -127,12 +154,12 @@ func sharedAccountMasksFor(tenantID string) []sharedAccountMask {
 		return nil
 	}
 	sharedAccountMasks.mu.RLock()
-	cache := sharedAccountMasks.cache
+	source := sharedAccountMasks.source
 	sharedAccountMasks.mu.RUnlock()
-	if cache == nil {
+	if source == nil {
 		return nil
 	}
-	return cache.masksFor(normalizeTenantID(tenantID), time.Now())
+	return source.masksFor(normalizeTenantID(tenantID))
 }
 
 // MaskSharedAccountText rewrites stored log content read back for tenantID so

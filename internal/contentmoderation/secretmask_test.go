@@ -316,7 +316,7 @@ func TestSecretMaskingRegistryKeepsTheKeyAcrossSwitches(t *testing.T) {
 		t.Fatalf("a write without a store returned %v", err)
 	}
 	registry.SetStore(store)
-	if got := registry.For("t"); got.Enabled {
+	if got, err := registry.For("t"); err != nil || got.Enabled {
 		t.Fatal("masking is on before anyone switched it on")
 	}
 	on, err := registry.SetEnabled(context.Background(), "t", true)
@@ -352,7 +352,7 @@ func TestSecretMaskingRegistryCachesAndKeepsTheLastReadOnFailure(t *testing.T) {
 	}
 	loads := store.loads
 	for range 3 {
-		if !registry.For("t").Enabled {
+		if got, err := registry.For("t"); err != nil || !got.Enabled {
 			t.Fatal("masking is off")
 		}
 	}
@@ -361,7 +361,7 @@ func TestSecretMaskingRegistryCachesAndKeepsTheLastReadOnFailure(t *testing.T) {
 	}
 	store.err = fmt.Errorf("database is down")
 	registry.Invalidate("t")
-	if !registry.For("t").Enabled {
+	if got, err := registry.For("t"); err == nil || !got.Enabled {
 		t.Fatal("a failed read switched masking off")
 	}
 }

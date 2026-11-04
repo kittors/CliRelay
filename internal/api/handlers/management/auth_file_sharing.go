@@ -91,9 +91,7 @@ func hideSharedAccountIdentity(entry map[string]any, auth *coreauth.Auth) {
 		}
 		replacer := strings.NewReplacer(args...)
 		for key, value := range entry {
-			if text, ok := value.(string); ok {
-				entry[key] = replacer.Replace(text)
-			}
+			entry[key] = maskSharedIdentityValue(value, replacer)
 		}
 	}
 	name := auth.SharedName()
