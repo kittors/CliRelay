@@ -84,6 +84,10 @@ func contentModerationProfileCapabilities() gin.H {
 		"word_guard": true,
 		// secret_masking: GET/PUT /content-moderation/secret-masking exist.
 		"secret_masking": true,
+		// word_portal: portal users may keep sensitive words of their own; the
+		// tenant manages who may under /content-moderation/word-policies/portal
+		// and reads them under /content-moderation/word-policies/end-users/:id.
+		"word_portal": true,
 	}
 }
 

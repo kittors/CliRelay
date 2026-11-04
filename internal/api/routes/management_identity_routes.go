@@ -40,6 +40,12 @@ func registerIdentityAuthRoutes(engine *gin.Engine, h *managementhandlers.Handle
 	portal.POST("/api-keys/:id/rotate", h.PostPortalAPIKeyRotate)
 	portal.POST("/api-keys/:id/period-spending/reset", h.PostPortalAPIKeyPeriodSpendingReset)
 	portal.DELETE("/api-keys/:id", h.DeletePortalAPIKey)
+	// The signed-in user's own sensitive words, while the tenant allows them.
+	portal.GET("/word-policy", h.GetPortalWordPolicy)
+	portal.PUT("/word-policy", h.PutPortalWordPolicy)
+	portal.DELETE("/word-policy", h.DeletePortalWordPolicy)
+	portal.POST("/word-policy/validate", h.PostPortalWordPolicyValidate)
+	portal.POST("/word-policy/test", h.PostPortalWordPolicyTest)
 }
 
 func registerManagementIdentityRoutes(group *gin.RouterGroup, h *managementhandlers.Handler) {

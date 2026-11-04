@@ -26,7 +26,7 @@ func TestRegisterManagementRouteTable(t *testing.T) {
 		routes[key] = route
 	}
 
-	if got, want := len(routes), 381; got != want {
+	if got, want := len(routes), 392; got != want {
 		t.Fatalf("route count = %d, want %d", got, want)
 	}
 	if got, want := sortedRouteKeys(routes), expectedManagementRoutes(); !slices.Equal(got, want) {
@@ -53,6 +53,11 @@ func TestRegisterManagementRouteTable(t *testing.T) {
 		"GET /v0/management/content-moderation/word-policies/keys/:id",
 		"PUT /v0/management/content-moderation/word-policies/keys/:id",
 		"DELETE /v0/management/content-moderation/word-policies/keys/:id",
+		"GET /v0/management/content-moderation/word-policies/portal",
+		"PUT /v0/management/content-moderation/word-policies/portal/users/:id",
+		"GET /v0/management/content-moderation/word-policies/end-users/:id",
+		"GET /v0/portal/word-policy",
+		"POST /v0/portal/word-policy/test",
 		"GET /v0/management/content-moderation/secret-masking",
 		"PUT /v0/management/content-moderation/secret-masking",
 		"POST /v0/management/content-moderation/word-policies/validate",
@@ -209,6 +214,12 @@ func TestManagementRoutePermissionsComplete(t *testing.T) {
 		{http.MethodDelete, "/v0/management/content-moderation/word-policies/keys/sample-id", "content_moderation.write"},
 		{http.MethodPost, "/v0/management/content-moderation/word-policies/validate", "content_moderation.write"},
 		{http.MethodPost, "/v0/management/content-moderation/word-policies/test", "content_moderation.test"},
+		{http.MethodGet, "/v0/management/content-moderation/word-policies/portal", "content_moderation.read"},
+		{http.MethodPut, "/v0/management/content-moderation/word-policies/portal", "content_moderation.write"},
+		{http.MethodPut, "/v0/management/content-moderation/word-policies/portal/users/sample-id", "content_moderation.write"},
+		{http.MethodGet, "/v0/management/content-moderation/word-policies/end-users/sample-id", "content_moderation.read"},
+		{http.MethodPut, "/v0/management/content-moderation/word-policies/end-users/sample-id", "content_moderation.write"},
+		{http.MethodDelete, "/v0/management/content-moderation/word-policies/end-users/sample-id", "content_moderation.write"},
 		{http.MethodPost, "/v0/management/content-moderation/profiles/profile-1/test", "content_moderation.test"},
 		// An API key whose id is "test" must not turn its policy's routes into
 		// the dry-run permission: reading it is a read, changing it a write.
@@ -280,6 +291,11 @@ func expectedManagementRoutes() []string {
 		"POST /v0/portal/api-keys/:id/rotate",
 		"POST /v0/portal/api-keys/:id/period-spending/reset",
 		"DELETE /v0/portal/api-keys/:id",
+		"GET /v0/portal/word-policy",
+		"PUT /v0/portal/word-policy",
+		"DELETE /v0/portal/word-policy",
+		"POST /v0/portal/word-policy/validate",
+		"POST /v0/portal/word-policy/test",
 		"POST /v0/portal/auth/login",
 		"POST /v0/portal/auth/logout",
 		"GET /v0/portal/auth/me",
@@ -421,6 +437,12 @@ func expectedManagementRoutes() []string {
 		"GET /v0/management/content-moderation/word-policies/keys/:id",
 		"GET /v0/management/content-moderation/word-policies/platform",
 		"GET /v0/management/content-moderation/word-policies/tenant",
+		"GET /v0/management/content-moderation/word-policies/portal",
+		"PUT /v0/management/content-moderation/word-policies/portal",
+		"PUT /v0/management/content-moderation/word-policies/portal/users/:id",
+		"GET /v0/management/content-moderation/word-policies/end-users/:id",
+		"PUT /v0/management/content-moderation/word-policies/end-users/:id",
+		"DELETE /v0/management/content-moderation/word-policies/end-users/:id",
 		"GET /v0/management/dashboard-summary",
 		"GET /v0/management/debug",
 		"GET /v0/management/error-logs-max-files",

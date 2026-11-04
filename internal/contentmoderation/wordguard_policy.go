@@ -63,6 +63,13 @@ const (
 	WordScopeTenant = "tenant"
 	// WordScopeKey adjusts the tenant policy for one API key.
 	WordScopeKey = "key"
+	// WordScopeEndUser is a portal user's own policy, kept by the user in the
+	// portal. It applies to the requests of every API key the user owns, as a
+	// context of its own: it can only add hits, never change or switch off what
+	// the platform, the tenant or a key policy decides. It is stored under the
+	// user's tenant with the user's id as scope id, and it applies only while the
+	// tenant lets the user keep one (see wordguard_portal.go).
+	WordScopeEndUser = "end_user"
 )
 
 // Limits. They keep one policy from turning every request into a long scan and
@@ -74,6 +81,11 @@ const (
 
 	MaxWordRulesPerPolicy = 10000
 	MaxWordRegexPerPolicy = 50
+	// A portal user's policy is held to less. Every portal user may keep one, so
+	// what the context cache holds for them adds up across users, and a list of
+	// thousands of words is what the tenant policy is for.
+	MaxWordRulesPerEndUserPolicy = 1000
+	MaxWordRegexPerEndUserPolicy = 10
 	// MaxWordRegexProgram bounds the compiled program of one regular expression,
 	// in instructions, and MaxWordRegexProgramTotal the sum over a policy. The
 	// source is short but its program is not: `(?:a{1000}){100}` is 16 bytes and
@@ -198,14 +210,21 @@ func (p *WordPolicy) Normalize() error {
 	switch p.ScopeType {
 	case WordScopePlatform, WordScopeTenant:
 		if p.ScopeID != "" {
-			return &WordPolicyError{Field: "scope_id", Message: "only a key policy has a scope id"}
+			return &WordPolicyError{Field: "scope_id", Message: "only a key or portal user policy has a scope id"}
 		}
 	case WordScopeKey:
 		if p.ScopeID == "" {
 			return &WordPolicyError{Field: "scope_id", Message: "a key policy needs the API key id"}
 		}
+	case WordScopeEndUser:
+		if p.ScopeID == "" {
+			return &WordPolicyError{Field: "scope_id", Message: "a portal user policy needs the user id"}
+		}
+		// It forms a context of its own (see buildEndUserContext): there are no
+		// tenant rules in it to keep or drop.
+		p.InheritTenant = true
 	default:
-		return &WordPolicyError{Field: "scope_type", Message: "must be platform, tenant or key"}
+		return &WordPolicyError{Field: "scope_type", Message: "must be platform, tenant, key or end_user"}
 	}
 	p.Action = strings.TrimSpace(p.Action)
 	switch p.Action {
@@ -225,7 +244,7 @@ func (p *WordPolicy) Normalize() error {
 	if err := validateFreeText("block_message", p.BlockMessage, MaxWordBlockMessageRunes, true); err != nil {
 		return err
 	}
-	rules, problems := normalizeWordRules(p.Rules)
+	rules, problems := normalizeWordRules(p.Rules, wordRuleLimitsFor(p.ScopeType))
 	if len(problems) > 0 {
 		return &WordPolicyError{Message: "some rules are invalid", Rules: problems}
 	}
@@ -251,13 +270,25 @@ func validateFreeText(field, value string, maxRunes int, allowNewline bool) erro
 	return nil
 }
 
+// wordRuleLimits are the counts a policy's rule list is held to.
+type wordRuleLimits struct{ rules, regex int }
+
+// wordRuleLimitsFor returns the counts for a policy of scopeType: a portal
+// user's policy is held to less than the others.
+func wordRuleLimitsFor(scopeType string) wordRuleLimits {
+	if scopeType == WordScopeEndUser {
+		return wordRuleLimits{rules: MaxWordRulesPerEndUserPolicy, regex: MaxWordRegexPerEndUserPolicy}
+	}
+	return wordRuleLimits{rules: MaxWordRulesPerPolicy, regex: MaxWordRegexPerPolicy}
+}
+
 // normalizeWordRules validates a rule list and returns the list to store.
-func normalizeWordRules(rules []WordRule) ([]WordRule, []WordRuleProblem) {
+func normalizeWordRules(rules []WordRule, limits wordRuleLimits) ([]WordRule, []WordRuleProblem) {
 	var problems []WordRuleProblem
-	if len(rules) > MaxWordRulesPerPolicy {
+	if len(rules) > limits.rules {
 		problems = append(problems, WordRuleProblem{
-			Index: MaxWordRulesPerPolicy, Code: "too_many_rules",
-			Message: fmt.Sprintf("a policy holds at most %d rules", MaxWordRulesPerPolicy),
+			Index: limits.rules, Code: "too_many_rules",
+			Message: fmt.Sprintf("a policy holds at most %d rules", limits.rules),
 		})
 		return nil, problems
 	}
@@ -276,8 +307,8 @@ func normalizeWordRules(rules []WordRule) ([]WordRule, []WordRuleProblem) {
 		if rule.Kind == WordRuleRegex {
 			// Counted before the expression is compiled: a list of thousands of
 			// expressions is refused without compiling any beyond the limit.
-			if regexCount++; regexCount > MaxWordRegexPerPolicy {
-				problem("too_many_regex", fmt.Sprintf("a policy holds at most %d regular expressions", MaxWordRegexPerPolicy))
+			if regexCount++; regexCount > limits.regex {
+				problem("too_many_regex", fmt.Sprintf("a policy holds at most %d regular expressions", limits.regex))
 				continue
 			}
 		}

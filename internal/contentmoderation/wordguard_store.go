@@ -245,15 +245,16 @@ func (s *Store) DeleteWordPoliciesForKeys(ctx context.Context, tenantID string, 
 
 // ListWordPolicySummaries lists, without their rules, the policies a tenant's
 // management view is made of: the platform policy, the tenant's own policy and
-// the policies of its API keys. Policies that were never saved are absent.
+// the policies of its API keys and of its portal users. Policies that were
+// never saved are absent.
 func (s *Store) ListWordPolicySummaries(ctx context.Context, tenantID string) ([]WordPolicySummary, error) {
 	if s == nil || s.db == nil {
 		return nil, ErrUnavailable
 	}
 	rows, err := s.db.QueryContext(ctx, `SELECT scope_type,scope_id,enabled,action,scan_scope,reply_filter,rule_count,version,updated_at FROM content_moderation_word_policies
-		WHERE (tenant_id=$1 AND scope_type=$2) OR (tenant_id=$3 AND (scope_type=$4 OR scope_type=$5))
+		WHERE (tenant_id=$1 AND scope_type=$2) OR (tenant_id=$3 AND (scope_type=$4 OR scope_type=$5 OR scope_type=$6))
 		ORDER BY scope_type, scope_id`,
-		platformWordTenantID(), WordScopePlatform, strings.TrimSpace(tenantID), WordScopeTenant, WordScopeKey)
+		platformWordTenantID(), WordScopePlatform, strings.TrimSpace(tenantID), WordScopeTenant, WordScopeKey, WordScopeEndUser)
 	if err != nil {
 		return nil, err
 	}
@@ -307,11 +308,16 @@ func (c *wordPolicyCache) put(key wordPolicyKey, policy *WordPolicy) {
 // WordPolicies are the policies that apply to one request. Any may be nil.
 type WordPolicies struct {
 	Platform, Tenant, Key *WordPolicy
+	// EndUser is the policy of the portal user who owns the API key. It is only
+	// ever set while the tenant allows the user to keep one: a policy the user
+	// may no longer keep is left out where it is read (see readWordPolicies).
+	EndUser *WordPolicy
 }
 
 // LoadWordPolicies returns the policies governing a request of tenantID made
-// with the API key keyID (empty when unknown). The result is shared and must
-// not be modified.
+// with the API key keyID (empty when unknown), which belongs to the portal user
+// endUserID (empty for a key no portal user owns). The result is shared and
+// must not be modified.
 //
 // It waits for the read of the policies for as long as ctx allows, which for a
 // request is a few tens of milliseconds (see RuntimeModerator.GuardRequest). If
@@ -319,20 +325,20 @@ type WordPolicies struct {
 // are returned together with the error, so that a database outage does not
 // switch the guard off for requests it already knew how to judge. The read goes
 // on in the background (see wordPolicyReads).
-func (s *Store) LoadWordPolicies(ctx context.Context, tenantID, keyID string) (WordPolicies, error) {
+func (s *Store) LoadWordPolicies(ctx context.Context, tenantID, keyID, endUserID string) (WordPolicies, error) {
 	if s == nil || s.db == nil {
 		return WordPolicies{}, ErrUnavailable
 	}
-	tenantID, keyID = strings.TrimSpace(tenantID), strings.TrimSpace(keyID)
-	read := s.wordReads.join(wordReadKey{tenantID, keyID}, func(readCtx context.Context) (WordPolicies, error) {
-		return s.readWordPolicies(readCtx, tenantID, keyID)
+	tenantID, keyID, endUserID = strings.TrimSpace(tenantID), strings.TrimSpace(keyID), strings.TrimSpace(endUserID)
+	read := s.wordReads.join(wordReadKey{tenantID, keyID, endUserID}, func(readCtx context.Context) (WordPolicies, error) {
+		return s.readWordPolicies(readCtx, tenantID, keyID, endUserID)
 	})
 	if s.wordReads.slow(time.Now()) {
 		select {
 		case <-read.done:
 			return read.policies, read.err
 		default:
-			return s.rememberedWordPolicies(tenantID, keyID), errWordPolicySlow
+			return s.rememberedWordPolicies(tenantID, keyID, endUserID), errWordPolicySlow
 		}
 	}
 	select {
@@ -343,12 +349,14 @@ func (s *Store) LoadWordPolicies(ctx context.Context, tenantID, keyID string) (W
 		if errors.Is(err, context.DeadlineExceeded) {
 			s.wordReads.markSlow(time.Now())
 		}
-		return s.rememberedWordPolicies(tenantID, keyID), err
+		return s.rememberedWordPolicies(tenantID, keyID, endUserID), err
 	}
 }
 
-// rememberedWordPolicies returns the policies of the cache for a request.
-func (s *Store) rememberedWordPolicies(tenantID, keyID string) WordPolicies {
+// rememberedWordPolicies returns the policies of the cache for a request. A
+// portal user's policy is among them only if the last read found the user
+// allowed one: not knowing is not being allowed.
+func (s *Store) rememberedWordPolicies(tenantID, keyID, endUserID string) WordPolicies {
 	remembered := WordPolicies{
 		Platform: s.wordPolicies.get(wordPolicyKey{platformWordTenantID(), WordScopePlatform, ""}),
 		Tenant:   s.wordPolicies.get(wordPolicyKey{tenantID, WordScopeTenant, ""}),
@@ -356,19 +364,45 @@ func (s *Store) rememberedWordPolicies(tenantID, keyID string) WordPolicies {
 	if keyID != "" {
 		remembered.Key = s.wordPolicies.get(wordPolicyKey{tenantID, WordScopeKey, keyID})
 	}
+	if endUserID != "" && s.wordPortal.allowed(tenantID, endUserID) {
+		remembered.EndUser = s.wordPolicies.get(wordPolicyKey{tenantID, WordScopeEndUser, endUserID})
+	}
 	return remembered
 }
+
+// wordPolicyHeadersSQL lists the version of each policy that applies to a
+// request of a key no portal user owns.
+const wordPolicyHeadersSQL = `SELECT tenant_id,scope_type,scope_id,version,updated_at FROM content_moderation_word_policies
+		WHERE (tenant_id=$1 AND scope_type=$2 AND scope_id='')
+		   OR (tenant_id=$3 AND scope_type=$4 AND scope_id='')
+		   OR (tenant_id=$3 AND scope_type=$5 AND scope_id=$6)`
+
+// wordPortalAccessScope marks, in the result of wordEndUserHeadersSQL, the rows
+// that are the tenant's permission for the portal user rather than a policy:
+// version holds whether it allows, scope_id the user (empty for the tenant's
+// default). It is no scope a policy can have.
+const wordPortalAccessScope = "portal_access"
+
+// wordEndUserHeadersSQL is wordPolicyHeadersSQL for a key a portal user owns: it
+// adds the user's policy and the permissions that say whether it applies, in
+// the same round trip, so that a request of a portal user costs the database
+// what any other request does.
+const wordEndUserHeadersSQL = wordPolicyHeadersSQL + `
+		   OR (tenant_id=$3 AND scope_type=$7 AND scope_id=$8)
+		UNION ALL
+		SELECT tenant_id,'` + wordPortalAccessScope + `',end_user_id,allowed,updated_at FROM content_moderation_word_portal_access
+		WHERE tenant_id=$3 AND (end_user_id='' OR end_user_id=$8)`
 
 // readWordPolicies reads the policies from the database, using the cached copy
 // of each whose version is unchanged. On a failure it returns the cached ones
 // with the error.
-func (s *Store) readWordPolicies(ctx context.Context, tenantID, keyID string) (WordPolicies, error) {
-	remembered := s.rememberedWordPolicies(tenantID, keyID)
-	rows, err := s.db.QueryContext(ctx, `SELECT tenant_id,scope_type,scope_id,version,updated_at FROM content_moderation_word_policies
-		WHERE (tenant_id=$1 AND scope_type=$2 AND scope_id='')
-		   OR (tenant_id=$3 AND scope_type=$4 AND scope_id='')
-		   OR (tenant_id=$3 AND scope_type=$5 AND scope_id=$6)`,
-		platformWordTenantID(), WordScopePlatform, tenantID, WordScopeTenant, WordScopeKey, keyID)
+func (s *Store) readWordPolicies(ctx context.Context, tenantID, keyID, endUserID string) (WordPolicies, error) {
+	remembered := s.rememberedWordPolicies(tenantID, keyID, endUserID)
+	query, args := wordPolicyHeadersSQL, []any{platformWordTenantID(), WordScopePlatform, tenantID, WordScopeTenant, WordScopeKey, keyID}
+	if endUserID != "" {
+		query, args = wordEndUserHeadersSQL, append(args, WordScopeEndUser, endUserID)
+	}
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return remembered, err
 	}
@@ -381,12 +415,17 @@ func (s *Store) readWordPolicies(ctx context.Context, tenantID, keyID string) (W
 		updatedAt time.Time
 	}
 	var headers []header
+	var access wordPortalGrant
 	for rows.Next() {
 		var h header
 		var updatedAt string
 		if err := rows.Scan(&h.key.tenantID, &h.key.scopeType, &h.key.scopeID, &h.version, &updatedAt); err != nil {
 			_ = rows.Close()
 			return remembered, err
+		}
+		if h.key.scopeType == wordPortalAccessScope {
+			access.add(h.key.scopeID, h.version != 0)
+			continue
 		}
 		h.updatedAt = parseTime(updatedAt)
 		headers = append(headers, h)
@@ -396,8 +435,17 @@ func (s *Store) readWordPolicies(ctx context.Context, tenantID, keyID string) (W
 		return remembered, err
 	}
 	_ = rows.Close()
+	allowed := endUserID != "" && access.allowed()
+	if endUserID != "" {
+		s.wordPortal.put(tenantID, endUserID, allowed)
+	}
 	var found WordPolicies
 	for _, h := range headers {
+		if h.key.scopeType == WordScopeEndUser && !allowed {
+			// Kept for the day the tenant allows it again, but not applied, and not
+			// read: nothing would use it.
+			continue
+		}
 		policy := s.wordPolicies.get(h.key)
 		if policy == nil || policy.Version != h.version || !policy.UpdatedAt.Equal(h.updatedAt) {
 			loaded, err := s.GetWordPolicy(ctx, h.key.tenantID, h.key.scopeType, h.key.scopeID)
@@ -419,6 +467,8 @@ func (s *Store) readWordPolicies(ctx context.Context, tenantID, keyID string) (W
 			if keyID != "" {
 				found.Key = policy
 			}
+		case WordScopeEndUser:
+			found.EndUser = policy
 		}
 	}
 	return found, nil

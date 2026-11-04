@@ -47,11 +47,11 @@ func TestWordPolicyReadsShareOneReadPerKey(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			got[i] = reads.join(wordReadKey{"a", "k"}, run)
+			got[i] = reads.join(wordReadKey{"a", "k", ""}, run)
 		}()
 	}
 	wg.Wait()
-	other := reads.join(wordReadKey{"b", "k"}, run)
+	other := reads.join(wordReadKey{"b", "k", ""}, run)
 	close(release)
 	<-other.done
 	for _, read := range got {
@@ -68,7 +68,7 @@ func TestWordPolicyReadsShareOneReadPerKey(t *testing.T) {
 	}
 	// Once a read is over the next caller starts a new one, which sees the data
 	// as it is now.
-	again := reads.join(wordReadKey{"a", "k"}, func(context.Context) (WordPolicies, error) { return WordPolicies{}, nil })
+	again := reads.join(wordReadKey{"a", "k", ""}, func(context.Context) (WordPolicies, error) { return WordPolicies{}, nil })
 	<-again.done
 	if again == got[0] {
 		t.Fatal("a finished read was handed out again")
@@ -77,7 +77,7 @@ func TestWordPolicyReadsShareOneReadPerKey(t *testing.T) {
 
 func TestWordPolicyReadsSurviveAPanic(t *testing.T) {
 	var reads wordPolicyReads
-	read := reads.join(wordReadKey{"a", ""}, func(context.Context) (WordPolicies, error) { panic("boom") })
+	read := reads.join(wordReadKey{"a", "", ""}, func(context.Context) (WordPolicies, error) { panic("boom") })
 	select {
 	case <-read.done:
 	case <-time.After(2 * time.Second):
@@ -86,7 +86,7 @@ func TestWordPolicyReadsSurviveAPanic(t *testing.T) {
 	if read.err == nil {
 		t.Fatal("a read that panicked must report an error")
 	}
-	next := reads.join(wordReadKey{"a", ""}, func(context.Context) (WordPolicies, error) { return WordPolicies{}, nil })
+	next := reads.join(wordReadKey{"a", "", ""}, func(context.Context) (WordPolicies, error) { return WordPolicies{}, nil })
 	<-next.done
 	if next == read || next.err != nil {
 		t.Fatalf("the key stayed taken by the read that panicked: %+v", next)
@@ -103,12 +103,12 @@ func TestWordPolicyReadsSlowModeEndsWhenAReadSucceeds(t *testing.T) {
 	if !reads.slow(now.Add(time.Minute)) || reads.slow(now.Add(2*time.Hour)) {
 		t.Fatal("slow mode must last for slowFor")
 	}
-	failed := reads.join(wordReadKey{"a", ""}, func(context.Context) (WordPolicies, error) { return WordPolicies{}, errors.New("down") })
+	failed := reads.join(wordReadKey{"a", "", ""}, func(context.Context) (WordPolicies, error) { return WordPolicies{}, errors.New("down") })
 	<-failed.done
 	if !reads.slow(now.Add(time.Minute)) {
 		t.Fatal("a failed read must not end slow mode")
 	}
-	ok := reads.join(wordReadKey{"a", ""}, func(context.Context) (WordPolicies, error) { return WordPolicies{}, nil })
+	ok := reads.join(wordReadKey{"a", "", ""}, func(context.Context) (WordPolicies, error) { return WordPolicies{}, nil })
 	<-ok.done
 	if reads.slow(now.Add(time.Minute)) {
 		t.Fatal("the store answered; requests should wait for it again")
@@ -117,7 +117,7 @@ func TestWordPolicyReadsSlowModeEndsWhenAReadSucceeds(t *testing.T) {
 
 func TestWordPolicyReadsHaveATimeOfTheirOwn(t *testing.T) {
 	reads := wordPolicyReads{readTimeout: 30 * time.Millisecond}
-	read := reads.join(wordReadKey{"a", ""}, func(ctx context.Context) (WordPolicies, error) {
+	read := reads.join(wordReadKey{"a", "", ""}, func(ctx context.Context) (WordPolicies, error) {
 		<-ctx.Done()
 		return WordPolicies{}, ctx.Err()
 	})
@@ -152,7 +152,7 @@ func busyStore(t *testing.T) (store *Store, hold func(), release func()) {
 func TestLoadWordPoliciesDoesNotWaitForAStalledStore(t *testing.T) {
 	store, hold, release := busyStore(t)
 	remembered := savedWordPolicy(t, store, "tenant-h", WordPolicy{ScopeType: WordScopeTenant, Enabled: true, Rules: []WordRule{kw("remembered")}}, nil)
-	if got, err := store.LoadWordPolicies(context.Background(), "tenant-h", ""); err != nil || got.Tenant == nil {
+	if got, err := store.LoadWordPolicies(context.Background(), "tenant-h", "", ""); err != nil || got.Tenant == nil {
 		t.Fatalf("first load: %+v, %v", got, err)
 	}
 	hold()
@@ -160,7 +160,7 @@ func TestLoadWordPoliciesDoesNotWaitForAStalledStore(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
 	defer cancel()
 	start := time.Now()
-	got, err := store.LoadWordPolicies(ctx, "tenant-h", "")
+	got, err := store.LoadWordPolicies(ctx, "tenant-h", "", "")
 	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
 		t.Fatalf("a request waited %v for a store that was not answering", elapsed)
 	}
@@ -174,7 +174,7 @@ func TestLoadWordPoliciesDoesNotWaitForAStalledStore(t *testing.T) {
 	// Having just lost patience, the next requests do not even try to wait.
 	for i := 0; i < 20; i++ {
 		start = time.Now()
-		got, err = store.LoadWordPolicies(context.Background(), "tenant-h", "")
+		got, err = store.LoadWordPolicies(context.Background(), "tenant-h", "", "")
 		if elapsed := time.Since(start); elapsed > 100*time.Millisecond {
 			t.Fatalf("request %d waited %v while the store is known to be slow", i, elapsed)
 		}
@@ -187,7 +187,7 @@ func TestLoadWordPoliciesDoesNotWaitForAStalledStore(t *testing.T) {
 	// connection is free, and the store answers normally again.
 	release()
 	eventually(t, 2*time.Second, "the store to answer again", func() bool {
-		_, err := store.LoadWordPolicies(context.Background(), "tenant-h", "")
+		_, err := store.LoadWordPolicies(context.Background(), "tenant-h", "", "")
 		return err == nil
 	})
 }
@@ -201,15 +201,15 @@ func TestLoadWordPoliciesFinishesAReadTheRequestGaveUpOn(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
-	got, err := store.LoadWordPolicies(ctx, "tenant-cold", "")
+	got, err := store.LoadWordPolicies(ctx, "tenant-cold", "", "")
 	if err == nil || got.Tenant != nil {
 		t.Fatalf("nothing is known yet, so the request goes unguarded: %+v, %v", got, err)
 	}
 	release()
 	eventually(t, 2*time.Second, "the background read to fill the cache", func() bool {
-		return store.rememberedWordPolicies("tenant-cold", "").Tenant != nil
+		return store.rememberedWordPolicies("tenant-cold", "", "").Tenant != nil
 	})
-	if got, err = store.LoadWordPolicies(context.Background(), "tenant-cold", ""); err != nil || got.Tenant == nil {
+	if got, err = store.LoadWordPolicies(context.Background(), "tenant-cold", "", ""); err != nil || got.Tenant == nil {
 		t.Fatalf("the next request must find the policy: %+v, %v", got, err)
 	}
 }
@@ -218,7 +218,7 @@ func TestGuardRequestStopsWaitingForTheStoreAndAppliesWhatItKnows(t *testing.T) 
 	store, hold, _ := busyStore(t)
 	savedWordPolicy(t, store, "tenant-g", WordPolicy{ScopeType: WordScopeTenant, Enabled: true, Action: WordActionBlock, Rules: []WordRule{kw("bad")}}, nil)
 	// The guard learns the policy the way it does in service: from the store.
-	if got, err := store.LoadWordPolicies(context.Background(), "tenant-g", ""); err != nil || got.Tenant == nil {
+	if got, err := store.LoadWordPolicies(context.Background(), "tenant-g", "", ""); err != nil || got.Tenant == nil {
 		t.Fatalf("first load: %+v, %v", got, err)
 	}
 	moderator := NewRequestModerator(store, nil)
@@ -269,7 +269,7 @@ func TestGuardRequestWhenThePostgresPoolIsBusy(t *testing.T) {
 	}
 	store := NewStore(db)
 	savedWordPolicy(t, store, "tenant-pg", WordPolicy{ScopeType: WordScopeTenant, Enabled: true, Action: WordActionBlock, Rules: []WordRule{kw("bad")}}, nil)
-	if got, err := store.LoadWordPolicies(context.Background(), "tenant-pg", ""); err != nil || got.Tenant == nil {
+	if got, err := store.LoadWordPolicies(context.Background(), "tenant-pg", "", ""); err != nil || got.Tenant == nil {
 		t.Fatalf("first load: %+v, %v", got, err)
 	}
 	moderator := NewRequestModerator(store, nil)
@@ -300,7 +300,7 @@ func TestGuardRequestWhenThePostgresPoolIsBusy(t *testing.T) {
 	}
 	holders.Wait()
 	eventually(t, 3*time.Second, "the guard to read the database again", func() bool {
-		_, err := store.LoadWordPolicies(context.Background(), "tenant-pg", "")
+		_, err := store.LoadWordPolicies(context.Background(), "tenant-pg", "", "")
 		return err == nil
 	})
 }

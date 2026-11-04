@@ -39,7 +39,7 @@ const (
 // known to be slow and the read has not finished.
 var errWordPolicySlow = errors.New("the word policy store is slow to answer")
 
-type wordReadKey struct{ tenantID, keyID string }
+type wordReadKey struct{ tenantID, keyID, endUserID string }
 
 // wordRead is one read of the policies of a tenant and key.
 type wordRead struct {

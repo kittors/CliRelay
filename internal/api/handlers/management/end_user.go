@@ -244,6 +244,7 @@ func (h *Handler) DeleteEndUser(c *gin.Context) {
 		endUserError(c, err)
 		return
 	}
+	h.forgetEndUserWords(c, effectiveTenantID(c), c.Param("id"))
 	if err := h.refreshAPIKeyCache(); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "cache_refresh_failed", "message": err.Error()}})
 		return

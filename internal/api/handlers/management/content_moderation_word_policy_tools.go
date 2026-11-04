@@ -19,11 +19,13 @@ const maxWordTestBodyBytes = maxWordPolicyBodyBytes + jsonEscapeBytes*maxWordTes
 // wordValidateRequest asks what saving the submitted rules into a policy would
 // do with each of them.
 type wordValidateRequest struct {
-	// Scope is platform, tenant or key; the rules are compared with that
-	// policy's stored rules. KeyID names the key for a key policy.
-	Scope string         `json:"scope"`
-	KeyID string         `json:"key_id"`
-	Rules wordRuleInputs `json:"rules"`
+	// Scope is platform, tenant, key or end_user; the rules are compared with
+	// that policy's stored rules. KeyID names the key for a key policy and
+	// EndUserID the portal user for an end_user policy.
+	Scope     string         `json:"scope"`
+	KeyID     string         `json:"key_id"`
+	EndUserID string         `json:"end_user_id"`
+	Rules     wordRuleInputs `json:"rules"`
 }
 
 // wordValidateSummary counts the verdicts and says whether the new rules fit.
@@ -61,19 +63,28 @@ func (h *Handler) PostWordPolicyValidate(c *gin.Context) {
 	if scope == "" {
 		scope = contentmoderation.WordScopeTenant
 	}
+	scopeID := body.KeyID
 	switch scope {
 	case contentmoderation.WordScopePlatform, contentmoderation.WordScopeTenant, contentmoderation.WordScopeKey:
+	case contentmoderation.WordScopeEndUser:
+		scopeID = body.EndUserID
 	default:
-		contentModerationBadRequest(c, "scope must be platform, tenant or key")
+		contentModerationBadRequest(c, "scope must be platform, tenant, key or end_user")
 		return
 	}
-	target, ok := h.wordPolicyTargetFor(c, scope, body.KeyID, true)
+	target, ok := h.wordPolicyTargetFor(c, scope, scopeID, true)
 	if !ok {
 		return
 	}
 	if !requireWordPolicyEditor(c, target) {
 		return
 	}
+	h.answerWordRuleReview(c, target, body.Rules)
+}
+
+// answerWordRuleReview reviews rules for an import into the policy target
+// addresses, which the caller has resolved and may change.
+func (h *Handler) answerWordRuleReview(c *gin.Context, target wordPolicyTarget, rules wordRuleInputs) {
 	var existing []contentmoderation.WordRule
 	stored, err := h.contentModerationStore().GetWordPolicy(c.Request.Context(), target.tenantID, target.scopeType, target.scopeID)
 	switch {
@@ -84,7 +95,7 @@ func (h *Handler) PostWordPolicyValidate(c *gin.Context) {
 		return
 	}
 
-	reviews := contentmoderation.ReviewWordRules(wordRulesFromInput(body.Rules), existing)
+	reviews := contentmoderation.ReviewWordRules(wordRulesFromInput(rules), existing)
 	summary := wordValidateSummary{Total: len(reviews), ExistingRules: len(existing)}
 	for _, rule := range existing {
 		if rule.Kind == contentmoderation.WordRuleRegex {
@@ -112,9 +123,10 @@ func (h *Handler) PostWordPolicyValidate(c *gin.Context) {
 		review.Rule = nil
 		listed = append(listed, review)
 	}
-	summary.Fits = summary.ExistingRules+summary.New <= contentmoderation.MaxWordRulesPerPolicy &&
-		summary.ExistingRegex+summary.NewRegex <= contentmoderation.MaxWordRegexPerPolicy &&
-		summary.ExistingRegexProgram+summary.NewRegexProgram <= contentmoderation.MaxWordRegexProgramTotal
+	limits := contentmoderation.WordLimitsFor(target.scopeType)
+	summary.Fits = summary.ExistingRules+summary.New <= limits.MaxRules &&
+		summary.ExistingRegex+summary.NewRegex <= limits.MaxRegex &&
+		summary.ExistingRegexProgram+summary.NewRegexProgram <= limits.MaxRegexProgramTotal
 	c.JSON(http.StatusOK, gin.H{"summary": summary, "reviews": listed})
 }
 
@@ -124,6 +136,9 @@ type wordTestRequest struct {
 	// KeyID, when given, adds that API key's policy to the policies checked, as
 	// a request made with the key would be.
 	KeyID string `json:"key_id"`
+	// EndUserID, when given, adds that portal user's own policy, as a request
+	// of the user would have it applied once the tenant allows it.
+	EndUserID string `json:"end_user_id"`
 	// Draft, when given, stands in for the stored policy of Scope (default
 	// tenant), so unsaved edits can be tried before they are saved.
 	Scope string           `json:"scope"`
@@ -179,6 +194,15 @@ func (h *Handler) PostWordPolicyTest(c *gin.Context) {
 			return
 		}
 	}
+	var endUser wordPolicyTarget
+	if strings.TrimSpace(body.EndUserID) != "" {
+		if endUser, ok = h.endUserWordPolicyTarget(c, body.EndUserID, true); !ok {
+			return
+		}
+		if policies.EndUser, ok = load(tenantID, contentmoderation.WordScopeEndUser, endUser.scopeID); !ok {
+			return
+		}
+	}
 
 	if body.Draft != nil {
 		scope := strings.TrimSpace(body.Scope)
@@ -196,8 +220,14 @@ func (h *Handler) PostWordPolicyTest(c *gin.Context) {
 				return
 			}
 			target.scopeID = keyID
+		case contentmoderation.WordScopeEndUser:
+			if endUser.scopeID == "" {
+				contentModerationBadRequest(c, "end_user_id is required to test a draft portal user policy")
+				return
+			}
+			target.scopeID = endUser.scopeID
 		default:
-			contentModerationBadRequest(c, "scope must be platform, tenant or key")
+			contentModerationBadRequest(c, "scope must be platform, tenant, key or end_user")
 			return
 		}
 		// Not stored, but a tenant should not be able to see the platform layer
@@ -215,6 +245,8 @@ func (h *Handler) PostWordPolicyTest(c *gin.Context) {
 			policies.Platform = &draft
 		case contentmoderation.WordScopeTenant:
 			policies.Tenant = &draft
+		case contentmoderation.WordScopeEndUser:
+			policies.EndUser = &draft
 		default:
 			policies.Key = &draft
 		}

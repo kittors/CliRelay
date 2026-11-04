@@ -45,7 +45,7 @@ type WordDryRun struct {
 // back with its rule id only, unless revealPlatform says the caller may read
 // that policy.
 func DryRunWordPolicies(policies WordPolicies, text string, revealPlatform bool) WordDryRun {
-	contexts := buildWordContexts(policies.Platform, policies.Tenant, policies.Key)
+	contexts := buildPolicyContexts(policies)
 	result := WordDryRun{Action: WordVerdictAllow, Output: text, Matches: []WordMatch{}, Layers: []string{}}
 	for _, context := range contexts {
 		result.Layers = append(result.Layers, context.layer)

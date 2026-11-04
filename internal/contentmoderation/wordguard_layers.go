@@ -5,10 +5,13 @@ import "strings"
 // wordContext is what applies together to one request: a set of rules and the
 // settings that say how to scan for them and what a hit does.
 //
-// A request has at most two. The platform's own context always comes first and
-// nothing below it can touch it, because letting a tenant or a key change the
-// platform's action or scope would be the same as letting them switch it off.
-// The tenant's context follows, with the API key's adjustments folded in.
+// A request has at most three. The platform's own context always comes first
+// and nothing below it can touch it, because letting a tenant or a key change
+// the platform's action or scope would be the same as letting them switch it
+// off. The tenant's context follows, with the API key's adjustments folded in.
+// Last comes the context of the portal user who owns the key, when the tenant
+// lets the user keep a policy: it is the user's own and stands apart for the
+// same reason, so that nothing the user sets weakens the two before it.
 type wordContext struct {
 	// layer is the highest layer that contributed rules to the context.
 	layer        string
@@ -97,17 +100,40 @@ func buildWordContexts(platform, tenant, key *WordPolicy) []wordContext {
 	return contexts
 }
 
+// buildPolicyContexts is buildWordContexts for all the policies of a request,
+// the portal user's included.
+func buildPolicyContexts(policies WordPolicies) []wordContext {
+	contexts := buildWordContexts(policies.Platform, policies.Tenant, policies.Key)
+	if context, ok := buildEndUserContext(policies.EndUser); ok {
+		contexts = append(contexts, context)
+	}
+	return contexts
+}
+
 // buildPlatformContext is the context of the platform policy, if it has one.
 func buildPlatformContext(platform *WordPolicy) (wordContext, bool) {
-	if platform == nil || !platform.Enabled {
+	return buildStandaloneContext(platform, WordScopePlatform)
+}
+
+// buildEndUserContext is the context of a portal user's policy, if it has one.
+// Whether the tenant allows the user one is settled before: a policy that is
+// not allowed is not passed in (see Store.readWordPolicies).
+func buildEndUserContext(endUser *WordPolicy) (wordContext, bool) {
+	return buildStandaloneContext(endUser, WordScopeEndUser)
+}
+
+// buildStandaloneContext is the context of a policy that is applied on its own,
+// with its own settings over the defaults and nothing else.
+func buildStandaloneContext(policy *WordPolicy, layer string) (wordContext, bool) {
+	if policy == nil || !policy.Enabled {
 		return wordContext{}, false
 	}
-	settings := mergeWordSettings(platform)
-	matcher := newWordMatcher(ruleRefs(platform, WordScopePlatform), settings.fold)
+	settings := mergeWordSettings(policy)
+	matcher := newWordMatcher(ruleRefs(policy, layer), settings.fold)
 	if matcher == nil {
 		return wordContext{}, false
 	}
-	return newWordContext(WordScopePlatform, settings, matcher), true
+	return newWordContext(layer, settings, matcher), true
 }
 
 // buildTenantContext is the context of the tenant policy with the key's

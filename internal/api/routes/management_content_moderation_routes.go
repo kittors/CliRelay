@@ -30,6 +30,14 @@ func registerManagementContentModerationRoutes(group *gin.RouterGroup, h *manage
 	group.GET("/content-moderation/word-policies/keys/:id", h.GetWordPolicyKey)
 	group.PUT("/content-moderation/word-policies/keys/:id", h.PutWordPolicyKey)
 	group.DELETE("/content-moderation/word-policies/keys/:id", h.DeleteWordPolicyKey)
+	// Portal users' own words: who of the tenant's portal users may keep them,
+	// and the words of one of them.
+	group.GET("/content-moderation/word-policies/portal", h.GetWordPortal)
+	group.PUT("/content-moderation/word-policies/portal", h.PutWordPortal)
+	group.PUT("/content-moderation/word-policies/portal/users/:id", h.PutWordPortalUser)
+	group.GET("/content-moderation/word-policies/end-users/:id", h.GetWordPolicyEndUser)
+	group.PUT("/content-moderation/word-policies/end-users/:id", h.PutWordPolicyEndUser)
+	group.DELETE("/content-moderation/word-policies/end-users/:id", h.DeleteWordPolicyEndUser)
 	group.POST("/content-moderation/word-policies/validate", h.PostWordPolicyValidate)
 	group.POST("/content-moderation/word-policies/test", h.PostWordPolicyTest)
 

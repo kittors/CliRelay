@@ -54,11 +54,17 @@ type WordPolicyLimits struct {
 	MaxBlockMessageChars int `json:"max_block_message_chars"`
 }
 
-// WordLimits returns the bounds a policy is saved within.
-func WordLimits() WordPolicyLimits {
+// WordLimits returns the bounds a platform, tenant or key policy is saved
+// within.
+func WordLimits() WordPolicyLimits { return WordLimitsFor(WordScopeTenant) }
+
+// WordLimitsFor returns the bounds a policy of scopeType is saved within; a
+// portal user's policy holds fewer rules than the others.
+func WordLimitsFor(scopeType string) WordPolicyLimits {
+	counts := wordRuleLimitsFor(scopeType)
 	return WordPolicyLimits{
-		MaxRules:             MaxWordRulesPerPolicy,
-		MaxRegex:             MaxWordRegexPerPolicy,
+		MaxRules:             counts.rules,
+		MaxRegex:             counts.regex,
 		MaxKeywordChars:      MaxWordKeywordRunes,
 		MaxRegexBytes:        MaxWordRegexBytes,
 		MaxRegexProgram:      MaxWordRegexProgram,
