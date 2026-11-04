@@ -9,10 +9,13 @@ import (
 )
 
 // A portal user (an end user of a tenant, who signs in to the portal) may keep a
-// word policy of their own (WordScopeEndUser) when the tenant lets them. The
+// word policy of their own (WordScopeEndUser) unless the tenant forbids it. The
 // tenant decides in two steps: a default for all of its portal users, and an
 // override for one user that allows or forbids whatever the default says. A
-// tenant that has decided nothing allows no one.
+// tenant that has decided nothing allows everyone: keeping words of one's own is
+// a portal user's right by default, not something an administrator has to hand
+// out account by account. It is safe to give, since a user's words only ever add
+// hits to that user's own requests (see buildEndUserContext).
 //
 // The permission is checked when a user saves a policy and again on every
 // request. A user the tenant stops allowing keeps the policy, which applies
@@ -36,7 +39,8 @@ CREATE TABLE IF NOT EXISTS content_moderation_word_portal_access (
 // WordPortalAccess is a tenant's decision about its portal users' word
 // policies.
 type WordPortalAccess struct {
-	// DefaultAllowed applies to every portal user without an override.
+	// DefaultAllowed applies to every portal user without an override. It is
+	// true until the tenant stores a default of its own.
 	DefaultAllowed bool `json:"default_allowed"`
 	// Overrides maps the id of a portal user to the user's own permission.
 	Overrides map[string]bool `json:"overrides"`
@@ -69,7 +73,8 @@ func (g wordPortalGrant) allowed() bool {
 	if g.hasOverride {
 		return g.overrideAllowed
 	}
-	return g.hasDefault && g.defaultAllowed
+	// No default stored: the tenant has not taken the right away.
+	return !g.hasDefault || g.defaultAllowed
 }
 
 // maxRememberedPortalGrants bounds wordPortalCache; when it is reached the
@@ -112,7 +117,8 @@ func (s *Store) GetWordPortalAccess(ctx context.Context, tenantID string) (WordP
 		return WordPortalAccess{}, err
 	}
 	defer rows.Close()
-	access := WordPortalAccess{Overrides: map[string]bool{}}
+	// A tenant without a stored default allows everyone (see the notes above).
+	access := WordPortalAccess{DefaultAllowed: true, Overrides: map[string]bool{}}
 	for rows.Next() {
 		var endUserID string
 		var allowed int

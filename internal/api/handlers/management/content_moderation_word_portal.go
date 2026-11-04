@@ -13,7 +13,8 @@ import (
 )
 
 // A portal user (an end user of a tenant, who signs in to the portal) may keep
-// sensitive words of their own while the tenant allows it (see
+// sensitive words of their own unless the tenant forbids it: every portal user
+// may until the tenant says otherwise (see
 // internal/contentmoderation/wordguard_portal.go). The tenant decides here:
 //
 //	GET  /content-moderation/word-policies/portal            the tenant's default and every portal user with their permission and policy

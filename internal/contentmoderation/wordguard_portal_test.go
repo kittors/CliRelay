@@ -17,13 +17,20 @@ func runWordPortalChecks(t *testing.T, store *Store) {
 	t.Helper()
 	ctx := context.Background()
 
-	t.Run("nobody is allowed until the tenant decides", func(t *testing.T) {
+	t.Run("everyone is allowed until the tenant decides otherwise", func(t *testing.T) {
 		access, err := store.GetWordPortalAccess(ctx, "tenant-p0")
-		if err != nil || access.DefaultAllowed || len(access.Overrides) != 0 || access.Allowed("u-1") {
+		if err != nil || !access.DefaultAllowed || len(access.Overrides) != 0 || !access.Allowed("u-1") {
 			t.Fatalf("access = %+v, %v", access, err)
 		}
-		if allowed, err := store.WordPortalAllowed(ctx, "tenant-p0", "u-1"); err != nil || allowed {
+		if allowed, err := store.WordPortalAllowed(ctx, "tenant-p0", "u-1"); err != nil || !allowed {
 			t.Fatalf("allowed = %v, %v", allowed, err)
+		}
+		// A tenant that closes it closes it for everyone without an override.
+		if err := store.SetWordPortalDefault(ctx, "tenant-p0", false); err != nil {
+			t.Fatal(err)
+		}
+		if allowed, err := store.WordPortalAllowed(ctx, "tenant-p0", "u-1"); err != nil || allowed {
+			t.Fatalf("after closing: allowed = %v, %v", allowed, err)
 		}
 	})
 
@@ -68,9 +75,17 @@ func runWordPortalChecks(t *testing.T, store *Store) {
 		savedWordPolicy(t, store, tenant, WordPolicy{ScopeType: WordScopeTenant, Enabled: true, Rules: []WordRule{kw("tenantword")}}, nil)
 		savedWordPolicy(t, store, tenant, WordPolicy{ScopeType: WordScopeEndUser, ScopeID: "u-1", Enabled: true, Rules: []WordRule{kw("myword")}}, nil)
 
+		// Nothing decided: the user's words apply.
 		got, err := store.LoadWordPolicies(ctx, tenant, "k-1", "u-1")
-		if err != nil || got.Tenant == nil || got.EndUser != nil {
-			t.Fatalf("not allowed yet: %+v, %v", got, err)
+		if err != nil || got.Tenant == nil || got.EndUser == nil || got.EndUser.Rules[0].Pattern != "myword" {
+			t.Fatalf("allowed by default: %+v, %v", got, err)
+		}
+		// Closed for the tenant, then opened again.
+		if err := store.SetWordPortalDefault(ctx, tenant, false); err != nil {
+			t.Fatal(err)
+		}
+		if got, _ := store.LoadWordPolicies(ctx, tenant, "k-1", "u-1"); got.EndUser != nil {
+			t.Fatalf("closed for the tenant, the user's words still apply: %+v", got.EndUser)
 		}
 		if err := store.SetWordPortalDefault(ctx, tenant, true); err != nil {
 			t.Fatal(err)
