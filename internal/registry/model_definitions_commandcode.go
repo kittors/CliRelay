@@ -11,6 +11,8 @@ package registry
 // running ahead of this snapshot can name any newer model explicitly under
 // commandcode-api-key[].models and it will route without touching this file.
 // Regenerate the snapshot from that endpoint rather than hand-editing entries.
+// MiniMax suggestions include the current Flash and M3 routes from that catalog;
+// explicitly configured legacy models still route independently of this list.
 
 // GetCommandCodeModels returns the Command Code Provider API catalog snapshot.
 func GetCommandCodeModels() []*ModelInfo {
@@ -47,9 +49,9 @@ func GetCommandCodeModels() []*ModelInfo {
 		{"zai-org/GLM-5.2-Fast", "GLM-5.2 Fast", 1000000},
 		{"zai-org/GLM-5.1", "GLM-5.1", 200000},
 		{"zai-org/GLM-5", "GLM-5", 200000},
+		{"minimax/minimax-m3.1-flash", "MiniMax M3.1 Flash", 1000000},
+		{"minimax/minimax-m3.1-flash:free", "MiniMax M3.1 Flash", 1000000},
 		{"MiniMaxAI/MiniMax-M3", "MiniMax M3", 1000000},
-		{"MiniMaxAI/MiniMax-M2.7", "MiniMax M2.7", 200000},
-		{"MiniMaxAI/MiniMax-M2.5", "MiniMax M2.5", 200000},
 		{"xiaomi/mimo-v2.5-pro", "MiMo V2.5 Pro", 1000000},
 		{"xiaomi/mimo-v2.5", "MiMo V2.5", 1000000},
 		{"Qwen/Qwen3.8-Max", "Qwen 3.8 Max", 1000000},

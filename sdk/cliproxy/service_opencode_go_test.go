@@ -51,8 +51,8 @@ func TestRegisterModelsForAuth_OpenCodeGoRegistersAllDefaultModels(t *testing.T)
 	service.registerModelsForAuth(context.Background(), auth)
 
 	models := registry.GetAvailableModelsByProvider("opencode-go")
-	if len(models) != 20 {
-		t.Fatalf("expected 20 registered opencode-go models, got %d: %+v", len(models), models)
+	if len(models) != 19 {
+		t.Fatalf("expected 19 registered opencode-go models, got %d: %+v", len(models), models)
 	}
 	ids := make(map[string]struct{}, len(models))
 	for _, model := range models {
@@ -63,8 +63,15 @@ func TestRegisterModelsForAuth_OpenCodeGoRegistersAllDefaultModels(t *testing.T)
 	if _, ok := ids["deepseek-v4-flash"]; !ok {
 		t.Fatalf("deepseek-v4-flash not registered; got ids %#v", ids)
 	}
-	if _, ok := ids["minimax-m2.7"]; !ok {
-		t.Fatalf("minimax-m2.7 not registered; got ids %#v", ids)
+	for _, id := range []string{"minimax-m3.1-flash-free", "minimax-m3"} {
+		if _, ok := ids[id]; !ok {
+			t.Fatalf("%s not registered; got ids %#v", id, ids)
+		}
+	}
+	for _, id := range []string{"minimax-m2.7", "minimax-m2.5"} {
+		if _, ok := ids[id]; ok {
+			t.Fatalf("legacy %s registered by default", id)
+		}
 	}
 	if _, ok := ids["kimi-k2.7-code"]; !ok {
 		t.Fatalf("kimi-k2.7-code not registered; got ids %#v", ids)
@@ -78,6 +85,7 @@ func TestRegisterModelsForAuth_OpenCodeGoUsesPerKeyModels(t *testing.T) {
 			Models: []config.OpenCodeGoModel{
 				{Name: "qwen3.7-max"},
 				{Name: "official-new-model"},
+				{Name: "minimax-m2.7"},
 			},
 		}},
 	}}
@@ -100,8 +108,8 @@ func TestRegisterModelsForAuth_OpenCodeGoUsesPerKeyModels(t *testing.T) {
 	service.registerModelsForAuth(context.Background(), auth)
 
 	models := registry.GetModelsForClient(auth.ID)
-	if len(models) != 2 {
-		t.Fatalf("expected configured opencode-go models, got %d: %+v", len(models), models)
+	if len(models) != 3 || !hasModelID(models, "minimax-m2.7") {
+		t.Fatalf("expected configured opencode-go models including saved legacy choice, got %d: %+v", len(models), models)
 	}
 	if !hasModelID(models, "official-new-model") {
 		t.Fatalf("per-key OpenCode Go model should be registered; got %+v", models)

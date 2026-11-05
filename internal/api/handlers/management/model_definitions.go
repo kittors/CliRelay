@@ -48,12 +48,12 @@ func (h *Handler) GetStaticModelDefinitions(c *gin.Context) {
 	}
 	if normalizedChannel == "ollama-cloud" {
 		if remoteModels, err := fetchOllamaCloudModelDefinitions(c.Request.Context()); err == nil && len(remoteModels) > 0 {
-			models = remoteModels
+			models = currentMiniMaxTextChoices(remoteModels)
 		}
 	}
 	if normalizedChannel == "commandcode" {
 		if remoteModels, err := fetchCommandCodeModelDefinitions(c.Request.Context()); err == nil && len(remoteModels) > 0 {
-			models = remoteModels
+			models = currentMiniMaxTextChoices(remoteModels)
 		}
 	}
 
