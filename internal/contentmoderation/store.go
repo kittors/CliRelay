@@ -90,6 +90,15 @@ func InitTables(db *sql.DB) error {
 	if _, err := db.Exec(wordPortalTablesSQL); err != nil {
 		return fmt.Errorf("create word portal access table: %w", err)
 	}
+	// Privacy masking: the portal users' own settings and the records. Like the
+	// tables above they only add tables, so an older build keeps running on the
+	// upgraded database.
+	if _, err := db.Exec(privacyMaskUsersTableSQL); err != nil {
+		return fmt.Errorf("create privacy masking users table: %w", err)
+	}
+	if _, err := db.Exec(privacyMaskRecordTablesSQL); err != nil {
+		return fmt.Errorf("create privacy masking record tables: %w", err)
+	}
 	for _, stmt := range profileColumnMigrations {
 		_, _ = db.Exec(stmt) // ignore duplicate-column errors on already-migrated installs
 	}

@@ -213,6 +213,17 @@ func permissionForManagementRequest(method, path string) string {
 			return "models.write"
 		}
 		return "models.read"
+	case strings.HasPrefix(relative, "/privacy-masking"):
+		// Privacy masking is set up and read by the same people as content
+		// moderation; trying a text out changes nothing, as a word policy's
+		// dry run does not.
+		if method == http.MethodPost && strings.TrimSuffix(relative, "/") == "/privacy-masking/preview" {
+			return "content_moderation.test"
+		}
+		if write {
+			return "content_moderation.write"
+		}
+		return "content_moderation.read"
 	case strings.HasPrefix(relative, "/content-moderation"):
 		if method == http.MethodPost && isContentModerationTestRoute(relative) {
 			return "content_moderation.test"

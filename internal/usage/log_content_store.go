@@ -11,6 +11,7 @@ import (
 	"github.com/klauspost/compress/zstd"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/cluster"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/contentmoderation"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/secretscrub"
 	log "github.com/sirupsen/logrus"
 )
@@ -305,6 +306,17 @@ func runRequestLogMaintenancePass(ctx context.Context, db *sql.DB, driver string
 		log.Errorf("usage: prune shared AI account day buckets: %v", err)
 	} else if n > 0 {
 		log.Infof("usage: pruned %d expired shared AI account day rows", n)
+	}
+	// Privacy masking records keep their own 30 days whatever cleanup-enabled
+	// says: the panel promises it. Their snippets are text of the request bodies
+	// and go with them: after the content retention, or at once while bodies
+	// are not stored.
+	if n, err := contentmoderation.CleanupMaskRecords(ctx, db, currentRequestLogStorageConfig().ContentRetentionDays, RequestLogBodyStorageEnabled(), time.Now()); err != nil {
+		if ctx.Err() == nil { // a pass stopped by shutdown is not a failure
+			log.Errorf("usage: prune privacy masking records: %v", err)
+		}
+	} else if n > 0 {
+		log.Infof("usage: pruned %d expired privacy masking records", n)
 	}
 	// Exactly-once keys only need to outlive the retries and spool replays of
 	// their own record; see requestLogIdempotencyRetention.

@@ -43,10 +43,9 @@ func memoRules(s string, o Options, find func() []span) []span {
 	}
 	slices.Sort(kinds)
 	fmt.Fprintf(h, "%s\x00", strings.Join(kinds, ","))
-	if o.Secrets {
-		for _, r := range o.Rules {
-			fmt.Fprintf(h, "%q:%q:%q;", r.Kind, r.Prefix, r.Regex)
-		}
+	// the rules apply whatever Secrets says (Options.Rules)
+	for _, r := range o.Rules {
+		fmt.Fprintf(h, "%q:%q:%q;", r.Kind, r.Prefix, r.Regex)
 	}
 	h.Write([]byte{0})
 	h.Write([]byte(s))

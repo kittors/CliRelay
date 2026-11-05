@@ -30,6 +30,12 @@ import (
 // the body is a second copy of a request whose first copy was masked already:
 // its values are not counted again.
 func maskRequestSecrets(format sdktranslator.Format, body []byte, masker *privacymask.Masker, quiet bool) (out []byte, failure string) {
+	return maskRequest(format, body, masker, quiet, nil)
+}
+
+// maskRequest is maskRequestSecrets that also notes, for the request's record,
+// where each value was found and the text around it (notes, nil for none).
+func maskRequest(format sdktranslator.Format, body []byte, masker *privacymask.Masker, quiet bool, notes *maskNotes) (out []byte, failure string) {
 	units := extractWordUnits(format, body)
 	type slot struct {
 		doc  *wordDoc
@@ -58,6 +64,9 @@ func maskRequestSecrets(format sdktranslator.Format, body []byte, masker *privac
 	changed := false
 	for i, unit := range units {
 		edits := plans[i]
+		if notes != nil && !quiet {
+			notes.add(masker, i, unit, edits)
+		}
 		if len(edits) == 0 {
 			continue
 		}

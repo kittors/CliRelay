@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/contentmoderation"
 	internalusage "github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
@@ -105,6 +106,8 @@ func newUsageReporter(ctx context.Context, provider, model, upstreamModel string
 			reporter.authSubjectID = identity.ID
 		}
 		reporter.channelName = strings.TrimSpace(auth.ChannelName())
+		// the privacy masking record shows where a masked request went
+		contentmoderation.NoteSecretMaskingRoute(ctx, reporter.channelName, auth.Provider)
 	}
 	return reporter
 }

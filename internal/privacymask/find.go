@@ -24,7 +24,10 @@ type Options struct {
 	// 123456.78 (wholeWord). Off, a word is found anywhere, inside a longer
 	// one too.
 	WordsWhole bool
-	Rules      []Rule // the user's own rules, masked with the secrets
+	// Rules are the user's own. Unlike magpie's they apply with the secrets
+	// off too: a tenant's rules apply to its portal users whatever they
+	// switch, and a rule someone wrote is meant to mask.
+	Rules []Rule
 	// Kinds turns each of the Categories of personal data on or off by its id,
 	// where the user chose; one not in it is as its Category.On says. None of
 	// them is masked while Personal is off.
@@ -36,11 +39,16 @@ type Options struct {
 	// Allow are values the user lets go as written, whichever finder finds
 	// them: each a whole value, in any case.
 	Allow []string
+	// UserAllow is Allow written by a portal user, and Locked the categories
+	// ("secret", "personal") the tenant turned on for everyone: a portal user's
+	// own list cannot let a value of a locked category go as written.
+	UserAllow []string
+	Locked    map[string]bool
 }
 
 // Any says o masks anything at all.
 func (o Options) Any() bool {
-	return o.Secrets || o.Personal || len(o.Words) > 0
+	return o.Secrets || o.Personal || len(o.Words) > 0 || len(o.Rules) > 0
 }
 
 // covers says o masks what a rule of category cat finds: "" are the secrets,
@@ -140,14 +148,33 @@ func (o Options) actionOf(kind string) string {
 	return Mask
 }
 
-// allows says the user lets v go as written (Options.Allow).
-func (o Options) allows(v string) bool {
-	for _, a := range o.Allow {
-		if strings.EqualFold(strings.TrimSpace(a), v) {
-			return true
+// allows says v, of kind, goes as written (Options.Allow, Options.UserAllow).
+func (o Options) allows(v, kind string) bool {
+	match := func(list []string) bool {
+		for _, a := range list {
+			if strings.EqualFold(strings.TrimSpace(a), v) {
+				return true
+			}
 		}
+		return false
 	}
-	return false
+	if match(o.Allow) {
+		return true
+	}
+	return !o.Locked[Class(kind)] && match(o.UserAllow)
+}
+
+// Class is the switch a kind is masked under: "secret" for keys, tokens,
+// passwords and the user's own rules, "personal" for personal data, "word"
+// for the user's words.
+func Class(kind string) string {
+	switch {
+	case kind == "TERM":
+		return "word"
+	case Personal(kind):
+		return "personal"
+	}
+	return "secret"
 }
 
 // Hint is as much of v as may be kept where v itself may not: its first
@@ -313,7 +340,7 @@ func ruleSpans(s string, o Options) []span {
 		}
 		var found []span
 		all := rules
-		if o.Secrets && len(o.Rules) > 0 {
+		if len(o.Rules) > 0 {
 			// the user's first: where one of theirs and one of the built-in ones
 			// find the same value, it goes by the name they gave it
 			all = append(customRules(o.Rules), rules...)
@@ -324,7 +351,7 @@ func ruleSpans(s string, o Options) []span {
 		// same place in them, an email, goes
 		var split []span
 		for _, r := range all {
-			if !o.covers(r.cat) {
+			if !r.yours && !o.covers(r.cat) {
 				continue
 			}
 			if len(r.markers) > 0 && !containsAny(s, r.markers) {

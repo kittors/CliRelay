@@ -46,6 +46,16 @@ func registerIdentityAuthRoutes(engine *gin.Engine, h *managementhandlers.Handle
 	portal.DELETE("/word-policy", h.DeletePortalWordPolicy)
 	portal.POST("/word-policy/validate", h.PostPortalWordPolicyValidate)
 	portal.POST("/word-policy/test", h.PostPortalWordPolicyTest)
+	// Privacy masking: the user's own settings, while the tenant allows them,
+	// and the records of the user's own requests.
+	portal.GET("/privacy-masking/settings", h.GetPortalPrivacyMaskingSettings)
+	portal.PUT("/privacy-masking/settings", h.PutPortalPrivacyMaskingSettings)
+	portal.DELETE("/privacy-masking/settings", h.DeletePortalPrivacyMaskingSettings)
+	portal.POST("/privacy-masking/preview", h.PostPortalPrivacyMaskingPreview)
+	portal.GET("/privacy-masking/summary", h.GetPortalPrivacyMaskingSummary)
+	portal.GET("/privacy-masking/records", h.GetPortalPrivacyMaskingRecords)
+	portal.GET("/privacy-masking/records/:key", h.GetPortalPrivacyMaskingRecord)
+	portal.DELETE("/privacy-masking/records", h.DeletePortalPrivacyMaskingRecords)
 }
 
 func registerManagementIdentityRoutes(group *gin.RouterGroup, h *managementhandlers.Handler) {

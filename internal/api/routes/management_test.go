@@ -26,7 +26,7 @@ func TestRegisterManagementRouteTable(t *testing.T) {
 		routes[key] = route
 	}
 
-	if got, want := len(routes), 392; got != want {
+	if got, want := len(routes), 409; got != want {
 		t.Fatalf("route count = %d, want %d", got, want)
 	}
 	if got, want := sortedRouteKeys(routes), expectedManagementRoutes(); !slices.Equal(got, want) {
@@ -60,6 +60,15 @@ func TestRegisterManagementRouteTable(t *testing.T) {
 		"POST /v0/portal/word-policy/test",
 		"GET /v0/management/content-moderation/secret-masking",
 		"PUT /v0/management/content-moderation/secret-masking",
+		"GET /v0/management/privacy-masking/settings",
+		"PUT /v0/management/privacy-masking/settings",
+		"POST /v0/management/privacy-masking/preview",
+		"GET /v0/management/privacy-masking/portal",
+		"PUT /v0/management/privacy-masking/portal/users/:id",
+		"GET /v0/management/privacy-masking/summary",
+		"GET /v0/management/privacy-masking/records",
+		"GET /v0/management/privacy-masking/records/:key",
+		"DELETE /v0/management/privacy-masking/records",
 		"POST /v0/management/content-moderation/word-policies/validate",
 		"POST /v0/management/content-moderation/word-policies/test",
 		"GET /v0/management/dashboard-summary",
@@ -216,6 +225,10 @@ func TestManagementRoutePermissionsComplete(t *testing.T) {
 		{http.MethodPost, "/v0/management/content-moderation/word-policies/test", "content_moderation.test"},
 		{http.MethodGet, "/v0/management/content-moderation/word-policies/portal", "content_moderation.read"},
 		{http.MethodPut, "/v0/management/content-moderation/word-policies/portal", "content_moderation.write"},
+		{http.MethodGet, "/v0/management/privacy-masking/records", "content_moderation.read"},
+		{http.MethodDelete, "/v0/management/privacy-masking/records", "content_moderation.write"},
+		{http.MethodPut, "/v0/management/privacy-masking/settings", "content_moderation.write"},
+		{http.MethodPost, "/v0/management/privacy-masking/preview", "content_moderation.test"},
 		{http.MethodPut, "/v0/management/content-moderation/word-policies/portal/users/sample-id", "content_moderation.write"},
 		{http.MethodGet, "/v0/management/content-moderation/word-policies/end-users/sample-id", "content_moderation.read"},
 		{http.MethodPut, "/v0/management/content-moderation/word-policies/end-users/sample-id", "content_moderation.write"},
@@ -296,6 +309,14 @@ func expectedManagementRoutes() []string {
 		"DELETE /v0/portal/word-policy",
 		"POST /v0/portal/word-policy/validate",
 		"POST /v0/portal/word-policy/test",
+		"GET /v0/portal/privacy-masking/settings",
+		"PUT /v0/portal/privacy-masking/settings",
+		"DELETE /v0/portal/privacy-masking/settings",
+		"POST /v0/portal/privacy-masking/preview",
+		"GET /v0/portal/privacy-masking/summary",
+		"GET /v0/portal/privacy-masking/records",
+		"GET /v0/portal/privacy-masking/records/:key",
+		"DELETE /v0/portal/privacy-masking/records",
 		"POST /v0/portal/auth/login",
 		"POST /v0/portal/auth/logout",
 		"GET /v0/portal/auth/me",
@@ -579,6 +600,15 @@ func expectedManagementRoutes() []string {
 		"POST /v0/management/content-moderation/word-policies/test",
 		"GET /v0/management/content-moderation/secret-masking",
 		"PUT /v0/management/content-moderation/secret-masking",
+		"GET /v0/management/privacy-masking/settings",
+		"PUT /v0/management/privacy-masking/settings",
+		"POST /v0/management/privacy-masking/preview",
+		"GET /v0/management/privacy-masking/portal",
+		"PUT /v0/management/privacy-masking/portal/users/:id",
+		"GET /v0/management/privacy-masking/summary",
+		"GET /v0/management/privacy-masking/records",
+		"GET /v0/management/privacy-masking/records/:key",
+		"DELETE /v0/management/privacy-masking/records",
 		"POST /v0/management/content-moderation/word-policies/validate",
 		"POST /v0/management/api-key-entries/daily-spending/reset",
 		"POST /v0/management/api-key-entries/period-spending/reset",

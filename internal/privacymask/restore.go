@@ -95,6 +95,17 @@ func (r *Restorer) Restore(s string, escaped bool) string {
 	return b.String()
 }
 
+// RestoredOf is how many places the reply had the value of placeholder p put
+// back, so far.
+func (r *Restorer) RestoredOf(p string) int {
+	if r == nil {
+		return 0
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.counts[p]
+}
+
 // Restored is how many places the reply had a value put back, so far.
 func (r *Restorer) Restored() int {
 	if r == nil {
