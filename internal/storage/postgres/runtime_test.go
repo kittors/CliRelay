@@ -11,8 +11,8 @@ import (
 
 func TestRuntimeMigrationsCoverCoreTables(t *testing.T) {
 	migrations := RuntimeMigrations()
-	if len(migrations) != 44 {
-		t.Fatalf("RuntimeMigrations len = %d, want 44", len(migrations))
+	if len(migrations) != 45 {
+		t.Fatalf("RuntimeMigrations len = %d, want 45", len(migrations))
 	}
 	// Membership table of multi-instance deployments.
 	if migrations[31].Version != "202609250001_cluster_nodes" {
@@ -102,6 +102,26 @@ func TestRuntimeMigrationsCoverCoreTables(t *testing.T) {
 		t.Fatalf("guard kind migration = %q: %q", got.Version, got.SQL)
 	} else if strings.Contains(got.SQL, "INDEX") || strings.Contains(got.SQL, "UPDATE") {
 		t.Fatalf("guard kind migration must only change the catalog: %q", got.SQL)
+	}
+	// Generation-speed sums on rollups: constant-default columns on a table
+	// every request writes to, so catalog-only; old buckets stay at zero, which
+	// reads as "no sample", instead of being rewritten.
+	if got := migrations[44]; got.Version != "202611040001_usage_rollup_generation_speed" {
+		t.Fatalf("generation speed migration = %q", got.Version)
+	} else {
+		for _, fragment := range []string{
+			"ADD COLUMN IF NOT EXISTS generation_count BIGINT NOT NULL DEFAULT 0",
+			"ADD COLUMN IF NOT EXISTS generation_output_tokens BIGINT NOT NULL DEFAULT 0",
+			"ADD COLUMN IF NOT EXISTS generation_sum_ms BIGINT NOT NULL DEFAULT 0",
+			"ADD COLUMN IF NOT EXISTS generation_speed_sum DOUBLE PRECISION NOT NULL DEFAULT 0",
+		} {
+			if !strings.Contains(got.SQL, fragment) {
+				t.Fatalf("generation speed migration missing %q", fragment)
+			}
+		}
+		if strings.Contains(got.SQL, "INDEX") || strings.Contains(got.SQL, "UPDATE") || strings.Contains(got.SQL, "request_logs") {
+			t.Fatalf("generation speed migration must only add rollup columns: %q", got.SQL)
+		}
 	}
 	// Appended from laterRuntimeMigrations() because migrations.go sits at its
 	// structure-gate size ceiling.

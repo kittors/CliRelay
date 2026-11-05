@@ -62,6 +62,10 @@ CREATE TABLE IF NOT EXISTS usage_rollup_buckets (
   cache_read_tokens       INTEGER NOT NULL DEFAULT 0,
   cache_write_tokens      INTEGER NOT NULL DEFAULT 0,
   cache_known_prompt_tokens INTEGER NOT NULL DEFAULT 0,
+  generation_count        INTEGER NOT NULL DEFAULT 0,
+  generation_output_tokens INTEGER NOT NULL DEFAULT 0,
+  generation_sum_ms       INTEGER NOT NULL DEFAULT 0,
+  generation_speed_sum    REAL NOT NULL DEFAULT 0,
   updated_at              DATETIME NOT NULL,
   PRIMARY KEY (
     tenant_id, bucket_kind, bucket_start,
@@ -113,6 +117,7 @@ func ensureUsageRollupTables(db *sql.DB) error {
 		return fmt.Errorf("usage: create usage_rollup_buckets: %w", err)
 	}
 	migrateUsageRollupCacheColumns(db)
+	migrateUsageRollupGenerationColumns(db)
 	return nil
 }
 
@@ -427,6 +432,9 @@ func projectUsageRollupTx(tx usageWriteTx, ev rollupEvent) error {
 	if ev.FirstTokenMs > 0 {
 		firstTokenCount = 1
 	}
+	// Live writes and the rebuild from request_logs both land here, so the
+	// two agree on which requests are generation-speed samples.
+	generation := requestGenerationTotals(ev.Failed, ev.Streaming, ev.LatencyMs, ev.FirstTokenMs, ev.Tokens.OutputTokens)
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	// Read usageLoc without locking: InitDB holds usageDBMu while backfilling.
 	loc := usageLoc
@@ -445,6 +453,7 @@ func projectUsageRollupTx(tx usageWriteTx, ev rollupEvent) error {
 			effective_input_tokens, total_tokens, cost_total,
 			latency_sum_ms, latency_count, first_token_sum_ms, first_token_count,
 			cache_read_tokens, cache_write_tokens, cache_known_prompt_tokens,
+			generation_count, generation_output_tokens, generation_sum_ms, generation_speed_sum,
 			updated_at
 		) VALUES (
 			?, ?, ?,
@@ -455,6 +464,7 @@ func projectUsageRollupTx(tx usageWriteTx, ev rollupEvent) error {
 			?, ?, ?,
 			?, ?, ?, ?,
 			?, ?, ?,
+			?, ?, ?, ?,
 			?
 		)
 		ON CONFLICT(
@@ -480,6 +490,10 @@ func projectUsageRollupTx(tx usageWriteTx, ev rollupEvent) error {
 			cache_read_tokens = usage_rollup_buckets.cache_read_tokens + excluded.cache_read_tokens,
 			cache_write_tokens = usage_rollup_buckets.cache_write_tokens + excluded.cache_write_tokens,
 			cache_known_prompt_tokens = usage_rollup_buckets.cache_known_prompt_tokens + excluded.cache_known_prompt_tokens,
+			generation_count = usage_rollup_buckets.generation_count + excluded.generation_count,
+			generation_output_tokens = usage_rollup_buckets.generation_output_tokens + excluded.generation_output_tokens,
+			generation_sum_ms = usage_rollup_buckets.generation_sum_ms + excluded.generation_sum_ms,
+			generation_speed_sum = usage_rollup_buckets.generation_speed_sum + excluded.generation_speed_sum,
 			updated_at = excluded.updated_at
 	`
 
@@ -495,6 +509,7 @@ func projectUsageRollupTx(tx usageWriteTx, ev rollupEvent) error {
 			effectiveInput, ev.Tokens.TotalTokens, ev.Cost,
 			ev.LatencyMs, latencyCount, ev.FirstTokenMs, firstTokenCount,
 			ev.Cache.ReadTokens, ev.Cache.WriteTokens, ev.Cache.KnownPromptTokens,
+			generation.Count, generation.OutputTokens, generation.SumMs, generation.SpeedSum,
 			now,
 		); err != nil {
 			return fmt.Errorf("usage: project rollup %s: %w", kind, err)
