@@ -45,21 +45,21 @@ func TestResponsesWebsocketPrewarmPayloads(t *testing.T) {
 	if gjson.GetBytes(payloads[0], "type").String() != "response.created" {
 		t.Fatalf("unexpected created payload type: %s", gjson.GetBytes(payloads[0], "type").String())
 	}
-	if gjson.GetBytes(payloads[1], "type").String() != "response.done" {
-		t.Fatalf("unexpected done payload type: %s", gjson.GetBytes(payloads[1], "type").String())
+	if gjson.GetBytes(payloads[1], "type").String() != "response.completed" {
+		t.Fatalf("unexpected completed payload type: %s", gjson.GetBytes(payloads[1], "type").String())
 	}
 	responseID := gjson.GetBytes(payloads[0], "response.id").String()
 	if responseID == "" {
 		t.Fatalf("created payload missing response id")
 	}
 	if gjson.GetBytes(payloads[1], "response.id").String() != responseID {
-		t.Fatalf("done payload response id mismatch")
+		t.Fatalf("completed payload response id mismatch")
 	}
 	if len(gjson.GetBytes(payloads[1], "response.output").Array()) != 0 {
-		t.Fatalf("done payload output must be empty")
+		t.Fatalf("completed payload output must be empty")
 	}
 	if gjson.GetBytes(payloads[1], "response.usage.total_tokens").Int() != 0 {
-		t.Fatalf("done payload total_tokens must be 0")
+		t.Fatalf("completed payload total_tokens must be 0")
 	}
 }
 

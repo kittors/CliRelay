@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -22,15 +24,16 @@ import (
 )
 
 const (
-	wsRequestTypeCreate  = "response.create"
-	wsRequestTypeAppend  = "response.append"
-	wsEventTypeError     = "error"
-	wsEventTypeCompleted = "response.completed"
-	wsEventTypeDone      = "response.done"
-	wsDoneMarker         = "[DONE]"
-	wsTurnStateHeader    = "x-codex-turn-state"
-	wsRequestBodyKey     = "REQUEST_BODY_OVERRIDE"
-	wsPayloadLogMaxSize  = 2048
+	wsRequestTypeCreate   = "response.create"
+	wsRequestTypeAppend   = "response.append"
+	wsEventTypeError      = "error"
+	wsEventTypeCompleted  = "response.completed"
+	wsEventTypeIncomplete = "response.incomplete"
+	wsEventTypeDone       = "response.done"
+	wsDoneMarker          = "[DONE]"
+	wsTurnStateHeader     = "x-codex-turn-state"
+	wsRequestBodyKey      = "REQUEST_BODY_OVERRIDE"
+	wsPayloadLogMaxSize   = 2048
 )
 
 var responsesWebsocketUpgrader = websocket.Upgrader{
@@ -43,10 +46,25 @@ var responsesWebsocketUpgrader = websocket.Upgrader{
 // It accepts `response.create` and `response.append` requests and streams
 // response events back as JSON websocket text messages.
 func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
-	conn, err := responsesWebsocketUpgrader.Upgrade(c.Writer, c.Request, websocketUpgradeHeaders(c.Request))
+	settings := h.websocketSettings()
+	if !settings.enabled {
+		// Codex takes 426 as "use HTTP" and switches without retrying
+		// (codex-rs core/src/client.rs, try_switch_fallback_transport).
+		status, body := handlers.FormatErrorBody(handlers.ErrorFormatOpenAI, http.StatusUpgradeRequired, "the Responses WebSocket is turned off on this server; use HTTP")
+		c.Data(status, "application/json", body)
+		return
+	}
+	upgrader := responsesWebsocketUpgrader
+	// Codex offers permessage-deflate on every connection; gorilla accepts it
+	// without context takeover.
+	upgrader.EnableCompression = settings.compression
+	conn, err := upgrader.Upgrade(c.Writer, c.Request, websocketUpgradeHeaders(c.Request))
 	if err != nil {
 		return
 	}
+	// gorilla reads a message whole and sets no limit of its own. The HTTP entries
+	// stop a body at the model request limit, and so does this one.
+	conn.SetReadLimit(settings.maxMessage)
 	passthroughSessionID := uuid.NewString()
 	clientRemoteAddr := ""
 	if c != nil && c.Request != nil {
@@ -71,8 +89,18 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 		}
 	}()
 
-	var lastRequest []byte
-	lastResponseOutput := []byte("[]")
+	transcript := newResponsesWebsocketTranscript()
+	// transcriptTooLarge closes the connection once a turn has been answered if
+	// the transcript it keeps has outgrown the limit; the client's next request
+	// opens a new connection with the full input.
+	transcriptTooLarge := func() bool {
+		if transcript.sizeBytes() <= settings.maxTranscript {
+			return false
+		}
+		log.Infof("responses websocket: transcript of %d bytes is over the %d byte limit, closing id=%s", transcript.sizeBytes(), settings.maxTranscript, passthroughSessionID)
+		closeResponsesWebsocket(conn, "transcript limit reached")
+		return true
+	}
 	pinnedAuthID := ""
 	// Published by the quota middleware on the upgrade request when the key has
 	// limits; it stays the same for the life of the connection.
@@ -83,17 +111,29 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 
 	for {
 		trace.Idle()
+		if settings.idleTimeout > 0 {
+			_ = conn.SetReadDeadline(time.Now().Add(settings.idleTimeout))
+		}
 		msgType, payload, errReadMessage := conn.ReadMessage()
 		if errReadMessage != nil {
 			wsTerminateErr = errReadMessage
 			appendWebsocketEvent(&wsBodyLog, "disconnect", []byte(errReadMessage.Error()))
-			if websocket.IsCloseError(errReadMessage, websocket.CloseNormalClosure, websocket.CloseGoingAway, websocket.CloseNoStatusReceived) {
+			switch {
+			case isWebsocketReadTimeout(errReadMessage):
+				// Idle between turns: free the transcript. The client reconnects on
+				// its next request.
+				log.Infof("responses websocket: closing idle connection id=%s idle=%s", passthroughSessionID, settings.idleTimeout)
+				closeResponsesWebsocket(conn, "idle timeout")
+			case errors.Is(errReadMessage, websocket.ErrReadLimit):
+				log.Warnf("responses websocket: message over %d bytes, closing id=%s", settings.maxMessage, passthroughSessionID)
+			case websocket.IsCloseError(errReadMessage, websocket.CloseNormalClosure, websocket.CloseGoingAway, websocket.CloseNoStatusReceived):
 				log.Infof("responses websocket: client disconnected id=%s error=%v", passthroughSessionID, errReadMessage)
-			} else {
+			default:
 				log.Debugf("responses websocket: read message failed id=%s error=%v", passthroughSessionID, errReadMessage)
 			}
 			return
 		}
+		_ = conn.SetReadDeadline(time.Time{})
 		if msgType != websocket.TextMessage && msgType != websocket.BinaryMessage {
 			continue
 		}
@@ -117,12 +157,32 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 		var requestJSON []byte
 		var updatedLastRequest []byte
 		var errMsg *interfaces.ErrorMessage
-		requestJSON, updatedLastRequest, errMsg = normalizeResponsesWebsocketRequestWithMode(
-			payload,
-			lastRequest,
-			lastResponseOutput,
-			allowIncrementalInputWithPreviousResponseID,
-		)
+		switch transcript.classify(payload, allowIncrementalInputWithPreviousResponseID) {
+		case wsTurnNewRoot:
+			requestJSON, updatedLastRequest, errMsg = normalizeResponseCreateRequest(payload)
+		case wsTurnStaleRoot:
+			log.Infof("responses websocket: new context window, previous_response_id dropped id=%s", passthroughSessionID)
+			requestJSON, updatedLastRequest, errMsg = normalizeResponseCreateRequest(dropPreviousResponseID(payload))
+		case wsTurnUnknownPrevious:
+			// The increment names a response other than the one this connection
+			// answered last, so it cannot be expanded. Codex sends it again in full.
+			markAPIResponseTimestamp(c)
+			notFound, errWrite := writeResponsesWebsocketPreviousResponseNotFound(conn, payload)
+			appendWebsocketEvent(&wsBodyLog, "response", notFound)
+			log.Infof("responses websocket: increment names an unknown response id=%s", passthroughSessionID)
+			if errWrite != nil {
+				wsTerminateErr = errWrite
+				return
+			}
+			continue
+		default:
+			requestJSON, updatedLastRequest, errMsg = normalizeResponsesWebsocketRequestWithMode(
+				payload,
+				transcript.lastRequest,
+				transcript.lastResponseOutput,
+				allowIncrementalInputWithPreviousResponseID,
+			)
+		}
 		if errMsg != nil {
 			h.LoggingAPIResponseError(context.WithValue(c.Request.Context(), util.ContextKeyGin, c), errMsg)
 			markAPIResponseTimestamp(c)
@@ -146,7 +206,8 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 			}
 			continue
 		}
-		lastRequest = updatedLastRequest
+		transcript.lastRequest = updatedLastRequest
+		transcript.observeWindow(payload)
 		requestJSON, _, _ = rewriteCcSwitchOpenAIRequestModel(requestJSON, c)
 
 		if prewarmPayloads, ok := responsesWebsocketPrewarmPayloads(requestJSON); ok {
@@ -164,7 +225,11 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 					return
 				}
 			}
-			lastResponseOutput = []byte("[]")
+			transcript.lastResponseOutput = []byte("[]")
+			transcript.lastResponseID = gjson.GetBytes(prewarmPayloads[len(prewarmPayloads)-1], "response.id").String()
+			if transcriptTooLarge() {
+				return
+			}
 			continue
 		}
 
@@ -218,7 +283,7 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 				continue
 			}
 		}
-		completedOutput, errForward := func() ([]byte, error) {
+		completedOutput, responseID, errForward := func() ([]byte, string, error) {
 			// Deferred so the slot comes back however the turn ends: completed,
 			// failed upstream, client gone, or a panic.
 			defer releaseQuota()
@@ -241,7 +306,11 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 			log.Warnf("responses websocket: forward failed id=%s error=%v", passthroughSessionID, errForward)
 			return
 		}
-		lastResponseOutput = completedOutput
+		transcript.lastResponseOutput = completedOutput
+		transcript.lastResponseID = responseID
+		if transcriptTooLarge() {
+			return
+		}
 	}
 }
 
@@ -407,17 +476,6 @@ func normalizeResponseSubsequentRequest(rawJSON []byte, lastRequest []byte, last
 	return normalized, bytes.Clone(normalized), nil
 }
 
-func responsesWebsocketPrewarmPayloads(requestJSON []byte) ([][]byte, bool) {
-	if !gjson.GetBytes(requestJSON, "generate").Exists() || gjson.GetBytes(requestJSON, "generate").Bool() {
-		return nil, false
-	}
-
-	syntheticID := "resp_prewarm_" + uuid.NewString()
-	created := []byte(fmt.Sprintf(`{"type":"response.created","response":{"id":%q}}`, syntheticID))
-	done := []byte(fmt.Sprintf(`{"type":"response.done","response":{"id":%q,"output":[],"usage":{"input_tokens":0,"output_tokens":0,"total_tokens":0}}}`, syntheticID))
-	return [][]byte{created, done}, true
-}
-
 func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 	c *gin.Context,
 	conn *websocket.Conn,
@@ -426,15 +484,17 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 	errs <-chan *interfaces.ErrorMessage,
 	wsBodyLog *strings.Builder,
 	sessionID string,
-) ([]byte, error) {
+) ([]byte, string, error) {
 	completed := false
 	completedOutput := []byte("[]")
+	responseID := ""
+	var collected websocketOutputCollector
 
 	for {
 		select {
 		case <-c.Request.Context().Done():
 			cancel(c.Request.Context().Err())
-			return completedOutput, c.Request.Context().Err()
+			return completedOutput, responseID, c.Request.Context().Err()
 		case errMsg, ok := <-errs:
 			if !ok {
 				errs = nil
@@ -460,7 +520,7 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 					// 	errWrite,
 					// )
 					cancel(errMsg.Error)
-					return completedOutput, errWrite
+					return completedOutput, responseID, errWrite
 				}
 			}
 			if errMsg != nil {
@@ -468,7 +528,7 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 			} else {
 				cancel(nil)
 			}
-			return completedOutput, nil
+			return completedOutput, responseID, nil
 		case chunk, ok := <-data:
 			if !ok {
 				if !completed {
@@ -507,24 +567,26 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 							errWrite,
 						)
 						cancel(errMsg.Error)
-						return completedOutput, errWrite
+						return completedOutput, responseID, errWrite
 					}
 					cancel(errMsg.Error)
-					return completedOutput, nil
+					return completedOutput, responseID, nil
 				}
 				cancel(nil)
-				return completedOutput, nil
+				return completedOutput, responseID, nil
 			}
 
 			payloads := websocketJSONPayloadsFromChunk(chunk)
 			for i := range payloads {
 				eventType := gjson.GetBytes(payloads[i], "type").String()
-				if eventType == wsEventTypeCompleted {
-					// log.Infof("replace %s with %s", wsEventTypeCompleted, wsEventTypeDone)
-					payloads[i], _ = sjson.SetBytes(payloads[i], "type", wsEventTypeDone)
-
+				collected.observe(payloads[i])
+				// The terminal event goes to the client under its own name: Codex 0.110
+				// and later end a turn only on response.completed or response.incomplete
+				// and wait out the idle timeout on anything else.
+				if websocketResponseFinished(eventType) {
 					completed = true
-					completedOutput = responseCompletedOutputFromPayload(payloads[i])
+					completedOutput = collected.output(payloads[i])
+					responseID = strings.TrimSpace(gjson.GetBytes(payloads[i], "response.id").String())
 				}
 				markAPIResponseTimestamp(c)
 				appendWebsocketEvent(wsBodyLog, "response", payloads[i])
@@ -543,7 +605,7 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 						errWrite,
 					)
 					cancel(errWrite)
-					return completedOutput, errWrite
+					return completedOutput, responseID, errWrite
 				}
 			}
 		}

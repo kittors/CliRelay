@@ -39,7 +39,7 @@ func TestResponsesWebsocketStartsTheRouteTraceOverForEachRequest(t *testing.T) {
 
 	for turn := 1; turn <= 2; turn++ {
 		wsTurnSend(t, conn, wsTurnCreate)
-		if reply := wsTurnRead(t, conn); gjson.GetBytes(reply, "type").String() != "response.done" {
+		if reply := wsTurnRead(t, conn); gjson.GetBytes(reply, "type").String() != "response.completed" {
 			t.Fatalf("turn %d reply = %s", turn, reply)
 		}
 		waitForTraceStage(t, rec, routetrace.StageIdle)

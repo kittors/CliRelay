@@ -12,6 +12,7 @@ type Config = bridgeconfig.Config
 type APIKeyEntry = bridgeconfig.APIKeyEntry
 
 type StreamingConfig = bridgeconfig.StreamingConfig
+type ResponsesWebsocketConfig = bridgeconfig.ResponsesWebsocketConfig
 type RoutingConfig = bridgeconfig.RoutingConfig
 type RoutingChannelGroup = bridgeconfig.RoutingChannelGroup
 type RoutingPathRoute = bridgeconfig.RoutingPathRoute

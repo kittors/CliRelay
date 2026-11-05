@@ -129,6 +129,17 @@ func appendWebsocketEvent(builder *strings.Builder, eventType string, payload []
 	if len(trimmedPayload) == 0 {
 		return
 	}
+	// The log covers the whole connection, so it is bounded (wsSessionLogMaxBytes).
+	if strings.HasSuffix(builder.String(), wsSessionLogTruncatedMarker) {
+		return
+	}
+	if builder.Len()+len(trimmedPayload) > wsSessionLogMaxBytes {
+		if builder.Len() > 0 {
+			builder.WriteString("\n")
+		}
+		builder.WriteString(wsSessionLogTruncatedMarker)
+		return
+	}
 	if builder.Len() > 0 {
 		builder.WriteString("\n")
 	}

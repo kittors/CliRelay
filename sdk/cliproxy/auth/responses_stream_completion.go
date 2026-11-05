@@ -12,9 +12,28 @@ import (
 
 const (
 	responsesStreamCompletedType = "response.completed"
-	responsesStreamFailedType    = "response.failed"
-	responsesStreamErrorType     = "error"
+	// responsesStreamIncompleteType ends a reply the upstream cut short
+	// (max_output_tokens, content_filter). It is a result to pass on, as the Codex
+	// executor and the translators treat it (codexResponseFinished), not a broken
+	// stream: counting it as one marked the auth failed and sent the client an
+	// error after the reply it had already received.
+	responsesStreamIncompleteType = "response.incomplete"
+	// responsesStreamDoneType is the name older Responses WebSocket peers give the
+	// completed event.
+	responsesStreamDoneType   = "response.done"
+	responsesStreamFailedType = "response.failed"
+	responsesStreamErrorType  = "error"
 )
+
+// responsesStreamFinished reports whether eventType ends a Responses stream with
+// a reply.
+func responsesStreamFinished(eventType string) bool {
+	switch eventType {
+	case responsesStreamCompletedType, responsesStreamIncompleteType, responsesStreamDoneType:
+		return true
+	}
+	return false
+}
 
 type responsesStreamCompletionTracker struct {
 	buffer      []byte
@@ -93,7 +112,7 @@ func responsesSSEBlockTerminalState(block []byte) (bool, error) {
 }
 
 func responsesSSEEventTerminalState(eventType string, data string) (bool, error) {
-	if eventType == responsesStreamCompletedType {
+	if responsesStreamFinished(eventType) {
 		return true, nil
 	}
 	if eventType == responsesStreamFailedType || eventType == responsesStreamErrorType {
@@ -110,9 +129,10 @@ func responsesSSEEventTerminalState(eventType string, data string) (bool, error)
 		return false, nil
 	}
 	payloadType := strings.TrimSpace(payload.Type)
-	switch payloadType {
-	case responsesStreamCompletedType:
+	if responsesStreamFinished(payloadType) {
 		return true, nil
+	}
+	switch payloadType {
 	case responsesStreamFailedType, responsesStreamErrorType:
 		return false, responsesStreamTerminalError(payloadType, data)
 	default:

@@ -297,8 +297,8 @@ func (h *quotaWSHarness) turn(conn *websocket.Conn, model string) []byte {
 
 func (h *quotaWSHarness) mustComplete(conn *websocket.Conn) {
 	h.t.Helper()
-	if reply := h.turn(conn, quotaWSModel); gjson.GetBytes(reply, "type").String() != "response.done" {
-		h.t.Fatalf("turn reply = %s, want response.done", reply)
+	if reply := h.turn(conn, quotaWSModel); gjson.GetBytes(reply, "type").String() != "response.completed" {
+		h.t.Fatalf("turn reply = %s, want response.completed", reply)
 	}
 }
 
@@ -539,8 +539,8 @@ func TestResponsesWebsocketTurnHoldsConcurrencySlotOnlyWhileRunning(t *testing.T
 	}
 
 	release()
-	if reply := h.read(conn); gjson.GetBytes(reply, "type").String() != "response.done" {
-		t.Fatalf("held turn reply = %s, want response.done", reply)
+	if reply := h.read(conn); gjson.GetBytes(reply, "type").String() != "response.completed" {
+		t.Fatalf("held turn reply = %s, want response.completed", reply)
 	}
 	h.waitSlotFree()
 	if calls := h.exec.calls.Load(); calls != 1 {
@@ -554,8 +554,8 @@ func TestResponsesWebsocketTurnReleasesConcurrencySlotOnEveryExit(t *testing.T) 
 		conn := h.mustDial()
 		release := h.startHeldTurn(conn)
 		release()
-		if reply := h.read(conn); gjson.GetBytes(reply, "type").String() != "response.done" {
-			t.Fatalf("reply = %s, want response.done", reply)
+		if reply := h.read(conn); gjson.GetBytes(reply, "type").String() != "response.completed" {
+			t.Fatalf("reply = %s, want response.completed", reply)
 		}
 		h.waitSlotFree()
 	})
@@ -598,8 +598,8 @@ func TestResponsesWebsocketTurnReleasesConcurrencySlotOnEveryExit(t *testing.T) 
 		conn := h.mustDial()
 		release := h.startHeldTurn(conn)
 		release()
-		if reply := h.read(conn); gjson.GetBytes(reply, "type").String() != "response.done" {
-			t.Fatalf("reply = %s, want response.done", reply)
+		if reply := h.read(conn); gjson.GetBytes(reply, "type").String() != "response.completed" {
+			t.Fatalf("reply = %s, want response.completed", reply)
 		}
 		reply := h.turn(conn, quotaWSOtherModel)
 		if gjson.GetBytes(reply, "status").Int() != http.StatusForbidden {
@@ -618,8 +618,8 @@ func TestResponsesWebsocketTurnReleasesConcurrencySlotOnEveryExit(t *testing.T) 
 		conn := h.mustDial()
 		release := h.startHeldTurn(conn) // turn 1 and the probe: 2 requests
 		release()
-		if reply := h.read(conn); gjson.GetBytes(reply, "type").String() != "response.done" {
-			t.Fatalf("reply = %s, want response.done", reply)
+		if reply := h.read(conn); gjson.GetBytes(reply, "type").String() != "response.completed" {
+			t.Fatalf("reply = %s, want response.completed", reply)
 		}
 		reply := h.turn(conn, quotaWSModel) // request 3
 		if gjson.GetBytes(reply, "error.code").String() != "rpm_limit_exceeded" {

@@ -411,6 +411,18 @@ streaming:
 # send plain JSON, e.g. to read the bytes on the wire through an inspecting proxy.
 # codex-request-zstd: false
 
+# Client-facing Responses WebSocket (GET /v1/responses, /backend-api/codex/responses).
+# Over it Codex sends only what a turn adds (previous_response_id plus the new
+# input items); over HTTP it re-sends the whole conversation every turn,
+# screenshots included. Codex uses it when its provider sets
+# supports_websockets = true.
+# responses-websocket:
+#   disabled: false           # true answers the upgrade with 426, and Codex falls back to HTTP at once
+#   compression: true         # permessage-deflate for clients that offer it
+#   max-message-mb: 128       # limit of one client message
+#   max-transcript-mb: 64     # transcript kept between turns; past it the connection closes after the turn
+#   idle-timeout-seconds: 600 # close a connection that waits this long for its next turn; negative disables
+
 # Codex API keys
 # codex-api-key:
 #   - api-key: "sk-atSM..."
