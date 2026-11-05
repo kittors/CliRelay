@@ -505,6 +505,10 @@ func mergeLegacySubjectUsageDailyTx(tx *sql.Tx, legacyID, subjectID string) erro
 	return nil
 }
 
+// mergeLegacyUsageRollupBucketsTx moves a legacy subject's buckets onto the
+// merged subject and deletes them. Every additive column has to be listed here:
+// one left out is dropped with the legacy rows. The cache and generation-speed
+// columns were missed this way when they were added.
 func mergeLegacyUsageRollupBucketsTx(tx *sql.Tx, legacyID, subjectID string) error {
 	if _, err := tx.Exec(`
 		INSERT INTO usage_rollup_buckets (
@@ -512,13 +516,19 @@ func mergeLegacyUsageRollupBucketsTx(tx *sql.Tx, legacyID, subjectID string) err
 			model, source, channel_name, request_count, success_count, failure_count,
 			streaming_count, input_tokens, output_tokens, reasoning_tokens, cached_tokens,
 			effective_input_tokens, total_tokens, cost_total, latency_sum_ms, latency_count,
-			first_token_sum_ms, first_token_count, updated_at
+			first_token_sum_ms, first_token_count,
+			cache_read_tokens, cache_write_tokens, cache_known_prompt_tokens,
+			generation_count, generation_output_tokens, generation_sum_ms, generation_speed_sum,
+			updated_at
 		)
 		SELECT tenant_id, bucket_kind, bucket_start, api_key_id, end_user_id, ?,
 			model, source, channel_name, request_count, success_count, failure_count,
 			streaming_count, input_tokens, output_tokens, reasoning_tokens, cached_tokens,
 			effective_input_tokens, total_tokens, cost_total, latency_sum_ms, latency_count,
-			first_token_sum_ms, first_token_count, updated_at
+			first_token_sum_ms, first_token_count,
+			cache_read_tokens, cache_write_tokens, cache_known_prompt_tokens,
+			generation_count, generation_output_tokens, generation_sum_ms, generation_speed_sum,
+			updated_at
 		FROM usage_rollup_buckets WHERE auth_subject_id = ?
 		ON CONFLICT(tenant_id, bucket_kind, bucket_start, api_key_id, end_user_id, auth_subject_id, model, source, channel_name) DO UPDATE SET
 			request_count = usage_rollup_buckets.request_count + excluded.request_count,
@@ -536,6 +546,13 @@ func mergeLegacyUsageRollupBucketsTx(tx *sql.Tx, legacyID, subjectID string) err
 			latency_count = usage_rollup_buckets.latency_count + excluded.latency_count,
 			first_token_sum_ms = usage_rollup_buckets.first_token_sum_ms + excluded.first_token_sum_ms,
 			first_token_count = usage_rollup_buckets.first_token_count + excluded.first_token_count,
+			cache_read_tokens = usage_rollup_buckets.cache_read_tokens + excluded.cache_read_tokens,
+			cache_write_tokens = usage_rollup_buckets.cache_write_tokens + excluded.cache_write_tokens,
+			cache_known_prompt_tokens = usage_rollup_buckets.cache_known_prompt_tokens + excluded.cache_known_prompt_tokens,
+			generation_count = usage_rollup_buckets.generation_count + excluded.generation_count,
+			generation_output_tokens = usage_rollup_buckets.generation_output_tokens + excluded.generation_output_tokens,
+			generation_sum_ms = usage_rollup_buckets.generation_sum_ms + excluded.generation_sum_ms,
+			generation_speed_sum = usage_rollup_buckets.generation_speed_sum + excluded.generation_speed_sum,
 			updated_at = CASE WHEN excluded.updated_at > usage_rollup_buckets.updated_at
 				THEN excluded.updated_at ELSE usage_rollup_buckets.updated_at END
 	`, subjectID, legacyID); err != nil {

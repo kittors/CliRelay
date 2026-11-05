@@ -23,6 +23,7 @@ type monitorAgg struct {
 	FirstTokenSum   int64
 	FirstTokenCount int64
 	Cache           cacheTotals
+	Generation      generationTotals
 }
 
 // monitorAggColumns must stay in the order of monitorAgg.scanTargets.
@@ -40,15 +41,16 @@ const monitorAggColumns = `
 	COALESCE(SUM(latency_sum_ms), 0),
 	COALESCE(SUM(latency_count), 0),
 	COALESCE(SUM(first_token_sum_ms), 0),
-	COALESCE(SUM(first_token_count), 0),` + rollupCacheSumsSQL
+	COALESCE(SUM(first_token_count), 0),` + rollupCacheSumsSQL + `,` + rollupGenerationSumsSQL
 
 func (a *monitorAgg) scanTargets() []any {
-	return append([]any{
+	targets := append([]any{
 		&a.Requests, &a.Success, &a.Failed, &a.Streaming,
 		&a.InputTokens, &a.OutputTokens, &a.ReasoningTokens, &a.CachedTokens,
 		&a.TotalTokens, &a.Cost,
 		&a.LatencySum, &a.LatencyCount, &a.FirstTokenSum, &a.FirstTokenCount,
 	}, a.Cache.scanTargets()...)
+	return append(targets, a.Generation.scanTargets()...)
 }
 
 func (a *monitorAgg) add(o monitorAgg) {
@@ -67,6 +69,7 @@ func (a *monitorAgg) add(o monitorAgg) {
 	a.FirstTokenSum += o.FirstTokenSum
 	a.FirstTokenCount += o.FirstTokenCount
 	a.Cache.add(o.Cache)
+	a.Generation.add(o.Generation)
 }
 
 func (a monitorAgg) totals() MonitorTotals {
@@ -82,8 +85,10 @@ func (a monitorAgg) totals() MonitorTotals {
 		TotalTokens:     a.TotalTokens,
 		Cost:            a.Cost,
 		CacheUsage:      a.Cache.usage(),
+		GenerationUsage: a.Generation.usage(),
 	}
 	t.CacheRate = t.legacyCacheRate()
+	t.OutputTokensPerSecond = t.legacyOutputTokensPerSecond()
 	if a.Requests > 0 {
 		t.SuccessRate = float64(a.Success) / float64(a.Requests) * 100
 	}
@@ -92,9 +97,6 @@ func (a monitorAgg) totals() MonitorTotals {
 	}
 	if a.FirstTokenCount > 0 {
 		t.FirstTokenAvgMs = float64(a.FirstTokenSum) / float64(a.FirstTokenCount)
-	}
-	if a.LatencySum > 0 {
-		t.OutputTokensPerSecond = float64(a.OutputTokens+a.ReasoningTokens) / (float64(a.LatencySum) / 1000)
 	}
 	return t
 }

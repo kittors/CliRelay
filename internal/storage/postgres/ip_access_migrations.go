@@ -51,6 +51,10 @@ func laterRuntimeMigrations() []Migration {
 		// Which loop protection check ended a request, so the log can show and
 		// filter it and the monitor can count it.
 		{Version: "202611010001_request_log_guard_kind", SQL: requestLogGuardKindSQL},
+		// Generation-speed samples on usage_rollup_buckets: output tokens over
+		// the time after the first token. See
+		// usage_rollup_generation_migrations.go.
+		{Version: "202611040001_usage_rollup_generation_speed", SQL: usageRollupGenerationSpeedSQL},
 	}
 }
 
