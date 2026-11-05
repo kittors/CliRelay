@@ -30,12 +30,6 @@ import (
 
 type privacyMaskSettingsView struct {
 	Policy contentmoderation.MaskPolicy `json:"policy"`
-	// Enforced and PortalDefaultAllowed are always empty: portal users kept
-	// settings of their own only from 2026-11-05 until the same day. The panel
-	// of before codeProxy#1092 still reads both, so they stay until it is
-	// replaced everywhere; a PUT that still carries them has them ignored.
-	Enforced             []string `json:"enforced"`
-	PortalDefaultAllowed bool     `json:"portal_default_allowed"`
 	// Persistent is false when no settings store is attached.
 	Persistent bool `json:"persistent"`
 	// KeyProtected says the placeholder key is (or, once made, will be) stored
@@ -50,7 +44,6 @@ type privacyMaskSettingsView struct {
 func (h *Handler) privacyMaskSettingsView(settings contentmoderation.SecretMaskingSettings) privacyMaskSettingsView {
 	view := privacyMaskSettingsView{
 		Policy:         settings.PolicyView(),
-		Enforced:       []string{},
 		Persistent:     h.secretMaskingRegistry().Persistent(),
 		KeyProtected:   contentmoderation.DataKeyConfigured() && settings.Key == "",
 		ServerDisabled: contentmoderation.PrivacyMaskingDisabledByServer(),
