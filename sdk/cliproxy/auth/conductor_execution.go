@@ -129,6 +129,39 @@ func allowedChannelsFromMetadata(meta map[string]any) map[string]struct{} {
 	return out
 }
 
+// allowedAuthIDsFromMetadata returns nil when the request carries no strict
+// auth allowlist, and a non-nil (possibly empty) set when it does. Any value
+// that is present but cannot be read as a list of IDs yields an empty set, so
+// a malformed allowlist denies every candidate instead of being ignored.
+func allowedAuthIDsFromMetadata(meta map[string]any) map[string]struct{} {
+	if len(meta) == 0 {
+		return nil
+	}
+	raw, ok := meta[cliproxyexecutor.AllowedAuthIDsMetadataKey]
+	if !ok {
+		return nil
+	}
+	var values []string
+	switch typed := raw.(type) {
+	case []string:
+		values = typed
+	case []any:
+		values = make([]string, 0, len(typed))
+		for _, item := range typed {
+			if id, isString := item.(string); isString {
+				values = append(values, id)
+			}
+		}
+	}
+	out := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		if id := strings.TrimSpace(value); id != "" {
+			out[id] = struct{}{}
+		}
+	}
+	return out
+}
+
 func pinnedAuthIDFromMetadata(meta map[string]any) string {
 	if len(meta) == 0 {
 		return ""

@@ -76,6 +76,11 @@ func (s selectorService) diagnoseEmptyCandidates(
 		if !authUsableByTenant(candidate, scope.tenantID, scope.grants) {
 			continue
 		}
+		// A credential outside the caller's strict auth allowlist was never
+		// eligible, so it must not drive a channel or group diagnosis.
+		if !scope.authIDAllowed(candidate.ID) {
+			continue
+		}
 		if includeCandidate != nil && !includeCandidate(candidate) {
 			continue
 		}

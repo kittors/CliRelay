@@ -14,7 +14,10 @@ import (
 const idempotencyKeyMetadataKey = "idempotency_key"
 
 type MetadataAccessors struct {
-	PinnedAuthID           func(context.Context) string
+	PinnedAuthID func(context.Context) string
+	// AllowedAuthIDs returns the strict auth allowlist and whether one is set.
+	// ok=true with an empty list leaves no credential eligible.
+	AllowedAuthIDs         func(context.Context) ([]string, bool)
 	SelectedAuthIDCallback func(context.Context) func(string)
 	ExecutionSessionID     func(context.Context) string
 }
@@ -96,6 +99,11 @@ func BuildExecutionMetadata(ctx context.Context, accessors MetadataAccessors) ma
 	if accessors.PinnedAuthID != nil {
 		if pinnedAuthID := accessors.PinnedAuthID(ctx); pinnedAuthID != "" {
 			meta[coreexecutor.PinnedAuthMetadataKey] = pinnedAuthID
+		}
+	}
+	if accessors.AllowedAuthIDs != nil {
+		if allowedAuthIDs, ok := accessors.AllowedAuthIDs(ctx); ok {
+			meta[coreexecutor.AllowedAuthIDsMetadataKey] = append([]string{}, allowedAuthIDs...)
 		}
 	}
 	if accessors.SelectedAuthIDCallback != nil {

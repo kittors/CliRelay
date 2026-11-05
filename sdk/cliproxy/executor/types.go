@@ -15,6 +15,13 @@ const (
 	TenantMetadataKey = "tenant_id"
 	// PinnedAuthMetadataKey locks execution to a specific auth ID.
 	PinnedAuthMetadataKey = "pinned_auth_id"
+	// AllowedAuthIDsMetadataKey ([]string) restricts selection to an exact set
+	// of auth IDs. Unlike allowed-channels, which treats an empty list as "no
+	// restriction", this key fails closed: when it is present only the listed
+	// auth IDs are eligible, and a present but empty (or unparseable) value
+	// leaves nothing eligible. It narrows every other scope (tenant, channels,
+	// channel groups, route group, pinned auth) and never widens one.
+	AllowedAuthIDsMetadataKey = "allowed_auth_ids"
 	// SinglePickMetadataKey forces the auth manager to use exactly one picked auth
 	// for the request and return its error directly without internal retry/fallback.
 	SinglePickMetadataKey = "single_pick"

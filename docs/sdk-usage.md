@@ -115,6 +115,34 @@ for ch := range chunks { /* ... */ }
 
 Note: Built‑in provider executors are wired automatically when you run the `Service`. If you want to use `Manager` stand‑alone without the HTTP server, you must register your own executors that implement `auth.ProviderExecutor`.
 
+### Restricting selection to specific credentials
+
+A request can be limited to an exact set of auth IDs with a strict allowlist. Set `executor.AllowedAuthIDsMetadataKey` (a `[]string`) in `Options.Metadata` when calling the manager directly:
+
+```go
+opts := cliproxyexecutor.Options{Metadata: map[string]any{
+    cliproxyexecutor.AllowedAuthIDsMetadataKey: []string{"team-a.json", "team-b.json"},
+}}
+resp, err := core.Execute(ctx, []string{"my-provider"}, req, opts)
+```
+
+Behind the HTTP server, attach it from trusted middleware with `handlers.WithAllowedAuthIDs`:
+
+```go
+cliproxy.WithMiddleware(func(c *gin.Context) {
+    ids := lookupCredentialsFor(c) // your own trusted policy, never raw client input
+    c.Request = c.Request.WithContext(handlers.WithAllowedAuthIDs(c.Request.Context(), ids))
+    c.Next()
+})
+```
+
+Unlike `allowed-channels`, where an empty list means "no restriction", the allowlist fails closed:
+
+- When it is absent, selection is unchanged.
+- When it is present, only the listed auth IDs are eligible, including on retries.
+- A present but empty or unreadable value leaves no credential eligible, and the request fails with `auth_not_found` without calling any executor.
+- It only narrows the other scopes (tenant, channels, channel groups, route group, pinned auth). It never widens them. A pinned auth outside the list is not selected.
+
 ## Custom Client Sources
 
 Replace the default loaders if your creds live outside the local filesystem:
