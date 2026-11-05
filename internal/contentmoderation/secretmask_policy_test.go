@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/http"
 	"strings"
 	"testing"
 
@@ -45,84 +44,51 @@ func TestMaskPolicyNormalizeTidiesAndRefuses(t *testing.T) {
 	if err := many.Normalize(); !errors.Is(err, ErrInvalidMaskPolicy) {
 		t.Fatalf("too many words: %v", err)
 	}
-	if _, err := NormalizeEnforced([]string{"personal", "secrets", "secrets"}); err != nil {
-		t.Fatal(err)
+}
+
+// What masking runs is the tenant's policy as it is: a row written before
+// policies is "mask secrets" while switched on, and nothing switched on masks
+// nothing.
+func TestTheTenantsPolicyIsWhatMaskingRuns(t *testing.T) {
+	p := normalized(t, MaskPolicy{Personal: true, Words: []string{"Nightjar"}, Allow: []string{"ops@company.com"},
+		Actions: map[string]string{"EMAIL": "warn", "TERM": "block"}})
+	o := SecretMaskingSettings{Policy: &p}.policy().options()
+	if o.Secrets || !o.Personal || strings.Join(o.Words, ",") != "Nightjar" || strings.Join(o.Allow, ",") != "ops@company.com" ||
+		o.Actions["EMAIL"] != privacymask.Warn || o.Actions["TERM"] != privacymask.Block {
+		t.Fatalf("options = %+v", o)
 	}
-	if got, _ := NormalizeEnforced([]string{"personal", "secrets"}); strings.Join(got, ",") != "secrets,personal" {
-		t.Fatalf("enforced = %v", got)
+	if got := (SecretMaskingSettings{Enabled: true}).policy().options(); !got.Secrets || got.Personal {
+		t.Fatalf("legacy = %+v", got)
 	}
-	if _, err := NormalizeEnforced([]string{"words"}); !errors.Is(err, ErrInvalidMaskPolicy) {
-		t.Fatalf("enforcing words: %v", err)
+	if got := (SecretMaskingSettings{}).policy().options(); got.Any() {
+		t.Fatalf("nothing switched on masks %+v", got)
 	}
 }
 
-// What the tenant enforces holds for a portal user's own policy; the rest is
-// the user's.
-func TestEffectiveMaskOptionsKeepsWhatTheTenantEnforces(t *testing.T) {
-	tenantPolicy := normalized(t, MaskPolicy{Secrets: true, Words: []string{"Nightjar"}, Allow: []string{"demo-token-1"},
-		Actions: map[string]string{"TERM": "block"}})
-	tenant := SecretMaskingSettings{Policy: &tenantPolicy, Enforced: []string{EnforceSecrets}}
-	user := normalized(t, MaskPolicy{Personal: true, Words: []string{"Kestrel"}, Allow: []string{testOpenAIKey, "Nightjar"},
-		Actions: map[string]string{"API_KEY": "warn", "EMAIL": "warn"}})
-
-	o := effectiveMaskOptions(tenant, &user, true)
-	if !o.Secrets || !o.Personal {
-		t.Fatalf("secrets enforced, personal the user's: %+v", o)
+// A row saved while portal users kept settings of their own (2026-11-05)
+// still reads, and loses the two fields of then once saved again.
+func TestASettingsRowWithThePortalFieldsStillReads(t *testing.T) {
+	var s SecretMaskingSettings
+	raw := `{"enabled":true,"policy":{"secrets":true,"personal":false},"enforced":["secrets"],"portal_default_allowed":false}`
+	if err := json.Unmarshal([]byte(raw), &s); err != nil {
+		t.Fatal(err)
 	}
-	if strings.Join(o.Words, ",") != "Nightjar,Kestrel" {
-		t.Fatalf("words = %v", o.Words)
+	if !s.policy().Secrets || s.policy().Personal {
+		t.Fatalf("policy = %+v", s.policy())
 	}
-	if o.Actions["API_KEY"] != privacymask.Mask || o.Actions["EMAIL"] != privacymask.Warn || o.Actions["TERM"] != privacymask.Block {
-		t.Fatalf("actions = %v", o.Actions)
+	out, err := json.Marshal(s)
+	if err != nil {
+		t.Fatal(err)
 	}
-	// the user's "never mask" cannot let an enforced category's value, or a
-	// tenant's word, go as written
-	masker := privacymask.NewMasker(make([]byte, 32), o, nil, "")
-	text := "use " + testOpenAIKey + " for Nightjar, mail me at ada.byron@gmail.com"
-	edits := masker.Plan([]string{text}, nil)[0]
-	out := privacymask.Apply(text, edits)
-	if strings.Contains(out, testOpenAIKey) || strings.Contains(out, "Nightjar") || !strings.Contains(out, "ada.byron@gmail.com") {
-		t.Fatalf("masked = %q", out)
-	}
-	if len(masker.Blocked()) != 1 {
-		t.Fatalf("the tenant's word is set to block: %+v", masker.Values())
-	}
-	warned := false
-	for _, v := range masker.Values() {
-		warned = warned || v.Kind == "EMAIL" && v.Action == privacymask.Warn
-	}
-	if !warned {
-		t.Fatalf("the user's warn for emails did not apply: %+v", masker.Values())
-	}
-
-	// without a policy of their own a user gets the tenant's default
-	if got := effectiveMaskOptions(tenant, nil, true); got.Personal || !got.Secrets || len(got.UserAllow) != 0 {
-		t.Fatalf("tenant default = %+v", got)
-	}
-	// a row from before policies is "mask secrets" while switched on
-	if got := effectiveMaskOptions(SecretMaskingSettings{Enabled: true}, nil, false); !got.Secrets || got.Personal {
-		t.Fatalf("legacy = %+v", got)
-	}
-	if got := effectiveMaskOptions(SecretMaskingSettings{}, nil, false); got.Any() {
-		t.Fatalf("nothing switched on masks %+v", got)
-	}
-	// what the tenant enforces holds for a portal user without a policy of
-	// their own, even where the tenant's default has it off; a request no
-	// portal user sent gets the default as it is
-	quiet := normalized(t, MaskPolicy{Words: []string{"Nightjar"}, Actions: map[string]string{"API_KEY": "warn"}})
-	enforcing := SecretMaskingSettings{Policy: &quiet, Enforced: []string{EnforceSecrets}}
-	if got := effectiveMaskOptions(enforcing, nil, true); !got.Secrets || got.Actions["API_KEY"] != privacymask.Mask || len(got.Words) != 1 {
-		t.Fatalf("portal user without a policy = %+v", got)
-	}
-	if got := effectiveMaskOptions(enforcing, nil, false); got.Secrets {
-		t.Fatalf("a tenant key's request = %+v", got)
+	if bytes.Contains(out, []byte("enforced")) || bytes.Contains(out, []byte("portal_default_allowed")) {
+		t.Fatalf("saved again = %s", out)
 	}
 }
 
 // A tenant's rules apply whatever the secrets switch says.
 func TestMaskRulesApplyWithSecretsOff(t *testing.T) {
 	p := normalized(t, MaskPolicy{Rules: []MaskRule{{Kind: "GATEWAY", Prefix: "gw_live_"}}})
-	masker := privacymask.NewMasker(make([]byte, 32), effectiveMaskOptions(SecretMaskingSettings{Policy: &p}, nil, false), nil, "")
+	masker := privacymask.NewMasker(make([]byte, 32), p.options(), nil, "")
 	text := "token gw_live_abcdefgh12345678 here"
 	out := privacymask.Apply(text, masker.Plan([]string{text}, nil)[0])
 	if strings.Contains(out, "gw_live_abcdefgh12345678") || !strings.Contains(out, "{{GATEWAY_") {
@@ -141,11 +107,11 @@ func TestSecretMaskingSettingsSealTheKeyUnderTheDataKey(t *testing.T) {
 	registry.SetStore(store)
 
 	p := normalized(t, MaskPolicy{Secrets: true, Personal: true})
-	saved, err := registry.SetPolicy(context.Background(), "t", p, []string{EnforceSecrets}, false)
+	saved, err := registry.SetPolicy(context.Background(), "t", p)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if saved.Key != "" || saved.KeyEnc == "" || !saved.KeyProtected() || !saved.Enabled || saved.PortalAllowed() {
+	if saved.Key != "" || saved.KeyEnc == "" || !saved.KeyProtected() || !saved.Enabled {
 		t.Fatalf("saved = %+v", saved)
 	}
 	key, ok := saved.placeholderKey("t")
@@ -165,18 +131,12 @@ func TestSecretMaskingSettingsSealTheKeyUnderTheDataKey(t *testing.T) {
 	}
 }
 
-// A portal user's own policy masks their requests; another user's requests,
-// and theirs once the tenant revokes it, go under the tenant's default.
-func TestGuardRequestUsesThePortalUsersOwnPolicy(t *testing.T) {
-	store := newTestStore(t)
-	MaskUsers().SetStore(store)
-	defer MaskUsers().SetStore(nil)
+// A portal user's requests go under the tenant's policy like any other: what
+// is masked is the tenant's call. The record still names the user and the key.
+func TestGuardRequestMasksAPortalUsersRequestUnderTheTenantsPolicy(t *testing.T) {
 	moderator := maskingModerator(t)
-	if err := moderator.secretMasking.EnsureKey(context.Background(), "tenant-p"); err != nil {
-		t.Fatal(err)
-	}
-	own := normalized(t, MaskPolicy{Personal: true})
-	if err := store.PutMaskUserPolicy(context.Background(), "tenant-p", "u-1", &own); err != nil {
+	p := normalized(t, MaskPolicy{Personal: true})
+	if _, err := moderator.secretMasking.SetPolicy(context.Background(), "tenant-p", p); err != nil {
 		t.Fatal(err)
 	}
 	body := chatRequest("write to ada.lovelace@gmail.com")
@@ -193,37 +153,14 @@ func TestGuardRequestUsesThePortalUsersOwnPolicy(t *testing.T) {
 	}
 	snapshot, masked := send("u-1")
 	if !masked || snapshot == nil || snapshot.Key == "" {
-		t.Fatalf("the user's own policy did not apply: %+v", snapshot)
+		t.Fatalf("the tenant's policy did not apply to a portal user's request: %+v", snapshot)
 	}
 	record := snapshot.Record(MaskClient("codex_cli_rs/0.50"))
 	if record == nil || record.EndUserID != "u-1" || record.APIKeyID != "k-u-1" || record.Client != "codex" || record.Values[0].ID == "" || record.Values[0].Field == "" {
 		t.Fatalf("record = %+v", record)
 	}
-	if _, masked := send("u-2"); masked {
-		t.Fatal("another user's request got the first user's policy")
-	}
-	allowed := false
-	if err := store.SetMaskUserAllowed(context.Background(), "tenant-p", "u-1", &allowed); err != nil {
-		t.Fatal(err)
-	}
-	if _, masked := send("u-1"); masked {
-		t.Fatal("a revoked policy still applied")
-	}
-}
-
-// A request whose portal user's settings were never read and cannot be read
-// now may be one that masks: it is refused.
-func TestGuardRequestRefusesWhileAPortalUsersSettingsAreUnknown(t *testing.T) {
-	store := newTestStore(t)
-	_ = store.db.Close()
-	MaskUsers().SetStore(store)
-	defer MaskUsers().SetStore(nil)
-	moderator := maskingModerator(t)
-	ctx, ginCtx := snapshotContext(t)
-	ginCtx.Set("accessMetadata", map[string]string{"end-user-id": "u-9"})
-	req, opts := guardOptions("tenant-q", chatRequest("hello"))
-	if result := moderator.GuardRequest(ctx, req, opts); !result.Blocked || result.HTTPStatus != http.StatusServiceUnavailable {
-		t.Fatalf("result = %+v", result)
+	if _, masked := send(""); !masked {
+		t.Fatal("a request of a tenant key went unmasked")
 	}
 }
 
@@ -244,8 +181,7 @@ func TestMaskClientNamesTheCodingAgents(t *testing.T) {
 
 func TestPreviewMaskUsesAKeyOfItsOwn(t *testing.T) {
 	p := normalized(t, MaskPolicy{Secrets: true, Actions: map[string]string{"API_KEY": "block"}})
-	tenant := SecretMaskingSettings{Policy: &p}
-	a, b := PreviewMask(tenant, nil, "key "+testOpenAIKey), PreviewMask(tenant, nil, "key "+testOpenAIKey)
+	a, b := PreviewMask(p, "key "+testOpenAIKey), PreviewMask(p, "key "+testOpenAIKey)
 	if strings.Contains(a.Text, testOpenAIKey) || len(a.Values) != 1 || !a.Blocked || a.Values[0].Placeholder == "" {
 		t.Fatalf("preview = %+v", a)
 	}

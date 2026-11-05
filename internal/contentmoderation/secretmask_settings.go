@@ -45,13 +45,10 @@ type SecretMaskingSettings struct {
 	KeyEnc string `json:"key_enc,omitempty"`
 	// Policy is the tenant's default, nil for a row written before policies.
 	Policy *MaskPolicy `json:"policy,omitempty"`
-	// Enforced are the categories on for every portal user (EnforceSecrets,
-	// EnforcePersonal).
-	Enforced []string `json:"enforced,omitempty"`
-	// PortalDefaultAllowed says whether portal users without an override of
-	// their own may keep a policy; nil is yes.
-	PortalDefaultAllowed *bool     `json:"portal_default_allowed,omitempty"`
-	UpdatedAt            time.Time `json:"updated_at,omitzero"`
+	// A row saved on 2026-11-05 may also hold "enforced" and
+	// "portal_default_allowed", from when portal users kept settings of their
+	// own; they are not read, and are left out when the row is saved again.
+	UpdatedAt time.Time `json:"updated_at,omitzero"`
 }
 
 // policy is the tenant's default policy.
@@ -71,12 +68,6 @@ func (s SecretMaskingSettings) PolicyView() MaskPolicy {
 		return s.policy() // a row written by hand: shown as it is
 	}
 	return p
-}
-
-// PortalAllowed says whether portal users without an override may keep a
-// policy of their own.
-func (s SecretMaskingSettings) PortalAllowed() bool {
-	return s.PortalDefaultAllowed == nil || *s.PortalDefaultAllowed
 }
 
 // KeyProtected says the placeholder key is stored sealed.
@@ -420,23 +411,12 @@ func (r *SecretMaskingRegistry) SetEnabled(ctx context.Context, tenantID string,
 	})
 }
 
-// SetPolicy saves tenantID's default policy, the categories it enforces and
-// whether its portal users may keep a policy of their own. policy is
-// normalized already.
-func (r *SecretMaskingRegistry) SetPolicy(ctx context.Context, tenantID string, policy MaskPolicy, enforced []string, portalAllowed bool) (SecretMaskingSettings, error) {
+// SetPolicy saves tenantID's policy. policy is normalized already.
+func (r *SecretMaskingRegistry) SetPolicy(ctx context.Context, tenantID string, policy MaskPolicy) (SecretMaskingSettings, error) {
 	return r.update(ctx, tenantID, true, func(next *SecretMaskingSettings) bool {
 		next.Policy = &policy
-		next.Enforced = enforced
-		next.PortalDefaultAllowed = &portalAllowed
 		return true
 	})
-}
-
-// EnsureKey makes tenantID's placeholder key if it has none: a portal user of
-// the tenant is switching masking on for their own requests.
-func (r *SecretMaskingRegistry) EnsureKey(ctx context.Context, tenantID string) error {
-	_, err := r.update(ctx, tenantID, true, func(*SecretMaskingSettings) bool { return false })
-	return err
 }
 
 // update applies change to tenantID's stored settings and saves them, on top

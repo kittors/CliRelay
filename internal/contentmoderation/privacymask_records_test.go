@@ -28,7 +28,7 @@ func maskedRecord(t *testing.T, tenantID, endUser, text string) *MaskRecord {
 		// stays the same across its requests
 		moderator = maskingModerator(t)
 		p := normalized(t, MaskPolicy{Secrets: true, Personal: true, Actions: map[string]string{"EMAIL": "warn"}})
-		if _, err := moderator.secretMasking.SetPolicy(context.Background(), tenantID, p, nil, true); err != nil {
+		if _, err := moderator.secretMasking.SetPolicy(context.Background(), tenantID, p); err != nil {
 			t.Fatal(err)
 		}
 		recordModerators[tenantID] = moderator
@@ -122,16 +122,10 @@ func TestMaskRecordsAreCountedListedAndScopedPostgres(t *testing.T) {
 	}
 	store := NewStore(db)
 	checkMaskRecordsAreCountedListedAndScoped(t, store)
-	allowed := false
-	if err := store.SetMaskUserAllowed(context.Background(), "tenant-s", "u-1", &allowed); err != nil {
-		t.Fatal(err)
-	}
-	p := normalized(t, MaskPolicy{Personal: true})
-	if err := store.PutMaskUserPolicy(context.Background(), "tenant-s", "u-1", &p); err != nil {
-		t.Fatal(err)
-	}
-	if row, err := store.GetMaskUser(context.Background(), "tenant-s", "u-1"); err != nil || row.Policy == nil || row.Allowed == nil || *row.Allowed {
-		t.Fatalf("row = %+v, %v", row, err)
+	// the table portal users kept their own settings in is dropped
+	var users sql.NullString
+	if err := db.QueryRow(`SELECT to_regclass('privacy_mask_users')::text`).Scan(&users); err != nil || users.Valid {
+		t.Fatalf("privacy_mask_users = %+v, %v", users, err)
 	}
 	if _, err := CleanupMaskRecords(context.Background(), db, 3, true, time.Now()); err != nil {
 		t.Fatal(err)
@@ -211,6 +205,18 @@ func checkMaskRecordsAreCountedListedAndScoped(t *testing.T, store *Store) {
 	}
 	if summary, _ := store.MaskSummary(ctx, tenant, 7, now); summary.Requests != 1 {
 		t.Fatalf("after deleting u-1's: %+v", summary)
+	}
+
+	// deleting a portal user takes their records and day counts with them;
+	// another tenant's user of the same id keeps theirs
+	if err := store.DeleteMaskUserRecords(ctx, "tenant-s", "u-2"); err != nil {
+		t.Fatal(err)
+	}
+	if summary, _ := store.MaskSummary(ctx, tenant, 7, now); summary.Requests != 0 || summary.Places != 0 {
+		t.Fatalf("after deleting u-2: %+v", summary)
+	}
+	if summary, _ := store.MaskSummary(ctx, MaskScope{TenantID: "tenant-t"}, 7, now); summary.Requests != 1 {
+		t.Fatalf("another tenant's records went too: %+v", summary)
 	}
 }
 

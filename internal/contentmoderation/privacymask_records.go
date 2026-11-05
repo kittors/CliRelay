@@ -343,3 +343,21 @@ func joinedSet(set map[string]bool) string {
 	slices.Sort(keys)
 	return "," + strings.Join(keys, ",") + ","
 }
+
+// DeleteMaskUserRecords removes the records of a portal user who has been
+// deleted.
+func (s *Store) DeleteMaskUserRecords(ctx context.Context, tenantID, endUserID string) error {
+	if s == nil || s.db == nil {
+		return ErrUnavailable
+	}
+	tenantID, endUserID = strings.TrimSpace(tenantID), strings.TrimSpace(endUserID)
+	if endUserID == "" {
+		return nil
+	}
+	for _, table := range []string{"privacy_mask_records", "privacy_mask_value_days", "privacy_mask_days"} {
+		if _, err := s.db.ExecContext(ctx, `DELETE FROM `+table+` WHERE tenant_id=$1 AND end_user_id=$2`, tenantID, endUserID); err != nil {
+			return err
+		}
+	}
+	return nil
+}

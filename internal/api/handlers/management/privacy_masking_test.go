@@ -59,14 +59,16 @@ func TestPrivacyMaskingSettingsRoundTripAndTheOldSwitch(t *testing.T) {
 	h := privacyMaskHandler(t)
 	rec, body := wordTenantAUser.call(h.GetPrivacyMaskingSettings, http.MethodGet, "", "")
 	wordExpectStatus(t, rec, http.StatusOK)
-	if policy, _ := body["policy"].(map[string]any); policy["secrets"] != false || body["portal_default_allowed"] != true || body["persistent"] != true {
+	if policy, _ := body["policy"].(map[string]any); policy["secrets"] != false || body["portal_default_allowed"] != false || len(body["enforced"].([]any)) != 0 || body["persistent"] != true {
 		t.Fatalf("a tenant that set nothing: %v", body)
 	}
+	// the panel of before codeProxy#1092 still sends what portal users had then:
+	// it is ignored, and the two fields read back empty
 	rec, body = wordTenantAUser.call(h.PutPrivacyMaskingSettings, http.MethodPut,
-		`{"policy":{"secrets":true,"personal":true,"words":["Nightjar"," Nightjar "],"actions":{"EMAIL":"warn"}},"enforced":["personal"],"portal_default_allowed":false}`, "")
+		`{"policy":{"secrets":true,"personal":true,"words":["Nightjar"," Nightjar "],"actions":{"EMAIL":"warn"}},"enforced":["personal"],"portal_default_allowed":true}`, "")
 	wordExpectStatus(t, rec, http.StatusOK)
 	policy, _ := body["policy"].(map[string]any)
-	if words, _ := policy["words"].([]any); len(words) != 1 || body["portal_default_allowed"] != false || body["enforced"].([]any)[0] != "personal" {
+	if words, _ := policy["words"].([]any); len(words) != 1 || body["portal_default_allowed"] != false || len(body["enforced"].([]any)) != 0 {
 		t.Fatalf("saved = %v", body)
 	}
 	if strings.Contains(rec.Body.String(), `"key"`) {
@@ -91,9 +93,9 @@ func TestPrivacyMaskingSettingsRoundTripAndTheOldSwitch(t *testing.T) {
 	}
 
 	for _, bad := range []string{
-		`{"policy":{"actions":{"EMAIL":"shred"}},"portal_default_allowed":true}`,
-		`{"policy":{},"enforced":["words"],"portal_default_allowed":true}`,
-		`{"policy":{}}`,
+		`{"policy":{"actions":{"EMAIL":"shred"}}}`,
+		`{"enforced":["secrets"],"portal_default_allowed":true}`,
+		`not json`,
 	} {
 		if rec, _ := wordTenantAUser.call(h.PutPrivacyMaskingSettings, http.MethodPut, bad, ""); rec.Code != http.StatusBadRequest {
 			t.Errorf("%s: %d", bad, rec.Code)
@@ -148,8 +150,6 @@ func portalMaskCall(t *testing.T, h *Handler, method, path, token, body string) 
 	router := gin.New()
 	router.GET("/v0/portal/auth/me", h.GetPortalMe)
 	router.GET("/v0/portal/privacy-masking/settings", h.GetPortalPrivacyMaskingSettings)
-	router.PUT("/v0/portal/privacy-masking/settings", h.PutPortalPrivacyMaskingSettings)
-	router.DELETE("/v0/portal/privacy-masking/settings", h.DeletePortalPrivacyMaskingSettings)
 	router.POST("/v0/portal/privacy-masking/preview", h.PostPortalPrivacyMaskingPreview)
 	router.GET("/v0/portal/privacy-masking/records", h.GetPortalPrivacyMaskingRecords)
 	router.GET("/v0/portal/privacy-masking/records/:key", h.GetPortalPrivacyMaskingRecord)
@@ -163,11 +163,11 @@ func portalMaskCall(t *testing.T, h *Handler, method, path, token, body string) 
 	return rec.Code, decoded
 }
 
-// TestPostgresPortalUserKeepsPrivacyMaskingWhileAllowed walks the portal side
-// on the database production runs: a portal user keeps a policy of their own
-// by default, previews it without the tenant's words, sees only their own
-// records, and loses the policy's effect when the tenant revokes it.
-func TestPostgresPortalUserKeepsPrivacyMaskingWhileAllowed(t *testing.T) {
+// TestPostgresPortalUserSeesPrivacyMaskingReadOnly walks the portal side on
+// the database production runs: what is masked is the tenant's call, so a
+// portal user sees the tenant's rules without its words, previews them
+// without the words, and sees only their own records.
+func TestPostgresPortalUserSeesPrivacyMaskingReadOnly(t *testing.T) {
 	dsn := strings.TrimSpace(os.Getenv("CLIRELAY_POSTGRES_TEST_DSN"))
 	if dsn == "" {
 		t.Skip("CLIRELAY_POSTGRES_TEST_DSN is not set")
@@ -201,8 +201,8 @@ func TestPostgresPortalUserKeepsPrivacyMaskingWhileAllowed(t *testing.T) {
 	}
 	store := contentmoderation.NewStore(db)
 	t.Cleanup(func() {
-		_ = store.DeleteMaskUser(context.Background(), tenantID, userID)
-		_ = store.DeleteMaskUser(context.Background(), tenantID, otherID)
+		_ = store.DeleteMaskUserRecords(context.Background(), tenantID, userID)
+		_ = store.DeleteMaskUserRecords(context.Background(), tenantID, otherID)
 		_, _ = db.ExecContext(context.Background(), `DELETE FROM end_user_sessions WHERE end_user_id = ?`, userID)
 		_, _ = db.ExecContext(context.Background(), `DELETE FROM end_users WHERE id = ?`, userID)
 	})
@@ -214,25 +214,24 @@ func TestPostgresPortalUserKeepsPrivacyMaskingWhileAllowed(t *testing.T) {
 	h := withMaskSettings(&Handler{cfg: &config.Config{}})
 	admin := wordCaller{tenant: tenantID, admin: true}
 	rec, _ := admin.call(h.PutPrivacyMaskingSettings, http.MethodPut,
-		`{"policy":{"secrets":true,"words":["Nightjar"]},"enforced":["secrets"],"portal_default_allowed":true}`, "")
+		`{"policy":{"secrets":true,"words":["Nightjar"]}}`, "")
 	wordExpectStatus(t, rec, http.StatusOK)
 
 	status, body := portalMaskCall(t, h, http.MethodGet, "/v0/portal/auth/me", token, "")
-	if status != http.StatusOK || body["privacy_masking_allowed"] != true {
+	capabilities, _ := body["capabilities"].(map[string]any)
+	if _, old := body["privacy_masking_allowed"]; status != http.StatusOK || capabilities["privacy-masking"] != true || old {
 		t.Fatalf("me = %d %v", status, body)
 	}
 	status, body = portalMaskCall(t, h, http.MethodGet, "/v0/portal/privacy-masking/settings", token, "")
 	policy, _ := body["policy"].(map[string]any)
-	if words, _ := policy["words"].([]any); status != http.StatusOK || body["own"] != false || len(words) != 0 || body["enforced"].([]any)[0] != "secrets" {
+	_, own := body["own"]
+	if words, _ := policy["words"].([]any); status != http.StatusOK || policy["secrets"] != true || len(words) != 0 || own {
 		t.Fatalf("portal settings = %d %v", status, body)
 	}
-	status, body = portalMaskCall(t, h, http.MethodPut, "/v0/portal/privacy-masking/settings", token, `{"policy":{"personal":true}}`)
-	if status != http.StatusOK || body["own"] != true {
-		t.Fatalf("put = %d %v", status, body)
-	}
-	// the tenant's words are not the user's to try out
-	status, body = portalMaskCall(t, h, http.MethodPost, "/v0/portal/privacy-masking/preview", token, `{"text":"Nightjar to ada.lovelace@gmail.com"}`)
-	if text, _ := body["text"].(string); status != http.StatusOK || !strings.Contains(text, "Nightjar") || strings.Contains(text, "ada.lovelace") {
+	// the tenant's words are not the user's to try out; its secrets switch is
+	key := "sk-proj-" + strings.Repeat("Ab3", 16)
+	status, body = portalMaskCall(t, h, http.MethodPost, "/v0/portal/privacy-masking/preview", token, `{"text":"Nightjar uses `+key+`","policy":{"personal":true}}`)
+	if text, _ := body["text"].(string); status != http.StatusOK || !strings.Contains(text, "Nightjar") || strings.Contains(text, key) {
 		t.Fatalf("preview = %d %v", status, body)
 	}
 
@@ -252,21 +251,6 @@ func TestPostgresPortalUserKeepsPrivacyMaskingWhileAllowed(t *testing.T) {
 	}
 	if status, _ := portalMaskCall(t, h, http.MethodGet, "/v0/portal/privacy-masking/records/"+theirs.Key, token, ""); status != http.StatusNotFound {
 		t.Fatalf("read another user's record: %d", status)
-	}
-
-	// revoked: the user keeps the policy but may not change it, and it stops applying
-	rec, body = admin.call(h.PutPrivacyMaskingPortalUser, http.MethodPut, `{"allowed":false}`, userID)
-	wordExpectStatus(t, rec, http.StatusOK)
-	if body["allowed"] != false {
-		t.Fatalf("revoke = %v", body)
-	}
-	status, body = portalMaskCall(t, h, http.MethodPut, "/v0/portal/privacy-masking/settings", token, `{"policy":{"personal":false}}`)
-	if status != http.StatusForbidden {
-		t.Fatalf("put after revoke = %d %v", status, body)
-	}
-	status, body = portalMaskCall(t, h, http.MethodGet, "/v0/portal/privacy-masking/settings", token, "")
-	if body["own"] != false || body["allowed"] != false {
-		t.Fatalf("settings after revoke = %d %v", status, body)
 	}
 }
 

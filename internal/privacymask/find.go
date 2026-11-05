@@ -39,11 +39,6 @@ type Options struct {
 	// Allow are values the user lets go as written, whichever finder finds
 	// them: each a whole value, in any case.
 	Allow []string
-	// UserAllow is Allow written by a portal user, and Locked the categories
-	// ("secret", "personal") the tenant turned on for everyone: a portal user's
-	// own list cannot let a value of a locked category go as written.
-	UserAllow []string
-	Locked    map[string]bool
 }
 
 // Any says o masks anything at all.
@@ -148,20 +143,14 @@ func (o Options) actionOf(kind string) string {
 	return Mask
 }
 
-// allows says v, of kind, goes as written (Options.Allow, Options.UserAllow).
-func (o Options) allows(v, kind string) bool {
-	match := func(list []string) bool {
-		for _, a := range list {
-			if strings.EqualFold(strings.TrimSpace(a), v) {
-				return true
-			}
+// allows says v goes as written (Options.Allow).
+func (o Options) allows(v string) bool {
+	for _, a := range o.Allow {
+		if strings.EqualFold(strings.TrimSpace(a), v) {
+			return true
 		}
-		return false
 	}
-	if match(o.Allow) {
-		return true
-	}
-	return !o.Locked[Class(kind)] && match(o.UserAllow)
+	return false
 }
 
 // Class is the switch a kind is masked under: "secret" for keys, tokens,

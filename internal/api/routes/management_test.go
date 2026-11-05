@@ -26,7 +26,7 @@ func TestRegisterManagementRouteTable(t *testing.T) {
 		routes[key] = route
 	}
 
-	if got, want := len(routes), 409; got != want {
+	if got, want := len(routes), 404; got != want {
 		t.Fatalf("route count = %d, want %d", got, want)
 	}
 	if got, want := sortedRouteKeys(routes), expectedManagementRoutes(); !slices.Equal(got, want) {
@@ -63,8 +63,6 @@ func TestRegisterManagementRouteTable(t *testing.T) {
 		"GET /v0/management/privacy-masking/settings",
 		"PUT /v0/management/privacy-masking/settings",
 		"POST /v0/management/privacy-masking/preview",
-		"GET /v0/management/privacy-masking/portal",
-		"PUT /v0/management/privacy-masking/portal/users/:id",
 		"GET /v0/management/privacy-masking/summary",
 		"GET /v0/management/privacy-masking/records",
 		"GET /v0/management/privacy-masking/records/:key",
@@ -310,13 +308,10 @@ func expectedManagementRoutes() []string {
 		"POST /v0/portal/word-policy/validate",
 		"POST /v0/portal/word-policy/test",
 		"GET /v0/portal/privacy-masking/settings",
-		"PUT /v0/portal/privacy-masking/settings",
-		"DELETE /v0/portal/privacy-masking/settings",
 		"POST /v0/portal/privacy-masking/preview",
 		"GET /v0/portal/privacy-masking/summary",
 		"GET /v0/portal/privacy-masking/records",
 		"GET /v0/portal/privacy-masking/records/:key",
-		"DELETE /v0/portal/privacy-masking/records",
 		"POST /v0/portal/auth/login",
 		"POST /v0/portal/auth/logout",
 		"GET /v0/portal/auth/me",
@@ -603,8 +598,6 @@ func expectedManagementRoutes() []string {
 		"GET /v0/management/privacy-masking/settings",
 		"PUT /v0/management/privacy-masking/settings",
 		"POST /v0/management/privacy-masking/preview",
-		"GET /v0/management/privacy-masking/portal",
-		"PUT /v0/management/privacy-masking/portal/users/:id",
 		"GET /v0/management/privacy-masking/summary",
 		"GET /v0/management/privacy-masking/records",
 		"GET /v0/management/privacy-masking/records/:key",
