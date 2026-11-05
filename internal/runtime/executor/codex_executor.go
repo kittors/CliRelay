@@ -22,7 +22,10 @@ import (
 	"github.com/tidwall/sjson"
 )
 
-var dataTag = []byte("data:")
+var (
+	dataTag  = []byte("data:")
+	eventTag = []byte("event:")
+)
 
 // CodexExecutor is a stateless executor for Codex (OpenAI Responses API entrypoint).
 // If api_key is unavailable on auth, it falls back to legacy via ClientAdapter.
@@ -426,15 +429,8 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 		var param any
 		completed := false
 		imageStream := newCodexImageStreamNormalizer()
-		for scanner.Scan() {
-			line := scanner.Bytes()
-			normalizedEvents := normalizeCodexImageGenerationOutboundEventWithState(imageStream, bytes.Clone(line))
-			if len(normalizedEvents) == 0 {
-				normalizedEvents = [][]byte{bytes.Clone(line)}
-			}
-
-			var terminalErr error
-			for _, eventLine := range normalizedEvents {
+		emit := func(eventLines [][]byte) (terminalErr error) {
+			for _, eventLine := range eventLines {
 				recorder.AppendResponseChunk(eventLine)
 				reporter.appendOutputChunk(eventLine)
 
@@ -456,12 +452,34 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 					out <- cliproxyexecutor.StreamChunk{Payload: []byte(chunks[i])}
 				}
 			}
-			if terminalErr != nil {
+			return terminalErr
+		}
+		// An "event:" line is held until the line after it arrives, so a synthetic event the
+		// image normalizer emits for that line goes out before the event, not inside it.
+		var heldEventLine []byte
+		for scanner.Scan() {
+			line := scanner.Bytes()
+			if heldEventLine == nil && bytes.HasPrefix(line, eventTag) {
+				heldEventLine = bytes.Clone(line)
+				continue
+			}
+			normalizedEvents := normalizeCodexImageGenerationOutboundEventWithState(imageStream, bytes.Clone(line))
+			if len(normalizedEvents) == 0 {
+				normalizedEvents = [][]byte{bytes.Clone(line)}
+			}
+			normalizedEvents = frameCodexImageStreamEvents(heldEventLine, normalizedEvents)
+			heldEventLine = nil
+			if terminalErr := emit(normalizedEvents); terminalErr != nil {
 				recorder.RecordResponseError(terminalErr)
 				reporter.publishFailure(execCtx.Context)
 				out <- cliproxyexecutor.StreamChunk{Err: terminalErr}
 				return
 			}
+		}
+		if heldEventLine != nil {
+			// An "event:" line with nothing after it carries no data and cannot fail the
+			// stream; forward it as it came.
+			_ = emit([][]byte{heldEventLine})
 		}
 		if errScan := scanner.Err(); errScan != nil {
 			if shouldSuppressUsageFailure(errScan, "") {
