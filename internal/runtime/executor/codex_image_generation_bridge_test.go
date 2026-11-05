@@ -460,24 +460,28 @@ func TestMaybeEnsureInjectsForLiteRequestWithImageIntent(t *testing.T) {
 	}
 }
 
-func TestRequestLooksLikeImageGenerationIntentMatchesDesktopSkillPayload(t *testing.T) {
+func TestClassifyCodexImageGenerationIntentMatchesDesktopSkillPayload(t *testing.T) {
 	// Verbatim shapes captured from a Codex Desktop turn that had the Image Gen skill on.
-	for name, text := range map[string]string{
-		"skill link":  "[$imagegen](/Users/kittors/.codex/skills/.system/imagegen/SKILL.md)  帮我画一个小猫咪\n",
-		"skill block": "<skill>\n<name>imagegen</name>\n<path>/Users/kittors/.codex/skills/.system/imagegen/SKILL.md</path>\n",
-		"plain ask":   "帮我画一个小猫咪\n",
+	// The skill link and block are explicit invocations; a plain ask is only a keyword guess.
+	for name, tc := range map[string]struct {
+		text string
+		want codexImageIntentLevel
+	}{
+		"skill link":  {"[$imagegen](/Users/kittors/.codex/skills/.system/imagegen/SKILL.md)  帮我画一个小猫咪\n", codexImageIntentExplicit},
+		"skill block": {"<skill>\n<name>imagegen</name>\n<path>/Users/kittors/.codex/skills/.system/imagegen/SKILL.md</path>\n", codexImageIntentExplicit},
+		"plain ask":   {"帮我画一个小猫咪\n", codexImageIntentKeyword},
 	} {
 		body, err := json.Marshal(map[string]any{
 			"input": []any{map[string]any{
 				"type": "message", "role": "user",
-				"content": []any{map[string]any{"type": "input_text", "text": text}},
+				"content": []any{map[string]any{"type": "input_text", "text": tc.text}},
 			}},
 		})
 		if err != nil {
 			t.Fatalf("%s: marshal: %v", name, err)
 		}
-		if !requestLooksLikeImageGenerationIntent(body) {
-			t.Fatalf("%s: intent not detected for %q", name, text)
+		if got := classifyCodexImageGenerationIntent(body).level; got != tc.want {
+			t.Fatalf("%s: intent level = %d, want %d for %q", name, got, tc.want, tc.text)
 		}
 	}
 }
