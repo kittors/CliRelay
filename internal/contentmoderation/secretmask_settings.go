@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/configsync"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/privacymask"
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/sync/singleflight"
 )
@@ -26,32 +25,77 @@ func init() {
 	configsync.RouteRuntimeSettingKey(SecretMaskingSettingKey, configsync.DomainSecretMasking)
 }
 
-// SecretMaskingSettings is a tenant's outbound secret masking (see
-// secretmask_rules.go). It is off until the tenant switches it on.
+// SecretMaskingSettings is a tenant's privacy masking (see secretmask.go): its
+// default policy, what it enforces for its portal users, and whether they may
+// keep a policy of their own. Nothing is masked until something is switched
+// on.
+//
+// The row predates the policy: one written before has only Enabled, which is
+// read as the policy "mask secrets" (policy). Enabled is still written, as
+// the policy's Secrets, for a build that reads only it.
 type SecretMaskingSettings struct {
 	Enabled bool `json:"enabled"`
 	// Key is the tenant's placeholder key (see privacymask.Masker): random
-	// bytes in base64, made when masking is first switched on. Switching it off
+	// bytes in base64, made when masking is first set up. Switching masking off
 	// keeps the key, so a conversation masked before gets the same placeholders,
 	// and keeps its prompt cache, when masking comes back on. It is never sent to
-	// a client.
-	Key       string    `json:"key,omitempty"`
-	UpdatedAt time.Time `json:"updated_at,omitzero"`
+	// a client. KeyEnc holds it instead, sealed, when the server has a data key
+	// (secretmask_kek.go).
+	Key    string `json:"key,omitempty"`
+	KeyEnc string `json:"key_enc,omitempty"`
+	// Policy is the tenant's default, nil for a row written before policies.
+	Policy *MaskPolicy `json:"policy,omitempty"`
+	// Enforced are the categories on for every portal user (EnforceSecrets,
+	// EnforcePersonal).
+	Enforced []string `json:"enforced,omitempty"`
+	// PortalDefaultAllowed says whether portal users without an override of
+	// their own may keep a policy; nil is yes.
+	PortalDefaultAllowed *bool     `json:"portal_default_allowed,omitempty"`
+	UpdatedAt            time.Time `json:"updated_at,omitzero"`
 }
 
-// options is what masking finds for these settings: the secrets. Personal
-// data, a tenant's own words and rules, and what to do with each kind come
-// with the settings of the next stage.
-func (s SecretMaskingSettings) options() privacymask.Options {
-	return privacymask.Options{Secrets: true}
+// policy is the tenant's default policy.
+func (s SecretMaskingSettings) policy() MaskPolicy {
+	if s.Policy != nil {
+		return *s.Policy
+	}
+	p := MaskPolicy{Secrets: s.Enabled}
+	_ = p.Normalize() // nothing to tidy: it only fills in the empty lists
+	return p
 }
+
+// PolicyView is the tenant's default policy, tidied for a client.
+func (s SecretMaskingSettings) PolicyView() MaskPolicy {
+	p := s.policy()
+	if err := p.Normalize(); err != nil {
+		return s.policy() // a row written by hand: shown as it is
+	}
+	return p
+}
+
+// PortalAllowed says whether portal users without an override may keep a
+// policy of their own.
+func (s SecretMaskingSettings) PortalAllowed() bool {
+	return s.PortalDefaultAllowed == nil || *s.PortalDefaultAllowed
+}
+
+// KeyProtected says the placeholder key is stored sealed.
+func (s SecretMaskingSettings) KeyProtected() bool { return s.KeyEnc != "" && s.Key == "" }
 
 // secretMaskingKeyBytes is the length of a placeholder key.
 const secretMaskingKeyBytes = 32
 
 // placeholderKey returns the decoded key, and false when the settings hold
-// none that is usable.
-func (s SecretMaskingSettings) placeholderKey() ([]byte, bool) {
+// none that is usable: none made yet, or one sealed under a data key the
+// server does not have.
+func (s SecretMaskingSettings) placeholderKey(tenantID string) ([]byte, bool) {
+	if s.Key == "" && s.KeyEnc != "" {
+		key, err := openTenantKey(tenantID, s.KeyEnc)
+		if err != nil || len(key) < secretMaskingKeyBytes {
+			return nil, false
+		}
+		return key, true
+	}
 	key, err := base64.StdEncoding.DecodeString(s.Key)
 	if err != nil || len(key) < secretMaskingKeyBytes {
 		return nil, false
@@ -336,6 +380,9 @@ func (r *SecretMaskingRegistry) PreloadInBackground() {
 			err := r.Preload(ctx)
 			cancel()
 			if err == nil {
+				ctx, cancel := context.WithTimeout(context.Background(), 10*secretMaskingLoadTimeout)
+				r.sealStoredKeys(ctx)
+				cancel()
 				return
 			}
 			if attempt%12 == 0 {
@@ -352,9 +399,52 @@ func (r *SecretMaskingRegistry) PreloadInBackground() {
 	}()
 }
 
-// SetEnabled switches masking on or off for tenantID and returns the settings
-// as saved. Switching it on the first time makes the tenant's key.
+// SetEnabled switches the masking of secrets on or off in tenantID's default
+// policy, for the endpoint that predates policies, and returns the settings as
+// saved.
 func (r *SecretMaskingRegistry) SetEnabled(ctx context.Context, tenantID string, enabled bool) (SecretMaskingSettings, error) {
+	return r.update(ctx, tenantID, enabled, func(next *SecretMaskingSettings) bool {
+		if next.Policy == nil {
+			// a row of before policies stays one: the switch is all it has
+			changed := next.Enabled != enabled
+			next.Enabled = enabled
+			return changed
+		}
+		if next.Policy.Secrets == enabled {
+			return false
+		}
+		p := *next.Policy
+		p.Secrets = enabled
+		next.Policy = &p
+		return true
+	})
+}
+
+// SetPolicy saves tenantID's default policy, the categories it enforces and
+// whether its portal users may keep a policy of their own. policy is
+// normalized already.
+func (r *SecretMaskingRegistry) SetPolicy(ctx context.Context, tenantID string, policy MaskPolicy, enforced []string, portalAllowed bool) (SecretMaskingSettings, error) {
+	return r.update(ctx, tenantID, true, func(next *SecretMaskingSettings) bool {
+		next.Policy = &policy
+		next.Enforced = enforced
+		next.PortalDefaultAllowed = &portalAllowed
+		return true
+	})
+}
+
+// EnsureKey makes tenantID's placeholder key if it has none: a portal user of
+// the tenant is switching masking on for their own requests.
+func (r *SecretMaskingRegistry) EnsureKey(ctx context.Context, tenantID string) error {
+	_, err := r.update(ctx, tenantID, true, func(*SecretMaskingSettings) bool { return false })
+	return err
+}
+
+// update applies change to tenantID's stored settings and saves them, on top
+// of a concurrent write if there was one, and returns them as saved. needKey
+// makes the placeholder key if there is none; a key stored unsealed is sealed
+// when the server has a data key. Nothing is written when nothing changed: no
+// new version, no announcement, no row for a tenant that never had one.
+func (r *SecretMaskingRegistry) update(ctx context.Context, tenantID string, needKey bool, change func(*SecretMaskingSettings) bool) (SecretMaskingSettings, error) {
 	if r == nil {
 		return SecretMaskingSettings{}, ErrSecretMaskingNotPersistent
 	}
@@ -370,22 +460,33 @@ func (r *SecretMaskingRegistry) SetEnabled(ctx context.Context, tenantID string,
 		if err != nil {
 			return SecretMaskingSettings{}, err
 		}
-		_, hasKey := current.placeholderKey()
-		if current.Enabled == enabled && (hasKey || !enabled) {
-			// Nothing to change: no new version, no announcement, and no row made
-			// for a tenant that never had one.
-			r.install(tenantID, current)
-			return current, nil
-		}
 		next := current
-		next.Enabled = enabled
-		if enabled && !hasKey {
-			key := make([]byte, secretMaskingKeyBytes)
+		changed := change(&next)
+		key, hasKey := next.placeholderKey(tenantID)
+		if needKey && !hasKey {
+			key = make([]byte, secretMaskingKeyBytes)
 			if _, err := rand.Read(key); err != nil {
 				return SecretMaskingSettings{}, err
 			}
-			next.Key = base64.StdEncoding.EncodeToString(key)
+			next.Key, next.KeyEnc, hasKey, changed = base64.StdEncoding.EncodeToString(key), "", true, true
 		}
+		if hasKey && next.Key != "" && DataKeyConfigured() {
+			sealed, err := sealTenantKey(tenantID, key)
+			if err != nil {
+				return SecretMaskingSettings{}, err
+			}
+			next.Key, next.KeyEnc, changed = "", sealed, true
+		}
+		if !changed {
+			// refreshed, not changed: what masking remembers of the tenant's
+			// requests stays, so their placeholders and prompt caches do too
+			r.mu.Lock()
+			r.entries[tenantID] = secretMaskingEntry{settings: current, until: r.now().Add(secretMaskingTTL), read: true}
+			r.gen++
+			r.mu.Unlock()
+			return current, nil
+		}
+		next.Enabled = next.policy().Secrets
 		next.UpdatedAt = r.now().UTC()
 		err = store.Save(ctx, tenantID, next, version)
 		if errors.Is(err, ErrSecretMaskingConflict) {
@@ -398,6 +499,28 @@ func (r *SecretMaskingRegistry) SetEnabled(ctx context.Context, tenantID string,
 		return next, nil
 	}
 	return SecretMaskingSettings{}, ErrSecretMaskingConflict
+}
+
+// sealStoredKeys seals the keys stored unsealed, once the server has a data
+// key: rows written before it was set. Each is rewritten on its own, so a
+// tenant whose row cannot be written keeps working with the key as it is.
+func (r *SecretMaskingRegistry) sealStoredKeys(ctx context.Context) {
+	if r == nil || !DataKeyConfigured() {
+		return
+	}
+	r.mu.RLock()
+	var plain []string
+	for tenantID, entry := range r.entries {
+		if entry.settings.Key != "" {
+			plain = append(plain, tenantID)
+		}
+	}
+	r.mu.RUnlock()
+	for _, tenantID := range plain {
+		if _, err := r.update(ctx, tenantID, false, func(*SecretMaskingSettings) bool { return false }); err != nil {
+			log.WithError(err).WithField("tenant_id", tenantID).Warn("privacy masking: sealing the stored placeholder key failed; it stays as it is")
+		}
+	}
 }
 
 // install makes settings the cached ones of tenantID, and forgets what masking

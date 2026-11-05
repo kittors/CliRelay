@@ -310,13 +310,16 @@ type configCapabilities struct {
 	Alerts bool `json:"alerts"`
 	// PoolCapacity: GET /ai-accounts/pool-capacity.
 	PoolCapacity bool `json:"pool-capacity"`
+	// PrivacyMasking: the /privacy-masking routes (settings, preview, records)
+	// and the portal's /v0/portal/privacy-masking.
+	PrivacyMasking bool `json:"privacy-masking"`
 }
 
 func newConfigResponse(cfg *config.Config, versions map[string]int64) configResponse {
 	return configResponse{
 		Config:                 cfg,
 		RuntimeSettingVersions: versions,
-		Capabilities:           configCapabilities{PayloadRulesDryRun: true, Alerts: true, PoolCapacity: true},
+		Capabilities:           configCapabilities{PayloadRulesDryRun: true, Alerts: true, PoolCapacity: true, PrivacyMasking: true},
 	}
 }
 

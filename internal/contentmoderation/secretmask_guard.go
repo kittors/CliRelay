@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"runtime/debug"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -80,6 +82,24 @@ func (m *RuntimeModerator) secretMaskingRegistry() *SecretMaskingRegistry {
 // panic to see that a request masking could not finish is not sent.
 var secretMaskingTestHook func()
 
+// privacyMaskOffEnv switches privacy masking off for every tenant when set to
+// "off" at start: the operator's way back if masking itself goes wrong, without
+// touching any tenant's settings. Requests are then sent as they came, so it
+// is logged loudly, and the settings page is told.
+const privacyMaskOffEnv = "CLIRELAY_PRIVACY_MASK"
+
+var privacyMaskOff = sync.OnceValue(func() bool {
+	off := strings.EqualFold(strings.TrimSpace(os.Getenv(privacyMaskOffEnv)), "off")
+	if off {
+		log.Warnf("privacy masking is switched off for every tenant (%s=off): requests are sent without masking, whatever the tenants set", privacyMaskOffEnv)
+	}
+	return off
+})
+
+// PrivacyMaskingDisabledByServer says the operator switched masking off for
+// every tenant.
+func PrivacyMaskingDisabledByServer() bool { return privacyMaskOff() }
+
 // maskScopes are the senders whose requests masking remembers (see
 // privacymask.Scope): one per portal user, or per API key without one, of a
 // tenant. In memory only.
@@ -97,16 +117,20 @@ func maskScopeID(ctx context.Context, tenantID string) string {
 	return tenantID + "\x00t"
 }
 
-// maskSecrets replaces the secrets of a request with placeholders when its
-// tenant has masking on, and adds the reply filter that puts them back. words
-// is what the word guard made of the request; the bodies it rewrote are the
-// ones masked.
+// maskSecrets replaces what privacy masking finds in a request with
+// placeholders, under its tenant's policy or its portal user's own one
+// (effectiveMaskOptions), and adds the reply filter that puts the values back.
+// words is what the word guard made of the request; the bodies it rewrote are
+// the ones masked.
 //
-// A request whose secrets cannot all be replaced is not sent: the tenant asked
-// for its secrets to stay here.
+// A request whose values cannot all be replaced is not sent: the tenant, or
+// the user, asked for them to stay here.
 func (m *RuntimeModerator) maskSecrets(ctx context.Context, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, result coreauth.RequestGuardResult) coreauth.RequestGuardResult {
 	if secretMaskingTestHook != nil {
 		secretMaskingTestHook()
+	}
+	if PrivacyMaskingDisabledByServer() {
+		return result
 	}
 	tenantID := coreauth.NormalizedTenantID(metadataString(opts.Metadata, cliproxyexecutor.TenantMetadataKey))
 	settings, known := m.secretMaskingRegistry().Lookup(tenantID)
@@ -117,13 +141,28 @@ func (m *RuntimeModerator) maskSecrets(ctx context.Context, req cliproxyexecutor
 		return coreauth.RequestGuardResult{Blocked: true, HTTPStatus: http.StatusServiceUnavailable,
 			Message: "This tenant's secret masking settings could not be read just now, so the request was not sent. Try again in a moment."}
 	}
-	if !settings.Enabled {
+	endUserID, keyID := wordGuardEndUserID(ctx), wordGuardKeyID(ctx)
+	var own *MaskPolicy
+	if endUserID != "" {
+		user, known := MaskUsers().Lookup(tenantID, endUserID)
+		if !known {
+			// the user may have switched masking on for their own requests
+			m.warnSecretMasking(tenantID, "a portal user's privacy masking settings could not be read; their requests are refused until they can be")
+			setSecretMaskingSnapshot(ctx, &SecretMaskingSnapshot{Refused: "settings_unreadable"})
+			return coreauth.RequestGuardResult{Blocked: true, HTTPStatus: http.StatusServiceUnavailable,
+				Message: "Your privacy masking settings could not be read just now, so the request was not sent. Try again in a moment."}
+		}
+		own = user.applies(settings)
+	}
+	options := effectiveMaskOptions(settings, own, endUserID != "")
+	if !options.Any() {
 		return result
 	}
-	key, ok := settings.placeholderKey()
+	key, ok := settings.placeholderKey(tenantID)
 	if !ok {
-		// Never saved so: switching masking on makes the key. A row edited by
-		// hand does not get the request sent unmasked.
+		// Never saved so: setting masking up makes the key. A row edited by hand,
+		// or one sealed under a data key this server does not have, does not get
+		// the request sent unmasked.
 		m.warnSecretMasking(tenantID, "secret masking is on but the tenant's key is unusable; requests are refused until it is switched off and on again")
 		return coreauth.RequestGuardResult{Blocked: true, HTTPStatus: http.StatusServiceUnavailable,
 			Message: "Secret masking is on for this tenant but is not set up correctly, so the request was not sent. Ask an administrator to switch it off and on again."}
@@ -135,10 +174,18 @@ func (m *RuntimeModerator) maskSecrets(ctx context.Context, req cliproxyexecutor
 	if result.Payload != nil {
 		payload = result.Payload
 	}
-	masker := privacymask.NewMasker(key, settings.options(), maskScopes.Get(maskScopeID(ctx, tenantID)), req.Model)
+	masker := privacymask.NewMasker(key, options, maskScopes.Get(maskScopeID(ctx, tenantID)), req.Model)
+	notes := newMaskNotes()
+	snapshotNow := func() *SecretMaskingSnapshot {
+		snapshot := newSecretMaskingSnapshot(masker, notes)
+		snapshot.tenantID, snapshot.endUserID, snapshot.apiKeyID, snapshot.model = tenantID, endUserID, keyID, req.Model
+		return snapshot
+	}
 	format := opts.SourceFormat
 	refuse := func(failure string) coreauth.RequestGuardResult {
-		setSecretMaskingSnapshot(ctx, &SecretMaskingSnapshot{Refused: failure})
+		snapshot := snapshotNow()
+		snapshot.Refused = failure
+		setSecretMaskingSnapshot(ctx, snapshot)
 		m.warnSecretMasking(tenantID, "secret masking refused a request: "+failure)
 		return coreauth.RequestGuardResult{Blocked: true, HTTPStatus: http.StatusBadRequest,
 			Message: "The request holds a secret that secret masking cannot replace (" + failure + "), so it was not sent. Remove the secret, or ask an administrator to switch secret masking off."}
@@ -146,7 +193,7 @@ func (m *RuntimeModerator) maskSecrets(ctx context.Context, req cliproxyexecutor
 	if len(original) == 0 || sameStorage(original, payload) {
 		// One body: both names keep pointing at one slice, which is how the
 		// executors know not to translate it twice.
-		masked, failure := maskRequestSecrets(format, payload, masker, false)
+		masked, failure := maskRequest(format, payload, masker, false, notes)
 		if failure != "" {
 			return refuse(failure)
 		}
@@ -157,11 +204,11 @@ func (m *RuntimeModerator) maskSecrets(ctx context.Context, req cliproxyexecutor
 			}
 		}
 	} else {
-		maskedOriginal, failure := maskRequestSecrets(format, original, masker, false)
+		maskedOriginal, failure := maskRequest(format, original, masker, false, notes)
 		if failure != "" {
 			return refuse(failure)
 		}
-		maskedPayload, failure := maskRequestSecrets(format, payload, masker, true)
+		maskedPayload, failure := maskRequest(format, payload, masker, true, nil)
 		if failure != "" {
 			return refuse(failure)
 		}
@@ -172,7 +219,7 @@ func (m *RuntimeModerator) maskSecrets(ctx context.Context, req cliproxyexecutor
 			result.Payload = maskedPayload
 		}
 	}
-	snapshot := newSecretMaskingSnapshot(masker)
+	snapshot := snapshotNow()
 	if blocked := masker.Blocked(); len(blocked) > 0 {
 		snapshot.Refused = "blocked"
 		setSecretMaskingSnapshot(ctx, snapshot)
@@ -222,8 +269,13 @@ func (m *RuntimeModerator) warnSecretMasking(tenantID, message string) {
 }
 
 // SecretMaskingSnapshot is what secret masking did to one request, for its
-// request log. It describes the values; it never holds one, or a placeholder.
+// request log and its record. It describes the values; it never holds one. The
+// placeholders and value ids are kept for the record only: the request log
+// leaves them out.
 type SecretMaskingSnapshot struct {
+	// Key is the request's record (MaskRecord.Key), "" for a request without
+	// one.
+	Key string `json:"key,omitempty"`
 	// Masked is how many different values were replaced, and Places in how
 	// many places.
 	Masked int `json:"masked,omitempty"`
@@ -247,10 +299,22 @@ type SecretMaskingSnapshot struct {
 	// restorer counts the places the reply had a value put back; the reply may
 	// still be streaming when the request log is written, and counts as it goes.
 	restorer *privacymask.Restorer
+	// for the record: who sent it, what for, and what masking noted
+	tenantID, endUserID, apiKeyID, model string
+	notes                                *maskNotes
+	at                                   time.Time
+	// where it was sent, noted by the executor (NoteSecretMaskingRoute)
+	route struct {
+		sync.Mutex
+		channel, provider string
+	}
 }
 
-func newSecretMaskingSnapshot(masker *privacymask.Masker) *SecretMaskingSnapshot {
-	s := &SecretMaskingSnapshot{Places: masker.Places(), Values: masker.Values(), TookMicros: masker.Took().Microseconds()}
+func newSecretMaskingSnapshot(masker *privacymask.Masker, notes *maskNotes) *SecretMaskingSnapshot {
+	s := &SecretMaskingSnapshot{Places: masker.Places(), Values: masker.Values(), TookMicros: masker.Took().Microseconds(), notes: notes, at: time.Now()}
+	if len(s.Values) > 0 {
+		s.Key = newMaskKey(s.at)
+	}
 	for _, v := range s.Values {
 		if v.Action == privacymask.Warn {
 			s.Warned++
@@ -263,6 +327,57 @@ func newSecretMaskingSnapshot(masker *privacymask.Masker) *SecretMaskingSnapshot
 		s.Kinds[v.Kind]++
 	}
 	return s
+}
+
+// NoteSecretMaskingRoute notes where a masked request was sent: the channel of
+// the account chosen and its provider. The last one noted is the one that
+// answered.
+func NoteSecretMaskingRoute(ctx context.Context, channel, provider string) {
+	if ctx == nil {
+		return
+	}
+	ginCtx, _ := ctx.Value(util.ContextKeyGin).(*gin.Context)
+	snapshot, ok := SecretMaskingSnapshotFromGin(ginCtx)
+	if !ok || snapshot.Key == "" {
+		return
+	}
+	snapshot.route.Lock()
+	snapshot.route.channel, snapshot.route.provider = strings.TrimSpace(channel), strings.TrimSpace(provider)
+	snapshot.route.Unlock()
+}
+
+// Record is the request's record once it is over, nil when masking found
+// nothing in it. client is what sent it (MaskClient).
+func (s *SecretMaskingSnapshot) Record(client string) *MaskRecord {
+	if s == nil || s.Key == "" || len(s.Values) == 0 {
+		return nil
+	}
+	r := &MaskRecord{
+		Key: s.Key, At: s.at, TenantID: s.tenantID, EndUserID: s.endUserID, APIKeyID: s.apiKeyID, Model: s.model,
+		Client: client, Places: s.Places, Distinct: len(s.Values), Warned: s.Warned, TookMicros: s.TookMicros,
+		Blocked: s.Refused != "",
+	}
+	s.route.Lock()
+	if !r.Blocked {
+		r.Channel, r.Provider = s.route.channel, s.route.provider
+	}
+	s.route.Unlock()
+	r.Values = make([]MaskRecordValue, 0, len(s.Values))
+	for _, v := range s.Values {
+		value := MaskRecordValue{ID: v.ID, Kind: v.Kind, By: v.By, Action: v.Action, Head: v.Head, Len: v.Len, N: v.N, Placeholder: v.Placeholder}
+		if v.Placeholder != "" {
+			value.Restored = s.restorer.RestoredOf(v.Placeholder)
+			r.Restored += value.Restored
+		}
+		if s.notes != nil {
+			value.Field = s.notes.fields[v.ID]
+		}
+		r.Values = append(r.Values, value)
+	}
+	if s.notes != nil {
+		r.Snippets = s.notes.snippets
+	}
+	return r
 }
 
 // MarshalJSON adds how many places the reply had a value put back so far.

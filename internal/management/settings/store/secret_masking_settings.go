@@ -82,4 +82,8 @@ func AttachSecretMaskingSettings() {
 	}
 	contentmoderation.SecretMasking().SetStore(SecretMaskingSettings{})
 	contentmoderation.SecretMasking().PreloadInBackground()
+	// the portal users' own settings and the records live in the same database
+	store := contentmoderation.NewStore(usage.RuntimeDB())
+	contentmoderation.MaskUsers().SetStore(store)
+	contentmoderation.MaskRecords().SetStore(store)
 }

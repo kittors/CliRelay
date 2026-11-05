@@ -44,4 +44,15 @@ func registerManagementContentModerationRoutes(group *gin.RouterGroup, h *manage
 	// Outbound secret masking: the tenant's switch.
 	group.GET("/content-moderation/secret-masking", h.GetSecretMasking)
 	group.PUT("/content-moderation/secret-masking", h.PutSecretMasking)
+
+	// Privacy masking: settings, the portal users' permission, the records.
+	group.GET("/privacy-masking/settings", h.GetPrivacyMaskingSettings)
+	group.PUT("/privacy-masking/settings", h.PutPrivacyMaskingSettings)
+	group.POST("/privacy-masking/preview", h.PostPrivacyMaskingPreview)
+	group.GET("/privacy-masking/portal", h.GetPrivacyMaskingPortal)
+	group.PUT("/privacy-masking/portal/users/:id", h.PutPrivacyMaskingPortalUser)
+	group.GET("/privacy-masking/summary", h.GetPrivacyMaskingSummary)
+	group.GET("/privacy-masking/records", h.GetPrivacyMaskingRecords)
+	group.GET("/privacy-masking/records/:key", h.GetPrivacyMaskingRecord)
+	group.DELETE("/privacy-masking/records", h.DeletePrivacyMaskingRecords)
 }

@@ -94,6 +94,8 @@ var MenuCatalog = []MenuSeed{
 	// Runtime / observability
 	{Code: "runtime.monitor", ParentCode: "group.runtime", Type: "menu", Path: "/runtime/monitor", Component: "monitor", LabelKey: "shell.nav_monitor", Icon: "activity", PermissionCode: "monitor.read", SortOrder: 10},
 	{Code: "runtime.request-logs", ParentCode: "group.runtime", Type: "menu", Path: "/runtime/request-logs", Component: "request-logs", LabelKey: "shell.nav_request_logs", Icon: "scroll-text", PermissionCode: "request_logs.read", SortOrder: 20},
+	// Privacy masking's records and settings; the same people as content moderation's see them.
+	{Code: "runtime.privacy-masking", ParentCode: "group.runtime", Type: "menu", Path: "/runtime/privacy-masking", Component: "privacy-masking", LabelKey: "shell.nav_privacy_masking", Icon: "shield-check", PermissionCode: "content_moderation.read", SortOrder: 25},
 	{Code: "runtime.logs", ParentCode: "group.runtime", Type: "menu", Path: "/runtime/logs", Component: "logs", LabelKey: "shell.nav_logs", Icon: "file-text", PermissionCode: "system.logs.read", SortOrder: 30},
 	// Access & credentials (upstream AI + client keys)
 	{Code: "access.providers", ParentCode: "group.access", Type: "menu", Path: "/access/ai-providers", Component: "providers", LabelKey: "shell.nav_ai_providers", Icon: "bot", PermissionCode: "providers.read", SortOrder: 10},

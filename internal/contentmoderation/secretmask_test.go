@@ -499,7 +499,7 @@ func TestSecretMaskingRegistryKeepsTheKeyAcrossSwitches(t *testing.T) {
 	if err != nil || !on.Enabled || on.Key == "" {
 		t.Fatalf("on = %+v, %v", on, err)
 	}
-	if _, ok := on.placeholderKey(); !ok {
+	if _, ok := on.placeholderKey("t"); !ok {
 		t.Fatalf("the key %q is not usable", on.Key)
 	}
 	off, err := registry.SetEnabled(context.Background(), "t", false)

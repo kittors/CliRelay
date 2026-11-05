@@ -30,8 +30,26 @@ type Value struct {
 	Head string `json:"head,omitempty"`
 	Len  int    `json:"len"`
 	N    int    `json:"n"`
+	// ID is the same for the same value of a tenant in every request, so the
+	// records can count a value across requests; it is a keyed hash, never the
+	// value. Not in the request log (that counts values per request).
+	ID string `json:"-"`
+	// Placeholder is what the upstream got in its place, "" for one sent as
+	// written. Kept out of the request log like the value.
+	Placeholder string `json:"-"`
+}
 
-	placeholder string
+// valueID is a value's id in the records: a keyed hash under a key of its own
+// derived from the tenant's, so a record's id and the value's placeholder
+// cannot be matched against each other.
+func (m *Masker) valueID(kind, v string) string {
+	derive := hmac.New(sha256.New, m.key)
+	derive.Write([]byte("privacymask record id v1"))
+	mac := hmac.New(sha256.New, derive.Sum(nil))
+	mac.Write([]byte(kind))
+	mac.Write([]byte{0})
+	mac.Write([]byte(v))
+	return tagEncoding.EncodeToString(mac.Sum(nil)[:10])
 }
 
 // Edit replaces text[Start:End] with Text.
@@ -61,6 +79,15 @@ type Masker struct {
 	took   time.Duration
 	// quiet says the texts being planned are a second copy (PlanQuiet)
 	quiet bool
+	// warns are, for each text of the last Plan that was not quiet, where the
+	// values sent as written are (View)
+	warns [][]Mark
+}
+
+// Mark is where a value is in a text View wrote, and which one (Value.ID).
+type Mark struct {
+	Start, End int
+	ID         string
 }
 
 // NewMasker returns a masker for one request: key is the tenant's placeholder
@@ -110,6 +137,9 @@ func (m *Masker) Plan(texts []string, skip []bool) [][]Edit {
 		return out
 	}
 	found := make([][]span, len(texts))
+	if !m.quiet {
+		m.warns = make([][]Mark, len(texts))
+	}
 	index := &knownIndex{scope: m.scope}
 	for i, s := range texts {
 		if skip != nil && skip[i] || len(s) < 3 {
@@ -131,7 +161,11 @@ func (m *Masker) Plan(texts []string, skip []bool) [][]Edit {
 		}
 		known := m.scope.sentSpans(m.route, s, m.opts, func() []span { return index.knownSpans(s, m.opts) })
 		f := append(found[i], noNumbers(s, noIDs(s, known))...)
-		out[i] = m.edits(s, f)
+		var warns []Mark
+		out[i], warns = m.edits(s, f)
+		if !m.quiet {
+			m.warns[i] = warns
+		}
 		m.learnPlaceholders(s)
 	}
 	return out
@@ -150,10 +184,10 @@ func (m *Masker) PlanQuiet(texts []string, skip []bool) [][]Edit {
 // edits decides each of found in s: the first to start, and of those the
 // longest, wins where they overlap, and nothing inside a placeholder already
 // there is touched. A value o allows goes as written, as does one of a kind o
-// warns of (recorded); the rest become placeholders.
-func (m *Masker) edits(s string, found []span) []Edit {
+// warns of (recorded, and returned in warns); the rest become placeholders.
+func (m *Masker) edits(s string, found []span) (edits []Edit, warns []Mark) {
 	if len(found) == 0 {
-		return nil
+		return nil, nil
 	}
 	if strings.Contains(s, "{{") {
 		for _, p := range placeholderRe.FindAllStringIndex(s, -1) {
@@ -172,7 +206,6 @@ func (m *Masker) edits(s string, found []span) []Edit {
 		}
 		return found[i].end > found[j].end
 	})
-	var edits []Edit
 	next := 0
 	for _, f := range found {
 		if f.start < next || f.end <= f.start {
@@ -180,13 +213,14 @@ func (m *Masker) edits(s string, found []span) []Edit {
 		}
 		next = f.end
 		v := s[f.start:f.end]
-		if m.opts.allows(v) {
+		if m.opts.allows(v, f.kind) {
 			continue
 		}
 		act := m.opts.actionOf(f.kind)
 		if act == Warn {
 			if !m.quiet {
-				m.note(f, v, "", Warn)
+				id := m.note(f, v, "", Warn)
+				warns = append(warns, Mark{Start: f.start, End: f.end, ID: id})
 			}
 			continue
 		}
@@ -199,11 +233,11 @@ func (m *Masker) edits(s string, found []span) []Edit {
 			m.places++
 		}
 	}
-	return edits
+	return edits, warns
 }
 
-// note counts one place of v.
-func (m *Masker) note(f span, v, p, act string) {
+// note counts one place of v and returns its id.
+func (m *Masker) note(f span, v, p, act string) string {
 	if act == Mask {
 		act = ""
 	}
@@ -215,7 +249,7 @@ func (m *Masker) note(f span, v, p, act string) {
 	}
 	if have == nil {
 		head, n := Hint(f.kind, v)
-		have = &Value{Kind: f.kind, By: f.by, Action: act, Head: head, Len: n, placeholder: p}
+		have = &Value{Kind: f.kind, By: f.by, Action: act, Head: head, Len: n, Placeholder: p, ID: m.valueID(f.kind, v)}
 		m.values = append(m.values, have)
 		if p != "" {
 			m.byP[p] = have
@@ -224,6 +258,7 @@ func (m *Masker) note(f span, v, p, act string) {
 		}
 	}
 	have.N++
+	return have.ID
 }
 
 // learnPlaceholders adds to the table the placeholders s holds already that
@@ -289,6 +324,55 @@ func (m *Masker) Commit() {
 	for p, v := range m.byP {
 		m.scope.add(p, m.table[p], v.Kind)
 	}
+}
+
+// View is text i of the last Plan the way a record may keep it: edits (Plan's
+// for it) made, and each value that went as written (its kind warns) shown as
+// ‹KIND›, so what is kept never holds a value. marks are where the values are
+// in it, in order.
+func (m *Masker) View(i int, text string, edits []Edit) (view string, marks []Mark) {
+	type change struct {
+		Edit
+		id string
+	}
+	all := make([]change, 0, len(edits))
+	for _, e := range edits {
+		id := ""
+		if v := m.byP[e.Text]; v != nil {
+			id = v.ID
+		}
+		all = append(all, change{e, id})
+	}
+	if i >= 0 && i < len(m.warns) {
+		for _, w := range m.warns[i] {
+			all = append(all, change{Edit{Start: w.Start, End: w.End, Text: "‹" + m.kindOf(w.ID) + "›"}, w.ID})
+		}
+	}
+	sort.Slice(all, func(a, b int) bool { return all[a].Start < all[b].Start })
+	var b strings.Builder
+	last := 0
+	for _, c := range all {
+		if c.Start < last || c.End > len(text) {
+			continue // overlapping: not made by one Plan
+		}
+		b.WriteString(text[last:c.Start])
+		at := b.Len()
+		b.WriteString(c.Text)
+		marks = append(marks, Mark{Start: at, End: b.Len(), ID: c.id})
+		last = c.End
+	}
+	b.WriteString(text[last:])
+	return b.String(), marks
+}
+
+// kindOf is the kind of the value of id the request found.
+func (m *Masker) kindOf(id string) string {
+	for _, v := range m.values {
+		if v.ID == id {
+			return v.Kind
+		}
+	}
+	return "VALUE"
 }
 
 // Apply makes the edits, in order and not overlapping, to text.

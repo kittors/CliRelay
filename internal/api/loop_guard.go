@@ -25,6 +25,7 @@ const apiKeyIDContextKey = "apiKeyID"
 func (s *Server) useInferenceMiddleware(group *gin.RouterGroup, stages []requestStage) {
 	useRequestStages(group, stages)
 	group.Use(loopGuardMiddleware(loopguard.Default()))
+	group.Use(privacyMaskRecordMiddleware())
 }
 
 // loopGuardMiddleware publishes the loop protection of the request for the
