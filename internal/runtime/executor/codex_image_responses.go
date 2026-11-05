@@ -136,7 +136,10 @@ func buildCodexImageResponsesRequest(parsed *codexImageRequest, toolModel string
 		return nil, fmt.Errorf("image input is required")
 	}
 
-	req := []byte(`{"instructions":"","stream":true,"reasoning":{"effort":"medium","summary":"auto"},"parallel_tool_calls":true,"include":["reasoning.encrypted_content"],"model":"","store":false,"tool_choice":{"type":"image_generation"}}`)
+	// No reasoning.effort: since 2026-11-04 the Codex backend passes it to the forced image call
+	// as complexity, and the image model it routes to rejects every value, medium included.
+	// See omitCodexReasoningEffortForImageCall.
+	req := []byte(`{"instructions":"","stream":true,"reasoning":{"summary":"auto"},"parallel_tool_calls":true,"include":["reasoning.encrypted_content"],"model":"","store":false,"tool_choice":{"type":"image_generation"}}`)
 	if strings.TrimSpace(baseModel) == "" {
 		baseModel = codexcarrier.Resolve()
 	}
