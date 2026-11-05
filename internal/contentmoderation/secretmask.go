@@ -1,129 +1,64 @@
 package contentmoderation
 
 import (
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/base32"
-	"strings"
-
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/privacymask"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v6/sdk/translator"
 )
 
-// secretTable is what the masking of one request replaced: every placeholder
-// with the value it stands for. It is built for each request and restores only
-// what that request sent, so a reply cannot be made to reveal the secrets of
-// another request, let alone of another tenant, by naming their placeholders.
-type secretTable struct {
-	// key is the tenant's (see SecretMaskingSettings.Key).
-	key    []byte
-	values map[string]string
-	// replacer swaps every placeholder for its value; made on first use.
-	replacer *strings.Replacer
-}
+// Outbound secret masking: a tenant may switch it on to keep the credentials
+// that travel in its requests away from the upstream (a key pasted into a
+// prompt, a .env file a coding agent read, a token in a tool result). Every
+// value found in the text the model reads is replaced with a placeholder
+// before the request leaves, and the placeholder is turned back into the
+// value in the reply, so the client sees its own text again
+// (secretmask_reply.go). It protects against the upstream and any relay in
+// front of it, not against this server.
+//
+// What is found, and how a placeholder is made and put back, is
+// internal/privacymask's (ported from magpie). This file reads the request the
+// way the word guard does and writes the placeholders into it.
 
-func newSecretTable(key []byte) *secretTable {
-	return &secretTable{key: key, values: make(map[string]string)}
-}
-
-// secretTagEncoding writes a placeholder's tag in lower case base32.
-var secretTagEncoding = base32.NewEncoding("abcdefghijklmnopqrstuvwxyz234567").WithPadding(base32.NoPadding)
-
-// placeholder returns {{KIND_tag}} for value and records it. The tag is the
-// start of HMAC-SHA256(tenant key, kind and value): the same value always gets
-// the same placeholder in a tenant, so a conversation the client sends again
-// turn after turn reaches the upstream byte for byte the same and its prompt
-// cache keeps working, while another tenant, with another key, gets another
-// placeholder for it. The upstream cannot try candidate values against a tag
-// without the key.
-func (t *secretTable) placeholder(kind secretKind, value string) string {
-	mac := hmac.New(sha256.New, t.key)
-	mac.Write([]byte(kind))
-	mac.Write([]byte{0})
-	mac.Write([]byte(value))
-	sum := mac.Sum(nil)
-	p := "{{" + string(kind) + "_" + secretTagEncoding.EncodeToString(sum[:5]) + "}}"
-	if known, taken := t.values[p]; taken && known != value {
-		// Two values of one request on the same 40-bit tag: the longer tag tells
-		// them apart, and is as stable.
-		p = "{{" + string(kind) + "_" + secretTagEncoding.EncodeToString(sum[:10]) + "}}"
-	}
-	if _, known := t.values[p]; !known {
-		t.values[p] = value
-		t.replacer = nil
-	}
-	return p
-}
-
-// restore returns text with every placeholder of the table replaced by its
-// value.
-func (t *secretTable) restore(text string) string {
-	if len(t.values) == 0 || !strings.Contains(text, "{{") {
-		return text
-	}
-	if t.replacer == nil {
-		t.seal()
-	}
-	return t.replacer.Replace(text)
-}
-
-// seal makes the replacer restore uses. The table is read-only after it: the
-// reply filters of every execution of one request share the table (the
-// request guard's outcome is handed from one execution to the next), and must
-// not build it at the same time.
-func (t *secretTable) seal() {
-	pairs := make([]string, 0, 2*len(t.values))
-	for p, value := range t.values {
-		pairs = append(pairs, p, value)
-	}
-	t.replacer = strings.NewReplacer(pairs...)
-}
-
-// partialTail returns where the end of text could be the start of one of the
-// table's placeholders, or len(text) if it cannot. A stream sends a
-// placeholder in as many pieces as the model wrote it in; the start of one is
-// held back until the rest arrives.
-func (t *secretTable) partialTail(text string) int {
-	longest := 0
-	for p := range t.values {
-		longest = max(longest, len(p))
-	}
-	for i := max(0, len(text)-longest+1); i < len(text); i++ {
-		if text[i] != '{' {
-			continue
-		}
-		tail := text[i:]
-		for p := range t.values {
-			if len(tail) < len(p) && strings.HasPrefix(p, tail) {
-				return i
-			}
-		}
-	}
-	return len(text)
-}
-
-// maskRequestSecrets replaces the secrets in the text of body, a request in
-// the layout of format, with placeholders it records in table. It returns the
-// new body and how many secrets it replaced, nil and 0 when there were none.
-// failure says why a request that holds a secret could not be rewritten; such
-// a request must not be sent.
+// maskRequestSecrets replaces what masker finds in the text of body, a request
+// in the layout of format, with placeholders. It returns the new body, nil when
+// nothing was replaced. failure says why a request that holds a value to mask
+// could not be rewritten; such a request must not be sent.
 //
 // It reads the request as the word guard does (extractWordUnits), so it sees
 // the same text the model reads, the arguments of tool calls included, and
 // leaves the protocol alone. Text a signature covers (a replayed thinking
-// block) is never changed: the upstream would refuse the request.
-func maskRequestSecrets(format sdktranslator.Format, body []byte, table *secretTable) (out []byte, masked int, failure string) {
+// block) is never changed: the upstream would refuse the request. quiet says
+// the body is a second copy of a request whose first copy was masked already:
+// its values are not counted again.
+func maskRequestSecrets(format sdktranslator.Format, body []byte, masker *privacymask.Masker, quiet bool) (out []byte, failure string) {
+	units := extractWordUnits(format, body)
 	type slot struct {
 		doc  *wordDoc
 		lit0 int
 	}
-	done := make(map[slot]bool)
-	var patches docPatches
-	for _, unit := range extractWordUnits(format, body) {
-		if unit.signed {
-			continue
+	texts := make([]string, len(units))
+	skip := make([]bool, len(units))
+	seen := make(map[slot]bool, len(units))
+	for i, unit := range units {
+		texts[i] = unit.text
+		key := slot{unit.doc, unit.lit0}
+		// the same string reached twice is read once, so its values are counted
+		// once
+		skip[i] = unit.signed || unit.rewritable && seen[key]
+		if unit.rewritable {
+			seen[key] = true
 		}
-		spans := findSecrets(unit.text)
-		if len(spans) == 0 {
+	}
+	var plans [][]privacymask.Edit
+	if quiet {
+		plans = masker.PlanQuiet(texts, skip)
+	} else {
+		plans = masker.Plan(texts, skip)
+	}
+	var patches docPatches
+	changed := false
+	for i, unit := range units {
+		edits := plans[i]
+		if len(edits) == 0 {
 			continue
 		}
 		where := withoutSecrets(unitField(unit))
@@ -132,45 +67,56 @@ func maskRequestSecrets(format sdktranslator.Format, body []byte, table *secretT
 			if why == "" {
 				why = "it is not a plain string value"
 			}
-			return nil, 0, where + ": " + why
+			return nil, where + ": " + why
 		}
-		key := slot{unit.doc, unit.lit0}
-		if done[key] {
-			continue // the same string reached twice
-		}
-		done[key] = true
 		lit := unit.doc.data[unit.lit0:unit.lit1]
 		if text, ok := decodeJSONLiteral(lit); !ok || text != unit.text {
-			return nil, 0, where + ": " + whyUnlocated
+			return nil, where + ": " + whyUnlocated
 		}
-		edits := make([]literalEdit, len(spans))
-		for i, span := range spans {
-			edits[i] = literalEdit{start: span.start, end: span.end, text: table.placeholder(span.kind, unit.text[span.start:span.end])}
+		literalEdits := make([]literalEdit, len(edits))
+		for j, e := range edits {
+			literalEdits[j] = literalEdit{start: e.Start, end: e.End, text: e.Text}
 		}
-		literal, ok := spliceLiteral(lit, edits)
+		literal, ok := spliceLiteral(lit, literalEdits)
 		if !ok {
-			return nil, 0, where + ": " + whyEscapes
+			// An edge that falls inside an escape: the whole string is written
+			// again. The upstream reads the same text; only how it is escaped
+			// changes, the same way every time.
+			literal = append(appendJSONEscaped([]byte{'"'}, privacymask.Apply(unit.text, edits)), '"')
 		}
 		patches.add(unit.doc, patch{lit0: unit.lit0, lit1: unit.lit1, literal: literal})
-		masked += len(spans)
+		changed = true
 	}
-	if masked == 0 {
-		return nil, 0, ""
+	if !changed {
+		return nil, ""
 	}
 	written, rewriteFailed := patches.write()
 	if rewriteFailed != nil {
-		return nil, 0, withoutSecrets(rewriteFailed.field) + ": " + rewriteFailed.why
+		return nil, withoutSecrets(rewriteFailed.field) + ": " + rewriteFailed.why
 	}
-	return written, masked, ""
+	return written, ""
 }
 
 // withoutSecrets returns a field's path with the secrets in it blanked out. A
 // path names object keys, and a key may itself be a secret; the path goes to
 // the client and to the process log.
 func withoutSecrets(path string) string {
-	spans := findSecrets(path)
-	for i := len(spans) - 1; i >= 0; i-- {
-		path = path[:spans[i].start] + "<" + string(spans[i].kind) + ">" + path[spans[i].end:]
+	m := privacymask.NewMasker(nil, privacymask.Options{Secrets: true}, nil, "")
+	edits := m.Plan([]string{path}, nil)[0]
+	for i := len(edits) - 1; i >= 0; i-- {
+		e := edits[i]
+		path = path[:e.Start] + "<" + kindOfPlaceholder(e.Text) + ">" + path[e.End:]
 	}
 	return path
+}
+
+// kindOfPlaceholder is the kind a placeholder names: SECRET of
+// {{SECRET_abcdefgh}}.
+func kindOfPlaceholder(p string) string {
+	for i := len(p) - 1; i > 2; i-- {
+		if p[i] == '_' {
+			return p[2:i]
+		}
+	}
+	return ""
 }

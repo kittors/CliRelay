@@ -85,7 +85,7 @@ func filterWholeReply(f replyTextFilter, format sdktranslator.Format, resp clipr
 		tail:   make([]string, len(pieces)),
 	}
 	for i, piece := range pieces {
-		h.out[i] = f.filterText(piece.text, false).out
+		h.out[i] = filterPieceText(f, piece, piece.text, false).out
 	}
 	if !h.changed() {
 		return resp
