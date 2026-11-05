@@ -59,16 +59,21 @@ func TestPrivacyMaskingSettingsRoundTripAndTheOldSwitch(t *testing.T) {
 	h := privacyMaskHandler(t)
 	rec, body := wordTenantAUser.call(h.GetPrivacyMaskingSettings, http.MethodGet, "", "")
 	wordExpectStatus(t, rec, http.StatusOK)
-	if policy, _ := body["policy"].(map[string]any); policy["secrets"] != false || body["portal_default_allowed"] != false || len(body["enforced"].([]any)) != 0 || body["persistent"] != true {
+	// portal users set nothing (2026-11-05): no "enforced" or
+	// "portal_default_allowed" is sent any more
+	_, enforced := body["enforced"]
+	_, portalDefault := body["portal_default_allowed"]
+	if policy, _ := body["policy"].(map[string]any); policy["secrets"] != false || enforced || portalDefault || body["persistent"] != true {
 		t.Fatalf("a tenant that set nothing: %v", body)
 	}
-	// the panel of before codeProxy#1092 still sends what portal users had then:
-	// it is ignored, and the two fields read back empty
+	// a client that still sends what portal users had then has it ignored
 	rec, body = wordTenantAUser.call(h.PutPrivacyMaskingSettings, http.MethodPut,
 		`{"policy":{"secrets":true,"personal":true,"words":["Nightjar"," Nightjar "],"actions":{"EMAIL":"warn"}},"enforced":["personal"],"portal_default_allowed":true}`, "")
 	wordExpectStatus(t, rec, http.StatusOK)
 	policy, _ := body["policy"].(map[string]any)
-	if words, _ := policy["words"].([]any); len(words) != 1 || body["portal_default_allowed"] != false || len(body["enforced"].([]any)) != 0 {
+	_, enforced = body["enforced"]
+	_, portalDefault = body["portal_default_allowed"]
+	if words, _ := policy["words"].([]any); len(words) != 1 || enforced || portalDefault {
 		t.Fatalf("saved = %v", body)
 	}
 	if strings.Contains(rec.Body.String(), `"key"`) {
