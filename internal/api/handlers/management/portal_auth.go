@@ -173,11 +173,14 @@ func (h *Handler) GetPortalMe(c *gin.Context) {
 		return
 	}
 	// word_policy_allowed says whether the portal offers the user sensitive
-	// words of their own, and privacy_masking_allowed privacy masking settings
-	// of their own (the records are theirs to see either way); an older
-	// backend sends neither and the portal then offers neither.
-	c.JSON(http.StatusOK, gin.H{"user": user, "capabilities": accessPolicyCapabilities(),
-		"word_policy_allowed": h.portalWordAllowed(c, user), "privacy_masking_allowed": h.portalMaskingAllowed(c, user)})
+	// words of their own; an older backend does not send it and the portal
+	// then offers none.
+	capabilities := accessPolicyCapabilities()
+	// the portal's privacy masking tab, read only: the rules that apply and the
+	// user's own records (privacy_masking_portal.go)
+	capabilities["privacy-masking"] = true
+	c.JSON(http.StatusOK, gin.H{"user": user, "capabilities": capabilities,
+		"word_policy_allowed": h.portalWordAllowed(c, user)})
 }
 
 func (h *Handler) PutPortalPassword(c *gin.Context) {

@@ -90,14 +90,19 @@ func InitTables(db *sql.DB) error {
 	if _, err := db.Exec(wordPortalTablesSQL); err != nil {
 		return fmt.Errorf("create word portal access table: %w", err)
 	}
-	// Privacy masking: the portal users' own settings and the records. Like the
-	// tables above they only add tables, so an older build keeps running on the
-	// upgraded database.
-	if _, err := db.Exec(privacyMaskUsersTableSQL); err != nil {
-		return fmt.Errorf("create privacy masking users table: %w", err)
-	}
+	// Privacy masking records. Like the tables above they only add tables, so
+	// an older build keeps running on the upgraded database.
 	if _, err := db.Exec(privacyMaskRecordTablesSQL); err != nil {
 		return fmt.Errorf("create privacy masking record tables: %w", err)
+	}
+	// privacy_mask_users held portal users' own masking settings, from
+	// 2026-11-05 until the same day, when what is masked became the tenant's
+	// call alone. Nothing was ever written to it on relay. A build of that day
+	// still running (the slot being drained) treats a missing row as none once
+	// it has read them all at start, and recreates the table empty if rolled
+	// back to.
+	if _, err := db.Exec(`DROP TABLE IF EXISTS privacy_mask_users`); err != nil {
+		return fmt.Errorf("drop privacy masking users table: %w", err)
 	}
 	for _, stmt := range profileColumnMigrations {
 		_, _ = db.Exec(stmt) // ignore duplicate-column errors on already-migrated installs

@@ -4,37 +4,38 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"sort"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/contentmoderation"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/enduser"
 	log "github.com/sirupsen/logrus"
 )
 
 // Privacy masking (internal/privacymask, internal/contentmoderation
 // secretmask*.go; ported from magpie, github.com/yetone/magpie): values found
 // in a request are replaced with placeholders before it leaves and put back in
-// the reply. A tenant sets it up here:
+// the reply. What is masked is the tenant's call, set up here:
 //
-//	GET/PUT /privacy-masking/settings            the default policy, what is enforced for portal users, whether they may keep their own
+//	GET/PUT /privacy-masking/settings            the tenant's policy
 //	POST    /privacy-masking/preview             a text masked under a policy, nothing kept
-//	GET     /privacy-masking/portal              every portal user with their permission
-//	PUT     /privacy-masking/portal/users/:id    one user's permission: allowed, forbidden, or null for the default
 //	GET     /privacy-masking/summary             the records counted over the last days
 //	GET     /privacy-masking/records             the records a page at a time
 //	GET     /privacy-masking/records/:key        one record with its snippets
 //	DELETE  /privacy-masking/records             every record (of one portal user or API key, when asked)
 //
-// Portal users keep their own under /v0/portal/privacy-masking
-// (privacy_masking_portal.go). Nothing here ever returns a value masking
-// found, or the tenant's placeholder key.
+// Portal users only see what applies to them and their own records, under
+// /v0/portal/privacy-masking (privacy_masking_portal.go); they set nothing.
+// Nothing here ever returns a value masking found, or the tenant's
+// placeholder key.
 
 type privacyMaskSettingsView struct {
-	Policy               contentmoderation.MaskPolicy `json:"policy"`
-	Enforced             []string                     `json:"enforced"`
-	PortalDefaultAllowed bool                         `json:"portal_default_allowed"`
+	Policy contentmoderation.MaskPolicy `json:"policy"`
+	// Enforced and PortalDefaultAllowed are always empty: portal users kept
+	// settings of their own only from 2026-11-05 until the same day. The panel
+	// of before codeProxy#1092 still reads both, so they stay until it is
+	// replaced everywhere; a PUT that still carries them has them ignored.
+	Enforced             []string `json:"enforced"`
+	PortalDefaultAllowed bool     `json:"portal_default_allowed"`
 	// Persistent is false when no settings store is attached.
 	Persistent bool `json:"persistent"`
 	// KeyProtected says the placeholder key is (or, once made, will be) stored
@@ -48,15 +49,11 @@ type privacyMaskSettingsView struct {
 
 func (h *Handler) privacyMaskSettingsView(settings contentmoderation.SecretMaskingSettings) privacyMaskSettingsView {
 	view := privacyMaskSettingsView{
-		Policy:               settings.PolicyView(),
-		Enforced:             settings.Enforced,
-		PortalDefaultAllowed: settings.PortalAllowed(),
-		Persistent:           h.secretMaskingRegistry().Persistent(),
-		KeyProtected:         contentmoderation.DataKeyConfigured() && settings.Key == "",
-		ServerDisabled:       contentmoderation.PrivacyMaskingDisabledByServer(),
-	}
-	if view.Enforced == nil {
-		view.Enforced = []string{}
+		Policy:         settings.PolicyView(),
+		Enforced:       []string{},
+		Persistent:     h.secretMaskingRegistry().Persistent(),
+		KeyProtected:   contentmoderation.DataKeyConfigured() && settings.Key == "",
+		ServerDisabled: contentmoderation.PrivacyMaskingDisabledByServer(),
 	}
 	if !settings.UpdatedAt.IsZero() {
 		updated := settings.UpdatedAt
@@ -71,15 +68,13 @@ func (h *Handler) GetPrivacyMaskingSettings(c *gin.Context) {
 
 func (h *Handler) PutPrivacyMaskingSettings(c *gin.Context) {
 	var body struct {
-		Policy               *contentmoderation.MaskPolicy `json:"policy"`
-		Enforced             []string                      `json:"enforced"`
-		PortalDefaultAllowed *bool                         `json:"portal_default_allowed"`
+		Policy *contentmoderation.MaskPolicy `json:"policy"`
 	}
 	if !readPrivacyMaskBody(c, &body, 1<<20) {
 		return
 	}
-	if body.Policy == nil || body.PortalDefaultAllowed == nil {
-		privacyMaskBadRequest(c, "policy and portal_default_allowed are required")
+	if body.Policy == nil {
+		privacyMaskBadRequest(c, "policy is required")
 		return
 	}
 	policy := *body.Policy
@@ -87,12 +82,7 @@ func (h *Handler) PutPrivacyMaskingSettings(c *gin.Context) {
 		privacyMaskError(c, err)
 		return
 	}
-	enforced, err := contentmoderation.NormalizeEnforced(body.Enforced)
-	if err != nil {
-		privacyMaskError(c, err)
-		return
-	}
-	saved, err := h.secretMaskingRegistry().SetPolicy(c.Request.Context(), effectiveTenantID(c), policy, enforced, *body.PortalDefaultAllowed)
+	saved, err := h.secretMaskingRegistry().SetPolicy(c.Request.Context(), effectiveTenantID(c), policy)
 	if err != nil {
 		privacyMaskError(c, err)
 		return
@@ -114,90 +104,22 @@ func (h *Handler) PostPrivacyMaskingPreview(c *gin.Context) {
 		privacyMaskBadRequest(c, "the text is too long to try out")
 		return
 	}
-	settings := h.secretMaskingRegistry().For(effectiveTenantID(c))
+	policy := h.secretMaskingRegistry().For(effectiveTenantID(c)).PolicyView()
 	if body.Policy != nil {
-		draft := *body.Policy
-		if err := draft.Normalize(); err != nil {
+		policy = *body.Policy
+		if err := policy.Normalize(); err != nil {
 			privacyMaskError(c, err)
 			return
 		}
-		settings = contentmoderation.SecretMaskingSettings{Policy: &draft}
 	}
-	c.JSON(http.StatusOK, contentmoderation.PreviewMask(settings, nil, body.Text))
+	c.JSON(http.StatusOK, contentmoderation.PreviewMask(policy, body.Text))
 }
 
-// privacyMaskPortalUser is a portal user as the tenant's permission list shows
-// them.
-type privacyMaskPortalUser struct {
-	enduser.UserBrief
-	// Override is the user's own permission, nil when the default applies;
-	// Allowed is what applies.
-	Override  *bool `json:"override"`
-	Allowed   bool  `json:"allowed"`
-	HasPolicy bool  `json:"has_policy"`
-}
-
-// GetPrivacyMaskingPortal lists the tenant's portal users with whether each may
-// keep a policy of their own, and has one.
-func (h *Handler) GetPrivacyMaskingPortal(c *gin.Context) {
-	ctx, tenantID := c.Request.Context(), effectiveTenantID(c)
-	settings := h.secretMaskingRegistry().For(tenantID)
-	stored, err := h.contentModerationStore().ListMaskUsers(ctx, tenantID)
-	if err != nil {
-		privacyMaskError(c, err)
-		return
-	}
-	svc := h.endUserService()
-	if svc == nil {
-		privacyMaskError(c, contentmoderation.ErrUnavailable)
-		return
-	}
-	briefs, err := svc.ListUserBriefs(ctx, tenantID)
-	if err != nil && !errors.Is(err, enduser.ErrNotFound) {
-		privacyMaskError(c, err)
-		return
-	}
-	users := make([]privacyMaskPortalUser, 0, len(briefs))
-	for _, brief := range briefs {
-		row := stored[brief.ID]
-		users = append(users, privacyMaskPortalUser{UserBrief: brief, Override: row.Allowed, Allowed: row.AllowedUnder(settings), HasPolicy: row.Policy != nil})
-	}
-	// users who keep a policy first: they are the ones a tenant looks for here
-	sort.SliceStable(users, func(i, j int) bool { return users[i].HasPolicy && !users[j].HasPolicy })
-	c.JSON(http.StatusOK, gin.H{"default_allowed": settings.PortalAllowed(), "users": users})
-}
-
-// PutPrivacyMaskingPortalUser sets one portal user's permission.
-func (h *Handler) PutPrivacyMaskingPortalUser(c *gin.Context) {
-	tenantID := effectiveTenantID(c)
-	user, ok := h.portalUserOfTenant(c, tenantID, c.Param("id"))
-	if !ok {
-		return
-	}
-	var body struct {
-		Allowed *bool `json:"allowed"`
-	}
-	if !readPrivacyMaskBody(c, &body, 4096) {
-		return
-	}
-	store := h.contentModerationStore()
-	if err := store.SetMaskUserAllowed(c.Request.Context(), tenantID, user.ID, body.Allowed); err != nil {
-		privacyMaskError(c, err)
-		return
-	}
-	row, err := store.GetMaskUser(c.Request.Context(), tenantID, user.ID)
-	if err != nil {
-		privacyMaskError(c, err)
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{"id": user.ID, "override": body.Allowed, "allowed": row.AllowedUnder(h.secretMaskingRegistry().For(tenantID))})
-}
-
-// forgetEndUserPrivacyMasking clears what privacy masking keeps of a portal
-// user who has just been deleted: their settings and their records.
+// forgetEndUserPrivacyMasking removes the records of a portal user who has
+// just been deleted.
 func (h *Handler) forgetEndUserPrivacyMasking(c *gin.Context, tenantID, endUserID string) {
-	if err := h.contentModerationStore().DeleteMaskUser(c.Request.Context(), tenantID, endUserID); err != nil && !errors.Is(err, contentmoderation.ErrUnavailable) {
-		log.WithError(err).WithField("end_user_id", endUserID).Warn("could not remove the deleted portal user's privacy masking settings and records")
+	if err := h.contentModerationStore().DeleteMaskUserRecords(c.Request.Context(), tenantID, endUserID); err != nil && !errors.Is(err, contentmoderation.ErrUnavailable) {
+		log.WithError(err).WithField("end_user_id", endUserID).Warn("could not remove the deleted portal user's privacy masking records")
 	}
 }
 

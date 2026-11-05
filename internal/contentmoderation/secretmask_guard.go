@@ -118,13 +118,13 @@ func maskScopeID(ctx context.Context, tenantID string) string {
 }
 
 // maskSecrets replaces what privacy masking finds in a request with
-// placeholders, under its tenant's policy or its portal user's own one
-// (effectiveMaskOptions), and adds the reply filter that puts the values back.
+// placeholders, under its tenant's policy, and adds the reply filter that puts
+// the values back.
 // words is what the word guard made of the request; the bodies it rewrote are
 // the ones masked.
 //
-// A request whose values cannot all be replaced is not sent: the tenant, or
-// the user, asked for them to stay here.
+// A request whose values cannot all be replaced is not sent: the tenant asked
+// for them to stay here.
 func (m *RuntimeModerator) maskSecrets(ctx context.Context, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, result coreauth.RequestGuardResult) coreauth.RequestGuardResult {
 	if secretMaskingTestHook != nil {
 		secretMaskingTestHook()
@@ -142,19 +142,7 @@ func (m *RuntimeModerator) maskSecrets(ctx context.Context, req cliproxyexecutor
 			Message: "This tenant's secret masking settings could not be read just now, so the request was not sent. Try again in a moment."}
 	}
 	endUserID, keyID := wordGuardEndUserID(ctx), wordGuardKeyID(ctx)
-	var own *MaskPolicy
-	if endUserID != "" {
-		user, known := MaskUsers().Lookup(tenantID, endUserID)
-		if !known {
-			// the user may have switched masking on for their own requests
-			m.warnSecretMasking(tenantID, "a portal user's privacy masking settings could not be read; their requests are refused until they can be")
-			setSecretMaskingSnapshot(ctx, &SecretMaskingSnapshot{Refused: "settings_unreadable"})
-			return coreauth.RequestGuardResult{Blocked: true, HTTPStatus: http.StatusServiceUnavailable,
-				Message: "Your privacy masking settings could not be read just now, so the request was not sent. Try again in a moment."}
-		}
-		own = user.applies(settings)
-	}
-	options := effectiveMaskOptions(settings, own, endUserID != "")
+	options := settings.policy().options()
 	if !options.Any() {
 		return result
 	}

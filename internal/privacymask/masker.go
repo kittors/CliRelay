@@ -213,7 +213,7 @@ func (m *Masker) edits(s string, found []span) (edits []Edit, warns []Mark) {
 		}
 		next = f.end
 		v := s[f.start:f.end]
-		if m.opts.allows(v, f.kind) {
+		if m.opts.allows(v) {
 			continue
 		}
 		act := m.opts.actionOf(f.kind)
