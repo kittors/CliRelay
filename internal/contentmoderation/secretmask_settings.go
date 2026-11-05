@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/configsync"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/privacymask"
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/sync/singleflight"
 )
@@ -29,13 +30,20 @@ func init() {
 // secretmask_rules.go). It is off until the tenant switches it on.
 type SecretMaskingSettings struct {
 	Enabled bool `json:"enabled"`
-	// Key is the tenant's placeholder key (see secretTable.placeholder): random
+	// Key is the tenant's placeholder key (see privacymask.Masker): random
 	// bytes in base64, made when masking is first switched on. Switching it off
 	// keeps the key, so a conversation masked before gets the same placeholders,
 	// and keeps its prompt cache, when masking comes back on. It is never sent to
 	// a client.
 	Key       string    `json:"key,omitempty"`
 	UpdatedAt time.Time `json:"updated_at,omitzero"`
+}
+
+// options is what masking finds for these settings: the secrets. Personal
+// data, a tenant's own words and rules, and what to do with each kind come
+// with the settings of the next stage.
+func (s SecretMaskingSettings) options() privacymask.Options {
+	return privacymask.Options{Secrets: true}
 }
 
 // secretMaskingKeyBytes is the length of a placeholder key.
@@ -59,6 +67,12 @@ var ErrSecretMaskingNotPersistent = errors.New("secret masking settings cannot b
 // ErrSecretMaskingConflict is returned by SecretMaskingStore.Save when the
 // stored settings are no longer at the version they were read at.
 var ErrSecretMaskingConflict = errors.New("secret masking settings were changed by someone else while being saved")
+
+// SecretMaskingBulkStore is a SecretMaskingStore that can also read every
+// tenant's settings at once (Preload).
+type SecretMaskingBulkStore interface {
+	LoadAll(ctx context.Context) (map[string]SecretMaskingSettings, error)
+}
 
 // SecretMaskingStore loads and saves a tenant's settings. It is an interface
 // so this package, which sits on the request path, does not depend on the
@@ -119,6 +133,10 @@ type SecretMaskingRegistry struct {
 	gen   uint64
 	loads singleflight.Group
 	now   func() time.Time
+	// preloaded says every tenant's settings were read at once (Preload): a
+	// tenant with no entry has no row, so masking is off for it, even while
+	// the store cannot be read.
+	preloaded bool
 }
 
 // NewSecretMaskingRegistry returns a registry with no store attached: masking
@@ -142,7 +160,9 @@ func (r *SecretMaskingRegistry) SetStore(store SecretMaskingStore) {
 	r.store = store
 	r.entries = make(map[string]secretMaskingEntry)
 	r.gen++
+	r.preloaded = false
 	r.mu.Unlock()
+	maskScopes.Drop("")
 }
 
 // Persistent reports whether writes are saved.
@@ -156,7 +176,8 @@ func (r *SecretMaskingRegistry) Persistent() bool {
 }
 
 // Invalidate expires tenantID's cached settings, for a change made by another
-// node.
+// node. What masking remembers of the tenant's requests is forgotten with it:
+// the next request brings it again.
 func (r *SecretMaskingRegistry) Invalidate(tenantID string) {
 	if r == nil {
 		return
@@ -169,6 +190,7 @@ func (r *SecretMaskingRegistry) Invalidate(tenantID string) {
 	}
 	r.gen++
 	r.mu.Unlock()
+	maskScopes.Drop(tenantID + "\x00")
 }
 
 // InvalidateAll expires every cached tenant, for a resync after missed events.
@@ -183,24 +205,37 @@ func (r *SecretMaskingRegistry) InvalidateAll() {
 	}
 	r.gen++
 	r.mu.Unlock()
+	maskScopes.Drop("")
 }
 
-// For returns the settings of tenantID, from the cache unless the entry has
-// expired; see secretMaskingRefreshWait and secretMaskingFirstReadWait for how
-// long it waits for the store.
+// For returns the settings of tenantID; see Lookup.
 func (r *SecretMaskingRegistry) For(tenantID string) SecretMaskingSettings {
+	settings, _ := r.Lookup(tenantID)
+	return settings
+}
+
+// Lookup returns the settings of tenantID, from the cache unless the entry has
+// expired; see secretMaskingRefreshWait and secretMaskingFirstReadWait for how
+// long it waits for the store. known is false when they are not known: never
+// read, not preloaded, and the store did not answer now. Masking may be on for
+// such a tenant, so its request must not be sent as it is.
+func (r *SecretMaskingRegistry) Lookup(tenantID string) (settings SecretMaskingSettings, known bool) {
 	if r == nil {
-		return SecretMaskingSettings{}
+		return SecretMaskingSettings{}, true
 	}
 	tenantID = configsync.NormalizeTenantID(tenantID)
 	r.mu.RLock()
-	store, cached, gen := r.store, r.entries[tenantID], r.gen
+	store, cached, gen, preloaded := r.store, r.entries[tenantID], r.gen, r.preloaded
 	r.mu.RUnlock()
 	if store == nil {
-		return SecretMaskingSettings{}
+		return SecretMaskingSettings{}, true
+	}
+	if !cached.read && preloaded {
+		// no row when every row was read: off, as far as anything here knows
+		cached.read = true
 	}
 	if r.now().Before(cached.until) {
-		return cached.settings
+		return cached.settings, true
 	}
 	// Concurrent callers share one read. The generation is part of the key: a
 	// read that started before an invalidation or a write returns the row as it
@@ -217,13 +252,14 @@ func (r *SecretMaskingRegistry) For(tenantID string) SecretMaskingSettings {
 	defer wait.Stop()
 	select {
 	case result := <-loaded:
-		return result.Val.(SecretMaskingSettings)
+		entry := result.Val.(secretMaskingEntry)
+		return entry.settings, entry.read
 	case <-wait.C:
-		return cached.settings
+		return cached.settings, cached.read
 	}
 }
 
-func (r *SecretMaskingRegistry) reload(tenantID string, store SecretMaskingStore, gen uint64, previous secretMaskingEntry) SecretMaskingSettings {
+func (r *SecretMaskingRegistry) reload(tenantID string, store SecretMaskingStore, gen uint64, previous secretMaskingEntry) secretMaskingEntry {
 	ctx, cancel := context.WithTimeout(context.Background(), secretMaskingLoadTimeout)
 	defer cancel()
 	settings, _, err := store.Load(ctx, tenantID)
@@ -240,7 +276,80 @@ func (r *SecretMaskingRegistry) reload(tenantID string, store SecretMaskingStore
 		r.entries[tenantID] = next
 	}
 	r.mu.Unlock()
-	return next.settings
+	return next
+}
+
+// Preload reads every tenant's settings at once, when the store can. After it,
+// a tenant whose settings cannot be read on its first request is known still:
+// one with no row has masking off. Before it (or with a store that cannot),
+// such a request is refused rather than sent unmasked (Lookup).
+func (r *SecretMaskingRegistry) Preload(ctx context.Context) error {
+	if r == nil {
+		return nil
+	}
+	r.mu.RLock()
+	store := r.store
+	r.mu.RUnlock()
+	bulk, ok := store.(SecretMaskingBulkStore)
+	if !ok {
+		return nil
+	}
+	all, err := bulk.LoadAll(ctx)
+	if err != nil {
+		return err
+	}
+	now := r.now()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.store != store {
+		return nil // another store came meanwhile; what was read is not its
+	}
+	for tenantID, settings := range all {
+		tenantID = configsync.NormalizeTenantID(tenantID)
+		if have, ok := r.entries[tenantID]; ok && have.read {
+			continue // read or written since: newer than this
+		}
+		r.entries[tenantID] = secretMaskingEntry{settings: settings, until: now.Add(secretMaskingTTL), read: true}
+	}
+	r.preloaded = true
+	return nil
+}
+
+// secretMaskingPreloadRetry spaces the tries of PreloadInBackground.
+var secretMaskingPreloadRetry = 5 * time.Second
+
+// PreloadInBackground runs Preload until it succeeds or the store changes. It
+// returns at once.
+func (r *SecretMaskingRegistry) PreloadInBackground() {
+	if r == nil {
+		return
+	}
+	r.mu.RLock()
+	store := r.store
+	r.mu.RUnlock()
+	if _, ok := store.(SecretMaskingBulkStore); !ok {
+		return
+	}
+	go func() {
+		for attempt := 0; ; attempt++ {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*secretMaskingLoadTimeout)
+			err := r.Preload(ctx)
+			cancel()
+			if err == nil {
+				return
+			}
+			if attempt%12 == 0 {
+				log.WithError(err).Warn("secret masking: reading every tenant's settings failed; retrying")
+			}
+			time.Sleep(secretMaskingPreloadRetry)
+			r.mu.RLock()
+			same := r.store == store
+			r.mu.RUnlock()
+			if !same {
+				return
+			}
+		}
+	}()
 }
 
 // SetEnabled switches masking on or off for tenantID and returns the settings
@@ -291,10 +400,12 @@ func (r *SecretMaskingRegistry) SetEnabled(ctx context.Context, tenantID string,
 	return SecretMaskingSettings{}, ErrSecretMaskingConflict
 }
 
-// install makes settings the cached ones of tenantID.
+// install makes settings the cached ones of tenantID, and forgets what masking
+// remembered of the tenant's requests: switched off, nothing of them is kept.
 func (r *SecretMaskingRegistry) install(tenantID string, settings SecretMaskingSettings) {
 	r.mu.Lock()
 	r.entries[tenantID] = secretMaskingEntry{settings: settings, until: r.now().Add(secretMaskingTTL), read: true}
 	r.gen++
 	r.mu.Unlock()
+	maskScopes.Drop(tenantID + "\x00")
 }

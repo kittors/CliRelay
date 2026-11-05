@@ -57,6 +57,25 @@ type replyTextFilter interface {
 	skipReply(reason string)
 }
 
+// jsonTextFilter is a replyTextFilter that writes into text that is itself
+// JSON (replyPiece.jsonText) differently: the secret masker puts a value back
+// there escaped, so the arguments of a tool call stay JSON whatever the value
+// holds. A filter without it treats such text as any other.
+type jsonTextFilter interface {
+	filterJSONText(text string, more bool) replyText
+}
+
+// filterPieceText is f's filterText for the text of piece, or its
+// filterJSONText where the piece is JSON text and f has one.
+func filterPieceText(f replyTextFilter, piece replyPiece, text string, more bool) replyText {
+	if piece.jsonText {
+		if j, ok := f.(jsonTextFilter); ok {
+			return j.filterJSONText(text, more)
+		}
+	}
+	return f.filterText(text, more)
+}
+
 func newWordReplyStream(engine replyTextFilter, format sdktranslator.Format) *wordReplyStream {
 	return &wordReplyStream{engine: engine, format: format}
 }
@@ -139,9 +158,9 @@ func (s *wordReplyStream) frame(f replyFrame) [][]byte {
 	for i, piece := range pieces {
 		var r replyText
 		if piece.full {
-			r = s.engine.filterText(piece.text, false)
+			r = filterPieceText(s.engine, piece, piece.text, false)
 		} else {
-			r = s.engine.filterText(carry[i]+piece.text, true)
+			r = filterPieceText(s.engine, piece, carry[i]+piece.text, true)
 		}
 		h.out[i], h.tail[i] = r.out, r.held
 		holding = holding || r.held != ""
@@ -182,7 +201,7 @@ func (s *wordReplyStream) release(next []replyPiece) ([][]byte, map[int]string) 
 			}
 		}
 		if h.tail[i] != "" {
-			h.out[i] += s.engine.filterText(h.tail[i], false).out
+			h.out[i] += filterPieceText(s.engine, h.pieces[i], h.tail[i], false).out
 			h.tail[i] = ""
 		}
 	}

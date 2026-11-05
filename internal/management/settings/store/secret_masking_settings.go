@@ -48,12 +48,38 @@ func (SecretMaskingSettings) Save(ctx context.Context, tenantID string, settings
 	return nil
 }
 
+// LoadAll returns every tenant's stored settings, keyed by tenant id: the
+// registry reads them once at start (Preload), so a tenant whose row cannot be
+// read on its first request is still known to have masking on or off.
+func (SecretMaskingSettings) LoadAll(context.Context) (map[string]contentmoderation.SecretMaskingSettings, error) {
+	payloads, err := usage.RuntimeSettingPayloadsByKey(contentmoderation.SecretMaskingSettingKey)
+	if err != nil {
+		return nil, fmt.Errorf("load every %s: %w", contentmoderation.SecretMaskingSettingKey, err)
+	}
+	out := make(map[string]contentmoderation.SecretMaskingSettings, len(payloads))
+	for tenantID, payload := range payloads {
+		if len(payload) == 0 {
+			continue
+		}
+		var settings contentmoderation.SecretMaskingSettings
+		if err := json.Unmarshal(payload, &settings); err != nil {
+			// One bad row must not stop the others from being known; the tenant's
+			// own read reports it.
+			continue
+		}
+		out[tenantID] = settings
+	}
+	return out, nil
+}
+
 // AttachSecretMaskingSettings attaches the store to the registry of this
-// process when a database is available. It is safe to call from every place
-// that assembles the gateway, as each of them may be the only one running.
+// process when a database is available, and reads every tenant's settings in
+// the background. It is safe to call from every place that assembles the
+// gateway, as each of them may be the only one running.
 func AttachSecretMaskingSettings() {
 	if usage.RuntimeDB() == nil || contentmoderation.SecretMasking().Persistent() {
 		return
 	}
 	contentmoderation.SecretMasking().SetStore(SecretMaskingSettings{})
+	contentmoderation.SecretMasking().PreloadInBackground()
 }

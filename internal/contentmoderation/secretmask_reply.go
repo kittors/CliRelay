@@ -5,26 +5,26 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/privacymask"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v6/sdk/translator"
 	"github.com/tidwall/gjson"
 )
 
-// secretReply puts the secrets of one request back into its reply, wherever
+// secretReply puts the values of one request back into its reply, wherever
 // the model wrote their placeholders: in its answer and in the arguments of
 // the tools it calls, which the client runs with the real values. Reasoning
 // text keeps the placeholders, as the word guard leaves it alone: some of it is
 // signed and goes back to the upstream as it came.
 type secretReply struct {
-	table  *secretTable
-	format sdktranslator.Format
+	restorer *privacymask.Restorer
+	format   sdktranslator.Format
 }
 
-// newSecretReply returns the filter for table, which masking no longer adds to.
-func newSecretReply(table *secretTable, format sdktranslator.Format) *secretReply {
-	table.seal()
-	return &secretReply{table: table, format: format}
+// newSecretReply returns the filter that puts back what restorer knows.
+func newSecretReply(restorer *privacymask.Restorer, format sdktranslator.Format) *secretReply {
+	return &secretReply{restorer: restorer, format: format}
 }
 
 // FilterResponse implements coreauth.ReplyFilter.
@@ -48,14 +48,24 @@ func (r *secretReply) pieces(format sdktranslator.Format, doc []byte, stream boo
 }
 
 func (r *secretReply) filterText(text string, more bool) replyText {
+	return r.restore(text, more, false)
+}
+
+// filterJSONText implements jsonTextFilter: in a tool call's arguments a
+// value goes in escaped, so they stay JSON whatever the value holds.
+func (r *secretReply) filterJSONText(text string, more bool) replyText {
+	return r.restore(text, more, true)
+}
+
+func (r *secretReply) restore(text string, more, escaped bool) replyText {
 	if !more {
-		return replyText{out: r.table.restore(text)}
+		return replyText{out: r.restorer.Restore(text, escaped)}
 	}
-	// The start of a placeholder at the end waits for the rest of it. The cut
-	// cannot fall inside a whole placeholder: every one starts with "{{", and the
-	// second brace of one is followed by its kind.
-	cut := r.table.partialTail(text)
-	return replyText{out: r.table.restore(text[:cut]), held: text[cut:]}
+	// What may still become a placeholder at the end waits for the rest of it,
+	// in any of the ways a model writes one back ({{API_, {{ phone_b5, a bare
+	// API_KEY_ab3).
+	cut := len(text) - r.restorer.PartialTail(text)
+	return replyText{out: r.restorer.Restore(text[:cut], escaped), held: text[cut:]}
 }
 
 // skipReply has nothing to note: the request log says what was masked.
@@ -95,7 +105,7 @@ func (r *replyReader) claudeToolInput(stream bool) {
 	switch r.root.Get("type").String() {
 	case "content_block_delta":
 		if delta := r.root.Get("delta"); delta.Get("type").String() == "input_json_delta" {
-			r.add("claude:"+r.root.Get("index").Raw, delta.Get("partial_json"), false)
+			r.addJSONText("claude:"+r.root.Get("index").Raw, delta.Get("partial_json"), false)
 		}
 	case "content_block_start":
 		if block := r.root.Get("content_block"); block.Get("type").String() == "tool_use" {
@@ -112,9 +122,9 @@ func (r *replyReader) chatToolInput(stream bool) {
 		}
 		if !stream {
 			for _, call := range arrayItems(choice.Get("message.tool_calls")) {
-				r.add("", call.Get("function.arguments"), true)
+				r.addJSONText("", call.Get("function.arguments"), true)
 			}
-			r.add("", choice.Get("message.function_call.arguments"), true)
+			r.addJSONText("", choice.Get("message.function_call.arguments"), true)
 			continue
 		}
 		for j, call := range arrayItems(choice.Get("delta.tool_calls")) {
@@ -122,9 +132,9 @@ func (r *replyReader) chatToolInput(stream bool) {
 			if index := call.Get("index"); index.Type == gjson.Number {
 				callKey = key + ":tool:" + index.Raw
 			}
-			r.add(callKey, call.Get("function.arguments"), false)
+			r.addJSONText(callKey, call.Get("function.arguments"), false)
 		}
-		r.add(key+":function", choice.Get("delta.function_call.arguments"), false)
+		r.addJSONText(key+":function", choice.Get("delta.function_call.arguments"), false)
 	}
 }
 
@@ -135,10 +145,12 @@ func (r *replyReader) responsesToolInput(stream bool) {
 	}
 	key := "resptool:" + r.root.Get("item_id").String() + ":" + r.root.Get("output_index").Raw
 	switch r.root.Get("type").String() {
-	case "response.function_call_arguments.delta", "response.custom_tool_call_input.delta":
+	case "response.function_call_arguments.delta":
+		r.addJSONText(key, r.root.Get("delta"), false)
+	case "response.custom_tool_call_input.delta":
 		r.add(key, r.root.Get("delta"), false)
 	case "response.function_call_arguments.done":
-		r.add("", r.root.Get("arguments"), true)
+		r.addJSONText("", r.root.Get("arguments"), true)
 	case "response.custom_tool_call_input.done":
 		r.add("", r.root.Get("input"), true)
 	case "response.output_item.added", "response.output_item.done":
@@ -157,7 +169,7 @@ func (r *replyReader) responseToolItems(output gjson.Result) {
 func (r *replyReader) responseToolItem(item gjson.Result) {
 	switch item.Get("type").String() {
 	case "function_call":
-		r.add("", item.Get("arguments"), true)
+		r.addJSONText("", item.Get("arguments"), true)
 	case "custom_tool_call":
 		r.add("", item.Get("input"), true)
 	}

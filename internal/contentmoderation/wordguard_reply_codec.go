@@ -31,6 +31,9 @@ type replyPiece struct {
 	// copies of the answer that streaming protocols repeat at the end. Nothing
 	// is held back for it.
 	full bool
+	// jsonText says the text is itself JSON, or a piece of it: a tool call's
+	// arguments. What a filter writes into it goes in escaped (jsonTextFilter).
+	jsonText bool
 }
 
 // replyReader collects the pieces of one document.
@@ -109,6 +112,16 @@ func (r *replyReader) add(key string, at gjson.Result, full bool) {
 		return
 	}
 	r.pieces = append(r.pieces, replyPiece{key: key, text: at.String(), lit0: lit0, lit1: lit1, full: full || key == ""})
+}
+
+// addJSONText is add for a string whose text is JSON: a tool call's
+// arguments, whole or a piece of them as a stream sends them.
+func (r *replyReader) addJSONText(key string, at gjson.Result, full bool) {
+	n := len(r.pieces)
+	r.add(key, at, full)
+	if len(r.pieces) > n {
+		r.pieces[n].jsonText = true
+	}
 }
 
 func (r *replyReader) claude(stream bool) {
