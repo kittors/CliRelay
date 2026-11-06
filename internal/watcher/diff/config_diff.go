@@ -30,6 +30,21 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 	if oldCfg.CodexRequestZstdEnabled() != newCfg.CodexRequestZstdEnabled() {
 		changes = append(changes, fmt.Sprintf("codex-request-zstd: %t -> %t", oldCfg.CodexRequestZstdEnabled(), newCfg.CodexRequestZstdEnabled()))
 	}
+	if oldCfg.ResponsesWebsocketEnabled() != newCfg.ResponsesWebsocketEnabled() {
+		changes = append(changes, fmt.Sprintf("responses-websocket.disabled: %t -> %t", !oldCfg.ResponsesWebsocketEnabled(), !newCfg.ResponsesWebsocketEnabled()))
+	}
+	if oldCfg.ResponsesWebsocketCompressionEnabled() != newCfg.ResponsesWebsocketCompressionEnabled() {
+		changes = append(changes, fmt.Sprintf("responses-websocket.compression: %t -> %t", oldCfg.ResponsesWebsocketCompressionEnabled(), newCfg.ResponsesWebsocketCompressionEnabled()))
+	}
+	if oldCfg.ResponsesWebsocketMaxMessageBytes() != newCfg.ResponsesWebsocketMaxMessageBytes() {
+		changes = append(changes, fmt.Sprintf("responses-websocket.max-message-mb: %d -> %d", oldCfg.ResponsesWebsocketMaxMessageBytes()>>20, newCfg.ResponsesWebsocketMaxMessageBytes()>>20))
+	}
+	if oldCfg.ResponsesWebsocketMaxTranscriptBytes() != newCfg.ResponsesWebsocketMaxTranscriptBytes() {
+		changes = append(changes, fmt.Sprintf("responses-websocket.max-transcript-mb: %d -> %d", oldCfg.ResponsesWebsocketMaxTranscriptBytes()>>20, newCfg.ResponsesWebsocketMaxTranscriptBytes()>>20))
+	}
+	if oldCfg.ResponsesWebsocketIdleTimeout() != newCfg.ResponsesWebsocketIdleTimeout() {
+		changes = append(changes, fmt.Sprintf("responses-websocket.idle-timeout: %s -> %s", oldCfg.ResponsesWebsocketIdleTimeout(), newCfg.ResponsesWebsocketIdleTimeout()))
+	}
 	if oldCfg.Debug != newCfg.Debug {
 		changes = append(changes, fmt.Sprintf("debug: %t -> %t", oldCfg.Debug, newCfg.Debug))
 	}

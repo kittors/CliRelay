@@ -138,7 +138,7 @@ func dialWS(t *testing.T, url string) *websocket.Conn {
 	return conn
 }
 
-// readTurn reads the events of one turn, up to response.done or an error.
+// readTurn reads the events of one turn, up to response.completed or an error.
 func readTurn(t *testing.T, conn *websocket.Conn) []string {
 	t.Helper()
 	var events []string
@@ -146,7 +146,7 @@ func readTurn(t *testing.T, conn *websocket.Conn) []string {
 		frame := string(wsTurnRead(t, conn))
 		events = append(events, frame)
 		switch gjson.Get(frame, "type").String() {
-		case "response.done", "error":
+		case "response.completed", "error":
 			return events
 		}
 	}
@@ -179,8 +179,8 @@ func TestResponsesWebsocketAnswersAToolLoopTurnLocally(t *testing.T) {
 	wsTurnSend(t, conn, toolLoopFrame(9))
 	events := readTurn(t, conn)
 	last := events[len(events)-1]
-	if gjson.Get(last, "type").String() != "response.done" {
-		t.Fatalf("the turn did not end with response.done: %v", events)
+	if gjson.Get(last, "type").String() != "response.completed" {
+		t.Fatalf("the turn did not end with response.completed: %v", events)
 	}
 	if text := gjson.Get(last, "response.output.0.content.0.text").String(); !strings.Contains(text, "loop protection") {
 		t.Fatalf("no notice in %s", last)
@@ -197,7 +197,7 @@ func TestResponsesWebsocketAnswersAToolLoopTurnLocally(t *testing.T) {
 	on.Store(false)
 	wsTurnSend(t, conn, toolLoopFrame(9))
 	events = readTurn(t, conn)
-	if gjson.Get(events[len(events)-1], "type").String() != "response.done" || exec.calls.Load() != 1 {
+	if gjson.Get(events[len(events)-1], "type").String() != "response.completed" || exec.calls.Load() != 1 {
 		t.Fatalf("calls %d, events %v", exec.calls.Load(), events)
 	}
 	if _, tools := observer.counts(); tools != 1 {
@@ -236,7 +236,7 @@ func TestResponsesWebsocketEndsALoopingReplyAndKeepsTheConnection(t *testing.T) 
 	exec.loop.Store(false)
 	wsTurnSend(t, conn, wsTurnCreate)
 	events = readTurn(t, conn)
-	if gjson.Get(events[len(events)-1], "type").String() != "response.done" {
+	if gjson.Get(events[len(events)-1], "type").String() != "response.completed" {
 		t.Fatalf("next turn: %v", events)
 	}
 	if cuts, _ := observer.counts(); cuts != 1 {
@@ -267,7 +267,7 @@ func TestResponsesWebsocketSurfacesTheErrorOfAStreamThatEndedWithOne(t *testing.
 			Error:      &loopdetect.ReplyLoopError{Trip: loopdetect.ReplyTrip{Window: 256, Distinct: 4, Units: []string{"Okay."}}},
 		}
 		close(errs)
-		_, _ = h.forwardResponsesWebsocket(c, conn, func(...interface{}) {}, data, errs, &strings.Builder{}, "test")
+		_, _, _ = h.forwardResponsesWebsocket(c, conn, func(...interface{}) {}, data, errs, &strings.Builder{}, "test")
 	})
 	server := httptest.NewServer(router)
 	defer server.Close()

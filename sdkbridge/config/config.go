@@ -9,6 +9,7 @@ type Config = internalconfig.Config
 type APIKeyEntry = internalconfig.APIKeyEntry
 
 type StreamingConfig = internalconfig.StreamingConfig
+type ResponsesWebsocketConfig = internalconfig.ResponsesWebsocketConfig
 type RoutingConfig = internalconfig.RoutingConfig
 type RoutingChannelGroup = internalconfig.RoutingChannelGroup
 type RoutingPathRoute = internalconfig.RoutingPathRoute

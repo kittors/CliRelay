@@ -262,8 +262,8 @@ func TestResponsesWebsocketQuotaRefusalIsAnErrorEvent(t *testing.T) {
 	// Only that turn failed; the connection carries the next one.
 	probe.refuseWith(nil)
 	wsTurnSend(t, conn, wsTurnCreate)
-	if reply := wsTurnRead(t, conn); gjson.GetBytes(reply, "type").String() != "response.done" {
-		t.Fatalf("next turn reply = %s, want response.done", reply)
+	if reply := wsTurnRead(t, conn); gjson.GetBytes(reply, "type").String() != "response.completed" {
+		t.Fatalf("next turn reply = %s, want response.completed", reply)
 	}
 	server.hangUp(conn)
 	probe.assertCounts(t, 2, 1)
@@ -277,8 +277,8 @@ func TestResponsesWebsocketReleasesEachAdmittedTurnOnce(t *testing.T) {
 		conn := server.dial()
 		for i := 0; i < 2; i++ {
 			wsTurnSend(t, conn, wsTurnCreate)
-			if reply := wsTurnRead(t, conn); gjson.GetBytes(reply, "type").String() != "response.done" {
-				t.Fatalf("reply = %s, want response.done", reply)
+			if reply := wsTurnRead(t, conn); gjson.GetBytes(reply, "type").String() != "response.completed" {
+				t.Fatalf("reply = %s, want response.completed", reply)
 			}
 		}
 		server.hangUp(conn)
@@ -346,7 +346,7 @@ func TestResponsesWebsocketPrewarmIsNotABillableTurn(t *testing.T) {
 	server := newWSTurnServer(t, exec, probe.gate(), nil)
 	conn := server.dial()
 	wsTurnSend(t, conn, fmt.Sprintf(`{"type":"response.create","model":%q,"generate":false,"input":[]}`, wsTurnModel))
-	for _, want := range []string{"response.created", "response.done"} {
+	for _, want := range []string{"response.created", "response.completed"} {
 		if reply := wsTurnRead(t, conn); gjson.GetBytes(reply, "type").String() != want {
 			t.Fatalf("prewarm reply = %s, want %s", reply, want)
 		}
