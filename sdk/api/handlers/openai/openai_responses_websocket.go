@@ -62,8 +62,9 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 	if err != nil {
 		return
 	}
-	// gorilla reads a message whole and sets no limit of its own. The HTTP entries
-	// stop a body at the model request limit, and so does this one.
+	// Gorilla's read limit caps the wire payload, before permessage-deflate is
+	// decoded. Keep that guard too; readResponsesWebsocketMessage bounds the
+	// decompressed input before it can enter the log, transcript, or executor.
 	conn.SetReadLimit(settings.maxMessage)
 	passthroughSessionID := uuid.NewString()
 	clientRemoteAddr := ""
@@ -114,7 +115,7 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 		if settings.idleTimeout > 0 {
 			_ = conn.SetReadDeadline(time.Now().Add(settings.idleTimeout))
 		}
-		msgType, payload, errReadMessage := conn.ReadMessage()
+		msgType, payload, errReadMessage := readResponsesWebsocketMessage(conn, settings.maxMessage)
 		if errReadMessage != nil {
 			wsTerminateErr = errReadMessage
 			appendWebsocketEvent(&wsBodyLog, "disconnect", []byte(errReadMessage.Error()))
