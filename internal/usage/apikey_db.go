@@ -312,6 +312,7 @@ func toPermissionProfileSnapshots(profiles []APIKeyPermissionProfileRow) []sqlap
 			AllowedChannels:      append([]string(nil), profile.AllowedChannels...),
 			AllowedChannelGroups: append([]string(nil), profile.AllowedChannelGroups...),
 			SystemPrompt:         profile.SystemPrompt,
+			AccessPolicy:         profile.AccessPolicy.Clone(),
 		})
 	}
 	return snapshots

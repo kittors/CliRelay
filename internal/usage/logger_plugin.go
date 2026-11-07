@@ -242,6 +242,13 @@ type TokenStats struct {
 	CacheReadTokens          int64 `json:"cache_read_tokens,omitempty"`
 	CacheWriteTokens         int64 `json:"cache_write_tokens,omitempty"`
 	CacheReadIncludedInInput bool  `json:"-"`
+	// CacheReported mirrors coreusage.Detail.CacheReported: false means the
+	// upstream said nothing about its cache, and the request is stored with
+	// unknown cache reads and writes instead of zeros.
+	CacheReported bool `json:"-"`
+	// CacheWrite1hTokens mirrors coreusage.Detail.CacheWrite1hTokens. It only
+	// affects the cost: request_logs keeps every write in one column.
+	CacheWrite1hTokens int64 `json:"cache_write_1h_tokens,omitempty"`
 }
 
 // StatisticsSnapshot represents an immutable view of the aggregated metrics.
@@ -322,6 +329,11 @@ func (s *RequestStatistics) ingest(ctx context.Context, record coreusage.Record)
 	if statsKey == "" {
 		statsKey = resolveAPIIdentifier(ctx, record)
 	}
+	// The aggregates are keyed by the key's stable id, never by its secret: the
+	// snapshot is served by /usage, exported and mirrored to Redis. statsKey stays
+	// the raw value because the log write resolves the key from it, and masks it
+	// before anything is persisted.
+	bucketKey := statsBucketKey(statsKey, record.APIKeyID)
 	failed := record.Failed || record.ResponseStatus >= httpStatusBadRequest
 	if !failed && record.ResponseStatus == 0 {
 		failed = !resolveSuccess(ctx)
@@ -345,10 +357,10 @@ func (s *RequestStatistics) ingest(ctx context.Context, record coreusage.Record)
 		}
 		s.totalTokens += totalTokens
 
-		stats, ok := s.apis[statsKey]
+		stats, ok := s.apis[bucketKey]
 		if !ok {
 			stats = &apiStats{Models: make(map[string]*modelStats)}
-			s.apis[statsKey] = stats
+			s.apis[bucketKey] = stats
 		}
 		s.updateAPIStats(stats, modelName, RequestDetail{
 			Timestamp:    timestamp,
@@ -375,6 +387,7 @@ func (s *RequestStatistics) ingest(ctx context.Context, record coreusage.Record)
 	outputContent := resolveDeferredUsageContent(record.OutputContent, record.OutputContentPath)
 	detailContent := resolveDeferredUsageContent(record.DetailContent, record.DetailContentPath)
 	return RequestLogEntry{
+		RequestID:             strings.TrimSpace(record.RequestID),
 		IdempotencyKey:        record.IdempotencyKey,
 		TrustedTenantID:       record.TrustedTenantID,
 		APIKey:                statsKey,
@@ -391,6 +404,7 @@ func (s *RequestStatistics) ingest(ctx context.Context, record coreusage.Record)
 		AuthIndex:             record.AuthIndex,
 		Failed:                failed,
 		Streaming:             record.Streaming,
+		GuardKind:             record.GuardKind,
 		Timestamp:             timestamp,
 		LatencyMs:             record.LatencyMs,
 		FirstTokenMs:          record.FirstTokenMs,
@@ -507,7 +521,7 @@ func (s *RequestStatistics) MergeSnapshot(snapshot StatisticsSnapshot) MergeResu
 	// No details loop required anymore
 
 	for apiName, apiSnapshot := range snapshot.APIs {
-		apiName = strings.TrimSpace(apiName)
+		apiName = snapshotBucketKey(apiName)
 		if apiName == "" {
 			continue
 		}
@@ -653,6 +667,8 @@ func normaliseDetail(detail coreusage.Detail) TokenStats {
 		CacheReadTokens:          detail.CacheReadTokens,
 		CacheWriteTokens:         detail.CacheWriteTokens,
 		CacheReadIncludedInInput: detail.CacheReadIncludedInInput,
+		CacheReported:            detail.CacheReported,
+		CacheWrite1hTokens:       detail.CacheWrite1hTokens,
 	}
 	if tokens.TotalTokens == 0 {
 		tokens.TotalTokens = detail.InputTokens + detail.OutputTokens + detail.ReasoningTokens

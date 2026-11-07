@@ -805,7 +805,8 @@ func (s *Service) defaultMappedOwnerKeys() map[string]bool {
 		return nil
 	}
 	owners := make(map[string]bool)
-	for _, auth := range s.authManager.ListForTenant(s.tenantID) {
+	// Credentials the platform shares with the tenant serve its models too.
+	for _, auth := range s.authManager.ListUsableForTenant(s.tenantID) {
 		if auth == nil || auth.Disabled || auth.Status == coreauth.StatusDisabled {
 			continue
 		}
@@ -828,7 +829,7 @@ func (s *Service) authByID() map[string]*coreauth.Auth {
 	if s == nil || s.authManager == nil {
 		return nil
 	}
-	auths := s.authManager.ListForTenant(s.tenantID)
+	auths := s.authManager.ListUsableForTenant(s.tenantID)
 	if len(auths) == 0 {
 		return nil
 	}

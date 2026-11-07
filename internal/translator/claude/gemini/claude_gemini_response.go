@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	translatorcommon "github.com/router-for-me/CLIProxyAPI/v6/internal/translator/common"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -192,23 +193,9 @@ func ConvertClaudeResponseToGemini(_ context.Context, modelName string, original
 		return []string{}
 
 	case "message_delta":
-		// Handle message-level changes (like stop reason and usage information)
-		if delta := root.Get("delta"); delta.Exists() {
-			if stopReason := delta.Get("stop_reason"); stopReason.Exists() {
-				switch stopReason.String() {
-				case "end_turn":
-					template, _ = sjson.Set(template, "candidates.0.finishReason", "STOP")
-				case "tool_use":
-					template, _ = sjson.Set(template, "candidates.0.finishReason", "STOP")
-				case "max_tokens":
-					template, _ = sjson.Set(template, "candidates.0.finishReason", "MAX_TOKENS")
-				case "stop_sequence":
-					template, _ = sjson.Set(template, "candidates.0.finishReason", "STOP")
-				default:
-					template, _ = sjson.Set(template, "candidates.0.finishReason", "STOP")
-				}
-			}
-		}
+		// Handle message-level changes (like stop reason and usage information).
+		// The last chunk always says why the reply ended; tool use ends with STOP.
+		finishReason := translatorcommon.StopReasonFromClaude(root.Get("delta.stop_reason").String()).Gemini()
 
 		if usage := root.Get("usage"); usage.Exists() {
 			// Basic token counts for prompt and completion
@@ -239,7 +226,7 @@ func ConvertClaudeResponseToGemini(_ context.Context, modelName string, original
 			// Set traffic type (required by Gemini API)
 			template, _ = sjson.Set(template, "usageMetadata.trafficType", "PROVISIONED_THROUGHPUT")
 		}
-		template, _ = sjson.Set(template, "candidates.0.finishReason", "STOP")
+		template, _ = sjson.Set(template, "candidates.0.finishReason", finishReason)
 
 		return []string{template}
 	case "message_stop":
@@ -420,6 +407,9 @@ func ConvertClaudeResponseToGeminiNonStream(_ context.Context, modelName string,
 			}
 
 		case "message_delta":
+			if stopReason := root.Get("delta.stop_reason"); stopReason.Exists() {
+				template, _ = sjson.Set(template, "candidates.0.finishReason", translatorcommon.StopReasonFromClaude(stopReason.String()).Gemini())
+			}
 			// Extract final usage information using sjson for token counts and metadata
 			if usage := root.Get("usage"); usage.Exists() {
 				usageJSON := `{}`

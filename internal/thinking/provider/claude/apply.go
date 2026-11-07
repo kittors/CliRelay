@@ -1,8 +1,9 @@
 // Package claude implements thinking configuration scaffolding for Claude models.
 //
-// Claude models use the thinking.budget_tokens format with values in the range
-// 1024-128000. Some Claude models support ZeroAllowed (sonnet-4-5, opus-4-5),
-// while older models do not.
+// Claude models up to 4.6 use the thinking.budget_tokens format with values in
+// the range 1024-128000. Some Claude models support ZeroAllowed (sonnet-4-5,
+// opus-4-5), while older models do not. Opus 4.7 and later reject budgets and
+// only take adaptive thinking with output_config.effort; see adaptive.go.
 // See: _bmad-output/planning-artifacts/architecture.md#Epic-6
 package claude
 
@@ -34,7 +35,9 @@ func init() {
 //   - Budget clamping to model range
 //   - ZeroAllowed constraint enforcement
 //
-// Apply only processes ModeBudget and ModeNone; other modes are passed through unchanged.
+// For budget-based models Apply only processes ModeBudget and ModeNone; other
+// modes are passed through unchanged. Models that declare adaptive thinking go
+// to applyAdaptive instead, configured models included.
 //
 // Expected output format when enabled:
 //
@@ -53,8 +56,11 @@ func init() {
 //	  }
 //	}
 func (a *Applier) Apply(body []byte, config thinking.ThinkingConfig, modelInfo *registry.ModelInfo) ([]byte, error) {
+	if thinking.AdaptiveThinkingOf(modelInfo) != nil {
+		return applyAdaptive(body, config, modelInfo.Thinking), nil
+	}
 	if thinking.IsUserDefinedModel(modelInfo) {
-		return applyCompatibleClaude(body, config)
+		return a.applyCompatibleClaude(body, config, modelInfo)
 	}
 	if modelInfo.Thinking == nil {
 		return body, nil
@@ -140,7 +146,7 @@ func (a *Applier) effectiveMaxTokens(body []byte, modelInfo *registry.ModelInfo)
 	return 0, false
 }
 
-func applyCompatibleClaude(body []byte, config thinking.ThinkingConfig) ([]byte, error) {
+func (a *Applier) applyCompatibleClaude(body []byte, config thinking.ThinkingConfig, modelInfo *registry.ModelInfo) ([]byte, error) {
 	if config.Mode != thinking.ModeBudget && config.Mode != thinking.ModeNone && config.Mode != thinking.ModeAuto {
 		return body, nil
 	}
@@ -161,6 +167,9 @@ func applyCompatibleClaude(body []byte, config thinking.ThinkingConfig) ([]byte,
 	default:
 		result, _ := sjson.SetBytes(body, "thinking.type", "enabled")
 		result, _ = sjson.SetBytes(result, "thinking.budget_tokens", config.Budget)
-		return result, nil
+		// budget_tokens >= max_tokens is a 400 whatever the model is. The
+		// translators write "xhigh" as 32768 and "max" as 128000 next to their
+		// default max_tokens of 32000, so cap the budget below max_tokens.
+		return a.normalizeClaudeBudget(result, config.Budget, modelInfo), nil
 	}
 }

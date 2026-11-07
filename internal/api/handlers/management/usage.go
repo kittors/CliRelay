@@ -3,11 +3,26 @@ package management
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 )
+
+// systemUsageOnly answers 403 unless the caller acts for the system tenant.
+// The in-memory statistics behind /usage, /usage/export and /usage/import are
+// one process-wide aggregate of every tenant's requests (keys, accounts and
+// their sources), so monitor.read in a tenant must not reach them; tenants read
+// their own usage from the request log endpoints.
+func systemUsageOnly(c *gin.Context) bool {
+	if coreauth.NormalizedTenantID(effectiveTenantID(c)) == coreauth.NormalizedTenantID("") {
+		return true
+	}
+	c.JSON(http.StatusForbidden, gin.H{"error": "the process-wide usage statistics are only available to the platform"})
+	return false
+}
 
 type usageExportPayload struct {
 	Version    int                      `json:"version"`
@@ -22,6 +37,9 @@ type usageImportPayload struct {
 
 // GetUsageStatistics returns the in-memory request statistics snapshot.
 func (h *Handler) GetUsageStatistics(c *gin.Context) {
+	if !systemUsageOnly(c) {
+		return
+	}
 	var snapshot usage.StatisticsSnapshot
 	if h != nil && h.usageStats != nil {
 		snapshot = h.usageStats.Snapshot()
@@ -34,6 +52,9 @@ func (h *Handler) GetUsageStatistics(c *gin.Context) {
 
 // ExportUsageStatistics returns a complete usage snapshot for backup/migration.
 func (h *Handler) ExportUsageStatistics(c *gin.Context) {
+	if !systemUsageOnly(c) {
+		return
+	}
 	var snapshot usage.StatisticsSnapshot
 	if h != nil && h.usageStats != nil {
 		snapshot = h.usageStats.Snapshot()
@@ -64,18 +85,22 @@ func (h *Handler) GetPublicUsageByAPIKey(c *gin.Context) {
 		snapshot = h.usageStats.Snapshot()
 	}
 
-	keys := []string{subject.APIKey}
+	// The snapshot's buckets are keyed by key id, so the subject is resolved to
+	// ids first: the account's keys for a portal session, the presented key
+	// otherwise. A secret that resolves to no stored key has no bucket to read.
+	var buckets []string
 	if subject.EndUserID != "" {
-		keys = usage.ListAPIKeySecretsForEndUserForTenant(subject.TenantID, subject.EndUserID)
+		buckets = usage.ListAPIKeyIDsForEndUserForTenant(subject.TenantID, subject.EndUserID)
+	} else if subject.APIKeyRow != nil {
+		buckets = []string{strings.TrimSpace(subject.APIKeyRow.ID)}
 	}
-	apiData, hasUsage := aggregatePublicAPISnapshots(snapshot.APIs, keys)
+	apiData, hasUsage := aggregatePublicAPISnapshots(snapshot.APIs, buckets)
 	found := hasUsage
 	if subject.EndUserID != "" && subject.APIKey == "" {
 		found = true
 	} else if subject.APIKeyRow != nil {
 		// A persisted disabled key must not be revived merely because the in-memory
-		// snapshot still contains older usage. Unknown legacy keys remain supported
-		// when the snapshot itself proves that the presented secret has usage.
+		// snapshot still contains older usage.
 		found = !subject.APIKeyRow.Disabled
 	}
 	maskedAPIKey := maskKey(subject.APIKey)
@@ -114,11 +139,11 @@ func (h *Handler) GetPublicUsageByAPIKey(c *gin.Context) {
 	})
 }
 
-func aggregatePublicAPISnapshots(items map[string]usage.APISnapshot, keys []string) (usage.APISnapshot, bool) {
+func aggregatePublicAPISnapshots(items map[string]usage.APISnapshot, buckets []string) (usage.APISnapshot, bool) {
 	result := usage.APISnapshot{Models: make(map[string]usage.ModelSnapshot)}
 	found := false
-	for _, key := range keys {
-		item, ok := items[key]
+	for _, bucket := range buckets {
+		item, ok := items[bucket]
 		if !ok {
 			continue
 		}
@@ -137,6 +162,9 @@ func aggregatePublicAPISnapshots(items map[string]usage.APISnapshot, keys []stri
 
 // ImportUsageStatistics merges a previously exported usage snapshot into memory.
 func (h *Handler) ImportUsageStatistics(c *gin.Context) {
+	if !systemUsageOnly(c) {
+		return
+	}
 	if h == nil || h.usageStats == nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "usage statistics unavailable"})
 		return

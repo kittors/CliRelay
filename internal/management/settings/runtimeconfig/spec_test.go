@@ -84,3 +84,29 @@ func identityFingerprintSpec(t *testing.T) Spec {
 	t.Fatal("identity-fingerprint spec not found")
 	return Spec{}
 }
+
+// The global disable-cooling switch is cluster-wide: a panel save lands on one
+// node, so like the retry settings it lives in runtime_settings.
+func TestDisableCoolingIsARuntimeSetting(t *testing.T) {
+	t.Parallel()
+
+	spec, ok := SpecByKey(RuntimeSettingDisableCooling)
+	if !ok {
+		t.Fatal("disable-cooling is not a runtime setting")
+	}
+	if spec.Meaningful(&config.Config{}) {
+		t.Fatal("the default, cooling on, counts as a value to import")
+	}
+	on := &config.Config{DisableCooling: true}
+	if !spec.Meaningful(on) {
+		t.Fatal("disable-cooling: true is not imported from config.yaml")
+	}
+	raw, err := Canonical(spec, on)
+	if err != nil || string(raw) != "true" {
+		t.Fatalf("canonical = %s, %v; want true", raw, err)
+	}
+	restored := &config.Config{}
+	if !spec.Apply(restored, raw) || !restored.DisableCooling {
+		t.Fatal("the stored value did not restore disable-cooling")
+	}
+}

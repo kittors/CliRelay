@@ -3,7 +3,6 @@ package contentmoderation
 import (
 	"context"
 	"net/http"
-	"strings"
 	"time"
 )
 
@@ -16,9 +15,13 @@ const (
 )
 
 type Decision struct {
-	WouldBlock      bool               `json:"would_block"`
-	Action          string             `json:"action"`
-	MatchedKeyword  string             `json:"matched_keyword,omitempty"`
+	WouldBlock     bool   `json:"would_block"`
+	Action         string `json:"action"`
+	MatchedKeyword string `json:"matched_keyword,omitempty"`
+	// MatchedSource is the class of text the keyword was found in (primary,
+	// tool_output or assistant_history), so an operator can tell a block on
+	// what the user typed from one on replayed history or a tool result.
+	MatchedSource   string             `json:"matched_source,omitempty"`
 	HighestCategory string             `json:"highest_category,omitempty"`
 	HighestScore    float64            `json:"highest_score,omitempty"`
 	CategoryScores  map[string]float64 `json:"category_scores"`
@@ -46,8 +49,11 @@ type backendResult struct {
 // moderationBackend is the pluggable upstream behind a profile. Implementations
 // own their wire protocol and their own block decision; the evaluator owns the
 // surrounding policy (mode, keywords, fail-open) that is identical for all.
+//
+// Backends receive the classified segments rather than one string so they can
+// spend a bounded budget on the newest text (see budget.go).
 type moderationBackend interface {
-	Check(ctx context.Context, profile Profile, input string) (backendResult, error)
+	Check(ctx context.Context, profile Profile, segments []Segment) (backendResult, error)
 }
 
 type Evaluator struct {
@@ -68,25 +74,33 @@ func (e *Evaluator) backendFor(profile Profile) moderationBackend {
 	return &openaiModerationsBackend{httpClient: e.httpClient}
 }
 
-func (e *Evaluator) Evaluate(ctx context.Context, profile Profile, input string) Decision {
+// Evaluate applies the profile to a request's classified text. Keyword checks
+// read every class; the moderation backend reads primary text, and tool output
+// only when the profile sets api_includes_tool_output (see Class).
+func (e *Evaluator) Evaluate(ctx context.Context, profile Profile, input Input) Decision {
 	decision := Decision{Action: ActionAllow, CategoryScores: map[string]float64{}, Thresholds: mergeThresholds(profile.Thresholds)}
-	input = strings.TrimSpace(input)
-	if profile.Mode != ModePreBlock || input == "" {
+	if profile.Mode != ModePreBlock || input.Empty() {
 		return decision
 	}
 	if profile.KeywordMode != KeywordModeAPIOnly {
-		if keyword, hit := matchKeyword(input, profile.BlockedKeywords); hit {
+		if hit := input.matchKeywords(profileKeywordSet(profile)); hit.matched {
 			decision.WouldBlock = true
 			decision.Action = ActionKeywordBlock
-			decision.MatchedKeyword = keyword
+			decision.MatchedKeyword = hit.keyword
+			decision.MatchedSource = hit.class.String()
 			return decision
 		}
 	}
 	if profile.KeywordMode == KeywordModeKeywordOnly {
 		return decision
 	}
+	segments := input.backendSegments(profile.APIIncludesToolOutput)
+	if len(segments) == 0 {
+		// Only history or opted-out tool output: nothing for the backend to judge.
+		return decision
+	}
 	start := time.Now()
-	result, err := e.backendFor(profile).Check(ctx, profile, input)
+	result, err := e.backendFor(profile).Check(ctx, profile, segments)
 	decision.LatencyMS = time.Since(start).Milliseconds()
 	if err != nil {
 		// Fail open: a broken moderation dependency must not take traffic down.
@@ -114,15 +128,4 @@ func (e *Evaluator) Evaluate(ctx context.Context, profile Profile, input string)
 		}
 	}
 	return decision
-}
-
-func matchKeyword(input string, keywords []string) (string, bool) {
-	input = strings.ToLower(input)
-	for _, keyword := range keywords {
-		keyword = strings.TrimSpace(keyword)
-		if keyword != "" && strings.Contains(input, strings.ToLower(keyword)) {
-			return keyword, true
-		}
-	}
-	return "", false
 }

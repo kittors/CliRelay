@@ -11,17 +11,15 @@ import (
 	"strings"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/auth/refreshguard"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	log "github.com/sirupsen/logrus"
-	"golang.org/x/sync/singleflight"
 )
 
 type XAIAuth struct {
 	httpClient *http.Client
 }
-
-var xaiRefreshGroup singleflight.Group
 
 func NewXAIAuth(cfg *config.Config) *XAIAuth {
 	return NewXAIAuthWithProxyURL(cfg, "")
@@ -188,14 +186,15 @@ func (a *XAIAuth) RefreshTokens(ctx context.Context, refreshToken, tokenEndpoint
 	}
 	tokenEndpoint = strings.TrimSpace(tokenEndpoint)
 
-	result, err, _ := xaiRefreshGroup.Do(refreshToken, func() (interface{}, error) {
-		return a.refreshTokensSingleFlight(context.WithoutCancel(ctx), refreshToken, tokenEndpoint)
+	// xAI rotates refresh tokens; see refreshguard for why the exchange must
+	// outlive ctx and run once per token.
+	tokenData, err := refreshguard.Exchange(ctx, "xai", refreshToken, func(ctx context.Context) (*TokenData, error) {
+		return a.refreshTokensSingleFlight(ctx, refreshToken, tokenEndpoint)
 	})
 	if err != nil {
 		return nil, err
 	}
-	tokenData, ok := result.(*TokenData)
-	if !ok || tokenData == nil {
+	if tokenData == nil {
 		return nil, fmt.Errorf("xai token refresh failed: invalid single-flight result")
 	}
 	return tokenData, nil

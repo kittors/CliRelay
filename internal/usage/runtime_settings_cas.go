@@ -68,6 +68,43 @@ func RuntimeSettingVersion(tenantID, key string) int64 {
 	return entry.Version
 }
 
+// LoadRuntimeSettingForTenant returns the stored payload of one key of tenantID
+// together with the version it is at, for a read-modify-write that is saved
+// with CompareAndSwapRuntimeSetting. ok is false when the key has no row (or no
+// database is attached), which is version 0 to a compare-and-swap.
+func LoadRuntimeSettingForTenant(tenantID, key string) (payload json.RawMessage, version int64, ok bool) {
+	if !ConfigStoreAvailable() {
+		return nil, 0, false
+	}
+	entry, ok := runtimeSettingsStoreForTenant(tenantID).Load(key)
+	if !ok {
+		return nil, 0, false
+	}
+	return entry.Payload, entry.Version, true
+}
+
+// LoadRuntimeSettingForTenantContext is LoadRuntimeSettingForTenant for a
+// caller that must not take a failed read for a missing row.
+func LoadRuntimeSettingForTenantContext(ctx context.Context, tenantID, key string) (payload json.RawMessage, version int64, ok bool, err error) {
+	if !ConfigStoreAvailable() {
+		return nil, 0, false, nil
+	}
+	entry, ok, err := runtimeSettingsStoreForTenant(tenantID).LoadContext(ctx, key)
+	if err != nil || !ok {
+		return nil, 0, false, err
+	}
+	return entry.Payload, entry.Version, true, nil
+}
+
+// RuntimeSettingPayloadsByKey returns the payload of key for every tenant that
+// has one, keyed by tenant id.
+func RuntimeSettingPayloadsByKey(key string) (map[string]json.RawMessage, error) {
+	if !ConfigStoreAvailable() {
+		return nil, nil
+	}
+	return runtimeSettingsStore().PayloadsByKey(key)
+}
+
 // CompareAndSwapRuntimeSetting writes one key of tenantID if it is still at
 // expected (0: absent, AnyVersion: unchecked) and returns the new version.
 func CompareAndSwapRuntimeSetting(ctx context.Context, tenantID, key string, value any, expected int64) (int64, error) {

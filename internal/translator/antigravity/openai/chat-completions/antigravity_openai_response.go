@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	translatorcommon "github.com/router-for-me/CLIProxyAPI/v6/internal/translator/common"
 	log "github.com/sirupsen/logrus"
 
 	. "github.com/router-for-me/CLIProxyAPI/v6/internal/translator/gemini/openai/chat-completions"
@@ -204,13 +205,11 @@ func ConvertAntigravityResponseToOpenAI(_ context.Context, _ string, originalReq
 	isFinalChunk := upstreamFinishReason != "" && usageExists
 
 	if isFinalChunk {
-		var finishReason string
-		if sawToolCall {
-			finishReason = "tool_calls"
-		} else if upstreamFinishReason == "MAX_TOKENS" {
-			finishReason = "max_tokens"
-		} else {
-			finishReason = "stop"
+		// A reply with a function call stops for tool calls; Gemini ends it with
+		// STOP. native_finish_reason keeps the upstream's own name.
+		finishReason := translatorcommon.StopToolUse.OpenAI()
+		if !sawToolCall {
+			finishReason = translatorcommon.StopReasonFromGemini(upstreamFinishReason).OpenAI()
 		}
 		template, _ = sjson.Set(template, "choices.0.finish_reason", finishReason)
 		template, _ = sjson.Set(template, "choices.0.native_finish_reason", strings.ToLower(upstreamFinishReason))

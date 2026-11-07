@@ -16,11 +16,12 @@ const (
 //   - "auto" / "" (default): inherit / standard behavior (strip non-standard service_tier)
 //   - "pass": passthrough client-provided service_tier (normalize "fast" -> "priority")
 //   - "priority": force fast/priority tier (always inject service_tier="priority")
+//   - "ultrafast": force ultrafast tier; upstream enforces model/account eligibility
 //   - "flex": force flex tier (always inject service_tier="flex")
 //   - "drop": completely strip service_tier from outbound request
 func ValidCodexServiceTier(tier string) bool {
 	switch strings.TrimSpace(strings.ToLower(tier)) {
-	case "", "auto", "default", "pass", "priority", "fast", "flex", "drop":
+	case "", "auto", "default", "pass", "priority", "fast", "ultrafast", "flex", "drop":
 		return true
 	default:
 		return false
@@ -32,6 +33,8 @@ func NormalizeCodexServiceTier(tier string) string {
 	switch strings.TrimSpace(strings.ToLower(tier)) {
 	case "priority", "fast":
 		return "priority"
+	case "ultrafast":
+		return "ultrafast"
 	case "pass":
 		return "pass"
 	case "flex":
@@ -68,7 +71,7 @@ func ensureCodexServiceTierEditable(auth *coreauth.Auth, tier string) error {
 	}
 	trimmed := strings.TrimSpace(strings.ToLower(tier))
 	if trimmed != "" && !ValidCodexServiceTier(trimmed) {
-		return fmt.Errorf("invalid codex service tier %q: must be empty, pass, priority (fast), flex, or drop", tier)
+		return fmt.Errorf("invalid codex service tier %q: must be empty, pass, priority (fast), ultrafast, flex, or drop", tier)
 	}
 	return nil
 }

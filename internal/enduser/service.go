@@ -18,6 +18,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/identity"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/quota"
+	sqlapikey "github.com/router-for-me/CLIProxyAPI/v6/internal/storage/sqlstore/apikey"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 	log "github.com/sirupsen/logrus"
 )
@@ -38,6 +39,9 @@ var (
 	ErrLastKey                 = errors.New("cannot delete last api key")
 	ErrNotFound                = errors.New("not found")
 	ErrPeriodDayLegacyConflict = errors.New("period day legacy conflict")
+	// ErrQuotaLegacyConflict：同一个额度格子在旧字段（daily-limit 等）与 quota-limits
+	// 中给出了不同的值。
+	ErrQuotaLegacyConflict = errors.New("quota limits legacy conflict")
 )
 
 const (
@@ -251,14 +255,14 @@ func requireUUID(id string) error {
 func scanUser(scanner interface{ Scan(dest ...any) error }) (User, error) {
 	var u User
 	var lastLogin, lockedUntil sql.NullTime
-	var modelsJSON, channelsJSON, groupsJSON string
+	var modelsJSON, channelsJSON, groupsJSON, policyJSON string
 	err := scanner.Scan(
 		&u.ID, &u.TenantID, &u.Username, &u.DisplayName, &u.Status,
 		&u.MustChangePassword, &lastLogin, &u.FailedLoginCount, &u.LockStage, &lockedUntil,
 		&u.CreatedAt, &u.UpdatedAt, &u.Version,
 		&u.PermissionProfileID, &u.DailyLimit, &u.TotalQuota, &u.SpendingLimit, &u.DailySpendingLimit,
 		&u.PeriodSpendingLimits.FiveHour, &u.PeriodSpendingLimits.Week, &u.PeriodSpendingLimits.Month, &u.ConcurrencyLimit, &u.RPMLimit, &u.TPMLimit,
-		&modelsJSON, &channelsJSON, &groupsJSON, &u.SystemPrompt,
+		&modelsJSON, &channelsJSON, &groupsJSON, &u.SystemPrompt, &policyJSON,
 	)
 	if err != nil {
 		return u, err
@@ -275,6 +279,7 @@ func scanUser(scanner interface{ Scan(dest ...any) error }) (User, error) {
 	u.AllowedModels = decodeJSONStringList(modelsJSON)
 	u.AllowedChannels = decodeJSONStringList(channelsJSON)
 	u.AllowedChannelGroups = decodeJSONStringList(groupsJSON)
+	setUserAccessPolicy(&u, decodeAccountPolicy(u.ID, policyJSON))
 	return u, nil
 }
 
@@ -322,7 +327,7 @@ const userSelect = `SELECT id, tenant_id, username, display_name, status, must_c
 	COALESCE(five_hour_spending_limit, 0), COALESCE(weekly_spending_limit, 0), COALESCE(monthly_spending_limit, 0),
 	COALESCE(concurrency_limit, 0), COALESCE(rpm_limit, 0), COALESCE(tpm_limit, 0),
 	COALESCE(allowed_models, '[]'), COALESCE(allowed_channels, '[]'), COALESCE(allowed_channel_groups, '[]'),
-	COALESCE(system_prompt, '')
+	COALESCE(system_prompt, ''), COALESCE(access_policy, '{}')
 	FROM end_users`
 
 func (s *Service) GetUser(ctx context.Context, tenantID, userID string) (User, error) {
@@ -467,8 +472,27 @@ func (s *Service) insertDefaultKey(ctx context.Context, tx *sql.Tx, tenantID, en
 	}, plain, nil
 }
 
-func (s *Service) CreateUser(ctx context.Context, actor identity.Principal, tenantID, username, displayName, password string) (CreateUserResult, error) {
+// CreateUserOption adjusts CreateUser.
+type CreateUserOption func(*createUserOptions)
+
+type createUserOptions struct {
+	profileID string
+}
+
+// WithPermissionProfile binds the new account to a permission profile in the same
+// transaction, so accounts can be provisioned from a template in one step.
+func WithPermissionProfile(profileID string) CreateUserOption {
+	return func(o *createUserOptions) { o.profileID = strings.TrimSpace(profileID) }
+}
+
+func (s *Service) CreateUser(ctx context.Context, actor identity.Principal, tenantID, username, displayName, password string, opts ...CreateUserOption) (CreateUserResult, error) {
 	var result CreateUserResult
+	var options createUserOptions
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&options)
+		}
+	}
 	if !actor.Has("end_users.write") && !actor.PlatformAdmin {
 		return result, ErrPermissionDenied
 	}
@@ -517,6 +541,21 @@ func (s *Service) CreateUser(ctx context.Context, actor identity.Principal, tena
 	`, userID, tenantID, uname, NormalizeUsername(uname), displayName, hash, mustChange); err != nil {
 		return result, err
 	}
+	if options.profileID != "" {
+		profile, err := sqlapikey.LoadPermissionProfileTx(ctx, tx, tenantID, options.profileID)
+		if err != nil {
+			return result, err
+		}
+		if profile == nil {
+			return result, fmt.Errorf("%w: permission profile %s not found", ErrValidation, options.profileID)
+		}
+		if _, err = tx.ExecContext(ctx, `UPDATE end_users SET permission_profile_id = ? WHERE id = ? AND tenant_id = ?`, options.profileID, userID, tenantID); err != nil {
+			return result, err
+		}
+		if err = copyProfileToAccountTx(ctx, tx, tenantID, userID, *profile); err != nil {
+			return result, err
+		}
+	}
 	key, plain, err := s.insertDefaultKey(ctx, tx, tenantID, userID, displayName)
 	if err != nil {
 		return result, err
@@ -531,216 +570,6 @@ func (s *Service) CreateUser(ctx context.Context, actor identity.Principal, tena
 	key.Key = plain
 	result = CreateUserResult{User: u, GeneratedPassword: generated, DefaultAPIKey: &key}
 	return result, nil
-}
-
-func (s *Service) UpdateUser(ctx context.Context, actor identity.Principal, tenantID, userID string, username, displayName, password, status *string, accountQuotaPatch *QuotaPatch) (User, error) {
-	if !actor.Has("end_users.write") && !actor.PlatformAdmin {
-		return User{}, ErrPermissionDenied
-	}
-	if err := ensureActorTenantScope(actor, tenantID); err != nil {
-		return User{}, err
-	}
-	if err := requireUUID(tenantID); err != nil {
-		return User{}, err
-	}
-	if err := requireUUID(userID); err != nil {
-		return User{}, err
-	}
-	sets := make([]string, 0, 20)
-	args := make([]any, 0, 24)
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return User{}, err
-	}
-	defer func() { _ = tx.Rollback() }()
-	var currentProfileID string
-	profileQuery := `SELECT COALESCE(permission_profile_id,'') FROM end_users WHERE id = ? AND tenant_id = ? FOR UPDATE`
-	if err := tx.QueryRowContext(ctx, profileQuery, userID, tenantID).Scan(&currentProfileID); err != nil {
-		if err = tx.QueryRowContext(ctx, strings.TrimSuffix(profileQuery, " FOR UPDATE"), userID, tenantID).Scan(&currentProfileID); err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
-				return User{}, ErrNotFound
-			}
-			return User{}, err
-		}
-	}
-	var resolvedPeriodPatch *quota.PeriodSpendingLimitsPatch
-	if accountQuotaPatch != nil {
-		resolvedPeriodPatch, err = quotaPkgResolveLegacyDay(accountQuotaPatch.DailySpendingLimit, accountQuotaPatch.PeriodSpendingLimits)
-		if err != nil {
-			return User{}, err
-		}
-		targetProfileID := currentProfileID
-		if accountQuotaPatch.PermissionProfileID != nil {
-			targetProfileID = strings.TrimSpace(*accountQuotaPatch.PermissionProfileID)
-		}
-		if resolvedPeriodPatch != nil && targetProfileID != "" {
-			return User{}, fmt.Errorf("%w: period limits are managed by permission profile %s", ErrValidation, targetProfileID)
-		}
-	}
-
-	if username != nil {
-		base := NormalizeUsername(*username)
-		if base == "" {
-			return User{}, fmt.Errorf("%w: username required", ErrValidation)
-		}
-		uname, err := s.uniqueUsernameExcluding(ctx, tx, base, userID)
-		if err != nil {
-			return User{}, err
-		}
-		sets = append(sets, "username = ?", "username_normalized = ?")
-		args = append(args, uname, NormalizeUsername(uname))
-	}
-	if displayName != nil {
-		v := strings.TrimSpace(*displayName)
-		if v == "" || len(v) > 128 {
-			return User{}, fmt.Errorf("%w: invalid display_name", ErrValidation)
-		}
-		sets = append(sets, "display_name = ?")
-		args = append(args, v)
-	}
-	if password != nil && strings.TrimSpace(*password) != "" {
-		hash, err := HashPassword(*password)
-		if err != nil {
-			return User{}, err
-		}
-		sets = append(sets, "password_hash = ?", "must_change_password = false", "password_changed_at = CURRENT_TIMESTAMP",
-			"failed_login_count = 0", "lock_stage = 0", "locked_until = NULL")
-		args = append(args, hash)
-	}
-	if status != nil {
-		st := strings.TrimSpace(*status)
-		if st != "active" && st != "disabled" && st != "locked" {
-			return User{}, fmt.Errorf("%w: invalid status", ErrValidation)
-		}
-		sets = append(sets, "status = ?")
-		args = append(args, st)
-		if st == "active" {
-			sets = append(sets, "failed_login_count = 0", "lock_stage = 0", "locked_until = NULL")
-		}
-	}
-	if accountQuotaPatch != nil {
-		if accountQuotaPatch.PermissionProfileID != nil {
-			sets, args = appendPermissionProfileSets(sets, args, currentProfileID, accountQuotaPatch)
-		}
-		if accountQuotaPatch.DailyLimit != nil {
-			sets = append(sets, "daily_limit = ?")
-			args = append(args, clampNonNegInt(*accountQuotaPatch.DailyLimit))
-		}
-		if accountQuotaPatch.TotalQuota != nil {
-			sets = append(sets, "total_quota = ?")
-			args = append(args, clampNonNegInt(*accountQuotaPatch.TotalQuota))
-		}
-		if accountQuotaPatch.SpendingLimit != nil {
-			sets = append(sets, "spending_limit = ?")
-			args = append(args, clampNonNegFloat(*accountQuotaPatch.SpendingLimit))
-		}
-		if resolvedPeriodPatch != nil {
-			if resolvedPeriodPatch.FiveHour != nil {
-				sets = append(sets, "five_hour_spending_limit = ?")
-				args = append(args, *resolvedPeriodPatch.FiveHour)
-			}
-			if resolvedPeriodPatch.Day != nil {
-				sets = append(sets, "daily_spending_limit = ?")
-				args = append(args, *resolvedPeriodPatch.Day)
-			}
-			if resolvedPeriodPatch.Week != nil {
-				sets = append(sets, "weekly_spending_limit = ?")
-				args = append(args, *resolvedPeriodPatch.Week)
-			}
-			if resolvedPeriodPatch.Month != nil {
-				sets = append(sets, "monthly_spending_limit = ?")
-				args = append(args, *resolvedPeriodPatch.Month)
-			}
-		}
-		if accountQuotaPatch.ConcurrencyLimit != nil {
-			sets = append(sets, "concurrency_limit = ?")
-			args = append(args, clampNonNegInt(*accountQuotaPatch.ConcurrencyLimit))
-		}
-		if accountQuotaPatch.RPMLimit != nil {
-			sets = append(sets, "rpm_limit = ?")
-			args = append(args, clampNonNegInt(*accountQuotaPatch.RPMLimit))
-		}
-		if accountQuotaPatch.TPMLimit != nil {
-			sets = append(sets, "tpm_limit = ?")
-			args = append(args, clampNonNegInt(*accountQuotaPatch.TPMLimit))
-		}
-		if accountQuotaPatch.AllowedModels != nil {
-			sets = append(sets, "allowed_models = ?")
-			args = append(args, encodeJSONStringList(*accountQuotaPatch.AllowedModels))
-		}
-		if accountQuotaPatch.AllowedChannels != nil {
-			sets = append(sets, "allowed_channels = ?")
-			args = append(args, encodeJSONStringList(*accountQuotaPatch.AllowedChannels))
-		}
-		if accountQuotaPatch.AllowedChannelGroups != nil {
-			sets = append(sets, "allowed_channel_groups = ?")
-			args = append(args, encodeJSONStringList(*accountQuotaPatch.AllowedChannelGroups))
-		}
-		if accountQuotaPatch.SystemPrompt != nil {
-			sets = append(sets, "system_prompt = ?")
-			args = append(args, *accountQuotaPatch.SystemPrompt)
-		}
-	}
-	if len(sets) == 0 {
-		_ = tx.Rollback()
-		return s.GetUser(ctx, tenantID, userID)
-	}
-
-	sets = append(sets, "updated_at = CURRENT_TIMESTAMP", "version = version + 1")
-	args = append(args, userID, tenantID)
-	q := `UPDATE end_users SET ` + strings.Join(sets, ", ") + ` WHERE id = ? AND tenant_id = ?`
-	res, err := tx.ExecContext(ctx, q, args...)
-	if err != nil {
-		return User{}, err
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return User{}, ErrNotFound
-	}
-	if password != nil && strings.TrimSpace(*password) != "" {
-		if _, err = tx.ExecContext(ctx, `
-			UPDATE end_user_sessions SET revoked_at = CURRENT_TIMESTAMP, revoke_reason = 'password_change'
-			WHERE end_user_id = ? AND revoked_at IS NULL
-		`, userID); err != nil {
-			return User{}, err
-		}
-	}
-	// Account freeze/activate is end_users.status only. Do not bulk-toggle api_keys.disabled:
-	// that would wipe per-key admin disables on re-activate. Auth refuses non-active accounts.
-	if status != nil && *status != "active" {
-		if _, err = tx.ExecContext(ctx, `
-				UPDATE end_user_sessions SET revoked_at = CURRENT_TIMESTAMP, revoke_reason = 'status_change'
-				WHERE end_user_id = ? AND revoked_at IS NULL
-			`, userID); err != nil {
-			return User{}, err
-		}
-	}
-	capped, err := capOwnedKeyPeriodLimitsTx(ctx, tx, tenantID, userID)
-	if err != nil {
-		return User{}, err
-	}
-	if err = commitAccountChange(ctx, tx, tenantID); err != nil {
-		return User{}, err
-	}
-	updated, err := s.GetUser(ctx, tenantID, userID)
-	if err != nil {
-		return User{}, err
-	}
-	if loaded := usage.GetEndUserQuota(userID); loaded != nil {
-		effective := usage.EffectiveEndUserQuota(*loaded)
-		updated.DailySpendingLimit = effective.DailySpendingLimit
-		updated.PeriodSpendingLimits = effective.PeriodSpendingLimits
-	}
-	updated.CappedKeys = capped
-	if len(capped) > 0 {
-		if audit := identity.Default(); audit != nil {
-			audit.RecordAudit(ctx, identity.AuditEvent{
-				TenantID: tenantID, ActorKind: actor.Kind, ActorUserID: actor.User.ID, ActorSessionID: actor.SessionID,
-				Action: "end_user.period_quota.cap_keys", ResourceType: "end_user", ResourceID: userID, Result: "success",
-				Changes: map[string]any{"capped-keys": capped},
-			})
-		}
-	}
-	return updated, nil
 }
 
 func (s *Service) ResetPassword(ctx context.Context, actor identity.Principal, tenantID, userID, password string) (string, error) {
@@ -875,12 +704,15 @@ func (s *Service) ListKeys(ctx context.Context, tenantID, endUserID string) ([]A
 	if err := requireUUID(endUserID); err != nil {
 		return nil, err
 	}
+	// 暂停的 Key（disabled 但密钥完好）也列出来，管理员才能在列表里恢复它；已删除的
+	// Key 密钥被作废成 sk-deleted-…，不再出现。门户只展示启用的 Key（见 handler）。
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, tenant_id, end_user_id, key, name, disabled, COALESCE(is_default, false),
 			COALESCE(created_at, ''), COALESCE(updated_at, ''),
-			COALESCE(daily_spending_limit, 0), COALESCE(five_hour_spending_limit, 0), COALESCE(weekly_spending_limit, 0), COALESCE(monthly_spending_limit, 0)
-		FROM api_keys WHERE tenant_id = ? AND end_user_id = ? AND disabled = 0
-		ORDER BY is_default DESC, created_at ASC
+			COALESCE(daily_spending_limit, 0), COALESCE(five_hour_spending_limit, 0), COALESCE(weekly_spending_limit, 0), COALESCE(monthly_spending_limit, 0),
+			COALESCE(access_policy, '{}')
+		FROM api_keys WHERE tenant_id = ? AND end_user_id = ? AND key NOT LIKE 'sk-deleted-%'
+		ORDER BY disabled ASC, is_default DESC, created_at ASC
 	`, tenantID, endUserID)
 	if err != nil {
 		return nil, err
@@ -893,7 +725,8 @@ func (s *Service) ListKeys(ctx context.Context, tenantID, endUserID string) ([]A
 		var ownerID sql.NullString
 		var disabledInt int
 		var isDefault bool
-		if err := rows.Scan(&k.ID, &k.TenantID, &ownerID, &k.Key, &k.Name, &disabledInt, &isDefault, &k.CreatedAt, &k.UpdatedAt, &k.DailySpendingLimit, &k.PeriodSpendingLimits.FiveHour, &k.PeriodSpendingLimits.Week, &k.PeriodSpendingLimits.Month); err != nil {
+		var policyJSON string
+		if err := rows.Scan(&k.ID, &k.TenantID, &ownerID, &k.Key, &k.Name, &disabledInt, &isDefault, &k.CreatedAt, &k.UpdatedAt, &k.DailySpendingLimit, &k.PeriodSpendingLimits.FiveHour, &k.PeriodSpendingLimits.Week, &k.PeriodSpendingLimits.Month, &policyJSON); err != nil {
 			return nil, err
 		}
 		if ownerID.Valid {
@@ -904,6 +737,9 @@ func (s *Service) ListKeys(ctx context.Context, tenantID, endUserID string) ([]A
 		k.IsDefault = isDefault
 		k.KeyMasked = MaskAPIKey(k.Key)
 		k.Key = "" // never list full secret
+		policy := decodeAccountPolicy(k.ID, policyJSON)
+		k.QuotaLimits = sqlapikey.OwnedKeyQuotaMatrix(k.PeriodSpendingLimits, policy)
+		k.ModelRules = nonNilRules(policy.ModelRules)
 		out = append(out, k)
 		ids = append(ids, k.ID)
 	}
@@ -913,7 +749,7 @@ func (s *Service) ListKeys(ctx context.Context, tenantID, endUserID string) ([]A
 	if usage.RuntimeDB() == nil {
 		return out, nil
 	}
-	usedByID, err := usage.QueryPeriodSpendingByAPIKeyIDsForTenant(tenantID, ids)
+	snapshots, err := usage.QueryAPIKeyQuotaUsageSnapshotsAt(tenantID, ids, time.Now())
 	if err != nil {
 		return nil, err
 	}
@@ -922,10 +758,13 @@ func (s *Service) ListKeys(ctx context.Context, tenantID, endUserID string) ([]A
 		return nil, err
 	}
 	for i := range out {
-		used := usedByID[out[i].ID]
+		snapshot := snapshots[out[i].ID]
+		used := snapshot.PeriodSpending()
 		out[i].DailySpendingUsed = used.Day
 		out[i].LifetimeSpendingUsed = used.Lifetime
 		out[i].PeriodSpending = quota.BuildPeriodSpending(out[i].PeriodSpendingLimits, used)
+		view := keyUsageView(out[i].ID, snapshot, out[i].ModelRules)
+		out[i].QuotaUsage = &view
 		out[i].DailySpendingResetCount = resetCounts[out[i].ID]
 	}
 	return out, nil
@@ -968,6 +807,8 @@ func (s *Service) UpdateKeyName(ctx context.Context, tenantID, endUserID, keyID,
 }
 
 // ensureUniqueKeyName rejects case-insensitive name collisions within one end user.
+// Paused keys count: they stay in the list and can be resumed, so a new key with
+// the same name would leave two indistinguishable rows.
 // excludeKeyID is empty on create; on rename pass the current key id so it can keep its name.
 func ensureUniqueKeyName(ctx context.Context, q queryRower, tenantID, endUserID, name, excludeKeyID string) error {
 	var exists int
@@ -975,12 +816,12 @@ func ensureUniqueKeyName(ctx context.Context, q queryRower, tenantID, endUserID,
 	if excludeKeyID == "" {
 		err = q.QueryRowContext(ctx, `
 			SELECT COUNT(*) FROM api_keys
-			WHERE tenant_id = ? AND end_user_id = ? AND disabled = 0 AND LOWER(name) = LOWER(?)
+			WHERE tenant_id = ? AND end_user_id = ? AND key NOT LIKE 'sk-deleted-%' AND LOWER(name) = LOWER(?)
 		`, tenantID, endUserID, name).Scan(&exists)
 	} else {
 		err = q.QueryRowContext(ctx, `
 			SELECT COUNT(*) FROM api_keys
-			WHERE tenant_id = ? AND end_user_id = ? AND disabled = 0 AND LOWER(name) = LOWER(?) AND id != ?
+			WHERE tenant_id = ? AND end_user_id = ? AND key NOT LIKE 'sk-deleted-%' AND LOWER(name) = LOWER(?) AND id != ?
 		`, tenantID, endUserID, name, excludeKeyID).Scan(&exists)
 	}
 	if err != nil {

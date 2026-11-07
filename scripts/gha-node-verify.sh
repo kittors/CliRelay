@@ -13,7 +13,7 @@
 # DRAIN_SECONDS and SHUTDOWN_GRACE_SECONDS from the deploy script's result line.
 # Tuning: PROBE_MIN_SECONDS (210), PROBE_MARGIN_SECONDS (30),
 # PROBE_INTERVAL_SECONDS (3), PUBLIC_PROBES (10), STOP_WAIT_EXTRA_SECONDS (60),
-# STOP_POLL_SECONDS (10).
+# STOP_POLL_SECONDS (10), OLD_SLOT_HOLD_SECONDS (90).
 set -euo pipefail
 
 fail() {
@@ -163,6 +163,35 @@ verify_node() {
 		sleep "${STOP_POLL_SECONDS:-10}"
 	done
 
+	# Something on the node can start the old slot again after the drain has
+	# stopped it. On 2026-10-27 a hand-installed watchdog with port 8319
+	# hard-coded did so 49 s after the drain, while this check had already
+	# read "inactive" and passed, leaving the retired build running next to
+	# the new one. Keep probing for longer than such a restarter needs to
+	# notice, then look again.
+	old_slot_came_back=0
+	if [ -n "${OLD_PORT:-}" ] && old_slot_stopped; then
+		stopped_state="$old_state" stopped_new_state="$new_state" stopped_served="$served_version"
+		hold_until=$(($(date +%s) + ${OLD_SLOT_HOLD_SECONDS:-90}))
+		while [ "$(date +%s)" -lt "$hold_until" ]; do
+			probe_node_once
+			sleep "${PROBE_INTERVAL_SECONDS:-3}"
+		done
+		read_remote_state
+		if [ "$old_state" = unknown ]; then
+			sleep "${STOP_POLL_SECONDS:-10}"
+			read_remote_state
+		fi
+		case "$old_state" in
+		unknown)
+			# ssh failed twice; the stop itself was already confirmed
+			echo "::warning::node ${NODE}: could not re-read old slot ${SLOT_SERVICE}-${OLD_PORT} after the hold; it was ${stopped_state} before"
+			old_state="$stopped_state" new_state="$stopped_new_state" served_version="$stopped_served"
+			;;
+		*) old_slot_stopped || old_slot_came_back=1 ;;
+		esac
+	fi
+
 	problems=0
 	if [ "$fails" -gt 0 ]; then
 		echo "::error::node ${NODE}: ${fails}/${probes} probes through ${NODE_SMOKE_IP} failed"
@@ -176,7 +205,10 @@ verify_node() {
 		echo "::error::node ${NODE}: ${SLOT_SERVICE}-${NEW_PORT} reports build ${served_version}, expected ${APP_VERSION}"
 		problems=$((problems + 1))
 	fi
-	if ! old_slot_stopped; then
+	if [ "$old_slot_came_back" -eq 1 ]; then
+		echo "::error::node ${NODE}: old slot ${SLOT_SERVICE}-${OLD_PORT} stopped after the drain but is ${old_state} again ${OLD_SLOT_HOLD_SECONDS:-90}s later; something on the node starts it (check clirelay-watchdog, cron and other units: grep -rl '${SLOT_SERVICE}-${OLD_PORT}' /etc/systemd/system /usr/local/bin /etc/cron*)"
+		problems=$((problems + 1))
+	elif ! old_slot_stopped; then
 		echo "::error::node ${NODE}: old slot ${SLOT_SERVICE}-${OLD_PORT} is still ${old_state} after the drain window; the drain did not run or was refused (journalctl -u '${SLOT_SERVICE}-drain-*' on the node)"
 		problems=$((problems + 1))
 	fi

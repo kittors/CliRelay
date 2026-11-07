@@ -9,7 +9,6 @@ package claude
 import (
 	"bytes"
 	"compress/gzip"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -19,6 +18,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/api/handlers"
+	sdktranslator "github.com/router-for-me/CLIProxyAPI/v6/sdk/translator"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 )
@@ -99,7 +99,7 @@ func (h *ClaudeCodeAPIHandler) ClaudeCountTokens(c *gin.Context) {
 
 	resp, upstreamHeaders, errMsg := h.ExecuteCountWithAuthManager(cliCtx, h.HandlerType(), modelName, rawJSON, alt)
 	if errMsg != nil {
-		h.WriteErrorResponse(c, errMsg)
+		h.WriteErrorResponseAs(c, errMsg, handlers.ErrorFormatClaude)
 		cliCancel(errMsg.Error)
 		return
 	}
@@ -154,7 +154,7 @@ func (h *ClaudeCodeAPIHandler) handleNonStreamingResponse(c *gin.Context, rawJSO
 	resp, upstreamHeaders, errMsg := h.ExecuteWithAuthManager(cliCtx, h.HandlerType(), modelName, rawJSON, alt)
 	stopKeepAlive()
 	if errMsg != nil {
-		h.WriteErrorResponse(c, errMsg)
+		h.WriteErrorResponseAs(c, errMsg, handlers.ErrorFormatClaude)
 		cliCancel(errMsg.Error)
 		return
 	}
@@ -179,6 +179,10 @@ func (h *ClaudeCodeAPIHandler) handleNonStreamingResponse(c *gin.Context, rawJSO
 			}
 		}
 	}
+
+	// Claude clients only take tool_use ids made of letters, digits, _ and -;
+	// other upstreams' ids are encoded here and decoded when they come back.
+	resp = sdktranslator.EncodeClaudeResponseToolIDs(resp)
 
 	handlers.WriteUpstreamHeaders(c.Writer.Header(), upstreamHeaders)
 	_, _ = c.Writer.Write(resp)
@@ -214,7 +218,7 @@ func (h *ClaudeCodeAPIHandler) handleStreamingResponse(c *gin.Context, rawJSON [
 
 	dataChan, upstreamHeaders, errChan, startErr := h.StartStreamWithAuthManager(cliCtx, h.HandlerType(), modelName, rawJSON, "")
 	if startErr != nil {
-		h.WriteErrorResponse(c, startErr)
+		h.WriteErrorResponseAs(c, startErr, handlers.ErrorFormatClaude)
 		cliCancel(startErr.Error)
 		return
 	}
@@ -233,40 +237,17 @@ func (h *ClaudeCodeAPIHandler) forwardClaudeStream(c *gin.Context, flusher http.
 			if len(chunk) == 0 {
 				return
 			}
-			_, _ = c.Writer.Write(chunk)
+			// Tool_use ids outside the alphabet Claude clients accept are
+			// encoded, as in the non-streaming response.
+			_, _ = c.Writer.Write(sdktranslator.EncodeClaudeStreamToolIDs(chunk))
 		},
 		WriteTerminalError: func(errMsg *interfaces.ErrorMessage) {
 			if errMsg == nil {
 				return
 			}
-			status := http.StatusInternalServerError
-			if errMsg.StatusCode > 0 {
-				status = errMsg.StatusCode
-			}
+			status, body := handlers.FormatErrorMessage(handlers.ErrorFormatClaude, errMsg)
 			c.Status(status)
-
-			errorBytes, _ := json.Marshal(h.toClaudeError(errMsg))
-			_, _ = fmt.Fprintf(c.Writer, "event: error\ndata: %s\n\n", errorBytes)
+			_, _ = fmt.Fprintf(c.Writer, "event: error\ndata: %s\n\n", body)
 		},
 	})
-}
-
-type claudeErrorDetail struct {
-	Type    string `json:"type"`
-	Message string `json:"message"`
-}
-
-type claudeErrorResponse struct {
-	Type  string            `json:"type"`
-	Error claudeErrorDetail `json:"error"`
-}
-
-func (h *ClaudeCodeAPIHandler) toClaudeError(msg *interfaces.ErrorMessage) claudeErrorResponse {
-	return claudeErrorResponse{
-		Type: "error",
-		Error: claudeErrorDetail{
-			Type:    "api_error",
-			Message: msg.Error.Error(),
-		},
-	}
 }

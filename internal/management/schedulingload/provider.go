@@ -16,6 +16,7 @@ import (
 
 	log "github.com/sirupsen/logrus"
 
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/management/aiaccountstatus"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 )
@@ -26,9 +27,19 @@ import (
 // short TTL here costs nothing and keeps the data fresh enough to steer traffic.
 const snapshotTTL = 60 * time.Second
 
+// window is one quota window as the snapshot keeps it.
+type window struct {
+	key  string
+	span time.Duration
+	// used is the share already spent, in [0,1]. The status records store the
+	// share *remaining*, which is what the panel shows.
+	used float64
+	// resetAt is zero when the provider gave no renewal time.
+	resetAt time.Time
+}
+
 type snapshot struct {
-	ratios      map[string]float64
-	resets      map[string]time.Time
+	windows     map[string][]window
 	refreshedAt time.Time
 }
 
@@ -46,7 +57,7 @@ type Provider struct {
 
 func NewProvider() *Provider {
 	p := &Provider{tenants: make(map[string]struct{})}
-	p.current.Store(&snapshot{ratios: map[string]float64{}, resets: map[string]time.Time{}})
+	p.current.Store(&snapshot{windows: map[string][]window{}})
 	return p
 }
 
@@ -61,29 +72,77 @@ func (p *Provider) TrackTenant(tenantID string) {
 	p.tenantsMu.Unlock()
 }
 
-// QuotaLoadRatio implements coreauth.QuotaLoadSource.
+// QuotaLoadRatio implements coreauth.QuotaLoadSource: the account-wide windows'
+// load, for callers that do not know the request's model.
 func (p *Provider) QuotaLoadRatio(auth *coreauth.Auth) (float64, bool) {
-	if p == nil || auth == nil {
+	return p.QuotaLoadRatioForModel(auth, "")
+}
+
+// QuotaLoadRatioForModel implements coreauth.ModelQuotaLoadSource: the share
+// spent of the most constrained window that limits model, with long windows
+// close to renewal discounted (see longWindowDiscount).
+func (p *Provider) QuotaLoadRatioForModel(auth *coreauth.Auth, model string) (float64, bool) {
+	windows, ok := p.windowsFor(auth)
+	if !ok {
 		return 0, false
+	}
+	now := time.Now()
+	worst, found := 0.0, false
+	for _, w := range windows {
+		if !aiaccountstatus.WindowAppliesToModel(w.key, model) {
+			continue
+		}
+		w = w.at(now)
+		if ratio := w.used * longWindowDiscount(w, now); !found || ratio > worst {
+			worst, found = ratio, true
+		}
+	}
+	return worst, found
+}
+
+// QuotaWindows implements coreauth.QuotaWindowSource for the reset-aware
+// distribution.
+func (p *Provider) QuotaWindows(auth *coreauth.Auth, model string) ([]coreauth.QuotaWindow, bool) {
+	windows, ok := p.windowsFor(auth)
+	if !ok {
+		return nil, false
+	}
+	now := time.Now()
+	out := make([]coreauth.QuotaWindow, 0, len(windows))
+	for _, w := range windows {
+		if !aiaccountstatus.WindowAppliesToModel(w.key, model) {
+			continue
+		}
+		w = w.at(now)
+		resetAt := w.resetAt
+		if resetAt.IsZero() && w.span > 0 {
+			// Not started, or renewed since it was read: the next request starts
+			// it, so it renews a full span from now.
+			resetAt = now.Add(w.span)
+		}
+		out = append(out, coreauth.QuotaWindow{Key: w.key, Span: w.span, Used: w.used, ResetAt: resetAt})
+	}
+	return out, len(out) > 0
+}
+
+func (p *Provider) windowsFor(auth *coreauth.Auth) ([]window, bool) {
+	if p == nil || auth == nil {
+		return nil, false
 	}
 	key := loadKey(auth.TenantID, auth.Index)
 	if key == "" {
-		return 0, false
+		return nil, false
 	}
-
 	current := p.current.Load()
 	if current == nil {
 		p.triggerRefresh()
-		return 0, false
+		return nil, false
 	}
 	if time.Since(current.refreshedAt) > snapshotTTL {
 		p.triggerRefresh()
 	}
-	ratio, ok := current.ratios[key]
-	if !ok {
-		return 0, false
-	}
-	return applyResetDiscount(key, ratio, current.resets), true
+	windows, ok := current.windows[key]
+	return windows, ok && len(windows) > 0
 }
 
 func (p *Provider) triggerRefresh() {
@@ -109,9 +168,7 @@ func (p *Provider) Refresh() {
 	}
 	p.tenantsMu.RUnlock()
 
-	ratios := make(map[string]float64)
-	resets := make(map[string]time.Time)
-	now := time.Now()
+	byAccount := make(map[string][]window)
 	for _, tenantID := range tenants {
 		records, err := usage.ListAIAccountStatusForTenant(tenantID, nil)
 		if err != nil {
@@ -125,83 +182,68 @@ func (p *Provider) Refresh() {
 			if key == "" {
 				continue
 			}
-			if ratio, ok := worstQuotaRatio(record.Quotas); ok {
-				ratios[key] = ratio
-				if reset, rok := soonestReset(record.Quotas, now); rok {
-					resets[key] = reset
-				}
+			if windows := windowsFromStatus(record.Quotas); len(windows) > 0 {
+				byAccount[key] = windows
 			}
 		}
 	}
-	p.current.Store(&snapshot{ratios: ratios, resets: resets, refreshedAt: time.Now()})
+	p.current.Store(&snapshot{windows: byAccount, refreshedAt: time.Now()})
 }
 
-// worstQuotaRatio takes the most constrained window for the account. An account
-// whose 5-hour window is nearly spent should shed traffic even when its weekly
-// window still looks healthy.
-func worstQuotaRatio(windows []usage.QuotaWindowDTO) (float64, bool) {
-	worst := 0.0
-	found := false
-	for _, window := range windows {
-		if window.Percent == nil {
+// windowsFromStatus keeps the windows whose usage is known. A window without a
+// share says nothing about how much room the account has.
+func windowsFromStatus(dtos []usage.QuotaWindowDTO) []window {
+	out := make([]window, 0, len(dtos))
+	for _, dto := range dtos {
+		if dto.Percent == nil {
 			continue
 		}
-		ratio := *window.Percent / 100
-		if ratio < 0 {
-			continue
+		remaining := math.Min(math.Max(*dto.Percent, 0), 100)
+		w := window{
+			key:  dto.QuotaKey,
+			span: time.Duration(dto.WindowSeconds) * time.Second,
+			used: 1 - remaining/100,
 		}
-		if ratio > 1 {
-			ratio = 1
+		if dto.ResetAt != nil {
+			w.resetAt = dto.ResetAt.UTC()
 		}
-		if !found || ratio > worst {
-			worst = ratio
-			found = true
-		}
+		out = append(out, w)
 	}
-	return worst, found
+	return out
 }
 
-// soonestReset returns the earliest upcoming reset across the account's
-// windows. It is the point at which the most exhausted quota refills, so the
-// selector can stop shedding traffic that would otherwise be preserved into a
-// reset that wipes it out anyway. Windows with no reset timestamp are ignored.
-func soonestReset(windows []usage.QuotaWindowDTO, now time.Time) (time.Time, bool) {
-	var soonest time.Time
-	found := false
-	for _, window := range windows {
-		if window.ResetAt == nil {
-			continue
-		}
-		reset := *window.ResetAt
-		if !reset.After(now) {
-			continue
-		}
-		if !found || reset.Before(soonest) {
-			soonest = reset
-			found = true
-		}
+// at returns the window as it stands at now. A window whose renewal has passed
+// since it was read has started over: nothing of it is spent, and when it
+// renews next is unknown until the provider reports it.
+func (w window) at(now time.Time) window {
+	if !w.resetAt.IsZero() && !w.resetAt.After(now) {
+		w.used = 0
+		w.resetAt = time.Time{}
 	}
-	return soonest, found
+	return w
 }
 
-// Reset-discount tuning for long (weekly) windows. Within fullBurnWindow of a
-// reset the remaining quota is about to be wiped, so the seat should burn it
-// freely rather than shed load. From fullBurnWindow out to discountHorizon the
-// discount fades linearly back to zero, so a seat whose reset is still days
-// away is protected as usual.
+// Reset-discount tuning for long (weekly or longer) windows. Within
+// fullBurnWindow of a renewal what such a window has left is about to be wiped,
+// so the account should burn it rather than shed load. From fullBurnWindow out
+// to discountHorizon the discount fades linearly back to none, so an account
+// whose renewal is days away is protected as usual.
+//
+// Shorter windows are never discounted: a five-hour window always renews within
+// fullBurnWindow, and running it into its cap means 429s until it does.
 const (
+	longWindowSpan  = 7 * 24 * time.Hour
 	fullBurnWindow  = 6 * time.Hour
 	discountHorizon = 48 * time.Hour
 )
 
-// resetDiscountFactor scales a quota load ratio down as the account's soonest
-// long-window reset approaches. It returns 1 when no reset is known.
-func resetDiscountFactor(key string, resets map[string]time.Time) float64 {
-	reset, ok := resets[key]
-	if !ok {
+// longWindowDiscount scales a window's used share as its renewal approaches. It
+// returns 1 for short windows and for windows without a known renewal.
+func longWindowDiscount(w window, now time.Time) float64 {
+	if w.span < longWindowSpan || w.resetAt.IsZero() {
 		return 1
 	}
-	until := time.Until(reset)
+	until := w.resetAt.Sub(now)
 	if until <= fullBurnWindow {
 		return 0
 	}
@@ -210,12 +252,6 @@ func resetDiscountFactor(key string, resets map[string]time.Time) float64 {
 	}
 	return float64(until-fullBurnWindow) / float64(discountHorizon-fullBurnWindow)
 }
-
-func applyResetDiscount(key string, ratio float64, resets map[string]time.Time) float64 {
-	return ratio * resetDiscountFactor(key, resets)
-}
-
-var _ = math.Max
 
 func loadKey(tenantID, authIndex string) string {
 	authIndex = strings.TrimSpace(authIndex)

@@ -305,7 +305,14 @@ func ConvertClaudeRequestToCodex(modelName string, inputRawJSON []byte, _ bool) 
 	}
 	out.WriteString(`,"parallel_tool_calls":true,"reasoning":{"effort":`)
 	out.Write(mustJSONString(reasoningEffort))
-	out.WriteString(`,"summary":"auto"},"stream":true,"store":false,"include":["reasoning.encrypted_content"]}`)
+	out.WriteString(`,"summary":"auto"},"stream":true,"store":false,"include":["reasoning.encrypted_content"]`)
+	// Written into the envelope like the rest, not set on the finished body.
+	if format, ok := common.OutputFormatFromClaude(rootResult).ResponsesFormat(); ok {
+		out.WriteString(`,"text":{"format":`)
+		out.WriteString(format)
+		out.WriteByte('}')
+	}
+	out.WriteByte('}')
 	return out.Bytes()
 }
 

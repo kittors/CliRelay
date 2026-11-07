@@ -22,6 +22,7 @@ import (
 	qwenprovider "github.com/router-for-me/CLIProxyAPI/v6/internal/management/oauth/providers/qwen"
 	xaiprovider "github.com/router-for-me/CLIProxyAPI/v6/internal/management/oauth/providers/xai"
 	oauthsession "github.com/router-for-me/CLIProxyAPI/v6/internal/management/oauth/session"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
 )
@@ -135,7 +136,25 @@ func (h *Handler) resolveOAuthProxyURL(c *gin.Context) string {
 	if proxyID == "" {
 		return ""
 	}
-	return h.cfg.ResolveProxyURL(proxyID, "")
+	return h.resolveTenantProxyURL(effectiveTenantID(c), proxyID)
+}
+
+// resolveTenantProxyURL resolves a proxy ID the way the tenant's executors
+// will once the credential is saved: against the tenant's own pool and the
+// platform proxies shared with it. Resolving against the system pool instead
+// sent a tenant's login through the system entry of the same ID, or straight
+// out when there was none, so the token was minted from another address than
+// the account's traffic would then use.
+func (h *Handler) resolveTenantProxyURL(tenantID, proxyID string) string {
+	proxyID = strings.TrimSpace(proxyID)
+	if proxyID == "" || h == nil || h.cfg == nil {
+		return ""
+	}
+	if tenantID == identity.SystemTenantID {
+		return h.cfg.ResolveProxyURL(proxyID, "")
+	}
+	tenantCfg := usage.BuildTenantRuntimeConfig(h.cfg, tenantID)
+	return tenantCfg.ResolveProxyURL(proxyID, "")
 }
 
 func (h *Handler) tenantOAuthBindings(c *gin.Context) (

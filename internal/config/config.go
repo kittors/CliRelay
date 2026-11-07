@@ -182,6 +182,11 @@ type Config struct {
 	// is the only thing that knows what the account may actually call.
 	CodexImageBaseModel string `yaml:"codex-image-base-model,omitempty" json:"codex-image-base-model,omitempty"`
 
+	// CodexRequestZstd controls whether POST /responses bodies sent to the ChatGPT
+	// Codex backend are zstd-compressed, as the official Codex client does. Nil
+	// means on; set false to send plain JSON. See CodexRequestZstdEnabled.
+	CodexRequestZstd *bool `yaml:"codex-request-zstd,omitempty" json:"codex-request-zstd,omitempty"`
+
 	// ProxyPool stores reusable outbound proxies that can be referenced by providers and auth files.
 	ProxyPool []ProxyPoolEntry `yaml:"proxy-pool,omitempty" json:"proxy-pool,omitempty"`
 

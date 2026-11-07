@@ -473,7 +473,8 @@ func (s *Service) authIndexesForProviderGroup(group string) []string {
 	if s == nil || s.authManager == nil {
 		return []string{}
 	}
-	auths := s.authManager.ListForTenant(s.tenantID)
+	// Shared platform credentials serve this tenant's traffic too.
+	auths := s.authManager.ListUsableForTenant(s.tenantID)
 	indexes := make([]string, 0, len(auths))
 	for _, auth := range auths {
 		if auth == nil {
@@ -499,7 +500,7 @@ func (s *Service) authByIndex(authIndex string) *coreauth.Auth {
 	if authIndex == "" {
 		return nil
 	}
-	for _, auth := range s.authManager.ListForTenant(s.tenantID) {
+	for _, auth := range s.authManager.ListUsableForTenant(s.tenantID) {
 		if auth == nil {
 			continue
 		}
@@ -517,7 +518,7 @@ func (s *Service) authSubjectMatcher(auth *coreauth.Auth) usage.AuthSubjectMatch
 	}
 	auths := []*coreauth.Auth{}
 	if s != nil && s.authManager != nil {
-		auths = s.authManager.ListForTenant(s.tenantID)
+		auths = s.authManager.ListUsableForTenant(s.tenantID)
 	}
 	return usage.BuildAuthSubjectMatcher(auth, auths)
 }

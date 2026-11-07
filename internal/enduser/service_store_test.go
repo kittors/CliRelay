@@ -262,8 +262,9 @@ func TestUnbindingPermissionProfileClearsInheritedScopes(t *testing.T) {
 	}
 }
 
-// Switching between profiles must not trip the unbind cleanup, and an explicit
-// scope in the same patch still wins over it.
+// Switching between profiles must not trip the unbind cleanup: the account takes
+// the new profile's snapshot instead of an emptied scope. An explicit scope in the
+// same patch as an unbind still wins over the cleanup.
 func TestProfileScopesSurviveWhenNotUnbinding(t *testing.T) {
 	db := openEndUserTestDB(t)
 	svc := NewService(db)
@@ -281,6 +282,11 @@ func TestProfileScopesSurviveWhenNotUnbinding(t *testing.T) {
 		t.Fatalf("insert rebind user: %v", err)
 	}
 	other := "profile-2"
+	if err := sqlapikey.NewTenantStore(db, tenantID).ReplaceAllPermissionProfiles([]sqlapikey.PermissionProfileRow{
+		{ID: other, Name: "Profile 2", AllowedChannelGroups: []string{"group-2"}},
+	}); err != nil {
+		t.Fatalf("seed profile: %v", err)
+	}
 	if _, err := svc.UpdateUser(ctx, actor, tenantID, rebind, nil, nil, nil, nil, &QuotaPatch{PermissionProfileID: &other}); err != nil {
 		t.Fatalf("UpdateUser rebind: %v", err)
 	}
@@ -288,8 +294,12 @@ func TestProfileScopesSurviveWhenNotUnbinding(t *testing.T) {
 	if err := db.QueryRow(`SELECT allowed_channel_groups FROM end_users WHERE id = ?`, rebind).Scan(&groups); err != nil {
 		t.Fatalf("query rebind: %v", err)
 	}
-	if groups != `["group"]` {
-		t.Fatalf("allowed_channel_groups = %q, want untouched when switching profiles", groups)
+	if groups != `["group-2"]` {
+		t.Fatalf("allowed_channel_groups = %q, want the new profile's snapshot when switching profiles", groups)
+	}
+	missing := "no-such-profile"
+	if _, err := svc.UpdateUser(ctx, actor, tenantID, rebind, nil, nil, nil, nil, &QuotaPatch{PermissionProfileID: &missing}); !errors.Is(err, ErrValidation) {
+		t.Fatalf("binding a missing profile err = %v, want ErrValidation", err)
 	}
 
 	explicit := uuid.NewString()

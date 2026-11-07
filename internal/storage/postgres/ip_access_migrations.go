@@ -36,6 +36,25 @@ func laterRuntimeMigrations() []Migration {
 		{Version: "202609250006_async_task_routes", SQL: asyncTaskRoutesSQL},
 		{Version: "202609250007_management_jobs", SQL: managementJobsSQL},
 		{Version: "202609250008_warmup_policies", SQL: warmupPoliciesSQL},
+		// Which tenants may use the system tenant's shared proxies and AI
+		// account credentials. See shared_resource_migrations.go.
+		{Version: "202610130001_platform_resource_grants", SQL: platformResourceGrantsSQL},
+		// Explicit Codex context window of a CC Switch import preset.
+		{Version: "202610130002_ccswitch_codex_context_window", SQL: ccSwitchCodexContextWindowSQL},
+		// Per-window request/token limits, per-model quota rules and model routes
+		// for accounts, keys and permission profiles. See access_policy_migrations.go.
+		{Version: "202610190001_access_policy", SQL: accessPolicySQL},
+		// Cache reads, cache writes, prompt size and client session on
+		// request_logs, and cache totals on usage_rollup_buckets. See
+		// request_log_cache_migrations.go.
+		{Version: "202610300001_request_log_cache_and_session", SQL: requestLogCacheAndSessionSQL},
+		// Which loop protection check ended a request, so the log can show and
+		// filter it and the monitor can count it.
+		{Version: "202611010001_request_log_guard_kind", SQL: requestLogGuardKindSQL},
+		// Generation-speed samples on usage_rollup_buckets: output tokens over
+		// the time after the first token. See
+		// usage_rollup_generation_migrations.go.
+		{Version: "202611040001_usage_rollup_generation_speed", SQL: usageRollupGenerationSpeedSQL},
 	}
 }
 

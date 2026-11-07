@@ -291,8 +291,9 @@ func QueryRawTodayCostsByKeysForTenant(tenantID string, keys []APIKeyRow) (map[s
 		return nil, err
 	}
 
-	// Match buildSingleAPIKeySelectorClauseForTenant:
-	// (api_key_id = ? OR (api_key_id = '' AND api_key = ?)) — sum both branches.
+	// Same key identity as buildSingleAPIKeySelectorClauseForTenant (api_key_id).
+	// legacyCostByKey stays empty because rollup buckets are always keyed by id, so
+	// the sum is the id branch alone.
 	for _, k := range keys {
 		id := strings.TrimSpace(k.ID)
 		key := strings.TrimSpace(k.Key)

@@ -40,7 +40,8 @@ CREATE TABLE IF NOT EXISTS api_keys (
   allowed_channel_groups TEXT NOT NULL DEFAULT '[]',
   system_prompt     TEXT NOT NULL DEFAULT '',
   created_at        TEXT NOT NULL DEFAULT '',
-  updated_at        TEXT NOT NULL DEFAULT ''
+  updated_at        TEXT NOT NULL DEFAULT '',
+  access_policy     TEXT NOT NULL DEFAULT '{}'
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_id ON api_keys(id);
@@ -74,6 +75,10 @@ type APIKeyRow struct {
 	SystemPrompt            string                     `json:"system-prompt,omitempty"`
 	CreatedAt               string                     `json:"created-at,omitempty"`
 	UpdatedAt               string                     `json:"updated_at,omitempty"`
+	// AccessPolicy 是 access_policy 列：固定列之外的额度格子与按模型规则。
+	// 不参与通用 Key 接口的 JSON（那里没有校验它的路径），只经 owner 作用域的
+	// 账号 Key 接口读写；Upsert/UpdateByID 不改写它，ReplaceAll 保留原值。
+	AccessPolicy quota.AccessPolicy `json:"-"`
 }
 
 type PermissionProfileSnapshot struct {
@@ -89,6 +94,7 @@ type PermissionProfileSnapshot struct {
 	AllowedChannels      []string
 	AllowedChannelGroups []string
 	SystemPrompt         string
+	AccessPolicy         quota.AccessPolicy
 }
 
 type Store struct {
@@ -225,7 +231,7 @@ func (s Store) ListAll() []APIKeyRow {
 	rows, err := s.db.Query(`SELECT tenant_id, key, name, disabled, id, daily_limit, total_quota,
 		permission_profile_id, spending_limit, daily_spending_limit, five_hour_spending_limit, weekly_spending_limit, monthly_spending_limit, concurrency_limit, rpm_limit, tpm_limit,
 		allowed_models, allowed_channels, allowed_channel_groups, system_prompt, created_at, updated_at,
-		end_user_id, is_default
+		end_user_id, is_default, access_policy
 		FROM api_keys ORDER BY tenant_id ASC, created_at ASC`)
 	if err != nil {
 		log.Errorf("sqlite/apikey: list all api_keys: %v", err)
@@ -254,7 +260,7 @@ func (s Store) List() []APIKeyRow {
 	rows, err := s.db.Query(`SELECT key, name, disabled, id, daily_limit, total_quota,
 		permission_profile_id, spending_limit, daily_spending_limit, five_hour_spending_limit, weekly_spending_limit, monthly_spending_limit, concurrency_limit, rpm_limit, tpm_limit,
 		allowed_models, allowed_channels, allowed_channel_groups, system_prompt, created_at, updated_at,
-		end_user_id, is_default
+		end_user_id, is_default, access_policy
 		FROM api_keys WHERE tenant_id = ? ORDER BY created_at ASC`, s.tenantID)
 	if err != nil {
 		log.Errorf("sqlite/apikey: list api_keys: %v", err)
@@ -282,7 +288,7 @@ func (s Store) Get(key string) *APIKeyRow {
 	row := s.db.QueryRow(`SELECT key, name, disabled, id, daily_limit, total_quota,
 		permission_profile_id, spending_limit, daily_spending_limit, five_hour_spending_limit, weekly_spending_limit, monthly_spending_limit, concurrency_limit, rpm_limit, tpm_limit,
 		allowed_models, allowed_channels, allowed_channel_groups, system_prompt, created_at, updated_at,
-		end_user_id, is_default
+		end_user_id, is_default, access_policy
 		FROM api_keys WHERE tenant_id = ? AND key = ?`, s.tenantID, trimmed)
 	entry, ok := scanAPIKeyRow(row)
 	if !ok {
@@ -308,7 +314,7 @@ func (s Store) GetAnyTenant(key string) *APIKeyRow {
 	row := s.db.QueryRow(`SELECT tenant_id, key, name, disabled, id, daily_limit, total_quota,
 		permission_profile_id, spending_limit, daily_spending_limit, five_hour_spending_limit, weekly_spending_limit, monthly_spending_limit, concurrency_limit, rpm_limit, tpm_limit,
 		allowed_models, allowed_channels, allowed_channel_groups, system_prompt, created_at, updated_at,
-		end_user_id, is_default
+		end_user_id, is_default, access_policy
 		FROM api_keys WHERE key = ?`, trimmed)
 	entry, ok := scanAPIKeyRowWithTenant(row)
 	if !ok {
@@ -330,7 +336,7 @@ func (s Store) GetByID(id string) *APIKeyRow {
 	row := s.db.QueryRow(`SELECT key, name, disabled, id, daily_limit, total_quota,
 		permission_profile_id, spending_limit, daily_spending_limit, five_hour_spending_limit, weekly_spending_limit, monthly_spending_limit, concurrency_limit, rpm_limit, tpm_limit,
 		allowed_models, allowed_channels, allowed_channel_groups, system_prompt, created_at, updated_at,
-		end_user_id, is_default
+		end_user_id, is_default, access_policy
 		FROM api_keys WHERE tenant_id = ? AND id = ?`, s.tenantID, trimmed)
 	entry, ok := scanAPIKeyRow(row)
 	if !ok {
@@ -355,7 +361,7 @@ func (s Store) GetByIDAnyTenant(id string) *APIKeyRow {
 	row := s.db.QueryRow(`SELECT tenant_id, key, name, disabled, id, daily_limit, total_quota,
 		permission_profile_id, spending_limit, daily_spending_limit, five_hour_spending_limit, weekly_spending_limit, monthly_spending_limit, concurrency_limit, rpm_limit, tpm_limit,
 		allowed_models, allowed_channels, allowed_channel_groups, system_prompt, created_at, updated_at,
-		end_user_id, is_default
+		end_user_id, is_default, access_policy
 		FROM api_keys WHERE id = ?`, trimmed)
 	entry, ok := scanAPIKeyRowWithTenant(row)
 	if !ok {
@@ -566,6 +572,12 @@ func lockOwnedEndUser(tx *sql.Tx, ownerID string) error {
 	return nil
 }
 
+// EnsureOwnedActiveKeyAndDefault 保证账号至少有一把启用的 Key 且恰好一把是默认 Key；
+// 账号服务暂停/恢复 Key 时复用这份规则。
+func EnsureOwnedActiveKeyAndDefault(tx *sql.Tx, tenantID, ownerID, now string) error {
+	return ensureOwnedActiveKeyAndDefault(tx, tenantID, ownerID, now)
+}
+
 func ensureOwnedActiveKeyAndDefault(tx *sql.Tx, tenantID, ownerID, now string) error {
 	var activeCount int
 	if err := tx.QueryRow(`
@@ -706,6 +718,7 @@ func migrateColumns(db *sql.DB) {
 		{name: "monthly_spending_limit", definition: "REAL NOT NULL DEFAULT 0"},
 		{name: "end_user_id", definition: "TEXT"},
 		{name: "is_default", definition: "INTEGER NOT NULL DEFAULT 0"},
+		{name: "access_policy", definition: "TEXT NOT NULL DEFAULT '{}'"},
 	} {
 		if _, err := db.Exec("ALTER TABLE api_keys ADD COLUMN " + col.name + " " + col.definition); err != nil {
 			if !strings.Contains(strings.ToLower(err.Error()), "duplicate") {
@@ -933,51 +946,33 @@ func scanAPIKeyRows(rows *sql.Rows) []APIKeyRow {
 }
 
 func scanAPIKeyRowWithTenant(row scanner) (*APIKeyRow, bool) {
-	var entry APIKeyRow
-	var disabledInt int
-	var endUserID sql.NullString
-	var isDefault any
-	var modelsJSON string
-	var channelsJSON string
-	var channelGroupsJSON string
-	if err := row.Scan(
-		&entry.TenantID, &entry.Key, &entry.Name, &disabledInt,
-		&entry.ID,
-		&entry.DailyLimit, &entry.TotalQuota, &entry.PermissionProfileID, &entry.SpendingLimit,
-		&entry.DailySpendingLimit, &entry.PeriodSpendingLimits.FiveHour, &entry.PeriodSpendingLimits.Week, &entry.PeriodSpendingLimits.Month, &entry.ConcurrencyLimit, &entry.RPMLimit, &entry.TPMLimit,
-		&modelsJSON, &channelsJSON, &channelGroupsJSON, &entry.SystemPrompt,
-		&entry.CreatedAt, &entry.UpdatedAt, &endUserID, &isDefault,
-	); err != nil {
-		if err != sql.ErrNoRows {
-			log.Warnf("sqlite/apikey: scan tenant api_keys row: %v", err)
-		}
-		return nil, false
-	}
-	if endUserID.Valid {
-		entry.EndUserID = endUserID.String
-	}
-	entry.IsDefault = boolish(isDefault)
-	entry.PeriodSpendingLimits.Day = entry.DailySpendingLimit
-	decodeAPIKeyRow(&entry, disabledInt, modelsJSON, channelsJSON, channelGroupsJSON)
-	return &entry, true
+	return scanAPIKeyRowColumns(row, true)
 }
 
 func scanAPIKeyRow(row scanner) (*APIKeyRow, bool) {
+	return scanAPIKeyRowColumns(row, false)
+}
+
+// scanAPIKeyRowColumns 扫描各 SELECT 共用的列序；withTenant 时第一列是 tenant_id。
+func scanAPIKeyRowColumns(row scanner, withTenant bool) (*APIKeyRow, bool) {
 	var entry APIKeyRow
 	var disabledInt int
 	var endUserID sql.NullString
 	var isDefault any
-	var modelsJSON string
-	var channelsJSON string
-	var channelGroupsJSON string
-	if err := row.Scan(
+	var modelsJSON, channelsJSON, channelGroupsJSON, policyJSON string
+	dest := make([]any, 0, 26)
+	if withTenant {
+		dest = append(dest, &entry.TenantID)
+	}
+	dest = append(dest,
 		&entry.Key, &entry.Name, &disabledInt,
 		&entry.ID,
 		&entry.DailyLimit, &entry.TotalQuota, &entry.PermissionProfileID, &entry.SpendingLimit,
 		&entry.DailySpendingLimit, &entry.PeriodSpendingLimits.FiveHour, &entry.PeriodSpendingLimits.Week, &entry.PeriodSpendingLimits.Month, &entry.ConcurrencyLimit, &entry.RPMLimit, &entry.TPMLimit,
 		&modelsJSON, &channelsJSON, &channelGroupsJSON, &entry.SystemPrompt,
-		&entry.CreatedAt, &entry.UpdatedAt, &endUserID, &isDefault,
-	); err != nil {
+		&entry.CreatedAt, &entry.UpdatedAt, &endUserID, &isDefault, &policyJSON,
+	)
+	if err := row.Scan(dest...); err != nil {
 		if err != sql.ErrNoRows {
 			log.Warnf("sqlite/apikey: scan api_keys row: %v", err)
 		}
@@ -989,6 +984,13 @@ func scanAPIKeyRow(row scanner) (*APIKeyRow, bool) {
 	entry.IsDefault = boolish(isDefault)
 	entry.PeriodSpendingLimits.Day = entry.DailySpendingLimit
 	decodeAPIKeyRow(&entry, disabledInt, modelsJSON, channelsJSON, channelGroupsJSON)
+	policy, err := quota.DecodeAccessPolicy(policyJSON)
+	if err != nil {
+		// 写入路径一律先校验再序列化，读到坏数据只可能是手工改库。按空策略处理会
+		// 静默放开额度，所以记一条错误日志；准入层对这类 Key 仍按固定列额度执行。
+		log.WithError(err).Errorf("sqlite/apikey: api key %s has an unreadable access_policy", entry.ID)
+	}
+	entry.AccessPolicy = policy
 	return &entry, true
 }
 

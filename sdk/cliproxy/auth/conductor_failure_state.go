@@ -41,12 +41,20 @@ func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Durati
 		auth.StatusMessage = "transient upstream error"
 		if quotaCooldownDisabledForAuth(auth) {
 			auth.NextRetryAfter = time.Time{}
+		} else if wait, ok := upstreamFailureCooldown(Result{RetryAfter: retryAfter}); ok {
+			auth.NextRetryAfter = now.Add(wait)
 		} else {
 			auth.NextRetryAfter = now.Add(1 * time.Minute)
 		}
 	default:
 		if auth.StatusMessage == "" {
 			auth.StatusMessage = "request failed"
+		}
+		// A 529 only backs off when the upstream names a time (see the model path).
+		if statusCode == statusSiteOverloaded && !quotaCooldownDisabledForAuth(auth) {
+			if wait, ok := upstreamFailureCooldown(Result{RetryAfter: retryAfter}); ok {
+				auth.NextRetryAfter = now.Add(wait)
+			}
 		}
 	}
 }

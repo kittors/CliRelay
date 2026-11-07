@@ -81,19 +81,19 @@ func (d *schedulerDeps) sessionAffinity() SessionAffinityStore {
 
 // honour returns the account bound to key when that binding still stands,
 // consulting the shared store when there is one.
-func (s *SessionStickySelector) honour(ctx context.Context, key string, available []*Auth, limits stickyLimits, now time.Time) *Auth {
+func (s *SessionStickySelector) honour(ctx context.Context, key, model string, available []*Auth, limits stickyLimits, now time.Time) *Auth {
 	store := s.deps.sessionAffinity()
 	if store == nil {
-		return s.honourBinding(key, available, limits, now)
+		return s.honourBinding(key, model, available, limits, now)
 	}
 	binding, err := store.Lookup(ctx, key, sessionStickyTTL)
 	if err != nil {
-		return s.honourBinding(key, available, limits, now)
+		return s.honourBinding(key, model, available, limits, now)
 	}
 	if !binding.Found {
 		// A binding made here while the store was unreachable still stands
 		// locally; carry it into the store so every process follows it.
-		bound := s.honourBinding(key, available, limits, now)
+		bound := s.honourBinding(key, model, available, limits, now)
 		if bound == nil {
 			return nil
 		}
@@ -105,7 +105,7 @@ func (s *SessionStickySelector) honour(ctx context.Context, key string, availabl
 	bound := findAuthByRef(available, binding.AccountRef)
 	if bound == nil ||
 		(limits.maxRequests > 0 && binding.Served >= limits.maxRequests) ||
-		(limits.releaseAtLoad > 0 && s.deps.loadRatio(bound) >= limits.releaseAtLoad) {
+		(limits.releaseAtLoad > 0 && s.deps.loadRatio(bound, model) >= limits.releaseAtLoad) {
 		_ = store.Release(ctx, key, binding.AccountRef)
 		s.deleteBinding(key)
 		return nil

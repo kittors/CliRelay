@@ -206,6 +206,12 @@ func buildRestrictionEntry(scope, model string, status coreauth.Status, statusMe
 			entry["retryable"] = true
 		}
 	}
+	// Why the account or model is held back, as a stable code the panel words
+	// itself. Only a restriction that is holding something back has one: an error
+	// with no time to wait is shown, but nothing is cooling down.
+	if reason := restrictionCooldownReason(nextRetryAfter, lastError, quota, now); reason != "" {
+		entry["cooldown_reason"] = reason
+	}
 	if quota.Exceeded {
 		entry["quota_exceeded"] = true
 		if quota.Reason != "" {
@@ -229,4 +235,41 @@ func isActiveRestriction(status coreauth.Status, unavailable bool, nextRetryAfte
 	hasActiveRetry := !nextRetryAfter.IsZero() && nextRetryAfter.After(now)
 	hasActiveQuota := quota.Exceeded && (quota.NextRecoverAt.IsZero() || quota.NextRecoverAt.After(now))
 	return hasErrorState || hasActiveRetry || hasActiveQuota
+}
+
+func restrictionCooldownReason(nextRetryAfter time.Time, lastError *coreauth.Error, quota coreauth.QuotaState, now time.Time) string {
+	cooling := nextRetryAfter.After(now) ||
+		(quota.Exceeded && (quota.NextRecoverAt.After(now) || quota.RecoveryRequired))
+	if !cooling {
+		return ""
+	}
+	return coreauth.CooldownReasonOf(lastError, quota)
+}
+
+// BuildModelCooldownPayload lists the models held back on an account, one entry
+// each. The restriction list above collapses repeats of the same error into one
+// line; a per-model action (retry this model now) needs every model.
+func BuildModelCooldownPayload(auth *coreauth.Auth, now time.Time) []map[string]any {
+	cooldowns := coreauth.ActiveModelCooldowns(auth, now)
+	if len(cooldowns) == 0 {
+		return nil
+	}
+	out := make([]map[string]any, 0, len(cooldowns))
+	for _, cooldown := range cooldowns {
+		entry := map[string]any{
+			"model":          cooldown.Model,
+			"quota_exceeded": cooldown.QuotaExceeded,
+		}
+		if cooldown.Reason != "" {
+			entry["reason"] = cooldown.Reason
+		}
+		if !cooldown.Until.IsZero() {
+			entry["until"] = cooldown.Until
+		}
+		if cooldown.HTTPStatus > 0 {
+			entry["http_status"] = cooldown.HTTPStatus
+		}
+		out = append(out, entry)
+	}
+	return out
 }

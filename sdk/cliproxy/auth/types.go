@@ -133,6 +133,10 @@ type ModelState struct {
 	Quota QuotaState `json:"quota"`
 	// UpdatedAt tracks the last update timestamp for this model state.
 	UpdatedAt time.Time `json:"updated_at"`
+	// FailureStreak counts the failures in a row, since the last success, that
+	// had the same HTTP status. Cooldowns that lengthen when a failure keeps
+	// coming back (repeatedFailureBackoff) read it.
+	FailureStreak int `json:"failure_streak,omitempty"`
 }
 
 // Clone shallow copies the Auth structure, duplicating maps to avoid accidental mutation.
@@ -180,7 +184,32 @@ func (a *Auth) EnsureIndex() string {
 	if a.indexAssigned && a.Index != "" {
 		return a.Index
 	}
+	seed := a.indexSeed()
+	if seed == "" {
+		return ""
+	}
+	idx := stableAuthIndex(seed)
+	a.Index = idx
+	a.indexAssigned = true
+	return idx
+}
 
+// currentIndex is EnsureIndex without assigning it: safe on an Auth other
+// goroutines read, such as the manager's own copy under its read lock.
+func (a *Auth) currentIndex() string {
+	if a == nil {
+		return ""
+	}
+	if a.indexAssigned && a.Index != "" {
+		return a.Index
+	}
+	if seed := a.indexSeed(); seed != "" {
+		return stableAuthIndex(seed)
+	}
+	return ""
+}
+
+func (a *Auth) indexSeed() string {
 	seed := strings.TrimSpace(a.FileName)
 	if seed != "" {
 		seed = "file:" + seed
@@ -197,10 +226,7 @@ func (a *Auth) EnsureIndex() string {
 		}
 	}
 
-	idx := stableAuthIndex(seed)
-	a.Index = idx
-	a.indexAssigned = true
-	return idx
+	return seed
 }
 
 // Clone duplicates a model state including nested error details.
@@ -237,18 +263,27 @@ func (a *Auth) ProxyInfo() string {
 	return "via proxy"
 }
 
-// DisableCoolingOverride returns the auth-file scoped disable_cooling override when present.
-// The value is read from metadata key "disable_cooling" (or legacy "disable-cooling").
+// DisableCoolingAttributeKey carries a channel's disable-cooling override onto
+// the credentials synthesized from a provider entry in the config. Credentials
+// loaded from auth files keep theirs in metadata instead.
+const DisableCoolingAttributeKey = "disable_cooling"
+
+// DisableCoolingOverride returns the credential's own disable_cooling override
+// when one is set. An auth file's metadata key "disable_cooling" (or legacy
+// "disable-cooling") wins over the attribute a provider entry writes, and
+// without either the credential follows the global disable-cooling switch.
 func (a *Auth) DisableCoolingOverride() (bool, bool) {
-	if a == nil || a.Metadata == nil {
+	if a == nil {
 		return false, false
 	}
-	if val, ok := a.Metadata["disable_cooling"]; ok {
-		if parsed, okParse := parseBoolAny(val); okParse {
-			return parsed, true
+	for _, key := range []string{"disable_cooling", "disable-cooling"} {
+		if val, ok := a.Metadata[key]; ok {
+			if parsed, okParse := parseBoolAny(val); okParse {
+				return parsed, true
+			}
 		}
 	}
-	if val, ok := a.Metadata["disable-cooling"]; ok {
+	if val, ok := a.Attributes[DisableCoolingAttributeKey]; ok {
 		if parsed, okParse := parseBoolAny(val); okParse {
 			return parsed, true
 		}

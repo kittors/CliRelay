@@ -52,7 +52,8 @@ func newModelUnavailableError(model, provider string, resetIn time.Duration) *mo
 	}
 }
 
-func (e *modelCooldownError) Error() string {
+// message is the human-readable sentence of the error body.
+func (e *modelCooldownError) message() string {
 	modelName := e.model
 	if modelName == "" {
 		modelName = "requested model"
@@ -61,6 +62,11 @@ func (e *modelCooldownError) Error() string {
 	if e.provider != "" {
 		message = fmt.Sprintf("%s via provider %s", message, e.provider)
 	}
+	return message
+}
+
+func (e *modelCooldownError) Error() string {
+	message := e.message()
 	resetSeconds := int(math.Ceil(e.resetIn.Seconds()))
 	if resetSeconds < 0 {
 		resetSeconds = 0
@@ -104,7 +110,8 @@ func (e *modelCooldownError) Headers() http.Header {
 	return headers
 }
 
-func (e *modelUnavailableError) Error() string {
+// message is the human-readable sentence of the error body.
+func (e *modelUnavailableError) message() string {
 	modelName := e.model
 	if modelName == "" {
 		modelName = "requested model"
@@ -113,6 +120,11 @@ func (e *modelUnavailableError) Error() string {
 	if e.provider != "" {
 		message = fmt.Sprintf("%s via provider %s", message, e.provider)
 	}
+	return message
+}
+
+func (e *modelUnavailableError) Error() string {
+	message := e.message()
 	resetSeconds := int(math.Ceil(e.resetIn.Seconds()))
 	if resetSeconds < 0 {
 		resetSeconds = 0

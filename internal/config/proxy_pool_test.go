@@ -130,3 +130,22 @@ func TestFindProxyPoolEntry(t *testing.T) {
 		t.Fatalf("FindProxyPoolEntry(non-existent) = %#v, want nil", entry)
 	}
 }
+
+func TestMergeSharedProxyPoolOwnEntriesWin(t *testing.T) {
+	own := []ProxyPoolEntry{{ID: "HK-1", URL: "http://198.51.100.1:3128", Enabled: false}}
+	shared := []ProxyPoolEntry{
+		{ID: "hk-1", URL: "socks5://203.0.113.1:1080", Enabled: true},
+		{ID: "sg-1", URL: "socks5://203.0.113.2:1080", Enabled: true},
+	}
+	merged := MergeSharedProxyPool(own, shared)
+	if len(merged) != 2 || merged[0].URL != own[0].URL || merged[1].ID != "sg-1" {
+		t.Fatalf("merged = %#v", merged)
+	}
+	cfg := &Config{ProxyPool: merged}
+	if got := cfg.ResolveProxyURL("hk-1", ""); got != "" {
+		t.Fatalf("a disabled own entry fell through to the shared address: %q", got)
+	}
+	if got := MergeSharedProxyPool(own, nil); len(got) != 1 {
+		t.Fatalf("no shared entries must leave the own pool alone: %#v", got)
+	}
+}

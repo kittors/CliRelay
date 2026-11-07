@@ -183,7 +183,10 @@ func (s *PolicyScheduler) triggerPolicy(ctx context.Context, policy *Policy, now
 		return
 	}
 
-	auths := s.authMgr.List()
+	// A policy belongs to one tenant and warms that tenant's accounts only:
+	// List() would include every tenant's credentials, so an empty account
+	// filter used to warm (and spend a request on) other tenants' accounts.
+	auths := s.authMgr.ListForTenant(policy.TenantID)
 	matchingAuths := make([]*coreauth.Auth, 0)
 	for _, a := range auths {
 		if a == nil || a.Unavailable {

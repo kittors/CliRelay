@@ -1,6 +1,7 @@
 package management
 
 import (
+	"errors"
 	"net/http"
 	"strings"
 	"sync/atomic"
@@ -57,7 +58,7 @@ func (h *Handler) GetWarmupAccountTargets(c *gin.Context) {
 		return
 	}
 
-	targets, err := h.warmupService().GetAccountTargets(authID)
+	targets, err := h.warmupService().GetAccountTargets(effectiveTenantID(c), authID)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 		return
@@ -77,9 +78,13 @@ func (h *Handler) PostWarmupAccount(c *gin.Context) {
 		return
 	}
 
-	res, err := h.warmupService().WarmupSingleAccount(c.Request.Context(), req.AuthID, req.PoolID)
+	res, err := h.warmupService().WarmupSingleAccount(c.Request.Context(), effectiveTenantID(c), req.AuthID, req.PoolID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		status := http.StatusInternalServerError
+		if errors.Is(err, warmup.ErrAuthNotFound) {
+			status = http.StatusNotFound
+		}
+		c.JSON(status, gin.H{"error": err.Error()})
 		return
 	}
 
@@ -97,7 +102,7 @@ func (h *Handler) PostWarmupBatch(c *gin.Context) {
 		return
 	}
 
-	count, err := h.warmupService().WarmupBatchAccounts(c.Request.Context(), req.AuthIDs, req.PoolID)
+	count, err := h.warmupService().WarmupBatchAccounts(c.Request.Context(), effectiveTenantID(c), req.AuthIDs, req.PoolID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return

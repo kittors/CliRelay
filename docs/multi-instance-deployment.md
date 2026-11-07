@@ -279,10 +279,22 @@ Replication protects against a lost machine, not against a bad `DELETE`: the mis
     - the archive directory is `0700 root` and PostgreSQL runs as uid 70. Mounted as is, `restore_command` cannot read a single segment, so recovery stops at the end of the base backup, still starts a healthy-looking database, and takes a timeline ID the live cluster has already used. Copy the archive and give the copy to uid 70 first;
     - the gzip stream of the `.partial` segment has no trailer yet, so `gunzip` fails after the last complete block. Ignore that error and pad the result to a whole segment with `truncate -s 16M`; the zeros read as the end of the WAL;
     - the image's entrypoint looks for `PG_VERSION` in `PGDATA` and runs initdb when it is missing. Start with `--entrypoint postgres`.
+  - one more, also handled in `pitr-drill.sh`: recovery refuses `max_connections`, `max_worker_processes`, `max_wal_senders`, `max_prepared_transactions` or `max_locks_per_transaction` below the primary's. A primary started with `-c max_connections=200` on its command line still ships the default 100 in the backup's `postgresql.conf`, and recovery stops with `insufficient parameter settings`. Pass the values `pg_controldata` reports for the backup.
 - **Weekly restore drill** (`clirelay-pitr-drill.timer`, Sundays 05:10):
   - `pitr-drill.sh` restores the second newest base backup into a throwaway instance with no network, replays the whole archive and removes it;
   - it passes only if the replay reaches the newest timeline in the archive and its last transaction is at most 15 minutes old; otherwise it exits with a failure (`systemctl status clirelay-pitr-drill`);
   - measured on 2026-09-28: starting from a timeline-11 backup it replayed 28 segments across timelines 11–14 and reached 15 seconds before the drill in 11 s. The `request_logs` row count matched production exactly.
+
+#### Single node
+
+A single-node deployment (one application host running PostgreSQL in the `clirelay-pg` container, as hk-155 does since 2026-10-18) uses the same scripts with `PG_CONTAINER=clirelay-pg` in `/etc/clirelay-cluster/backup.env` instead of `BACKUP_HOSTS`:
+
+- the tools run inside the database container's network namespace (`--network container:clirelay-pg`) and connect to its loopback, which the stock `pg_hba.conf` trusts for replication. The database port stays bound to `127.0.0.1`, so nothing new is exposed;
+- the source is the primary serving traffic, so the base backup uses a spread checkpoint, `MAX_RATE` and one CPU core;
+- nothing manages slots, so `pg-receivewal.sh` creates `clirelay_walarchive` itself, and refuses to while `max_slot_wal_keep_size` is unlimited: a slot keeps WAL while the archiver is down, and an archiver that stays stopped would fill the production disk. Set it once with `ALTER SYSTEM SET max_slot_wal_keep_size = '4GB'; SELECT pg_reload_conf();` (no restart);
+- a machine with another provider in another region keeps the offsite copy. It **pulls** every 15 minutes (`offsite-pull.sh`, `clirelay-offsite-pull.timer`): the database host pins its key to `from="<offsite IP>",restrict,command="/usr/bin/rrsync -ro /opt/clirelay-cluster/backups"` and holds no credential for the offsite host, and rsync runs without `--delete`, so a compromised database host can neither reach nor delete the copies. The offsite host prunes its own copies to `KEEP`;
+- the weekly drill runs on the offsite host, after a fresh pull (drop-in `clirelay-pitr-drill.offsite.conf`), so it proves the copies that would be used after losing the database host. Set `MAX_LAG_SECONDS` above the pull interval and `DRILL_MEMORY` on a small host;
+- measured on 2026-10-29 (hk-155, offsite copy on bwg): a 720 MB database took a 77 s base backup (204 MB compressed) with `/readyz` unaffected; the first pull took 55 s; the first drill replayed to 42 s before it ran and matched the production `request_logs` row count.
 
 ### 4.9 Rolling deploys
 
@@ -309,6 +321,7 @@ Releases must keep the old and new versions able to run side by side. Database m
 | Take a backup now | On the arbiter `systemctl start clirelay-pg-basebackup` |
 | Prove a backup restores | On the arbiter `systemctl start clirelay-pitr-drill`, then `journalctl -u clirelay-pitr-drill` |
 | Check the WAL archive | On the arbiter `systemctl status clirelay-pg-receivewal`; `ls /opt/clirelay-cluster/backups/wal` |
+| Single node: check backups | On the database host `systemctl status clirelay-pg-receivewal`, `ls /opt/clirelay-cluster/backups`; on the offsite host `systemctl list-timers 'clirelay-*'`, `journalctl -u clirelay-pitr-drill` |
 | Restore from a backup | See 4.8 |
 | Rotate certificates | Re-issue from the same CA, distribute, then restart etcd, Patroni, nginx and CliRelay one node at a time |
 

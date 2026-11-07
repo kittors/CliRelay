@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	translatorcommon "github.com/router-for-me/CLIProxyAPI/v6/internal/translator/common"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -194,7 +195,7 @@ func ConvertClaudeResponseToOpenAI(_ context.Context, modelName string, original
 		var outputs []string
 		if delta := root.Get("delta"); delta.Exists() {
 			if stopReason := delta.Get("stop_reason"); stopReason.Exists() {
-				state.FinishReason = mapAnthropicStopReasonToOpenAI(stopReason.String())
+				state.FinishReason = translatorcommon.StopReasonFromClaude(stopReason.String()).OpenAI()
 				template, _ = sjson.Set(template, "choices.0.finish_reason", state.FinishReason)
 				outputs = append(outputs, template)
 			}
@@ -230,22 +231,6 @@ func ConvertClaudeResponseToOpenAI(_ context.Context, modelName string, original
 	default:
 		// Unknown event type - ignore
 		return []string{}
-	}
-}
-
-// mapAnthropicStopReasonToOpenAI maps Anthropic stop reasons to OpenAI stop reasons
-func mapAnthropicStopReasonToOpenAI(anthropicReason string) string {
-	switch anthropicReason {
-	case "end_turn":
-		return "stop"
-	case "tool_use":
-		return "tool_calls"
-	case "max_tokens":
-		return "length"
-	case "stop_sequence":
-		return "stop"
-	default:
-		return "stop"
 	}
 }
 
@@ -405,10 +390,10 @@ func ConvertClaudeResponseToOpenAINonStream(_ context.Context, _ string, origina
 		if toolCallsCount > 0 {
 			out, _ = sjson.Set(out, "choices.0.finish_reason", "tool_calls")
 		} else {
-			out, _ = sjson.Set(out, "choices.0.finish_reason", mapAnthropicStopReasonToOpenAI(stopReason))
+			out, _ = sjson.Set(out, "choices.0.finish_reason", translatorcommon.StopReasonFromClaude(stopReason).OpenAI())
 		}
 	} else {
-		out, _ = sjson.Set(out, "choices.0.finish_reason", mapAnthropicStopReasonToOpenAI(stopReason))
+		out, _ = sjson.Set(out, "choices.0.finish_reason", translatorcommon.StopReasonFromClaude(stopReason).OpenAI())
 	}
 
 	return out

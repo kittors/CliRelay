@@ -44,6 +44,17 @@ type User struct {
 	AllowedChannels      []string                   `json:"allowed-channels,omitempty"`
 	AllowedChannelGroups []string                   `json:"allowed-channel-groups,omitempty"`
 	SystemPrompt         string                     `json:"system-prompt,omitempty"`
+
+	// QuotaLimits 是完整的总额度矩阵（花费/请求/Token × 5h/日/周/月/累计），
+	// ModelRules / ModelRoutes 是按模型规则与模型路由。列表与详情返回模板覆盖后的
+	// 生效值：绑定模板时就是模板的值，未绑定时就是账号自己的值。
+	QuotaLimits quota.Matrix       `json:"quota-limits"`
+	ModelRules  []quota.ModelRule  `json:"model-rules"`
+	ModelRoutes []quota.ModelRoute `json:"model-routes"`
+	// QuotaUsage 是总额度各格与每条规则当前的用量，只在列表等需要展示进度的接口填充。
+	QuotaUsage *quota.UsageView `json:"quota-usage,omitempty"`
+	// CappedCells 是本次修改连带压低的 Key 额度格子（CappedKeys 只含其中美元周期部分）。
+	CappedCells []quota.CappedCell `json:"capped-cells,omitempty"`
 }
 
 // QuotaPatch updates account-level limits. Nil field = leave unchanged.
@@ -62,6 +73,26 @@ type QuotaPatch struct {
 	AllowedChannels      *[]string                        `json:"allowed-channels,omitempty"`
 	AllowedChannelGroups *[]string                        `json:"allowed-channel-groups,omitempty"`
 	SystemPrompt         *string                          `json:"system-prompt,omitempty"`
+	// QuotaLimits 是矩阵的局部修改；与上面的旧字段（daily-limit 等）指向同一格时
+	// 二者必须一致，否则返回 ErrQuotaLegacyConflict。
+	QuotaLimits *quota.MatrixPatch `json:"quota-limits,omitempty"`
+	// ModelRules / ModelRoutes 非 nil 时整体替换。
+	ModelRules  *[]quota.ModelRule  `json:"model-rules,omitempty"`
+	ModelRoutes *[]quota.ModelRoute `json:"model-routes,omitempty"`
+}
+
+// KeyPatch 修改账号下的一把 Key。nil 字段表示不修改。
+type KeyPatch struct {
+	Name *string
+	// Disabled 暂停或恢复 Key。暂停保留密钥，恢复后原密钥继续可用；账号至少要留一把
+	// 启用的 Key（与删除的规则一致）。
+	Disabled *bool
+	// Period 是旧版的美元四周期子额度字段；与 QuotaLimits 指向同一格时二者必须一致。
+	Period      *quota.PeriodSpendingLimitsPatch
+	QuotaLimits *quota.MatrixPatch
+	// ModelRules 非 nil 时整体替换 Key 的按模型规则。Key 不配置模型路由：路由决定
+	// 请求实际用哪个模型，属于账号/模板层的权限，不随某一把 Key 变化。
+	ModelRules *[]quota.ModelRule
 }
 
 type APIKey struct {
@@ -81,6 +112,11 @@ type APIKey struct {
 	DailySpendingUsed       float64                    `json:"daily-spending-used"`
 	LifetimeSpendingUsed    float64                    `json:"lifetime-spending-used"`
 	DailySpendingResetCount int                        `json:"daily-spending-reset-count"`
+	// QuotaLimits 是 Key 的子额度矩阵（每格不超过账号同一格），ModelRules 是 Key
+	// 自己的按模型规则；QuotaUsage 是二者当前的用量。
+	QuotaLimits quota.Matrix      `json:"quota-limits"`
+	ModelRules  []quota.ModelRule `json:"model-rules"`
+	QuotaUsage  *quota.UsageView  `json:"quota-usage,omitempty"`
 }
 
 type LoginResult struct {

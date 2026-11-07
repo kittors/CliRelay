@@ -11,6 +11,8 @@ import (
 	"github.com/klauspost/compress/zstd"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/cluster"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/contentmoderation"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/secretscrub"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -305,6 +307,17 @@ func runRequestLogMaintenancePass(ctx context.Context, db *sql.DB, driver string
 	} else if n > 0 {
 		log.Infof("usage: pruned %d expired shared AI account day rows", n)
 	}
+	// Privacy masking records keep their own 30 days whatever cleanup-enabled
+	// says: the panel promises it. Their snippets are text of the request bodies
+	// and go with them: after the content retention, or at once while bodies
+	// are not stored.
+	if n, err := contentmoderation.CleanupMaskRecords(ctx, db, currentRequestLogStorageConfig().ContentRetentionDays, RequestLogBodyStorageEnabled(), time.Now()); err != nil {
+		if ctx.Err() == nil { // a pass stopped by shutdown is not a failure
+			log.Errorf("usage: prune privacy masking records: %v", err)
+		}
+	} else if n > 0 {
+		log.Infof("usage: pruned %d expired privacy masking records", n)
+	}
 	// Exactly-once keys only need to outlive the retries and spool replays of
 	// their own record; see requestLogIdempotencyRetention.
 	if n, err := pruneRequestLogIdempotencyKeys(ctx, db, time.Now().Add(-requestLogIdempotencyRetention)); err != nil {
@@ -376,10 +389,14 @@ func refreshRequestLogContentBytes(q logContentQuerier) {
 }
 
 func insertLogContentTx(tx *sql.Tx, logID int64, timestamp time.Time, inputContent, outputContent, detailContent string) error {
-	return insertLogContentTenantTx(tx, "00000000-0000-0000-0000-000000000001", logID, timestamp, inputContent, outputContent, detailContent, false)
+	return insertLogContentTenantTx(tx, "00000000-0000-0000-0000-000000000001", logID, timestamp, inputContent, outputContent, detailContent, extractSessionIDFromDetails(detailContent), false)
 }
 
-func insertLogContentTenantTx(tx usageWriteTx, tenantID string, logID int64, timestamp time.Time, inputContent, outputContent, detailContent string, failed bool) error {
+// insertLogContentTenantTx stores the compressed bodies and detail of a log.
+// sessionID is the one the caller already extracted from detailContent for
+// request_logs.session_id; it is passed in rather than extracted again because
+// a detail can be large.
+func insertLogContentTenantTx(tx usageWriteTx, tenantID string, logID int64, timestamp time.Time, inputContent, outputContent, detailContent, sessionID string, failed bool) error {
 	if tx == nil || logID < 1 {
 		return nil
 	}
@@ -398,7 +415,6 @@ func insertLogContentTenantTx(tx usageWriteTx, tenantID string, logID int64, tim
 	if inputContent == "" && outputContent == "" && detailContent == "" {
 		return nil
 	}
-	sessionID := extractSessionIDFromDetails(detailContent)
 
 	inputCompressed, err := compressLogContent(inputContent)
 	if err != nil {
@@ -539,6 +555,10 @@ func migrateLegacyContentBatch(db *sql.DB, batchSize int) (int, error) {
 		if err := rows.Scan(&row.ID, &row.Timestamp, &row.InputContent, &row.OutputContent); err != nil {
 			return 0, fmt.Errorf("usage: scan legacy content row: %w", err)
 		}
+		// Moved content is scrubbed like newly written content (see
+		// scrubRequestLogContent), before the transaction starts.
+		row.InputContent = secretscrub.Scrub(row.InputContent)
+		row.OutputContent = secretscrub.Scrub(row.OutputContent)
 		batch = append(batch, row)
 	}
 	if err := rows.Err(); err != nil {

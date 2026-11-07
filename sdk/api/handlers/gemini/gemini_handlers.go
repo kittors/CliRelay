@@ -192,7 +192,7 @@ func (h *GeminiAPIHandler) handleStreamGenerateContent(c *gin.Context, modelName
 	cliCtx, cliCancel := h.GetContextWithCancel(h, c, c.Request.Context())
 	dataChan, upstreamHeaders, errChan, startErr := h.StartStreamWithAuthManager(cliCtx, h.HandlerType(), modelName, rawJSON, alt)
 	if startErr != nil {
-		h.WriteErrorResponse(c, startErr)
+		h.WriteErrorResponseAs(c, startErr, handlers.ErrorFormatGemini)
 		cliCancel(startErr.Error)
 		return
 	}
@@ -222,7 +222,7 @@ func (h *GeminiAPIHandler) handleCountTokens(c *gin.Context, modelName string, r
 	cliCtx, cliCancel := h.GetContextWithCancel(h, c, c.Request.Context())
 	resp, upstreamHeaders, errMsg := h.ExecuteCountWithAuthManager(cliCtx, h.HandlerType(), modelName, rawJSON, alt)
 	if errMsg != nil {
-		h.WriteErrorResponse(c, errMsg)
+		h.WriteErrorResponseAs(c, errMsg, handlers.ErrorFormatGemini)
 		cliCancel(errMsg.Error)
 		return
 	}
@@ -248,7 +248,7 @@ func (h *GeminiAPIHandler) handleGenerateContent(c *gin.Context, modelName strin
 	resp, upstreamHeaders, errMsg := h.ExecuteWithAuthManager(cliCtx, h.HandlerType(), modelName, rawJSON, alt)
 	stopKeepAlive()
 	if errMsg != nil {
-		h.WriteErrorResponse(c, errMsg)
+		h.WriteErrorResponseAs(c, errMsg, handlers.ErrorFormatGemini)
 		cliCancel(errMsg.Error)
 		return
 	}
@@ -278,15 +278,7 @@ func (h *GeminiAPIHandler) forwardGeminiStream(c *gin.Context, flusher http.Flus
 			if errMsg == nil {
 				return
 			}
-			status := http.StatusInternalServerError
-			if errMsg.StatusCode > 0 {
-				status = errMsg.StatusCode
-			}
-			errText := http.StatusText(status)
-			if errMsg.Error != nil && errMsg.Error.Error() != "" {
-				errText = errMsg.Error.Error()
-			}
-			body := handlers.BuildErrorResponseBody(status, errText)
+			_, body := handlers.FormatErrorMessage(handlers.ErrorFormatGemini, errMsg)
 			if alt == "" {
 				_, _ = fmt.Fprintf(c.Writer, "event: error\ndata: %s\n\n", string(body))
 			} else {

@@ -145,9 +145,12 @@ func (m *Manager) Update(ctx context.Context, auth *Auth) (*Auth, error) {
 	}
 	auth.EnsureIndex()
 	snapshot := auth.Clone()
+	var releasedModels []string
 	if previous != nil {
+		now := time.Now()
 		preserveRuntimeFields(snapshot, previous)
-		preserveAvailabilityRuntimeForUpdate(snapshot, previous, time.Now())
+		preserveAvailabilityRuntimeForUpdate(snapshot, previous, now)
+		releasedModels = releaseCoolingOnDisable(snapshot, previous, now)
 	}
 	m.auths[auth.ID] = snapshot
 	m.mu.Unlock()
@@ -163,6 +166,7 @@ func (m *Manager) Update(ctx context.Context, auth *Auth) (*Auth, error) {
 		return nil, err
 	}
 	m.rebuildAPIKeyModelAliasFromRuntimeConfig()
+	m.resumeRecoveredQuotaModels(snapshot.ID, releasedModels)
 	m.hook.OnAuthUpdated(ctx, snapshot.Clone())
 	return snapshot.Clone(), nil
 }

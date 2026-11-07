@@ -52,6 +52,12 @@ type ModelInfo struct {
 	// This is optional and currently used for Gemini thinking budget normalization.
 	Thinking *ThinkingSupport `json:"thinking,omitempty"`
 
+	// ClaudeRequest lists the request fields a Claude catalog model rejects.
+	// Only static catalog entries set it; executors look it up by upstream
+	// name with LookupClaudeModelInfo, so copies made for the dynamic registry
+	// do not need to carry it.
+	ClaudeRequest *ClaudeRequestRules `json:"-"`
+
 	// UserDefined indicates this model was defined through config file's models[]
 	// array (e.g., openai-compatibility.*.models[], *-api-key.models[]).
 	// UserDefined models have thinking configuration passed through without validation.
@@ -72,6 +78,10 @@ type ThinkingSupport struct {
 	// Levels defines discrete reasoning effort levels (e.g., "low", "medium", "high").
 	// When set, the model uses level-based reasoning instead of token budgets.
 	Levels []string `json:"levels,omitempty"`
+	// Adaptive is set for Claude models that only take adaptive thinking with
+	// output_config.effort (Opus 4.7 and later) and says how each one turns
+	// thinking off. Nil for every other model.
+	Adaptive *AdaptiveThinking `json:"adaptive,omitempty"`
 }
 
 // ModelRegistration tracks a model's availability

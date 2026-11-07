@@ -561,6 +561,9 @@ func RegisterExecutorForAuth(coreManager *coreauth.Manager, base *config.Config,
 	}
 	register := func(exec coreauth.ProviderExecutor) {
 		coreManager.RegisterExecutorForTenant(tenantID, exec)
+		if tenantID != identity.SystemTenantID {
+			rememberTenantProxyPool(tenantID, cfg.ProxyPool)
+		}
 	}
 	if strings.EqualFold(strings.TrimSpace(auth.Provider), "codex") {
 		if !forceReplace {

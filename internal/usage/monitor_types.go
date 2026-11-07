@@ -4,9 +4,10 @@ package usage
 // (GET /usage/monitor/overview and /usage/monitor/realtime).
 //
 // Totals, series and breakdowns come from usage_rollup_buckets so they cover
-// the whole history; latency percentiles and recent failures need per-request
-// rows and are limited to the request_logs retention window, which the
-// response reports explicitly instead of letting the two silently disagree.
+// the whole history; latency percentiles, the models' per-request performance
+// and recent failures need per-request rows and are limited to the
+// request_logs retention window, which the response reports explicitly
+// instead of letting the two silently disagree.
 
 // MonitorTotals is one aggregate cell: a whole window, a series bucket or a
 // breakdown row. Derived rates and averages are computed server-side so every
@@ -24,15 +25,21 @@ type MonitorTotals struct {
 	Cost            float64 `json:"cost"`
 	// SuccessRate and CacheRate are percentages (0-100). SuccessRate is 0 when
 	// there was no traffic; callers tell "idle" from "all failed" by Requests.
+	// CacheRate is deprecated; see LogStats.CacheRate.
 	SuccessRate float64 `json:"success_rate"`
 	CacheRate   float64 `json:"cache_rate"`
+	CacheUsage
 	// Averages only count requests that reported the measurement: latency 0
 	// means "not recorded", and first-token time only exists for streams.
 	LatencyAvgMs    float64 `json:"latency_avg_ms"`
 	FirstTokenAvgMs float64 `json:"first_token_avg_ms"`
-	// OutputTokensPerSecond is generated (output + reasoning) tokens over the
-	// total time of the requests that reported latency, first-token wait
-	// included; it compares models, it is not a decode-speed benchmark.
+	// GenerationUsage is the generation speed: output tokens over the time
+	// after the first token, per request. See generation_speed.go.
+	GenerationUsage
+	// OutputTokensPerSecond is deprecated: it carries GenerationTokensPerSecond,
+	// or 0 without a sample, for panels built before that field. It used to
+	// divide output plus reasoning tokens by the whole duration, first-token
+	// wait included.
 	OutputTokensPerSecond float64 `json:"output_tokens_per_second"`
 }
 
@@ -72,6 +79,10 @@ type MonitorBreakdownRow struct {
 	Kind    string `json:"kind,omitempty"`
 	KeyHint string `json:"key_hint,omitempty"`
 	MonitorTotals
+	// Performance is the model's per-request distributions, read from
+	// request_logs. Only model rows carry it, and none of them do when the
+	// details could not be read.
+	Performance *MonitorModelPerformance `json:"performance,omitempty"`
 	// Trend / TrendFailed are request counts aligned with the overview series;
 	// only the top rows carry them.
 	Trend       []int64 `json:"trend,omitempty"`
@@ -83,6 +94,35 @@ type MonitorBreakdownRow struct {
 type MonitorBreakdown struct {
 	Rows  []MonitorBreakdownRow `json:"rows"`
 	Total int                   `json:"total"`
+	// PerformanceCoverageStart is the oldest request_logs row behind the model
+	// rows' Performance. Details expire before rollups do, so on long ranges it
+	// is later than the range start. Model ranking only; empty when no row had
+	// a sample.
+	PerformanceCoverageStart string `json:"performance_coverage_start,omitempty"`
+}
+
+// MonitorQuantiles summarises one per-request measurement. P50 and P90 are 0
+// when there is no sample.
+type MonitorQuantiles struct {
+	Samples int64   `json:"samples"`
+	P50     float64 `json:"p50"`
+	P90     float64 `json:"p90"`
+}
+
+// MonitorModelPerformance is how one model's requests behaved, request by
+// request, over the details the window still has.
+type MonitorModelPerformance struct {
+	// GenerationSpeed is in tokens per second, over the same samples as
+	// MonitorTotals.GenerationTokensPerSecond.
+	GenerationSpeed MonitorQuantiles `json:"generation_speed"`
+	// FirstTokenMs is the time to the first token, over successful streams that
+	// recorded one.
+	FirstTokenMs MonitorQuantiles `json:"first_token_ms"`
+	// FirstTokenMsPer1KInput is the first-token time per thousand input
+	// tokens: the summed first-token time of those streams over their summed
+	// input, counting only streams that reported input. Longer prompts take
+	// longer to process; this shows by how much. null without such a stream.
+	FirstTokenMsPer1KInput *float64 `json:"first_token_ms_per_1k_input"`
 }
 
 // MonitorLatencyStats summarises one latency measurement over the window.
@@ -198,6 +238,9 @@ type MonitorOverview struct {
 	Flows          MonitorFlowGraph     `json:"flows"`
 	RecentFailures []MonitorFailure     `json:"recent_failures"`
 	Filters        MonitorFilterOptions `json:"filters"`
+	// LoopGuard is what loop protection ended in the window; see
+	// MonitorLoopGuard. Backends without loop protection send no such field.
+	LoopGuard MonitorLoopGuard `json:"loop_guard"`
 }
 
 // MonitorRealtime is the last hour at one-minute resolution for the live strip.

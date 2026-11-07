@@ -63,7 +63,8 @@ func TestLoggerPluginUsesTrustedTenantBeforeAPIKeyLookup(t *testing.T) {
 		RequestedAt: now.Add(2 * time.Second),
 		Detail:      coreusage.Detail{TotalTokens: 1},
 	})
-	assertRequestLogTenantAndAPIKey(t, realAPIKeyModel, realTenantID, realAPIKey)
+	// The tenant comes from the key's row, and the row stores only its mask.
+	assertRequestLogTenantAndAPIKey(t, realAPIKeyModel, realTenantID, MaskAPIKey(realAPIKey))
 }
 
 func assertRequestLogTenantAndAPIKey(t *testing.T, model, wantTenantID, wantAPIKey string) {

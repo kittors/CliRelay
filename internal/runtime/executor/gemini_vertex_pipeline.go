@@ -129,7 +129,7 @@ func (e *GeminiVertexExecutor) executeVertexNonStream(
 		recorder.AppendResponseChunk(b)
 		logWithRequestID(execCtx.Context).Debugf("request error, error status: %d, error message: %s", httpResp.StatusCode, summarizeErrorBody(httpResp.Header.Get("Content-Type"), b))
 		reporter.publishFailureWithContent(execCtx.Context, string(execCtx.Request.Payload), string(b))
-		err = statusErr{code: httpResp.StatusCode, msg: string(b)}
+		err = statusErr{code: httpResp.StatusCode, msg: string(b), headers: failureHeaders(httpResp.Header)}
 		return resp, err
 	}
 
@@ -185,7 +185,7 @@ func (e *GeminiVertexExecutor) executeVertexStream(
 		if errClose := httpResp.Body.Close(); errClose != nil {
 			log.Errorf("vertex executor: close response body error: %v", errClose)
 		}
-		return nil, statusErr{code: httpResp.StatusCode, msg: string(b)}
+		return nil, statusErr{code: httpResp.StatusCode, msg: string(b), headers: failureHeaders(httpResp.Header)}
 	}
 
 	out := make(chan cliproxyexecutor.StreamChunk)
@@ -256,7 +256,7 @@ func (e *GeminiVertexExecutor) executeVertexCountTokens(
 		b := readUpstreamErrorBody(e.Identifier(), httpResp.Body)
 		recorder.AppendResponseChunk(b)
 		logWithRequestID(execCtx.Context).Debugf("request error, error status: %d, error message: %s", httpResp.StatusCode, summarizeErrorBody(httpResp.Header.Get("Content-Type"), b))
-		return cliproxyexecutor.Response{}, statusErr{code: httpResp.StatusCode, msg: string(b)}
+		return cliproxyexecutor.Response{}, statusErr{code: httpResp.StatusCode, msg: string(b), headers: failureHeaders(httpResp.Header)}
 	}
 
 	data, err := readUpstreamResponseBody(e.Identifier(), httpResp.Body)

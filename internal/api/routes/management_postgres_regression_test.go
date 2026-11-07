@@ -46,6 +46,27 @@ func TestManagementAPIPostgresDataStackRegression(t *testing.T) {
 		"permission-profile-id":"profile-route-test"
 	}]}`, http.StatusOK)
 	client.expectBodyContains(t, http.MethodGet, "/v0/management/api-key-entries", "", http.StatusOK, "Postgres Route Key")
+	// The simulator reads the key by id from PostgreSQL; the response names the
+	// key without its secret.
+	simulated := client.expectStatus(t, http.MethodGet, "/v0/management/routing-simulation?api-key-id=key-route-test&model=gpt-route-test", "", http.StatusOK).Body.String()
+	if !strings.Contains(simulated, `"name":"Postgres Route Key"`) || strings.Contains(simulated, "sk-test-postgres-route") {
+		t.Fatalf("routing simulation = %s, want the key named without its secret", simulated)
+	}
+	client.expectBodyContains(t, http.MethodGet, "/v0/management/routing-simulation?api-key-id=key-route-missing&model=gpt-route-test", "", http.StatusNotFound, "api_key_not_found")
+
+	// Loop protection is a runtime_settings row written with a compare-and-swap;
+	// a key's override is checked against the key stored just above.
+	client.expectBodyContains(t, http.MethodGet, "/v0/management/loop-guard", "", http.StatusOK, `"persistent":true`)
+	client.expectStatus(t, http.MethodPut, "/v0/management/loop-guard", `{"reply":{"enabled":true,"window":512,"max_distinct":40}}`, http.StatusOK)
+	client.expectBodyContains(t, http.MethodPut, "/v0/management/loop-guard/keys/key-route-test", `{"tool":{"enabled":true,"repeats":5}}`, http.StatusOK, `"source":"api_key"`)
+	client.expectBodyContains(t, http.MethodGet, "/v0/management/loop-guard", "", http.StatusOK, `"window":512`)
+	client.expectBodyContains(t, http.MethodGet, "/v0/management/loop-guard/keys/key-route-test", "", http.StatusOK, `"repeats":5`)
+	client.expectBodyContains(t, http.MethodPut, "/v0/management/loop-guard/keys/key-route-missing", `{}`, http.StatusNotFound, "api_key_not_found")
+	client.expectBodyContains(t, http.MethodGet, "/v0/management/content-moderation/secret-masking", "", http.StatusOK, `"persistent":true`)
+	client.expectBodyContains(t, http.MethodPut, "/v0/management/content-moderation/secret-masking", `{"enabled":true}`, http.StatusOK, `"enabled":true`)
+	client.expectBodyContains(t, http.MethodGet, "/v0/management/content-moderation/secret-masking", "", http.StatusOK, `"enabled":true`)
+	client.expectBodyContains(t, http.MethodPut, "/v0/management/content-moderation/secret-masking", `{}`, http.StatusBadRequest, "invalid_request")
+	client.expectBodyContains(t, http.MethodPut, "/v0/management/content-moderation/secret-masking", `{"enabled":false}`, http.StatusOK, `"enabled":false`)
 
 	client.expectStatus(t, http.MethodPost, "/v0/management/model-configs", `{
 		"id":"gpt-route-test",
@@ -135,6 +156,14 @@ func TestManagementAPIPostgresDataStackRegression(t *testing.T) {
 	if got := usage.GetAPIKey("sk-test-postgres-route"); got != nil {
 		t.Fatalf("api key still exists after DELETE: %#v", got)
 	}
+	// delete_logs removes the key's history by its id, which outlives the secret.
+	var leftover int
+	if err := usage.RuntimeDB().QueryRow(`SELECT COUNT(*) FROM request_logs WHERE api_key_id = ?`, "key-route-test").Scan(&leftover); err != nil {
+		t.Fatalf("count the deleted key's logs: %v", err)
+	}
+	if leftover != 0 {
+		t.Fatalf("%d request logs of the deleted key remain", leftover)
+	}
 
 	// Last, as it replaces the handler's config: copies of the stored routing
 	// and proxy pool go through.
@@ -221,6 +250,11 @@ func setupPostgresManagementClient(t *testing.T) postgresManagementClient {
 	}, configPath, nil)
 	handler.SetLocalPassword(postgresManagementKey)
 	handler.SetLogDirectory(logDir)
+	// The server wires its simulator into every handler it builds; a stand-in
+	// keeps the route answering as it does there, for requests that reach it.
+	handler.SetRoutingSimulator(func(_ context.Context, req managementhandlers.RoutingSimulationRequest) (*managementhandlers.RoutingSimulationResult, error) {
+		return &managementhandlers.RoutingSimulationResult{Model: req.Model}, nil
+	})
 	t.Cleanup(handler.Close)
 
 	gin.SetMode(gin.TestMode)
@@ -297,9 +331,10 @@ func (client postgresManagementClient) expectUsageLog(t *testing.T) int64 {
 	rec := client.expectStatus(t, http.MethodGet, "/v0/management/usage/logs?api_key=sk-test-postgres-route&days=1&page=1&size=10", "", http.StatusOK)
 	var payload struct {
 		Items []struct {
-			ID     int64  `json:"id"`
-			APIKey string `json:"api_key"`
-			Model  string `json:"model"`
+			ID       int64  `json:"id"`
+			APIKey   string `json:"api_key"`
+			APIKeyID string `json:"api_key_id"`
+			Model    string `json:"model"`
 		} `json:"items"`
 		Total int64 `json:"total"`
 	}
@@ -309,8 +344,15 @@ func (client postgresManagementClient) expectUsageLog(t *testing.T) int64 {
 	if payload.Total != 1 || len(payload.Items) != 1 {
 		t.Fatalf("usage logs total=%d len=%d body=%s", payload.Total, len(payload.Items), rec.Body.String())
 	}
-	if payload.Items[0].APIKey != "sk-test-postgres-route" || payload.Items[0].Model != "gpt-route-test" {
+	// The row is tied to the key by id and shows only the mask; the secret passed
+	// as the selector is not echoed back.
+	if payload.Items[0].APIKey != usage.MaskAPIKey("sk-test-postgres-route") ||
+		payload.Items[0].APIKeyID != "key-route-test" ||
+		payload.Items[0].Model != "gpt-route-test" {
 		t.Fatalf("usage log item = %#v", payload.Items[0])
+	}
+	if strings.Contains(rec.Body.String(), "sk-test-postgres-route") {
+		t.Fatalf("usage logs response carries the client secret: %s", rec.Body.String())
 	}
 	return payload.Items[0].ID
 }

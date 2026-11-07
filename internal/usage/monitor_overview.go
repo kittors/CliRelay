@@ -49,6 +49,11 @@ func QueryMonitorOverview(filter MonitorFilter, rangeKey string, now time.Time) 
 		return monitorStageOne(w, filter, monitorConsumerDimension)
 	})
 	out.Models = monitorBreakdownRows(w, filter, monitorModelDimension, models)
+	if err := attachMonitorModelPerformance(&out.Models, filter, w); err != nil {
+		// The ranking itself is complete; the panel falls back to the rollup
+		// means for rows without per-request distributions.
+		log.Warnf("usage: monitor model performance section degraded: %v", err)
+	}
 	out.Channels = monitorBreakdownRows(w, filter, monitorChannelDimension, channels)
 	for i := range out.Channels.Rows {
 		row := &out.Channels.Rows[i]
@@ -101,6 +106,9 @@ func QueryMonitorOverview(filter MonitorFilter, rangeKey string, now time.Time) 
 	})
 	out.RecentFailures = monitorSection("recent failures", empty.RecentFailures, func() ([]MonitorFailure, error) {
 		return monitorRecentFailures(filter, w.start, w.end, names.label)
+	})
+	out.LoopGuard = monitorSection("loop guard", empty.LoopGuard, func() (MonitorLoopGuard, error) {
+		return monitorLoopGuard(filter, w.start, w.end)
 	})
 	return out, nil
 }

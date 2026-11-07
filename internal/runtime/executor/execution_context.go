@@ -205,11 +205,7 @@ func (ec *ExecutionContext) Reporter() *usageReporter {
 		model = ec.BaseModel
 	}
 	reporter := newUsageReporter(ec.Context, ec.Provider, model, ec.BaseModel, ec.Auth, ec.ClientRequestedStream())
-	level := thinking.ExtractThinkingLevel(ec.OriginalPayload, ec.SourceFormat.String())
-	if parsedModel.HasSuffix {
-		level = parsedModel.RawSuffix
-	}
-	reporter.setThinkingLevel(level)
+	reporter.setThinkingLevel(ec.RequestedThinkingLevel())
 	if fallback := visionFallbackLogFromContext(ec.Context); fallback.FallbackModel != "" {
 		fallbackModel := thinking.ParseSuffix(fallback.RequestedModel)
 		reporter.setModel(fallbackModel.ModelName)
@@ -220,6 +216,19 @@ func (ec *ExecutionContext) Reporter() *usageReporter {
 		reporter.setVisionFallbackModel(fallback.FallbackModel)
 	}
 	return reporter
+}
+
+// RequestedThinkingLevel is the reasoning level the client asked for: the model
+// suffix when there is one, otherwise the level or numeric budget the original
+// request body carries, read in the client's own format.
+func (ec *ExecutionContext) RequestedThinkingLevel() string {
+	if ec == nil {
+		return ""
+	}
+	if parsed := thinking.ParseSuffix(ec.RequestedModel); parsed.HasSuffix {
+		return parsed.RawSuffix
+	}
+	return thinking.ExtractThinkingLevel(ec.OriginalPayload, ec.SourceFormat.String())
 }
 
 func (ec *ExecutionContext) HTTPClient(timeout time.Duration) *http.Client {

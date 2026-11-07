@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/configsync"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/quota"
 )
 
 // ReplaceAll replaces the tenant's API keys with entries whatever the stored
@@ -41,6 +42,10 @@ func (s Store) replaceAllTx(tx *sql.Tx, entries []APIKeyRow) error {
 		key       string
 		endUserID string
 		isDefault bool
+		// Key 的访问策略与 owned key 的周期子额度只经 owner 作用域接口校验后写入；
+		// 通用整表替换的 payload 里没有它们，按原值保留，而不是被清空。
+		periodLimits quota.PeriodSpendingLimits
+		accessPolicy quota.AccessPolicy
 	}
 	byID := make(map[string]ownership)
 	byKey := make(map[string]ownership)
@@ -52,10 +57,12 @@ func (s Store) replaceAllTx(tx *sql.Tx, entries []APIKeyRow) error {
 		key := strings.TrimSpace(row.Key)
 		id := strings.TrimSpace(row.ID)
 		own := ownership{
-			id:        id,
-			key:       key,
-			endUserID: strings.TrimSpace(row.EndUserID),
-			isDefault: row.IsDefault,
+			id:           id,
+			key:          key,
+			endUserID:    strings.TrimSpace(row.EndUserID),
+			isDefault:    row.IsDefault,
+			periodLimits: row.PeriodSpendingLimits,
+			accessPolicy: row.AccessPolicy,
 		}
 		if id != "" {
 			byID[id] = own
@@ -99,9 +106,12 @@ func (s Store) replaceAllTx(tx *sql.Tx, entries []APIKeyRow) error {
 		}
 		seenIDs[entry.ID] = struct{}{}
 		// Ownership is not client-authoritative on full replace for existing keys.
+		entry.AccessPolicy = prev.accessPolicy
 		if prev.endUserID != "" {
 			entry.EndUserID = prev.endUserID
 			entry.IsDefault = prev.isDefault
+			entry.PeriodSpendingLimits = prev.periodLimits
+			entry.DailySpendingLimit = prev.periodLimits.Day
 		} else {
 			// Brand-new keys may not carry ownership through generic replace.
 			entry.EndUserID = ""
@@ -127,8 +137,8 @@ func (s Store) replaceAllTx(tx *sql.Tx, entries []APIKeyRow) error {
 	stmt, err := tx.Prepare(`INSERT INTO api_keys
 		(tenant_id, key, id, name, disabled, permission_profile_id, daily_limit, total_quota, spending_limit, daily_spending_limit, five_hour_spending_limit, weekly_spending_limit, monthly_spending_limit,
 		 concurrency_limit, rpm_limit, tpm_limit, allowed_models, allowed_channels, allowed_channel_groups, system_prompt, created_at, updated_at,
-		 end_user_id, is_default)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+		 end_user_id, is_default, access_policy)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return err
 	}
@@ -156,7 +166,7 @@ func (s Store) replaceAllTx(tx *sql.Tx, entries []APIKeyRow) error {
 			entry.ConcurrencyLimit, entry.RPMLimit, entry.TPMLimit,
 			mustJSONStringList(entry.AllowedModels), mustJSONStringList(entry.AllowedChannels),
 			mustJSONStringList(entry.AllowedChannelGroups), entry.SystemPrompt,
-			entry.CreatedAt, now, endUserID, isDefault,
+			entry.CreatedAt, now, endUserID, isDefault, quota.EncodeAccessPolicy(entry.AccessPolicy),
 		); err != nil {
 			return err
 		}
@@ -176,7 +186,7 @@ func (s Store) listTx(tx *sql.Tx) ([]APIKeyRow, error) {
 	rows, err := tx.Query(`SELECT key, name, disabled, id, daily_limit, total_quota,
 		permission_profile_id, spending_limit, daily_spending_limit, five_hour_spending_limit, weekly_spending_limit, monthly_spending_limit, concurrency_limit, rpm_limit, tpm_limit,
 		allowed_models, allowed_channels, allowed_channel_groups, system_prompt, created_at, updated_at,
-		end_user_id, is_default
+		end_user_id, is_default, access_policy
 		FROM api_keys WHERE tenant_id = ? ORDER BY created_at ASC`, s.tenantID)
 	if err != nil {
 		return nil, err

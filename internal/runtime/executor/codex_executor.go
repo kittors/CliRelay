@@ -150,6 +150,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	body = execCtx.ApplyPayloadConfig(body, originalTranslated)
 	body = ensureTranslatedCodexModel(body, execCtx.BaseModel)
 	body = sanitizeCodexResponsesRequest(body)
+	body = prepareCodexResponsesBody(body, req.Payload, execCtx.SourceFormat, isCodexChatGPTBackendBaseURL(auth, baseURL))
 	sets := map[string][]byte{"stream": util.JSONBool(true)}
 	if !gjson.GetBytes(body, "instructions").Exists() {
 		// Extract system messages from original OpenAI-format payload to use as instructions.
@@ -172,10 +173,9 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	}
 	httpReq = httpReq.WithContext(withCodexRequestModel(httpReq.Context(), firstNonEmptyString(req.Model, execCtx.BaseModel)))
 	applyCodexHeaders(httpReq, e.cfg, auth, apiKey, true)
+	applyCodexServiceTierRoutingHint(httpReq.Header, body, auth)
 	recorder := execCtx.Recorder()
-	recorder.RecordRequest(url, http.MethodPost, httpReq.Header.Clone(), body)
-	httpClient := execCtx.HTTPClient(0)
-	httpResp, err := httpClient.Do(httpReq) //nolint:bodyclose // body is closed by the defer below.
+	httpResp, err := e.doCodexResponses(execCtx, recorder, httpReq, body) //nolint:bodyclose // body is closed by the defer below.
 	if err != nil {
 		recorder.RecordResponseError(err)
 		reporter.publishFailureWithContentBytes(execCtx.Context, req.Payload, err.Error())
@@ -226,7 +226,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 			}
 			continue
 		}
-		if gjson.GetBytes(line, "type").String() != "response.completed" {
+		if !codexResponseFinished(gjson.GetBytes(line, "type").String()) {
 			continue
 		}
 		line = mergeCodexResponsesCompletedOutput(line, pendingOutputItems, pendingOutputKeys)
@@ -284,6 +284,7 @@ func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.A
 	body = execCtx.ApplyPayloadConfig(body, originalTranslated)
 	body = ensureTranslatedCodexModel(body, execCtx.BaseModel)
 	body = sanitizeCodexResponsesRequest(body)
+	body = prepareCodexResponsesBody(body, req.Payload, execCtx.SourceFormat, isCodexChatGPTBackendBaseURL(auth, baseURL))
 	body, _ = sjson.DeleteBytes(body, "stream")
 	body = applyCodexConvergenceClientMetadata(body, convergedIDs)
 
@@ -295,10 +296,8 @@ func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.A
 	httpReq = httpReq.WithContext(withCodexRequestModel(httpReq.Context(), firstNonEmptyString(req.Model, execCtx.BaseModel)))
 	applyCodexHeaders(httpReq, e.cfg, auth, apiKey, false)
 	recorder := execCtx.Recorder()
-	recorder.RecordRequest(url, http.MethodPost, httpReq.Header.Clone(), body)
-	httpClient := execCtx.HTTPClient(0)
 	//nolint:bodyclose // body is closed by the defer below.
-	httpResp, err := httpClient.Do(httpReq)
+	httpResp, err := e.doCodexResponses(execCtx, recorder, httpReq, body)
 	if err != nil {
 		recorder.RecordResponseError(err)
 		reporter.publishFailureWithContentBytes(execCtx.Context, req.Payload, err.Error())
@@ -366,6 +365,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 
 	body = execCtx.ApplyPayloadConfig(body, originalTranslated)
 	body = sanitizeCodexResponsesRequest(body)
+	body = prepareCodexResponsesBody(body, req.Payload, execCtx.SourceFormat, isCodexChatGPTBackendBaseURL(auth, baseURL))
 	sets := map[string][]byte{}
 	if !gjson.GetBytes(body, "instructions").Exists() {
 		sets["instructions"] = util.JSONString(extractSystemMessagesAsInstructions(execCtx.Request.Payload))
@@ -387,11 +387,10 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	}
 	httpReq = httpReq.WithContext(withCodexRequestModel(httpReq.Context(), firstNonEmptyString(req.Model, execCtx.BaseModel)))
 	applyCodexHeaders(httpReq, e.cfg, auth, apiKey, true)
+	applyCodexServiceTierRoutingHint(httpReq.Header, body, auth)
 	recorder := execCtx.Recorder()
-	recorder.RecordRequest(url, http.MethodPost, httpReq.Header.Clone(), body)
-	httpClient := execCtx.HTTPClient(0)
 	//nolint:bodyclose // success body is consumed and closed by the stream goroutine below.
-	httpResp, err := httpClient.Do(httpReq)
+	httpResp, err := e.doCodexResponses(execCtx, recorder, httpReq, body)
 	if err != nil {
 		recorder.RecordResponseError(err)
 		reporter.publishFailureWithContentBytes(execCtx.Context, req.Payload, err.Error())
@@ -442,7 +441,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 				if bytes.HasPrefix(eventLine, dataTag) {
 					data := bytes.TrimSpace(eventLine[len(dataTag):])
 					switch gjson.GetBytes(data, "type").String() {
-					case "response.completed":
+					case "response.completed", "response.incomplete":
 						completed = true
 						if detail, ok := parseCodexUsage(data); ok {
 							reporter.publish(execCtx.Context, detail)
@@ -618,6 +617,11 @@ func (e *CodexExecutor) cacheHelper(ctx context.Context, auth *cliproxyauth.Auth
 			// derive one the same way selection derives the sticky binding.
 			cache.ID = codexSyntheticSessionID(auth, req.Model, codexSessionPromptCacheSeed(opts, req.Payload))
 		}
+	} else if from == "openai" {
+		// Chat Completions carries no Codex session identity of its own; see
+		// codex_chat_cache_key.go for how one is derived and why only part of the
+		// usual header set goes with it.
+		cache.ID = codexChatPromptCacheKey(ctx, auth, req.Model, opts, req.Payload)
 	}
 
 	if cache.ID != "" {
@@ -628,8 +632,14 @@ func (e *CodexExecutor) cacheHelper(ctx context.Context, auth *cliproxyauth.Auth
 		return nil, err
 	}
 	if cache.ID != "" {
-		httpReq.Header.Set("Conversation_id", cache.ID)
-		httpReq.Header.Set("Session_id", cache.ID)
+		if from == "openai" {
+			if codexChatSessionHeaderApplies(e.cfg) {
+				httpReq.Header.Set("Session_id", cache.ID)
+			}
+		} else {
+			httpReq.Header.Set("Conversation_id", cache.ID)
+			httpReq.Header.Set("Session_id", cache.ID)
+		}
 	}
 	return httpReq, nil
 }

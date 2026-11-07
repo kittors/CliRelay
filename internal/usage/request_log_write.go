@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/secretscrub"
 	coreusage "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/usage"
 	log "github.com/sirupsen/logrus"
 )
@@ -19,6 +21,10 @@ import (
 // New columns now go here instead of adding another wrapper and another word to
 // that name. The legacy wrappers are retained below for existing callers.
 type RequestLogEntry struct {
+	// RequestID is the gateway request the entry bills. It is not stored: the
+	// settled hook hands it to the budget reservations (SetRequestLogSettledHook).
+	RequestID string
+
 	// IdempotencyKey makes the write exactly-once: a retry or spool replay of
 	// an entry whose earlier attempt already committed is skipped. Records from
 	// the usage queue carry the key assigned when they were published;
@@ -50,6 +56,9 @@ type RequestLogEntry struct {
 
 	Failed    bool
 	Streaming bool
+	// GuardKind is the loop protection check that ended the request, empty for
+	// every other request. See request_log_guard.go.
+	GuardKind string
 
 	Timestamp    time.Time
 	LatencyMs    int64
@@ -88,10 +97,12 @@ func insertRequestLogRowTx(tx usageWriteTx, plan requestLogWritePlan) error {
 		streamingInt = 1
 	}
 
+	cacheRead, cacheWrite, promptTokens := requestLogCacheValues(entry.Tokens)
 	insertSQL := `INSERT INTO request_logs
 		(tenant_id, timestamp, api_key, api_key_id, auth_subject_id, api_key_name, model, thinking_level, upstream_model, upstream_response_model, vision_fallback_model, source, channel_name, auth_index,
-		 failed, streaming, latency_ms, first_token_ms, input_tokens, output_tokens, reasoning_tokens, cached_tokens, total_tokens, cost)
-	 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+		 failed, streaming, latency_ms, first_token_ms, input_tokens, output_tokens, reasoning_tokens, cached_tokens, total_tokens, cost,
+		 cache_read_tokens, cache_write_tokens, prompt_tokens, session_id, guard_kind)
+	 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 	insertArgs := []any{
 		plan.tenantID, entry.Timestamp.UTC().Format(time.RFC3339Nano),
 		entry.APIKey, entry.APIKeyID, entry.AuthSubjectID, entry.APIKeyName, entry.Model, entry.ThinkingLevel,
@@ -99,6 +110,7 @@ func insertRequestLogRowTx(tx usageWriteTx, plan requestLogWritePlan) error {
 		failedInt, streamingInt, entry.LatencyMs, entry.FirstTokenMs,
 		entry.Tokens.InputTokens, entry.Tokens.OutputTokens, entry.Tokens.ReasoningTokens,
 		entry.Tokens.CachedTokens, entry.Tokens.TotalTokens, plan.cost,
+		cacheRead, cacheWrite, promptTokens, plan.sessionID, entry.GuardKind,
 	}
 
 	if !plan.storeContent {
@@ -122,15 +134,15 @@ func insertRequestLogRowTx(tx usageWriteTx, plan requestLogWritePlan) error {
 			return fmt.Errorf("resolve inserted log id: %w", err)
 		}
 	}
-	if err := insertLogContentTenantTx(tx, plan.tenantID, logID, entry.Timestamp, entry.InputContent, entry.OutputContent, entry.DetailContent, entry.Failed); err != nil {
+	if err := insertLogContentTenantTx(tx, plan.tenantID, logID, entry.Timestamp, entry.InputContent, entry.OutputContent, entry.DetailContent, plan.sessionID, entry.Failed); err != nil {
 		return fmt.Errorf("insert log content: %w", err)
 	}
 	return nil
 }
 
-// normalizeRequestLogEntry trims identity fields and makes sure the entry
+// normalizeRequestLogEntry trims identity fields, makes sure the entry
 // carries an idempotency key before its first attempt, so every retry and
-// replay of it shares that key.
+// replay of it shares that key, and scrubs the content it stores.
 func normalizeRequestLogEntry(entry RequestLogEntry) RequestLogEntry {
 	entry.IdempotencyKey = strings.TrimSpace(entry.IdempotencyKey)
 	if entry.IdempotencyKey == "" {
@@ -143,6 +155,19 @@ func normalizeRequestLogEntry(entry RequestLogEntry) RequestLogEntry {
 	entry.UpstreamResponseModel = strings.TrimSpace(entry.UpstreamResponseModel)
 	entry.VisionFallbackModel = strings.TrimSpace(entry.VisionFallbackModel)
 	entry.ThinkingLevel = strings.TrimSpace(entry.ThinkingLevel)
+	entry.GuardKind = normalizeGuardKind(entry.GuardKind)
+	return scrubRequestLogContent(entry)
+}
+
+// scrubRequestLogContent replaces the credentials in the stored request and
+// response bodies and diagnostics with [REDACTED:<kind>] (see secretscrub).
+// It runs before the entry is written or spooled, outside any transaction, so
+// neither the database nor the spool on disk keeps a key that a client's
+// prompt carried. What was sent upstream is not affected.
+func scrubRequestLogContent(entry RequestLogEntry) RequestLogEntry {
+	entry.InputContent = secretscrub.Scrub(entry.InputContent)
+	entry.OutputContent = secretscrub.Scrub(entry.OutputContent)
+	entry.DetailContent = secretscrub.Scrub(entry.DetailContent)
 	return entry
 }
 
@@ -158,8 +183,11 @@ func InsertRequestLog(entry RequestLogEntry) {
 	entry = normalizeRequestLogEntry(entry)
 	spool := activeUsageSpool()
 	if spool == nil && getDB() == nil {
+		settleRequestLog(entry, false, 0)
 		return
 	}
+	// A spooled entry is written later, if at all; the reservation of its
+	// request runs out on its own (internal/quota/inflight).
 	if spool != nil && usageDBHealth.down() {
 		spoolLiveRequestLog(spool, entry, usageSpoolReasonDBUnavailable, time.Time{}, nil)
 		return
@@ -168,6 +196,7 @@ func InsertRequestLog(entry RequestLogEntry) {
 	switch outcome {
 	case requestLogWriteCommitted:
 		usageDBHealth.markUp()
+		settleRequestLog(entry, !entry.Failed, result.cost)
 		if spool != nil && result.duplicateNeedsRecheck(time.Now()) {
 			// The key found may be our own commit that a failover is about to
 			// discard; the replayer checks it again after the settle window.
@@ -178,12 +207,37 @@ func InsertRequestLog(entry RequestLogEntry) {
 	case requestLogWriteTransient:
 		if spool == nil {
 			log.Errorf("usage: insert log after retries: %v", err)
+			settleRequestLog(entry, false, 0)
 			return
 		}
 		usageDBHealth.markDown(err)
 		spoolLiveRequestLog(spool, entry, usageSpoolReasonWriteFailed, result.commitUncertainAt, err)
 	default:
 		log.Errorf("usage: insert log: %v", err)
+		settleRequestLog(entry, false, 0)
+	}
+}
+
+// RequestLogSettledFunc is told when a gateway request's log has been
+// committed, which is when the budget checks start counting it, or was dropped
+// and never will be. billed marks a committed log of a successful request;
+// cost and tokens are what it was billed.
+type RequestLogSettledFunc func(requestID string, billed bool, cost float64, tokens int64)
+
+var requestLogSettled atomic.Pointer[RequestLogSettledFunc]
+
+// SetRequestLogSettledHook installs fn, or removes the hook when fn is nil.
+func SetRequestLogSettledHook(fn RequestLogSettledFunc) {
+	if fn == nil {
+		requestLogSettled.Store(nil)
+		return
+	}
+	requestLogSettled.Store(&fn)
+}
+
+func settleRequestLog(entry RequestLogEntry, billed bool, cost float64) {
+	if fn := requestLogSettled.Load(); fn != nil && entry.RequestID != "" {
+		(*fn)(entry.RequestID, billed, cost, entry.Tokens.TotalTokens)
 	}
 }
 

@@ -1,6 +1,7 @@
 package management
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	configaccess "github.com/router-for-me/CLIProxyAPI/v6/internal/access/config_access"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/configsync"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/contentmoderation"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/identity"
 	apikeysettings "github.com/router-for-me/CLIProxyAPI/v6/internal/management/settings/apikey"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/quota"
@@ -51,7 +53,8 @@ func (h *Handler) apiKeySettingsForTenant(tenantID string, extra ...apikeysettin
 
 	var auths []*coreauth.Auth
 	if h.authManager != nil {
-		auths = h.authManager.ListForTenant(tenantID)
+		// A key may be limited to a shared platform credential's channel.
+		auths = h.authManager.ListUsableForTenant(tenantID)
 	}
 
 	routingCfg := currentRoutingConfigForTenant(h.cfg, tenantID)
@@ -74,8 +77,17 @@ func (h *Handler) apiKeySettingsForTenant(tenantID string, extra ...apikeysettin
 				return h.validateAllowedChannelGroupsForTenant(tenantID, values)
 			}),
 			apikeysettings.WithEntryValidator(validateEntry),
-			apikeysettings.WithLogsDeleter(func(apiKey string) (int64, error) {
-				return usage.DeleteLogsByAPIKeyForTenant(tenantID, apiKey)
+			apikeysettings.WithLogsDeleter(func(apiKeyID string) (int64, error) {
+				return usage.DeleteLogsByAPIKeyIDForTenant(tenantID, apiKeyID)
+			}),
+			// The word guard's override of a deleted key goes with it, so that a key
+			// created later under the same id does not inherit it.
+			apikeysettings.WithKeyPolicyDeleter(func(apiKeyIDs []string) error {
+				_, err := h.contentModerationStore().DeleteWordPoliciesForKeys(context.Background(), tenantID, apiKeyIDs)
+				if errors.Is(err, contentmoderation.ErrUnavailable) {
+					return nil // no database, no policies
+				}
+				return err
 			}),
 			apikeysettings.WithExpectedVersion(configsync.AnyVersion),
 		}, extra...)...,
@@ -153,11 +165,12 @@ func (h *Handler) DeleteAPIKeys(c *gin.Context) {
 }
 
 func (h *Handler) GetAPIKeyPermissionProfiles(c *gin.Context) {
-	profiles := h.apiKeySettings(c).PermissionProfiles()
+	profiles := permissionProfileDTOs(h.apiKeySettings(c).PermissionProfiles())
 	setVersionHeader(c, usage.ConfigCollectionVersion(configsync.DomainPermissionProfiles, effectiveTenantID(c)))
 	c.JSON(200, gin.H{
 		"api-key-permission-profiles": profiles,
 		"items":                       profiles,
+		"capabilities":                accessPolicyCapabilities(),
 	})
 }
 
@@ -176,24 +189,23 @@ func (h *Handler) PutAPIKeyPermissionProfiles(c *gin.Context) {
 		return
 	}
 
-	var profiles []usage.APIKeyPermissionProfileRow
-	syncAccounts := false
-	if err = json.Unmarshal(data, &profiles); err != nil {
-		var obj struct {
-			Items        []usage.APIKeyPermissionProfileRow `json:"items"`
-			SyncAccounts bool                               `json:"sync-accounts"`
+	items, syncAccounts, err := decodePermissionProfilePayload(data)
+	if err != nil {
+		c.JSON(400, gin.H{"error": "invalid body"})
+		return
+	}
+	settings := h.apiKeySettings(c)
+	profiles, err := permissionProfilesFromDTOs(items, settings.PermissionProfiles())
+	if err != nil {
+		if !writeAccessPolicyError(c, err) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		}
-		if err2 := json.Unmarshal(data, &obj); err2 != nil {
-			c.JSON(400, gin.H{"error": "invalid body"})
-			return
-		}
-		profiles = obj.Items
-		syncAccounts = obj.SyncAccounts
+		return
 	}
 
-	result, err := h.apiKeySettings(c).ReplacePermissionProfilesWithCaps(profiles, syncAccounts)
+	result, err := settings.ReplacePermissionProfilesWithCaps(profiles, syncAccounts)
 	if err != nil {
-		if writeConfigConflict(c, err) {
+		if writeConfigConflict(c, err) || writeAccessPolicyError(c, err) {
 			return
 		}
 		if errors.Is(err, quota.ErrPeriodDayLegacyConflict) {
@@ -207,17 +219,17 @@ func (h *Handler) PutAPIKeyPermissionProfiles(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	if len(result.CappedKeys) > 0 {
+	if len(result.CappedCells) > 0 {
 		principal, _ := principalFromContext(c)
 		if audit := identity.Default(); audit != nil {
 			audit.RecordAudit(c.Request.Context(), identity.AuditEvent{
 				TenantID: effectiveTenantID(c), ActorKind: principal.Kind, ActorUserID: principal.User.ID, ActorSessionID: principal.SessionID,
 				Action: "permission_profile.period_quota.cap_keys", ResourceType: "api_key_permission_profiles", Result: "success",
-				Changes: map[string]any{"capped-keys": result.CappedKeys},
+				Changes: map[string]any{"capped-keys": result.CappedKeys, "capped-cells": result.CappedCells},
 			})
 		}
 	}
-	c.JSON(200, gin.H{"status": "ok", "applied_count": result.AppliedCount, "capped-keys": result.CappedKeys})
+	c.JSON(200, gin.H{"status": "ok", "applied_count": result.AppliedCount, "capped-keys": result.CappedKeys, "capped-cells": result.CappedCells})
 }
 
 // api-key-entries: backed by the api_keys table

@@ -36,7 +36,7 @@ type LogFormatter struct{}
 // of it was ever printed, so "credential failure armed a block" appeared with no
 // indication of which address or account triggered it, which is the only part an
 // operator needs. Any new structured field must be registered here to be visible.
-var logFieldOrder = []string{"provider", "model", "mode", "budget", "level", "original_mode", "original_value", "min", "max", "clamped_to", "error_class", "profile_id", "profile_version", "resolution_source", "channel_type", "channel_id", "action", "latency_ms", "cache_hit", "category", "score", "error",
+var logFieldOrder = []string{"provider", "model", "mode", "budget", "level", "original_mode", "original_value", "min", "max", "clamped_to", "error_class", "tenant_id", "policy_tenant_id", "profile_id", "profile_version", "resolution_source", "channel_type", "channel_id", "action", "latency_ms", "cache_hit", "category", "score", "error",
 	// auth-throttle / ip-access diagnostics
 	"scope", "key", "shared", "short_count", "long_count", "limit", "long_limit", "outcome", "block_for", "generation", "path", "method", "ua", "relay_header"}
 

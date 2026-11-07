@@ -10,12 +10,14 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	internalclaude "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/claude"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/identity"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/management/oauth/credentialimport"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 )
 
@@ -67,7 +69,17 @@ func TestImportCredentialSavesAndBindsProxy(t *testing.T) {
 				}, nil
 		},
 	}
-	h, store := newImportTestHandler(t, kind, []config.ProxyPoolEntry{{ID: "pp-1", URL: "http://proxy.internal:8080", Enabled: true}})
+	// The proxy is the tenant's own. The system pool has an entry under the
+	// same ID that must not be used: the import resolves the ID the way the
+	// tenant's executors will once the account is saved.
+	if err := usage.InitDB(filepath.Join(t.TempDir(), "usage.db"), config.RequestLogStorageConfig{}, time.UTC); err != nil {
+		t.Fatalf("init usage db: %v", err)
+	}
+	t.Cleanup(usage.CloseDB)
+	if err := usage.ReplaceProxyPoolForTenant("tenant-acme", []config.ProxyPoolEntry{{ID: "pp-1", URL: "http://proxy.internal:8080", Enabled: true}}); err != nil {
+		t.Fatal(err)
+	}
+	h, store := newImportTestHandler(t, kind, []config.ProxyPoolEntry{{ID: "pp-1", URL: "http://system-only.internal:9090", Enabled: true}})
 
 	rec := postImport(t, h, "tenant-acme", `{"credential":"sessionKey=sk-ant-sid01-test; other=1","proxy_id":"pp-1"}`)
 	if rec.Code != http.StatusOK {
@@ -206,5 +218,30 @@ func TestImportCredentialUnknownProvider(t *testing.T) {
 	h.ImportCodexRefreshToken(c) // not in the injected map
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404", rec.Code)
+	}
+}
+
+func TestImportCredentialDoesNotBorrowTheSystemTenantsProxy(t *testing.T) {
+	var gotInput credentialImportInput
+	kind := credentialImportKind{
+		normalize: internalclaude.NormalizeSessionKey,
+		exchange: func(_ context.Context, _ *config.Config, in credentialImportInput) (*coreauth.Auth, credentialimport.Details, error) {
+			gotInput = in
+			return &coreauth.Auth{ID: "claude-import.json", Provider: "claude", FileName: "claude-import.json", Metadata: map[string]any{"type": "claude"}}, credentialimport.Details{}, nil
+		},
+	}
+	if err := usage.InitDB(filepath.Join(t.TempDir(), "usage.db"), config.RequestLogStorageConfig{}, time.UTC); err != nil {
+		t.Fatalf("init usage db: %v", err)
+	}
+	t.Cleanup(usage.CloseDB)
+	// pp-1 exists only in the system pool and is not shared with the tenant.
+	h, _ := newImportTestHandler(t, kind, []config.ProxyPoolEntry{{ID: "pp-1", URL: "http://system-only.internal:9090", Enabled: true}})
+
+	rec := postImport(t, h, "tenant-acme", `{"credential":"sessionKey=sk-ant-sid01-test","proxy_id":"pp-1"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	if gotInput.ProxyURL != "" {
+		t.Fatalf("tenant import exchanged through the system tenant's proxy %q", gotInput.ProxyURL)
 	}
 }

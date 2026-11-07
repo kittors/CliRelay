@@ -23,7 +23,7 @@ func (s *Service) modelOwnerScope(channels []string, groups map[string]struct{})
 	}
 	auths := []*coreauth.Auth(nil)
 	if s.authManager != nil {
-		auths = s.authManager.ListForTenant(s.tenantID)
+		auths = s.authManager.ListUsableForTenant(s.tenantID)
 	}
 	addOwnersForChannel := func(channel string) {
 		for _, owner := range ownersForChannel(channel, auths, ownerMappings, providerOwners) {

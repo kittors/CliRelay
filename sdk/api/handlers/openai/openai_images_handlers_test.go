@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -369,6 +370,66 @@ func TestOpenAIImagesGenerationsSplitsMultipleImagesIntoSingleImageExecutions(t 
 	}
 	if len(body.Data) != 3 {
 		t.Fatalf("data length = %d, want 3", len(body.Data))
+	}
+}
+
+// imageRewritingGuard is a request guard that replaces a word and counts how
+// often it is asked.
+type imageRewritingGuard struct {
+	mu    sync.Mutex
+	calls int
+}
+
+func (g *imageRewritingGuard) Moderate(context.Context, *coreauth.Auth, coreexecutor.Options) coreauth.RequestModerationResult {
+	return coreauth.RequestModerationResult{}
+}
+
+func (g *imageRewritingGuard) GuardRequest(_ context.Context, req coreexecutor.Request, opts coreexecutor.Options) coreauth.RequestGuardResult {
+	g.mu.Lock()
+	g.calls++
+	g.mu.Unlock()
+	return coreauth.RequestGuardResult{
+		OriginalRequest: bytes.ReplaceAll(opts.OriginalRequest, []byte("fox"), []byte("***")),
+		Payload:         bytes.ReplaceAll(req.Payload, []byte("fox"), []byte("***")),
+	}
+}
+
+// n > 1 is one client request run as n executions of one image each. The prompt
+// is looked at by the request guard once, and every execution gets the same
+// rewritten prompt.
+func TestOpenAIImagesGuardsAMultiImageRequestOnce(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	executor := &imageCaptureExecutor{}
+	manager := coreauth.NewManager(nil, nil, nil)
+	manager.RegisterExecutor(executor)
+	registerImageTestCodexAuth(t, manager, "codex-auth-guarded-images", openAIImageModelID)
+	guard := &imageRewritingGuard{}
+	manager.SetRequestModerator(guard)
+
+	base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager)
+	h := NewOpenAIImagesAPIHandler(base)
+	router := gin.New()
+	router.POST("/v1/images/generations", h.Generations)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", strings.NewReader(`{"model":"gpt-image-2","prompt":"draw a fox","n":3}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", resp.Code, resp.Body.String())
+	}
+	if executor.calls != 3 {
+		t.Fatalf("executor calls = %d, want 3", executor.calls)
+	}
+	if guard.calls != 1 {
+		t.Fatalf("the guard ran %d times for one client request, want 1", guard.calls)
+	}
+	for i, payload := range executor.payloads {
+		if !strings.Contains(payload, `"prompt":"draw a ***"`) || strings.Contains(payload, "fox") || !strings.Contains(payload, `"n":1`) {
+			t.Fatalf("payload[%d] = %s, want the rewritten prompt and n=1", i, payload)
+		}
 	}
 }
 

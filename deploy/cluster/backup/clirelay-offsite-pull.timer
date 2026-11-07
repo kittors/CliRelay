@@ -1,0 +1,12 @@
+[Unit]
+Description=Pull the CliRelay backup set to this offsite host every 15 minutes
+
+[Timer]
+# The WAL archive on the database host is continuous; this bounds how much
+# of it an offsite restore can miss if the database host is lost.
+OnCalendar=*:0/15
+RandomizedDelaySec=60
+Persistent=true
+
+[Install]
+WantedBy=timers.target

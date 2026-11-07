@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/auth/refreshguard"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	log "github.com/sirupsen/logrus"
@@ -84,7 +85,17 @@ func (ia *IFlowAuth) ExchangeCodeForTokens(ctx context.Context, code, redirectUR
 }
 
 // RefreshTokens exchanges a refresh token for a new access token.
+//
+// The response carries a new refresh token, so the exchange runs through
+// refreshguard: it finishes even if ctx ends, and concurrent refreshes of one
+// token share a single request.
 func (ia *IFlowAuth) RefreshTokens(ctx context.Context, refreshToken string) (*IFlowTokenData, error) {
+	return refreshguard.Exchange(ctx, "iflow", refreshToken, func(ctx context.Context) (*IFlowTokenData, error) {
+		return ia.refreshOnce(ctx, refreshToken)
+	})
+}
+
+func (ia *IFlowAuth) refreshOnce(ctx context.Context, refreshToken string) (*IFlowTokenData, error) {
 	form := url.Values{}
 	form.Set("grant_type", "refresh_token")
 	form.Set("refresh_token", refreshToken)

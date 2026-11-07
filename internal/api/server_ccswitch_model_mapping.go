@@ -7,6 +7,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/api/bodyutil"
 	internalrouting "github.com/router-for-me/CLIProxyAPI/v6/internal/routing"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -50,8 +51,13 @@ func ccSwitchOpenAIModelMappingMiddleware() gin.HandlerFunc {
 	}
 }
 
+// ccSwitchOpenAIModelMapping returns the request-model → target-model rewrite
+// for presets whose app speaks the OpenAI protocol (Codex, OpenCode, OpenClaw,
+// Hermes). The middleware is mounted on /v1, /:group/v1 and
+// /backend-api/codex, which covers /chat/completions, /completions,
+// /responses (HTTP and WebSocket), /responses/compact and /alpha/search.
 func ccSwitchOpenAIModelMapping(route *internalrouting.PathRouteContext) map[string]string {
-	if route == nil || route.CcSwitch == nil || !strings.EqualFold(strings.TrimSpace(route.CcSwitch.ClientType), "codex") {
+	if route == nil || route.CcSwitch == nil || !usage.CcSwitchClientUsesOpenAIProtocol(route.CcSwitch.ClientType) {
 		return nil
 	}
 	mapping := make(map[string]string)

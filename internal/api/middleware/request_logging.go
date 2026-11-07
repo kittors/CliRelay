@@ -48,6 +48,10 @@ func RequestLoggingMiddleware(logger logging.RequestLogger) gin.HandlerFunc {
 		diagnostic := diagnostics.EnsureGin(c, requestID)
 		if diagnostic != nil {
 			diagnostic.UpdateRequest(c.Request)
+			// Deferred so the request leaves the in-flight list, and any usage
+			// record its scheduler still holds goes out, however it ends.
+			endInFlight := diagnostics.BeginInFlight(diagnostic)
+			defer endInFlight()
 		}
 
 		if wrapper := requestLoggingExistingWrapper(c); wrapper != nil {
@@ -242,6 +246,10 @@ func cloneHTTPHeader(headers http.Header) map[string][]string {
 // all other routes, including module-provided ones, to honor request-log.
 func shouldLogRequest(path string) bool {
 	if strings.HasPrefix(path, "/v0/management") || strings.HasPrefix(path, "/management") {
+		return false
+	}
+	// A metrics scrape carries a bearer token and repeats every few seconds.
+	if path == "/metrics" {
 		return false
 	}
 

@@ -70,6 +70,9 @@ type Server struct {
 	// management handler
 	mgmt *managementHandlers.Handler
 
+	// routingSimulation runs the management API's simulated requests.
+	routingSimulation *routingSimulation
+
 	// ampModule is the Amp routing module for model mapping hot-reload
 	ampModule *ampmodule.AmpModule
 

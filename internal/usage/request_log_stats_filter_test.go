@@ -20,12 +20,14 @@ func TestQueryStatsMatchesQueryLogsForMultiChannelSelectors(t *testing.T) {
 	now := time.Now().UTC()
 	InsertLogWithDetailsIdentitySubject("", "key-a", "subject-a", "", "model-target", "source", "Alpha", "auth-a", false, now, 10, 1, TokenStats{
 		InputTokens: 80, OutputTokens: 20, CachedTokens: 20, TotalTokens: 100,
+		CacheReadTokens: 20, CacheReadIncludedInInput: true, CacheReported: true,
 	}, "", "", "")
 	InsertLogWithDetailsIdentitySubject("", "key-a", "subject-a", "", "model-other", "source", "Alpha", "auth-a", false, now.Add(time.Second), 10, 1, TokenStats{
 		InputTokens: 40, TotalTokens: 40,
 	}, "", "", "")
 	InsertLogWithDetailsIdentitySubject("", "key-b", "subject-b", "", "model-target", "source", "Beta", "auth-b", true, now.Add(2*time.Second), 10, 1, TokenStats{
 		InputTokens: 10, OutputTokens: 250, CachedTokens: 40, TotalTokens: 300,
+		CacheReadTokens: 40, CacheReported: true,
 	}, "", "", "")
 	InsertLogWithDetailsIdentitySubject("", "key-c", "subject-c", "", "model-target", "source", "Gamma", "auth-c", false, now.Add(3*time.Second), 10, 1, TokenStats{
 		InputTokens: 10, TotalTokens: 10,
@@ -123,9 +125,11 @@ func TestQueryStatsMatchesQueryLogsForStatuses(t *testing.T) {
 	now := time.Now().UTC()
 	InsertLogWithDetailsIdentitySubject("", "key-success", "subject-success", "", "model", "source", "Success", "auth-success", false, now, 10, 1, TokenStats{
 		InputTokens: 80, OutputTokens: 20, CachedTokens: 20, TotalTokens: 100,
+		CacheReadTokens: 20, CacheReadIncludedInInput: true, CacheReported: true,
 	}, "", "", "")
 	InsertLogWithDetailsIdentitySubject("", "key-failed", "subject-failed", "", "model", "source", "Failed", "auth-failed", true, now.Add(time.Second), 10, 1, TokenStats{
 		InputTokens: 10, OutputTokens: 250, CachedTokens: 40, TotalTokens: 300,
+		CacheReadTokens: 40, CacheReported: true,
 	}, "", "", "")
 	if _, err := getDB().Exec(`UPDATE request_logs SET cost = CASE WHEN failed = 0 THEN 1.25 ELSE 2.5 END`); err != nil {
 		t.Fatalf("set detail costs: %v", err)

@@ -165,7 +165,22 @@ func (h *Handler) GetPortalMe(c *gin.Context) {
 	if !ok {
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"user": user})
+	// The portal shows the limits its keys run under, so it must see the
+	// profile-applied values, not the raw account row: a bound account used to
+	// read "unlimited" here while the gateway enforced its profile.
+	if err := decorateEndUser(&user); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	// word_policy_allowed says whether the portal offers the user sensitive
+	// words of their own; an older backend does not send it and the portal
+	// then offers none.
+	capabilities := accessPolicyCapabilities()
+	// the portal's privacy masking tab, read only: the rules that apply and the
+	// user's own records (privacy_masking_portal.go)
+	capabilities["privacy-masking"] = true
+	c.JSON(http.StatusOK, gin.H{"user": user, "capabilities": capabilities,
+		"word_policy_allowed": h.portalWordAllowed(c, user)})
 }
 
 func (h *Handler) PutPortalPassword(c *gin.Context) {

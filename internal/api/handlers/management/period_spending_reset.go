@@ -96,16 +96,14 @@ func (h *Handler) PostEndUserPeriodSpendingReset(c *gin.Context) {
 	}
 	effective := usage.EffectiveEndUserQuota(*accountQuota)
 	effective.PeriodSpendingLimits.Day = effective.DailySpendingLimit
+	matrix := effective.QuotaMatrix()
 	for _, period := range periods {
-		// The lifetime allowance is stored in its own column, not in the rolling
-		// period limits, so it needs its own configured check.
-		limit := effective.PeriodSpendingLimits.Value(period)
-		if period == quota.PeriodLifetime {
-			limit = effective.SpendingLimit
-		}
-		if limit <= 0 {
+		// A window can be reset when anything limits it: a spending, request or
+		// token cell of the account matrix, or a per-model rule. The reset clears
+		// all of them for that window at once.
+		if !quota.WindowHasLimit(matrix, effective.AccessPolicy.ModelRules, period) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{
-				"code": "period_limit_missing", "message": fmt.Sprintf("Account %s spending limit is not configured", period), "period": period,
+				"code": "period_limit_missing", "message": fmt.Sprintf("Account %s limit is not configured", period), "period": period,
 			}})
 			return
 		}

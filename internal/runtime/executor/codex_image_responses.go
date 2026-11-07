@@ -42,7 +42,6 @@ func (e *CodexExecutor) executeCodexImageViaResponses(
 	}
 	url := strings.TrimSuffix(baseURL, "/") + "/responses"
 	recorder := execCtx.Recorder()
-	httpClient := execCtx.HTTPClient(0)
 	var lastErr error
 	for attempt := 1; attempt <= codexImageResponsesMaxTries; attempt++ {
 		httpReq, err := http.NewRequestWithContext(execCtx.Context, http.MethodPost, url, bytes.NewReader(body))
@@ -51,9 +50,8 @@ func (e *CodexExecutor) executeCodexImageViaResponses(
 		}
 		httpReq = httpReq.WithContext(withCodexRequestModel(httpReq.Context(), e.resolveCodexImageBaseModel()))
 		applyCodexHeaders(httpReq, e.cfg, execCtx.Auth, apiKey, true)
-		recorder.RecordRequest(url, http.MethodPost, httpReq.Header.Clone(), body)
 
-		httpResp, err := httpClient.Do(httpReq)
+		httpResp, err := e.doCodexResponses(execCtx, recorder, httpReq, body)
 		if err != nil {
 			recorder.RecordResponseError(err)
 			return nil, nil, err
@@ -138,7 +136,10 @@ func buildCodexImageResponsesRequest(parsed *codexImageRequest, toolModel string
 		return nil, fmt.Errorf("image input is required")
 	}
 
-	req := []byte(`{"instructions":"","stream":true,"reasoning":{"effort":"medium","summary":"auto"},"parallel_tool_calls":true,"include":["reasoning.encrypted_content"],"model":"","store":false,"tool_choice":{"type":"image_generation"}}`)
+	// No reasoning.effort: since 2026-11-04 the Codex backend passes it to the forced image call
+	// as complexity, and the image model it routes to rejects every value, medium included.
+	// See omitCodexReasoningEffortForImageCall.
+	req := []byte(`{"instructions":"","stream":true,"reasoning":{"summary":"auto"},"parallel_tool_calls":true,"include":["reasoning.encrypted_content"],"model":"","store":false,"tool_choice":{"type":"image_generation"}}`)
 	if strings.TrimSpace(baseModel) == "" {
 		baseModel = codexcarrier.Resolve()
 	}

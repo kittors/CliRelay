@@ -306,9 +306,14 @@ func TestWorkflowNodeVerifyWaitsForTheOldSlotToStop(t *testing.T) {
 printf '%s\n' "$*" >> "$CURL_LOG"
 printf 'HTTP/1.1 204 No Content\r\nx-cpa-version: %s\r\n\r\nprobe_status=204\n' "$FAKE_PUBLIC_VERSION"
 `)
+	// FAKE_OLD_STATE is a space-separated sequence: one state per read of
+	// the node, the last one repeating.
 	writeExecutable(t, filepath.Join(binDir, "ssh"), `#!/usr/bin/env bash
 cat > /dev/null
-printf 'new_state=active old_state=%s served_version=%s\n' "$FAKE_OLD_STATE" "$FAKE_SERVED_VERSION"
+n=$(cat "$FAKE_READS" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$FAKE_READS"
+set -- $FAKE_OLD_STATE
+[ "$n" -le $# ] || n=$#
+printf 'new_state=active old_state=%s served_version=%s\n' "${!n}" "$FAKE_SERVED_VERSION"
 `)
 
 	run := func(t *testing.T, oldState, served string) (string, error) {
@@ -317,6 +322,7 @@ printf 'new_state=active old_state=%s served_version=%s\n' "$FAKE_OLD_STATE" "$F
 		cmd.Env = append(os.Environ(),
 			"PATH="+binDir+":"+os.Getenv("PATH"),
 			"CURL_LOG="+curlLog,
+			"FAKE_READS="+filepath.Join(t.TempDir(), "reads"),
 			"FAKE_PUBLIC_VERSION=dev-abc1234",
 			"FAKE_OLD_STATE="+oldState,
 			"FAKE_SERVED_VERSION="+served,
@@ -334,6 +340,7 @@ printf 'new_state=active old_state=%s served_version=%s\n' "$FAKE_OLD_STATE" "$F
 			"PROBE_INTERVAL_SECONDS=1",
 			"STOP_WAIT_EXTRA_SECONDS=1",
 			"STOP_POLL_SECONDS=1",
+			"OLD_SLOT_HOLD_SECONDS=1",
 		)
 		out, err := cmd.CombinedOutput()
 		return string(out), err
@@ -358,6 +365,19 @@ printf 'new_state=active old_state=%s served_version=%s\n' "$FAKE_OLD_STATE" "$F
 	out, err = run(t, "inactive", "dev-0000000")
 	if err == nil || !strings.Contains(out, "reports build dev-0000000, expected dev-abc1234") {
 		t.Fatalf("a new slot serving another build must fail the node, err=%v\n%s", err, out)
+	}
+
+	// 2026-10-27: a hand-installed watchdog started the retired slot again
+	// 49 s after the drain stopped it, after this check had passed.
+	out, err = run(t, "inactive active", "dev-abc1234")
+	if err == nil || !strings.Contains(out, "old slot clirelay2-8319 stopped after the drain but is active again") {
+		t.Fatalf("an old slot that comes back after stopping must fail the node, err=%v\n%s", err, out)
+	}
+
+	// A lost ssh read after the hold is not evidence of anything.
+	out, err = run(t, "inactive unknown", "dev-abc1234")
+	if err != nil || !strings.Contains(out, "could not re-read old slot clirelay2-8319") {
+		t.Fatalf("an unreadable node after the hold must only warn, err=%v\n%s", err, out)
 	}
 }
 

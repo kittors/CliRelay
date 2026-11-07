@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/configsync"
 	sqlproxypool "github.com/router-for-me/CLIProxyAPI/v6/internal/storage/sqlstore/proxypool"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 )
@@ -59,4 +60,22 @@ func UpdateForTenant(tenantID, id string, entry config.ProxyPoolEntry) error {
 // still at expected (configsync.AnyVersion: unchecked).
 func ReplaceForTenantExpect(ctx context.Context, tenantID string, entries []config.ProxyPoolEntry, expected int64) (int64, error) {
 	return usage.ReplaceProxyPoolForTenantExpect(ctx, tenantID, entries, expected)
+}
+
+// SharedForTenant returns the system tenant's proxies the platform shares with
+// tenantID; the tenant resolves them like its own unless it overrides one.
+func SharedForTenant(tenantID string) []config.ProxyPoolEntry {
+	return usage.SharedProxyPoolForTenant(tenantID)
+}
+
+// TenantsOverriding returns, for each of ids, the tenants whose own entry with
+// that ID overrides the shared one.
+func TenantsOverriding(ctx context.Context, ids []string) (map[string][]string, error) {
+	return usage.TenantsOverridingProxies(ctx, ids)
+}
+
+// CollectionVersionForTenant returns the version of the tenant's proxy pool,
+// for read-modify-write updates made on the tenant's behalf.
+func CollectionVersionForTenant(tenantID string) int64 {
+	return usage.ConfigCollectionVersion(configsync.DomainProxyPool, tenantID)
 }

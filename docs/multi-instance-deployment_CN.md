@@ -267,10 +267,22 @@ server {                                    # 接收对端溢出：只转本机 
     - 归档目录是 `0700 root`，而 PostgreSQL 以 uid 70 运行。直接挂载时 `restore_command` 一段也读不到，恢复会停在备份的终点，照样启动成一个看起来正常的库，还会占用一个线上已经用过的时间线编号。要先把归档复制一份，改成 70 属主再挂载；
     - 正在写入的 `.partial` 段，gzip 流还没有结尾，`gunzip` 会在最后一个完整块之后报错。忽略这个错误，再用 `truncate -s 16M` 补成整段，补上的零会被当作 WAL 的结尾；
     - 镜像的入口脚本会在 `PGDATA` 里找 `PG_VERSION`，找不到就去 initdb。要用 `--entrypoint postgres` 直接启动。
+  - 还有一个，`pitr-drill.sh` 也已处理：恢复时 `max_connections`、`max_worker_processes`、`max_wal_senders`、`max_prepared_transactions`、`max_locks_per_transaction` 不能低于主库。主库如果在命令行里用 `-c max_connections=200` 启动，备份里的 `postgresql.conf` 仍是默认的 100，恢复会报 `insufficient parameter settings` 停下。要按 `pg_controldata` 读出的备份值启动。
 - **每周恢复演练**（`clirelay-pitr-drill.timer`，每周日 05:10）：
   - `pitr-drill.sh` 把第二新的全量备份恢复到一个没有网络的临时实例，回放全部归档，结束后删除；
   - 只有回放到了归档里最新的时间线，并且最后一个事务在 15 分钟以内，才算通过，否则以失败退出（用 `systemctl status clirelay-pitr-drill` 查看）；
   - 2026-09-28 实测：从时间线 11 的备份出发，依次回放时间线 11–14 共 28 段，11 秒回放到 15 秒前。与生产逐行核对，`request_logs` 行数完全一致。
+
+#### 单机部署
+
+单机部署（一台应用机，PostgreSQL 跑在 `clirelay-pg` 容器里，hk-155 自 2026-10-18 起就是这样）用同一套脚本，`/etc/clirelay-cluster/backup.env` 里写 `PG_CONTAINER=clirelay-pg`，不写 `BACKUP_HOSTS`：
+
+- 备份工具跑在数据库容器的网络命名空间里（`--network container:clirelay-pg`），连容器自己的回环，镜像默认的 `pg_hba.conf` 本来就信任它的复制连接。数据库端口仍只绑 `127.0.0.1`，没有新开放任何东西；
+- 备份源就是正在服务的主库，所以全量备份用 spread checkpoint、`MAX_RATE` 限速、容器限一核；
+- 没有组件管理复制槽，`pg-receivewal.sh` 自己建 `clirelay_walarchive`；`max_slot_wal_keep_size` 不设上限时拒绝建槽：归档停掉期间复制槽会让主库一直保留 WAL，停久了会撑爆生产磁盘。设一次即可：`ALTER SYSTEM SET max_slot_wal_keep_size = '4GB'; SELECT pg_reload_conf();`（不用重启）；
+- 异地副本放在另一家厂商、另一个地区的机器上，由它每 15 分钟**拉取**（`offsite-pull.sh`、`clirelay-offsite-pull.timer`）：数据库机把它的 key 钉死为 `from="<异地机 IP>",restrict,command="/usr/bin/rrsync -ro /opt/clirelay-cluster/backups"`，自己不持有异地机的任何凭据，rsync 也不带 `--delete`。数据库机被攻破时，既碰不到也删不掉异地副本。异地机按 `KEEP` 自己清理；
+- 每周演练在异地机上跑，先拉取一次（drop-in `clirelay-pitr-drill.offsite.conf`），证明的是真丢了数据库机时要用的那份副本。`MAX_LAG_SECONDS` 要大于拉取间隔，小机器上设 `DRILL_MEMORY`；
+- 2026-10-29 实测（hk-155，异地副本在 bwg）：720 MB 的库全量备份 77 秒（压缩后 204 MB），`/readyz` 不受影响；首次拉取 55 秒；首次演练回放到演练前 42 秒，`request_logs` 行数与生产一致。
 
 ### 4.9 逐台滚动发版
 
@@ -297,6 +309,7 @@ GitHub Actions 的 `Deploy CliRelay` 按节点逐台部署：
 | 立刻做一份备份 | 仲裁机上 `systemctl start clirelay-pg-basebackup` |
 | 验证备份能恢复 | 仲裁机上 `systemctl start clirelay-pitr-drill`，用 `journalctl -u clirelay-pitr-drill` 查看结果 |
 | 查看 WAL 归档 | 仲裁机上 `systemctl status clirelay-pg-receivewal`；`ls /opt/clirelay-cluster/backups/wal` |
+| 单机：查看备份 | 数据库机上 `systemctl status clirelay-pg-receivewal`、`ls /opt/clirelay-cluster/backups`；异地机上 `systemctl list-timers 'clirelay-*'`、`journalctl -u clirelay-pitr-drill` |
 | 从备份恢复 | 解压到新的数据目录，用同一镜像启动单实例 PostgreSQL 核对数据，确认后再作为新集群的起点 |
 | 证书轮换 | 用同一 CA 重新签发，分发后依次重启 etcd、Patroni、nginx、CliRelay |
 

@@ -237,6 +237,7 @@ func (h *Handler) collectSystemStats() SystemStats {
 
 	// ── Concurrency snapshot ──
 	stats.ActiveConcurrency, stats.TotalInFlight = middleware.GetConcurrencySnapshot()
+	maskConcurrencyKeys(stats.ActiveConcurrency)
 
 	// Compute system-wide RPM and TPM totals
 	var sysRPM int
@@ -254,6 +255,15 @@ func (h *Handler) collectSystemStats() SystemStats {
 		TenantStaleChecks:   identity.TenantStaleServed(),
 	}
 	return stats
+}
+
+// maskConcurrencyKeys replaces the client secret each snapshot is tracked under
+// (that is what the rate windows are keyed by) with its mask: the dashboard only
+// needs to tell the keys apart.
+func maskConcurrencyKeys(snapshots []middleware.ConcurrencySnapshot) {
+	for i := range snapshots {
+		snapshots[i].APIKey = usage.MaskAPIKey(snapshots[i].APIKey)
+	}
 }
 
 // GetSystemStats handles GET /v0/management/system-stats

@@ -21,8 +21,10 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/enduser"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/identity"
 	settingsstore "github.com/router-for-me/CLIProxyAPI/v6/internal/management/settings/store"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/quota/inflight"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy"
+	coreusage "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/usage"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -297,9 +299,22 @@ func initializeRuntimeDataStack(cfg *config.Config, configPath string, loc *time
 	settingsstore.ApplyStoredRuntimeSettings(cfg)
 	// After the settings store is live: the protection policy is read from it.
 	initializeIPAccessControl(context.Background(), cfg)
+	// Likewise the metrics endpoint settings.
+	initializeObservability()
+	// And the loop protection and secret masking settings every inference
+	// request resolves.
+	settingsstore.AttachLoopGuardSettings()
+	settingsstore.AttachSecretMaskingSettings()
 	middleware.InitQuotaUsageFuncs(usage.CountTodayByKey, usage.CountTotalByKey, usage.QueryTotalCostByKey, usage.QueryTodayCostByKey)
 	middleware.InitQuotaEndUserUsageFuncs(usage.CountTodayByEndUser, usage.CountTotalByEndUser, usage.QueryTotalCostByEndUser, usage.QueryTodayCostByEndUser)
 	middleware.InitQuotaPeriodUsageFuncs(usage.QueryPeriodSpendingByAPIKeyIDForTenant, usage.QueryPeriodSpendingByEndUserForTenant)
+	middleware.InitQuotaSnapshotFuncs(usage.QueryEndUserQuotaUsageSnapshot, usage.QueryAPIKeyQuotaUsageSnapshot)
+	// Key-limit refusals tell the client when the day, week or month window ends.
+	middleware.InitQuotaPeriodResetFunc(usage.PeriodResetAt)
+	// Admitted requests hold a reservation on their budgets until their usage
+	// records are committed; see internal/quota/inflight.
+	coreusage.SetPublishObserver(func(record coreusage.Record) { inflight.Default().Published(record.RequestID) })
+	usage.SetRequestLogSettledHook(inflight.Default().Settle)
 	middleware.SetQuotaUsageStaleMaxAge(cfg.DBResilience.QuotaStaleMaxAge())
 	// The write path hands over the key's owner it already resolved, so TPM
 	// accounting needs no lookup of its own and keeps working while the
@@ -313,6 +328,12 @@ func initializeRuntimeDataStack(cfg *config.Config, configPath string, loc *time
 type runtimeDataStackMaintenanceOps struct {
 	runAIAccountSharedSubjectBackfill func() error
 	scheduleUsageRollupCatchup        func()
+	// scheduleRequestLogKeyMasking starts the background pass that replaces the
+	// client secrets older builds stored in request_logs.api_key with masks.
+	scheduleRequestLogKeyMasking func()
+	// scheduleRequestLogSessionBackfill starts the background pass that copies
+	// the session id of older rows from request_log_content onto request_logs.
+	scheduleRequestLogSessionBackfill func()
 	// withRepairLock serialises the one-time repairs across nodes; nil runs
 	// them directly.
 	withRepairLock func(func() error) error
@@ -343,8 +364,10 @@ func defaultRuntimeDataStackMaintenanceOps() runtimeDataStackMaintenanceOps {
 			// those held on a period the upstream refilled rather than spent out.
 			return usage.RunAIAccountSubjectCycleRefillRepairAtInit()
 		},
-		scheduleUsageRollupCatchup: usage.ScheduleUsageRollupBlueGreenCatchup,
-		withRepairLock:             withRepairLock,
+		scheduleUsageRollupCatchup:        usage.ScheduleUsageRollupBlueGreenCatchup,
+		scheduleRequestLogKeyMasking:      usage.ScheduleRequestLogAPIKeyMasking,
+		scheduleRequestLogSessionBackfill: usage.ScheduleRequestLogSessionBackfill,
+		withRepairLock:                    withRepairLock,
 	}
 }
 
@@ -375,6 +398,17 @@ func runRuntimeDataStackPostStartMaintenance(ops runtimeDataStackMaintenanceOps)
 	// cannot block the HTTP listener or deployment readiness.
 	if ops.scheduleUsageRollupCatchup != nil {
 		ops.scheduleUsageRollupCatchup()
+	}
+	// The same old slot still writes the secret into request_logs.api_key; the
+	// masking pass holds off for longer than its drain window and then runs in
+	// small batches in the background.
+	if ops.scheduleRequestLogKeyMasking != nil {
+		ops.scheduleRequestLogKeyMasking()
+	}
+	// Rows that old slot writes have no session_id either, so the session
+	// backfill waits out the same drain window.
+	if ops.scheduleRequestLogSessionBackfill != nil {
+		ops.scheduleRequestLogSessionBackfill()
 	}
 
 	log.Infof("usage: post-listen runtime data maintenance scheduled in %s", time.Since(startedAt).Round(time.Millisecond))

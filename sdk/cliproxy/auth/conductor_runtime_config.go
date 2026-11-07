@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"math"
 	"strings"
 	"time"
 
@@ -216,6 +217,20 @@ func (m *Manager) SetRetryConfig(retry int, maxRetryInterval time.Duration) {
 	}
 	m.requestRetry.Store(int32(retry))
 	m.maxRetryInterval.Store(maxRetryInterval.Nanoseconds())
+}
+
+// SetBusyWaitConfig updates how many requests may wait for a cooling account at
+// once (streaming.busy-wait-max-waiters). Zero or less takes the default; it
+// never means unlimited. A lowered cap does not shorten waits already running,
+// it only turns away the ones that would start while the count is above it.
+func (m *Manager) SetBusyWaitConfig(maxWaiters int) {
+	if m == nil {
+		return
+	}
+	if maxWaiters <= 0 {
+		maxWaiters = sdkconfig.StreamingConfig{}.BusyWaiters()
+	}
+	m.maxBusyWaiters.Store(int32(min(maxWaiters, math.MaxInt32)))
 }
 
 // SetAccountConcurrencyConfig updates how requests queue for accounts that are at

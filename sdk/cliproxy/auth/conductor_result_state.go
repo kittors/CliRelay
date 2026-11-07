@@ -29,6 +29,7 @@ func resetModelState(state *ModelState, now time.Time) {
 	state.NextRetryAfter = time.Time{}
 	state.LastError = nil
 	state.Quota = QuotaState{}
+	state.FailureStreak = 0
 	state.UpdatedAt = now
 }
 

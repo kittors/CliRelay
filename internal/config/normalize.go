@@ -3,6 +3,7 @@ package config
 import (
 	"bytes"
 	"encoding/json"
+	"sort"
 	"strings"
 
 	log "github.com/sirupsen/logrus"
@@ -28,29 +29,40 @@ func sanitizePayloadRawRules(rules []PayloadRule, section string) []PayloadRule 
 		if len(rule.Params) == 0 {
 			continue
 		}
-		invalid := false
-		for path, value := range rule.Params {
-			raw, ok := payloadRawString(value)
-			if !ok {
-				continue
-			}
-			trimmed := bytes.TrimSpace(raw)
-			if len(trimmed) == 0 || !json.Valid(trimmed) {
-				log.WithFields(log.Fields{
-					"section":    section,
-					"rule_index": i + 1,
-					"param":      path,
-				}).Warn("payload rule dropped: invalid raw JSON")
-				invalid = true
-				break
-			}
-		}
-		if invalid {
+		if param, invalid := InvalidPayloadRawParam(rule); invalid {
+			log.WithFields(log.Fields{
+				"section":    section,
+				"rule_index": i + 1,
+				"param":      param,
+			}).Warn("payload rule dropped: invalid raw JSON")
 			continue
 		}
 		out = append(out, rule)
 	}
 	return out
+}
+
+// InvalidPayloadRawParam returns the first param, in path order, of a *-raw
+// payload rule whose value is not valid JSON. SanitizePayloadRules drops such a
+// rule whole: its value is written into the request as is, so the rule would
+// break every request it matches.
+func InvalidPayloadRawParam(rule PayloadRule) (string, bool) {
+	paths := make([]string, 0, len(rule.Params))
+	for path := range rule.Params {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	for _, path := range paths {
+		raw, ok := payloadRawString(rule.Params[path])
+		if !ok {
+			continue
+		}
+		trimmed := bytes.TrimSpace(raw)
+		if len(trimmed) == 0 || !json.Valid(trimmed) {
+			return path, true
+		}
+	}
+	return "", false
 }
 
 func payloadRawString(value any) ([]byte, bool) {

@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	translatorcommon "github.com/router-for-me/CLIProxyAPI/v6/internal/translator/common"
 	. "github.com/router-for-me/CLIProxyAPI/v6/internal/translator/gemini/openai/chat-completions"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
@@ -203,11 +204,10 @@ func ConvertCliResponseToOpenAI(_ context.Context, _ string, originalRequestRawJ
 		template, _ = sjson.Set(template, "choices.0.finish_reason", "tool_calls")
 		template, _ = sjson.Set(template, "choices.0.native_finish_reason", "tool_calls")
 	} else if finishReason != "" && (*param).(*convertCliResponseToOpenAIChatParams).FunctionIndex == 0 {
-		// Only pass through specific finish reasons
-		if finishReason == "max_tokens" || finishReason == "stop" {
-			template, _ = sjson.Set(template, "choices.0.finish_reason", finishReason)
-			template, _ = sjson.Set(template, "choices.0.native_finish_reason", finishReason)
-		}
+		// finish_reason uses Chat's names; native_finish_reason keeps the
+		// upstream's own.
+		template, _ = sjson.Set(template, "choices.0.finish_reason", translatorcommon.StopReasonFromGemini(finishReason).OpenAI())
+		template, _ = sjson.Set(template, "choices.0.native_finish_reason", finishReason)
 	}
 
 	return []string{template}

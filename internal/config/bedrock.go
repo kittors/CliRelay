@@ -21,6 +21,12 @@ type BedrockKey struct {
 	// Higher values are preferred; defaults to 0.
 	Priority int `yaml:"priority,omitempty" json:"priority,omitempty"`
 
+	// DisableCooling overrides the global disable-cooling switch for this
+	// channel: true keeps a 429 or 5xx from taking it out of rotation, false
+	// keeps cooldowns on even while the global switch is off, and leaving it
+	// unset follows the global switch.
+	DisableCooling *bool `yaml:"disable-cooling,omitempty" json:"disable-cooling,omitempty"`
+
 	// Prefix optionally namespaces model aliases for this credential.
 	Prefix string `yaml:"prefix,omitempty" json:"prefix,omitempty"`
 

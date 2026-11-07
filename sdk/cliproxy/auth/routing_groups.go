@@ -51,10 +51,11 @@ func (m *Manager) KnownChannelGroupsForTenant(tenantID string) map[string]struct
 			}
 		}
 	}
+	grants := m.sharedGrantIndex()
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	for _, auth := range m.auths {
-		if auth == nil || normalizedTenantID(auth.TenantID) != tenantID {
+		if !authUsableByTenant(auth, tenantID, grants) {
 			continue
 		}
 		for group := range authGroups(cfg, auth) {
@@ -102,10 +103,11 @@ func (m *Manager) CanServeModelWithScopesForTenantOpts(tenantID, modelID string,
 	cfg := m.currentRuntimeConfigForTenant(tenantID)
 	selectionRouteGroup := effectiveRouteGroupForSelection(cfg, routeGroup, allowedGroups, modelID)
 
+	grants := m.sharedGrantIndex()
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	for _, candidate := range m.auths {
-		if candidate == nil || normalizedTenantID(candidate.TenantID) != tenantID || candidate.Disabled || candidate.Status == StatusDisabled {
+		if !authUsableByTenant(candidate, tenantID, grants) || candidate.Disabled || candidate.Status == StatusDisabled {
 			continue
 		}
 		if !authAllowedByChannels(candidate, allowedChannels) {

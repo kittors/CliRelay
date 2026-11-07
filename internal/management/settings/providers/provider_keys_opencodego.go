@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/management/patchfield"
 )
 
 // OpenCode Go provider settings.
@@ -24,6 +25,7 @@ type OpenCodeGoPatch struct {
 	ExcludedModels  *[]string                 `json:"excluded-models"`
 	VisionFallback  *string                   `json:"vision-fallback-model"`
 	CodexToolBridge *bool                     `json:"codex-tool-bridge"`
+	DisableCooling  patchfield.NullableBool   `json:"disable-cooling"`
 }
 
 func (s *Service) OpenCodeGoKeys() []config.OpenCodeGoKey {
@@ -129,6 +131,7 @@ func (s *Service) PatchOpenCodeGoKey(index *int, apiKey *string, name *string, p
 	if patch.CodexToolBridge != nil {
 		entry.CodexToolBridge = *patch.CodexToolBridge
 	}
+	patch.DisableCooling.Apply(&entry.DisableCooling)
 	NormalizeOpenCodeGoKey(&entry)
 	if entry.APIKey == "" {
 		return ErrProviderAPIKeyRequired

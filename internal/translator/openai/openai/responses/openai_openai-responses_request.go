@@ -211,5 +211,5 @@ func ConvertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 		out, _ = sjson.Set(out, "tool_choice", toolChoice.String())
 	}
 
-	return []byte(out)
+	return common.OutputFormatFromResponses(root).WriteChat([]byte(out))
 }

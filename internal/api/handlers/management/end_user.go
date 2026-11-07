@@ -39,6 +39,9 @@ func endUserError(c *gin.Context, err error) {
 	if writePasswordPolicyError(c, err) {
 		return
 	}
+	if writeAccessPolicyError(c, err) {
+		return
+	}
 	switch {
 	case errors.Is(err, enduser.ErrInvalidCredentials):
 		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": gin.H{"code": "invalid_credentials", "message": err.Error()}})
@@ -94,52 +97,13 @@ func (h *Handler) GetEndUsers(c *gin.Context) {
 		endUserError(c, err)
 		return
 	}
-	// Group by tenant and batch-load period/lifetime usage and reset counts.
-	byTenant := map[string][]string{}
-	for i := range items {
-		byTenant[items[i].TenantID] = append(byTenant[items[i].TenantID], items[i].ID)
+	// Effective (profile-applied) limits, per-model rules and current usage, batch
+	// loaded per tenant.
+	if err := decorateEndUsers(items); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
 	}
-	usageByID := map[string]quota.PeriodSpendingUsage{}
-	resetCounts := map[string]int{}
-	profilesByTenant := map[string]map[string]usage.APIKeyPermissionProfileRow{}
-	for tenantID, ids := range byTenant {
-		part, usageErr := usage.QueryPeriodSpendingByEndUsersForTenant(tenantID, ids)
-		if usageErr != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": usageErr.Error()})
-			return
-		}
-		for id, used := range part {
-			usageByID[id] = used
-		}
-		countPart, usageErr := usage.ListEndUserDailySpendingResetEventCounts(tenantID, ids)
-		if usageErr != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": usageErr.Error()})
-			return
-		}
-		for id, count := range countPart {
-			resetCounts[id] = count
-		}
-		profiles := make(map[string]usage.APIKeyPermissionProfileRow)
-		for _, profile := range usage.ListAPIKeyPermissionProfilesForTenant(tenantID) {
-			profiles[profile.ID] = profile
-		}
-		profilesByTenant[tenantID] = profiles
-	}
-	for i := range items {
-		limits := items[i].PeriodSpendingLimits
-		if profile, ok := profilesByTenant[items[i].TenantID][strings.TrimSpace(items[i].PermissionProfileID)]; ok {
-			limits = profile.PeriodSpendingLimits
-			items[i].DailySpendingLimit = profile.DailySpendingLimit
-		}
-		limits.Day = items[i].DailySpendingLimit
-		items[i].PeriodSpendingLimits = limits
-		used := usageByID[items[i].ID]
-		items[i].DailySpendingUsed = used.Day
-		items[i].LifetimeSpendingUsed = used.Lifetime
-		items[i].PeriodSpending = quota.BuildPeriodSpending(limits, used)
-		items[i].DailySpendingResetCount = resetCounts[items[i].ID]
-	}
-	c.JSON(http.StatusOK, gin.H{"items": items})
+	c.JSON(http.StatusOK, gin.H{"items": items, "capabilities": accessPolicyCapabilities()})
 }
 
 func (h *Handler) PostEndUser(c *gin.Context) {
@@ -150,17 +114,23 @@ func (h *Handler) PostEndUser(c *gin.Context) {
 		return
 	}
 	var body struct {
-		Username    string `json:"username"`
-		DisplayName string `json:"display_name"`
-		Password    string `json:"password"`
+		Username            string `json:"username"`
+		DisplayName         string `json:"display_name"`
+		Password            string `json:"password"`
+		PermissionProfileID string `json:"permission-profile-id"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
 		return
 	}
-	result, err := svc.CreateUser(c.Request.Context(), principal, effectiveTenantID(c), body.Username, body.DisplayName, body.Password)
+	result, err := svc.CreateUser(c.Request.Context(), principal, effectiveTenantID(c), body.Username, body.DisplayName, body.Password,
+		enduser.WithPermissionProfile(body.PermissionProfileID))
 	if err != nil {
 		endUserError(c, err)
+		return
+	}
+	if err := decorateEndUser(&result.User); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 	if err := h.refreshAPIKeyCache(); err != nil {
@@ -195,6 +165,9 @@ func (h *Handler) PatchEndUser(c *gin.Context) {
 		AllowedChannels      *[]string                        `json:"allowed-channels"`
 		AllowedChannelGroups *[]string                        `json:"allowed-channel-groups"`
 		SystemPrompt         *string                          `json:"system-prompt"`
+		QuotaLimits          *quota.MatrixPatch               `json:"quota-limits"`
+		ModelRules           *[]quota.ModelRule               `json:"model-rules"`
+		ModelRoutes          *[]quota.ModelRoute              `json:"model-routes"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
@@ -223,12 +196,16 @@ func (h *Handler) PatchEndUser(c *gin.Context) {
 		AllowedChannels:      body.AllowedChannels,
 		AllowedChannelGroups: body.AllowedChannelGroups,
 		SystemPrompt:         body.SystemPrompt,
+		QuotaLimits:          body.QuotaLimits,
+		ModelRules:           body.ModelRules,
+		ModelRoutes:          body.ModelRoutes,
 	}
 	// Only pass quota when at least one field is set (avoid no-op patch noise).
 	hasQuota := body.PermissionProfileID != nil || body.DailyLimit != nil || body.TotalQuota != nil ||
 		body.SpendingLimit != nil || periodPatch != nil || body.ConcurrencyLimit != nil ||
 		body.RPMLimit != nil || body.TPMLimit != nil || body.AllowedModels != nil ||
-		body.AllowedChannels != nil || body.AllowedChannelGroups != nil || body.SystemPrompt != nil
+		body.AllowedChannels != nil || body.AllowedChannelGroups != nil || body.SystemPrompt != nil ||
+		body.QuotaLimits != nil || body.ModelRules != nil || body.ModelRoutes != nil
 	if !hasQuota {
 		quotaPatch = nil
 	}
@@ -247,6 +224,12 @@ func (h *Handler) PatchEndUser(c *gin.Context) {
 			return
 		}
 	}
+	cappedKeys, cappedCells := user.CappedKeys, user.CappedCells
+	if err := decorateEndUser(&user); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	user.CappedKeys, user.CappedCells = cappedKeys, cappedCells
 	c.JSON(http.StatusOK, user)
 }
 
@@ -261,6 +244,8 @@ func (h *Handler) DeleteEndUser(c *gin.Context) {
 		endUserError(c, err)
 		return
 	}
+	h.forgetEndUserWords(c, effectiveTenantID(c), c.Param("id"))
+	h.forgetEndUserPrivacyMasking(c, effectiveTenantID(c), c.Param("id"))
 	if err := h.refreshAPIKeyCache(); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "cache_refresh_failed", "message": err.Error()}})
 		return
@@ -422,7 +407,7 @@ func (h *Handler) GetEndUserAPIKeys(c *gin.Context) {
 		endUserError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"items": items})
+	c.JSON(http.StatusOK, gin.H{"items": items, "capabilities": accessPolicyCapabilities()})
 }
 
 func (h *Handler) PostEndUserAPIKey(c *gin.Context) {
@@ -436,25 +421,15 @@ func (h *Handler) PostEndUserAPIKey(c *gin.Context) {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "end user service unavailable"})
 		return
 	}
-	var body struct {
-		Name                 string                           `json:"name"`
-		DailySpendingLimit   *float64                         `json:"daily-spending-limit"`
-		PeriodSpendingLimits *quota.PeriodSpendingLimitsPatch `json:"period-spending-limits"`
-	}
-	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+	_, patch, ok := bindKeyMutation(c)
+	if !ok {
 		return
 	}
-	periodPatch, err := quota.ResolveLegacyDay(body.DailySpendingLimit, body.PeriodSpendingLimits)
-	if errors.Is(err, quota.ErrPeriodDayLegacyConflict) {
-		endUserError(c, enduser.ErrPeriodDayLegacyConflict)
+	if patch.Disabled != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"code": "validation_failed", "message": "a new key is created enabled"}})
 		return
 	}
-	if err != nil {
-		endUserError(c, fmt.Errorf("%w: %v", enduser.ErrValidation, err))
-		return
-	}
-	result, err := svc.CreateKeyWithPeriodLimits(c.Request.Context(), effectiveTenantID(c), c.Param("id"), body.Name, periodPatch)
+	result, err := svc.CreateKeyWithPatch(c.Request.Context(), effectiveTenantID(c), c.Param("id"), patch)
 	if err != nil {
 		endUserError(c, err)
 		return
@@ -477,32 +452,18 @@ func (h *Handler) PatchEndUserAPIKey(c *gin.Context) {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "end user service unavailable"})
 		return
 	}
-	var body struct {
-		Name                 *string                          `json:"name"`
-		DailySpendingLimit   *float64                         `json:"daily-spending-limit"`
-		PeriodSpendingLimits *quota.PeriodSpendingLimitsPatch `json:"period-spending-limits"`
-	}
-	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+	body, patch, ok := bindKeyMutation(c)
+	if !ok {
 		return
 	}
-	periodPatch, err := quota.ResolveLegacyDay(body.DailySpendingLimit, body.PeriodSpendingLimits)
-	if errors.Is(err, quota.ErrPeriodDayLegacyConflict) {
-		endUserError(c, enduser.ErrPeriodDayLegacyConflict)
-		return
-	}
-	if err != nil {
-		endUserError(c, fmt.Errorf("%w: %v", enduser.ErrValidation, err))
-		return
-	}
-	if body.Name == nil && periodPatch == nil {
+	if body.isEmpty() {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
 		return
 	}
 	tenantID := effectiveTenantID(c)
 	userID := c.Param("id")
 	keyID := c.Param("key_id")
-	if err := svc.UpdateKey(c.Request.Context(), tenantID, userID, keyID, body.Name, periodPatch); err != nil {
+	if err := svc.UpdateKeyWithPatch(c.Request.Context(), tenantID, userID, keyID, patch); err != nil {
 		endUserError(c, err)
 		return
 	}
@@ -601,7 +562,18 @@ func (h *Handler) GetPortalAPIKeys(c *gin.Context) {
 		endUserError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"items": items})
+	c.JSON(http.StatusOK, gin.H{"items": activePortalKeys(items), "capabilities": accessPolicyCapabilities()})
+}
+
+// activePortalKeys 只把启用的 Key 交给门户：暂停由管理员决定，也只能由管理员恢复。
+func activePortalKeys(items []enduser.APIKey) []enduser.APIKey {
+	out := make([]enduser.APIKey, 0, len(items))
+	for _, item := range items {
+		if !item.Disabled {
+			out = append(out, item)
+		}
+	}
+	return out
 }
 
 // GetPortalAPIKeySecret returns the plaintext secret for an owned key (for usage lookup after login).
@@ -625,25 +597,15 @@ func (h *Handler) PostPortalAPIKey(c *gin.Context) {
 	if !ok {
 		return
 	}
-	var body struct {
-		Name                 string                           `json:"name"`
-		DailySpendingLimit   *float64                         `json:"daily-spending-limit"`
-		PeriodSpendingLimits *quota.PeriodSpendingLimitsPatch `json:"period-spending-limits"`
-	}
-	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+	_, patch, ok := bindKeyMutation(c)
+	if !ok {
 		return
 	}
-	periodPatch, err := quota.ResolveLegacyDay(body.DailySpendingLimit, body.PeriodSpendingLimits)
-	if errors.Is(err, quota.ErrPeriodDayLegacyConflict) {
-		endUserError(c, enduser.ErrPeriodDayLegacyConflict)
+	if patch.Disabled != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"code": "validation_failed", "message": "a new key is created enabled"}})
 		return
 	}
-	if err != nil {
-		endUserError(c, fmt.Errorf("%w: %v", enduser.ErrValidation, err))
-		return
-	}
-	result, err := h.endUserService().CreateKeyWithPeriodLimits(c.Request.Context(), user.TenantID, user.ID, body.Name, periodPatch)
+	result, err := h.endUserService().CreateKeyWithPatch(c.Request.Context(), user.TenantID, user.ID, patch)
 	if err != nil {
 		endUserError(c, err)
 		return
@@ -660,28 +622,19 @@ func (h *Handler) PatchPortalAPIKey(c *gin.Context) {
 	if !ok {
 		return
 	}
-	var body struct {
-		Name                 *string                          `json:"name"`
-		DailySpendingLimit   *float64                         `json:"daily-spending-limit"`
-		PeriodSpendingLimits *quota.PeriodSpendingLimitsPatch `json:"period-spending-limits"`
-	}
-	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+	body, patch, ok := bindKeyMutation(c)
+	if !ok {
 		return
 	}
-	periodPatch, err := quota.ResolveLegacyDay(body.DailySpendingLimit, body.PeriodSpendingLimits)
-	if errors.Is(err, quota.ErrPeriodDayLegacyConflict) {
-		endUserError(c, enduser.ErrPeriodDayLegacyConflict)
-		return
-	}
-	if err != nil {
-		endUserError(c, fmt.Errorf("%w: %v", enduser.ErrValidation, err))
+	// 暂停与恢复是管理员的操作；门户用户只能删除自己的 Key。
+	if patch.Disabled != nil {
+		endUserError(c, enduser.ErrPermissionDenied)
 		return
 	}
 	keyID := c.Param("id")
 	svc := h.endUserService()
-	if body.Name != nil || periodPatch != nil {
-		if err := svc.UpdateKey(c.Request.Context(), user.TenantID, user.ID, keyID, body.Name, periodPatch); err != nil {
+	if !body.isEmpty() {
+		if err := svc.UpdateKeyWithPatch(c.Request.Context(), user.TenantID, user.ID, keyID, patch); err != nil {
 			endUserError(c, err)
 			return
 		}

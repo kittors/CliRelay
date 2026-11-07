@@ -18,7 +18,10 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/identity"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/logging"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/loopguard"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/managementasset"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/observability"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v6/sdk/access"
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/api/handlers"
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
@@ -58,6 +61,9 @@ func newServerEngine(cfg *config.Config, optionState *serverOptionConfig) *gin.E
 
 	engine.Use(clusterNodeHeaderMiddleware())
 	engine.Use(logging.GinLogrusLogger())
+	// Outside the recovery middleware, so a recovered panic is counted with
+	// the 500 it was answered with; ahead of admission, so refusals count too.
+	engine.Use(observability.Default().HTTPMiddleware())
 	engine.Use(logging.GinLogrusRecovery())
 	// Admission runs before any body handling: a denied source must not be able
 	// to make the process decompress or buffer what it sent.
@@ -162,8 +168,10 @@ func (s *Server) applyInitialRuntimeConfig(cfg *config.Config, authManager *auth
 	s.oldConfigYaml, _ = yaml.Marshal(cfg)
 	s.applyAccessConfig(nil, cfg)
 	if authManager != nil {
+		usage.InstallSharedAccountMasking(authManager)
 		authManager.SetRetryConfig(cfg.RequestRetry, time.Duration(cfg.MaxRetryInterval)*time.Second)
 		authManager.SetAccountConcurrencyConfig(cfg.AccountConcurrency.WaitTimeout(), cfg.AccountConcurrency.QueueDepth())
+		authManager.SetBusyWaitConfig(cfg.Streaming.BusyWaitMaxWaiters)
 	}
 	// Cluster-wide limits, slots, affinity and cooldowns; a no-op on a single
 	// node. Before the server listens, after StartService prepared the cluster.
@@ -225,18 +233,28 @@ func (s *Server) configureManagementHandler(
 	if optionState != nil && optionState.modelConfigMutatedCallback != nil {
 		s.mgmt.SetModelConfigMutatedHook(optionState.modelConfigMutatedCallback)
 	}
+	s.mgmt.SetRoutingSimulator(s.simulateRouting)
 	// Quota snapshots have to keep advancing for accounts nobody is watching;
 	// see config.AccountStatusRefreshConfig.
 	s.mgmt.StartAccountStatusScheduler()
 	// Stored warmup policies run from startup, not from the first panel visit.
 	s.mgmt.StartWarmupScheduler()
+	// Alert rules are judged for tenants nobody is looking at, and nothing is sent
+	// for a tenant that has not switched alerting on and added a channel.
+	s.mgmt.StartAlertEngine()
 }
 
 func (s *Server) registerBuiltinModules(cfg *config.Config, accessManager *sdkaccess.Manager) {
 	if s == nil || s.engine == nil || cfg == nil {
 		return
 	}
-	s.ampModule = ampmodule.NewLegacy(accessManager, AuthMiddleware(accessManager))
+	// The Amp provider routes call the same handlers as /v1, so they publish the
+	// same loop protection; they skip the request stages, as they always have.
+	s.ampModule = ampmodule.New(
+		ampmodule.WithAccessManager(accessManager),
+		ampmodule.WithAuthMiddleware(AuthMiddleware(accessManager)),
+		ampmodule.WithInferenceMiddleware(loopGuardMiddleware(loopguard.Default())),
+	)
 	ctx := modules.Context{
 		Engine:         s.engine,
 		BaseHandler:    s.handlers,

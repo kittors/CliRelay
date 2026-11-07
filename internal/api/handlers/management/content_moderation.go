@@ -68,7 +68,27 @@ func (h *Handler) GetContentModerationProfiles(c *gin.Context) {
 	for _, profile := range profiles {
 		items = append(items, contentModerationProfileView(profile, counts[profile.ID]))
 	}
-	c.JSON(http.StatusOK, gin.H{"items": items})
+	c.JSON(http.StatusOK, gin.H{"items": items, "capabilities": contentModerationProfileCapabilities()})
+}
+
+// contentModerationProfileCapabilities lists the profile fields this build
+// stores beyond the original set. The panel updates itself from the latest
+// release and may run against an older backend, which silently drops fields it
+// does not know, so it only offers a field listed here.
+func contentModerationProfileCapabilities() gin.H {
+	return gin.H{
+		"keyword_fold_traditional_chinese": true,
+		"api_includes_tool_output":         true,
+		// word_guard: the /content-moderation/word-policies endpoints exist. An
+		// older backend does not list it, and the panel then offers no word rules.
+		"word_guard": true,
+		// secret_masking: GET/PUT /content-moderation/secret-masking exist.
+		"secret_masking": true,
+		// word_portal: portal users may keep sensitive words of their own; the
+		// tenant manages who may under /content-moderation/word-policies/portal
+		// and reads them under /content-moderation/word-policies/end-users/:id.
+		"word_portal": true,
+	}
 }
 
 func (h *Handler) PostContentModerationProfile(c *gin.Context) {

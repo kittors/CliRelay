@@ -218,12 +218,20 @@ func TestGetPublicUsageByAPIKeyAggregatesOwnedCurrentSecrets(t *testing.T) {
 	if err := usage.UpdateAPIKeyByIDForTenant(tenantID, rotated); err != nil {
 		t.Fatalf("UpdateAPIKeyByIDForTenant: %v", err)
 	}
-	// Rotated secret has no in-memory snapshot under the new value; sibling key B stays independent.
+	// The snapshot is keyed by key id, so a rotation does not orphan the key's
+	// history; sibling key B stays independent.
 	afterRotate := getPublicUsageSnapshot(t, h, rotated.Key)
+	if !afterRotate.Found || len(afterRotate.Usage.APIs) != 1 {
+		t.Fatalf("post-rotate response = %#v", afterRotate)
+	}
 	for _, snapshot := range afterRotate.Usage.APIs {
-		if snapshot.TotalRequests != 0 || snapshot.TotalTokens != 0 {
-			t.Fatalf("post-rotate rotated secret = %+v, want empty key-scoped snapshot", snapshot)
+		if snapshot.TotalRequests != 1 || snapshot.TotalTokens != 10 {
+			t.Fatalf("post-rotate rotated secret = %+v, want the key's history requests=1 tokens=10", snapshot)
 		}
+	}
+	// The old secret no longer identifies anything.
+	if stale := getPublicUsageSnapshot(t, h, keyA.Key); stale.Found {
+		t.Fatalf("pre-rotation secret still resolves: %#v", stale)
 	}
 	sibling := getPublicUsageSnapshot(t, h, keyB.Key)
 	for _, snapshot := range sibling.Usage.APIs {
@@ -235,17 +243,27 @@ func TestGetPublicUsageByAPIKeyAggregatesOwnedCurrentSecrets(t *testing.T) {
 
 func TestGetPublicUsageByAPIKeyMasksCredentialEverywhere(t *testing.T) {
 	gin.SetMode(gin.TestMode)
+	setupOwnedPublicUsageDB(t)
 
 	const apiKey = "sk-test-public-usage-secret-123456"
+	keyID := uuid.NewString()
+	if err := usage.UpsertAPIKey(usage.APIKeyRow{ID: keyID, Key: apiKey, Name: "Masked"}); err != nil {
+		t.Fatalf("UpsertAPIKey: %v", err)
+	}
 	stats := usage.NewRequestStatistics()
 	wasEnabled := usage.StatisticsEnabled()
 	usage.SetStatisticsEnabled(true)
 	t.Cleanup(func() { usage.SetStatisticsEnabled(wasEnabled) })
 	stats.Record(context.Background(), coreusage.Record{
-		APIKey: apiKey,
-		Model:  "gpt-4o-mini",
-		Detail: coreusage.Detail{InputTokens: 10, OutputTokens: 20, TotalTokens: 30},
+		APIKey:   apiKey,
+		APIKeyID: keyID,
+		Model:    "gpt-4o-mini",
+		Detail:   coreusage.Detail{InputTokens: 10, OutputTokens: 20, TotalTokens: 30},
 	})
+	// The statistics never hold the secret, whoever asks for them.
+	if snapshot := stats.Snapshot(); len(snapshot.APIs) != 1 || snapshot.APIs[keyID].TotalRequests != 1 {
+		t.Fatalf("snapshot.APIs = %#v, want one bucket named after the key id", snapshot.APIs)
+	}
 
 	rec := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(rec)

@@ -41,7 +41,7 @@ func (s *LeastLoadSelector) Pick(ctx context.Context, provider, model string, op
 	var best *Auth
 	bestScore := 0.0
 	for _, candidate := range available {
-		score := s.score(candidate, now)
+		score := s.score(candidate, model, now)
 		// available is already sorted by ID, so a strict comparison keeps the
 		// selection deterministic when several accounts are equally idle.
 		if best == nil || score < bestScore {
@@ -56,7 +56,7 @@ func (s *LeastLoadSelector) Pick(ctx context.Context, provider, model string, op
 	return best, nil
 }
 
-func (s *LeastLoadSelector) score(candidate *Auth, now time.Time) float64 {
+func (s *LeastLoadSelector) score(candidate *Auth, model string, now time.Time) float64 {
 	weight := authSelectionWeight(candidate)
 	if weight <= 0 {
 		// getAvailableAuths already filtered these out; guard against a caller
@@ -68,5 +68,5 @@ func (s *LeastLoadSelector) score(candidate *Auth, now time.Time) float64 {
 		load += float64(s.deps.limiter.GetInFlight(candidate.ID))
 	}
 	score := load / float64(weight)
-	return score * (1 + quotaLoadPenalty*s.deps.loadRatio(candidate))
+	return score * (1 + quotaLoadPenalty*s.deps.loadRatio(candidate, model))
 }

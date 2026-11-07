@@ -9,6 +9,7 @@ func registerManagementSettingsRoutes(group *gin.RouterGroup, h *managementhandl
 	group.GET("/config", h.GetConfig)
 	group.GET("/config.yaml", h.GetConfigYAML)
 	group.PUT("/config.yaml", h.PutConfigYAML)
+	group.POST("/payload-rules/dry-run", h.PostPayloadRulesDryRun)
 	group.GET("/latest-version", h.GetLatestVersion)
 	group.GET("/update/check", h.CheckUpdate)
 	group.GET("/update/current", h.GetCurrentUpdateState)
@@ -47,6 +48,16 @@ func registerManagementSettingsRoutes(group *gin.RouterGroup, h *managementhandl
 	group.PATCH("/request-log-storage/store-content", h.PutRequestLogBodyStorage)
 	group.GET("/request-log-storage/status", h.GetRequestLogStorageStatus)
 
+	group.GET("/observability/metrics", h.GetObservabilityMetrics)
+	group.PUT("/observability/metrics", h.PutObservabilityMetrics)
+	group.POST("/observability/metrics/token", h.PostObservabilityMetricsToken)
+
+	// Loop protection of the tenant, and the override of one of its API keys.
+	group.GET("/loop-guard", h.GetLoopGuard)
+	group.PUT("/loop-guard", h.PutLoopGuard)
+	group.GET("/loop-guard/keys/:id", h.GetLoopGuardKey)
+	group.PUT("/loop-guard/keys/:id", h.PutLoopGuardKey)
+
 	group.GET("/proxy-url", h.GetProxyURL)
 	group.PUT("/proxy-url", h.PutProxyURL)
 	group.PATCH("/proxy-url", h.PutProxyURL)
@@ -55,6 +66,9 @@ func registerManagementSettingsRoutes(group *gin.RouterGroup, h *managementhandl
 	group.PUT("/proxy-pool", h.PutProxyPool)
 	group.PATCH("/proxy-pool/:id", h.PatchProxyPoolEntry)
 	group.POST("/proxy-pool/check", h.PostProxyPoolCheck)
+	// Platform sharing of the system tenant's proxies (platform admins only).
+	group.PUT("/proxy-pool/:id/sharing", h.PutProxyPoolSharing)
+	group.POST("/proxy-pool/:id/adopt", h.PostProxyPoolAdopt)
 
 	group.POST("/api-call", h.APITools().APICall)
 
@@ -67,6 +81,12 @@ func registerManagementSettingsRoutes(group *gin.RouterGroup, h *managementhandl
 	group.PATCH("/quota-exceeded/switch-preview-model", h.PutSwitchPreviewModel)
 	group.POST("/quota/reconcile", h.PostQuotaReconcile)
 	group.POST("/quota/clear-status", h.PostQuotaClearStatus)
+
+	// Alerting: rules, delivery channels, a test send and the recent history.
+	group.GET("/alerts/settings", h.GetAlertSettings)
+	group.PUT("/alerts/settings", h.PutAlertSettings)
+	group.POST("/alerts/test", h.PostAlertTest)
+	group.GET("/alerts/events", h.GetAlertEvents)
 }
 
 func registerManagementRuntimeTuningRoutes(group *gin.RouterGroup, h *managementhandlers.Handler) {

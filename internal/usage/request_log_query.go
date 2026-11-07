@@ -52,7 +52,7 @@ func QueryLogs(params LogQueryParams) (LogQueryResult, error) {
 	offset := (params.Page - 1) * params.Size
 	querySQL := "SELECT id, timestamp, api_key, api_key_id, api_key_name, model, thinking_level, upstream_model, upstream_response_model, vision_fallback_model, source, channel_name, auth_index, auth_subject_id, " +
 		"failed, streaming, latency_ms, first_token_ms, input_tokens, output_tokens, reasoning_tokens, cached_tokens, total_tokens, " +
-		"cost, " +
+		"cost, cache_read_tokens, cache_write_tokens, prompt_tokens, session_id, guard_kind, " +
 		"(CASE WHEN EXISTS (SELECT 1 FROM request_log_content content WHERE content.tenant_id = request_logs.tenant_id AND content.log_id = request_logs.id) " +
 		"OR length(input_content) > 0 OR length(output_content) > 0 THEN 1 ELSE 0 END) as has_content " +
 		"FROM request_logs" + where +
@@ -71,11 +71,13 @@ func QueryLogs(params LogQueryParams) (LogQueryResult, error) {
 		var row LogRow
 		var ts storedTime
 		var failedInt, streamingInt, hasContentInt int
+		var cacheRead, cacheWrite, promptTokens sql.NullInt64
 		if err := rows.Scan(
 			&row.ID, &ts, &row.APIKey, &row.APIKeyID, &row.APIKeyName, &row.Model, &row.ThinkingLevel, &row.UpstreamModel, &row.UpstreamResponseModel, &row.VisionFallbackModel, &row.Source, &row.ChannelName,
 			&row.AuthIndex, &row.AuthSubjectID, &failedInt, &streamingInt, &row.LatencyMs, &row.FirstTokenMs,
 			&row.InputTokens, &row.OutputTokens, &row.ReasoningTokens,
-			&row.CachedTokens, &row.TotalTokens, &row.Cost, &hasContentInt,
+			&row.CachedTokens, &row.TotalTokens, &row.Cost,
+			&cacheRead, &cacheWrite, &promptTokens, &row.SessionID, &row.GuardKind, &hasContentInt,
 		); err != nil {
 			log.Warnf("usage: scan log row failed: %v", err)
 			return LogQueryResult{}, fmt.Errorf("usage: scan row: %w", err)
@@ -86,6 +88,9 @@ func QueryLogs(params LogQueryParams) (LogQueryResult, error) {
 		row.Failed = failedInt != 0
 		row.Streaming = streamingInt != 0
 		row.HasContent = hasContentInt != 0
+		row.CacheReadTokens = nullableInt64(cacheRead)
+		row.CacheWriteTokens = nullableInt64(cacheWrite)
+		row.PromptTokens = nullableInt64(promptTokens)
 		// Derived on read so every row is judged by the current alias rule rather
 		// than by whatever it was when the row was written.
 		row.UpstreamModelMismatch = UpstreamModelMismatch(row.Model, row.UpstreamModel, row.UpstreamResponseModel)
@@ -100,44 +105,6 @@ func QueryLogs(params LogQueryParams) (LogQueryResult, error) {
 		Page:  params.Page,
 		Size:  params.Size,
 	}, nil
-}
-
-// hydrateAPIKeyDisplayNames keeps account and credential identity separate.
-func hydrateAPIKeyDisplayNames(tenantID string, items []LogRow) {
-	if len(items) == 0 {
-		return
-	}
-	byID := currentAPIKeyRowsByIDForTenant(tenantID)
-	byKey := currentAPIKeyRowsByKeyForTenant(tenantID)
-	for i := range items {
-		var row *APIKeyRow
-		if r, ok := byID[strings.TrimSpace(items[i].APIKeyID)]; ok {
-			copy := r
-			row = &copy
-		} else if r, ok := byKey[strings.TrimSpace(items[i].APIKey)]; ok {
-			copy := r
-			row = &copy
-		} else {
-			// Fall back: resolve via secret lookup when tenant maps miss.
-			if live := GetAPIKey(items[i].APIKey); live != nil {
-				row = live
-			}
-		}
-		if row != nil {
-			items[i].APIKeyID = strings.TrimSpace(row.ID)
-			items[i].APIKeyOwnName = strings.TrimSpace(row.Name)
-			items[i].EndUserDisplayName = DisplayNameForEndUser(row.EndUserID)
-			if items[i].EndUserDisplayName != "" {
-				items[i].APIKeyName = items[i].EndUserDisplayName
-			} else if items[i].APIKeyOwnName != "" {
-				items[i].APIKeyName = items[i].APIKeyOwnName
-			}
-		} else {
-			// Legacy rows have only one snapshot label. Preserve it as the key name;
-			// no account identity is inferred without a trusted ownership row.
-			items[i].APIKeyOwnName = strings.TrimSpace(items[i].APIKeyName)
-		}
-	}
 }
 
 func hydrateStreamingFromContent(db *sql.DB, tenantID string, items []LogRow) {
@@ -221,9 +188,6 @@ func QueryFiltersForLogs(params LogQueryParams) (FilterOptions, error) {
 	if db == nil {
 		// Ensure stable JSON shape: slices => [] (not null), maps => {} (not null).
 		return FilterOptions{
-			APIKeys:        make([]string, 0),
-			APIKeyNames:    make(map[string]string),
-			APIKeyCounts:   make(map[string]int64),
 			APIKeyIDs:      make([]string, 0),
 			APIKeyIDNames:  make(map[string]string),
 			APIKeyIDCounts: make(map[string]int64),
@@ -231,15 +195,11 @@ func QueryFiltersForLogs(params LogQueryParams) (FilterOptions, error) {
 			Channels:       make([]string, 0),
 			ChannelOptions: make([]ChannelFilterOption, 0),
 			Statuses:       make([]string, 0),
+			GuardKinds:     make([]string, 0),
 		}, nil
 	}
 
 	params = normalizeLogQueryParams(params)
-	keys, keyNames, keyCounts, err := queryDistinctAPIKeys(db, params.withoutFacet("api_key"))
-	if err != nil {
-		log.Warnf("usage: query distinct api keys failed: %v", err)
-		return FilterOptions{}, err
-	}
 	keyIDs, keyIDNames, keyIDCounts, err := queryDistinctAPIKeyIDs(db, params.withoutFacet("api_key_id"))
 	if err != nil {
 		log.Warnf("usage: query distinct api key ids failed: %v", err)
@@ -258,6 +218,10 @@ func QueryFiltersForLogs(params LogQueryParams) (FilterOptions, error) {
 	statuses, err := queryDistinctStatuses(db, params.withoutFacet("status"))
 	if err != nil {
 		log.Warnf("usage: query distinct statuses failed: %v", err)
+		return FilterOptions{}, err
+	}
+	guardKinds, err := queryDistinct(db, "guard_kind", params.withoutFacet("guard_kind"))
+	if err != nil {
 		return FilterOptions{}, err
 	}
 
@@ -280,9 +244,6 @@ func QueryFiltersForLogs(params LogQueryParams) (FilterOptions, error) {
 	}
 
 	return FilterOptions{
-		APIKeys:        keys,
-		APIKeyNames:    keyNames,
-		APIKeyCounts:   keyCounts,
 		APIKeyIDs:      keyIDs,
 		APIKeyIDNames:  keyIDNames,
 		APIKeyIDCounts: keyIDCounts,
@@ -290,6 +251,7 @@ func QueryFiltersForLogs(params LogQueryParams) (FilterOptions, error) {
 		Channels:       channelNames,
 		ChannelOptions: channelRows,
 		Statuses:       statuses,
+		GuardKinds:     guardKinds,
 	}, nil
 }
 
@@ -297,11 +259,9 @@ func (params LogQueryParams) withoutFacet(facet string) LogQueryParams {
 	params.Page = 0
 	params.Size = 0
 	switch facet {
-	case "api_key":
-		params.APIKey = ""
-		params.APIKeys = nil
-		params.MatchNoAPIKeys = false
 	case "api_key_id":
+		// APIKey/APIKeys stay: for a public lookup they are the scope of the
+		// subject's own key, not a selection the user can widen.
 		params.APIKeyIDs = nil
 		params.MatchNoAPIKeyIDs = false
 	case "model":
@@ -318,139 +278,10 @@ func (params LogQueryParams) withoutFacet(facet string) LogQueryParams {
 		params.Status = ""
 		params.Statuses = nil
 		params.MatchNoStatuses = false
+	case "guard_kind":
+		params.GuardKinds = nil
 	}
 	return params
-}
-
-// QueryStats returns aggregated statistics for the same filters as QueryLogs.
-// It prefers usage rollups, falling back to request_logs only when the rollup
-// dimensions cannot express the requested filter without changing its meaning.
-func QueryStats(params LogQueryParams) (LogStats, error) {
-	if getReadDB() == nil {
-		return LogStats{CacheRate: 0}, nil
-	}
-	params = normalizeLogQueryParams(params)
-	// Explicit empty multi-selects match no rows.
-	if params.MatchNoAPIKeys || params.MatchNoAPIKeyIDs || params.MatchNoModels || params.MatchNoStatuses || params.MatchNoChannels {
-		return LogStats{CacheRate: 0}, nil
-	}
-
-	filter, ok := rollupIdentityFilter(params)
-	if !ok {
-		// Preserve fail-closed identity behavior before considering a detail fallback.
-		return LogStats{CacheRate: 0}, nil
-	}
-
-	var (
-		stats LogStats
-		err   error
-	)
-	if queryStatsRequiresDetailAggregation(params) {
-		stats, err = queryStatsFromDetails(params)
-	} else {
-		stats, err = queryStatsFromRollupFilter(params, filter)
-	}
-	if err != nil {
-		log.Warnf("usage: stats query failed: %v", err)
-		return LogStats{}, err
-	}
-	return stats, nil
-}
-
-func queryStatsRequiresDetailAggregation(params LogQueryParams) bool {
-	// auth_index is not a rollup dimension, and precise legacy channel pairs
-	// cannot be represented by the rollup dimensions.
-	if len(params.AuthIndexes) > 0 || len(params.AuthIndexChannelNames) > 0 {
-		return true
-	}
-
-	// QueryLogs combines channel selector kinds with OR, while rollup dimensions
-	// are conjunctive. A mixed selector therefore needs the shared detail WHERE.
-	channelSelectorKinds := 0
-	if len(dedupeExactStrings(params.AuthSubjectIDs)) > 0 {
-		channelSelectorKinds++
-	}
-	if len(dedupeLowerTrimmedStrings(params.ChannelNames)) > 0 {
-		channelSelectorKinds++
-	}
-	if channelSelectorKinds > 1 {
-		return true
-	}
-
-	// Rollup buckets keep status counts, but token/cost/cache totals are not split
-	// by status. Use details for an exact single-status aggregate.
-	hasSuccess, hasFailed := requestedStatusFilter(params.Statuses)
-	return hasSuccess != hasFailed
-}
-
-func queryStatsFromDetails(params LogQueryParams) (LogStats, error) {
-	db := getReadDB()
-	if db == nil {
-		return LogStats{CacheRate: 0}, nil
-	}
-	where, args := buildWhereClause(params)
-
-	var agg rollupAgg
-	query := `
-		SELECT
-			COUNT(*),
-			COALESCE(SUM(CASE WHEN failed = 0 THEN 1 ELSE 0 END), 0),
-			COALESCE(SUM(total_tokens), 0),
-			COALESCE(SUM(cost), 0),
-			COALESCE(SUM(cached_tokens), 0),
-			COALESCE(SUM(` + cacheRateEffectiveInputSQL + `), 0)
-		FROM request_logs` + where
-	if err := db.QueryRow(query, args...).Scan(
-		&agg.RequestCount,
-		&agg.SuccessCount,
-		&agg.TotalTokens,
-		&agg.CostTotal,
-		&agg.CachedTokens,
-		&agg.EffectiveInputTokens,
-	); err != nil {
-		return LogStats{}, fmt.Errorf("usage: detail stats aggregate: %w", err)
-	}
-	return agg.toLogStats(), nil
-}
-
-// DeleteLogsByAPIKey removes all request_logs and request_log_content entries
-// for the given API key. Returns the number of deleted log rows.
-func DeleteLogsByAPIKey(apiKey string) (int64, error) {
-	return DeleteLogsByAPIKeyForTenant(systemTenantID, apiKey)
-}
-
-func DeleteLogsByAPIKeyForTenant(tenantID, apiKey string) (int64, error) {
-	db := getDB()
-	if db == nil {
-		return 0, fmt.Errorf("usage: database not initialised")
-	}
-	if apiKey == "" {
-		return 0, fmt.Errorf("usage: empty api_key")
-	}
-
-	// Delete associated content rows first (FK cascade may handle this,
-	// but be explicit to ensure cleanup even without FK enforcement).
-	tenantID = normalizeTenantID(tenantID)
-	clause, args := buildSingleAPIKeySelectorClauseForTenant(tenantID, apiKey)
-	predicate := strings.TrimPrefix(clause, " WHERE ")
-	args = append([]interface{}{tenantID}, args...)
-	clause = " WHERE tenant_id = ? AND " + predicate
-	_, _ = db.Exec(
-		`DELETE FROM request_log_content WHERE tenant_id = ? AND log_id IN
-		 (SELECT id FROM request_logs`+clause+`)`, append([]interface{}{tenantID}, args...)...)
-
-	result, err := db.Exec("DELETE FROM request_logs"+clause, args...)
-	if err != nil {
-		return 0, fmt.Errorf("usage: delete logs by api_key: %w", err)
-	}
-	deleted, err := result.RowsAffected()
-	if err != nil {
-		return 0, fmt.Errorf("usage: affected rows: %w", err)
-	}
-	if deleted > 0 {
-		log.Infof("usage: deleted %d request log(s) for api_key=%s", deleted, apiKey)
-	}
-	return deleted, nil
 }
 
 func rowsAffected(result sql.Result) (int64, error) {
@@ -707,75 +538,9 @@ func buildWhereClause(params LogQueryParams) (string, []interface{}) {
 		args = append(args, selectorArgs...)
 	}
 
-	// Stable key-id multi-value filter (public key facet; does not expand account pools).
-	if len(params.APIKeyIDs) > 0 {
-		idConds := make([]string, 0, len(params.APIKeyIDs))
-		for _, id := range params.APIKeyIDs {
-			id = strings.TrimSpace(id)
-			if id == "" {
-				continue
-			}
-			row := GetAPIKeyByIDForTenant(params.TenantID, id)
-			if row == nil {
-				row = GetAPIKeyByID(id)
-			}
-			if row != nil {
-				secret := strings.TrimSpace(row.Key)
-				if secret != "" {
-					idConds = append(idConds, "(api_key_id = ? OR (trim(coalesce(api_key_id, '')) = '' AND api_key = ?))")
-					args = append(args, id, secret)
-					continue
-				}
-			}
-			idConds = append(idConds, "api_key_id = ?")
-			args = append(args, id)
-		}
-		if len(idConds) == 1 {
-			conditions = append(conditions, idConds[0])
-		} else if len(idConds) > 1 {
-			conditions = append(conditions, "("+strings.Join(idConds, " OR ")+")")
-		}
-	}
-
-	// API Key multi-value filter
-	if len(params.APIKeys) > 0 {
-		apiKeyConds := make([]string, 0, len(params.APIKeys))
-		systemConds := make([]string, 0)
-		normalKeys := make([]string, 0, len(params.APIKeys))
-		for _, key := range params.APIKeys {
-			if key == systemRequestLogFilterValue {
-				systemConds = append(systemConds, `(
-					trim(coalesce(api_key_name, '')) = ''
-					AND (
-						trim(coalesce(api_key, '')) = ''
-						OR trim(coalesce(api_key, '')) LIKE '/%'
-						OR upper(trim(coalesce(api_key, ''))) LIKE 'GET /%'
-						OR upper(trim(coalesce(api_key, ''))) LIKE 'POST /%'
-						OR upper(trim(coalesce(api_key, ''))) LIKE 'PUT /%'
-						OR upper(trim(coalesce(api_key, ''))) LIKE 'PATCH /%'
-						OR upper(trim(coalesce(api_key, ''))) LIKE 'DELETE /%'
-						OR upper(trim(coalesce(api_key, ''))) LIKE 'OPTIONS /%'
-						OR upper(trim(coalesce(api_key, ''))) LIKE 'HEAD /%'
-					)
-				)`)
-			} else {
-				normalKeys = append(normalKeys, key)
-			}
-		}
-		if len(normalKeys) > 0 {
-			for _, k := range normalKeys {
-				clause, clauseArgs := buildSingleAPIKeySelectorClauseForTenant(params.TenantID, k)
-				apiKeyConds = append(apiKeyConds, strings.TrimPrefix(clause, " WHERE "))
-				args = append(args, clauseArgs...)
-			}
-		}
-		apiKeyConds = append(apiKeyConds, systemConds...)
-		if len(apiKeyConds) == 1 {
-			conditions = append(conditions, apiKeyConds[0])
-		} else if len(apiKeyConds) > 1 {
-			conditions = append(conditions, "("+strings.Join(apiKeyConds, " OR ")+")")
-		}
-	}
+	keyConds, keyArgs := apiKeyFilterConditions(params)
+	conditions = append(conditions, keyConds...)
+	args = append(args, keyArgs...)
 
 	// Model multi-value filter
 	if len(params.Models) > 0 {
@@ -796,6 +561,10 @@ func buildWhereClause(params LogQueryParams) (string, []interface{}) {
 			conditions = append(conditions, "failed = 1")
 		}
 		// Both success and failed: no status filter needed (equivalent to "all")
+	}
+	if condition, guardArgs := guardKindCondition(params.GuardKinds); condition != "" {
+		conditions = append(conditions, condition)
+		args = append(args, guardArgs...)
 	}
 	if len(params.AuthSubjectIDs) > 0 || len(params.AuthIndexes) > 0 || len(params.ChannelNames) > 0 {
 		filterConditions := make([]string, 0, 3)
@@ -1012,44 +781,4 @@ func queryDistinctStatuses(db *sql.DB, params LogQueryParams) ([]string, error) 
 		}
 	}
 	return result, rows.Err()
-}
-
-func trimNullString(value sql.NullString) string {
-	if !value.Valid {
-		return ""
-	}
-	return strings.TrimSpace(value.String)
-}
-
-// QueryModelsForKey returns the distinct models used by a specific API key within the time range.
-func QueryModelsForKey(apiKey string, days int) ([]string, error) {
-	db := getReadDB()
-	if db == nil {
-		return make([]string, 0), nil
-	}
-	if days < 1 {
-		days = 7
-	}
-	params := LogQueryParams{TenantID: ResolveAPIKeyTenant(apiKey), APIKey: apiKey, Days: days}
-	where, args := buildWhereClause(params)
-	rows, err := db.Query(
-		"SELECT DISTINCT model FROM request_logs"+where+" AND model != '' ORDER BY model",
-		args...,
-	)
-	if err != nil {
-		log.Warnf("usage: distinct models for key query failed: %v", err)
-		return nil, fmt.Errorf("usage: distinct models for key: %w", err)
-	}
-	defer rows.Close()
-
-	result := make([]string, 0)
-	for rows.Next() {
-		var v string
-		if err := rows.Scan(&v); err != nil {
-			log.Warnf("usage: distinct models for key scan failed: %v", err)
-			return nil, err
-		}
-		result = append(result, v)
-	}
-	return result, nil
 }

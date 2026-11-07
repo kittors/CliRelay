@@ -196,22 +196,41 @@ func QuotaMiddleware() gin.HandlerFunc {
 
 		// Diagnostics, and cached limits for the dashboard snapshot
 		policy.record(c)
+		// 模型策略中间件在读到模型后检查按模型规则，复用这里读到的用量快照。
+		if policy.usage != nil {
+			c.Set(policyUsageContextKey, policy.usage)
+		}
 
 		// No limits configured — skip all checks
 		if !policy.hasLimits() {
+			// Per-model rules are checked by the model policy middleware once
+			// the model is known; the reservation lets it count this key's
+			// other requests in flight.
+			if policy.hasModelRules() {
+				policy.requestID = ensureRequestLoggingRequestID(c)
+				defer policy.reserve().Finish()
+				c.Set(quotaReservationContextKey, policy.inflight)
+			}
 			c.Next()
 			return
 		}
 
+		policy.requestID = ensureRequestLoggingRequestID(c)
 		release, verdict := policy.admit()
 		if verdict != nil {
 			verdict.abort(c)
 			return
 		}
 		defer release()
+		// The model policy middleware records the routed model on it, so rules
+		// that cap one model count only that model's requests in flight.
+		c.Set(quotaReservationContextKey, policy.inflight)
 		c.Next()
 	}
 }
+
+// quotaReservationContextKey holds the request's *inflight.Reservation.
+const quotaReservationContextKey = "cliproxy.quotaReservation"
 
 // quotaCredentials returns the authenticated API key and the access metadata
 // holding its limits.

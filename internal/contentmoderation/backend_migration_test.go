@@ -77,6 +77,9 @@ func TestInitTablesMigratesLegacyProfilesToOpenAIBackend(t *testing.T) {
 	if len(profile.Scanners) != 0 {
 		t.Fatalf("scanners = %v, want empty", profile.Scanners)
 	}
+	if profile.APIIncludesToolOutput || profile.KeywordFoldTraditionalChinese {
+		t.Fatalf("text coverage options = %v/%v, want both off", profile.APIIncludesToolOutput, profile.KeywordFoldTraditionalChinese)
+	}
 	if len(profile.ElevatedCategories) != len(DefaultElevatedCategories()) {
 		t.Fatalf("elevated categories = %v", profile.ElevatedCategories)
 	}
@@ -94,7 +97,7 @@ func TestInitTablesMigratesLegacyProfilesToOpenAIBackend(t *testing.T) {
 	}))
 	defer server.Close()
 	profile.BaseURL = server.URL
-	decision := NewEvaluator(server.Client()).Evaluate(context.Background(), profile, "input")
+	decision := NewEvaluator(server.Client()).Evaluate(context.Background(), profile, TextInput("input"))
 	if path != "/v1/moderations" {
 		t.Fatalf("legacy profile called %q", path)
 	}
