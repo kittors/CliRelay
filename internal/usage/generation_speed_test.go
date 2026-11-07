@@ -5,6 +5,7 @@ import (
 	"math"
 	"path/filepath"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
@@ -258,7 +259,18 @@ func TestQueryMonitorOverviewReportsGenerationSpeed(t *testing.T) {
 
 // A SQLite database from before the generation columns gains them on start;
 // the buckets it already had hold no sample and report no speed.
+//
+// InitDB prunes rollup buckets past retention by time.Now(), while the legacy
+// bucket and the queries are pinned to monitorTestNow. Run in a synctest bubble
+// whose clock reads monitorTestNow: with the real clock the 2026-10-07 bucket
+// fell out of the 30-day hour retention on 2026-11-06 and the test failed from
+// then on.
 func TestUsageRollupGenerationColumnsMigrateLegacySQLite(t *testing.T) {
+	synctest.Test(t, testUsageRollupGenerationColumnsMigrateLegacySQLite)
+}
+
+func testUsageRollupGenerationColumnsMigrateLegacySQLite(t *testing.T) {
+	time.Sleep(time.Until(monitorTestNow))
 	dbPath := filepath.Join(t.TempDir(), "legacy-rollup.db")
 	legacy, err := sql.Open("sqlite", dbPath)
 	if err != nil {
