@@ -149,6 +149,9 @@ func TestFirstTokenTimeoutMovesAStalledStreamToAnotherAccount(t *testing.T) {
 		if waited := time.Since(start); waited != 5*time.Second {
 			t.Fatalf("switched after %s, want exactly the 5s timeout", waited)
 		}
+		// Failover can finish before the abandoned executor records cancellation.
+		// Let that goroutine finish before checking how its context ended.
+		synctest.Wait()
 		ids, ctxErrs := executor.attempts()
 		if len(ids) != 2 || !distinct(ids) {
 			t.Fatalf("attempts = %v, want two different accounts", ids)
