@@ -125,7 +125,14 @@ func applyOllamaPromptCacheEstimate(ctx context.Context, detail coreusage.Detail
 	if detail.CachedTokens > 0 || detail.CacheReadTokens > 0 || detail.CacheWriteTokens > 0 {
 		return detail
 	}
-	cached := ollamaPromptCacheEstimatorFromContext(ctx).estimate(detail.InputTokens)
+	estimator := ollamaPromptCacheEstimatorFromContext(ctx)
+	if estimator == nil {
+		return detail
+	}
+	// The estimate stands in for the counters Ollama never sends, so a turn
+	// with no reusable prefix is a known miss rather than an unknown.
+	detail.CacheReported = true
+	cached := estimator.estimate(detail.InputTokens)
 	if cached <= 0 {
 		return detail
 	}

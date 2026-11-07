@@ -113,6 +113,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 	body = execCtx.ApplyPayloadConfig(body, originalTranslated)
 	body, _ = sjson.SetBytes(body, "model", execCtx.BaseModel)
 	body = sanitizeCodexResponsesRequest(body)
+	body = prepareCodexResponsesBody(body, req.Payload, execCtx.SourceFormat, isCodexChatGPTBackendBaseURL(auth, baseURL))
 	body, _ = sjson.SetBytes(body, "stream", true)
 	body, _ = sjson.DeleteBytes(body, "previous_response_id")
 	body, _ = sjson.DeleteBytes(body, "prompt_cache_retention")
@@ -131,6 +132,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 
 	body, wsHeaders := applyCodexPromptCacheHeaders(auth, execCtx.SourceFormat, req, body, execCtx.Options)
 	wsHeaders = applyCodexWebsocketHeaders(execCtx.Context, wsHeaders, e.cfg, auth, apiKey)
+	applyCodexServiceTierRoutingHint(wsHeaders, body, auth)
 	recorder := execCtx.Recorder()
 
 	var authID string
@@ -159,6 +161,8 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 	if respHS != nil {
 		recorder.RecordResponseMetadata(respHS.StatusCode, respHS.Header.Clone())
 	}
+	chatGPTBackend := isCodexChatGPTBackendBaseURL(auth, baseURL)
+	observeCodexWebsocketHandshake(execCtx.Context, chatGPTBackend, respHS)
 	if errDial != nil {
 		bodyErr := websocketHandshakeBody(respHS)
 		if len(bodyErr) > 0 {
@@ -257,6 +261,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 			continue
 		}
 		recorder.AppendResponseChunk(payload)
+		observeCodexWebsocketMessage(execCtx.Context, chatGPTBackend, payload)
 
 		if wsErr, ok := parseCodexWebsocketError(payload); ok {
 			if sess != nil {
@@ -268,7 +273,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 
 		payload = normalizeCodexWebsocketCompletion(payload)
 		eventType := gjson.GetBytes(payload, "type").String()
-		if eventType == "response.completed" {
+		if codexResponseFinished(eventType) {
 			if detail, ok := parseCodexUsage(payload); ok {
 				reporter.publish(execCtx.Context, detail)
 			}
@@ -317,6 +322,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 	}
 
 	body = execCtx.ApplyPayloadConfig(body, body)
+	body = prepareCodexResponsesBody(body, req.Payload, execCtx.SourceFormat, isCodexChatGPTBackendBaseURL(auth, baseURL))
 	body = maybeEnsureCodexImageGenerationTool(body, auth, execCtx.BaseModel, codexAdmissionHeadersFromContext(execCtx.Context))
 	body = applyCodexServiceTierPolicy(body, execCtx.Request.Payload, auth)
 
@@ -328,6 +334,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 
 	body, wsHeaders := applyCodexPromptCacheHeaders(auth, execCtx.SourceFormat, req, body, execCtx.Options)
 	wsHeaders = applyCodexWebsocketHeaders(execCtx.Context, wsHeaders, e.cfg, auth, apiKey)
+	applyCodexServiceTierRoutingHint(wsHeaders, body, auth)
 	recorder := execCtx.Recorder()
 
 	var authID string
@@ -357,6 +364,8 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 		upstreamHeaders = respHS.Header.Clone()
 		recorder.RecordResponseMetadata(respHS.StatusCode, respHS.Header.Clone())
 	}
+	chatGPTBackend := isCodexChatGPTBackendBaseURL(auth, baseURL)
+	observeCodexWebsocketHandshake(execCtx.Context, chatGPTBackend, respHS)
 	if errDial != nil {
 		bodyErr := websocketHandshakeBody(respHS)
 		if len(bodyErr) > 0 {
@@ -502,6 +511,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 				continue
 			}
 			recorder.AppendResponseChunk(payload)
+			observeCodexWebsocketMessage(execCtx.Context, chatGPTBackend, payload)
 
 			if wsErr, ok := parseCodexWebsocketError(payload); ok {
 				terminateReason = "upstream_error"
@@ -522,7 +532,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 			}
 			for _, eventPayload := range normalizedEvents {
 				eventType := gjson.GetBytes(eventPayload, "type").String()
-				if eventType == "response.completed" || eventType == "response.done" {
+				if codexResponseFinished(eventType) || eventType == "response.done" {
 					if detail, ok := parseCodexUsage(eventPayload); ok {
 						reporter.publish(execCtx.Context, detail)
 					}
@@ -537,7 +547,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 						return
 					}
 				}
-				if eventType == "response.completed" || eventType == "response.done" {
+				if codexResponseFinished(eventType) || eventType == "response.done" {
 					return
 				}
 			}

@@ -38,7 +38,7 @@ func (h *Handler) GetConfig(c *gin.Context) {
 	}
 	tenantID := effectiveTenantID(c)
 	if tenantID == identity.SystemTenantID {
-		c.JSON(200, withSettingVersions(sanitizeConfigForAPI(h.cfg), h.cfg.RuntimeSettingState().Versions()))
+		c.JSON(200, newConfigResponse(sanitizeConfigForAPI(h.cfg), h.cfg.RuntimeSettingState().Versions()))
 		return
 	}
 	runtimeCfg := usage.BuildTenantRuntimeConfig(h.cfg, tenantID)
@@ -70,7 +70,7 @@ func (h *Handler) GetConfig(c *gin.Context) {
 	if principal, ok := principalFromContext(c); ok && principal.PlatformAdmin {
 		copyProcessGlobalRuntimeToggles(h.cfg, tenantView)
 	}
-	c.JSON(200, withSettingVersions(sanitizeConfigForAPI(tenantView), runtimeCfg.RuntimeSettingState().Versions()))
+	c.JSON(200, newConfigResponse(sanitizeConfigForAPI(tenantView), runtimeCfg.RuntimeSettingState().Versions()))
 }
 
 // copyProcessGlobalRuntimeToggles copies host-wide runtime switches that the

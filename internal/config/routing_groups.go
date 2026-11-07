@@ -26,11 +26,11 @@ type ChannelGroupMatch struct {
 //
 //	both empty        → every model the group's channels serve, including ones
 //	                    the upstream adds later
-//	AllowedModels set → a frozen allow list on every group except default.
-//	                    The default group is the root pool: a model live
+//	AllowedModels set → an allow list. It is frozen unless the group follows
+//	                    upstream (FollowUpstreamModels): then a model live
 //	                    discovery has listed for the tenant is served too,
-//	                    unless it is excluded, so the plaza does not wait for
-//	                    someone to check the new id. Other groups stay frozen.
+//	                    unless it is excluded, so a new id does not wait for
+//	                    someone to add it by hand.
 //	ExcludedModels set→ every model except these, so new upstream models stay
 //	                    usable without touching the config
 //	both set          → the allow list minus the exclusions
@@ -43,17 +43,35 @@ type ChannelGroupMatch struct {
 // Which form a group uses is the operator's choice in the panel; the panel
 // never converts an allow list on its own, since that widens what the group
 // serves.
+//
+// FollowUpstreamModels is a pointer because "never set" has its own meaning:
+// the default group follows and every other group stays frozen, which is how
+// groups behaved before the setting existed (sdkrouting.FollowsUpstreamModels).
+// SanitizeRouting drops a value equal to that, so the stored form is unique.
 type RoutingChannelGroup struct {
-	Name               string            `yaml:"name" json:"name"`
-	Description        string            `yaml:"description,omitempty" json:"description,omitempty"`
-	Strategy           string            `yaml:"strategy,omitempty" json:"strategy,omitempty"`
-	Scheduling         GroupScheduling   `yaml:"scheduling,omitempty" json:"scheduling,omitempty"`
-	Match              ChannelGroupMatch `yaml:"match,omitempty" json:"match,omitempty"`
-	ExcludeFromDefault bool              `yaml:"exclude-from-default,omitempty" json:"exclude-from-default,omitempty"`
-	Priority           int               `yaml:"priority,omitempty" json:"priority,omitempty"`
-	ChannelPriorities  map[string]int    `yaml:"channel-priorities,omitempty" json:"channel-priorities,omitempty"`
-	AllowedModels      []string          `yaml:"allowed-models,omitempty" json:"allowed-models,omitempty"`
-	ExcludedModels     []string          `yaml:"excluded-models,omitempty" json:"excluded-models,omitempty"`
+	Name                 string            `yaml:"name" json:"name"`
+	Description          string            `yaml:"description,omitempty" json:"description,omitempty"`
+	Strategy             string            `yaml:"strategy,omitempty" json:"strategy,omitempty"`
+	Scheduling           GroupScheduling   `yaml:"scheduling,omitempty" json:"scheduling,omitempty"`
+	Match                ChannelGroupMatch `yaml:"match,omitempty" json:"match,omitempty"`
+	ExcludeFromDefault   bool              `yaml:"exclude-from-default,omitempty" json:"exclude-from-default,omitempty"`
+	Priority             int               `yaml:"priority,omitempty" json:"priority,omitempty"`
+	ChannelPriorities    map[string]int    `yaml:"channel-priorities,omitempty" json:"channel-priorities,omitempty"`
+	AllowedModels        []string          `yaml:"allowed-models,omitempty" json:"allowed-models,omitempty"`
+	ExcludedModels       []string          `yaml:"excluded-models,omitempty" json:"excluded-models,omitempty"`
+	FollowUpstreamModels *bool             `yaml:"follow-upstream-models,omitempty" json:"follow-upstream-models,omitempty"`
+	// FirstTokenTimeoutSeconds and BusyWaitMaxSeconds are the group's stream
+	// guards (routing_stream_guards.go); both are off unless set. BusyWaitMaxSeconds
+	// is a pointer so an explicit 0 is stored apart from "never set": they behave
+	// alike today, but what the operator typed is kept as typed.
+	FirstTokenTimeoutSeconds int  `yaml:"first-token-timeout-seconds,omitempty" json:"first-token-timeout-seconds,omitempty"`
+	BusyWaitMaxSeconds       *int `yaml:"busy-wait-max-seconds,omitempty" json:"busy-wait-max-seconds,omitempty"`
+}
+
+// FollowsUpstreamModels reports whether the group's allow list also admits
+// models discovery lists after it was saved.
+func (g RoutingChannelGroup) FollowsUpstreamModels() bool {
+	return internalrouting.FollowsUpstreamModels(g.Name, g.FollowUpstreamModels)
 }
 
 // RoutingPathRoute maps a URL namespace path to a channel group.
@@ -180,12 +198,23 @@ func (cfg *Config) SanitizeRouting() {
 		group.Match.Tags = normalizeStringList(group.Match.Tags, NormalizeRoutingTag)
 		group.ChannelPriorities = normalizeChannelPriorities(group.ChannelPriorities)
 		sanitizeScheduling(&group)
+		sanitizeStreamGuards(&group)
 		group.AllowedModels = normalizeStringList(group.AllowedModels, func(value string) string {
 			return strings.TrimSpace(value)
 		})
 		group.ExcludedModels = normalizeStringList(group.ExcludedModels, func(value string) string {
 			return strings.TrimSpace(value)
 		})
+		// Keep only a setting that departs from what the group does unset, so a
+		// panel that writes every switch explicitly and one that writes none store
+		// the same config (SameRoutingConfig compares the encoding).
+		if group.FollowUpstreamModels != nil {
+			follows := *group.FollowUpstreamModels
+			group.FollowUpstreamModels = nil
+			if follows != group.FollowsUpstreamModels() {
+				group.FollowUpstreamModels = &follows
+			}
+		}
 		if group.Name == "" {
 			continue
 		}
@@ -214,6 +243,7 @@ func (cfg *Config) SanitizeRouting() {
 		pathRoutes = append(pathRoutes, route)
 	}
 	cfg.Routing.PathRoutes = pathRoutes
+	sanitizeVirtualModels(&cfg.Routing)
 }
 
 // SanitizeAPIKeyEntries normalizes API key channel-group restrictions.

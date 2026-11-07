@@ -20,7 +20,7 @@ import (
 
 // commandcode-api-key: []CommandCodeKey
 func (h *ProviderKeysHandler) GetCommandCodeKeys(c *gin.Context) {
-	h.jsonWithRequestVersion(c, settingsstore.RuntimeSettingCommandCodeKeys, gin.H{"commandcode-api-key": providerSettingsService(h, c).CommandCodeKeys()})
+	h.jsonWithRequestVersion(c, settingsstore.RuntimeSettingCommandCodeKeys, providerListBody("commandcode-api-key", providerSettingsService(h, c).CommandCodeKeys()))
 }
 
 func (h *ProviderKeysHandler) PutCommandCodeKeys(c *gin.Context) {

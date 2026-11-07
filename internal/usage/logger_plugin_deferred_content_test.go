@@ -17,6 +17,8 @@ func TestLoggerPluginPersistsDeferredContentFiles(t *testing.T) {
 		CleanupIntervalMinutes: 1440,
 	})
 
+	registerTestAPIKey(t, "deferred-key-id", "sk-deferred", "Deferred")
+
 	var deferredPaths []string
 	writeTemp := func(pattern, content string) string {
 		t.Helper()
@@ -55,7 +57,7 @@ func TestLoggerPluginPersistsDeferredContentFiles(t *testing.T) {
 		}
 	}
 
-	logs, err := QueryLogs(LogQueryParams{Page: 1, Size: 10, Days: 1, APIKeys: []string{"sk-deferred"}})
+	logs, err := QueryLogs(LogQueryParams{Page: 1, Size: 10, Days: 1, APIKeyIDs: []string{"deferred-key-id"}})
 	if err != nil {
 		t.Fatalf("QueryLogs: %v", err)
 	}

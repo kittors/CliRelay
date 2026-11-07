@@ -390,3 +390,5 @@ Please target pull requests at `dev`, not `main`; `main` is updated by releases.
 CliRelay is released under the [MIT License](LICENSE).
 
 It stands on the core proxy logic of **[router-for-me/CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI)**. Our thanks to the original project and all its contributors — their foundation made it possible to build the management layer, request logging, quota control and the control panel on top.
+
+Privacy masking (`internal/privacymask`) is ported from **[yetone/magpie](https://github.com/yetone/magpie)**: its rules for finding keys, tokens, passwords and personal data, its placeholders and the way it puts values back in replies. Thank you to magpie's author and contributors; the ported files keep magpie's MIT copyright notice ([internal/privacymask/MAGPIE_LICENSE](internal/privacymask/MAGPIE_LICENSE)).

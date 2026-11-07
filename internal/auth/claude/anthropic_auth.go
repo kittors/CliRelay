@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/auth/refreshguard"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	log "github.com/sirupsen/logrus"
@@ -259,11 +260,24 @@ func normalizeRedirectURI(redirectURI string) string {
 // Returns:
 //   - *ClaudeTokenData: The new token data with updated access token
 //   - error: An error if token refresh fails
+//
+// Anthropic refresh tokens are single-use, so the exchange runs through
+// refreshguard: it finishes even if ctx ends, and concurrent refreshes of one
+// token share a single request.
 func (o *ClaudeAuth) RefreshTokens(ctx context.Context, refreshToken string) (*ClaudeTokenData, error) {
 	if refreshToken == "" {
 		return nil, fmt.Errorf("refresh token is required")
 	}
+	return refreshguard.Exchange(ctx, refreshGuardProvider, refreshToken, func(ctx context.Context) (*ClaudeTokenData, error) {
+		return o.refreshOnce(ctx, refreshToken)
+	})
+}
 
+// refreshGuardProvider scopes Claude exchanges in refreshguard; RefreshTokens and
+// RefreshTokensWithRetry share it, so either one joins the other's exchange.
+const refreshGuardProvider = "claude"
+
+func (o *ClaudeAuth) refreshOnce(ctx context.Context, refreshToken string) (*ClaudeTokenData, error) {
 	reqBody := map[string]interface{}{
 		"client_id":     ClientID,
 		"grant_type":    "refresh_token",
@@ -352,6 +366,15 @@ func (o *ClaudeAuth) CreateTokenStorage(bundle *ClaudeAuthBundle) *ClaudeTokenSt
 //   - *ClaudeTokenData: The refreshed token data
 //   - error: An error if all retry attempts fail
 func (o *ClaudeAuth) RefreshTokensWithRetry(ctx context.Context, refreshToken string, maxRetries int) (*ClaudeTokenData, error) {
+	if refreshToken == "" {
+		return nil, fmt.Errorf("refresh token is required")
+	}
+	return refreshguard.Exchange(ctx, refreshGuardProvider, refreshToken, func(ctx context.Context) (*ClaudeTokenData, error) {
+		return o.refreshWithRetry(ctx, refreshToken, maxRetries)
+	})
+}
+
+func (o *ClaudeAuth) refreshWithRetry(ctx context.Context, refreshToken string, maxRetries int) (*ClaudeTokenData, error) {
 	var lastErr error
 
 	for attempt := 0; attempt < maxRetries; attempt++ {
@@ -364,7 +387,7 @@ func (o *ClaudeAuth) RefreshTokensWithRetry(ctx context.Context, refreshToken st
 			}
 		}
 
-		tokenData, err := o.RefreshTokens(ctx, refreshToken)
+		tokenData, err := o.refreshOnce(ctx, refreshToken)
 		if err == nil {
 			return tokenData, nil
 		}

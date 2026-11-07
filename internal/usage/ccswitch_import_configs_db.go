@@ -33,6 +33,7 @@ type CcSwitchImportConfigRow struct {
 	EndpointPath              string                     `json:"endpoint-path"`
 	UsageAutoInterval         int                        `json:"usage-auto-interval"`
 	APIKeyField               string                     `json:"api-key-field,omitempty"`
+	CodexContextWindow        int                        `json:"codex-context-window"` // see normalizeCcSwitchImportConfigRow
 	CodexModelCatalogFilename string                     `json:"codex-model-catalog-filename,omitempty"`
 	CodexModelCatalog         *CcSwitchCodexModelCatalog `json:"codex-model-catalog,omitempty"`
 	CreatedAt                 string                     `json:"created-at,omitempty"`
@@ -53,6 +54,7 @@ CREATE TABLE IF NOT EXISTS ccswitch_import_configs (
   endpoint_path          TEXT NOT NULL DEFAULT '',
   usage_auto_interval    INTEGER NOT NULL DEFAULT 30,
   api_key_field          TEXT NOT NULL DEFAULT '',
+  codex_context_window   INTEGER NOT NULL DEFAULT 0,
   created_at             TEXT NOT NULL DEFAULT '',
   updated_at             TEXT NOT NULL DEFAULT '',
   PRIMARY KEY (tenant_id, id)
@@ -74,6 +76,11 @@ func initCcSwitchImportConfigsTable(db *sql.DB) {
 		}
 	}
 	migrateCcSwitchImportConfigsTenantSchema(db)
+	if _, err := db.Exec(`ALTER TABLE ccswitch_import_configs ADD COLUMN codex_context_window INTEGER NOT NULL DEFAULT 0`); err != nil {
+		if !strings.Contains(strings.ToLower(err.Error()), "duplicate") {
+			log.Errorf("usage: migrate ccswitch_import_configs.codex_context_window: %v", err)
+		}
+	}
 	if _, err := db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_ccswitch_import_configs_tenant_route_path
 		ON ccswitch_import_configs(tenant_id, route_path) WHERE route_path <> ''`); err != nil {
 		log.Errorf("usage: create tenant ccswitch_import_configs.route_path index: %v", err)
@@ -129,7 +136,7 @@ func ListCcSwitchImportConfigsForTenant(tenantID string) []CcSwitchImportConfigR
 	}
 
 	rows, err := db.Query(`SELECT id, client_type, provider_name, note, default_model, model_mappings,
-		allowed_channel_groups, route_path, endpoint_path, usage_auto_interval, api_key_field, created_at, updated_at
+		allowed_channel_groups, route_path, endpoint_path, usage_auto_interval, api_key_field, codex_context_window, created_at, updated_at
 		FROM ccswitch_import_configs WHERE tenant_id = ? ORDER BY created_at ASC, id ASC`, tenantID)
 	if err != nil {
 		log.Errorf("usage: list ccswitch_import_configs: %v", err)
@@ -163,7 +170,7 @@ func FindCcSwitchImportConfigByRoutePathForTenant(tenantID, routePath string) (C
 	}
 
 	row := db.QueryRow(`SELECT id, client_type, provider_name, note, default_model, model_mappings,
-		allowed_channel_groups, route_path, endpoint_path, usage_auto_interval, api_key_field, created_at, updated_at
+		allowed_channel_groups, route_path, endpoint_path, usage_auto_interval, api_key_field, codex_context_window, created_at, updated_at
 		FROM ccswitch_import_configs WHERE tenant_id = ? AND route_path = ? LIMIT 1`, tenantID, normalizedRoutePath)
 	result := scanCcSwitchImportConfigFromRow(row)
 	if result == nil {
@@ -208,8 +215,8 @@ func ReplaceAllCcSwitchImportConfigsForTenantExpect(ctx context.Context, tenantI
 
 	stmt, err := tx.Prepare(`INSERT INTO ccswitch_import_configs
 		(tenant_id, id, client_type, provider_name, note, default_model, model_mappings, allowed_channel_groups,
-		 route_path, endpoint_path, usage_auto_interval, api_key_field, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+		 route_path, endpoint_path, usage_auto_interval, api_key_field, codex_context_window, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		_ = tx.Rollback()
 		return 0, err
@@ -267,6 +274,7 @@ func ReplaceAllCcSwitchImportConfigsForTenantExpect(ctx context.Context, tenantI
 			row.EndpointPath,
 			row.UsageAutoInterval,
 			row.APIKeyField,
+			row.CodexContextWindow,
 			row.CreatedAt,
 			row.UpdatedAt,
 		); err != nil {
@@ -298,6 +306,18 @@ func normalizeCcSwitchImportConfigRow(row CcSwitchImportConfigRow) CcSwitchImpor
 		row.APIKeyField = normalizeCcSwitchAPIKeyField(row.APIKeyField)
 	} else {
 		row.APIKeyField = ""
+	}
+	// CodexContextWindow is the context window a Codex preset sets for its
+	// default model (model_context_window in the imported config.toml); 0
+	// leaves it to Codex. It is kept apart from the per-mapping context
+	// windows, which earlier panels filled with a 128000 placeholder for every
+	// model and CC Switch never applied: reading those as intent would cap
+	// Codex at 128k on every re-import. The field is always serialised, so the
+	// panel can tell a backend that stores it from one that would drop it.
+	if row.ClientType == "codex" {
+		row.CodexContextWindow = normalizeCcSwitchContextWindowForModels(row.CodexContextWindow, row.DefaultModel)
+	} else {
+		row.CodexContextWindow = 0
 	}
 	return row
 }
@@ -446,6 +466,7 @@ func scanCcSwitchImportConfigFromRow(row scannable) *CcSwitchImportConfigRow {
 		&result.EndpointPath,
 		&result.UsageAutoInterval,
 		&result.APIKeyField,
+		&result.CodexContextWindow,
 		&result.CreatedAt,
 		&result.UpdatedAt,
 	); err != nil {

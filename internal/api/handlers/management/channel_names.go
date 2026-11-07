@@ -356,7 +356,8 @@ func (h *Handler) sanitizeAllowedChannelsForTenant(tenantID string, values []str
 		}
 	}
 	if h != nil && h.authManager != nil {
-		auths = h.authManager.ListForTenant(tenantID)
+		// Shared platform credentials are channels this tenant can be limited to.
+		auths = h.authManager.ListUsableForTenant(tenantID)
 	}
 	known, err := collectKnownChannels(cfg, auths, "")
 	if err != nil {
@@ -423,7 +424,9 @@ func (h *Handler) validateAuthChannelNameForTenant(tenantID, name, excludeAuthID
 	}
 	var auths []*coreauth.Auth
 	if h != nil && h.authManager != nil {
-		auths = h.authManager.ListForTenant(tenantID)
+		// A name taken by a shared platform credential is taken in this
+		// tenant's routing too.
+		auths = h.authManager.ListUsableForTenant(tenantID)
 	}
 	cfg := h.cfg
 	if tenantID != identity.SystemTenantID {

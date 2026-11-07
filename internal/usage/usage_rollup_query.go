@@ -7,18 +7,18 @@ import (
 )
 
 type rollupAgg struct {
-	RequestCount         int64
-	SuccessCount         int64
-	FailureCount         int64
-	InputTokens          int64
-	OutputTokens         int64
-	ReasoningTokens      int64
-	CachedTokens         int64
-	EffectiveInputTokens int64
-	TotalTokens          int64
-	CostTotal            float64
-	LatencySumMs         int64
-	LatencyCount         int64
+	RequestCount    int64
+	SuccessCount    int64
+	FailureCount    int64
+	InputTokens     int64
+	OutputTokens    int64
+	ReasoningTokens int64
+	CachedTokens    int64
+	TotalTokens     int64
+	CostTotal       float64
+	LatencySumMs    int64
+	LatencyCount    int64
+	Cache           cacheTotals
 }
 
 func (a rollupAgg) toLogStats() LogStats {
@@ -26,13 +26,15 @@ func (a rollupAgg) toLogStats() LogStats {
 	if a.RequestCount > 0 {
 		successRate = float64(a.SuccessCount) / float64(a.RequestCount) * 100
 	}
-	return LogStats{
+	stats := LogStats{
 		Total:       a.RequestCount,
 		SuccessRate: successRate,
 		TotalTokens: a.TotalTokens,
-		CacheRate:   cacheRateFromTokenTotals(a.EffectiveInputTokens, a.CachedTokens),
 		TotalCost:   a.CostTotal,
+		CacheUsage:  a.Cache.usage(),
 	}
+	stats.CacheRate = stats.legacyCacheRate()
+	return stats
 }
 
 func (a rollupAgg) toDashboardKPI() DashboardKPI {
@@ -46,11 +48,12 @@ func (a rollupAgg) toDashboardKPI() DashboardKPI {
 		CachedTokens:    a.CachedTokens,
 		TotalTokens:     a.TotalTokens,
 		TotalCost:       a.CostTotal,
+		CacheUsage:      a.Cache.usage(),
 	}
 	if a.RequestCount > 0 {
 		kpi.SuccessRate = float64(a.SuccessCount) / float64(a.RequestCount) * 100
 	}
-	kpi.CacheRate = cacheRateFromTokenTotals(a.EffectiveInputTokens, a.CachedTokens)
+	kpi.CacheRate = kpi.legacyCacheRate()
 	return kpi
 }
 
@@ -89,11 +92,10 @@ func queryRollupAgg(filter rollupFilter) (rollupAgg, error) {
 			COALESCE(SUM(output_tokens), 0),
 			COALESCE(SUM(reasoning_tokens), 0),
 			COALESCE(SUM(cached_tokens), 0),
-			COALESCE(SUM(effective_input_tokens), 0),
 			COALESCE(SUM(total_tokens), 0),
 			COALESCE(SUM(cost_total), 0),
 			COALESCE(SUM(latency_sum_ms), 0),
-			COALESCE(SUM(latency_count), 0)
+			COALESCE(SUM(latency_count), 0),` + rollupCacheSumsSQL + `
 		FROM usage_rollup_buckets
 		WHERE tenant_id = ? AND bucket_kind = ?
 	`)
@@ -149,7 +151,7 @@ func queryRollupAgg(filter rollupFilter) (rollupAgg, error) {
 	}
 
 	var out rollupAgg
-	err := db.QueryRow(b.String(), args...).Scan(
+	err := db.QueryRow(b.String(), args...).Scan(append([]any{
 		&out.RequestCount,
 		&out.SuccessCount,
 		&out.FailureCount,
@@ -157,12 +159,11 @@ func queryRollupAgg(filter rollupFilter) (rollupAgg, error) {
 		&out.OutputTokens,
 		&out.ReasoningTokens,
 		&out.CachedTokens,
-		&out.EffectiveInputTokens,
 		&out.TotalTokens,
 		&out.CostTotal,
 		&out.LatencySumMs,
 		&out.LatencyCount,
-	)
+	}, out.Cache.scanTargets()...)...)
 	if err != nil {
 		return rollupAgg{}, fmt.Errorf("usage: rollup aggregate: %w", err)
 	}
@@ -395,9 +396,9 @@ type rollupDayPoint struct {
 	TotalTokens    int64
 	Cost           float64
 	CachedTokens   int64
-	EffectiveInput int64
 	SuccessCount   int64
 	Model          string
+	Cache          cacheTotals
 }
 
 func queryRollupDailySeries(filter rollupFilter) ([]rollupDayPoint, error) {
@@ -420,8 +421,7 @@ func queryRollupDailySeries(filter rollupFilter) ([]rollupDayPoint, error) {
 			COALESCE(SUM(output_tokens), 0),
 			COALESCE(SUM(total_tokens), 0),
 			COALESCE(SUM(cost_total), 0),
-			COALESCE(SUM(cached_tokens), 0),
-			COALESCE(SUM(effective_input_tokens), 0)
+			COALESCE(SUM(cached_tokens), 0),` + rollupCacheSumsSQL + `
 		FROM usage_rollup_buckets
 		WHERE tenant_id = ? AND bucket_kind = ?
 	`)
@@ -450,11 +450,11 @@ func queryRollupDailySeries(filter rollupFilter) ([]rollupDayPoint, error) {
 	out := make([]rollupDayPoint, 0)
 	for rows.Next() {
 		var p rollupDayPoint
-		if err := rows.Scan(
+		if err := rows.Scan(append([]any{
 			&p.Date, &p.Requests, &p.FailedRequests, &p.SuccessCount,
 			&p.InputTokens, &p.OutputTokens, &p.TotalTokens, &p.Cost,
-			&p.CachedTokens, &p.EffectiveInput,
-		); err != nil {
+			&p.CachedTokens,
+		}, p.Cache.scanTargets()...)...); err != nil {
 			return nil, err
 		}
 		out = append(out, p)

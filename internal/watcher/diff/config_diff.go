@@ -27,6 +27,24 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 	if strings.TrimSpace(oldCfg.CodexImageBaseModel) != strings.TrimSpace(newCfg.CodexImageBaseModel) {
 		changes = append(changes, fmt.Sprintf("codex-image-base-model: %s -> %s", strings.TrimSpace(oldCfg.CodexImageBaseModel), strings.TrimSpace(newCfg.CodexImageBaseModel)))
 	}
+	if oldCfg.CodexRequestZstdEnabled() != newCfg.CodexRequestZstdEnabled() {
+		changes = append(changes, fmt.Sprintf("codex-request-zstd: %t -> %t", oldCfg.CodexRequestZstdEnabled(), newCfg.CodexRequestZstdEnabled()))
+	}
+	if oldCfg.ResponsesWebsocketEnabled() != newCfg.ResponsesWebsocketEnabled() {
+		changes = append(changes, fmt.Sprintf("responses-websocket.disabled: %t -> %t", !oldCfg.ResponsesWebsocketEnabled(), !newCfg.ResponsesWebsocketEnabled()))
+	}
+	if oldCfg.ResponsesWebsocketCompressionEnabled() != newCfg.ResponsesWebsocketCompressionEnabled() {
+		changes = append(changes, fmt.Sprintf("responses-websocket.compression: %t -> %t", oldCfg.ResponsesWebsocketCompressionEnabled(), newCfg.ResponsesWebsocketCompressionEnabled()))
+	}
+	if oldCfg.ResponsesWebsocketMaxMessageBytes() != newCfg.ResponsesWebsocketMaxMessageBytes() {
+		changes = append(changes, fmt.Sprintf("responses-websocket.max-message-mb: %d -> %d", oldCfg.ResponsesWebsocketMaxMessageBytes()>>20, newCfg.ResponsesWebsocketMaxMessageBytes()>>20))
+	}
+	if oldCfg.ResponsesWebsocketMaxTranscriptBytes() != newCfg.ResponsesWebsocketMaxTranscriptBytes() {
+		changes = append(changes, fmt.Sprintf("responses-websocket.max-transcript-mb: %d -> %d", oldCfg.ResponsesWebsocketMaxTranscriptBytes()>>20, newCfg.ResponsesWebsocketMaxTranscriptBytes()>>20))
+	}
+	if oldCfg.ResponsesWebsocketIdleTimeout() != newCfg.ResponsesWebsocketIdleTimeout() {
+		changes = append(changes, fmt.Sprintf("responses-websocket.idle-timeout: %s -> %s", oldCfg.ResponsesWebsocketIdleTimeout(), newCfg.ResponsesWebsocketIdleTimeout()))
+	}
 	if oldCfg.Debug != newCfg.Debug {
 		changes = append(changes, fmt.Sprintf("debug: %t -> %t", oldCfg.Debug, newCfg.Debug))
 	}
@@ -75,6 +93,12 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 	if oldCfg.NonStreamKeepAliveInterval != newCfg.NonStreamKeepAliveInterval {
 		changes = append(changes, fmt.Sprintf("nonstream-keepalive-interval: %d -> %d", oldCfg.NonStreamKeepAliveInterval, newCfg.NonStreamKeepAliveInterval))
 	}
+	if formatOptionalInt(oldCfg.Streaming.BootstrapRetries) != formatOptionalInt(newCfg.Streaming.BootstrapRetries) {
+		changes = append(changes, fmt.Sprintf("streaming.bootstrap-retries: %s -> %s", formatOptionalInt(oldCfg.Streaming.BootstrapRetries), formatOptionalInt(newCfg.Streaming.BootstrapRetries)))
+	}
+	if formatPositiveOrDefault(oldCfg.Streaming.BusyWaitMaxWaiters) != formatPositiveOrDefault(newCfg.Streaming.BusyWaitMaxWaiters) {
+		changes = append(changes, fmt.Sprintf("streaming.busy-wait-max-waiters: %s -> %s", formatPositiveOrDefault(oldCfg.Streaming.BusyWaitMaxWaiters), formatPositiveOrDefault(newCfg.Streaming.BusyWaitMaxWaiters)))
+	}
 
 	// Quota-exceeded behavior
 	if oldCfg.QuotaExceeded.SwitchProject != newCfg.QuotaExceeded.SwitchProject {
@@ -90,6 +114,7 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 	if oldCfg.Routing.Strategy != newCfg.Routing.Strategy {
 		changes = append(changes, fmt.Sprintf("routing.strategy: %s -> %s", oldCfg.Routing.Strategy, newCfg.Routing.Strategy))
 	}
+	changes = append(changes, channelGroupStreamGuardChanges(oldCfg.Routing.ChannelGroups, newCfg.Routing.ChannelGroups)...)
 
 	// API keys (redacted) and counts
 	if len(oldCfg.APIKeys) != len(newCfg.APIKeys) {
@@ -117,6 +142,9 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 			}
 			if !equalStringMap(o.Headers, n.Headers) {
 				changes = append(changes, fmt.Sprintf("gemini[%d].headers: updated", i))
+			}
+			if formatCoolingOverride(o.DisableCooling) != formatCoolingOverride(n.DisableCooling) {
+				changes = append(changes, fmt.Sprintf("gemini[%d].disable-cooling: %s -> %s", i, formatCoolingOverride(o.DisableCooling), formatCoolingOverride(n.DisableCooling)))
 			}
 			oldModels := SummarizeGeminiModels(o.Models)
 			newModels := SummarizeGeminiModels(n.Models)
@@ -152,6 +180,9 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 			}
 			if !equalStringMap(o.Headers, n.Headers) {
 				changes = append(changes, fmt.Sprintf("claude[%d].headers: updated", i))
+			}
+			if formatCoolingOverride(o.DisableCooling) != formatCoolingOverride(n.DisableCooling) {
+				changes = append(changes, fmt.Sprintf("claude[%d].disable-cooling: %s -> %s", i, formatCoolingOverride(o.DisableCooling), formatCoolingOverride(n.DisableCooling)))
 			}
 			oldModels := SummarizeClaudeModels(o.Models)
 			newModels := SummarizeClaudeModels(n.Models)
@@ -204,6 +235,9 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 			}
 			if !equalStringMap(o.Headers, n.Headers) {
 				changes = append(changes, fmt.Sprintf("codex[%d].headers: updated", i))
+			}
+			if formatCoolingOverride(o.DisableCooling) != formatCoolingOverride(n.DisableCooling) {
+				changes = append(changes, fmt.Sprintf("codex[%d].disable-cooling: %s -> %s", i, formatCoolingOverride(o.DisableCooling), formatCoolingOverride(n.DisableCooling)))
 			}
 			oldModels := SummarizeCodexModels(o.Models)
 			newModels := SummarizeCodexModels(n.Models)
@@ -316,6 +350,9 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 			if !equalStringMap(o.Headers, n.Headers) {
 				changes = append(changes, fmt.Sprintf("vertex[%d].headers: updated", i))
 			}
+			if formatCoolingOverride(o.DisableCooling) != formatCoolingOverride(n.DisableCooling) {
+				changes = append(changes, fmt.Sprintf("vertex[%d].disable-cooling: %s -> %s", i, formatCoolingOverride(o.DisableCooling), formatCoolingOverride(n.DisableCooling)))
+			}
 		}
 	}
 
@@ -340,6 +377,55 @@ func equalStringMap(a, b map[string]string) bool {
 		}
 	}
 	return true
+}
+
+// channelGroupStreamGuardChanges reports changes to a group's first-token
+// timeout and busy-wait cap. A group that is new compares against an unset one.
+func channelGroupStreamGuardChanges(oldGroups, newGroups []config.RoutingChannelGroup) []string {
+	previous := make(map[string]config.RoutingChannelGroup, len(oldGroups))
+	for _, group := range oldGroups {
+		previous[strings.ToLower(strings.TrimSpace(group.Name))] = group
+	}
+	var changes []string
+	for _, group := range newGroups {
+		name := strings.ToLower(strings.TrimSpace(group.Name))
+		before := previous[name]
+		if before.FirstTokenTimeoutSeconds != group.FirstTokenTimeoutSeconds {
+			changes = append(changes, fmt.Sprintf("routing.channel-groups[%s].first-token-timeout-seconds: %d -> %d", name, before.FirstTokenTimeoutSeconds, group.FirstTokenTimeoutSeconds))
+		}
+		if formatOptionalInt(before.BusyWaitMaxSeconds) != formatOptionalInt(group.BusyWaitMaxSeconds) {
+			changes = append(changes, fmt.Sprintf("routing.channel-groups[%s].busy-wait-max-seconds: %s -> %s", name, formatOptionalInt(before.BusyWaitMaxSeconds), formatOptionalInt(group.BusyWaitMaxSeconds)))
+		}
+	}
+	return changes
+}
+
+// formatOptionalInt renders a setting where unset differs from 0: unset takes
+// the built-in default, while 0 is an explicit value (often "off").
+func formatOptionalInt(value *int) string {
+	if value == nil {
+		return "default"
+	}
+	return fmt.Sprintf("%d", *value)
+}
+
+// formatPositiveOrDefault renders a count where 0, unset and negative all mean
+// "take the built-in default", so those never show up as a change among
+// themselves.
+func formatPositiveOrDefault(value int) string {
+	if value <= 0 {
+		return "default"
+	}
+	return fmt.Sprintf("%d", value)
+}
+
+// formatCoolingOverride renders a channel's disable-cooling override; unset
+// means the channel follows the global switch.
+func formatCoolingOverride(override *bool) string {
+	if override == nil {
+		return "inherit"
+	}
+	return fmt.Sprintf("%t", *override)
 }
 
 func formatProxyURL(raw string) string {

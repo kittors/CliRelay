@@ -36,7 +36,12 @@ func (h *Handler) ListAuthFiles(c *gin.Context) {
 		},
 	})
 	h.enrichAuthFileIdentityFingerprintSummaries(files, auths)
-	c.JSON(200, gin.H{"files": files})
+	// capabilities lists what this backend can do, so a panel newer than it does
+	// not offer one that would fail: the fields PATCH /auth-files/fields stores,
+	// and the per-model "retry now" action (POST /auth-files/model-cooldown/clear).
+	body := gin.H{"files": files, "capabilities": gin.H{"disable-cooling": true, "model-cooldown-clear": true}}
+	h.decorateAuthFilesResponse(c, effectiveTenantID(c), files, body)
+	c.JSON(200, body)
 }
 
 // GetAuthFileModels returns the models supported by a specific auth file.
@@ -201,6 +206,7 @@ func (h *Handler) DeleteAuthFile(c *gin.Context) {
 			return h.removeChannelReferencesForTenant(effectiveTenantID(c), channels)
 		},
 		RemoveAuthBindings: func(authIDs []string) error {
+			h.dropSharedAuthGrants(ctx, effectiveTenantID(c), authIDs)
 			return h.deleteContentModerationBindings(ctx, effectiveTenantID(c), contentmoderation.ChannelTypeAuthFile, authIDs)
 		},
 	}

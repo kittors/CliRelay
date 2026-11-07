@@ -12,7 +12,6 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/identity"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/interfaces"
 	modelconfigsettings "github.com/router-for-me/CLIProxyAPI/v6/internal/management/settings/modelconfig"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/modeldiscovery"
 	internalrouting "github.com/router-for-me/CLIProxyAPI/v6/internal/routing"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/api/handlers"
@@ -29,8 +28,12 @@ func (s *Server) modelRestrictionMiddleware() gin.HandlerFunc {
 			// recognised with the same check the upgrader uses, so every
 			// accepted upgrade is gated.
 			if middleware.IsWebsocketUpgrade(c.Request) {
-				if gate := s.buildModelGate(c); gate != nil {
+				gate, planner := s.buildModelGates(c)
+				if gate != nil {
 					c.Set(handlers.ModelGateContextKey, gate)
+				}
+				if planner != nil {
+					c.Set(handlers.VirtualModelPlannerContextKey, planner)
 				}
 			}
 			c.Next()
@@ -40,7 +43,10 @@ func (s *Server) modelRestrictionMiddleware() gin.HandlerFunc {
 			return
 		}
 
-		gate := s.buildModelGate(c)
+		gate, planner := s.buildModelGates(c)
+		if planner != nil {
+			c.Set(handlers.VirtualModelPlannerContextKey, planner)
+		}
 		if gate == nil {
 			c.Next()
 			return
@@ -78,6 +84,15 @@ func (s *Server) modelRestrictionMiddleware() gin.HandlerFunc {
 // The verdict is an *interfaces.ErrorMessage whose Error is a *modelGateError,
 // so both the HTTP path and the WebSocket path can render the same code/type.
 func (s *Server) buildModelGate(c *gin.Context) handlers.ModelGate {
+	gate, _ := s.buildModelGates(c)
+	return gate
+}
+
+// buildModelGates is buildModelGate with the planner the handlers run the
+// tenant's virtual models with, nil when it has none. A tenant with virtual
+// models always gets a gate: a virtual model none of whose members the request
+// may use is refused here, as a model it may not use is.
+func (s *Server) buildModelGates(c *gin.Context) (handlers.ModelGate, handlers.VirtualModelPlanner) {
 	allowedStr := ""
 	if metadataVal, exists := c.Get("accessMetadata"); exists {
 		if metadata, ok := metadataVal.(map[string]string); ok {
@@ -91,33 +106,24 @@ func (s *Server) buildModelGate(c *gin.Context) handlers.ModelGate {
 	}
 	allowedGroups := allowedChannelGroupsFromAccessMetadata(c)
 
-	var ccSwitchAllowed map[string]struct{}
-	if route != nil && route.CcSwitch != nil {
-		ccSwitchAllowed = make(map[string]struct{})
-		for _, mapping := range route.CcSwitch.ModelMappings {
-			if t := strings.TrimSpace(mapping.TargetModel); t != "" {
-				ccSwitchAllowed[t] = struct{}{}
-			}
-			if r := strings.TrimSpace(mapping.RequestModel); r != "" {
-				ccSwitchAllowed[r] = struct{}{}
-			}
-		}
-		if dm := strings.TrimSpace(route.CcSwitch.DefaultModel); dm != "" {
-			ccSwitchAllowed[dm] = struct{}{}
-		}
-		if len(ccSwitchAllowed) == 0 {
-			ccSwitchAllowed = nil
-		}
-	}
+	// A CC Switch import preset adds no allow list of its own. Its mappings only
+	// rename models (mapCcSwitchRequestModelForRestriction); what the route may
+	// serve is the preset's channel group, checked below like any group path.
+	// Reading the mappings as an allow list froze every preset at the models
+	// picked when it was saved, so a model the upstream added later was refused
+	// on the preset route while the group itself served it.
 
 	tenantID := requestTenantID(c)
-	hasScopedRestriction := s.hasScopedRoutingModelRestrictionForTenant(tenantID, routeGroup, allowedGroups)
+	routing := s.routingConfigForTenant(tenantID)
+	hasScopedRestriction := !scopedRoutingModelGateFor(routing, tenantID, routeGroup, allowedGroups).unrestricted
+	scope := virtualModelScope{tenantID: tenantID, routeGroup: internalrouting.NormalizeGroupName(routeGroup), allowedGroups: allowedGroups}
+	planner := s.virtualModelPlanner(scope, routing)
 	// A model switched off in the catalog is refused for everyone, so this
 	// middleware has to inspect the body even when the key itself carries no
 	// allowed-models restriction.
 	disabledModels := modelconfigsettings.DisabledModelIDsForTenant(tenantID)
-	if allowedStr == "" && !hasScopedRestriction && ccSwitchAllowed == nil && len(disabledModels) == 0 {
-		return nil
+	if allowedStr == "" && !hasScopedRestriction && len(disabledModels) == 0 && planner == nil {
+		return nil, nil
 	}
 
 	var allowedModels map[string]struct{}
@@ -127,17 +133,6 @@ func (s *Server) buildModelGate(c *gin.Context) handlers.ModelGate {
 			trimmed := strings.TrimSpace(m)
 			if trimmed != "" {
 				allowedModels[trimmed] = struct{}{}
-			}
-		}
-	}
-	if ccSwitchAllowed != nil {
-		if len(allowedModels) == 0 {
-			allowedModels = ccSwitchAllowed
-		} else {
-			for m := range allowedModels {
-				if _, ok := ccSwitchAllowed[m]; !ok {
-					delete(allowedModels, m)
-				}
 			}
 		}
 	}
@@ -157,11 +152,20 @@ func (s *Server) buildModelGate(c *gin.Context) handlers.ModelGate {
 		if len(allowedModels) > 0 && !modelInSet(requestedModel, allowedModels) && !modelInSet(routingModel, allowedModels) {
 			return modelNotAllowedError(requestedModel)
 		}
-		if !s.modelAllowedByScopedRoutingGroupsForTenant(tenantID, routingModel, routeGroup, allowedGroups) {
-			return modelNotAllowedError(requestedModel)
+		// Read per call rather than once per gate: a WebSocket connection keeps
+		// its gate across turns and must see a channel group edited meanwhile.
+		routing := s.routingConfigForTenant(tenantID)
+		// The key's allowed-models decide who may ask for a virtual model by its
+		// name; the channel groups are checked for each member instead
+		// (virtualModelMemberRefusal), since those are what it runs on.
+		if plan := s.planVirtualModel(scope, routing, routingModel); plan != nil {
+			return virtualModelUnavailable(plan)
+		}
+		if denial := scopedRoutingModelGateFor(routing, tenantID, routeGroup, allowedGroups).denial(routingModel); denial != nil {
+			return modelNotAllowedByChannelGroupError(tenantID, requestedModel, routingModel, denial)
 		}
 		return nil
-	}
+	}, planner
 }
 
 // modelGateError carries the OpenAI-style error triple so the HTTP and
@@ -174,7 +178,8 @@ type modelGateError struct {
 
 func (e *modelGateError) Error() string { return e.message }
 
-// modelNotAllowedError is an authorization failure: the key cannot use this model.
+// modelNotAllowedError is an authorization failure: the key's own allowed-models
+// list (or its end user's) does not name this model.
 func modelNotAllowedError(model string) *interfaces.ErrorMessage {
 	return &interfaces.ErrorMessage{
 		StatusCode: http.StatusForbidden,
@@ -182,6 +187,30 @@ func modelNotAllowedError(model string) *interfaces.ErrorMessage {
 			message: fmt.Sprintf("model '%s' is not allowed for this API key", model),
 			typ:     "forbidden",
 			code:    "model_not_allowed",
+		},
+	}
+}
+
+// modelNotAllowedByChannelGroupError rejects a model the request's channel
+// groups do not serve. It used to share modelNotAllowedError's "not allowed for
+// this API key", which sent operators to a key that had no model list at all
+// while the refusal came from the group a path or preset routes to. The wording
+// and code match the credential selector's diagnosis of the same refusal.
+func modelNotAllowedByChannelGroupError(tenantID, requested, routed string, denial *modelGroupDenial) *interfaces.ErrorMessage {
+	message := internalrouting.ChannelGroupModelDenialMessage(
+		routed, denial.excludedBy, denial.notAllowedBy,
+		internalrouting.DiscoveredModel(tenantID, routed),
+	)
+	if !strings.EqualFold(requested, routed) {
+		// A CC Switch preset renamed the model; the client only knows its own name.
+		message = fmt.Sprintf("%s (requested as %q)", message, requested)
+	}
+	return &interfaces.ErrorMessage{
+		StatusCode: http.StatusForbidden,
+		Error: &modelGateError{
+			message: message,
+			typ:     "forbidden",
+			code:    "model_not_allowed_by_channel_group",
 		},
 	}
 }
@@ -224,6 +253,12 @@ func modelInSet(model string, allowed map[string]struct{}) bool {
 	return ok
 }
 
+// modelPolicyEffectiveModel 给模型策略中间件用：账号/Key 的路由与按模型额度按
+// CC Switch 预设映射之后的模型判定，与模型门控看待模型的方式一致。
+func (s *Server) modelPolicyEffectiveModel(c *gin.Context, requested string) string {
+	return mapCcSwitchRequestModelForRestriction(requested, pathRouteContextFromGin(c))
+}
+
 func mapCcSwitchRequestModelForRestriction(model string, route *internalrouting.PathRouteContext) string {
 	model = strings.TrimSpace(model)
 	if model == "" || route == nil || route.CcSwitch == nil {
@@ -259,8 +294,9 @@ func (s *Server) modelAllowedByScopedRoutingGroupsForTenant(tenantID, model, rou
 // scopedRoutingModelGate applies the channel-group model gate to requests and to
 // the /v1/models listing, mirroring the runtime gate in sdk/cliproxy/auth: a
 // group with neither list serves every model its channels offer (including ones
-// added upstream later), an allow list freezes the group to the models it names,
-// and exclusions subtract from everything. Scoped groups form a union, so one
+// added upstream later), an allow list limits the group to the models it names
+// (plus what discovery lists later, when the group follows upstream), and
+// exclusions subtract from everything. Scoped groups form a union, so one
 // permissive group is enough. Exclusions match through the shared
 // internalrouting.ChannelGroupExcludesModel so that this gate and the runtime
 // one cannot disagree on how a prefixed or wildcard entry is read.
@@ -274,32 +310,52 @@ type scopedRoutingModelGroupGate struct {
 	name     string
 	allowed  []string
 	excluded []string
+	follows  bool
+}
+
+// modelGroupDenial names the groups that refused a model, by the list that did it.
+type modelGroupDenial struct {
+	excludedBy   []string
+	notAllowedBy []string
 }
 
 func (g scopedRoutingModelGate) allows(model string) bool {
+	return g.denial(model) == nil
+}
+
+// denial returns why every scoped group refused model, or nil when one admits it.
+func (g scopedRoutingModelGate) denial(model string) *modelGroupDenial {
 	if g.unrestricted {
-		return true
+		return nil
 	}
+	refused := &modelGroupDenial{}
 	if strings.TrimSpace(model) == "" {
-		return false
+		return refused
 	}
 	for _, group := range g.groups {
 		if internalrouting.ChannelGroupExcludesModel(group.excluded, model) {
+			refused.excludedBy = append(refused.excludedBy, group.name)
 			continue
 		}
 		if len(group.allowed) == 0 || routeAllowedModelMatches(model, group.allowed) {
-			return true
+			return nil
 		}
-		if internalrouting.NormalizeGroupName(group.name) == "default" && modeldiscovery.Listed(g.tenantID, "codex", model) {
-			return true
+		if internalrouting.GroupAdmitsDiscoveredModel(group.follows, g.tenantID, model) {
+			return nil
 		}
+		refused.notAllowedBy = append(refused.notAllowedBy, group.name)
 	}
-	return false
+	return refused
 }
 
 func (s *Server) scopedRoutingModelGateForTenant(tenantID, routeGroup string, allowedGroups map[string]struct{}) scopedRoutingModelGate {
+	return scopedRoutingModelGateFor(s.routingConfigForTenant(tenantID), tenantID, routeGroup, allowedGroups)
+}
+
+// scopedRoutingModelGateFor is scopedRoutingModelGateForTenant over a routing
+// config the caller already read.
+func scopedRoutingModelGateFor(routing *config.RoutingConfig, tenantID, routeGroup string, allowedGroups map[string]struct{}) scopedRoutingModelGate {
 	unrestricted := scopedRoutingModelGate{unrestricted: true}
-	routing := s.routingConfigForTenant(tenantID)
 	if routing == nil {
 		return unrestricted
 	}
@@ -336,6 +392,7 @@ func (s *Server) scopedRoutingModelGateForTenant(tenantID, routeGroup string, al
 			name:     groupName,
 			allowed:  group.AllowedModels,
 			excluded: group.ExcludedModels,
+			follows:  group.FollowsUpstreamModels(),
 		})
 	}
 	if len(gate.groups) == 0 {

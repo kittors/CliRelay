@@ -16,6 +16,10 @@ var levelToBudgetMap = map[string]int{
 	"medium":  8192,
 	"high":    24576,
 	"xhigh":   32768,
+	// The largest budget any Claude model accepts; providers clamp it to their
+	// own ceiling and to max_tokens. Without an entry the translators dropped
+	// "max" altogether and the request ran at the model's default effort.
+	"max": BudgetMax,
 }
 
 // ConvertLevelToBudget converts a thinking level to a budget value.
@@ -31,6 +35,7 @@ var levelToBudgetMap = map[string]int{
 //   - medium  → 8192
 //   - high    → 24576
 //   - xhigh   → 32768
+//   - max     → 128000
 //
 // Returns:
 //   - budget: The converted budget value
@@ -51,6 +56,12 @@ const (
 	ThresholdMedium = 8192
 	// ThresholdHigh is the upper bound for "high" level (8193-24576)
 	ThresholdHigh = 24576
+	// ThresholdXHigh is the upper bound for "xhigh" level (24577-127999).
+	// Only BudgetMax and above read back as "max", so the budgets clients
+	// actually send (below max_tokens, which is at most 128000) map as before.
+	ThresholdXHigh = BudgetMax - 1
+	// BudgetMax is the budget the "max" level converts to.
+	BudgetMax = 128000
 )
 
 // ConvertBudgetToLevel converts a budget value to the nearest thinking level.
@@ -65,7 +76,8 @@ const (
 //   - 513-1024  → low
 //   - 1025-8192 → medium
 //   - 8193-24576 → high
-//   - 24577+    → xhigh
+//   - 24577-127999 → xhigh
+//   - 128000+   → max
 //
 // Returns:
 //   - level: The converted thinking level string
@@ -87,8 +99,10 @@ func ConvertBudgetToLevel(budget int) (string, bool) {
 		return string(LevelMedium), true
 	case budget <= ThresholdHigh:
 		return string(LevelHigh), true
-	default:
+	case budget <= ThresholdXHigh:
 		return string(LevelXHigh), true
+	default:
+		return string(LevelMax), true
 	}
 }
 
@@ -113,8 +127,8 @@ const (
 // This is an internal function used by validation and conversion helpers.
 // It analyzes the model's ThinkingSupport configuration to classify the model:
 //   - CapabilityNone: modelInfo.Thinking is nil (model doesn't support thinking)
-//   - CapabilityBudgetOnly: Has Min/Max but no Levels (Claude, Gemini 2.5)
-//   - CapabilityLevelOnly: Has Levels but no Min/Max (OpenAI, iFlow)
+//   - CapabilityBudgetOnly: Has Min/Max but no Levels (Claude up to 4.6, Gemini 2.5)
+//   - CapabilityLevelOnly: Has Levels but no Min/Max (OpenAI, iFlow, Claude Opus 4.7+ adaptive)
 //   - CapabilityHybrid: Has both Min/Max and Levels (Gemini 3)
 //
 // Note: Returns a special sentinel value when modelInfo itself is nil (unknown model).

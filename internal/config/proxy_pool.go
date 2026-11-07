@@ -132,6 +132,32 @@ func (cfg *Config) SanitizeProxyPool() {
 	cfg.ProxyPool = NormalizeProxyPool(cfg.ProxyPool)
 }
 
+// MergeSharedProxyPool returns the pool a tenant resolves proxy IDs against:
+// its own entries, then the platform's shared entries it does not override.
+//
+// An own entry wins over a shared entry with the same ID whether or not it is
+// enabled. ResolveProxyURL skips disabled entries, so letting a disabled
+// override through would send the tenant's traffic to the shared address,
+// which is not the one the tenant configured.
+func MergeSharedProxyPool(own, shared []ProxyPoolEntry) []ProxyPoolEntry {
+	if len(shared) == 0 {
+		return own
+	}
+	merged := make([]ProxyPoolEntry, 0, len(own)+len(shared))
+	ownIDs := make(map[string]struct{}, len(own))
+	for _, entry := range own {
+		ownIDs[normalizeProxyID(entry.ID)] = struct{}{}
+		merged = append(merged, entry)
+	}
+	for _, entry := range shared {
+		if _, overridden := ownIDs[normalizeProxyID(entry.ID)]; overridden {
+			continue
+		}
+		merged = append(merged, entry)
+	}
+	return merged
+}
+
 // ResolveProxyURL returns the effective proxy URL for a proxy-id plus legacy fallback URL.
 func (cfg *Config) ResolveProxyURL(proxyID string, fallbackURL string) string {
 	if cfg != nil {

@@ -14,6 +14,25 @@ func ManagementRequestPermission(method, path string) string {
 	return permissionForManagementRequest(method, path)
 }
 
+// isContentModerationTestRoute reports whether relative is one of the two
+// routes that try content moderation out without changing it: the test of a
+// profile and the dry run of a word policy. It matches them whole. A suffix
+// check would also match a route whose last segment merely is "test" (the
+// policy of an API key whose id is "test"), and give whoever may only try things
+// out the right to change or delete that policy.
+func isContentModerationTestRoute(relative string) bool {
+	relative = strings.TrimSuffix(relative, "/")
+	if relative == "/content-moderation/word-policies/test" {
+		return true
+	}
+	rest, ok := strings.CutPrefix(relative, "/content-moderation/profiles/")
+	if !ok {
+		return false
+	}
+	id, ok := strings.CutSuffix(rest, "/test")
+	return ok && id != "" && !strings.Contains(id, "/")
+}
+
 func principalHasManagementRequestPermission(principal identity.Principal, method, path, permission string) bool {
 	if permission != "" && principal.Has(permission) {
 		return true
@@ -102,6 +121,26 @@ func permissionForManagementRequest(method, path string) string {
 		return "dashboard.read"
 	case strings.HasPrefix(relative, "/system-stats"), relative == "/cluster":
 		return "system.status.read"
+	// /metrics reports the whole platform's traffic, so only platform
+	// operators may switch it on or mint its token.
+	case strings.HasPrefix(relative, "/observability"):
+		if write {
+			return "system.config.write"
+		}
+		return "system.config.read"
+	// Loop protection is a tenant setting; the override of one API key is edited
+	// in that key's editor, so it follows the key permissions. Listed before the
+	// substring matches below: the :id of a key is not ours to keep out of them.
+	case strings.HasPrefix(relative, "/loop-guard/keys/"):
+		if write {
+			return "api_keys.write"
+		}
+		return "api_keys.read"
+	case relative == "/loop-guard":
+		if write {
+			return "tenant_settings.write"
+		}
+		return "tenant_settings.read"
 	// Sensitive request/error log files — not system.config.
 	case strings.HasPrefix(relative, "/request-error-logs"), strings.HasPrefix(relative, "/request-log-by-id"):
 		return "system.logs.read"
@@ -128,6 +167,10 @@ func permissionForManagementRequest(method, path string) string {
 	// Exact /usage* stats paths only — /usage-statistics-enabled is config.
 	case relative == "/usage" || strings.HasPrefix(relative, "/usage/"):
 		return "monitor.read"
+	// The pool capacity view adds up the same account status the list shows, so it
+	// is read with the same permission.
+	case relative == "/ai-accounts/pool-capacity":
+		return "auth_files.read"
 	// AI account status read model: same capability surface as auth-files list.
 	case strings.HasPrefix(relative, "/ai-accounts/status-refresh") && write:
 		return "auth_files.write"
@@ -170,8 +213,19 @@ func permissionForManagementRequest(method, path string) string {
 			return "models.write"
 		}
 		return "models.read"
+	case strings.HasPrefix(relative, "/privacy-masking"):
+		// Privacy masking is set up and read by the same people as content
+		// moderation; trying a text out changes nothing, as a word policy's
+		// dry run does not.
+		if method == http.MethodPost && strings.TrimSuffix(relative, "/") == "/privacy-masking/preview" {
+			return "content_moderation.test"
+		}
+		if write {
+			return "content_moderation.write"
+		}
+		return "content_moderation.read"
 	case strings.HasPrefix(relative, "/content-moderation"):
-		if strings.HasSuffix(relative, "/test") {
+		if method == http.MethodPost && isContentModerationTestRoute(relative) {
 			return "content_moderation.test"
 		}
 		if write {
@@ -237,6 +291,11 @@ func permissionForManagementRequest(method, path string) string {
 	// Process-global config knobs (explicit so default stays fail-closed).
 	case relative == "/config":
 		return "tenant_settings.read"
+	// The dry run is a tool for editing the payload rules on the config page.
+	// It changes nothing, but a POST never maps to a read permission, so it
+	// takes the one saving the rules takes.
+	case relative == "/payload-rules/dry-run":
+		return "system.config.write"
 	case relative == "/debug", relative == "/logging-to-file", relative == "/logs-max-total-size-mb",
 		relative == "/error-logs-max-files", relative == "/usage-statistics-enabled",
 		relative == "/request-log", strings.HasPrefix(relative, "/request-log-storage"),
@@ -246,6 +305,14 @@ func permissionForManagementRequest(method, path string) string {
 		}
 		return "system.config.read"
 	case strings.HasPrefix(relative, "/proxy-url"), strings.HasPrefix(relative, "/quota"), strings.HasPrefix(relative, "/request-retry"), strings.HasPrefix(relative, "/max-retry"), strings.HasPrefix(relative, "/force-model-prefix"):
+		if write {
+			return "tenant_settings.write"
+		}
+		return "tenant_settings.read"
+	// Alerting is a tenant-level setting: each tenant picks its own channels and
+	// thresholds. Sending a test message is a POST, so it takes the write
+	// permission: it makes the server call out to an address the caller chose.
+	case relative == "/alerts" || strings.HasPrefix(relative, "/alerts/"):
 		if write {
 			return "tenant_settings.write"
 		}

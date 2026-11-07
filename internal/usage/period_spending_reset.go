@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS period_spending_resets (
   window_key    TEXT NOT NULL DEFAULT '',
   cost_baseline REAL NOT NULL DEFAULT 0,
   reset_at      TIMESTAMP NOT NULL,
+  usage_baseline TEXT NOT NULL DEFAULT '',
   PRIMARY KEY (tenant_id, subject_type, subject_id, period)
 );
 CREATE INDEX IF NOT EXISTS idx_period_spending_resets_window
@@ -61,6 +62,7 @@ func bootstrapPeriodSpendingResets(db *sql.DB) error {
 	if _, err := db.Exec(periodSpendingResetEventsTableSQL); err != nil {
 		return fmt.Errorf("usage: ensure period_spending_reset_events: %w", err)
 	}
+	ensurePeriodSpendingResetUsageBaselineColumn(db)
 	return ensurePeriodWindowAnchors(db)
 }
 
@@ -196,6 +198,13 @@ func resetPeriodSpendingForSubject(tenantID string, subject periodSubject, subje
 		return PeriodSpendingResetResult{}, err
 	}
 	raw := rawByID[subjectID]
+	// 请求次数、Token 与按模型用量的基线一起记下，让总额度矩阵与按模型规则在同一
+	// 时刻清零（见 quota_usage_baseline.go）。
+	rawUsageByID, err := queryRawQuotaUsage(tenantID, subject, []string{subjectID}, windows)
+	if err != nil {
+		return PeriodSpendingResetResult{}, err
+	}
+	rawUsage := rawUsageByID[subjectID]
 	baselinesByID, err := listEffectivePeriodBaselines(tenantID, subject, []string{subjectID}, windows)
 	if err != nil {
 		return PeriodSpendingResetResult{}, fmt.Errorf("%w: period baselines: %v", ErrQuotaUsageUnavailable, err)
@@ -238,6 +247,9 @@ func resetPeriodSpendingForSubject(tenantID string, subject periodSubject, subje
 		windowKeys[period] = windowKey
 		costBaselines[period] = baseline
 		setPeriodUsageValue(&after, period, 0)
+	}
+	if err := writeUsageBaselinesTx(tx, tenantID, subjectType, subjectID, rawUsage, windowKeys); err != nil {
+		return PeriodSpendingResetResult{}, err
 	}
 	event := periodSpendingResetEvent{
 		TenantID: tenantID, SubjectType: subjectType, SubjectID: subjectID,

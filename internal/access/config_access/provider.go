@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/accesspolicy"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/identity"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/quota"
@@ -21,7 +22,10 @@ func Register(cfg *sdkconfig.SDKConfig) {
 		return
 	}
 
-	keyConfigs := buildKeyConfigMap(cfg)
+	keyConfigs, policies := buildKeyConfigAndPolicyMaps(cfg)
+	// 策略表与 Key 表来自同一次读库，一起替换；即使没有任何 Key 也要发布空表，
+	// 让已删除 Key 的策略不再被查到。
+	accesspolicy.Publish(policies)
 	if len(keyConfigs) == 0 {
 		sdkaccess.UnregisterProvider(sdkaccess.AccessProviderTypeConfigAPIKey)
 		return
@@ -34,10 +38,18 @@ func Register(cfg *sdkconfig.SDKConfig) {
 }
 
 // buildKeyConfigMap builds a map from API key to its full configuration.
+func buildKeyConfigMap(cfg *sdkconfig.SDKConfig) map[string]keyConfig {
+	keys, _ := buildKeyConfigAndPolicyMaps(cfg)
+	return keys
+}
+
+// buildKeyConfigAndPolicyMaps builds the key map and the structured access policy
+// of every key (see internal/accesspolicy) from one read of the database.
 // Primary source: management/settings/apikey service backed by PostgreSQL.
 // Fallback: legacy APIKeys and APIKeyEntries from YAML config.
-func buildKeyConfigMap(cfg *sdkconfig.SDKConfig) map[string]keyConfig {
+func buildKeyConfigAndPolicyMaps(cfg *sdkconfig.SDKConfig) (map[string]keyConfig, map[string]*accesspolicy.Policy) {
 	result := make(map[string]keyConfig)
+	policies := make(map[string]*accesspolicy.Policy)
 
 	// Primary: preload tenant profiles and owned accounts once, then build every key.
 	storedRows := usage.ListAllAPIKeys()
@@ -80,6 +92,7 @@ func buildKeyConfigMap(cfg *sdkconfig.SDKConfig) map[string]keyConfig {
 			continue
 		}
 		result[trimmed] = keyConfigFromRowWithAccount(entry, account)
+		policies[trimmed] = accessPolicyFor(entry, account)
 	}
 
 	// Fallback: YAML config (for backward compatibility during migration)
@@ -94,6 +107,7 @@ func buildKeyConfigMap(cfg *sdkconfig.SDKConfig) map[string]keyConfig {
 			continue
 		}
 		result[trimmed] = keyConfigFromRow(row)
+		policies[trimmed] = accessPolicyFor(row, nil)
 	}
 	for _, k := range cfg.APIKeys {
 		trimmed := strings.TrimSpace(k)
@@ -105,7 +119,36 @@ func buildKeyConfigMap(cfg *sdkconfig.SDKConfig) map[string]keyConfig {
 		}
 		result[trimmed] = keyConfig{}
 	}
-	return result
+	return result, policies
+}
+
+// accessPolicyFor 算出一把 Key 的生效策略。账号下的 Key：额度分账号与 Key 两层，
+// 规则也分两层，路由来自账号（模板覆盖后）；独立 Key：row 已经叠加过它绑定的模板。
+func accessPolicyFor(row usage.APIKeyRow, account *usage.EndUserQuota) *accesspolicy.Policy {
+	tenantID := strings.TrimSpace(row.TenantID)
+	if tenantID == "" {
+		tenantID = identity.SystemTenantID
+	}
+	period := row.PeriodSpendingLimits
+	period.Day = row.DailySpendingLimit
+	policy := &accesspolicy.Policy{
+		TenantID: tenantID,
+		APIKeyID: strings.TrimSpace(row.ID),
+		KeyRules: row.AccessPolicy.ModelRules,
+	}
+	if endUserID := strings.TrimSpace(row.EndUserID); endUserID != "" && account != nil {
+		policy.EndUserID = endUserID
+		policy.AccountLimits = account.QuotaMatrix()
+		policy.AccountRules = account.AccessPolicy.ModelRules
+		policy.Routes = account.AccessPolicy.ModelRoutes
+		policy.KeyLimits = quota.OwnedKeyColumnLayout.MatrixFromColumns(quota.ColumnValues{Period: period}, row.AccessPolicy.Limits)
+		return policy
+	}
+	policy.Routes = row.AccessPolicy.ModelRoutes
+	policy.KeyLimits = quota.StandaloneKeyColumnLayout.MatrixFromColumns(quota.ColumnValues{
+		Period: period, LifetimeCost: row.SpendingLimit, DailyRequests: row.DailyLimit, TotalRequests: row.TotalQuota,
+	}, row.AccessPolicy.Limits)
+	return policy
 }
 
 // keyConfig holds the per-key configuration extracted from APIKeyEntry.

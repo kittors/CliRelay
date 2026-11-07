@@ -7,6 +7,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/codexcarrier"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -83,25 +84,74 @@ func codexBridgeImageModel(auth *cliproxyauth.Auth) string {
 //     strip hosted image_generation so Desktop uses /v1/images + disk save path.
 //  2. Else if account bridge is enabled, inject hosted image_generation + bridge instructions.
 //     API-key custom providers typically do not expose local image_gen, so hosted is required.
-//  3. When image intent is present and only hosted tool is available, force
-//     tool_choice=image_generation so the model cannot skip the tool and reply with text.
+//     A turn that asks for no image but sets a reasoning effort gets no tool; see
+//     ensureCodexImageGenerationTool.
+//  3. Only an explicit imagegen invocation in the current user turn forces
+//     tool_choice=image_generation, so the model cannot skip the tool and reply with text.
+//     A keyword match is a guess and leaves the choice to the model.
+//  4. A request that is going to call the hosted tool leaves without reasoning.effort, which
+//     the backend would otherwise hand to the image model as complexity.
 func maybeEnsureCodexImageGenerationTool(body []byte, auth *cliproxyauth.Auth, baseModel string, headers http.Header) []byte {
 	body = repairCodexImageCarrierModel(body, baseModel)
 	if requestHasLocalImageGenTool(body) {
 		return stripHostedImageGenerationTools(body)
 	}
-	if !codexImageGenerationBridgeEnabled(auth) {
-		return body
-	}
-	intent := requestLooksLikeImageGenerationIntent(body)
-	body = ensureCodexImageGenerationTool(body, baseModel, auth, headers, intent)
-	if requestHasHostedImageGenerationTool(body) {
-		body = ensureCodexImageGenerationBridgeInstructions(body)
-		if intent {
-			body = forceCodexImageGenerationToolChoice(body)
+	intent := classifyCodexImageGenerationIntent(body)
+	if codexImageGenerationBridgeEnabled(auth) {
+		body = ensureCodexImageGenerationTool(body, baseModel, auth, headers, intent)
+		if requestHasHostedImageGenerationTool(body) {
+			body = ensureCodexImageGenerationBridgeInstructions(body)
+			if intent.forcesToolChoice() {
+				body = forceCodexImageGenerationToolChoice(body)
+			}
 		}
 	}
-	return body
+	return omitCodexReasoningEffortForImageCall(body, intent)
+}
+
+// codexRequestSetsReasoningEffort reports whether the request names a reasoning effort.
+func codexRequestSetsReasoningEffort(body []byte) bool {
+	effort := gjson.GetBytes(body, "reasoning.effort")
+	return effort.Type == gjson.String && strings.TrimSpace(effort.String()) != ""
+}
+
+// omitCodexReasoningEffortForImageCall drops reasoning.effort from a request that is going to
+// call the hosted image_generation tool: tool_choice is pinned to it, or the current turn asks
+// for an image. Whoever attached the tool (the bridge, the gpt-image translator path or the
+// client) does not matter.
+//
+// Since 2026-11-04 chatgpt.com/backend-api/codex/responses hands the outer reasoning.effort
+// to the image call as its complexity, and the image model the Codex backend routes to
+// (gpt-image-2-codex, whichever gpt-image model the tool names) rejects every value: production
+// logged `Complexity '<effort>' is not supported for this image model.` for low, medium, high,
+// xhigh and max on 2026-11-05, 170 failures across 16 sessions, each an HTTP 200 whose stream
+// ends in image_generation_user_error and fails every retry the same way. Other relays hit by
+// the same change found that the request succeeds once the effort is left out, which is also
+// what the /v1/images path now sends. The rest of the reasoning object stays as the client
+// sent it.
+//
+// Requests that will not call the tool keep their effort: lowering the reasoning of an
+// ordinary coding turn because an image tool happens to be attached would be the wrong trade.
+func omitCodexReasoningEffortForImageCall(body []byte, intent codexImageIntent) []byte {
+	if !requestHasHostedImageGenerationTool(body) || !codexRequestSetsReasoningEffort(body) {
+		return body
+	}
+	pinned := strings.TrimSpace(gjson.GetBytes(body, "tool_choice.type").String()) == "image_generation"
+	if !pinned && !intent.wantsImage() {
+		return body
+	}
+	effort := gjson.GetBytes(body, "reasoning.effort").String()
+	updated, err := sjson.DeleteBytes(body, "reasoning.effort")
+	if err != nil {
+		return body
+	}
+	if reasoning := gjson.GetBytes(updated, "reasoning"); reasoning.IsObject() && len(reasoning.Map()) == 0 {
+		if trimmed, errDelete := sjson.DeleteBytes(updated, "reasoning"); errDelete == nil {
+			updated = trimmed
+		}
+	}
+	log.Debugf("codex image bridge: dropped reasoning.effort %q from a request that calls hosted image_generation", effort)
+	return updated
 }
 
 // requestCarriesImageInput reports whether the recent user turns attach images.
@@ -131,105 +181,6 @@ func requestCarriesImageInput(body []byte) bool {
 			case "input_image", "image_url":
 				return true
 			}
-		}
-	}
-	return false
-}
-
-func requestLooksLikeImageGenerationIntent(body []byte) bool {
-	// Explicit Image Gen skill / slash-command markers from Codex Desktop.
-	markers := []string{
-		"[$imagegen]",
-		"<name>imagegen</name>",
-		"skills/.system/imagegen",
-		"$imagegen",
-		"image_gen.imagegen",
-		"built-in `image_gen`",
-		"built-in image_gen",
-	}
-	// Prefer scanning recent user text, not the whole body (tools/schema can be huge).
-	input := gjson.GetBytes(body, "input")
-	if input.Type == gjson.String {
-		lower := strings.ToLower(input.String())
-		for _, m := range markers {
-			if strings.Contains(lower, strings.ToLower(m)) {
-				return true
-			}
-		}
-		return looksLikeChineseImageRequest(lower) || looksLikeEnglishImageRequest(lower)
-	}
-	if input.IsArray() {
-		// Scan from the end: last user turn is decisive.
-		items := input.Array()
-		for i := len(items) - 1; i >= 0 && i >= len(items)-8; i-- {
-			item := items[i]
-			role := strings.TrimSpace(item.Get("role").String())
-			if role != "" && role != "user" {
-				continue
-			}
-			text := extractCodexInputItemText(item)
-			if text == "" {
-				continue
-			}
-			lower := strings.ToLower(text)
-			for _, m := range markers {
-				if strings.Contains(lower, strings.ToLower(m)) {
-					return true
-				}
-			}
-			if looksLikeChineseImageRequest(lower) || looksLikeEnglishImageRequest(lower) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-func extractCodexInputItemText(item gjson.Result) string {
-	if item.Get("content").Type == gjson.String {
-		return item.Get("content").String()
-	}
-	content := item.Get("content")
-	if !content.IsArray() {
-		if t := item.Get("text"); t.Type == gjson.String {
-			return t.String()
-		}
-		return ""
-	}
-	var b strings.Builder
-	for _, part := range content.Array() {
-		switch strings.TrimSpace(part.Get("type").String()) {
-		case "input_text", "output_text", "text":
-			if t := part.Get("text"); t.Type == gjson.String {
-				if b.Len() > 0 {
-					b.WriteByte('\n')
-				}
-				b.WriteString(t.String())
-			}
-		}
-	}
-	return b.String()
-}
-
-func looksLikeChineseImageRequest(lower string) bool {
-	// lower is already lowercased for ASCII; Chinese unchanged.
-	keys := []string{"画一", "画个", "画只", "画一张", "生成一张", "生成图片", "生图", "出图", "改图", "修图", "绘一张"}
-	for _, k := range keys {
-		if strings.Contains(lower, k) {
-			return true
-		}
-	}
-	return false
-}
-
-func looksLikeEnglishImageRequest(lower string) bool {
-	keys := []string{
-		"generate an image", "generate a image", "draw a ", "draw an ", "create an image",
-		"make an image", "edit this image", "image generation", "generate image",
-	}
-	for _, k := range keys {
-		if strings.Contains(lower, k) {
-			return true
 		}
 	}
 	return false
@@ -356,8 +307,8 @@ func codexImageGenerationBridgeEnabled(auth *cliproxyauth.Auth) bool {
 	return true
 }
 
-func ensureCodexImageGenerationTool(body []byte, baseModel string, auth *cliproxyauth.Auth, headers http.Header, intent bool) []byte {
-	if isCodexResponsesLiteRequest(body, headers) && !intent {
+func ensureCodexImageGenerationTool(body []byte, baseModel string, auth *cliproxyauth.Auth, headers http.Header, intent codexImageIntent) []byte {
+	if isCodexResponsesLiteRequest(body, headers) && !intent.wantsImage() {
 		// Responses Lite carries its tools inside input[].additional_tools, and a hosted tool
 		// at the top level is not something Lite traffic is otherwise observed to send. Adding
 		// it to every Lite turn would put all Lite conversations behind an unverified upstream
@@ -368,6 +319,15 @@ func ensureCodexImageGenerationTool(body []byte, baseModel string, auth *cliprox
 		return body
 	}
 	if isCodexFreePlanAuth(auth) {
+		return body
+	}
+	if !intent.wantsImage() && codexRequestSetsReasoningEffort(body) {
+		// A turn that asks for no image keeps its reasoning effort and goes without the tool.
+		// The Codex backend hands any effort to the image call as complexity and the image model
+		// rejects them all (see omitCodexReasoningEffortForImageCall), so a model that reached
+		// for the tool unprompted would fail the whole turn; dropping the effort of an ordinary
+		// coding turn to make room for a tool nobody asked for is the wrong trade. A turn that
+		// does ask for an image gets the tool, and leaves without the effort.
 		return body
 	}
 

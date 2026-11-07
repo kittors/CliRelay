@@ -73,7 +73,7 @@ func (s *Service) UsageChartData(apiKey string, days int) (map[string]any, error
 
 		for i := range apikeyDist {
 			if apikeyDist[i].Name == "" {
-				if name, ok := maps.keyNameMap[apikeyDist[i].APIKey]; ok {
+				if name, ok := maps.keyNameMap[apikeyDist[i].APIKeyID]; ok {
 					apikeyDist[i].Name = name
 				}
 			}

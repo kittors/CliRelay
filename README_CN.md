@@ -390,3 +390,5 @@ git push origin feature/your-change   # 然后向 dev 发起 Pull Request
 CliRelay 以 [MIT 许可证](LICENSE)发布。
 
 它建立在 **[router-for-me/CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI)** 的核心代理逻辑之上。感谢原项目及其所有贡献者——正是有了这个坚实的基础，我们才能在上面构建管理层、请求日志、额度控制和管理面板。
+
+隐私脱敏（`internal/privacymask`）移植自 **[yetone/magpie](https://github.com/yetone/magpie)**：识别密钥、令牌、密码和个人信息的规则，占位符的写法，以及在回复里把原值换回来的做法。感谢 magpie 的作者和贡献者；移植的文件保留了 magpie 的 MIT 版权声明（[internal/privacymask/MAGPIE_LICENSE](internal/privacymask/MAGPIE_LICENSE)）。

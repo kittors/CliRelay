@@ -12,6 +12,7 @@ type Config = bridgeconfig.Config
 type APIKeyEntry = bridgeconfig.APIKeyEntry
 
 type StreamingConfig = bridgeconfig.StreamingConfig
+type ResponsesWebsocketConfig = bridgeconfig.ResponsesWebsocketConfig
 type RoutingConfig = bridgeconfig.RoutingConfig
 type RoutingChannelGroup = bridgeconfig.RoutingChannelGroup
 type RoutingPathRoute = bridgeconfig.RoutingPathRoute
@@ -60,6 +61,7 @@ const (
 	DistributionWeighted     = bridgeconfig.DistributionWeighted
 	DistributionLeastLoad    = bridgeconfig.DistributionLeastLoad
 	DistributionFillFirst    = bridgeconfig.DistributionFillFirst
+	DistributionResetAware   = bridgeconfig.DistributionResetAware
 	DefaultStickyMaxRequests = bridgeconfig.DefaultStickyMaxRequests
 )
 

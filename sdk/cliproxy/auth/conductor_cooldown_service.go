@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/retryhint"
 )
 
 type cooldownService struct {
@@ -142,6 +144,12 @@ func (s cooldownService) markResult(ctx context.Context, result Result) {
 		return
 	}
 
+	// What the executor itself published, before the scheduler reads the response
+	// for a hint: the weekly-balance probe below keys on whether the executor
+	// knew the reset time.
+	published := result
+	result = withInferredRetryAfter(result, time.Now())
+
 	var effects resultStateEffects
 	var cooldown *CooldownNotice
 	s.manager.mu.Lock()
@@ -157,7 +165,7 @@ func (s cooldownService) markResult(ctx context.Context, result Result) {
 	s.applyRegistryEffects(result, effects)
 	s.manager.publishCooldown(cooldown)
 	s.manager.hook.OnResult(ctx, result)
-	if !result.Success && result.RetryAfter == nil && isXAIWeekBalanceExhaustedError(result.Error) {
+	if !published.Success && published.RetryAfter == nil && isXAIWeekBalanceExhaustedError(published.Error) {
 		probeCtx := context.Background()
 		if ctx != nil {
 			probeCtx = context.WithoutCancel(ctx)
@@ -181,6 +189,7 @@ func (s cooldownService) applySuccessLocked(auth *Auth, result Result, now time.
 		return
 	}
 	markClaudeOAuthHealthSuccessLocked(auth, result, now)
+	markCodexOAuthHealthSuccessLocked(auth, now)
 	if result.Model != "" {
 		state := ensureModelState(auth, result.Model)
 		if activeModelQuotaCooldown(state, now) && !quotaNeedsConfirmedRecovery(state.Quota, now) {
@@ -218,7 +227,11 @@ func (s cooldownService) applyFailureLocked(auth *Auth, result Result, now time.
 	if result.Error != nil && isRequestInvalidError(result.Error) {
 		return
 	}
+	result = dropAdvisoryRetryAfter(auth, result)
 	if applyClaudeOAuthFailureLocked(auth, result, now, effects) {
+		return
+	}
+	if applyCodexOAuthFailureLocked(auth, result, now, effects) {
 		return
 	}
 	if result.Model != "" {
@@ -230,6 +243,7 @@ func (s cooldownService) applyFailureLocked(auth *Auth, result Result, now time.
 
 func (s cooldownService) applyModelFailureLocked(auth *Auth, result Result, now time.Time, effects *resultStateEffects) {
 	state := ensureModelState(auth, result.Model)
+	previousStatus := statusCodeFromResult(state.LastError)
 	state.Unavailable = true
 	state.Status = StatusError
 	state.UpdatedAt = now
@@ -249,6 +263,11 @@ func (s cooldownService) applyModelFailureLocked(auth *Auth, result Result, now 
 	}
 
 	statusCode := statusCodeFromResult(result.Error)
+	if statusCode != 0 && statusCode == previousStatus {
+		state.FailureStreak++
+	} else {
+		state.FailureStreak = 1
+	}
 	// xAI Grok Build returns HTTP 402 for weekly usage balance exhaustion.
 	// Route those as quota cooldowns (window/retry metadata from executor),
 	// not the generic 30m payment_required probe loop.
@@ -257,18 +276,24 @@ func (s cooldownService) applyModelFailureLocked(auth *Auth, result Result, now 
 	} else {
 		switch statusCode {
 		case 401:
+			// The upstream rejected the credential, not this model, so every
+			// model of the account is held back with it: the ones it has state
+			// for here, the others by the selector (credentialRejected). A dead
+			// key is then not tried once per model.
 			next := now.Add(30 * time.Minute)
 			state.NextRetryAfter = next
+			holdCredentialModelsLocked(auth, state, result.Error, next, now)
 			effects.suspendReason = "unauthorized"
 			effects.shouldSuspendModel = true
 		case 402, 403:
-			next := now.Add(30 * time.Minute)
-			state.NextRetryAfter = next
+			// A billing or permission refusal can be about this model alone (a
+			// relay key not allowed to use it), so it stays per model. One that
+			// keeps coming back is retried less often.
+			state.NextRetryAfter = now.Add(repeatedFailureBackoff(30*time.Minute, 2*time.Hour, state.FailureStreak))
 			effects.suspendReason = "payment_required"
 			effects.shouldSuspendModel = true
 		case 404:
-			next := now.Add(12 * time.Hour)
-			state.NextRetryAfter = next
+			state.NextRetryAfter = now.Add(notFoundCooldown(result.Error, state.FailureStreak))
 			effects.suspendReason = "not_found"
 			effects.shouldSuspendModel = true
 		case 429:
@@ -293,6 +318,12 @@ func (s cooldownService) applyModelFailureLocked(auth *Auth, result Result, now 
 			// pool has been shed, so those back off briefly instead.
 			if quotaCooldownDisabledForAuth(auth) {
 				state.NextRetryAfter = time.Time{}
+			} else if isProxyFailure(result) {
+				// The proxy in front of the upstream failed, not this credential.
+				state.NextRetryAfter = time.Time{}
+			} else if wait, ok := upstreamFailureCooldown(result); ok {
+				// The upstream said how long to leave it alone.
+				state.NextRetryAfter = now.Add(wait)
 			} else if isTransientUpstreamOverloadError(result.Error) {
 				state.NextRetryAfter = now.Add(transientUpstreamOverloadCooldown)
 			} else {
@@ -300,6 +331,13 @@ func (s cooldownService) applyModelFailureLocked(auth *Auth, result Result, now 
 			}
 		default:
 			state.NextRetryAfter = time.Time{}
+			// Anthropic's 529 "overloaded" carries no cooldown of its own; it only
+			// backs off when the upstream names a time.
+			if statusCode == statusSiteOverloaded && !quotaCooldownDisabledForAuth(auth) {
+				if wait, ok := upstreamFailureCooldown(result); ok {
+					state.NextRetryAfter = now.Add(wait)
+				}
+			}
 		}
 	}
 
@@ -369,32 +407,16 @@ func isQuotaExhaustionError(err *Error, retryAfter *time.Duration) bool {
 // isTransientRateLimitError reports whether a 429 describes short-term
 // throttling rather than an exhausted allowance.
 //
-// The distinction is in the body: providers name an exhausted quota explicitly
-// ("quota_exhausted", a quotaResetDelay, a daily quota), whereas a bare
-// "resource has been exhausted" is the generic throttle Google returns for
-// per-minute limits. Anything not recognised as throttling keeps the previous
-// behaviour and is treated as exhaustion, so this can only narrow the cases
-// that suspend a model, never widen them.
+// The distinction is in the message: providers name an exhausted quota
+// explicitly ("quota_exhausted", a quotaResetDelay, a daily quota, 额度/余额),
+// whereas a bare "resource has been exhausted" is the generic throttle Google
+// returns for per-minute limits and a Chinese relay says "请求过于频繁" for the
+// same thing. retryhint.ClassifyMessage holds the phrase lists. Anything it does
+// not recognise keeps the previous behaviour and is treated as exhaustion, so
+// growing the lists can only narrow the cases that suspend a model, never widen
+// them.
 func isTransientRateLimitError(err *Error) bool {
-	if err == nil {
-		return false
-	}
-	body := strings.ToLower(err.Message)
-	if body == "" {
-		return false
-	}
-	for _, explicit := range []string{
-		"quota_exhausted", "quotaresetdelay", "quota reset",
-		"quota limit", "daily quota", "usage balance exhausted", "balance exhausted",
-	} {
-		if strings.Contains(body, explicit) {
-			return false
-		}
-	}
-	return strings.Contains(body, "resource has been exhausted") ||
-		strings.Contains(body, "resource_exhausted") ||
-		strings.Contains(body, "rate limit") ||
-		strings.Contains(body, "too many requests")
+	return err != nil && retryhint.ClassifyMessage(err.Message) == retryhint.KindRateLimit
 }
 
 // applyTransientRateLimitLocked backs off briefly without declaring the model
@@ -489,5 +511,49 @@ func (s cooldownService) applyRegistryEffects(result Result, effects resultState
 		registryRef.ResumeClientModel(result.AuthID, result.Model)
 	} else if effects.shouldSuspendModel {
 		registryRef.SuspendClientModel(result.AuthID, result.Model, effects.suspendReason)
+	}
+}
+
+// notFoundCooldown is how long a model stays held back after a 404. A 404
+// that says the model does not exist or the plan leaves it out holds for 12
+// hours. A bare one may be a relay's passing routing miss, so it holds for 10
+// minutes the first time and twice as long each time it comes back without a
+// success in between, up to the same 12 hours.
+func notFoundCooldown(failure *Error, streak int) time.Duration {
+	const limit = 12 * time.Hour
+	if failure != nil && isModelUnavailableMessage(failure.Message) {
+		return limit
+	}
+	return repeatedFailureBackoff(10*time.Minute, limit, streak)
+}
+
+// repeatedFailureBackoff is base for the first failure of a streak, doubled
+// for each repeat, and never more than limit.
+func repeatedFailureBackoff(base, limit time.Duration, streak int) time.Duration {
+	wait := base
+	for i := 1; i < streak && wait < limit; i++ {
+		wait *= 2
+	}
+	return min(wait, limit)
+}
+
+// holdCredentialModelsLocked gives every other model auth has state for the
+// cooldown of a 401 one of them got, unless it is held back longer already.
+func holdCredentialModelsLocked(auth *Auth, failed *ModelState, failure *Error, until, now time.Time) {
+	for _, state := range auth.ModelStates {
+		if state == nil || state == failed || state.Status == StatusDisabled {
+			continue
+		}
+		if state.Unavailable && !state.NextRetryAfter.Before(until) {
+			continue
+		}
+		state.Unavailable = true
+		state.Status = StatusError
+		state.NextRetryAfter = until
+		state.UpdatedAt = now
+		if failure != nil {
+			state.LastError = cloneError(failure)
+			state.StatusMessage = failure.Message
+		}
 	}
 }

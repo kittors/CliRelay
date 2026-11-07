@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/codexadmission"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/management/patchfield"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 )
 
@@ -37,8 +38,12 @@ type FieldPatch struct {
 	ConcurrencyLimit *int `json:"concurrency_limit"`
 	// CodexConvergenceMode overrides the global identity fingerprint convergence mode for Codex accounts (off, device, session, full, or empty to inherit).
 	CodexConvergenceMode *string `json:"codex_convergence_mode"`
-	// CodexServiceTier sets how service_tier (Fast/Priority/Flex) is handled for this account: "pass", "priority", "flex", "drop", or empty/default to inherit.
+	// CodexServiceTier controls service_tier: "pass", "priority", "ultrafast", "flex", "drop", or empty/default for standard mode.
 	CodexServiceTier *string `json:"codex_service_tier"`
+	// DisableCooling overrides the global disable-cooling switch for this
+	// account: true or false sets the override, null removes it so the account
+	// follows the global switch again.
+	DisableCooling patchfield.NullableBool `json:"disable_cooling"`
 }
 
 type FieldPatchOptions struct {
@@ -371,6 +376,10 @@ func ApplyFieldPatch(auth *coreauth.Auth, patch FieldPatch, opts FieldPatchOptio
 		}
 		changed = true
 	}
+	if patch.DisableCooling.Set {
+		applyDisableCoolingPatch(auth, patch.DisableCooling.Value)
+		changed = true
+	}
 
 	if !changed {
 		return result, fmt.Errorf("no fields to update")
@@ -386,6 +395,20 @@ func defaultValidateLabel(label, excludeAuthID string) (string, error) {
 		return "", fmt.Errorf("channel name is required")
 	}
 	return trimmed, nil
+}
+
+// applyDisableCoolingPatch stores the account's disable_cooling override in its
+// metadata, where DisableCoolingOverride reads it, or removes it. The legacy
+// "disable-cooling" key goes too, or it would keep answering after a clear.
+func applyDisableCoolingPatch(auth *coreauth.Auth, value *bool) {
+	metadata := ensureMetadata(auth)
+	delete(metadata, "disable-cooling")
+	if value == nil {
+		delete(metadata, "disable_cooling")
+		delete(auth.Attributes, coreauth.DisableCoolingAttributeKey)
+		return
+	}
+	metadata["disable_cooling"] = *value
 }
 
 func ensureMetadata(auth *coreauth.Auth) map[string]any {

@@ -172,7 +172,7 @@ func TestOpenAIBackendRejectsOversizedResponse(t *testing.T) {
 	defer server.Close()
 	profile := testProfile(t, "tenant-a", "api", ModePreBlock, KeywordModeAPIOnly)
 	profile.BaseURL = server.URL
-	decision := NewEvaluator(server.Client()).Evaluate(context.Background(), profile, "input")
+	decision := NewEvaluator(server.Client()).Evaluate(context.Background(), profile, TextInput("input"))
 	if decision.WouldBlock || decision.Action != ActionAPIError {
 		t.Fatalf("decision = %#v, want fail-open", decision)
 	}

@@ -11,8 +11,8 @@ import (
 
 func TestRuntimeMigrationsCoverCoreTables(t *testing.T) {
 	migrations := RuntimeMigrations()
-	if len(migrations) != 39 {
-		t.Fatalf("RuntimeMigrations len = %d, want 39", len(migrations))
+	if len(migrations) != 45 {
+		t.Fatalf("RuntimeMigrations len = %d, want 45", len(migrations))
 	}
 	// Membership table of multi-instance deployments.
 	if migrations[31].Version != "202609250001_cluster_nodes" {
@@ -49,6 +49,78 @@ func TestRuntimeMigrationsCoverCoreTables(t *testing.T) {
 		got := migrations[35+i]
 		if got.Version != want.version || !strings.Contains(got.SQL, want.table) {
 			t.Fatalf("migration %d = %q, want %q creating %q", 35+i, got.Version, want.version, want.table)
+		}
+	}
+	// Grants of the system tenant's shared proxies and credentials. A new
+	// table only; proxy_pool and auth_credentials keep their shape.
+	if got := migrations[39]; got.Version != "202610130001_platform_resource_grants" ||
+		!strings.Contains(got.SQL, "CREATE TABLE IF NOT EXISTS platform_resource_grants") ||
+		strings.Contains(got.SQL, "ALTER TABLE") {
+		t.Fatalf("resource grants migration = %q", got.Version)
+	}
+	if got := migrations[40]; got.Version != "202610130002_ccswitch_codex_context_window" ||
+		!strings.Contains(got.SQL, "ADD COLUMN IF NOT EXISTS codex_context_window") {
+		t.Fatalf("ccswitch context window migration = %q", got.Version)
+	}
+	// Access policies of accounts, keys and permission profiles: one additive
+	// column each, defaulting to the empty policy so no backfill is needed.
+	if got := migrations[41]; got.Version != "202610190001_access_policy" {
+		t.Fatalf("access policy migration = %q", got.Version)
+	} else {
+		for _, table := range []string{"end_users", "api_keys", "api_key_permission_profiles"} {
+			if !strings.Contains(got.SQL, "ALTER TABLE "+table+" ADD COLUMN IF NOT EXISTS access_policy TEXT NOT NULL DEFAULT '{}'") {
+				t.Fatalf("access policy migration does not add the column to %s", table)
+			}
+		}
+	}
+	// Cache reads, cache writes, prompt size and session on request_logs, cache
+	// totals on rollups. Catalog-only ALTERs: an index on request_logs would
+	// block log writes for the whole build, and an UPDATE would rewrite every
+	// row; the session backfill runs in the background instead.
+	if got := migrations[42]; got.Version != "202610300001_request_log_cache_and_session" {
+		t.Fatalf("cache and session migration = %q", got.Version)
+	} else {
+		for _, fragment := range []string{
+			"ADD COLUMN IF NOT EXISTS cache_read_tokens BIGINT,",
+			"ADD COLUMN IF NOT EXISTS cache_write_tokens BIGINT,",
+			"ADD COLUMN IF NOT EXISTS prompt_tokens BIGINT,",
+			"ADD COLUMN IF NOT EXISTS session_id TEXT NOT NULL DEFAULT ''",
+			"ADD COLUMN IF NOT EXISTS cache_known_prompt_tokens BIGINT NOT NULL DEFAULT 0",
+		} {
+			if !strings.Contains(got.SQL, fragment) {
+				t.Fatalf("cache and session migration missing %q", fragment)
+			}
+		}
+		if strings.Contains(got.SQL, "INDEX") || strings.Contains(got.SQL, "UPDATE") {
+			t.Fatalf("cache and session migration must only change the catalog: %q", got.SQL)
+		}
+	}
+	// Which loop protection check ended a request: one constant-default column,
+	// no index (it would block log writes for the whole build) and no backfill.
+	if got := migrations[43]; got.Version != "202611010001_request_log_guard_kind" ||
+		!strings.Contains(got.SQL, "ADD COLUMN IF NOT EXISTS guard_kind TEXT NOT NULL DEFAULT ''") {
+		t.Fatalf("guard kind migration = %q: %q", got.Version, got.SQL)
+	} else if strings.Contains(got.SQL, "INDEX") || strings.Contains(got.SQL, "UPDATE") {
+		t.Fatalf("guard kind migration must only change the catalog: %q", got.SQL)
+	}
+	// Generation-speed sums on rollups: constant-default columns on a table
+	// every request writes to, so catalog-only; old buckets stay at zero, which
+	// reads as "no sample", instead of being rewritten.
+	if got := migrations[44]; got.Version != "202611040001_usage_rollup_generation_speed" {
+		t.Fatalf("generation speed migration = %q", got.Version)
+	} else {
+		for _, fragment := range []string{
+			"ADD COLUMN IF NOT EXISTS generation_count BIGINT NOT NULL DEFAULT 0",
+			"ADD COLUMN IF NOT EXISTS generation_output_tokens BIGINT NOT NULL DEFAULT 0",
+			"ADD COLUMN IF NOT EXISTS generation_sum_ms BIGINT NOT NULL DEFAULT 0",
+			"ADD COLUMN IF NOT EXISTS generation_speed_sum DOUBLE PRECISION NOT NULL DEFAULT 0",
+		} {
+			if !strings.Contains(got.SQL, fragment) {
+				t.Fatalf("generation speed migration missing %q", fragment)
+			}
+		}
+		if strings.Contains(got.SQL, "INDEX") || strings.Contains(got.SQL, "UPDATE") || strings.Contains(got.SQL, "request_logs") {
+			t.Fatalf("generation speed migration must only add rollup columns: %q", got.SQL)
 		}
 	}
 	// Appended from laterRuntimeMigrations() because migrations.go sits at its

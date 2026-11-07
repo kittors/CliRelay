@@ -94,6 +94,8 @@ var MenuCatalog = []MenuSeed{
 	// Runtime / observability
 	{Code: "runtime.monitor", ParentCode: "group.runtime", Type: "menu", Path: "/runtime/monitor", Component: "monitor", LabelKey: "shell.nav_monitor", Icon: "activity", PermissionCode: "monitor.read", SortOrder: 10},
 	{Code: "runtime.request-logs", ParentCode: "group.runtime", Type: "menu", Path: "/runtime/request-logs", Component: "request-logs", LabelKey: "shell.nav_request_logs", Icon: "scroll-text", PermissionCode: "request_logs.read", SortOrder: 20},
+	// Privacy masking's records and settings; the same people as content moderation's see them.
+	{Code: "runtime.privacy-masking", ParentCode: "group.runtime", Type: "menu", Path: "/runtime/privacy-masking", Component: "privacy-masking", LabelKey: "shell.nav_privacy_masking", Icon: "shield-check", PermissionCode: "content_moderation.read", SortOrder: 25},
 	{Code: "runtime.logs", ParentCode: "group.runtime", Type: "menu", Path: "/runtime/logs", Component: "logs", LabelKey: "shell.nav_logs", Icon: "file-text", PermissionCode: "system.logs.read", SortOrder: 30},
 	// Access & credentials (upstream AI + client keys)
 	{Code: "access.providers", ParentCode: "group.access", Type: "menu", Path: "/access/ai-providers", Component: "providers", LabelKey: "shell.nav_ai_providers", Icon: "bot", PermissionCode: "providers.read", SortOrder: 10},
@@ -126,6 +128,10 @@ var MenuCatalog = []MenuSeed{
 	{Code: "governance.ip-access", ParentCode: "group.governance", Type: "menu", Path: "/governance/ip-access", Component: "ip-access", LabelKey: "shell.nav_ip_access", Icon: "shield-ban", PermissionCode: "platform.ip_access.read", SortOrder: 50},
 	// System settings only
 	{Code: "system.config", ParentCode: "group.system", Type: "menu", Path: "/system/config", Component: "config", LabelKey: "shell.nav_config", Icon: "settings", PermissionCode: "system.config.read", SortOrder: 10},
+	// Tenant-scoped, like the /alerts API it edits (tenant_settings.read/write): every tenant
+	// sets its own channels and thresholds. Must not use platform system.config.read, or
+	// ordinary tenants never see this menu.
+	{Code: "system.alerts", ParentCode: "group.system", Type: "menu", Path: "/system/alerts", Component: "alerts", LabelKey: "shell.nav_alerts", Icon: "bell", PermissionCode: "tenant_settings.read", SortOrder: 15},
 	{Code: MenuManagementCode, ParentCode: "group.system", Type: "menu", Path: "/system/menu-management", Component: "menu-management", LabelKey: "shell.nav_menu_management", Icon: "menu", PermissionCode: "platform.menus.read", SortOrder: 20},
 }
 

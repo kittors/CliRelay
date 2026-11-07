@@ -298,3 +298,69 @@ func TestGetUsageLogEgressCannotReadAnotherTenantLog(t *testing.T) {
 		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusNotFound, rec.Body.String())
 	}
 }
+
+func TestGetUsageLogEgressRechecksSharedCredentialThroughThePlatformPool(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	if err := usage.InitDB(filepath.Join(t.TempDir(), "usage.db"), config.RequestLogStorageConfig{StoreContent: true}, time.UTC); err != nil {
+		t.Fatalf("InitDB: %v", err)
+	}
+	t.Cleanup(usage.CloseDB)
+
+	const grantee = "00000000-0000-0000-0000-00000000000a"
+	const apiKey = "sk-grantee-egress"
+	if err := usage.UpsertAPIKeyForTenant(grantee, usage.APIKeyRow{Key: apiKey}); err != nil {
+		t.Fatalf("UpsertAPIKeyForTenant: %v", err)
+	}
+	systemPool := []config.ProxyPoolEntry{{ID: "hk-1", Name: "Platform HK", URL: "http://platform-proxy.local:8080", Enabled: true}}
+	if err := usage.ReplaceProxyPool(systemPool); err != nil {
+		t.Fatal(err)
+	}
+	// The grantee has an unrelated entry under the same ID. The request left
+	// through the platform's hk-1, where the shared credential runs.
+	if err := usage.ReplaceProxyPoolForTenant(grantee, []config.ProxyPoolEntry{{ID: "hk-1", URL: "http://grantee-proxy.local:8080", Enabled: true}}); err != nil {
+		t.Fatal(err)
+	}
+
+	manager := coreauth.NewManager(&memoryAuthStore{}, nil, nil)
+	shared, err := manager.Register(context.Background(), &coreauth.Auth{
+		ID: "codex-platform.json", TenantID: identity.SystemTenantID, Provider: "codex", ProxyID: "hk-1", Status: coreauth.StatusActive,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.SetSharedAuthGrants(map[string][]string{shared.ID: {grantee}})
+
+	usage.InsertLogWithDetails(
+		apiKey, "Grantee", "gpt-test", "codex", "Codex", shared.Index,
+		false, time.Now().UTC(), 100, 10,
+		usage.TokenStats{InputTokens: 1, OutputTokens: 1, TotalTokens: 2},
+		`{"messages":[]}`, `{"choices":[]}`,
+		`{"egress":{"route_kind":"proxy","proxy_source":"proxy_id","proxy_id":"hk-1","proxy_name":"Platform HK","proxy_url_host":"http://platform-proxy.local:8080"}}`,
+	)
+	rows, err := usage.QueryLogs(usage.LogQueryParams{TenantID: grantee, Page: 1, Size: 10, Days: 1})
+	if err != nil || len(rows.Items) != 1 {
+		t.Fatalf("QueryLogs: items=%d err=%v", len(rows.Items), err)
+	}
+
+	savedProbe := usageLogEgressProbeFn
+	var probed []string
+	usageLogEgressProbeFn = func(_ context.Context, proxyURL string, _ *config.SDKConfig) (string, error) {
+		probed = append(probed, proxyURL)
+		return "203.0.113.7", nil
+	}
+	t.Cleanup(func() { usageLogEgressProbeFn = savedProbe })
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Set(managementPrincipalKey, identity.Principal{EffectiveTenant: identity.Tenant{ID: grantee}})
+	c.Params = gin.Params{{Key: "id", Value: strconv.FormatInt(rows.Items[0].ID, 10)}}
+	c.Request = httptest.NewRequest(http.MethodGet, "/usage/logs/1/egress", nil)
+	(&Handler{cfg: &config.Config{ProxyPool: systemPool}, authManager: manager}).GetUsageLogEgress(c)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	if len(probed) != 2 || probed[1] != "http://platform-proxy.local:8080" {
+		t.Fatalf("probed %v, want the server and then the platform's hk-1", probed)
+	}
+}

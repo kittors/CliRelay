@@ -270,6 +270,14 @@ request-retry: 3
 # Maximum wait time in seconds for a cooled-down credential before triggering a retry.
 max-retry-interval: 30
 
+# When true, a credential that answers 429, 408 or 5xx is not taken out of rotation:
+# the error goes back to the client and the next request may use it again. A reset
+# time the upstream announces with a usage limit (for example a Codex limit or a
+# Claude OAuth window) is still waited out. Each provider entry and each auth file can
+# override this with its own disable-cooling (auth files: "disable_cooling"); leave it
+# unset there to follow this value. 401, 403 and 404 still park a credential.
+disable-cooling: false
+
 # Behavior when an AI account reaches the `concurrency_limit` set on its auth file.
 # Requests first fail over to any account with a free slot; only when every candidate
 # is busy do they queue here, in arrival order, and resume as soon as a slot frees up.
@@ -354,7 +362,21 @@ nonstream-keepalive-interval: 0
 # Streaming behavior (SSE keep-alives + safe bootstrap retries).
 streaming:
   keepalive-seconds: 15   # Default: 15. Set < 0 to disable keep-alives.
-  bootstrap-retries: 1    # Default: 1. Retries before first byte is sent.
+  # How many times a stream that fails before its first byte moves to another
+  # account. Leave it unset for the default (2, and never more than the accounts
+  # that can serve the request); 0 turns it off.
+  # bootstrap-retries: 2
+  # Process-wide cap on requests waiting at once for a cooling account. It only
+  # matters when a channel group turns busy waiting on (busy-wait-max-seconds in
+  # the group's settings, off by default). Every waiter holds its client
+  # connection open, idle, and counts against the reverse proxy's limit on
+  # connections to this process (nginx max_conns), so keep it well below that
+  # limit. Unset, 0 or negative take the default (64); it never means unlimited.
+  # A request over the cap fails at once, as if the group had waiting off.
+  # Streaming clients get keep-alive comments while they wait; non-streaming
+  # requests and image/video submissions wait silently, so a client whose own
+  # timeout is shorter than the group's wait counts the wait as a failure.
+  # busy-wait-max-waiters: 64
 
 # Gemini API keys
 # gemini-api-key:
@@ -381,6 +403,25 @@ streaming:
 # manifest, which is the only source that knows what an account may call. Set it
 # only to pin a specific carrier, e.g. to control cost.
 # codex-image-base-model: "gpt-5.5"
+
+# Compress the request body of Codex OAuth (ChatGPT account) POST /responses calls
+# with zstd, as the official Codex client does. On by default. It only applies to
+# chatgpt.com; API-key accounts, custom base URLs, /responses/compact and
+# websockets are unaffected, and request logs keep the plain JSON. Set false to
+# send plain JSON, e.g. to read the bytes on the wire through an inspecting proxy.
+# codex-request-zstd: false
+
+# Client-facing Responses WebSocket (GET /v1/responses, /backend-api/codex/responses).
+# Over it Codex sends only what a turn adds (previous_response_id plus the new
+# input items); over HTTP it re-sends the whole conversation every turn,
+# screenshots included. Codex uses it when its provider sets
+# supports_websockets = true.
+# responses-websocket:
+#   disabled: false           # true answers the upgrade with 426, and Codex falls back to HTTP at once
+#   compression: true         # permessage-deflate for clients that offer it
+#   max-message-mb: 128       # limit of one client message
+#   max-transcript-mb: 64     # transcript kept between turns; past it the connection closes after the turn
+#   idle-timeout-seconds: 600 # close a connection that waits this long for its next turn; negative disables
 
 # Codex API keys
 # codex-api-key:
@@ -480,6 +521,7 @@ streaming:
 #     headers:
 #       X-Custom-Header: "custom-value"
 #     codex-tool-bridge: false # opt in only for Codex Desktop Computer Use / Browser, see above
+#     disable-cooling: true # optional: keep sending to this provider when it answers 429/5xx; omit to follow the global disable-cooling
 #     api-key-entries:
 #       - api-key: "sk-or-v1-...b780"
 #         proxy-url: "socks5://proxy.example.com:1080" # optional: per-key proxy override

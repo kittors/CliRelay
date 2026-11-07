@@ -40,6 +40,19 @@ func registerIdentityAuthRoutes(engine *gin.Engine, h *managementhandlers.Handle
 	portal.POST("/api-keys/:id/rotate", h.PostPortalAPIKeyRotate)
 	portal.POST("/api-keys/:id/period-spending/reset", h.PostPortalAPIKeyPeriodSpendingReset)
 	portal.DELETE("/api-keys/:id", h.DeletePortalAPIKey)
+	// The signed-in user's own sensitive words, while the tenant allows them.
+	portal.GET("/word-policy", h.GetPortalWordPolicy)
+	portal.PUT("/word-policy", h.PutPortalWordPolicy)
+	portal.DELETE("/word-policy", h.DeletePortalWordPolicy)
+	portal.POST("/word-policy/validate", h.PostPortalWordPolicyValidate)
+	portal.POST("/word-policy/test", h.PostPortalWordPolicyTest)
+	// Privacy masking, read only: the rules that apply to the user and the
+	// records of the user's own requests.
+	portal.GET("/privacy-masking/settings", h.GetPortalPrivacyMaskingSettings)
+	portal.POST("/privacy-masking/preview", h.PostPortalPrivacyMaskingPreview)
+	portal.GET("/privacy-masking/summary", h.GetPortalPrivacyMaskingSummary)
+	portal.GET("/privacy-masking/records", h.GetPortalPrivacyMaskingRecords)
+	portal.GET("/privacy-masking/records/:key", h.GetPortalPrivacyMaskingRecord)
 }
 
 func registerManagementIdentityRoutes(group *gin.RouterGroup, h *managementhandlers.Handler) {
@@ -57,6 +70,7 @@ func registerManagementIdentityRoutes(group *gin.RouterGroup, h *managementhandl
 
 	group.GET("/end-users", h.GetEndUsers)
 	group.POST("/end-users", h.PostEndUser)
+	group.POST("/end-users/batch/permission-profile", h.PostEndUsersBatchPermissionProfile)
 	group.PATCH("/end-users/:id", h.PatchEndUser)
 	group.DELETE("/end-users/:id", h.DeleteEndUser)
 	group.POST("/end-users/:id/reset-password", h.PostEndUserResetPassword)
@@ -70,6 +84,7 @@ func registerManagementIdentityRoutes(group *gin.RouterGroup, h *managementhandl
 	group.POST("/end-users/:id/api-keys/:key_id/daily-spending/reset", h.PostEndUserAPIKeyDailySpendingReset)
 	group.POST("/end-users/:id/api-keys/:key_id/period-spending/reset", h.PostEndUserAPIKeyPeriodSpendingReset)
 	group.GET("/end-users/:id/api-keys/:key_id/daily-spending/reset-history", h.GetEndUserAPIKeyDailySpendingResetHistory)
+	group.GET("/end-users/:id/api-keys/:key_id/secret", h.GetEndUserAPIKeySecret)
 	group.DELETE("/end-users/:id/api-keys/:key_id", h.DeleteEndUserAPIKey)
 	group.POST("/end-users/:id/api-keys/:key_id/default", h.PostEndUserAPIKeyDefault)
 

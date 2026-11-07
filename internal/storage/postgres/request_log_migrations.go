@@ -20,3 +20,14 @@ const requestLogUpstreamResponseModelSQL = `
 ALTER TABLE request_logs
 ADD COLUMN IF NOT EXISTS upstream_response_model TEXT NOT NULL DEFAULT '';
 `
+
+// requestLogGuardKindSQL records which loop protection check ended a request
+// ("reply_loop", "tool_loop"). Existing rows keep the empty default, which reads
+// as "loop protection did not end this request". A constant default is a
+// catalog change on PostgreSQL 11 and later, the same shape as the migration
+// above. No index: the filter and the monitor count read a time window that the
+// (tenant_id, timestamp) index already narrows, like the failed-request views.
+const requestLogGuardKindSQL = `
+ALTER TABLE request_logs
+ADD COLUMN IF NOT EXISTS guard_kind TEXT NOT NULL DEFAULT '';
+`

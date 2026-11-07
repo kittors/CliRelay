@@ -13,8 +13,10 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/configsync"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/identity"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/ipaccess"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/loopguard"
 	modelconfigsettings "github.com/router-for-me/CLIProxyAPI/v6/internal/management/settings/modelconfig"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/management/settings/runtimeconfig"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/observability"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
@@ -86,6 +88,7 @@ func (s *Server) configSyncHandlers() map[string]configsync.Handler {
 		configsync.DomainModelConfigs:       s.reloadModelConfigs,
 		configsync.DomainModelOwnerPresets:  readOnDemand,
 		configsync.DomainCcSwitch:           readOnDemand,
+		configsync.DomainAlerts:             readOnDemand,
 		configsync.DomainPricing: func(context.Context, []cluster.ConfigEvent) error {
 			usage.ReloadPricingCache()
 			return nil
@@ -97,7 +100,19 @@ func (s *Server) configSyncHandlers() map[string]configsync.Handler {
 		configsync.DomainIPAccessRules: func(ctx context.Context, _ []cluster.ConfigEvent) error {
 			return ipaccess.Default().Refresh(ctx)
 		},
-		configsync.DomainTenants: s.reloadTenants,
+		configsync.DomainTenants:        s.reloadTenants,
+		configsync.DomainResourceGrants: s.reloadResourceGrants,
+		configsync.DomainObservability: func(context.Context, []cluster.ConfigEvent) error {
+			return observability.Default().Reload()
+		},
+		configsync.DomainLoopGuard: func(_ context.Context, events []cluster.ConfigEvent) error {
+			reloadLoopGuardSettings(events)
+			return nil
+		},
+		configsync.DomainSecretMasking: func(_ context.Context, events []cluster.ConfigEvent) error {
+			reloadSecretMaskingSettings(events)
+			return nil
+		},
 	}
 }
 
@@ -214,6 +229,24 @@ func (s *Server) reloadProxyPool(_ context.Context, events []cluster.ConfigEvent
 		}
 		manager.SetConfig(cfg)
 		internalserviceapp.SyncConfigDerivedAuthsForTenantInPlace(cfg, manager, identity.SystemTenantID)
+		// The system pool is also the platform's shared pool: tenants granted an
+		// entry that changed resolve it from their own bound copy.
+		internalserviceapp.RefreshSharedProxyPools(cfg, manager)
+	}
+	return nil
+}
+
+// reloadResourceGrants applies a change to what the system tenant shares:
+// credential grants take effect on the next selection, proxy grants through
+// a rebind of the tenants whose effective pool changed.
+func (s *Server) reloadResourceGrants(_ context.Context, _ []cluster.ConfigEvent) error {
+	manager := s.coreManager()
+	if manager == nil {
+		return nil
+	}
+	internalserviceapp.LoadSharedAuthGrants(manager)
+	if base := s.liveConfig(nil); base != nil {
+		internalserviceapp.RefreshSharedProxyPools(base, manager)
 	}
 	return nil
 }
@@ -390,8 +423,15 @@ func (s *Server) fullConfigReload(ctx context.Context) error {
 	if err := ipaccess.Default().Refresh(ctx); err != nil {
 		log.WithError(err).Debug("config sync: ip access refresh failed")
 	}
+	if err := observability.Default().Reload(); err != nil {
+		log.WithError(err).Debug("config sync: observability settings reload failed")
+	}
+	loopguard.Default().InvalidateAll()
 	if err := s.reloadAccessProviders(); err != nil {
 		return err
 	}
-	return s.reloadTenants(ctx, nil)
+	if err := s.reloadTenants(ctx, nil); err != nil {
+		return err
+	}
+	return s.reloadResourceGrants(ctx, nil)
 }

@@ -5,6 +5,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/configsync"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/identity"
 	apikeysettings "github.com/router-for-me/CLIProxyAPI/v6/internal/management/settings/apikey"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
@@ -51,13 +52,36 @@ type routingConfigResponse struct {
 
 type routingConfigCapabilities struct {
 	ChannelGroupExcludedModels bool `json:"channel-group-excluded-models"`
+	// ChannelGroupFollowUpstreamModels: channel groups store and enforce
+	// follow-upstream-models. An older backend drops the field on save, so the
+	// panel only shows the switch when this is advertised.
+	ChannelGroupFollowUpstreamModels bool `json:"channel-group-follow-upstream-models"`
+	// ChannelGroupFirstTokenTimeout and ChannelGroupBusyWait: channel groups
+	// store and enforce first-token-timeout-seconds and busy-wait-max-seconds.
+	// The panel only shows those fields when these are advertised, because an
+	// older backend drops them on save.
+	ChannelGroupFirstTokenTimeout bool `json:"channel-group-first-token-timeout"`
+	ChannelGroupBusyWait          bool `json:"channel-group-busy-wait"`
+	// ChannelGroupResetAwareDistribution: channel groups accept the
+	// reset-aware distribution. An older backend reads the unknown value as
+	// weighted, so the panel only offers it when this is advertised.
+	ChannelGroupResetAwareDistribution bool `json:"channel-group-distribution-reset-aware"`
+	// RoutingSimulation: GET /routing-simulation answers. The panel only offers
+	// the simulator when this is advertised.
+	RoutingSimulation bool `json:"routing-simulation"`
+	// VirtualModels: the routing config stores and serves virtual-models, and
+	// /routing-config/virtual-models edits them. The panel only shows the
+	// editor when this is advertised.
+	VirtualModels bool `json:"virtual-models"`
 }
 
 func (h *Handler) GetRoutingConfig(c *gin.Context) {
 	tenantID := effectiveTenantID(c)
 	var auths []*coreauth.Auth
 	if h != nil && h.authManager != nil {
-		auths = h.authManager.ListForTenant(tenantID)
+		// Shared platform credentials take part in this tenant's routing, so
+		// their channel names are this tenant's to reference.
+		auths = h.authManager.ListUsableForTenant(tenantID)
 	}
 	routing := currentRoutingConfigForTenant(h.cfg, tenantID)
 	_, version := usage.GetRoutingConfigWithVersionForTenant(tenantID)
@@ -66,17 +90,44 @@ func (h *Handler) GetRoutingConfig(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, routingConfigResponse{
 		RoutingConfig: routing,
-		Capabilities:  routingConfigCapabilities{ChannelGroupExcludedModels: true},
-		Version:       version,
+		Capabilities: routingConfigCapabilities{
+			ChannelGroupExcludedModels:         true,
+			ChannelGroupFollowUpstreamModels:   true,
+			ChannelGroupFirstTokenTimeout:      true,
+			ChannelGroupBusyWait:               true,
+			ChannelGroupResetAwareDistribution: true,
+			RoutingSimulation:                  h.routingSimulationAvailable(),
+			VirtualModels:                      true,
+		},
+		Version: version,
 	})
 }
 
 func (h *Handler) PutRoutingConfig(c *gin.Context) {
 	tenantID := effectiveTenantID(c)
-	var body config.RoutingConfig
-	if err := c.ShouldBindJSON(&body); err != nil {
+	body, sentVirtualModels, err := bindRoutingConfigBody(c)
+	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
 		return
+	}
+	// Checked before SanitizeRouting, which would quietly clamp what the
+	// operator typed into range.
+	if err := config.ValidateRoutingStreamGuards(body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	expected := requestExpectedVersion(c)
+	sentModels := body.VirtualModels
+	if !sentVirtualModels {
+		// A panel that predates virtual models saves the routing config without
+		// them, which must not delete them: they are carried over from the
+		// stored config. A write that names no version is pinned to the one
+		// they were read at, so an edit of them made meanwhile is not lost.
+		stored, version := h.storedRoutingConfig(tenantID)
+		body.VirtualModels = stored.VirtualModels
+		if expected == configsync.AnyVersion {
+			expected = version
+		}
 	}
 
 	candidate := &config.Config{
@@ -89,7 +140,7 @@ func (h *Handler) PutRoutingConfig(c *gin.Context) {
 
 	var auths []*coreauth.Auth
 	if h != nil && h.authManager != nil {
-		auths = h.authManager.ListForTenant(tenantID)
+		auths = h.authManager.ListUsableForTenant(tenantID)
 	}
 	if known, err := collectKnownChannels(h.cfg, auths, ""); err == nil {
 		candidate.Routing = canonicalizeRoutingConfigChannels(candidate.Routing, known)
@@ -99,23 +150,32 @@ func (h *Handler) PutRoutingConfig(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	if err := validateRoutingVirtualModels(candidate, auths, sentModels, sentVirtualModels); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 	// A PUT replaces the whole routing config, so it is checked against the
 	// version the client read, when it sent one.
-	version, err := usage.CompareAndSwapRoutingConfigForTenant(c.Request.Context(), tenantID, candidate.Routing, requestExpectedVersion(c))
+	version, err := usage.CompareAndSwapRoutingConfigForTenant(c.Request.Context(), tenantID, candidate.Routing, expected)
 	if err != nil {
 		writeConfigSaveError(c, "failed to save routing config", err)
 		return
 	}
+	h.applyRoutingConfig(c, tenantID, candidate.Routing, version)
+}
 
+// applyRoutingConfig makes a routing config just stored for tenantID the one
+// this node runs with, and answers the write.
+func (h *Handler) applyRoutingConfig(c *gin.Context, tenantID string, routing config.RoutingConfig, version int64) {
 	h.mu.Lock()
 	if h.cfg == nil {
 		h.cfg = &config.Config{}
 		h.cfg.Routing.IncludeDefaultGroup = true
 	}
 	tenantCfg := usage.BuildTenantRuntimeConfig(h.cfg, tenantID)
-	tenantCfg.Routing = candidate.Routing
+	tenantCfg.Routing = routing
 	if tenantID == identity.SystemTenantID {
-		h.cfg.Routing = candidate.Routing
+		h.cfg.Routing = routing
 	}
 	cfgRef := h.cfg
 	h.mu.Unlock()

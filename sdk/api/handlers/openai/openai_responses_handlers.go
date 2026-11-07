@@ -114,7 +114,7 @@ func (h *OpenAIResponsesAPIHandler) Compact(c *gin.Context) {
 	resp, upstreamHeaders, errMsg := h.ExecuteWithAuthManager(cliCtx, h.HandlerType(), modelName, rawJSON, "responses/compact")
 	stopKeepAlive()
 	if errMsg != nil {
-		h.WriteErrorResponse(c, errMsg)
+		h.WriteErrorResponseAs(c, errMsg, handlers.ErrorFormatOpenAI)
 		cliCancel(errMsg.Error)
 		return
 	}
@@ -140,7 +140,7 @@ func (h *OpenAIResponsesAPIHandler) handleNonStreamingResponse(c *gin.Context, r
 	resp, upstreamHeaders, errMsg := h.ExecuteWithAuthManager(cliCtx, h.HandlerType(), modelName, rawJSON, "")
 	stopKeepAlive()
 	if errMsg != nil {
-		h.WriteErrorResponse(c, errMsg)
+		h.WriteErrorResponseAs(c, errMsg, handlers.ErrorFormatOpenAI)
 		cliCancel(errMsg.Error)
 		return
 	}
@@ -174,7 +174,7 @@ func (h *OpenAIResponsesAPIHandler) handleStreamingResponse(c *gin.Context, rawJ
 	cliCtx, cliCancel := h.GetContextWithCancel(h, c, c.Request.Context())
 	dataChan, upstreamHeaders, errChan, startErr := h.StartStreamWithAuthManager(cliCtx, h.HandlerType(), modelName, rawJSON, "")
 	if startErr != nil {
-		h.WriteErrorResponse(c, startErr)
+		h.WriteErrorResponseAs(c, startErr, handlers.ErrorFormatOpenAI)
 		cliCancel(startErr.Error)
 		return
 	}

@@ -147,3 +147,39 @@ func TestRequestModeratorRunsAgainForFallbackCandidate(t *testing.T) {
 		t.Fatalf("moderated candidates = %#v, want auth-a then auth-b", moderated)
 	}
 }
+
+// A shared credential is moderated like any other candidate, and the moderator
+// is told both whose credential it is and who is asking: the owner's TenantID on
+// auth, the requesting tenant in the request metadata.
+func TestRequestModeratorSeesSharedCredentialOwnerAndRequestingTenant(t *testing.T) {
+	executor := &moderationCountingExecutor{}
+	manager := newModerationTestManager(t, executor,
+		&Auth{ID: "system-shared", TenantID: defaultTenantID, Provider: executor.Identifier(), Status: StatusActive},
+	)
+	manager.SetSharedAuthGrants(map[string][]string{"system-shared": {sharedTestTenantB}})
+	var mu sync.Mutex
+	var owner, requester string
+	manager.SetRequestModerator(requestModeratorFunc(func(_ context.Context, auth *Auth, opts cliproxyexecutor.Options) RequestModerationResult {
+		mu.Lock()
+		defer mu.Unlock()
+		owner = auth.TenantID
+		requester, _ = opts.Metadata[cliproxyexecutor.TenantMetadataKey].(string)
+		return RequestModerationResult{Blocked: true, Message: "blocked", HTTPStatus: http.StatusForbidden}
+	}))
+
+	_, err := manager.Execute(context.Background(), []string{executor.Identifier()}, cliproxyexecutor.Request{Model: "model"}, tenantOptions(sharedTestTenantB))
+	var authErr *Error
+	if !errors.As(err, &authErr) || authErr.Code != contentPolicyViolationCode {
+		t.Fatalf("error = %#v, want content policy violation", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if owner != defaultTenantID || requester != sharedTestTenantB {
+		t.Fatalf("moderator saw owner=%q requester=%q, want owner=%q requester=%q", owner, requester, defaultTenantID, sharedTestTenantB)
+	}
+	executor.mu.Lock()
+	defer executor.mu.Unlock()
+	if executor.execute != 0 {
+		t.Fatalf("executor calls = %d, want the blocked shared credential never reached", executor.execute)
+	}
+}

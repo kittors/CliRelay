@@ -60,21 +60,46 @@ func TestManagementLogsExpandsOwnedAPIKeyFilterIncludingSoftDeletedKeys(t *testi
 		t.Fatalf("expanded filters = %#v, want active, soft-deleted, and system selectors", expanded)
 	}
 
+	// The key facet offers account representatives by id; selecting one expands
+	// to every key of the account, soft-deleted ones included.
+	expandedIDs := expandManagementAPIKeyIDs(tenantID, []string{
+		" 00000000-0000-0000-0000-0000000000b2 ", "00000000-0000-0000-0000-0000000000b2", " __system__ ", "__system__",
+	})
+	wantIDs := []string{
+		"00000000-0000-0000-0000-0000000000b2",
+		"__system__",
+	}
+	for _, id := range wantIDs {
+		if !slices.Contains(expandedIDs, id) {
+			t.Fatalf("expanded ids = %#v, missing %q", expandedIDs, id)
+		}
+	}
+	if !slices.Contains(expandedIDs, "00000000-0000-0000-0000-0000000000a2") || len(expandedIDs) != 3 {
+		t.Fatalf("expanded ids = %#v, want the account's soft-deleted key as well", expandedIDs)
+	}
+
 	service := NewForTenant(tenantID, &config.Config{}, nil)
 	unfiltered, err := service.ManagementLogs(ManagementLogQueryInput{Days: 1, Page: 1, Size: 50})
 	if err != nil {
 		t.Fatalf("ManagementLogs(unfiltered): %v", err)
 	}
 	filters := unfiltered["filters"].(usage.FilterOptions)
-	if !slices.Contains(filters.APIKeys, "sk-owned-log-b") {
-		t.Fatalf("filters.APIKeys = %#v, want representative sk-owned-log-b", filters.APIKeys)
+	const ownedRepresentative = "00000000-0000-0000-0000-0000000000b2"
+	if !slices.Contains(filters.APIKeyIDs, ownedRepresentative) {
+		t.Fatalf("filters.APIKeyIDs = %#v, want the account's default key as representative", filters.APIKeyIDs)
 	}
-	if filters.APIKeyCounts["sk-owned-log-b"] != 2 {
-		t.Fatalf("filters.APIKeyCounts[sk-owned-log-b] = %d, want 2 account requests", filters.APIKeyCounts["sk-owned-log-b"])
+	if slices.Contains(filters.APIKeyIDs, "00000000-0000-0000-0000-0000000000a2") {
+		t.Fatalf("filters.APIKeyIDs = %#v, want the account's other keys folded into the representative", filters.APIKeyIDs)
+	}
+	if filters.APIKeyIDCounts[ownedRepresentative] != 2 {
+		t.Fatalf("filters.APIKeyIDCounts[%s] = %d, want 2 account requests", ownedRepresentative, filters.APIKeyIDCounts[ownedRepresentative])
+	}
+	if got := unfiltered["capabilities"].(map[string]bool)[CapabilityAPIKeyIDFilters]; !got {
+		t.Fatalf("capabilities = %#v, want %s declared", unfiltered["capabilities"], CapabilityAPIKeyIDFilters)
 	}
 
 	owned, err := service.ManagementLogs(ManagementLogQueryInput{
-		Days: 1, Page: 1, Size: 50, APIKeys: []string{"sk-owned-log-b"},
+		Days: 1, Page: 1, Size: 50, APIKeyIDs: []string{ownedRepresentative},
 	})
 	if err != nil {
 		t.Fatalf("ManagementLogs(owned representative): %v", err)
@@ -83,15 +108,16 @@ func TestManagementLogsExpandsOwnedAPIKeyFilterIncludingSoftDeletedKeys(t *testi
 		t.Fatalf("owned total = %d, want 2 account requests", total)
 	}
 	ownedItems := owned["items"].([]usage.LogRow)
-	if len(ownedItems) != 2 || ownedItems[0].APIKey != "sk-owned-log-a" || ownedItems[1].APIKey != "sk-owned-log-a" {
-		t.Fatalf("owned items = %#v, want two sk-owned-log-a requests", ownedItems)
+	wantMask := usage.MaskAPIKey("sk-owned-log-a")
+	if len(ownedItems) != 2 || ownedItems[0].APIKey != wantMask || ownedItems[1].APIKey != wantMask {
+		t.Fatalf("owned items = %#v, want two requests carrying the mask %q", ownedItems, wantMask)
 	}
 	if stats := owned["stats"].(usage.LogStats); stats.Total != 2 {
 		t.Fatalf("owned stats total = %d, want 2", stats.Total)
 	}
 
 	standalone, err := service.ManagementLogs(ManagementLogQueryInput{
-		Days: 1, Page: 1, Size: 50, APIKeys: []string{"sk-standalone"},
+		Days: 1, Page: 1, Size: 50, APIKeyIDs: []string{"00000000-0000-0000-0000-0000000000c2"},
 	})
 	if err != nil {
 		t.Fatalf("ManagementLogs(standalone): %v", err)
@@ -100,8 +126,19 @@ func TestManagementLogsExpandsOwnedAPIKeyFilterIncludingSoftDeletedKeys(t *testi
 		t.Fatalf("standalone total = %d, want 1", total)
 	}
 	standaloneItems := standalone["items"].([]usage.LogRow)
-	if len(standaloneItems) != 1 || standaloneItems[0].APIKey != "sk-standalone" {
-		t.Fatalf("standalone items = %#v, want only sk-standalone", standaloneItems)
+	if len(standaloneItems) != 1 || standaloneItems[0].APIKey != usage.MaskAPIKey("sk-standalone") {
+		t.Fatalf("standalone items = %#v, want only the standalone key's request", standaloneItems)
+	}
+
+	// A selector the caller holds still resolves to the key's id.
+	bySecret, err := service.ManagementLogs(ManagementLogQueryInput{
+		Days: 1, Page: 1, Size: 50, APIKeys: []string{"sk-standalone"},
+	})
+	if err != nil {
+		t.Fatalf("ManagementLogs(standalone secret selector): %v", err)
+	}
+	if total := bySecret["total"].(int64); total != 1 {
+		t.Fatalf("secret selector total = %d, want 1", total)
 	}
 }
 

@@ -343,7 +343,7 @@ func ConvertClaudeRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 		out, _ = sjson.Set(out, "user", user.String())
 	}
 
-	return []byte(out)
+	return common.OutputFormatFromClaude(root).WriteChat([]byte(out))
 }
 
 func convertClaudeContentPart(part gjson.Result) (string, bool) {

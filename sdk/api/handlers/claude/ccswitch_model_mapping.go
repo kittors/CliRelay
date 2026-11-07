@@ -50,3 +50,11 @@ func rewriteCcSwitchClaudeRequestModel(rawJSON []byte, route *internalrouting.Pa
 	}
 	return rawJSON, modelName, false
 }
+
+// MessagesModel is the model ClaudeMessages runs rawJSON with: the body's model
+// after the route's CC Switch mapping. The routing simulator reads it so it
+// simulates the model a real request would run.
+func MessagesModel(c *gin.Context, rawJSON []byte) string {
+	rawJSON, _, _ = rewriteCcSwitchClaudeRequestModel(rawJSON, routeContextFromGin(c))
+	return gjson.GetBytes(rawJSON, "model").String()
+}

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	log "github.com/sirupsen/logrus"
 )
@@ -45,33 +46,32 @@ type qwen3GuardBackend struct {
 	httpClient *http.Client
 }
 
-func (b *qwen3GuardBackend) Check(ctx context.Context, profile Profile, input string) (backendResult, error) {
+func (b *qwen3GuardBackend) Check(ctx context.Context, profile Profile, segments []Segment) (backendResult, error) {
 	// TimeoutMS budgets the entire evaluation. Chunks run under one deadline so
 	// a long prompt cannot multiply the latency the caller was promised.
 	budgetCtx, cancel := context.WithTimeout(ctx, time.Duration(profile.TimeoutMS)*time.Millisecond)
 	defer cancel()
 
-	chunks, truncatedRunes := splitForGuard(input, profile.InputLimit, profile.MaxChunks)
+	// Past input_limit x max_chunks characters, the oldest text is skipped and
+	// the newest user message always stays in (see guardChunks).
+	chunks, skipped := guardChunks(segments, profile.InputLimit, profile.MaxChunks)
 	if len(chunks) == 0 {
 		return backendResult{}, nil
 	}
-	if truncatedRunes > 0 {
-		// Never drop input silently: an unscanned tail is a coverage gap the
-		// operator has to be able to see and fix by raising the limits.
-		log.WithFields(log.Fields{
-			"profile_id":      profile.ID,
-			"input_limit":     profile.InputLimit,
-			"max_chunks":      profile.MaxChunks,
-			"truncated_chars": truncatedRunes,
-		}).Warn("content moderation truncated input before qwen3guard scan")
+	scanned := 0
+	for _, chunk := range chunks {
+		scanned += utf8.RuneCountInString(chunk)
 	}
+	logSkipped(profile, skipped, scanned, "content moderation skipped the oldest input before qwen3guard scan",
+		log.Fields{"input_limit": profile.InputLimit, "max_chunks": profile.MaxChunks})
 
 	aggregate := backendResult{Scores: map[string]float64{}}
 	categories := make(map[string]struct{})
 	matched := make(map[string]struct{})
 	unknown := make(map[string]struct{})
-	// Chunks run serially: guard deployments are typically a single small
-	// instance, and firing every chunk at once would only stall them all.
+	// Chunks run serially, newest first: guard deployments are typically a
+	// single small instance, and firing every chunk at once would only stall
+	// them all.
 	for _, chunk := range chunks {
 		verdict, err := b.scanChunk(budgetCtx, profile, chunk)
 		if err != nil {
@@ -267,30 +267,6 @@ func decideGuardVerdict(profile Profile, verdict guardVerdict) ([]string, bool) 
 	default:
 		return matched, false
 	}
-}
-
-// splitForGuard slices input into rune-safe chunks, returning how many runes
-// were dropped past the max_chunks ceiling.
-func splitForGuard(value string, limit, maxChunks int) ([]string, int) {
-	if limit <= 0 {
-		limit = DefaultInputLimit
-	}
-	if maxChunks <= 0 {
-		maxChunks = DefaultMaxChunks
-	}
-	runes := []rune(value)
-	chunks := make([]string, 0, maxChunks)
-	for start := 0; start < len(runes); start += limit {
-		if len(chunks) == maxChunks {
-			return chunks, len(runes) - start
-		}
-		end := start + limit
-		if end > len(runes) {
-			end = len(runes)
-		}
-		chunks = append(chunks, string(runes[start:end]))
-	}
-	return chunks, 0
 }
 
 // extractChatContent pulls the assistant text out of a chat completion, also

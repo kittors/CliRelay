@@ -21,7 +21,6 @@ func (l *FileRequestLogger) writeNonStreamingLog(
 	url, method string,
 	requestHeaders map[string][]string,
 	requestBody []byte,
-	requestBodyPath string,
 	apiRequest []byte,
 	apiResponse []byte,
 	apiResponseErrors []*interfaces.ErrorMessage,
@@ -36,7 +35,7 @@ func (l *FileRequestLogger) writeNonStreamingLog(
 	if requestTimestamp.IsZero() {
 		requestTimestamp = time.Now()
 	}
-	if errWrite := writeRequestInfoWithBody(w, url, method, requestHeaders, requestBody, requestBodyPath, requestTimestamp, diagnostic); errWrite != nil {
+	if errWrite := writeRequestInfoWithBody(w, url, method, requestHeaders, requestBody, "", requestTimestamp, diagnostic); errWrite != nil {
 		return errWrite
 	}
 	if errWrite := writeAPISection(w, "=== API REQUEST ===\n", "=== API REQUEST", apiRequest, time.Time{}); errWrite != nil {

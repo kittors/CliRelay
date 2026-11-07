@@ -46,10 +46,19 @@ func (s *Service) coordinatedRefresh(ctx context.Context, auth *coreauth.Auth, n
 // write that lost a version race re-applies the refreshed keys onto the
 // newest copy instead of dropping the rotated tokens; on a single node it is a
 // plain update.
+//
+// The write does not follow ctx: the refresh it records may have retired the
+// old refresh token upstream, so dropping the write because the management
+// request ended would leave the credential holding a dead token.
 func (s *Service) persistRefreshedAuth(ctx context.Context, auth *coreauth.Auth) {
 	before, _ := ctx.Value(refreshBaselineKey{}).(coreauth.MetadataSnapshot)
-	_, _ = s.authManager.UpdateRefreshed(ctx, auth, before)
+	store, cancel := context.WithTimeout(context.WithoutCancel(ctx), persistRefreshedAuthTimeout)
+	defer cancel()
+	_, _ = s.authManager.UpdateRefreshed(store, auth, before)
 }
+
+// persistRefreshedAuthTimeout bounds persistRefreshedAuth's write.
+const persistRefreshedAuthTimeout = 30 * time.Second
 
 // kimiTokenNeedsRefresh reports whether a Kimi access token is missing an
 // expiry or expires within 30 seconds.

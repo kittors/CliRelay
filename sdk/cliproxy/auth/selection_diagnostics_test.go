@@ -8,6 +8,7 @@ import (
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
 	sdkmodelcatalog "github.com/router-for-me/CLIProxyAPI/v6/sdk/modelcatalog"
+	sdkrouting "github.com/router-for-me/CLIProxyAPI/v6/sdk/routing"
 )
 
 // restrictedGroupManager reproduces the production shape that made this bug so hard
@@ -315,5 +316,53 @@ func TestExcludedModelReportsTheExclusion(t *testing.T) {
 	}
 	if strings.Contains(selectionErr.Message, "not in the allowed models") {
 		t.Errorf("message blames an allow list the group does not have: %q", selectionErr.Message)
+	}
+}
+
+// TestFrozenGroupPointsAtFollowingUpstreamForAListedModel covers the refusal the
+// 2026-10-28 report hit: discovery already listed the model and only a frozen
+// allow list stood in the way. Adding the id by hand fixes that one model; the
+// message has to name the setting that fixes the next one too.
+func TestFrozenGroupPointsAtFollowingUpstreamForAListedModel(t *testing.T) {
+	frozen := false
+	manager := NewManager(nil, &FillFirstSelector{}, nil)
+	manager.SetConfig(&internalconfig.Config{
+		Routing: internalconfig.RoutingConfig{
+			IncludeDefaultGroup: true,
+			ChannelGroups: []internalconfig.RoutingChannelGroup{
+				{Name: "default", AllowedModels: []string{"grok-4.5"}, FollowUpstreamModels: &frozen},
+			},
+		},
+	})
+	manager.RegisterExecutor(&stubExecutor{id: "xai"})
+	if _, err := manager.Register(context.Background(), &Auth{
+		ID:       "xai-auth",
+		Label:    "Grok Account",
+		Provider: "xai",
+		Status:   StatusActive,
+	}); err != nil {
+		t.Fatalf("register auth: %v", err)
+	}
+
+	listed := map[string]bool{"grok-imagine-image": true}
+	sdkrouting.SetDiscoveredModel(func(_ string, modelID string) bool { return listed[modelID] })
+	t.Cleanup(func() { sdkrouting.SetDiscoveredModel(nil) })
+
+	err := pickWithModel(manager, "grok-imagine-image")
+	selectionErr, ok := err.(*Error)
+	if !ok || selectionErr.Code != "model_not_allowed_by_channel_group" {
+		t.Fatalf("err = %v, want model_not_allowed_by_channel_group", err)
+	}
+	if !strings.Contains(selectionErr.Message, "follow-upstream-models") {
+		t.Fatalf("message does not point at follow-upstream-models: %q", selectionErr.Message)
+	}
+
+	err = pickWithModel(manager, "grok-imagine-video")
+	selectionErr, ok = err.(*Error)
+	if !ok || selectionErr.Code != "model_not_allowed_by_channel_group" {
+		t.Fatalf("err = %v, want model_not_allowed_by_channel_group", err)
+	}
+	if strings.Contains(selectionErr.Message, "follow-upstream-models") {
+		t.Fatalf("following upstream would not admit an unlisted model, yet the message says it would: %q", selectionErr.Message)
 	}
 }

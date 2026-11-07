@@ -31,6 +31,11 @@ const (
 type proxyPoolAPIEntry struct {
 	config.ProxyPoolEntry
 	MaskedURL string `json:"masked_url"`
+	// Sharing and OverriddenBy describe a system tenant entry the platform
+	// shares; see proxy_pool_sharing.go. Clients that write the pool back
+	// send only the entry fields, so these never round-trip into storage.
+	Sharing      *resourceSharing `json:"sharing,omitempty"`
+	OverriddenBy []tenantRef      `json:"overridden_by,omitempty"`
 }
 
 // GetProxyPool returns reusable proxy entries for the management UI.
@@ -55,7 +60,12 @@ func (h *Handler) GetProxyPool(c *gin.Context) {
 			MaskedURL:      maskProxyPoolURL(entry.URL),
 		})
 	}
-	c.JSON(http.StatusOK, gin.H{"items": items})
+	// items stays the tenant's own pool: clients save it back whole, and a
+	// shared entry in it would be copied into the tenant's pool.
+	body := gin.H{}
+	decorateProxyPoolResponse(c, tenantID, items, body)
+	body["items"] = items
+	c.JSON(http.StatusOK, body)
 }
 
 // PutProxyPool replaces the reusable proxy list after normalization.
@@ -98,6 +108,9 @@ func (h *Handler) PutProxyPool(c *gin.Context) {
 			cfgRef := h.cfg
 			h.mu.Unlock()
 			h.notifyConfigMutated(cfgRef)
+			// The system pool is the platform's shared pool too; replacing it
+			// also drops the grants of entries it removed.
+			h.refreshSharedProxyPools()
 		} else {
 			h.applyTenantProxyPoolConfig(tenantID)
 		}
@@ -166,6 +179,7 @@ func (h *Handler) PatchProxyPoolEntry(c *gin.Context) {
 			cfgRef := h.cfg
 			h.mu.Unlock()
 			h.notifyConfigMutated(cfgRef)
+			h.refreshSharedProxyPools()
 		} else {
 			h.applyTenantProxyPoolConfig(tenantID)
 		}
@@ -231,6 +245,17 @@ func (h *Handler) PostProxyPoolCheck(c *gin.Context) {
 	if proxyURL == "" && proxypoolsettings.StoreAvailableForTenant(tenantID) {
 		if entry := proxypoolsettings.GetForTenant(tenantID, body.ID); entry != nil {
 			proxyURL = strings.TrimSpace(entry.URL)
+		}
+	}
+	if proxyURL == "" && tenantID != identity.SystemTenantID && strings.TrimSpace(body.ID) != "" {
+		// A grantee checks a shared entry by ID; its address never leaves the
+		// server, the check runs here.
+		id := config.NormalizeProxyID(body.ID)
+		for _, entry := range proxypoolsettings.SharedForTenant(tenantID) {
+			if config.NormalizeProxyID(entry.ID) == id {
+				proxyURL = strings.TrimSpace(entry.URL)
+				break
+			}
 		}
 	}
 	if proxyURL == "" && tenantID == identity.SystemTenantID && h != nil && h.cfg != nil {

@@ -74,11 +74,14 @@ func TestBedrockKeyManagementHandlers(t *testing.T) {
 	if getRec.Code != http.StatusOK {
 		t.Fatalf("GET status = %d body=%s", getRec.Code, getRec.Body.String())
 	}
-	var got map[string][]config.BedrockKey
+	// The list sits next to other keys (capabilities), so read it by name.
+	var got struct {
+		Keys []config.BedrockKey `json:"bedrock-api-key"`
+	}
 	if err := json.Unmarshal(getRec.Body.Bytes(), &got); err != nil {
 		t.Fatalf("decode GET body: %v", err)
 	}
-	if len(got["bedrock-api-key"]) != 2 {
+	if len(got.Keys) != 2 {
 		t.Fatalf("expected 2 keys from GET, got %+v", got)
 	}
 

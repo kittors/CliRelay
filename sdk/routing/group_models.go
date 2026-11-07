@@ -1,6 +1,10 @@
 package routing
 
-import "strings"
+import (
+	"fmt"
+	"sort"
+	"strings"
+)
 
 // discoveredModel is installed by model discovery. Nil until that package
 // initialises, which is the same as "nothing has been listed".
@@ -19,6 +23,88 @@ func DiscoveredModel(tenantID, modelID string) bool {
 		return false
 	}
 	return fn(tenantID, modelID)
+}
+
+// FollowsUpstreamModels resolves a channel group's follow-upstream-models
+// setting: whether its allow list also admits a model discovery lists after the
+// list was saved. Every gate that reads an allow list (the request gate, the
+// credential selector, /v1/models and the panel's availability) asks this, so
+// they cannot disagree on which groups grow on their own.
+//
+// A group that never set it follows only when it is the default group. That is
+// the root pool behind /v1 and the model plaza, which followed upstream before
+// the setting existed; a curated group stays frozen until an operator opts it
+// in, because inheriting every new model is not what an allow list promised.
+func FollowsUpstreamModels(groupName string, setting *bool) bool {
+	if setting != nil {
+		return *setting
+	}
+	return NormalizeGroupName(groupName) == "default"
+}
+
+// GroupAdmitsDiscoveredModel reports whether a group that follows upstream
+// admits modelID because discovery listed it for tenantID. It does not read the
+// group's exclusions; callers check those first, since an exclusion always wins.
+func GroupAdmitsDiscoveredModel(follows bool, tenantID, modelID string) bool {
+	return follows && strings.TrimSpace(modelID) != "" && DiscoveredModel(tenantID, modelID)
+}
+
+// ChannelGroupModelDenialMessage explains why channel groups refused a model,
+// naming each group by the list that did it: excludedBy holds groups whose
+// excluded-models cover the model, notAllowedBy groups whose allow list does not
+// name it. The request gate and the credential selector both report a refusal
+// with it, so a client sees the same wording whichever one stopped the request.
+//
+// upstreamListed adds the cheaper fix when discovery already lists the model:
+// every group that refused it is then a frozen one, and following upstream
+// admits this model and the next one, where adding the id fixes only this one.
+func ChannelGroupModelDenialMessage(model string, excludedBy, notAllowedBy []string, upstreamListed bool) string {
+	excluded, notAllowed := quotedGroupNames(excludedBy), quotedGroupNames(notAllowedBy)
+	switch {
+	case excluded == "" && notAllowed == "":
+		return fmt.Sprintf("model %q is not served by the channel groups this request may use", model)
+	case excluded == "":
+		message := fmt.Sprintf(
+			"model %q is not in the allowed models of channel group %s; add it there or route the request to a group that permits it",
+			model, notAllowed,
+		)
+		if upstreamListed {
+			message += "; the upstream already lists this model, so turning on the group's follow-upstream-models setting admits it and the models the upstream adds later"
+		}
+		return message
+	case notAllowed == "":
+		return fmt.Sprintf(
+			"model %q is excluded by channel group %s; remove it from the group's excluded models or route the request to a group that permits it",
+			model, excluded,
+		)
+	default:
+		return fmt.Sprintf(
+			"model %q is excluded by channel group %s and not in the allowed models of channel group %s; change the group's model list or route the request to a group that permits it",
+			model, excluded, notAllowed,
+		)
+	}
+}
+
+// quotedGroupNames renders a set of group names as a sorted, quoted list.
+func quotedGroupNames(names []string) string {
+	seen := make(map[string]struct{}, len(names))
+	quoted := make([]string, 0, len(names))
+	for _, name := range names {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		quoted = append(quoted, name)
+	}
+	sort.Strings(quoted)
+	for i, name := range quoted {
+		quoted[i] = fmt.Sprintf("%q", name)
+	}
+	return strings.Join(quoted, ", ")
 }
 
 // ChannelGroupExcludesModel reports whether a channel group's excluded-models

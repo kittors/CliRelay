@@ -3,6 +3,7 @@ package executor
 import (
 	"bytes"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/tidwall/gjson"
@@ -33,6 +34,131 @@ func isClaudeOAuthToken(apiKey string) bool {
 }
 
 func applyClaudeToolPrefix(body []byte, prefix string) []byte {
+	if prefix == "" {
+		return body
+	}
+
+	// Malformed requests retain the historical permissive setter behavior.
+	if !gjson.ValidBytes(body) {
+		return applyClaudeToolPrefixLegacy(body, prefix)
+	}
+	type nameEdit struct {
+		start, end int
+		value      []byte
+	}
+	var edits []nameEdit
+	invalid := false
+	addName := func(value gjson.Result, name string) {
+		start, end := value.Index, value.Index+len(value.Raw)
+		if start < 0 || end > len(body) || start >= end || !bytes.Equal(body[start:end], []byte(value.Raw)) {
+			invalid = true
+			return
+		}
+		// Preserve the legacy setter's exact string escape representation.
+		encoded, err := sjson.SetBytes([]byte(`{}`), "name", name)
+		if err != nil {
+			invalid = true
+			return
+		}
+		edits = append(edits, nameEdit{start, end, []byte(gjson.GetBytes(encoded, "name").Raw)})
+	}
+
+	builtinTools := map[string]bool{}
+	for _, name := range []string{"web_search", "code_execution", "text_editor", "computer"} {
+		builtinTools[name] = true
+	}
+
+	if tools := gjson.GetBytes(body, "tools"); tools.Exists() && tools.IsArray() {
+		tools.ForEach(func(_, tool gjson.Result) bool {
+			if tool.Get("type").Exists() && tool.Get("type").String() != "" {
+				if n := tool.Get("name").String(); n != "" {
+					builtinTools[n] = true
+				}
+				return true
+			}
+			name := tool.Get("name").String()
+			if name == "" || strings.HasPrefix(name, prefix) {
+				return true
+			}
+			addName(tool.Get("name"), prefix+name)
+			return true
+		})
+	}
+
+	if gjson.GetBytes(body, "tool_choice.type").String() == "tool" {
+		name := gjson.GetBytes(body, "tool_choice.name").String()
+		if name != "" && !strings.HasPrefix(name, prefix) && !builtinTools[name] {
+			addName(gjson.GetBytes(body, "tool_choice.name"), prefix+name)
+		}
+	}
+
+	if messages := gjson.GetBytes(body, "messages"); messages.Exists() && messages.IsArray() {
+		messages.ForEach(func(_, msg gjson.Result) bool {
+			content := msg.Get("content")
+			if !content.Exists() || !content.IsArray() {
+				return true
+			}
+			content.ForEach(func(_, part gjson.Result) bool {
+				partType := part.Get("type").String()
+				switch partType {
+				case "tool_use":
+					name := part.Get("name").String()
+					if name == "" || strings.HasPrefix(name, prefix) || builtinTools[name] {
+						return true
+					}
+					addName(part.Get("name"), prefix+name)
+				case "tool_reference":
+					toolName := part.Get("tool_name").String()
+					if toolName == "" || strings.HasPrefix(toolName, prefix) || builtinTools[toolName] {
+						return true
+					}
+					addName(part.Get("tool_name"), prefix+toolName)
+				case "tool_result":
+					nestedContent := part.Get("content")
+					if nestedContent.Exists() && nestedContent.IsArray() {
+						nestedContent.ForEach(func(_, nestedPart gjson.Result) bool {
+							if nestedPart.Get("type").String() == "tool_reference" {
+								nestedToolName := nestedPart.Get("tool_name").String()
+								if nestedToolName != "" && !strings.HasPrefix(nestedToolName, prefix) && !builtinTools[nestedToolName] {
+									addName(nestedPart.Get("tool_name"), prefix+nestedToolName)
+								}
+							}
+							return true
+						})
+					}
+				}
+				return true
+			})
+			return true
+		})
+	}
+
+	if invalid {
+		return applyClaudeToolPrefixLegacy(body, prefix)
+	}
+	if len(edits) == 0 {
+		return body
+	}
+	sort.Slice(edits, func(i, j int) bool { return edits[i].start < edits[j].start })
+	size, previous := len(body), 0
+	for _, edit := range edits {
+		if edit.start < previous {
+			return applyClaudeToolPrefixLegacy(body, prefix)
+		}
+		size += len(edit.value) - (edit.end - edit.start)
+		previous = edit.end
+	}
+	result := make([]byte, 0, size)
+	previous = 0
+	for _, edit := range edits {
+		result = append(result, body[previous:edit.start]...)
+		result = append(result, edit.value...)
+		previous = edit.end
+	}
+	return append(result, body[previous:]...)
+}
+
+func applyClaudeToolPrefixLegacy(body []byte, prefix string) []byte {
 	if prefix == "" {
 		return body
 	}

@@ -2,6 +2,7 @@ package warmup
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -67,14 +68,31 @@ func (s *Service) recordResult(r *Result) {
 	}
 }
 
-// GetAccountTargets returns available warmup targets for a specific credential.
-func (s *Service) GetAccountTargets(authID string) ([]Target, error) {
+// ErrAuthNotFound is returned for an account the caller's tenant does not own,
+// whether or not it exists: telling the two apart would let a tenant probe for
+// other tenants' credential ids.
+var ErrAuthNotFound = errors.New("auth not found")
+
+// authForTenant returns the account authID if tenantID owns it. A warmup sends a
+// real upstream request on the account's own credential, so it is limited to the
+// accounts the tenant manages; platform accounts shared with a tenant are only
+// lent for routing and are warmed by the platform, not by the tenant.
+func (s *Service) authForTenant(tenantID, authID string) (*coreauth.Auth, error) {
 	if s.authMgr == nil {
 		return nil, fmt.Errorf("auth manager unavailable")
 	}
 	auth, ok := s.authMgr.GetByID(authID)
-	if !ok || auth == nil {
-		return nil, fmt.Errorf("auth %s not found", authID)
+	if !ok || auth == nil || coreauth.NormalizedTenantID(auth.TenantID) != coreauth.NormalizedTenantID(tenantID) {
+		return nil, fmt.Errorf("%w: %s", ErrAuthNotFound, authID)
+	}
+	return auth, nil
+}
+
+// GetAccountTargets returns available warmup targets for a credential of tenantID.
+func (s *Service) GetAccountTargets(tenantID, authID string) ([]Target, error) {
+	auth, err := s.authForTenant(tenantID, authID)
+	if err != nil {
+		return nil, err
 	}
 
 	driver, okDriver := s.registry.Get(auth.Provider)
@@ -85,14 +103,11 @@ func (s *Service) GetAccountTargets(authID string) ([]Target, error) {
 	return driver.GetTargets(auth), nil
 }
 
-// WarmupSingleAccount triggers an immediate warmup for one pool of an account.
-func (s *Service) WarmupSingleAccount(ctx context.Context, authID string, poolID string) (*Result, error) {
-	if s.authMgr == nil {
-		return nil, fmt.Errorf("auth manager unavailable")
-	}
-	auth, ok := s.authMgr.GetByID(authID)
-	if !ok || auth == nil {
-		return nil, fmt.Errorf("auth %s not found", authID)
+// WarmupSingleAccount triggers an immediate warmup for one pool of an account of tenantID.
+func (s *Service) WarmupSingleAccount(ctx context.Context, tenantID, authID string, poolID string) (*Result, error) {
+	auth, err := s.authForTenant(tenantID, authID)
+	if err != nil {
+		return nil, err
 	}
 
 	driver, okDriver := s.registry.Get(auth.Provider)
@@ -119,8 +134,9 @@ func (s *Service) WarmupSingleAccount(ctx context.Context, authID string, poolID
 	return res, err
 }
 
-// WarmupBatchAccounts triggers immediate staggered warmup for multiple accounts.
-func (s *Service) WarmupBatchAccounts(ctx context.Context, authIDs []string, poolID string) (int, error) {
+// WarmupBatchAccounts triggers immediate staggered warmup for accounts of
+// tenantID; ids the tenant does not own are skipped like unknown ones.
+func (s *Service) WarmupBatchAccounts(ctx context.Context, tenantID string, authIDs []string, poolID string) (int, error) {
 	if s.authMgr == nil {
 		return 0, fmt.Errorf("auth manager unavailable")
 	}
@@ -131,8 +147,8 @@ func (s *Service) WarmupBatchAccounts(ctx context.Context, authIDs []string, poo
 	tasks := make([]Task, 0, len(authIDs))
 	now := time.Now()
 	for _, id := range authIDs {
-		auth, ok := s.authMgr.GetByID(id)
-		if !ok || auth == nil {
+		auth, err := s.authForTenant(tenantID, id)
+		if err != nil {
 			continue
 		}
 		driver, okDriver := s.registry.Get(auth.Provider)

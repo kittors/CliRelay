@@ -32,6 +32,13 @@ func TestPermissionForManagementRequest(t *testing.T) {
 		{http.MethodPatch, "/v0/management/end-users/eu/api-keys/key", "api_keys.write"},
 		{http.MethodPost, "/v0/management/end-users/eu/api-keys/key/rotate", "api_keys.write"},
 		{http.MethodGet, "/v0/management/end-users/eu/daily-spending/reset-history", "end_users.read"},
+		{http.MethodGet, "/v0/management/content-moderation/word-policies/tenant", "content_moderation.read"},
+		{http.MethodPut, "/v0/management/content-moderation/word-policies/keys/k1", "content_moderation.write"},
+		{http.MethodDelete, "/v0/management/content-moderation/word-policies/platform", "content_moderation.write"},
+		// Previewing an import changes nothing but is a POST, so it takes the write
+		// permission; only the dry-run dialog takes the test permission.
+		{http.MethodPost, "/v0/management/content-moderation/word-policies/validate", "content_moderation.write"},
+		{http.MethodPost, "/v0/management/content-moderation/word-policies/test", "content_moderation.test"},
 		{http.MethodGet, "/v0/management/menus", "platform.menus.read"},
 		{http.MethodPost, "/v0/management/menus", "platform.menus.update"},
 		{http.MethodPatch, "/v0/management/menus/system.config", "platform.menus.update"},

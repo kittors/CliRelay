@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"strings"
@@ -34,6 +35,7 @@ CREATE TABLE IF NOT EXISTS api_key_permission_profiles (
   system_prompt          TEXT NOT NULL DEFAULT '',
   created_at             TEXT NOT NULL DEFAULT '',
   updated_at             TEXT NOT NULL DEFAULT '',
+  access_policy          TEXT NOT NULL DEFAULT '{}',
   PRIMARY KEY (tenant_id, id)
 );
 `
@@ -55,11 +57,18 @@ type PermissionProfileRow struct {
 	SystemPrompt         string                     `json:"system-prompt" yaml:"system-prompt"`
 	CreatedAt            string                     `json:"created-at,omitempty" yaml:"created-at,omitempty"`
 	UpdatedAt            string                     `json:"updated-at,omitempty" yaml:"updated-at,omitempty"`
+	// AccessPolicy 是模板的扩展额度、按模型规则与模型路由。管理接口以 quota-limits /
+	// model-rules / model-routes 三个字段收发它（见 handlers/management），
+	// 这里不直接参与 JSON/YAML，避免旧的 YAML 导入路径绕过校验写入。
+	AccessPolicy quota.AccessPolicy `json:"-" yaml:"-"`
 }
 
 type PermissionProfileSyncResult struct {
 	AppliedCount int64             `json:"applied_count"`
 	CappedKeys   []quota.CappedKey `json:"capped-keys,omitempty"`
+	// CappedCells 是全部被压低的 Key 额度格子（含美元周期之外的格子）；CappedKeys
+	// 只保留其中美元周期的部分，供旧版面板继续使用。
+	CappedCells []quota.CappedCell `json:"capped-cells,omitempty"`
 }
 
 func InitPermissionProfilesTable(db *sql.DB) {
@@ -79,6 +88,8 @@ func InitPermissionProfilesTable(db *sql.DB) {
 			log.Warnf("sqlite/apikey: migrate api_key_permission_profiles %s: %v", column, err)
 		}
 	}
+	// 主键迁移会按列名复制整表，access_policy 必须在它之前就位。
+	ensureAccessPolicyColumn(db, "api_key_permission_profiles")
 	if err := migratePermissionProfilesTenantPrimaryKey(db); err != nil {
 		log.Errorf("sqlite/apikey: migrate api_key_permission_profiles tenant primary key: %v", err)
 	}
@@ -90,6 +101,18 @@ func InitPermissionProfilesTable(db *sql.DB) {
 					log.Warnf("sqlite/apikey: migrate %s.%s: %v", table, column, err)
 				}
 			}
+		}
+		ensureAccessPolicyColumn(db, table)
+	}
+}
+
+// ensureAccessPolicyColumn 为 SQLite 引导与测试库补上 access_policy 列；PostgreSQL
+// 由版本化迁移添加（compatdriver 也会把这里的 ADD COLUMN 改写成幂等形式）。
+func ensureAccessPolicyColumn(db *sql.DB, table string) {
+	if _, err := db.Exec("ALTER TABLE " + table + " ADD COLUMN access_policy TEXT NOT NULL DEFAULT '{}'"); err != nil {
+		message := strings.ToLower(err.Error())
+		if !strings.Contains(message, "duplicate") && !strings.Contains(message, "no such table") {
+			log.Warnf("sqlite/apikey: migrate %s.access_policy: %v", table, err)
 		}
 	}
 }
@@ -142,7 +165,7 @@ func migratePermissionProfilesTenantPrimaryKey(db *sql.DB) error {
 			tpm_limit INTEGER NOT NULL DEFAULT 0, allowed_models TEXT NOT NULL DEFAULT '[]',
 			allowed_channels TEXT NOT NULL DEFAULT '[]', allowed_channel_groups TEXT NOT NULL DEFAULT '[]',
 			system_prompt TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT '',
-			updated_at TEXT NOT NULL DEFAULT '', PRIMARY KEY (tenant_id, id)
+			updated_at TEXT NOT NULL DEFAULT '', access_policy TEXT NOT NULL DEFAULT '{}', PRIMARY KEY (tenant_id, id)
 		)
 	`); err != nil {
 		return err
@@ -150,11 +173,11 @@ func migratePermissionProfilesTenantPrimaryKey(db *sql.DB) error {
 	if _, err = tx.Exec(`
 		INSERT INTO api_key_permission_profiles_tenant_pk (
 			tenant_id, id, name, daily_limit, total_quota, daily_spending_limit, five_hour_spending_limit, weekly_spending_limit, monthly_spending_limit, concurrency_limit,
-			rpm_limit, tpm_limit, allowed_models, allowed_channels, allowed_channel_groups, system_prompt, created_at, updated_at
+			rpm_limit, tpm_limit, allowed_models, allowed_channels, allowed_channel_groups, system_prompt, created_at, updated_at, access_policy
 		)
 		SELECT CASE WHEN trim(coalesce(tenant_id, '')) = '' THEN ? ELSE tenant_id END,
 			id, name, daily_limit, total_quota, daily_spending_limit, five_hour_spending_limit, weekly_spending_limit, monthly_spending_limit, concurrency_limit,
-			rpm_limit, tpm_limit, allowed_models, allowed_channels, allowed_channel_groups, system_prompt, created_at, updated_at
+			rpm_limit, tpm_limit, allowed_models, allowed_channels, allowed_channel_groups, system_prompt, created_at, updated_at, access_policy
 		FROM api_key_permission_profiles
 	`, systemTenantID); err != nil {
 		return err
@@ -175,7 +198,7 @@ func (s Store) ListPermissionProfiles() []PermissionProfileRow {
 
 	rows, err := s.db.Query(`SELECT id, name, daily_limit, total_quota, daily_spending_limit, five_hour_spending_limit, weekly_spending_limit, monthly_spending_limit, concurrency_limit,
 		rpm_limit, tpm_limit, allowed_models, allowed_channels, allowed_channel_groups,
-		system_prompt, created_at, updated_at
+		system_prompt, created_at, updated_at, access_policy
 		FROM api_key_permission_profiles WHERE tenant_id = ? ORDER BY created_at ASC, id ASC`, s.tenantID)
 	if err != nil {
 		log.Errorf("sqlite/apikey: list api_key_permission_profiles: %v", err)
@@ -233,7 +256,19 @@ func (s Store) ReplaceAllPermissionProfilesExpect(ctx context.Context, profiles 
 				}
 			}
 		}
+		ensureAccessPolicyColumn(s.db, table)
 	}
+	normalized := make([]PermissionProfileRow, 0, len(profiles))
+	for i, profile := range profiles {
+		profile = normalizePermissionProfile(profile)
+		policy, err := quota.NormalizeAccessPolicy(profile.AccessPolicy, quota.ProfileColumnLayout)
+		if err != nil {
+			return PermissionProfileSyncResult{}, 0, &ProfilePolicyError{Index: i, ProfileID: profile.ID, Err: err}
+		}
+		profile.AccessPolicy = policy
+		normalized = append(normalized, profile)
+	}
+	profiles = normalized
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -256,8 +291,8 @@ func (s Store) ReplaceAllPermissionProfilesExpect(ctx context.Context, profiles 
 
 	stmt, err := tx.Prepare(`INSERT INTO api_key_permission_profiles
 		(tenant_id, id, name, daily_limit, total_quota, daily_spending_limit, five_hour_spending_limit, weekly_spending_limit, monthly_spending_limit, concurrency_limit, rpm_limit, tpm_limit,
-		 allowed_models, allowed_channels, allowed_channel_groups, system_prompt, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+		 allowed_models, allowed_channels, allowed_channel_groups, system_prompt, created_at, updated_at, access_policy)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		_ = tx.Rollback()
 		return PermissionProfileSyncResult{}, 0, err
@@ -267,7 +302,6 @@ func (s Store) ReplaceAllPermissionProfilesExpect(ctx context.Context, profiles 
 	now := time.Now().UTC().Format(time.RFC3339)
 	seen := make(map[string]struct{}, len(profiles))
 	for _, profile := range profiles {
-		profile = normalizePermissionProfile(profile)
 		if profile.ID == "" {
 			_ = tx.Rollback()
 			return PermissionProfileSyncResult{}, 0, fmt.Errorf("id is required")
@@ -291,7 +325,7 @@ func (s Store) ReplaceAllPermissionProfilesExpect(ctx context.Context, profiles 
 			profile.PeriodSpendingLimits.FiveHour, profile.PeriodSpendingLimits.Week, profile.PeriodSpendingLimits.Month, profile.ConcurrencyLimit, profile.RPMLimit, profile.TPMLimit,
 			mustJSONStringList(profile.AllowedModels), mustJSONStringList(profile.AllowedChannels),
 			mustJSONStringList(profile.AllowedChannelGroups), profile.SystemPrompt,
-			profile.CreatedAt, profile.UpdatedAt,
+			profile.CreatedAt, profile.UpdatedAt, quota.EncodeAccessPolicy(profile.AccessPolicy),
 		); err != nil {
 			_ = tx.Rollback()
 			return PermissionProfileSyncResult{}, 0, err
@@ -301,18 +335,17 @@ func (s Store) ReplaceAllPermissionProfilesExpect(ctx context.Context, profiles 
 	appliedCount := int64(0)
 	if syncEndUsers {
 		for _, profile := range profiles {
-			profile = normalizePermissionProfile(profile)
 			result, syncErr := tx.Exec(`
 				UPDATE end_users SET
 					permission_profile_id = ?, daily_limit = ?, total_quota = ?,
 					daily_spending_limit = ?, five_hour_spending_limit = ?, weekly_spending_limit = ?, monthly_spending_limit = ?, concurrency_limit = ?, rpm_limit = ?, tpm_limit = ?,
-					allowed_models = ?, allowed_channels = ?, allowed_channel_groups = ?, system_prompt = ?,
+					allowed_models = ?, allowed_channels = ?, allowed_channel_groups = ?, system_prompt = ?, access_policy = ?,
 					updated_at = ?, version = version + 1
 				WHERE tenant_id = ? AND permission_profile_id = ?
 			`, profile.ID, profile.DailyLimit, profile.TotalQuota, profile.DailySpendingLimit,
 				profile.PeriodSpendingLimits.FiveHour, profile.PeriodSpendingLimits.Week, profile.PeriodSpendingLimits.Month, profile.ConcurrencyLimit, profile.RPMLimit, profile.TPMLimit,
 				mustJSONStringList(profile.AllowedModels), mustJSONStringList(profile.AllowedChannels),
-				mustJSONStringList(profile.AllowedChannelGroups), profile.SystemPrompt,
+				mustJSONStringList(profile.AllowedChannelGroups), profile.SystemPrompt, quota.EncodeAccessPolicy(profile.AccessPolicy),
 				now, s.tenantID, profile.ID)
 			if syncErr != nil {
 				_ = tx.Rollback()
@@ -345,7 +378,7 @@ func (s Store) ReplaceAllPermissionProfilesExpect(ctx context.Context, profiles 
 		}
 	}
 
-	cappedKeys, err := capProfileOwnedKeysTx(tx, s.tenantID, profiles, now)
+	cappedCells, err := capProfileOwnedKeysTx(tx, s.tenantID, profiles, now)
 	if err != nil {
 		_ = tx.Rollback()
 		return PermissionProfileSyncResult{}, 0, err
@@ -357,7 +390,29 @@ func (s Store) ReplaceAllPermissionProfilesExpect(ctx context.Context, profiles 
 	if err := configsync.CommitTx(ctx, tx, configsync.KeyEvent(configsync.DomainPermissionProfiles, s.tenantID, "", version)); err != nil {
 		return PermissionProfileSyncResult{}, 0, err
 	}
-	return PermissionProfileSyncResult{AppliedCount: appliedCount, CappedKeys: cappedKeys}, version, nil
+	return PermissionProfileSyncResult{AppliedCount: appliedCount, CappedKeys: quota.LegacyCappedKeys(cappedCells), CappedCells: cappedCells}, version, nil
+}
+
+// ProfilePolicyError 指出整表替换中哪一个模板的访问策略不合法。
+type ProfilePolicyError struct {
+	Index     int
+	ProfileID string
+	Err       error
+}
+
+func (e *ProfilePolicyError) Error() string {
+	return fmt.Sprintf("permission profile %q: %v", e.ProfileID, e.Err)
+}
+
+func (e *ProfilePolicyError) Unwrap() error { return e.Err }
+
+// ProfileQuotaMatrix 是模板拥有的完整额度矩阵（不含累计消费，那一格属于账号）。
+func ProfileQuotaMatrix(profile PermissionProfileRow) quota.Matrix {
+	period := profile.PeriodSpendingLimits
+	period.Day = profile.DailySpendingLimit
+	return quota.ProfileColumnLayout.MatrixFromColumns(quota.ColumnValues{
+		Period: period, DailyRequests: profile.DailyLimit, TotalRequests: profile.TotalQuota,
+	}, profile.AccessPolicy.Limits)
 }
 
 func lockBoundEndUsersForProfileUpdate(tx *sql.Tx, tenantID string) error {
@@ -388,15 +443,17 @@ func lockBoundEndUsersForProfileUpdate(tx *sql.Tx, tenantID string) error {
 	return rows.Err()
 }
 
-func capProfileOwnedKeysTx(tx *sql.Tx, tenantID string, profiles []PermissionProfileRow, now string) ([]quota.CappedKey, error) {
-	ceilings := make(map[string]quota.PeriodSpendingLimits, len(profiles))
+// capProfileOwnedKeysTx 在模板降额后把绑定账号名下超过新天花板的 Key 子额度压到
+// 天花板，与模板写入在同一事务。只压模板拥有的格子：累计消费的天花板来自账号自己
+// 的 spending_limit，模板变化不影响它。
+func capProfileOwnedKeysTx(tx *sql.Tx, tenantID string, profiles []PermissionProfileRow, now string) ([]quota.CappedCell, error) {
+	ceilings := make(map[string]quota.Matrix, len(profiles))
 	for _, profile := range profiles {
-		profile = normalizePermissionProfile(profile)
-		ceilings[profile.ID] = profile.PeriodSpendingLimits
+		ceilings[profile.ID] = ProfileQuotaMatrix(profile)
 	}
 	rows, err := tx.Query(`SELECT k.id, e.permission_profile_id,
 		COALESCE(k.daily_spending_limit,0), COALESCE(k.five_hour_spending_limit,0),
-		COALESCE(k.weekly_spending_limit,0), COALESCE(k.monthly_spending_limit,0)
+		COALESCE(k.weekly_spending_limit,0), COALESCE(k.monthly_spending_limit,0), COALESCE(k.access_policy,'{}')
 		FROM api_keys k JOIN end_users e ON e.id = k.end_user_id AND e.tenant_id = k.tenant_id
 		WHERE k.tenant_id = ? AND e.permission_profile_id != '' ORDER BY k.id ASC`, tenantID)
 	if err != nil {
@@ -408,51 +465,61 @@ func capProfileOwnedKeysTx(tx *sql.Tx, tenantID string, profiles []PermissionPro
 	type item struct {
 		id, profileID string
 		limits        quota.PeriodSpendingLimits
+		policy        quota.AccessPolicy
 	}
 	items := make([]item, 0)
 	for rows.Next() {
 		var v item
-		if err := rows.Scan(&v.id, &v.profileID, &v.limits.Day, &v.limits.FiveHour, &v.limits.Week, &v.limits.Month); err != nil {
+		var policyJSON string
+		if err := rows.Scan(&v.id, &v.profileID, &v.limits.Day, &v.limits.FiveHour, &v.limits.Week, &v.limits.Month, &policyJSON); err != nil {
 			_ = rows.Close()
 			return nil, err
 		}
+		v.policy, _ = quota.DecodeAccessPolicy(policyJSON)
 		items = append(items, v)
 	}
 	if err := rows.Close(); err != nil {
 		return nil, err
 	}
-	out := make([]quota.CappedKey, 0)
+	out := make([]quota.CappedCell, 0)
 	for _, v := range items {
 		ceiling, ok := ceilings[v.profileID]
 		if !ok {
 			continue
 		}
-		updated := v.limits
-		for _, period := range quota.OrderedPeriods {
-			from, to := updated.Value(period), ceiling.Value(period)
-			if from <= 0 || to <= 0 || from <= to {
-				continue
-			}
-			switch period {
-			case quota.PeriodFiveHour:
-				updated.FiveHour = to
-			case quota.PeriodDay:
-				updated.Day = to
-			case quota.PeriodWeek:
-				updated.Week = to
-			case quota.PeriodMonth:
-				updated.Month = to
-			}
-			out = append(out, quota.CappedKey{ID: v.id, Period: period, From: from, To: to})
+		cells, err := capOwnedKeyMatrixTx(tx, tenantID, v.id, v.limits, v.policy, ceiling, now)
+		if err != nil {
+			return nil, err
 		}
-		if updated != v.limits {
-			if _, err := tx.Exec(`UPDATE api_keys SET daily_spending_limit=?, five_hour_spending_limit=?, weekly_spending_limit=?, monthly_spending_limit=?, updated_at=? WHERE tenant_id=? AND id=?`,
-				updated.Day, updated.FiveHour, updated.Week, updated.Month, now, tenantID, v.id); err != nil {
-				return nil, err
-			}
-		}
+		out = append(out, cells...)
 	}
 	return out, nil
+}
+
+// OwnedKeyQuotaMatrix 是账号下 Key 的完整子额度矩阵。
+func OwnedKeyQuotaMatrix(period quota.PeriodSpendingLimits, policy quota.AccessPolicy) quota.Matrix {
+	return quota.OwnedKeyColumnLayout.MatrixFromColumns(quota.ColumnValues{Period: period}, policy.Limits)
+}
+
+// capOwnedKeyMatrixTx 把一个 Key 的子额度压到 ceiling 之内并写回（美元周期列 + 策略）。
+func capOwnedKeyMatrixTx(tx *sql.Tx, tenantID, keyID string, period quota.PeriodSpendingLimits, policy quota.AccessPolicy, ceiling quota.Matrix, now string) ([]quota.CappedCell, error) {
+	current := OwnedKeyQuotaMatrix(period, policy)
+	capped, cells := quota.CapMatrixToAccount(keyID, current, ceiling)
+	if len(cells) == 0 {
+		return nil, nil
+	}
+	cols := quota.OwnedKeyColumnLayout.ColumnsFromMatrix(capped)
+	policy.Limits = quota.OwnedKeyColumnLayout.StripColumnCells(capped)
+	if _, err := tx.Exec(`UPDATE api_keys SET daily_spending_limit=?, five_hour_spending_limit=?, weekly_spending_limit=?, monthly_spending_limit=?, access_policy=?, updated_at=? WHERE tenant_id=? AND id=?`,
+		cols.Period.Day, cols.Period.FiveHour, cols.Period.Week, cols.Period.Month, quota.EncodeAccessPolicy(policy), now, tenantID, keyID); err != nil {
+		return nil, err
+	}
+	return cells, nil
+}
+
+// CapOwnedKeyMatrixTx 供账号服务在账号降额时复用同一套压低逻辑。
+func CapOwnedKeyMatrixTx(tx *sql.Tx, tenantID, keyID string, period quota.PeriodSpendingLimits, policy quota.AccessPolicy, ceiling quota.Matrix, now string) ([]quota.CappedCell, error) {
+	return capOwnedKeyMatrixTx(tx, tenantID, keyID, period, policy, ceiling, now)
 }
 
 func normalizePermissionProfile(profile PermissionProfileRow) PermissionProfileRow {
@@ -485,25 +552,39 @@ func normalizePermissionProfile(profile PermissionProfileRow) PermissionProfileR
 }
 
 func scanPermissionProfileRow(row scanner) (*PermissionProfileRow, bool) {
-	var profile PermissionProfileRow
-	var modelsJSON string
-	var channelsJSON string
-	var channelGroupsJSON string
-	if err := row.Scan(
-		&profile.ID, &profile.Name, &profile.DailyLimit, &profile.TotalQuota, &profile.DailySpendingLimit, &profile.PeriodSpendingLimits.FiveHour, &profile.PeriodSpendingLimits.Week, &profile.PeriodSpendingLimits.Month, &profile.ConcurrencyLimit,
-		&profile.RPMLimit, &profile.TPMLimit, &modelsJSON, &channelsJSON, &channelGroupsJSON,
-		&profile.SystemPrompt, &profile.CreatedAt, &profile.UpdatedAt,
-	); err != nil {
+	profile, err := scanPermissionProfileRowErr(row)
+	if err != nil {
 		if err != sql.ErrNoRows {
 			log.Warnf("sqlite/apikey: scan api_key_permission_profiles row: %v", err)
 		}
 		return nil, false
 	}
+	return profile, true
+}
+
+func scanPermissionProfileRowErr(row scanner) (*PermissionProfileRow, error) {
+	var profile PermissionProfileRow
+	var modelsJSON string
+	var channelsJSON string
+	var channelGroupsJSON string
+	var policyJSON string
+	if err := row.Scan(
+		&profile.ID, &profile.Name, &profile.DailyLimit, &profile.TotalQuota, &profile.DailySpendingLimit, &profile.PeriodSpendingLimits.FiveHour, &profile.PeriodSpendingLimits.Week, &profile.PeriodSpendingLimits.Month, &profile.ConcurrencyLimit,
+		&profile.RPMLimit, &profile.TPMLimit, &modelsJSON, &channelsJSON, &channelGroupsJSON,
+		&profile.SystemPrompt, &profile.CreatedAt, &profile.UpdatedAt, &policyJSON,
+	); err != nil {
+		return nil, err
+	}
 	profile.PeriodSpendingLimits.Day = profile.DailySpendingLimit
 	profile.AllowedModels = decodeJSONStringList(modelsJSON)
 	profile.AllowedChannels = decodeJSONStringList(channelsJSON)
 	profile.AllowedChannelGroups = decodeJSONStringList(channelGroupsJSON)
-	return &profile, true
+	policy, err := quota.DecodeAccessPolicy(policyJSON)
+	if err != nil {
+		log.WithError(err).Errorf("sqlite/apikey: permission profile %s has an unreadable access_policy", profile.ID)
+	}
+	profile.AccessPolicy = policy
+	return &profile, nil
 }
 
 func normalizeNonNegativeInt(value int) int {
@@ -553,4 +634,30 @@ func decodeJSONStringList(raw string) []string {
 		return []string{}
 	}
 	return normalizeStringSlice(values)
+}
+
+// LoadPermissionProfileTx 在事务中读取一个模板；不存在时返回 (nil, nil)。
+// 账号绑定模板时用它把模板的全部值复制到账号行，作为解绑后可编辑的快照。
+func LoadPermissionProfileTx(ctx context.Context, tx *sql.Tx, tenantID, id string) (*PermissionProfileRow, error) {
+	id = strings.TrimSpace(id)
+	if tx == nil || id == "" {
+		return nil, nil
+	}
+	tenantID = strings.TrimSpace(tenantID)
+	if tenantID == "" {
+		tenantID = systemTenantID
+	}
+	row := tx.QueryRowContext(ctx, `SELECT id, name, daily_limit, total_quota, daily_spending_limit, five_hour_spending_limit, weekly_spending_limit, monthly_spending_limit, concurrency_limit,
+		rpm_limit, tpm_limit, allowed_models, allowed_channels, allowed_channel_groups,
+		system_prompt, created_at, updated_at, access_policy
+		FROM api_key_permission_profiles WHERE tenant_id = ? AND id = ?`, tenantID, id)
+	profile, err := scanPermissionProfileRowErr(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	profile.TenantID = tenantID
+	return profile, nil
 }

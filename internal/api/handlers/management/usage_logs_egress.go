@@ -160,11 +160,21 @@ func parseUsageLogEgressMetadata(raw string) usageLogEgressMetadata {
 }
 
 func (h *Handler) resolveUsageLogEgressProxyURL(tenantID, authIndex string, meta usageLogEgressMetadata) string {
+	auth := h.findAuthByIndexForTenant(tenantID, authIndex)
+	// Recheck through the proxy the request left by: credentials resolve
+	// proxies where they run, so a platform credential shared with this tenant
+	// resolves in the system tenant's pool, and the tenant's own credentials
+	// in its effective pool, which includes the proxies shared with it.
+	if auth != nil {
+		tenantID = coreauth.NormalizedTenantID(auth.TenantID)
+	}
 	var cfg *config.Config
 	if tenantID == identity.SystemTenantID {
 		cfg = h.cfg
+	} else if h.cfg != nil {
+		tenantCfg := usage.BuildTenantRuntimeConfig(h.cfg, tenantID)
+		cfg = &tenantCfg
 	}
-	auth := h.findAuthByIndexForTenant(tenantID, authIndex)
 	proxyID := strings.TrimSpace(meta.ProxyID)
 	if proxyID == "" && auth != nil {
 		proxyID = strings.TrimSpace(auth.ProxyID)
@@ -235,7 +245,9 @@ func (h *Handler) findAuthByIndexForTenant(tenantID, authIndex string) *coreauth
 	if authIndex == "" || h == nil || h.authManager == nil {
 		return nil
 	}
-	for _, auth := range h.authManager.ListForTenant(tenantID) {
+	// A request of this tenant may have been served by a platform credential
+	// shared with it.
+	for _, auth := range h.authManager.ListUsableForTenant(tenantID) {
 		if auth == nil {
 			continue
 		}

@@ -385,7 +385,7 @@ func modelAllowedByRoutingGroupScopes(cfg *runtimeConfigSnapshot, tenantID, mode
 			return true
 		}
 		foundRestrictedGroup = true
-		if routingGroupModelAllowed(groupName, group.AllowedModels, group.ExcludedModels, modelID, tenantID) {
+		if routingGroupModelAllowed(group, modelID, tenantID) {
 			return true
 		}
 	}
@@ -400,22 +400,21 @@ func modelAllowedByRoutingGroupScopes(cfg *runtimeConfigSnapshot, tenantID, mode
 // purpose: an exclusion that misses serves a model the operator blocked, so it
 // matches loosely (see sdkrouting.ChannelGroupExcludesModel); an allow entry
 // that misses only refuses one, so it keeps its exact match.
-func routingGroupModelAllowed(groupName string, allowedModels, excludedModels []string, modelID, tenantID string) bool {
-	if sdkrouting.ChannelGroupExcludesModel(excludedModels, modelID) {
+func routingGroupModelAllowed(group runtimeRoutingChannelGroup, modelID, tenantID string) bool {
+	if sdkrouting.ChannelGroupExcludesModel(group.ExcludedModels, modelID) {
 		return false
 	}
-	if len(allowedModels) == 0 {
+	if len(group.AllowedModels) == 0 {
 		return strings.TrimSpace(modelID) != ""
 	}
-	if routingGroupAllowsModel(groupName, allowedModels, modelID) {
+	if routingGroupAllowsModel(normalizeGroupName(group.Name), group.AllowedModels, modelID) {
 		return true
 	}
-	// The default group is the root pool behind /v1 and the model plaza. Its
-	// allow list is a snapshot, so a model the manifest adds later would stay
-	// invisible until somebody checked it by hand. Discovery is that check.
-	// Other groups stay frozen: a curated pool must not inherit every new model.
-	// An exclusion already returned false above.
-	return normalizeGroupName(groupName) == "default" && sdkrouting.DiscoveredModel(tenantID, modelID)
+	// An allow list is a snapshot, so a model the manifest adds later would stay
+	// out until somebody added it by hand. A group that follows upstream (the
+	// default group unless an operator changed it) takes discovery as that
+	// check; any other group stays frozen. An exclusion already returned false.
+	return sdkrouting.GroupAdmitsDiscoveredModel(group.FollowUpstreamModels, tenantID, modelID)
 }
 
 // routingGroupAllowsModel reports whether an allow list names the model. It has

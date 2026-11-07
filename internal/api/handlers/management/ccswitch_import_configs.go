@@ -20,6 +20,13 @@ func (h *Handler) GetCcSwitchImportConfigs(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"ccswitch-import-configs": items,
 		"items":                   items,
+		// The panel auto-updates and may run against an older backend; it only
+		// offers the apps listed here (and falls back to claude/codex/gemini when
+		// the field is missing).
+		"client-types": usage.CcSwitchClientTypes(),
+		// Fields an older backend would silently drop on PUT; the panel only
+		// offers the matching controls when they are listed as true here.
+		"capabilities": gin.H{"codex-context-window": true},
 	})
 }
 
@@ -55,14 +62,13 @@ func (h *Handler) PutCcSwitchImportConfigs(c *gin.Context) {
 			EndpointPath:         items[idx].EndpointPath,
 			UsageAutoInterval:    items[idx].UsageAutoInterval,
 			APIKeyField:          strings.TrimSpace(items[idx].APIKeyField),
+			CodexContextWindow:   items[idx].CodexContextWindow,
 			CreatedAt:            strings.TrimSpace(items[idx].CreatedAt),
 			UpdatedAt:            strings.TrimSpace(items[idx].UpdatedAt),
 		}
 
-		switch items[idx].ClientType {
-		case "claude", "codex", "gemini":
-		default:
-			c.JSON(http.StatusBadRequest, gin.H{"error": "client-type must be one of claude, codex, gemini"})
+		if !usage.IsCcSwitchClientType(items[idx].ClientType) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "client-type must be one of " + strings.Join(usage.CcSwitchClientTypes(), ", ")})
 			return
 		}
 

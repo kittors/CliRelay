@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/management/patchfield"
 )
 
 type OpenAICompatibilityPatch struct {
@@ -15,6 +16,7 @@ type OpenAICompatibilityPatch struct {
 	Models          *[]config.OpenAICompatibilityModel  `json:"models"`
 	Headers         *map[string]string                  `json:"headers"`
 	CodexToolBridge *bool                               `json:"codex-tool-bridge"`
+	DisableCooling  patchfield.NullableBool             `json:"disable-cooling"`
 }
 
 func (s *Service) OpenAICompatibility() []config.OpenAICompatibility {
@@ -102,6 +104,7 @@ func (s *Service) PatchOpenAICompatibility(index *int, name *string, patch OpenA
 	if patch.CodexToolBridge != nil {
 		entry.CodexToolBridge = *patch.CodexToolBridge
 	}
+	patch.DisableCooling.Apply(&entry.DisableCooling)
 	NormalizeOpenAICompatibilityEntry(&entry)
 	prev := append([]config.OpenAICompatibility(nil), s.cfg.OpenAICompatibility...)
 	s.cfg.OpenAICompatibility[targetIndex] = entry
@@ -137,13 +140,14 @@ func (s *Service) DeleteOpenAICompatibilityByIndex(index int) bool {
 }
 
 type VertexCompatPatch struct {
-	APIKey   *string                     `json:"api-key"`
-	Prefix   *string                     `json:"prefix"`
-	BaseURL  *string                     `json:"base-url"`
-	ProxyURL *string                     `json:"proxy-url"`
-	ProxyID  *string                     `json:"proxy-id"`
-	Headers  *map[string]string          `json:"headers"`
-	Models   *[]config.VertexCompatModel `json:"models"`
+	APIKey         *string                     `json:"api-key"`
+	Prefix         *string                     `json:"prefix"`
+	BaseURL        *string                     `json:"base-url"`
+	ProxyURL       *string                     `json:"proxy-url"`
+	ProxyID        *string                     `json:"proxy-id"`
+	Headers        *map[string]string          `json:"headers"`
+	Models         *[]config.VertexCompatModel `json:"models"`
+	DisableCooling patchfield.NullableBool     `json:"disable-cooling"`
 }
 
 func (s *Service) VertexCompatKeys() []config.VertexCompatKey {
@@ -222,6 +226,7 @@ func (s *Service) PatchVertexCompatKey(index *int, match *string, patch VertexCo
 	if patch.Models != nil {
 		entry.Models = append([]config.VertexCompatModel(nil), (*patch.Models)...)
 	}
+	patch.DisableCooling.Apply(&entry.DisableCooling)
 	NormalizeVertexCompatKey(&entry)
 	s.cfg.VertexCompatAPIKey[targetIndex] = entry
 	s.cfg.SanitizeVertexCompatKeys()

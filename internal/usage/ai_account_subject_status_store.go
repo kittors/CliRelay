@@ -3,6 +3,7 @@ package usage
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -176,33 +177,51 @@ func latestQuotaObservedAt(quotas []QuotaWindowDTO, fallback *time.Time) *time.T
 	return newest
 }
 
-func loadSubjectQuotaState(db *sql.DB, subjectID string) ([]QuotaWindowDTO, *time.Time) {
+// loadSubjectQuotaRow reads one account's stored quota windows. exists is false
+// when the account has no row yet, which a caller that must not create rows needs
+// to tell apart from a row with no windows.
+func loadSubjectQuotaRow(db *sql.DB, subjectID string) (windows []QuotaWindowDTO, observed *time.Time, exists bool, err error) {
 	if db == nil {
-		return nil, nil
+		return nil, nil, false, nil
 	}
 	var quotaJSON string
-	var observed sql.NullString
-	err := db.QueryRow(`
+	var observedRaw sql.NullString
+	err = db.QueryRow(`
 		SELECT quota_json, quota_observed_at FROM ai_account_subject_status WHERE auth_subject_id = ?
-	`, subjectID).Scan(&quotaJSON, &observed)
+	`, subjectID).Scan(&quotaJSON, &observedRaw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil, false, nil
+	}
+	if err != nil {
+		return nil, nil, false, fmt.Errorf("usage: load shared ai account quota: %w", err)
+	}
+	rowObserved := parseNullableTime(observedRaw)
+	return applyQuotaObservedFallback(decodeQuotaWindows(quotaJSON), rowObserved), rowObserved, true, nil
+}
+
+func loadSubjectQuotaState(db *sql.DB, subjectID string) ([]QuotaWindowDTO, *time.Time) {
+	windows, observed, _, err := loadSubjectQuotaRow(db, subjectID)
 	if err != nil {
 		return nil, nil
 	}
-	rowObserved := parseNullableTime(observed)
-	return applyQuotaObservedFallback(decodeQuotaWindows(quotaJSON), rowObserved), rowObserved
+	return windows, observed
 }
 
 // UpsertAIAccountSubjectStatus persists a successful probe result.
 //
-// Quota windows are merged rather than replaced (see mergeQuotaWindows). The
-// read-modify-write is safe because status refresh is serialized per subject by
-// the singleflight group in the aiaccountstatus service — one physical account
-// is never probed concurrently, even across tenants.
+// Quota windows are merged rather than replaced (see mergeQuotaWindows). Two
+// things keep the read-modify-write from losing an update: status refresh is
+// serialized per subject by the singleflight group in the aiaccountstatus service
+// (one physical account is never probed concurrently, even across tenants), and
+// subjectQuotaMu keeps a live quota reading (MergeObservedAIAccountQuota) from
+// landing between this load and its write.
 func UpsertAIAccountSubjectStatus(record AIAccountSubjectStatusRecord) error {
 	db := getDB()
 	if db == nil || strings.TrimSpace(record.AuthSubjectID) == "" {
 		return nil
 	}
+	subjectQuotaMu.Lock()
+	defer subjectQuotaMu.Unlock()
 	if record.LastProbeState == "" {
 		record.LastProbeState = "idle"
 	}

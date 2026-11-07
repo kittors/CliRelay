@@ -66,7 +66,7 @@ func (s *Service) monitorAuthMetaBySubject() map[string]authChannelMeta {
 	if s == nil || s.authManager == nil {
 		return out
 	}
-	for _, auth := range s.authManager.ListForTenant(s.tenantID) {
+	for _, auth := range s.authManager.ListUsableForTenant(s.tenantID) {
 		if auth == nil {
 			continue
 		}
@@ -79,7 +79,7 @@ func (s *Service) monitorAuthMetaBySubject() map[string]authChannelMeta {
 			continue
 		}
 		out[subjectID] = authChannelMeta{
-			label:    strings.TrimSpace(auth.ChannelName()),
+			label:    channelLabelForTenant(auth, s.tenantID),
 			provider: normalizeProviderKey(auth.Provider),
 			authType: resolveAuthType(auth),
 		}

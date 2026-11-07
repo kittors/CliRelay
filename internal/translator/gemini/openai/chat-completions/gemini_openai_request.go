@@ -407,6 +407,7 @@ func ConvertOpenAIRequestToGemini(modelName string, inputRawJSON []byte, _ bool)
 		}
 	}
 
+	out = translatorcommon.OutputFormatFromChat(gjson.ParseBytes(rawJSON)).WriteGemini(out, "", modelName)
 	out = common.AttachDefaultSafetySettings(out, "safetySettings")
 
 	return out

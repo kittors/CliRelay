@@ -13,6 +13,9 @@ const (
 	DistributionWeighted  = "weighted"
 	DistributionLeastLoad = "least-load"
 	DistributionFillFirst = "fill-first"
+	// DistributionResetAware spends first the accounts whose quota windows renew
+	// soonest, since what a window has left is lost when it renews.
+	DistributionResetAware = "reset-aware"
 )
 
 // DefaultStickyMaxRequests bounds how many requests one conversation may pin to
@@ -52,6 +55,8 @@ func NormalizeDistribution(value string) string {
 		return DistributionLeastLoad
 	case "fill-first", "fillfirst", "ff":
 		return DistributionFillFirst
+	case "reset-aware", "resetaware", "smart":
+		return DistributionResetAware
 	default:
 		return DistributionWeighted
 	}
@@ -83,12 +88,14 @@ func normalizeChannelWeights(values map[string]int) map[string]int {
 // legacyStrategyForScheduling derives the pre-scheduling `strategy` value so a
 // config written by this build still reads sensibly on an older binary and in
 // an older admin panel. least-load has no legacy equivalent and degrades to
-// round-robin, which is the closest balancing behaviour.
+// round-robin, which is the closest balancing behaviour; reset-aware keeps one
+// account answering until it is nearly spent, which is what fill-first does.
 func legacyStrategyForScheduling(scheduling GroupScheduling) string {
 	if scheduling.Sticky.Enabled {
 		return "session-sticky"
 	}
-	if scheduling.Distribution == DistributionFillFirst {
+	switch scheduling.Distribution {
+	case DistributionFillFirst, DistributionResetAware:
 		return "fill-first"
 	}
 	return "round-robin"

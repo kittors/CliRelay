@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/storage/sqlstore/resourcegrants"
 	_ "modernc.org/sqlite"
 )
 
@@ -93,5 +94,52 @@ func TestListContextReportsWhatListSkips(t *testing.T) {
 	_ = db.Close()
 	if _, err := store.ListContext(ctx); err == nil {
 		t.Fatal("a failed query must be reported, not read as an empty pool")
+	}
+}
+
+func TestSystemReplaceDropsGrantsOfRemovedEntries(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.SetMaxOpenConns(1)
+	t.Cleanup(func() { _ = db.Close() })
+	InitTable(db)
+	ctx := context.Background()
+	grants := resourcegrants.NewStore(db)
+	system := NewStore(db)
+	tenant := NewTenantStore(db, "11111111-1111-1111-1111-111111111111")
+
+	if err := system.Replace([]config.ProxyPoolEntry{
+		{ID: "hk-1", URL: "socks5://203.0.113.1:1080", Enabled: true},
+		{ID: "sg-1", URL: "socks5://203.0.113.2:1080", Enabled: true},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := grants.Replace(ctx, resourcegrants.KindProxy, []string{"hk-1", "sg-1"}, []string{resourcegrants.AllTenants}); err != nil {
+		t.Fatal(err)
+	}
+
+	// A tenant replacing its own pool, even with the same IDs, never touches
+	// the platform's grants.
+	if err := tenant.Replace([]config.ProxyPoolEntry{{ID: "hk-1", URL: "http://203.0.113.9:3128", Enabled: true}}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := grants.List(ctx, resourcegrants.KindProxy); len(got) != 2 {
+		t.Fatalf("tenant replace changed grants: %v", got)
+	}
+
+	if err := system.Replace([]config.ProxyPoolEntry{{ID: "sg-1", URL: "socks5://203.0.113.2:1080", Enabled: true}}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := grants.List(ctx, resourcegrants.KindProxy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := got["hk-1"]; ok {
+		t.Fatalf("grant of the removed entry survived: %v", got)
+	}
+	if !slices.Equal(got["sg-1"], []string{resourcegrants.AllTenants}) {
+		t.Fatalf("grant of the kept entry changed: %v", got)
 	}
 }

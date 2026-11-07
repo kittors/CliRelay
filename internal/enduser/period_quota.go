@@ -10,9 +10,19 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/quota"
+	sqlapikey "github.com/router-for-me/CLIProxyAPI/v6/internal/storage/sqlstore/apikey"
 )
 
+// 账号下 Key 的创建与修改。Key 的子额度矩阵每一格都不能超过账号同一格的生效额度
+// （模板覆盖后），校验与写入在同一事务中、在锁住账号行之后进行，账号同时降额也不会
+// 留下超出天花板的 Key。
+
 func (s *Service) CreateKeyWithPeriodLimits(ctx context.Context, tenantID, endUserID, name string, patch *quota.PeriodSpendingLimitsPatch) (CreateKeyResult, error) {
+	return s.CreateKeyWithPatch(ctx, tenantID, endUserID, KeyPatch{Name: &name, Period: patch})
+}
+
+// CreateKeyWithPatch 为账号创建一把 Key，可同时设置子额度与按模型规则。
+func (s *Service) CreateKeyWithPatch(ctx context.Context, tenantID, endUserID string, patch KeyPatch) (CreateKeyResult, error) {
 	var result CreateKeyResult
 	if err := requireUUID(tenantID); err != nil {
 		return result, err
@@ -20,24 +30,27 @@ func (s *Service) CreateKeyWithPeriodLimits(ctx context.Context, tenantID, endUs
 	if err := requireUUID(endUserID); err != nil {
 		return result, err
 	}
-	patch, err := quota.NormalizePatch(patch)
-	if err != nil {
-		return result, fmt.Errorf("%w: %v", ErrValidation, err)
+	name := ""
+	if patch.Name != nil {
+		name = strings.TrimSpace(*patch.Name)
 	}
-	limits := quota.ApplyPatch(quota.PeriodSpendingLimits{}, patch)
+	if name == "" {
+		return result, fmt.Errorf("%w: key name is required", ErrValidation)
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return result, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	status, accountLimits, err := effectiveAccountPeriodLimitsTx(ctx, tx, tenantID, endUserID)
+	account, err := effectiveAccountTx(ctx, tx, tenantID, endUserID, true)
 	if err != nil {
 		return result, err
 	}
-	if status != "active" {
+	if account.Status != "active" {
 		return result, fmt.Errorf("%w: cannot create api key for non-active end user", ErrValidation)
 	}
-	if err := quota.ValidateKeyWithinAccount(limits, accountLimits); err != nil {
+	matrix, policy, err := planKeyQuota(quota.Matrix{}, quota.AccessPolicy{}, patch, account)
+	if err != nil {
 		return result, err
 	}
 	var count int
@@ -59,21 +72,18 @@ func (s *Service) CreateKeyWithPeriodLimits(ctx context.Context, tenantID, endUs
 	}
 	id := uuid.NewString()
 	now := time.Now().UTC().Format(time.RFC3339)
-	name = strings.TrimSpace(name)
-	if name == "" {
-		return result, fmt.Errorf("%w: key name is required", ErrValidation)
-	}
 	if err = ensureUniqueKeyName(ctx, tx, tenantID, endUserID, name, ""); err != nil {
 		return result, err
 	}
+	cols := quota.OwnedKeyColumnLayout.ColumnsFromMatrix(matrix)
 	if _, err = tx.ExecContext(ctx, `
 		INSERT INTO api_keys (key, id, name, disabled, end_user_id, is_default, tenant_id, created_at, updated_at,
 			permission_profile_id, daily_limit, total_quota, spending_limit, daily_spending_limit, five_hour_spending_limit, weekly_spending_limit, monthly_spending_limit,
-			concurrency_limit, rpm_limit, tpm_limit, allowed_models, allowed_channels, allowed_channel_groups, system_prompt)
+			concurrency_limit, rpm_limit, tpm_limit, allowed_models, allowed_channels, allowed_channel_groups, system_prompt, access_policy)
 		VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?,
-			'', 0, 0, 0, ?, ?, ?, ?, 0, 0, 0, '[]', '[]', '[]', '')
+			'', 0, 0, 0, ?, ?, ?, ?, 0, 0, 0, '[]', '[]', '[]', '', ?)
 	`, plain, id, name, endUserID, isDefault, tenantID, now, now,
-		limits.Day, limits.FiveHour, limits.Week, limits.Month); err != nil {
+		cols.Period.Day, cols.Period.FiveHour, cols.Period.Week, cols.Period.Month, quota.EncodeAccessPolicy(policy)); err != nil {
 		return result, err
 	}
 	if err = commitKeyChange(ctx, tx, tenantID); err != nil {
@@ -82,13 +92,19 @@ func (s *Service) CreateKeyWithPeriodLimits(ctx context.Context, tenantID, endUs
 	result.APIKey = APIKey{
 		ID: id, TenantID: tenantID, EndUserID: endUserID, Name: name, IsDefault: isDefault,
 		KeyMasked: MaskAPIKey(plain), CreatedAt: now, UpdatedAt: now,
-		DailySpendingLimit: limits.Day, PeriodSpendingLimits: limits,
+		DailySpendingLimit: cols.Period.Day, PeriodSpendingLimits: cols.Period,
+		QuotaLimits: matrix, ModelRules: nonNilRules(policy.ModelRules),
 	}
 	result.PlaintextKey = plain
 	return result, nil
 }
 
 func (s *Service) UpdateKey(ctx context.Context, tenantID, endUserID, keyID string, name *string, patch *quota.PeriodSpendingLimitsPatch) error {
+	return s.UpdateKeyWithPatch(ctx, tenantID, endUserID, keyID, KeyPatch{Name: name, Period: patch})
+}
+
+// UpdateKeyWithPatch 修改账号下一把 Key 的名称、子额度或按模型规则。
+func (s *Service) UpdateKeyWithPatch(ctx context.Context, tenantID, endUserID, keyID string, patch KeyPatch) error {
 	if err := requireUUID(tenantID); err != nil {
 		return err
 	}
@@ -98,37 +114,36 @@ func (s *Service) UpdateKey(ctx context.Context, tenantID, endUserID, keyID stri
 	if err := requireUUID(keyID); err != nil {
 		return err
 	}
-	patch, err := quota.NormalizePatch(patch)
-	if err != nil {
-		return fmt.Errorf("%w: %v", ErrValidation, err)
-	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	_, accountLimits, err := effectiveAccountPeriodLimitsTx(ctx, tx, tenantID, endUserID)
+	account, err := effectiveAccountTx(ctx, tx, tenantID, endUserID, true)
 	if err != nil {
 		return err
 	}
-	var currentName string
-	var current quota.PeriodSpendingLimits
+	var currentName, policyJSON string
+	var disabledInt int
+	var period quota.PeriodSpendingLimits
+	// 已暂停的 Key 也能改名、调额度与恢复；已删除（密钥被作废成 sk-deleted-…）的不行。
 	if err := tx.QueryRowContext(ctx, `
-		SELECT name, COALESCE(daily_spending_limit,0), COALESCE(five_hour_spending_limit,0),
-		       COALESCE(weekly_spending_limit,0), COALESCE(monthly_spending_limit,0)
-		FROM api_keys WHERE tenant_id = ? AND end_user_id = ? AND id = ? AND disabled = 0
-	`, tenantID, endUserID, keyID).Scan(&currentName, &current.Day, &current.FiveHour, &current.Week, &current.Month); err != nil {
+		SELECT name, disabled, COALESCE(daily_spending_limit,0), COALESCE(five_hour_spending_limit,0),
+		       COALESCE(weekly_spending_limit,0), COALESCE(monthly_spending_limit,0), COALESCE(access_policy,'{}')
+		FROM api_keys WHERE tenant_id = ? AND end_user_id = ? AND id = ? AND key NOT LIKE 'sk-deleted-%'
+	`, tenantID, endUserID, keyID).Scan(&currentName, &disabledInt, &period.Day, &period.FiveHour, &period.Week, &period.Month, &policyJSON); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrNotFound
 		}
 		return err
 	}
-	updated := quota.ApplyPatch(current, patch)
-	if err := quota.ValidateKeyWithinAccount(updated, accountLimits); err != nil {
+	currentPolicy := decodeAccountPolicy(keyID, policyJSON)
+	matrix, policy, err := planKeyQuota(sqlapikey.OwnedKeyQuotaMatrix(period, currentPolicy), currentPolicy, patch, account)
+	if err != nil {
 		return err
 	}
-	if name != nil {
-		currentName = strings.TrimSpace(*name)
+	if patch.Name != nil {
+		currentName = strings.TrimSpace(*patch.Name)
 		if currentName == "" {
 			return fmt.Errorf("%w: name required", ErrValidation)
 		}
@@ -136,104 +151,77 @@ func (s *Service) UpdateKey(ctx context.Context, tenantID, endUserID, keyID stri
 			return err
 		}
 	}
+	cols := quota.OwnedKeyColumnLayout.ColumnsFromMatrix(matrix)
+	now := time.Now().UTC().Format(time.RFC3339)
+	disabled := disabledInt != 0
+	if patch.Disabled != nil {
+		disabled = *patch.Disabled
+	}
+	if disabled && disabledInt == 0 {
+		var active int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM api_keys WHERE tenant_id = ? AND end_user_id = ? AND disabled = 0`, tenantID, endUserID).Scan(&active); err != nil {
+			return err
+		}
+		if active <= 1 {
+			return ErrLastKey
+		}
+	}
+	nextDisabled := 0
+	if disabled {
+		nextDisabled = 1
+	}
 	res, err := tx.ExecContext(ctx, `
-		UPDATE api_keys SET name = ?, daily_spending_limit = ?, five_hour_spending_limit = ?,
-		       weekly_spending_limit = ?, monthly_spending_limit = ?, updated_at = ?
-		WHERE tenant_id = ? AND end_user_id = ? AND id = ? AND disabled = 0
-	`, currentName, updated.Day, updated.FiveHour, updated.Week, updated.Month,
-		time.Now().UTC().Format(time.RFC3339), tenantID, endUserID, keyID)
+		UPDATE api_keys SET name = ?, disabled = ?, daily_spending_limit = ?, five_hour_spending_limit = ?,
+		       weekly_spending_limit = ?, monthly_spending_limit = ?, access_policy = ?, updated_at = ?
+		WHERE tenant_id = ? AND end_user_id = ? AND id = ? AND key NOT LIKE 'sk-deleted-%'
+	`, currentName, nextDisabled, cols.Period.Day, cols.Period.FiveHour, cols.Period.Week, cols.Period.Month, quota.EncodeAccessPolicy(policy),
+		now, tenantID, endUserID, keyID)
 	if err != nil {
 		return err
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
 		return ErrNotFound
 	}
+	if (disabledInt != 0) != disabled {
+		// 暂停的 Key 不能是默认 Key；暂停或恢复后重新确定默认 Key。
+		if err := sqlapikey.EnsureOwnedActiveKeyAndDefault(tx, tenantID, endUserID, now); err != nil {
+			return err
+		}
+	}
 	return commitKeyChange(ctx, tx, tenantID)
 }
 
-func effectiveAccountPeriodLimitsTx(ctx context.Context, tx *sql.Tx, tenantID, endUserID string) (string, quota.PeriodSpendingLimits, error) {
-	var status, profileID string
-	var limits quota.PeriodSpendingLimits
-	query := `SELECT status, COALESCE(permission_profile_id,''), COALESCE(daily_spending_limit,0),
-	                 COALESCE(five_hour_spending_limit,0), COALESCE(weekly_spending_limit,0), COALESCE(monthly_spending_limit,0)
-	          FROM end_users WHERE id = ? AND tenant_id = ? FOR UPDATE`
-	err := tx.QueryRowContext(ctx, query, endUserID, tenantID).Scan(&status, &profileID, &limits.Day, &limits.FiveHour, &limits.Week, &limits.Month)
+// planKeyQuota 计算一把 Key 修改后的子额度矩阵与策略，并校验不超过账号天花板。
+func planKeyQuota(current quota.Matrix, policy quota.AccessPolicy, patch KeyPatch, account effectiveAccount) (quota.Matrix, quota.AccessPolicy, error) {
+	normalizedPeriod, err := quota.NormalizePatch(patch.Period)
 	if err != nil {
-		err = tx.QueryRowContext(ctx, strings.TrimSuffix(query, " FOR UPDATE"), endUserID, tenantID).Scan(&status, &profileID, &limits.Day, &limits.FiveHour, &limits.Week, &limits.Month)
+		return quota.Matrix{}, quota.AccessPolicy{}, fmt.Errorf("%w: %v", ErrValidation, err)
 	}
-	if errors.Is(err, sql.ErrNoRows) {
-		return "", quota.PeriodSpendingLimits{}, ErrNotFound
+	matrixPatch := patch.QuotaLimits.Clone()
+	if err := mergeLegacyPeriod(matrixPatch, normalizedPeriod); err != nil {
+		return quota.Matrix{}, quota.AccessPolicy{}, err
 	}
+	next, err := quota.ApplyMatrixPatch(current, matrixPatch)
 	if err != nil {
-		return "", quota.PeriodSpendingLimits{}, err
+		return quota.Matrix{}, quota.AccessPolicy{}, fmt.Errorf("%w: quota-limits.%v", ErrValidation, err)
 	}
-	if profileID != "" {
-		err = tx.QueryRowContext(ctx, `SELECT COALESCE(daily_spending_limit,0), COALESCE(five_hour_spending_limit,0),
-			COALESCE(weekly_spending_limit,0), COALESCE(monthly_spending_limit,0)
-			FROM api_key_permission_profiles WHERE tenant_id = ? AND id = ?`, tenantID, profileID).
-			Scan(&limits.Day, &limits.FiveHour, &limits.Week, &limits.Month)
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return "", quota.PeriodSpendingLimits{}, err
-		}
+	if err := quota.ValidateKeyMatrixWithinAccount(next, account.Matrix); err != nil {
+		return quota.Matrix{}, quota.AccessPolicy{}, err
 	}
-	return status, limits, nil
-}
-
-func capOwnedKeyPeriodLimitsTx(ctx context.Context, tx *sql.Tx, tenantID, endUserID string) ([]quota.CappedKey, error) {
-	_, account, err := effectiveAccountPeriodLimitsTx(ctx, tx, tenantID, endUserID)
+	nextPolicy := policy.Clone()
+	nextPolicy.Limits = quota.OwnedKeyColumnLayout.StripColumnCells(next)
+	if patch.ModelRules != nil {
+		nextPolicy.ModelRules = *patch.ModelRules
+	}
+	nextPolicy.ModelRoutes = nil
+	nextPolicy, err = quota.NormalizeAccessPolicy(nextPolicy, quota.OwnedKeyColumnLayout)
 	if err != nil {
-		return nil, err
+		return quota.Matrix{}, quota.AccessPolicy{}, err
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT id, COALESCE(daily_spending_limit,0), COALESCE(five_hour_spending_limit,0),
-		COALESCE(weekly_spending_limit,0), COALESCE(monthly_spending_limit,0)
-		FROM api_keys WHERE tenant_id = ? AND end_user_id = ? ORDER BY id ASC`, tenantID, endUserID)
-	if err != nil {
-		return nil, err
+	if err := validatePolicyTargetsAllowed(nextPolicy, account.AllowedModels); err != nil {
+		return quota.Matrix{}, quota.AccessPolicy{}, err
 	}
-	type keyLimits struct {
-		id     string
-		limits quota.PeriodSpendingLimits
-	}
-	keys := make([]keyLimits, 0)
-	for rows.Next() {
-		var item keyLimits
-		if err := rows.Scan(&item.id, &item.limits.Day, &item.limits.FiveHour, &item.limits.Week, &item.limits.Month); err != nil {
-			_ = rows.Close()
-			return nil, err
-		}
-		keys = append(keys, item)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
-	capped := make([]quota.CappedKey, 0)
-	for _, item := range keys {
-		updated := item.limits
-		for _, period := range quota.OrderedPeriods {
-			from, ceiling := updated.Value(period), account.Value(period)
-			if from <= 0 || ceiling <= 0 || from <= ceiling {
-				continue
-			}
-			switch period {
-			case quota.PeriodFiveHour:
-				updated.FiveHour = ceiling
-			case quota.PeriodDay:
-				updated.Day = ceiling
-			case quota.PeriodWeek:
-				updated.Week = ceiling
-			case quota.PeriodMonth:
-				updated.Month = ceiling
-			}
-			capped = append(capped, quota.CappedKey{ID: item.id, Period: period, From: from, To: ceiling})
-		}
-		if updated != item.limits {
-			if _, err := tx.ExecContext(ctx, `UPDATE api_keys SET daily_spending_limit=?, five_hour_spending_limit=?, weekly_spending_limit=?, monthly_spending_limit=?, updated_at=? WHERE tenant_id=? AND id=?`,
-				updated.Day, updated.FiveHour, updated.Week, updated.Month, time.Now().UTC().Format(time.RFC3339), tenantID, item.id); err != nil {
-				return nil, err
-			}
-		}
-	}
-	return capped, nil
+	return next, nextPolicy, nil
 }
 
 func quotaPkgResolveLegacyDay(legacy *float64, patch *quota.PeriodSpendingLimitsPatch) (*quota.PeriodSpendingLimitsPatch, error) {

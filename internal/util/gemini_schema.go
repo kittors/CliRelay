@@ -51,6 +51,7 @@ func cleanJSONSchema(jsonStr string, addPlaceholder bool) string {
 		jsonStr = removePlaceholderFields(jsonStr)
 	}
 	jsonStr = cleanupRequiredFields(jsonStr)
+	jsonStr = addMissingArrayItems(jsonStr)
 	// Phase 4: Add placeholder for empty object schemas (Claude VALIDATED mode requirement)
 	if addPlaceholder {
 		jsonStr = addEmptySchemaPlaceholder(jsonStr)

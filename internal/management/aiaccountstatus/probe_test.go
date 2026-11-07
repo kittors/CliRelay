@@ -144,6 +144,55 @@ func TestParseCodexWhamQuotasNonStandardAndBlocked(t *testing.T) {
 	}
 }
 
+// The card's entries are keyed and labelled by the probe and, since live quota
+// readings were added, by usage.CodexQuotaWindowKey as well. A window reported by
+// either must land on the same entry, and the label keys are what the console
+// translates, so both are pinned here rather than derived.
+func TestParseCodexWhamQuotasNamesWindowsLikeTheLivePath(t *testing.T) {
+	body := []byte(`{
+		"rate_limit": {
+			"primary_window": {"used_percent": 20, "limit_window_seconds": 18000},
+			"secondary_window": {"used_percent": 40, "limit_window_seconds": 604800}
+		},
+		"code_review_rate_limit": {
+			"primary_window": {"used_percent": 10, "limit_window_seconds": 18000},
+			"secondary_window": {"used_percent": 30, "limit_window_seconds": 604800}
+		}
+	}`)
+	wantLabels := map[string]string{
+		"code_5h":     "m_quota.code_5h",
+		"code_week":   "m_quota.code_weekly",
+		"review_5h":   "m_quota.review_5h",
+		"review_week": "m_quota.review_weekly",
+	}
+	items := parseCodexWhamQuotas(body)
+	if len(items) != len(wantLabels) {
+		t.Fatalf("items = %+v, want %d windows", items, len(wantLabels))
+	}
+	for key, label := range wantLabels {
+		item := quotaByKey(items, key)
+		if item == nil || item.QuotaLabel != label {
+			t.Fatalf("%s = %+v, want label %q", key, item, label)
+		}
+	}
+
+	for _, prefix := range []string{"code", "review"} {
+		for _, seconds := range []int64{18000, 604800, 86400, 3600} {
+			liveKey, liveLabel := usage.CodexQuotaWindowKey(prefix, seconds)
+			limit := "rate_limit"
+			if prefix == "review" {
+				limit = "code_review_rate_limit"
+			}
+			probed := parseCodexWhamQuotas([]byte(fmt.Sprintf(
+				`{%q:{"primary_window":{"used_percent":5,"limit_window_seconds":%d}}}`, limit, seconds)))
+			item := quotaByKey(probed, liveKey)
+			if item == nil || item.QuotaLabel != liveLabel || item.WindowSeconds != seconds {
+				t.Fatalf("%s/%ds: probe produced %+v, the live path names it %q (%q)", prefix, seconds, probed, liveKey, liveLabel)
+			}
+		}
+	}
+}
+
 func TestParseCodexResetExpirationsNestedSortedUnique(t *testing.T) {
 	body := []byte(`{"data":{"items":[{"expiresAt":"2026-07-20T00:00:00Z"},{"expires_at":"2026-07-18T00:00:00Z"},{"expires_at":"2026-07-20T00:00:00Z"}]}}`)
 	got := parseCodexResetExpirations(body)

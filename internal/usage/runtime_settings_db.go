@@ -172,7 +172,9 @@ func BuildTenantRuntimeConfig(base *config.Config, tenantID string) config.Confi
 	} else {
 		tenantCfg.Routing = config.RoutingConfig{IncludeDefaultGroup: true}
 	}
-	tenantCfg.ProxyPool = ListProxyPoolForTenant(tenantID)
+	// Proxies the platform shares with this tenant resolve like its own, so an
+	// account can pick one by ID; the tenant's own entry with the same ID wins.
+	tenantCfg.ProxyPool = config.MergeSharedProxyPool(ListProxyPoolForTenant(tenantID), SharedProxyPoolForTenant(tenantID))
 	ApplyStoredRuntimeSettingsForTenant(tenantID, &tenantCfg)
 	tenantCfg.SanitizeIdentityFingerprint()
 	sqlsettings.Rebaseline(&tenantCfg)

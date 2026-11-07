@@ -116,25 +116,35 @@ func (e *BedrockExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, 
 	reporter := execCtx.Reporter()
 	defer reporter.trackFailure(execCtx.Context, &err)
 
+	catalogModel := bedrockCatalogModel(mappedModel, baseModel)
 	body, originalTranslated := execCtx.TranslateRequestPair(req.Payload)
 	body, _ = sjson.SetBytes(body, "model", execCtx.BaseModel)
-	body, err = thinking.ApplyThinking(body, req.Model, execCtx.SourceFormat.String(), to.String(), e.Identifier())
+	body, err = thinking.ApplyThinking(body, bedrockThinkingModel(req.Model, catalogModel), execCtx.SourceFormat.String(), to.String(), e.Identifier())
 	if err != nil {
 		return resp, err
 	}
 	body = execCtx.ApplyPayloadConfig(body, originalTranslated)
-	body = disableThinkingIfToolChoiceForced(body)
+	body = repairClaudeToolUse(execCtx, body)
+	plan := newClaudeRequestPlan(execCtx, claudeRequestTarget{
+		provider:                  e.Identifier(),
+		endpoint:                  bedrockEndpoint(auth, mappedModel),
+		model:                     mappedModel,
+		catalogModel:              catalogModel,
+		dropThinkingForForcedTool: true,
+	})
 	betaTokens := resolveBedrockBetaTokens(opts.Headers.Get("anthropic-beta"), body, mappedModel)
-	bodyForTranslation := body
-	body, err = prepareBedrockRequestBody(body, mappedModel, betaTokens)
-	if err != nil {
-		return resp, err
-	}
 
 	recorder := execCtx.Recorder()
-	httpResp, err := e.doBedrockRequest(execCtx, mappedModel, false, body)
+	sent, err := e.invokeClaude(execCtx, mappedModel, false, body, betaTokens, plan)
 	if err != nil {
 		reporter.publishFailureWithContent(execCtx.Context, string(req.Payload), err.Error())
+		return resp, err
+	}
+	bodyForTranslation := sent.claudeBody
+	httpResp := sent.resp
+	if sent.failed() {
+		reporter.publishFailureWithContent(execCtx.Context, string(req.Payload), string(sent.errBody))
+		err = statusErr{code: httpResp.StatusCode, msg: string(sent.errBody), headers: failureHeaders(httpResp.Header)}
 		return resp, err
 	}
 	defer func() {
@@ -142,14 +152,6 @@ func (e *BedrockExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, 
 			log.Errorf("bedrock executor: close response body error: %v", errClose)
 		}
 	}()
-	recorder.RecordResponseMetadata(httpResp.StatusCode, httpResp.Header.Clone())
-	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
-		b := readUpstreamErrorBody(e.Identifier(), httpResp.Body)
-		recorder.AppendResponseChunk(b)
-		reporter.publishFailureWithContent(execCtx.Context, string(req.Payload), string(b))
-		err = statusErr{code: httpResp.StatusCode, msg: string(b)}
-		return resp, err
-	}
 	data, err := readUpstreamResponseBody(e.Identifier(), httpResp.Body)
 	if err != nil {
 		recorder.RecordResponseError(err)
@@ -183,35 +185,35 @@ func (e *BedrockExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.
 	reporter := execCtx.Reporter()
 	defer reporter.trackFailure(execCtx.Context, &err)
 
-	bodyForTranslation, originalTranslated := execCtx.TranslateRequestPair(req.Payload)
-	bodyForTranslation, _ = sjson.SetBytes(bodyForTranslation, "model", execCtx.BaseModel)
-	bodyForTranslation, err = thinking.ApplyThinking(bodyForTranslation, req.Model, execCtx.SourceFormat.String(), to.String(), e.Identifier())
+	catalogModel := bedrockCatalogModel(mappedModel, baseModel)
+	body, originalTranslated := execCtx.TranslateRequestPair(req.Payload)
+	body, _ = sjson.SetBytes(body, "model", execCtx.BaseModel)
+	body, err = thinking.ApplyThinking(body, bedrockThinkingModel(req.Model, catalogModel), execCtx.SourceFormat.String(), to.String(), e.Identifier())
 	if err != nil {
 		return nil, err
 	}
-	bodyForTranslation = execCtx.ApplyPayloadConfig(bodyForTranslation, originalTranslated)
-	bodyForTranslation = disableThinkingIfToolChoiceForced(bodyForTranslation)
-	betaTokens := resolveBedrockBetaTokens(opts.Headers.Get("anthropic-beta"), bodyForTranslation, mappedModel)
-	body, err := prepareBedrockRequestBody(bodyForTranslation, mappedModel, betaTokens)
-	if err != nil {
-		return nil, err
-	}
+	body = execCtx.ApplyPayloadConfig(body, originalTranslated)
+	body = repairClaudeToolUse(execCtx, body)
+	plan := newClaudeRequestPlan(execCtx, claudeRequestTarget{
+		provider:                  e.Identifier(),
+		endpoint:                  bedrockEndpoint(auth, mappedModel),
+		model:                     mappedModel,
+		catalogModel:              catalogModel,
+		dropThinkingForForcedTool: true,
+	})
+	betaTokens := resolveBedrockBetaTokens(opts.Headers.Get("anthropic-beta"), body, mappedModel)
 
 	recorder := execCtx.Recorder()
-	httpResp, err := e.doBedrockRequest(execCtx, mappedModel, true, body) //nolint:bodyclose // success body is consumed and closed by the stream goroutine below.
+	sent, err := e.invokeClaude(execCtx, mappedModel, true, body, betaTokens, plan) //nolint:bodyclose // success body is consumed and closed by the stream goroutine below.
 	if err != nil {
 		reporter.publishFailureWithContent(execCtx.Context, string(req.Payload), err.Error())
 		return nil, err
 	}
-	recorder.RecordResponseMetadata(httpResp.StatusCode, httpResp.Header.Clone())
-	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
-		b := readUpstreamErrorBody(e.Identifier(), httpResp.Body)
-		recorder.AppendResponseChunk(b)
-		reporter.publishFailureWithContent(execCtx.Context, string(req.Payload), string(b))
-		if errClose := httpResp.Body.Close(); errClose != nil {
-			log.Errorf("bedrock executor: close response body error: %v", errClose)
-		}
-		err = statusErr{code: httpResp.StatusCode, msg: string(b)}
+	bodyForTranslation := sent.claudeBody
+	httpResp := sent.resp
+	if sent.failed() {
+		reporter.publishFailureWithContent(execCtx.Context, string(req.Payload), string(sent.errBody))
+		err = statusErr{code: httpResp.StatusCode, msg: string(sent.errBody), headers: failureHeaders(httpResp.Header)}
 		return nil, err
 	}
 
@@ -227,6 +229,7 @@ func (e *BedrockExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.
 
 		decoder := newBedrockEventStreamDecoder(httpResp.Body)
 		var param any
+		streamUsage := &claudeStreamUsage{}
 		for {
 			payload, errDecode := decoder.Decode()
 			if errDecode != nil {
@@ -247,7 +250,7 @@ func (e *BedrockExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.
 			sseData = transformBedrockInvocationMetrics(sseData)
 			line := []byte("data: " + string(sseData))
 			reporter.appendOutputChunk(line)
-			if detail, ok := parseClaudeStreamUsage(line); ok {
+			if detail, ok := streamUsage.observe(line); ok {
 				reporter.publish(execCtx.Context, detail)
 			}
 			if execCtx.SourceFormat == to {
@@ -477,6 +480,12 @@ func bedrockCrossRegionPrefix(region string) string {
 	}
 }
 
+// bedrockEndpoint is the invoke URL of modelID for auth, which identifies the
+// upstream for the request rules learned from its 400s.
+func bedrockEndpoint(auth *cliproxyauth.Auth, modelID string) string {
+	return buildBedrockURL(bedrockAttr(auth, "base_url"), bedrockRegion(auth), modelID, false)
+}
+
 func buildBedrockURL(baseURL, region, modelID string, stream bool) string {
 	if region == "" {
 		region = defaultBedrockRegion
@@ -494,8 +503,9 @@ func buildBedrockURL(baseURL, region, modelID string, stream bool) string {
 	return fmt.Sprintf("%s/model/%s/%s", baseURL, encodedModelID, endpoint)
 }
 
-func prepareBedrockRequestBody(body []byte, modelID string, betaTokens []string) ([]byte, error) {
+func prepareBedrockRequestBody(body []byte, modelID string, betaTokens []string, keepEffort bool) ([]byte, error) {
 	var err error
+	effort := gjson.GetBytes(body, "output_config.effort")
 	body, err = sjson.SetBytes(body, "anthropic_version", "bedrock-2023-05-31")
 	if err != nil {
 		return nil, fmt.Errorf("inject anthropic_version: %w", err)
@@ -510,6 +520,14 @@ func prepareBedrockRequestBody(body []byte, modelID string, betaTokens []string)
 		body, err = sjson.DeleteBytes(body, path)
 		if err != nil {
 			return nil, fmt.Errorf("remove %s: %w", path, err)
+		}
+	}
+	if keepEffort && effort.Exists() {
+		// Only the effort is put back; the rest of output_config stays removed
+		// as before.
+		body, err = sjson.SetBytes(body, "output_config.effort", effort.String())
+		if err != nil {
+			return nil, fmt.Errorf("restore output_config.effort: %w", err)
 		}
 	}
 	body = removeBedrockToolCustomFields(body)

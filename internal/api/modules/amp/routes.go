@@ -212,7 +212,7 @@ func (m *AmpModule) registerManagementRoutes(engine *gin.Engine, baseHandler *ha
 	// Route POST model calls through Gemini bridge with FallbackHandler.
 	// FallbackHandler checks provider -> mapping -> proxy fallback automatically.
 	// All other methods (e.g., GET model listing) always proxy to upstream to preserve Amp CLI behavior.
-	ampAPI.Any("/provider/google/v1beta1/*path", func(c *gin.Context) {
+	googleV1Beta1 := func(c *gin.Context) {
 		if c.Request.Method == "POST" {
 			if path := c.Param("path"); strings.Contains(path, "/models/") {
 				// POST with /models/ path -> use Gemini bridge with fallback handler
@@ -223,7 +223,15 @@ func (m *AmpModule) registerManagementRoutes(engine *gin.Engine, baseHandler *ha
 		}
 		// Non-POST or no local provider available -> proxy upstream
 		proxyHandler(c)
-	})
+	}
+	// The conversations this route serves locally are the ones loop protection
+	// covers; the middleware is attached to this route alone because the rest of
+	// the group only proxies to the Amp control plane.
+	if m.inferenceMiddleware != nil {
+		ampAPI.Any("/provider/google/v1beta1/*path", m.inferenceMiddleware, googleV1Beta1)
+	} else {
+		ampAPI.Any("/provider/google/v1beta1/*path", googleV1Beta1)
+	}
 }
 
 // registerProviderAliases registers /api/provider/{provider}/... routes
@@ -253,6 +261,9 @@ func (m *AmpModule) registerProviderAliases(engine *gin.Engine, baseHandler *han
 	}
 	// Inject client API key into request context for per-client upstream routing
 	ampProviders.Use(clientAPIKeyMiddleware())
+	if m.inferenceMiddleware != nil {
+		ampProviders.Use(m.inferenceMiddleware)
+	}
 
 	provider := ampProviders.Group("/:provider")
 

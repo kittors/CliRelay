@@ -2,10 +2,10 @@ package executor
 
 import (
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/retryhint"
 	"github.com/tidwall/gjson"
 )
 
@@ -99,24 +99,13 @@ func isXAIUsageBalanceExhaustedText(text string) bool {
 		strings.Contains(lower, "balance exhausted")
 }
 
+// parseHTTPRetryAfterHeader reads the standard Retry-After header. The parse is
+// shared with the scheduler's generic reader so both accept the same forms and
+// reject the same overflows.
 func parseHTTPRetryAfterHeader(header http.Header, now time.Time) *time.Duration {
-	if header == nil {
+	delay, ok := retryhint.RetryAfterHeader(header, now)
+	if !ok {
 		return nil
 	}
-	raw := strings.TrimSpace(header.Get("Retry-After"))
-	if raw == "" {
-		return nil
-	}
-	if seconds, err := strconv.ParseInt(raw, 10, 64); err == nil {
-		if seconds <= 0 {
-			return nil
-		}
-		retryAfter := time.Duration(seconds) * time.Second
-		return &retryAfter
-	}
-	if when, err := http.ParseTime(raw); err == nil && when.After(now) {
-		retryAfter := when.Sub(now)
-		return &retryAfter
-	}
-	return nil
+	return &delay
 }

@@ -104,3 +104,23 @@ func TestResponsesStreamCompletionTrackerRejectsTrueIncompleteStream(t *testing.
 		t.Fatalf("ErrIfIncomplete() error = %v, want incomplete stream message", err)
 	}
 }
+
+// A reply the upstream cut short ends with response.incomplete; older peers call
+// the completed event response.done. Either way the stream is whole and must not
+// be reported as broken.
+func TestResponsesStreamCompletionTrackerAcceptsIncompleteAndDone(t *testing.T) {
+	t.Parallel()
+
+	for _, chunk := range []string{
+		"event: response.incomplete\ndata: {\"type\":\"response.incomplete\",\"response\":{\"status\":\"incomplete\"}}",
+		"data: {\"type\":\"response.incomplete\"}",
+		"event: response.done\ndata: {\"type\":\"response.done\"}",
+	} {
+		tracker := newResponsesStreamCompletionTracker(sdktranslator.FormatOpenAIResponse)
+		tracker.Observe([]byte("data: {\"type\":\"response.created\"}\n\n"))
+		tracker.Observe([]byte(chunk))
+		if err := tracker.ErrIfIncomplete(); err != nil {
+			t.Fatalf("ErrIfIncomplete() after %q = %v, want nil", chunk, err)
+		}
+	}
+}

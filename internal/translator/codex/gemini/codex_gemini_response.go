@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"time"
 
+	translatorcommon "github.com/router-for-me/CLIProxyAPI/v6/internal/translator/common"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -120,7 +121,9 @@ func ConvertCodexResponseToGemini(_ context.Context, modelName string, originalR
 		part := `{"text":""}`
 		part, _ = sjson.Set(part, "text", rootResult.Get("delta").String())
 		template, _ = sjson.SetRaw(template, "candidates.0.content.parts.-1", part)
-	} else if typeStr == "response.completed" { // Handle response completion with usage metadata
+	} else if typeStr == "response.completed" || typeStr == "response.incomplete" { // Handle response completion with usage metadata
+		// Gemini clients expect the last chunk to say why the reply ended.
+		template, _ = sjson.Set(template, "candidates.0.finishReason", codexGeminiFinishReason(rootResult.Get("response")))
 		template, _ = sjson.Set(template, "usageMetadata.promptTokenCount", rootResult.Get("response.usage.input_tokens").Int())
 		template, _ = sjson.Set(template, "usageMetadata.candidatesTokenCount", rootResult.Get("response.usage.output_tokens").Int())
 		totalTokens := rootResult.Get("response.usage.input_tokens").Int() + rootResult.Get("response.usage.output_tokens").Int()
@@ -153,8 +156,9 @@ func ConvertCodexResponseToGemini(_ context.Context, modelName string, originalR
 func ConvertCodexResponseToGeminiNonStream(_ context.Context, modelName string, originalRequestRawJSON, requestRawJSON, rawJSON []byte, _ *any) string {
 	rootResult := gjson.ParseBytes(rawJSON)
 
-	// Verify this is a response.completed event
-	if rootResult.Get("type").String() != "response.completed" {
+	// Verify this is the final event: response.completed, or response.incomplete
+	// for a reply the upstream cut short.
+	if typ := rootResult.Get("type").String(); typ != "response.completed" && typ != "response.incomplete" {
 		return ""
 	}
 
@@ -189,7 +193,6 @@ func ConvertCodexResponseToGeminiNonStream(_ context.Context, modelName string, 
 		}
 
 		// Process output content to build parts array
-		hasToolCall := false
 		var pendingFunctionCalls []string
 
 		flushPendingFunctionCalls := func() {
@@ -240,7 +243,6 @@ func ConvertCodexResponseToGeminiNonStream(_ context.Context, modelName string, 
 
 				case "function_call":
 					// Collect function call for potential merging with consecutive ones
-					hasToolCall = true
 					functionCall := `{"functionCall":{"args":{},"name":""}}`
 					{
 						n := value.Get("name").String()
@@ -268,12 +270,8 @@ func ConvertCodexResponseToGeminiNonStream(_ context.Context, modelName string, 
 			flushPendingFunctionCalls()
 		}
 
-		// Set finish reason based on whether there were tool calls
-		if hasToolCall {
-			template, _ = sjson.Set(template, "candidates.0.finishReason", "STOP")
-		} else {
-			template, _ = sjson.Set(template, "candidates.0.finishReason", "STOP")
-		}
+		// Gemini has no finish reason for tool calls: they end with STOP too.
+		template, _ = sjson.Set(template, "candidates.0.finishReason", codexGeminiFinishReason(responseData))
 	}
 	return template
 }
@@ -309,4 +307,10 @@ func buildReverseMapFromGeminiOriginal(original []byte) map[string]string {
 
 func GeminiTokenCount(ctx context.Context, count int64) string {
 	return fmt.Sprintf(`{"totalTokens":%d,"promptTokensDetails":[{"modality":"TEXT","tokenCount":%d}]}`, count, count)
+}
+
+// codexGeminiFinishReason is the Gemini finishReason for a finished Responses
+// response: MAX_TOKENS or SAFETY for one the upstream cut short, else STOP.
+func codexGeminiFinishReason(response gjson.Result) string {
+	return translatorcommon.StopReasonFromResponses(response.Get("status").String(), response.Get("incomplete_details.reason").String()).Gemini()
 }

@@ -11,9 +11,11 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/contentmoderation"
 	internalusage "github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/routetrace"
 	coreusage "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/usage"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
@@ -40,6 +42,10 @@ type usageReporter struct {
 	once                sync.Once
 	contentMu           sync.Mutex
 	captureFullContent  bool
+	// guardKind is the loop protection check that ended a request the gateway
+	// answered itself; a cut reply is found on the context instead (see
+	// guardOutcome). Set before the usage is published, never after.
+	guardKind string
 	// streamingRequest records what the client asked for, so it is fixed at
 	// construction from the client payload and never revised afterwards.
 	//
@@ -100,6 +106,8 @@ func newUsageReporter(ctx context.Context, provider, model, upstreamModel string
 			reporter.authSubjectID = identity.ID
 		}
 		reporter.channelName = strings.TrimSpace(auth.ChannelName())
+		// the privacy masking record shows where a masked request went
+		contentmoderation.NoteSecretMaskingRoute(ctx, reporter.channelName, auth.Provider)
 	}
 	return reporter
 }
@@ -370,6 +378,7 @@ func (r *usageReporter) publishWithOutcome(ctx context.Context, detail coreusage
 	if r == nil {
 		return
 	}
+	failed, guardKind := r.guardOutcome(ctx, failed)
 	detail = applyOllamaPromptCacheEstimate(ctx, detail)
 	if detail.TotalTokens == 0 {
 		total := detail.InputTokens + detail.OutputTokens + detail.ReasoningTokens
@@ -380,48 +389,7 @@ func (r *usageReporter) publishWithOutcome(ctx context.Context, detail coreusage
 	if detail.InputTokens == 0 && detail.OutputTokens == 0 && detail.ReasoningTokens == 0 && detail.CachedTokens == 0 && detail.TotalTokens == 0 && !failed {
 		return
 	}
-	r.once.Do(func() {
-		inputContent, outputContent, inputPath, outputPath := r.finalizeContentForOutcome(failed)
-		detailContent, detailPath := deferLargeContent("cliproxy-usage-detail-*", buildRequestDetailContent(ctx, r.captureFullContent))
-		latencyMs := time.Since(r.requestedAt).Milliseconds()
-		if latencyMs < 0 {
-			latencyMs = 0
-		}
-		firstTokenMs := firstTokenLatencyMsFromContext(ctx, r.requestedAt)
-		apiIdentifier, requestID, responseStatus := usageRequestMetadata(ctx)
-		coreusage.PublishRecord(ctx, coreusage.Record{
-			Provider:              r.provider,
-			Model:                 r.model,
-			ThinkingLevel:         r.thinkingLevel,
-			UpstreamModel:         r.upstreamModel,
-			VisionFallbackModel:   r.visionFallbackModel,
-			UpstreamResponseModel: r.upstreamResponse.model(),
-			Source:                r.source,
-			ChannelName:           r.channelName,
-			APIKey:                r.apiKey,
-			TrustedTenantID:       r.trustedTenantID,
-			APIKeyID:              r.apiKeyID,
-			APIKeyName:            r.apiKeyName,
-			AuthID:                r.authID,
-			AuthIndex:             r.authIndex,
-			AuthSubjectID:         r.authSubjectID,
-			RequestedAt:           r.requestedAt,
-			LatencyMs:             latencyMs,
-			FirstTokenMs:          firstTokenMs,
-			Failed:                failed,
-			APIIdentifier:         apiIdentifier,
-			RequestID:             requestID,
-			ResponseStatus:        responseStatus,
-			Streaming:             r.streamingRequest,
-			Detail:                detail,
-			InputContent:          inputContent,
-			OutputContent:         outputContent,
-			DetailContent:         detailContent,
-			InputContentPath:      inputPath,
-			OutputContentPath:     outputPath,
-			DetailContentPath:     detailPath,
-		})
-	})
+	r.once.Do(func() { r.emit(ctx, detail, failed, guardKind) })
 }
 
 // ensurePublished guarantees that a usage record is emitted exactly once.
@@ -432,48 +400,65 @@ func (r *usageReporter) ensurePublished(ctx context.Context) {
 	if r == nil {
 		return
 	}
-	r.once.Do(func() {
-		inputContent, outputContent, inputPath, outputPath := r.finalizeContentForOutcome(false)
-		detailContent, detailPath := deferLargeContent("cliproxy-usage-detail-*", buildRequestDetailContent(ctx, r.captureFullContent))
-		latencyMs := time.Since(r.requestedAt).Milliseconds()
-		if latencyMs < 0 {
-			latencyMs = 0
-		}
-		firstTokenMs := firstTokenLatencyMsFromContext(ctx, r.requestedAt)
-		apiIdentifier, requestID, responseStatus := usageRequestMetadata(ctx)
-		coreusage.PublishRecord(ctx, coreusage.Record{
-			Provider:              r.provider,
-			Model:                 r.model,
-			ThinkingLevel:         r.thinkingLevel,
-			UpstreamModel:         r.upstreamModel,
-			VisionFallbackModel:   r.visionFallbackModel,
-			UpstreamResponseModel: r.upstreamResponse.model(),
-			Source:                r.source,
-			ChannelName:           r.channelName,
-			APIKey:                r.apiKey,
-			TrustedTenantID:       r.trustedTenantID,
-			APIKeyID:              r.apiKeyID,
-			APIKeyName:            r.apiKeyName,
-			AuthID:                r.authID,
-			AuthIndex:             r.authIndex,
-			AuthSubjectID:         r.authSubjectID,
-			RequestedAt:           r.requestedAt,
-			LatencyMs:             latencyMs,
-			FirstTokenMs:          firstTokenMs,
-			Failed:                false,
-			APIIdentifier:         apiIdentifier,
-			RequestID:             requestID,
-			ResponseStatus:        responseStatus,
-			Streaming:             r.streamingRequest,
-			Detail:                coreusage.Detail{},
-			InputContent:          inputContent,
-			OutputContent:         outputContent,
-			DetailContent:         detailContent,
-			InputContentPath:      inputPath,
-			OutputContentPath:     outputPath,
-			DetailContentPath:     detailPath,
-		})
-	})
+	// Loop protection may have ended the request without the executor knowing.
+	failed, guardKind := r.guardOutcome(ctx, false)
+	r.once.Do(func() { r.emit(ctx, coreusage.Detail{}, failed, guardKind) })
+}
+
+// emit builds the usage record of this reporter's attempt and publishes it.
+//
+// The request-log detail is built only when the record goes out. The scheduler
+// holds an attempt's records until it has settled the attempt (see
+// routetrace.DeferPublish), so that the detail's route trace says how the
+// attempt ended, what it left the account in and what the request did next.
+// Everything else is taken now, as the attempt ends.
+func (r *usageReporter) emit(ctx context.Context, detail coreusage.Detail, failed bool, guardKind string) {
+	inputContent, outputContent, inputPath, outputPath := r.finalizeContentForOutcome(failed)
+	latencyMs := time.Since(r.requestedAt).Milliseconds()
+	if latencyMs < 0 {
+		latencyMs = 0
+	}
+	firstTokenMs := firstTokenLatencyMsFromContext(ctx, r.requestedAt)
+	apiIdentifier, requestID, responseStatus := usageRequestMetadata(ctx)
+	record := coreusage.Record{
+		Provider:              r.provider,
+		Model:                 r.model,
+		ThinkingLevel:         r.thinkingLevel,
+		UpstreamModel:         r.upstreamModel,
+		VisionFallbackModel:   r.visionFallbackModel,
+		UpstreamResponseModel: r.upstreamResponse.model(),
+		Source:                r.source,
+		ChannelName:           r.channelName,
+		APIKey:                r.apiKey,
+		TrustedTenantID:       r.trustedTenantID,
+		APIKeyID:              r.apiKeyID,
+		APIKeyName:            r.apiKeyName,
+		AuthID:                r.authID,
+		AuthIndex:             r.authIndex,
+		AuthSubjectID:         r.authSubjectID,
+		RequestedAt:           r.requestedAt,
+		LatencyMs:             latencyMs,
+		FirstTokenMs:          firstTokenMs,
+		Failed:                failed,
+		GuardKind:             guardKind,
+		APIIdentifier:         apiIdentifier,
+		RequestID:             requestID,
+		ResponseStatus:        responseStatus,
+		Streaming:             r.streamingRequest,
+		Detail:                detail,
+		InputContent:          inputContent,
+		OutputContent:         outputContent,
+		InputContentPath:      inputPath,
+		OutputContentPath:     outputPath,
+	}
+	publish := func() {
+		record.DetailContent, record.DetailContentPath = deferLargeContent("cliproxy-usage-detail-*", buildRequestDetailContent(ctx, r.captureFullContent))
+		coreusage.PublishRecord(ctx, record)
+	}
+	if routetrace.DeferPublish(ctx, publish) {
+		return
+	}
+	publish()
 }
 
 func (r *usageReporter) spillOutputBuilderToFileLocked() error {

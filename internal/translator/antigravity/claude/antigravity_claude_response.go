@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/cache"
+	translatorcommon "github.com/router-for-me/CLIProxyAPI/v6/internal/translator/common"
 	log "github.com/sirupsen/logrus"
 
 	"github.com/tidwall/gjson"
@@ -372,18 +373,11 @@ func appendFinalEvents(params *Params, output *string, force bool) {
 }
 
 func resolveStopReason(params *Params) string {
+	// A reply with a function call stops for tool use; Gemini ends it with STOP.
 	if params.HasToolUse {
-		return "tool_use"
+		return translatorcommon.StopToolUse.Claude()
 	}
-
-	switch params.FinishReason {
-	case "MAX_TOKENS":
-		return "max_tokens"
-	case "STOP", "FINISH_REASON_UNSPECIFIED", "UNKNOWN":
-		return "end_turn"
-	}
-
-	return "end_turn"
+	return translatorcommon.StopReasonFromGemini(params.FinishReason).Claude()
 }
 
 // ConvertAntigravityResponseToClaudeNonStream converts a non-streaming Gemini CLI response to a non-streaming Claude response.
@@ -547,20 +541,10 @@ func ConvertAntigravityResponseToClaudeNonStream(_ context.Context, _ string, or
 	flushThinking()
 	flushText()
 
-	stopReason := "end_turn"
-	if hasToolCall {
-		stopReason = "tool_use"
-	} else {
-		if finish := root.Get("response.candidates.0.finishReason"); finish.Exists() {
-			switch finish.String() {
-			case "MAX_TOKENS":
-				stopReason = "max_tokens"
-			case "STOP", "FINISH_REASON_UNSPECIFIED", "UNKNOWN":
-				stopReason = "end_turn"
-			default:
-				stopReason = "end_turn"
-			}
-		}
+	// A reply with a function call stops for tool use; Gemini ends it with STOP.
+	stopReason := translatorcommon.StopToolUse.Claude()
+	if !hasToolCall {
+		stopReason = translatorcommon.StopReasonFromGemini(root.Get("response.candidates.0.finishReason").String()).Claude()
 	}
 	responseJSON, _ = sjson.Set(responseJSON, "stop_reason", stopReason)
 

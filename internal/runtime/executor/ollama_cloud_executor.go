@@ -109,7 +109,7 @@ func (e *OllamaCloudExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 	if opts.Alt != "responses/compact" && (opts.SourceFormat == sdktranslator.FormatOpenAIResponse || opts.SourceFormat == sdktranslator.FormatOpenAI) {
 		result, err = e.executeNativeChatStream(ctx, auth, req, opts)
 	} else if opts.Alt != "responses/compact" && opts.SourceFormat == sdktranslator.FormatClaude {
-		result, err = e.executeDirectStream(ctx, auth, req, opts, sdktranslator.FormatClaude, "/messages", parseClaudeStreamUsage)
+		result, err = e.executeDirectStream(ctx, auth, req, opts, sdktranslator.FormatClaude, "/messages", (&claudeStreamUsage{}).observe)
 	} else {
 		result, err = e.openAIExecutor().ExecuteStream(ctx, e.openAIAuth(auth), req, opts)
 	}

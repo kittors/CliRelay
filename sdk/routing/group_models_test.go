@@ -1,6 +1,9 @@
 package routing
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestChannelGroupExcludesModel(t *testing.T) {
 	t.Parallel()
@@ -74,5 +77,45 @@ func TestMatchWildcard(t *testing.T) {
 		if got := MatchWildcard(tt.pattern, tt.value); got != tt.want {
 			t.Errorf("MatchWildcard(%q, %q) = %v, want %v", tt.pattern, tt.value, got, tt.want)
 		}
+	}
+}
+
+func TestChannelGroupModelDenialMessage(t *testing.T) {
+	t.Parallel()
+
+	message := ChannelGroupModelDenialMessage("gpt-6.1-terra", nil, []string{"team-b", "team-a", "team-a"}, true)
+	for _, want := range []string{`"gpt-6.1-terra"`, `"team-a", "team-b"`, "allowed models", "follow-upstream-models"} {
+		if !strings.Contains(message, want) {
+			t.Errorf("message %q does not contain %s", message, want)
+		}
+	}
+
+	// Only a frozen allow list can be fixed by following upstream.
+	excluded := ChannelGroupModelDenialMessage("gpt-6.1-terra", []string{"team"}, nil, true)
+	if !strings.Contains(excluded, "excluded by channel group \"team\"") || strings.Contains(excluded, "follow-upstream-models") {
+		t.Errorf("exclusion message = %q", excluded)
+	}
+	unlisted := ChannelGroupModelDenialMessage("gpt-6.1-terra", nil, []string{"team"}, false)
+	if strings.Contains(unlisted, "follow-upstream-models") {
+		t.Errorf("message for an unlisted model suggests following upstream: %q", unlisted)
+	}
+	both := ChannelGroupModelDenialMessage("gpt-6.1-terra", []string{"a"}, []string{"b"}, true)
+	if !strings.Contains(both, `excluded by channel group "a"`) || !strings.Contains(both, `allowed models of channel group "b"`) {
+		t.Errorf("message naming both lists = %q", both)
+	}
+}
+
+func TestGroupAdmitsDiscoveredModelNeedsBothTheSettingAndTheListing(t *testing.T) {
+	SetDiscoveredModel(func(tenantID, modelID string) bool { return tenantID == "t" && modelID == "gpt-6.1-terra" })
+	t.Cleanup(func() { SetDiscoveredModel(nil) })
+
+	if !GroupAdmitsDiscoveredModel(true, "t", "gpt-6.1-terra") {
+		t.Fatal("a following group refused a listed model")
+	}
+	if GroupAdmitsDiscoveredModel(false, "t", "gpt-6.1-terra") {
+		t.Fatal("a frozen group admitted a listed model")
+	}
+	if GroupAdmitsDiscoveredModel(true, "t", "unlisted") || GroupAdmitsDiscoveredModel(true, "t", " ") {
+		t.Fatal("a following group admitted a model discovery did not list")
 	}
 }

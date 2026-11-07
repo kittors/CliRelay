@@ -626,3 +626,88 @@ func TestMergeLegacyAccountIDSubjectSkipsCrowdedTeamBindings(t *testing.T) {
 		t.Fatalf("crowded account_id subject = %+v, want the 12 shared requests left in place", got)
 	}
 }
+
+// Folding a legacy subject into the merged one must carry every additive rollup
+// column; the cache and generation-speed columns were once left behind.
+func TestMergeLegacyUsageRollupBucketsKeepsCacheAndGenerationColumns(t *testing.T) {
+	initMonitorTestDB(t)
+	at := monitorTestNow.Add(-time.Hour)
+	project := func(subject, model string) {
+		t.Helper()
+		tx, err := getDB().Begin()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := projectUsageRollupTx(tx, rollupEvent{
+			TenantID: systemTenantID, AuthSubjectID: subject, Model: model, Source: "test",
+			Streaming: true, LatencyMs: 3000, FirstTokenMs: 1000,
+			Tokens: TokenStats{InputTokens: 1000, OutputTokens: 400, TotalTokens: 1400},
+			Cache:  cacheTotals{ReadTokens: 100, WriteTokens: 10, KnownPromptTokens: 1000},
+			At:     at,
+		}); err != nil {
+			_ = tx.Rollback()
+			t.Fatal(err)
+		}
+		if err := tx.Commit(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A bucket only the legacy subject has moves over; one both have adds up.
+	project("legacy-subject", "moved-model")
+	project("legacy-subject", "shared-model")
+	project("merged-subject", "shared-model")
+
+	tx, err := getDB().Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := mergeLegacyUsageRollupBucketsTx(tx, "legacy-subject", "merged-subject"); err != nil {
+		_ = tx.Rollback()
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+
+	type bucket struct {
+		requests                        int64
+		cacheRead, cacheWrite, cacheKey int64
+		generation                      generationTotals
+	}
+	read := func(subject string) map[string]bucket {
+		t.Helper()
+		rows, err := getDB().Query(`
+			SELECT model, request_count, cache_read_tokens, cache_write_tokens, cache_known_prompt_tokens,
+			       generation_count, generation_output_tokens, generation_sum_ms, generation_speed_sum
+			FROM usage_rollup_buckets WHERE bucket_kind = 'lifetime' AND auth_subject_id = ?`, subject)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rows.Close()
+		out := map[string]bucket{}
+		for rows.Next() {
+			var model string
+			var b bucket
+			if err := rows.Scan(&model, &b.requests, &b.cacheRead, &b.cacheWrite, &b.cacheKey,
+				&b.generation.Count, &b.generation.OutputTokens, &b.generation.SumMs, &b.generation.SpeedSum); err != nil {
+				t.Fatal(err)
+			}
+			out[model] = b
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	if left := read("legacy-subject"); len(left) != 0 {
+		t.Fatalf("legacy buckets left behind: %+v", left)
+	}
+	got := read("merged-subject")
+	one := bucket{requests: 1, cacheRead: 100, cacheWrite: 10, cacheKey: 1000,
+		generation: generationTotals{Count: 1, OutputTokens: 400, SumMs: 2000, SpeedSum: 200}}
+	two := bucket{requests: 2, cacheRead: 200, cacheWrite: 20, cacheKey: 2000,
+		generation: generationTotals{Count: 2, OutputTokens: 800, SumMs: 4000, SpeedSum: 400}}
+	if got["moved-model"] != one || got["shared-model"] != two {
+		t.Fatalf("merged buckets = %+v, want moved %+v and shared %+v", got, one, two)
+	}
+}

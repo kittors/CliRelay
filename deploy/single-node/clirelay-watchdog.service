@@ -1,0 +1,13 @@
+# Installed as /etc/systemd/system/clirelay-watchdog.service with the script
+# at /usr/local/bin/clirelay-watchdog.sh (see clirelay-watchdog.sh).
+[Unit]
+Description=CliRelay hang watchdog (probes the slot named in /opt/clirelay2/.active-port)
+After=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/clirelay-watchdog.sh
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

@@ -33,6 +33,8 @@ func EffectiveAPIKeyRowWithProfiles(row APIKeyRow, profiles []PermissionProfileS
 	row.AllowedChannels = append([]string(nil), matched.AllowedChannels...)
 	row.AllowedChannelGroups = append([]string(nil), matched.AllowedChannelGroups...)
 	row.SystemPrompt = matched.SystemPrompt
+	// 模板不拥有累计消费，那一格仍是 Key 自己的 spending_limit 列，不在策略里。
+	row.AccessPolicy = matched.AccessPolicy.Clone()
 	return row
 }
 

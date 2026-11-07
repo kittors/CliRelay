@@ -34,6 +34,11 @@ type AmpModule struct {
 	enabled         bool
 	registerOnce    sync.Once
 
+	// inferenceMiddleware runs after authentication on the routes that send a
+	// conversation to a provider (not on the proxied management routes). The API
+	// server uses it to publish the request's loop protection to the handlers.
+	inferenceMiddleware gin.HandlerFunc
+
 	// restrictToLocalhost controls localhost-only access for management routes (hot-reloadable)
 	restrictToLocalhost bool
 	restrictMu          sync.RWMutex
@@ -92,6 +97,14 @@ func WithAccessManager(am *sdkaccess.Manager) Option {
 func WithAuthMiddleware(middleware gin.HandlerFunc) Option {
 	return func(m *AmpModule) {
 		m.authMiddleware_ = middleware
+	}
+}
+
+// WithInferenceMiddleware sets a middleware that runs after authentication on the
+// provider routes that carry a conversation.
+func WithInferenceMiddleware(middleware gin.HandlerFunc) Option {
+	return func(m *AmpModule) {
+		m.inferenceMiddleware = middleware
 	}
 }
 
