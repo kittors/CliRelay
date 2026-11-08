@@ -173,6 +173,8 @@ type Ledger struct {
 	byRequest map[string][]*Reservation
 	averages  map[string]*average
 	overall   average
+	// Model decisions have their own ordering, after request models are known.
+	modelGates map[string]*modelGate
 
 	settleAfter time.Duration
 }
