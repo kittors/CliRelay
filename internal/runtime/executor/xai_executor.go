@@ -306,7 +306,12 @@ func (e *XAIExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*cl
 		return auth, nil
 	}
 	tokenEndpoint := xaiMetadataString(auth.Metadata, "token_endpoint")
-	svc := xaiauth.NewXAIAuthWithProxyURL(e.cfg, auth.ProxyURL)
+	// The refresh leaves through the proxy the credential's requests use, its
+	// proxy-pool entry included. auth.ProxyURL alone skipped a pool binding and
+	// fell back to the global proxy-url: when that proxy died, accounts whose
+	// own pool proxy was fine stopped refreshing and went 401 once the 6-hour
+	// access token ran out (2026-11-09, kittors/CliRelay#1122).
+	svc := xaiauth.NewXAIAuthWithProxyURL(e.cfg, resolveAuthProxyURL(e.cfg, auth))
 	td, err := svc.RefreshTokens(ctx, refreshToken, tokenEndpoint)
 	if err != nil {
 		return nil, err
