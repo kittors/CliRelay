@@ -172,6 +172,7 @@ func ResolveGemini(cfg config.GeminiIdentityFingerprintConfig, learned *LearnedR
 func ResolveXAI(cfg config.XAIIdentityFingerprintConfig, learned *LearnedRecord) (config.XAIIdentityFingerprintConfig, EffectiveFingerprint) {
 	clean := config.CleanXAIIdentityFingerprint(cfg)
 	defaults := config.DefaultXAIIdentityFingerprint()
+	bundle := coherentXAIBundle(learned, defaults.ClientVersion)
 	fields := make(map[string]FieldValue)
 	pick := func(field, preset, learnedValue, defaultValue string) string {
 		value, source := pickField(preset, learnedValue, defaultValue)
@@ -181,11 +182,16 @@ func ResolveXAI(cfg config.XAIIdentityFingerprintConfig, learned *LearnedRecord)
 
 	resolved := config.XAIIdentityFingerprintConfig{
 		Enabled:            clean.Enabled,
-		UserAgent:          pick(FieldUserAgent, clean.UserAgent, learnedField(learned, FieldUserAgent), defaults.UserAgent),
-		ClientIdentifier:   pick(FieldXAIClientIdentifier, clean.ClientIdentifier, learnedField(learned, FieldXAIClientIdentifier), defaults.ClientIdentifier),
-		ClientVersion:      pick(FieldXAIClientVersion, clean.ClientVersion, learnedFieldOrVersion(learned, FieldXAIClientVersion), defaults.ClientVersion),
+		UserAgent:          pick(FieldUserAgent, clean.UserAgent, bundle[FieldUserAgent], defaults.UserAgent),
+		ClientIdentifier:   pick(FieldXAIClientIdentifier, clean.ClientIdentifier, bundle[FieldXAIClientIdentifier], defaults.ClientIdentifier),
+		ClientVersion:      pick(FieldXAIClientVersion, clean.ClientVersion, bundle[FieldXAIClientVersion], defaults.ClientVersion),
 		GrokConversationID: strings.TrimSpace(clean.GrokConversationID),
 		CustomHeaders:      clean.CustomHeaders,
+	}
+	// The mode is learned only, like Kimi's device id: it is part of the
+	// bundle it came with, so it goes out with that bundle and never alone.
+	if mode := bundle[FieldXAIClientMode]; mode != "" {
+		fields[FieldXAIClientMode] = FieldValue{Value: mode, Source: FieldSourceLearned}
 	}
 	effective := effective(ProviderXAI, clean.Enabled, learned, fields)
 	if value := strings.TrimSpace(resolved.ClientVersion); value != "" {
@@ -270,6 +276,58 @@ func ResolveAntigravity(cfg config.AntigravityIdentityFingerprintConfig, learned
 		effective.Version = value
 	}
 	return resolved, effective
+}
+
+// XAIClientMode is the learned x-grok-client-mode the resolved identity goes
+// out with, or "" when its bundle carried none.
+func XAIClientMode(effective EffectiveFingerprint) string {
+	return strings.TrimSpace(effective.Fields[FieldXAIClientMode].Value)
+}
+
+// coherentXAIBundle is the learned Grok client identity as one bundle, or nil
+// when there is none to replay.
+//
+// The User-Agent anchors it: the version is the one the User-Agent names, and
+// the identifier one of the products it lists. A record merged field by field
+// before 2026-11-09 can hold grok-shell/1.0.77's User-Agent beside the
+// identifier and version of an earlier grok-pager 1.0.70; read through here it
+// goes out as the one client its User-Agent names. A learned mode stays only
+// while the identifier and version it was learned with do.
+//
+// A bundle older than floor is not replayed at all. cli-chat-proxy answers an
+// outdated client with 426 ("Your Grok CLI version (…) is outdated"), which is
+// why the chat path used to overwrite the version with the builtin one; the
+// builtin default is the newest version known to be accepted, so an older
+// learned client gives way to it whole instead of being half-replaced.
+func coherentXAIBundle(learned *LearnedRecord, floor string) map[string]string {
+	ua := learnedField(learned, FieldUserAgent)
+	products := xaiUserAgentProducts(ua)
+	if len(products) == 0 {
+		return nil
+	}
+	version := products[0].version
+	if strings.TrimSpace(floor) != "" && isNewerVersion(floor, version) {
+		return nil
+	}
+	learnedIdentifier := learnedField(learned, FieldXAIClientIdentifier)
+	identifier := products[0].name
+	for _, product := range products {
+		if learnedIdentifier != "" && strings.EqualFold(product.name, learnedIdentifier) {
+			identifier = learnedIdentifier
+			break
+		}
+	}
+	bundle := map[string]string{
+		FieldUserAgent:           ua,
+		FieldXAIClientIdentifier: identifier,
+		FieldXAIClientVersion:    version,
+	}
+	if identifier == learnedIdentifier && learnedField(learned, FieldXAIClientVersion) == version {
+		if mode := learnedField(learned, FieldXAIClientMode); mode != "" {
+			bundle[FieldXAIClientMode] = mode
+		}
+	}
+	return bundle
 }
 
 func pickField(preset, learned, fallback string) (string, FieldSource) {
