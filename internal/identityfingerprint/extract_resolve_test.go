@@ -314,25 +314,26 @@ func TestResolveGeminiUsesLearnedWhenPresetEmpty(t *testing.T) {
 }
 
 func TestResolveXAIUsesLearnedWhenPresetEmpty(t *testing.T) {
+	learnedVersion := xaiVersionAboveDefault()
 	learned := &LearnedRecord{
 		Provider:      ProviderXAI,
 		AccountKey:    "acct",
 		ClientProduct: "grok-shell",
-		Version:       "0.2.93",
+		Version:       learnedVersion,
 		Fields: map[string]string{
-			FieldUserAgent:           "grok-shell/0.2.93 (macos; aarch64)",
+			FieldUserAgent:           "grok-shell/" + learnedVersion + " (macos; aarch64)",
 			FieldXAIClientIdentifier: "grok-shell",
-			FieldXAIClientVersion:    "0.2.93",
+			FieldXAIClientVersion:    learnedVersion,
 		},
 	}
 
 	fp, effective := ResolveXAI(config.XAIIdentityFingerprintConfig{Enabled: true}, learned)
-	if fp.UserAgent != "grok-shell/0.2.93 (macos; aarch64)" ||
+	if fp.UserAgent != "grok-shell/"+learnedVersion+" (macos; aarch64)" ||
 		fp.ClientIdentifier != "grok-shell" ||
-		fp.ClientVersion != "0.2.93" {
+		fp.ClientVersion != learnedVersion {
 		t.Fatalf("resolved xAI fingerprint = %#v, want learned fields", fp)
 	}
-	if effective.Version != "0.2.93" {
+	if effective.Version != learnedVersion {
 		t.Fatalf("effective version = %q, want learned version", effective.Version)
 	}
 	if got := effective.Fields[FieldUserAgent].Source; got != FieldSourceLearned {

@@ -10,16 +10,19 @@ import (
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 )
 
-func xaiIdentityFingerprint(cfg *config.Config, auth *cliproxyauth.Auth, ctx context.Context) (config.XAIIdentityFingerprintConfig, bool) {
+// xaiIdentityFingerprint resolves the Grok client identity the account's
+// requests go out with, and the x-grok-client-mode learned with it ("" when
+// its bundle had none).
+func xaiIdentityFingerprint(cfg *config.Config, auth *cliproxyauth.Auth, ctx context.Context) (config.XAIIdentityFingerprintConfig, string, bool) {
 	if cfg == nil || !cfg.IdentityFingerprint.XAI.Enabled {
-		return config.XAIIdentityFingerprintConfig{}, false
+		return config.XAIIdentityFingerprintConfig{}, "", false
 	}
 	learned := observeRuntimeIdentityFingerprint(identityfingerprint.ProviderXAI, auth, ctx)
-	resolved, _ := identityfingerprint.ResolveXAI(cfg.IdentityFingerprint.XAI, learned)
-	return resolved, true
+	resolved, effective := identityfingerprint.ResolveXAI(cfg.IdentityFingerprint.XAI, learned)
+	return resolved, identityfingerprint.XAIClientMode(effective), true
 }
 
-func applyXAIIdentityFingerprintHeaders(headers http.Header, fp config.XAIIdentityFingerprintConfig) {
+func applyXAIIdentityFingerprintHeaders(headers http.Header, fp config.XAIIdentityFingerprintConfig, clientMode string) {
 	if headers == nil {
 		return
 	}
@@ -31,6 +34,9 @@ func applyXAIIdentityFingerprintHeaders(headers http.Header, fp config.XAIIdenti
 	}
 	if strings.TrimSpace(fp.ClientVersion) != "" {
 		headers.Set("X-Grok-Client-Version", fp.ClientVersion)
+	}
+	if mode := strings.TrimSpace(clientMode); mode != "" {
+		headers.Set("X-Grok-Client-Mode", mode)
 	}
 	for key, value := range fp.CustomHeaders {
 		key = strings.TrimSpace(key)
@@ -62,7 +68,7 @@ func applyXAIPassthroughHeaders(headers, inbound http.Header) {
 func isXAIFingerprintRuntimeBlockedHeader(key string) bool {
 	switch strings.ToLower(strings.TrimSpace(key)) {
 	case "authorization", "content-type", "accept", "connection", "user-agent",
-		"x-grok-client-identifier", "x-grok-client-version", "x-grok-conv-id":
+		"x-grok-client-identifier", "x-grok-client-version", "x-grok-client-mode", "x-grok-conv-id":
 		return true
 	default:
 		return false

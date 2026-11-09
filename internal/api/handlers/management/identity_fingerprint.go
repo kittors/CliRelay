@@ -368,7 +368,7 @@ func isGeminiIdentityFingerprintBlockedHeader(key string) bool {
 
 func isXAIIdentityFingerprintBlockedHeader(key string) bool {
 	switch strings.ToLower(strings.TrimSpace(key)) {
-	case "x-grok-client-identifier", "x-grok-client-version", "x-grok-conv-id":
+	case "x-grok-client-identifier", "x-grok-client-version", "x-grok-client-mode", "x-grok-conv-id":
 		return true
 	default:
 		return false

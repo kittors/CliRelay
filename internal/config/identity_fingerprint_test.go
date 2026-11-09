@@ -202,14 +202,14 @@ func TestDefaultXAIIdentityFingerprint(t *testing.T) {
 	if !got.Enabled {
 		t.Fatal("Enabled = false, want true by default")
 	}
-	if got.UserAgent != "grok-shell/1.0.46 (macos; aarch64)" {
+	if got.UserAgent != "grok-shell/1.0.77 (macos; aarch64)" {
 		t.Fatalf("UserAgent = %q, want Grok shell default", got.UserAgent)
 	}
 	if got.ClientIdentifier != "grok-shell" {
 		t.Fatalf("ClientIdentifier = %q, want grok-shell", got.ClientIdentifier)
 	}
-	if got.ClientVersion != "1.0.46" {
-		t.Fatalf("ClientVersion = %q, want 1.0.46", got.ClientVersion)
+	if got.ClientVersion != "1.0.77" {
+		t.Fatalf("ClientVersion = %q, want 1.0.77", got.ClientVersion)
 	}
 }
 
