@@ -10,7 +10,7 @@
 #
 # Environment: HEALTH_URL and APP_VERSION; for `node` also NODE, NODE_SMOKE_IP,
 # SLOT_SERVICE, NEW_PORT, OLD_PORT (empty on a node's first deploy),
-# DRAIN_SECONDS and SHUTDOWN_GRACE_SECONDS from the deploy script's result line.
+# DRAIN_SECONDS and STOP_TIMEOUT_SECONDS from the deploy script's result line.
 # Tuning: PROBE_MIN_SECONDS (210), PROBE_MARGIN_SECONDS (30),
 # PROBE_INTERVAL_SECONDS (3), PUBLIC_PROBES (10), STOP_WAIT_EXTRA_SECONDS (60),
 # STOP_POLL_SECONDS (10), OLD_SLOT_HOLD_SECONDS (90).
@@ -127,7 +127,7 @@ verify_node() {
 	require_number NEW_PORT "${NEW_PORT:-}"
 	[ -z "${OLD_PORT:-}" ] || require_number OLD_PORT "$OLD_PORT"
 	require_number DRAIN_SECONDS "${DRAIN_SECONDS:-}"
-	require_number SHUTDOWN_GRACE_SECONDS "${SHUTDOWN_GRACE_SECONDS:-}"
+	require_number STOP_TIMEOUT_SECONDS "${STOP_TIMEOUT_SECONDS:-}"
 
 	case "$NODE_SMOKE_IP" in
 	*:*) pin_addr="[${NODE_SMOKE_IP}]" ;;
@@ -150,9 +150,11 @@ verify_node() {
 	done
 
 	# The drain sends the old slot SIGTERM, after which it may keep finishing
-	# streams for up to its shutdown grace. The next node waits until it has
-	# really exited, and the probes continue meanwhile.
-	stop_deadline=$(($(date +%s) + SHUTDOWN_GRACE_SECONDS + ${STOP_WAIT_EXTRA_SECONDS:-60}))
+	# streams for up to its shutdown grace and then run the rest of its
+	# shutdown; systemd kills it STOP_TIMEOUT_SECONDS after the SIGTERM at the
+	# latest. The next node waits until it has really exited, and the probes
+	# continue meanwhile.
+	stop_deadline=$(($(date +%s) + STOP_TIMEOUT_SECONDS + ${STOP_WAIT_EXTRA_SECONDS:-60}))
 	while :; do
 		read_remote_state
 		if old_slot_stopped || [ "$(date +%s)" -ge "$stop_deadline" ]; then
