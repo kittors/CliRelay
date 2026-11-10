@@ -450,7 +450,11 @@ func insertLogContentTenantTx(tx usageWriteTx, tenantID string, logID int64, tim
 	if tx == nil || logID < 1 {
 		return nil
 	}
-	if !RequestLogBodyStorageEnabled() {
+	// One read of the toggle decides both the stripping and the bodies_stripped
+	// flag stored with the row: the purge skips rows flagged 1, so a flag that
+	// disagreed with the content would keep a body for good.
+	stripBodies := !RequestLogBodyStorageEnabled()
+	if stripBodies {
 		// Privacy: do not keep full request/response bodies when body storage is off.
 		// Failed requests are an exception for output_content: the management UI
 		// error modal needs the compact upstream error payload (status/message JSON).
@@ -491,8 +495,14 @@ func insertLogContentTenantTx(tx usageWriteTx, tenantID string, logID int64, tim
 	if usageDriver == "postgres" {
 		conflictTarget = "(tenant_id, log_id)"
 	}
-	query := `INSERT INTO request_log_content (tenant_id, log_id, timestamp, compression, input_content, output_content, detail_content, session_id)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	// bodies_stripped: 1 when the content above was stripped for storage being
+	// off, 0 when it may hold bodies. See purgeStoredRequestBodies.
+	bodiesStripped := 0
+	if stripBodies {
+		bodiesStripped = 1
+	}
+	query := `INSERT INTO request_log_content (tenant_id, log_id, timestamp, compression, input_content, output_content, detail_content, session_id, bodies_stripped)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT` + conflictTarget + ` DO UPDATE SET
 		   tenant_id = excluded.tenant_id,
 		   timestamp = excluded.timestamp,
@@ -500,8 +510,9 @@ func insertLogContentTenantTx(tx usageWriteTx, tenantID string, logID int64, tim
 		   input_content = excluded.input_content,
 		   output_content = excluded.output_content,
 		   detail_content = excluded.detail_content,
-		   session_id = excluded.session_id`
-	args := []any{tenantID, logID, timestamp.UTC().Format(time.RFC3339Nano), requestLogContentCompression, inputCompressed, outputCompressed, detailCompressed, sessionID}
+		   session_id = excluded.session_id,
+		   bodies_stripped = excluded.bodies_stripped`
+	args := []any{tenantID, logID, timestamp.UTC().Format(time.RFC3339Nano), requestLogContentCompression, inputCompressed, outputCompressed, detailCompressed, sessionID, bodiesStripped}
 	_, err = tx.Exec(query, args...)
 	if err != nil {
 		return fmt.Errorf("usage: insert compressed content: %w", err)
