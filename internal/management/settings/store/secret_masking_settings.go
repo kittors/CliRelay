@@ -8,6 +8,7 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/configsync"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/contentmoderation"
+	sqlsettings "github.com/router-for-me/CLIProxyAPI/v6/internal/storage/sqlstore/settings"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 )
 
@@ -18,10 +19,11 @@ type SecretMaskingSettings struct{}
 
 func (SecretMaskingSettings) Load(ctx context.Context, tenantID string) (contentmoderation.SecretMaskingSettings, int64, error) {
 	// A failed read must not pass for "no row": that is masking off, and the
-	// tenant's secrets would go upstream until the next read.
+	// tenant's secrets would go upstream until the next read. The runtime
+	// database being gone is such a read (sqlsettings.ErrStoreUnavailable).
 	payload, version, ok, err := usage.LoadRuntimeSettingForTenantContext(ctx, tenantID, contentmoderation.SecretMaskingSettingKey)
 	if err != nil {
-		return contentmoderation.SecretMaskingSettings{}, 0, fmt.Errorf("load %s: %w", contentmoderation.SecretMaskingSettingKey, err)
+		return contentmoderation.SecretMaskingSettings{}, 0, maskingSettingsReadError("load "+contentmoderation.SecretMaskingSettingKey, err)
 	}
 	if !ok || len(payload) == 0 {
 		return contentmoderation.SecretMaskingSettings{}, 0, nil
@@ -51,10 +53,12 @@ func (SecretMaskingSettings) Save(ctx context.Context, tenantID string, settings
 // LoadAll returns every tenant's stored settings, keyed by tenant id: the
 // registry reads them once at start (Preload), so a tenant whose row cannot be
 // read on its first request is still known to have masking on or off.
-func (SecretMaskingSettings) LoadAll(context.Context) (map[string]contentmoderation.SecretMaskingSettings, error) {
-	payloads, err := usage.RuntimeSettingPayloadsByKey(contentmoderation.SecretMaskingSettingKey)
+func (SecretMaskingSettings) LoadAll(ctx context.Context) (map[string]contentmoderation.SecretMaskingSettings, error) {
+	// No database is no read, not "no tenant has a row": that would make every
+	// tenant known to have masking off.
+	payloads, err := usage.RuntimeSettingPayloadsByKeyContext(ctx, contentmoderation.SecretMaskingSettingKey)
 	if err != nil {
-		return nil, fmt.Errorf("load every %s: %w", contentmoderation.SecretMaskingSettingKey, err)
+		return nil, maskingSettingsReadError("load every "+contentmoderation.SecretMaskingSettingKey, err)
 	}
 	out := make(map[string]contentmoderation.SecretMaskingSettings, len(payloads))
 	for tenantID, payload := range payloads {
@@ -70,6 +74,16 @@ func (SecretMaskingSettings) LoadAll(context.Context) (map[string]contentmoderat
 		out[tenantID] = settings
 	}
 	return out, nil
+}
+
+// maskingSettingsReadError names a failed read of the settings, and reports a
+// database that is not attached as contentmoderation.ErrUnavailable too, which
+// the management API answers with 503.
+func maskingSettingsReadError(what string, err error) error {
+	if errors.Is(err, sqlsettings.ErrStoreUnavailable) {
+		return fmt.Errorf("%s: %w: %w", what, contentmoderation.ErrUnavailable, err)
+	}
+	return fmt.Errorf("%s: %w", what, err)
 }
 
 // AttachSecretMaskingSettings attaches the store to the registry of this

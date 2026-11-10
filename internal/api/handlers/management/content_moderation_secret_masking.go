@@ -49,9 +49,16 @@ func (h *Handler) secretMaskingView(settings contentmoderation.SecretMaskingSett
 }
 
 // GetSecretMasking returns the secret masking switch of the tenant the session
-// acts in.
+// acts in. While the switch is not known (the store could not be read and
+// never was) it answers 503: "enabled": false would say masking is off while
+// the tenant's requests are refused for not knowing.
 func (h *Handler) GetSecretMasking(c *gin.Context) {
-	c.JSON(http.StatusOK, h.secretMaskingView(h.secretMaskingRegistry().For(effectiveTenantID(c))))
+	settings, known := h.secretMaskingRegistry().Lookup(effectiveTenantID(c))
+	if !known {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": gin.H{"code": "secret_masking_unavailable", "message": "the secret masking switch could not be read just now; try again in a moment"}})
+		return
+	}
+	c.JSON(http.StatusOK, h.secretMaskingView(settings))
 }
 
 // PutSecretMasking switches the tenant's secret masking on or off.
@@ -68,6 +75,8 @@ func (h *Handler) PutSecretMasking(c *gin.Context) {
 		switch {
 		case errors.Is(err, contentmoderation.ErrSecretMaskingNotPersistent):
 			c.JSON(http.StatusServiceUnavailable, gin.H{"error": gin.H{"code": "secret_masking_not_persistent", "message": err.Error()}})
+		case errors.Is(err, contentmoderation.ErrUnavailable):
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": gin.H{"code": "secret_masking_unavailable", "message": "the secret masking switch could not be read just now; try again in a moment"}})
 		case errors.Is(err, contentmoderation.ErrSecretMaskingConflict):
 			c.JSON(http.StatusConflict, gin.H{"error": gin.H{"code": "secret_masking_conflict", "message": "the secret masking switch was changed by someone else while saving; reload and try again"}})
 		default:

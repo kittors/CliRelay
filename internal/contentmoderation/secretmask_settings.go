@@ -135,13 +135,15 @@ const (
 	// settings to be read again. Every inference request reads them, those of
 	// tenants that never switched masking on included, so a slow store must not
 	// hold them: the request goes on with the settings read before, and the read
-	// finishes in the background.
+	// finishes in the background. A store that fails keeps serving the settings
+	// read before, whatever they are: refusing the requests of tenants whose
+	// masking was off would make every tenant depend on the settings store.
 	secretMaskingRefreshWait = 75 * time.Millisecond
 	// secretMaskingFirstReadWait is the wait while nothing has been read for the
 	// tenant yet. Masking may be on, and going on without the settings would
 	// send the tenant's secrets upstream, so the first request waits for a slow
-	// store. A store that does not answer at all is taken as masking off for as
-	// long as it fails: the word guard fails open the same way.
+	// store, and while no read has succeeded the settings are unknown: requests
+	// are refused (Lookup), not sent as if masking were off.
 	secretMaskingFirstReadWait = time.Second
 	// secretMaskingUpdateAttempts is how often a write is retried on top of a
 	// concurrent one before it gives up.
@@ -243,17 +245,13 @@ func (r *SecretMaskingRegistry) InvalidateAll() {
 	maskScopes.Drop("")
 }
 
-// For returns the settings of tenantID; see Lookup.
-func (r *SecretMaskingRegistry) For(tenantID string) SecretMaskingSettings {
-	settings, _ := r.Lookup(tenantID)
-	return settings
-}
-
 // Lookup returns the settings of tenantID, from the cache unless the entry has
 // expired; see secretMaskingRefreshWait and secretMaskingFirstReadWait for how
 // long it waits for the store. known is false when they are not known: never
 // read, not preloaded, and the store did not answer now. Masking may be on for
-// such a tenant, so its request must not be sent as it is.
+// such a tenant, so its request must not be sent as it is, and a view of its
+// settings must not show them off. There is no lookup that leaves known out:
+// one that did (For) let every read view say "off" while the store was down.
 func (r *SecretMaskingRegistry) Lookup(tenantID string) (settings SecretMaskingSettings, known bool) {
 	if r == nil {
 		return SecretMaskingSettings{}, true
@@ -270,7 +268,10 @@ func (r *SecretMaskingRegistry) Lookup(tenantID string) (settings SecretMaskingS
 		cached.read = true
 	}
 	if r.now().Before(cached.until) {
-		return cached.settings, true
+		// A failed first read is kept too, for secretMaskingRetryAfterFailure,
+		// and stays unknown: it is not "masking off". Answering true here let
+		// every request but the first through unmasked while the store was down.
+		return cached.settings, cached.read
 	}
 	// Concurrent callers share one read. The generation is part of the key: a
 	// read that started before an invalidation or a write returns the row as it
@@ -302,8 +303,13 @@ func (r *SecretMaskingRegistry) reload(tenantID string, store SecretMaskingStore
 	next := secretMaskingEntry{settings: settings, until: now.Add(secretMaskingTTL), read: true}
 	if err != nil {
 		// Keep what was last read, if anything: a store that cannot be read for a
-		// moment must not switch a tenant's masking off.
-		log.WithError(err).WithField("tenant_id", tenantID).Warn("secret masking: stored settings are unreadable; using the last ones read")
+		// moment must not switch a tenant's masking off. With nothing read yet
+		// the settings stay unknown (read false), and requests are refused.
+		message := "secret masking: stored settings are unreadable; using the last ones read"
+		if !previous.read {
+			message = "secret masking: stored settings are unreadable and were never read; the tenant's requests are refused until they are"
+		}
+		log.WithError(err).WithField("tenant_id", tenantID).Warn(message)
 		next = secretMaskingEntry{settings: previous.settings, until: now.Add(secretMaskingRetryAfterFailure), read: previous.read}
 	}
 	r.mu.Lock()
