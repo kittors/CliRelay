@@ -158,7 +158,9 @@ func ConvertOpenAIRequestToClaude(modelName string, inputRawJSON []byte, stream 
 					out, _ = sjson.SetRaw(out, fmt.Sprintf("messages.%d.content.-1", systemMessageIndex), textPart)
 				} else if contentResult.Exists() && contentResult.IsArray() {
 					contentResult.ForEach(func(_, part gjson.Result) bool {
-						if part.Get("type").String() == "text" {
+						// An empty part is skipped like an empty string content above:
+						// Anthropic rejects empty text blocks.
+						if part.Get("type").String() == "text" && part.Get("text").String() != "" {
 							textPart := `{"type":"text","text":""}`
 							textPart, _ = sjson.Set(textPart, "text", part.Get("text").String())
 							out, _ = sjson.SetRaw(out, fmt.Sprintf("messages.%d.content.-1", systemMessageIndex), textPart)
@@ -192,9 +194,16 @@ func ConvertOpenAIRequestToClaude(modelName string, inputRawJSON []byte, stream 
 
 						switch partType {
 						case "text":
-							textPart := `{"type":"text","text":""}`
-							textPart, _ = sjson.Set(textPart, "text", part.Get("text").String())
-							msg, _ = sjson.SetRaw(msg, "content.-1", textPart)
+							// Anthropic rejects an empty text block ("text content blocks
+							// must be non-empty"); clients send one next to an image
+							// attached without typed text, or beside tool_calls. It is
+							// skipped like an empty string content above; whitespace-only
+							// text is accepted and kept.
+							if text := part.Get("text").String(); text != "" {
+								textPart := `{"type":"text","text":""}`
+								textPart, _ = sjson.Set(textPart, "text", text)
+								msg, _ = sjson.SetRaw(msg, "content.-1", textPart)
+							}
 
 						case "image_url":
 							// Convert OpenAI image format to Claude Code format
