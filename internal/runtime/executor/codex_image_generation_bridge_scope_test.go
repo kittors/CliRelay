@@ -126,8 +126,9 @@ func TestMaybeEnsureSkipsCodexInternalSubagents(t *testing.T) {
 
 func TestMaybeEnsureKeepsBridgeForSpawnedAgents(t *testing.T) {
 	// collab_spawn is an agent the user asked for; it may be the one told to draw.
+	// Only an explicit $imagegen pins tool_choice (see classifyCodexImageGenerationIntent).
 	auth := codexBridgeAuth(map[string]any{"codex_image_generation_bridge": true})
-	body := []byte(`{"model":"gpt-5.5","tools":[{"type":"function","name":"shell"}],"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"帮我画一个小猫咪"}]}]}`)
+	body := []byte(`{"model":"gpt-5.5","tools":[{"type":"function","name":"shell"}],"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"$imagegen 帮我画一个小猫咪"}]}]}`)
 	for name, headers := range map[string]http.Header{
 		"collab_spawn": {"X-Openai-Subagent": []string{"collab_spawn"}},
 		"blank label":  {"X-Openai-Subagent": []string{"  "}},
@@ -177,7 +178,8 @@ func TestMaybeEnsureForcesToolChoiceOnlyOverAuto(t *testing.T) {
 		"named function": {`{"type":"function","name":"shell"}`, `{"type":"function","name":"shell"}`},
 	}
 	for name, tc := range cases {
-		body := []byte(`{"model":"gpt-5.5","tools":[{"type":"function","name":"shell"}],"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"帮我画一个小猫咪"}]}]}`)
+		// An explicit $imagegen is the only intent that pins tool_choice at all.
+		body := []byte(`{"model":"gpt-5.5","tools":[{"type":"function","name":"shell"}],"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"$imagegen 帮我画一个小猫咪"}]}]}`)
 		if tc.toolChoice != "" {
 			body, _ = sjson.SetRawBytes(body, "tool_choice", []byte(tc.toolChoice))
 		}
