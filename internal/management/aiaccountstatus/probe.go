@@ -56,7 +56,7 @@ func probeAuth(ctx context.Context, svc *managementapitools.Service, cfg *config
 	case "antigravity":
 		return probeAntigravity(ctx, svc, auth)
 	default:
-		return ProbeResult{Unsupported: true, UnsupportedReason: "provider " + provider + " has no server-side status probe"}, nil
+		return probeZAICoding(ctx, svc, auth, zaiCodingQuotaURL(auth))
 	}
 }
 

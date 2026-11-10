@@ -107,6 +107,9 @@ func observeRuntimeIdentityFingerprint(provider identityfingerprint.Provider, au
 		if record := getCachedRuntimeIdentityFingerprint(provider, accountKey, "", ""); record != nil {
 			return record
 		}
+		if record := loadRuntimeIdentityFingerprintOnColdStart(provider, accountKey); record != nil {
+			return record
+		}
 		scheduleRuntimeIdentityFingerprintLoad(provider, accountKey)
 		return nil
 	}
@@ -126,10 +129,19 @@ func observeRuntimeIdentityFingerprint(provider identityfingerprint.Provider, au
 		profileKey = identityfingerprint.DefaultProfileKey(provider)
 	}
 	signature := runtimeIdentityFingerprintObservationSignature(obs)
+	// Read the cached record before the signature lookup: a signature mismatch
+	// evicts the entry, and merging into nothing would serve an identity built
+	// from this one request until the background persist returns, even when a
+	// newer record is known. Storage merges into its stored record; so does this.
+	existing := getCachedRuntimeIdentityFingerprint(provider, accountKey, profileKey, "")
 	if record := getCachedRuntimeIdentityFingerprint(provider, accountKey, profileKey, signature); record != nil {
 		return record
 	}
-	existing := getCachedRuntimeIdentityFingerprint(provider, accountKey, profileKey, "")
+	if existing == nil {
+		// The same holds for the first request after a restart, before anything
+		// is cached.
+		existing = loadRuntimeIdentityFingerprintOnColdStart(provider, accountKey)
+	}
 	result := identityfingerprint.MergeObservation(existing, obs)
 	if result.Record == nil {
 		return nil

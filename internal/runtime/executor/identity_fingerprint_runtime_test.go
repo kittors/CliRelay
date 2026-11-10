@@ -115,7 +115,7 @@ func TestClaudeExecutorLearnsAndAppliesClaudeCodeFingerprint(t *testing.T) {
 		},
 	}
 	headers := http.Header{}
-	headers.Set("User-Agent", "claude-cli/2.1.200 (external, cli)")
+	headers.Set("User-Agent", "claude-cli/2.1.300 (external, cli)")
 	headers.Set("X-App", "cli")
 	headers.Set("Anthropic-Beta", "claude-code-20250219,oauth-2025-04-20")
 	headers.Set("X-Stainless-Package-Version", "0.99.0")
@@ -134,7 +134,7 @@ func TestClaudeExecutorLearnsAndAppliesClaudeCodeFingerprint(t *testing.T) {
 		t.Fatalf("Execute returned error: %v", err)
 	}
 
-	if got := gotHeaders.Get("User-Agent"); got != "claude-cli/2.1.200 (external, cli)" {
+	if got := gotHeaders.Get("User-Agent"); got != "claude-cli/2.1.300 (external, cli)" {
 		t.Fatalf("User-Agent = %q, want learned Claude Code UA", got)
 	}
 	if got := gotHeaders.Get("X-Stainless-Package-Version"); got != "0.99.0" {
@@ -150,7 +150,7 @@ func TestClaudeExecutorLearnsAndAppliesClaudeCodeFingerprint(t *testing.T) {
 		t.Fatalf("X-Claude-Code-Session-Id = %q, want fixed session", got)
 	}
 	billing := gjson.GetBytes(gotBody, "system.0.text").String()
-	if !gjson.GetBytes(gotBody, "system.1.text").Exists() || !containsAll(billing, "cc_version=2.1.200.", "cc_entrypoint=cli") {
+	if !gjson.GetBytes(gotBody, "system.1.text").Exists() || !containsAll(billing, "cc_version=2.1.300.", "cc_entrypoint=cli") {
 		t.Fatalf("system blocks/billing = %s, want learned Claude Code billing", string(gotBody))
 	}
 
@@ -170,7 +170,7 @@ func TestClaudeExecutorLearnsAndAppliesClaudeCodeFingerprint(t *testing.T) {
 	eventually(t, 5*time.Second, func() bool {
 		var err error
 		record, err = usage.GetIdentityFingerprint(identityfingerprint.ProviderClaude, accountKey)
-		return err == nil && record != nil && record.Fields[identityfingerprint.FieldClaudeCLIVersion] == "2.1.200"
+		return err == nil && record != nil && record.Fields[identityfingerprint.FieldClaudeCLIVersion] == "2.1.300"
 	})
 }
 
@@ -209,7 +209,7 @@ func TestClaudeCountTokensLearnsAndAppliesClaudeCodeFingerprint(t *testing.T) {
 		Metadata: map[string]any{"account_id": "claude-count-account"},
 	}
 	headers := http.Header{}
-	headers.Set("User-Agent", "claude-cli/2.1.201 (external, cli)")
+	headers.Set("User-Agent", "claude-cli/2.1.301 (external, cli)")
 	headers.Set("X-App", "cli")
 	headers.Set("Anthropic-Beta", "claude-code-20250219,oauth-2025-04-20")
 	headers.Set("X-Stainless-Package-Version", "1.0.0")
@@ -228,13 +228,13 @@ func TestClaudeCountTokensLearnsAndAppliesClaudeCodeFingerprint(t *testing.T) {
 		t.Fatalf("CountTokens returned error: %v", err)
 	}
 
-	if got := gotHeaders.Get("User-Agent"); got != "claude-cli/2.1.201 (external, cli)" {
+	if got := gotHeaders.Get("User-Agent"); got != "claude-cli/2.1.301 (external, cli)" {
 		t.Fatalf("User-Agent = %q, want learned Claude CountTokens UA", got)
 	}
 	if got := gotHeaders.Get("X-Stainless-Runtime-Version"); got != "v24.5.0" {
 		t.Fatalf("X-Stainless-Runtime-Version = %q, want learned runtime", got)
 	}
-	if billing := gjson.GetBytes(gotBody, "system.0.text").String(); !containsAll(billing, "cc_version=2.1.201.", "cc_entrypoint=cli") {
+	if billing := gjson.GetBytes(gotBody, "system.0.text").String(); !containsAll(billing, "cc_version=2.1.301.", "cc_entrypoint=cli") {
 		t.Fatalf("billing header block = %q, want learned CountTokens fingerprint", billing)
 	}
 }
@@ -441,6 +441,7 @@ func TestGeminiCLIHeadersReplayLearnedFingerprintWithoutInboundHeaders(t *testin
 }
 
 func TestXAIHeadersReplayLearnedFingerprintWithoutInboundHeaders(t *testing.T) {
+	learnedVersion := xaiVersionAboveDefault()
 	initIdentityFingerprintRuntimeDB(t)
 
 	cfg := &config.Config{
@@ -457,22 +458,22 @@ func TestXAIHeadersReplayLearnedFingerprintWithoutInboundHeaders(t *testing.T) {
 		},
 	}
 	inbound := http.Header{}
-	inbound.Set("User-Agent", "grok-shell/0.2.93 (macos; aarch64)")
+	inbound.Set("User-Agent", "grok-shell/"+learnedVersion+" (macos; aarch64)")
 	inbound.Set("X-Grok-Client-Identifier", "grok-shell")
-	inbound.Set("X-Grok-Client-Version", "0.2.93")
+	inbound.Set("X-Grok-Client-Version", learnedVersion)
 	inbound.Set("X-Grok-Conv-Id", "conv-123")
 	ctx := contextWithInboundHeaders(http.MethodPost, "/v1/responses", inbound)
 
 	req := httptest.NewRequest(http.MethodPost, "https://api.x.ai/v1/responses", nil)
 	req = req.WithContext(ctx)
 	applyXAIHeaders(req, cfg, auth, "xai-token", true)
-	if got := req.Header.Get("User-Agent"); got != "grok-shell/0.2.93 (macos; aarch64)" {
+	if got := req.Header.Get("User-Agent"); got != "grok-shell/"+learnedVersion+" (macos; aarch64)" {
 		t.Fatalf("User-Agent = %q, want learned xAI UA", got)
 	}
 	if got := req.Header.Get("X-Grok-Client-Identifier"); got != "grok-shell" {
 		t.Fatalf("X-Grok-Client-Identifier = %q, want learned xAI client identifier", got)
 	}
-	if got := req.Header.Get("X-Grok-Client-Version"); got != "0.2.93" {
+	if got := req.Header.Get("X-Grok-Client-Version"); got != learnedVersion {
 		t.Fatalf("X-Grok-Client-Version = %q, want learned xAI client version", got)
 	}
 	if got := req.Header.Get("X-Grok-Conv-Id"); got != "conv-123" {
@@ -481,13 +482,13 @@ func TestXAIHeadersReplayLearnedFingerprintWithoutInboundHeaders(t *testing.T) {
 
 	replayReq := httptest.NewRequest(http.MethodPost, "https://api.x.ai/v1/responses", nil)
 	applyXAIHeaders(replayReq, cfg, auth, "xai-token", true)
-	if got := replayReq.Header.Get("User-Agent"); got != "grok-shell/0.2.93 (macos; aarch64)" {
+	if got := replayReq.Header.Get("User-Agent"); got != "grok-shell/"+learnedVersion+" (macos; aarch64)" {
 		t.Fatalf("replayed User-Agent = %q, want stored learned xAI UA", got)
 	}
 	if got := replayReq.Header.Get("X-Grok-Client-Identifier"); got != "grok-shell" {
 		t.Fatalf("replayed X-Grok-Client-Identifier = %q, want stored learned xAI client identifier", got)
 	}
-	if got := replayReq.Header.Get("X-Grok-Client-Version"); got != "0.2.93" {
+	if got := replayReq.Header.Get("X-Grok-Client-Version"); got != learnedVersion {
 		t.Fatalf("replayed X-Grok-Client-Version = %q, want stored learned xAI client version", got)
 	}
 	if got := replayReq.Header.Get("X-Grok-Conv-Id"); got != "" {

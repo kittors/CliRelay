@@ -58,10 +58,13 @@ const (
 	DefaultGeminiFingerprintClientMetadata = "ideType=IDE_UNSPECIFIED,platform=PLATFORM_UNSPECIFIED,pluginType=GEMINI"
 
 	// cli-chat-proxy.grok.com rejects x-grok-client-version below 1.0.13.
-	// 1.0.46 is the stable CLI published at https://x.ai/cli/stable.
-	DefaultXAIFingerprintUserAgent        = "grok-shell/1.0.46 (macos; aarch64)"
+	// 1.0.77 is the stable CLI published at https://x.ai/cli/stable
+	// (2026-11-09), the version real Grok CLIs reached this proxy with that day.
+	// It is also the floor below which a learned Grok identity is not replayed
+	// (identityfingerprint.ResolveXAI), so raise it as the stable CLI moves.
+	DefaultXAIFingerprintUserAgent        = "grok-shell/1.0.77 (macos; aarch64)"
 	DefaultXAIFingerprintClientIdentifier = "grok-shell"
-	DefaultXAIFingerprintClientVersion    = "1.0.46"
+	DefaultXAIFingerprintClientVersion    = "1.0.77"
 )
 
 // IdentityFingerprintConfig groups provider-specific upstream identity settings.

@@ -306,7 +306,12 @@ func (e *XAIExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*cl
 		return auth, nil
 	}
 	tokenEndpoint := xaiMetadataString(auth.Metadata, "token_endpoint")
-	svc := xaiauth.NewXAIAuthWithProxyURL(e.cfg, auth.ProxyURL)
+	// The refresh leaves through the proxy the credential's requests use, its
+	// proxy-pool entry included. auth.ProxyURL alone skipped a pool binding and
+	// fell back to the global proxy-url: when that proxy died, accounts whose
+	// own pool proxy was fine stopped refreshing and went 401 once the 6-hour
+	// access token ran out (2026-11-09, kittors/CliRelay#1122).
+	svc := xaiauth.NewXAIAuthWithProxyURL(e.cfg, resolveAuthProxyURL(e.cfg, auth))
 	td, err := svc.RefreshTokens(ctx, refreshToken, tokenEndpoint)
 	if err != nil {
 		return nil, err
@@ -472,8 +477,8 @@ func applyXAIHeaders(r *http.Request, cfg *config.Config, auth *cliproxyauth.Aut
 	}
 	util.ApplyCustomHeadersFromAttrs(r, attrs)
 	applyXAIPassthroughHeaders(r.Header, identityFingerprintHeadersFromContext(r.Context()))
-	if fp, ok := xaiIdentityFingerprint(cfg, auth, r.Context()); ok {
-		applyXAIIdentityFingerprintHeaders(r.Header, fp)
+	if fp, clientMode, ok := xaiIdentityFingerprint(cfg, auth, r.Context()); ok {
+		applyXAIIdentityFingerprintHeaders(r.Header, fp, clientMode)
 	}
 }
 
@@ -483,7 +488,14 @@ func applyXAIChatHeaders(r *http.Request, cfg *config.Config, auth *cliproxyauth
 		return
 	}
 	r.Header.Set(xaiTokenAuthHeader, xaiTokenAuthValue)
-	r.Header.Set("X-Grok-Client-Version", config.DefaultXAIFingerprintClientVersion)
+	// cli-chat-proxy answers a request without a client version with 426
+	// ("(none) is outdated"), so one always goes; the identity's own wins.
+	// This used to overwrite it with the builtin constant, which sent a
+	// learned grok-shell/1.0.77 User-Agent beside version 1.0.46 (2026-11-09).
+	// An outdated learned identity is kept out by ResolveXAI's floor instead.
+	if strings.TrimSpace(r.Header.Get("X-Grok-Client-Version")) == "" {
+		r.Header.Set("X-Grok-Client-Version", config.DefaultXAIFingerprintClientVersion)
+	}
 }
 
 func xaiMetadataString(meta map[string]any, key string) string {
