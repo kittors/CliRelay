@@ -52,9 +52,7 @@ type claudeToResponsesState struct {
 	// ReasoningChars counts thinking text across all blocks for the usage estimate.
 	ReasoningChars int
 	// usage aggregation
-	InputTokens  int64
-	OutputTokens int64
-	UsageSeen    bool
+	Usage claudeResponsesUsage
 }
 
 var dataTag = []byte("data:")
@@ -117,19 +115,8 @@ func ConvertClaudeResponseToOpenAIResponses(ctx context.Context, modelName strin
 			st.FuncArgsBuf = make(map[int]*strings.Builder)
 			st.FuncNames = make(map[int]string)
 			st.FuncCallIDs = make(map[int]string)
-			st.InputTokens = 0
-			st.OutputTokens = 0
-			st.UsageSeen = false
-			if usage := msg.Get("usage"); usage.Exists() {
-				if v := usage.Get("input_tokens"); v.Exists() {
-					st.InputTokens = v.Int()
-					st.UsageSeen = true
-				}
-				if v := usage.Get("output_tokens"); v.Exists() {
-					st.OutputTokens = v.Int()
-					st.UsageSeen = true
-				}
-			}
+			st.Usage = claudeResponsesUsage{}
+			st.Usage.merge(msg.Get("usage"))
 			// response.created
 			created := `{"type":"response.created","sequence_number":0,"response":{"id":"","object":"response","created_at":0,"status":"in_progress","background":false,"error":null,"output":[]}}`
 			created, _ = sjson.Set(created, "sequence_number", nextSeq())
@@ -367,16 +354,7 @@ func ConvertClaudeResponseToOpenAIResponses(ctx context.Context, modelName strin
 			st.ReasoningSignature = ""
 		}
 	case "message_delta":
-		if usage := root.Get("usage"); usage.Exists() {
-			if v := usage.Get("output_tokens"); v.Exists() {
-				st.OutputTokens = v.Int()
-				st.UsageSeen = true
-			}
-			if v := usage.Get("input_tokens"); v.Exists() {
-				st.InputTokens = v.Int()
-				st.UsageSeen = true
-			}
-		}
+		st.Usage.merge(root.Get("usage"))
 	case "message_stop":
 
 		completed := `{"type":"response.completed","sequence_number":0,"response":{"id":"","object":"response","created_at":0,"status":"completed","background":false,"error":null}}`
@@ -516,16 +494,16 @@ func ConvertClaudeResponseToOpenAIResponses(ctx context.Context, modelName strin
 			reasoningChars += st.ReasoningBuf.Len()
 		}
 		reasoningTokens := int64(reasoningChars / 4)
-		usagePresent := st.UsageSeen || reasoningTokens > 0
+		usagePresent := st.Usage.Seen || reasoningTokens > 0
 		if usagePresent {
-			completed, _ = sjson.Set(completed, "response.usage.input_tokens", st.InputTokens)
-			completed, _ = sjson.Set(completed, "response.usage.input_tokens_details.cached_tokens", 0)
-			completed, _ = sjson.Set(completed, "response.usage.output_tokens", st.OutputTokens)
+			completed, _ = sjson.Set(completed, "response.usage.input_tokens", st.Usage.responsesInputTokens())
+			completed, _ = sjson.Set(completed, "response.usage.input_tokens_details.cached_tokens", st.Usage.CacheReadTokens)
+			completed, _ = sjson.Set(completed, "response.usage.output_tokens", st.Usage.OutputTokens)
 			if reasoningTokens > 0 {
 				completed, _ = sjson.Set(completed, "response.usage.output_tokens_details.reasoning_tokens", reasoningTokens)
 			}
-			total := st.InputTokens + st.OutputTokens
-			if total > 0 || st.UsageSeen {
+			total := st.Usage.responsesTotalTokens()
+			if total > 0 || st.Usage.Seen {
 				completed, _ = sjson.Set(completed, "response.usage.total_tokens", total)
 			}
 		}
