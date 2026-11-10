@@ -84,11 +84,10 @@ func LoadRuntimeSettingForTenant(tenantID, key string) (payload json.RawMessage,
 }
 
 // LoadRuntimeSettingForTenantContext is LoadRuntimeSettingForTenant for a
-// caller that must not take a failed read for a missing row.
+// caller that must not take a failed read for a missing row. No database
+// attached is such a read too: it returns sqlsettings.ErrStoreUnavailable, not
+// "no row".
 func LoadRuntimeSettingForTenantContext(ctx context.Context, tenantID, key string) (payload json.RawMessage, version int64, ok bool, err error) {
-	if !ConfigStoreAvailable() {
-		return nil, 0, false, nil
-	}
 	entry, ok, err := runtimeSettingsStoreForTenant(tenantID).LoadContext(ctx, key)
 	if err != nil || !ok {
 		return nil, 0, false, err
@@ -103,6 +102,13 @@ func RuntimeSettingPayloadsByKey(key string) (map[string]json.RawMessage, error)
 		return nil, nil
 	}
 	return runtimeSettingsStore().PayloadsByKey(key)
+}
+
+// RuntimeSettingPayloadsByKeyContext is RuntimeSettingPayloadsByKey for a
+// caller that must not take a missing database for no tenant having a row: it
+// returns sqlsettings.ErrStoreUnavailable then.
+func RuntimeSettingPayloadsByKeyContext(ctx context.Context, key string) (map[string]json.RawMessage, error) {
+	return runtimeSettingsStore().PayloadsByKeyContext(ctx, key)
 }
 
 // CompareAndSwapRuntimeSetting writes one key of tenantID if it is still at

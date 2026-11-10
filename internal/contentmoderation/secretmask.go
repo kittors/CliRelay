@@ -23,12 +23,13 @@ import (
 // nothing was replaced. failure says why a request that holds a value to mask
 // could not be rewritten; such a request must not be sent.
 //
-// It reads the request as the word guard does (extractWordUnits), so it sees
-// the same text the model reads, the arguments of tool calls included, and
-// leaves the protocol alone. Text a signature covers (a replayed thinking
-// block) is never changed: the upstream would refuse the request. quiet says
-// the body is a second copy of a request whose first copy was masked already:
-// its values are not counted again.
+// It reads the request as the word guard does, and also the data of tool calls
+// and results whatever their keys, and the tools' descriptions
+// (extractSecretUnits), so it sees the text the model reads, and leaves the
+// protocol alone. Text a signature covers (a replayed thinking block) is never
+// changed: the upstream would refuse the request. quiet says the body is a
+// second copy of a request whose first copy was masked already: its values
+// are not counted again.
 func maskRequestSecrets(format sdktranslator.Format, body []byte, masker *privacymask.Masker, quiet bool) (out []byte, failure string) {
 	return maskRequest(format, body, masker, quiet, nil)
 }
@@ -36,7 +37,7 @@ func maskRequestSecrets(format sdktranslator.Format, body []byte, masker *privac
 // maskRequest is maskRequestSecrets that also notes, for the request's record,
 // where each value was found and the text around it (notes, nil for none).
 func maskRequest(format sdktranslator.Format, body []byte, masker *privacymask.Masker, quiet bool, notes *maskNotes) (out []byte, failure string) {
-	units := extractWordUnits(format, body)
+	units := extractSecretUnits(format, body)
 	type slot struct {
 		doc  *wordDoc
 		lit0 int
