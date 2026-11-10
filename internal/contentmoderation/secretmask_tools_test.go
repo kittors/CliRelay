@@ -187,9 +187,10 @@ func TestMaskingReachesReplySchemaDescriptions(t *testing.T) {
 	}
 }
 
-// A declaration the request repeats is read in every copy: a lookup finds the
-// first, and the upstream's parser may take the last.
-func TestMaskingReadsEveryCopyOfARepeatedDeclaration(t *testing.T) {
+// A request that repeats a declaration is not sent: a lookup finds the first
+// copy, and the upstream's parser may take the last, so masking cannot tell
+// what the upstream will read (see extraction.run).
+func TestMaskingRefusesARepeatedDeclaration(t *testing.T) {
 	user := `{"role":"user","content":"go"}`
 	for _, tc := range []struct {
 		name   string
@@ -201,13 +202,9 @@ func TestMaskingReadsEveryCopyOfARepeatedDeclaration(t *testing.T) {
 		{"text.format", sdktranslator.FormatOpenAIResponse, `{"input":"go","text":{"format":{"type":"text"},"format":{"type":"json_schema","name":"answer","description":"Use ` + testOpenAIKey + `","schema":{"type":"object"}}}}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			masker := testMasker(11)
-			masked, failure := maskRequestSecrets(tc.format, []byte(tc.body), masker, false)
-			if failure != "" || masker.Places() != 1 || bytes.Contains(masked, []byte(testOpenAIKey)) {
-				t.Fatalf("places = %d, failure = %q, masked = %s", masker.Places(), failure, masked)
-			}
-			if got := masker.Restorer().Restore(string(masked), false); got != tc.body {
-				t.Fatalf("restored request differs:\n%s\n%s", got, tc.body)
+			masked, failure := maskRequestSecrets(tc.format, []byte(tc.body), testMasker(11), false)
+			if failure != maskFailureUnreadable || masked != nil {
+				t.Fatalf("failure = %q, masked = %s", failure, masked)
 			}
 		})
 	}

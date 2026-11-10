@@ -34,10 +34,20 @@ func maskRequestSecrets(format sdktranslator.Format, body []byte, masker *privac
 	return maskRequest(format, body, masker, quiet, nil)
 }
 
+// maskFailureUnreadable is the failure of a body that is not one strict JSON
+// text. It names no field: the problem may sit in a member name, and a name may
+// be a secret.
+const maskFailureUnreadable = "unreadable"
+
 // maskRequest is maskRequestSecrets that also notes, for the request's record,
 // where each value was found and the text around it (notes, nil for none).
 func maskRequest(format sdktranslator.Format, body []byte, masker *privacymask.Masker, quiet bool, notes *maskNotes) (out []byte, failure string) {
-	units := extractSecretUnits(format, body)
+	units, unreadable := readSecretUnits(format, body)
+	if unreadable != nil {
+		// Masking cannot see the values of a body it cannot read as the upstream
+		// will, so it cannot keep them here (see extraction.run).
+		return nil, maskFailureUnreadable
+	}
 	type slot struct {
 		doc  *wordDoc
 		lit0 int

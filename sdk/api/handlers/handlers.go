@@ -59,44 +59,39 @@ type selectedAuthCallbackContextKey struct{}
 type executionSessionContextKey struct{}
 
 // ReadJSONRequestBody applies the shared request-body limit and writes a standard API error response.
+// The body must be one strict JSON text (bodyutil.CheckJSONRequestBody): the
+// request stages have checked it already unless it came as a form, and a stage
+// that replaced it has it checked again here.
 func ReadJSONRequestBody(c *gin.Context) ([]byte, bool) {
 	if c == nil {
 		return nil, false
 	}
-
-	body, err := bodyutil.ReadRequestBody(c, bodyutil.ModelRequestBodyLimit())
+	limit := bodyutil.ModelRequestBodyLimit()
+	err := bodyutil.CheckJSONRequestBody(c, limit)
+	var body []byte
+	if err == nil {
+		body, err = bodyutil.ReadRequestBody(c, limit)
+	}
 	if err == nil {
 		return body, true
 	}
-
-	status := http.StatusBadRequest
-	message := fmt.Sprintf("Invalid request: %v", err)
-	errType := "invalid_request_error"
-	code := ""
-	if bodyutil.IsTooLarge(err) {
-		status = http.StatusRequestEntityTooLarge
-		message = "Request body too large"
-		code = "request_body_too_large"
-	} else if bodyutil.IsStorageUnavailable(err) {
-		status = http.StatusInsufficientStorage
-		message = "Request body temporary storage unavailable"
-		errType = "server_error"
-		code = "request_body_storage_unavailable"
-	} else if bodyutil.IsTimeout(err) {
-		status = http.StatusRequestTimeout
-		message = "Request timed out while reading the request body"
-		errType = "request_timeout"
-		code = "request_timeout"
-	}
-
-	c.JSON(status, ErrorResponse{
-		Error: ErrorDetail{
-			Message: message,
-			Type:    errType,
-			Code:    code,
-		},
-	})
+	WriteRequestBodyError(c, err)
 	return nil, false
+}
+
+// WriteRequestBodyError answers a model request whose body could not be read,
+// or is not one strict JSON text, with the standard API error. It does not
+// abort the handler chain.
+func WriteRequestBodyError(c *gin.Context, err error) {
+	status, body := RequestBodyErrorJSON(err)
+	c.Data(status, "application/json; charset=utf-8", body)
+}
+
+// RequestBodyErrorJSON is the status and the body WriteRequestBodyError answers with.
+func RequestBodyErrorJSON(err error) (int, []byte) {
+	problem := bodyutil.DescribeRequestBodyError(err)
+	body, _ := json.Marshal(ErrorResponse{Error: ErrorDetail{Message: problem.Message, Type: problem.Type, Code: problem.Code}})
+	return problem.Status, body
 }
 
 // WithPinnedAuthID returns a child context that requests execution on a specific auth ID.
