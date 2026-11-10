@@ -136,9 +136,13 @@ func ConvertOpenAIRequestToClaude(modelName string, inputRawJSON []byte, stream 
 	// Stream configuration to enable or disable streaming responses
 	out, _ = sjson.Set(out, "stream", stream)
 
+	// Each message is serialized on its own and all of them are written into
+	// the request at the end. Appending them to out one by one copied the whole
+	// request built so far every time, which grew with the square of the
+	// history: about 2.7 GB for 512 tool calls and results (#1179).
+	var translatedMessages []string
 	// Process messages and transform them to Claude Code format
 	if messages := root.Get("messages"); messages.Exists() && messages.IsArray() {
-		messageIndex := 0
 		systemMessageIndex := -1
 		messages.ForEach(func(_, message gjson.Result) bool {
 			role := message.Get("role").String()
@@ -148,20 +152,21 @@ func ConvertOpenAIRequestToClaude(modelName string, inputRawJSON []byte, stream 
 			case "system":
 				if systemMessageIndex == -1 {
 					systemMsg := `{"role":"user","content":[]}`
-					out, _ = sjson.SetRaw(out, "messages.-1", systemMsg)
-					systemMessageIndex = messageIndex
-					messageIndex++
+					translatedMessages = append(translatedMessages, systemMsg)
+					systemMessageIndex = len(translatedMessages) - 1
 				}
 				if contentResult.Exists() && contentResult.Type == gjson.String && contentResult.String() != "" {
 					textPart := `{"type":"text","text":""}`
 					textPart, _ = sjson.Set(textPart, "text", contentResult.String())
-					out, _ = sjson.SetRaw(out, fmt.Sprintf("messages.%d.content.-1", systemMessageIndex), textPart)
+					translatedMessages[systemMessageIndex], _ = sjson.SetRaw(translatedMessages[systemMessageIndex], "content.-1", textPart)
 				} else if contentResult.Exists() && contentResult.IsArray() {
 					contentResult.ForEach(func(_, part gjson.Result) bool {
-						if part.Get("type").String() == "text" {
+						// An empty part is skipped like an empty string content above:
+						// Anthropic rejects empty text blocks.
+						if part.Get("type").String() == "text" && part.Get("text").String() != "" {
 							textPart := `{"type":"text","text":""}`
 							textPart, _ = sjson.Set(textPart, "text", part.Get("text").String())
-							out, _ = sjson.SetRaw(out, fmt.Sprintf("messages.%d.content.-1", systemMessageIndex), textPart)
+							translatedMessages[systemMessageIndex], _ = sjson.SetRaw(translatedMessages[systemMessageIndex], "content.-1", textPart)
 						}
 						return true
 					})
@@ -192,9 +197,16 @@ func ConvertOpenAIRequestToClaude(modelName string, inputRawJSON []byte, stream 
 
 						switch partType {
 						case "text":
-							textPart := `{"type":"text","text":""}`
-							textPart, _ = sjson.Set(textPart, "text", part.Get("text").String())
-							msg, _ = sjson.SetRaw(msg, "content.-1", textPart)
+							// Anthropic rejects an empty text block ("text content blocks
+							// must be non-empty"); clients send one next to an image
+							// attached without typed text, or beside tool_calls. It is
+							// skipped like an empty string content above; whitespace-only
+							// text is accepted and kept.
+							if text := part.Get("text").String(); text != "" {
+								textPart := `{"type":"text","text":""}`
+								textPart, _ = sjson.Set(textPart, "text", text)
+								msg, _ = sjson.SetRaw(msg, "content.-1", textPart)
+							}
 
 						case "image_url":
 							// Convert OpenAI image format to Claude Code format
@@ -270,8 +282,7 @@ func ConvertOpenAIRequestToClaude(modelName string, inputRawJSON []byte, stream 
 					})
 				}
 
-				out, _ = sjson.SetRaw(out, "messages.-1", msg)
-				messageIndex++
+				translatedMessages = append(translatedMessages, msg)
 
 			case "tool":
 				// Handle tool result messages conversion
@@ -280,8 +291,7 @@ func ConvertOpenAIRequestToClaude(modelName string, inputRawJSON []byte, stream 
 				msg := `{"role":"user","content":[{"type":"tool_result","tool_use_id":"","content":""}]}`
 				msg, _ = sjson.Set(msg, "content.0.tool_use_id", toolCallID)
 				msg, _ = sjson.SetRaw(msg, "content.0.content", common.ToClaudeContent(common.ParseToolResult(message.Get("content"))))
-				out, _ = sjson.SetRaw(out, "messages.-1", msg)
-				messageIndex++
+				translatedMessages = append(translatedMessages, msg)
 			}
 			return true
 		})
@@ -345,5 +355,31 @@ func ConvertOpenAIRequestToClaude(modelName string, inputRawJSON []byte, stream 
 		}
 	}
 
-	return common.OutputFormatFromChat(root).WriteClaude([]byte(out), modelName)
+	// Written last, so the fields above were all set on the small request
+	// instead of each copying the whole history once more. sjson replaces the
+	// template's "messages":[] where it stands, so the bytes match the old
+	// one-by-one appends.
+	result := []byte(out)
+	if len(translatedMessages) > 0 {
+		result, _ = sjson.SetRawBytes(result, "messages", joinClaudeMessages(translatedMessages))
+	}
+	return common.OutputFormatFromChat(root).WriteClaude(result, modelName)
+}
+
+// joinClaudeMessages renders serialized messages as one JSON array, allocated
+// once at its final size.
+func joinClaudeMessages(messages []string) []byte {
+	size := len(messages) + 1 // the two brackets and the commas between messages
+	for _, message := range messages {
+		size += len(message)
+	}
+	array := make([]byte, 0, size)
+	array = append(array, '[')
+	for i, message := range messages {
+		if i > 0 {
+			array = append(array, ',')
+		}
+		array = append(array, message...)
+	}
+	return append(array, ']')
 }

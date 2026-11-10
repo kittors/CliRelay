@@ -246,11 +246,14 @@ func TestModelRulesCountOnlyRequestsOfTheirModels(t *testing.T) {
 	haiku := l.Reserve("r3", ownedKey)
 	haiku.SetModel("claude-haiku-4-5")
 	probe := l.Reserve("r4", ownedKey)
+	usage, release := probe.BeginModelAdmission()
+	defer release()
 
-	if got := probe.BeforeMatching(ScopeKey, []string{"claude-opus-*"}); got.Requests != 1 {
+	// The opus model was recorded in mixed case with a thinking suffix.
+	if got := usage.Matching(ScopeKey, []string{"claude-opus-*"}); got.Requests != 1 {
 		t.Fatalf("opus rule sees %+v, want the one opus request", got)
 	}
-	if got := probe.BeforeMatching(ScopeAccount, []string{"claude-*"}); got.Requests != 2 {
+	if got := usage.Matching(ScopeAccount, []string{"claude-*"}); got.Requests != 2 {
 		t.Fatalf("claude rule sees %+v, want the two routed requests", got)
 	}
 }
@@ -276,7 +279,7 @@ func TestUsageShowsNothingWhenNothingIsHeld(t *testing.T) {
 
 func TestNilReservationSeesNothing(t *testing.T) {
 	var r *Reservation
-	if !r.Before(ScopeKey).IsZero() || !r.BeforeMatching(ScopeAccount, []string{"*"}).IsZero() || !r.Amounts().IsZero() {
+	if !r.Before(ScopeKey).IsZero() || !r.Amounts().IsZero() {
 		t.Fatal("nil reservation must see nothing")
 	}
 	r.SetModel("x")

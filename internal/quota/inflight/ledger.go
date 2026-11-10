@@ -7,7 +7,10 @@
 // and the key ends N requests over. Each admitted request therefore holds a
 // reservation, and a check counts the reservations admitted before it: a
 // request still sees exactly what it saw before when it runs alone, and a
-// burst near the limit overshoots by at most about one request.
+// burst near the limit overshoots by at most about one request. Rules that cap
+// particular models cannot follow admission order, because a request's model
+// is known only once its body has been read: those decisions are serialized
+// per key and account instead (see BeginModelAdmission).
 //
 // A reservation is an estimate: one request, and the tokens and cost an
 // average request of the same key has recently billed. It is estimated from
@@ -173,6 +176,8 @@ type Ledger struct {
 	byRequest map[string][]*Reservation
 	averages  map[string]*average
 	overall   average
+	// Model decisions have their own ordering, after request models are known.
+	modelGates map[string]*modelGate
 
 	settleAfter time.Duration
 }
@@ -248,21 +253,9 @@ func (l *Ledger) estimateLocked(owner Owner) Amounts {
 
 // Before sums what the requests admitted before r still hold in scope. A nil
 // reservation sees nothing, which is what a check outside an admission (a
-// WebSocket handshake) should see.
+// WebSocket handshake) should see. Rules that cap particular models order by
+// model decision instead (see BeginModelAdmission).
 func (r *Reservation) Before(scope Scope) Amounts {
-	return r.before(scope, nil)
-}
-
-// BeforeMatching is Before restricted to requests routed to a model matching
-// one of patterns, for rules that cap particular models. A request whose model
-// is not known yet is left out.
-func (r *Reservation) BeforeMatching(scope Scope, patterns []string) Amounts {
-	return r.before(scope, func(model string) bool {
-		return model != "" && quota.MatchesAnyModelPattern(patterns, model)
-	})
-}
-
-func (r *Reservation) before(scope Scope, keep func(model string) bool) Amounts {
 	if r == nil || r.ledger == nil {
 		return Amounts{}
 	}
@@ -275,7 +268,7 @@ func (r *Reservation) before(scope Scope, keep func(model string) bool) Amounts 
 	defer l.mu.Unlock()
 	var sum Amounts
 	for seq, other := range l.byName[name] {
-		if seq >= r.seq || (keep != nil && !keep(other.model)) {
+		if seq >= r.seq {
 			continue
 		}
 		sum = sum.add(other.amounts)
