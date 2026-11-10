@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	antigravityauth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/antigravity"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
@@ -279,5 +280,26 @@ func TestAntigravityProjectRegistryKeysOnTheCredential(t *testing.T) {
 	relogged := &cliproxyauth.Auth{ID: "antigravity-relogin.json", Metadata: map[string]any{"refresh_token": "new"}}
 	if err := registry.failure(relogged, time.Now()); err != nil {
 		t.Fatalf("the new credential inherited the old verdict: %v", err)
+	}
+}
+
+// The discovery may outlive the request that started it, so it must not keep
+// that request's gin context, while an injected transport still applies.
+func TestAntigravityDiscoveryContextDropsTheRequestScope(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ginCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	transport := roundTripperFunc(func(*http.Request) (*http.Response, error) { return jsonResponse(`{}`), nil })
+	parent, cancel := context.WithCancel(context.WithValue(context.WithValue(context.Background(), util.ContextKeyGin, ginCtx), util.ContextKeyRoundTripper, transport))
+	cancel()
+
+	detached := detachedDiscoveryContext(parent)
+	if err := detached.Err(); err != nil {
+		t.Fatalf("detached context err = %v, want it to outlive the request", err)
+	}
+	if got, _ := detached.Value(util.ContextKeyGin).(*gin.Context); got != nil {
+		t.Fatal("the discovery context still carries the request's gin context")
+	}
+	if _, ok := detached.Value(util.ContextKeyRoundTripper).(http.RoundTripper); !ok {
+		t.Fatal("the discovery context lost the injected transport")
 	}
 }

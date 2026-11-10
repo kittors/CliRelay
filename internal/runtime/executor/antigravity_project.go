@@ -11,6 +11,7 @@ import (
 	"time"
 
 	antigravityauth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/antigravity"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v6/sdk/auth"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	"golang.org/x/sync/singleflight"
@@ -142,9 +143,12 @@ func (r *antigravityProjectRegistry) record(key, projectID string, err error, no
 // credential, remembers the outcome, and waits for it at most wait (0 waits
 // until it is done) or until ctx ends.
 func (r *antigravityProjectRegistry) discover(ctx context.Context, auth *cliproxyauth.Auth, wait time.Duration, fetch func(context.Context) (string, error)) (string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	key := antigravityProjectKey(auth)
 	run := func() (any, error) {
-		discoveryCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), antigravityDiscoveryTimeout)
+		discoveryCtx, cancel := context.WithTimeout(detachedDiscoveryContext(ctx), antigravityDiscoveryTimeout)
 		defer cancel()
 		projectID, err := fetch(discoveryCtx)
 		projectID = strings.TrimSpace(projectID)
@@ -180,6 +184,15 @@ func (r *antigravityProjectRegistry) discover(ctx context.Context, auth *cliprox
 
 var errAntigravityDiscoveryPending = errors.New("project discovery is still running")
 
+// detachedDiscoveryContext keeps what reaching Google needs from ctx, such as
+// an injected transport, but neither its cancellation nor its gin context. A
+// discovery can outlive the request that started it, and gin reuses a
+// finished request's context for the next one, so timings or the egress route
+// written there would land in an unrelated request's log.
+func detachedDiscoveryContext(ctx context.Context) context.Context {
+	return context.WithValue(context.WithoutCancel(ctx), util.ContextKeyGin, nil)
+}
+
 // antigravityProjectIDFromAuth returns the project stored on the credential.
 func antigravityProjectIDFromAuth(auth *cliproxyauth.Auth) string {
 	if auth == nil {
@@ -195,7 +208,13 @@ func antigravityProjectIDFromAuth(auth *cliproxyauth.Auth) string {
 func missingAntigravityProjectError(cause error) error {
 	msg := "antigravity account has no Cloud Code project yet"
 	if cause != nil {
-		msg += ": " + cause.Error()
+		// Upstream bodies arrive pretty-printed; one line reads better in logs
+		// and error responses.
+		reason := strings.Join(strings.Fields(cause.Error()), " ")
+		if len(reason) > 300 {
+			reason = reason[:300] + "…"
+		}
+		msg += ": " + reason
 	}
 	return statusErr{code: http.StatusServiceUnavailable, msg: msg}
 }
