@@ -109,9 +109,15 @@ func TestAntigravityStreamRetriesMalformedFunctionCall(t *testing.T) {
 	}
 }
 
+// terminalEvents counts the events that end a Responses stream.
+func terminalEvents(events []string) int {
+	return len(eventsOfType(events, "response.completed")) + len(eventsOfType(events, "response.incomplete")) + len(eventsOfType(events, "response.failed"))
+}
+
 // Retries are bounded. Once they are spent the upstream's own end of turn is
-// delivered, so the client response still terminates exactly once (how that
-// terminal reads is the translator's decision).
+// delivered, so the client response still terminates exactly once, and as a
+// turn that was cut short rather than a completed reply of nothing but
+// thinking.
 func TestAntigravityStreamMalformedFunctionCallStopsAfterRetries(t *testing.T) {
 	server, calls := upstreamSequence(t, sseThought+sseMalformed)
 	events := runMalformedCallStream(t, server.URL)
@@ -119,16 +125,16 @@ func TestAntigravityStreamMalformedFunctionCallStopsAfterRetries(t *testing.T) {
 	if got, want := atomic.LoadInt32(calls), int32(antigravityMalformedCallRetries+1); got != want {
 		t.Fatalf("upstream calls = %d, want %d", got, want)
 	}
-	terminals := len(eventsOfType(events, "response.completed")) + len(eventsOfType(events, "response.failed"))
-	if terminals != 1 {
-		t.Fatalf("terminal events = %d, want 1", terminals)
+	if n := terminalEvents(events); n != 1 || len(eventsOfType(events, "response.incomplete")) != 1 {
+		t.Fatalf("terminal events = %d, want exactly one response.incomplete", n)
 	}
 	if n := len(eventsOfType(events, "response.created")); n != 1 {
 		t.Fatalf("response.created events = %d, want 1", n)
 	}
 }
 
-// Once the client has text, a retry would duplicate it; the answer stands.
+// Once the client has text, a retry would duplicate it, so the executor does
+// not ask again; the text stands, reported as a reply that was cut short.
 func TestAntigravityStreamDoesNotRetryAfterVisibleOutput(t *testing.T) {
 	sseText := `data: {"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"Checking now."}]}}],"responseId":"r1"}}` + "\n\n"
 	server, calls := upstreamSequence(t, sseText+sseMalformed, sseCall+sseStop)
@@ -137,8 +143,12 @@ func TestAntigravityStreamDoesNotRetryAfterVisibleOutput(t *testing.T) {
 	if got := atomic.LoadInt32(calls); got != 1 {
 		t.Fatalf("upstream calls = %d, want 1", got)
 	}
-	if n := len(eventsOfType(events, "response.completed")); n != 1 {
-		t.Fatalf("response.completed events = %d, want 1", n)
+	incomplete := eventsOfType(events, "response.incomplete")
+	if n := terminalEvents(events); n != 1 || len(incomplete) != 1 {
+		t.Fatalf("terminal events = %d, want exactly one response.incomplete", n)
+	}
+	if got := gjson.Get(incomplete[0], "response.output.#(type==\"message\").content.0.text").String(); got != "Checking now." {
+		t.Fatalf("incomplete output text = %q, want the text already streamed", got)
 	}
 }
 
@@ -161,6 +171,25 @@ func TestAntigravityNonStreamRetriesMalformedFunctionCall(t *testing.T) {
 	}
 	if !strings.Contains(gjson.GetBytes(resp.Payload, "output").Raw, `"function_call"`) {
 		t.Fatalf("output has no function_call: %s", resp.Payload)
+	}
+}
+
+// When every retry ends the same way, the last answer is served as a turn that
+// was cut short.
+func TestAntigravityNonStreamMalformedFunctionCallAfterRetries(t *testing.T) {
+	server, calls := upstreamSequence(t, sseThought+sseMalformed)
+	resp, err := NewAntigravityExecutor(&config.Config{}).Execute(context.Background(), antigravityTestAuth(server.URL), cliproxyexecutor.Request{
+		Model:   "gemini-3.8-flash-high",
+		Payload: []byte(strings.Replace(malformedCallResponsesRequest, `"stream":true`, `"stream":false`, 1)),
+	}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FromString("openai-response")})
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if got, want := atomic.LoadInt32(calls), int32(antigravityMalformedCallRetries+1); got != want {
+		t.Fatalf("upstream calls = %d, want %d", got, want)
+	}
+	if status := gjson.GetBytes(resp.Payload, "status").String(); status != "incomplete" {
+		t.Fatalf("status = %q, want incomplete: %s", status, resp.Payload)
 	}
 }
 
