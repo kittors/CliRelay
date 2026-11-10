@@ -104,6 +104,7 @@ func antigravityTestAuth(baseURL string) *cliproxyauth.Auth {
 		Metadata: map[string]any{
 			"access_token": "test-token",
 			"expired":      time.Now().Add(2 * time.Hour).UTC().Format(time.RFC3339),
+			"project_id":   "test-project",
 		},
 	}
 }

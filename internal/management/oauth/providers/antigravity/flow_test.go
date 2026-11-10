@@ -3,6 +3,7 @@ package antigravity
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -17,6 +18,7 @@ type antigravityOAuthAuthStub struct {
 	tokenErr     error
 	userInfoErr  error
 	projectErr   error
+	noProject    bool
 }
 
 func (s antigravityOAuthAuthStub) BuildAuthURL(state, redirectURI string) string {
@@ -59,6 +61,9 @@ func (s antigravityOAuthAuthStub) FetchProjectID(_ context.Context, accessToken 
 	}
 	if s.projectErr != nil {
 		return "", s.projectErr
+	}
+	if s.noProject {
+		return "", nil
 	}
 	return "project-1", nil
 }
@@ -258,5 +263,70 @@ func TestStartOAuthLoginSetsTimeoutOnWaitFailure(t *testing.T) {
 	}
 	if status != "OAuth flow timed out" {
 		t.Fatalf("status = %q, want OAuth flow timed out", status)
+	}
+}
+
+// A login that cannot find the account's project must fail and say why, not
+// save the account and report success: that credential then sent requests
+// with a made-up project and drew 403 SUBSCRIPTION_REQUIRED (#1032).
+func TestStartOAuthLoginFailsWithoutProject(t *testing.T) {
+	cases := []struct {
+		name string
+		auth antigravityOAuthAuthStub
+		want string
+	}{
+		{
+			name: "client refused",
+			auth: antigravityOAuthAuthStub{projectErr: fmt.Errorf("%w: This client is not supported.", internalantigravity.ErrUnsupportedClient)},
+			want: "Google rejected this client while looking up the Antigravity project",
+		},
+		{
+			name: "onboarding unfinished",
+			auth: antigravityOAuthAuthStub{projectErr: fmt.Errorf("%w after 5 polls", internalantigravity.ErrOnboardingPending)},
+			want: "log in again shortly",
+		},
+		{
+			name: "empty project",
+			auth: antigravityOAuthAuthStub{noProject: true},
+			want: "Google returned no Antigravity project for this account",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			done := make(chan string, 1)
+			saved := false
+			completed := false
+			_, err := StartOAuthLogin(context.Background(), OAuthLoginOptions{
+				Auth:          tc.auth,
+				GenerateState: func() (string, error) { return "antigravity-state", nil },
+				CallbackPort:  60000,
+				WaitCallback: func(string, string, string, time.Duration) (map[string]string, error) {
+					return map[string]string{"state": "antigravity-state", "code": "code"}, nil
+				},
+				Sessions: SessionCallbacks{
+					SetError: func(_, message string) { done <- message },
+					Complete: func(string) { completed = true },
+				},
+				SaveRecord: func(context.Context, *coreauth.Auth) (string, error) {
+					saved = true
+					return "/tmp/antigravity.json", nil
+				},
+			})
+			if err != nil {
+				t.Fatalf("StartOAuthLogin() error = %v", err)
+			}
+			var message string
+			select {
+			case message = <-done:
+			case <-time.After(time.Second):
+				t.Fatal("timeout waiting for the session error")
+			}
+			if !strings.Contains(message, tc.want) {
+				t.Fatalf("session error = %q, want it to contain %q", message, tc.want)
+			}
+			if saved || completed {
+				t.Fatalf("saved = %v, completed = %v: an account without a project must not be saved or reported as logged in", saved, completed)
+			}
+		})
 	}
 }

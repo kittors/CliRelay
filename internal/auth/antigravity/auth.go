@@ -4,6 +4,7 @@ package antigravity
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -314,6 +315,9 @@ func (o *AntigravityAuth) FetchAccountDetails(ctx context.Context, accessToken s
 	}
 
 	if projectID == "" {
+		if errRefused := unsupportedClientRefusal(loadResp); errRefused != nil {
+			return AccountInfo{PlanType: planType, TierID: tierID}, errRefused
+		}
 		defaultTierID := "legacy-tier"
 		if tiers, okTiers := loadResp["allowedTiers"].([]any); okTiers {
 			for _, rawTier := range tiers {
@@ -332,6 +336,13 @@ func (o *AntigravityAuth) FetchAccountDetails(ctx context.Context, accessToken s
 
 		onboardedProject, err := o.OnboardUser(ctx, accessToken, defaultTierID)
 		if err != nil {
+			if errors.Is(err, ErrNoProjectID) {
+				if reasons := ineligibleTierReasons(loadResp); reasons != "" {
+					// Keep Google's own reasons: on their own, "no project" reads
+					// like a missing licence.
+					err = fmt.Errorf("%w (ineligible tiers: %s)", err, reasons)
+				}
+			}
 			return AccountInfo{PlanType: planType, TierID: tierID}, err
 		}
 		projectID = onboardedProject
@@ -342,6 +353,59 @@ func (o *AntigravityAuth) FetchAccountDetails(ctx context.Context, accessToken s
 		PlanType:  planType,
 		TierID:    tierID,
 	}, nil
+}
+
+// unsupportedClientRefusal returns ErrUnsupportedClient when a loadCodeAssist
+// answer found no project because Google did not accept the client identity.
+//
+// That answer is still HTTP 200: allowedTiers lists what the account could
+// have and ineligibleTiers carries the refusal. Onboarding with the same
+// identity cannot fix it, and without this check discovery ended in a bare
+// "no project_id in response", which read like an account problem (#1032).
+func unsupportedClientRefusal(loadResp map[string]any) error {
+	tiers, _ := loadResp["ineligibleTiers"].([]any)
+	for _, raw := range tiers {
+		tier, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		if !strings.EqualFold(stringFromMap(tier, "reasonCode", "reason_code"), "UNSUPPORTED_CLIENT") {
+			continue
+		}
+		if msg := stringFromMap(tier, "reasonMessage", "reason_message"); msg != "" {
+			return fmt.Errorf("%w: %s", ErrUnsupportedClient, msg)
+		}
+		return ErrUnsupportedClient
+	}
+	return nil
+}
+
+// ineligibleTierReasons lists the reason codes loadCodeAssist gave for the
+// tiers the account cannot have, for error messages.
+func ineligibleTierReasons(loadResp map[string]any) string {
+	tiers, _ := loadResp["ineligibleTiers"].([]any)
+	reasons := make([]string, 0, len(tiers))
+	for _, raw := range tiers {
+		tier, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		if code := stringFromMap(tier, "reasonCode", "reason_code"); code != "" {
+			reasons = append(reasons, code)
+		}
+	}
+	return strings.Join(reasons, ", ")
+}
+
+func stringFromMap(values map[string]any, keys ...string) string {
+	for _, key := range keys {
+		if value, ok := values[key].(string); ok {
+			if trimmed := strings.TrimSpace(value); trimmed != "" {
+				return trimmed
+			}
+		}
+	}
+	return ""
 }
 
 // FetchProjectID retrieves the project ID for the authenticated user via loadCodeAssist
@@ -370,16 +434,15 @@ func (o *AntigravityAuth) OnboardUser(ctx context.Context, accessToken, tierID s
 		return "", fmt.Errorf("marshal request body: %w", errMarshal)
 	}
 
-	maxAttempts := 5
+	baseCtx := ctx
+	if baseCtx == nil {
+		baseCtx = context.Background()
+	}
+	maxAttempts := onboardMaxPolls
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		log.Debugf("Polling attempt %d/%d", attempt, maxAttempts)
 
-		reqCtx := ctx
-		var cancel context.CancelFunc
-		if reqCtx == nil {
-			reqCtx = context.Background()
-		}
-		reqCtx, cancel = context.WithTimeout(reqCtx, 30*time.Second)
+		reqCtx, cancel := context.WithTimeout(baseCtx, 30*time.Second)
 
 		endpointURL := fmt.Sprintf("%s/%s:onboardUser", APIEndpoint, APIVersion)
 		req, errRequest := http.NewRequestWithContext(reqCtx, http.MethodPost, endpointURL, strings.NewReader(string(rawBody)))
@@ -436,7 +499,11 @@ func (o *AntigravityAuth) OnboardUser(ctx context.Context, accessToken, tierID s
 				return "", ErrNoProjectID
 			}
 
-			time.Sleep(2 * time.Second)
+			if attempt < maxAttempts {
+				if errWait := waitOnboardPoll(baseCtx); errWait != nil {
+					return "", errWait
+				}
+			}
 			continue
 		}
 
@@ -452,5 +519,29 @@ func (o *AntigravityAuth) OnboardUser(ctx context.Context, accessToken, tierID s
 		return "", fmt.Errorf("http %d: %s", resp.StatusCode, responseErr)
 	}
 
-	return "", nil
+	// Every poll found the operation still running. Google may finish it
+	// moments later, so this must stay retryable: the empty project with no
+	// error returned here before was recorded by callers as "this account has
+	// no project", which then never expired (#1032).
+	return "", fmt.Errorf("%w after %d polls", ErrOnboardingPending, maxAttempts)
+}
+
+// onboardMaxPolls and onboardPollInterval bound how long OnboardUser waits for
+// the operation to report done. Tests shorten the interval.
+var (
+	onboardMaxPolls     = 5
+	onboardPollInterval = 2 * time.Second
+)
+
+// waitOnboardPoll sleeps between polls but gives up when ctx ends, so a
+// cancelled login or refresh does not sit out the remaining polls.
+func waitOnboardPoll(ctx context.Context) error {
+	timer := time.NewTimer(onboardPollInterval)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
