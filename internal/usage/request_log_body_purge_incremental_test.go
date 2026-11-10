@@ -386,7 +386,7 @@ func TestBodyPurgeLeavesRowsWhileStorageIsOn(t *testing.T) {
 	keepBodyStorageToggle(t)
 	insertBodyPurgeTestLog(t, "", false, bodyPurgeTestDetail)
 
-	result, err := purgeStoredRequestBodies(context.Background(), getDB(), "sqlite")
+	result, err := purgeStoredRequestBodies(context.Background(), getDB(), "sqlite", 0)
 	if err != nil {
 		t.Fatalf("purgeStoredRequestBodies() error = %v", err)
 	}
