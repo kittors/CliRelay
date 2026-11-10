@@ -33,11 +33,12 @@ func ConvertOpenAIRequestToCodex(modelName string, inputRawJSON []byte, stream b
 	// copy each result out of the slice instead, and messages is nearly the
 	// whole request.
 	rawJSON := string(inputRawJSON)
+	fields := readChatRequestFields(rawJSON)
 
 	// Build tool name shortening map from original tools (if any)
 	originalToolNameMap := map[string]string{}
 	{
-		tools := gjson.Get(rawJSON, "tools")
+		tools := fields.tools
 		if tools.IsArray() && len(tools.Array()) > 0 {
 			var names []string
 			arr := tools.Array()
@@ -63,7 +64,9 @@ func ConvertOpenAIRequestToCodex(modelName string, inputRawJSON []byte, stream b
 	// it edits: appending each content part to its message with sjson copied
 	// everything already in the message once per part, so a screenshot early
 	// in a turn was copied again for every later part. On 2026-11-10 that took
-	// 13–15% of the relay's CPU.
+	// 13–15% of the relay's CPU. The parts themselves are written by hand too
+	// (codex_openai_request_json.go): building one with sjson copied its
+	// screenshot twice more before it reached the buffer.
 	var inputBuf bytes.Buffer
 	inputBuf.Grow(len(rawJSON))
 	inputBuf.WriteByte('[')
@@ -75,11 +78,12 @@ func ConvertOpenAIRequestToCodex(modelName string, inputRawJSON []byte, stream b
 		appendArrayElement(&inputBuf, &inputFirst, raw)
 	}
 
-	messages := gjson.Get(rawJSON, "messages")
+	messages := fields.messages
 	if messages.IsArray() {
-		arr := messages.Array()
-		for i := 0; i < len(arr); i++ {
-			m := arr[i]
+		// ForEach rather than Array, here and for content below: Array finds
+		// where each element ends a byte at a time, ForEach eight bytes at a
+		// time, and the elements carry the screenshots.
+		messages.ForEach(func(_, m gjson.Result) bool {
 			role := m.Get("role").String()
 
 			switch role {
@@ -104,60 +108,40 @@ func ConvertOpenAIRequestToCodex(modelName string, inputRawJSON []byte, stream b
 				appendArrayElement(&inputBuf, &inputFirst, head[:len(head)-1])
 				inputBuf.WriteString(`,"content":[`)
 				partsFirst := true
-				appendPart := func(part string) {
-					appendArrayElement(&inputBuf, &partsFirst, part)
-				}
 
 				c := m.Get("content")
 				if c.Exists() && c.Type == gjson.String && c.String() != "" {
-					partType := "input_text"
-					if role == "assistant" {
-						partType = "output_text"
-					}
-					part := `{}`
-					part, _ = sjson.Set(part, "type", partType)
-					part, _ = sjson.Set(part, "text", c.String())
-					appendPart(part)
+					writeTextPart(&inputBuf, &partsFirst, role, c.String())
 				} else if c.Exists() && c.IsArray() {
-					items := c.Array()
-					for j := 0; j < len(items); j++ {
-						it := items[j]
+					c.ForEach(func(_, it gjson.Result) bool {
 						t := it.Get("type").String()
 						switch t {
 						case "text":
-							partType := "input_text"
-							if role == "assistant" {
-								partType = "output_text"
-							}
-							part := `{}`
-							part, _ = sjson.Set(part, "type", partType)
-							part, _ = sjson.Set(part, "text", it.Get("text").String())
-							appendPart(part)
+							writeTextPart(&inputBuf, &partsFirst, role, it.Get("text").String())
 						case "image_url":
 							if role == "user" {
-								part := `{}`
-								part, _ = sjson.Set(part, "type", "input_image")
+								startPart(&inputBuf, &partsFirst, "input_image")
 								if u := it.Get("image_url.url"); u.Exists() {
-									part, _ = sjson.Set(part, "image_url", u.String())
+									writeStringMember(&inputBuf, "image_url", u.String())
 								}
-								appendPart(part)
+								inputBuf.WriteByte('}')
 							}
 						case "file":
 							if role == "user" {
 								fileData := it.Get("file.file_data").String()
 								filename := it.Get("file.filename").String()
 								if fileData != "" {
-									part := `{}`
-									part, _ = sjson.Set(part, "type", "input_file")
-									part, _ = sjson.Set(part, "file_data", fileData)
+									startPart(&inputBuf, &partsFirst, "input_file")
+									writeStringMember(&inputBuf, "file_data", fileData)
 									if filename != "" {
-										part, _ = sjson.Set(part, "filename", filename)
+										writeStringMember(&inputBuf, "filename", filename)
 									}
-									appendPart(part)
+									inputBuf.WriteByte('}')
 								}
 							}
 						}
-					}
+						return true
+					})
 				}
 
 				inputBuf.WriteString(`]}`)
@@ -188,7 +172,8 @@ func ConvertOpenAIRequestToCodex(modelName string, inputRawJSON []byte, stream b
 					}
 				}
 			}
-		}
+			return true
+		})
 	}
 	inputBuf.WriteByte(']')
 
@@ -197,7 +182,7 @@ func ConvertOpenAIRequestToCodex(modelName string, inputRawJSON []byte, stream b
 	// document it edits, which would otherwise include the history.
 	out := `{"instructions":""}`
 	out, _ = sjson.Set(out, "stream", stream)
-	if v := gjson.Get(rawJSON, "reasoning_effort"); v.Exists() {
+	if v := fields.reasoningEffort; v.Exists() {
 		out, _ = sjson.Set(out, "reasoning.effort", v.Value())
 	} else {
 		out, _ = sjson.Set(out, "reasoning.effort", "medium")
@@ -211,16 +196,16 @@ func ConvertOpenAIRequestToCodex(modelName string, inputRawJSON []byte, stream b
 
 	// Map response_format to the Responses API text.format, then the verbosity
 	// a client may have set for a Responses upstream.
-	format := common.OutputFormatFromChat(gjson.Parse(rawJSON))
+	format := common.OutputFormatFromChatResponseFormat(fields.responseFormat)
 	if spec, ok := format.ResponsesFormat(); ok {
 		out, _ = sjson.SetRaw(out, "text.format", spec)
 	}
-	if v := gjson.Get(rawJSON, "text.verbosity"); v.Exists() {
+	if v := fields.verbosity; v.Exists() {
 		out, _ = sjson.Set(out, "text.verbosity", v.Value())
 	}
 
 	// Map tools (flatten function fields) once.
-	tools := gjson.Get(rawJSON, "tools")
+	tools := fields.tools
 	if tools.IsArray() && len(tools.Array()) > 0 {
 		var toolsBuf bytes.Buffer
 		toolsBuf.WriteByte('[')
@@ -275,7 +260,7 @@ func ConvertOpenAIRequestToCodex(modelName string, inputRawJSON []byte, stream b
 	}
 
 	// Map tool_choice when present.
-	if tc := gjson.Get(rawJSON, "tool_choice"); tc.Exists() {
+	if tc := fields.toolChoice; tc.Exists() {
 		switch {
 		case tc.Type == gjson.String:
 			out, _ = sjson.Set(out, "tool_choice", tc.String())
