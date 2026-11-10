@@ -12,7 +12,7 @@
 #   deploy-blue-green.sh --print-settings  print the effective settings and exit
 #
 # SCRIPT_VERSION must stay in sync with deploy gate expectations.
-SCRIPT_VERSION='2026.10.19.1'
+SCRIPT_VERSION='2026.11.10.1'
 set -euo pipefail
 
 mode=deploy
@@ -77,9 +77,24 @@ SLOT_GROUP=
 # asynchronously, so a longer window costs one idle process, not deploy time.
 DRAIN_SECONDS=180
 # Upper bound the retiring process may spend finishing in-flight requests
-# after SIGTERM. Passed to the unit as TimeoutStopSec and to the binary as
-# CLIRELAY_SHUTDOWN_GRACE so systemd cannot kill it mid-stream.
+# after SIGTERM. Passed to the binary as CLIRELAY_SHUTDOWN_GRACE; the unit's
+# TimeoutStopSec is this plus SHUTDOWN_STOP_HEADROOM_SECONDS.
 SHUTDOWN_GRACE_SECONDS=300
+# How much longer than the grace systemd waits before it sends SIGKILL. When a
+# drain uses the whole grace the process still has its own shutdown to run,
+# and none of it shares the grace's deadline: in cluster mode it closes the
+# shared credential store (up to 10s); it writes the usage records still
+# queued, or spools them (up to 30s); it waits for the spool replayer's
+# current write (up to 10s); it saves the usage snapshot to Redis, which with
+# go-redis defaults is four 3s tries against a server that stopped answering,
+# possibly twice since the periodic save may be under way; and it stops the
+# request log maintenance, which ends within one statement. Until 2026.11.10.1
+# TimeoutStopSec equalled the grace, so a drain that ran out was SIGKILLed on
+# the spot and the queued usage records went with it. Not a node setting: the
+# binary's shutdown sizes it, and that is the same on every node.
+# TestDeployStopHeadroomCoversTheShutdownAfterTheDrain (internal/cmd) holds it
+# to those timeouts.
+SHUTDOWN_STOP_HEADROOM_SECONDS=90
 HEALTH_TIMEOUT_SECONDS=90
 SMOKE_TIMEOUT_SECONDS=30
 MIN_AVAILABLE_MB=512
@@ -240,7 +255,7 @@ require_root_controlled() {
 }
 
 print_settings() {
-	for setting in SCRIPT_VERSION DEPLOY_ENV_FILE deploy_env_state SERVICE_NAME BASE_DIR PORT_A PORT_B TEMP_BIN ACTIVE_PORT_FILE CLEANUP_SCRIPT RECONCILE_SCRIPT APP_ENV_FILE DOMAIN PUBLIC_BASE_URL NODE_PUBLIC_IP SMOKE_LOCAL_TLS_ADDR NGINX_CONF NGINX_SEARCH_DIRS NGINX_CONTAINER SLOT_USER SLOT_GROUP DRAIN_SECONDS SHUTDOWN_GRACE_SECONDS HEALTH_TIMEOUT_SECONDS SMOKE_TIMEOUT_SECONDS MIN_AVAILABLE_MB GO_MEM_LIMIT_PERCENT SERVICE_CPU_QUOTA SERVICE_MEMORY_HIGH SERVICE_MEMORY_MAX SERVICE_TASKS_MAX SERVICE_GO_MEM_LIMIT; do
+	for setting in SCRIPT_VERSION DEPLOY_ENV_FILE deploy_env_state SERVICE_NAME BASE_DIR PORT_A PORT_B TEMP_BIN ACTIVE_PORT_FILE CLEANUP_SCRIPT RECONCILE_SCRIPT APP_ENV_FILE DOMAIN PUBLIC_BASE_URL NODE_PUBLIC_IP SMOKE_LOCAL_TLS_ADDR NGINX_CONF NGINX_SEARCH_DIRS NGINX_CONTAINER SLOT_USER SLOT_GROUP DRAIN_SECONDS SHUTDOWN_GRACE_SECONDS SHUTDOWN_STOP_HEADROOM_SECONDS SLOT_STOP_TIMEOUT_SECONDS HEALTH_TIMEOUT_SECONDS SMOKE_TIMEOUT_SECONDS MIN_AVAILABLE_MB GO_MEM_LIMIT_PERCENT SERVICE_CPU_QUOTA SERVICE_MEMORY_HIGH SERVICE_MEMORY_MAX SERVICE_TASKS_MAX SERVICE_GO_MEM_LIMIT; do
 		printf '%s=%s\n' "$setting" "${!setting}"
 	done
 }
@@ -280,6 +295,13 @@ derive_go_mem_limit() {
 	fi
 }
 
+# derive_stop_timeout sets the slot unit's TimeoutStopSec from the grace in
+# effect on this node, which deploy.env may have changed, so a node that lets
+# requests drain for longer still leaves its shutdown the same headroom.
+derive_stop_timeout() {
+	SLOT_STOP_TIMEOUT_SECONDS=$((SHUTDOWN_GRACE_SECONDS + SHUTDOWN_STOP_HEADROOM_SECONDS))
+}
+
 read_caller_tunables
 deploy_env_state=absent
 deploy_env_set=""
@@ -289,6 +311,7 @@ if [ -e "$DEPLOY_ENV_FILE" ]; then
 	deploy_env_state=loaded
 fi
 derive_go_mem_limit
+derive_stop_timeout
 PUBLIC_BASE_URL="https://${DOMAIN}"
 
 if [ "$mode" = print-settings ]; then
@@ -880,7 +903,10 @@ unit_file="/etc/systemd/system/${next_unit}.service"
 	echo "Restart=always"
 	echo "RestartSec=3"
 	echo "KillSignal=SIGTERM"
-	echo "TimeoutStopSec=${SHUTDOWN_GRACE_SECONDS}"
+	# The binary drains for the grace; systemd waits the headroom on top so
+	# the shutdown that follows the drain is not SIGKILLed (see
+	# SHUTDOWN_STOP_HEADROOM_SECONDS). Do not set the two equal again.
+	echo "TimeoutStopSec=${SLOT_STOP_TIMEOUT_SECONDS}"
 	echo "Environment=CLIRELAY_SHUTDOWN_GRACE=${SHUTDOWN_GRACE_SECONDS}s"
 	# Must stay below MemoryHigh: it is what keeps the runtime collecting on its
 	# own instead of letting the kernel throttle the cgroup into reclaim.
@@ -1042,6 +1068,6 @@ fi
 
 # One machine-readable line for the workflow, which keeps probing this node
 # until the old slot named here has really stopped.
-printf 'CLIRELAY_DEPLOY_RESULT service=%s new_port=%s old_port=%s drain_seconds=%s shutdown_grace_seconds=%s version=%s\n' \
-	"$SERVICE_NAME" "$next_port" "$old_port" "$DRAIN_SECONDS" "$SHUTDOWN_GRACE_SECONDS" \
+printf 'CLIRELAY_DEPLOY_RESULT service=%s new_port=%s old_port=%s drain_seconds=%s shutdown_grace_seconds=%s stop_timeout_seconds=%s version=%s\n' \
+	"$SERVICE_NAME" "$next_port" "$old_port" "$DRAIN_SECONDS" "$SHUTDOWN_GRACE_SECONDS" "$SLOT_STOP_TIMEOUT_SECONDS" \
 	"$(printf '%s' "$expected_version" | tr -cd 'A-Za-z0-9._+:-')"

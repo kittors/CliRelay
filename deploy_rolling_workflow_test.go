@@ -265,6 +265,17 @@ func TestDeployWorkflowProbesEachNodeAcrossItsDrain(t *testing.T) {
 		verify.Env["OLD_PORT"] != "${{ steps.deploy.outputs.old_port }}" {
 		t.Fatalf("per-node verification must use the drain and slots the node reported, got run=%q env=%v", verify.Run, verify.Env)
 	}
+	// The old slot may run for its whole TimeoutStopSec after the drain's
+	// SIGTERM, which is longer than its shutdown grace. Waiting only for the
+	// grace would fail a node whose slot is still finishing its shutdown.
+	_, deployStep := workflowStep(t, deploy, "Blue-green deploy via fixed root entrypoint")
+	if verify.Env["STOP_TIMEOUT_SECONDS"] != "${{ steps.deploy.outputs.stop_timeout_seconds }}" ||
+		!strings.Contains(deployStep.Run, "stop_timeout_seconds=*") {
+		t.Fatalf("per-node verification must wait for the stop timeout the node reported, got env=%v", verify.Env)
+	}
+	if _, ok := verify.Env["SHUTDOWN_GRACE_SECONDS"]; ok {
+		t.Fatalf("per-node verification must not size its wait by the shutdown grace, got env=%v", verify.Env)
+	}
 
 	docker := workflowJob(t, wf, "docker")
 	publicIndex, public := workflowStep(t, docker, "Verify public endpoint after rollout")
@@ -334,7 +345,7 @@ printf 'new_state=active old_state=%s served_version=%s\n' "${!n}" "$FAKE_SERVED
 			"NEW_PORT=8318",
 			"OLD_PORT=8319",
 			"DRAIN_SECONDS=1",
-			"SHUTDOWN_GRACE_SECONDS=0",
+			"STOP_TIMEOUT_SECONDS=0",
 			"PROBE_MIN_SECONDS=1",
 			"PROBE_MARGIN_SECONDS=0",
 			"PROBE_INTERVAL_SECONDS=1",
