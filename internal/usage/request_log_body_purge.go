@@ -1,6 +1,7 @@
 package usage
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"sync"
@@ -37,10 +38,17 @@ func PurgeStoredRequestBodies() (RequestLogBodyPurgeResult, error) {
 	if db == nil {
 		return RequestLogBodyPurgeResult{}, fmt.Errorf("usage: database not initialised")
 	}
-	return purgeStoredRequestBodies(db, driver)
+	// Turning body storage off from the panel asks for the purge, so it runs
+	// to the end rather than stopping with the request.
+	return purgeStoredRequestBodies(context.Background(), db, driver)
 }
 
-func purgeStoredRequestBodies(db *sql.DB, _ string) (RequestLogBodyPurgeResult, error) {
+// purgeStoredRequestBodies walks every stored request detail, so it can run for
+// many minutes on a large table. ctx stops it between statements and cancels the
+// one in flight: the maintenance worker passes its own context, and CloseDB waits
+// for that worker before the process can exit. Each batch commits on its own, so
+// a stopped purge loses nothing and the next pass walks the table again.
+func purgeStoredRequestBodies(ctx context.Context, db *sql.DB, _ string) (RequestLogBodyPurgeResult, error) {
 	requestLogBodyPurgeMu.Lock()
 	defer requestLogBodyPurgeMu.Unlock()
 
@@ -48,13 +56,13 @@ func purgeStoredRequestBodies(db *sql.DB, _ string) (RequestLogBodyPurgeResult, 
 		return RequestLogBodyPurgeResult{}, fmt.Errorf("usage: database not initialised")
 	}
 
-	cleared, err := clearRequestLogs(db, ClearRequestLogsOptions{ClearBodyContent: true})
+	cleared, err := clearRequestLogs(ctx, db, ClearRequestLogsOptions{ClearBodyContent: true})
 	if err != nil {
 		return RequestLogBodyPurgeResult{}, err
 	}
 	result := RequestLogBodyPurgeResult{ClearRequestLogsResult: cleared}
 
-	result.SanitizedDetailRows, result.RemovedDetailBytes, err = sanitizeHistoricalRequestDetails(db)
+	result.SanitizedDetailRows, result.RemovedDetailBytes, err = sanitizeHistoricalRequestDetails(ctx, db)
 	if err != nil {
 		return result, err
 	}
@@ -74,13 +82,16 @@ func purgeStoredRequestBodies(db *sql.DB, _ string) (RequestLogBodyPurgeResult, 
 	return result, nil
 }
 
-func sanitizeHistoricalRequestDetails(db *sql.DB) (int64, int64, error) {
+func sanitizeHistoricalRequestDetails(ctx context.Context, db *sql.DB) (int64, int64, error) {
 	var sanitizedRows int64
 	var removedBytes int64
 	var lastLogID int64
 
 	for {
-		rows, err := db.Query(
+		if err := ctx.Err(); err != nil {
+			return sanitizedRows, removedBytes, err
+		}
+		rows, err := db.QueryContext(ctx,
 			`SELECT log_id, compression, detail_content
 			 FROM request_log_content
 			 WHERE log_id > ? AND length(detail_content) > 0
@@ -112,7 +123,7 @@ func sanitizeHistoricalRequestDetails(db *sql.DB) (int64, int64, error) {
 			break
 		}
 
-		tx, err := db.Begin()
+		tx, err := db.BeginTx(ctx, nil)
 		if err != nil {
 			return sanitizedRows, removedBytes, fmt.Errorf("usage: begin historical request detail cleanup: %w", err)
 		}
@@ -131,7 +142,7 @@ func sanitizeHistoricalRequestDetails(db *sql.DB) (int64, int64, error) {
 				_ = tx.Rollback()
 				return sanitizedRows, removedBytes, fmt.Errorf("usage: compress request detail log_id=%d: %w", row.LogID, errCompress)
 			}
-			if _, err = tx.Exec(
+			if _, err = tx.ExecContext(ctx,
 				"UPDATE request_log_content SET detail_content = ? WHERE log_id = ?",
 				compressed,
 				row.LogID,
