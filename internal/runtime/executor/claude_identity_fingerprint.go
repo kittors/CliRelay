@@ -130,6 +130,10 @@ func applyClaudeIdentityFingerprintPayload(auth *cliproxyauth.Auth, payload []by
 	return payload
 }
 
+// claudeCodeIdentityText is the system line the identity fingerprint prepends,
+// with a cache_control breakpoint of its own.
+const claudeCodeIdentityText = "You are Claude Code, Anthropic's official CLI for Claude."
+
 func applyClaudeFingerprintSystem(payload []byte, fp config.ClaudeIdentityFingerprintConfig) []byte {
 	system := gjson.GetBytes(payload, "system")
 	remaining := make([]map[string]any, 0)
@@ -163,7 +167,7 @@ func applyClaudeFingerprintSystem(payload []byte, fp config.ClaudeIdentityFinger
 		{"type": "text", "text": buildClaudeBillingHeader(payload, fp)},
 		{
 			"type":          "text",
-			"text":          "You are Claude Code, Anthropic's official CLI for Claude.",
+			"text":          claudeCodeIdentityText,
 			"cache_control": map[string]string{"type": "ephemeral"},
 		},
 	}

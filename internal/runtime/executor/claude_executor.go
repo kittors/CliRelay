@@ -141,10 +141,8 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 		dropThinkingForForcedTool: !skipAnthropic,
 	})
 	if !skipAnthropic {
-		// Auto-inject cache_control if missing (optimization for ClawdBot/clients without caching support)
-		if countCacheControls(body) == 0 {
-			body = ensureCacheControl(body)
-		}
+		// Auto-inject cache_control unless the client placed its own breakpoints.
+		body = applyClaudeCacheControl(body)
 	}
 
 	// Extract betas from body and convert to header
@@ -275,10 +273,8 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 		dropThinkingForForcedTool: !skipAnthropic,
 	})
 	if !skipAnthropic {
-		// Auto-inject cache_control if missing (optimization for ClawdBot/clients without caching support)
-		if countCacheControls(body) == 0 {
-			body = ensureCacheControl(body)
-		}
+		// Auto-inject cache_control unless the client placed its own breakpoints.
+		body = applyClaudeCacheControl(body)
 	}
 
 	// Extract betas from body and convert to header
