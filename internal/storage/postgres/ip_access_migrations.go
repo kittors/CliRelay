@@ -55,6 +55,9 @@ func laterRuntimeMigrations() []Migration {
 		// the time after the first token. See
 		// usage_rollup_generation_migrations.go.
 		{Version: "202611040001_usage_rollup_generation_speed", SQL: usageRollupGenerationSpeedSQL},
+		// Read one AI account's rollup buckets across tenants (quota window
+		// spend). See usage_rollup_subject_index_migrations.go.
+		{Version: "202611100001_usage_rollup_subject_index", SQL: usageRollupSubjectIndexSQL},
 	}
 }
 
