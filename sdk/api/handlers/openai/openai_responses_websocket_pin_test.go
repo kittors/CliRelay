@@ -125,8 +125,8 @@ func TestResponsesWebsocketReleasesPinWhenModelSwitchesProvider(t *testing.T) {
 
 	for _, model := range []string{claudeModel, geminiModel, claudeModel} {
 		wsTurnSend(t, conn, wsPinCreate(model))
-		if reply := wsTurnRead(t, conn); gjson.GetBytes(reply, "type").String() != "response.done" {
-			t.Fatalf("turn on %s: reply = %s, want response.done", model, reply)
+		if reply := wsTurnRead(t, conn); gjson.GetBytes(reply, "type").String() != "response.completed" {
+			t.Fatalf("turn on %s: reply = %s, want response.completed", model, reply)
 		}
 	}
 	server.hangUp(conn)
@@ -150,8 +150,8 @@ func TestResponsesWebsocketKeepsPinAcrossThinkingSuffix(t *testing.T) {
 
 	for _, requested := range []string{model, model + "(high)", model + "(low)", model} {
 		wsTurnSend(t, conn, wsPinCreate(requested))
-		if reply := wsTurnRead(t, conn); gjson.GetBytes(reply, "type").String() != "response.done" {
-			t.Fatalf("turn on %s: reply = %s, want response.done", requested, reply)
+		if reply := wsTurnRead(t, conn); gjson.GetBytes(reply, "type").String() != "response.completed" {
+			t.Fatalf("turn on %s: reply = %s, want response.completed", requested, reply)
 		}
 	}
 	server.hangUp(conn)
