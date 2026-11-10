@@ -191,7 +191,7 @@ func TestWordGuardRenamedKeysStayDistinct(t *testing.T) {
 		{"two banned keys", `{"bad":1,"BAD":2}`, `{"***":1,"***_2":2}`, 2},
 		{"a key that is already the replacement", `{"***":0,"bad":1}`, `{"***":0,"***_2":1}`, 2},
 		{"the replacement comes later in the object", `{"bad":1,"***":0}`, `{"***_2":1,"***":0}`, 2},
-		{"three of them", `{"bad":1,"***":0,"BAD":2,"bad":3}`, `{"***_2":1,"***":0,"***_3":2,"***_4":3}`, 4},
+		{"three of them", `{"bad":1,"***":0,"BAD":2,"Bad":3}`, `{"***_2":1,"***":0,"***_3":2,"***_4":3}`, 4},
 		{"separate objects do not share names", `{"bad":{"bad":1},"x":{"bad":2}}`, `{"***":{"***":1},"x":{"***":2}}`, 2},
 	}
 	for _, tt := range tests {

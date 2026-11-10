@@ -12,6 +12,7 @@ const (
 	stageAuth            = "auth"
 	stageRoute           = "route"
 	stageChannelGroup    = "channel-group"
+	stageRequestBody     = "request-body"
 	stageQuota           = "quota"
 	stageModelPolicy     = "model-policy"
 	stageModelGate       = "model-gate"
@@ -38,6 +39,8 @@ func (s *Server) requestStages(route gin.HandlerFunc) []requestStage {
 		{name: stageAuth, handler: AuthMiddleware(s.accessManager)},
 		{name: stageRoute, handler: route},
 		{name: stageChannelGroup, handler: channelGroupAuthorizationMiddleware()},
+		// Before any stage that reads the body (see requestBodyMiddleware).
+		{name: stageRequestBody, handler: requestBodyMiddleware()},
 		{name: stageQuota, handler: middleware.QuotaMiddleware(), writesState: true},
 		{name: stageModelPolicy, handler: middleware.ModelPolicyMiddleware(s.modelPolicyEffectiveModel)},
 		{name: stageModelGate, handler: s.modelRestrictionMiddleware()},
