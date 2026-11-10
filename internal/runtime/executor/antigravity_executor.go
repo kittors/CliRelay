@@ -146,6 +146,10 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 	if updatedAuth != nil {
 		auth = updatedAuth
 	}
+	auth, errProject := e.withRequestProject(ctx, auth, token)
+	if errProject != nil {
+		return nil, errProject
+	}
 
 	execCtx := e.newAntigravityExecutionContext(ctx, auth, req, opts, true)
 	reporter := execCtx.Reporter()
@@ -397,6 +401,15 @@ func (e *AntigravityExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Au
 	updated, errRefresh := e.refreshToken(ctx, auth.Clone())
 	if errRefresh != nil {
 		return nil, errRefresh
+	}
+	// Project discovery rides on the background refresh because the manager
+	// persists what Refresh returns, the project and the probe back-off with
+	// it. Requests refresh tokens too, but their copy of the credential is
+	// dropped once the request ends: a probe there could neither keep the
+	// project it found nor remember its back-off, so every request would ask
+	// again.
+	if errProject := e.ensureAntigravityProjectID(ctx, updated, metaStringValue(updated.Metadata, "access_token")); errProject != nil {
+		log.Warnf("antigravity executor: ensure project id failed: %v", errProject)
 	}
 	return updated, nil
 }

@@ -74,15 +74,20 @@ func ImportRefreshToken(ctx context.Context, opts RefreshTokenImportOptions) (*c
 	if email == "" {
 		return nil, credentialimport.Details{}, errors.New("google returned no email for this account")
 	}
-	// A missing project is not fatal: the browser login saves the account the
-	// same way and the project is probed again later.
+	// Same rule as the browser login: an account is only usable with its
+	// Cloud Code project, so an import that cannot find one fails and says why
+	// rather than saving an account that cannot serve (#1032).
 	projectID, errProject := client.FetchProjectID(ctx, accessToken)
+	projectID = strings.TrimSpace(projectID)
+	if errProject == nil && projectID == "" {
+		errProject = internalantigravity.ErrNoProjectID
+	}
 	if errProject != nil {
-		log.Warnf("antigravity import: failed to fetch project ID: %v", errProject)
-		projectID = ""
+		log.Warnf("antigravity import: project discovery failed: %v", errProject)
+		return nil, credentialimport.Details{}, projectDiscoveryError{cause: errProject}
 	}
 
-	record := RecordFromTokenResponse(tokenResp, email, strings.TrimSpace(projectID), now())
+	record := RecordFromTokenResponse(tokenResp, email, projectID, now())
 	if record == nil {
 		return nil, credentialimport.Details{}, errors.New("could not build the antigravity account")
 	}
