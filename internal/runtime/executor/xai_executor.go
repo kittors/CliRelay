@@ -382,6 +382,8 @@ func (e *XAIExecutor) prepareResponsesRequest(ctx context.Context, auth *cliprox
 	body = sanitizeCodexResponsesRequest(body)
 	body, toolNames := flattenXAINamespaceTools(body)
 	body = stripXAIUnsupportedWebSearchOptions(body)
+	// After flattening, so namespace children and lifted Lite tools are checked too.
+	body = normalizeXAIToolParameterRoots(body)
 	sets := map[string][]byte{
 		"stream": util.JSONBool(stream),
 	}
