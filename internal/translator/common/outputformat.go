@@ -177,7 +177,8 @@ func (f OutputFormat) WriteChat(out []byte) []byte {
 // ResponsesFormat returns f as a Responses API text.format object, for a
 // translator that writes its envelope by hand; ok is false when f asks for
 // nothing. Unlike WriteResponses it does not check that a JSON mode request
-// mentions JSON, which only matters for OutputFormatJSONObject.
+// mentions JSON, which only matters for OutputFormatJSONObject; that check is
+// EnsureResponsesMentionsJSON.
 func (f OutputFormat) ResponsesFormat() (format string, ok bool) {
 	switch f.Kind {
 	case OutputFormatText:
@@ -199,7 +200,7 @@ func (f OutputFormat) WriteResponses(out []byte) []byte {
 	}
 	out, _ = sjson.SetRawBytes(out, "text.format", []byte(format))
 	if f.Kind == OutputFormatJSONObject {
-		out = ensureResponsesMentionsJSON(out)
+		out = EnsureResponsesMentionsJSON(out)
 	}
 	return out
 }
@@ -414,10 +415,14 @@ func prependGeminiUserText(out []byte, prefix, text string) []byte {
 	return prependArrayItem(out, prefix+"contents."+strconv.Itoa(turn)+".parts", part)
 }
 
-// The Responses API rejects JSON mode unless the word "json" appears in the
-// conversation. A client of another protocol never had to write it, so a
-// request that lacks it is given an instruction that has it.
-func ensureResponsesMentionsJSON(out []byte) []byte {
+// EnsureResponsesMentionsJSON makes a Responses API request in JSON mode
+// acceptable upstream. The API rejects JSON mode unless the word "json"
+// appears in the conversation; a client of another protocol never had to write
+// it, so a request that lacks it is given an instruction that has it.
+// WriteResponses calls it. A translator that sets text.format itself (see
+// ResponsesFormat) calls it once the input is in place, since it reads the
+// input.
+func EnsureResponsesMentionsJSON(out []byte) []byte {
 	if mentionsJSON(gjson.GetBytes(out, "instructions")) {
 		return out
 	}
