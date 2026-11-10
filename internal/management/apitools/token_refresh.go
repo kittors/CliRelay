@@ -108,7 +108,8 @@ func (s *Service) refreshXAIOAuthAccessToken(ctx context.Context, auth *coreauth
 	if cfg == nil {
 		cfg = &config.Config{}
 	}
-	svc := xaiauth.NewXAIAuthWithProxyURL(cfg, auth.ProxyURL)
+	// Management refresh must use the same pool binding as account requests.
+	svc := xaiauth.NewXAIAuthWithProxyURL(cfg, cfg.ResolveProxyURL(auth.ProxyID, auth.ProxyURL))
 	tokenData, errRefresh := svc.RefreshTokens(ctx, refreshToken, tokenEndpoint)
 	if errRefresh != nil {
 		return "", errRefresh
