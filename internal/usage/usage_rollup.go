@@ -81,6 +81,8 @@ CREATE INDEX IF NOT EXISTS idx_usage_rollup_tenant_user_day
   ON usage_rollup_buckets(tenant_id, bucket_kind, end_user_id, bucket_start);
 CREATE INDEX IF NOT EXISTS idx_usage_rollup_tenant_subject_day
   ON usage_rollup_buckets(tenant_id, bucket_kind, auth_subject_id, bucket_start);
+CREATE INDEX IF NOT EXISTS idx_usage_rollup_subject_kind_start
+  ON usage_rollup_buckets(auth_subject_id, bucket_kind, bucket_start);
 `
 	// Bump marker when rebuild semantics change so upgrades re-run once.
 	usageRollupBackfillMarker = "usage_rollup_buckets_v4"
