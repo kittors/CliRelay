@@ -12,7 +12,6 @@ import (
 
 	antigravityauth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/antigravity"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	sdkAuth "github.com/router-for-me/CLIProxyAPI/v6/sdk/auth"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
 )
@@ -128,6 +127,9 @@ func (e *AntigravityExecutor) refreshToken(ctx context.Context, auth *cliproxyau
 	return auth, nil
 }
 
+// ensureAntigravityProjectID puts the account's project on auth, the copy the
+// background refresh persists, and records a failed discovery there so the
+// next refreshes back off.
 func (e *AntigravityExecutor) ensureAntigravityProjectID(ctx context.Context, auth *cliproxyauth.Auth, accessToken string) error {
 	if auth == nil {
 		return nil
@@ -135,11 +137,20 @@ func (e *AntigravityExecutor) ensureAntigravityProjectID(ctx context.Context, au
 	if auth.Metadata == nil {
 		auth.Metadata = make(map[string]any)
 	}
+	if antigravityProjectIDFromAuth(auth) != "" {
+		return nil
+	}
+	// A request may have found it already; keep that rather than ask again.
+	if projectID := antigravityProjects.known(auth); projectID != "" {
+		antigravityauth.ClearProjectIDProbeMarkers(auth.Metadata)
+		auth.Metadata["project_id"] = projectID
+		return nil
+	}
 
-	// Non-empty project_id or a recent probe failure must not re-enter
-	// onboardUser — that path was thrashing production with auth writes +
-	// reloads. A "no project" verdict holds for ProjectIDUnavailableRetryAfter,
-	// not forever, so a credential recorded that way can still recover.
+	// A recent probe failure must not re-enter onboardUser — that path was
+	// thrashing production with auth writes + reloads. A "no project" verdict
+	// holds for ProjectIDUnavailableRetryAfter, not forever, so a credential
+	// recorded that way can still recover.
 	if antigravityauth.ShouldSkipProjectIDProbe(auth.Metadata, time.Now(), 0) {
 		return nil
 	}
@@ -152,16 +163,12 @@ func (e *AntigravityExecutor) ensureAntigravityProjectID(ctx context.Context, au
 		return nil
 	}
 
-	httpClient := newProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
-	projectID, errFetch := sdkAuth.FetchAntigravityProjectID(ctx, token, httpClient)
+	projectID, errFetch := antigravityProjects.discover(ctx, auth, 0, func(discoveryCtx context.Context) (string, error) {
+		return e.fetchAntigravityProjectID(discoveryCtx, auth, token)
+	})
 	if errFetch != nil {
 		antigravityauth.MarkProjectIDProbeFailure(auth.Metadata, errFetch, time.Now())
 		return errFetch
-	}
-	projectID = strings.TrimSpace(projectID)
-	if projectID == "" {
-		antigravityauth.MarkProjectIDProbeFailure(auth.Metadata, antigravityauth.ErrNoProjectID, time.Now())
-		return antigravityauth.ErrNoProjectID
 	}
 	antigravityauth.ClearProjectIDProbeMarkers(auth.Metadata)
 	auth.Metadata["project_id"] = projectID

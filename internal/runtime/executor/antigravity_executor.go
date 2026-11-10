@@ -146,6 +146,10 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 	if updatedAuth != nil {
 		auth = updatedAuth
 	}
+	auth, errProject := e.withRequestProject(ctx, auth, token)
+	if errProject != nil {
+		return nil, errProject
+	}
 
 	execCtx := e.newAntigravityExecutionContext(ctx, auth, req, opts, true)
 	reporter := execCtx.Reporter()
