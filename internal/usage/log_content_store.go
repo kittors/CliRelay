@@ -208,6 +208,9 @@ func startRequestLogMaintenance(db *sql.DB, driver string) {
 	// - owner: startRequestLogMaintenance / stopRequestLogMaintenance
 	// - 取消条件: stopRequestLogMaintenance、数据库关闭、进程退出
 	// - 超时策略: 周期 cleanup + wakeup 驱动；单次 DB 操作各自控制
+	// - 取消响应: 每一步都要在 ctx 取消后的一条语句内停下。CloseDB 在进程退出前
+	//   等这个协程；2026-11-10 两个退役 slot 就是等一轮 16 分钟以上的正文清除，
+	//   被 systemd 在 TimeoutStopSec 时 SIGKILL
 	// - 清理方式: cancel 后等待 requestLogMaintenanceWG，确保协程退出
 	go func() {
 		defer requestLogMaintenanceWG.Done()
@@ -245,10 +248,35 @@ func startRequestLogMaintenance(db *sql.DB, driver string) {
 func stopRequestLogMaintenance() {
 	if requestLogMaintenanceCancel != nil {
 		requestLogMaintenanceCancel()
-		requestLogMaintenanceWG.Wait()
+		waitForRequestLogMaintenance(requestLogMaintenanceStopWarnAfter)
 		requestLogMaintenanceCancel = nil
 	}
 	requestLogMaintenanceWakeup.Store((chan struct{})(nil))
+}
+
+// requestLogMaintenanceStopWarnAfter is how long a stop waits before saying so.
+// A pass is meant to stop within one statement of the cancel, so a longer wait
+// means some step ignores ctx. Without this line that wait shows in the log only
+// as a gap after "Redis usage persistence flushed and closed", up to the SIGKILL.
+const requestLogMaintenanceStopWarnAfter = 10 * time.Second
+
+func waitForRequestLogMaintenance(warnAfter time.Duration) {
+	cancelledAt := time.Now()
+	stopped := make(chan struct{})
+	go func() {
+		requestLogMaintenanceWG.Wait()
+		close(stopped)
+	}()
+	timer := time.NewTimer(warnAfter)
+	defer timer.Stop()
+	select {
+	case <-stopped:
+		return
+	case <-timer.C:
+	}
+	log.Warnf("usage: request log maintenance still running %s after it was cancelled; waiting for it to stop", warnAfter)
+	<-stopped
+	log.Warnf("usage: request log maintenance stopped %s after it was cancelled", time.Since(cancelledAt).Round(time.Millisecond))
 }
 
 func runRequestLogMaintenancePass(ctx context.Context, db *sql.DB, driver string) {
@@ -267,10 +295,17 @@ func runRequestLogMaintenancePass(ctx context.Context, db *sql.DB, driver string
 		return
 	}
 	if !RequestLogBodyStorageEnabled() {
-		if _, err := purgeStoredRequestBodies(db, driver); err != nil {
-			log.Errorf("usage: purge disabled request log body storage: %v", err)
+		if _, err := purgeStoredRequestBodies(ctx, db, driver); err != nil {
+			if ctx.Err() == nil { // a pass stopped by shutdown is not a failure
+				log.Errorf("usage: purge disabled request log body storage: %v", err)
+			}
 			return
 		}
+	}
+	// The steps below that take no ctx are each short, so the pass checks ctx
+	// between them; once cancelled it stops instead of running the rest.
+	if ctx.Err() != nil {
+		return
 	}
 
 	// Refresh the running total periodically so size-cap enforcement stays fast
@@ -281,7 +316,7 @@ func runRequestLogMaintenancePass(ctx context.Context, db *sql.DB, driver string
 		}
 	}
 
-	for {
+	for ctx.Err() == nil {
 		migrated, err := migrateLegacyContentBatch(db, 200)
 		if err != nil {
 			log.Errorf("usage: migrate legacy request log content: %v", err)
@@ -290,6 +325,10 @@ func runRequestLogMaintenancePass(ctx context.Context, db *sql.DB, driver string
 		if migrated == 0 {
 			break
 		}
+	}
+
+	if ctx.Err() != nil {
+		return
 	}
 
 	// Finish pending→done catch-up if startup goroutine has not yet (or failed).
@@ -333,6 +372,10 @@ func runRequestLogMaintenancePass(ctx context.Context, db *sql.DB, driver string
 		log.Infof("usage: pruned %d expired shared AI account quota point rows", n)
 	}
 
+	if ctx.Err() != nil {
+		return
+	}
+
 	// cleanup-enabled gates metadata and content retention/size cleanup only.
 	// Body purge when store-content=false still runs above (privacy, not retention).
 	if !currentRequestLogStorageConfig().CleanupEnabled {
@@ -343,11 +386,18 @@ func runRequestLogMaintenancePass(ctx context.Context, db *sql.DB, driver string
 	cleanupStarted := time.Now()
 	metaDeleted, metaErr := cleanupExpiredRequestLogMetadata(ctx, db)
 	if metaErr != nil {
+		if ctx.Err() != nil { // stopped by shutdown; not a failed cleanup to record
+			return
+		}
 		log.Errorf("usage: cleanup request log metadata: %v", metaErr)
 		recordCleanupPass(metaDeleted, cleanupStarted, "error", metaErr.Error())
 	} else if metaDeleted > 0 {
 		log.Infof("usage: pruned %d expired request_logs metadata rows", metaDeleted)
 		recordCleanupPass(metaDeleted, cleanupStarted, "ok", "")
+	}
+
+	if ctx.Err() != nil {
+		return
 	}
 
 	deleted, err := cleanupExpiredLogContent(db)

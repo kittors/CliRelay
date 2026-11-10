@@ -34,11 +34,18 @@ import (
 
 // extractSecretUnits is extractWordUnits for privacy masking.
 func extractSecretUnits(format sdktranslator.Format, payload []byte) []wordUnit {
+	units, _ := readSecretUnits(format, payload)
+	return units
+}
+
+// readSecretUnits is extractSecretUnits for a caller that refuses a body it
+// cannot read: the error says why there are no units (see extraction.run).
+func readSecretUnits(format sdktranslator.Format, payload []byte) ([]wordUnit, error) {
 	x := &extraction{locate: true, secrets: true, doc: &wordDoc{data: payload, located: true}}
 	if !x.run(format, payload) {
-		return nil
+		return nil, x.unreadable
 	}
-	return x.units
+	return x.units, nil
 }
 
 // toolData reads the data of a tool call or result: as jsonText does for the
@@ -84,8 +91,8 @@ func walkToolData(value gjson.Result, depth int, visit jsonTextVisitor) {
 //
 // The fields are found in one walk of root, not looked up one by one: a
 // lookup of a field that is not there scans the whole request, megabytes for
-// one that carries screenshots, and a lookup finds only the first copy of a
-// field the request repeats, where the upstream's parser may take the last.
+// one that carries screenshots. (A request that repeats a field is not read at
+// all; see extraction.run.)
 func (x *extraction) declaredDescriptions(root gjson.Result) {
 	if !x.secrets {
 		return

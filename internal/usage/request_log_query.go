@@ -1,6 +1,7 @@
 package usage
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"strings"
@@ -313,16 +314,17 @@ func ClearRequestLogs(options ClearRequestLogsOptions) (ClearRequestLogsResult, 
 	if db == nil {
 		return ClearRequestLogsResult{}, fmt.Errorf("usage: database not initialised")
 	}
-	return clearRequestLogs(db, options)
+	return clearRequestLogs(context.Background(), db, options)
 }
 
-func clearRequestLogs(db *sql.DB, options ClearRequestLogsOptions) (ClearRequestLogsResult, error) {
+// clearRequestLogs runs in one transaction; cancelling ctx rolls it back.
+func clearRequestLogs(ctx context.Context, db *sql.DB, options ClearRequestLogsOptions) (ClearRequestLogsResult, error) {
 	options, err := normalizeClearRequestLogsOptions(options)
 	if err != nil {
 		return ClearRequestLogsResult{}, err
 	}
 
-	tx, err := db.Begin()
+	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return ClearRequestLogsResult{}, fmt.Errorf("usage: begin clear request logs: %w", err)
 	}
@@ -337,11 +339,11 @@ func clearRequestLogs(db *sql.DB, options ClearRequestLogsOptions) (ClearRequest
 	var result ClearRequestLogsResult
 
 	if options.ClearRequestRecords {
-		contentResult, err := tx.Exec("DELETE FROM request_log_content WHERE tenant_id = ?", options.TenantID)
+		contentResult, err := tx.ExecContext(ctx, "DELETE FROM request_log_content WHERE tenant_id = ?", options.TenantID)
 		if err != nil {
 			return ClearRequestLogsResult{}, fmt.Errorf("usage: clear request_log_content: %w", err)
 		}
-		logResult, err := tx.Exec("DELETE FROM request_logs WHERE tenant_id = ?", options.TenantID)
+		logResult, err := tx.ExecContext(ctx, "DELETE FROM request_logs WHERE tenant_id = ?", options.TenantID)
 		if err != nil {
 			return ClearRequestLogsResult{}, fmt.Errorf("usage: clear request_logs: %w", err)
 		}
@@ -359,7 +361,7 @@ func clearRequestLogs(db *sql.DB, options ClearRequestLogsOptions) (ClearRequest
 			// Always drop request bodies. Preserve failed-request output_content so the
 			// error-detail modal can still show the compact upstream error when
 			// store-content is disabled (maintenance purge must not erase those).
-			contentResult, err := tx.Exec(
+			contentResult, err := tx.ExecContext(ctx,
 				`UPDATE request_log_content
 				 SET input_content = X'',
 				     output_content = CASE
@@ -383,7 +385,7 @@ func clearRequestLogs(db *sql.DB, options ClearRequestLogsOptions) (ClearRequest
 				return ClearRequestLogsResult{}, fmt.Errorf("usage: body affected rows: %w", err)
 			}
 
-			legacyResult, err := tx.Exec(
+			legacyResult, err := tx.ExecContext(ctx,
 				`UPDATE request_logs
 				 SET input_content = '',
 				     output_content = CASE WHEN failed = 1 THEN output_content ELSE '' END
@@ -401,7 +403,7 @@ func clearRequestLogs(db *sql.DB, options ClearRequestLogsOptions) (ClearRequest
 		}
 
 		if options.ClearDetailContent {
-			detailResult, err := tx.Exec(
+			detailResult, err := tx.ExecContext(ctx,
 				"UPDATE request_log_content SET detail_content = X'', session_id = '' WHERE tenant_id = ? AND (length(detail_content) > 0 OR session_id <> '')",
 				options.TenantID,
 			)
@@ -414,7 +416,7 @@ func clearRequestLogs(db *sql.DB, options ClearRequestLogsOptions) (ClearRequest
 			}
 		}
 
-		deleteEmptyRowsResult, err := tx.Exec(
+		deleteEmptyRowsResult, err := tx.ExecContext(ctx,
 			"DELETE FROM request_log_content WHERE tenant_id = ? AND length(input_content) = 0 AND length(output_content) = 0 AND length(detail_content) = 0 AND session_id = ''",
 			options.TenantID,
 		)
