@@ -18,6 +18,15 @@ import (
 // sequential scan and a sort.
 const requestBodyPurgeBatchSize = 25
 
+// requestBodyPurgePassRows caps the rows one maintenance pass reads. Only a
+// backlog reaches it: rows written while body storage was on, or the rows from
+// before bodies_stripped on the first pass after the upgrade. Production's 69k
+// rows took 2 min 42 s in one go on 2026-11-10; at this cap a pass stays
+// around 12 s, and the worker comes back for the rest after
+// requestLogMaintenanceCatchUpDelay rather than an hour later. A variable so
+// tests can lower it.
+var requestBodyPurgePassRows int64 = 5000
+
 // requestLogLegacyBodiesPurgedMarker records that request_logs.input_content and
 // output_content were cleared with body storage off. Nothing writes those
 // columns any more: the INSERT in insertRequestLogRowTx leaves them out, and
@@ -41,6 +50,8 @@ type RequestLogBodyPurgeResult struct {
 	RemovedDetailBytes      int64 `json:"removed_detail_bytes"`
 	ReclaimedStorage        bool  `json:"reclaimed_storage"`
 	PhysicalReclaimDeferred bool  `json:"physical_reclaim_deferred"`
+	// stoppedAtLimit: the purge read its row limit and rows may be left.
+	stoppedAtLimit bool
 }
 
 // unstrippedContentRow is what the purge needs to strip one row. The body
@@ -67,8 +78,8 @@ func PurgeStoredRequestBodies() (RequestLogBodyPurgeResult, error) {
 		return RequestLogBodyPurgeResult{}, fmt.Errorf("usage: database not initialised")
 	}
 	// Turning body storage off from the panel asks for the purge, so it runs
-	// to the end rather than stopping with the request.
-	return purgeStoredRequestBodies(context.Background(), db, driver)
+	// to the end rather than stopping with the request, and has no row limit.
+	return purgeStoredRequestBodies(context.Background(), db, driver, 0)
 }
 
 // purgeStoredRequestBodies strips the bodies from the rows that may still hold
@@ -83,11 +94,11 @@ func PurgeStoredRequestBodies() (RequestLogBodyPurgeResult, error) {
 //
 // ctx stops it between statements and cancels the one in flight: the
 // maintenance worker passes its own context, and CloseDB waits for that worker
-// before the process can exit. The first purge after an upgrade, or after
-// storage was on for a while, still reads many rows. Each batch commits on its
-// own, so a stopped purge loses nothing and the next one goes on with the rows
-// left.
-func purgeStoredRequestBodies(ctx context.Context, db *sql.DB, _ string) (RequestLogBodyPurgeResult, error) {
+// before the process can exit. maxRows, when above 0, stops it once it has read
+// that many rows (the maintenance pass; see requestBodyPurgePassRows). Each
+// batch commits on its own, so a purge stopped either way loses nothing and the
+// next one goes on with the rows left.
+func purgeStoredRequestBodies(ctx context.Context, db *sql.DB, _ string, maxRows int64) (RequestLogBodyPurgeResult, error) {
 	requestLogBodyPurgeMu.Lock()
 	defer requestLogBodyPurgeMu.Unlock()
 
@@ -106,7 +117,7 @@ func purgeStoredRequestBodies(ctx context.Context, db *sql.DB, _ string) (Reques
 	if result.ClearedLegacyRows, err = purgeLegacyRequestLogBodies(ctx, db); err != nil {
 		return result, err
 	}
-	if err = purgeUnstrippedRequestLogContent(ctx, db, &result); err != nil {
+	if err = purgeUnstrippedRequestLogContent(ctx, db, maxRows, &result); err != nil {
 		return result, err
 	}
 
@@ -118,7 +129,7 @@ func purgeStoredRequestBodies(ctx context.Context, db *sql.DB, _ string) (Reques
 	result.PhysicalReclaimDeferred = changed
 
 	log.Infof(
-		"usage: purged request log bodies (checked_rows=%d body_rows=%d legacy_rows=%d sanitized_detail_rows=%d deleted_rows=%d removed_detail_bytes=%d physical_reclaim_deferred=%t)",
+		"usage: purged request log bodies (checked_rows=%d body_rows=%d legacy_rows=%d sanitized_detail_rows=%d deleted_rows=%d removed_detail_bytes=%d physical_reclaim_deferred=%t limit_reached=%t)",
 		result.CheckedRows,
 		result.ClearedBodyRows,
 		result.ClearedLegacyRows,
@@ -126,6 +137,7 @@ func purgeStoredRequestBodies(ctx context.Context, db *sql.DB, _ string) (Reques
 		result.DeletedContents,
 		result.RemovedDetailBytes,
 		result.PhysicalReclaimDeferred,
+		result.stoppedAtLimit,
 	)
 	return result, nil
 }
@@ -181,12 +193,17 @@ func purgeLegacyRequestLogBodies(ctx context.Context, db *sql.DB) (int64, error)
 }
 
 // purgeUnstrippedRequestLogContent walks the rows with bodies_stripped = 0 in
-// log_id order, strips each one and marks it stripped.
-func purgeUnstrippedRequestLogContent(ctx context.Context, db *sql.DB, result *RequestLogBodyPurgeResult) error {
+// log_id order, strips each one and marks it stripped, until none are left or
+// it has read maxRows (when above 0).
+func purgeUnstrippedRequestLogContent(ctx context.Context, db *sql.DB, maxRows int64, result *RequestLogBodyPurgeResult) error {
 	var lastLogID int64
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
+		}
+		if maxRows > 0 && result.CheckedRows >= maxRows {
+			result.stoppedAtLimit = true
+			return nil
 		}
 		// Rows written from here on keep their bodies on purpose; the ones not
 		// reached yet are the next purge's once storage is off again.
@@ -200,6 +217,9 @@ func purgeUnstrippedRequestLogContent(ctx context.Context, db *sql.DB, result *R
 		}
 		if len(ids) == 0 {
 			return nil
+		}
+		if left := maxRows - result.CheckedRows; maxRows > 0 && int64(len(ids)) > left {
+			ids = ids[:left]
 		}
 		lastLogID = ids[len(ids)-1]
 		if err = stripRequestLogContentBatch(ctx, db, ids, result); err != nil {
