@@ -39,7 +39,7 @@ env:
   # entrypoint refuses to run on a mismatch, and the preflight job checks it on
   # every node before any node is touched. Guarded by
   # TestDeployScriptVersionMatchesWorkflowExpectation.
-  EXPECTED_SCRIPT_VERSION: '2026.10.19.1'
+  EXPECTED_SCRIPT_VERSION: '2026.11.10.1'
   HEALTH_URL: ${{ vars.CLIRELAY_PUBLIC_HEALTH_URL || 'https://relay.07230805.xyz/healthz' }}
   # After its cutover each node is probed through its own address for its drain
   # (DRAIN_SECONDS=180 in scripts/deploy-blue-green.sh, or what the node's
@@ -334,7 +334,7 @@ jobs:
                 echo "::error::node ${NODE}: unexpected field in the deploy result: ${field}"
                 exit 1
                 ;;
-              service=* | new_port=* | old_port=* | drain_seconds=* | shutdown_grace_seconds=* | version=*)
+              service=* | new_port=* | old_port=* | drain_seconds=* | stop_timeout_seconds=* | version=*)
                 printf '%s\n' "${field}" >> "$GITHUB_OUTPUT"
                 ;;
             esac
@@ -351,7 +351,9 @@ jobs:
           NEW_PORT: ${{ steps.deploy.outputs.new_port }}
           OLD_PORT: ${{ steps.deploy.outputs.old_port }}
           DRAIN_SECONDS: ${{ steps.deploy.outputs.drain_seconds }}
-          SHUTDOWN_GRACE_SECONDS: ${{ steps.deploy.outputs.shutdown_grace_seconds }}
+          # The old slot's TimeoutStopSec: its shutdown grace plus the headroom
+          # systemd leaves the shutdown after the drain.
+          STOP_TIMEOUT_SECONDS: ${{ steps.deploy.outputs.stop_timeout_seconds }}
         run: |
           set -euo pipefail
           if ! ./scripts/gha-node-verify.sh node; then

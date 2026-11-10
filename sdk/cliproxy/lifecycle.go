@@ -241,8 +241,11 @@ func (s *Service) ensureAuthDir() error {
 // minutes. The previous fixed 30s meant a blue-green deploy cut off any request
 // still streaming 30 seconds after the old slot was signalled, which is a
 // user-visible failure even though the deploy itself reported success. The
-// window now defaults to five minutes and is overridable, so an operator can
-// match it to the systemd TimeoutStopSec on the host.
+// window now defaults to five minutes and is overridable. It covers the drain
+// only: writing the queued usage records and closing the database run after it
+// ends, so the host's systemd TimeoutStopSec has to be longer than the window,
+// not equal to it (scripts/deploy-blue-green.sh adds
+// SHUTDOWN_STOP_HEADROOM_SECONDS).
 //
 // Note this is an upper bound, not a delay: Shutdown returns as soon as the
 // last in-flight request completes.
