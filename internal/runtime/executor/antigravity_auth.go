@@ -125,9 +125,6 @@ func (e *AntigravityExecutor) refreshToken(ctx context.Context, auth *cliproxyau
 	auth.Metadata["timestamp"] = now.UnixMilli()
 	auth.Metadata["expired"] = now.Add(time.Duration(tokenResp.ExpiresIn) * time.Second).Format(time.RFC3339)
 	auth.Metadata["type"] = antigravityAuthType
-	if errProject := e.ensureAntigravityProjectID(ctx, auth, tokenResp.AccessToken); errProject != nil {
-		log.Warnf("antigravity executor: ensure project id failed: %v", errProject)
-	}
 	return auth, nil
 }
 
@@ -139,8 +136,10 @@ func (e *AntigravityExecutor) ensureAntigravityProjectID(ctx context.Context, au
 		auth.Metadata = make(map[string]any)
 	}
 
-	// Non-empty project_id or a recent/terminal probe failure must not re-enter
-	// onboardUser — that path was thrashing production with auth writes + reloads.
+	// Non-empty project_id or a recent probe failure must not re-enter
+	// onboardUser — that path was thrashing production with auth writes +
+	// reloads. A "no project" verdict holds for ProjectIDUnavailableRetryAfter,
+	// not forever, so a credential recorded that way can still recover.
 	if antigravityauth.ShouldSkipProjectIDProbe(auth.Metadata, time.Now(), 0) {
 		return nil
 	}

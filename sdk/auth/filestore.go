@@ -209,7 +209,12 @@ func (s *FileTokenStore) readAuthFile(path, baseDir string) (*cliproxyauth.Auth,
 			}
 		}
 	}
-	if provider == "antigravity" || provider == "gemini" {
+	// Antigravity is deliberately not handled here: its project discovery runs
+	// in the executor, through the account's own egress proxy and under its
+	// back-off. Probing on every file read used http.DefaultClient — Google
+	// reached straight from this host, with no timeout — and the only thing
+	// that had kept it quiet was the never-expiring "no project" flag (#1032).
+	if provider == "gemini" {
 		projectID := ""
 		if pid, ok := metadata["project_id"].(string); ok {
 			projectID = strings.TrimSpace(pid)
