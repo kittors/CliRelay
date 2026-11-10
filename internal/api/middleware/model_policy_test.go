@@ -168,8 +168,8 @@ func TestModelPolicyFallsBackInsteadOfRejecting(t *testing.T) {
 	}
 }
 
-// 总额度矩阵里的请求次数格子由 QuotaMiddleware 检查；同一个请求里模型策略复用它读到的快照。
-func TestPolicyCellsAreCheckedOnceAndShareTheSnapshot(t *testing.T) {
+// 模型准入读取新的快照，避免总额度快照与已经释放的在途预留之间出现空档。
+func TestPolicyCellsAndModelAdmissionReadSeparateSnapshots(t *testing.T) {
 	weekRequests := quota.Matrix{}
 	weekRequests.Set(quota.MetricRequests, quota.PeriodWeek, 50)
 	used := quota.Matrix{}
@@ -183,8 +183,8 @@ func TestPolicyCellsAreCheckedOnceAndShareTheSnapshot(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d body=%s", rec.Code, rec.Body)
 	}
-	if accountReads.Load() != 1 {
-		t.Fatalf("account snapshot read %d times in one request, want 1", accountReads.Load())
+	if accountReads.Load() != 2 {
+		t.Fatalf("account snapshot read %d times in one request, want 2", accountReads.Load())
 	}
 
 	used.Set(quota.MetricRequests, quota.PeriodWeek, 50)
