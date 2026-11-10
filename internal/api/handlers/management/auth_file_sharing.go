@@ -81,7 +81,8 @@ func sharedAuthFileEntries(auths []*coreauth.Auth) []map[string]any {
 // hideSharedAccountIdentity replaces what identifies a shared account at its
 // upstream (the login email, and the credential id and file name built from
 // it) with the stand-ins every tenant view uses (coreauth.Auth.SharedName and
-// SharedID); status messages that quote the account are rewritten the same way.
+// SharedID); status messages that quote the account are rewritten the same way,
+// the nested ones of its restrictions included (maskSharedIdentityValue).
 func hideSharedAccountIdentity(entry map[string]any, auth *coreauth.Auth) {
 	delete(entry, "email")
 	if pairs := auth.SharedStandIns(); len(pairs) > 0 {
@@ -91,9 +92,7 @@ func hideSharedAccountIdentity(entry map[string]any, auth *coreauth.Auth) {
 		}
 		replacer := strings.NewReplacer(args...)
 		for key, value := range entry {
-			if text, ok := value.(string); ok {
-				entry[key] = replacer.Replace(text)
-			}
+			entry[key] = maskSharedIdentityValue(value, replacer)
 		}
 	}
 	name := auth.SharedName()
