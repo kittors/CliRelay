@@ -22,7 +22,7 @@ const geminiFinishMalformedFunctionCall = "MALFORMED_FUNCTION_CALL"
 type geminiResponsesFinish struct {
 	// status is "completed" or "incomplete", and names the terminal stream event.
 	status string
-	// incompleteReason is incomplete_details.reason; "" leaves the reason out.
+	// incompleteReason is incomplete_details.reason; "" makes incomplete_details null.
 	incompleteReason string
 }
 
@@ -41,7 +41,7 @@ func geminiResponsesFinishOf(modelName string, root gjson.Result) geminiResponse
 		// (antigravity_malformed_call.go); this is what is left once it cannot.
 		// Responses has no reason for it: incomplete_details.reason names only
 		// max_output_tokens, max_messages, content_filter and steered, each of
-		// which would send the client the wrong way, and the field is optional.
+		// which would send the client the wrong way, so there is none (see apply).
 		// The request log shows a successful request, so the turn is logged; the
 		// details go into the message, as the shared log formatter prints only a
 		// fixed set of fields.
@@ -55,14 +55,19 @@ func geminiResponsesFinishOf(modelName string, root gjson.Result) geminiResponse
 
 // apply sets status and incomplete_details on a Responses object at prefix:
 // "response." in a stream event, "" in a non-stream body.
+//
+// Without a reason incomplete_details is null, as the other converters write
+// it, not an empty object: the Vercel AI SDK (and the clients built on it)
+// validates the field as {reason: string} or null and fails the whole event on
+// {}. Codex CLI and pi read a null and a missing reason alike.
 func (f geminiResponsesFinish) apply(resp, prefix string) string {
 	resp, _ = sjson.Set(resp, prefix+"status", f.status)
 	if f.status != "incomplete" {
 		return resp
 	}
-	details := `{}`
+	details := "null"
 	if f.incompleteReason != "" {
-		details, _ = sjson.Set(details, "reason", f.incompleteReason)
+		details, _ = sjson.Set(`{}`, "reason", f.incompleteReason)
 	}
 	resp, _ = sjson.SetRaw(resp, prefix+"incomplete_details", details)
 	return resp

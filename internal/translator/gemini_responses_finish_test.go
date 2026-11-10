@@ -20,7 +20,7 @@ func TestGeminiFinishReasonsReachResponsesClients(t *testing.T) {
 	cases := []struct {
 		reason string
 		status string
-		// incompleteReason is incomplete_details.reason; "" means it is left out.
+		// incompleteReason is incomplete_details.reason; "" means incomplete_details is null.
 		incompleteReason string
 	}{
 		{"STOP", "completed", ""},
@@ -44,8 +44,13 @@ func TestGeminiFinishReasonsReachResponsesClients(t *testing.T) {
 			}
 			return
 		}
-		reason := details.Get("reason")
-		if !details.IsObject() || reason.String() != incompleteReason || (incompleteReason == "" && reason.Exists()) {
+		if incompleteReason == "" {
+			if !details.Exists() || details.Type != gjson.Null {
+				t.Fatalf("incomplete_details = %s, want null", details.Raw)
+			}
+			return
+		}
+		if !details.IsObject() || details.Get("reason").String() != incompleteReason {
 			t.Fatalf("incomplete_details = %s, want reason %q", details.Raw, incompleteReason)
 		}
 	}

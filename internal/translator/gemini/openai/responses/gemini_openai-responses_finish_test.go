@@ -48,7 +48,7 @@ type geminiFinishCase struct {
 	reason string
 	// status is the Responses status, and the terminal event is "response."+status.
 	status string
-	// incompleteReason is incomplete_details.reason; "" means the reason is left out.
+	// incompleteReason is incomplete_details.reason; "" means incomplete_details is null.
 	incompleteReason string
 	outputTypes      []string // the item types in the response output
 }
@@ -67,7 +67,7 @@ var geminiFinishCases = []geminiFinishCase{
 	{"image prohibited content", []string{finishTestThought}, "IMAGE_PROHIBITED_CONTENT", "incomplete", "content_filter", []string{"reasoning"}},
 	// A malformed call after visible output is a reply cut short, reported the
 	// way a truncated reply is. Responses has no reason for it (see
-	// geminiResponsesFinish), so the reason is left out.
+	// geminiResponsesFinishOf), so incomplete_details is null.
 	{"malformed call after text", []string{finishTestThought, finishTestText}, "MALFORMED_FUNCTION_CALL", "incomplete", "", []string{"reasoning", "message"}},
 	{"malformed call after a function call", []string{finishTestThought, finishTestCall}, "MALFORMED_FUNCTION_CALL", "incomplete", "", []string{"reasoning", "function_call"}},
 	// Reaches the translator once the Antigravity executor has spent its
@@ -91,18 +91,15 @@ func checkGeminiFinish(t *testing.T, resp gjson.Result, tc geminiFinishCase) {
 		}
 		return
 	}
-	if !details.IsObject() {
-		t.Fatalf("incomplete_details = %q, want an object: %s", details.Raw, resp.Raw)
-	}
-	reason := details.Get("reason")
 	if tc.incompleteReason == "" {
-		if reason.Exists() {
-			t.Fatalf("incomplete_details.reason = %s, want it left out", reason.Raw)
+		// null, not {}: the Vercel AI SDK rejects an object without a reason.
+		if !details.Exists() || details.Type != gjson.Null {
+			t.Fatalf("incomplete_details = %s, want null: %s", details.Raw, resp.Raw)
 		}
 		return
 	}
-	if reason.String() != tc.incompleteReason {
-		t.Fatalf("incomplete_details.reason = %q, want %q", reason.String(), tc.incompleteReason)
+	if !details.IsObject() || details.Get("reason").String() != tc.incompleteReason {
+		t.Fatalf("incomplete_details = %s, want reason %q", details.Raw, tc.incompleteReason)
 	}
 }
 
