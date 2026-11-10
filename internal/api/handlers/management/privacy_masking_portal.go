@@ -34,8 +34,14 @@ type portalMaskSettingsView struct {
 	UpdatedAt      *time.Time `json:"updated_at,omitempty"`
 }
 
-func (h *Handler) portalMaskSettingsView(tenantID string) portalMaskSettingsView {
-	settings := h.secretMaskingRegistry().For(tenantID)
+// portalMaskSettingsView is false while the tenant's settings are not known
+// (see privacyMaskSettingsOf): the portal must not show "nothing is masked"
+// while the user's requests are refused for not knowing.
+func (h *Handler) portalMaskSettingsView(tenantID string) (portalMaskSettingsView, bool) {
+	settings, known := h.secretMaskingRegistry().Lookup(tenantID)
+	if !known {
+		return portalMaskSettingsView{}, false
+	}
 	view := portalMaskSettingsView{Policy: settings.PolicyView(), ServerDisabled: contentmoderation.PrivacyMaskingDisabledByServer()}
 	view.Policy.Words, view.Policy.Rules, view.Policy.Allow = []string{}, []contentmoderation.MaskRule{}, []string{}
 	if err := view.Policy.Normalize(); err != nil {
@@ -46,7 +52,7 @@ func (h *Handler) portalMaskSettingsView(tenantID string) portalMaskSettingsView
 		updated := settings.UpdatedAt
 		view.UpdatedAt = &updated
 	}
-	return view
+	return view, true
 }
 
 func (h *Handler) GetPortalPrivacyMaskingSettings(c *gin.Context) {
@@ -54,7 +60,12 @@ func (h *Handler) GetPortalPrivacyMaskingSettings(c *gin.Context) {
 	if !ok {
 		return
 	}
-	c.JSON(http.StatusOK, h.portalMaskSettingsView(user.TenantID))
+	view, known := h.portalMaskSettingsView(user.TenantID)
+	if !known {
+		privacyMaskError(c, contentmoderation.ErrUnavailable)
+		return
+	}
+	c.JSON(http.StatusOK, view)
 }
 
 // PostPortalPrivacyMaskingPreview masks a text under the rules that apply to
@@ -74,7 +85,12 @@ func (h *Handler) PostPortalPrivacyMaskingPreview(c *gin.Context) {
 		privacyMaskBadRequest(c, "the text is too long to try out")
 		return
 	}
-	c.JSON(http.StatusOK, contentmoderation.PreviewMask(h.portalMaskSettingsView(user.TenantID).Policy, body.Text))
+	view, known := h.portalMaskSettingsView(user.TenantID)
+	if !known {
+		privacyMaskError(c, contentmoderation.ErrUnavailable)
+		return
+	}
+	c.JSON(http.StatusOK, contentmoderation.PreviewMask(view.Policy, body.Text))
 }
 
 // portalMaskScope is the signed-in user's records.
