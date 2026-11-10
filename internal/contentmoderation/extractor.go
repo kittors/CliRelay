@@ -43,7 +43,7 @@ func (x *extraction) run(format sdktranslator.Format, payload []byte) bool {
 		return false
 	}
 	root := gjson.ParseBytes(payload)
-	x.toolDescriptions(root)
+	x.declaredDescriptions(root)
 	switch format {
 	case sdktranslator.FormatOpenAIResponse:
 		x.responses(root)
@@ -58,7 +58,7 @@ func (x *extraction) run(format sdktranslator.Format, payload []byte) bool {
 		if request := root.Get("request"); request.IsObject() {
 			x.gemini(root)
 			root = request
-			x.toolDescriptions(root)
+			x.declaredDescriptions(root)
 		}
 		x.gemini(root)
 	default:
