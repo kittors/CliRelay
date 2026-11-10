@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -66,22 +67,34 @@ func TestPublisherFlushesCoalescedProgress(t *testing.T) {
 	t.Fatal("coalesced progress was never flushed")
 }
 
+// TestPublisherHeartbeatAndLostOwner runs on synctest's fake clock. On the
+// wall clock, a pause of the test process longer than the 60ms loss window
+// (a loaded host running `go test ./...`) let the read run before the
+// heartbeat goroutine caught up, and a live owner read as lost. Inside the
+// bubble time only moves on once every goroutine is blocked, so each 10ms
+// beat is recorded before the clock advances past it.
 func TestPublisherHeartbeatAndLostOwner(t *testing.T) {
-	store := NewMemoryStore()
-	store.SetOwnerLostAfter(60 * time.Millisecond)
-	pub := NewPublisher(store, "k", time.Minute, func() string { return "node-a" })
-	pub.SetIntervals(time.Hour, 10*time.Millisecond)
+	synctest.Test(t, func(t *testing.T) {
+		store := NewMemoryStore()
+		store.SetOwnerLostAfter(60 * time.Millisecond)
+		pub := NewPublisher(store, "k", time.Minute, func() string { return "node-a" })
+		pub.SetIntervals(time.Hour, 10*time.Millisecond)
+		// Close is idempotent. The cleanup stops the heartbeat goroutine when
+		// an assertion fails before the explicit Close below, so the bubble
+		// can end and report the failure.
+		t.Cleanup(pub.Close)
 
-	pub.Publish(Snapshot{ID: "job-3", Status: "running", Version: 1})
-	time.Sleep(150 * time.Millisecond)
-	if snap := get(t, store, "k", "job-3"); snap.OwnerLost {
-		t.Fatal("a heartbeating owner must not read as lost")
-	}
-	pub.Close()
-	time.Sleep(150 * time.Millisecond)
-	if snap := get(t, store, "k", "job-3"); !snap.OwnerLost {
-		t.Fatal("an unfinished job whose owner stopped heartbeating must read as lost")
-	}
+		pub.Publish(Snapshot{ID: "job-3", Status: "running", Version: 1})
+		time.Sleep(150 * time.Millisecond)
+		if snap := get(t, store, "k", "job-3"); snap.OwnerLost {
+			t.Fatal("a heartbeating owner must not read as lost")
+		}
+		pub.Close()
+		time.Sleep(150 * time.Millisecond)
+		if snap := get(t, store, "k", "job-3"); !snap.OwnerLost {
+			t.Fatal("an unfinished job whose owner stopped heartbeating must read as lost")
+		}
+	})
 }
 
 type flakyStore struct {
