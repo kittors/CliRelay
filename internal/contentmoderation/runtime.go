@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -250,7 +251,16 @@ func (m *RuntimeModerator) Moderate(ctx context.Context, auth *coreauth.Auth, op
 		return coreauth.RequestModerationResult{}
 	}
 
-	input := ExtractModerationInput(opts.SourceFormat, opts.OriginalRequest)
+	input, unreadable := readModerationInput(opts.SourceFormat, opts.OriginalRequest)
+	if unreadable != nil {
+		// Not let through unread: the request stages refuse such a body before
+		// it gets here (bodyutil.CheckJSONRequestBody).
+		counters.blocks.Add(1)
+		decision := Decision{WouldBlock: true, Action: ActionUnreadable}
+		m.setSnapshot(ctx, tenantID, auth, resolved.source, profile, decision, false, false)
+		m.logDecision(tenantID, auth, resolved.source, profile, decision, false)
+		return coreauth.RequestModerationResult{Blocked: true, Message: UnreadableBodyMessage, HTTPStatus: http.StatusBadRequest}
+	}
 	if input.Empty() {
 		counters.allows.Add(1)
 		decision := Decision{Action: ActionAllow}

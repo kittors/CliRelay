@@ -29,7 +29,16 @@ const (
 	// WordReasonRewriteInvalid: the rewritten body failed its checks. It is
 	// refused rather than sent on.
 	WordReasonRewriteInvalid = "rewrite_invalid"
+	// WordReasonUnreadable: the body is not one strict JSON text (a member name
+	// repeated in an object, NaN, a trailing comma...), so what the guard reads
+	// of it is not what the upstream reads (see extraction.run). It is refused
+	// whatever the policies' actions, as a bad request.
+	WordReasonUnreadable = "unreadable"
 )
+
+// UnreadableBodyMessage is what a client is told of a body the guards refuse
+// as unreadable (WordReasonUnreadable and its like in masking and moderation).
+const UnreadableBodyMessage = "The request was not sent: its body is not valid JSON, or an object in it names a member twice, so it cannot be checked as the upstream would read it."
 
 const (
 	// maxRecordedWordMatches bounds the matches kept for the request log.
@@ -116,7 +125,13 @@ type wordUnitHit struct {
 // action, rewrites it. payload is the request body in the layout of format.
 func evaluateWords(format sdktranslator.Format, payload []byte, contexts []wordContext, options wordEvalOptions) WordVerdict {
 	started := time.Now()
-	verdict := evaluateWordsUnits(extractWordUnits(format, payload), contexts, options)
+	units, unreadable := readWordUnits(format, payload)
+	var verdict WordVerdict
+	if unreadable != nil {
+		verdict = WordVerdict{Action: WordVerdictBlock, Blocked: true, Reason: WordReasonUnreadable, BlockMessage: UnreadableBodyMessage, Matches: []WordMatch{}}
+	} else {
+		verdict = evaluateWordsUnits(units, contexts, options)
+	}
 	verdict.LatencyMS = time.Since(started).Milliseconds()
 	return verdict
 }

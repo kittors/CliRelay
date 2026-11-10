@@ -175,8 +175,11 @@ func (m *RuntimeModerator) maskSecrets(ctx context.Context, req cliproxyexecutor
 		snapshot.Refused = failure
 		setSecretMaskingSnapshot(ctx, snapshot)
 		m.warnSecretMasking(tenantID, "secret masking refused a request: "+failure)
-		return coreauth.RequestGuardResult{Blocked: true, HTTPStatus: http.StatusBadRequest,
-			Message: "The request holds a secret that secret masking cannot replace (" + failure + "), so it was not sent. Remove the secret, or ask an administrator to switch secret masking off."}
+		message := "The request holds a secret that secret masking cannot replace (" + failure + "), so it was not sent. Remove the secret, or ask an administrator to switch secret masking off."
+		if failure == maskFailureUnreadable {
+			message = UnreadableBodyMessage
+		}
+		return coreauth.RequestGuardResult{Blocked: true, HTTPStatus: http.StatusBadRequest, Message: message}
 	}
 	if len(original) == 0 || sameStorage(original, payload) {
 		// One body: both names keep pointing at one slice, which is how the

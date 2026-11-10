@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"net/http"
 	"os"
 	"strings"
 	"time"
@@ -179,7 +180,12 @@ func (m *RuntimeModerator) guardWords(ctx context.Context, req cliproxyexecutor.
 	SetWordGuardSnapshot(ctx, snapshot)
 	m.logWordVerdict(tenantID, verdict, len(body))
 	if verdict.Blocked {
-		return coreauth.RequestGuardResult{Blocked: true, Message: verdict.BlockMessage, HTTPStatus: DefaultBlockStatus}
+		status := DefaultBlockStatus
+		if verdict.Reason == WordReasonUnreadable {
+			// The client's mistake, not the policy's verdict on what it said.
+			status = http.StatusBadRequest
+		}
+		return coreauth.RequestGuardResult{Blocked: true, Message: verdict.BlockMessage, HTTPStatus: status}
 	}
 
 	result := coreauth.RequestGuardResult{Reply: newWordReply(contexts, format, snapshot)}
