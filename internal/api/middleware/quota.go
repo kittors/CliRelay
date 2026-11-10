@@ -196,10 +196,6 @@ func QuotaMiddleware() gin.HandlerFunc {
 
 		// Diagnostics, and cached limits for the dashboard snapshot
 		policy.record(c)
-		// 模型策略中间件在读到模型后检查按模型规则，复用这里读到的用量快照。
-		if policy.usage != nil {
-			c.Set(policyUsageContextKey, policy.usage)
-		}
 
 		// No limits configured — skip all checks
 		if !policy.hasLimits() {

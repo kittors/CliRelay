@@ -42,7 +42,7 @@ type quotaPolicy struct {
 
 	// access 是这把 Key 的结构化访问策略；没有使用新能力的 Key 为 nil。
 	access *accesspolicy.Policy
-	// usage 缓存本次准入读到的用量快照，总额度检查与模型策略检查共用。
+	// usage 缓存本次总额度准入的用量快照；模型准入会读取新的快照。
 	usage *policyUsage
 
 	// requestID ties this admission's reservation to the usage records that
@@ -295,6 +295,7 @@ func (p *quotaPolicy) checkBudgets() *quotaVerdict {
 	}
 
 	if hasPeriodLimits(p.accountPeriod) {
+		held := p.inflight.Before(inflight.ScopeAccount)
 		// Period windows roll over at local midnight (the 5h window aside), so a
 		// reading from another day never stands in.
 		used, err := readQuotaUsage(quotaWindowPeriodAccount, "eu:"+p.tenantID+"/"+p.endUserID, "account "+p.endUserID, true, func() (quota.PeriodSpendingUsage, error) {
@@ -303,18 +304,19 @@ func (p *quotaPolicy) checkBudgets() *quotaVerdict {
 		if err != nil {
 			return quotaUsageUnavailableVerdict("account", "period", p.tenantID, p.endUserID, err)
 		}
-		if verdict := configuredPeriodVerdict("account", p.accountPeriod, used, p.inflight.Before(inflight.ScopeAccount)); verdict != nil {
+		if verdict := configuredPeriodVerdict("account", p.accountPeriod, used, held); verdict != nil {
 			return verdict
 		}
 	}
 	if hasPeriodLimits(p.keyPeriod) {
+		held := p.inflight.Before(inflight.ScopeKey)
 		used, err := readQuotaUsage(quotaWindowPeriodKey, "key:"+p.tenantID+"/"+p.apiKeyID, "key "+p.apiKeyID, true, func() (quota.PeriodSpendingUsage, error) {
 			return queryPeriodByKeyFunc(p.tenantID, p.apiKeyID)
 		})
 		if err != nil {
 			return quotaUsageUnavailableVerdict("key", "period", p.tenantID, p.apiKeyID, err)
 		}
-		if verdict := configuredPeriodVerdict("key", p.keyPeriod, used, p.inflight.Before(inflight.ScopeKey)); verdict != nil {
+		if verdict := configuredPeriodVerdict("key", p.keyPeriod, used, held); verdict != nil {
 			return verdict
 		}
 	}
