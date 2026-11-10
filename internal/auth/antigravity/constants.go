@@ -34,20 +34,17 @@ const (
 	ClientMetadata = `{"ideType":"IDE_UNSPECIFIED","platform":"PLATFORM_UNSPECIFIED","pluginType":"GEMINI"}`
 )
 
-// ClientVersion is the Antigravity client version advertised to CloudCode.
+// ClientVersion is the Antigravity Hub version advertised to CloudCode.
 //
 // The upstream gates its answer on this: an outdated version is served a
-// reduced model set and a coarser quota view. The two callers that talk to
-// CloudCode — the request executor and the account status probe — had drifted
-// to 1.104.0 and 1.11.5 respectively, so the same account looked like two
-// different clients depending on which half of the system was asking, and both
-// were far behind the real client.
+// reduced model set and a coarser quota view. Hub 2.22.0 and later are served
+// Gemini 4 Argon, 2.9.1 is not, and the vscode/1.X.X (Antigravity/x) identity
+// this code advertised before is not served it at any version number.
 //
-// Keep this in step with the shipping Antigravity release when models start
-// coming back missing or with a flattened quota view.
-const ClientVersion = "4.3.0"
+// Keep this in step with the shipping Hub release when models start coming back
+// missing or with a flattened quota view.
+const ClientVersion = "2.26.0"
 
-// ClientUserAgent is the header the Antigravity client sends on its own
-// CloudCode calls. The literal `1.X.X` is not an unfilled placeholder — that is
-// the string the client itself sends.
-const ClientUserAgent = "vscode/1.X.X (Antigravity/" + ClientVersion + ")"
+// ClientUserAgent is the header the Antigravity Hub's language server sends on
+// its own CloudCode calls.
+const ClientUserAgent = "antigravity/hub/" + ClientVersion + " darwin/arm64"
