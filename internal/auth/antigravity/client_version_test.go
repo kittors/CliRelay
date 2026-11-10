@@ -11,7 +11,7 @@ import (
 // value, and that value must not slide backwards: the probe once sat on 1.11.5
 // while the executor sent 1.104.0, and the probe was served a flattened quota
 // view as a result.
-const minimumClientVersion = "4.3.0"
+const minimumClientVersion = "2.22.0"
 
 func TestClientVersionIsNotBehindTheKnownFloor(t *testing.T) {
 	if compareVersions(t, ClientVersion, minimumClientVersion) < 0 {
@@ -19,11 +19,11 @@ func TestClientVersionIsNotBehindTheKnownFloor(t *testing.T) {
 	}
 }
 
-// The header format is what the real client sends. `1.X.X` is literal, and the
-// Antigravity version has to appear in it, or the upstream cannot read it.
+// The header format is what the real Hub sends, and the version has to appear
+// in it, or the upstream cannot read it.
 func TestClientUserAgentCarriesTheVersion(t *testing.T) {
-	if !strings.HasPrefix(ClientUserAgent, "vscode/1.X.X (Antigravity/") {
-		t.Fatalf("ClientUserAgent = %q, want the vscode/1.X.X (Antigravity/...) form", ClientUserAgent)
+	if !strings.HasPrefix(ClientUserAgent, "antigravity/hub/") {
+		t.Fatalf("ClientUserAgent = %q, want the antigravity/hub/<version> form", ClientUserAgent)
 	}
 	if !strings.Contains(ClientUserAgent, ClientVersion) {
 		t.Fatalf("ClientUserAgent = %q, does not carry ClientVersion %q", ClientUserAgent, ClientVersion)
