@@ -23,11 +23,7 @@ func TestRequestAnthropicTokenUsesAvailableLocalCallbackWhenPreferredPortBusy(t 
 	}
 	defer func() { _ = busy.Close() }()
 
-	previousStore := oauthSessions
-	oauthSessions = newOAuthSessionStore(oauthCallbackWaitTimeout)
-	t.Cleanup(func() {
-		oauthSessions = previousStore
-	})
+	useIsolatedOAuthSessions(t, oauthCallbackWaitTimeout)
 
 	h := &Handler{
 		cfg: &config.Config{
@@ -89,11 +85,7 @@ func TestRequestAntigravityTokenUsesAvailableLocalCallbackWhenPreferredPortBusy(
 	}
 	defer func() { _ = busy.Close() }()
 
-	previousStore := oauthSessions
-	oauthSessions = newOAuthSessionStore(oauthCallbackWaitTimeout)
-	t.Cleanup(func() {
-		oauthSessions = previousStore
-	})
+	useIsolatedOAuthSessions(t, oauthCallbackWaitTimeout)
 
 	h := &Handler{
 		cfg: &config.Config{
@@ -156,11 +148,7 @@ func TestRequestCodexTokenDoesNotRequireLocalCallbackForwarder(t *testing.T) {
 	}
 	defer func() { _ = busy.Close() }()
 
-	previousStore := oauthSessions
-	oauthSessions = newOAuthSessionStore(oauthCallbackWaitTimeout)
-	t.Cleanup(func() {
-		oauthSessions = previousStore
-	})
+	useIsolatedOAuthSessions(t, oauthCallbackWaitTimeout)
 
 	h := &Handler{
 		cfg: &config.Config{

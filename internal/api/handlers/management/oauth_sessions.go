@@ -31,7 +31,16 @@ var (
 	errOAuthSessionNotPending = oauthsession.ErrNotPending
 )
 
-var oauthSessions = newOAuthSessionStore(oauthSessionTTL)
+// oauthSessions holds the in-process session store. Production stores it once
+// here. Tests swap in an isolated store while the login goroutine of an
+// earlier test can still be reading it: StartOAuthLogin returns before its
+// goroutine reads the store to wait for the callback. The pointer is atomic so
+// that swap is not a data race.
+var oauthSessions = func() *atomic.Pointer[oauthsession.Store] {
+	sessions := new(atomic.Pointer[oauthsession.Store])
+	sessions.Store(newOAuthSessionStore(oauthSessionTTL))
+	return sessions
+}()
 
 // sharedOAuthSessions replaces oauthSessions in cluster mode, where the
 // callback and the status polls of one login may reach different nodes.
@@ -51,7 +60,7 @@ func activeOAuthSessions() oauthsession.Backend {
 	if shared := sharedOAuthSessions.Load(); shared != nil {
 		return shared
 	}
-	return oauthSessions
+	return oauthSessions.Load()
 }
 
 func RegisterOAuthSession(state, provider string) {
@@ -116,7 +125,7 @@ func WriteOAuthCallbackFileForPendingSession(authDir, provider, state, code, err
 	if _, tenantID, _, ok := GetOAuthSessionWithTenant(state); ok && tenantID != "" {
 		authDir = managementauthfiles.TenantAuthDir(authDir, tenantID)
 	}
-	return oauthSessions.WriteCallbackFileForPending(authDir, provider, state, code, errorMessage)
+	return oauthSessions.Load().WriteCallbackFileForPending(authDir, provider, state, code, errorMessage)
 }
 
 func WaitOAuthCallbackFile(authDir, provider, state string, timeout time.Duration) (map[string]string, error) {

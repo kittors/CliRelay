@@ -20,11 +20,7 @@ import (
 func TestRequestXAITokenSaysWhyTheLoginCouldNotStart(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	previousStore := oauthSessions
-	oauthSessions = newOAuthSessionStore(oauthCallbackWaitTimeout)
-	t.Cleanup(func() {
-		oauthSessions = previousStore
-	})
+	useIsolatedOAuthSessions(t, oauthCallbackWaitTimeout)
 
 	var mu sync.Mutex
 	var asked []string
