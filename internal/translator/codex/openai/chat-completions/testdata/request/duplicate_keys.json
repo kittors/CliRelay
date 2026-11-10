@@ -1,0 +1,1 @@
+{"instructions":"","stream":true,"reasoning":{"effort":"medium","summary":"auto"},"parallel_tool_calls":true,"include":["reasoning.encrypted_content"],"model":"gpt-5.4","store":false,"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"first"}]}]}
