@@ -7,9 +7,10 @@ import "strings"
 // The probes in this package name each window after what the upstream reports,
 // and scheduling has to know which of them a request for one model draws from:
 // an account whose Opus allowance is spent still serves Sonnet, and the Codex
-// code-review allowance says nothing about chat requests. The rule lives next
-// to the code that builds the keys, so a new key is classified where it is
-// introduced.
+// code-review allowance says nothing about chat requests. The spend shown next
+// to each window asks the same question the other way round — which recorded
+// requests fed it — so both read windowModelScope. The rule lives next to the
+// code that builds the keys, so a new key is classified where it is introduced.
 
 // accountWideWindowKeys limit every model request of an account.
 var accountWideWindowKeys = map[string]bool{
@@ -41,38 +42,104 @@ const codexSparkFeatureKey = "codex_bengalfox"
 // cap) apply to no model: counting them would shed or reorder traffic over an
 // allowance the request does not touch.
 func WindowAppliesToModel(quotaKey, model string) bool {
-	key := strings.ToLower(strings.TrimSpace(quotaKey))
-	if key == "" {
-		return false
-	}
-	if accountWideWindowKeys[key] || strings.HasPrefix(key, "code_subscription_") {
+	accountWide, covers := windowModelScope(quotaKey)
+	if accountWide {
 		return true
 	}
 	model = normalizeScheduledModel(model)
-	if model == "" {
-		return false
+	return model != "" && covers != nil && covers(model)
+}
+
+// windowSpendCovers returns which recorded requests count toward a window's
+// spend: every request of the account (nil filter) for an account-wide window,
+// the models it limits for a model-scoped one. It reports false for windows no
+// model request draws on, whose spend the proxy's own traffic cannot tell.
+func windowSpendCovers(quotaKey string) (func(model string) bool, bool) {
+	accountWide, covers := windowModelScope(quotaKey)
+	if accountWide {
+		return nil, true
+	}
+	if covers == nil {
+		return nil, false
+	}
+	return func(model string) bool {
+		model = normalizeScheduledModel(model)
+		return model != "" && covers(model)
+	}, true
+}
+
+// windowModelScope classifies quotaKey. An account-wide window limits every
+// request; otherwise covers accepts the (normalized) models the window limits,
+// and is nil for allowances that no model request draws on.
+func windowModelScope(quotaKey string) (accountWide bool, covers func(model string) bool) {
+	key := strings.ToLower(strings.TrimSpace(quotaKey))
+	if key == "" {
+		return false, nil
+	}
+	if accountWideWindowKeys[key] || strings.HasPrefix(key, "code_subscription_") {
+		return true, nil
 	}
 	switch {
 	case strings.HasPrefix(key, "additional:"):
-		return codexAdditionalCoversModel(strings.TrimPrefix(key, "additional:"), model)
+		rest := strings.TrimPrefix(key, "additional:")
+		return false, func(model string) bool { return codexAdditionalCoversModel(rest, model) }
 	case key == "seven_day_opus":
-		return strings.Contains(model, "opus")
+		return false, func(model string) bool { return strings.Contains(model, "opus") }
 	case key == "seven_day_sonnet":
-		return strings.Contains(model, "sonnet")
+		return false, func(model string) bool { return strings.Contains(model, "sonnet") }
 	case strings.HasPrefix(key, "weekly_scoped_"):
 		// The slug comes from the scope's model id or display name ("claude-opus-4-5",
 		// "opus-4-5"), either of which a dated request model id contains.
 		slug := strings.TrimPrefix(key, "weekly_scoped_")
-		return slug != "" && strings.Contains(claudeModelSlug(model), slug)
+		if slug == "" {
+			return false, nil
+		}
+		return false, func(model string) bool { return strings.Contains(claudeModelSlug(model), slug) }
 	case strings.HasPrefix(key, "model:"):
-		return geminiGroupCoversModel(strings.TrimPrefix(key, "model:"), model)
+		rest := strings.TrimPrefix(key, "model:")
+		return false, func(model string) bool { return geminiGroupCoversModel(rest, model) }
 	case strings.HasPrefix(key, "antigravity:model_"):
-		return normalizeQuotaKeyPart(model) == strings.TrimPrefix(key, "antigravity:model_")
+		id := strings.TrimPrefix(key, "antigravity:model_")
+		return false, func(model string) bool { return normalizeQuotaKeyPart(model) == id }
 	case strings.HasPrefix(key, "antigravity:"):
-		family := strings.TrimPrefix(key, "antigravity:")
-		return family != antigravityCategoryOther && categorizeAntigravityModel(model) == family
+		return false, antigravityWindowCovers(strings.TrimPrefix(key, "antigravity:"))
 	}
-	return false
+	return false, nil
+}
+
+// antigravityWindowCovers reads the two shapes of Antigravity window keys.
+//
+// The per-family rows (gemini_pro, claude, ...) come from the fallback model
+// listing and limit their own family. The quota summary instead reports the
+// account's real buckets — gemini-5h / gemini-weekly for every Gemini model and
+// 3p-5h / 3p-weekly for the third-party (Claude, GPT) ones — whose keys name no
+// family. Those used to match no model at all, so scheduling never weighed the
+// buckets an Antigravity account actually spends.
+func antigravityWindowCovers(family string) func(model string) bool {
+	switch family {
+	case antigravityCategoryOther:
+		return nil
+	case antigravityCategoryGeminiPro, antigravityCategoryGeminiFlash,
+		antigravityCategoryGeminiImage, antigravityCategoryClaude:
+		return func(model string) bool { return categorizeAntigravityModel(model) == family }
+	}
+	switch {
+	case strings.HasPrefix(family, "gemini_"):
+		return isAntigravityGeminiModel
+	case strings.HasPrefix(family, "3p_"):
+		return func(model string) bool { return !isAntigravityGeminiModel(model) }
+	}
+	return nil
+}
+
+// isAntigravityGeminiModel reports whether model draws on the Gemini bucket
+// rather than the third-party one.
+func isAntigravityGeminiModel(model string) bool {
+	switch categorizeAntigravityModel(model) {
+	case antigravityCategoryGeminiPro, antigravityCategoryGeminiFlash, antigravityCategoryGeminiImage:
+		return true
+	}
+	return strings.HasPrefix(model, "gemini")
 }
 
 func normalizeScheduledModel(model string) string {
