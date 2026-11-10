@@ -184,7 +184,8 @@ func (h *Handler) GetAIAccountStatusRefreshJob(c *gin.Context) {
 }
 
 // GetAIAccountStatus returns latest status + lightweight usage summary.
-// Does not scan request_logs; reads current-tenant bindings and shared subject small tables.
+// Does not scan request_logs; reads current-tenant bindings, shared subject
+// small tables, and the rollup buckets inside each quota window (window spend).
 func (h *Handler) GetAIAccountStatus(c *gin.Context) {
 	svc := h.aiAccountStatusService()
 	if svc == nil {
@@ -200,7 +201,7 @@ func (h *Handler) GetAIAccountStatus(c *gin.Context) {
 	}
 	for i := range payload.Items {
 		if payload.Items[i].Quotas == nil {
-			payload.Items[i].Quotas = []usage.QuotaWindowDTO{}
+			payload.Items[i].Quotas = []aiaccountstatus.QuotaWindowView{}
 		}
 	}
 	c.JSON(http.StatusOK, payload)

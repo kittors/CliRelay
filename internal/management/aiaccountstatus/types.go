@@ -69,7 +69,7 @@ type AccountStatusView struct {
 	ErrorSummary              string                        `json:"error_summary,omitempty"`
 	ErrorCode                 string                        `json:"error_code,omitempty"`
 	ErrorMessage              string                        `json:"error_message,omitempty"`
-	Quotas                    []usage.QuotaWindowDTO        `json:"quotas"`
+	Quotas                    []QuotaWindowView             `json:"quotas"`
 	ResetCreditCount          *int64                        `json:"reset_credit_count,omitempty"`
 	ResetCreditExpirations    []string                      `json:"reset_credit_expirations,omitempty"`
 	Usage                     usage.AuthSubjectUsageSummary `json:"usage"`
@@ -87,6 +87,28 @@ type AccountStatusView struct {
 	UpdatedAt       *time.Time `json:"updated_at,omitempty"`
 }
 
+// QuotaWindowView is a quota window as the status API returns it: the stored
+// window plus what is worked out when it is read. Kept apart from
+// usage.QuotaWindowDTO, which is what probes persist, so a derived figure can
+// never be written back into quota_json and served later as if current.
+type QuotaWindowView struct {
+	usage.QuotaWindowDTO
+	// UsedCostUSD is what this proxy recorded spending inside the window, at its
+	// own model prices. Absent when the window's start is unknown (no length or
+	// renewal reported, or a renewal already past) or when no model request
+	// draws on it (Codex code review, xAI product shares).
+	UsedCostUSD *float64 `json:"used_cost_usd,omitempty"`
+}
+
 type StatusListResponse struct {
 	Items []AccountStatusView `json:"items"`
+	// Capabilities names what this backend adds to the items, so a newer panel
+	// talking to an older backend knows a missing field is unsupported rather
+	// than empty. The panel updates itself to the latest release on its own.
+	Capabilities map[string]bool `json:"capabilities,omitempty"`
+}
+
+// statusListCapabilities is stamped on every status list.
+func statusListCapabilities() map[string]bool {
+	return map[string]bool{"quota-window-spend": true}
 }

@@ -296,6 +296,9 @@ func TestStopReasonVocabulary(t *testing.T) {
 			if got := common.StopReasonFromGemini(kind.Gemini()); got != kind {
 				t.Errorf("Gemini round trip of %v = %v", kind, got)
 			}
+			if got := common.StopReasonFromResponses(kind.Responses()); got != kind {
+				t.Errorf("Responses round trip of %v = %v", kind, got)
+			}
 		}
 	}
 	for _, tc := range []struct {
@@ -314,6 +317,8 @@ func TestStopReasonVocabulary(t *testing.T) {
 		{"openai legacy function_call", common.StopReasonFromOpenAI("function_call"), common.StopToolUse},
 		{"gemini lower case", common.StopReasonFromGemini("max_tokens"), common.StopMaxTokens},
 		{"gemini malformed function call", common.StopReasonFromGemini("MALFORMED_FUNCTION_CALL"), common.StopEndTurn},
+		{"gemini image prohibited content", common.StopReasonFromGemini("IMAGE_PROHIBITED_CONTENT"), common.StopRefusal},
+		{"gemini image recitation", common.StopReasonFromGemini("IMAGE_RECITATION"), common.StopRefusal},
 		{"responses completed", common.StopReasonFromResponses("completed", ""), common.StopEndTurn},
 		{"responses unknown incomplete", common.StopReasonFromResponses("incomplete", "something_new"), common.StopEndTurn},
 	} {

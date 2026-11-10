@@ -729,8 +729,8 @@ func (s *Service) viewFromPersistedRecord(tenantID string, auth *coreauth.Auth, 
 	summaries, _ := usage.QueryAIAccountSubjectUsageSummaries([]string{record.AuthSubjectID}, cycleStarts)
 	subjects, _ := usage.ListAIAccountSubjects([]string{record.AuthSubjectID})
 	counts, _ := usage.CountAIAccountTenantBindings(tenantID, []string{record.AuthSubjectID})
-	view := statusViewFromSharedRecord(record, auth, summaries[record.AuthSubjectID], subjects[record.AuthSubjectID], counts[record.AuthSubjectID])
-	return &view
+	views := withQuotaWindowSpend([]AccountStatusView{statusViewFromSharedRecord(record, auth, summaries[record.AuthSubjectID], subjects[record.AuthSubjectID], counts[record.AuthSubjectID])})
+	return &views[0]
 }
 
 func (s *Service) ListStatus(tenantID string, authIndexes, authSubjectIDs []string) (StatusListResponse, error) {
@@ -776,7 +776,7 @@ func (s *Service) ListStatus(tenantID string, authIndexes, authSubjectIDs []stri
 		subjectIDs = append(subjectIDs, sid)
 	}
 	if len(subjectIDs) == 0 {
-		return StatusListResponse{Items: []AccountStatusView{}}, nil
+		return StatusListResponse{Items: []AccountStatusView{}, Capabilities: statusListCapabilities()}, nil
 	}
 
 	statusRows, err := usage.ListAIAccountSubjectStatus(subjectIDs)
@@ -819,13 +819,13 @@ func (s *Service) ListStatus(tenantID string, authIndexes, authSubjectIDs []stri
 				StatusScope: usage.AIAccountStatusScopeShared, SubjectScope: subject.SubjectScope,
 				ShareEligible: subject.ShareEligible, SubjectSeedKind: subject.SeedKind,
 				CurrentTenantBindingCount: bindingCounts[sid], RefreshState: string(RefreshIdle),
-				HealthStatus: string(auth.Status), Quotas: []usage.QuotaWindowDTO{}, Usage: summaries[sid],
+				HealthStatus: string(auth.Status), Quotas: []QuotaWindowView{}, Usage: summaries[sid],
 			})
 			continue
 		}
 		items = append(items, statusViewFromSharedRecord(row, auth, summaries[sid], subject, bindingCounts[sid]))
 	}
-	return StatusListResponse{Items: items}, nil
+	return StatusListResponse{Items: withQuotaWindowSpend(items), Capabilities: statusListCapabilities()}, nil
 }
 
 func (s *Service) listAuths(tenantID string) []*coreauth.Auth {
