@@ -169,21 +169,20 @@ waitForCallback:
 		return nil, fmt.Errorf("antigravity: empty email returned from user info")
 	}
 
-	// Fetch account details via loadCodeAssist (project ID & plan type)
-	projectID := ""
-	planType := ""
-	if accessToken != "" {
-		accountInfo, errAccount := authSvc.FetchAccountDetails(ctx, accessToken)
-		if errAccount != nil {
-			log.Warnf("antigravity: failed to fetch account details: %v", errAccount)
-		} else {
-			projectID = accountInfo.ProjectID
-			planType = accountInfo.PlanType
-			if projectID != "" {
-				log.Infof("antigravity: obtained project ID %s (plan: %s)", projectID, planType)
-			}
-		}
+	// Fetch account details via loadCodeAssist (project ID & plan type). The
+	// account is only usable with its project, so a login that cannot find one
+	// fails instead of saving a credential that would later send requests
+	// without it (#1032).
+	accountInfo, errAccount := authSvc.FetchAccountDetails(ctx, accessToken)
+	projectID := strings.TrimSpace(accountInfo.ProjectID)
+	if errAccount == nil && projectID == "" {
+		errAccount = antigravity.ErrNoProjectID
 	}
+	if errAccount != nil {
+		return nil, fmt.Errorf("antigravity: could not find the account's Antigravity project: %w", errAccount)
+	}
+	planType := accountInfo.PlanType
+	log.Infof("antigravity: obtained project ID %s (plan: %s)", projectID, planType)
 
 	now := time.Now()
 	metadata := map[string]any{
@@ -197,9 +196,7 @@ waitForCallback:
 	if email != "" {
 		metadata["email"] = email
 	}
-	if projectID != "" {
-		metadata["project_id"] = projectID
-	}
+	metadata["project_id"] = projectID
 	if planType != "" {
 		metadata["plan_type"] = planType
 	}
@@ -211,9 +208,7 @@ waitForCallback:
 	}
 
 	fmt.Println("Antigravity authentication successful")
-	if projectID != "" {
-		fmt.Printf("Using GCP project: %s\n", projectID)
-	}
+	fmt.Printf("Using GCP project: %s\n", projectID)
 	return &coreauth.Auth{
 		ID:       fileName,
 		Provider: "antigravity",

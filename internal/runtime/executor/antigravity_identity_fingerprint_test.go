@@ -35,7 +35,7 @@ func TestAntigravityBuildRequestKeepsClientUserAgentOutOfUpstream(t *testing.T) 
 	for _, clientUA := range []string{"node", "curl/8.7.1", "Mozilla/5.0"} {
 		ctx := contextWithClientUserAgent(clientUA)
 		executor := &AntigravityExecutor{cfg: newAntigravityFingerprintConfig(true)}
-		auth := &cliproxyauth.Auth{ID: "account-under-test"}
+		auth := &cliproxyauth.Auth{ID: "account-under-test", Metadata: map[string]any{"project_id": "test-project"}}
 
 		req, _, err := executor.buildRequest(ctx, auth, "token", "gemini-3.7-flash-high", []byte(`{"request":{}}`), false, "", "https://example.com", 0)
 		if err != nil {
@@ -59,6 +59,7 @@ func TestAntigravityBuildRequestHonoursDisabledFingerprint(t *testing.T) {
 	auth := &cliproxyauth.Auth{
 		ID:         "account-under-test",
 		Attributes: map[string]string{"user_agent": pinned},
+		Metadata:   map[string]any{"project_id": "test-project"},
 	}
 
 	req, _, err := executor.buildRequest(ctx, auth, "token", "gemini-3.7-flash-high", []byte(`{"request":{}}`), false, "", "https://example.com", 0)

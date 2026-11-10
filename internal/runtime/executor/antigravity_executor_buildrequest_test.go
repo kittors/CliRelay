@@ -39,7 +39,7 @@ func buildRequestBodyFromPayload(t *testing.T, modelName string) map[string]any 
 	t.Helper()
 
 	executor := &AntigravityExecutor{}
-	auth := &cliproxyauth.Auth{}
+	auth := &cliproxyauth.Auth{Metadata: map[string]any{"project_id": "test-project"}}
 	payload := []byte(`{
 		"request": {
 			"tools": [
