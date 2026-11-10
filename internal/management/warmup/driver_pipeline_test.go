@@ -41,6 +41,8 @@ func TestAntigravityDriverRealPipeline(t *testing.T) {
 			"access_token": "ya29.real-test-token",
 			"expired":      time.Now().Add(2 * time.Hour).Format(time.RFC3339),
 			"base_url":     server.URL,
+			// Without a project the executor would first ask Google for one.
+			"project_id": "warmup-test-project",
 		},
 	}
 

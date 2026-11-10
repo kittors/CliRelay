@@ -43,11 +43,12 @@ func (e *AntigravityExecutor) buildRequest(ctx context.Context, auth *cliproxyau
 		requestURL.WriteString(url.QueryEscape(alt))
 	}
 
-	projectID := ""
-	if auth != nil && auth.Metadata != nil {
-		if pid, ok := auth.Metadata["project_id"].(string); ok {
-			projectID = strings.TrimSpace(pid)
-		}
+	// The entry points resolve the project before building (withRequestProject).
+	// Getting here without one means a caller skipped that, and sending a
+	// made-up project is what #1032 removed.
+	projectID := antigravityProjectIDFromAuth(auth)
+	if projectID == "" {
+		return nil, nil, missingAntigravityProjectError(nil)
 	}
 	payload = geminiToAntigravity(modelName, payload, projectID, sessionGeneration)
 	payload, _ = sjson.SetBytes(payload, "model", modelName)
