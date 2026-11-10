@@ -20,8 +20,8 @@ import (
 //   - 按模型规则：要知道请求的模型才能判定，由 ModelPolicyMiddleware 在读到模型后
 //     检查（见 model_policy.go）。
 //
-// 两类检查读同一份用量快照（每个主体每次准入最多一次库查询），快照读失败时与原有
-// 检查一样先用不超过上限时长的旧读数，再不行就 503（宁可拒绝也不绕过付费额度）。
+// 总额度与模型准入各自读取用量快照：模型决议可能晚于总额度检查，不能把旧快照
+// 与已经释放过的在途预留拼在一起。快照读失败时仍使用有时限的故障回退，之后拒绝。
 
 var (
 	queryAccountSnapshotFunc = func(string, string) (quota.UsageSnapshot, error) {
@@ -45,9 +45,6 @@ func InitQuotaSnapshotFuncs(account, key func(tenantID, id string) (quota.UsageS
 const (
 	quotaWindowSnapshotAccount = "snapshot_account"
 	quotaWindowSnapshotKey     = "snapshot_key"
-
-	// policyUsageContextKey 让同一个 HTTP 请求里的总额度检查与模型策略检查共用快照。
-	policyUsageContextKey = "cliproxy.policyUsage"
 )
 
 // policyUsage 为一次准入惰性读取并缓存账号与 Key 的用量快照。它只在单个请求
@@ -113,22 +110,24 @@ func (p *quotaPolicy) checkPolicyCells() *quotaVerdict {
 		return nil
 	}
 	usage := p.policyUsage()
+	// Capture holds before reading persisted usage. A commit between the two
+	// may be counted twice, but cannot disappear from both sides of the check.
 	if cells := p.access.AccountPolicyCells(); len(cells) > 0 {
+		held := p.inflight.Before(inflight.ScopeAccount)
 		used, err := usage.accountSnapshot()
 		if err != nil {
 			return quotaUsageUnavailableVerdict("account", "policy", p.access.TenantID, p.access.EndUserID, err)
 		}
-		held := p.inflight.Before(inflight.ScopeAccount)
 		if verdict := policyCellVerdict("account", cells, used.Total, held, used.FiveHourWindowStart); verdict != nil {
 			return verdict
 		}
 	}
 	if cells := p.access.KeyPolicyCells(); len(cells) > 0 {
+		held := p.inflight.Before(inflight.ScopeKey)
 		used, err := usage.keySnapshot()
 		if err != nil {
 			return quotaUsageUnavailableVerdict("key", "policy", p.access.TenantID, p.access.APIKeyID, err)
 		}
-		held := p.inflight.Before(inflight.ScopeKey)
 		if verdict := policyCellVerdict("key", cells, used.Total, held, used.FiveHourWindowStart); verdict != nil {
 			return verdict
 		}

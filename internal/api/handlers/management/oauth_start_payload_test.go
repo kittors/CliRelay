@@ -24,11 +24,7 @@ type oauthStartResponse struct {
 func TestRequestAnthropicTokenCodeModeReportsCodeFlow(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	previousStore := oauthSessions
-	oauthSessions = newOAuthSessionStore(oauthCallbackWaitTimeout)
-	t.Cleanup(func() {
-		oauthSessions = previousStore
-	})
+	useIsolatedOAuthSessions(t, oauthCallbackWaitTimeout)
 
 	h := &Handler{cfg: &config.Config{AuthDir: t.TempDir(), Port: 8317}}
 
@@ -77,11 +73,7 @@ func TestRequestAnthropicTokenCodeModeReportsCodeFlow(t *testing.T) {
 func TestRequestCodexTokenReportsRedirectFlow(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	previousStore := oauthSessions
-	oauthSessions = newOAuthSessionStore(oauthCallbackWaitTimeout)
-	t.Cleanup(func() {
-		oauthSessions = previousStore
-	})
+	useIsolatedOAuthSessions(t, oauthCallbackWaitTimeout)
 
 	h := &Handler{cfg: &config.Config{AuthDir: t.TempDir(), Port: 8317}}
 

@@ -18,6 +18,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/api/handlers"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/routetrace"
+	"github.com/router-for-me/CLIProxyAPI/v6/sdk/jsonstrict"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -62,8 +63,9 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 	if err != nil {
 		return
 	}
-	// gorilla reads a message whole and sets no limit of its own. The HTTP entries
-	// stop a body at the model request limit, and so does this one.
+	// Gorilla's read limit caps the wire payload, before permessage-deflate is
+	// decoded. Keep that guard too; readResponsesWebsocketMessage bounds the
+	// decompressed input before it can enter the log, transcript, or executor.
 	conn.SetReadLimit(settings.maxMessage)
 	passthroughSessionID := uuid.NewString()
 	clientRemoteAddr := ""
@@ -114,7 +116,7 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 		if settings.idleTimeout > 0 {
 			_ = conn.SetReadDeadline(time.Now().Add(settings.idleTimeout))
 		}
-		msgType, payload, errReadMessage := conn.ReadMessage()
+		msgType, payload, errReadMessage := readResponsesWebsocketMessage(conn, settings.maxMessage)
 		if errReadMessage != nil {
 			wsTerminateErr = errReadMessage
 			appendWebsocketEvent(&wsBodyLog, "disconnect", []byte(errReadMessage.Error()))
@@ -147,6 +149,20 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 		// )
 		appendWebsocketEvent(&wsBodyLog, "request", payload)
 
+		// A turn is checked as the body of an HTTP request is
+		// (bodyutil.CheckJSONRequestBody) before anything reads it: the account is
+		// pinned, and the turn moderated and masked, by what gjson reads of it,
+		// while the upstream reads it with a parser of its own.
+		if errInvalid := jsonstrict.Check(payload); errInvalid != nil {
+			status, body := handlers.RequestBodyErrorJSON(errInvalid)
+			refusal := &interfaces.ErrorMessage{StatusCode: status, Error: errors.New(string(body))}
+			if !h.refuseResponsesWebsocketTurn(c, conn, refusal, &wsBodyLog, "invalid request JSON", passthroughSessionID) {
+				return
+			}
+			continue
+		}
+
+		pinnedAuthID = h.pinnedAuthForTurn(c, pinnedAuthID, payload, transcript.lastRequest, passthroughSessionID)
 		allowIncrementalInputWithPreviousResponseID := websocketUpstreamSupportsIncrementalInput(nil, nil)
 		if pinnedAuthID != "" && h != nil && h.AuthManager != nil {
 			if pinnedAuth, ok := h.AuthManager.GetByID(pinnedAuthID); ok && pinnedAuth != nil {

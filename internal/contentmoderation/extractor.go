@@ -3,6 +3,7 @@ package contentmoderation
 import (
 	"strings"
 
+	"github.com/router-for-me/CLIProxyAPI/v6/sdk/jsonstrict"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v6/sdk/translator"
 	"github.com/tidwall/gjson"
 )
@@ -18,11 +19,18 @@ import (
 // written by the client and can carry anything. Only binary payloads (images,
 // audio, files) and opaque signatures are left out.
 func ExtractModerationInput(format sdktranslator.Format, payload []byte) Input {
+	input, _ := readModerationInput(format, payload)
+	return input
+}
+
+// readModerationInput is ExtractModerationInput for a caller that refuses a
+// body it cannot read: the error says why nothing was read (see run).
+func readModerationInput(format sdktranslator.Format, payload []byte) (Input, error) {
 	x := &extraction{}
 	if !x.run(format, payload) {
-		return NewInput(nil)
+		return NewInput(nil), x.unreadable
 	}
-	return NewInput(x.segments)
+	return NewInput(x.segments), nil
 }
 
 // extractWordUnits reads a request the way ExtractModerationInput does, and
@@ -30,19 +38,40 @@ func ExtractModerationInput(format sdktranslator.Format, payload []byte) Input {
 // can rewrite it in place. The classification and the order are the same by
 // construction: it is one walk.
 func extractWordUnits(format sdktranslator.Format, payload []byte) []wordUnit {
-	x := &extraction{locate: true, doc: &wordDoc{data: payload, located: true}}
-	if !x.run(format, payload) {
-		return nil
-	}
-	return x.units
+	units, _ := readWordUnits(format, payload)
+	return units
 }
 
-// run walks payload in the layout of format and reports whether it was JSON.
+// readWordUnits is extractWordUnits for a caller that refuses a body it cannot
+// read: the error says why there are no units (see run).
+func readWordUnits(format sdktranslator.Format, payload []byte) ([]wordUnit, error) {
+	x := &extraction{locate: true, doc: &wordDoc{data: payload, located: true}}
+	if !x.run(format, payload) {
+		return nil, x.unreadable
+	}
+	return x.units, nil
+}
+
+// run walks payload in the layout of format and reports whether it read it.
+//
+// It reads only a body that is one strict JSON text (jsonstrict), and keeps
+// why it read nothing of any other in x.unreadable. The walk reads with gjson,
+// which takes the first of two members of an object with one name and reads
+// nothing of a text it finds invalid, while the upstream takes the last, or
+// both, or reads NaN where gjson stops: a second "messages", or a NaN anywhere,
+// would put the whole conversation past moderation and masking unread. The
+// request stages refuse such a body (bodyutil.CheckJSONRequestBody); the
+// guards refuse what reaches them anyway rather than pass it on.
 func (x *extraction) run(format sdktranslator.Format, payload []byte) bool {
-	if len(payload) == 0 || !gjson.ValidBytes(payload) {
+	if len(payload) == 0 {
+		return false
+	}
+	if err := jsonstrict.Check(payload); err != nil {
+		x.unreadable = err
 		return false
 	}
 	root := gjson.ParseBytes(payload)
+	x.declaredDescriptions(root)
 	switch format {
 	case sdktranslator.FormatOpenAIResponse:
 		x.responses(root)
@@ -57,6 +86,7 @@ func (x *extraction) run(format sdktranslator.Format, payload []byte) bool {
 		if request := root.Get("request"); request.IsObject() {
 			x.gemini(root)
 			root = request
+			x.declaredDescriptions(root)
 		}
 		x.gemini(root)
 	default:
@@ -79,6 +109,11 @@ type extraction struct {
 	units  []wordUnit
 	// signed is set while reading text a signature covers (see wordUnit.signed).
 	signed bool
+	// secrets makes the walk read what privacy masking reads besides what the
+	// word guard does (secretmask_extract.go).
+	secrets bool
+	// unreadable says why run read nothing of a body that was not empty.
+	unreadable error
 }
 
 func (x *extraction) nextTurn() { x.turn++ }
@@ -283,10 +318,10 @@ func (x *extraction) geminiParts(content gjson.Result, class Class, user bool) {
 		}
 		if response := firstField(part, "functionResponse", "function_response"); response.Exists() {
 			// Arbitrary JSON the model reads serialized, keys included.
-			x.jsonText(response.Get("response"), ClassToolOutput)
+			x.toolData(response.Get("response"), ClassToolOutput)
 		}
 		if call := firstField(part, "functionCall", "function_call"); call.Exists() {
-			x.jsonText(call.Get("args"), ClassAssistantHistory)
+			x.toolData(call.Get("args"), ClassAssistantHistory)
 		}
 		if code := firstField(part, "executableCode", "executable_code"); code.Exists() {
 			x.addValue(ClassAssistantHistory, false, code.Get("code"))
@@ -346,7 +381,7 @@ func (x *extraction) block(block gjson.Result, class Class, user bool) {
 		// the conversation is sent back: it is read, but not rewritten.
 		x.addSigned(ClassAssistantHistory, false, block.Get("thinking"))
 	case "tool_use", "server_tool_use", "mcp_tool_use":
-		x.jsonText(block.Get("input"), ClassAssistantHistory)
+		x.toolData(block.Get("input"), ClassAssistantHistory)
 	case "tool_result":
 		// Claude: the content is a string or a list of blocks.
 		x.content(block.Get("content"), ClassToolOutput, false)
@@ -385,7 +420,7 @@ func (x *extraction) block(block gjson.Result, class Class, user bool) {
 // \u4f60 (for 你) hides a keyword from a substring scan.
 func (x *extraction) arguments(value gjson.Result, class Class) {
 	if value.Type != gjson.String {
-		x.jsonText(value, class)
+		x.toolData(value, class)
 		return
 	}
 	raw := value.String()
@@ -397,7 +432,7 @@ func (x *extraction) arguments(value gjson.Result, class Class) {
 		if x.locate {
 			x.doc = nestedDoc(outer, value, raw)
 		}
-		x.jsonText(decoded, class)
+		x.toolData(decoded, class)
 		x.doc = outer
 		return
 	}
@@ -412,8 +447,16 @@ const maxJSONTextDepth = 64
 // included: tool arguments and function responses reach the model serialized,
 // so a key is as visible to it as a value.
 func (x *extraction) jsonText(value gjson.Result, class Class) {
+	x.jsonTextBy(class, func(visit jsonTextVisitor) { walkJSONText(value, 0, false, visit) })
+}
+
+// jsonTextVisitor is what walkJSONText calls with each text it finds.
+type jsonTextVisitor func(text string, at gjson.Result, kind jsonTextKind, owner gjson.Result)
+
+// jsonTextBy is jsonText over the text walk visits.
+func (x *extraction) jsonTextBy(class Class, walk func(jsonTextVisitor)) {
 	var b strings.Builder
-	walkJSONText(value, 0, false, func(text string, at gjson.Result, kind jsonTextKind, owner gjson.Result) {
+	walk(func(text string, at gjson.Result, kind jsonTextKind, owner gjson.Result) {
 		b.WriteString(text)
 		b.WriteByte(' ')
 		if !x.locate || kind == jsonTextProtocol {
@@ -452,7 +495,7 @@ const (
 // walkJSONText visits the text in a JSON value in document order. at is the
 // JSON value the text was read from (the key itself for a key, and then owner
 // is the object the key belongs to).
-func walkJSONText(value gjson.Result, depth int, protocol bool, visit func(text string, at gjson.Result, kind jsonTextKind, owner gjson.Result)) {
+func walkJSONText(value gjson.Result, depth int, protocol bool, visit jsonTextVisitor) {
 	switch {
 	case value.Type == gjson.String:
 		text := value.String()

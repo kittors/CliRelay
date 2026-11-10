@@ -8,8 +8,8 @@ import (
 )
 
 const (
-	DefaultAntigravityFingerprintVersion   = "4.3.0"
-	DefaultAntigravityFingerprintUserAgent = "vscode/1.X.X (Antigravity/" + DefaultAntigravityFingerprintVersion + ")"
+	DefaultAntigravityFingerprintVersion   = "2.26.0"
+	DefaultAntigravityFingerprintUserAgent = "antigravity/hub/" + DefaultAntigravityFingerprintVersion + " darwin/arm64"
 )
 
 // AntigravityIdentityFingerprintConfig configures Antigravity upstream identity headers.

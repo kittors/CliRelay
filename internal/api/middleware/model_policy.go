@@ -77,12 +77,11 @@ func ModelPolicyMiddleware(effectiveModel func(*gin.Context, string) string) gin
 			}
 		}
 		reservation := reservationFromContext(c)
-		decision, verdict := resolveModelPolicy(access, policyUsageFromContext(c, access), reservation, effective)
+		decision, verdict := resolveModelPolicy(access, reservation, effective)
 		if verdict != nil {
 			verdict.abort(c)
 			return
 		}
-		reservation.SetModel(decision.FinalModel)
 		if decision.FinalModel != effective {
 			if err := rewriteRequestModel(c, source, decision.FinalModel); err != nil {
 				c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": gin.H{
@@ -96,18 +95,6 @@ func ModelPolicyMiddleware(effectiveModel func(*gin.Context, string) string) gin
 	}
 }
 
-// policyUsageFromContext 取 QuotaMiddleware 已经为本请求读到的用量快照；没有时新建。
-func policyUsageFromContext(c *gin.Context, access *accesspolicy.Policy) *policyUsage {
-	if value, ok := c.Get(policyUsageContextKey); ok {
-		if usage, ok := value.(*policyUsage); ok && usage != nil && usage.policy == access {
-			return usage
-		}
-	}
-	usage := newPolicyUsage(access)
-	c.Set(policyUsageContextKey, usage)
-	return usage
-}
-
 // modelPolicyTurnGate 为 Responses WebSocket 的每一轮决议模型；每轮读取最新用量。
 // turns 交来额度 gate 刚为这一轮取的在途预留（帧循环先过额度 gate、再过这里）。
 func modelPolicyTurnGate(access *accesspolicy.Policy, turns *turnReservations) handlers.ModelPolicyGate {
@@ -117,11 +104,10 @@ func modelPolicyTurnGate(access *accesspolicy.Policy, turns *turnReservations) h
 		if model == "" {
 			return model, nil
 		}
-		decision, verdict := resolveModelPolicy(access, newPolicyUsage(access), reservation, model)
+		decision, verdict := resolveModelPolicy(access, reservation, model)
 		if verdict != nil {
 			return model, verdict.forTurn()
 		}
-		reservation.SetModel(decision.FinalModel)
 		return decision.FinalModel, nil
 	}
 }
@@ -137,10 +123,15 @@ func reservationFromContext(c *gin.Context) *inflight.Reservation {
 	return nil
 }
 
-// resolveModelPolicy 按 Key 在前、账号在后的顺序检查按模型规则：Key 的规则更具体，
-// 同时触顶时优先报告它。reservation 是本请求的在途预留：规则的用量算上排在它前面、
-// 已路由到规则所管模型、还没入账的请求；为 nil 时只看已入账的用量。
-func resolveModelPolicy(access *accesspolicy.Policy, usage *policyUsage, reservation *inflight.Reservation, model string) (quota.ModelPolicyDecision, *quotaVerdict) {
+// resolveModelPolicy checks and records one model decision under the owner's
+// model-admission locks. Model order can differ from initial reservation order:
+// a slow request body must still see a later request that already chose a model.
+func resolveModelPolicy(access *accesspolicy.Policy, reservation *inflight.Reservation, model string) (quota.ModelPolicyDecision, *quotaVerdict) {
+	held, release := reservation.BeginModelAdmission()
+	defer release()
+	// Capture model holds before fresh reads, including all fallback models.
+	// Reusing the earlier total-quota snapshot could miss a now-settled request.
+	usage := newPolicyUsage(access)
 	layers := make([]quota.ScopedRules, 0, 2)
 	if len(access.KeyRules) > 0 {
 		layers = append(layers, quota.ScopedRules{Scope: quota.RuleScopeKey, Rules: access.KeyRules,
@@ -149,8 +140,8 @@ func resolveModelPolicy(access *accesspolicy.Policy, usage *policyUsage, reserva
 				if err != nil {
 					return quota.Matrix{}, err
 				}
-				held := reservation.BeforeMatching(inflight.ScopeKey, patterns)
-				return snapshot.MatchedUsage(patterns).Add(held.Matrix()), nil
+				reserved := held.Matching(inflight.ScopeKey, patterns)
+				return snapshot.MatchedUsage(patterns).Add(reserved.Matrix()), nil
 			}})
 	}
 	if access.Owned() && len(access.AccountRules) > 0 {
@@ -160,8 +151,8 @@ func resolveModelPolicy(access *accesspolicy.Policy, usage *policyUsage, reserva
 				if err != nil {
 					return quota.Matrix{}, err
 				}
-				held := reservation.BeforeMatching(inflight.ScopeAccount, patterns)
-				return snapshot.MatchedUsage(patterns).Add(held.Matrix()), nil
+				reserved := held.Matching(inflight.ScopeAccount, patterns)
+				return snapshot.MatchedUsage(patterns).Add(reserved.Matrix()), nil
 			}})
 	}
 	decision, err := quota.ResolveModelPolicy(model, access.Routes, layers)
@@ -173,9 +164,10 @@ func resolveModelPolicy(access *accesspolicy.Policy, usage *policyUsage, reserva
 		if decision.Exceeded.Scope == quota.RuleScopeAccount {
 			scope = inflight.ScopeAccount
 		}
-		held := reservation.BeforeMatching(scope, decision.Exceeded.Rule.Models)
-		return decision, modelRuleVerdict(decision.Exceeded, usage.fiveHourWindowStart(decision.Exceeded.Scope), held)
+		reserved := held.Matching(scope, decision.Exceeded.Rule.Models)
+		return decision, modelRuleVerdict(decision.Exceeded, usage.fiveHourWindowStart(decision.Exceeded.Scope), reserved)
 	}
+	reservation.SetModel(decision.FinalModel)
 	return decision, nil
 }
 

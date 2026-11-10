@@ -5,12 +5,19 @@ import (
 	"time"
 )
 
+// useIsolatedOAuthSessions gives the test its own in-process session store
+// and puts the previous one back when the test ends. A login started by an
+// earlier test may still have its callback waiter running. Whichever store
+// that waiter reads, its state is not pending there, so it returns within
+// one poll interval and records nothing in this test's store.
+func useIsolatedOAuthSessions(t *testing.T, ttl time.Duration) {
+	t.Helper()
+	previous := oauthSessions.Swap(newOAuthSessionStore(ttl))
+	t.Cleanup(func() { oauthSessions.Store(previous) })
+}
+
 func TestCompleteOAuthSessionRetainsCompletedState(t *testing.T) {
-	previousStore := oauthSessions
-	oauthSessions = newOAuthSessionStore(time.Minute)
-	t.Cleanup(func() {
-		oauthSessions = previousStore
-	})
+	useIsolatedOAuthSessions(t, time.Minute)
 
 	const (
 		completedState = "completed-state"

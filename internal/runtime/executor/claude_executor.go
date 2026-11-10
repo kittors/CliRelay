@@ -141,10 +141,8 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 		dropThinkingForForcedTool: !skipAnthropic,
 	})
 	if !skipAnthropic {
-		// Auto-inject cache_control if missing (optimization for ClawdBot/clients without caching support)
-		if countCacheControls(body) == 0 {
-			body = ensureCacheControl(body)
-		}
+		// Auto-inject cache_control unless the client placed its own breakpoints.
+		body = applyClaudeCacheControl(body)
 	}
 
 	// Extract betas from body and convert to header
@@ -275,10 +273,8 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 		dropThinkingForForcedTool: !skipAnthropic,
 	})
 	if !skipAnthropic {
-		// Auto-inject cache_control if missing (optimization for ClawdBot/clients without caching support)
-		if countCacheControls(body) == 0 {
-			body = ensureCacheControl(body)
-		}
+		// Auto-inject cache_control unless the client placed its own breakpoints.
+		body = applyClaudeCacheControl(body)
 	}
 
 	// Extract betas from body and convert to header
@@ -431,6 +427,9 @@ func (e *ClaudeExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Aut
 		claudeFPSessionID = claudeFingerprintSessionID(claudeFP)
 		body = applyClaudeIdentityFingerprintPayload(auth, body, claudeFP, claudeFPSessionID)
 	}
+	// The OAuth tool prefix is applied by toUpstream below; only the metadata
+	// the fingerprint wrote has to go, since count_tokens rejects it.
+	body = stripClaudeCountTokensMetadata(body)
 
 	url := fmt.Sprintf("%s/v1/messages/count_tokens?beta=true", baseURL)
 	// count_tokens has always applied the OAuth tool prefix, third-party

@@ -55,8 +55,25 @@ func (h *Handler) privacyMaskSettingsView(settings contentmoderation.SecretMaski
 	return view
 }
 
+// privacyMaskSettingsOf returns tenantID's settings, and answers the request
+// itself with 503 (returning false) while they are not known: the store could
+// not be read and never was. Shown then they would be the defaults, nothing
+// masked, while the tenant's requests are refused for not knowing.
+func (h *Handler) privacyMaskSettingsOf(c *gin.Context, tenantID string) (contentmoderation.SecretMaskingSettings, bool) {
+	settings, known := h.secretMaskingRegistry().Lookup(tenantID)
+	if !known {
+		privacyMaskError(c, contentmoderation.ErrUnavailable)
+		return contentmoderation.SecretMaskingSettings{}, false
+	}
+	return settings, true
+}
+
 func (h *Handler) GetPrivacyMaskingSettings(c *gin.Context) {
-	c.JSON(http.StatusOK, h.privacyMaskSettingsView(h.secretMaskingRegistry().For(effectiveTenantID(c))))
+	settings, ok := h.privacyMaskSettingsOf(c, effectiveTenantID(c))
+	if !ok {
+		return
+	}
+	c.JSON(http.StatusOK, h.privacyMaskSettingsView(settings))
 }
 
 func (h *Handler) PutPrivacyMaskingSettings(c *gin.Context) {
@@ -97,13 +114,19 @@ func (h *Handler) PostPrivacyMaskingPreview(c *gin.Context) {
 		privacyMaskBadRequest(c, "the text is too long to try out")
 		return
 	}
-	policy := h.secretMaskingRegistry().For(effectiveTenantID(c)).PolicyView()
+	var policy contentmoderation.MaskPolicy
 	if body.Policy != nil {
 		policy = *body.Policy
 		if err := policy.Normalize(); err != nil {
 			privacyMaskError(c, err)
 			return
 		}
+	} else {
+		settings, ok := h.privacyMaskSettingsOf(c, effectiveTenantID(c))
+		if !ok {
+			return
+		}
+		policy = settings.PolicyView()
 	}
 	c.JSON(http.StatusOK, contentmoderation.PreviewMask(policy, body.Text))
 }

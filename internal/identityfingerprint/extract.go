@@ -25,6 +25,7 @@ const (
 	FieldXAIGrokConversationID  = "x-grok-conv-id"
 	FieldXAIClientIdentifier    = "x-grok-client-identifier"
 	FieldXAIClientVersion       = "x-grok-client-version"
+	FieldXAIClientMode          = "x-grok-client-mode"
 	FieldKimiPlatform           = "x-msh-platform"
 	FieldKimiVersion            = "x-msh-version"
 	FieldKimiDeviceName         = "x-msh-device-name"
@@ -41,7 +42,7 @@ var (
 	geminiUARe       = regexp.MustCompile(`(?i)^google-api-nodejs-client/([0-9]+(?:\.[0-9]+){0,3})`)
 	xaiTokenVerRe    = regexp.MustCompile(`(?i)\b([a-z0-9_.-]*(?:grok|xai)[a-z0-9_.-]*)/([0-9]+(?:\.[0-9]+){0,3})(?:[-+][a-z0-9_.-]+)?`)
 	kimiTokenVerRe   = regexp.MustCompile(`(?i)\b([a-z0-9_.-]*kimi[a-z0-9_.-]*)/([0-9]+(?:\.[0-9]+){0,3})(?:[-+][a-z0-9_.-]+)?`)
-	antigravityUARe  = regexp.MustCompile(`(?i)(?:vscode/[^\s]+\s+)?\(?antigravity/([0-9]+(?:\.[0-9]+){0,3})\)?`)
+	antigravityUARe  = regexp.MustCompile(`(?i)(?:vscode/[^\s]+\s+)?\(?antigravity/(?:(?:hub|cli)/)?([0-9]+(?:\.[0-9]+){0,3})\)?`)
 )
 
 func ExtractObservation(input LearnInput) (Observation, bool) {
@@ -194,32 +195,39 @@ func extractGeminiObservation(input LearnInput, headers http.Header, observedAt 
 	}, true
 }
 
+// extractXAIObservation learns the identity a real Grok CLI presents.
+//
+// The User-Agent is what makes an observation: a Grok CLI names itself there
+// (grok-shell/1.0.77, or grok-pager/1.0.77 grok-shell/1.0.77 from its pager),
+// and the other headers belong to the same bundle. A caller that only sets
+// X-Grok-Client-Identifier beside some other User-Agent is not the CLI, and
+// recording it would pin the account to a made-up identity.
+//
+// The CLI does not send every header everywhere: on its own backend it sends
+// identifier, version and mode beside the User-Agent, but pointed at an
+// OpenAI-compatible endpoint (this proxy, 2026-11-09) it sends the User-Agent
+// alone. What it sent is the bundle; MergeObservation keeps it whole.
 func extractXAIObservation(input LearnInput, headers http.Header, observedAt time.Time) (Observation, bool) {
 	ua := strings.TrimSpace(headers.Get("User-Agent"))
 	clientIdentifier := strings.TrimSpace(headers.Get("X-Grok-Client-Identifier"))
 	clientVersion := strings.TrimSpace(headers.Get("X-Grok-Client-Version"))
+	clientMode := strings.TrimSpace(headers.Get("X-Grok-Client-Mode"))
 	product, version := xaiProductVersion(ua)
-	if product == "" && clientIdentifier != "" {
-		product = clientIdentifier
+	if product == "" {
+		return Observation{}, false
 	}
 	if version == "" {
 		version = clientVersion
 	}
-	if product == "" {
-		return Observation{}, false
-	}
-	fields := map[string]string{}
-	if ua != "" {
-		fields[FieldUserAgent] = ua
-	}
+	fields := map[string]string{FieldUserAgent: ua}
 	if clientIdentifier != "" {
 		fields[FieldXAIClientIdentifier] = clientIdentifier
 	}
 	if clientVersion != "" {
 		fields[FieldXAIClientVersion] = clientVersion
 	}
-	if len(fields) == 0 {
-		return Observation{}, false
+	if clientMode != "" {
+		fields[FieldXAIClientMode] = clientMode
 	}
 	return Observation{
 		Provider:        ProviderXAI,
@@ -230,7 +238,7 @@ func extractXAIObservation(input LearnInput, headers http.Header, observedAt tim
 		ClientVariant:   "cli",
 		Version:         version,
 		Fields:          fields,
-		ObservedHeaders: observedHeaders(headers, []string{"User-Agent", "X-Grok-Client-Identifier", "X-Grok-Client-Version"}),
+		ObservedHeaders: observedHeaders(headers, []string{"User-Agent", "X-Grok-Client-Identifier", "X-Grok-Client-Version", "X-Grok-Client-Mode"}),
 		ObservedAt:      observedAt.UTC(),
 	}, true
 }
@@ -395,6 +403,16 @@ func MergeObservation(existing *LearnedRecord, obs Observation) MergeResult {
 	if record.Fields == nil {
 		record.Fields = map[string]string{}
 	}
+	// A client's identity headers are one bundle. Merged field by field, a
+	// Grok account learned grok-shell/1.0.77's User-Agent beside the
+	// identifier and version an earlier grok-pager 1.0.70 had sent, and went
+	// out as three clients at once (2026-11-09). An observation that carries
+	// the bundle's User-Agent replaces the whole bundle instead.
+	if bundle := identityBundleFields(obs.Provider); len(bundle) > 0 && strings.TrimSpace(obs.Fields[FieldUserAgent]) != "" {
+		for _, field := range bundle {
+			delete(record.Fields, field)
+		}
+	}
 	for key, value := range obs.Fields {
 		if key = strings.TrimSpace(key); key != "" {
 			if value = strings.TrimSpace(value); value != "" {
@@ -474,6 +492,35 @@ func xaiProductVersion(ua string) (string, string) {
 		return "xai-cli", ""
 	}
 	return "", ""
+}
+
+// xaiProduct is one product/version token of a Grok CLI User-Agent.
+type xaiProduct struct {
+	name    string
+	version string
+}
+
+// xaiUserAgentProducts lists the Grok products a User-Agent names, in order:
+// "grok-pager/1.0.77 grok-shell/1.0.77 (macos; aarch64)" is the pager, then
+// the shell it runs. Tokens without a version are not listed.
+func xaiUserAgentProducts(ua string) []xaiProduct {
+	matches := xaiTokenVerRe.FindAllStringSubmatch(strings.TrimSpace(ua), -1)
+	products := make([]xaiProduct, 0, len(matches))
+	for _, match := range matches {
+		products = append(products, xaiProduct{name: strings.ToLower(match[1]), version: match[2]})
+	}
+	return products
+}
+
+// identityBundleFields are the fields a provider's client sends as one
+// identity, which an observation replaces together rather than one by one.
+// Only xAI declares one: its CLI sends different subsets of these headers to
+// different endpoints, so field-wise merging mixed two clients.
+func identityBundleFields(provider Provider) []string {
+	if provider == ProviderXAI {
+		return []string{FieldUserAgent, FieldXAIClientIdentifier, FieldXAIClientVersion, FieldXAIClientMode}
+	}
+	return nil
 }
 
 func kimiProductVersion(ua string) (string, string) {

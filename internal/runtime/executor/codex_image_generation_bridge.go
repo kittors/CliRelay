@@ -16,6 +16,14 @@ const (
 	codexResponsesLiteHeader   = "X-OpenAI-Internal-Codex-Responses-Lite"
 	codexResponsesLiteMetadata = "client_metadata.ws_request_header_x_openai_internal_codex_responses_lite"
 
+	// Codex labels requests from threads it started itself. Over HTTP the label is a
+	// header; over WebSocket it is copied into client_metadata of each request.
+	codexSubagentHeader   = "X-Openai-Subagent"
+	codexSubagentMetadata = "client_metadata.x-openai-subagent"
+	// Agents spawned for the user (spawn_agent) carry this label. They do user work and
+	// may be the agent asked to draw, so they keep the bridge.
+	codexSpawnedAgentSubagent = "collab_spawn"
+
 	// Per-account opt-out switch, surfaced by the management API as
 	// codex_image_generation_bridge. Absent means enabled.
 	metadataKeyCodexImageGenerationBridge = "codex_image_generation_bridge"
@@ -88,20 +96,29 @@ func codexBridgeImageModel(auth *cliproxyauth.Auth) string {
 //     ensureCodexImageGenerationTool.
 //  3. Only an explicit imagegen invocation in the current user turn forces
 //     tool_choice=image_generation, so the model cannot skip the tool and reply with text.
-//     A keyword match is a guess and leaves the choice to the model.
+//     A keyword match is a guess and leaves the choice to the model. Even an explicit
+//     invocation leaves a client's own tool_choice or JSON reply format in place (see
+//     codexImageToolChoiceForceable).
 //  4. A request that is going to call the hosted tool leaves without reasoning.effort, which
 //     the backend would otherwise hand to the image model as complexity.
+//
+// Requests from Codex's own helper threads (auto-review, /review, compaction, memory
+// consolidation) are left alone, effort included: they quote the conversation back as user
+// text, where an image keyword is not a request for a picture. See codexInternalSubagent.
 func maybeEnsureCodexImageGenerationTool(body []byte, auth *cliproxyauth.Auth, baseModel string, headers http.Header) []byte {
 	body = repairCodexImageCarrierModel(body, baseModel)
 	if requestHasLocalImageGenTool(body) {
 		return stripHostedImageGenerationTools(body)
+	}
+	if codexInternalSubagent(body, headers) {
+		return body
 	}
 	intent := classifyCodexImageGenerationIntent(body)
 	if codexImageGenerationBridgeEnabled(auth) {
 		body = ensureCodexImageGenerationTool(body, baseModel, auth, headers, intent)
 		if requestHasHostedImageGenerationTool(body) {
 			body = ensureCodexImageGenerationBridgeInstructions(body)
-			if intent.forcesToolChoice() {
+			if intent.forcesToolChoice() && codexImageToolChoiceForceable(body) {
 				body = forceCodexImageGenerationToolChoice(body)
 			}
 		}
@@ -152,6 +169,50 @@ func omitCodexReasoningEffortForImageCall(body []byte, intent codexImageIntent) 
 	}
 	log.Debugf("codex image bridge: dropped reasoning.effort %q from a request that calls hosted image_generation", effort)
 	return updated
+}
+
+// codexInternalSubagent reports whether the request comes from a thread Codex started for
+// its own bookkeeping rather than from the user's conversation.
+//
+// Those threads quote the parent conversation back as user text. Auto-review (label
+// "guardian") sends the parent agent's tool output as evidence, so a DOM dump with
+// aria-label="生成图片缩略图" reads as an image request to the keyword check. The bridge
+// then forced tool_choice=image_generation on a request that must answer with a JSON
+// verdict, upstream failed it, and every later review in that thread failed the same way
+// because the quoted text stays in the recent turns. None of these threads acts on a
+// request for a picture, so the bridge has nothing to add to them.
+//
+// Labels come from codex-rs subagent_header_value: "review", "compact",
+// "memory_consolidation", "collab_spawn", internal session sources, and free-form labels
+// such as "guardian". Only collab_spawn is a user-facing agent.
+func codexInternalSubagent(body []byte, headers http.Header) bool {
+	label := ""
+	if headers != nil {
+		label = strings.TrimSpace(headers.Get(codexSubagentHeader))
+	}
+	if label == "" {
+		label = strings.TrimSpace(gjson.GetBytes(body, codexSubagentMetadata).String())
+	}
+	return label != "" && !strings.EqualFold(label, codexSpawnedAgentSubagent)
+}
+
+// codexImageToolChoiceForceable reports whether forcing the image tool still leaves the
+// request answerable. It is not when the client already picked a tool_choice other than
+// "auto" ("none", "required", a named tool), or when it asked for a JSON reply through
+// text.format: a forced image call cannot produce that document. The hosted tool stays
+// attached either way, so the model can still call it.
+func codexImageToolChoiceForceable(body []byte) bool {
+	choice := gjson.GetBytes(body, "tool_choice")
+	if choice.Exists() && choice.Type != gjson.Null {
+		if choice.Type != gjson.String || !strings.EqualFold(strings.TrimSpace(choice.String()), "auto") {
+			return false
+		}
+	}
+	switch strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, "text.format.type").String())) {
+	case "json_schema", "json_object":
+		return false
+	}
+	return true
 }
 
 // requestCarriesImageInput reports whether the recent user turns attach images.

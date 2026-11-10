@@ -55,6 +55,15 @@ func laterRuntimeMigrations() []Migration {
 		// the time after the first token. See
 		// usage_rollup_generation_migrations.go.
 		{Version: "202611040001_usage_rollup_generation_speed", SQL: usageRollupGenerationSpeedSQL},
+		// Read one AI account's rollup buckets across tenants (quota window
+		// spend). See usage_rollup_subject_index_migrations.go.
+		{Version: "202611100001_usage_rollup_subject_index", SQL: usageRollupSubjectIndexSQL},
+		// Whether a request_log_content row's bodies were stripped, and a partial
+		// index over the rows that may still hold them, so the purge with body
+		// storage off stops re-reading the whole table every pass. See
+		// request_log_content_body_migrations.go.
+		{Version: "202611100002_request_log_content_bodies_stripped", SQL: requestLogContentBodiesStrippedSQL},
+		{Version: "202611100003_request_log_content_unstripped_index", SQL: requestLogContentUnstrippedIndexSQL},
 	}
 }
 

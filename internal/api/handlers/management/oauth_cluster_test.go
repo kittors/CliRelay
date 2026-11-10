@@ -226,9 +226,7 @@ func TestClusterOAuthCallbackForUnknownStateIsRejected(t *testing.T) {
 // node has no record of is reported as expired, as the cluster store does.
 func TestSingleNodeAuthStatusSeparatesSupersededFromExpired(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	previous := oauthSessions
-	oauthSessions = newOAuthSessionStore(time.Minute)
-	t.Cleanup(func() { oauthSessions = previous })
+	useIsolatedOAuthSessions(t, time.Minute)
 
 	h := &Handler{cfg: &config.Config{AuthDir: t.TempDir()}}
 	code, body := getAuthStatus(t, h, "never-started")

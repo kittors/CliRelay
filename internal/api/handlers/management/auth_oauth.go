@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -139,6 +140,33 @@ func (h *Handler) resolveOAuthProxyURL(c *gin.Context) string {
 	return h.resolveTenantProxyURL(effectiveTenantID(c), proxyID)
 }
 
+// urlCredentials matches the user:password part of a URL, such as a proxy's.
+var urlCredentials = regexp.MustCompile(`([A-Za-z][A-Za-z0-9+.-]*://)[^\s/@"']+@`)
+
+// oauthStartFailure is the body of a login that could not start: the code, and
+// the cause as message, which the panel shows as "code: cause". The code alone
+// hid a global proxy that refused its credentials on 2026-11-09: every Grok
+// login answered "failed to generate authorization url" and nothing more, while
+// the log said "socks connect tcp …: username/password authentication failed".
+// The cause keeps what the operator acts on (the URL, the proxy's host:port,
+// the upstream's words); credentials in any URL are left out.
+func oauthStartFailure(code string, err error) gin.H {
+	body := gin.H{"error": code}
+	if err == nil {
+		return body
+	}
+	if reason := strings.TrimSpace(urlCredentials.ReplaceAllString(err.Error(), "${1}***@")); reason != "" {
+		body["message"] = reason
+	}
+	return body
+}
+
+// withErrorStatus adds the "status": "error" the iFlow login answers carry.
+func withErrorStatus(body gin.H) gin.H {
+	body["status"] = "error"
+	return body
+}
+
 // resolveTenantProxyURL resolves a proxy ID the way the tenant's executors
 // will once the credential is saved: against the tenant's own pool and the
 // platform proxies shared with it. Resolving against the system pool instead
@@ -217,10 +245,10 @@ func (h *Handler) RequestAnthropicToken(c *gin.Context) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate state parameter"})
 		case errors.Is(err, claudeprovider.ErrAuthURL):
 			log.Errorf("Failed to generate authorization URL: %v", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate authorization url"})
+			c.JSON(http.StatusInternalServerError, oauthStartFailure("failed to generate authorization url", err))
 		default:
 			log.WithError(err).Error("failed to start anthropic oauth flow")
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate authorization url"})
+			c.JSON(http.StatusInternalServerError, oauthStartFailure("failed to generate authorization url", err))
 		}
 		return
 	}
@@ -260,10 +288,10 @@ func (h *Handler) RequestGeminiCLIToken(c *gin.Context) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "callback server unavailable"})
 		case errors.Is(err, geminicli.ErrCallbackStart):
 			log.WithError(err).Error("failed to start gemini callback forwarder")
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to start callback server"})
+			c.JSON(http.StatusInternalServerError, oauthStartFailure("failed to start callback server", err))
 		default:
 			log.WithError(err).Error("failed to start gemini oauth flow")
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to start oauth flow"})
+			c.JSON(http.StatusInternalServerError, oauthStartFailure("failed to start oauth flow", err))
 		}
 		return
 	}
@@ -302,10 +330,10 @@ func (h *Handler) RequestCodexToken(c *gin.Context) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate state parameter"})
 		case errors.Is(err, codexprovider.ErrAuthURL):
 			log.Errorf("Failed to generate authorization URL: %v", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate authorization url"})
+			c.JSON(http.StatusInternalServerError, oauthStartFailure("failed to generate authorization url", err))
 		default:
 			log.WithError(err).Error("failed to start codex oauth flow")
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate authorization url"})
+			c.JSON(http.StatusInternalServerError, oauthStartFailure("failed to generate authorization url", err))
 		}
 		return
 	}
@@ -343,12 +371,12 @@ func (h *Handler) RequestAntigravityToken(c *gin.Context) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "callback server unavailable"})
 		case errors.Is(err, antigravityprovider.ErrCallbackStart):
 			log.WithError(err).Error("failed to start antigravity callback forwarder")
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to start callback server"})
+			c.JSON(http.StatusInternalServerError, oauthStartFailure("failed to start callback server", err))
 		case errors.Is(err, antigravityprovider.ErrOAuthClientIDMissing):
 			c.JSON(http.StatusBadRequest, gin.H{"error": "antigravity oauth client-id not configured"})
 		default:
 			log.WithError(err).Error("failed to start antigravity oauth flow")
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to start oauth flow"})
+			c.JSON(http.StatusInternalServerError, oauthStartFailure("failed to start oauth flow", err))
 		}
 		return
 	}
@@ -371,7 +399,7 @@ func (h *Handler) RequestQwenToken(c *gin.Context) {
 	})
 	if err != nil {
 		log.Errorf("Failed to generate authorization URL: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate authorization url"})
+		c.JSON(http.StatusInternalServerError, oauthStartFailure("failed to generate authorization url", err))
 		return
 	}
 
@@ -394,7 +422,7 @@ func (h *Handler) RequestKimiToken(c *gin.Context) {
 	})
 	if err != nil {
 		log.Errorf("Failed to generate authorization URL: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate authorization url"})
+		c.JSON(http.StatusInternalServerError, oauthStartFailure("failed to generate authorization url", err))
 		return
 	}
 
@@ -435,13 +463,13 @@ func (h *Handler) RequestXAIToken(c *gin.Context) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "callback server unavailable"})
 		case errors.Is(err, xaiprovider.ErrCallbackStart):
 			log.WithError(err).Error("failed to start xai callback forwarder")
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to start callback server"})
+			c.JSON(http.StatusInternalServerError, oauthStartFailure("failed to start callback server", err))
 		case errors.Is(err, xaiprovider.ErrDiscovery), errors.Is(err, xaiprovider.ErrAuthURL):
 			log.WithError(err).Error("failed to start xai oauth flow")
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate authorization url"})
+			c.JSON(http.StatusInternalServerError, oauthStartFailure("failed to generate authorization url", err))
 		default:
 			log.WithError(err).Error("failed to start xai oauth flow")
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to start oauth flow"})
+			c.JSON(http.StatusInternalServerError, oauthStartFailure("failed to start oauth flow", err))
 		}
 		return
 	}
@@ -475,10 +503,10 @@ func (h *Handler) RequestIFlowToken(c *gin.Context) {
 			c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "error": "callback server unavailable"})
 		case errors.Is(err, iflowprovider.ErrCallbackStart):
 			log.WithError(err).Error("failed to start iflow callback forwarder")
-			c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "error": "failed to start callback server"})
+			c.JSON(http.StatusInternalServerError, withErrorStatus(oauthStartFailure("failed to start callback server", err)))
 		default:
 			log.WithError(err).Error("failed to start iflow oauth flow")
-			c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "error": "failed to start oauth flow"})
+			c.JSON(http.StatusInternalServerError, withErrorStatus(oauthStartFailure("failed to start oauth flow", err)))
 		}
 		return
 	}

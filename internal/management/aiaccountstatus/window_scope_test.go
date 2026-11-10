@@ -62,10 +62,54 @@ func TestWindowAppliesToModel(t *testing.T) {
 		{"antigravity:other", "gpt-oss-120b-medium", false},
 		{"antigravity:model_gpt_oss_120b_medium", "gpt-oss-120b-medium", true},
 		{"antigravity:model_gpt_oss_120b_medium", "gpt-oss-20b", false},
+
+		// The quota summary's real buckets: Gemini models on one, the rest on the other.
+		{"antigravity:gemini_5h", "gemini-3.1-flash-lite", true},
+		{"antigravity:gemini_weekly", "gemini-3.1-flash-image", true},
+		{"antigravity:gemini_weekly", "claude-sonnet-5-5-high", false},
+		{"antigravity:3p_5h", "claude-opus-5-5-high", true},
+		{"antigravity:3p_weekly", "gpt-oss-120b-medium", true},
+		{"antigravity:3p_weekly", "gemini-3.8-flash-high", false},
+		{"antigravity:3p_weekly", "", false},
+		{"antigravity:g0_b1", "gemini-3.1-flash-lite", false},
 	}
 	for _, tc := range cases {
 		if got := WindowAppliesToModel(tc.key, tc.model); got != tc.want {
 			t.Errorf("WindowAppliesToModel(%q, %q) = %v, want %v", tc.key, tc.model, got, tc.want)
+		}
+	}
+}
+
+// Spend follows the same classification as scheduling, read the other way:
+// account-wide windows count every request, model-scoped ones a filter, and
+// feature allowances none at all — they report no spend rather than $0.
+func TestWindowSpendCoversMatchesWindowAppliesToModel(t *testing.T) {
+	for _, key := range []string{"code_5h", "code_subscription_2592000", "seven_day", "weekly_limit"} {
+		if covers, ok := windowSpendCovers(key); !ok || covers != nil {
+			t.Errorf("%s: account-wide window must count every request (ok=%v, filter=%v)", key, ok, covers != nil)
+		}
+	}
+	for _, key := range []string{"review_5h", "seven_day_oauth_apps", "product:GrokBuild", "pay_as_you_go", "antigravity:other", ""} {
+		if _, ok := windowSpendCovers(key); ok {
+			t.Errorf("%s: no model request draws on it, so it has no spend", key)
+		}
+	}
+	for _, tc := range []struct {
+		key, model string
+		want       bool
+	}{
+		{"seven_day_opus", "claude-opus-5-5", true},
+		{"seven_day_opus", "claude-sonnet-5-5", false},
+		{"antigravity:gemini_5h", "models/Gemini-3.1-Flash-Lite", true},
+		{"antigravity:3p_5h", "gemini-3.1-flash-lite", false},
+		{"antigravity:3p_5h", "", false},
+	} {
+		covers, ok := windowSpendCovers(tc.key)
+		if !ok || covers == nil {
+			t.Fatalf("%s: want a model filter", tc.key)
+		}
+		if got := covers(tc.model); got != tc.want || got != WindowAppliesToModel(tc.key, tc.model) {
+			t.Errorf("%s / %q: covers = %v, want %v (and equal to WindowAppliesToModel)", tc.key, tc.model, got, tc.want)
 		}
 	}
 }

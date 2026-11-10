@@ -73,6 +73,10 @@ func TestDeployScriptIgnoresCallerOverridesOfRootPaths(t *testing.T) {
 		"PORT_A=22",
 		"GO_MEM_LIMIT_PERCENT=a[$(touch /tmp/evil)]",
 		"SCRIPT_VERSION=anything",
+		// A stop timeout at or below the grace SIGKILLs the shutdown that
+		// follows the drain.
+		"SHUTDOWN_STOP_HEADROOM_SECONDS=0",
+		"SLOT_STOP_TIMEOUT_SECONDS=1",
 	}
 	cmd := exec.Command("bash", "scripts/deploy-blue-green.sh", "--print-settings")
 	cmd.Env = append(os.Environ(), hostile...)
@@ -103,6 +107,11 @@ func TestDeployScriptIgnoresCallerOverridesOfRootPaths(t *testing.T) {
 		if got, ok := settings[key]; !ok || got != want {
 			t.Fatalf("%s = %q (present %v) with a hostile environment, want %q\n%s", key, got, ok, want, out)
 		}
+	}
+	// The slot unit's stop timeout is derived on the node, never taken from the
+	// caller.
+	if got, want := settings["SLOT_STOP_TIMEOUT_SECONDS"], defaultSlotStopTimeout(t); got != want {
+		t.Fatalf("SLOT_STOP_TIMEOUT_SECONDS = %q with a hostile environment, want %q\n%s", got, want, out)
 	}
 
 	// Tunables do come from the caller, so they are validated instead: a

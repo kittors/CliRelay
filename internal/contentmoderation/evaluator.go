@@ -12,6 +12,9 @@ const (
 	ActionAPIBlock     = "api_block"
 	ActionGuardBlock   = "guard_block"
 	ActionAPIError     = "api_error"
+	// ActionUnreadable: the body is not one strict JSON text, so what moderation
+	// would read of it is not what the upstream reads (see extraction.run).
+	ActionUnreadable = "unreadable"
 )
 
 type Decision struct {

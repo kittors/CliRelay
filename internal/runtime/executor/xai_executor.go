@@ -73,7 +73,7 @@ func (e *XAIExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req 
 	if opts.Alt == "responses/compact" {
 		return resp, statusErr{code: http.StatusNotImplemented, msg: "/responses/compact not supported"}
 	}
-	execCtx, body, _, err := e.prepareResponsesRequest(ctx, auth, req, opts, true)
+	execCtx, body, toolNames, err := e.prepareResponsesRequest(ctx, auth, req, opts, true)
 	if err != nil {
 		return resp, err
 	}
@@ -127,7 +127,7 @@ func (e *XAIExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req 
 		if !bytes.HasPrefix(line, dataTag) {
 			continue
 		}
-		payload := bytes.TrimSpace(line[len(dataTag):])
+		payload, _ := toolNames.restoreEvent(bytes.TrimSpace(line[len(dataTag):]))
 		switch gjson.GetBytes(payload, "type").String() {
 		case "response.failed", "error":
 			streamErr = codexResponsesFailedStatusErr(payload)
@@ -179,7 +179,7 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 	if opts.Alt == "responses/compact" {
 		return nil, statusErr{code: http.StatusBadRequest, msg: "streaming not supported for /responses/compact"}
 	}
-	execCtx, body, _, err := e.prepareResponsesRequest(ctx, auth, req, opts, true)
+	execCtx, body, toolNames, err := e.prepareResponsesRequest(ctx, auth, req, opts, true)
 	if err != nil {
 		return nil, err
 	}
@@ -249,7 +249,9 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 				}
 			}
 
-			chunks := sdktranslator.TranslateStream(execCtx.Context, execCtx.Execution.TargetFormat, execCtx.SourceFormat, req.Model, execCtx.OriginalPayload, body, bytes.Clone(line), &param)
+			// The recorder and usage reporter above keep Grok's own line; the
+			// client gets calls back under the namespaces it declared.
+			chunks := sdktranslator.TranslateStream(execCtx.Context, execCtx.Execution.TargetFormat, execCtx.SourceFormat, req.Model, execCtx.OriginalPayload, body, toolNames.restoreSSELine(bytes.Clone(line)), &param)
 			for i := range chunks {
 				out <- cliproxyexecutor.StreamChunk{Payload: []byte(chunks[i])}
 			}
@@ -306,7 +308,12 @@ func (e *XAIExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*cl
 		return auth, nil
 	}
 	tokenEndpoint := xaiMetadataString(auth.Metadata, "token_endpoint")
-	svc := xaiauth.NewXAIAuthWithProxyURL(e.cfg, auth.ProxyURL)
+	// The refresh leaves through the proxy the credential's requests use, its
+	// proxy-pool entry included. auth.ProxyURL alone skipped a pool binding and
+	// fell back to the global proxy-url: when that proxy died, accounts whose
+	// own pool proxy was fine stopped refreshing and went 401 once the 6-hour
+	// access token ran out (2026-11-09, kittors/CliRelay#1122).
+	svc := xaiauth.NewXAIAuthWithProxyURL(e.cfg, resolveAuthProxyURL(e.cfg, auth))
 	td, err := svc.RefreshTokens(ctx, refreshToken, tokenEndpoint)
 	if err != nil {
 		return nil, err
@@ -355,7 +362,10 @@ func (e *XAIExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*cl
 	return auth, nil
 }
 
-func (e *XAIExecutor) prepareResponsesRequest(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, stream bool) (*ExecutionContext, []byte, []byte, error) {
+// prepareResponsesRequest builds the body sent to xAI. The returned names map
+// the flat tool names it invented for Codex namespace tools back to the
+// namespaced originals; it is nil for requests that carried none.
+func (e *XAIExecutor) prepareResponsesRequest(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, stream bool) (*ExecutionContext, []byte, *xaiNamespaceToolNames, error) {
 	execCtx := newExecutionContext(ctx, e.Identifier(), e.cfg, auth, req, opts, ExecutionOptions{
 		TargetFormat:      sdktranslator.FromString("codex"),
 		TranslateAsStream: stream,
@@ -370,6 +380,10 @@ func (e *XAIExecutor) prepareResponsesRequest(ctx context.Context, auth *cliprox
 	body = execCtx.ApplyPayloadConfig(body, originalTranslated)
 	body = ensureTranslatedCodexModel(body, execCtx.BaseModel)
 	body = sanitizeCodexResponsesRequest(body)
+	body, toolNames := flattenXAINamespaceTools(body)
+	body = stripXAIUnsupportedWebSearchOptions(body)
+	// After flattening, so namespace children and lifted Lite tools are checked too.
+	body = normalizeXAIToolParameterRoots(body)
 	sets := map[string][]byte{
 		"stream": util.JSONBool(stream),
 	}
@@ -382,7 +396,7 @@ func (e *XAIExecutor) prepareResponsesRequest(ctx context.Context, auth *cliprox
 		"safety_identifier",
 		"stream_options",
 	})
-	return execCtx, body, originalTranslated, nil
+	return execCtx, body, toolNames, nil
 }
 
 func xaiCreds(auth *cliproxyauth.Auth) (token, baseURL string) {
@@ -472,8 +486,8 @@ func applyXAIHeaders(r *http.Request, cfg *config.Config, auth *cliproxyauth.Aut
 	}
 	util.ApplyCustomHeadersFromAttrs(r, attrs)
 	applyXAIPassthroughHeaders(r.Header, identityFingerprintHeadersFromContext(r.Context()))
-	if fp, ok := xaiIdentityFingerprint(cfg, auth, r.Context()); ok {
-		applyXAIIdentityFingerprintHeaders(r.Header, fp)
+	if fp, clientMode, ok := xaiIdentityFingerprint(cfg, auth, r.Context()); ok {
+		applyXAIIdentityFingerprintHeaders(r.Header, fp, clientMode)
 	}
 }
 
@@ -483,7 +497,14 @@ func applyXAIChatHeaders(r *http.Request, cfg *config.Config, auth *cliproxyauth
 		return
 	}
 	r.Header.Set(xaiTokenAuthHeader, xaiTokenAuthValue)
-	r.Header.Set("X-Grok-Client-Version", config.DefaultXAIFingerprintClientVersion)
+	// cli-chat-proxy answers a request without a client version with 426
+	// ("(none) is outdated"), so one always goes; the identity's own wins.
+	// This used to overwrite it with the builtin constant, which sent a
+	// learned grok-shell/1.0.77 User-Agent beside version 1.0.46 (2026-11-09).
+	// An outdated learned identity is kept out by ResolveXAI's floor instead.
+	if strings.TrimSpace(r.Header.Get("X-Grok-Client-Version")) == "" {
+		r.Header.Set("X-Grok-Client-Version", config.DefaultXAIFingerprintClientVersion)
+	}
 }
 
 func xaiMetadataString(meta map[string]any, key string) string {

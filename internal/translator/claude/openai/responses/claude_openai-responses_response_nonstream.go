@@ -52,8 +52,7 @@ func ConvertClaudeResponseToOpenAIResponsesNonStream(_ context.Context, _ string
 		reasoningItemID string
 		reasoningSig    string
 		reasoningChars  int
-		inputTokens     int64
-		outputTokens    int64
+		usage           claudeResponsesUsage
 	)
 	textOutputIndex = -1
 	// outputItems is deliberately populated as Claude closes content blocks.
@@ -79,9 +78,7 @@ func ConvertClaudeResponseToOpenAIResponsesNonStream(_ context.Context, _ string
 			if msg := root.Get("message"); msg.Exists() {
 				responseID = msg.Get("id").String()
 				createdAt = time.Now().Unix()
-				if usage := msg.Get("usage"); usage.Exists() {
-					inputTokens = usage.Get("input_tokens").Int()
-				}
+				usage.merge(msg.Get("usage"))
 			}
 
 		case "content_block_start":
@@ -181,9 +178,7 @@ func ConvertClaudeResponseToOpenAIResponsesNonStream(_ context.Context, _ string
 			}
 
 		case "message_delta":
-			if usage := root.Get("usage"); usage.Exists() {
-				outputTokens = usage.Get("output_tokens").Int()
-			}
+			usage.merge(root.Get("usage"))
 		}
 	}
 
@@ -281,10 +276,10 @@ func ConvertClaudeResponseToOpenAIResponsesNonStream(_ context.Context, _ string
 	}
 
 	// Usage
-	total := inputTokens + outputTokens
-	out, _ = sjson.Set(out, "usage.input_tokens", inputTokens)
-	out, _ = sjson.Set(out, "usage.output_tokens", outputTokens)
-	out, _ = sjson.Set(out, "usage.total_tokens", total)
+	out, _ = sjson.Set(out, "usage.input_tokens", usage.responsesInputTokens())
+	out, _ = sjson.Set(out, "usage.input_tokens_details.cached_tokens", usage.CacheReadTokens)
+	out, _ = sjson.Set(out, "usage.output_tokens", usage.OutputTokens)
+	out, _ = sjson.Set(out, "usage.total_tokens", usage.responsesTotalTokens())
 	if reasoningChars > 0 {
 		// Rough estimate similar to chat completions
 		reasoningTokens := int64(reasoningChars / 4)

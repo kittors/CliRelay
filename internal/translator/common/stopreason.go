@@ -78,7 +78,8 @@ func StopReasonFromGemini(reason string) StopReason {
 	switch strings.ToUpper(reason) {
 	case "MAX_TOKENS":
 		return StopMaxTokens
-	case "SAFETY", "RECITATION", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII", "IMAGE_SAFETY":
+	case "SAFETY", "RECITATION", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII",
+		"IMAGE_SAFETY", "IMAGE_PROHIBITED_CONTENT", "IMAGE_RECITATION":
 		return StopRefusal
 	}
 	return StopEndTurn
@@ -123,6 +124,19 @@ func (r StopReason) OpenAI() string {
 		return "content_filter"
 	}
 	return "stop"
+}
+
+// Responses returns the Responses API status and incomplete_details.reason for
+// r. Responses has no reason for a natural end or for tool calls: both are
+// completed.
+func (r StopReason) Responses() (status, incompleteReason string) {
+	switch r {
+	case StopMaxTokens:
+		return "incomplete", "max_output_tokens"
+	case StopRefusal:
+		return "incomplete", "content_filter"
+	}
+	return "completed", ""
 }
 
 // Gemini returns the Gemini finishReason for r; tool calls end with STOP.

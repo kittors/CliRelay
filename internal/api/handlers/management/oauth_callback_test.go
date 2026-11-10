@@ -14,11 +14,7 @@ import (
 func TestPostOAuthCallbackAcceptsAlreadyProcessedState(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	previousStore := oauthSessions
-	oauthSessions = newOAuthSessionStore(time.Minute)
-	t.Cleanup(func() {
-		oauthSessions = previousStore
-	})
+	useIsolatedOAuthSessions(t, time.Minute)
 
 	RegisterOAuthSession("session-1", "codex")
 	CompleteOAuthSession("session-1")
@@ -50,11 +46,7 @@ func TestPostOAuthCallbackAcceptsAlreadyProcessedState(t *testing.T) {
 func TestPostOAuthCallbackReturnsSessionStatusWhenFlowIsNoLongerPending(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	previousStore := oauthSessions
-	oauthSessions = newOAuthSessionStore(time.Minute)
-	t.Cleanup(func() {
-		oauthSessions = previousStore
-	})
+	useIsolatedOAuthSessions(t, time.Minute)
 
 	RegisterOAuthSession("session-timeout", "codex")
 	SetOAuthSessionError("session-timeout", "Timeout waiting for OAuth callback")
@@ -85,11 +77,7 @@ func TestPostOAuthCallbackReturnsSessionStatusWhenFlowIsNoLongerPending(t *testi
 func TestPostOAuthCallbackAcceptsDirectCodeAndState(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	previousStore := oauthSessions
-	oauthSessions = newOAuthSessionStore(time.Minute)
-	t.Cleanup(func() {
-		oauthSessions = previousStore
-	})
+	useIsolatedOAuthSessions(t, time.Minute)
 
 	RegisterOAuthSession("xai-state", "xai")
 

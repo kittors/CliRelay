@@ -44,24 +44,17 @@ var (
 	requestLogContentBytes  atomic.Int64 // total compressed bytes; -1 means unknown
 	requestLogBodiesEnabled atomic.Bool
 
-	zstdEncoderPool = sync.Pool{
-		New: func() any {
-			encoder, err := zstd.NewWriter(nil)
-			if err != nil {
-				panic(err)
-			}
-			return encoder
-		},
-	}
-	zstdDecoderPool = sync.Pool{
-		New: func() any {
-			decoder, err := zstd.NewReader(nil)
-			if err != nil {
-				panic(err)
-			}
-			return decoder
-		},
-	}
+	// One encoder and one decoder serve every call. EncodeAll and DecodeAll are
+	// safe for concurrent use and keep their own pool of block coders, so the
+	// sync.Pool of whole coders these replace only multiplied that memory.
+	//
+	// They are created, and used once, in init: a coder sets up channels on
+	// first use, and a channel made inside a synctest bubble is a fatal error
+	// when touched from outside it. Pooled coders made in one test's bubble
+	// reached the next test's that way ("receive on synctest channel from
+	// outside bubble"), taking the whole test binary down.
+	zstdEncoder *zstd.Encoder
+	zstdDecoder *zstd.Decoder
 )
 
 func init() {
@@ -70,6 +63,17 @@ func init() {
 	requestLogBodiesEnabled.Store(false)
 	// Initialize atomic.Value type so subsequent stores can use typed nil safely.
 	requestLogMaintenanceWakeup.Store((chan struct{})(nil))
+
+	var err error
+	if zstdEncoder, err = zstd.NewWriter(nil); err != nil {
+		panic(err)
+	}
+	if zstdDecoder, err = zstd.NewReader(nil); err != nil {
+		panic(err)
+	}
+	if _, err = zstdDecoder.DecodeAll(zstdEncoder.EncodeAll([]byte("init"), nil), nil); err != nil {
+		panic(err)
+	}
 }
 
 func defaultRequestLogStorageRuntime() requestLogStorageRuntime {
@@ -207,51 +211,93 @@ func startRequestLogMaintenance(db *sql.DB, driver string) {
 	// 请求日志维护协程属于 usage 存储子系统：
 	// - owner: startRequestLogMaintenance / stopRequestLogMaintenance
 	// - 取消条件: stopRequestLogMaintenance、数据库关闭、进程退出
-	// - 超时策略: 周期 cleanup + wakeup 驱动；单次 DB 操作各自控制
+	// - 超时策略: 一轮跑完后按 cleanup 间隔排下一轮，唤醒只做 compaction、不推迟下一轮；
+	//   单次 DB 操作各自控制
+	// - 取消响应: 每一步都要在 ctx 取消后的一条语句内停下。CloseDB 在进程退出前
+	//   等这个协程；2026-11-10 两个退役 slot 就是等一轮 16 分钟以上的正文清除，
+	//   被 systemd 在 TimeoutStopSec 时 SIGKILL
 	// - 清理方式: cancel 后等待 requestLogMaintenanceWG，确保协程退出
 	go func() {
 		defer requestLogMaintenanceWG.Done()
-		runRequestLogMaintenancePass(ctx, db, driver)
+		more := runRequestLogMaintenancePass(ctx, db, driver)
+		lastPass := time.Now()
 
 		for {
-			interval := time.Duration(currentRequestLogStorageConfig().CleanupIntervalMinutes) * time.Minute
-			timer := time.NewTimer(interval)
+			// The next pass is due one interval after the last one ended,
+			// however many wakeups come in between. The loop used to start a new
+			// full-interval timer after each wakeup, and the write path wakes it
+			// whenever it trims content to the size cap, which production does on
+			// nearly every write: on 2026-11-10 every process ran its pass once,
+			// at startup, and request_logs had grown past max-rows. The interval
+			// is read again on each turn, so a config change still applies.
+			timer := time.NewTimer(time.Until(lastPass.Add(nextRequestLogMaintenanceDelay(more))))
 			select {
 			case <-ctx.Done():
-				if !timer.Stop() {
-					select {
-					case <-timer.C:
-					default:
-					}
-				}
+				timer.Stop()
 				return
 			case <-wakeup:
-				if !timer.Stop() {
-					select {
-					case <-timer.C:
-					default:
-					}
-				}
-				// Compaction/config wakeups should remain lightweight. The next
-				// timer is rebuilt from the latest runtime policy.
+				timer.Stop()
+				// Compaction/config wakeups stay lightweight and leave the
+				// schedule alone.
 				compactLogContentStorageInternal(ctx, db)
 			case <-timer.C:
-				runRequestLogMaintenancePass(ctx, db, driver)
+				more = runRequestLogMaintenancePass(ctx, db, driver)
+				lastPass = time.Now()
 			}
 		}
 	}()
 }
 
+// requestLogMaintenanceCatchUpDelay is the wait before the next pass while the
+// last one left a backlog at its per-pass limit (requestBodyPurgePassRows).
+// Each pass stays bounded, with time between them for the traffic, and a
+// backlog still clears in minutes rather than one slice an hour.
+const requestLogMaintenanceCatchUpDelay = time.Minute
+
+func nextRequestLogMaintenanceDelay(backlog bool) time.Duration {
+	if backlog {
+		return requestLogMaintenanceCatchUpDelay
+	}
+	return time.Duration(currentRequestLogStorageConfig().CleanupIntervalMinutes) * time.Minute
+}
+
 func stopRequestLogMaintenance() {
 	if requestLogMaintenanceCancel != nil {
 		requestLogMaintenanceCancel()
-		requestLogMaintenanceWG.Wait()
+		waitForRequestLogMaintenance(requestLogMaintenanceStopWarnAfter)
 		requestLogMaintenanceCancel = nil
 	}
 	requestLogMaintenanceWakeup.Store((chan struct{})(nil))
 }
 
-func runRequestLogMaintenancePass(ctx context.Context, db *sql.DB, driver string) {
+// requestLogMaintenanceStopWarnAfter is how long a stop waits before saying so.
+// A pass is meant to stop within one statement of the cancel, so a longer wait
+// means some step ignores ctx. Without this line that wait shows in the log only
+// as a gap after "Redis usage persistence flushed and closed", up to the SIGKILL.
+const requestLogMaintenanceStopWarnAfter = 10 * time.Second
+
+func waitForRequestLogMaintenance(warnAfter time.Duration) {
+	cancelledAt := time.Now()
+	stopped := make(chan struct{})
+	go func() {
+		requestLogMaintenanceWG.Wait()
+		close(stopped)
+	}()
+	timer := time.NewTimer(warnAfter)
+	defer timer.Stop()
+	select {
+	case <-stopped:
+		return
+	case <-timer.C:
+	}
+	log.Warnf("usage: request log maintenance still running %s after it was cancelled; waiting for it to stop", warnAfter)
+	<-stopped
+	log.Warnf("usage: request log maintenance stopped %s after it was cancelled", time.Since(cancelledAt).Round(time.Millisecond))
+}
+
+// runRequestLogMaintenancePass reports whether it left a backlog for a
+// catch-up pass: the body purge stopped at its per-pass row limit.
+func runRequestLogMaintenancePass(ctx context.Context, db *sql.DB, driver string) (backlog bool) {
 	if removed, err := CleanupStaleDeferredUsageContentFiles(); err != nil {
 		log.WithError(err).Warn("usage: stale deferred content cleanup completed with errors")
 	} else if removed > 0 {
@@ -267,10 +313,19 @@ func runRequestLogMaintenancePass(ctx context.Context, db *sql.DB, driver string
 		return
 	}
 	if !RequestLogBodyStorageEnabled() {
-		if _, err := purgeStoredRequestBodies(db, driver); err != nil {
-			log.Errorf("usage: purge disabled request log body storage: %v", err)
+		purged, err := purgeStoredRequestBodies(ctx, db, driver, requestBodyPurgePassRows)
+		if err != nil {
+			if ctx.Err() == nil { // a pass stopped by shutdown is not a failure
+				log.Errorf("usage: purge disabled request log body storage: %v", err)
+			}
 			return
 		}
+		backlog = purged.stoppedAtLimit
+	}
+	// The steps below that take no ctx are each short, so the pass checks ctx
+	// between them; once cancelled it stops instead of running the rest.
+	if ctx.Err() != nil {
+		return
 	}
 
 	// Refresh the running total periodically so size-cap enforcement stays fast
@@ -281,7 +336,7 @@ func runRequestLogMaintenancePass(ctx context.Context, db *sql.DB, driver string
 		}
 	}
 
-	for {
+	for ctx.Err() == nil {
 		migrated, err := migrateLegacyContentBatch(db, 200)
 		if err != nil {
 			log.Errorf("usage: migrate legacy request log content: %v", err)
@@ -290,6 +345,10 @@ func runRequestLogMaintenancePass(ctx context.Context, db *sql.DB, driver string
 		if migrated == 0 {
 			break
 		}
+	}
+
+	if ctx.Err() != nil {
+		return
 	}
 
 	// Finish pending→done catch-up if startup goroutine has not yet (or failed).
@@ -333,6 +392,10 @@ func runRequestLogMaintenancePass(ctx context.Context, db *sql.DB, driver string
 		log.Infof("usage: pruned %d expired shared AI account quota point rows", n)
 	}
 
+	if ctx.Err() != nil {
+		return
+	}
+
 	// cleanup-enabled gates metadata and content retention/size cleanup only.
 	// Body purge when store-content=false still runs above (privacy, not retention).
 	if !currentRequestLogStorageConfig().CleanupEnabled {
@@ -343,11 +406,18 @@ func runRequestLogMaintenancePass(ctx context.Context, db *sql.DB, driver string
 	cleanupStarted := time.Now()
 	metaDeleted, metaErr := cleanupExpiredRequestLogMetadata(ctx, db)
 	if metaErr != nil {
+		if ctx.Err() != nil { // stopped by shutdown; not a failed cleanup to record
+			return
+		}
 		log.Errorf("usage: cleanup request log metadata: %v", metaErr)
 		recordCleanupPass(metaDeleted, cleanupStarted, "error", metaErr.Error())
 	} else if metaDeleted > 0 {
 		log.Infof("usage: pruned %d expired request_logs metadata rows", metaDeleted)
 		recordCleanupPass(metaDeleted, cleanupStarted, "ok", "")
+	}
+
+	if ctx.Err() != nil {
+		return
 	}
 
 	deleted, err := cleanupExpiredLogContent(db)
@@ -378,6 +448,7 @@ func runRequestLogMaintenancePass(ctx context.Context, db *sql.DB, driver string
 
 	// PostgreSQL compaction stays online and asynchronous; never wait for VACUUM FULL.
 	compactLogContentStorageInternal(ctx, db)
+	return
 }
 
 func refreshRequestLogContentBytes(q logContentQuerier) {
@@ -400,7 +471,11 @@ func insertLogContentTenantTx(tx usageWriteTx, tenantID string, logID int64, tim
 	if tx == nil || logID < 1 {
 		return nil
 	}
-	if !RequestLogBodyStorageEnabled() {
+	// One read of the toggle decides both the stripping and the bodies_stripped
+	// flag stored with the row: the purge skips rows flagged 1, so a flag that
+	// disagreed with the content would keep a body for good.
+	stripBodies := !RequestLogBodyStorageEnabled()
+	if stripBodies {
 		// Privacy: do not keep full request/response bodies when body storage is off.
 		// Failed requests are an exception for output_content: the management UI
 		// error modal needs the compact upstream error payload (status/message JSON).
@@ -441,8 +516,14 @@ func insertLogContentTenantTx(tx usageWriteTx, tenantID string, logID int64, tim
 	if usageDriver == "postgres" {
 		conflictTarget = "(tenant_id, log_id)"
 	}
-	query := `INSERT INTO request_log_content (tenant_id, log_id, timestamp, compression, input_content, output_content, detail_content, session_id)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	// bodies_stripped: 1 when the content above was stripped for storage being
+	// off, 0 when it may hold bodies. See purgeStoredRequestBodies.
+	bodiesStripped := 0
+	if stripBodies {
+		bodiesStripped = 1
+	}
+	query := `INSERT INTO request_log_content (tenant_id, log_id, timestamp, compression, input_content, output_content, detail_content, session_id, bodies_stripped)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT` + conflictTarget + ` DO UPDATE SET
 		   tenant_id = excluded.tenant_id,
 		   timestamp = excluded.timestamp,
@@ -450,8 +531,9 @@ func insertLogContentTenantTx(tx usageWriteTx, tenantID string, logID int64, tim
 		   input_content = excluded.input_content,
 		   output_content = excluded.output_content,
 		   detail_content = excluded.detail_content,
-		   session_id = excluded.session_id`
-	args := []any{tenantID, logID, timestamp.UTC().Format(time.RFC3339Nano), requestLogContentCompression, inputCompressed, outputCompressed, detailCompressed, sessionID}
+		   session_id = excluded.session_id,
+		   bodies_stripped = excluded.bodies_stripped`
+	args := []any{tenantID, logID, timestamp.UTC().Format(time.RFC3339Nano), requestLogContentCompression, inputCompressed, outputCompressed, detailCompressed, sessionID, bodiesStripped}
 	_, err = tx.Exec(query, args...)
 	if err != nil {
 		return fmt.Errorf("usage: insert compressed content: %w", err)
@@ -497,9 +579,7 @@ func compressLogContent(content string) ([]byte, error) {
 	if content == "" {
 		return []byte{}, nil
 	}
-	encoder := zstdEncoderPool.Get().(*zstd.Encoder)
-	defer zstdEncoderPool.Put(encoder)
-	return encoder.EncodeAll([]byte(content), make([]byte, 0, len(content)/2)), nil
+	return zstdEncoder.EncodeAll([]byte(content), make([]byte, 0, len(content)/2)), nil
 }
 
 func decompressLogContent(compression string, content []byte) (string, error) {
@@ -508,9 +588,7 @@ func decompressLogContent(compression string, content []byte) (string, error) {
 	}
 	switch compression {
 	case "", requestLogContentCompression:
-		decoder := zstdDecoderPool.Get().(*zstd.Decoder)
-		defer zstdDecoderPool.Put(decoder)
-		decoded, err := decoder.DecodeAll(content, nil)
+		decoded, err := zstdDecoder.DecodeAll(content, nil)
 		if err != nil {
 			return "", fmt.Errorf("usage: decompress content: %w", err)
 		}

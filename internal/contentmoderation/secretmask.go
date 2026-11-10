@@ -23,20 +23,31 @@ import (
 // nothing was replaced. failure says why a request that holds a value to mask
 // could not be rewritten; such a request must not be sent.
 //
-// It reads the request as the word guard does (extractWordUnits), so it sees
-// the same text the model reads, the arguments of tool calls included, and
-// leaves the protocol alone. Text a signature covers (a replayed thinking
-// block) is never changed: the upstream would refuse the request. quiet says
-// the body is a second copy of a request whose first copy was masked already:
-// its values are not counted again.
+// It reads the request as the word guard does, and also the data of tool calls
+// and results whatever their keys, and the descriptions of the tools and of
+// the reply's schema (extractSecretUnits), so it sees the text the model
+// reads, and leaves the protocol alone. Text a signature covers (a replayed
+// thinking block) is never changed: the upstream would refuse the request.
+// quiet says the body is a second copy of a request whose first copy was
+// masked already: its values are not counted again.
 func maskRequestSecrets(format sdktranslator.Format, body []byte, masker *privacymask.Masker, quiet bool) (out []byte, failure string) {
 	return maskRequest(format, body, masker, quiet, nil)
 }
 
+// maskFailureUnreadable is the failure of a body that is not one strict JSON
+// text. It names no field: the problem may sit in a member name, and a name may
+// be a secret.
+const maskFailureUnreadable = "unreadable"
+
 // maskRequest is maskRequestSecrets that also notes, for the request's record,
 // where each value was found and the text around it (notes, nil for none).
 func maskRequest(format sdktranslator.Format, body []byte, masker *privacymask.Masker, quiet bool, notes *maskNotes) (out []byte, failure string) {
-	units := extractWordUnits(format, body)
+	units, unreadable := readSecretUnits(format, body)
+	if unreadable != nil {
+		// Masking cannot see the values of a body it cannot read as the upstream
+		// will, so it cannot keep them here (see extraction.run).
+		return nil, maskFailureUnreadable
+	}
 	type slot struct {
 		doc  *wordDoc
 		lit0 int
@@ -60,6 +71,11 @@ func maskRequest(format sdktranslator.Format, body []byte, masker *privacymask.M
 	} else {
 		plans = masker.Plan(texts, skip)
 	}
+	if notes != nil && !quiet {
+		// The places noted below are located once the request is read, refused
+		// or not (a refused request has a record too), in one walk of it.
+		defer notes.locate()
+	}
 	var patches docPatches
 	changed := false
 	for i, unit := range units {
@@ -70,17 +86,16 @@ func maskRequest(format sdktranslator.Format, body []byte, masker *privacymask.M
 		if len(edits) == 0 {
 			continue
 		}
-		where := withoutSecrets(unitField(unit))
 		if unit.kind != unitText || !unit.rewritable {
 			why := unit.why
 			if why == "" {
 				why = "it is not a plain string value"
 			}
-			return nil, where + ": " + why
+			return nil, failedAt(unit, why)
 		}
 		lit := unit.doc.data[unit.lit0:unit.lit1]
 		if text, ok := decodeJSONLiteral(lit); !ok || text != unit.text {
-			return nil, where + ": " + whyUnlocated
+			return nil, failedAt(unit, whyUnlocated)
 		}
 		literalEdits := make([]literalEdit, len(edits))
 		for j, e := range edits {
@@ -104,6 +119,14 @@ func maskRequest(format sdktranslator.Format, body []byte, masker *privacymask.M
 		return nil, withoutSecrets(rewriteFailed.field) + ": " + rewriteFailed.why
 	}
 	return written, ""
+}
+
+// failedAt says why a unit stops a request from being masked, and where it is.
+// The place is worked out only here, for the one unit that stops it: it takes a
+// walk of the request, and working it out for every unit masked, in case one
+// failed, cost more than all the rest of masking on a request of screenshots.
+func failedAt(unit wordUnit, why string) string {
+	return withoutSecrets(unitField(unit)) + ": " + why
 }
 
 // withoutSecrets returns a field's path with the secrets in it blanked out. A
