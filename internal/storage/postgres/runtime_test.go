@@ -11,8 +11,8 @@ import (
 
 func TestRuntimeMigrationsCoverCoreTables(t *testing.T) {
 	migrations := RuntimeMigrations()
-	if len(migrations) != 46 {
-		t.Fatalf("RuntimeMigrations len = %d, want 46", len(migrations))
+	if len(migrations) != 48 {
+		t.Fatalf("RuntimeMigrations len = %d, want 48", len(migrations))
 	}
 	// Membership table of multi-instance deployments.
 	if migrations[31].Version != "202609250001_cluster_nodes" {
@@ -131,6 +131,23 @@ func TestRuntimeMigrationsCoverCoreTables(t *testing.T) {
 		t.Fatalf("rollup subject index migration = %q: %q", got.Version, got.SQL)
 	} else if strings.Contains(got.SQL, "cost_total") || strings.Contains(got.SQL, "request_logs") || strings.Contains(got.SQL, "UPDATE") {
 		t.Fatalf("rollup subject index migration must only add the key index: %q", got.SQL)
+	}
+	// The body purge's flag and its partial index, as two migrations: the
+	// constant-default column is catalog-only, and building the index inside
+	// the ALTER's transaction would hold a lock that blocks reads too. No
+	// UPDATE: rows older than the column read 0 and the purge checks them.
+	if got := migrations[46]; got.Version != "202611100002_request_log_content_bodies_stripped" ||
+		!strings.Contains(got.SQL, "ADD COLUMN IF NOT EXISTS bodies_stripped INTEGER NOT NULL DEFAULT 0") {
+		t.Fatalf("bodies stripped migration = %q: %q", got.Version, got.SQL)
+	} else if strings.Contains(got.SQL, "INDEX") || strings.Contains(got.SQL, "UPDATE") {
+		t.Fatalf("bodies stripped migration must only change the catalog: %q", got.SQL)
+	}
+	if got := migrations[47]; got.Version != "202611100003_request_log_content_unstripped_index" ||
+		!strings.Contains(got.SQL, "ON request_log_content(log_id)") ||
+		!strings.Contains(got.SQL, "WHERE bodies_stripped = 0") {
+		t.Fatalf("unstripped index migration = %q: %q", got.Version, got.SQL)
+	} else if strings.Contains(got.SQL, "ALTER TABLE") || strings.Contains(got.SQL, "UPDATE") {
+		t.Fatalf("unstripped index migration must only add the partial index: %q", got.SQL)
 	}
 	// Appended from laterRuntimeMigrations() because migrations.go sits at its
 	// structure-gate size ceiling.

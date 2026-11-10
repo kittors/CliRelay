@@ -16,11 +16,13 @@ import (
 
 // TestStopRequestLogMaintenanceCancelsBodyPurgeWalk covers the retiring slots
 // that systemd killed on 2026-11-10. With body storage off, every maintenance
-// pass walks all of request_log_content to strip bodies from details; in
-// production that walk ran for 16 to 22 minutes. CloseDB stops the maintenance
-// worker and waits for it, so a walk that ignored the cancel held shutdown
-// until TimeoutStopSec ran out. The driver below parks the walk's query until
-// the query's context ends, as a long statement on PostgreSQL does.
+// pass then walked all of request_log_content to strip bodies from details; in
+// production that walk ran for 16 to 22 minutes. It now walks only the rows not
+// yet stripped, but the first pass after an upgrade, or after storage was on,
+// can still cover the whole table. CloseDB stops the maintenance worker and
+// waits for it, so a walk that ignored the cancel held shutdown until
+// TimeoutStopSec ran out. The driver below parks the walk's query until the
+// query's context ends, as a long statement on PostgreSQL does.
 func TestStopRequestLogMaintenanceCancelsBodyPurgeWalk(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "usage.db")
 	CloseDB()
@@ -39,7 +41,7 @@ func TestStopRequestLogMaintenanceCancelsBodyPurgeWalk(t *testing.T) {
 	t.Cleanup(func() { SetRequestLogBodyStorageEnabled(previous) })
 
 	gate := &statementGate{
-		match:   "WHERE log_id > ? AND length(detail_content) > 0",
+		match:   "WHERE bodies_stripped = 0 AND log_id > ?",
 		entered: make(chan struct{}),
 		release: make(chan struct{}),
 	}
