@@ -32,8 +32,11 @@ type ConvertAnthropicResponseToOpenAIParams struct {
 
 // ToolCallAccumulator holds the state for accumulating tool call data
 type ToolCallAccumulator struct {
-	ID        string
-	Name      string
+	ID   string
+	Name string
+	// Streamed is set when the call went out at content_block_start; its
+	// arguments then follow fragment by fragment instead of whole at the stop.
+	Streamed  bool
 	Arguments strings.Builder
 }
 
@@ -120,13 +123,28 @@ func ConvertClaudeResponseToOpenAI(_ context.Context, modelName string, original
 					state.ToolCallsAccumulator = make(map[int]*ToolCallAccumulator)
 				}
 
-				state.ToolCallsAccumulator[index] = &ToolCallAccumulator{
+				accumulator := &ToolCallAccumulator{
 					ID:   toolCallID,
 					Name: toolName,
 				}
+				state.ToolCallsAccumulator[index] = accumulator
 
-				// Don't output anything yet - wait for complete tool call
-				return []string{}
+				// Without an id and a name the call cannot be announced yet; it
+				// is sent whole at content_block_stop.
+				if toolCallID == "" || toolName == "" {
+					return []string{}
+				}
+				// As in OpenAI's stream, the call's first chunk carries its index,
+				// id, type and name with empty arguments, and the arguments follow
+				// as Claude generates them. Waiting for content_block_stop left a
+				// client with no sign of a long tool call until it was complete.
+				accumulator.Streamed = true
+				template, _ = sjson.Set(template, "choices.0.delta.tool_calls.0.index", index)
+				template, _ = sjson.Set(template, "choices.0.delta.tool_calls.0.id", toolCallID)
+				template, _ = sjson.Set(template, "choices.0.delta.tool_calls.0.type", "function")
+				template, _ = sjson.Set(template, "choices.0.delta.tool_calls.0.function.name", toolName)
+				template, _ = sjson.Set(template, "choices.0.delta.tool_calls.0.function.arguments", "")
+				return []string{template}
 			}
 		}
 		return []string{}
@@ -147,16 +165,25 @@ func ConvertClaudeResponseToOpenAI(_ context.Context, modelName string, original
 			case "thinking_delta":
 				return []string{}
 			case "input_json_delta":
-				// Tool use input delta - accumulate arguments for tool calls
+				// Tool use input delta: a streamed call forwards each fragment as
+				// it arrives, with only its index; any other call keeps
+				// accumulating until content_block_stop.
 				if partialJSON := delta.Get("partial_json"); partialJSON.Exists() {
 					index := int(root.Get("index").Int())
 					if state.ToolCallsAccumulator != nil {
 						if accumulator, exists := state.ToolCallsAccumulator[index]; exists {
-							accumulator.Arguments.WriteString(partialJSON.String())
+							fragment := partialJSON.String()
+							accumulator.Arguments.WriteString(fragment)
+							// Anthropic opens the arguments with an empty fragment,
+							// which carries nothing to send.
+							if accumulator.Streamed && fragment != "" {
+								template, _ = sjson.Set(template, "choices.0.delta.tool_calls.0.index", index)
+								template, _ = sjson.Set(template, "choices.0.delta.tool_calls.0.function.arguments", fragment)
+								return []string{template}
+							}
 						}
 					}
 				}
-				// Don't output anything yet - wait for complete tool call
 				return []string{}
 			}
 		}
@@ -167,12 +194,24 @@ func ConvertClaudeResponseToOpenAI(_ context.Context, modelName string, original
 		}
 
 	case "content_block_stop":
-		// End of content block - output complete tool call if it's a tool_use block
+		// End of content block - finish the tool call if it's a tool_use block
 		index := int(root.Get("index").Int())
 		if state.ToolCallsAccumulator != nil {
 			if accumulator, exists := state.ToolCallsAccumulator[index]; exists {
-				// Build complete tool call with accumulated arguments
 				arguments := accumulator.Arguments.String()
+				if accumulator.Streamed {
+					// The id, name and every argument fragment are out already. A
+					// call that got no arguments still has to read as an empty
+					// object.
+					delete(state.ToolCallsAccumulator, index)
+					if arguments != "" {
+						return []string{}
+					}
+					template, _ = sjson.Set(template, "choices.0.delta.tool_calls.0.index", index)
+					template, _ = sjson.Set(template, "choices.0.delta.tool_calls.0.function.arguments", "{}")
+					return []string{template}
+				}
+				// Build complete tool call with accumulated arguments
 				if arguments == "" {
 					arguments = "{}"
 				}
