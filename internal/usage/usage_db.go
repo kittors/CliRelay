@@ -70,6 +70,7 @@ CREATE TABLE IF NOT EXISTS request_log_content (
   output_content   BLOB NOT NULL DEFAULT X'',
   detail_content   BLOB NOT NULL DEFAULT X'',
   session_id       TEXT NOT NULL DEFAULT '',
+  bodies_stripped  INTEGER NOT NULL DEFAULT 0,
   FOREIGN KEY(log_id) REFERENCES request_logs(id) ON DELETE CASCADE
 );
 
@@ -408,41 +409,6 @@ func migrateStreamingColumn(db *sql.DB) {
 	}
 }
 
-func migrateRequestLogDetailColumn(db *sql.DB) {
-	_, err := db.Exec("ALTER TABLE request_log_content ADD COLUMN detail_content BLOB NOT NULL DEFAULT X''")
-	if err != nil {
-		if !strings.Contains(err.Error(), "duplicate") {
-			log.Warnf("usage: migrate column detail_content: %v", err)
-		}
-	}
-}
-
-func migrateRequestLogContentSessionIDColumn(db *sql.DB) {
-	_, err := db.Exec("ALTER TABLE request_log_content ADD COLUMN session_id TEXT NOT NULL DEFAULT ''")
-	if err != nil {
-		if !strings.Contains(err.Error(), "duplicate") {
-			log.Warnf("usage: migrate column session_id: %v", err)
-		}
-	}
-}
-
-func ensureRequestLogDetailIndexes(db *sql.DB) {
-	if _, err := db.Exec(`
-		CREATE INDEX IF NOT EXISTS idx_log_content_detail_timestamp
-		ON request_log_content(timestamp DESC)
-		WHERE length(detail_content) > 0
-	`); err != nil {
-		log.Warnf("usage: create idx_log_content_detail_timestamp: %v", err)
-	}
-	if _, err := db.Exec(`
-		CREATE INDEX IF NOT EXISTS idx_log_content_session_timestamp
-		ON request_log_content(session_id, timestamp DESC)
-		WHERE session_id <> ''
-	`); err != nil {
-		log.Warnf("usage: create idx_log_content_session_timestamp: %v", err)
-	}
-}
-
 const (
 	requestLogSessionBackfillMaxRows        = 50
 	requestLogSessionBackfillMaxContentSize = 1 << 20
@@ -720,12 +686,14 @@ func initOpenedDBLocked(db, readDB *sql.DB, dbPath, driver string, storageCfg co
 		migrateRequestLogDetailColumn(db)
 		log.Debugf("usage: running request log content session_id column migration")
 		migrateRequestLogContentSessionIDColumn(db)
+		log.Debugf("usage: running request log content bodies_stripped column migration")
+		migrateRequestLogContentBodiesStrippedColumn(db)
 		log.Debugf("usage: running request log cache and session column migration")
 		migrateRequestLogCacheColumns(db)
 		log.Debugf("usage: running request log guard_kind column migration")
 		migrateRequestLogGuardKindColumn(db)
-		log.Debugf("usage: ensuring request log detail indexes")
-		ensureRequestLogDetailIndexes(db)
+		log.Debugf("usage: ensuring request log content indexes")
+		ensureRequestLogContentIndexes(db)
 		if err := ensureRequestLogIdempotencyTable(db); err != nil {
 			_ = db.Close()
 			usageDB, usageReadDB = nil, nil
