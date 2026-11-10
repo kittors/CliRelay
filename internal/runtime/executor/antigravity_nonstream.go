@@ -35,6 +35,10 @@ func (e *AntigravityExecutor) executeViaStreamEndpoint(ctx context.Context, auth
 	if updatedAuth != nil {
 		auth = updatedAuth
 	}
+	auth, errProject := e.withRequestProject(ctx, auth, token)
+	if errProject != nil {
+		return resp, errProject
+	}
 
 	execCtx := e.newAntigravityExecutionContext(ctx, auth, req, opts, true)
 	reporter := execCtx.Reporter()

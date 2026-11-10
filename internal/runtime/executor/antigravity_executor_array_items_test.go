@@ -30,7 +30,7 @@ func TestAntigravityBuildRequest_FillsMissingArrayItems(t *testing.T) {
 	for _, model := range []string{"gemini-3.8-flash-high", "claude-sonnet-4-6"} {
 		t.Run(model, func(t *testing.T) {
 			payload := chat.ConvertOpenAIRequestToAntigravity(model, openAI, false)
-			req, _, err := (&AntigravityExecutor{}).buildRequest(context.Background(), &cliproxyauth.Auth{}, "token", model, payload, false, "", "https://example.com", 0)
+			req, _, err := (&AntigravityExecutor{}).buildRequest(context.Background(), &cliproxyauth.Auth{Metadata: map[string]any{"project_id": "test-project"}}, "token", model, payload, false, "", "https://example.com", 0)
 			if err != nil {
 				t.Fatalf("buildRequest error: %v", err)
 			}

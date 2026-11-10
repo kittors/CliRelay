@@ -27,13 +27,16 @@ func geminiToAntigravity(modelName string, payload []byte, projectID string, ses
 		requestRaw = string(payload)
 	}
 
-	pid := projectID
-	if pid == "" {
-		pid = generateProjectID()
-	}
-
 	template := `{"project":"","model":"","userAgent":"antigravity","requestType":"agent","requestId":"","request":{}}`
-	template, _ = sjson.Set(template, "project", pid)
+	// The project is the account's own. It used to be invented when the
+	// credential had none, which Google answers for a free-tier account with
+	// 403 SUBSCRIPTION_REQUIRED (#1032); buildRequest now refuses to get here
+	// without one, and an empty value is left out rather than made up.
+	if projectID = strings.TrimSpace(projectID); projectID != "" {
+		template, _ = sjson.Set(template, "project", projectID)
+	} else {
+		template, _ = sjson.Delete(template, "project")
+	}
 	template, _ = sjson.Set(template, "model", modelName)
 	template, _ = sjson.Set(template, "requestId", generateRequestID())
 	template, _ = sjson.SetRaw(template, "request", requestRaw)
@@ -91,15 +94,4 @@ func generateStableSessionID(payload []byte, sessionGeneration int) string {
 		}
 	}
 	return generateSessionID()
-}
-
-func generateProjectID() string {
-	adjectives := []string{"useful", "bright", "swift", "calm", "bold"}
-	nouns := []string{"fuze", "wave", "spark", "flow", "core"}
-	randSourceMutex.Lock()
-	adj := adjectives[randSource.Intn(len(adjectives))]
-	noun := nouns[randSource.Intn(len(nouns))]
-	randSourceMutex.Unlock()
-	randomPart := strings.ToLower(uuid.NewString())[:5]
-	return adj + "-" + noun + "-" + randomPart
 }

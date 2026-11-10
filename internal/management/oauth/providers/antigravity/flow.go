@@ -180,16 +180,22 @@ func StartOAuthLogin(ctx context.Context, opts OAuthLoginOptions) (OAuthLoginRes
 			return
 		}
 
-		projectID := ""
-		if accessToken != "" {
-			fetchedProjectID, errProject := auth.FetchProjectID(ctx, accessToken)
-			if errProject != nil {
-				log.Warnf("antigravity: failed to fetch project ID: %v", errProject)
-			} else {
-				projectID = fetchedProjectID
-				log.Infof("antigravity: obtained project ID %s", projectID)
-			}
+		// An account is only usable with its Cloud Code project. Saving it
+		// without one and reporting success is how #1032's accounts came to
+		// send made-up projects and draw 403 SUBSCRIPTION_REQUIRED, so the login
+		// fails here and says why; the operator can retry once Google has
+		// finished onboarding the account.
+		projectID, errProject := auth.FetchProjectID(ctx, accessToken)
+		projectID = strings.TrimSpace(projectID)
+		if errProject == nil && projectID == "" {
+			errProject = internalantigravity.ErrNoProjectID
 		}
+		if errProject != nil {
+			log.Errorf("antigravity: project discovery failed: %v", errProject)
+			opts.Sessions.setError(state, ProjectDiscoveryFailureMessage(errProject))
+			return
+		}
+		log.Infof("antigravity: obtained project ID %s", projectID)
 
 		record := RecordFromTokenResponse(tokenResp, email, projectID, now())
 		if opts.SaveRecord == nil {
@@ -206,14 +212,43 @@ func StartOAuthLogin(ctx context.Context, opts OAuthLoginOptions) (OAuthLoginRes
 		opts.Sessions.complete(state)
 		opts.Sessions.completeProvider("antigravity")
 		fmt.Printf("Authentication successful! Token saved to %s\n", savedPath)
-		if projectID != "" {
-			fmt.Printf("Using GCP project: %s\n", projectID)
-		}
+		fmt.Printf("Using GCP project: %s\n", projectID)
 		fmt.Println("You can now use Antigravity services through this CLI")
 	}()
 
 	return OAuthLoginResult{AuthURL: authURL, State: state}, nil
 }
+
+// ProjectDiscoveryFailureMessage is what a login reports when the account's
+// Cloud Code project could not be found. It keeps Google's reason, since "no
+// project" on its own reads like a missing licence, and says when trying again
+// can help.
+func ProjectDiscoveryFailureMessage(err error) string {
+	reason := "unknown error"
+	if err != nil {
+		reason = strings.Join(strings.Fields(err.Error()), " ")
+		if len(reason) > 300 {
+			reason = reason[:300] + "…"
+		}
+	}
+	switch {
+	case errors.Is(err, internalantigravity.ErrUnsupportedClient):
+		return "Google rejected this client while looking up the Antigravity project: " + reason
+	case errors.Is(err, internalantigravity.ErrOnboardingPending):
+		return "Google has not finished setting up this account for Antigravity yet; log in again shortly: " + reason
+	case errors.Is(err, internalantigravity.ErrNoProjectID):
+		return "Google returned no Antigravity project for this account: " + reason
+	default:
+		return "Failed to look up the Antigravity project: " + reason
+	}
+}
+
+// projectDiscoveryError carries ProjectDiscoveryFailureMessage while keeping
+// the cause reachable, so callers can still tell a timeout from a verdict.
+type projectDiscoveryError struct{ cause error }
+
+func (e projectDiscoveryError) Error() string { return ProjectDiscoveryFailureMessage(e.cause) }
+func (e projectDiscoveryError) Unwrap() error { return e.cause }
 
 func startCallbackForwarder(opts OAuthLoginOptions, callbackPort int) (CallbackForwarder, int, error) {
 	if !opts.WebUI {
