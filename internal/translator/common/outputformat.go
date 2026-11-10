@@ -70,7 +70,13 @@ const jsonOnlyInstruction = "Respond with only a valid JSON object. Do not wrap 
 
 // OutputFormatFromChat reads a Chat Completions request's response_format.
 func OutputFormatFromChat(root gjson.Result) OutputFormat {
-	format := root.Get("response_format")
+	return OutputFormatFromChatResponseFormat(root.Get("response_format"))
+}
+
+// OutputFormatFromChatResponseFormat reads a response_format member already
+// found in a Chat Completions request, for a translator that finds its
+// members in one walk of the request rather than one lookup each.
+func OutputFormatFromChatResponseFormat(format gjson.Result) OutputFormat {
 	return outputFormatFromOpenAI(format.Get("type").String(), format.Get("json_schema"))
 }
 
