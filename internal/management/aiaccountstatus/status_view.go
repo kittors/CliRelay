@@ -13,7 +13,7 @@ func statusViewFromSharedRecord(row usage.AIAccountSubjectStatusRecord, auth *co
 		SubjectScope: subject.SubjectScope, ShareEligible: subject.ShareEligible, SubjectSeedKind: subject.SeedKind,
 		CurrentTenantBindingCount: bindingCount, RefreshState: row.LastProbeState, HealthStatus: row.HealthStatus,
 		PlanType: row.PlanType, RestrictionSummary: row.RestrictionSummary, ErrorSummary: row.ErrorSummary,
-		ErrorCode: row.ErrorCode, Quotas: row.Quotas, ResetCreditCount: row.ResetCreditCount,
+		ErrorCode: row.ErrorCode, Quotas: quotaWindowViews(row.Quotas), ResetCreditCount: row.ResetCreditCount,
 		ResetCreditExpirations: row.ResetCreditExpirations, Usage: summary,
 		SubscriptionStartedAt: row.SubscriptionStartedAt, SubscriptionExpiresAt: row.SubscriptionExpiresAt,
 		SubscriptionSource: row.SubscriptionSource, UpstreamCheckedAt: row.UpstreamCheckedAt,
@@ -29,9 +29,6 @@ func statusViewFromSharedRecord(row usage.AIAccountSubjectStatusRecord, auth *co
 			view.HealthStatus = string(auth.Status)
 		}
 	}
-	if view.Quotas == nil {
-		view.Quotas = []usage.QuotaWindowDTO{}
-	}
 	if view.Usage.AuthSubjectID == "" {
 		view.Usage.AuthSubjectID = row.AuthSubjectID
 	}
@@ -42,6 +39,16 @@ func statusViewFromSharedRecord(row usage.AIAccountSubjectStatusRecord, auth *co
 		view.Usage.WeeklyQuotaUsed = weeklyUsedFromQuotas(row.Quotas, primaryWeeklyKeys(auth.Provider)...)
 	}
 	return view
+}
+
+// quotaWindowViews copies the stored windows into views. The slice is never
+// nil: the API always answers with a list.
+func quotaWindowViews(dtos []usage.QuotaWindowDTO) []QuotaWindowView {
+	views := make([]QuotaWindowView, len(dtos))
+	for i := range dtos {
+		views[i].QuotaWindowDTO = dtos[i]
+	}
+	return views
 }
 
 func timePointer(value time.Time) *time.Time {
