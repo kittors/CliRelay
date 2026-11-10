@@ -35,6 +35,17 @@ var requestGoldenCases = []struct {
 	{name: "empty_request", stream: true, input: `{}`},
 	{name: "duplicate_keys", stream: true, input: `{"messages":[{"role":"user","content":"first","content":"second"}],"messages":[{"role":"user","content":"ignored"}]}`},
 	{name: "screenshot_history", stream: true, input: string(screenshotHistoryRequest(2, 96))},
+	// The top-level members are read in one walk of the request; these pin
+	// down what gjson.Get read: the first of repeated members, the first text
+	// object that has a verbosity, names written with escapes, and nothing at
+	// all of a request that is not an object.
+	{name: "top_level_members_repeated", stream: true, input: `{"messages":[{"role":"user","content":"first"}],"tools":[{"type":"function","function":{"name":"first_tool"}}],"tools":[{"type":"function","function":{"name":"second_tool"}}],"tool_choice":"required","tool_choice":"none","reasoning_effort":"low","reasoning_effort":"high","response_format":{"type":"json_schema","json_schema":{"name":"a","schema":{"type":"object"}}},"response_format":{"type":"text"},"text":{"format":{"type":"text"}},"text":"low","text":["verbosity"],"text":{"verbosity":"high"},"text":{"verbosity":"low"},"messages":[{"role":"user","content":"second"}]}`},
+	{name: "escaped_member_names", stream: true, input: `{"m\u0065ssages":[{"r\u006fle":"user","c\u006fntent":[{"t\u0079pe":"text","t\u0065xt":"hi"},{"type":"image_url","image\u005furl":{"\u0075rl":"data:image/png;base64,AAAA"}}]}],"tool\u005fchoice":"none","reasoning\u005feffort":"low","t\u0065xt":{"verb\u006fsity":"low"},"response\u005fformat":{"type":"json_object"}}`},
+	{name: "top_level_array", stream: true, input: `[{"messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function","function":{"name":"f"}}]}]`},
+	// Content parts are written by hand; these are the values sjson wrote in
+	// ways of its own: control characters, DEL, a lone surrogate, non-ASCII,
+	// a quote, values that are not strings, and image_url given as a string.
+	{name: "part_values", stream: true, input: `{"messages":[{"role":"user","content":[{"type":"text"},{"type":"text","text":"tab\there nul\u0000 del\u007f lone \ud800 end"},{"type":"text","text":12.5},{"type":"image_url","image_url":"data:image/png;base64,AAAA"},{"type":"image_url","image_url":{"url":null}},{"type":"image_url","image_url":{"url":7}},{"type":"image_url","image_url":{"detail":"low","url":"https://example.com/é.png"}},{"type":"file","file":{"file_data":"data:text/plain;base64,aGk=","filename":"\"quoted\".txt"}}]},{"role":"user","content":"string \u007f content"},{"role":"assistant","content":[{"type":"text","text":"<ok> & done"}]}]}`},
 }
 
 func TestConvertOpenAIRequestToCodexMatchesGolden(t *testing.T) {
