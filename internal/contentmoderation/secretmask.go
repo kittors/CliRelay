@@ -24,12 +24,12 @@ import (
 // could not be rewritten; such a request must not be sent.
 //
 // It reads the request as the word guard does, and also the data of tool calls
-// and results whatever their keys, and the tools' descriptions
-// (extractSecretUnits), so it sees the text the model reads, and leaves the
-// protocol alone. Text a signature covers (a replayed thinking block) is never
-// changed: the upstream would refuse the request. quiet says the body is a
-// second copy of a request whose first copy was masked already: its values
-// are not counted again.
+// and results whatever their keys, and the descriptions of the tools and of
+// the reply's schema (extractSecretUnits), so it sees the text the model
+// reads, and leaves the protocol alone. Text a signature covers (a replayed
+// thinking block) is never changed: the upstream would refuse the request.
+// quiet says the body is a second copy of a request whose first copy was
+// masked already: its values are not counted again.
 func maskRequestSecrets(format sdktranslator.Format, body []byte, masker *privacymask.Masker, quiet bool) (out []byte, failure string) {
 	return maskRequest(format, body, masker, quiet, nil)
 }

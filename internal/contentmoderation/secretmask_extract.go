@@ -20,15 +20,17 @@ import (
 //     block. The word guard leaves the values under those keys alone, which is
 //     right for the request's own messages and blocks, but here it sent
 //     {"id": "<an API key>"} upstream as it came.
-//   - The tools the request declares: their descriptions and those of their
-//     parameters, however deep the schema nests them. The model reads them as
-//     instructions; a key pasted into one went upstream as it came.
+//   - What the request declares besides its messages: the tools it offers the
+//     model, and the schema it asks the reply to follow. Their descriptions,
+//     and those of every property, however deep the schema nests them: the
+//     model reads them as instructions, and a key pasted into one went
+//     upstream as it came.
 //
 // Neither is added to what the word guard reads: its policies were written
 // against what it reads, and a tenant's banned words are not meant to refuse
-// a tool schema. The protocol of the request itself (the ids, types and
-// signatures of its messages and blocks) and text a signature covers are left
-// as they were.
+// a tool or a reply schema. The protocol of the request itself (the ids,
+// types and signatures of its messages and blocks) and text a signature
+// covers are left as they were.
 
 // extractSecretUnits is extractWordUnits for privacy masking.
 func extractSecretUnits(format sdktranslator.Format, payload []byte) []wordUnit {
@@ -75,16 +77,68 @@ func walkToolData(value gjson.Result, depth int, visit jsonTextVisitor) {
 	}
 }
 
-// toolDescriptions reads, for masking, the descriptions of the tools root
-// declares: "tools" in every format, and the "functions" of Chat Completions
-// before tools. Nothing else of a tool is read: its name and schema are
-// structure the upstream checks, not prose.
-func (x *extraction) toolDescriptions(root gjson.Result) {
+// declaredDescriptions reads, for masking, the descriptions in what root
+// declares: the tools it offers and the schema of the reply it asks for
+// (declaredFields). Nothing else of them is read: names, types and
+// constraints are structure the upstream checks, not prose.
+//
+// The fields are found in one walk of root, not looked up one by one: a
+// lookup of a field that is not there scans the whole request, megabytes for
+// one that carries screenshots, and a lookup finds only the first copy of a
+// field the request repeats, where the upstream's parser may take the last.
+func (x *extraction) declaredDescriptions(root gjson.Result) {
 	if !x.secrets {
 		return
 	}
-	x.descriptions(root.Get("tools"), 0)
-	x.descriptions(root.Get("functions"), 0)
+	root.ForEach(func(key, value gjson.Result) bool {
+		if key.Type != gjson.String {
+			return true
+		}
+		under, declared := declaredFields[key.String()]
+		switch {
+		case !declared:
+		case under == "":
+			x.descriptions(value, 0)
+		default:
+			value.ForEach(func(key, value gjson.Result) bool {
+				if key.Type == gjson.String && key.String() == under {
+					x.descriptions(value, 0)
+				}
+				return true
+			})
+		}
+		return true
+	})
+}
+
+// declaredFields are the fields of a request that declare tools or a reply
+// schema, each with the field of it that holds the declaration, "" for the
+// field itself. Each is read in every format, as tools always were: a request
+// passed through to an upstream of its own format keeps the fields it
+// carries, its format's or not.
+var declaredFields = map[string]string{
+	// The tools: "tools" in every format, and the "functions" of Chat
+	// Completions before tools.
+	"tools":     "",
+	"functions": "",
+	// The reply's schema, where the translators read it
+	// (translator/common/outputformat.go), which a model reads whether it is
+	// sent as a constraint or written into the prompt instead. Chat
+	// Completions puts the schema and a description of it in
+	// response_format.json_schema; the Responses API puts both in
+	// text.format beside the type.
+	"response_format": "",
+	"text":            "format",
+	// Anthropic's output_config.format, and output_format, which it replaced
+	// and the API still takes under a beta header.
+	"output_config": "format",
+	"output_format": "",
+	// Gemini's responseJsonSchema or responseSchema. Google's parser takes
+	// camelCase and snake_case names alike, and nothing else in
+	// generationConfig has a description, so all of generationConfig is read,
+	// in both spellings, rather than each spelling of each schema field.
+	"generationConfig":  "",
+	"generation_config": "",
 }
 
 // descriptions reads every string under a "description" key in value. A
