@@ -177,6 +177,9 @@ func ConvertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 				var partsJSON []string
 				hasImage := false
 				hasFile := false
+				// droppedEmptyText marks an empty text part left out of partsJSON,
+				// so a message that had nothing else is still sent, not lost.
+				droppedEmptyText := false
 				if parts := item.Get("content"); parts.Exists() && parts.IsArray() {
 					parts.ForEach(func(_, part gjson.Result) bool {
 						ptype := part.Get("type").String()
@@ -185,9 +188,17 @@ func ConvertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 							if t := part.Get("text"); t.Exists() {
 								txt := t.String()
 								textAggregate.WriteString(txt)
-								contentPart := `{"type":"text","text":""}`
-								contentPart, _ = sjson.Set(contentPart, "text", txt)
-								partsJSON = append(partsJSON, contentPart)
+								// Anthropic rejects an empty text block ("text content
+								// blocks must be non-empty"). Clients send one next to
+								// an image when the user attaches an image without
+								// typing anything.
+								if txt != "" {
+									contentPart := `{"type":"text","text":""}`
+									contentPart, _ = sjson.Set(contentPart, "text", txt)
+									partsJSON = append(partsJSON, contentPart)
+								} else {
+									droppedEmptyText = true
+								}
 							}
 							if ptype == "input_text" {
 								role = "user"
@@ -271,7 +282,10 @@ func ConvertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 					}
 				}
 
-				if thinkingTurnOpen && role == "assistant" && len(partsJSON) > 0 {
+				if thinkingTurnOpen && role == "assistant" && (len(partsJSON) > 0 || droppedEmptyText) {
+					// An assistant message that was only empty text adds nothing to
+					// the open turn, and a separate message would split the thinking
+					// from the tool_use or text it led to.
 					appendToOpenThinkingTurn(partsJSON...)
 				} else if len(partsJSON) > 0 {
 					thinkingTurnOpen = false
@@ -288,7 +302,9 @@ func ConvertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 						}
 					}
 					out, _ = sjson.SetRaw(out, "messages.-1", msg)
-				} else if textAggregate.Len() > 0 || role == "system" {
+				} else if textAggregate.Len() > 0 || role == "system" || droppedEmptyText {
+					// With droppedEmptyText, a message made only of empty text parts
+					// keeps the "" content it was sent with before they were skipped.
 					msg := `{"role":"","content":""}`
 					msg, _ = sjson.Set(msg, "role", role)
 					msg, _ = sjson.Set(msg, "content", textAggregate.String())
