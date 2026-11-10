@@ -4,13 +4,31 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/gorilla/websocket"
 	"github.com/tidwall/gjson"
 )
+
+// readResponsesWebsocketMessage caps the decoded message, not just the compressed
+// frames counted by SetReadLimit. Read one extra byte to distinguish a message
+// exactly at the limit from an oversized one without buffering the whole input.
+func readResponsesWebsocketMessage(conn *websocket.Conn, maxMessage int64) (int, []byte, error) {
+	messageType, reader, err := conn.NextReader()
+	if err != nil {
+		return messageType, nil, err
+	}
+	payload, err := io.ReadAll(io.LimitReader(reader, maxMessage+1))
+	if int64(len(payload)) > maxMessage {
+		_ = conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseMessageTooBig, ""), time.Now().Add(time.Second))
+		return messageType, nil, websocket.ErrReadLimit
+	}
+	return messageType, payload, err
+}
 
 func websocketUpstreamSupportsIncrementalInput(attributes map[string]string, metadata map[string]any) bool {
 	if len(attributes) > 0 {
