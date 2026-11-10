@@ -436,7 +436,8 @@ func ConvertGeminiResponseToOpenAIResponses(_ context.Context, modelName string,
 
 		// Reasoning already finalized above if present
 
-		// Build response.completed with aggregated outputs and request echo fields
+		// Build the final response with aggregated outputs and request echo fields;
+		// finishGeminiResponsesStream sends it as the event the finishReason calls for.
 		completed := `{"type":"response.completed","sequence_number":0,"response":{"id":"","object":"response","created_at":0,"status":"completed","background":false,"error":null}}`
 		completed, _ = sjson.Set(completed, "sequence_number", nextSeq())
 		completed, _ = sjson.Set(completed, "response.id", st.ResponseID)
@@ -573,14 +574,14 @@ func ConvertGeminiResponseToOpenAIResponses(_ context.Context, modelName string,
 			}
 		}
 
-		out = append(out, emitEvent("response.completed", completed))
+		out = append(out, finishGeminiResponsesStream(modelName, root, completed))
 	}
 
 	return out
 }
 
 // ConvertGeminiResponseToOpenAIResponsesNonStream aggregates Gemini response JSON into a single OpenAI Responses JSON object.
-func ConvertGeminiResponseToOpenAIResponsesNonStream(_ context.Context, _ string, originalRequestRawJSON, requestRawJSON, rawJSON []byte, _ *any) string {
+func ConvertGeminiResponseToOpenAIResponsesNonStream(_ context.Context, modelName string, originalRequestRawJSON, requestRawJSON, rawJSON []byte, _ *any) string {
 	root := gjson.ParseBytes(rawJSON)
 	root = unwrapGeminiResponseRoot(root)
 
@@ -779,5 +780,5 @@ func ConvertGeminiResponseToOpenAIResponsesNonStream(_ context.Context, _ string
 		}
 	}
 
-	return resp
+	return finishGeminiResponsesBody(modelName, root, resp)
 }
