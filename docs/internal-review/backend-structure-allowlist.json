@@ -46,7 +46,7 @@
       },
       {
         "path": "sdk/api/handlers/handlers.go",
-        "max_lines": 958
+        "max_lines": 953
       }
     ]
   },

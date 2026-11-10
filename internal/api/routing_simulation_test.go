@@ -81,7 +81,7 @@ func TestRoutingSimulationRunsTheInferenceStages(t *testing.T) {
 	for _, endpoint := range []string{managementHandlers.RoutingSimulationEndpointChat, managementHandlers.RoutingSimulationEndpointMessages} {
 		t.Run(endpoint, func(t *testing.T) {
 			result := simulate(t, server, managementHandlers.RoutingSimulationRequest{APIKey: "rsim-key", Model: routingSimulationTestModel, Endpoint: endpoint})
-			want := []string{"auth=passed", "route=passed", "channel-group=passed", "quota=skipped", "model-policy=passed",
+			want := []string{"auth=passed", "route=passed", "channel-group=passed", "request-body=passed", "quota=skipped", "model-policy=passed",
 				"model-gate=passed", "ccswitch-mapping=passed", "system-prompt=passed", "handler=passed"}
 			if got := stageOutcomes(result); !slices.Equal(got, want) {
 				t.Fatalf("stages = %v, want %v", got, want)
