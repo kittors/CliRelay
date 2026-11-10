@@ -61,6 +61,11 @@ func maskRequest(format sdktranslator.Format, body []byte, masker *privacymask.M
 	} else {
 		plans = masker.Plan(texts, skip)
 	}
+	if notes != nil && !quiet {
+		// The places noted below are located once the request is read, refused
+		// or not (a refused request has a record too), in one walk of it.
+		defer notes.locate()
+	}
 	var patches docPatches
 	changed := false
 	for i, unit := range units {
@@ -71,17 +76,16 @@ func maskRequest(format sdktranslator.Format, body []byte, masker *privacymask.M
 		if len(edits) == 0 {
 			continue
 		}
-		where := withoutSecrets(unitField(unit))
 		if unit.kind != unitText || !unit.rewritable {
 			why := unit.why
 			if why == "" {
 				why = "it is not a plain string value"
 			}
-			return nil, where + ": " + why
+			return nil, failedAt(unit, why)
 		}
 		lit := unit.doc.data[unit.lit0:unit.lit1]
 		if text, ok := decodeJSONLiteral(lit); !ok || text != unit.text {
-			return nil, where + ": " + whyUnlocated
+			return nil, failedAt(unit, whyUnlocated)
 		}
 		literalEdits := make([]literalEdit, len(edits))
 		for j, e := range edits {
@@ -105,6 +109,14 @@ func maskRequest(format sdktranslator.Format, body []byte, masker *privacymask.M
 		return nil, withoutSecrets(rewriteFailed.field) + ": " + rewriteFailed.why
 	}
 	return written, ""
+}
+
+// failedAt says why a unit stops a request from being masked, and where it is.
+// The place is worked out only here, for the one unit that stops it: it takes a
+// walk of the request, and working it out for every unit masked, in case one
+// failed, cost more than all the rest of masking on a request of screenshots.
+func failedAt(unit wordUnit, why string) string {
+	return withoutSecrets(unitField(unit)) + ": " + why
 }
 
 // withoutSecrets returns a field's path with the secrets in it blanked out. A
