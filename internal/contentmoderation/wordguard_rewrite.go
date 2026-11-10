@@ -55,16 +55,10 @@ func unrewritableMessage(base string, failure *rewriteFailure) string {
 }
 
 // unitField is the path of the text of a unit in the request, with a note when
-// it is an object key.
+// it is an object key. It walks the request: for the fields of many units, see
+// unitFields.
 func unitField(unit wordUnit) string {
-	if unit.doc == nil {
-		return ""
-	}
-	field := joinJSONPath(unit.doc.path(), jsonPathAt(unit.doc.data, unit.lit0))
-	if field != "" && unit.kind == unitKey {
-		field += " (an object key)"
-	}
-	return field
+	return unitFields([]wordUnit{unit})[0]
 }
 
 // patch replaces the string literal at lit0:lit1 of a document.

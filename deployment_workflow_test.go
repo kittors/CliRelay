@@ -1,8 +1,11 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -130,8 +133,8 @@ func TestBlueGreenDeployScriptSyntaxAndGuards(t *testing.T) {
 		`scripts/cleanup-drained-slot.sh`,
 		`NGINX_BACKUP_PATTERN`,
 		`SCRIPT_VERSION`,
-		`TimeoutStopSec=${SHUTDOWN_GRACE_SECONDS}`,
-		`CLIRELAY_SHUTDOWN_GRACE`,
+		`TimeoutStopSec=${SLOT_STOP_TIMEOUT_SECONDS}`,
+		`Environment=CLIRELAY_SHUTDOWN_GRACE=${SHUTDOWN_GRACE_SECONDS}s`,
 		// The cutover must prove it happened rather than infer it from an exit
 		// status. A missing rewrite tool once left the config untouched while
 		// the deploy reported success, which is what manufactured the slot
@@ -172,6 +175,10 @@ func TestBlueGreenDeployScriptSyntaxAndGuards(t *testing.T) {
 		// its only guard; see TestNginxLookupPicksTheVhostThatProxiesToASlot.
 		`"$NGINX_BACKUP_PATTERN" | head -n1`,
 		`'${NGINX_BACKUP_PATTERN}' | head -n1`,
+		// systemd then SIGKILLed a slot whose drain used the whole grace before
+		// it wrote its queued usage records; see
+		// TestSlotUnitStopTimeoutOutlastsTheShutdownGrace.
+		`TimeoutStopSec=${SHUTDOWN_GRACE_SECONDS}`,
 		`migrate-sqlite-to-postgres.sh`,
 		`Legacy SQLite`,
 		`stop_active_units_for_migration`,
@@ -182,6 +189,90 @@ func TestBlueGreenDeployScriptSyntaxAndGuards(t *testing.T) {
 			t.Fatalf("deploy script contains forbidden pattern %q; see the comment beside it", forbidden)
 		}
 	}
+}
+
+// A drain that uses the whole grace still leaves the process its own shutdown
+// to run: queued usage records written or spooled, the Redis snapshot saved,
+// the database closed. With TimeoutStopSec equal to the grace, systemd
+// SIGKILLed the slot the moment its drain ran out. The unit's stop timeout is
+// the grace in effect on the node plus a fixed headroom, so a node that raises
+// its grace in deploy.env keeps the headroom; how large the headroom must be
+// is checked against the binary's own timeouts in
+// internal/cmd TestDeployStopHeadroomCoversTheShutdownAfterTheDrain.
+func TestSlotUnitStopTimeoutOutlastsTheShutdownGrace(t *testing.T) {
+	const script = "scripts/deploy-blue-green.sh"
+	keys := extractShellAssignment(t, script, "DEPLOY_ENV_KEYS")
+	grace, headroom := slotStopTimeoutDefaults(t)
+
+	run := func(t *testing.T, content string) (string, error) {
+		t.Helper()
+		path := filepath.Join(t.TempDir(), "deploy.env")
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatalf("write deploy.env: %v", err)
+		}
+		// Same order as the script: the node file first, then the derivation.
+		body := fmt.Sprintf(`DEPLOY_ENV_KEYS=%q
+SHUTDOWN_GRACE_SECONDS=%d
+SHUTDOWN_STOP_HEADROOM_SECONDS=%d
+load_deploy_env %q
+derive_stop_timeout
+echo "grace=${SHUTDOWN_GRACE_SECONDS} stop_timeout=${SLOT_STOP_TIMEOUT_SECONDS}"
+`, keys, grace, headroom, path)
+		return runShellFunctions(t, script, []string{"fail", "tunable_is_valid", "setting_is_valid", "load_deploy_env", "derive_stop_timeout"}, body)
+	}
+
+	for content, want := range map[string]string{
+		"":                           fmt.Sprintf("grace=%d stop_timeout=%d", grace, grace+headroom),
+		"SHUTDOWN_GRACE_SECONDS=600": fmt.Sprintf("grace=600 stop_timeout=%d", 600+headroom),
+	} {
+		out, err := run(t, content)
+		if err != nil || !strings.Contains(out, want+"\n") {
+			t.Fatalf("deploy.env %q: want %q, err=%v\n%s", content, want, err, out)
+		}
+	}
+	// The binary's shutdown sizes the headroom, not the node.
+	if out, err := run(t, "SHUTDOWN_STOP_HEADROOM_SECONDS=0\n"); err == nil || !strings.Contains(out, "unknown setting SHUTDOWN_STOP_HEADROOM_SECONDS") {
+		t.Fatalf("deploy.env must not be able to shrink the stop headroom, err=%v\n%s", err, out)
+	}
+
+	data, err := os.ReadFile(script)
+	if err != nil {
+		t.Fatalf("read deploy script: %v", err)
+	}
+	content := string(data)
+	// Derived after deploy.env is read, or a node's own grace would leave its
+	// unit with the default stop timeout.
+	loadIndex := strings.Index(content, "\n\tload_deploy_env \"$DEPLOY_ENV_FILE\"\n")
+	deriveIndex := strings.Index(content, "\nderive_stop_timeout\n")
+	if loadIndex < 0 || deriveIndex < loadIndex {
+		t.Fatalf("derive_stop_timeout must run after deploy.env is loaded (load at %d, derive at %d)", loadIndex, deriveIndex)
+	}
+	// The workflow waits for the old slot by the timeout the node reports.
+	if !strings.Contains(content, `stop_timeout_seconds=%s`) || !strings.Contains(content, `"$SLOT_STOP_TIMEOUT_SECONDS"`) {
+		t.Fatalf("the deploy result line must report the slot's stop timeout")
+	}
+}
+
+// slotStopTimeoutDefaults reads the shipped shutdown grace and stop headroom.
+func slotStopTimeoutDefaults(t *testing.T) (grace, headroom int) {
+	t.Helper()
+	const script = "scripts/deploy-blue-green.sh"
+	grace, err := strconv.Atoi(extractShellAssignment(t, script, "SHUTDOWN_GRACE_SECONDS"))
+	if err != nil {
+		t.Fatalf("parse SHUTDOWN_GRACE_SECONDS: %v", err)
+	}
+	headroom, err = strconv.Atoi(extractShellAssignment(t, script, "SHUTDOWN_STOP_HEADROOM_SECONDS"))
+	if err != nil || headroom <= 0 {
+		t.Fatalf("SHUTDOWN_STOP_HEADROOM_SECONDS must be a positive number of seconds, got %d (%v)", headroom, err)
+	}
+	return grace, headroom
+}
+
+// defaultSlotStopTimeout is the TimeoutStopSec a node without deploy.env gets.
+func defaultSlotStopTimeout(t *testing.T) string {
+	t.Helper()
+	grace, headroom := slotStopTimeoutDefaults(t)
+	return strconv.Itoa(grace + headroom)
 }
 
 func TestCleanupDrainedSlotStopsOnlyTheExpectedInactiveSlot(t *testing.T) {
