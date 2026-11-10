@@ -218,6 +218,10 @@ func ConvertClaudeResponseToOpenAIResponses(ctx context.Context, modelName strin
 				msg := `{"type":"response.output_text.delta","sequence_number":0,"item_id":"","output_index":0,"content_index":0,"delta":"","logprobs":[]}`
 				msg, _ = sjson.Set(msg, "sequence_number", nextSeq())
 				msg, _ = sjson.Set(msg, "item_id", st.CurrentMsgID)
+				// The message item was opened at the text block's index; a delta
+				// left at 0 lands on the reasoning item whenever thinking came
+				// first, and clients that route deltas by output_index drop it.
+				msg, _ = sjson.Set(msg, "output_index", int(root.Get("index").Int()))
 				msg, _ = sjson.Set(msg, "delta", t.String())
 				out = append(out, emitEvent("response.output_text.delta", msg))
 				// aggregate text for response.output
