@@ -427,6 +427,9 @@ func (e *ClaudeExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Aut
 		claudeFPSessionID = claudeFingerprintSessionID(claudeFP)
 		body = applyClaudeIdentityFingerprintPayload(auth, body, claudeFP, claudeFPSessionID)
 	}
+	// The OAuth tool prefix is applied by toUpstream below; only the metadata
+	// the fingerprint wrote has to go, since count_tokens rejects it.
+	body = stripClaudeCountTokensMetadata(body)
 
 	url := fmt.Sprintf("%s/v1/messages/count_tokens?beta=true", baseURL)
 	// count_tokens has always applied the OAuth tool prefix, third-party
