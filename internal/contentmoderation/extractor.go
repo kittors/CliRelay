@@ -3,6 +3,7 @@ package contentmoderation
 import (
 	"strings"
 
+	"github.com/router-for-me/CLIProxyAPI/v6/sdk/jsonstrict"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v6/sdk/translator"
 	"github.com/tidwall/gjson"
 )
@@ -18,11 +19,18 @@ import (
 // written by the client and can carry anything. Only binary payloads (images,
 // audio, files) and opaque signatures are left out.
 func ExtractModerationInput(format sdktranslator.Format, payload []byte) Input {
+	input, _ := readModerationInput(format, payload)
+	return input
+}
+
+// readModerationInput is ExtractModerationInput for a caller that refuses a
+// body it cannot read: the error says why nothing was read (see run).
+func readModerationInput(format sdktranslator.Format, payload []byte) (Input, error) {
 	x := &extraction{}
 	if !x.run(format, payload) {
-		return NewInput(nil)
+		return NewInput(nil), x.unreadable
 	}
-	return NewInput(x.segments)
+	return NewInput(x.segments), nil
 }
 
 // extractWordUnits reads a request the way ExtractModerationInput does, and
@@ -30,16 +38,36 @@ func ExtractModerationInput(format sdktranslator.Format, payload []byte) Input {
 // can rewrite it in place. The classification and the order are the same by
 // construction: it is one walk.
 func extractWordUnits(format sdktranslator.Format, payload []byte) []wordUnit {
-	x := &extraction{locate: true, doc: &wordDoc{data: payload, located: true}}
-	if !x.run(format, payload) {
-		return nil
-	}
-	return x.units
+	units, _ := readWordUnits(format, payload)
+	return units
 }
 
-// run walks payload in the layout of format and reports whether it was JSON.
+// readWordUnits is extractWordUnits for a caller that refuses a body it cannot
+// read: the error says why there are no units (see run).
+func readWordUnits(format sdktranslator.Format, payload []byte) ([]wordUnit, error) {
+	x := &extraction{locate: true, doc: &wordDoc{data: payload, located: true}}
+	if !x.run(format, payload) {
+		return nil, x.unreadable
+	}
+	return x.units, nil
+}
+
+// run walks payload in the layout of format and reports whether it read it.
+//
+// It reads only a body that is one strict JSON text (jsonstrict), and keeps
+// why it read nothing of any other in x.unreadable. The walk reads with gjson,
+// which takes the first of two members of an object with one name and reads
+// nothing of a text it finds invalid, while the upstream takes the last, or
+// both, or reads NaN where gjson stops: a second "messages", or a NaN anywhere,
+// would put the whole conversation past moderation and masking unread. The
+// request stages refuse such a body (bodyutil.CheckJSONRequestBody); the
+// guards refuse what reaches them anyway rather than pass it on.
 func (x *extraction) run(format sdktranslator.Format, payload []byte) bool {
-	if len(payload) == 0 || !gjson.ValidBytes(payload) {
+	if len(payload) == 0 {
+		return false
+	}
+	if err := jsonstrict.Check(payload); err != nil {
+		x.unreadable = err
 		return false
 	}
 	root := gjson.ParseBytes(payload)
@@ -84,6 +112,8 @@ type extraction struct {
 	// secrets makes the walk read what privacy masking reads besides what the
 	// word guard does (secretmask_extract.go).
 	secrets bool
+	// unreadable says why run read nothing of a body that was not empty.
+	unreadable error
 }
 
 func (x *extraction) nextTurn() { x.turn++ }
