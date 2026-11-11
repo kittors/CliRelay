@@ -17,7 +17,7 @@ const codexErrorPeekBytes = 64 << 10
 
 // doCodexResponses sends one prepared POST to the Codex upstream.
 //
-// It owns three things that must agree about what was actually sent:
+// It owns four things that must agree about what was actually sent:
 //
 //   - compression: the body leaves as zstd when the ChatGPT backend expects it
 //     (codex_request_zstd.go), while the request log keeps the plain JSON;
@@ -26,7 +26,9 @@ const codexErrorPeekBytes = 64 << 10
 //     prompt_cache_key the request helper added;
 //   - the one retry after `invalid_encrypted_content`: when the upstream refuses
 //     replayed reasoning it cannot read, the request is sent again without that
-//     reasoning instead of failing a turn the model could have answered.
+//     reasoning instead of failing a turn the model could have answered;
+//   - the shape of a request refused with a 400 that names no error code, which
+//     is kept for diagnosis because the body itself is not (codex_request_shape.go).
 //
 // fallbackBody is logged when the request body cannot be read back.
 //
@@ -56,11 +58,13 @@ func (e *CodexExecutor) sendCodexResponses(execCtx *ExecutionContext, recorder U
 		return resp, err
 	}
 
-	peek, err := io.ReadAll(io.LimitReader(resp.Body, codexErrorPeekBytes))
-	// Hand the caller the body it would have had, whatever happens next: the
-	// peeked prefix followed by whatever was not read.
-	resp.Body = &codexPeekedBody{Reader: io.MultiReader(bytes.NewReader(peek), resp.Body), closer: resp.Body}
+	peek, err := peekCodexErrorBody(resp)
 	if err != nil || !bytes.Contains(peek, codexInvalidCiphertextCode) {
+		if err == nil {
+			// A 400 that names no error code explains nothing, so the shape of what
+			// was sent is the only evidence there will be of why it was refused.
+			recordCodexUnexplainedBadRequest(execCtx, httpReq, plain, peek, false)
+		}
 		return resp, nil
 	}
 	stripped, dropped := dropCodexReasoningItems(plain, anyCodexCiphertext)
@@ -79,7 +83,25 @@ func (e *CodexExecutor) sendCodexResponses(execCtx *ExecutionContext, recorder U
 	setCodexRequestBody(retry, stripped)
 	compressCodexRequest(e.cfg, auth, retry, stripped)
 	recorder.RecordRequest(retry.URL.String(), retry.Method, retry.Header.Clone(), stripped)
-	return httpClient.Do(retry) //nolint:bodyclose // returned to the caller, who owns closing it.
+	retryResp, err := httpClient.Do(retry) //nolint:bodyclose // returned to the caller, who owns closing it.
+	if err != nil || retryResp == nil || retryResp.StatusCode != http.StatusBadRequest {
+		return retryResp, err
+	}
+	// Refused again, and this answer is the one the attempt ends with: its shape
+	// is the body that went out without the reasoning, marked as such.
+	if retryPeek, errPeek := peekCodexErrorBody(retryResp); errPeek == nil {
+		recordCodexUnexplainedBadRequest(execCtx, retry, stripped, retryPeek, true)
+	}
+	return retryResp, nil
+}
+
+// peekCodexErrorBody reads the start of a 400 body and puts it back, so the
+// caller still gets the body it would have had whatever is done with the prefix:
+// the peeked bytes followed by whatever was not read.
+func peekCodexErrorBody(resp *http.Response) ([]byte, error) {
+	peek, err := io.ReadAll(io.LimitReader(resp.Body, codexErrorPeekBytes))
+	resp.Body = &codexPeekedBody{Reader: io.MultiReader(bytes.NewReader(peek), resp.Body), closer: resp.Body}
+	return peek, err
 }
 
 // codexPeekedBody serves a response body that has been partly read ahead.

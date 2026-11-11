@@ -28,9 +28,9 @@ type codexHistoryImage struct {
 
 // before upstream. Desktop keeps outbound data-url markdown for display, then re-sends it
 // on the next turn as text — that blows the model context (context_length_exceeded).
-func stripCodexHistoryDataURLImages(body []byte) []byte {
+func stripCodexHistoryDataURLImages(body []byte, edits ...*codexBodyEdits) []byte {
 	store := gjson.GetBytes(body, "store")
-	return stripCodexHistoryDataURLImagesForStore(body, store.Exists() && !store.Bool())
+	return stripCodexHistoryDataURLImagesForStore(body, store.Exists() && !store.Bool(), edits...)
 }
 
 // stripCodexHistoryDataURLImagesForStore also strips server-issued history item IDs when
@@ -46,7 +46,11 @@ func stripCodexHistoryDataURLImages(body []byte) []byte {
 //
 // Implementation rebuilds the input array once. Never call sjson.Set/Delete on the full
 // multi-MB body for each history item — that was the production RSS spike path.
-func stripCodexHistoryDataURLImagesForStore(body []byte, stripStoredItemIDs bool) []byte {
+//
+// edits is an optional tally of what the pass changed (see codexBodyEdits). It is
+// kept as plain counters beside the loop below: the same body is not read again to
+// work them out.
+func stripCodexHistoryDataURLImagesForStore(body []byte, stripStoredItemIDs bool, edits ...*codexBodyEdits) []byte {
 	if len(body) == 0 {
 		return body
 	}
@@ -81,6 +85,7 @@ func stripCodexHistoryDataURLImagesForStore(body []byte, stripStoredItemIDs bool
 	input := gjson.GetBytes(body, "input")
 	if input.Type == gjson.String {
 		if next, ok := replaceCodexDataURLImagesInText(input.String(), nextPlaceholder, remember); ok {
+			firstCodexEdits(edits).noteHistory(0, 0, seq, 0, false)
 			return util.MutateTopLevelObject(body, map[string][]byte{
 				"input": util.JSONString(next),
 			}, nil)
@@ -95,6 +100,11 @@ func stripCodexHistoryDataURLImagesForStore(body []byte, stripStoredItemIDs bool
 	// Keep original raw strings for unchanged fragments; only allocate rewritten ones.
 	itemRaws := make([]string, 0, len(items))
 	changed := false
+	// Tallies for edits: items that kept their place and lost an id, items that
+	// went whole, pixels removed from image_generation_call items, and whether the
+	// last extracted image was put back on the latest user turn.
+	var idsStripped, shellsDropped, imageResultsDropped int
+	reattached := false
 	outLen := 2 // []
 	appendItem := func(raw string) {
 		if len(itemRaws) > 0 {
@@ -118,6 +128,7 @@ func stripCodexHistoryDataURLImagesForStore(body []byte, stripStoredItemIDs bool
 					if next, err := sjson.Delete(item.Raw, "result"); err == nil {
 						itemRaw = next
 						changed = true
+						imageResultsDropped++
 					}
 				}
 			}
@@ -178,7 +189,11 @@ func stripCodexHistoryDataURLImagesForStore(body []byte, stripStoredItemIDs bool
 			itemRaw, itemChanged, drop = stripCodexStoredHistoryItemReference(itemRaw)
 			changed = changed || itemChanged
 			if drop {
+				shellsDropped++
 				continue
+			}
+			if itemChanged {
+				idsStripped++
 			}
 		}
 		appendItem(itemRaw)
@@ -189,6 +204,7 @@ func stripCodexHistoryDataURLImagesForStore(body []byte, stripStoredItemIDs bool
 		if nextItems, ok := attachCodexHistoryImageToItemRaws(itemRaws, *lastImage); ok {
 			itemRaws = nextItems
 			changed = true
+			reattached = true
 			outLen = 2
 			for i, raw := range itemRaws {
 				if i > 0 {
@@ -201,6 +217,7 @@ func stripCodexHistoryDataURLImagesForStore(body []byte, stripStoredItemIDs bool
 	if !changed {
 		return body
 	}
+	firstCodexEdits(edits).noteHistory(idsStripped, shellsDropped, seq, imageResultsDropped, reattached)
 
 	var inputBuf bytes.Buffer
 	inputBuf.Grow(outLen)
