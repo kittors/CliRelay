@@ -105,7 +105,9 @@ func codexBridgeImageModel(auth *cliproxyauth.Auth) string {
 // Requests from Codex's own helper threads (auto-review, /review, compaction, memory
 // consolidation) are left alone, effort included: they quote the conversation back as user
 // text, where an image keyword is not a request for a picture. See codexInternalSubagent.
-func maybeEnsureCodexImageGenerationTool(body []byte, auth *cliproxyauth.Auth, baseModel string, headers http.Header) []byte {
+//
+// edits is an optional tally of what the bridge changed (see codexBodyEdits).
+func maybeEnsureCodexImageGenerationTool(body []byte, auth *cliproxyauth.Auth, baseModel string, headers http.Header, edits ...*codexBodyEdits) []byte {
 	body = repairCodexImageCarrierModel(body, baseModel)
 	if requestHasLocalImageGenTool(body) {
 		return stripHostedImageGenerationTools(body)
@@ -115,15 +117,16 @@ func maybeEnsureCodexImageGenerationTool(body []byte, auth *cliproxyauth.Auth, b
 	}
 	intent := classifyCodexImageGenerationIntent(body)
 	if codexImageGenerationBridgeEnabled(auth) {
-		body = ensureCodexImageGenerationTool(body, baseModel, auth, headers, intent)
+		body = ensureCodexImageGenerationTool(body, baseModel, auth, headers, intent, edits...)
 		if requestHasHostedImageGenerationTool(body) {
 			body = ensureCodexImageGenerationBridgeInstructions(body)
 			if intent.forcesToolChoice() && codexImageToolChoiceForceable(body) {
 				body = forceCodexImageGenerationToolChoice(body)
+				firstCodexEdits(edits).noteToolChoiceForced()
 			}
 		}
 	}
-	return omitCodexReasoningEffortForImageCall(body, intent)
+	return omitCodexReasoningEffortForImageCall(body, intent, edits...)
 }
 
 // codexRequestSetsReasoningEffort reports whether the request names a reasoning effort.
@@ -149,7 +152,7 @@ func codexRequestSetsReasoningEffort(body []byte) bool {
 //
 // Requests that will not call the tool keep their effort: lowering the reasoning of an
 // ordinary coding turn because an image tool happens to be attached would be the wrong trade.
-func omitCodexReasoningEffortForImageCall(body []byte, intent codexImageIntent) []byte {
+func omitCodexReasoningEffortForImageCall(body []byte, intent codexImageIntent, edits ...*codexBodyEdits) []byte {
 	if !requestHasHostedImageGenerationTool(body) || !codexRequestSetsReasoningEffort(body) {
 		return body
 	}
@@ -162,6 +165,7 @@ func omitCodexReasoningEffortForImageCall(body []byte, intent codexImageIntent) 
 	if err != nil {
 		return body
 	}
+	firstCodexEdits(edits).noteEffortDropped()
 	if reasoning := gjson.GetBytes(updated, "reasoning"); reasoning.IsObject() && len(reasoning.Map()) == 0 {
 		if trimmed, errDelete := sjson.DeleteBytes(updated, "reasoning"); errDelete == nil {
 			updated = trimmed
@@ -368,7 +372,7 @@ func codexImageGenerationBridgeEnabled(auth *cliproxyauth.Auth) bool {
 	return true
 }
 
-func ensureCodexImageGenerationTool(body []byte, baseModel string, auth *cliproxyauth.Auth, headers http.Header, intent codexImageIntent) []byte {
+func ensureCodexImageGenerationTool(body []byte, baseModel string, auth *cliproxyauth.Auth, headers http.Header, intent codexImageIntent, edits ...*codexBodyEdits) []byte {
 	if isCodexResponsesLiteRequest(body, headers) && !intent.wantsImage() {
 		// Responses Lite carries its tools inside input[].additional_tools, and a hosted tool
 		// at the top level is not something Lite traffic is otherwise observed to send. Adding
@@ -404,6 +408,7 @@ func ensureCodexImageGenerationTool(body []byte, baseModel string, auth *cliprox
 	tools := gjson.GetBytes(body, "tools")
 	if !tools.Exists() || !tools.IsArray() {
 		body, _ = sjson.SetRawBytes(body, "tools", toolArrayJSON)
+		firstCodexEdits(edits).noteImageBridgeTool()
 		return body
 	}
 	for _, tool := range tools.Array() {
@@ -412,6 +417,7 @@ func ensureCodexImageGenerationTool(body []byte, baseModel string, auth *cliprox
 		}
 	}
 	body, _ = sjson.SetRawBytes(body, "tools.-1", toolJSON)
+	firstCodexEdits(edits).noteImageBridgeTool()
 	return body
 }
 
