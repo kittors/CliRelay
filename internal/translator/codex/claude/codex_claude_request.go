@@ -298,12 +298,15 @@ func ConvertClaudeRequestToCodex(modelName string, inputRawJSON []byte, _ bool) 
 	out.Write(mustJSONString(modelName))
 	out.WriteString(`,"instructions":"","input":`)
 	out.Write(inputBuf.Bytes())
+	// Look tool_choice up once: each rootResult.Get rescans the whole request,
+	// and tool_choice usually sits after a multi-MB messages array.
+	toolChoice := rootResult.Get("tool_choice")
 	if hasTools {
 		out.WriteString(`,"tools":`)
 		out.Write(toolsBuf.Bytes())
 		// Preserve a caller's prohibition instead of changing it to auto.
 		// Keep declarations for cache stability; omit choice when no tools exist.
-		if rootResult.Get("tool_choice.type").String() == "none" {
+		if toolChoice.Get("type").String() == "none" {
 			out.WriteString(`,"tool_choice":"none"`)
 		} else {
 			out.WriteString(`,"tool_choice":"auto"`)
@@ -311,7 +314,7 @@ func ConvertClaudeRequestToCodex(modelName string, inputRawJSON []byte, _ bool) 
 	}
 	// Anthropic's opt-out is the inverse of the Responses parallel flag.
 	// Only a JSON boolean true disables it; absent/false retain the default.
-	if rootResult.Get("tool_choice.disable_parallel_tool_use").Type == gjson.True {
+	if toolChoice.Get("disable_parallel_tool_use").Type == gjson.True {
 		out.WriteString(`,"parallel_tool_calls":false`)
 	} else {
 		out.WriteString(`,"parallel_tool_calls":true`)
