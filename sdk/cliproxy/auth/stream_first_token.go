@@ -69,6 +69,11 @@ func (e *firstTokenTimeoutError) RetryAfter() *time.Duration {
 // channel group's first-token timeout when it sets one. Without a timeout it
 // is a plain ExecuteStream call.
 func (s executionService) executeStreamAttempt(candidate *mixedExecutionCandidate, scope *mixedExecutionScope) (*cliproxyexecutor.StreamResult, error) {
+	// An account whose proxy is known to be out fails here, before the
+	// executor does any work for it; see conductor_egress.go.
+	if errEgress := s.egressRefusal(candidate); errEgress != nil {
+		return nil, errEgress
+	}
 	timeout := s.manager.streamGuardsFor(scope.opts.Metadata).firstTokenTimeout
 	if timeout <= 0 {
 		return candidate.executor.ExecuteStream(candidate.execCtx, candidate.auth, candidate.execReq, scope.opts)

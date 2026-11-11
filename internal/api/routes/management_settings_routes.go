@@ -66,6 +66,7 @@ func registerManagementSettingsRoutes(group *gin.RouterGroup, h *managementhandl
 	group.PUT("/proxy-pool", h.PutProxyPool)
 	group.PATCH("/proxy-pool/:id", h.PatchProxyPoolEntry)
 	group.POST("/proxy-pool/check", h.PostProxyPoolCheck)
+	group.GET("/proxy-pool/egress-status", h.GetProxyPoolEgressStatus)
 	// Platform sharing of the system tenant's proxies (platform admins only).
 	group.PUT("/proxy-pool/:id/sharing", h.PutProxyPoolSharing)
 	group.POST("/proxy-pool/:id/adopt", h.PostProxyPoolAdopt)

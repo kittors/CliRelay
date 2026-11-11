@@ -17,6 +17,7 @@ import (
 	"time"
 
 	utls "github.com/refraction-networking/utls"
+	"github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/egressbreaker"
 	"golang.org/x/net/http2"
 	"golang.org/x/net/proxy"
 )
@@ -315,14 +316,20 @@ func (t *RoundTripper) dialViaSOCKS5(ctx context.Context, proxyURL *url.URL, add
 		password, _ := proxyURL.User.Password()
 		auth = &proxy.Auth{User: proxyURL.User.Username(), Password: password}
 	}
-	dialer, err := proxy.SOCKS5(t.network(), proxyURL.Host, auth, t.baseDialer())
+	// Failures of the proxy hop itself are marked where they happen (see
+	// package egressbreaker), as util.BuildProxyTransport marks them for the
+	// standard transport: the connect to the proxy, and a rejected
+	// authentication. The marks do not change the error text.
+	dialer, err := proxy.SOCKS5(t.network(), proxyURL.Host, auth, egressbreaker.HopDialer{Base: t.baseDialer().DialContext})
 	if err != nil {
 		return nil, err
 	}
 	if contextDialer, ok := dialer.(proxy.ContextDialer); ok {
-		return contextDialer.DialContext(ctx, t.network(), addr)
+		conn, errDial := contextDialer.DialContext(ctx, t.network(), addr)
+		return conn, egressbreaker.MarkSOCKS5(errDial)
 	}
-	return dialer.Dial(t.network(), addr)
+	conn, errDial := dialer.Dial(t.network(), addr)
+	return conn, egressbreaker.MarkSOCKS5(errDial)
 }
 
 // dialViaHTTPProxy opens a CONNECT tunnel. http.Transport would normally handle
@@ -338,7 +345,7 @@ func (t *RoundTripper) dialViaHTTPProxy(ctx context.Context, proxyURL *url.URL, 
 		}
 	}
 
-	conn, err := t.baseDialer().DialContext(ctx, t.network(), proxyAddr)
+	conn, err := egressbreaker.MarkDial(t.baseDialer().DialContext)(ctx, t.network(), proxyAddr)
 	if err != nil {
 		return nil, err
 	}
@@ -387,7 +394,13 @@ func (t *RoundTripper) dialViaHTTPProxy(ctx context.Context, proxyURL *url.URL, 
 	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		_ = conn.Close()
-		return nil, fmt.Errorf("tlsfingerprint: proxy CONNECT to %s failed: %s", addr, resp.Status)
+		errConnect := fmt.Errorf("tlsfingerprint: proxy CONNECT to %s failed: %s", addr, resp.Status)
+		if resp.StatusCode == http.StatusProxyAuthRequired {
+			// The proxy refused the credentials. Other statuses may be the
+			// proxy reporting on the destination and stay unmarked.
+			return nil, egressbreaker.AuthRejected(errConnect)
+		}
+		return nil, errConnect
 	}
 	if reader.Buffered() > 0 {
 		_ = conn.Close()

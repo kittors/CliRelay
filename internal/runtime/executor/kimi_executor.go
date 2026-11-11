@@ -24,14 +24,25 @@ import (
 	"github.com/tidwall/sjson"
 )
 
-// KimiExecutor is a stateless executor for Kimi API using OpenAI-compatible chat completions.
+// KimiExecutor is a stateless executor for Kimi credentials. OpenAI-format
+// requests go to the gateway's chat completions endpoint; Claude-format requests
+// and token counts go to its Anthropic-compatible endpoint through claude.
 type KimiExecutor struct {
-	ClaudeExecutor
 	cfg *config.Config
+	// claude serves the Claude-format requests and is built from cfg, so they
+	// resolve the credential's proxy, payload rules, request log and Claude
+	// identity settings like every other request. It used to be an embedded
+	// ClaudeExecutor that was never given the configuration: those requests
+	// ignored the credential's proxy-pool entry and the global proxy-url and
+	// left directly. It is a named field so that methods added to
+	// ClaudeExecutor are not promoted to KimiExecutor unnoticed.
+	claude *ClaudeExecutor
 }
 
 // NewKimiExecutor creates a new Kimi executor.
-func NewKimiExecutor(cfg *config.Config) *KimiExecutor { return &KimiExecutor{cfg: cfg} }
+func NewKimiExecutor(cfg *config.Config) *KimiExecutor {
+	return &KimiExecutor{cfg: cfg, claude: NewClaudeExecutor(cfg)}
+}
 
 // Identifier returns the executor identifier.
 func (e *KimiExecutor) Identifier() string { return "kimi" }
@@ -69,7 +80,7 @@ func (e *KimiExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 	from := opts.SourceFormat
 	if from.String() == "claude" {
 		auth.Attributes["base_url"] = kimiauth.KimiAPIBaseURL
-		return e.ClaudeExecutor.Execute(ctx, auth, req, opts)
+		return e.claude.Execute(ctx, auth, req, opts)
 	}
 
 	execCtx := newExecutionContext(ctx, e.Identifier(), e.cfg, auth, req, opts, ExecutionOptions{
@@ -168,7 +179,7 @@ func (e *KimiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 	from := opts.SourceFormat
 	if from.String() == "claude" {
 		auth.Attributes["base_url"] = kimiauth.KimiAPIBaseURL
-		return e.ClaudeExecutor.ExecuteStream(ctx, auth, req, opts)
+		return e.claude.ExecuteStream(ctx, auth, req, opts)
 	}
 
 	execCtx := newExecutionContext(ctx, e.Identifier(), e.cfg, auth, req, opts, ExecutionOptions{
@@ -297,7 +308,7 @@ func (e *KimiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 // CountTokens estimates token count for Kimi requests.
 func (e *KimiExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
 	auth.Attributes["base_url"] = kimiauth.KimiAPIBaseURL
-	return e.ClaudeExecutor.CountTokens(ctx, auth, req, opts)
+	return e.claude.CountTokens(ctx, auth, req, opts)
 }
 
 func normalizeKimiToolMessageLinks(body []byte) ([]byte, error) {

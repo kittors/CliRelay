@@ -33,6 +33,10 @@ func (s stubSources) Spenders(context.Context, string, time.Time) ([]alerting.Sp
 	return nil, nil
 }
 
+func (s stubSources) Egress(context.Context, string, time.Time) ([]alerting.EgressSample, error) {
+	return nil, nil
+}
+
 func poolAccount(id, provider string, used float64, resetIn time.Duration, now time.Time) alerting.AccountSample {
 	return alerting.AccountSample{
 		ID: id, Subject: "subject-" + id, Provider: provider, Name: id,

@@ -41,6 +41,7 @@ func (h *harness) enable(tenantID string, mutate ...func(*Settings)) {
 		AccountFailure: AccountFailureRule{ForMinutes: DefaultFailureMinutes},
 		Spending:       SpendingRule{ThresholdPercent: DefaultUsageThresholdPercent},
 		UseItOrLoseIt:  UseItOrLoseItRule{MinRemainingPercent: DefaultMinRemainingPercent, HoursBeforeReset: DefaultHoursBeforeReset},
+		EgressBreaker:  EgressBreakerRule{ForMinutes: DefaultEgressMinutes},
 	}
 	for _, m := range mutate {
 		m(&s)
@@ -54,6 +55,7 @@ func withQuota(s *Settings)   { s.Rules.QuotaWindow.Enabled = true }
 func withFailure(s *Settings) { s.Rules.AccountFailure.Enabled = true }
 func withSpend(s *Settings)   { s.Rules.Spending.Enabled = true }
 func withUseIt(s *Settings)   { s.Rules.UseItOrLoseIt.Enabled = true }
+func withEgress(s *Settings)  { s.Rules.EgressBreaker.Enabled = true }
 
 func (h *harness) round() []Message {
 	h.t.Helper()

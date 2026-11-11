@@ -143,6 +143,13 @@ func (s cooldownService) markResult(ctx context.Context, result Result) {
 	if s.manager == nil || result.AuthID == "" {
 		return
 	}
+	// The proxy failed, not the account (see conductor_egress.go): nothing
+	// about the account changed, so there is no state to update or to persist.
+	// The hook still hears of the attempt.
+	if !result.Success && isEgressUnavailable(result.Error) {
+		s.manager.hook.OnResult(ctx, result)
+		return
+	}
 
 	// What the executor itself published, before the scheduler reads the response
 	// for a hint: the weekly-balance probe below keys on whether the executor

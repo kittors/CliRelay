@@ -47,6 +47,7 @@ type RulesPatch struct {
 	AccountFailure *AccountFailurePatch `json:"account_failure"`
 	Spending       *SpendingPatch       `json:"spending"`
 	UseItOrLoseIt  *UseItOrLoseItPatch  `json:"use_it_or_lose_it"`
+	EgressBreaker  *EgressBreakerPatch  `json:"egress_breaker"`
 }
 
 type QuotaWindowPatch struct {
@@ -62,6 +63,11 @@ type AccountFailurePatch struct {
 type SpendingPatch struct {
 	Enabled          *bool `json:"enabled"`
 	ThresholdPercent *int  `json:"threshold_percent"`
+}
+
+type EgressBreakerPatch struct {
+	Enabled    *bool `json:"enabled"`
+	ForMinutes *int  `json:"for_minutes"`
 }
 
 type UseItOrLoseItPatch struct {
@@ -116,6 +122,10 @@ func (p RulesPatch) apply(rules Rules) Rules {
 		setBool(&rules.UseItOrLoseIt.Enabled, u.Enabled)
 		setInt(&rules.UseItOrLoseIt.MinRemainingPercent, u.MinRemainingPercent)
 		setInt(&rules.UseItOrLoseIt.HoursBeforeReset, u.HoursBeforeReset)
+	}
+	if eb := p.EgressBreaker; eb != nil {
+		setBool(&rules.EgressBreaker.Enabled, eb.Enabled)
+		setInt(&rules.EgressBreaker.ForMinutes, eb.ForMinutes)
 	}
 	return rules
 }

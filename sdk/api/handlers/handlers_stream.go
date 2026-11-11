@@ -331,6 +331,9 @@ func bootstrapEligibleStreamErr(err error) bool {
 }
 
 func streamErrorMessageFromErr(streamErr error) *StreamErrorMessage {
+	if msg := egressUnavailableMessage(streamErr); msg != nil {
+		return msg
+	}
 	status := http.StatusInternalServerError
 	if se, ok := streamErr.(interface{ StatusCode() int }); ok && se != nil {
 		if code := se.StatusCode(); code > 0 {

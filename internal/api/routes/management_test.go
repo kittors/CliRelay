@@ -26,7 +26,7 @@ func TestRegisterManagementRouteTable(t *testing.T) {
 		routes[key] = route
 	}
 
-	if got, want := len(routes), 404; got != want {
+	if got, want := len(routes), 405; got != want {
 		t.Fatalf("route count = %d, want %d", got, want)
 	}
 	if got, want := sortedRouteKeys(routes), expectedManagementRoutes(); !slices.Equal(got, want) {
@@ -504,6 +504,7 @@ func expectedManagementRoutes() []string {
 		"GET /v0/management/openai-compatibility",
 		"POST /v0/management/payload-rules/dry-run",
 		"GET /v0/management/proxy-pool",
+		"GET /v0/management/proxy-pool/egress-status",
 		"GET /v0/management/proxy-url",
 		"GET /v0/management/public/ccswitch-import-configs",
 		"GET /v0/management/public/ping",

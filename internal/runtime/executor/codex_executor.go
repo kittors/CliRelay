@@ -122,7 +122,8 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	if opts.Alt == "responses/compact" {
 		return e.executeCompact(ctx, auth, req, opts)
 	}
-	req, opts = maybeStripCodexHistoryDataURLImagesOnRequest(req, opts)
+	ctx, edits := withCodexBodyEdits(ctx)
+	req, opts = maybeStripCodexHistoryDataURLImagesOnRequest(req, opts, edits)
 	ctx, convergedIDs := e.prepareCodexConvergence(ctx, auth)
 	execCtx := newExecutionContext(ctx, e.Identifier(), e.cfg, auth, req, opts, ExecutionOptions{
 		TargetFormat: sdktranslator.FromString("codex"),
@@ -149,8 +150,8 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 
 	body = execCtx.ApplyPayloadConfig(body, originalTranslated)
 	body = ensureTranslatedCodexModel(body, execCtx.BaseModel)
-	body = sanitizeCodexResponsesRequest(body)
-	body = prepareCodexResponsesBody(body, req.Payload, execCtx.SourceFormat, isCodexChatGPTBackendBaseURL(auth, baseURL))
+	body = sanitizeCodexResponsesRequest(body, edits)
+	body = prepareCodexResponsesBody(body, req.Payload, execCtx.SourceFormat, isCodexChatGPTBackendBaseURL(auth, baseURL), edits)
 	sets := map[string][]byte{"stream": util.JSONBool(true)}
 	if !gjson.GetBytes(body, "instructions").Exists() {
 		// Extract system messages from original OpenAI-format payload to use as instructions.
@@ -162,7 +163,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		"prompt_cache_retention",
 		"safety_identifier",
 	})
-	body = maybeEnsureCodexImageGenerationTool(body, auth, execCtx.BaseModel, codexAdmissionHeadersFromContext(execCtx.Context))
+	body = maybeEnsureCodexImageGenerationTool(body, auth, execCtx.BaseModel, codexAdmissionHeadersFromContext(execCtx.Context), edits)
 	body = applyCodexConvergenceClientMetadata(body, convergedIDs)
 	body = applyCodexServiceTierPolicy(body, execCtx.Request.Payload, auth)
 
@@ -257,6 +258,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 }
 
 func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
+	ctx, edits := withCodexBodyEdits(ctx)
 	ctx, convergedIDs := e.prepareCodexConvergence(ctx, auth)
 	execCtx := newExecutionContext(ctx, e.Identifier(), e.cfg, auth, req, opts, ExecutionOptions{
 		TargetFormat: sdktranslator.FromString("openai-response"),
@@ -283,8 +285,8 @@ func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.A
 
 	body = execCtx.ApplyPayloadConfig(body, originalTranslated)
 	body = ensureTranslatedCodexModel(body, execCtx.BaseModel)
-	body = sanitizeCodexResponsesRequest(body)
-	body = prepareCodexResponsesBody(body, req.Payload, execCtx.SourceFormat, isCodexChatGPTBackendBaseURL(auth, baseURL))
+	body = sanitizeCodexResponsesRequest(body, edits)
+	body = prepareCodexResponsesBody(body, req.Payload, execCtx.SourceFormat, isCodexChatGPTBackendBaseURL(auth, baseURL), edits)
 	body, _ = sjson.DeleteBytes(body, "stream")
 	body = applyCodexConvergenceClientMetadata(body, convergedIDs)
 
@@ -335,9 +337,10 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	if opts.Alt == "responses/compact" || opts.Alt == "alpha/search" {
 		return nil, statusErr{code: http.StatusBadRequest, msg: "streaming not supported for /" + opts.Alt}
 	}
+	ctx, edits := withCodexBodyEdits(ctx)
 	// Shrink multi-MB Desktop history data URLs before translation/sanitize so later
 	// body-level passes never see the full base64 history.
-	req, opts = maybeStripCodexHistoryDataURLImagesOnRequest(req, opts)
+	req, opts = maybeStripCodexHistoryDataURLImagesOnRequest(req, opts, edits)
 	ctx, convergedIDs := e.prepareCodexConvergence(ctx, auth)
 	execCtx := newExecutionContext(ctx, e.Identifier(), e.cfg, auth, req, opts, ExecutionOptions{
 		TargetFormat:      sdktranslator.FromString("codex"),
@@ -364,8 +367,8 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	}
 
 	body = execCtx.ApplyPayloadConfig(body, originalTranslated)
-	body = sanitizeCodexResponsesRequest(body)
-	body = prepareCodexResponsesBody(body, req.Payload, execCtx.SourceFormat, isCodexChatGPTBackendBaseURL(auth, baseURL))
+	body = sanitizeCodexResponsesRequest(body, edits)
+	body = prepareCodexResponsesBody(body, req.Payload, execCtx.SourceFormat, isCodexChatGPTBackendBaseURL(auth, baseURL), edits)
 	sets := map[string][]byte{}
 	if !gjson.GetBytes(body, "instructions").Exists() {
 		sets["instructions"] = util.JSONString(extractSystemMessagesAsInstructions(execCtx.Request.Payload))
@@ -376,7 +379,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 		"safety_identifier",
 	})
 	body = ensureTranslatedCodexModel(body, execCtx.BaseModel)
-	body = maybeEnsureCodexImageGenerationTool(body, auth, execCtx.BaseModel, codexAdmissionHeadersFromContext(execCtx.Context))
+	body = maybeEnsureCodexImageGenerationTool(body, auth, execCtx.BaseModel, codexAdmissionHeadersFromContext(execCtx.Context), edits)
 	body = applyCodexConvergenceClientMetadata(body, convergedIDs)
 	body = applyCodexServiceTierPolicy(body, execCtx.Request.Payload, auth)
 
@@ -611,14 +614,14 @@ func (e *CodexExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*
 // maybeStripCodexHistoryDataURLImagesOnRequest shrinks multi-MB Desktop history
 // data:image payloads before translation. Only openai-response payloads carry
 // that history shape; other source formats are left untouched.
-func maybeStripCodexHistoryDataURLImagesOnRequest(req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Request, cliproxyexecutor.Options) {
+func maybeStripCodexHistoryDataURLImagesOnRequest(req cliproxyexecutor.Request, opts cliproxyexecutor.Options, edits ...*codexBodyEdits) (cliproxyexecutor.Request, cliproxyexecutor.Options) {
 	if opts.SourceFormat != sdktranslator.FormatOpenAIResponse {
 		return req, opts
 	}
 	if len(req.Payload) == 0 {
 		return req, opts
 	}
-	stripped := stripCodexHistoryDataURLImages(req.Payload)
+	stripped := stripCodexHistoryDataURLImages(req.Payload, edits...)
 	if samePayloadStorage(stripped, req.Payload) {
 		return req, opts
 	}

@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/egressbreaker"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
 )
 
@@ -220,6 +221,11 @@ type Manager struct {
 
 	// Optional HTTP RoundTripper provider injected by host.
 	rtProvider RoundTripperProvider
+
+	// egress is the breaker consulted before an executor is called; nil means
+	// the process-wide one, which the upstream transports report to. See
+	// conductor_egress.go.
+	egress *egressbreaker.Breaker
 
 	modelRegistry ModelRegistry
 

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/egressbreaker"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
 )
 
@@ -26,6 +27,13 @@ func cloneError(err *Error) *Error {
 }
 
 func errorFromExecution(err error) *Error {
+	// A failure of the account's proxy is named by its code, so that what
+	// records the result can tell it from a failure of the account. The
+	// message is the breaker's own: the error an http.Client wraps it in
+	// starts with the upstream URL.
+	if egressErr, ok := egressbreaker.AsError(err); ok {
+		return &Error{Code: EgressUnavailableCode, Message: egressErr.Error()}
+	}
 	var authErr *Error
 	if errors.As(err, &authErr) && authErr != nil {
 		result := cloneError(authErr)

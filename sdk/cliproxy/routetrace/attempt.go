@@ -2,6 +2,7 @@ package routetrace
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"time"
 )
@@ -64,6 +65,40 @@ func DeferPublish(ctx context.Context, publish func()) bool {
 		return false
 	}
 	a.held = append(a.held, publish)
+	return true
+}
+
+// MaxUpstreamRequestShapeBytes bounds the shape one attempt may carry. The trace
+// holds up to headSteps+tailSteps attempts and is written into every request log
+// row of the request, so a shape is a few hundred bytes of counts, not a copy of
+// anything the client sent.
+const MaxUpstreamRequestShapeBytes = 4 << 10
+
+// AttachUpstreamRequestShape records the shape of the request the executor sent
+// on the attempt ctx carries, and reports whether it did. An attempt that sent
+// twice (an executor retrying on its own) keeps the last shape, the one whose
+// answer the attempt ends with.
+//
+// build runs only when ctx carries an attempt, and outside the recorder's lock:
+// building a shape reads the whole request body, which an executor with nowhere
+// to put the result must not pay for. A shape that is empty or larger than
+// MaxUpstreamRequestShapeBytes is dropped.
+func AttachUpstreamRequestShape(ctx context.Context, build func() json.RawMessage) bool {
+	if ctx == nil || build == nil {
+		return false
+	}
+	a, _ := ctx.Value(attemptKey{}).(*Attempt)
+	if a == nil {
+		return false
+	}
+	shape := build()
+	if len(shape) == 0 || len(shape) > MaxUpstreamRequestShapeBytes {
+		return false
+	}
+	r := a.rec
+	r.mu.Lock()
+	a.step.UpstreamRequestShape = shape
+	r.mu.Unlock()
 	return true
 }
 

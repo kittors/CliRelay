@@ -93,11 +93,17 @@ func newProxyAwareHTTPClient(ctx context.Context, cfg *config.Config, auth *clip
 	}
 	recordRequestLogEgressRoute(ctx, cfg, auth, proxyURL)
 
+	// viaProxy is set once the transport chosen really sends through proxyURL;
+	// a proxy URL that cannot be used falls through to a transport that does
+	// not, and the egress breaker must not judge the proxy by those requests.
+	viaProxy := false
+
 	// A TLS fingerprint transport dials and tunnels on its own, because the
 	// ClientHello has to be emitted by utls rather than by http.Transport. It
 	// therefore replaces the transport selection below instead of wrapping it.
 	if rt := tlsFingerprintRoundTripper(cfg, auth, proxyURL); rt != nil {
 		httpClient.Transport = rt
+		viaProxy = proxyURL != ""
 	}
 
 	// If we have a proxy URL configured, set up the transport
@@ -105,6 +111,7 @@ func newProxyAwareHTTPClient(ctx context.Context, cfg *config.Config, auth *clip
 		transport := cachedProxyTransport(proxyURL, cfgToSDKCfg(cfg))
 		if transport != nil {
 			httpClient.Transport = transport
+			viaProxy = true
 		} else {
 			// If proxy setup failed, log and fall through to context RoundTripper
 			log.Debugf("failed to setup proxy from URL: %s, falling back to context transport", maskProxyURLHost(proxyURL))
@@ -122,6 +129,12 @@ func newProxyAwareHTTPClient(ctx context.Context, cfg *config.Config, auth *clip
 
 	if httpClient.Transport == nil {
 		httpClient.Transport = cachedDirectTransport(cfgToSDKCfg(cfg))
+	}
+
+	// Innermost wrapper, so that a request the breaker refuses still shows up
+	// in the upstream timing and warm-up bookkeeping as an attempt that failed.
+	if viaProxy {
+		httpClient.Transport = egressBreaker.Transport(proxyURL, httpClient.Transport)
 	}
 
 	if proxyURL != "" {

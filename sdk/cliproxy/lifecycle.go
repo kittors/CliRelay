@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/egressbreaker"
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/usage"
 	log "github.com/sirupsen/logrus"
 )
@@ -24,6 +25,14 @@ func (s *Service) Run(ctx context.Context) error {
 	}
 
 	usage.StartDefault(ctx)
+
+	// The egress breaker refuses requests through a proxy it has found broken.
+	// Should it ever misjudge one, an operator can turn it off for this node
+	// from the environment file, without waiting for a new build.
+	if !egressbreaker.EnabledByEnv(os.Getenv(egressbreaker.EnvSwitch)) {
+		egressbreaker.Default().SetEnabled(false)
+		log.Warnf("cliproxy: the egress breaker is off (%s): requests keep going out through proxies known to be failing", egressbreaker.EnvSwitch)
+	}
 
 	// Read here so a malformed CLIRELAY_SHUTDOWN_GRACE is reported at startup.
 	grace := shutdownGracePeriod()

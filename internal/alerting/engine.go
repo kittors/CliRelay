@@ -23,6 +23,10 @@ type Sources interface {
 	// Spenders returns the tenant's keys and end users that have a limit, with
 	// how much of it they have used.
 	Spenders(ctx context.Context, tenantID string, now time.Time) ([]SpendSample, error)
+	// Egress returns the proxies the tenant's traffic leaves through, with what
+	// the egress breaker of this process knows about each. An error means they
+	// could not be read, which the rule must not take for "every proxy works".
+	Egress(ctx context.Context, tenantID string, now time.Time) ([]EgressSample, error)
 }
 
 // Sender delivers a message to channels. *Dispatcher is the production one.
@@ -64,8 +68,9 @@ const (
 )
 
 // ruleOrder is the order the rules of a round are sent in: what needs a person
-// first.
-var ruleOrder = []string{RuleAccountFailure, RuleQuotaWindow, RuleSpending, RuleUseItOrLoseIt}
+// first. A broken proxy stops every account behind it, so it leads; news that
+// something is over comes last.
+var ruleOrder = []string{RuleEgressBreaker, RuleAccountFailure, RuleQuotaWindow, RuleSpending, RuleUseItOrLoseIt, RuleEgressRecovered}
 
 // Engine evaluates the rules of every tenant that has alerting on and delivers
 // what they find. It runs on one node of a cluster (the leader), on its own
@@ -268,7 +273,19 @@ func (e *Engine) runTenant(ctx context.Context, tenantID string, settings Settin
 			e.markSpendRead(tenantID, now)
 		}
 	}
-	e.deliver(ctx, tenantID, settings, candidates, failing, now)
+	// egress stays nil unless the proxies were read this round, for the same
+	// reason as failing: the ends of outages are judged against them.
+	var egress *egressRound
+	if rules.EgressBreaker.Enabled {
+		samples, err := e.sources.Egress(ctx, tenantID, now)
+		if err != nil {
+			log.Debugf("alerting: could not read the proxies of tenant %s: %v", tenantID, err)
+		} else {
+			candidates = append(candidates, egressCandidates(rules.EgressBreaker, samples, now)...)
+			egress = &egressRound{samples: samples}
+		}
+	}
+	e.deliver(ctx, tenantID, settings, candidates, failing, egress, now)
 }
 
 func (e *Engine) failures(tenantID string, rule AccountFailureRule, accounts []AccountSample, now time.Time) ([]Candidate, map[string]struct{}) {
@@ -313,7 +330,7 @@ type plannedMessage struct {
 // process whose write succeeds sends. After delivery the reservation is replaced
 // by the real quiet period, or by a retry time if no channel accepted the
 // message.
-func (e *Engine) deliver(ctx context.Context, tenantID string, settings Settings, candidates []Candidate, failing map[string]struct{}, now time.Time) {
+func (e *Engine) deliver(ctx context.Context, tenantID string, settings Settings, candidates []Candidate, failing map[string]struct{}, egress *egressRound, now time.Time) {
 	sent, version, err := e.store.LoadSent(tenantID)
 	if err != nil {
 		log.Debugf("alerting: could not read what was already sent to tenant %s: %v", tenantID, err)
@@ -323,6 +340,11 @@ func (e *Engine) deliver(ctx context.Context, tenantID string, settings Settings
 	sent.prune(now)
 	if failing != nil {
 		sent.forgetFailures(failureKeyPrefix, failing)
+	}
+	if egress != nil {
+		// The ends of reported outages are found against what was reported, so
+		// only now that the records are read.
+		candidates = append(candidates, egress.recoveries(&sent, now)...)
 	}
 	housekeeping := len(sent.Records) != before
 
@@ -394,9 +416,16 @@ func (e *Engine) settle(tenantID string, plan []plannedMessage, cooldown time.Du
 				switch {
 				case p.skipped:
 					delete(sent.Records, c.Key)
+				case p.ok && c.Resolves != "":
+					// The end of a problem was reported: the problem stays quiet for
+					// a while (see resolvedQuiet), and so does the report of its end.
+					sent.set(c.Key, SentRecord{At: now, Until: now.Add(resolvedQuiet)})
+					sent.set(c.Resolves, SentRecord{At: now, Until: now.Add(resolvedQuiet), Resolved: true})
 				case p.ok:
-					sent.set(c.Key, SentRecord{At: now, Until: quietUntil(c, cooldown, now)})
+					sent.set(c.Key, SentRecord{At: now, Until: quietUntil(c, cooldown, now), Since: c.Since})
 				default:
+					// For the end of a problem the problem's record is left alone, so
+					// that the end is reported again after the retry wait.
 					sent.set(c.Key, SentRecord{At: now, Until: now.Add(failedRetryAfter), Failed: true})
 				}
 			}
