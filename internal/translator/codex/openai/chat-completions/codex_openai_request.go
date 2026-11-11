@@ -248,8 +248,21 @@ func ConvertOpenAIRequestToCodex(modelName string, inputRawJSON []byte, stream b
 					if v := fn.Get("parameters"); v.Exists() {
 						item, _ = sjson.SetRaw(item, "parameters", v.Raw)
 					}
-					if v := fn.Get("strict"); v.Exists() {
+					// Chat Completions treats a function without strict (or
+					// with strict null) as non-strict. The Responses API
+					// treats a missing strict as a request to try strict
+					// mode. On 2026-11-11 the Codex backend fell back to
+					// non-strict only when the request had no Version
+					// header; with the one Codex clients send (the executor
+					// forwards it), gpt-6-astra rejected Codex App's
+					// automation_update (root "properties":{} beside a oneOf
+					// of $ref branches) with "required property 'id' is
+					// unsatisfiable". Write the Chat default out, as the
+					// Claude and Gemini translators to Codex already do.
+					if v := fn.Get("strict"); v.Exists() && v.Type != gjson.Null {
 						item, _ = sjson.Set(item, "strict", v.Value())
+					} else {
+						item, _ = sjson.Set(item, "strict", false)
 					}
 				}
 				appendTool(item)
