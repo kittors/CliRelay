@@ -11,6 +11,7 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/egressbreaker"
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/net/proxy"
 )
@@ -57,17 +58,25 @@ func newProxyAwareWebsocketDialer(ctx context.Context, cfg *config.Config, auth 
 			password, _ := parsedURL.User.Password()
 			proxyAuth = &proxy.Auth{User: username, Password: password}
 		}
-		socksDialer, errSOCKS5 := proxy.SOCKS5("tcp", parsedURL.Host, proxyAuth, proxy.Direct)
+		// Failures of the proxy hop itself are marked where they happen (see
+		// package egressbreaker), as util.BuildProxyTransport marks them for
+		// HTTP requests. The marks do not change the error text.
+		socksDialer, errSOCKS5 := proxy.SOCKS5("tcp", parsedURL.Host, proxyAuth, egressbreaker.HopDialer{Base: proxy.Direct.DialContext})
 		if errSOCKS5 != nil {
 			log.Errorf("codex websockets executor: create SOCKS5 dialer failed: %v", errSOCKS5)
 			return dialer
 		}
 		dialer.Proxy = nil
 		dialer.NetDialContext = func(_ context.Context, network, addr string) (net.Conn, error) {
-			return socksDialer.Dial(network, addr)
+			conn, err := socksDialer.Dial(network, addr)
+			return conn, egressbreaker.MarkSOCKS5(err)
 		}
 	case "http", "https":
 		dialer.Proxy = http.ProxyURL(parsedURL)
+		// With a proxy set this dial only ever connects to the proxy. The
+		// CONNECT exchange is gorilla's own and reports a 407 as plain text,
+		// so a rejected authentication is not recognised on this path.
+		dialer.NetDialContext = egressbreaker.MarkDial(dialer.NetDialContext)
 	default:
 		log.Errorf("codex websockets executor: unsupported proxy scheme: %s", parsedURL.Scheme)
 	}

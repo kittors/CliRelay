@@ -564,7 +564,14 @@ func (e *CodexWebsocketsExecutor) dialCodexWebsocket(ctx context.Context, auth *
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	// A new upstream websocket is a new connection through the account's
+	// proxy, so it passes the egress breaker like an HTTP request does.
+	permit, errEgress := egressBreaker.Allow(resolveAuthProxyURL(e.cfg, auth))
+	if errEgress != nil {
+		return nil, nil, errEgress
+	}
 	conn, resp, err := dialer.DialContext(ctx, wsURL, headers)
+	err = permit.Done(err)
 	if conn != nil {
 		// Avoid gorilla/websocket flate tail validation issues on some upstreams/Go versions.
 		// Negotiating permessage-deflate is fine; we just don't compress outbound messages.

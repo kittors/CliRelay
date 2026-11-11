@@ -5,12 +5,14 @@ package util
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/egressbreaker"
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/net/proxy"
@@ -116,8 +118,11 @@ func BuildProxyTransport(proxyURL string, preferIPv4 bool) *http.Transport {
 		if preferIPv4 {
 			proxyNetwork = "tcp4"
 		}
+		// Failures of the proxy hop itself are marked where they happen (see
+		// package egressbreaker): the connect to the proxy here, a rejected
+		// authentication below. The marks do not change the error text.
 		forwardDialer := &net.Dialer{Timeout: DefaultHTTPDialTimeout, KeepAlive: 30 * time.Second}
-		dialer, errSOCKS5 := proxy.SOCKS5(proxyNetwork, parsedURL.Host, proxyAuth, forwardDialer)
+		dialer, errSOCKS5 := proxy.SOCKS5(proxyNetwork, parsedURL.Host, proxyAuth, egressbreaker.HopDialer{Base: forwardDialer.DialContext})
 		if errSOCKS5 != nil {
 			log.Errorf("create SOCKS5 dialer failed: %v", errSOCKS5)
 			return nil
@@ -125,18 +130,39 @@ func BuildProxyTransport(proxyURL string, preferIPv4 bool) *http.Transport {
 		transport.Proxy = nil
 		transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
 			if contextDialer, ok := dialer.(proxy.ContextDialer); ok {
-				return contextDialer.DialContext(ctx, network, addr)
+				conn, err := contextDialer.DialContext(ctx, network, addr)
+				return conn, egressbreaker.MarkSOCKS5(err)
 			}
-			return dialer.Dial(network, addr)
+			conn, err := dialer.Dial(network, addr)
+			return conn, egressbreaker.MarkSOCKS5(err)
 		}
 	case "http", "https":
 		transport.Proxy = http.ProxyURL(parsedURL)
+		// With a proxy set the transport dials nothing but the proxy, so a
+		// failed dial is the proxy being out of reach.
+		transport.DialContext = egressbreaker.MarkDial(transport.DialContext)
+		transport.OnProxyConnectResponse = markProxyConnectRejection
 	default:
 		log.Errorf("unsupported proxy scheme: %s", parsedURL.Scheme)
 		return nil
 	}
 
 	return transport
+}
+
+// markProxyConnectRejection is the transport's OnProxyConnectResponse hook. A
+// 407 to CONNECT is the proxy refusing the credentials; it is returned marked
+// as such, with the text the transport would have produced on its own (the
+// status line without its code). Every other status is left to the transport.
+func markProxyConnectRejection(_ context.Context, _ *url.URL, _ *http.Request, res *http.Response) error {
+	if res == nil || res.StatusCode != http.StatusProxyAuthRequired {
+		return nil
+	}
+	_, text, ok := strings.Cut(res.Status, " ")
+	if !ok || strings.TrimSpace(text) == "" {
+		text = http.StatusText(http.StatusProxyAuthRequired)
+	}
+	return egressbreaker.AuthRejected(errors.New(text))
 }
 
 // SetProxy configures the provided HTTP client with proxy settings from the configuration.

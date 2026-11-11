@@ -55,6 +55,9 @@ func (h *BaseAPIHandler) writeErrorResponse(c *gin.Context, msg *StreamErrorMess
 			}
 		}
 	}
+	if retryAfter := localRetryAfter(msg); retryAfter != "" {
+		c.Writer.Header().Set("Retry-After", retryAfter)
+	}
 
 	status, errText := ErrorMessageText(msg)
 	status, body := build(status, errText)
