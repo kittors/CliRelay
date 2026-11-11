@@ -301,9 +301,22 @@ func ConvertClaudeRequestToCodex(modelName string, inputRawJSON []byte, _ bool) 
 	if hasTools {
 		out.WriteString(`,"tools":`)
 		out.Write(toolsBuf.Bytes())
-		out.WriteString(`,"tool_choice":"auto"`)
+		// Preserve a caller's prohibition instead of changing it to auto.
+		// Keep declarations for cache stability; omit choice when no tools exist.
+		if rootResult.Get("tool_choice.type").String() == "none" {
+			out.WriteString(`,"tool_choice":"none"`)
+		} else {
+			out.WriteString(`,"tool_choice":"auto"`)
+		}
 	}
-	out.WriteString(`,"parallel_tool_calls":true,"reasoning":{"effort":`)
+	// Anthropic's opt-out is the inverse of the Responses parallel flag.
+	// Only a JSON boolean true disables it; absent/false retain the default.
+	if rootResult.Get("tool_choice.disable_parallel_tool_use").Type == gjson.True {
+		out.WriteString(`,"parallel_tool_calls":false`)
+	} else {
+		out.WriteString(`,"parallel_tool_calls":true`)
+	}
+	out.WriteString(`,"reasoning":{"effort":`)
 	out.Write(mustJSONString(reasoningEffort))
 	out.WriteString(`,"summary":"auto"},"stream":true,"store":false,"include":["reasoning.encrypted_content"]`)
 	// Written into the envelope like the rest, not set on the finished body.
