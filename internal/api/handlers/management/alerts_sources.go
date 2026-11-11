@@ -7,21 +7,30 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/alerting"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/management/aiaccountstatus"
 	apikeysettings "github.com/router-for-me/CLIProxyAPI/v6/internal/management/settings/apikey"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/quota"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/egressbreaker"
 )
 
 // alertSources reads what the alert rules judge from data that is already
 // stored: the credentials the auth manager holds in memory, the account status
-// the probes keep current, and the usage tables the quota admission reads. It
-// triggers no probe and writes nothing, so evaluating alerts never costs an
-// upstream call. (aiaccountstatus.Service.ListStatus is not used for that
-// reason: it also reconciles bindings and normalizes stale state.)
+// the probes keep current, the usage tables the quota admission reads, and
+// what the egress breaker has seen (see alerts_egress.go). It triggers no
+// probe and writes nothing, so evaluating alerts never costs an upstream call.
+// (aiaccountstatus.Service.ListStatus is not used for that reason: it also
+// reconciles bindings and normalizes stale state.)
 type alertSources struct {
 	authManager func() *coreauth.Manager
+	// proxyPools returns a tenant's own proxy entries and the platform entries
+	// shared with it (Handler.tenantProxyPools); nil reads none.
+	proxyPools func(tenantID string) (own, shared []config.ProxyPoolEntry)
+	// breaker is the egress breaker the requests pass; nil is the process-wide
+	// one.
+	breaker *egressbreaker.Breaker
 }
 
 var _ alerting.Sources = alertSources{}

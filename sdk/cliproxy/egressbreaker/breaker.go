@@ -90,6 +90,12 @@ type Breaker struct {
 	mu     sync.Mutex
 	epoch  uint64
 	states map[string]*state
+	// passed is when a request last got through each proxy. The state above
+	// vanishes with the process, so after a restart "not open" only means
+	// "not seen failing yet"; a request that got through is what confirms
+	// that an outage reported earlier is over (see Observe). It holds one
+	// time per proxy in use and forgets the ones unused for staleAfter.
+	passed map[string]time.Time
 }
 
 type state struct {
@@ -120,6 +126,10 @@ type state struct {
 	// refused counts the attempts turned away during this outage. One request
 	// that walks a pool of accounts is turned away once per account.
 	refused int64
+	// failedProbes counts the probes of this outage that met a fault: the
+	// proof that the proxy was still failing after the breaker opened, not
+	// just at the moment it did.
+	failedProbes int
 }
 
 // New builds a Breaker.
@@ -142,7 +152,7 @@ func New(cfg Config) *Breaker {
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
-	return &Breaker{cfg: cfg, states: map[string]*state{}}
+	return &Breaker{cfg: cfg, states: map[string]*state{}, passed: map[string]time.Time{}}
 }
 
 var defaultBreaker = New(Config{})
@@ -190,6 +200,7 @@ func (b *Breaker) Reset() {
 	}
 	b.mu.Lock()
 	b.states = map[string]*state{}
+	b.passed = map[string]time.Time{}
 	b.mu.Unlock()
 }
 
@@ -310,6 +321,7 @@ func (b *Breaker) pass(p *Permit) {
 	s := b.states[p.key]
 	switch {
 	case s == nil:
+		b.notePassLocked(p.key, now)
 		b.mu.Unlock()
 		return
 	case !s.open:
@@ -318,17 +330,20 @@ func (b *Breaker) pass(p *Permit) {
 		if !p.probe {
 			delete(b.states, p.key)
 		}
+		b.notePassLocked(p.key, now)
 		b.mu.Unlock()
 		return
 	case !p.probe || s.epoch != p.epoch:
 		// A request admitted before the breaker opened, or a probe of an
 		// earlier round. It may have reused a connection that predates the
 		// outage, which says nothing about whether new ones can be opened;
-		// only the current probe closes the breaker.
+		// only the current probe closes the breaker. For the same reason it
+		// is not recorded as a pass.
 		b.mu.Unlock()
 		return
 	}
 	delete(b.states, p.key)
+	b.notePassLocked(p.key, now)
 	label, outage, refused := s.label, now.Sub(s.since), s.refused
 	b.mu.Unlock()
 	log.Infof("egress-breaker: %s works again after %s; %d attempt(s) were refused instead of sent",
@@ -349,6 +364,7 @@ func (b *Breaker) fail(p *Permit, fault Fault, cause error) time.Duration {
 			return wait
 		}
 		wait := b.openLocked(s, fault, now, true)
+		s.failedProbes++
 		label, outage, refused := s.label, now.Sub(s.since), s.refused
 		b.mu.Unlock()
 		log.Warnf("egress-breaker: %s is still unavailable after %s (%s); %d attempt(s) refused so far, next probe in %s: %v",
@@ -399,6 +415,7 @@ func (b *Breaker) openLocked(s *state, fault Fault, now time.Time, reopen bool) 
 		s.backoff = b.cfg.BaseOpen
 		s.since = now
 		s.refused = 0
+		s.failedProbes = 0
 	}
 	s.open, s.fault, s.probing = true, fault, false
 	s.rejections, s.unreachable = 0, 0
@@ -416,13 +433,28 @@ func (b *Breaker) remainingLocked(s *state, now time.Time) time.Duration {
 }
 
 // forgetStaleLocked drops the state of proxies nothing has asked about for
-// staleAfter.
+// staleAfter, and the passes older than that.
 func (b *Breaker) forgetStaleLocked(now time.Time) {
 	for key, s := range b.states {
 		if now.Sub(s.lastSeen) > staleAfter {
 			delete(b.states, key)
 		}
 	}
+	for key, at := range b.passed {
+		if now.Sub(at) > staleAfter {
+			delete(b.passed, key)
+		}
+	}
+}
+
+// notePassLocked records that a request got through the proxy. A proxy seen
+// for the first time is the moment to drop the stale ones, as fail does for
+// states, so the map stays as small as the set of proxies in use.
+func (b *Breaker) notePassLocked(key string, now time.Time) {
+	if _, known := b.passed[key]; !known {
+		b.forgetStaleLocked(now)
+	}
+	b.passed[key] = now
 }
 
 // abandon gives the probe slot back when the probe ended without an answer,
@@ -450,6 +482,8 @@ type Status struct {
 	// Refused counts the attempts turned away during this outage; a request
 	// that walks a pool of accounts counts once per account.
 	Refused int64
+	// FailedProbes counts the probes of this outage that met a fault.
+	FailedProbes int
 }
 
 // Open lists the proxies requests are refused for, ordered by label.
@@ -462,7 +496,7 @@ func (b *Breaker) Open() []Status {
 	out := make([]Status, 0, len(b.states))
 	for _, s := range b.states {
 		if s.open {
-			out = append(out, Status{Label: s.label, Fault: s.fault, Since: s.since, NextProbe: s.until, Refused: s.refused})
+			out = append(out, s.status())
 		}
 	}
 	b.mu.Unlock()

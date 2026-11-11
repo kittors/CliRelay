@@ -27,6 +27,7 @@ import (
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v6/sdk/access"
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v6/sdk/auth"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/egressbreaker"
 )
 
 // Handler aggregates config reference, persistence path and helpers.
@@ -73,6 +74,8 @@ type Handler struct {
 	importKinds map[string]credentialImportKind
 	// metrics overrides the process-wide metrics exporter in tests.
 	metrics *observability.Exporter
+	// egress overrides the process-wide egress breaker in tests.
+	egress *egressbreaker.Breaker
 	// routingSimulator runs GET /routing-simulation; nil until the API server
 	// sets it, and the endpoint answers 503 until then.
 	routingSimulator RoutingSimulator

@@ -1,7 +1,7 @@
 // Package alerting tells an operator about the things nobody is watching for:
-// an upstream account about to run dry, one that stopped working, a key or
-// end user about to hit its spending limit, a long allowance about to reset
-// with most of it unused.
+// an upstream account about to run dry, one that stopped working, a proxy the
+// traffic leaves through that stopped working, a key or end user about to hit
+// its spending limit, a long allowance about to reset with most of it unused.
 //
 // The unit is the tenant. Everything the rules look at (accounts, keys, end
 // users, their usage) belongs to one tenant, so each tenant carries its own
@@ -49,6 +49,10 @@ const (
 	RuleAccountFailure = "account_failure"
 	RuleSpending       = "spending"
 	RuleUseItOrLoseIt  = "use_it_or_lose_it"
+	RuleEgressBreaker  = "egress_breaker"
+	// RuleEgressRecovered marks the message that an outage RuleEgressBreaker
+	// reported is over. It has no settings of its own: it follows that rule.
+	RuleEgressRecovered = "egress_recovered"
 	// RuleTest marks the message an operator sent to try a channel.
 	RuleTest = "test"
 )
@@ -97,6 +101,16 @@ const (
 	DefaultMinRemainingPercent = 40
 	DefaultHoursBeforeReset    = 24
 	MaxHoursBeforeReset        = 7 * 24
+
+	// DefaultEgressMinutes is how long the egress breaker must have kept a
+	// proxy shut before it is reported. The breaker probes 15s, 45s and 105s
+	// after it opens, so a proxy that is back within about a minute and a half
+	// is never reported, while one that is not (the 2026-11-11 rejection lasted
+	// 27 minutes) is reported within four minutes. There is no zero: a breaker
+	// that opened a moment ago may close at its first probe.
+	DefaultEgressMinutes = 3
+	MinEgressMinutes     = 1
+	MaxEgressMinutes     = 24 * 60
 )
 
 // Settings is the stored form of one tenant's alerting configuration. The
@@ -141,6 +155,7 @@ type Rules struct {
 	AccountFailure AccountFailureRule `json:"account_failure"`
 	Spending       SpendingRule       `json:"spending"`
 	UseItOrLoseIt  UseItOrLoseItRule  `json:"use_it_or_lose_it"`
+	EgressBreaker  EgressBreakerRule  `json:"egress_breaker"`
 }
 
 // QuotaWindowRule fires when an upstream account has used ThresholdPercent of
@@ -172,8 +187,16 @@ type UseItOrLoseItRule struct {
 	HoursBeforeReset    int  `json:"hours_before_reset"`
 }
 
-// DefaultRules is what a tenant that never saved the rules gets. The last rule
-// is a reminder rather than a problem, so it starts off.
+// EgressBreakerRule fires when the egress breaker has refused requests through
+// a proxy the tenant's traffic leaves through for ForMinutes, and reports again
+// once requests get through it.
+type EgressBreakerRule struct {
+	Enabled    bool `json:"enabled"`
+	ForMinutes int  `json:"for_minutes"`
+}
+
+// DefaultRules is what a tenant that never saved the rules gets. The reminder
+// rule (use it or lose it) is not about a problem, so it starts off.
 func DefaultRules() Rules {
 	return Rules{
 		QuotaWindow:    QuotaWindowRule{Enabled: true, ThresholdPercent: DefaultUsageThresholdPercent},
@@ -184,6 +207,7 @@ func DefaultRules() Rules {
 			MinRemainingPercent: DefaultMinRemainingPercent,
 			HoursBeforeReset:    DefaultHoursBeforeReset,
 		},
+		EgressBreaker: EgressBreakerRule{Enabled: true, ForMinutes: DefaultEgressMinutes},
 	}
 }
 
@@ -206,6 +230,13 @@ func (s Settings) Normalized() Settings {
 	if s.Rules == (Rules{}) {
 		s.Rules = DefaultRules()
 	}
+	// A row saved before the rule existed has no trace of it, and a saved rule
+	// always has its minutes (they cannot be zero). Such a row gets the rule as
+	// a new tenant does, switched on: an operator who switched alerting on
+	// wants to hear that the traffic cannot leave.
+	if s.Rules.EgressBreaker == (EgressBreakerRule{}) {
+		s.Rules.EgressBreaker = DefaultRules().EgressBreaker
+	}
 	s.Language = normalizeLanguage(s.Language)
 	s.CooldownMinutes = clamp(s.CooldownMinutes, MinCooldownMinutes, MaxCooldownMinutes, DefaultCooldownMinutes)
 	s.Rules.QuotaWindow.ThresholdPercent = clamp(s.Rules.QuotaWindow.ThresholdPercent, 1, 100, DefaultUsageThresholdPercent)
@@ -213,6 +244,7 @@ func (s Settings) Normalized() Settings {
 	s.Rules.AccountFailure.ForMinutes = clamp(s.Rules.AccountFailure.ForMinutes, 0, MaxFailureMinutes, DefaultFailureMinutes)
 	s.Rules.UseItOrLoseIt.MinRemainingPercent = clamp(s.Rules.UseItOrLoseIt.MinRemainingPercent, 1, 100, DefaultMinRemainingPercent)
 	s.Rules.UseItOrLoseIt.HoursBeforeReset = clamp(s.Rules.UseItOrLoseIt.HoursBeforeReset, 1, MaxHoursBeforeReset, DefaultHoursBeforeReset)
+	s.Rules.EgressBreaker.ForMinutes = clamp(s.Rules.EgressBreaker.ForMinutes, MinEgressMinutes, MaxEgressMinutes, DefaultEgressMinutes)
 	channels := make([]Channel, 0, len(s.Channels))
 	for _, channel := range s.Channels {
 		if len(channels) >= MaxChannels {
@@ -256,7 +288,8 @@ func (s Settings) Active() bool {
 // RulesEnabled reports whether any rule is on.
 func (s Settings) RulesEnabled() bool {
 	r := s.Rules
-	return r.QuotaWindow.Enabled || r.AccountFailure.Enabled || r.Spending.Enabled || r.UseItOrLoseIt.Enabled
+	return r.QuotaWindow.Enabled || r.AccountFailure.Enabled || r.Spending.Enabled || r.UseItOrLoseIt.Enabled ||
+		r.EgressBreaker.Enabled
 }
 
 // deliverable reports whether the channel holds what its kind needs to send.
@@ -345,7 +378,10 @@ func (s Settings) Validate(allowPrivate bool) *FieldError {
 	if err := inRange("rules.use_it_or_lose_it.min_remaining_percent", r.UseItOrLoseIt.MinRemainingPercent, 1, 100); err != nil {
 		return err
 	}
-	return inRange("rules.use_it_or_lose_it.hours_before_reset", r.UseItOrLoseIt.HoursBeforeReset, 1, MaxHoursBeforeReset)
+	if err := inRange("rules.use_it_or_lose_it.hours_before_reset", r.UseItOrLoseIt.HoursBeforeReset, 1, MaxHoursBeforeReset); err != nil {
+		return err
+	}
+	return inRange("rules.egress_breaker.for_minutes", r.EgressBreaker.ForMinutes, MinEgressMinutes, MaxEgressMinutes)
 }
 
 func inRange(field string, value, lo, hi int) *FieldError {
