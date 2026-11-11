@@ -398,6 +398,7 @@ func TestExecutorsResolveTheirEgressProxy(t *testing.T) {
 		"gemini":           NewGeminiExecutor(cfg),
 		"gemini-cli":       NewGeminiCLIExecutor(cfg),
 		"iflow":            NewIFlowExecutor(cfg),
+		"kimi":             NewKimiExecutor(cfg),
 		"minimax":          NewMiniMaxExecutor("minimax", cfg),
 		"ollama-cloud":     NewOllamaCloudExecutor(cfg),
 		"openai-compat":    NewOpenAICompatExecutor("openrouter", cfg),
@@ -418,13 +419,6 @@ func TestExecutorsResolveTheirEgressProxy(t *testing.T) {
 		if got := resolver.EgressProxyURL(&cliproxyauth.Auth{ID: "plain"}); got != cfg.ProxyURL {
 			t.Errorf("%s: EgressProxyURL without a proxy of its own = %q, want the global proxy", name, got)
 		}
-	}
-
-	// Kimi resolves the proxy in two different ways (see egress_gate.go) and
-	// must leave the decision to its transports rather than name the wrong one.
-	kimi, ok := cliproxyauth.ProviderExecutor(NewKimiExecutor(cfg)).(cliproxyauth.EgressProxyResolver)
-	if !ok || kimi.EgressProxyURL(auth) != "" {
-		t.Errorf("kimi: EgressProxyURL must be declared and name no proxy")
 	}
 
 	// And the URL the executors name is the one their HTTP requests pass the

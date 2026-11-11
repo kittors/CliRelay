@@ -91,12 +91,14 @@ func (e *IFlowExecutor) EgressProxyURL(auth *cliproxyauth.Auth) string {
 	return resolveAuthProxyURL(e.cfg, auth)
 }
 
-// KimiExecutor names no proxy, which leaves the decision to its transports.
-// It serves Claude-format requests through the ClaudeExecutor it embeds, and
-// that one is never given a configuration, so the two formats resolve the
-// credential's proxy differently and no single answer would be right for
-// both. The method is declared so that the embedded one is not promoted.
-func (e *KimiExecutor) EgressProxyURL(*cliproxyauth.Auth) string { return "" }
+// KimiExecutor serves Claude-format requests through a ClaudeExecutor built
+// from the same configuration, so both of its formats leave through this proxy.
+func (e *KimiExecutor) EgressProxyURL(auth *cliproxyauth.Auth) string {
+	if e == nil {
+		return ""
+	}
+	return resolveAuthProxyURL(e.cfg, auth)
+}
 
 func (e *OllamaCloudExecutor) EgressProxyURL(auth *cliproxyauth.Auth) string {
 	if e == nil {
