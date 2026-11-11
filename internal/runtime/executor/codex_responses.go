@@ -21,7 +21,9 @@ func ensureTranslatedCodexModel(body []byte, fallback string) []byte {
 	}, nil)
 }
 
-func sanitizeCodexResponsesRequest(body []byte) []byte {
+// sanitizeCodexResponsesRequest takes an optional tally of what it changes (see
+// codexBodyEdits); callers with no attempt to attribute it to pass none.
+func sanitizeCodexResponsesRequest(body []byte, edits ...*codexBodyEdits) []byte {
 	body = util.MutateTopLevelObject(body, nil, []string{
 		"max_output_tokens",
 		"max_completion_tokens",
@@ -32,7 +34,7 @@ func sanitizeCodexResponsesRequest(body []byte) []byte {
 	// With store=false, also remove server item IDs so upstream treats retained history as
 	// inline content instead of looking up items that were never persisted.
 	store := gjson.GetBytes(body, "store")
-	body = stripCodexHistoryDataURLImagesForStore(body, store.Exists() && !store.Bool())
+	body = stripCodexHistoryDataURLImagesForStore(body, store.Exists() && !store.Bool(), edits...)
 	return body
 }
 

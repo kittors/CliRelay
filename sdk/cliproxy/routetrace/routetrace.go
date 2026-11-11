@@ -23,6 +23,7 @@ package routetrace
 
 import (
 	"context"
+	"encoding/json"
 	"sync"
 	"time"
 	"unicode/utf8"
@@ -171,6 +172,12 @@ type Step struct {
 	// BeforeFirstByte marks a stream that failed before anything reached the
 	// client, which a handler may still retry on another account.
 	BeforeFirstByte bool `json:"before_first_byte,omitempty"`
+	// UpstreamRequestShape is the structural fingerprint of the request body an
+	// executor sent on an attempt the upstream refused without saying why:
+	// counts, sizes and type names, never any content. It is the executor's own
+	// JSON, kept raw so this package does not need to know the upstream's request
+	// format (see AttachUpstreamRequestShape).
+	UpstreamRequestShape json.RawMessage `json:"upstream_request_shape,omitempty"`
 
 	// Reason is why a skip passed the account over.
 	Reason string `json:"reason,omitempty"`

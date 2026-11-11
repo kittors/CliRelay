@@ -148,13 +148,15 @@ func mergeCodexClientInclude(body, clientPayload []byte, source sdktranslator.Fo
 // prepareCodexResponsesBody applies the Codex-specific input rules that must run
 // after translation. chatGPTBackend selects the ciphertext check, which relies on
 // the ChatGPT backend's token format and so must not touch API-key upstreams.
-func prepareCodexResponsesBody(body, clientPayload []byte, source sdktranslator.Format, chatGPTBackend bool) []byte {
+// edits is an optional tally of what was removed (see codexBodyEdits).
+func prepareCodexResponsesBody(body, clientPayload []byte, source sdktranslator.Format, chatGPTBackend bool, edits ...*codexBodyEdits) []byte {
 	body = mergeCodexClientInclude(body, clientPayload, source)
 	if chatGPTBackend {
 		var dropped int
 		body, dropped = dropCodexReasoningItems(body, isForeignCodexCiphertext)
 		if dropped > 0 {
 			log.Debugf("codex executor: dropped %d reasoning item(s) carrying non-OpenAI encrypted_content", dropped)
+			firstCodexEdits(edits).noteForeignReasoning(dropped)
 		}
 	}
 	return body
