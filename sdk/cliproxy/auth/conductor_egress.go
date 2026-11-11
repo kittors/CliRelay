@@ -1,6 +1,8 @@
 package auth
 
 import (
+	"strings"
+
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/egressbreaker"
 )
 
@@ -33,6 +35,27 @@ const EgressUnavailableCode = "egress_unavailable"
 // executor's own requests use: the breaker keys its state by it.
 type EgressProxyResolver interface {
 	EgressProxyURL(auth *Auth) string
+}
+
+// EgressProxyURL returns the proxy a credential's upstream traffic leaves
+// through, as the executor the scheduler picks for it resolves the proxy: the
+// key the egress breaker keeps its state under. Empty means the traffic goes
+// out directly, or that the executor cannot name one proxy for all of its
+// requests. It is for readers outside the request path (the console, the
+// alert rules) that need to tie a breaker state back to accounts.
+func (m *Manager) EgressProxyURL(auth *Auth) string {
+	if m == nil || auth == nil {
+		return ""
+	}
+	providerKey := strings.TrimSpace(strings.ToLower(auth.Provider))
+	m.mu.RLock()
+	executor := m.executorForAuthLocked(auth, providerKey)
+	m.mu.RUnlock()
+	resolver, ok := executor.(EgressProxyResolver)
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(resolver.EgressProxyURL(auth))
 }
 
 func (m *Manager) egressBreaker() *egressbreaker.Breaker {

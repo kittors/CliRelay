@@ -13,6 +13,9 @@ const (
 	SubjectAccount = "account"
 	SubjectKey     = "key"
 	SubjectEndUser = "end_user"
+	// SubjectProxy is a proxy the tenant's traffic leaves through. Its ID is the
+	// proxy-pool entry, empty for a proxy that is not one.
+	SubjectProxy = "proxy"
 	// SubjectChannel is kept for the one rule that is not implemented: no channel
 	// stores a balance, so there is nothing to judge (see the package doc).
 	SubjectChannel = "channel"
@@ -89,6 +92,13 @@ type Candidate struct {
 	// Until is when the same problem may be reported again; zero means one
 	// cooldown from when it was sent.
 	Until time.Time
+	// Since is when the problem began, kept with the record of the sent message
+	// for rules that also report the end of a problem.
+	Since time.Time
+	// Resolves is set on the message that a problem is over: the key of the
+	// problem it reports the end of. Once the message is out that problem is
+	// marked as ended (see SentRecord.Resolved).
+	Resolves string
 	// Describe writes the sentence about this candidate in a language.
 	Describe func(language string) string
 }

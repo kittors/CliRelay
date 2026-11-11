@@ -30,6 +30,15 @@ const (
 	// failedRetryAfter is how long a message that no channel accepted waits before
 	// it is tried again.
 	failedRetryAfter = 15 * time.Minute
+
+	// resolvedQuiet is how long a problem whose end was reported is not reported
+	// again. Two things would otherwise raise it at once. During a deploy the
+	// old backend slot keeps evaluating for a few minutes after the new one took
+	// the traffic, and the egress breaker of a process that no longer gets
+	// requests still shows the outage as it was when they stopped. And a proxy
+	// that keeps failing and recovering would send a message each way every
+	// round. A new outage of the same proxy is reported once this is over.
+	resolvedQuiet = 15 * time.Minute
 )
 
 // Event is one entry of the alert history.
@@ -107,6 +116,19 @@ type SentRecord struct {
 	// Failed marks a problem whose message no channel accepted; Until is then the
 	// retry time rather than the end of a quiet period.
 	Failed bool `json:"failed,omitempty"`
+	// Since is when the reported problem began, for the rules that also report
+	// its end: only something that happened after it can say it is over.
+	Since time.Time `json:"since,omitzero"`
+	// Resolved marks a problem whose end was reported; Until is then when it
+	// may be reported again (see resolvedQuiet).
+	Resolved bool `json:"resolved,omitempty"`
+}
+
+// reported says the record stands for a message about the problem that went
+// out and whose end has not been reported: neither a reservation, nor a
+// message no channel accepted, nor an ended problem.
+func (r SentRecord) reported() bool {
+	return !r.Pending && !r.Failed && !r.Resolved
 }
 
 // SentState is which problems were already reported. It is the memory that makes

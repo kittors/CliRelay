@@ -170,6 +170,8 @@ func subjectKindName(kind, language string) string {
 		return pick(language, "end user", "终端用户")
 	case SubjectChannel:
 		return pick(language, "channel", "渠道")
+	case SubjectProxy:
+		return pick(language, "proxy", "代理")
 	default:
 		return kind
 	}
@@ -186,6 +188,10 @@ func ruleTitle(rule, language string, count int) string {
 		return pick(language, "Spending limit is almost reached", "花费额度即将用完")
 	case RuleUseItOrLoseIt:
 		return pick(language, "Quota will reset with most of it unused", "额度即将重置，还剩很多没用")
+	case RuleEgressBreaker:
+		return pick(language, "Egress proxy is not working", "出口代理不可用")
+	case RuleEgressRecovered:
+		return pick(language, "Egress proxy works again", "出口代理已恢复")
 	case RuleTest:
 		return pick(language, "Test message from CliRelay", "CliRelay 测试消息")
 	default:
@@ -202,6 +208,8 @@ func groupSubjectName(kind string, count int, language string) string {
 		return pick(language, fmt.Sprintf("%d API keys", count), fmt.Sprintf("%d 个 API Key", count))
 	case SubjectEndUser:
 		return pick(language, fmt.Sprintf("%d end users", count), fmt.Sprintf("%d 个终端用户", count))
+	case SubjectProxy:
+		return pick(language, fmt.Sprintf("%d proxies", count), fmt.Sprintf("%d 个代理", count))
 	default:
 		return pick(language, fmt.Sprintf("%d items", count), fmt.Sprintf("%d 项", count))
 	}

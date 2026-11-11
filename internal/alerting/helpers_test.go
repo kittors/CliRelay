@@ -126,9 +126,12 @@ type fakeSources struct {
 	mu          sync.Mutex
 	accounts    map[string][]AccountSample
 	spenders    map[string][]SpendSample
+	egress      map[string][]EgressSample
 	accountErr  error
+	egressErr   error
 	accountCall int
 	spendCall   int
+	egressCall  int
 	panicFor    string
 }
 
@@ -150,6 +153,31 @@ func (f *fakeSources) Spenders(_ context.Context, tenantID string, _ time.Time) 
 	defer f.mu.Unlock()
 	f.spendCall++
 	return append([]SpendSample(nil), f.spenders[tenantID]...), nil
+}
+
+func (f *fakeSources) Egress(_ context.Context, tenantID string, _ time.Time) ([]EgressSample, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.egressCall++
+	if f.egressErr != nil {
+		return nil, f.egressErr
+	}
+	return append([]EgressSample(nil), f.egress[tenantID]...), nil
+}
+
+func (f *fakeSources) setEgress(tenantID string, samples ...EgressSample) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.egress == nil {
+		f.egress = map[string][]EgressSample{}
+	}
+	f.egress[tenantID] = samples
+}
+
+func (f *fakeSources) setEgressErr(err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.egressErr = err
 }
 
 func (f *fakeSources) setAccounts(tenantID string, accounts ...AccountSample) {

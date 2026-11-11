@@ -196,3 +196,28 @@ func TestExecutionErrorNamesTheProxyFailureByItsCode(t *testing.T) {
 		t.Fatalf("statusCodeFromError = %d, want 0", status)
 	}
 }
+
+func TestEgressProxyURLAsksTheExecutorOfTheAccount(t *testing.T) {
+	exec := &egressAwareExecutor{proxies: map[string]string{"proxied": " " + brokenProxy + " "}}
+	mgr, _ := newEgressManager(t, exec, "proxied", "direct")
+	proxied, _ := mgr.GetByID("proxied")
+	if got := mgr.EgressProxyURL(proxied); got != brokenProxy {
+		t.Fatalf("EgressProxyURL(proxied) = %q, want %q", got, brokenProxy)
+	}
+	direct, _ := mgr.GetByID("direct")
+	if got := mgr.EgressProxyURL(direct); got != "" {
+		t.Fatalf("EgressProxyURL(direct) = %q, want empty", got)
+	}
+	// No executor for the provider, or one that cannot name a proxy: nothing.
+	if got := mgr.EgressProxyURL(&Auth{ID: "orphan", Provider: "nobody"}); got != "" {
+		t.Fatalf("EgressProxyURL(orphan) = %q, want empty", got)
+	}
+	plain := newPlainManager(t, &scriptedExecutor{}, "proxied")
+	if got := plain.EgressProxyURL(proxied); got != "" {
+		t.Fatalf("EgressProxyURL through an executor without a resolver = %q, want empty", got)
+	}
+	var none *Manager
+	if got := none.EgressProxyURL(proxied); got != "" {
+		t.Fatalf("nil manager EgressProxyURL = %q", got)
+	}
+}

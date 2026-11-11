@@ -88,6 +88,10 @@ func (fixedSources) Spenders(context.Context, string, time.Time) ([]alerting.Spe
 	return nil, nil
 }
 
+func (fixedSources) Egress(context.Context, string, time.Time) ([]alerting.EgressSample, error) {
+	return nil, nil
+}
+
 // countingSender counts the messages it is asked to deliver.
 type countingSender struct {
 	mu       sync.Mutex

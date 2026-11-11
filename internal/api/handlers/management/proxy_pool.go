@@ -41,16 +41,7 @@ type proxyPoolAPIEntry struct {
 // GetProxyPool returns reusable proxy entries for the management UI.
 func (h *Handler) GetProxyPool(c *gin.Context) {
 	tenantID := effectiveTenantID(c)
-	var entries []config.ProxyPoolEntry
-	if proxypoolsettings.StoreAvailableForTenant(tenantID) {
-		entries = proxypoolsettings.ListForTenant(tenantID)
-	} else if h != nil && tenantID == identity.SystemTenantID {
-		h.mu.Lock()
-		if h.cfg != nil {
-			entries = append(entries, h.cfg.ProxyPool...)
-		}
-		h.mu.Unlock()
-	}
+	entries := h.ownProxyPool(tenantID)
 
 	setVersionHeader(c, usage.ConfigCollectionVersion(configsync.DomainProxyPool, tenantID))
 	items := make([]proxyPoolAPIEntry, 0, len(entries))
@@ -66,6 +57,23 @@ func (h *Handler) GetProxyPool(c *gin.Context) {
 	decorateProxyPoolResponse(c, tenantID, items, body)
 	body["items"] = items
 	c.JSON(http.StatusOK, body)
+}
+
+// ownProxyPool returns the tenant's own proxy entries: the stored pool, or for
+// the system tenant without a store the configured one.
+func (h *Handler) ownProxyPool(tenantID string) []config.ProxyPoolEntry {
+	if proxypoolsettings.StoreAvailableForTenant(tenantID) {
+		return proxypoolsettings.ListForTenant(tenantID)
+	}
+	var entries []config.ProxyPoolEntry
+	if h != nil && tenantID == identity.SystemTenantID {
+		h.mu.Lock()
+		if h.cfg != nil {
+			entries = append(entries, h.cfg.ProxyPool...)
+		}
+		h.mu.Unlock()
+	}
+	return entries
 }
 
 // PutProxyPool replaces the reusable proxy list after normalization.

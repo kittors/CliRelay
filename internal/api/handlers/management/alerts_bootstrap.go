@@ -44,7 +44,7 @@ func (h *Handler) StartAlertEngine() {
 	sender := h.alertDispatcher()
 	engine := alerting.NewEngine(alerting.EngineOptions{
 		Store:    settingsstore.AlertSettings{},
-		Sources:  alertSources{authManager: h.currentAuthManager},
+		Sources:  alertSources{authManager: h.currentAuthManager, proxyPools: h.tenantProxyPools, breaker: h.egressBreaker()},
 		Sender:   sender,
 		IsLeader: func() bool { return cluster.Default().IsLeader() },
 		Interval: alerting.DefaultInterval, StartDelay: alerting.DefaultStartDelay,
