@@ -123,6 +123,17 @@ func TestNewProxyAwareHTTPClientHonorsPreferIPv4ForHTTPProxy(t *testing.T) {
 	}
 }
 
+// proxyTransportBehindBreaker returns the cached proxy transport of client.
+// Every proxied client gets an egress breaker wrapper of its own in front of
+// it, so the wrappers always differ; what is shared, or not, is the transport
+// behind them.
+func proxyTransportBehindBreaker(client *http.Client) http.RoundTripper {
+	if wrapped, ok := client.Transport.(interface{ Unwrap() http.RoundTripper }); ok {
+		return wrapped.Unwrap()
+	}
+	return client.Transport
+}
+
 func TestNewProxyAwareHTTPClientReusesProxyTransport(t *testing.T) {
 	t.Parallel()
 
@@ -135,7 +146,7 @@ func TestNewProxyAwareHTTPClientReusesProxyTransport(t *testing.T) {
 	if first.Transport == nil || second.Transport == nil {
 		t.Fatalf("expected proxy transports to be configured")
 	}
-	if first.Transport != second.Transport {
+	if proxyTransportBehindBreaker(first) != proxyTransportBehindBreaker(second) {
 		t.Fatalf("expected same proxy transport to be reused")
 	}
 }
@@ -154,7 +165,7 @@ func TestNewProxyAwareHTTPClientSeparatesProxyTransportByPreferIPv4(t *testing.T
 	if first.Transport == nil || second.Transport == nil {
 		t.Fatalf("expected proxy transports to be configured")
 	}
-	if first.Transport == second.Transport {
+	if proxyTransportBehindBreaker(first) == proxyTransportBehindBreaker(second) {
 		t.Fatalf("expected prefer-ipv4 change to use a distinct proxy transport")
 	}
 }
@@ -173,12 +184,12 @@ func TestNewProxyAwareHTTPClientSeparatesProxyTransportByTLSConfig(t *testing.T)
 	if first.Transport == nil || second.Transport == nil {
 		t.Fatalf("expected proxy transports to be configured")
 	}
-	if first.Transport == second.Transport {
+	if proxyTransportBehindBreaker(first) == proxyTransportBehindBreaker(second) {
 		t.Fatalf("expected TLS config change to use a distinct proxy transport")
 	}
-	transport, ok := second.Transport.(*http.Transport)
+	transport, ok := proxyTransportBehindBreaker(second).(*http.Transport)
 	if !ok {
-		t.Fatalf("second transport type = %T, want *http.Transport", second.Transport)
+		t.Fatalf("second transport type = %T, want *http.Transport", proxyTransportBehindBreaker(second))
 	}
 	if transport.TLSClientConfig == nil || !transport.TLSClientConfig.InsecureSkipVerify {
 		t.Fatalf("expected insecure TLS setting to be applied to cached proxy transport")

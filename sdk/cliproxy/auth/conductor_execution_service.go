@@ -137,7 +137,13 @@ func (s executionService) executeMixedOnce(ctx context.Context, providers []stri
 		}
 
 		attempt := beginTracedAttempt(ctx, candidate, scope.routeModel)
-		resp, errExec := candidate.executor.Execute(candidate.execCtx, candidate.auth, candidate.execReq, scope.opts)
+		// An account whose proxy is known to be out fails here, before the
+		// executor does any work for it; see conductor_egress.go.
+		var resp cliproxyexecutor.Response
+		errExec := s.egressRefusal(candidate)
+		if errExec == nil {
+			resp, errExec = candidate.executor.Execute(candidate.execCtx, candidate.auth, candidate.execReq, scope.opts)
+		}
 		releaseSlot()
 		result := Result{
 			AuthID:   candidate.auth.ID,
@@ -184,7 +190,11 @@ func (s executionService) executeCountMixedOnce(ctx context.Context, providers [
 		}
 
 		attempt := beginTracedAttempt(ctx, candidate, scope.routeModel)
-		resp, errExec := candidate.executor.CountTokens(candidate.execCtx, candidate.auth, candidate.execReq, scope.opts)
+		var resp cliproxyexecutor.Response
+		errExec := s.egressRefusal(candidate)
+		if errExec == nil {
+			resp, errExec = candidate.executor.CountTokens(candidate.execCtx, candidate.auth, candidate.execReq, scope.opts)
+		}
 		releaseSlot()
 		if errExec != nil {
 			if errCtx := candidate.execCtx.Err(); errCtx != nil {

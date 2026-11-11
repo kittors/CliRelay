@@ -251,6 +251,13 @@ The watcher is `cmd/clirelay-dnswatch`, plus `deploy/cluster/dnswatch/`. The uni
   - **On the arbiter**, `egress_path: /readyz/egress` adds that request to every round; anything but 2xx fails, including a timeout or a 404 from a release without the endpoint. A ready node failing it three rounds in a row is **degraded** until it passes three in a row. DNS then lists the healthy nodes (ready, egress passing) if there are any; otherwise the degraded ones, so a proxy outage that hits every node changes nothing; otherwise nothing changes (see the safety rules).
   - A node whose egress breaks leaves DNS after about a minute. `min_change_interval`, the hold file and dry-run apply as before. Degraded nodes show in the log, in the summary line (`healthy=… degraded=… unhealthy=…`), in `GET /status` (`state`, `egress`) and in the alerts `node_egress_degraded` / `node_egress_recovered`.
   - Upgrade every node before setting `egress_path`. An enabled pool entry that is dead from everywhere degrades every node and so disables the preference: disable such entries. An empty `egress_path` keeps the readiness-only behaviour.
+  - The check is a TCP connect and cannot see a proxy that rejects its credentials. On 2026-11-11 every endpoint of the proxy provider accepted connections and rejected the authentication for 27 minutes, while each request went through the whole account pool. A node handles that on its own request path (the egress breaker, `sdk/cliproxy/egressbreaker`):
+    - State is kept per proxy entry (address and credentials). After two rejected authentications in a row, or three failed connects in a row, requests through that entry are no longer sent: they are answered with 503, `code` `egress_unavailable` and a `Retry-After`.
+    - After 15 s one request is let through to try the proxy. If it fails the wait doubles, up to 2 minutes; a successful handshake ends the outage with nobody doing anything.
+    - Accounts get no cooldown and no error from it: the proxy failed, not the account.
+    - `/readyz/egress` is not affected. A rejected authentication is about the proxy account and would be the same from any node, so taking a node out of DNS would not help.
+    - The node log has a line starting `egress-breaker:` when a proxy is shut out, for each failed probe and when it works again. It names `host:port` and a fingerprint of the credentials, never the credentials.
+    - To turn it off, set `CLIRELAY_EGRESS_BREAKER=off` in the node's environment file and restart the process.
 - **Safety rules.**
   - If no node passes readiness, DNS is left untouched and an alert is raised. **It never deletes every record.**
   - Records are added before stale ones are removed.
