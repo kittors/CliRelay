@@ -25,16 +25,7 @@ func TestCodexImageFallbackPreservesTerminalEventWithMetadata(t *testing.T) {
 			for _, handlerFormatting := range []bool{false, true} {
 				wire := strings.Join(chunks, "\n") + "\n"
 				if handlerFormatting {
-					var b strings.Builder
-					for _, chunk := range chunks {
-						if strings.HasPrefix(chunk, "event:") {
-							b.WriteString("\n")
-						}
-						b.WriteString(chunk)
-						b.WriteString("\n")
-					}
-					b.WriteString("\n")
-					wire = b.String()
+					wire = codexResponsesWire(chunks)
 				}
 				events := parseFramedSSE(wire)
 				if len(events) != 4 {
@@ -80,19 +71,10 @@ func TestCodexImageFallbackHandlesTerminalFieldOrderingAndMultilineJSON(t *testi
 	}
 }
 
-// Match forwardResponsesStream's real output framing, including its leading newline
-// for event: chunks. This catches valid late event fields being split by that writer.
+// Responses passthrough now emits already-delimited frames. The HTTP writer
+// preserves those bytes instead of treating each channel chunk as a raw line.
 func codexResponsesWire(chunks []string) string {
-	var b strings.Builder
-	for _, chunk := range chunks {
-		if strings.HasPrefix(chunk, "event:") {
-			b.WriteByte('\n')
-		}
-		b.WriteString(chunk)
-		b.WriteByte('\n')
-	}
-	b.WriteByte('\n')
-	return b.String()
+	return strings.Join(chunks, "")
 }
 
 func TestCodexImageSSEFramerPreservesUnchangedLinesAndStreamsImmediately(t *testing.T) {
@@ -249,7 +231,7 @@ func TestCodexImageStreamCancellationClosesBodyWithoutConsumer(t *testing.T) {
 						if chunk.Err != nil {
 							t.Fatal(chunk.Err)
 						}
-						if len(chunk.Payload) == 0 {
+						if strings.HasSuffix(string(chunk.Payload), "\n\n") {
 							blanks++
 						}
 					case <-time.After(2 * time.Second):
