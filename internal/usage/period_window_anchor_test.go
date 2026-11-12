@@ -43,7 +43,7 @@ func recordBilledUsage(t *testing.T, tenantID, apiKeyID, endUserID string, cost 
 	if err != nil {
 		t.Fatalf("begin: %v", err)
 	}
-	if err := commitLogWithProjections(tx, rollupEvent{
+	if err := commitLogWithProjections(usageTestMetadataTx(tx), rollupEvent{
 		TenantID: tenantID, APIKeyID: apiKeyID, EndUserID: endUserID,
 		Model: "test-model", Cost: cost, At: at,
 	}); err != nil {

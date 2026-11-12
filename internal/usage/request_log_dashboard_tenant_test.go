@@ -33,7 +33,7 @@ func TestDashboardQueriesAreTenantScoped(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := projectUsageRollupTx(tx, rollupEvent{
+		if err := projectUsageRollupTx(usageTestMetadataTx(tx), rollupEvent{
 			TenantID:    tenantID,
 			Model:       "model",
 			Source:      "source",

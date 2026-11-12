@@ -193,7 +193,7 @@ func compactLogContentStorageInternal(ctx context.Context, db *sql.DB) {
 	if db == nil {
 		return
 	}
-	if usageDriver != "postgres" {
+	if metadataForUsageDB(db).driver != "postgres" {
 		return
 	}
 	if err := compactPostgresLogStorage(ctx, db); err != nil {

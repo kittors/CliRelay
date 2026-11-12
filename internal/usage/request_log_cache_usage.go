@@ -168,7 +168,7 @@ func migrateRequestLogCacheColumns(db *sql.DB) {
 // column that exists still queues for an exclusive lock on a table every
 // request writes to.
 func migrateUsageRollupCacheColumns(db *sql.DB) {
-	if usageDriver == "postgres" {
+	if metadataForUsageDB(db).driver == "postgres" {
 		return
 	}
 	addSQLiteColumns(db, "usage_rollup_buckets", []string{

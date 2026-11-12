@@ -439,7 +439,7 @@ func TestSharedSubjectBackfillUsesOnlySmallTablesAndIsIdempotent(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := projectUsageRollupTx(tx, rollupEvent{
+		if err := projectUsageRollupTx(usageTestMetadataTx(tx), rollupEvent{
 			TenantID: tenantID, AuthSubjectID: identity.ID, Model: "gpt-5.4", Source: tenantID,
 			ChannelName: tenantID, At: now, Cost: 2, Tokens: TokenStats{TotalTokens: 1},
 		}); err != nil {
@@ -551,11 +551,11 @@ func TestProjectAIAccountSubjectUsageLoadsPrimaryCycleOnCacheMiss(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := projectAIAccountSubjectUsageTx(tx, identity.ID, false, 0.5, 111, primaryStart.Add(-time.Second)); err != nil {
+	if err := projectAIAccountSubjectUsageTx(usageTestMetadataTx(tx), identity.ID, false, 0.5, 111, primaryStart.Add(-time.Second)); err != nil {
 		_ = tx.Rollback()
 		t.Fatal(err)
 	}
-	if err := projectAIAccountSubjectUsageTx(tx, identity.ID, false, 1.5, 321, now); err != nil {
+	if err := projectAIAccountSubjectUsageTx(usageTestMetadataTx(tx), identity.ID, false, 1.5, 321, now); err != nil {
 		_ = tx.Rollback()
 		t.Fatal(err)
 	}
@@ -613,7 +613,7 @@ func TestAIAccountSubjectUsageTokensBackfillUsesRollupsAndExactCycle(t *testing.
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := projectUsageRollupTx(tx, rollupEvent{
+		if err := projectUsageRollupTx(usageTestMetadataTx(tx), rollupEvent{
 			TenantID: sharedSubjectTenantA, AuthSubjectID: identity.ID, At: event.at,
 			Tokens: TokenStats{TotalTokens: event.tokens},
 		}); err != nil {

@@ -69,7 +69,7 @@ func seedMonitorEvent(t *testing.T, ev monitorTestEvent) {
 	if err != nil {
 		t.Fatalf("begin: %v", err)
 	}
-	if err := projectUsageRollupTx(tx, rollupEvent{
+	if err := projectUsageRollupTx(usageTestMetadataTx(tx), rollupEvent{
 		TenantID: ev.tenant, APIKeyID: ev.apiKeyID, EndUserID: ev.endUserID,
 		Model: ev.model, Source: "test", ChannelName: ev.channel,
 		Failed: ev.failed, Streaming: ev.streaming,

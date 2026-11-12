@@ -36,10 +36,18 @@ type aiAccountSubjectCycleBucketRow struct {
 // the same account. Anchoring stops new fragments; this merges the existing ones
 // so the totals are correct without waiting for the next period to roll over.
 func RunAIAccountSubjectCycleBucketMergeAtInit() error {
-	return runAIAccountSubjectCycleBucketMergeDB(getDB())
+	usageWriteLease.RLock()
+	defer usageWriteLease.RUnlock()
+	return runAIAccountSubjectCycleBucketMergeDBLeased(getDB())
 }
 
 func runAIAccountSubjectCycleBucketMergeDB(db *sql.DB) error {
+	usageWriteLease.RLock()
+	defer usageWriteLease.RUnlock()
+	return runAIAccountSubjectCycleBucketMergeDBLeased(db)
+}
+
+func runAIAccountSubjectCycleBucketMergeDBLeased(db *sql.DB) error {
 	if db == nil {
 		return nil
 	}

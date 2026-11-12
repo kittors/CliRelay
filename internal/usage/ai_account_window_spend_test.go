@@ -131,7 +131,7 @@ func projectWindowSpendEvent(t *testing.T, tenant, subject, model string, at tim
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := projectUsageRollupTx(tx, rollupEvent{
+	if err := projectUsageRollupTx(usageTestMetadataTx(tx), rollupEvent{
 		TenantID: tenant, AuthSubjectID: subject, Model: model, Source: "test", ChannelName: "shared-label",
 		Cost: cost, At: at,
 	}); err != nil {
