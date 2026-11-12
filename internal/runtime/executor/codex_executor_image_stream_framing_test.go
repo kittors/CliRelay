@@ -66,7 +66,7 @@ func parseFramedSSE(raw string) []framedSSEEvent {
 }
 
 // streamCodexResponses runs upstream through ExecuteStream for a Responses client and
-// returns the chunks it forwards, one line each.
+// returns complete SSE frames (or leading heartbeat comments).
 func streamCodexResponses(t *testing.T, upstream string) []string {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -169,8 +169,8 @@ func TestCodexExecutorExecuteStreamLeavesStreamsWithoutFallbackUnchanged(t *test
 		`"type":"image_generation_call","status":"completed","result":"iVBORw0KGgo=","output_format":"png"`,
 		`"type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"hi"}]`, 1)
 	chunks := streamCodexResponses(t, upstream)
-	want := strings.Split(strings.TrimSuffix(upstream, "\n"), "\n")
-	if strings.Join(chunks, "\n") != strings.Join(want, "\n") {
+	want := upstream
+	if strings.Join(chunks, "") != want {
 		t.Fatalf("forwarded lines changed:\n got %q\nwant %q", chunks, want)
 	}
 }
