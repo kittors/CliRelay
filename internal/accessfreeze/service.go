@@ -34,6 +34,10 @@ type Service struct {
 	registry *registry
 	now      func() time.Time
 
+	// transitions serializes the database decision and its cache publication.
+	// The request path uses registry's own read lock, never this gate.
+	transitions chan struct{}
+
 	jobs      chan refusalJob
 	stop      chan struct{}
 	closeOnce sync.Once
@@ -50,11 +54,12 @@ type refusalJob struct {
 // NewService returns a service over store; notices are written in loc.
 func NewService(store *Store, loc *time.Location) *Service {
 	return &Service{
-		store:    store,
-		registry: newRegistry(loc),
-		now:      time.Now,
-		jobs:     make(chan refusalJob, jobQueue),
-		stop:     make(chan struct{}),
+		store:       store,
+		registry:    newRegistry(loc),
+		now:         time.Now,
+		transitions: make(chan struct{}, 1),
+		jobs:        make(chan refusalJob, jobQueue),
+		stop:        make(chan struct{}),
 	}
 }
 
@@ -94,7 +99,30 @@ func (s *Service) refreshLoop() {
 	}
 }
 
+// lockTransition waits without outliving the caller's deadline. A database
+// result must be published before another local transition or refresh begins:
+// otherwise an old active row can undo a completed release in the registry.
+// This orders this process only; peers still learn changes through refresh.
+func (s *Service) lockTransition(ctx context.Context) error {
+	select {
+	case s.transitions <- struct{}{}:
+		if err := ctx.Err(); err != nil {
+			s.unlockTransition()
+			return err
+		}
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (s *Service) unlockTransition() { <-s.transitions }
+
 func (s *Service) refresh(ctx context.Context) {
+	if err := s.lockTransition(ctx); err != nil {
+		return
+	}
+	defer s.unlockTransition()
 	generation := s.registry.generation()
 	freezes, err := s.store.ListActive(ctx)
 	if err != nil {
@@ -146,8 +174,21 @@ func (s *Service) OnUpstreamContentRefusal(ctx context.Context, event coreauth.U
 }
 
 func (s *Service) handle(job refusalJob) {
+	// A queued refusal has already been admitted. Waiting for another state
+	// transition must not consume its database-work deadline or drop evidence.
+	// The existing worker queue already waits this way; overflow goroutines
+	// retain their existing independent lifecycle.
+	_ = s.lockTransition(context.Background())
 	ctx, cancel := context.WithTimeout(context.Background(), jobTimeout)
 	defer cancel()
+	var newlyFrozen *Freeze
+	defer func() {
+		s.unlockTransition()
+		// Auditing is not part of cache ordering and may call other services.
+		if newlyFrozen != nil {
+			auditFreeze(ctx, *newlyFrozen)
+		}
+	}()
 	strike := Strike{
 		Subject:         job.subject,
 		Provider:        normalizeProvider(job.event.Provider),
@@ -194,7 +235,7 @@ func (s *Service) handle(job refusalJob) {
 	if created {
 		log.Warnf("access freeze: froze %s for %s %s of tenant %s after %d refusal(s) (%s, model %s, request %s)",
 			freeze.Provider, freeze.Subject.Kind, freeze.Subject.ID, freeze.Subject.TenantID, freeze.StrikeCount, freeze.ReasonCode, freeze.Model, freeze.RequestID)
-		auditFreeze(ctx, freeze)
+		newlyFrozen = &freeze
 	}
 }
 
@@ -273,6 +314,14 @@ func (s *Service) ListStrikes(ctx context.Context, subject Subject, provider str
 // Release lifts one of the tenant's freezes; the requester can use the
 // provider again on its next request to this process.
 func (s *Service) Release(ctx context.Context, tenantID string, id int64, by, note string) (Freeze, error) {
+	// Bound both waiting and database work, even when the HTTP client supplied
+	// no deadline; a stuck management write must not hold the worker forever.
+	ctx, cancel := context.WithTimeout(ctx, jobTimeout)
+	defer cancel()
+	if err := s.lockTransition(ctx); err != nil {
+		return Freeze{}, err
+	}
+	defer s.unlockTransition()
 	freeze, err := s.store.Release(ctx, tenantID, id, strings.TrimSpace(by), strings.TrimSpace(note), s.now())
 	if err != nil {
 		return Freeze{}, err
