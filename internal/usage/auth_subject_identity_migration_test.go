@@ -638,7 +638,7 @@ func TestMergeLegacyUsageRollupBucketsKeepsCacheAndGenerationColumns(t *testing.
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := projectUsageRollupTx(tx, rollupEvent{
+		if err := projectUsageRollupTx(usageTestMetadataTx(tx), rollupEvent{
 			TenantID: systemTenantID, AuthSubjectID: subject, Model: model, Source: "test",
 			Streaming: true, LatencyMs: 3000, FirstTokenMs: 1000,
 			Tokens: TokenStats{InputTokens: 1000, OutputTokens: 400, TotalTokens: 1400},

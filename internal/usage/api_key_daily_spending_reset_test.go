@@ -46,7 +46,7 @@ func insertTodayCost(t *testing.T, tenantID, apiKeyID, apiKey string, cost float
 	if err != nil {
 		t.Fatalf("begin rollup: %v", err)
 	}
-	if err := projectUsageRollupTx(tx, rollupEvent{
+	if err := projectUsageRollupTx(usageTestMetadataTx(tx), rollupEvent{
 		TenantID: tenantID,
 		APIKeyID: apiKeyID,
 		Model:    "model",

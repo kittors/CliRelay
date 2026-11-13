@@ -103,7 +103,7 @@ func TestCountUsageByEndUserAggregatesAllKeys(t *testing.T) {
 		if err != nil {
 			t.Fatalf("begin: %v", err)
 		}
-		if err := projectUsageRollupTx(tx, rollupEvent{
+		if err := projectUsageRollupTx(usageTestMetadataTx(tx), rollupEvent{
 			TenantID:  systemTenantID,
 			APIKeyID:  row.id,
 			EndUserID: endUserID,

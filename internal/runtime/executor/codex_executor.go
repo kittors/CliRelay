@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -208,15 +209,14 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	pendingOutputKeys := make([]string, 0, 1)
 	pendingSeen := make(map[string]struct{})
 	var streamErr error
-	for _, line := range lines {
-		if !bytes.HasPrefix(line, dataTag) {
-			continue
-		}
-
-		line = bytes.TrimSpace(line[5:])
+	var terminalLine []byte
+	for _, line := range codexResponsesSSEPayloads(lines) {
 		switch gjson.GetBytes(line, "type").String() {
 		case "response.failed", "error":
 			streamErr = codexResponsesFailedStatusErr(line)
+			continue
+		}
+		if terminalLine != nil {
 			continue
 		}
 		if item, key, ok := extractCodexResponsesOutputItemDone(line); ok {
@@ -227,10 +227,21 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 			}
 			continue
 		}
-		if !codexResponseFinished(gjson.GetBytes(line, "type").String()) {
+		if !validCodexResponsesTerminal(line) {
 			continue
 		}
-		line = mergeCodexResponsesCompletedOutput(line, pendingOutputItems, pendingOutputKeys)
+		terminalLine = bytes.Clone(line)
+	}
+	if streamErr != nil {
+		terminal := codexResponsesTerminal{}
+		terminal.observe(terminalLine)
+		reporter.setInputContentBytes(req.Payload)
+		reporter.appendOutputChunk(data)
+		terminal.publishFailure(execCtx.Context, reporter)
+		return resp, streamErr
+	}
+	if terminalLine != nil {
+		line := mergeCodexResponsesCompletedOutput(terminalLine, pendingOutputItems, pendingOutputKeys)
 		// Non-stream: still rewrite /mnt/data markdown when hosted image results exist.
 		imageStream := newCodexImageStreamNormalizer()
 		for _, item := range pendingOutputItems {
@@ -243,15 +254,12 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		if detail, ok := parseCodexUsage(line); ok {
 			reporter.publishWithContentBytes(execCtx.Context, detail, req.Payload, string(data))
 		}
+		reporter.ensurePublished(execCtx.Context)
 
 		var param any
 		out := sdktranslator.TranslateNonStream(execCtx.Context, to, execCtx.SourceFormat, req.Model, execCtx.OriginalPayload, body, line, &param)
 		resp = cliproxyexecutor.Response{Payload: []byte(out), Headers: httpResp.Header.Clone()}
 		return resp, nil
-	}
-	if streamErr != nil {
-		reporter.publishFailureWithContentBytes(execCtx.Context, req.Payload, streamErr.Error())
-		return resp, streamErr
 	}
 	err = statusErr{code: 408, msg: "stream error: stream disconnected before completion: stream closed before response.completed"}
 	return resp, err
@@ -425,9 +433,9 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 			}
 		}()
 		scanner := bufio.NewScanner(httpResp.Body)
-		scanner.Buffer(nil, 52_428_800) // 50MB
+		scanner.Buffer(nil, maxCodexSSELineBytes)
 		var param any
-		completed := false
+		terminal := codexResponsesTerminal{}
 		imageStream := newCodexImageStreamNormalizer()
 		send := func(chunk cliproxyexecutor.StreamChunk) bool {
 			if execCtx.Context.Err() != nil {
@@ -440,80 +448,125 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 				return false
 			}
 		}
+		finishRead := func(readErr error) {
+			if terminal.seen && !errors.Is(readErr, bufio.ErrTooLong) {
+				terminal.publishSuccess(execCtx.Context, reporter)
+				return
+			}
+			if !shouldSuppressUsageFailure(readErr, "") {
+				recorder.RecordResponseError(readErr)
+				terminal.publishFailure(execCtx.Context, reporter)
+			}
+			send(cliproxyexecutor.StreamChunk{Err: readErr})
+		}
+		// Only identity-style Responses passthrough needs upstream SSE boundaries.
+		// Other formats keep translating ordinary data lines immediately.
+		responsesPassthrough := execCtx.SourceFormat == sdktranslator.FormatOpenAIResponse
 		emit := func(eventLines [][]byte) (terminalErr error) {
+			if err := execCtx.Context.Err(); err != nil {
+				return err
+			}
+			// The framer preserves original multiline data fields. Inspect their
+			// joined JSON without changing the lines forwarded to the translator.
+			for _, payload := range codexResponsesSSEPayloads(eventLines) {
+				switch gjson.GetBytes(payload, "type").String() {
+				case "response.completed", "response.incomplete":
+					terminal.observe(payload)
+				case "response.failed", "error":
+					terminalErr = codexResponsesFailedStatusErr(payload)
+				}
+			}
+			var responseFrame bytes.Buffer
 			for _, eventLine := range eventLines {
 				if err := execCtx.Context.Err(); err != nil {
+					if terminalErr != nil {
+						return terminalErr
+					}
 					return err
 				}
 				recorder.AppendResponseChunk(eventLine)
 				reporter.appendOutputChunk(eventLine)
 
-				if bytes.HasPrefix(eventLine, dataTag) {
-					data := bytes.TrimSpace(eventLine[len(dataTag):])
-					switch gjson.GetBytes(data, "type").String() {
-					case "response.completed", "response.incomplete":
-						completed = true
-						if detail, ok := parseCodexUsage(data); ok {
-							reporter.publish(execCtx.Context, detail)
-						}
-					case "response.failed", "error":
-						terminalErr = codexResponsesFailedStatusErr(data)
-					}
-				}
-
 				chunks := sdktranslator.TranslateStream(execCtx.Context, to, execCtx.SourceFormat, req.Model, execCtx.OriginalPayload, body, eventLine, &param)
 				for i := range chunks {
+					if responsesPassthrough {
+						responseFrame.WriteString(chunks[i])
+						responseFrame.WriteByte('\n')
+						continue
+					}
 					if !send(cliproxyexecutor.StreamChunk{Payload: []byte(chunks[i])}) {
+						if terminalErr != nil {
+							return terminalErr
+						}
 						return execCtx.Context.Err()
 					}
 				}
 			}
+			if responseFrame.Len() > 0 {
+				// The framer emits only complete events, leading comments, or a
+				// clean-EOF remainder. Complete that remainder for compatibility.
+				payload := responseFrame.Bytes()
+				if len(eventLines) > 0 && len(eventLines[len(eventLines)-1]) > 0 && eventLines[0][0] != ':' {
+					payload = append(payload, '\n')
+				}
+				if !send(cliproxyexecutor.StreamChunk{Payload: payload}) {
+					if terminalErr != nil {
+						return terminalErr
+					}
+					return execCtx.Context.Err()
+				}
+			}
 			return terminalErr
 		}
-		framer := codexImageSSEFramer{normalizer: imageStream}
+		finishEmitError := func(emitErr error) {
+			if errors.Is(emitErr, context.Canceled) || errors.Is(emitErr, context.DeadlineExceeded) {
+				finishRead(emitErr)
+				return
+			}
+			recorder.RecordResponseError(emitErr)
+			terminal.publishFailure(execCtx.Context, reporter)
+			send(cliproxyexecutor.StreamChunk{Err: emitErr})
+		}
+		framer := codexImageSSEFramer{normalizer: imageStream, waitForDelimiter: responsesPassthrough}
 		for scanner.Scan() {
 			lines, frameErr := framer.push(scanner.Bytes())
 			if frameErr != nil {
 				recorder.RecordResponseError(frameErr)
-				reporter.publishFailure(execCtx.Context)
+				terminal.publishFailure(execCtx.Context, reporter)
 				send(cliproxyexecutor.StreamChunk{Err: frameErr})
 				return
 			}
-			if terminalErr := emit(lines); terminalErr != nil {
-				recorder.RecordResponseError(terminalErr)
-				reporter.publishFailure(execCtx.Context)
-				send(cliproxyexecutor.StreamChunk{Err: terminalErr})
+			if emitErr := emit(lines); emitErr != nil {
+				finishEmitError(emitErr)
 				return
 			}
 		}
 		if errScan := scanner.Err(); errScan != nil {
-			if shouldSuppressUsageFailure(errScan, "") {
-				send(cliproxyexecutor.StreamChunk{Err: errScan})
-				return
-			}
-			recorder.RecordResponseError(errScan)
-			reporter.publishFailure(execCtx.Context)
-			send(cliproxyexecutor.StreamChunk{Err: errScan})
+			finishRead(errScan)
 			return
 		}
 		// Do not turn an interrupted, partially buffered event into a completed one.
 		if errContext := execCtx.Context.Err(); errContext != nil {
-			send(cliproxyexecutor.StreamChunk{Err: errContext})
+			finishRead(errContext)
 			return
 		}
-		if terminalErr := emit(framer.finish(false)); terminalErr != nil {
-			recorder.RecordResponseError(terminalErr)
-			reporter.publishFailure(execCtx.Context)
-			send(cliproxyexecutor.StreamChunk{Err: terminalErr})
+		if frameErr := framer.validateResponsesEvent(); frameErr != nil {
+			recorder.RecordResponseError(frameErr)
+			terminal.publishFailure(execCtx.Context, reporter)
+			send(cliproxyexecutor.StreamChunk{Err: frameErr})
 			return
 		}
-		if completed {
-			reporter.ensurePublished(execCtx.Context)
+		if emitErr := emit(framer.finish(false)); emitErr != nil {
+			finishEmitError(emitErr)
+			return
+		}
+		if terminal.seen {
+			terminal.publishSuccess(execCtx.Context, reporter)
 			return
 		}
 		streamErr := newCodexResponsesIncompleteError()
 		recorder.RecordResponseError(streamErr)
-		reporter.publishFailure(execCtx.Context)
+		terminal.publishFailure(execCtx.Context, reporter)
 		send(cliproxyexecutor.StreamChunk{Err: streamErr})
 	}()
 	return &cliproxyexecutor.StreamResult{Headers: httpResp.Header.Clone(), Chunks: out}, nil

@@ -117,6 +117,15 @@ func overflowUsageRecord(record coreusage.Record) bool {
 // when the record is accepted; the replay will not count it again.
 // commitUncertainAt carries a lost COMMIT reply over to the replayer.
 func spoolLiveRequestLog(spool *usageSpool, entry RequestLogEntry, reason usageSpoolReason, commitUncertainAt time.Time, cause error) bool {
+	if !appendLiveRequestLog(spool, entry, reason, commitUncertainAt, cause) {
+		return false
+	}
+	notifyTokenUsage(entry, "")
+	return true
+}
+
+// appendLiveRequestLog performs only persistence, never application callbacks.
+func appendLiveRequestLog(spool *usageSpool, entry RequestLogEntry, reason usageSpoolReason, commitUncertainAt time.Time, cause error) bool {
 	line, err := encodeUsageSpoolRecord(entry, reason, commitUncertainAt, time.Now())
 	if err == nil {
 		err = spool.append(line)
@@ -129,7 +138,6 @@ func spoolLiveRequestLog(spool *usageSpool, entry RequestLogEntry, reason usageS
 		}
 		return false
 	}
-	notifyTokenUsage(entry, "")
 	return true
 }
 

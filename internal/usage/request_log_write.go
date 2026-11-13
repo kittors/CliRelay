@@ -87,7 +87,7 @@ func isRetryableUsageWriteErr(err error) bool {
 
 // insertRequestLogRowTx inserts the request_logs row and, when the plan keeps
 // content, its compressed body row.
-func insertRequestLogRowTx(tx usageWriteTx, plan requestLogWritePlan) error {
+func insertRequestLogRowTx(tx usageMetadataWriteTx, plan requestLogWritePlan) error {
 	entry := plan.entry
 	failedInt, streamingInt := 0, 0
 	if entry.Failed {
@@ -120,7 +120,7 @@ func insertRequestLogRowTx(tx usageWriteTx, plan requestLogWritePlan) error {
 		return nil
 	}
 	var logID int64
-	if usageDriver == "postgres" {
+	if tx.usageMetadata().driver == "postgres" {
 		if err := tx.QueryRow(insertSQL+" RETURNING id", insertArgs...).Scan(&logID); err != nil {
 			return fmt.Errorf("insert log: %w", err)
 		}
@@ -181,26 +181,42 @@ func scrubRequestLogContent(entry RequestLogEntry) RequestLogEntry {
 // traffic instead of spending the retry budget on every record.
 func InsertRequestLog(entry RequestLogEntry) {
 	entry = normalizeRequestLogEntry(entry)
+	usageWriteLease.RLock()
 	spool := activeUsageSpool()
 	if spool == nil && getDB() == nil {
+		usageWriteLease.RUnlock()
 		settleRequestLog(entry, false, 0)
 		return
 	}
 	// A spooled entry is written later, if at all; the reservation of its
 	// request runs out on its own (internal/quota/inflight).
 	if spool != nil && usageDBHealth.down() {
-		spoolLiveRequestLog(spool, entry, usageSpoolReasonDBUnavailable, time.Time{}, nil)
+		appended := appendLiveRequestLog(spool, entry, usageSpoolReasonDBUnavailable, time.Time{}, nil)
+		usageWriteLease.RUnlock()
+		if appended {
+			notifyTokenUsage(entry, "")
+		}
 		return
 	}
-	result, outcome, err := writeRequestLogWithRetry(entry, liveRequestLogRetryBudget(spool))
+	result, outcome, err := writeRequestLogWithRetryLeased(entry, liveRequestLogRetryBudget(spool))
+	verifyCommit := outcome == requestLogWriteCommitted && spool != nil && result.duplicateNeedsRecheck(time.Now())
+	spooled := false
+	if verifyCommit {
+		spooled = appendLiveRequestLog(spool, entry, usageSpoolReasonVerifyCommit, result.commitUncertainAt, nil)
+	} else if outcome == requestLogWriteTransient && spool != nil {
+		usageDBHealth.markDown(err)
+		spooled = appendLiveRequestLog(spool, entry, usageSpoolReasonWriteFailed, result.commitUncertainAt, err)
+	}
+	// Keep append within the lease, but release before any application hook.
+	usageWriteLease.RUnlock()
 	switch outcome {
 	case requestLogWriteCommitted:
 		usageDBHealth.markUp()
 		settleRequestLog(entry, !entry.Failed, result.cost)
-		if spool != nil && result.duplicateNeedsRecheck(time.Now()) {
-			// The key found may be our own commit that a failover is about to
-			// discard; the replayer checks it again after the settle window.
-			spoolLiveRequestLog(spool, entry, usageSpoolReasonVerifyCommit, result.commitUncertainAt, nil)
+		if verifyCommit {
+			if spooled {
+				notifyTokenUsage(entry, "")
+			}
 			return
 		}
 		notifyTokenUsage(entry, result.endUserID)
@@ -210,8 +226,9 @@ func InsertRequestLog(entry RequestLogEntry) {
 			settleRequestLog(entry, false, 0)
 			return
 		}
-		usageDBHealth.markDown(err)
-		spoolLiveRequestLog(spool, entry, usageSpoolReasonWriteFailed, result.commitUncertainAt, err)
+		if spooled {
+			notifyTokenUsage(entry, "")
+		}
 	default:
 		log.Errorf("usage: insert log: %v", err)
 		settleRequestLog(entry, false, 0)

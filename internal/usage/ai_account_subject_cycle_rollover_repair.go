@@ -49,7 +49,9 @@ type aiAccountSubjectCycleTotals struct {
 // the ones already on disk rather than leaving operators to wait out a window
 // whose totals stay wrong until it ends.
 func RunAIAccountSubjectCycleRolloverRepairAtInit() error {
-	return runAIAccountSubjectCycleRolloverRepairDB(getDB())
+	usageWriteLease.RLock()
+	defer usageWriteLease.RUnlock()
+	return runAIAccountSubjectCycleRolloverRepairDBLeased(getDB())
 }
 
 // RunAIAccountSubjectCycleRefillRepairAtInit repairs the anchors the metering rule
@@ -60,16 +62,30 @@ func RunAIAccountSubjectCycleRolloverRepairAtInit() error {
 // and the anchor stays frozen with the new period's usage landing in the old
 // period's bucket for as long as the account leaves the fresh allowance alone.
 func RunAIAccountSubjectCycleRefillRepairAtInit() error {
-	return runAIAccountSubjectCycleRefillRepairDB(getDB())
+	usageWriteLease.RLock()
+	defer usageWriteLease.RUnlock()
+	return runAIAccountSubjectCycleRefillRepairDBLeased(getDB())
 }
 
 func runAIAccountSubjectCycleRolloverRepairDB(db *sql.DB) error {
-	return runAIAccountSubjectCycleAnchorRepairDB(db, aiAccountSubjectCycleRolloverRepairMarker,
+	usageWriteLease.RLock()
+	defer usageWriteLease.RUnlock()
+	return runAIAccountSubjectCycleRolloverRepairDBLeased(db)
+}
+
+func runAIAccountSubjectCycleRolloverRepairDBLeased(db *sql.DB) error {
+	return runAIAccountSubjectCycleAnchorRepairDBLeased(db, aiAccountSubjectCycleRolloverRepairMarker,
 		loadLatestMeteredWeeklyQuotaProbes, aiAccountSubjectQuotaObservation{metering: true})
 }
 
 func runAIAccountSubjectCycleRefillRepairDB(db *sql.DB) error {
-	return runAIAccountSubjectCycleAnchorRepairDB(db, aiAccountSubjectCycleRefillRepairMarker,
+	usageWriteLease.RLock()
+	defer usageWriteLease.RUnlock()
+	return runAIAccountSubjectCycleRefillRepairDBLeased(db)
+}
+
+func runAIAccountSubjectCycleRefillRepairDBLeased(db *sql.DB) error {
+	return runAIAccountSubjectCycleAnchorRepairDBLeased(db, aiAccountSubjectCycleRefillRepairMarker,
 		loadLatestWeeklyQuotaRefillProbes, aiAccountSubjectQuotaObservation{refilled: true})
 }
 
@@ -78,7 +94,7 @@ func runAIAccountSubjectCycleRefillRepairDB(db *sql.DB) error {
 // the move. The probe loader and the observation it stands for are the only
 // difference between the passes, so both judge with the same rule the running
 // server uses and cannot disagree with it about which period an account is in.
-func runAIAccountSubjectCycleAnchorRepairDB(
+func runAIAccountSubjectCycleAnchorRepairDBLeased(
 	db *sql.DB,
 	marker string,
 	loadProbes func(*sql.DB) (map[string]meteredWeeklyQuotaProbe, error),

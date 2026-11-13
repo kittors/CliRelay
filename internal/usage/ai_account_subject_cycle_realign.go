@@ -26,10 +26,18 @@ const aiAccountSubjectCycleRealignMarker = "ai_account_subject_cycle_realign_v1"
 // appear. This repairs the ones already on disk instead of making operators wait
 // out a full window for correct totals.
 func RunAIAccountSubjectCycleRealignAtInit() error {
-	return runAIAccountSubjectCycleRealignDB(getDB())
+	usageWriteLease.RLock()
+	defer usageWriteLease.RUnlock()
+	return runAIAccountSubjectCycleRealignDBLeased(getDB())
 }
 
 func runAIAccountSubjectCycleRealignDB(db *sql.DB) error {
+	usageWriteLease.RLock()
+	defer usageWriteLease.RUnlock()
+	return runAIAccountSubjectCycleRealignDBLeased(db)
+}
+
+func runAIAccountSubjectCycleRealignDBLeased(db *sql.DB) error {
 	if db == nil {
 		return nil
 	}

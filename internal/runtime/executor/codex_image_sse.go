@@ -17,19 +17,26 @@ const maxCodexImageSSEBufferedBytes = 50 << 20
 // first-payload timeout boundary. Fragmented / non-JSON data waits for a delimiter.
 // So does an event needing the image fallback, keeping even trailing event/id
 // fields attached to the original event rather than the synthetic one.
+// Responses passthrough instead waits for the actual blank delimiter (or clean
+// EOF), so late metadata and additional data fields remain in the same event.
 // Leading comments flow immediately, preserving upstream heartbeats.
 type codexImageSSEFramer struct {
 	normalizer *codexImageStreamNormalizer
-	pending    [][]byte
-	data       [][]byte
-	synthetic  [][]byte
-	buffered   int
-	streaming  bool
-	limit      int // zero uses maxCodexImageSSEBufferedBytes; small values aid boundary tests
+	// Responses passthrough must retain late metadata and multi-data boundaries.
+	waitForDelimiter bool
+	pending          [][]byte
+	data             [][]byte
+	synthetic        [][]byte
+	buffered         int
+	streaming        bool
+	limit            int // zero uses maxCodexImageSSEBufferedBytes; small values aid boundary tests
 }
 
 func (f *codexImageSSEFramer) push(line []byte) ([][]byte, error) {
 	if len(line) == 0 {
+		if err := f.validateResponsesEvent(); err != nil {
+			return nil, err
+		}
 		return f.finish(true), nil
 	}
 	if f.streaming || (len(f.pending) == 0 && line[0] == ':') {
@@ -58,7 +65,7 @@ func (f *codexImageSSEFramer) push(line []byte) ([][]byte, error) {
 	// The usual one-data-line event remains immediate. If its JSON is partial,
 	// wait for the delimiter and parse the joined document once, avoiding quadratic
 	// copying / validation for an upstream sending many tiny data fields.
-	if len(f.data) > 1 || !gjson.ValidBytes(value) {
+	if f.waitForDelimiter || len(f.data) > 1 || !gjson.ValidBytes(value) {
 		return nil, nil
 	}
 	f.normalize(value)
@@ -83,6 +90,16 @@ func (f *codexImageSSEFramer) normalize(payload []byte) {
 		}
 	}
 	canonical := append([]byte("data: "), payload...)
+	if f.waitForDelimiter && len(f.data) > 1 {
+		// The Responses SDK validates JSON per data line. Canonicalize only
+		// fragmented JSON, not empty data fields surrounding a complete value.
+		for _, part := range f.data {
+			if len(bytes.TrimSpace(part)) > 0 && !gjson.ValidBytes(part) {
+				f.pending = replaceCodexSSEData(f.pending, canonical)
+				break
+			}
+		}
+	}
 	events := normalizeCodexImageGenerationOutboundEventWithState(f.normalizer, canonical)
 	if len(events) == 0 {
 		events = [][]byte{canonical}
@@ -143,9 +160,8 @@ func replaceCodexSSEData(lines [][]byte, replacement []byte) [][]byte {
 	return out
 }
 
-// Synthetic events precede *all* metadata of the original event. On this path
-// move original metadata before data: the Responses writer inserts a blank line
-// before an event:-prefixed chunk, so a late event field would otherwise split it.
+// Synthetic events precede *all* metadata of the original event. Keep original
+// metadata before data on this path for line-oriented translated consumers.
 // Unchanged events never use this rearrangement and retain their original lines.
 func frameCodexImageStreamEvents(original, synthetic [][]byte) [][]byte {
 	out := make([][]byte, 0, 3*len(synthetic)+len(original))
@@ -168,4 +184,17 @@ func frameCodexImageStreamEvents(original, synthetic [][]byte) [][]byte {
 		}
 	}
 	return out
+}
+
+// Validate the whole Responses data document before interpreting any individual
+// line as terminal. Two separately valid JSON values are not one valid event.
+func (f *codexImageSSEFramer) validateResponsesEvent() error {
+	if !f.waitForDelimiter || len(f.data) == 0 {
+		return nil
+	}
+	payload := bytes.TrimSpace(bytes.Join(f.data, []byte{'\n'}))
+	if len(payload) == 0 || bytes.Equal(payload, []byte("[DONE]")) || gjson.ValidBytes(payload) {
+		return nil
+	}
+	return errors.New("invalid Codex Responses SSE event JSON")
 }
