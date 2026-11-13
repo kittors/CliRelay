@@ -152,7 +152,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	body = execCtx.ApplyPayloadConfig(body, originalTranslated)
 	body = ensureTranslatedCodexModel(body, execCtx.BaseModel)
 	body = sanitizeCodexResponsesRequest(body, edits)
-	body = prepareCodexResponsesBody(body, req.Payload, execCtx.SourceFormat, isCodexChatGPTBackendBaseURL(auth, baseURL), edits)
+	body = prepareCodexResponsesForUpstream(body, req.Payload, execCtx.SourceFormat, auth, baseURL, edits)
 	sets := map[string][]byte{"stream": util.JSONBool(true)}
 	if !gjson.GetBytes(body, "instructions").Exists() {
 		// Extract system messages from original OpenAI-format payload to use as instructions.
@@ -294,7 +294,7 @@ func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.A
 	body = execCtx.ApplyPayloadConfig(body, originalTranslated)
 	body = ensureTranslatedCodexModel(body, execCtx.BaseModel)
 	body = sanitizeCodexResponsesRequest(body, edits)
-	body = prepareCodexResponsesBody(body, req.Payload, execCtx.SourceFormat, isCodexChatGPTBackendBaseURL(auth, baseURL), edits)
+	body = prepareCodexResponsesForUpstream(body, req.Payload, execCtx.SourceFormat, auth, baseURL, edits)
 	body, _ = sjson.DeleteBytes(body, "stream")
 	body = applyCodexConvergenceClientMetadata(body, convergedIDs)
 
@@ -376,7 +376,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 
 	body = execCtx.ApplyPayloadConfig(body, originalTranslated)
 	body = sanitizeCodexResponsesRequest(body, edits)
-	body = prepareCodexResponsesBody(body, req.Payload, execCtx.SourceFormat, isCodexChatGPTBackendBaseURL(auth, baseURL), edits)
+	body = prepareCodexResponsesForUpstream(body, req.Payload, execCtx.SourceFormat, auth, baseURL, edits)
 	sets := map[string][]byte{}
 	if !gjson.GetBytes(body, "instructions").Exists() {
 		sets["instructions"] = util.JSONString(extractSystemMessagesAsInstructions(execCtx.Request.Payload))

@@ -50,6 +50,7 @@ func (e *ClaudeExecutor) sendClaudeMessages(execCtx *ExecutionContext, tmpl *htt
 }
 
 func (e *ClaudeExecutor) postClaudeMessages(execCtx *ExecutionContext, tmpl *http.Request, body []byte, toUpstream func([]byte) []byte) (claudeMessagesResult, error) {
+	body = limitClaudeCacheControls(body)
 	upstreamBody := toUpstream(body)
 	httpReq := tmpl.Clone(execCtx.Context)
 	httpReq.Body = io.NopCloser(bytes.NewReader(upstreamBody))
