@@ -6,12 +6,14 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/accessfreeze"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/accesspolicy"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/identity"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/quota"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v6/sdk/access"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
 )
 
@@ -302,6 +304,11 @@ func (p *provider) Authenticate(_ context.Context, r *http.Request) (*sdkaccess.
 			}
 			if len(kc.allowedChannelGroups) > 0 {
 				metadata["allowed-channel-groups"] = strings.Join(kc.allowedChannelGroups, ",")
+			}
+			// Read per request, not kept in keyConfig: a freeze applies from the
+			// requester's next request, without waiting for the keys to reload.
+			if frozen := accessfreeze.FrozenProvidersFor(kc.tenantID, kc.endUserID, kc.apiKeyID); frozen != "" {
+				metadata[cliproxyexecutor.AccessFrozenProvidersKey] = frozen
 			}
 			if kc.dailyLimit > 0 {
 				metadata["daily-limit"] = fmt.Sprintf("%d", kc.dailyLimit)

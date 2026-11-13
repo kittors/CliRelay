@@ -64,6 +64,9 @@ func laterRuntimeMigrations() []Migration {
 		// request_log_content_body_migrations.go.
 		{Version: "202611100002_request_log_content_bodies_stripped", SQL: requestLogContentBodiesStrippedSQL},
 		{Version: "202611100003_request_log_content_unstripped_index", SQL: requestLogContentUnstrippedIndexSQL},
+		// Per-provider freezes of requesters an upstream refused for their
+		// content. See access_freeze_migrations.go.
+		{Version: "202611130001_access_freezes", SQL: accessFreezesSQL},
 	}
 }
 

@@ -57,6 +57,9 @@ func waitForCooldown(ctx context.Context, wait time.Duration) error {
 // MarkResult records an execution result and notifies hooks.
 func (m *Manager) MarkResult(ctx context.Context, result Result) {
 	newCooldownService(m).markResult(ctx, result)
+	// Every attempt's result passes here, a stream that failed after its first
+	// byte included, so this is where an upstream content refusal is reported.
+	m.observeUpstreamRefusal(ctx, result)
 }
 
 func (s cooldownService) closestWait(providers []string, model string, attempt int) (time.Duration, bool) {
@@ -126,10 +129,12 @@ func (s cooldownService) shouldRetryAfterError(err error, attempt int, providers
 	if status := statusCodeFromError(err); status == http.StatusOK {
 		return 0, false
 	}
-	if isRequestInvalidError(err) {
+	if isRequestFault(err) {
 		return 0, false
 	}
-	if isContentPolicyViolation(err) {
+	// A freeze outlasts any cooldown: waiting for a frozen provider's accounts to
+	// recover would only end in the same refusal.
+	if isProviderAccessFrozen(err) {
 		return 0, false
 	}
 	wait, found := s.closestWait(providers, model, attempt)
@@ -229,9 +234,10 @@ func (s cooldownService) applyFailureLocked(auth *Auth, result Result, now time.
 		return
 	}
 	// Client request errors (400 invalid payload/image/etc.) are not auth health
-	// signals. Do not mark the credential unavailable or start any cooldown;
-	// failover is already suppressed by isRequestInvalidError.
-	if result.Error != nil && isRequestInvalidError(result.Error) {
+	// signals, and neither is an upstream safety classifier refusing the content.
+	// Do not mark the credential unavailable or start any cooldown; failover is
+	// already suppressed by isRequestFault.
+	if result.Error != nil && isRequestFault(result.Error) {
 		return
 	}
 	result = dropAdvisoryRetryAfter(auth, result)

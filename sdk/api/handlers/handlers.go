@@ -219,8 +219,7 @@ func requestExecutionMetadata(ctx context.Context) map[string]any {
 	// Idempotency-Key is an optional client-supplied header used to correlate retries.
 	// It is forwarded as execution metadata; when absent we generate a UUID.
 	key := ""
-	allowedChannels := ""
-	allowedChannelGroups := ""
+	var accessMetadata map[string]string
 	routeGroup := ""
 	routeFallback := ""
 	sessionStickyKey := ""
@@ -238,10 +237,7 @@ func requestExecutionMetadata(ctx context.Context) map[string]any {
 			key = strings.TrimSpace(ginCtx.GetHeader("Idempotency-Key"))
 			sessionStickyKey = requestSessionStickyHeaderKey(ginCtx)
 			if metadataVal, exists := ginCtx.Get("accessMetadata"); exists {
-				if metadata, okMeta := metadataVal.(map[string]string); okMeta {
-					allowedChannels = strings.TrimSpace(metadata["allowed-channels"])
-					allowedChannelGroups = strings.TrimSpace(metadata["allowed-channel-groups"])
-				}
+				accessMetadata, _ = metadataVal.(map[string]string)
 			}
 			if routeVal, exists := ginCtx.Get(internalrouting.GinPathRouteContextKey); exists {
 				if route, okRoute := routeVal.(*internalrouting.PathRouteContext); okRoute && route != nil {
@@ -269,12 +265,7 @@ func requestExecutionMetadata(ctx context.Context) map[string]any {
 	if tenantID != "" {
 		meta[coreexecutor.TenantMetadataKey] = tenantID
 	}
-	if allowedChannels != "" {
-		meta["allowed-channels"] = allowedChannels
-	}
-	if allowedChannelGroups != "" {
-		meta["allowed-channel-groups"] = allowedChannelGroups
-	}
+	coreexecutor.CopyAccessSelectionScope(accessMetadata, meta)
 	if routeGroup != "" {
 		meta[coreexecutor.RouteGroupMetadataKey] = routeGroup
 	}

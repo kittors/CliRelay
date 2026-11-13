@@ -49,6 +49,9 @@ type selectionRejection struct {
 	// which group to add: the model list they had already edited lived in a group
 	// they could not reach.
 	servingGroups map[string]struct{}
+	// frozenNotices holds, by provider, the notices of the freezes that excluded
+	// a serving credential the caller could otherwise reach.
+	frozenNotices map[string]string
 }
 
 // diagnoseEmptyCandidates inspects the credentials the scope considered and
@@ -68,6 +71,7 @@ func (s selectorService) diagnoseEmptyCandidates(
 		modelBlockedByGroups:  map[string]struct{}{},
 		modelExcludedByGroups: map[string]struct{}{},
 		servingGroups:         map[string]struct{}{},
+		frozenNotices:         map[string]string{},
 	}
 	for _, candidate := range s.manager.auths {
 		if candidate == nil || candidate.Disabled || candidate.Status == StatusDisabled {
@@ -103,6 +107,10 @@ func (s selectorService) diagnoseEmptyCandidates(
 			}
 			continue
 		}
+		if notice, frozen := scope.frozenNotice(candidate); frozen {
+			rejection.frozenNotices[strings.ToLower(strings.TrimSpace(candidate.Provider))] = notice
+			continue
+		}
 
 		// Re-run only the model-scope gate. A candidate that clears it was excluded
 		// for some other reason, which this diagnosis deliberately does not guess at.
@@ -127,6 +135,12 @@ func (s selectorService) diagnoseEmptyCandidates(
 	// This is the case the generic message hid worst: the panel lists the account,
 	// the model panel lists the model, and the request still says "no auth".
 	if rejection.sawServingCandidate {
+		// A freeze comes first: the frozen credentials are ones the caller could
+		// reach, so the freeze is what stands between the caller and the model,
+		// and its notice is what the caller has to read.
+		if len(rejection.frozenNotices) > 0 {
+			return providerAccessFrozenError(rejection.frozenNotices)
+		}
 		if rejection.servingBlockedByGroups {
 			return &Error{
 				Code: "model_outside_allowed_channel_groups",
