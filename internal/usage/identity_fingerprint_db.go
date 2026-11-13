@@ -57,7 +57,7 @@ func initIdentityFingerprintsTable(db *sql.DB) {
 		log.Errorf("usage: create identity fingerprint tables: %v", err)
 		return
 	}
-	if usageDriver != "postgres" {
+	if metadataForUsageDB(db).driver != "postgres" {
 		migrateIdentityFingerprintTenantSchema(db)
 		if _, err := db.Exec(createIdentityFingerprintsTableSQL); err != nil {
 			log.Errorf("usage: recreate identity fingerprint indexes: %v", err)

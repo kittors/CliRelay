@@ -20,10 +20,18 @@ type aiAccountSubjectTokenBucket struct {
 // RunAIAccountSubjectUsageTokensBackfillAtInit fills the new token projection
 // from durable rollups and exact surviving cycle logs once per marker version.
 func RunAIAccountSubjectUsageTokensBackfillAtInit() error {
-	return runAIAccountSubjectUsageTokensBackfillAtInitDB(getDB())
+	usageWriteLease.RLock()
+	defer usageWriteLease.RUnlock()
+	return runAIAccountSubjectUsageTokensBackfillAtInitDBLeased(getDB())
 }
 
 func runAIAccountSubjectUsageTokensBackfillAtInitDB(db *sql.DB) error {
+	usageWriteLease.RLock()
+	defer usageWriteLease.RUnlock()
+	return runAIAccountSubjectUsageTokensBackfillAtInitDBLeased(db)
+}
+
+func runAIAccountSubjectUsageTokensBackfillAtInitDBLeased(db *sql.DB) error {
 	if db == nil {
 		return nil
 	}

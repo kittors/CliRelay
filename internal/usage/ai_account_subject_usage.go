@@ -326,7 +326,7 @@ func formatAIAccountSubjectCycleBucketStart(value time.Time) string {
 // projectAIAccountSubjectUsageTx is the request-hot B-layer projection. It only
 // uses the server-computed subject already captured by usageReporter; it never
 // reads or upserts the low-frequency tenant binding table.
-func projectAIAccountSubjectUsageTx(tx usageWriteTx, authSubjectID string, failed bool, cost float64, totalTokens int64, at time.Time) error {
+func projectAIAccountSubjectUsageTx(tx usageMetadataWriteTx, authSubjectID string, failed bool, cost float64, totalTokens int64, at time.Time) error {
 	if tx == nil {
 		return nil
 	}
@@ -337,7 +337,7 @@ func projectAIAccountSubjectUsageTx(tx usageWriteTx, authSubjectID string, faile
 	if at.IsZero() {
 		at = time.Now()
 	}
-	loc := usageLoc
+	loc := tx.usageMetadata().loc
 	if loc == nil {
 		loc = time.Local
 	}

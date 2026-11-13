@@ -511,6 +511,8 @@ func startRequestLogContentSessionIDBackfill(db *sql.DB) {
 func InitDB(dbPath string, storageCfg config.RequestLogStorageConfig, loc *time.Location) error {
 	usageDBLifecycleMu.Lock()
 	defer usageDBLifecycleMu.Unlock()
+	usageWriteLease.Lock()
+	defer usageWriteLease.Unlock()
 
 	usageDBMu.Lock()
 	defer usageDBMu.Unlock()
@@ -616,6 +618,8 @@ func InitPostgres(pgCfg config.PostgresConfig, storageCfg config.RequestLogStora
 
 	usageDBLifecycleMu.Lock()
 	defer usageDBLifecycleMu.Unlock()
+	usageWriteLease.Lock()
+	defer usageWriteLease.Unlock()
 
 	usageDBMu.Lock()
 	defer usageDBMu.Unlock()
@@ -633,11 +637,20 @@ func InitPostgres(pgCfg config.PostgresConfig, storageCfg config.RequestLogStora
 	return initOpenedDBLocked(db, db, "postgres", "postgres", storageCfg, loc, false)
 }
 
-func initOpenedDBLocked(db, readDB *sql.DB, dbPath, driver string, storageCfg config.RequestLogStorageConfig, loc *time.Location, runSQLiteBootstrap bool) error {
+func initOpenedDBLocked(db, readDB *sql.DB, dbPath, driver string, storageCfg config.RequestLogStorageConfig, loc *time.Location, runSQLiteBootstrap bool) (err error) {
 	if loc == nil {
 		loc = time.Local
 	}
 	usageLoc = loc
+	metadata := usageDBMetadata{driver: driver, loc: loc}
+	usageDBMetadataByHandle.Store(db, metadata)
+	usageDBMetadataByHandle.Store(readDB, metadata)
+	defer func() {
+		if err != nil {
+			usageDBMetadataByHandle.Delete(db)
+			usageDBMetadataByHandle.Delete(readDB)
+		}
+	}()
 
 	log.Debugf("usage: creating tables")
 	if runSQLiteBootstrap {
@@ -768,38 +781,6 @@ func initOpenedDBLocked(db, readDB *sql.DB, dbPath, driver string, storageCfg co
 	startRequestLogContentSessionIDBackfill(db)
 	log.Infof("usage: %s database initialised at %s", driver, dbPath)
 	return nil
-}
-
-// CloseDB closes the runtime database gracefully.
-func CloseDB() {
-	usageDBLifecycleMu.Lock()
-	defer usageDBLifecycleMu.Unlock()
-
-	// Maintenance and in-flight writes can read usageLoc under usageDBMu.
-	// Stop the worker, then detach the handles under the mutex before waiting for
-	// database/sql to drain them, otherwise shutdown can deadlock on that mutex.
-	stopRequestLogMaintenance()
-
-	usageDBMu.Lock()
-	db := usageDB
-	readDB := usageReadDB
-	usageDB = nil
-	usageReadDB = nil
-	usageDBMu.Unlock()
-
-	if db != nil {
-		_ = db.Close()
-	}
-	if readDB != nil && readDB != db {
-		_ = readDB.Close()
-	}
-
-	usageDBMu.Lock()
-	usageLoc = nil
-	usageDriver = ""
-	usageDBMu.Unlock()
-	resetAIAccountSubjectCycleCache()
-	log.Info("usage: database closed")
 }
 
 // MigrateFromSnapshot imports all request details from an existing

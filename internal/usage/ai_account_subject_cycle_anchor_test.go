@@ -17,7 +17,7 @@ func projectSubjectRequest(t *testing.T, subjectID string, at time.Time, tokens 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := projectAIAccountSubjectUsageTx(tx, subjectID, false, 1, tokens, at); err != nil {
+	if err := projectAIAccountSubjectUsageTx(usageTestMetadataTx(tx), subjectID, false, 1, tokens, at); err != nil {
 		_ = tx.Rollback()
 		t.Fatal(err)
 	}
