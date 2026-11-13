@@ -359,14 +359,8 @@ func requestImageExecutionMetadata(c *gin.Context) map[string]any {
 		}
 	}
 	if metadataVal, exists := c.Get("accessMetadata"); exists {
-		if metadata, ok := metadataVal.(map[string]string); ok {
-			if allowedChannels := strings.TrimSpace(metadata["allowed-channels"]); allowedChannels != "" {
-				meta["allowed-channels"] = allowedChannels
-			}
-			if allowedGroups := strings.TrimSpace(metadata["allowed-channel-groups"]); allowedGroups != "" {
-				meta["allowed-channel-groups"] = allowedGroups
-			}
-		}
+		metadata, _ := metadataVal.(map[string]string)
+		coreexecutor.CopyAccessSelectionScope(metadata, meta)
 	}
 	if routeVal, exists := c.Get(internalrouting.GinPathRouteContextKey); exists {
 		if route, ok := routeVal.(*internalrouting.PathRouteContext); ok && route != nil {

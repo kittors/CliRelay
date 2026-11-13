@@ -53,6 +53,8 @@ func registerIdentityAuthRoutes(engine *gin.Engine, h *managementhandlers.Handle
 	portal.GET("/privacy-masking/summary", h.GetPortalPrivacyMaskingSummary)
 	portal.GET("/privacy-masking/records", h.GetPortalPrivacyMaskingRecords)
 	portal.GET("/privacy-masking/records/:key", h.GetPortalPrivacyMaskingRecord)
+	// The signed-in user's standing access freezes and the notice of each.
+	portal.GET("/access-freezes", h.GetPortalAccessFreezes)
 }
 
 func registerManagementIdentityRoutes(group *gin.RouterGroup, h *managementhandlers.Handler) {
@@ -70,6 +72,12 @@ func registerManagementIdentityRoutes(group *gin.RouterGroup, h *managementhandl
 
 	group.GET("/end-users", h.GetEndUsers)
 	group.POST("/end-users", h.PostEndUser)
+	// Per-provider freezes of requesters an upstream refused for their content.
+	group.GET("/end-users/access-freezes", h.GetAccessFreezes)
+	group.GET("/end-users/access-freezes/strikes", h.GetAccessFreezeStrikes)
+	group.GET("/end-users/access-freezes/settings", h.GetAccessFreezeSettings)
+	group.PUT("/end-users/access-freezes/settings", h.PutAccessFreezeSettings)
+	group.POST("/end-users/access-freezes/:freeze_id/release", h.PostAccessFreezeRelease)
 	group.POST("/end-users/batch/permission-profile", h.PostEndUsersBatchPermissionProfile)
 	group.PATCH("/end-users/:id", h.PatchEndUser)
 	group.DELETE("/end-users/:id", h.DeleteEndUser)

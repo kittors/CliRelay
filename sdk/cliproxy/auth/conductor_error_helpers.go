@@ -122,11 +122,22 @@ func statusCodeFromResult(err *Error) int {
 }
 
 // IsRequestFault reports whether err is the upstream refusing the request
-// itself: a malformed request, or a content-policy block. Another account
-// would refuse it as well, and so would another model; a virtual model does
-// not move on to its next member after one.
+// itself: a malformed request, a content-policy block, or an upstream safety
+// classifier refusing the content. Another account would refuse it as well,
+// and so would another model; a virtual model does not move on to its next
+// member after one.
 func IsRequestFault(err error) bool {
-	return isRequestInvalidError(err) || isContentPolicyViolation(err)
+	return isRequestFault(err)
+}
+
+// isRequestFault is a failure of the request rather than of the account that
+// ran it: it is not failed over to another account, not waited out, and does
+// not cool the account down. An upstream content refusal is one even though
+// the upstream may call it invalid_request without the usual
+// invalid_request_error signal: failing it over would only send the same
+// content to more of the pool's accounts.
+func isRequestFault(err error) bool {
+	return isRequestInvalidError(err) || isContentPolicyViolation(err) || isUpstreamContentRefusal(err)
 }
 
 // FailureCause classifies a failed execution as the route trace does an

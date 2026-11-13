@@ -26,7 +26,7 @@ func TestRegisterManagementRouteTable(t *testing.T) {
 		routes[key] = route
 	}
 
-	if got, want := len(routes), 405; got != want {
+	if got, want := len(routes), 411; got != want {
 		t.Fatalf("route count = %d, want %d", got, want)
 	}
 	if got, want := sortedRouteKeys(routes), expectedManagementRoutes(); !slices.Equal(got, want) {
@@ -312,6 +312,7 @@ func expectedManagementRoutes() []string {
 		"GET /v0/portal/privacy-masking/summary",
 		"GET /v0/portal/privacy-masking/records",
 		"GET /v0/portal/privacy-masking/records/:key",
+		"GET /v0/portal/access-freezes",
 		"POST /v0/portal/auth/login",
 		"POST /v0/portal/auth/logout",
 		"GET /v0/portal/auth/me",
@@ -340,6 +341,11 @@ func expectedManagementRoutes() []string {
 		"GET /v0/management/end-users",
 		"POST /v0/management/end-users",
 		"POST /v0/management/end-users/batch/permission-profile",
+		"GET /v0/management/end-users/access-freezes",
+		"GET /v0/management/end-users/access-freezes/strikes",
+		"GET /v0/management/end-users/access-freezes/settings",
+		"PUT /v0/management/end-users/access-freezes/settings",
+		"POST /v0/management/end-users/access-freezes/:freeze_id/release",
 		"PATCH /v0/management/end-users/:id",
 		"DELETE /v0/management/end-users/:id",
 		"POST /v0/management/end-users/:id/reset-password",

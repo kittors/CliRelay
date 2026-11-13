@@ -40,6 +40,9 @@ const (
 	ExcludedChannel CandidateExclusion = "channel"
 	// ExcludedAllowedGroups is outside the channel groups the API key may use.
 	ExcludedAllowedGroups CandidateExclusion = "allowed-groups"
+	// ExcludedFrozen belongs to a provider the requester's access is frozen for
+	// after an upstream refused one of its requests for its content.
+	ExcludedFrozen CandidateExclusion = "frozen"
 	// ExcludedRouteGroup is outside the route group being tried.
 	ExcludedRouteGroup CandidateExclusion = "route-group"
 	// ExcludedTried is a credential the request already tried.

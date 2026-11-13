@@ -60,11 +60,14 @@ func StartService(cfg *config.Config, configPath string, localPassword string) {
 
 	moderator := contentmoderation.NewRequestModerator(contentmoderation.NewStore(usage.RuntimeDB()), contentmoderation.NewEvaluator(nil))
 	contentmoderation.SetRuntime(moderator)
+	freezes := startAccessFreezes(loc)
+	defer freezes.Close()
 	builder := cliproxy.NewBuilder().
 		WithConfig(cfg).
 		WithConfigPath(configPath).
 		WithCoreAuthHook(usage.NewAIAccountBindingHook()).
 		WithRequestModerator(moderator).
+		WithUpstreamRefusalObserver(freezes).
 		WithHooks(runtimeDataStackPostStartHooks(defaultRuntimeDataStackMaintenanceOps())).
 		WithLocalManagementPassword(localPassword)
 
@@ -126,11 +129,13 @@ func StartServiceBackground(cfg *config.Config, configPath string, localPassword
 
 	moderator := contentmoderation.NewRequestModerator(contentmoderation.NewStore(usage.RuntimeDB()), contentmoderation.NewEvaluator(nil))
 	contentmoderation.SetRuntime(moderator)
+	freezes := startAccessFreezes(loc)
 	builder := cliproxy.NewBuilder().
 		WithConfig(cfg).
 		WithConfigPath(configPath).
 		WithCoreAuthHook(usage.NewAIAccountBindingHook()).
 		WithRequestModerator(moderator).
+		WithUpstreamRefusalObserver(freezes).
 		WithHooks(runtimeDataStackPostStartHooks(defaultRuntimeDataStackMaintenanceOps())).
 		WithLocalManagementPassword(localPassword)
 
@@ -140,6 +145,7 @@ func StartServiceBackground(cfg *config.Config, configPath string, localPassword
 	service, err := builder.Build()
 	if err != nil {
 		log.Errorf("failed to build proxy service: %v", err)
+		freezes.Close()
 		stopClusterAuth()
 		coordinator.Close()
 		stopRuntimeDataStack()
@@ -154,6 +160,7 @@ func StartServiceBackground(cfg *config.Config, configPath string, localPassword
 		defer coordinator.Close()
 		defer stopClusterAuth()
 		defer stopClusterWatch()
+		defer freezes.Close()
 		if err := service.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 			log.Errorf("proxy service exited with error: %v", err)
 		}

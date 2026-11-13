@@ -38,6 +38,16 @@ const (
 	ExecutionSessionMetadataKey = "execution_session_id"
 	// SessionStickyMetadataKey carries a stable client session key for sticky routing.
 	SessionStickyMetadataKey = "session_sticky_key"
+	// FrozenProvidersMetadataKey carries the providers the requester's access is
+	// frozen for, mapped to the notice the requester is shown: a JSON object
+	// string as the access metadata holds it, or a map[string]string. Selection
+	// leaves those providers' credentials out, and answers with the notice when
+	// nothing else can serve the request.
+	FrozenProvidersMetadataKey = "frozen_providers"
+	// AccessFrozenProvidersKey is the key the host's API key authentication
+	// writes the same JSON object under in the request's access metadata; the
+	// handlers copy it to FrozenProvidersMetadataKey.
+	AccessFrozenProvidersKey = "frozen-providers"
 )
 
 // Request encapsulates the translated payload that will be sent to a provider executor.
