@@ -31,7 +31,7 @@ func ensureCacheControl(payload []byte) []byte {
 // conversation went uncached. The prefix ending at the identity block is far
 // below Anthropic's minimum cacheable length, so nothing was cached at all.
 func applyClaudeCacheControl(payload []byte) []byte {
-	if countClientCacheControls(payload) > 0 {
+	if gjson.GetBytes(payload, "cache_control").Exists() || countClientCacheControls(payload) > 0 {
 		return payload
 	}
 	return ensureCacheControl(payload)
@@ -59,46 +59,82 @@ func isClaudeIdentityBlock(item gjson.Result) bool {
 	return item.Get("text").String() == claudeCodeIdentityText
 }
 
+// claudeCacheControlPaths lists explicit breakpoints. Identity paths come
+// first so a full client cache budget never loses a breakpoint to our banner.
+func claudeCacheControlPaths(payload []byte) (identity, tools, system, messages []string) {
+	gjson.GetBytes(payload, "system").ForEach(func(index, item gjson.Result) bool {
+		if item.Get("cache_control").Exists() {
+			path := fmt.Sprintf("system.%d.cache_control", index.Int())
+			if isClaudeIdentityBlock(item) {
+				identity = append(identity, path)
+			} else {
+				system = append(system, path)
+			}
+		}
+		return true
+	})
+	gjson.GetBytes(payload, "tools").ForEach(func(index, item gjson.Result) bool {
+		if item.Get("cache_control").Exists() {
+			tools = append(tools, fmt.Sprintf("tools.%d.cache_control", index.Int()))
+		}
+		return true
+	})
+	gjson.GetBytes(payload, "messages").ForEach(func(index, msg gjson.Result) bool {
+		content := msg.Get("content")
+		if content.IsArray() {
+			content.ForEach(func(partIndex, item gjson.Result) bool {
+				if item.Get("cache_control").Exists() {
+					messages = append(messages, fmt.Sprintf("messages.%d.content.%d.cache_control", index.Int(), partIndex.Int()))
+				}
+				return true
+			})
+		}
+		return true
+	})
+	return
+}
+
 func countCacheControls(payload []byte) int {
-	count := 0
-
-	system := gjson.GetBytes(payload, "system")
-	if system.IsArray() {
-		system.ForEach(func(_, item gjson.Result) bool {
-			if item.Get("cache_control").Exists() {
-				count++
-			}
-			return true
-		})
+	identity, tools, system, messages := claudeCacheControlPaths(payload)
+	count := len(identity) + len(tools) + len(system) + len(messages)
+	if gjson.GetBytes(payload, "cache_control").Exists() {
+		count++
 	}
-
-	tools := gjson.GetBytes(payload, "tools")
-	if tools.IsArray() {
-		tools.ForEach(func(_, item gjson.Result) bool {
-			if item.Get("cache_control").Exists() {
-				count++
-			}
-			return true
-		})
-	}
-
-	messages := gjson.GetBytes(payload, "messages")
-	if messages.IsArray() {
-		messages.ForEach(func(_, msg gjson.Result) bool {
-			content := msg.Get("content")
-			if content.IsArray() {
-				content.ForEach(func(_, item gjson.Result) bool {
-					if item.Get("cache_control").Exists() {
-						count++
-					}
-					return true
-				})
-			}
-			return true
-		})
-	}
-
 	return count
+}
+
+// limitClaudeCacheControls runs at the common send boundary, including retries,
+// count_tokens and credentials opting out of mimicry. The automatic top-level
+// breakpoint also needs a slot. Remove our short identity anchor first; only
+// an already-overfull client request loses its oldest message anchors, then
+// tool anchors, then system anchors. Content and the client's automatic mode
+// are preserved. A valid budget is returned byte for byte.
+func limitClaudeCacheControls(payload []byte) []byte {
+	const maxBreakpoints = 4
+	identity, tools, system, messages := claudeCacheControlPaths(payload)
+	excess := len(identity) + len(tools) + len(system) + len(messages) - maxBreakpoints
+	if gjson.GetBytes(payload, "cache_control").Exists() {
+		excess++
+	}
+	if excess <= 0 {
+		return payload
+	}
+	paths := append(identity, messages...)
+	paths = append(paths, tools...)
+	paths = append(paths, system...)
+	for _, path := range paths {
+		if excess == 0 {
+			break
+		}
+		next, err := sjson.DeleteBytes(payload, path)
+		if err != nil {
+			log.Warnf("failed to remove excess Claude cache breakpoint: %v", err)
+			continue
+		}
+		payload = next
+		excess--
+	}
+	return payload
 }
 
 // injectMessagesCacheControl adds cache_control to the second-to-last user turn for multi-turn caching.

@@ -38,6 +38,10 @@ type codexBodyEdits struct {
 	// carrying another vendor's ciphertext (prepareCodexResponsesBody).
 	ForeignReasoningDropped int `json:"foreign_reasoning_dropped,omitempty"`
 
+	// ReasoningContentsRemoved counts nonempty visible reasoning arrays stripped
+	// for an OpenAI destination. Items, summaries and valid ciphertext stay.
+	ReasoningContentsRemoved int `json:"reasoning_contents_removed,omitempty"`
+
 	// ReasoningRetry marks a body sent a second time without any reasoning
 	// ciphertext after the upstream refused the first (codex_responses_send.go).
 	// The sender sets it on the copy it reports, not here.

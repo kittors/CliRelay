@@ -3,9 +3,11 @@ package executor
 import (
 	"bytes"
 	"encoding/json"
+	"net/url"
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
+	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v6/sdk/translator"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
@@ -152,6 +154,7 @@ func mergeCodexClientInclude(body, clientPayload []byte, source sdktranslator.Fo
 func prepareCodexResponsesBody(body, clientPayload []byte, source sdktranslator.Format, chatGPTBackend bool, edits ...*codexBodyEdits) []byte {
 	body = mergeCodexClientInclude(body, clientPayload, source)
 	if chatGPTBackend {
+		body = normalizeCodexReasoningContent(body, edits...)
 		var dropped int
 		body, dropped = dropCodexReasoningItems(body, isForeignCodexCiphertext)
 		if dropped > 0 {
@@ -160,4 +163,63 @@ func prepareCodexResponsesBody(body, clientPayload []byte, source sdktranslator.
 		}
 	}
 	return body
+}
+
+// prepareCodexResponsesForUpstream scopes reasoning compatibility to the actual
+// destination. API-key accounts must not get the OAuth ciphertext filter, but a
+// real OpenAI endpoint still rejects replayed, visible reasoning.content.
+func prepareCodexResponsesForUpstream(body, clientPayload []byte, source sdktranslator.Format, auth *cliproxyauth.Auth, baseURL string, edits ...*codexBodyEdits) []byte {
+	chatGPTBackend := isCodexChatGPTBackendBaseURL(auth, baseURL)
+	body = prepareCodexResponsesBody(body, clientPayload, source, chatGPTBackend, edits...)
+	if !chatGPTBackend {
+		target, err := url.Parse(strings.TrimSpace(baseURL))
+		if err == nil && (strings.EqualFold(target.Hostname(), "api.openai.com") || strings.EqualFold(target.Hostname(), codexChatGPTHost)) {
+			body = normalizeCodexReasoningContent(body, edits...)
+		}
+	}
+	return body
+}
+
+// normalizeCodexReasoningContent removes only nonempty reasoning.content arrays
+// from histories replayed to OpenAI. Compatible providers can persist visible
+// reasoning there; the OpenAI input schema accepts an empty array only. Keep
+// summaries, ciphertext, extensions and ordinary message/tool content intact.
+// Rebuild input once so long sessions do not copy the whole body per item, and
+// preserve raw JSON numbers (opaque fields may exceed float64's integer range).
+func normalizeCodexReasoningContent(body []byte, edits ...*codexBodyEdits) []byte {
+	input := gjson.GetBytes(body, "input")
+	if !input.IsArray() {
+		return body
+	}
+	needsNormalization := false
+	input.ForEach(func(_, item gjson.Result) bool {
+		content := item.Get("content")
+		needsNormalization = item.Get("type").String() == "reasoning" && content.IsArray() && content.Get("#").Int() > 0
+		return !needsNormalization
+	})
+	if !needsNormalization {
+		return body
+	}
+	removed := 0
+	var out bytes.Buffer
+	out.Grow(len(input.Raw))
+	out.WriteByte('[')
+	input.ForEach(func(index, item gjson.Result) bool {
+		if index.Int() > 0 {
+			out.WriteByte(',')
+		}
+		raw := []byte(item.Raw)
+		content := item.Get("content")
+		if item.Get("type").String() == "reasoning" && content.IsArray() && content.Get("#").Int() > 0 {
+			raw = util.MutateTopLevelObject(raw, nil, []string{"content"})
+			removed++
+		}
+		out.Write(raw)
+		return true
+	})
+	out.WriteByte(']')
+	if tally := firstCodexEdits(edits); tally != nil {
+		tally.ReasoningContentsRemoved += removed
+	}
+	return util.MutateTopLevelObject(body, map[string][]byte{"input": out.Bytes()}, nil)
 }
