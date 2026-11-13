@@ -1,6 +1,7 @@
 package management
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strconv"
@@ -23,17 +24,52 @@ import (
 const maxReleaseNote = 500
 
 // accessFreezeView is a freeze as the panel reads it: the stored fields, the
-// vendor name of the provider ("" for an operator-named upstream), and the
-// notice the requester is answered with.
+// requester's name, the vendor name of the provider ("" for an operator-named
+// upstream), and the notice the requester is answered with.
 type accessFreezeView struct {
 	accessfreeze.Freeze
+	SubjectName  string `json:"subject_name"`
 	ProviderName string `json:"provider_name"`
 	Notice       string `json:"notice"`
 }
 
-func newAccessFreezeView(f accessfreeze.Freeze) accessFreezeView {
+func newAccessFreezeView(f accessfreeze.Freeze, subjectName string) accessFreezeView {
 	name, _ := accessfreeze.ProviderDisplayName(f.Provider)
-	return accessFreezeView{Freeze: f, ProviderName: name, Notice: accessfreeze.NoticeFor(f)}
+	return accessFreezeView{Freeze: f, SubjectName: subjectName, ProviderName: name, Notice: accessfreeze.NoticeFor(f)}
+}
+
+// accessFreezeSubjectNames names each requester of a listing once: a portal
+// account by its display name (or username), a key by its name, "" when it
+// is gone. Without it the panel had to load every API key, secrets included,
+// to name the one frozen key.
+func (h *Handler) accessFreezeSubjectNames(ctx context.Context, tenantID string, subjects []accessfreeze.Subject) map[accessfreeze.Subject]string {
+	names := make(map[accessfreeze.Subject]string, len(subjects))
+	users := h.endUserService()
+	for _, subject := range subjects {
+		if _, seen := names[subject]; seen {
+			continue
+		}
+		name := ""
+		switch subject.Kind {
+		case accessfreeze.SubjectEndUser:
+			if users != nil {
+				if user, err := users.GetUser(ctx, tenantID, subject.ID); err == nil {
+					name = strings.TrimSpace(user.DisplayName)
+					if name == "" {
+						name = strings.TrimSpace(user.Username)
+					}
+				}
+			}
+		case accessfreeze.SubjectAPIKey:
+			if usage.RuntimeDB() != nil {
+				if row := usage.GetAPIKeyByIDForTenant(tenantID, subject.ID); row != nil {
+					name = strings.TrimSpace(row.Name)
+				}
+			}
+		}
+		names[subject] = name
+	}
+	return names
 }
 
 func accessFreezeError(c *gin.Context, err error) {
@@ -98,16 +134,22 @@ func (h *Handler) GetAccessFreezes(c *gin.Context) {
 		return
 	}
 	limit, _ := strconv.Atoi(strings.TrimSpace(c.Query("limit")))
-	freezes, err := accessFreezeStore().List(c.Request.Context(), effectiveTenantID(c), accessfreeze.Filter{
+	tenantID := effectiveTenantID(c)
+	freezes, err := accessFreezeStore().List(c.Request.Context(), tenantID, accessfreeze.Filter{
 		Status: status, SubjectKind: kind, SubjectID: c.Query("subject_id"), Provider: c.Query("provider"), Limit: limit,
 	})
 	if err != nil {
 		accessFreezeError(c, err)
 		return
 	}
+	subjects := make([]accessfreeze.Subject, 0, len(freezes))
+	for _, f := range freezes {
+		subjects = append(subjects, f.Subject)
+	}
+	names := h.accessFreezeSubjectNames(c.Request.Context(), tenantID, subjects)
 	items := make([]accessFreezeView, 0, len(freezes))
 	for _, f := range freezes {
-		items = append(items, newAccessFreezeView(f))
+		items = append(items, newAccessFreezeView(f, names[f.Subject]))
 	}
 	c.JSON(http.StatusOK, gin.H{"items": items})
 }
@@ -174,12 +216,14 @@ func (h *Handler) PostAccessFreezeRelease(c *gin.Context) {
 	if by == "" {
 		by = actor.Kind
 	}
-	freeze, err := accessfreeze.Release(c.Request.Context(), accessFreezeStore(), effectiveTenantID(c), id, by, note)
+	tenantID := effectiveTenantID(c)
+	freeze, err := accessfreeze.Release(c.Request.Context(), accessFreezeStore(), tenantID, id, by, note)
 	if err != nil {
 		accessFreezeError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"freeze": newAccessFreezeView(freeze)})
+	names := h.accessFreezeSubjectNames(c.Request.Context(), tenantID, []accessfreeze.Subject{freeze.Subject})
+	c.JSON(http.StatusOK, gin.H{"freeze": newAccessFreezeView(freeze, names[freeze.Subject])})
 }
 
 func accessFreezeSettingsBody(threshold int) gin.H {

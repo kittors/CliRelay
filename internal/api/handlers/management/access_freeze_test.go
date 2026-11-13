@@ -212,3 +212,19 @@ func TestAccessFreezeHandlersPostgres(t *testing.T) {
 		t.Fatalf("another tenant sees carol's freezes: %d %s", rec.Code, rec.Body)
 	}
 }
+
+func TestAccessFreezeSubjectNamesNameAccountsAndKeys(t *testing.T) {
+	f := newAccessPolicyFixture(t)
+	created, err := f.svc.CreateKey(context.Background(), identity.SystemTenantID, f.userID, "ci-runner")
+	if err != nil {
+		t.Fatalf("CreateKey: %v", err)
+	}
+	account := accessfreeze.Subject{TenantID: identity.SystemTenantID, Kind: accessfreeze.SubjectEndUser, ID: f.userID}
+	key := accessfreeze.Subject{TenantID: identity.SystemTenantID, Kind: accessfreeze.SubjectAPIKey, ID: created.APIKey.ID}
+	gone := accessfreeze.Subject{TenantID: identity.SystemTenantID, Kind: accessfreeze.SubjectAPIKey, ID: "missing-key"}
+
+	names := f.h.accessFreezeSubjectNames(context.Background(), identity.SystemTenantID, []accessfreeze.Subject{account, key, account, gone})
+	if names[account] != "Policy User" || names[key] != "ci-runner" || names[gone] != "" || len(names) != 3 {
+		t.Fatalf("names = %#v", names)
+	}
+}
