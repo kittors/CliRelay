@@ -459,7 +459,7 @@ func refreshRequestLogContentBytes(q logContentQuerier) {
 	}
 }
 
-func insertLogContentTx(tx *sql.Tx, logID int64, timestamp time.Time, inputContent, outputContent, detailContent string) error {
+func insertLogContentTx(tx usageMetadataWriteTx, logID int64, timestamp time.Time, inputContent, outputContent, detailContent string) error {
 	return insertLogContentTenantTx(tx, "00000000-0000-0000-0000-000000000001", logID, timestamp, inputContent, outputContent, detailContent, extractSessionIDFromDetails(detailContent), false)
 }
 
@@ -467,7 +467,7 @@ func insertLogContentTx(tx *sql.Tx, logID int64, timestamp time.Time, inputConte
 // sessionID is the one the caller already extracted from detailContent for
 // request_logs.session_id; it is passed in rather than extracted again because
 // a detail can be large.
-func insertLogContentTenantTx(tx usageWriteTx, tenantID string, logID int64, timestamp time.Time, inputContent, outputContent, detailContent, sessionID string, failed bool) error {
+func insertLogContentTenantTx(tx usageMetadataWriteTx, tenantID string, logID int64, timestamp time.Time, inputContent, outputContent, detailContent, sessionID string, failed bool) error {
 	if tx == nil || logID < 1 {
 		return nil
 	}
@@ -513,7 +513,7 @@ func insertLogContentTenantTx(tx usageWriteTx, tenantID string, logID int64, tim
 
 	tenantID = normalizeTenantID(tenantID)
 	conflictTarget := "(log_id)"
-	if usageDriver == "postgres" {
+	if tx.usageMetadata().driver == "postgres" {
 		conflictTarget = "(tenant_id, log_id)"
 	}
 	// bodies_stripped: 1 when the content above was stripped for storage being
@@ -653,6 +653,7 @@ func migrateLegacyContentBatch(db *sql.DB, batchSize int) (int, error) {
 		return 0, fmt.Errorf("usage: begin legacy migration tx: %w", err)
 	}
 
+	bound := usageMetadataTx{usageWriteTx: tx, metadata: metadataForUsageDB(db)}
 	for _, row := range batch {
 		timestamp, errParse := time.Parse(time.RFC3339Nano, row.Timestamp)
 		if errParse != nil {
@@ -661,7 +662,7 @@ func migrateLegacyContentBatch(db *sql.DB, batchSize int) (int, error) {
 
 		shouldKeep := RequestLogBodyStorageEnabled() && withinContentRetention(timestamp)
 		if shouldKeep {
-			if errStore := insertLogContentTx(tx, row.ID, timestamp, row.InputContent, row.OutputContent, ""); errStore != nil {
+			if errStore := insertLogContentTx(bound, row.ID, timestamp, row.InputContent, row.OutputContent, ""); errStore != nil {
 				_ = tx.Rollback()
 				return 0, errStore
 			}

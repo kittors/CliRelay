@@ -146,7 +146,7 @@ const rollupGenerationSumsSQL = `
 // 202611040001_usage_rollup_generation_speed and is skipped here, for the
 // reason given at migrateUsageRollupCacheColumns.
 func migrateUsageRollupGenerationColumns(db *sql.DB) {
-	if usageDriver == "postgres" {
+	if metadataForUsageDB(db).driver == "postgres" {
 		return
 	}
 	addSQLiteColumns(db, "usage_rollup_buckets", []string{

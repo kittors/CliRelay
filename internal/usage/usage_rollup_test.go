@@ -34,7 +34,7 @@ func TestUsageRollupSurvivesDetailDelete(t *testing.T) {
 	if err != nil {
 		t.Fatalf("begin: %v", err)
 	}
-	if err := projectUsageRollupTx(tx, rollupEvent{
+	if err := projectUsageRollupTx(usageTestMetadataTx(tx), rollupEvent{
 		TenantID: systemTenantID,
 		APIKeyID: "key-1",
 		Model:    "gpt-test",
@@ -98,7 +98,7 @@ func TestQueryStatsDoesNotRequireRequestLogs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("begin: %v", err)
 	}
-	if err := projectUsageRollupTx(tx, rollupEvent{
+	if err := projectUsageRollupTx(usageTestMetadataTx(tx), rollupEvent{
 		TenantID: systemTenantID,
 		APIKeyID: "key-guard",
 		Model:    "m",

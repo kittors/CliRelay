@@ -63,7 +63,7 @@ func insertEndUserAccountLog(t *testing.T, tenantID, apiKey, apiKeyID, apiKeyNam
 	if err != nil {
 		t.Fatalf("begin: %v", err)
 	}
-	if err := projectUsageRollupTx(tx, rollupEvent{
+	if err := projectUsageRollupTx(usageTestMetadataTx(tx), rollupEvent{
 		TenantID:  tenantID,
 		APIKeyID:  apiKeyID,
 		EndUserID: endUserID,

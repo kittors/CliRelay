@@ -121,11 +121,14 @@ type Manager struct {
 	started  atomic.Bool
 	done     chan struct{}
 
-	mu       sync.Mutex
-	cond     *sync.Cond
-	queue    []queueItem
-	capacity int
-	closed   bool
+	mu               sync.Mutex
+	cond             *sync.Cond
+	queue            []queueItem
+	capacity         int
+	closed           bool
+	paused           bool
+	activePublishers int
+	dispatching      bool
 
 	overflow atomic.Pointer[OverflowHandler]
 	observer atomic.Pointer[PublishObserver]
@@ -154,8 +157,9 @@ func NewIdempotencyKey() string {
 }
 
 // SetOverflowHandler installs fn as the destination for records the queue
-// cannot take. With a handler installed Publish never blocks; without one a
-// full queue makes Publish wait for space, which is the original contract.
+// cannot take. With a handler installed Publish does not wait for queue space;
+// it can still wait while WithDrained pauses admission. Without a handler a full
+// queue makes Publish wait for space, which is the original contract.
 // Passing nil restores the blocking behaviour.
 func (m *Manager) SetOverflowHandler(fn OverflowHandler) {
 	if m == nil {
@@ -276,6 +280,8 @@ func (m *Manager) Publish(ctx context.Context, record Record) {
 	if m == nil {
 		return
 	}
+	m.beginPublish()
+	defer m.endPublish()
 	// ensure worker is running even if Start was not called explicitly
 	m.Start(context.Background())
 	if record.IdempotencyKey == "" {
@@ -300,7 +306,7 @@ func (m *Manager) Publish(ctx context.Context, record Record) {
 	}
 	m.queue = append(m.queue, queueItem{record: record})
 	m.mu.Unlock()
-	m.cond.Signal()
+	m.cond.Broadcast()
 }
 
 func invokeObserver(fn PublishObserver, record Record) {
@@ -335,9 +341,14 @@ func (m *Manager) run(ctx context.Context) {
 		item := m.queue[0]
 		m.queue[0] = queueItem{}
 		m.queue = m.queue[1:]
+		m.dispatching = true
 		m.cond.Broadcast()
 		m.mu.Unlock()
 		m.dispatch(item)
+		m.mu.Lock()
+		m.dispatching = false
+		m.cond.Broadcast()
+		m.mu.Unlock()
 	}
 }
 

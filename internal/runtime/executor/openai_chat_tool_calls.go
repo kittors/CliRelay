@@ -47,6 +47,15 @@ func mergeConsecutiveAssistantToolCalls(messages []any) ([]any, bool) {
 			if !ok || messageRole(next) != "assistant" || len(messageToolCalls(next)) == 0 || !messageContentEmpty(next) {
 				break
 			}
+			// Responses can interleave reasoning and parallel calls. Collapsing
+			// those calls into one Chat turn must retain each readable summary.
+			if reasoning, ok := next["reasoning_content"].(string); ok && reasoning != "" {
+				if previous, _ := msg["reasoning_content"].(string); previous != "" {
+					msg["reasoning_content"] = previous + "\n" + reasoning
+				} else {
+					msg["reasoning_content"] = reasoning
+				}
+			}
 			calls = append(calls, messageToolCalls(next)...)
 			i++
 			changed = true

@@ -310,7 +310,7 @@ func TestBodyPurgeFlagFollowsRewrittenContent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("begin: %v", err)
 	}
-	if err := insertLogContentTx(tx, logID, time.Now().UTC(), "input again", "output again", bodyPurgeTestDetail); err != nil {
+	if err := insertLogContentTx(usageTestMetadataTx(tx), logID, time.Now().UTC(), "input again", "output again", bodyPurgeTestDetail); err != nil {
 		_ = tx.Rollback()
 		t.Fatalf("rewrite content: %v", err)
 	}
@@ -347,7 +347,7 @@ func TestBodyPurgeLeavesRowRewrittenAfterItWasRead(t *testing.T) {
 	if err != nil {
 		t.Fatalf("begin: %v", err)
 	}
-	if err := insertLogContentTx(tx, stored[1].LogID, time.Now().UTC(),
+	if err := insertLogContentTx(usageTestMetadataTx(tx), stored[1].LogID, time.Now().UTC(),
 		"a newer and much longer request body, written after the purge read the row", "a newer response body", bodyPurgeTestDetail); err != nil {
 		_ = tx.Rollback()
 		t.Fatalf("rewrite content: %v", err)

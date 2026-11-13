@@ -51,8 +51,8 @@ const requestLogContentionMaxAttempt = 8
 var errUsageDBUnavailable = errors.New("usage: runtime database is not available")
 
 // usageWriteTx is the statement surface of the request log write path.
-// *sql.Tx satisfies it, so rebuild paths and tests keep passing a plain
-// transaction; the live writer passes a boundTx instead.
+// *sql.Tx satisfies the SQL surface; metadata-dependent operations additionally
+// require usageMetadataWriteTx so every transaction has explicit store metadata.
 type usageWriteTx interface {
 	Exec(query string, args ...any) (sql.Result, error)
 	Query(query string, args ...any) (*sql.Rows, error)
@@ -66,8 +66,9 @@ type usageWriteTx interface {
 // through the plain methods run under context.Background() and would wait on a
 // dead primary with no deadline at all.
 type boundTx struct {
-	tx  *sql.Tx
-	ctx context.Context
+	tx       *sql.Tx
+	ctx      context.Context
+	metadata usageDBMetadata
 }
 
 func (b boundTx) Exec(query string, args ...any) (sql.Result, error) {
@@ -204,6 +205,12 @@ func (r requestLogWriteResult) duplicateNeedsRecheck(now time.Time) bool {
 // up to budget. A zero budget still makes one attempt (plus contention
 // retries); the replayer and shutdown use that.
 func writeRequestLogWithRetry(entry RequestLogEntry, budget time.Duration) (requestLogWriteResult, requestLogWriteOutcome, error) {
+	usageWriteLease.RLock()
+	defer usageWriteLease.RUnlock()
+	return writeRequestLogWithRetryLeased(entry, budget)
+}
+
+func writeRequestLogWithRetryLeased(entry RequestLogEntry, budget time.Duration) (requestLogWriteResult, requestLogWriteOutcome, error) {
 	started := time.Now()
 	backoff := requestLogRetryInitialBackoff
 	contention := 0
@@ -376,7 +383,7 @@ func writeRequestLogAttempt(entry RequestLogEntry, timeout time.Duration) (reque
 	if err != nil {
 		return result, fmt.Errorf("begin insert tx: %w", err)
 	}
-	tx := boundTx{tx: sqlTx, ctx: ctx}
+	tx := boundTx{tx: sqlTx, ctx: ctx, metadata: metadataForUsageDB(db)}
 	claimed, err := claimRequestLogIdempotencyKeyTx(tx, plan.entry.IdempotencyKey)
 	if err != nil {
 		_ = tx.Rollback()

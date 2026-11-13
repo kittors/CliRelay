@@ -1173,7 +1173,7 @@ func TestCleanupExpiredLogContentKeepsMetadataRows(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Begin() error = %v", err)
 	}
-	if err := insertLogContentTx(tx, logID, timestamp, "expired-input", "expired-output", ""); err != nil {
+	if err := insertLogContentTx(usageTestMetadataTx(tx), logID, timestamp, "expired-input", "expired-output", ""); err != nil {
 		t.Fatalf("insertLogContentTx() error = %v", err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -1578,7 +1578,7 @@ func TestInsertLogContentTxSkipsSingleRowLargerThanSizeCap(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Begin() error = %v", err)
 	}
-	if err := insertLogContentTx(tx, logID, time.Now().UTC(), payload, "", ""); err != nil {
+	if err := insertLogContentTx(usageTestMetadataTx(tx), logID, time.Now().UTC(), payload, "", ""); err != nil {
 		t.Fatalf("insertLogContentTx() error = %v", err)
 	}
 	if err := tx.Commit(); err != nil {

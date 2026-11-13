@@ -34,7 +34,7 @@ func TestRecordQuotaPointsKeepsOneCycleAcrossProbeJitter(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := projectAIAccountSubjectUsageTx(tx, identity.ID, false, 1, 10, now.Add(time.Duration(i)*time.Minute)); err != nil {
+		if err := projectAIAccountSubjectUsageTx(usageTestMetadataTx(tx), identity.ID, false, 1, 10, now.Add(time.Duration(i)*time.Minute)); err != nil {
 			_ = tx.Rollback()
 			t.Fatal(err)
 		}
@@ -272,7 +272,7 @@ func TestCycleBucketMergeDropsStaleCycleCache(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := projectAIAccountSubjectUsageTx(tx, identity.ID, false, 1, 10, now); err != nil {
+	if err := projectAIAccountSubjectUsageTx(usageTestMetadataTx(tx), identity.ID, false, 1, 10, now); err != nil {
 		_ = tx.Rollback()
 		t.Fatal(err)
 	}

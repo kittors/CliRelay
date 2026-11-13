@@ -172,7 +172,7 @@ func ensureAIAccountSharedSubjectTables(db *sql.DB) error {
 	if db == nil {
 		return nil
 	}
-	if usageDriver != "postgres" {
+	if metadataForUsageDB(db).driver != "postgres" {
 		if _, err := db.Exec(aiAccountSharedSubjectTablesSQL); err != nil {
 			return fmt.Errorf("usage: ensure ai account shared subject tables: %w", err)
 		}
