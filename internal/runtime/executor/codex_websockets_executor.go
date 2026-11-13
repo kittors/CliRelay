@@ -113,7 +113,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 	body = execCtx.ApplyPayloadConfig(body, originalTranslated)
 	body, _ = sjson.SetBytes(body, "model", execCtx.BaseModel)
 	body = sanitizeCodexResponsesRequest(body)
-	body = prepareCodexResponsesBody(body, req.Payload, execCtx.SourceFormat, isCodexChatGPTBackendBaseURL(auth, baseURL))
+	body = prepareCodexResponsesForUpstream(body, req.Payload, execCtx.SourceFormat, auth, baseURL)
 	body, _ = sjson.SetBytes(body, "stream", true)
 	body, _ = sjson.DeleteBytes(body, "previous_response_id")
 	body, _ = sjson.DeleteBytes(body, "prompt_cache_retention")
@@ -322,7 +322,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 	}
 
 	body = execCtx.ApplyPayloadConfig(body, body)
-	body = prepareCodexResponsesBody(body, req.Payload, execCtx.SourceFormat, isCodexChatGPTBackendBaseURL(auth, baseURL))
+	body = prepareCodexResponsesForUpstream(body, req.Payload, execCtx.SourceFormat, auth, baseURL)
 	body = maybeEnsureCodexImageGenerationTool(body, auth, execCtx.BaseModel, codexAdmissionHeadersFromContext(execCtx.Context))
 	body = applyCodexServiceTierPolicy(body, execCtx.Request.Payload, auth)
 
