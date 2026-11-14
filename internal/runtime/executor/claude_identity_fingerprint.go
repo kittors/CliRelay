@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"regexp"
 	"strings"
 	"sync"
 
@@ -163,10 +164,13 @@ const claudeCodeIdentityText = "You are Claude Code, Anthropic's official CLI fo
 
 func applyClaudeFingerprintSystem(payload []byte, fp config.ClaudeIdentityFingerprintConfig) []byte {
 	system := gjson.GetBytes(payload, "system")
+	billing := buildClaudeBillingHeader(payload, fp)
+	isBilling := func(text string) bool {
+		return text == billing || isClaudeFingerprintBillingText(text)
+	}
 	remaining := make([]map[string]any, 0)
 	appendText := func(text string, cache bool) {
-		text = strings.TrimSpace(text)
-		if text == "" || isClaudeFingerprintBillingText(text) || isClaudeFingerprintPrefixText(text) {
+		if text == "" || isBilling(text) || isClaudeFingerprintPrefixText(text) {
 			return
 		}
 		block := map[string]any{"type": "text", "text": text}
@@ -178,7 +182,8 @@ func applyClaudeFingerprintSystem(payload []byte, fp config.ClaudeIdentityFinger
 	if system.IsArray() {
 		for _, item := range system.Array() {
 			text := item.Get("text").String()
-			if isClaudeFingerprintBillingText(text) || isClaudeFingerprintPrefixText(text) {
+			if item.Get("type").String() == "text" && item.Get("text").Type == gjson.String &&
+				(isBilling(text) || isClaudeFingerprintPrefixText(text)) {
 				continue
 			}
 			var block map[string]any
@@ -191,7 +196,7 @@ func applyClaudeFingerprintSystem(payload []byte, fp config.ClaudeIdentityFinger
 	}
 
 	next := []map[string]any{
-		{"type": "text", "text": buildClaudeBillingHeader(payload, fp)},
+		{"type": "text", "text": billing},
 		{
 			"type":          "text",
 			"text":          claudeCodeIdentityText,
@@ -294,12 +299,16 @@ func isClaudeFingerprintDeviceID(value string) bool {
 	return true
 }
 
+// Recognize only complete billing lines in the known generated format.
+// Unknown formats are preserved rather than risking removal of user instructions.
+var claudeBillingLinePattern = regexp.MustCompile(`^x-anthropic-billing-header: cc_version=[0-9]+(?:\.[0-9]+){0,3}\.[0-9a-f]{3}; cc_entrypoint=[A-Za-z0-9_.-]+;$`)
+
 func isClaudeFingerprintBillingText(text string) bool {
-	return strings.Contains(text, "x-anthropic-billing-header")
+	return claudeBillingLinePattern.MatchString(strings.TrimSpace(text))
 }
 
 func isClaudeFingerprintPrefixText(text string) bool {
-	return strings.Contains(text, "You are Claude Code")
+	return strings.TrimSpace(text) == claudeCodeIdentityText
 }
 
 func isClaudeFingerprintRuntimeBlockedHeader(key string) bool {
