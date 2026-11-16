@@ -47,6 +47,10 @@ func TestServerFeedsTheNodeSnapshot(t *testing.T) {
 			if snap.Version != buildinfo.Version || snap.Egress == nil || snap.Schema != nodemetrics.SchemaVersion {
 				t.Fatalf("snapshot = %+v", snap)
 			}
+			// A single node has no cluster Redis to report.
+			if snap.SharedRedis != nil {
+				t.Fatalf("shared redis = %+v, want it left out on a single node", snap.SharedRedis)
+			}
 			break
 		}
 		if time.Now().After(deadline) {

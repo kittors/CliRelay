@@ -45,6 +45,9 @@ type Snapshot struct {
 	Egress  *Egress    `json:"egress,omitempty"`
 	DB      *RoundTrip `json:"db,omitempty"`
 	Redis   *RoundTrip `json:"redis,omitempty"`
+	// SharedRedis is the cluster Redis as this node's limits see it; left
+	// out on a single node.
+	SharedRedis *SharedRedis `json:"shared_redis,omitempty"`
 }
 
 // Host describes the whole machine.
@@ -56,9 +59,10 @@ type Host struct {
 	Memory *Memory  `json:"memory,omitempty"`
 }
 
-// HostCPU splits the machine's CPU time over the window between the last two
-// samples into cores: 1.5 means one and a half CPUs spent the whole window in
-// that state. It is left out until there are two samples.
+// HostCPU splits the machine's CPU time over about the last 30 seconds (since
+// the process started, while it is younger) into cores: 1.5 means one and a
+// half CPUs spent the whole window in that state. A single 5-second step
+// jumps around too much to read. It is left out until there are two samples.
 type HostCPU struct {
 	WindowSeconds float64 `json:"window_seconds"`
 	// BusyCores is time spent running: user, nice, system, irq and softirq.
@@ -96,8 +100,8 @@ type Cgroup struct {
 }
 
 // CgroupCPU is the cgroup's cpu.stat counters, its cpu.max quota and the
-// rates over the last sample window. The usage includes time stolen by the
-// hypervisor (see the package comment).
+// rates over about the last 30 seconds, like HostCPU. The usage includes time
+// stolen by the hypervisor (see the package comment).
 type CgroupCPU struct {
 	UsageUsec     uint64 `json:"usage_usec"`
 	NrPeriods     uint64 `json:"nr_periods"`
@@ -110,7 +114,7 @@ type CgroupCPU struct {
 	Window *CgroupCPUWindow `json:"window,omitempty"`
 }
 
-// CgroupCPUWindow is the cgroup's CPU over the last sample window.
+// CgroupCPUWindow is the cgroup's CPU over the window of HostCPU.
 type CgroupCPUWindow struct {
 	Seconds    float64 `json:"seconds"`
 	UsageCores float64 `json:"usage_cores"`
@@ -165,6 +169,19 @@ type Egress struct {
 type EgressCheck struct {
 	Total       int `json:"total"`
 	Unreachable int `json:"unreachable"`
+}
+
+// SharedRedis is the state of the cluster Redis, which makes rate limits,
+// concurrency slots, session affinity and minted ids cluster-wide.
+type SharedRedis struct {
+	// Configured is false in cluster mode without cluster.redis: limits are
+	// then split across the active nodes and affinity stays per node.
+	Configured bool `json:"configured"`
+	// Available is false while a configured Redis is unreachable: this node
+	// has fallen back to counting on its own.
+	Available bool `json:"available"`
+	// Since is when Available last changed.
+	Since *time.Time `json:"since,omitempty"`
 }
 
 // RoundTrip is the latest round trip to a dependency.

@@ -19,11 +19,12 @@ import (
 func (s *Server) startNodeMetrics() {
 	collector := nodemetrics.Default()
 	collector.SetSources(nodemetrics.Sources{
-		Version:   buildinfo.Version,
-		InFlight:  s.inFlightRequests.Load,
-		PingDB:    pingRuntimeDB,
-		PingRedis: s.pingNodeRedis,
-		Egress:    s.egressSnapshot,
+		Version:     buildinfo.Version,
+		InFlight:    s.inFlightRequests.Load,
+		PingDB:      pingRuntimeDB,
+		PingRedis:   s.pingNodeRedis,
+		Egress:      s.egressSnapshot,
+		SharedRedis: s.sharedRedisSnapshot,
 	})
 	collector.Start()
 }
@@ -68,6 +69,24 @@ func (s *Server) pingNodeRedis(ctx context.Context) (string, error) {
 		return "usage", err
 	}
 	return "", nodemetrics.ErrNotConfigured
+}
+
+// sharedRedisSnapshot reports whether this node's limits, slots and session
+// affinity are cluster-wide (the cluster Redis answers) or have fallen back
+// to counting on this node. It leaves out the address and the last error,
+// which the snapshot would store and show.
+func (s *Server) sharedRedisSnapshot() *nodemetrics.SharedRedis {
+	if s.clusterRuntime == nil {
+		// A single node has no cluster Redis.
+		return nil
+	}
+	status := s.clusterRuntime.Status()
+	out := &nodemetrics.SharedRedis{Configured: status.Addr != "", Available: status.Available}
+	if !status.Since.IsZero() {
+		since := status.Since.UTC()
+		out.Since = &since
+	}
+	return out
 }
 
 // egressSnapshot sums up the egress breaker and the connect check behind

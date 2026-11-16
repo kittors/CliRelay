@@ -52,7 +52,8 @@ func TestNodePulledAfterThreeFailuresAndRestoredAfterThreeSuccesses(t *testing.T
 	if lines := h.logs.lines(`msg="dns record added"`, "node=node-b", "ttl=60", "node recovered after 3 consecutive successful probes"); len(lines) != 2 {
 		t.Fatalf("expected an addition line per hostname, got %q", lines)
 	}
-	// Re-added records use the configured TTL and are unproxied.
+	// Re-added records use the configured TTL and, with proxied off, are DNS
+	// only: the fake fails the test on any create that is not.
 	for _, write := range h.writesOf("POST") {
 		if !strings.HasSuffix(write, testIPB) {
 			t.Fatalf("unexpected create %q", write)

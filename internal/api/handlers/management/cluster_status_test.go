@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -13,12 +14,11 @@ import (
 )
 
 type clusterStatusBody struct {
-	Enabled      bool                 `json:"enabled"`
-	NodeID       string               `json:"node_id"`
-	IsLeader     bool                 `json:"is_leader"`
-	ActiveNodes  int                  `json:"active_nodes"`
-	Capabilities map[string]bool      `json:"capabilities"`
-	Nodes        []cluster.NodeStatus `json:"nodes"`
+	Enabled     bool                 `json:"enabled"`
+	NodeID      string               `json:"node_id"`
+	IsLeader    bool                 `json:"is_leader"`
+	ActiveNodes int                  `json:"active_nodes"`
+	Nodes       []cluster.NodeStatus `json:"nodes"`
 }
 
 // sampleNodeMetrics makes sure the process-wide collector has a snapshot.
@@ -62,8 +62,16 @@ func TestGetClusterStatusSingleNode(t *testing.T) {
 	if body.Enabled || !body.IsLeader || body.ActiveNodes != 1 || len(body.Nodes) != 1 || !body.Nodes[0].Self || body.NodeID == "" {
 		t.Fatalf("single node status = %+v", body)
 	}
-	if !body.Capabilities["node_metrics"] {
-		t.Fatalf("the console needs the node_metrics capability, got %+v", body.Capabilities)
+}
+
+// The panel shows the node view only where GET /config declares it.
+func TestNodeMetricsCapabilityIsDeclaredInConfig(t *testing.T) {
+	raw, err := json.Marshal(newConfigResponse(nil, nil).Capabilities)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"node-metrics":true`) {
+		t.Fatalf("capabilities JSON = %s, want node-metrics declared", raw)
 	}
 }
 

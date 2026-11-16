@@ -10,15 +10,12 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/nodemetrics"
 )
 
-// clusterCapabilities tells the console what this build reports. The panel
-// updates itself to the latest release ahead of the backends it talks to, so
-// it shows the node view only where node_metrics is present.
-var clusterCapabilities = gin.H{"node_metrics": true}
-
 // GetClusterStatus reports this node's view of the cluster: whether cluster
 // mode is on, which node answered, who leads, and the membership table with
 // each node's resource snapshot (package nodemetrics). A single node reports
-// itself as the only, leading member.
+// itself as the only, leading member. The panel learns that the snapshots are
+// there from the node-metrics capability of GET /config, like every other
+// feature it must not offer to older backends.
 //
 // The membership list is read from the database; if that fails, this node
 // still reports itself from what the process knows, next to the error, since
@@ -48,7 +45,6 @@ func (h *Handler) GetClusterStatus(c *gin.Context) {
 		"node_id":      coordinator.NodeID(),
 		"is_leader":    coordinator.IsLeader(),
 		"active_nodes": coordinator.ActiveNodeCount(),
-		"capabilities": clusterCapabilities,
 		"nodes":        nodes,
 	}
 	if err != nil {

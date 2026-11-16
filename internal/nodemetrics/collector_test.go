@@ -124,6 +124,51 @@ func TestCollectorSplitsHostCPUFromSteal(t *testing.T) {
 	}
 }
 
+// One 5-second step jumps around; the CPU figures average over about the
+// last 30 seconds instead, host and cgroup alike.
+func TestCollectorSmoothsCPUOverHalfAMinute(t *testing.T) {
+	root := hostFixture(t)
+	c, clock := newTestCollector(t, root)
+	ctx := context.Background()
+
+	// Every 5 s the host runs 1 core and loses 1 to steal (500 + 500 of the
+	// 4000 ticks), except one 5-second burst of 6 stolen cores.
+	user, idle, steal := uint64(0), uint64(0), uint64(0)
+	usage := uint64(0)
+	for step := 0; step <= 12; step++ {
+		if step > 0 {
+			clock.Advance(5 * time.Second)
+			stolen := uint64(500)
+			if step == 10 {
+				stolen = 3000
+			}
+			user += 500
+			steal += stolen
+			idle += 4000 - 500 - stolen
+			usage += 10_000_000 // 2 cores for 5 s, in usec
+		}
+		writeFixture(t, root, "proc/stat", procStatLine(user, 0, 0, idle, 0, 0, 0, steal))
+		writeFixture(t, root, cgroupRel+"cpu.stat", "usage_usec "+uintString(usage)+"\nnr_periods 0\nnr_throttled 0\nthrottled_usec 0\n")
+		c.sample(ctx)
+	}
+	snap, _ := c.Latest()
+	cpu := snap.Host.CPU
+	if cpu.WindowSeconds != 30 {
+		t.Fatalf("window = %v s, want 30", cpu.WindowSeconds)
+	}
+	// Over the six steps of the window: 6 x 500 running ticks and 5 x 500 + 3000
+	// stolen ones, out of 6 x 4000.
+	if cpu.BusyCores != 1 || cpu.StealCores != 1.833 {
+		t.Fatalf("host cpu = %+v, want 1 running and 1.833 stolen cores averaged over the window", cpu)
+	}
+	if window := snap.Cgroup.CPU.Window; window == nil || window.Seconds != 30 || window.UsageCores != 2 {
+		t.Fatalf("cgroup window = %+v, want 2 cores over 30 s", window)
+	}
+	if len(c.cpuHistory) > 8 || len(c.cgroupHistory) > 8 {
+		t.Fatalf("histories must stay bounded: %d, %d", len(c.cpuHistory), len(c.cgroupHistory))
+	}
+}
+
 func TestCollectorLeavesOutWhatItCannotRead(t *testing.T) {
 	c, _ := newTestCollector(t, t.TempDir())
 	c.sample(context.Background())
@@ -253,6 +298,7 @@ func TestCollectorReportsDependenciesAndEgress(t *testing.T) {
 		Egress: func() *Egress {
 			return &Egress{BreakerEnabled: true, BreakerOpen: 1, Unreachable: 1, OpenSince: &since, Check: &EgressCheck{Total: 4, Unreachable: 1}}
 		},
+		SharedRedis: func() *SharedRedis { return &SharedRedis{Configured: true, Available: false, Since: &since} },
 	})
 	c.sample(context.Background())
 	snap, _ := c.Latest()
@@ -264,6 +310,9 @@ func TestCollectorReportsDependenciesAndEgress(t *testing.T) {
 	}
 	if snap.Egress == nil || snap.Egress.BreakerOpen != 1 || snap.Egress.Check.Total != 4 {
 		t.Fatalf("egress = %+v", snap.Egress)
+	}
+	if shared := snap.SharedRedis; shared == nil || !shared.Configured || shared.Available || !shared.Since.Equal(since) {
+		t.Fatalf("shared redis = %+v, want configured and fallen back to local counting", shared)
 	}
 }
 

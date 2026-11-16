@@ -20,6 +20,10 @@ const (
 	DefaultInterval = 5 * time.Second
 	// trafficSpan is the window of the request and byte counts.
 	trafficSpan = time.Minute
+	// cpuSpan is the window of the CPU figures, host and cgroup: long enough
+	// to smooth out the jumps between two 5-second samples, short enough to
+	// show a change within a minute.
+	cpuSpan = 30 * time.Second
 	// pingTimeout bounds each round trip; a dependency slower than this is
 	// reported as a timeout.
 	pingTimeout = 2 * time.Second
@@ -42,6 +46,9 @@ type Sources struct {
 	PingRedis func(ctx context.Context) (role string, err error)
 	// Egress reports the egress breaker and connect check.
 	Egress func() *Egress
+	// SharedRedis reports the cluster Redis; nil, or a nil result, on a
+	// single node.
+	SharedRedis func() *SharedRedis
 }
 
 // Options configures a Collector. Zero values take the defaults; tests set
@@ -66,13 +73,13 @@ type Collector struct {
 	sources   Sources
 
 	// The sampling state below belongs to whoever holds sampleMu: the loop,
-	// or a test calling sample directly.
-	sampleMu   sync.Mutex
-	prevCPU    *cpuSample
-	prevCgroup *cgroupSample
-	// history holds traffic counts by time; history[0] is the newest sample
-	// at least trafficSpan old, or the start of the process while it is
-	// younger than that.
+	// or a test calling sample directly. Each history is ordered by time and
+	// its first entry is where the window starts (see slide).
+	sampleMu      sync.Mutex
+	cpuHistory    []cpuSample
+	cgroupHistory []cgroupSample
+	// history holds traffic counts; it starts at the process start, when the
+	// counters were zero.
 	history []trafficSample
 
 	latest atomic.Pointer[published]
@@ -256,6 +263,9 @@ func (c *Collector) sample(ctx context.Context) {
 	if sources.Egress != nil {
 		snap.Egress = sources.Egress()
 	}
+	if sources.SharedRedis != nil {
+		snap.SharedRedis = sources.SharedRedis()
+	}
 	// The round trips go last: they are the only part that can take a while.
 	if sources.PingDB != nil {
 		snap.DB = roundTrip(ctx, "", func(ctx context.Context) (string, error) { return "", sources.PingDB(ctx) })
@@ -277,16 +287,33 @@ func (c *Collector) sample(ctx context.Context) {
 	c.latest.Store(&published{snapshot: snap, raw: raw})
 }
 
+// slide appends cur to history and drops the samples the window no longer
+// needs. The window starts at the newest sample at least span older than
+// cur, or at the oldest one kept while the history is younger than span; ok
+// is false while there is nothing before cur.
+func slide[T any](history []T, cur T, at func(T) time.Time, span time.Duration) (kept []T, start T, ok bool) {
+	history = append(history, cur)
+	cut := at(cur).Add(-span)
+	for len(history) > 2 && !at(history[1]).After(cut) {
+		history = history[1:]
+	}
+	if len(history) < 2 {
+		return history, start, false
+	}
+	return history, history[0], true
+}
+
 func (c *Collector) sampleHost(now time.Time) *Host {
 	host := &Host{}
 	if times, cpus, ok := readProcStat(c.root); ok {
 		host.CPUs = cpus
-		if prev := c.prevCPU; prev != nil {
-			host.CPU = cpuWindow(prev.times, times, cpus, now.Sub(prev.at))
+		var start cpuSample
+		c.cpuHistory, start, ok = slide(c.cpuHistory, cpuSample{at: now, times: times}, func(s cpuSample) time.Time { return s.at }, cpuSpan)
+		if ok {
+			host.CPU = cpuWindow(start.times, times, cpus, now.Sub(start.at))
 		}
-		c.prevCPU = &cpuSample{at: now, times: times}
 	} else {
-		c.prevCPU = nil
+		c.cpuHistory = nil
 	}
 	if load, ok := readLoadAvg(c.root); ok {
 		host.Load = load
@@ -327,7 +354,7 @@ func cpuWindow(prev, cur cpuTimes, cpus int, elapsed time.Duration) *HostCPU {
 func (c *Collector) sampleCgroup(now time.Time) *Cgroup {
 	path, ok := cgroupPath(c.root)
 	if !ok {
-		c.prevCgroup = nil
+		c.cgroupHistory = nil
 		return nil
 	}
 	dir := cgroupDir(c.root, path)
@@ -340,13 +367,18 @@ func (c *Collector) sampleCgroup(now time.Time) *Cgroup {
 			ThrottledUsec: stat.throttledUsec,
 			QuotaCores:    readCPUMax(dir),
 		}
-		if prev := c.prevCgroup; prev != nil && prev.path == path {
-			cpu.Window = cgroupWindow(prev.stat, stat, now.Sub(prev.at))
+		if len(c.cgroupHistory) > 0 && c.cgroupHistory[0].path != path {
+			// Counters of another cgroup cannot be subtracted from these.
+			c.cgroupHistory = nil
 		}
-		c.prevCgroup = &cgroupSample{at: now, path: path, stat: stat}
+		var start cgroupSample
+		c.cgroupHistory, start, ok = slide(c.cgroupHistory, cgroupSample{at: now, path: path, stat: stat}, func(s cgroupSample) time.Time { return s.at }, cpuSpan)
+		if ok {
+			cpu.Window = cgroupWindow(start.stat, stat, now.Sub(start.at))
+		}
 		group.CPU = cpu
 	} else {
-		c.prevCgroup = nil
+		c.cgroupHistory = nil
 	}
 	if mem, ok := readCgroupMemory(dir); ok {
 		group.Memory = mem
@@ -376,13 +408,9 @@ func cgroupWindow(prev, cur cgroupCPUStat, elapsed time.Duration) *CgroupCPUWind
 
 func (c *Collector) sampleTraffic(now time.Time, sources Sources) Traffic {
 	counts := c.traffic.load()
-	c.history = append(c.history, trafficSample{at: now, counts: counts})
-	cut := now.Add(-trafficSpan)
-	// Keep the newest sample at or before the cut as the window's start.
-	for len(c.history) > 2 && !c.history[1].at.After(cut) {
-		c.history = c.history[1:]
-	}
-	base := c.history[0]
+	var base trafficSample
+	// history begins with the process start, so a window always exists.
+	c.history, base, _ = slide(c.history, trafficSample{at: now, counts: counts}, func(s trafficSample) time.Time { return s.at }, trafficSpan)
 	delta := counts.minus(base.counts)
 	traffic := Traffic{
 		WindowSeconds: round3(max(now.Sub(base.at), 0).Seconds()),
