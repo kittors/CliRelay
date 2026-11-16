@@ -7,14 +7,12 @@ package gemini
 
 import (
 	"crypto/rand"
-	"fmt"
 	"math/big"
 	"strconv"
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/thinking"
 	translatorcommon "github.com/router-for-me/CLIProxyAPI/v6/internal/translator/common"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -85,6 +83,14 @@ func ConvertGeminiRequestToCodex(modelName string, inputRawJSON []byte, _ bool) 
 	// Model
 	out, _ = sjson.Set(out, "model", modelName)
 
+	// Input items are collected here and written into out once, after the
+	// contents. sjson.SetRaw(out, "input.-1", ...) per item copied the whole
+	// request each time, which grew with the square of the history (see
+	// translatorcommon.JSONArrayBuilder). The template already holds
+	// "input":[] and nothing reads it back before it is written, so the result
+	// is byte-for-byte the same.
+	var inputItems translatorcommon.JSONArrayBuilder
+
 	// System instruction -> as a user message with input_text parts
 	sysParts := root.Get("system_instruction.parts")
 	if sysParts.IsArray() {
@@ -100,7 +106,7 @@ func ConvertGeminiRequestToCodex(modelName string, inputRawJSON []byte, _ bool) 
 			}
 		}
 		if len(gjson.Get(msg, "content").Array()) > 0 {
-			out, _ = sjson.SetRaw(out, "input.-1", msg)
+			inputItems.Append(msg)
 		}
 	}
 
@@ -134,7 +140,7 @@ func ConvertGeminiRequestToCodex(modelName string, inputRawJSON []byte, _ bool) 
 					part, _ = sjson.Set(part, "type", partType)
 					part, _ = sjson.Set(part, "text", t.String())
 					msg, _ = sjson.SetRaw(msg, "content.-1", part)
-					out, _ = sjson.SetRaw(out, "input.-1", msg)
+					inputItems.Append(msg)
 					continue
 				}
 
@@ -159,7 +165,7 @@ func ConvertGeminiRequestToCodex(modelName string, inputRawJSON []byte, _ bool) 
 					id := genCallID()
 					fn, _ = sjson.Set(fn, "call_id", id)
 					pendingCallIDs = append(pendingCallIDs, id)
-					out, _ = sjson.SetRaw(out, "input.-1", fn)
+					inputItems.Append(fn)
 					continue
 				}
 
@@ -186,18 +192,25 @@ func ConvertGeminiRequestToCodex(modelName string, inputRawJSON []byte, _ bool) 
 						id = genCallID()
 					}
 					fno, _ = sjson.Set(fno, "call_id", id)
-					out, _ = sjson.SetRaw(out, "input.-1", fno)
+					inputItems.Append(fno)
 					continue
 				}
 			}
 		}
 	}
 
+	if inputItems.Len() > 0 {
+		out, _ = sjson.SetRaw(out, "input", inputItems.String())
+	}
+
 	// Tools mapping: Gemini functionDeclarations -> Codex tools
 	tools := root.Get("tools")
 	if tools.IsArray() {
+		// The tools are collected and written over the empty array once, for
+		// the same reason as the input: each append copied the whole request.
 		out, _ = sjson.SetRaw(out, "tools", `[]`)
 		out, _ = sjson.Set(out, "tool_choice", "auto")
+		var toolNodes translatorcommon.JSONArrayBuilder
 		tarr := tools.Array()
 		for i := 0; i < len(tarr); i++ {
 			td := tarr[i]
@@ -236,8 +249,11 @@ func ConvertGeminiRequestToCodex(modelName string, inputRawJSON []byte, _ bool) 
 					tool, _ = sjson.SetRaw(tool, "parameters", cleaned)
 				}
 				tool, _ = sjson.Set(tool, "strict", false)
-				out, _ = sjson.SetRaw(out, "tools.-1", tool)
+				toolNodes.Append(tool)
 			}
+		}
+		if toolNodes.Len() > 0 {
+			out, _ = sjson.SetRaw(out, "tools", toolNodes.String())
 		}
 	}
 
@@ -282,13 +298,7 @@ func ConvertGeminiRequestToCodex(modelName string, inputRawJSON []byte, _ bool) 
 	out, _ = sjson.Set(out, "store", false)
 	out, _ = sjson.Set(out, "include", []string{"reasoning.encrypted_content"})
 
-	var pathsToLower []string
-	toolsResult := gjson.Get(out, "tools")
-	util.Walk(toolsResult, "", "type", &pathsToLower)
-	for _, p := range pathsToLower {
-		fullPath := fmt.Sprintf("tools.%s", p)
-		out, _ = sjson.Set(out, fullPath, strings.ToLower(gjson.Get(out, fullPath).String()))
-	}
+	out = translatorcommon.LowerToolSchemaTypes(out)
 
 	return translatorcommon.OutputFormatFromGemini(root).WriteResponses([]byte(out))
 }

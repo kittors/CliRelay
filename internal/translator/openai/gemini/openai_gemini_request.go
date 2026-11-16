@@ -112,6 +112,14 @@ func ConvertGeminiRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 	// Stream parameter
 	out, _ = sjson.Set(out, "stream", stream)
 
+	// Messages are collected here and written into out once, after the
+	// contents. sjson.SetRaw(out, "messages.-1", ...) per message copied the
+	// whole request each time, which grew with the square of the history (see
+	// translatorcommon.JSONArrayBuilder). The template already holds
+	// "messages":[] and nothing reads it back before it is written, so the
+	// result is byte-for-byte the same.
+	var messageNodes translatorcommon.JSONArrayBuilder
+
 	// Process contents (Gemini messages) -> OpenAI messages
 	var toolCallIDs []string // Track tool call IDs for matching with tool results
 
@@ -155,7 +163,7 @@ func ConvertGeminiRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 		}
 
 		if hasContent {
-			out, _ = sjson.SetRaw(out, "messages.-1", msg)
+			messageNodes.Append(msg)
 		}
 	}
 
@@ -253,7 +261,7 @@ func ConvertGeminiRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 							toolMsg, _ = sjson.Set(toolMsg, "tool_call_id", genToolCallID())
 						}
 
-						out, _ = sjson.SetRaw(out, "messages.-1", toolMsg)
+						messageNodes.Append(toolMsg)
 					}
 
 					return true
@@ -274,13 +282,22 @@ func ConvertGeminiRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 				msg, _ = sjson.SetRaw(msg, "tool_calls", gjson.Get(toolCallsWrapper, "arr").Raw)
 			}
 
-			out, _ = sjson.SetRaw(out, "messages.-1", msg)
+			messageNodes.Append(msg)
 			return true
 		})
 	}
 
+	if messageNodes.Len() > 0 {
+		out, _ = sjson.SetRaw(out, "messages", messageNodes.String())
+	}
+
 	// Tools mapping: Gemini tools -> OpenAI tools
 	if tools := root.Get("tools"); tools.Exists() && tools.IsArray() {
+		// The tools are collected and the array written once: each
+		// sjson.SetRaw(out, "tools.-1", ...) copied the whole request, history
+		// included. The first append created the array at the end of out and
+		// nothing else is written in between, so it sits at the same place.
+		var toolNodes translatorcommon.JSONArrayBuilder
 		tools.ForEach(func(_, tool gjson.Result) bool {
 			if functionDeclarations := tool.Get("functionDeclarations"); functionDeclarations.Exists() && functionDeclarations.IsArray() {
 				functionDeclarations.ForEach(func(_, funcDecl gjson.Result) bool {
@@ -295,12 +312,15 @@ func ConvertGeminiRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 						openAITool, _ = sjson.SetRaw(openAITool, "function.parameters", parameters.Raw)
 					}
 
-					out, _ = sjson.SetRaw(out, "tools.-1", openAITool)
+					toolNodes.Append(openAITool)
 					return true
 				})
 			}
 			return true
 		})
+		if toolNodes.Len() > 0 {
+			out, _ = sjson.SetRaw(out, "tools", toolNodes.String())
+		}
 	}
 
 	// Tool choice mapping (Gemini doesn't have direct equivalent, but we can handle it)

@@ -145,6 +145,14 @@ func ConvertOpenAIRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 			}
 		}
 
+		// Contents are collected here and written into out once after the loop.
+		// sjson.SetRawBytes(out, "request.contents.-1", ...) per message copied the whole
+		// request each time, which grew with the square of the history (see
+		// translatorcommon.JSONArrayBuilder). The template already holds an empty
+		// contents array, the system instruction written in the loop goes after
+		// it, and nothing reads the array back before it is written, so the
+		// result is byte-for-byte the same.
+		var contentNodes translatorcommon.JSONArrayBuilder
 		systemPartIndex := 0
 		for i := 0; i < len(arr); i++ {
 			m := arr[i]
@@ -217,7 +225,7 @@ func ConvertOpenAIRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 						}
 					}
 				}
-				out, _ = sjson.SetRawBytes(out, "request.contents.-1", node)
+				contentNodes.Append(string(node))
 			} else if role == "assistant" {
 				node := []byte(`{"role":"model","parts":[]}`)
 				p := 0
@@ -276,7 +284,7 @@ func ConvertOpenAIRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 							fIDs = append(fIDs, fid)
 						}
 					}
-					out, _ = sjson.SetRawBytes(out, "request.contents.-1", node)
+					contentNodes.Append(string(node))
 
 					// Append a single tool content combining name + response per function
 					toolNode := []byte(`{"role":"user","parts":[]}`)
@@ -308,12 +316,15 @@ func ConvertOpenAIRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 						}
 					}
 					if pp > 0 {
-						out, _ = sjson.SetRawBytes(out, "request.contents.-1", toolNode)
+						contentNodes.Append(string(toolNode))
 					}
 				} else {
-					out, _ = sjson.SetRawBytes(out, "request.contents.-1", node)
+					contentNodes.Append(string(node))
 				}
 			}
+		}
+		if contentNodes.Len() > 0 {
+			out, _ = sjson.SetRawBytes(out, "request.contents", []byte(contentNodes.String()))
 		}
 	}
 

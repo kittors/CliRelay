@@ -10,6 +10,10 @@ package common
 // hundreds of tool calls and inline screenshots: on 2026-11-16 the
 // Responses -> Gemini -> Antigravity translators took two thirds of hk-155's
 // CPU that way and starved every other request in the process.
+//
+// The result only matches the appends when the array starts out empty and the
+// translator never reads it back while it is being built; each caller says why
+// that holds for it.
 type JSONArrayBuilder struct {
 	buf []byte
 	n   int

@@ -110,10 +110,10 @@ func ConvertOpenAIResponsesRequestToGemini(modelName string, inputRawJSON []byte
 
 		// Contents are collected here and written into out once after the loop.
 		// sjson.SetRaw(out, "contents.-1", ...) per item copied the whole request
-		// each time (see common.JSONArrayBuilder). The template already holds
+		// each time (see translatorcommon.JSONArrayBuilder). The template already holds
 		// "contents":[] as its first key and nothing in the loop reads the array
 		// back, so the result is byte-for-byte the same.
-		var contents common.JSONArrayBuilder
+		var contents translatorcommon.JSONArrayBuilder
 		// callNames maps a call_id to the name of the first function_call that
 		// carries it: the match the old code found by rescanning the whole input
 		// for every function_call_output. Built on first use.

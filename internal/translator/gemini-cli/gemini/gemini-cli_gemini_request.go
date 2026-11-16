@@ -8,8 +8,8 @@ package gemini
 import (
 	"fmt"
 
+	translatorcommon "github.com/router-for-me/CLIProxyAPI/v6/internal/translator/common"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/translator/gemini/common"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -51,64 +51,13 @@ func ConvertGeminiRequestToGeminiCLI(_ string, inputRawJSON []byte, _ bool) []by
 	}
 	rawJSON = []byte(template)
 
-	// Normalize roles in request.contents: default to valid values if missing/invalid
-	contents := gjson.GetBytes(rawJSON, "request.contents")
-	if contents.Exists() {
-		prevRole := ""
-		idx := 0
-		contents.ForEach(func(_ gjson.Result, value gjson.Result) bool {
-			role := value.Get("role").String()
-			valid := role == "user" || role == "model"
-			if role == "" || !valid {
-				var newRole string
-				if prevRole == "" {
-					newRole = "user"
-				} else if prevRole == "user" {
-					newRole = "model"
-				} else {
-					newRole = "user"
-				}
-				path := fmt.Sprintf("request.contents.%d.role", idx)
-				rawJSON, _ = sjson.SetBytes(rawJSON, path, newRole)
-				role = newRole
-			}
-			prevRole = role
-			idx++
-			return true
-		})
-	}
-
-	toolsResult := gjson.GetBytes(rawJSON, "request.tools")
-	if toolsResult.Exists() && toolsResult.IsArray() {
-		toolResults := toolsResult.Array()
-		for i := 0; i < len(toolResults); i++ {
-			functionDeclarationsResult := gjson.GetBytes(rawJSON, fmt.Sprintf("request.tools.%d.function_declarations", i))
-			if functionDeclarationsResult.Exists() && functionDeclarationsResult.IsArray() {
-				functionDeclarationsResults := functionDeclarationsResult.Array()
-				for j := 0; j < len(functionDeclarationsResults); j++ {
-					parametersResult := gjson.GetBytes(rawJSON, fmt.Sprintf("request.tools.%d.function_declarations.%d.parameters", i, j))
-					if parametersResult.Exists() {
-						strJson, _ := util.RenameKey(string(rawJSON), fmt.Sprintf("request.tools.%d.function_declarations.%d.parameters", i, j), fmt.Sprintf("request.tools.%d.function_declarations.%d.parametersJsonSchema", i, j))
-						rawJSON = []byte(strJson)
-					}
-				}
-			}
-		}
-	}
-
-	gjson.GetBytes(rawJSON, "request.contents").ForEach(func(key, content gjson.Result) bool {
-		if content.Get("role").String() == "model" {
-			content.Get("parts").ForEach(func(partKey, part gjson.Result) bool {
-				if part.Get("functionCall").Exists() {
-					rawJSON, _ = sjson.SetBytes(rawJSON, fmt.Sprintf("request.contents.%d.parts.%d.thoughtSignature", key.Int(), partKey.Int()), "skip_thought_signature_validator")
-				} else if part.Get("thoughtSignature").Exists() {
-					rawJSON, _ = sjson.SetBytes(rawJSON, fmt.Sprintf("request.contents.%d.parts.%d.thoughtSignature", key.Int(), partKey.Int()), "skip_thought_signature_validator")
-				}
-				return true
-			})
-		}
-		return true
-	})
+	// The three edits below used to rewrite the whole request once per
+	// content, declaration and part, which grew with the square of a long
+	// session. Each now patches the elements it changes in one pass (see
+	// common.RawPatch), in the order they always ran.
+	rawJSON = common.NormalizeContentRoles(rawJSON, "request.contents")
+	rawJSON = common.RenameFunctionDeclarationParameters(rawJSON, "request.tools")
+	rawJSON = common.SkipThoughtSignatureValidation(rawJSON, "request.contents")
 
 	return common.AttachDefaultSafetySettings(rawJSON, "request.safetySettings")
 }
@@ -141,8 +90,10 @@ func fixCLIToolResponse(input string) (string, error) {
 		return input, fmt.Errorf("contents not found in input")
 	}
 
-	// Initialize data structures for processing and grouping
-	contentsWrapper := `{"contents":[]}`
+	// Initialize data structures for processing and grouping. The new contents
+	// array is built once instead of appending to a wrapper document per
+	// content, which re-parsed and copied everything appended so far each time.
+	var newContents translatorcommon.JSONArrayBuilder
 	var pendingGroups []*FunctionCallGroup // Groups awaiting completion with responses
 	var collectedResponses []gjson.Result  // Standalone responses to be matched
 
@@ -174,17 +125,8 @@ func fixCLIToolResponse(input string) (string, error) {
 					collectedResponses = collectedResponses[group.ResponsesNeeded:]
 
 					// Create merged function response content
-					functionResponseContent := `{"parts":[],"role":"function"}`
-					for _, response := range groupResponses {
-						if !response.IsObject() {
-							log.Warnf("failed to parse function response")
-							continue
-						}
-						functionResponseContent, _ = sjson.SetRaw(functionResponseContent, "parts.-1", response.Raw)
-					}
-
-					if gjson.Get(functionResponseContent, "parts.#").Int() > 0 {
-						contentsWrapper, _ = sjson.SetRaw(contentsWrapper, "contents.-1", functionResponseContent)
+					if merged, ok := mergedFunctionResponseContent(groupResponses); ok {
+						newContents.Append(merged)
 					}
 
 					// Remove this group as it's been satisfied
@@ -212,7 +154,7 @@ func fixCLIToolResponse(input string) (string, error) {
 					log.Warnf("failed to parse model content")
 					return true
 				}
-				contentsWrapper, _ = sjson.SetRaw(contentsWrapper, "contents.-1", value.Raw)
+				newContents.Append(value.Raw)
 
 				// Create a new group for tracking responses
 				group := &FunctionCallGroup{
@@ -225,7 +167,7 @@ func fixCLIToolResponse(input string) (string, error) {
 					log.Warnf("failed to parse content")
 					return true
 				}
-				contentsWrapper, _ = sjson.SetRaw(contentsWrapper, "contents.-1", value.Raw)
+				newContents.Append(value.Raw)
 			}
 		} else {
 			// Non-model content (user, etc.)
@@ -233,7 +175,7 @@ func fixCLIToolResponse(input string) (string, error) {
 				log.Warnf("failed to parse content")
 				return true
 			}
-			contentsWrapper, _ = sjson.SetRaw(contentsWrapper, "contents.-1", value.Raw)
+			newContents.Append(value.Raw)
 		}
 
 		return true
@@ -245,24 +187,35 @@ func fixCLIToolResponse(input string) (string, error) {
 			groupResponses := collectedResponses[:group.ResponsesNeeded]
 			collectedResponses = collectedResponses[group.ResponsesNeeded:]
 
-			functionResponseContent := `{"parts":[],"role":"function"}`
-			for _, response := range groupResponses {
-				if !response.IsObject() {
-					log.Warnf("failed to parse function response")
-					continue
-				}
-				functionResponseContent, _ = sjson.SetRaw(functionResponseContent, "parts.-1", response.Raw)
-			}
-
-			if gjson.Get(functionResponseContent, "parts.#").Int() > 0 {
-				contentsWrapper, _ = sjson.SetRaw(contentsWrapper, "contents.-1", functionResponseContent)
+			if merged, ok := mergedFunctionResponseContent(groupResponses); ok {
+				newContents.Append(merged)
 			}
 		}
 	}
 
 	// Update the original JSON with the new contents
 	result := input
-	result, _ = sjson.SetRaw(result, "request.contents", gjson.Get(contentsWrapper, "contents").Raw)
+	result, _ = sjson.SetRaw(result, "request.contents", newContents.String())
 
 	return result, nil
+}
+
+// mergedFunctionResponseContent merges a group's responses into one
+// function-role content, the same bytes the old per-part sjson appends onto
+// {"parts":[],"role":"function"} produced. A response that is not an object
+// is skipped with a warning, as before; it reports false when none is left,
+// where the old code skipped the content.
+func mergedFunctionResponseContent(responses []gjson.Result) (string, bool) {
+	var parts translatorcommon.JSONArrayBuilder
+	for _, response := range responses {
+		if !response.IsObject() {
+			log.Warnf("failed to parse function response")
+			continue
+		}
+		parts.Append(response.Raw)
+	}
+	if parts.Len() == 0 {
+		return "", false
+	}
+	return `{"parts":` + parts.String() + `,"role":"function"}`, true
 }

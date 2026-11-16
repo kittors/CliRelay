@@ -59,6 +59,14 @@ func ConvertClaudeRequestToGemini(modelName string, inputRawJSON []byte, _ bool)
 		out, _ = sjson.Set(out, "system_instruction.parts.-1.text", systemResult.String())
 	}
 
+	// Contents are collected here and written into out once after the
+	// messages. sjson.SetRaw(out, "contents.-1", ...) per message copied the
+	// whole request each time, which grew with the square of the history (see
+	// translatorcommon.JSONArrayBuilder). The template already holds an empty
+	// contents array and nothing reads it back before it is written, so the
+	// result is byte-for-byte the same.
+	var contentNodes translatorcommon.JSONArrayBuilder
+
 	// contents
 	if messagesResult := gjson.GetBytes(rawJSON, "messages"); messagesResult.IsArray() {
 		messagesResult.ForEach(func(_, messageResult gjson.Result) bool {
@@ -139,7 +147,7 @@ func ConvertClaudeRequestToGemini(modelName string, inputRawJSON []byte, _ bool)
 				if len(gjson.Get(contentJSON, "parts").Array()) == 0 {
 					return true
 				}
-				out, _ = sjson.SetRaw(out, "contents.-1", contentJSON)
+				contentNodes.Append(contentJSON)
 			} else if contentsResult.Type == gjson.String {
 				if contentsResult.String() == "" {
 					return true
@@ -147,15 +155,23 @@ func ConvertClaudeRequestToGemini(modelName string, inputRawJSON []byte, _ bool)
 				part := `{"text":""}`
 				part, _ = sjson.Set(part, "text", contentsResult.String())
 				contentJSON, _ = sjson.SetRaw(contentJSON, "parts.-1", part)
-				out, _ = sjson.SetRaw(out, "contents.-1", contentJSON)
+				contentNodes.Append(contentJSON)
 			}
 			return true
 		})
 	}
 
+	if contentNodes.Len() > 0 {
+		out, _ = sjson.SetRaw(out, "contents", contentNodes.String())
+	}
+
 	// tools
 	if toolsResult := gjson.GetBytes(rawJSON, "tools"); toolsResult.IsArray() {
-		hasTools := false
+		// Declarations are collected and the tools array written once: appending
+		// each one to tools.0.functionDeclarations copied the whole request,
+		// contents included, per tool. The old code created the array right
+		// before the first append, so it sits at the same place either way.
+		var declarations translatorcommon.JSONArrayBuilder
 		toolsResult.ForEach(func(_, toolResult gjson.Result) bool {
 			inputSchemaResult := toolResult.Get("input_schema")
 			if inputSchemaResult.Exists() && inputSchemaResult.IsObject() {
@@ -167,16 +183,14 @@ func ConvertClaudeRequestToGemini(modelName string, inputRawJSON []byte, _ bool)
 				tool, _ = sjson.Delete(tool, "type")
 				tool, _ = sjson.Delete(tool, "cache_control")
 				if gjson.Valid(tool) && gjson.Parse(tool).IsObject() {
-					if !hasTools {
-						out, _ = sjson.SetRaw(out, "tools", `[{"functionDeclarations":[]}]`)
-						hasTools = true
-					}
-					out, _ = sjson.SetRaw(out, "tools.0.functionDeclarations.-1", tool)
+					declarations.Append(tool)
 				}
 			}
 			return true
 		})
-		if !hasTools {
+		if declarations.Len() > 0 {
+			out, _ = sjson.SetRaw(out, "tools", `[{"functionDeclarations":`+declarations.String()+`}]`)
+		} else {
 			out, _ = sjson.Delete(out, "tools")
 		}
 	}

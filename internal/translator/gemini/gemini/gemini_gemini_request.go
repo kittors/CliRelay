@@ -9,7 +9,6 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/translator/gemini/common"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
 )
 
 // ConvertGeminiRequestToGemini normalizes Gemini v1beta requests.
@@ -25,6 +24,100 @@ func ConvertGeminiRequestToGemini(_ string, inputRawJSON []byte, _ bool) []byte 
 		return common.AttachDefaultSafetySettings(rawJSON, "safetySettings")
 	}
 
+	// The edits below used to rewrite the whole request once per tool,
+	// declaration, content and part, which grew with the square of a long
+	// session. Each now patches the elements it changes in one pass (see
+	// common.RawPatch). The roles are read from the renamed request, where
+	// the contents are unchanged.
+	rawJSON = renameToolDeclarations(rawJSON)
+	out := common.NormalizeContentRoles(rawJSON, "contents")
+	out = common.SkipThoughtSignatureValidation(out, "contents")
+
+	if gjson.GetBytes(rawJSON, "generationConfig.responseSchema").Exists() {
+		strJson, _ := util.RenameKey(string(out), "generationConfig.responseSchema", "generationConfig.responseJsonSchema")
+		out = []byte(strJson)
+	}
+
+	out = common.AttachDefaultSafetySettings(out, "safetySettings")
+	return out
+}
+
+// renameToolDeclarations renames each tool's functionDeclarations to
+// function_declarations and then each declaration's parameters to
+// parametersJsonSchema, as renameToolDeclarationsSlow does, editing every tool
+// on its own and splicing the edited tools back in one pass.
+func renameToolDeclarations(rawJSON []byte) []byte {
+	tools := gjson.GetBytes(rawJSON, "tools")
+	if !tools.Exists() || !tools.IsArray() {
+		return rawJSON
+	}
+	var patches []common.RawPatch
+	fast := true
+	tools.ForEach(func(_, tool gjson.Result) bool {
+		edited, changed, ok := renameToolDeclarationsIn(tool)
+		if !ok {
+			fast = false
+			return false
+		}
+		if changed {
+			patches = append(patches, common.NewRawPatch(tool, edited))
+		}
+		return true
+	})
+	if fast {
+		if out, ok := common.ApplyRawPatches(rawJSON, patches); ok {
+			return out
+		}
+	}
+	return renameToolDeclarationsSlow(rawJSON)
+}
+
+// renameToolDeclarationsIn makes one tool's renames on the tool alone. It
+// reports whether the tool changed, and false for ok when a rename failed or
+// the tool cannot be patched in place.
+func renameToolDeclarationsIn(tool gjson.Result) (edited string, changed, ok bool) {
+	edited = tool.Raw
+	if tool.Get("functionDeclarations").Exists() {
+		renamed, err := util.RenameKey(edited, "functionDeclarations", "function_declarations")
+		if err != nil || !tool.IsObject() {
+			return "", false, false
+		}
+		edited, changed = renamed, true
+	}
+	decls := gjson.Get(edited, "function_declarations")
+	if !decls.Exists() || !decls.IsArray() {
+		return edited, changed, true
+	}
+	var patches []common.RawPatch
+	ok = true
+	decls.ForEach(func(_, decl gjson.Result) bool {
+		if !decl.Get("parameters").Exists() {
+			return true
+		}
+		renamed, err := util.RenameKey(decl.Raw, "parameters", "parametersJsonSchema")
+		if err != nil || !decl.IsObject() {
+			ok = false
+			return false
+		}
+		patches = append(patches, common.NewRawPatch(decl, renamed))
+		return true
+	})
+	if !ok {
+		return "", false, false
+	}
+	if len(patches) == 0 {
+		return edited, changed, true
+	}
+	patched, applied := common.ApplyRawPatches([]byte(edited), patches)
+	if !applied {
+		return "", false, false
+	}
+	return string(patched), true, true
+}
+
+// renameToolDeclarationsSlow is the original per-path rename of the whole
+// request, kept for the requests renameToolDeclarations cannot patch.
+func renameToolDeclarationsSlow(rawJSON []byte) []byte {
 	toolsResult := gjson.GetBytes(rawJSON, "tools")
 	if toolsResult.Exists() && toolsResult.IsArray() {
 		toolResults := toolsResult.Array()
@@ -47,54 +140,5 @@ func ConvertGeminiRequestToGemini(_ string, inputRawJSON []byte, _ bool) []byte 
 			}
 		}
 	}
-
-	// Walk contents and fix roles
-	out := rawJSON
-	prevRole := ""
-	idx := 0
-	contents.ForEach(func(_ gjson.Result, value gjson.Result) bool {
-		role := value.Get("role").String()
-
-		// Only user/model are valid for Gemini v1beta requests
-		valid := role == "user" || role == "model"
-		if role == "" || !valid {
-			var newRole string
-			if prevRole == "" {
-				newRole = "user"
-			} else if prevRole == "user" {
-				newRole = "model"
-			} else {
-				newRole = "user"
-			}
-			path := fmt.Sprintf("contents.%d.role", idx)
-			out, _ = sjson.SetBytes(out, path, newRole)
-			role = newRole
-		}
-
-		prevRole = role
-		idx++
-		return true
-	})
-
-	gjson.GetBytes(out, "contents").ForEach(func(key, content gjson.Result) bool {
-		if content.Get("role").String() == "model" {
-			content.Get("parts").ForEach(func(partKey, part gjson.Result) bool {
-				if part.Get("functionCall").Exists() {
-					out, _ = sjson.SetBytes(out, fmt.Sprintf("contents.%d.parts.%d.thoughtSignature", key.Int(), partKey.Int()), "skip_thought_signature_validator")
-				} else if part.Get("thoughtSignature").Exists() {
-					out, _ = sjson.SetBytes(out, fmt.Sprintf("contents.%d.parts.%d.thoughtSignature", key.Int(), partKey.Int()), "skip_thought_signature_validator")
-				}
-				return true
-			})
-		}
-		return true
-	})
-
-	if gjson.GetBytes(rawJSON, "generationConfig.responseSchema").Exists() {
-		strJson, _ := util.RenameKey(string(out), "generationConfig.responseSchema", "generationConfig.responseJsonSchema")
-		out = []byte(strJson)
-	}
-
-	out = common.AttachDefaultSafetySettings(out, "safetySettings")
-	return out
+	return rawJSON
 }
