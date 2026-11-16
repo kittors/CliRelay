@@ -2,6 +2,7 @@ package dnswatch
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -12,8 +13,20 @@ import (
 	"time"
 )
 
+// eachProxyMode runs a safety test with the records DNS only and proxied: the
+// guards must not depend on the mode.
+func eachProxyMode(t *testing.T, test func(t *testing.T, proxied bool)) {
+	for _, proxied := range []bool{false, true} {
+		t.Run(fmt.Sprintf("proxied=%v", proxied), func(t *testing.T) { test(t, proxied) })
+	}
+}
+
 func TestAllNodesDownLeavesDNSUntouched(t *testing.T) {
-	h := newHarness(t, harnessOptions{})
+	eachProxyMode(t, testAllNodesDownLeavesDNSUntouched)
+}
+
+func testAllNodesDownLeavesDNSUntouched(t *testing.T, proxied bool) {
+	h := newHarness(t, harnessOptions{proxied: proxied})
 	h.round()
 	h.cf.resetLogs()
 
@@ -44,7 +57,11 @@ func TestAllNodesDownLeavesDNSUntouched(t *testing.T) {
 }
 
 func TestLastHealthyNodeFailingKeepsItsRecord(t *testing.T) {
-	h := newHarness(t, harnessOptions{})
+	eachProxyMode(t, testLastHealthyNodeFailingKeepsItsRecord)
+}
+
+func testLastHealthyNodeFailingKeepsItsRecord(t *testing.T, proxied bool) {
+	h := newHarness(t, harnessOptions{proxied: proxied})
 	h.round()
 	h.nodeB.setStatus(http.StatusServiceUnavailable)
 	h.rounds(3)
@@ -96,6 +113,124 @@ func TestRecordsOutsideTheNodeListAreNeverTouched(t *testing.T) {
 	if other := h.w.Status().Records[testRelay].Other; !slices.Equal(other, []string{"198.51.100.7"}) {
 		t.Fatalf("status should list the foreign A record, got %v", other)
 	}
+}
+
+// The proxied counterpart of the test above: a DNS-only record outside the
+// node list is neither removed nor proxied.
+func TestProxiedModeLeavesRecordsOutsideTheNodeListAlone(t *testing.T) {
+	var foreign []string
+	h := newHarness(t, harnessOptions{proxied: true, seed: func(f *fakeCloudflare) {
+		publishBothProxied(f)
+		for _, name := range []string{testRelay, testCode} {
+			foreign = append(foreign, f.seed(name, "A", "198.51.100.7"))
+		}
+	}})
+	h.cf.ignoreFilters = true
+
+	h.round()
+	h.nodeB.setStatus(http.StatusServiceUnavailable)
+	h.rounds(3)
+
+	h.expectIPs(testRelay, testIPA, "198.51.100.7")
+	h.expectIPs(testCode, testIPA, "198.51.100.7")
+	h.expectBothProxied(testIPA)
+	for _, id := range foreign {
+		if rec := h.cf.record(id); rec.Proxied || rec.Content != "198.51.100.7" {
+			t.Fatalf("record %s outside the node list was changed: %+v", id, rec)
+		}
+	}
+	want := []string{"DELETE " + testRelay + " " + testIPB, "DELETE " + testCode + " " + testIPB}
+	if got := h.cf.writeLog(); !slices.Equal(got, want) {
+		t.Fatalf("writes = %v, want %v", got, want)
+	}
+}
+
+// Cloudflare serves every A record of a name as proxied while one of them is,
+// and as DNS only, with the node addresses public, once none is. With proxied
+// set, a removal therefore waits while it would take away the last proxied
+// record and the records kept are still DNS only.
+func TestProxiedModeNeverLeavesADomainDNSOnly(t *testing.T) {
+	h := newHarness(t, harnessOptions{proxied: true, seed: func(f *fakeCloudflare) {
+		for _, name := range []string{testRelay, testCode} {
+			f.seed(name, "A", testIPA)
+			f.seedProxied(name, testIPB)
+		}
+	}})
+	h.cf.fail(http.MethodPatch, -1, http.StatusInternalServerError)
+	h.nodeB.setStatus(http.StatusServiceUnavailable)
+	h.rounds(4)
+
+	h.expectBothRecords(testIPA, testIPB)
+	if deletes := h.writesOf("DELETE"); len(deletes) != 0 {
+		t.Fatalf("node-b holds the last proxied records and node-a's are still DNS only, got %v", deletes)
+	}
+	// node-b turns unhealthy in round 3, so rounds 3 and 4 each postpone the
+	// removal under both hostnames.
+	if lines := h.logs.lines("DNS removals postponed: they would remove the last proxied record", "pending_removals="+testIPB); len(lines) != 4 {
+		t.Fatalf("expected the postponement logged per hostname and round, got %q", lines)
+	}
+	status := h.w.Status()
+	if status.LastReconcile.OK || !strings.Contains(status.LastReconcile.Error, "HTTP 500") {
+		t.Fatalf("the failed proxy change should be reported, got %+v", status.LastReconcile)
+	}
+	if got := status.Records[testRelay].ProxyMismatch; !slices.Equal(got, []string{testIPA}) {
+		t.Fatalf("status should name node-a's DNS-only record, got %v", got)
+	}
+
+	h.cf.clearFaults()
+	h.cf.resetLogs()
+	h.round()
+	h.expectBothRecords(testIPA)
+	h.expectBothProxied(testIPA)
+	want := []string{
+		"PATCH " + testRelay + " " + testIPA,
+		"DELETE " + testRelay + " " + testIPB,
+		"PATCH " + testCode + " " + testIPA,
+		"DELETE " + testCode + " " + testIPB,
+	}
+	if got := h.cf.writeLog(); !slices.Equal(got, want) {
+		t.Fatalf("writes = %v, want the proxy on before each removal: %v", got, want)
+	}
+	if status := h.w.Status(); !status.LastReconcile.OK || len(status.Records[testRelay].ProxyMismatch) != 0 {
+		t.Fatalf("the round should reconcile without mismatches, got %+v", status)
+	}
+}
+
+// With proxied off, dnswatch never turns a proxy off: that would publish the
+// node's address, which cannot be taken back. It warns once per record and,
+// as above, will not remove the last proxied record of a domain either.
+func TestDNSOnlyModeNeverTurnsTheProxyOff(t *testing.T) {
+	h := newHarness(t, harnessOptions{seed: func(f *fakeCloudflare) {
+		for _, name := range []string{testRelay, testCode} {
+			f.seedProxied(name, testIPA)
+			f.seed(name, "A", testIPB)
+		}
+	}})
+	h.rounds(3)
+	if writes := h.cf.writeLog(); len(writes) != 0 {
+		t.Fatalf("nothing may change while both nodes are healthy, got %v", writes)
+	}
+	if lines := h.logs.lines("DNS record is proxied but proxied is off", "node=node-a"); len(lines) != 2 {
+		t.Fatalf("expected one warning per proxied record, got %q", lines)
+	}
+	if got := h.w.Status().Records[testCode].ProxyMismatch; !slices.Equal(got, []string{testIPA}) {
+		t.Fatalf("status should name node-a's proxied record, got %v", got)
+	}
+
+	h.nodeA.setStatus(http.StatusServiceUnavailable)
+	h.rounds(4)
+	h.expectBothRecords(testIPA, testIPB)
+	h.expectBothProxied(testIPA)
+	if writes := h.cf.writeLog(); len(writes) != 0 {
+		t.Fatalf("removing node-a's proxied records would publish node-b's address, got %v", writes)
+	}
+	if lines := h.logs.lines("DNS removals postponed: they would remove the last proxied record", "pending_removals="+testIPA); len(lines) == 0 {
+		t.Fatal("the withheld removal should be logged")
+	}
+	if status := h.w.Status(); status.LastReconcile.OK || !strings.Contains(status.LastReconcile.Error, "last proxied record") {
+		t.Fatalf("the withheld removal needs an operator and must be reported, got %+v", status.LastReconcile)
+	}
+	h.alerts.waitFor(t, "dns_reconcile_failed")
 }
 
 func TestHoldFileSuspendsDNSChanges(t *testing.T) {
@@ -165,6 +300,27 @@ func TestDryRunReportsPlannedAdditions(t *testing.T) {
 	}
 	if writes := h.cf.writeLog(); len(writes) != 0 {
 		t.Fatalf("dry_run must never write, got %v", writes)
+	}
+}
+
+func TestProxiedDryRunReportsTheProxyChangeWithoutWriting(t *testing.T) {
+	h := newHarness(t, harnessOptions{proxied: true, seed: publishBoth, config: func(c *Config) { c.DryRun = true }})
+	h.rounds(3)
+
+	h.expectBothRecords(testIPA, testIPB)
+	for _, request := range h.cf.requestLog() {
+		if !strings.HasPrefix(request, http.MethodGet) {
+			t.Fatalf("dry_run must never write, got %s", request)
+		}
+	}
+	for _, name := range []string{testRelay, testCode} {
+		lines := h.logs.lines("dry-run: would turn on the proxy of DNS record", "domain="+name)
+		if len(lines) != 2 {
+			t.Fatalf("expected the planned proxy change of both nodes logged once for %s, got %q", name, lines)
+		}
+	}
+	if got := h.w.Status().Records[testRelay].ProxyMismatch; !slices.Equal(got, []string{testIPA, testIPB}) {
+		t.Fatalf("status should list both DNS-only records, got %v", got)
 	}
 }
 

@@ -64,6 +64,70 @@ func TestNodePulledAfterThreeFailuresAndRestoredAfterThreeSuccesses(t *testing.T
 	}
 }
 
+// The proxied counterpart: the records kept stay proxied, and a node that
+// comes back is published proxied with the automatic TTL (the fake rejects any
+// other create).
+func TestProxiedNodePulledAndRestoredAsProxiedRecords(t *testing.T) {
+	h := newHarness(t, harnessOptions{proxied: true})
+	h.round()
+	h.expectBothProxied(testIPA, testIPB)
+
+	h.nodeB.setStatus(http.StatusServiceUnavailable)
+	h.rounds(3)
+	h.expectBothRecords(testIPA)
+	h.expectBothProxied(testIPA)
+	h.alerts.waitFor(t, "node_unhealthy")
+
+	h.nodeB.setStatus(http.StatusNoContent)
+	h.rounds(3)
+	h.expectBothRecords(testIPA, testIPB)
+	h.expectBothProxied(testIPA, testIPB)
+	if lines := h.logs.lines(`msg="dns record added"`, "node=node-b", "ttl=1", "proxied=true"); len(lines) != 2 {
+		t.Fatalf("expected a proxied addition per hostname, got %q", lines)
+	}
+	if patches := h.writesOf("PATCH"); len(patches) != 0 {
+		t.Fatalf("records created proxied need no proxy change, got %v", patches)
+	}
+	status := h.w.Status()
+	if !status.Proxied || len(status.Records[testRelay].ProxyMismatch) != 0 || !status.LastReconcile.OK {
+		t.Fatalf("status should show proxied records and no mismatch: %+v", status)
+	}
+}
+
+// A DNS-only record of a kept node, e.g. one added by hand, gets its proxy
+// turned on in proxied mode, and only once.
+func TestProxiedModeTurnsOnTheProxyOfKeptRecords(t *testing.T) {
+	h := newHarness(t, harnessOptions{proxied: true, seed: func(f *fakeCloudflare) {
+		for _, name := range []string{testRelay, testCode} {
+			f.seedProxied(name, testIPA)
+			f.seed(name, "A", testIPB)
+		}
+	}})
+	h.round()
+	h.expectBothProxied(testIPA, testIPB)
+	want := []string{"PATCH " + testRelay + " " + testIPB, "PATCH " + testCode + " " + testIPB}
+	if got := h.cf.writeLog(); !slices.Equal(got, want) {
+		t.Fatalf("writes = %v, want %v", got, want)
+	}
+	updated := h.alerts.waitFor(t, "dns_updated")
+	if len(updated.Changes) != 2 || updated.Changes[0].Action != "proxy" || updated.Changes[0].Node != "node-b" ||
+		!strings.Contains(updated.Text, "proxied node-b") {
+		t.Fatalf("unexpected dns_updated alert: %+v", updated)
+	}
+	if lines := h.logs.lines(`msg="dns record proxied"`, "node=node-b", "ip="+testIPB); len(lines) != 2 {
+		t.Fatalf("expected one line per proxied record, got %q", lines)
+	}
+	if got := h.w.Status().Records[testRelay].ProxyMismatch; len(got) != 0 {
+		t.Fatalf("no mismatch should be left, got %v", got)
+	}
+
+	h.cf.resetLogs()
+	h.rounds(2)
+	if writes := h.cf.writeLog(); len(writes) != 0 {
+		t.Fatalf("nothing is left to change, got %v", writes)
+	}
+}
+
 func TestStartupTrustsPublishedNodesUntilProbesDisagree(t *testing.T) {
 	h := newHarness(t, harnessOptions{})
 	h.nodeB.setStatus(http.StatusServiceUnavailable)

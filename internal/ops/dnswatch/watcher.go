@@ -53,10 +53,13 @@ type Watcher struct {
 	reconcileFailing bool
 	records          map[string]recordView
 	dryRunPlans      map[string]string
-	lastReconcile    ReconcileStatus
-	counters         summaryCounters
-	lastSummary      time.Time
-	startedAt        time.Time
+	// proxyNoted holds, per hostname, the ids of the proxied node records
+	// already warned about while proxied is off.
+	proxyNoted    map[string]map[string]bool
+	lastReconcile ReconcileStatus
+	counters      summaryCounters
+	lastSummary   time.Time
+	startedAt     time.Time
 
 	mu     sync.RWMutex
 	status Status
@@ -106,6 +109,7 @@ func New(cfg *Config, token string, opts Options) (*Watcher, error) {
 		limits:      thresholds{fail: c.Probe.FailThreshold, recover: c.Probe.RecoverThreshold, minChange: c.MinChangeInterval},
 		records:     map[string]recordView{},
 		dryRunPlans: map[string]string{},
+		proxyNoted:  map[string]map[string]bool{},
 		startedAt:   now(),
 	}
 	for _, node := range c.Nodes {
@@ -208,8 +212,8 @@ func (w *Watcher) initialize(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		owned, other := matchRecords(name, records, w.nodes)
-		view := recordView{Other: other}
+		owned, other, _ := matchRecords(name, records, w.nodes)
+		view := recordView{Other: other, ProxyMismatch: recordIPs(mismatchedRecords(owned, w.nodes, w.cfg.Proxied), nil)}
 		for _, s := range w.nodes {
 			if len(owned[s]) > 0 {
 				publishedIn[s] = append(publishedIn[s], name)

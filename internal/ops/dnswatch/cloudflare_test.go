@@ -29,7 +29,7 @@ func TestCloudflareClientListCreateDelete(t *testing.T) {
 		t.Fatalf("list returned %+v, want only the A record %s", records, existing)
 	}
 
-	created, err := client.createARecord(ctx, "relay.dnswatch.test", "203.0.113.12", 60)
+	created, err := client.createARecord(ctx, "relay.dnswatch.test", "203.0.113.12", 60, false)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -47,6 +47,41 @@ func TestCloudflareClientListCreateDelete(t *testing.T) {
 	// Deleting a record that is already gone is the desired end state.
 	if err := client.deleteRecord(ctx, existing); err != nil {
 		t.Fatalf("deleting a missing record should succeed, got %v", err)
+	}
+}
+
+func TestCloudflareClientCreatesAndProxiesProxiedRecords(t *testing.T) {
+	f := newFakeCloudflare(t)
+	f.wantProxied = true
+	dnsOnly := f.seed("relay.dnswatch.test", "A", "203.0.113.11")
+	client := newTestCloudflareClient(f)
+	ctx := context.Background()
+
+	created, err := client.createARecord(ctx, "relay.dnswatch.test", "203.0.113.12", AutomaticTTL, true)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if stored := f.record(created.ID); !stored.Proxied || stored.TTL != AutomaticTTL {
+		t.Fatalf("created record = %+v, want proxied with the automatic TTL", stored)
+	}
+
+	updated, err := client.proxyRecord(ctx, dnsOnly)
+	if err != nil {
+		t.Fatalf("proxy: %v", err)
+	}
+	stored := f.record(dnsOnly)
+	if !updated.Proxied || !stored.Proxied || stored.TTL != AutomaticTTL || stored.Content != "203.0.113.11" || stored.Name != "relay.dnswatch.test" {
+		t.Fatalf("proxied record = %+v (reply %+v), want the same record proxied", stored, updated)
+	}
+	if got := f.writeLog(); !slices.Equal(got, []string{"POST relay.dnswatch.test 203.0.113.12", "PATCH relay.dnswatch.test 203.0.113.11"}) {
+		t.Fatalf("writes = %v", got)
+	}
+
+	// Unlike a delete, a proxy change on a missing record is a failure: the
+	// record dnswatch meant to keep is not there.
+	f.resetLogs()
+	if _, err := client.proxyRecord(ctx, "rec404"); err == nil || !strings.Contains(err.Error(), "HTTP 404") {
+		t.Fatalf("proxying a missing record should fail with 404, got %v", err)
 	}
 }
 
@@ -81,7 +116,7 @@ func TestCloudflareClientRetriesTransientFailures(t *testing.T) {
 func TestCloudflareClientGivesUpAfterThreeAttempts(t *testing.T) {
 	f := newFakeCloudflare(t)
 	f.fail("", -1, http.StatusInternalServerError)
-	_, err := newTestCloudflareClient(f).createARecord(context.Background(), "relay.dnswatch.test", "203.0.113.12", 60)
+	_, err := newTestCloudflareClient(f).createARecord(context.Background(), "relay.dnswatch.test", "203.0.113.12", 60, false)
 	if err == nil || !strings.Contains(err.Error(), "HTTP 500") {
 		t.Fatalf("expected a 500 error, got %v", err)
 	}
@@ -93,7 +128,7 @@ func TestCloudflareClientGivesUpAfterThreeAttempts(t *testing.T) {
 func TestCloudflareClientDoesNotRetryClientErrors(t *testing.T) {
 	f := newFakeCloudflare(t)
 	f.fail(http.MethodPost, -1, http.StatusBadRequest)
-	_, err := newTestCloudflareClient(f).createARecord(context.Background(), "relay.dnswatch.test", "203.0.113.12", 60)
+	_, err := newTestCloudflareClient(f).createARecord(context.Background(), "relay.dnswatch.test", "203.0.113.12", 60, false)
 	if err == nil || !strings.Contains(err.Error(), "[10000] injected failure") {
 		t.Fatalf("expected the Cloudflare error message to surface, got %v", err)
 	}

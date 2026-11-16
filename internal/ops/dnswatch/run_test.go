@@ -167,7 +167,7 @@ func TestApplyPlanNeverEmptiesADomain(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	plan := planDomain(testRelay, records, h.w.nodes)
+	plan := planDomain(testRelay, records, h.w.nodes, h.w.cfg.Proxied)
 	if len(plan.remove) != 1 || len(plan.add) != 0 || len(plan.unconfirmed) != 1 {
 		t.Fatalf("unexpected plan: %+v", plan)
 	}

@@ -8,6 +8,12 @@
 // nodes that cannot reach their upstream proxies. It never deletes the last
 // healthy record and never touches records that do not belong to a configured
 // node.
+//
+// The records are DNS only (grey cloud) by default, so clients connect to the
+// nodes directly. With proxied set they are proxied (orange cloud): clients
+// connect to Cloudflare, which forwards to the nodes, and a removed record
+// stops receiving traffic at Cloudflare's edge at once instead of lingering
+// in resolver caches for the TTL.
 package dnswatch
 
 import (
@@ -31,8 +37,15 @@ import (
 
 // Defaults applied to settings that are omitted (left at zero).
 const (
-	DefaultAPIBaseURL        = "https://api.cloudflare.com/client/v4"
-	DefaultTTL               = 60
+	DefaultAPIBaseURL = "https://api.cloudflare.com/client/v4"
+	// DefaultTTL applies to DNS-only records: the lowest TTL Cloudflare takes
+	// outside Enterprise zones, which bounds how long resolvers keep sending
+	// clients to a node after its record is removed.
+	DefaultTTL = 60
+	// AutomaticTTL is Cloudflare's "automatic" TTL. Proxied records always
+	// have it: Cloudflare answers for them with its own addresses and does
+	// not let their TTL be edited.
+	AutomaticTTL             = 1
 	DefaultProbePath         = "/readyz"
 	DefaultProbeInterval     = 10 * time.Second
 	DefaultProbeTimeout      = 5 * time.Second
@@ -57,8 +70,16 @@ type Config struct {
 	Cloudflare CloudflareConfig `yaml:"cloudflare"`
 	// Records are the hostnames whose A record set follows node health.
 	Records []string `yaml:"records"`
-	// TTL applies to every record dnswatch creates. Records are always
-	// created unproxied (grey cloud) so clients connect to the nodes directly.
+	// Proxied publishes the records proxied (orange cloud) instead of DNS
+	// only (grey cloud). Cloudflare serves every A record of a name as
+	// proxied while at least one of them is, and as DNS only, with the node
+	// addresses public, once none is; so in this mode dnswatch also turns the
+	// proxy on for node records it finds DNS only, and holds back removals
+	// until it has. It never turns the proxy off: a published address cannot
+	// be taken back.
+	Proxied bool `yaml:"proxied"`
+	// TTL applies to every record dnswatch creates. It defaults to DefaultTTL,
+	// or to AutomaticTTL (the only value proxied records take) with Proxied.
 	TTL   int         `yaml:"ttl"`
 	Nodes []Node      `yaml:"nodes"`
 	Probe ProbeConfig `yaml:"probe"`
@@ -178,6 +199,9 @@ func (c *Config) applyDefaults() {
 	}
 	if c.TTL == 0 {
 		c.TTL = DefaultTTL
+		if c.Proxied {
+			c.TTL = AutomaticTTL
+		}
 	}
 	for i := range c.Nodes {
 		c.Nodes[i].Name = strings.TrimSpace(c.Nodes[i].Name)
@@ -254,7 +278,12 @@ func (c *Config) validate() error {
 		seenRecords[name] = true
 	}
 	// Cloudflare takes 1 ("automatic") or an explicit 30..86400 seconds.
-	if c.TTL != 1 && (c.TTL < 30 || c.TTL > 86400) {
+	switch {
+	case c.Proxied && c.TTL != AutomaticTTL:
+		// Refused rather than ignored, so the config cannot claim a TTL the
+		// records do not have.
+		fail("ttl must be 1 (automatic) or left out with proxied: true; Cloudflare does not let proxied records have another TTL")
+	case c.TTL != AutomaticTTL && (c.TTL < 30 || c.TTL > 86400):
 		fail("ttl must be 1 (automatic) or between 30 and 86400 seconds")
 	}
 
@@ -377,6 +406,7 @@ func (c *Config) LogAttrs() []any {
 		"zone_id", c.Cloudflare.ZoneID,
 		"api_token_file", DescribeTokenPath(c.Cloudflare.APITokenFile),
 		"records", strings.Join(c.Records, ","),
+		"proxied", c.Proxied,
 		"ttl", c.TTL,
 		"nodes", strings.Join(nodes, ","),
 		"probe", "https://<node-ip>" + c.Probe.Path,
