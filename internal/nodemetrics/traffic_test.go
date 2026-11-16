@@ -82,8 +82,14 @@ func TestListenerCountsHijackedConnections(t *testing.T) {
 	_, _ = io.WriteString(conn, "GET /ws HTTP/1.1\r\nHost: test\r\nConnection: Upgrade\r\nUpgrade: test\r\n\r\n")
 	reader := bufio.NewReader(conn)
 	resp, err := http.ReadResponse(reader, nil)
-	if err != nil || resp.StatusCode != http.StatusSwitchingProtocols {
-		t.Fatalf("upgrade: %v %v", resp, err)
+	if err != nil {
+		t.Fatalf("upgrade: %v", err)
+	}
+	// A 101 has no body; the bytes after it belong to the upgraded stream,
+	// which is read from reader below.
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusSwitchingProtocols {
+		t.Fatalf("upgrade status = %d", resp.StatusCode)
 	}
 	_, _ = conn.Write([]byte(strings.Repeat("c", 5000)))
 	if n, _ := io.Copy(io.Discard, reader); n != 7000 {
