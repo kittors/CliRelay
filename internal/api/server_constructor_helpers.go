@@ -20,6 +20,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/loopguard"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/managementasset"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/nodemetrics"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/observability"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v6/sdk/access"
@@ -145,6 +146,7 @@ func (s *Server) installDynamicMiddleware(configFilePath string) {
 	s.engine.Use(func(c *gin.Context) {
 		s.inFlightRequests.Add(1)
 		defer s.inFlightRequests.Add(-1)
+		nodemetrics.Default().CountRequest()
 		c.Next()
 	})
 	s.engine.Use(corsMiddleware(func() *config.Config {

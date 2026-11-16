@@ -12,6 +12,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/buildinfo"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/cluster"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/nodemetrics"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/storage/postgres/compatdriver"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 	log "github.com/sirupsen/logrus"
@@ -36,6 +37,9 @@ func clusterOptions(cfg *config.Config) cluster.Options {
 		Advertise: cfg.Cluster.Advertise,
 		DSN:       cfg.Postgres.DSN,
 		Version:   buildinfo.Version,
+		// Every heartbeat stores the latest resource snapshot, which the API
+		// server's collector takes while it serves.
+		Snapshot: nodemetrics.Default().SnapshotJSON,
 	}
 }
 

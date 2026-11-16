@@ -67,6 +67,8 @@ func laterRuntimeMigrations() []Migration {
 		// Per-provider freezes of requesters an upstream refused for their
 		// content. See access_freeze_migrations.go.
 		{Version: "202611130001_access_freezes", SQL: accessFreezesSQL},
+		// Resource snapshots in the membership rows. See clusterNodeSnapshotSQL.
+		{Version: "202611170001_cluster_node_snapshot", SQL: clusterNodeSnapshotSQL},
 	}
 }
 

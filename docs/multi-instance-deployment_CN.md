@@ -27,7 +27,7 @@ CliRelay 支持两种部署方式：
 
 ```
                      客户端
-                       │  DNS：relay/code 各有两条 A 记录（灰云直连，不经 Cloudflare 代理）
+                       │  DNS：relay/code 各有两条 A 记录（默认灰云直连；proxied: true 时为橙云代理记录）
           ┌────────────┴────────────┐
           ▼                         ▼
    节点 A（n43）                 节点 B（n2）
@@ -62,7 +62,7 @@ CliRelay 支持两种部署方式：
 | 场景 | 表现 | 用户影响 |
 |---|---|---|
 | 某节点 CliRelay 进程挂了或正在发版 | nginx 把请求转给对端节点 | 无感 |
-| 某节点整机宕机 | dnswatch 约 30 秒后摘掉它的 DNS 记录，客户端在 DNS TTL（60 秒）内陆续切走；如果主库在这台，同时触发数据库切换 | 该节点上的在途请求失败；其余请求正常 |
+| 某节点整机宕机 | dnswatch 约 30 秒后摘掉它的 DNS 记录，客户端在 DNS TTL（60 秒）内陆续切走（代理记录在 Cloudflare 边缘立即生效）；如果主库在这台，同时触发数据库切换 | 该节点上的在途请求失败；其余请求正常 |
 | 主库计划内切换（`patronictl switchover`） | 写入中断约 2 秒 | 应用写入先缓冲、再补写，用户无感 |
 | 主库所在机器宕机 | 约 21 秒后同步备库升为主库 | 期间的写入先缓冲、再补写 |
 | 主库被网络隔离（进程还活着） | 先在租约到期前自行降级，另一台随后升主，不会同时存在两个主库 | 隔离侧未确认的提交返回错误，不会误报成功 |
@@ -249,6 +249,7 @@ server {                                    # 接收对端溢出：只转本机 
     - 需要关掉时，在节点的环境文件里设 `CLIRELAY_EGRESS_BREAKER=off` 并重启进程。
 - 所有节点都不就绪时，DNS 保持不动并告警，**绝不会删光记录**。
 - 先加新记录再删旧记录；只动名单内节点 IP 的 A 记录。
+- **代理记录（`proxied: true`）**：新建的记录是橙云代理记录，TTL 用 Cloudflare 的自动值（配其他 `ttl` 会被拒绝）；摘除在 Cloudflare 边缘立即生效，不用等解析器缓存过期。Cloudflare 对同名 A 记录的规则是：只要有一条代理，整组都按代理处理；一条代理记录都不剩时，整组按仅 DNS 处理，节点 IP 随之公开。所以这个模式下 dnswatch 先把名单内节点的仅 DNS 记录改成代理，再做删除；某次删除会让这个域名只剩仅 DNS 记录时，删除要等改完再做。它在任何模式下都不关代理：默认的 `proxied: false` 遇到节点的代理记录时保持原样，日志告警，并在 `GET /status` 的 `proxy_mismatch` 里列出；也不会删掉一个域名的最后一条代理记录（这一轮报失败，直到人工把这个域名的代理状态理清）。
 - 维护前 `touch /etc/clirelay-dnswatch/hold`，之后只探测、不改 DNS；维护完删除这个文件。
 - 首次部署先用 `dry_run: true` 观察日志，确认无误后再关掉 dry-run。
 - Cloudflare 令牌只需要该 zone 的 DNS 编辑权限，放在 root 0600 的文件里，由 systemd `LoadCredential` 交给服务。
@@ -367,6 +368,7 @@ GitHub Actions 的 `Deploy CliRelay` 按节点逐台部署：
   - 主节点所在机器整台消失时，锁约 30 秒内释放，靠的是会话级 TCP keepalive。不设的话，Linux 默认要约 2 小时。
   - 以下维护任务只在主节点运行：账号状态探测、OpenRouter 价格同步、共享表的日志维护与保留、用量汇总追平、会话与审计清理、IP 规则清理、OAuth 会话与异步任务过期清理、warmup 策略调度。
 - **成员表** `cluster_nodes`：每 5 秒心跳一次。`GET /v0/management/cluster` 可以查看所有节点、主节点和在线数；每个响应都带 `X-CliRelay-Node`，标明请求落在哪台。
+- **节点资源快照**：每次心跳同时把本节点的资源快照（`internal/nodemetrics`，每 5 秒采一次）写进 `snapshot` 列，`GET /v0/management/cluster` 给每个节点带上 `snapshot`、`snapshot_at`；`GET /v0/management/config` 的 `capabilities` 里声明 `node-metrics`，面板只在有这个能力的版本上显示节点视图。快照包括：从 `/proc/stat` 算出的整机 CPU，执行（`busy_cores`）和被宿主机拿走的时间（`steal_cores`）分开；负载、内存；slot 所在 cgroup 的配额、用量与限流（`cpu.stat`、`cpu.max`、`memory.current/high/max`）；在途请求、最近一分钟的请求数与入 / 出字节；出口熔断；库与 Redis 的往返耗时；版本和启动时间。CPU（整机与 cgroup）取最近约 30 秒的平均，单个 5 秒步长抖动太大；`shared_redis`（configured、available、since）表示限流与会话粘性是集群共享，还是已退化为本机计数。整机 CPU 必须从 `/proc/stat` 算：内核没开 `CONFIG_PARAVIRT_TIME_ACCOUNTING` 时，cgroup 和进程的 CPU 都含 steal。单节点不写这张表，但同样在接口里报本机快照；读不到的字段（其他操作系统、cgroup v1 主机）留空。
 - **迁移锁**：数据库迁移、YAML 导入和各类回填都在集群级 advisory lock 下执行，两台同时升级也不会互相踩踏。
 
 ### 6.2 凭据（OAuth 账号）

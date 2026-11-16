@@ -3,6 +3,7 @@ package cluster
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -14,6 +15,12 @@ import (
 // the database's now(), so nodes whose clocks drift still agree on who is
 // alive. A row is active while it was refreshed within the active window and
 // has not been marked stopped.
+//
+// Each heartbeat also stores the node's resource snapshot (package
+// nodemetrics) in the row, and registering clears it, so a snapshot always
+// belongs to the process heartbeating there. Builds from before the snapshot
+// columns neither write nor clear them, which is why listNodesSQL drops a
+// snapshot much older than the row's last heartbeat.
 
 const registerNodeSQL = `
 WITH previous AS (
@@ -29,26 +36,31 @@ WITH previous AS (
 		started_at = EXCLUDED.started_at,
 		last_seen  = EXCLUDED.last_seen,
 		leader     = false,
-		stopped_at = NULL
+		stopped_at = NULL,
+		snapshot    = NULL,
+		snapshot_at = NULL
 	RETURNING started_at
 )
 SELECT started_at, COALESCE((SELECT active FROM previous), false) FROM registered`
 
 const heartbeatSQL = `
 UPDATE cluster_nodes
-   SET last_seen = now(), leader = $3, version = $4, advertise = $5, stopped_at = NULL
+   SET last_seen = now(), leader = $3, version = $4, advertise = $5, stopped_at = NULL,
+       snapshot = $6::jsonb, snapshot_at = CASE WHEN $6::jsonb IS NULL THEN NULL ELSE now() END
  WHERE node_id = $1 AND started_at = $2`
 
 const reclaimNodeSQL = `
-INSERT INTO cluster_nodes (node_id, version, advertise, started_at, last_seen, leader, stopped_at)
-VALUES ($1, $3, $4, $2, now(), $5, NULL)
+INSERT INTO cluster_nodes (node_id, version, advertise, started_at, last_seen, leader, stopped_at, snapshot, snapshot_at)
+VALUES ($1, $3, $4, $2, now(), $5, NULL, $6::jsonb, CASE WHEN $6::jsonb IS NULL THEN NULL ELSE now() END)
 ON CONFLICT (node_id) DO UPDATE SET
-	version    = EXCLUDED.version,
-	advertise  = EXCLUDED.advertise,
-	started_at = EXCLUDED.started_at,
-	last_seen  = EXCLUDED.last_seen,
-	leader     = EXCLUDED.leader,
-	stopped_at = NULL`
+	version     = EXCLUDED.version,
+	advertise   = EXCLUDED.advertise,
+	started_at  = EXCLUDED.started_at,
+	last_seen   = EXCLUDED.last_seen,
+	leader      = EXCLUDED.leader,
+	stopped_at  = NULL,
+	snapshot    = EXCLUDED.snapshot,
+	snapshot_at = EXCLUDED.snapshot_at`
 
 // inspectNodeSQL reads the row of a node ID whose heartbeat matched nothing,
 // to tell a newer process of the same node (a blue-green deploy) from a row
@@ -72,9 +84,15 @@ const markStoppedSQL = `
 UPDATE cluster_nodes SET stopped_at = now(), leader = false
  WHERE node_id = $1 AND started_at = $2`
 
+// listNodesSQL leaves out a snapshot stored more than 30 seconds before the
+// row's last heartbeat: the process heartbeating there no longer refreshes
+// it, as after a rollback to a build without snapshots, so it describes an
+// earlier process. A stopped node keeps its last snapshot.
 const listNodesSQL = `
 SELECT node_id, version, advertise, started_at, last_seen, leader,
-       stopped_at IS NULL AND last_seen > now() - interval '20 seconds' AS active
+       stopped_at IS NULL AND last_seen > now() - interval '20 seconds' AS active,
+       CASE WHEN snapshot_at >= last_seen - interval '30 seconds' THEN snapshot END,
+       CASE WHEN snapshot_at >= last_seen - interval '30 seconds' THEN snapshot_at END
   FROM cluster_nodes
  ORDER BY node_id`
 
@@ -117,7 +135,8 @@ func (p *pgNode) runHeartbeat(ctx context.Context) {
 // heartbeat refreshes this node's row and the cached active node count.
 func (p *pgNode) heartbeat(ctx context.Context) {
 	leader := p.c.IsLeader()
-	result, err := p.db.ExecContext(ctx, heartbeatSQL, p.nodeID, p.startedAt, leader, p.version, p.advertise)
+	snapshot := p.snapshotArg()
+	result, err := p.db.ExecContext(ctx, heartbeatSQL, p.nodeID, p.startedAt, leader, p.version, p.advertise, snapshot)
 	if err != nil {
 		if ctx.Err() == nil && time.Since(p.lastHeartbeatWarn) >= warnEvery {
 			p.lastHeartbeatWarn = time.Now()
@@ -126,7 +145,7 @@ func (p *pgNode) heartbeat(ctx context.Context) {
 		return
 	}
 	if updated, errRows := result.RowsAffected(); errRows == nil && updated == 0 {
-		p.reclaim(ctx, leader)
+		p.reclaim(ctx, leader, snapshot)
 	}
 	if leader {
 		if _, err := p.db.ExecContext(ctx, clearStaleLeaderFlagsSQL, p.nodeID); err != nil {
@@ -145,7 +164,7 @@ func (p *pgNode) heartbeat(ctx context.Context) {
 // and forth. Any other row (stopped by a rolled-back slot, pruned after an
 // outage, left by a crashed process, or held by an older live process) is
 // taken back.
-func (p *pgNode) reclaim(ctx context.Context, leader bool) {
+func (p *pgNode) reclaim(ctx context.Context, leader bool, snapshot any) {
 	var rowStarted time.Time
 	var rowActive bool
 	err := p.db.QueryRowContext(ctx, inspectNodeSQL, p.nodeID).Scan(&rowStarted, &rowActive)
@@ -169,7 +188,7 @@ func (p *pgNode) reclaim(ctx context.Context, leader bool) {
 				"(expected after a rolled-back deploy or a database outage)", p.nodeID)
 		}
 	}
-	if _, err := p.db.ExecContext(ctx, reclaimNodeSQL, p.nodeID, p.startedAt, p.version, p.advertise, leader); err != nil {
+	if _, err := p.db.ExecContext(ctx, reclaimNodeSQL, p.nodeID, p.startedAt, p.version, p.advertise, leader, snapshot); err != nil {
 		log.Debugf("cluster: reclaim membership row: %v", err)
 	}
 }
@@ -191,6 +210,19 @@ func (p *pgNode) yieldTo(newerStarted time.Time) {
 			"running; unless it is a slot being drained, give each process a unique cluster.node-id",
 			p.nodeID, now.Sub(p.supersededAt).Round(time.Second))
 	}
+}
+
+// snapshotArg is the snapshot parameter of a membership write: the JSON
+// text, or nil (SQL NULL) when there is no valid snapshot to store.
+func (p *pgNode) snapshotArg() any {
+	if p.snapshot == nil {
+		return nil
+	}
+	raw := p.snapshot()
+	if len(raw) == 0 || !json.Valid(raw) {
+		return nil
+	}
+	return string(raw)
 }
 
 func (p *pgNode) refreshActiveCount(ctx context.Context) {
@@ -220,12 +252,20 @@ func (p *pgNode) nodes(ctx context.Context) ([]NodeStatus, error) {
 	out := make([]NodeStatus, 0, 2)
 	for rows.Next() {
 		var node NodeStatus
-		if err := rows.Scan(&node.NodeID, &node.Version, &node.Advertise, &node.StartedAt, &node.LastSeen, &node.Leader, &node.Active); err != nil {
+		var snapshot []byte
+		var snapshotAt sql.NullTime
+		if err := rows.Scan(&node.NodeID, &node.Version, &node.Advertise, &node.StartedAt, &node.LastSeen, &node.Leader, &node.Active,
+			&snapshot, &snapshotAt); err != nil {
 			return nil, fmt.Errorf("cluster: scan node: %w", err)
 		}
 		// The flag of a node that stopped heartbeating is stale.
 		node.Leader = node.Leader && node.Active
 		node.Self = node.NodeID == p.nodeID
+		if len(snapshot) > 0 && snapshotAt.Valid && json.Valid(snapshot) {
+			node.Snapshot = json.RawMessage(snapshot)
+			at := snapshotAt.Time
+			node.SnapshotAt = &at
+		}
 		out = append(out, node)
 	}
 	if err := rows.Err(); err != nil {

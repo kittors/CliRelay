@@ -4,10 +4,13 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/cluster"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/nodemetrics"
 )
 
 type clusterStatusBody struct {
@@ -16,6 +19,24 @@ type clusterStatusBody struct {
 	IsLeader    bool                 `json:"is_leader"`
 	ActiveNodes int                  `json:"active_nodes"`
 	Nodes       []cluster.NodeStatus `json:"nodes"`
+}
+
+// sampleNodeMetrics makes sure the process-wide collector has a snapshot.
+func sampleNodeMetrics(t *testing.T) nodemetrics.Snapshot {
+	t.Helper()
+	collector := nodemetrics.Default()
+	collector.Start()
+	t.Cleanup(collector.Stop)
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if snap, ok := collector.Latest(); ok {
+			return snap
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the collector took no snapshot")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 func getClusterStatus(t *testing.T) clusterStatusBody {
@@ -43,6 +64,36 @@ func TestGetClusterStatusSingleNode(t *testing.T) {
 	}
 }
 
+// The panel shows the node view only where GET /config declares it.
+func TestNodeMetricsCapabilityIsDeclaredInConfig(t *testing.T) {
+	raw, err := json.Marshal(newConfigResponse(nil, nil).Capabilities)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"node-metrics":true`) {
+		t.Fatalf("capabilities JSON = %s, want node-metrics declared", raw)
+	}
+}
+
+// A single node never writes the membership table, so its own row carries
+// the snapshot taken in the process.
+func TestGetClusterStatusSingleNodeCarriesItsSnapshot(t *testing.T) {
+	cluster.SetDefault(nil)
+	snap := sampleNodeMetrics(t)
+	body := getClusterStatus(t)
+	self := body.Nodes[0]
+	if len(self.Snapshot) == 0 || self.SnapshotAt == nil || !self.SnapshotAt.Equal(snap.CollectedAt) {
+		t.Fatalf("self row = %+v, want the latest snapshot taken at %s", self, snap.CollectedAt)
+	}
+	var decoded nodemetrics.Snapshot
+	if err := json.Unmarshal(self.Snapshot, &decoded); err != nil || decoded.Schema != nodemetrics.SchemaVersion {
+		t.Fatalf("snapshot %s does not decode: %v", self.Snapshot, err)
+	}
+	if self.StartedAt.After(time.Now()) || time.Since(self.StartedAt) < 0 {
+		t.Fatalf("a single node reports its process start, got %s", self.StartedAt)
+	}
+}
+
 func TestGetClusterStatusCluster(t *testing.T) {
 	hub := cluster.NewMemoryHub()
 	hub.Join("node-a")
@@ -56,6 +107,22 @@ func TestGetClusterStatusCluster(t *testing.T) {
 	for _, node := range body.Nodes {
 		if node.Self != (node.NodeID == "node-b") || node.Leader != (node.NodeID == "node-a") {
 			t.Fatalf("node view = %+v", node)
+		}
+	}
+}
+
+func TestGetClusterStatusClusterAttachesTheLocalSnapshotToSelf(t *testing.T) {
+	hub := cluster.NewMemoryHub()
+	hub.Join("node-a")
+	follower := hub.Join("node-b")
+	cluster.SetDefault(follower)
+	t.Cleanup(func() { cluster.SetDefault(nil) })
+	sampleNodeMetrics(t)
+	body := getClusterStatus(t)
+	for _, node := range body.Nodes {
+		// The hub stores no snapshots: only this node's live one shows.
+		if hasSnapshot := len(node.Snapshot) > 0; hasSnapshot != node.Self {
+			t.Fatalf("node %s: snapshot present=%v, self=%v", node.NodeID, hasSnapshot, node.Self)
 		}
 	}
 }

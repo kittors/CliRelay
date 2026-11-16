@@ -3,16 +3,43 @@ package usage
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"os"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/identityfingerprint"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/testutil/postgrestest"
 )
+
+// truncateRuntimeTables empties the tables the test below fills. The shared
+// test database is also written by tests of other packages that do not take
+// the shared runtime lock, and by this package's own background writers that
+// InitPostgres starts. TRUNCATE ... CASCADE locks every table it reaches, so
+// PostgreSQL can pick it as the victim of a deadlock (SQLSTATE 40P01) with one
+// of those writers; the statement is then rolled back whole, and running it
+// again once the other transaction has finished succeeds.
+func truncateRuntimeTables(t *testing.T, db *sql.DB, statement string) {
+	t.Helper()
+	const attempts = 5
+	for attempt := 1; ; attempt++ {
+		_, err := db.Exec(statement)
+		if err == nil {
+			return
+		}
+		var pgErr *pgconn.PgError
+		deadlock := (errors.As(err, &pgErr) && pgErr.Code == "40P01") || strings.Contains(err.Error(), "SQLSTATE 40P01")
+		if !deadlock || attempt == attempts {
+			t.Fatalf("truncate runtime tables (attempt %d): %v", attempt, err)
+		}
+		t.Logf("truncate runtime tables: deadlock on attempt %d, retrying: %v", attempt, err)
+		time.Sleep(time.Duration(attempt) * 200 * time.Millisecond)
+	}
+}
 
 func TestPostgresRuntimeDataStackIntegration(t *testing.T) {
 	dsn := os.Getenv("CLIRELAY_POSTGRES_TEST_DSN")
@@ -48,7 +75,7 @@ func TestPostgresRuntimeDataStackIntegration(t *testing.T) {
 	if dbPath := GetDBPath(); dbPath != "" {
 		t.Fatalf("GetDBPath() = %q, want empty for postgres", dbPath)
 	}
-	if _, err := db.Exec(`
+	truncateRuntimeTables(t, db, `
 		TRUNCATE
 			request_log_content,
 			request_logs,
@@ -65,9 +92,7 @@ func TestPostgresRuntimeDataStackIntegration(t *testing.T) {
 			identity_fingerprints,
 			ccswitch_import_configs
 		RESTART IDENTITY CASCADE
-	`); err != nil {
-		t.Fatalf("truncate runtime tables: %v", err)
-	}
+	`)
 
 	if err := UpsertModelPricingV2("gpt-test", 1, 2, 0.5, 0.25, 0.75); err != nil {
 		t.Fatalf("UpsertModelPricingV2() error = %v", err)

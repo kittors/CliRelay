@@ -27,7 +27,7 @@ Single-instance behaviour is exactly what it was before clustering existed. This
 
 ```
                        clients
-                          │  DNS: relay/code each resolve to every healthy node (DNS only, not proxied)
+                          │  DNS: relay/code each resolve to every healthy node (DNS only, or proxied with proxied: true)
             ┌─────────────┴─────────────┐
             ▼                           ▼
      node A (n43)                  node B (n2)
@@ -70,7 +70,7 @@ Numbers come from a rehearsal with the production settings: Patroni 4.1.5, Postg
 | Scenario | What happens | User impact |
 |---|---|---|
 | CliRelay on a node crashes or is being deployed | nginx forwards to the peer node | None |
-| A whole node goes down | dnswatch removes its records after about 30 s; clients move within the 60 s DNS TTL. A database failover follows if the primary was there | Requests in flight on that node fail; everything else is served |
+| A whole node goes down | dnswatch removes its records after about 30 s; clients move within the 60 s DNS TTL (at once with proxied records). A database failover follows if the primary was there | Requests in flight on that node fail; everything else is served |
 | Planned primary switchover (`patronictl switchover`) | About 2 s without writes | Writes are spooled and replayed; none visible |
 | Primary's machine dies | The synchronous replica is promoted after about 21 s | Writes are spooled and replayed |
 | Primary partitioned away (still running) | It demotes itself before its lease expires, then the other node is promoted. Two primaries never coexist | Unconfirmed commits on the isolated side fail instead of reporting success |
@@ -262,6 +262,7 @@ The watcher is `cmd/clirelay-dnswatch`, plus `deploy/cluster/dnswatch/`. The uni
   - If no node passes readiness, DNS is left untouched and an alert is raised. **It never deletes every record.**
   - Records are added before stale ones are removed.
   - Only A records pointing at the listed node IPs are touched.
+- **Proxied records (`proxied: true`).** Records are created proxied (orange cloud) with Cloudflare's automatic TTL, so a removal takes effect at Cloudflare's edge at once rather than after resolver caches expire; any other `ttl` is refused. Cloudflare serves every A record of a name as proxied while one of them is, and as DNS only, with the node addresses public, once none is. So in this mode dnswatch turns the proxy on for node records it finds DNS only, before removing anything, and a removal that would leave a name with only DNS-only records waits until it has. It never turns a proxy off: with the default `proxied: false` it leaves a proxied node record as it is, logs a warning and lists it under `proxy_mismatch` in `GET /status`, and still will not remove the last proxied record of a name (the round is reported as failed until an operator settles the name's proxy status).
 - **Operating it.**
   - `touch /etc/clirelay-dnswatch/hold` before maintenance keeps it probing without editing DNS; remove the file afterwards.
   - Start with `dry_run: true`, read the logs, then turn dry-run off.
@@ -379,6 +380,7 @@ In cluster mode all nodes share one database. Every piece of state that used to 
   - Session-level TCP keepalives release it within about 30 s when the leader's machine vanishes, instead of Linux's roughly 2-hour default.
   - Leader-only work: account status probes, the OpenRouter price sync, shared-table log maintenance and retention, the usage rollup catch-up, session and audit cleanup, IP-rule cleanup, expiry of OAuth sessions and async jobs, and warmup scheduling.
 - **Membership.** `cluster_nodes` receives a heartbeat every 5 s. `GET /v0/management/cluster` lists the nodes, the leader and the active count, and every response carries `X-CliRelay-Node`.
+- **Node snapshots.** Each heartbeat also stores the node's resource snapshot (`internal/nodemetrics`, taken every 5 s) in the `snapshot` column, and `GET /v0/management/cluster` returns it on every node (`snapshot`, `snapshot_at`); `GET /v0/management/config` declares `capabilities.node-metrics` so the panel shows the node view only on builds that have it. It holds host CPU split into running (`busy_cores`) and stolen (`steal_cores`) time from `/proc/stat`, load, memory, the slot's cgroup quota, usage and throttling (`cpu.stat`, `cpu.max`, `memory.current/high/max`), in-flight requests, requests and bytes over the last minute, the egress breaker, the database and Redis round trips, the version and the start time. CPU figures (host and cgroup) are averaged over about the last 30 s, since one 5-second step jumps around; the shared Redis state (`shared_redis`: configured, available, since) shows whether limits are cluster-wide or have fallen back to this node. Host CPU is read from `/proc/stat` because on a kernel without `CONFIG_PARAVIRT_TIME_ACCOUNTING` the cgroup and process CPU include steal. A single node writes nothing to the table but reports its own snapshot the same way. Fields that cannot be read (another OS, a cgroup v1 host) are left out.
 - **Migration lock.** Migrations, YAML imports and backfills run under a cluster-wide advisory lock, so two nodes upgrading together never race.
 
 ### 6.2 Credentials (OAuth accounts)

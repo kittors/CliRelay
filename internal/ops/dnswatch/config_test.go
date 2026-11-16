@@ -1,6 +1,7 @@
 package dnswatch
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -36,6 +37,7 @@ func TestParseConfigAppliesDefaults(t *testing.T) {
 		got, want any
 	}{
 		{"api_base_url", cfg.Cloudflare.APIBaseURL, DefaultAPIBaseURL},
+		{"proxied", cfg.Proxied, false},
 		{"ttl", cfg.TTL, 60},
 		{"probe.path", cfg.Probe.Path, "/readyz"},
 		{"probe.host", cfg.Probe.Host, "relay.dnswatch.test"},
@@ -138,6 +140,7 @@ func TestConfigValidation(t *testing.T) {
 		{"wildcard record", func(c *Config) { c.Records = []string{"*.dnswatch.test"} }, "not a valid hostname"},
 		{"duplicate record", func(c *Config) { c.Records = []string{"relay.dnswatch.test", "RELAY.dnswatch.test"} }, "listed twice"},
 		{"ttl too low", func(c *Config) { c.TTL = 10 }, "ttl must be"},
+		{"proxied with a fixed ttl", func(c *Config) { c.Proxied, c.TTL = true, 60 }, "left out with proxied: true"},
 		{"no nodes", func(c *Config) { c.Nodes = nil }, "at least one node"},
 		{"node without name", func(c *Config) { c.Nodes[0].Name = " " }, "name is required"},
 		{"duplicate node name", func(c *Config) { c.Nodes[1].Name = "node-a" }, "used twice"},
@@ -163,6 +166,33 @@ func TestConfigValidation(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestParseConfigProxiedDefaultsToTheAutomaticTTL(t *testing.T) {
+	for _, extra := range []string{"proxied: true\n", "proxied: true\nttl: 1\n"} {
+		cfg, err := ParseConfig([]byte(minimalConfigYAML + extra))
+		if err != nil {
+			t.Fatalf("ParseConfig with %q: %v", extra, err)
+		}
+		if !cfg.Proxied || cfg.TTL != AutomaticTTL {
+			t.Fatalf("with %q: proxied=%v ttl=%d, want proxied with ttl 1", extra, cfg.Proxied, cfg.TTL)
+		}
+		if attrs := cfg.LogAttrs(); !slices.ContainsFunc(pairs(attrs), func(kv string) bool { return kv == "proxied=true" }) {
+			t.Fatalf("the startup log should show the proxy mode: %v", attrs)
+		}
+	}
+	if _, err := ParseConfig([]byte(minimalConfigYAML + "proxied: true\nttl: 60\n")); err == nil || !strings.Contains(err.Error(), "proxied") {
+		t.Fatalf("a fixed TTL must be refused with proxied: true, got %v", err)
+	}
+}
+
+// pairs renders slog-style key, value attributes as key=value strings.
+func pairs(attrs []any) []string {
+	var out []string
+	for i := 0; i+1 < len(attrs); i += 2 {
+		out = append(out, fmt.Sprintf("%v=%v", attrs[i], attrs[i+1]))
+	}
+	return out
 }
 
 func TestConfigNormalizesNodeAddresses(t *testing.T) {

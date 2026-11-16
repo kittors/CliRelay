@@ -11,8 +11,8 @@ import (
 
 func TestRuntimeMigrationsCoverCoreTables(t *testing.T) {
 	migrations := RuntimeMigrations()
-	if len(migrations) != 49 {
-		t.Fatalf("RuntimeMigrations len = %d, want 49", len(migrations))
+	if len(migrations) != 50 {
+		t.Fatalf("RuntimeMigrations len = %d, want 50", len(migrations))
 	}
 	// Membership table of multi-instance deployments.
 	if migrations[31].Version != "202609250001_cluster_nodes" {
@@ -158,6 +158,15 @@ func TestRuntimeMigrationsCoverCoreTables(t *testing.T) {
 		t.Fatalf("access freeze migration = %q: %q", got.Version, got.SQL)
 	} else if strings.Contains(got.SQL, "ALTER TABLE") || strings.Contains(got.SQL, "UPDATE") || strings.Contains(got.SQL, "DROP") {
 		t.Fatalf("access freeze migration must only create its own tables: %q", got.SQL)
+	}
+	// Node snapshots: two nullable columns on cluster_nodes and nothing else,
+	// so the migration is a catalog change that cannot hold a lock for long.
+	if got := migrations[49]; got.Version != "202611170001_cluster_node_snapshot" ||
+		!strings.Contains(got.SQL, "ADD COLUMN IF NOT EXISTS snapshot JSONB") ||
+		!strings.Contains(got.SQL, "ADD COLUMN IF NOT EXISTS snapshot_at TIMESTAMPTZ") {
+		t.Fatalf("cluster node snapshot migration = %q: %q", got.Version, got.SQL)
+	} else if strings.Contains(got.SQL, "DEFAULT") || strings.Contains(got.SQL, "UPDATE") || strings.Contains(got.SQL, "INDEX") {
+		t.Fatalf("cluster node snapshot migration must only add nullable columns: %q", got.SQL)
 	}
 	// Appended from laterRuntimeMigrations() because migrations.go sits at its
 	// structure-gate size ceiling.
