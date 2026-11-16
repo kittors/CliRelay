@@ -97,6 +97,15 @@ func ConvertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 	// Stream
 	out, _ = sjson.Set(out, "stream", stream)
 
+	// Messages are collected here and written into out once, after the input.
+	// sjson.SetRaw(out, "messages.-1", ...) per message, and the index lookup
+	// plus nested append per part of an open thinking turn, re-parsed and
+	// copied the whole request each time, which grew with the square of a
+	// Codex session's history. The template already holds "messages":[] and
+	// nothing reads the array back before it is written, so the result is
+	// byte-for-byte the same.
+	var messages []string
+
 	// instructions -> as a leading message (use role user for Claude API compatibility)
 	instructionsText := ""
 	extractedFromSystem := false
@@ -105,7 +114,7 @@ func ConvertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 		if instructionsText != "" {
 			sysMsg := `{"role":"user","content":""}`
 			sysMsg, _ = sjson.Set(sysMsg, "content", instructionsText)
-			out, _ = sjson.SetRaw(out, "messages.-1", sysMsg)
+			messages = append(messages, sysMsg)
 		}
 	}
 
@@ -131,7 +140,7 @@ func ConvertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 					if instructionsText != "" {
 						sysMsg := `{"role":"user","content":""}`
 						sysMsg, _ = sjson.Set(sysMsg, "content", instructionsText)
-						out, _ = sjson.SetRaw(out, "messages.-1", sysMsg)
+						messages = append(messages, sysMsg)
 						extractedFromSystem = true
 					}
 				}
@@ -147,10 +156,12 @@ func ConvertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 	// message. Any other item closes it.
 	thinkingTurnOpen := false
 	appendToOpenThinkingTurn := func(parts ...string) {
-		// sjson reads "-1" as append, so the last message is addressed by index.
-		path := fmt.Sprintf("messages.%d.content.-1", gjson.Get(out, "messages.#").Int()-1)
+		// The open turn is the last message: the reasoning item that opened it
+		// appended it. Editing it alone is what sjson did when it recursed
+		// into messages.<last>.content.
+		last := len(messages) - 1
 		for _, part := range parts {
-			out, _ = sjson.SetRaw(out, path, part)
+			messages[last], _ = sjson.SetRaw(messages[last], "content.-1", part)
 		}
 	}
 
@@ -301,14 +312,14 @@ func ConvertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 							msg, _ = sjson.SetRaw(msg, "content.-1", partJSON)
 						}
 					}
-					out, _ = sjson.SetRaw(out, "messages.-1", msg)
+					messages = append(messages, msg)
 				} else if textAggregate.Len() > 0 || role == "system" || droppedEmptyText {
 					// With droppedEmptyText, a message made only of empty text parts
 					// keeps the "" content it was sent with before they were skipped.
 					msg := `{"role":"","content":""}`
 					msg, _ = sjson.Set(msg, "role", role)
 					msg, _ = sjson.Set(msg, "content", textAggregate.String())
-					out, _ = sjson.SetRaw(out, "messages.-1", msg)
+					messages = append(messages, msg)
 				}
 
 			case "function_call":
@@ -336,7 +347,7 @@ func ConvertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 				}
 				asst := `{"role":"assistant","content":[]}`
 				asst, _ = sjson.SetRaw(asst, "content.-1", toolUse)
-				out, _ = sjson.SetRaw(out, "messages.-1", asst)
+				messages = append(messages, asst)
 
 			case "reasoning":
 				block := convertResponsesReasoningToClaudeThinking(item)
@@ -351,7 +362,7 @@ func ConvertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 				}
 				asst := `{"role":"assistant","content":[]}`
 				asst, _ = sjson.SetRaw(asst, "content.-1", block)
-				out, _ = sjson.SetRaw(out, "messages.-1", asst)
+				messages = append(messages, asst)
 				thinkingTurnOpen = true
 
 			case "function_call_output":
@@ -363,10 +374,14 @@ func ConvertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 
 				usr := `{"role":"user","content":[]}`
 				usr, _ = sjson.SetRaw(usr, "content.-1", toolResult)
-				out, _ = sjson.SetRaw(out, "messages.-1", usr)
+				messages = append(messages, usr)
 			}
 			return true
 		})
+	}
+
+	if len(messages) > 0 {
+		out, _ = sjson.SetRaw(out, "messages", "["+strings.Join(messages, ",")+"]")
 	}
 
 	out = stripTrailingClaudeThinking(out)

@@ -16,7 +16,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/thinking"
 	translatorcommon "github.com/router-for-me/CLIProxyAPI/v6/internal/translator/common"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -163,6 +162,14 @@ func ConvertGeminiRequestToClaude(modelName string, inputRawJSON []byte, stream 
 		}
 	}
 
+	// Messages are collected here and written into out once, after the
+	// contents. sjson.SetRaw(out, "messages.-1", ...) per message copied the
+	// whole request each time, which grew with the square of the history (see
+	// translatorcommon.JSONArrayBuilder). The template already holds
+	// "messages":[] and nothing reads it back before it is written, so the
+	// result is byte-for-byte the same.
+	var messageNodes translatorcommon.JSONArrayBuilder
+
 	// System instruction conversion to Claude Code format
 	if sysInstr := root.Get("system_instruction"); sysInstr.Exists() {
 		if parts := sysInstr.Get("parts"); parts.Exists() && parts.IsArray() {
@@ -180,7 +187,7 @@ func ConvertGeminiRequestToClaude(modelName string, inputRawJSON []byte, stream 
 				// Create system message in Claude Code format
 				systemMessage := `{"role":"user","content":[{"type":"text","text":""}]}`
 				systemMessage, _ = sjson.Set(systemMessage, "content.0.text", systemText.String())
-				out, _ = sjson.SetRaw(out, "messages.-1", systemMessage)
+				messageNodes.Append(systemMessage)
 			}
 		}
 	}
@@ -297,11 +304,14 @@ func ConvertGeminiRequestToClaude(modelName string, inputRawJSON []byte, stream 
 
 			// Only add message if it has content
 			if contentArray := gjson.Get(msg, "content"); contentArray.Exists() && len(contentArray.Array()) > 0 {
-				out, _ = sjson.SetRaw(out, "messages.-1", msg)
+				messageNodes.Append(msg)
 			}
 
 			return true
 		})
+	}
+	if messageNodes.Len() > 0 {
+		out, _ = sjson.SetRaw(out, "messages", messageNodes.String())
 	}
 
 	// Tools mapping: Gemini functionDeclarations -> Claude Code tools
@@ -365,13 +375,7 @@ func ConvertGeminiRequestToClaude(modelName string, inputRawJSON []byte, stream 
 	out, _ = sjson.Set(out, "stream", stream)
 
 	// Convert tool parameter types to lowercase for Claude Code compatibility
-	var pathsToLower []string
-	toolsResult := gjson.Get(out, "tools")
-	util.Walk(toolsResult, "", "type", &pathsToLower)
-	for _, p := range pathsToLower {
-		fullPath := fmt.Sprintf("tools.%s", p)
-		out, _ = sjson.Set(out, fullPath, strings.ToLower(gjson.Get(out, fullPath).String()))
-	}
+	out = translatorcommon.LowerToolSchemaTypes(out)
 
 	return translatorcommon.OutputFormatFromGemini(root).WriteClaude([]byte(out), modelName)
 }

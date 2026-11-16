@@ -9,8 +9,8 @@ import (
 	"fmt"
 	"strings"
 
+	translatorcommon "github.com/router-for-me/CLIProxyAPI/v6/internal/translator/common"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/translator/gemini/common"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -54,9 +54,9 @@ func ConvertGeminiRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 
 	// The three edits below run in the order they always have. Each one patches
 	// small elements and splices them back in one pass instead of editing the
-	// whole request once per element; see antigravity_gemini_request_patch.go.
-	rawJSON = normalizeContentRoles(rawJSON)
-	rawJSON = renameFunctionDeclarationParameters(rawJSON)
+	// whole request once per element; see common.RawPatch.
+	rawJSON = common.NormalizeContentRoles(rawJSON, "request.contents")
+	rawJSON = common.RenameFunctionDeclarationParameters(rawJSON, "request.tools")
 
 	// Gemini-specific handling for non-Claude models:
 	// - Add skip_thought_signature_validator to functionCall parts so upstream can bypass signature validation.
@@ -66,62 +66,6 @@ func ConvertGeminiRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 	}
 
 	return common.AttachDefaultSafetySettings(rawJSON, "request.safetySettings")
-}
-
-// normalizeContentRolesSlow is the original per-path role edit. It now runs
-// only when normalizeContentRoles cannot patch elements in place.
-func normalizeContentRolesSlow(rawJSON []byte) []byte {
-	// Normalize roles in request.contents: default to valid values if missing/invalid
-	contents := gjson.GetBytes(rawJSON, "request.contents")
-	if contents.Exists() {
-		prevRole := ""
-		idx := 0
-		contents.ForEach(func(_ gjson.Result, value gjson.Result) bool {
-			role := value.Get("role").String()
-			valid := role == "user" || role == "model"
-			if role == "" || !valid {
-				var newRole string
-				if prevRole == "" {
-					newRole = "user"
-				} else if prevRole == "user" {
-					newRole = "model"
-				} else {
-					newRole = "user"
-				}
-				path := fmt.Sprintf("request.contents.%d.role", idx)
-				rawJSON, _ = sjson.SetBytes(rawJSON, path, newRole)
-				role = newRole
-			}
-			prevRole = role
-			idx++
-			return true
-		})
-	}
-	return rawJSON
-}
-
-// renameFunctionDeclarationParametersSlow is the original per-path rename. It
-// now runs only when renameFunctionDeclarationParameters cannot patch the
-// declarations in place.
-func renameFunctionDeclarationParametersSlow(rawJSON []byte) []byte {
-	toolsResult := gjson.GetBytes(rawJSON, "request.tools")
-	if toolsResult.Exists() && toolsResult.IsArray() {
-		toolResults := toolsResult.Array()
-		for i := 0; i < len(toolResults); i++ {
-			functionDeclarationsResult := gjson.GetBytes(rawJSON, fmt.Sprintf("request.tools.%d.function_declarations", i))
-			if functionDeclarationsResult.Exists() && functionDeclarationsResult.IsArray() {
-				functionDeclarationsResults := functionDeclarationsResult.Array()
-				for j := 0; j < len(functionDeclarationsResults); j++ {
-					parametersResult := gjson.GetBytes(rawJSON, fmt.Sprintf("request.tools.%d.function_declarations.%d.parameters", i, j))
-					if parametersResult.Exists() {
-						strJson, _ := util.RenameKey(string(rawJSON), fmt.Sprintf("request.tools.%d.function_declarations.%d.parameters", i, j), fmt.Sprintf("request.tools.%d.function_declarations.%d.parametersJsonSchema", i, j))
-						rawJSON = []byte(strJson)
-					}
-				}
-			}
-		}
-	}
-	return rawJSON
 }
 
 // markThoughtSignaturesToSkipSlow is the original per-path sentinel edit. It
@@ -214,7 +158,7 @@ func fixCLIToolResponse(input string) (string, error) {
 	// Initialize data structures for processing and grouping. The new contents
 	// array is built once instead of appending to a wrapper document per
 	// content, which re-parsed and copied everything appended so far each time.
-	var newContents common.JSONArrayBuilder
+	var newContents translatorcommon.JSONArrayBuilder
 	var pendingGroups []*FunctionCallGroup // Groups awaiting completion with responses
 	var collectedResponses []gjson.Result  // Standalone responses to be matched
 
@@ -326,7 +270,7 @@ func fixCLIToolResponse(input string) (string, error) {
 // {"parts":[],"role":"function"} produced. It reports false when no response
 // yields a part, where the old code skipped the content.
 func mergedFunctionResponseContent(responses []gjson.Result) (string, bool) {
-	var parts common.JSONArrayBuilder
+	var parts translatorcommon.JSONArrayBuilder
 	for _, response := range responses {
 		if partRaw := parseFunctionResponseRaw(response); partRaw != "" {
 			parts.Append(partRaw)
