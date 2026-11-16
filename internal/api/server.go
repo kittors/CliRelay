@@ -124,6 +124,9 @@ func (s *Server) Start() error {
 
 	s.startConfigSync()
 	s.egress.Start(context.Background())
+	s.startNodeMetrics()
+	// The listener is opened here rather than by ListenAndServe so that the
+	// node snapshot can count the bytes of every connection.
 	useTLS := s.cfg != nil && s.cfg.TLS.Enable
 	if useTLS {
 		cert := strings.TrimSpace(s.cfg.TLS.Cert)
@@ -132,14 +135,24 @@ func (s *Server) Start() error {
 			return fmt.Errorf("failed to start HTTPS server: tls.cert or tls.key is empty")
 		}
 		log.Debugf("Starting API server on %s with TLS", s.server.Addr)
-		if errServeTLS := s.server.ListenAndServeTLS(cert, key); errServeTLS != nil && !errors.Is(errServeTLS, http.ErrServerClosed) {
+		ln, errListen := s.listenCounted(":https")
+		if errListen != nil {
+			return fmt.Errorf("failed to start HTTPS server: %v", errListen)
+		}
+		defer func() { _ = ln.Close() }()
+		if errServeTLS := s.server.ServeTLS(ln, cert, key); errServeTLS != nil && !errors.Is(errServeTLS, http.ErrServerClosed) {
 			return fmt.Errorf("failed to start HTTPS server: %v", errServeTLS)
 		}
 		return nil
 	}
 
 	log.Debugf("Starting API server on %s", s.server.Addr)
-	if errServe := s.server.ListenAndServe(); errServe != nil && !errors.Is(errServe, http.ErrServerClosed) {
+	ln, errListen := s.listenCounted(":http")
+	if errListen != nil {
+		return fmt.Errorf("failed to start HTTP server: %v", errListen)
+	}
+	defer func() { _ = ln.Close() }()
+	if errServe := s.server.Serve(ln); errServe != nil && !errors.Is(errServe, http.ErrServerClosed) {
 		return fmt.Errorf("failed to start HTTP server: %v", errServe)
 	}
 
@@ -161,6 +174,7 @@ func (s *Server) Stop(ctx context.Context) error {
 		}
 	}
 
+	s.stopNodeMetrics()
 	s.stopConfigSync()
 	s.egress.Stop()
 	if s.mgmt != nil {

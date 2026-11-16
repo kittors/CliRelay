@@ -33,6 +33,11 @@ type Options struct {
 	Version string
 	// Advertise is an optional human-readable address shown in status views.
 	Advertise string
+	// Snapshot returns this node's latest resource snapshot as JSON (package
+	// nodemetrics), or nil while there is none. Every heartbeat stores it in
+	// the node's membership row so any node can show all of them. Nil means
+	// rows carry no snapshot.
+	Snapshot func() json.RawMessage
 }
 
 // NodeStatus is one row of the membership view.
@@ -45,6 +50,12 @@ type NodeStatus struct {
 	Leader    bool      `json:"leader"`
 	Active    bool      `json:"active"`
 	Self      bool      `json:"self"`
+	// Snapshot is the node's latest resource snapshot (package nodemetrics)
+	// and SnapshotAt when it was stored. Both are left out when the row has
+	// none, or only one an older build of the node left behind (see
+	// listNodesSQL).
+	Snapshot   json.RawMessage `json:"snapshot,omitempty"`
+	SnapshotAt *time.Time      `json:"snapshot_at,omitempty"`
 }
 
 // ErrPayloadTooLarge is returned by Publish when the encoded payload would
@@ -64,6 +75,8 @@ type transport interface {
 type Coordinator struct {
 	enabled bool
 	nodeID  string
+	// version is the build reported for this node.
+	version string
 
 	transport transport
 
@@ -118,6 +131,10 @@ func SetDefault(c *Coordinator) {
 
 var singleNode = newCoordinator(false, DefaultNodeID())
 
+// processStartedAt is when this package was initialised, within moments of
+// the process starting. A single node reports it as its start.
+var processStartedAt = time.Now()
+
 // DefaultNodeID returns the host name, or "local" when it is unavailable.
 func DefaultNodeID() string {
 	if id := strings.TrimSpace(os.Getenv(EnvNodeID)); id != "" {
@@ -143,6 +160,7 @@ func Start(ctx context.Context, opts Options) (*Coordinator, error) {
 	}
 	if !opts.Enabled {
 		c := newCoordinator(false, nodeID)
+		c.version = strings.TrimSpace(opts.Version)
 		SetDefault(c)
 		return c, nil
 	}
@@ -169,6 +187,7 @@ func Prepare(opts Options) *Coordinator {
 		nodeID = DefaultNodeID()
 	}
 	c := newCoordinator(true, nodeID)
+	c.version = strings.TrimSpace(opts.Version)
 	c.prepared = true
 	newBackendSlot(c)
 	SetDefault(c)
@@ -224,10 +243,27 @@ func (c *Coordinator) ActiveNodeCount() int {
 // Nodes returns the membership view. A single node reports only itself.
 func (c *Coordinator) Nodes(ctx context.Context) ([]NodeStatus, error) {
 	if c == nil || c.nodesProvider == nil {
-		now := time.Now()
-		return []NodeStatus{{NodeID: c.NodeID(), StartedAt: now, LastSeen: now, Leader: true, Active: true, Self: true}}, nil
+		return []NodeStatus{c.Self()}, nil
 	}
 	return c.nodesProvider(ctx)
+}
+
+// Self describes this node from what the process knows, without the
+// database: what a single node reports, and what a cluster node falls back
+// to while it cannot read the membership table.
+func (c *Coordinator) Self() NodeStatus {
+	self := NodeStatus{
+		NodeID:    c.NodeID(),
+		StartedAt: processStartedAt,
+		LastSeen:  time.Now(),
+		Leader:    c.IsLeader(),
+		Active:    true,
+		Self:      true,
+	}
+	if c != nil {
+		self.Version = c.version
+	}
+	return self
 }
 
 // OnLeadershipChange registers fn to be called whenever this node gains or

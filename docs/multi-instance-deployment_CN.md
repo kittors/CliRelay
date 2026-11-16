@@ -368,6 +368,7 @@ GitHub Actions 的 `Deploy CliRelay` 按节点逐台部署：
   - 主节点所在机器整台消失时，锁约 30 秒内释放，靠的是会话级 TCP keepalive。不设的话，Linux 默认要约 2 小时。
   - 以下维护任务只在主节点运行：账号状态探测、OpenRouter 价格同步、共享表的日志维护与保留、用量汇总追平、会话与审计清理、IP 规则清理、OAuth 会话与异步任务过期清理、warmup 策略调度。
 - **成员表** `cluster_nodes`：每 5 秒心跳一次。`GET /v0/management/cluster` 可以查看所有节点、主节点和在线数；每个响应都带 `X-CliRelay-Node`，标明请求落在哪台。
+- **节点资源快照**：每次心跳同时把本节点的资源快照（`internal/nodemetrics`，每 5 秒采一次）写进 `snapshot` 列，`GET /v0/management/cluster` 给每个节点带上 `snapshot`、`snapshot_at`，并返回 `capabilities.node_metrics: true`。快照包括：从 `/proc/stat` 算出的整机 CPU，执行（`busy_cores`）和被宿主机拿走的时间（`steal_cores`）分开；负载、内存；slot 所在 cgroup 的配额、用量与限流（`cpu.stat`、`cpu.max`、`memory.current/high/max`）；在途请求、最近一分钟的请求数与入 / 出字节；出口熔断；库与 Redis 的往返耗时；版本和启动时间。整机 CPU 必须从 `/proc/stat` 算：内核没开 `CONFIG_PARAVIRT_TIME_ACCOUNTING` 时，cgroup 和进程的 CPU 都含 steal。单节点不写这张表，但同样在接口里报本机快照；读不到的字段（其他操作系统、cgroup v1 主机）留空。
 - **迁移锁**：数据库迁移、YAML 导入和各类回填都在集群级 advisory lock 下执行，两台同时升级也不会互相踩踏。
 
 ### 6.2 凭据（OAuth 账号）

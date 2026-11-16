@@ -32,6 +32,10 @@ var (
 	redisCtx    = context.Background()
 	redisCancel context.CancelFunc
 	redisSyncWg sync.WaitGroup
+	// redisPingTarget mirrors redisClient for PingRedis, which runs on the
+	// node metrics goroutine: redisClient itself is only touched by
+	// InitRedis, StopRedis and the sync loop they own.
+	redisPingTarget atomic.Pointer[redis.Client]
 )
 
 const redisUsageKey = "cliproxy:usage_stats_snapshot"
@@ -95,6 +99,7 @@ func InitRedis(cfg config.RedisConfig) {
 	}
 
 	log.Infof("Redis persistence for usage statistics activated on %s (DB: %d)", cfg.Addr, cfg.DB)
+	redisPingTarget.Store(redisClient)
 
 	// Attempt to load existing data
 	if err := loadFromRedis(); err != nil {
@@ -125,6 +130,7 @@ func StopRedis() {
 		redisCancel()
 		redisSyncWg.Wait()
 	}
+	redisPingTarget.Store(nil)
 	if redisClient != nil {
 		saveToRedis() // Perform a final save
 		redisClient.Close()
@@ -134,6 +140,17 @@ func StopRedis() {
 	redisCancel = nil
 	redisCtx = context.Background()
 	CloseDB()
+}
+
+// PingRedis makes one round trip to the usage persistence Redis, for the
+// node's resource snapshot. configured is false when usage persistence does
+// not use Redis.
+func PingRedis(ctx context.Context) (configured bool, err error) {
+	client := redisPingTarget.Load()
+	if client == nil {
+		return false, nil
+	}
+	return true, client.Ping(ctx).Err()
 }
 
 func redisSyncLoop() {
