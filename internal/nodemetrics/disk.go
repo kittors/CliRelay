@@ -44,10 +44,14 @@ const (
 	diskGrowthSpan = time.Hour
 	// diskGrowthStep keeps one point a minute in the growth history.
 	diskGrowthStep = time.Minute
-	// diskGrowthMinWindow is the shortest window the growth is reported for:
-	// over a few minutes a log rotation or one large request body swamps the
-	// trend.
-	diskGrowthMinWindow = 10 * time.Minute
+	// diskGrowthMinWindow is the shortest window the growth is reported for.
+	// The console extrapolates it days ahead, so ten minutes after a restart
+	// (every deploy) was too little: 10 MB more turned an empty 2 GB tmpfs
+	// into "full in 30 hours" on 2026-11-17.
+	diskGrowthMinWindow = 30 * time.Minute
+	// diskGrowthEdge is how much of each end of the window the low-water
+	// marks are taken from; see diskGrowth.
+	diskGrowthEdge = 10 * time.Minute
 )
 
 // errDisksUnsupported is what statPath returns where filesystems cannot be
@@ -97,8 +101,11 @@ type Disk struct {
 }
 
 // DiskGrowth is how the used space of a filesystem changed over about the
-// last hour (since the process started, while it is younger). The console
-// divides the available space by it to estimate when the filesystem fills.
+// last hour (since the process started, while it is younger), measured
+// between the least space used near the start of that window and the least
+// used near its end, so that files which come and go do not count. The
+// window is the time between those two points. The console divides the
+// available space by it to estimate when the filesystem fills.
 type DiskGrowth struct {
 	WindowSeconds float64 `json:"window_seconds"`
 	// UsedDeltaBytes is negative when space was freed.
@@ -208,6 +215,14 @@ func (c *Collector) sampleDisks(now time.Time, paths []DiskPath) []Disk {
 // diskGrowth records used space once a minute for the filesystem under key
 // and returns its change over the window, nil while the window is shorter
 // than diskGrowthMinWindow.
+//
+// The change is between low-water marks: the least used in the first
+// diskGrowthEdge of the window and the least used in the last one (the
+// current sample included). A file that is there for a few minutes and gone
+// again, such as a large request body in the tmpfs body cache, lifts single
+// samples but not those minimums, so only space that stays counts as growth.
+// Comparing the newest sample with the oldest read a passing 10 MB body on an
+// empty 2 GB tmpfs as a trend.
 func (c *Collector) diskGrowth(key string, now time.Time, used uint64) *DiskGrowth {
 	if c.diskHistory == nil {
 		c.diskHistory = map[string][]diskSample{}
@@ -226,9 +241,30 @@ func (c *Collector) diskGrowth(key string, now time.Time, used uint64) *DiskGrow
 	if elapsed < diskGrowthMinWindow {
 		return nil
 	}
+	// Ties keep the earliest point at the start and the current sample at the
+	// end, so a flat series spans the whole window.
+	early := start
+	for _, s := range history {
+		if s.at.After(start.at.Add(diskGrowthEdge)) {
+			break
+		}
+		if s.used < early.used {
+			early = s
+		}
+	}
+	late := diskSample{at: now, used: used}
+	for _, s := range history {
+		if !s.at.Before(now.Add(-diskGrowthEdge)) && s.used < late.used {
+			late = s
+		}
+	}
+	span := late.at.Sub(early.at)
+	if span <= 0 {
+		return nil
+	}
 	return &DiskGrowth{
-		WindowSeconds:  round3(elapsed.Seconds()),
-		UsedDeltaBytes: int64(used) - int64(start.used),
+		WindowSeconds:  round3(span.Seconds()),
+		UsedDeltaBytes: int64(late.used) - int64(early.used),
 	}
 }
 
