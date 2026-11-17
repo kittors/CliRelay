@@ -11,8 +11,8 @@ import (
 
 func TestRuntimeMigrationsCoverCoreTables(t *testing.T) {
 	migrations := RuntimeMigrations()
-	if len(migrations) != 50 {
-		t.Fatalf("RuntimeMigrations len = %d, want 50", len(migrations))
+	if len(migrations) != 51 {
+		t.Fatalf("RuntimeMigrations len = %d, want 51", len(migrations))
 	}
 	// Membership table of multi-instance deployments.
 	if migrations[31].Version != "202609250001_cluster_nodes" {
@@ -167,6 +167,14 @@ func TestRuntimeMigrationsCoverCoreTables(t *testing.T) {
 		t.Fatalf("cluster node snapshot migration = %q: %q", got.Version, got.SQL)
 	} else if strings.Contains(got.SQL, "DEFAULT") || strings.Contains(got.SQL, "UPDATE") || strings.Contains(got.SQL, "INDEX") {
 		t.Fatalf("cluster node snapshot migration must only add nullable columns: %q", got.SQL)
+	}
+	// Host snapshots: a table of their own, nothing that touches the
+	// membership table the nodes and dnswatch read.
+	if got := migrations[50]; got.Version != "202611170002_cluster_hosts" ||
+		!strings.Contains(got.SQL, "CREATE TABLE IF NOT EXISTS cluster_hosts") {
+		t.Fatalf("cluster hosts migration = %q: %q", got.Version, got.SQL)
+	} else if strings.Contains(got.SQL, "cluster_nodes") || strings.Contains(got.SQL, "ALTER TABLE") || strings.Contains(got.SQL, "DROP") {
+		t.Fatalf("cluster hosts migration must only create its own table: %q", got.SQL)
 	}
 	// Appended from laterRuntimeMigrations() because migrations.go sits at its
 	// structure-gate size ceiling.

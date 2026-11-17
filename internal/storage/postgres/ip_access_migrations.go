@@ -69,6 +69,9 @@ func laterRuntimeMigrations() []Migration {
 		{Version: "202611130001_access_freezes", SQL: accessFreezesSQL},
 		// Resource snapshots in the membership rows. See clusterNodeSnapshotSQL.
 		{Version: "202611170001_cluster_node_snapshot", SQL: clusterNodeSnapshotSQL},
+		// Machine snapshots of hosts without a node (the database host). See
+		// clusterHostsSQL.
+		{Version: "202611170002_cluster_hosts", SQL: clusterHostsSQL},
 	}
 }
 

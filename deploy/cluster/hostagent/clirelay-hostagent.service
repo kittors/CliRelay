@@ -1,0 +1,101 @@
+# clirelay-hostagent: reports a machine that runs no CliRelay node (the
+# database host) to the console: CPU split into running and stolen time,
+# load, memory, and the filesystems of the directories given with -path. It
+# writes one row of the cluster_hosts table of the shared PostgreSQL every
+# 15 s; GET /v0/management/cluster lists it under "hosts", and the panel shows
+# the "database" host's disks next to the database.
+#
+# SQL can tell the leader how large the database is, not how much room is left
+# under it: that is why this runs on the database host itself.
+#
+# Requires systemd >= 248 for LoadCredential= with the %d specifier, and nodes
+# new enough to have created cluster_hosts (migration 202611170002).
+#
+#   install -m 0755 clirelay-hostagent /usr/local/bin/clirelay-hostagent
+#   install -d -m 0755 /etc/clirelay-hostagent
+#   install -m 0600 /dev/null /etc/clirelay-hostagent/dsn   # then write the DSN into it
+#   install -m 0644 clirelay-hostagent.service /etc/systemd/system/
+#   # edit the -path lines below to the database's data and backup directories
+#   /usr/local/bin/clirelay-hostagent -once -path database=/opt/clirelay-data/pg   # check what it sees
+#   systemctl daemon-reload && systemctl enable --now clirelay-hostagent
+#
+# The DSN points at the database over the loopback address, e.g.
+#   postgres://clirelay_hostagent:<password>@127.0.0.1:25432/cliproxy?sslmode=disable
+# with a role that may only write this table (as a superuser, once):
+#   CREATE ROLE clirelay_hostagent LOGIN PASSWORD '<password>';
+#   GRANT CONNECT ON DATABASE cliproxy TO clirelay_hostagent;
+#   GRANT USAGE ON SCHEMA public TO clirelay_hostagent;
+#   GRANT SELECT, INSERT, UPDATE ON cluster_hosts TO clirelay_hostagent;
+# and, unless pg_hba.conf already admits it, a host line for that role from
+# the loopback (scram-sha-256).
+
+[Unit]
+Description=CliRelay host report (database host)
+Documentation=https://github.com/kittors/CliRelay/tree/main/deploy/cluster/hostagent
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=exec
+# The DSN stays root-only in /etc; systemd copies it into a private
+# credentials directory (%d) only this service can read.
+LoadCredential=dsn:/etc/clirelay-hostagent/dsn
+ExecStart=/usr/local/bin/clirelay-hostagent \
+    -dsn-file %d/dsn \
+    -host-id db \
+    -role database \
+    -path database=/opt/clirelay-data/pg \
+    -path backups=/opt/clirelay-cluster/backups
+Restart=always
+RestartSec=10s
+# Exit status 2 means a bad flag or DSN file, which a restart cannot fix.
+RestartPreventExitStatus=2
+
+# Unprivileged throwaway user. It reads /proc (stat, loadavg, meminfo,
+# self/mountinfo), calls statfs on the listed directories, and connects to
+# the database. statfs reads no file, but reaching a directory needs search
+# permission on every parent, and a database's data directory sits under
+# directories only root or postgres may enter: CAP_DAC_READ_SEARCH grants
+# that and nothing else. It only works without PrivateUsers=, whose user
+# namespace leaves the capability no effect on root's files. A directory it
+# still cannot reach is left out of the report, never reported on its
+# parent's filesystem.
+# Do not add ProcSubset=pid: it hides /proc/stat, /proc/loadavg and
+# /proc/meminfo. Directories under /home need ProtectHome=read-only.
+DynamicUser=yes
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH
+AmbientCapabilities=CAP_DAC_READ_SEARCH
+NoNewPrivileges=yes
+UMask=0077
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectProc=invisible
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RemoveIPC=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+SystemCallErrorNumber=EPERM
+
+# The Go runtime does not read the cgroup memory limit, so give it a soft
+# limit below MemoryMax.
+MemoryMax=64M
+Environment=GOMEMLIMIT=48MiB
+CPUQuota=20%
+
+[Install]
+WantedBy=multi-user.target

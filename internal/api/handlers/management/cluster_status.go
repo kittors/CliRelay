@@ -8,6 +8,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/cluster"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/nodemetrics"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 )
 
 // GetClusterStatus reports this node's view of the cluster: whether cluster
@@ -23,7 +24,10 @@ import (
 //
 // This node's own row carries the snapshot taken in this process, which is
 // fresher than the stored copy and also exists on a single node, which never
-// writes the membership table.
+// writes the membership table. The leader's snapshot also carries the state
+// of the PostgreSQL server (nodemetrics.Database), and "hosts" lists the
+// machines without a node that report through cmd/clirelay-hostagent, such
+// as the database host.
 func (h *Handler) GetClusterStatus(c *gin.Context) {
 	coordinator := cluster.Default()
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 3*time.Second)
@@ -49,6 +53,19 @@ func (h *Handler) GetClusterStatus(c *gin.Context) {
 	}
 	if err != nil {
 		body["nodes_error"] = err.Error()
+	}
+	// Hosts without a node (cmd/clirelay-hostagent), on PostgreSQL only: the
+	// table does not exist on SQLite. Left out when none reports.
+	if usage.RuntimeDriver() == "postgres" {
+		if db := usage.RuntimeDB(); db != nil {
+			hosts, hostsErr := cluster.ListHosts(ctx, db)
+			switch {
+			case hostsErr != nil:
+				body["hosts_error"] = hostsErr.Error()
+			case len(hosts) > 0:
+				body["hosts"] = hosts
+			}
+		}
 	}
 	c.JSON(http.StatusOK, body)
 }

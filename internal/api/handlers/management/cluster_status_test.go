@@ -19,6 +19,7 @@ type clusterStatusBody struct {
 	IsLeader    bool                 `json:"is_leader"`
 	ActiveNodes int                  `json:"active_nodes"`
 	Nodes       []cluster.NodeStatus `json:"nodes"`
+	Hosts       []cluster.HostStatus `json:"hosts"`
 }
 
 // sampleNodeMetrics makes sure the process-wide collector has a snapshot.
@@ -61,6 +62,10 @@ func TestGetClusterStatusSingleNode(t *testing.T) {
 	body := getClusterStatus(t)
 	if body.Enabled || !body.IsLeader || body.ActiveNodes != 1 || len(body.Nodes) != 1 || !body.Nodes[0].Self || body.NodeID == "" {
 		t.Fatalf("single node status = %+v", body)
+	}
+	// No PostgreSQL runtime database here, so no cluster_hosts to read.
+	if body.Hosts != nil {
+		t.Fatalf("hosts = %+v, want none without PostgreSQL", body.Hosts)
 	}
 }
 

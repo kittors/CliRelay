@@ -49,6 +49,13 @@ type Sources struct {
 	// SharedRedis reports the cluster Redis; nil, or a nil result, on a
 	// single node.
 	SharedRedis func() *SharedRedis
+	// DiskPaths lists the directories whose filesystems the snapshot
+	// reports, besides the root filesystem, which is always reported.
+	DiskPaths func() []DiskPath
+	// Database returns the latest sample of the PostgreSQL server
+	// (DatabaseProbe.Latest); nil, or a nil result, on nodes that do not
+	// sample it.
+	Database func() *Database
 }
 
 // Options configures a Collector. Zero values take the defaults; tests set
@@ -81,6 +88,11 @@ type Collector struct {
 	// history holds traffic counts; it starts at the process start, when the
 	// counters were zero.
 	history []trafficSample
+	// diskHistory holds one point a minute of each filesystem's used space,
+	// keyed by mount point and device, for DiskGrowth.
+	diskHistory map[string][]diskSample
+	// statPath reads a filesystem; tests replace it.
+	statPath func(path string) (fsStat, error)
 
 	latest atomic.Pointer[published]
 
@@ -142,7 +154,8 @@ func New(opts Options) *Collector {
 		startedAt: opts.StartedAt,
 		// The counters start at zero with the process, which makes its start
 		// the first point of the traffic window.
-		history: []trafficSample{{at: opts.StartedAt}},
+		history:  []trafficSample{{at: opts.StartedAt}},
+		statPath: platformStatPath,
 	}
 }
 
@@ -239,6 +252,17 @@ func (c *Collector) SnapshotJSON() json.RawMessage {
 	return raw
 }
 
+// Sample takes one snapshot now, publishes it and returns it; ok is false
+// when ctx ended during the sample. The loop started by Start calls the same
+// thing; this is for one-off reads such as clirelay-hostagent -once.
+func (c *Collector) Sample(ctx context.Context) (snapshot Snapshot, ok bool) {
+	c.sample(ctx)
+	if ctx.Err() != nil {
+		return Snapshot{}, false
+	}
+	return c.Latest()
+}
+
 // sample takes one snapshot and publishes it.
 func (c *Collector) sample(ctx context.Context) {
 	c.sampleMu.Lock()
@@ -259,12 +283,21 @@ func (c *Collector) sample(ctx context.Context) {
 	}
 	snap.Host = c.sampleHost(now)
 	snap.Cgroup = c.sampleCgroup(now)
+	var diskPaths []DiskPath
+	if sources.DiskPaths != nil {
+		diskPaths = sources.DiskPaths()
+	}
+	snap.Disks = c.sampleDisks(now, diskPaths)
 	snap.Traffic = c.sampleTraffic(now, sources)
 	if sources.Egress != nil {
 		snap.Egress = sources.Egress()
 	}
 	if sources.SharedRedis != nil {
 		snap.SharedRedis = sources.SharedRedis()
+	}
+	if sources.Database != nil {
+		// Sampled on its own timer by the leader; this only reads the latest.
+		snap.Database = sources.Database()
 	}
 	// The round trips go last: they are the only part that can take a while.
 	if sources.PingDB != nil {

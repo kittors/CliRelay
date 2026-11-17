@@ -1,10 +1,13 @@
 // Package nodemetrics samples what one CliRelay process and the machine it
 // runs on are doing: host CPU split into running and stolen time, load,
-// memory, the process's cgroup quota, usage and throttling, in-flight
-// requests, request and byte counts, the egress breaker, and the round trips
-// to the database and Redis. Cluster nodes publish the latest snapshot with
-// their membership heartbeat so the console can show every node; a single
-// node reports its own.
+// memory, the filesystems it writes to, the process's cgroup quota, usage and
+// throttling, in-flight requests, request and byte counts, the egress
+// breaker, and the round trips to the database and Redis. Cluster nodes
+// publish the latest snapshot with their membership heartbeat so the console
+// can show every node; a single node reports its own. The leader also
+// samples the PostgreSQL server itself (DatabaseProbe), and a host without a
+// node, such as the database host, can publish the machine part alone with
+// cmd/clirelay-hostagent.
 //
 // Host CPU comes from /proc/stat rather than from the process or its cgroup.
 // On a kernel built without CONFIG_PARAVIRT_TIME_ACCOUNTING (hk-155 in
@@ -39,8 +42,12 @@ type Snapshot struct {
 	// left out when there is none.
 	MemoryLimitBytes *int64 `json:"memory_limit_bytes,omitempty"`
 
-	Host    *Host      `json:"host,omitempty"`
-	Cgroup  *Cgroup    `json:"cgroup,omitempty"`
+	Host   *Host   `json:"host,omitempty"`
+	Cgroup *Cgroup `json:"cgroup,omitempty"`
+	// Disks are the filesystems holding the root and the directories the
+	// process writes to (see DiskPath), one entry per filesystem. Left out
+	// outside Linux.
+	Disks   []Disk     `json:"disks,omitempty"`
 	Traffic Traffic    `json:"traffic"`
 	Egress  *Egress    `json:"egress,omitempty"`
 	DB      *RoundTrip `json:"db,omitempty"`
@@ -48,6 +55,9 @@ type Snapshot struct {
 	// SharedRedis is the cluster Redis as this node's limits see it; left
 	// out on a single node.
 	SharedRedis *SharedRedis `json:"shared_redis,omitempty"`
+	// Database is the state of the PostgreSQL server itself (see Database).
+	// Only the leader samples it, so only the leader's snapshot has it.
+	Database *Database `json:"database,omitempty"`
 }
 
 // Host describes the whole machine.
