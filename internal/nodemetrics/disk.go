@@ -68,7 +68,14 @@ type Disk struct {
 	Mount string `json:"mount"`
 	// FSType is the filesystem type from /proc/self/mountinfo, e.g. "xfs";
 	// "tmpfs" lives in memory. Left out when the mount is not listed.
-	FSType   string     `json:"fs_type,omitempty"`
+	FSType string `json:"fs_type,omitempty"`
+	// ReadOnly means the filesystem itself is read-only, as when the kernel
+	// remounted it after errors (errors=remount-ro). It is read from the
+	// super options in mountinfo, not from statfs: statfs reports the mount
+	// the process sees, and a sandboxed service (ProtectSystem=strict, as
+	// clirelay-hostagent runs) sees / as a read-only bind mount of a
+	// filesystem that is still written. Without the mount in mountinfo it
+	// falls back to statfs.
 	ReadOnly bool       `json:"read_only,omitempty"`
 	Paths    []DiskPath `json:"paths"`
 
@@ -117,6 +124,9 @@ type mountEntry struct {
 	major, minor uint32
 	point        string
 	fsType       string
+	// readOnly is set when the super options, the filesystem's own state
+	// shared by every mount of it, include "ro". See Disk.ReadOnly.
+	readOnly bool
 }
 
 type diskSample struct {
@@ -152,6 +162,11 @@ func (c *Collector) sampleDisks(now time.Time, paths []DiskPath) []Disk {
 			mount := mountFor(mounts, resolved, stat.major, stat.minor)
 			disk := diskFromStat(stat)
 			disk.Mount, disk.FSType = mount.point, mount.fsType
+			if mount.point != "" && mount.major == stat.major && mount.minor == stat.minor {
+				// The filesystem's state, not that of the view this process
+				// has of it; see Disk.ReadOnly.
+				disk.ReadOnly = mount.readOnly
+			}
 			if disk.Mount == "" {
 				disk.Mount = resolved
 			}
@@ -335,8 +350,9 @@ func readMountInfo(root string) ([]mountEntry, bool) {
 //
 //	36 35 98:0 /mnt1 /mnt2 rw,noatime master:1 - ext3 /dev/root rw,errors=continue
 //
-// keeping the device, the mount point (field 5) and the filesystem type (the
-// first field after the "-" separator). Lines it cannot read are skipped.
+// keeping the device, the mount point (field 5), the filesystem type (the
+// first field after the "-" separator) and whether the super options (the
+// third field after it) include "ro". Lines it cannot read are skipped.
 func parseMountInfo(data []byte) []mountEntry {
 	var mounts []mountEntry
 	scanner := bufio.NewScanner(bytes.NewReader(data))
@@ -355,21 +371,36 @@ func parseMountInfo(data []byte) []mountEntry {
 		if errMajor != nil || errMinor != nil {
 			continue
 		}
-		fsType := ""
+		fsType, readOnly := "", false
 		for i := 6; i < len(fields)-1; i++ {
 			if fields[i] == "-" {
 				fsType = fields[i+1]
+				if i+3 < len(fields) {
+					readOnly = hasMountOption(fields[i+3], "ro")
+				}
 				break
 			}
 		}
 		mounts = append(mounts, mountEntry{
-			major:  uint32(major),
-			minor:  uint32(minor),
-			point:  unescapeMountField(fields[4]),
-			fsType: fsType,
+			major:    uint32(major),
+			minor:    uint32(minor),
+			point:    unescapeMountField(fields[4]),
+			fsType:   fsType,
+			readOnly: readOnly,
 		})
 	}
 	return mounts
+}
+
+// hasMountOption reports whether the comma-separated options include name
+// on its own ("errors=remount-ro" is not "ro").
+func hasMountOption(options, name string) bool {
+	for _, option := range strings.Split(options, ",") {
+		if option == name {
+			return true
+		}
+	}
+	return false
 }
 
 // unescapeMountField undoes the octal escapes mountinfo uses for space, tab,

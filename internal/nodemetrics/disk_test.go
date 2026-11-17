@@ -33,6 +33,30 @@ func TestParseMountInfo(t *testing.T) {
 	if got := mounts[4].point; got != "/mnt/data disk" {
 		t.Fatalf("escaped mount point = %q, want %q", got, "/mnt/data disk")
 	}
+	for _, m := range mounts {
+		if m.readOnly {
+			t.Fatalf("%s read-only, but every filesystem in the fixture is mounted rw", m.point)
+		}
+	}
+}
+
+// Whether a filesystem is read-only comes from its super options, not from
+// the options of the mount. The first line is / as clirelay-hostagent sees it
+// on the database host under ProtectSystem=strict (2026-11-17): a read-only
+// bind mount of a filesystem still mounted read-write.
+func TestParseMountInfoReadsReadOnlyFromTheSuperOptions(t *testing.T) {
+	mounts := parseMountInfo([]byte("2559 2465 252:1 / / ro,nosuid,relatime shared:786 master:1 - ext4 /dev/vda1 rw,discard,errors=remount-ro\n" +
+		"60 22 8:33 / /srv rw,relatime shared:30 - ext4 /dev/sdc1 ro,errors=remount-ro\n" +
+		"61 22 11:0 / /media/cd ro,relatime - iso9660 /dev/sr0 ro,relatime\n"))
+	if len(mounts) != 3 {
+		t.Fatalf("parsed %d mounts, want 3: %+v", len(mounts), mounts)
+	}
+	if mounts[0].readOnly {
+		t.Fatalf("a read-only view of a read-write filesystem counted as read-only: %+v", mounts[0])
+	}
+	if !mounts[1].readOnly || !mounts[2].readOnly {
+		t.Fatalf("filesystems whose super options say ro: %+v, %+v; want both read-only", mounts[1], mounts[2])
+	}
 }
 
 func TestMountForPicksTheLongestMountOfTheSameDevice(t *testing.T) {
@@ -158,6 +182,28 @@ func TestCollectorReportsOneEntryPerFilesystem(t *testing.T) {
 		if !strings.Contains(string(raw), field) {
 			t.Fatalf("disk JSON %s lacks %s", raw, field)
 		}
+	}
+}
+
+// statfs inside a sandbox reports the read-only view; the disk is read-only
+// only once the filesystem itself is.
+func TestCollectorTakesReadOnlyFromTheFilesystemNotTheView(t *testing.T) {
+	collector, _, _, fs := diskCollector(t)
+	view := fs.byPrefix["/"]
+	view.readOnly = true // what statfs says under ProtectSystem=strict
+	fs.byPrefix["/"] = view
+	collector.sample(context.Background())
+	snap, _ := collector.Latest()
+	if len(snap.Disks) == 0 || snap.Disks[0].Mount != "/" || snap.Disks[0].ReadOnly {
+		t.Fatalf("disks = %+v, want / reported writable: only the view of it is read-only", snap.Disks)
+	}
+
+	// The kernel remounted it read-only after errors.
+	writeFixture(t, collector.root, "proc/self/mountinfo", "22 1 8:1 / / rw,relatime shared:1 - ext4 /dev/sda1 ro,errors=remount-ro\n")
+	collector.sample(context.Background())
+	snap, _ = collector.Latest()
+	if len(snap.Disks) == 0 || !snap.Disks[0].ReadOnly {
+		t.Fatalf("disks = %+v, want / read-only once its super options say ro", snap.Disks)
 	}
 }
 
