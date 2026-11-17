@@ -250,6 +250,7 @@ server {                                    # 接收对端溢出：只转本机 
 - 所有节点都不就绪时，DNS 保持不动并告警，**绝不会删光记录**。
 - 先加新记录再删旧记录；只动名单内节点 IP 的 A 记录。
 - **代理记录（`proxied: true`）**：新建的记录是橙云代理记录，TTL 用 Cloudflare 的自动值（配其他 `ttl` 会被拒绝）；摘除在 Cloudflare 边缘立即生效，不用等解析器缓存过期。Cloudflare 对同名 A 记录的规则是：只要有一条代理，整组都按代理处理；一条代理记录都不剩时，整组按仅 DNS 处理，节点 IP 随之公开。所以这个模式下 dnswatch 先把名单内节点的仅 DNS 记录改成代理，再做删除；某次删除会让这个域名只剩仅 DNS 记录时，删除要等改完再做。它在任何模式下都不关代理：默认的 `proxied: false` 遇到节点的代理记录时保持原样，日志告警，并在 `GET /status` 的 `proxy_mismatch` 里列出；也不会删掉一个域名的最后一条代理记录（这一轮报失败，直到人工把这个域名的代理状态理清）。
+- **主备模式（节点配 `standby: true`）**：默认所有健康节点都挂在 DNS 上，由 Cloudflare 分流。标了 `standby: true` 的节点是热备：只要还有一个主节点（没标 standby 的）能留在 DNS 上，它就不挂；主节点全都不可用，或者主节点出口探测不通而它通过时，它才按常规规则挂上；主节点恢复后先加回主节点，再撤下备用节点。适合「一台承担几乎全部流量、其余只在它挂了时顶上」的部署。配置里至少要有一个主节点；日志和告警的原因会写明 `standby node: no primary node is serving` 或 `standby node: a primary node is serving`，`GET /status` 的节点条目带 `standby: true`。
 - 维护前 `touch /etc/clirelay-dnswatch/hold`，之后只探测、不改 DNS；维护完删除这个文件。
 - 首次部署先用 `dry_run: true` 观察日志，确认无误后再关掉 dry-run。
 - Cloudflare 令牌只需要该 zone 的 DNS 编辑权限，放在 root 0600 的文件里，由 systemd `LoadCredential` 交给服务。

@@ -147,6 +147,7 @@ func TestConfigValidation(t *testing.T) {
 		{"ipv6 node", func(c *Config) { c.Nodes[0].IP = "2001:db8::1" }, "IPv4"},
 		{"unspecified node ip", func(c *Config) { c.Nodes[0].IP = "0.0.0.0" }, "IPv4"},
 		{"duplicate node ip", func(c *Config) { c.Nodes[1].IP = "203.0.113.11" }, "used twice"},
+		{"only standby nodes", func(c *Config) { c.Nodes[0].Standby, c.Nodes[1].Standby = true, true }, "without standby: true"},
 		{"relative probe path", func(c *Config) { c.Probe.Path = "readyz" }, "probe.path"},
 		{"timeout not below interval", func(c *Config) { c.Probe.Timeout = 10 * time.Second }, "shorter than probe.interval"},
 		{"negative threshold", func(c *Config) { c.Probe.FailThreshold = -1 }, "at least 1"},
