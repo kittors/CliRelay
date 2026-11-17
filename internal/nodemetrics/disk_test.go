@@ -252,15 +252,20 @@ func TestDiskGrowthCoversTheLastHour(t *testing.T) {
 	if disk := sampleRoot(); disk.Growth != nil {
 		t.Fatalf("growth at start = %+v", disk.Growth)
 	}
-	// Nine minutes later, 1 GiB more in use: still too short a window.
+	// Nine minutes later, 1 GiB more in use, and it stays: no growth is
+	// reported before half an hour of history.
 	clock.Advance(9 * time.Minute)
 	setFree(17 << 18)
 	if disk := sampleRoot(); disk.Growth != nil {
 		t.Fatalf("growth after 9 minutes = %+v", disk.Growth)
 	}
+	clock.Advance(20 * time.Minute)
+	if disk := sampleRoot(); disk.Growth != nil {
+		t.Fatalf("growth after 29 minutes = %+v, want none before 30", disk.Growth)
+	}
 	clock.Advance(time.Minute)
-	if disk := sampleRoot(); disk.Growth == nil || disk.Growth.WindowSeconds != 600 || disk.Growth.UsedDeltaBytes != 1<<30 {
-		t.Fatalf("growth after 10 minutes = %+v, want +1 GiB over 600 s", disk.Growth)
+	if disk := sampleRoot(); disk.Growth == nil || disk.Growth.WindowSeconds != 1800 || disk.Growth.UsedDeltaBytes != 1<<30 {
+		t.Fatalf("growth after 30 minutes = %+v, want +1 GiB over 1800 s", disk.Growth)
 	}
 	// Samples between the minute points do not pile up in the history.
 	for range 11 {
@@ -283,6 +288,54 @@ func TestDiskGrowthCoversTheLastHour(t *testing.T) {
 	disk := sampleRoot()
 	if disk.Growth == nil || disk.Growth.WindowSeconds > 3600 || disk.Growth.WindowSeconds < 3300 || disk.Growth.UsedDeltaBytes != -2<<30 {
 		t.Fatalf("growth after two hours = %+v, want -2 GiB over about an hour", disk.Growth)
+	}
+}
+
+// A file that comes and goes, like a large request body in the tmpfs body
+// cache, lifts single samples but not the low-water marks, so it is not
+// growth; space that stays is.
+func TestDiskGrowthIgnoresSpaceThatComesAndGoes(t *testing.T) {
+	collector, clock, _, fs := diskCollector(t)
+	rootStat := fs.byPrefix["/"]
+	setFree := func(freeBlocks uint64) {
+		s := rootStat
+		s.free, s.avail = freeBlocks, freeBlocks
+		fs.byPrefix["/"] = s
+	}
+	sampleRoot := func() Disk {
+		collector.sample(context.Background())
+		snap, _ := collector.Latest()
+		return snap.Disks[0]
+	}
+
+	// 40 quiet minutes at 12 GiB used, one sample a minute (t = 0 … 39).
+	setFree(18 << 18)
+	for range 40 {
+		sampleRoot()
+		clock.Advance(time.Minute)
+	}
+	// 2 GiB of files for a single sample (t = 40): no growth.
+	setFree(16 << 18)
+	if g := sampleRoot().Growth; g == nil || g.UsedDeltaBytes != 0 {
+		t.Fatalf("growth with a passing 2 GiB file = %+v, want 0", g)
+	}
+	setFree(18 << 18)
+	clock.Advance(time.Minute)
+	sampleRoot()
+
+	// Then 256 MiB more every minute for a quarter of an hour (t = 42 … 56).
+	free := uint64(18 << 18)
+	for range 15 {
+		clock.Advance(time.Minute)
+		free -= 1 << 16
+		setFree(free)
+		sampleRoot()
+	}
+	// The low-water marks are t = 0 (12 GiB) and t = 46, the oldest point of
+	// the last ten minutes, after five steps: +1.25 GiB over 46 minutes.
+	g := sampleRoot().Growth
+	if g == nil || g.WindowSeconds != 46*60 || g.UsedDeltaBytes != 5<<28 {
+		t.Fatalf("growth = %+v, want +1.25 GiB over 2760 s", g)
 	}
 }
 
