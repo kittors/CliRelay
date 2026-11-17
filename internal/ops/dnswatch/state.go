@@ -36,11 +36,15 @@ type nodeState struct {
 	egress *nodeState
 	// sidelined and egressPending are this round's DNS verdict, set by
 	// markDesired for planDomain. sidelined drops a ready node whose egress
-	// check fails while another node is fully healthy. egressPending keeps a
+	// check fails while another node is fully healthy, and a standby node
+	// while a primary would be in DNS (see standbyHeld). egressPending keeps a
 	// node whose egress has not passed a probe yet from being added anywhere,
 	// as confirmed does for readiness.
 	sidelined     bool
 	egressPending bool
+	// standbyHeld is set with sidelined on a standby node while some primary
+	// node would be in DNS; it only changes the reason the logs give.
+	standbyHeld bool
 }
 
 // observation reports what one probe result did to a node.

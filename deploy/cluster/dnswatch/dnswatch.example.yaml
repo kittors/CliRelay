@@ -45,11 +45,20 @@ proxied: true
 
 # Application nodes (public IPv4). Only A records whose content is one of
 # these addresses are ever added or removed; every other record is left alone.
+#
+# By default every healthy node is published and Cloudflare spreads the
+# traffic over them. A node with `standby: true` is a warm spare instead: it
+# stays out of DNS while any node without it would be in DNS, takes over once
+# every such primary is down (or sidelined by the egress probe while the spare
+# passes it), and is pulled again after a primary recovers. Each hand-over
+# publishes the incoming node before it removes the outgoing one. At least one
+# node must not be standby.
 nodes:
   - name: app-1
     ip: REPLACE_WITH_APP_1_IPV4
   - name: app-2
     ip: REPLACE_WITH_APP_2_IPV4
+    # standby: true
 
 probe:
   # Each round sends GET https://<node ip><path> to every node with TLS SNI

@@ -38,6 +38,7 @@ type Status struct {
 type NodeStatus struct {
 	Name                 string     `json:"name"`
 	IP                   string     `json:"ip"`
+	Standby              bool       `json:"standby,omitempty"`
 	Healthy              bool       `json:"healthy"`
 	State                string     `json:"state"`
 	Confirmed            bool       `json:"confirmed"`
@@ -151,6 +152,7 @@ func (w *Watcher) publish() {
 		node := NodeStatus{
 			Name:                 s.Name,
 			IP:                   s.IP,
+			Standby:              s.Standby,
 			Healthy:              s.healthy,
 			State:                tier(s),
 			Confirmed:            s.confirmed,
