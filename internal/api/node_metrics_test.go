@@ -3,6 +3,7 @@ package api
 import (
 	"io"
 	"net/http"
+	"reflect"
 	"testing"
 	"time"
 
@@ -57,5 +58,33 @@ func TestServerFeedsTheNodeSnapshot(t *testing.T) {
 			t.Fatal("starting the server's node metrics should take a snapshot at once")
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// The snapshot reports the filesystems of what the process writes, and of
+// any extra directory an operator lists.
+func TestNodeDiskPathsListWhatTheProcessWrites(t *testing.T) {
+	t.Setenv(nodeDiskPathsEnv, " /srv/backups , ,/mnt/extra")
+	server := newTestServer(t)
+	uses := map[string][]string{}
+	for _, p := range server.nodeDiskPaths() {
+		uses[p.Use] = append(uses[p.Use], p.Path)
+	}
+	for _, use := range []string{nodemetrics.DiskUseWorkdir, nodemetrics.DiskUseAuth, nodemetrics.DiskUseLogs, nodemetrics.DiskUseBodyCache} {
+		if len(uses[use]) != 1 || uses[use][0] == "" {
+			t.Fatalf("paths for %s = %v (all: %v)", use, uses[use], uses)
+		}
+	}
+	if got := uses[nodemetrics.DiskUseExtra]; !reflect.DeepEqual(got, []string{"/srv/backups", "/mnt/extra"}) {
+		t.Fatalf("extra paths = %v", got)
+	}
+
+	// Resolved at most once a minute: resolving the log directory writes a
+	// probe file.
+	source := server.cachedDiskPaths()
+	first := source()
+	t.Setenv(nodeDiskPathsEnv, "/elsewhere")
+	if second := source(); !reflect.DeepEqual(first, second) {
+		t.Fatalf("paths changed within a minute: %v then %v", first, second)
 	}
 }
