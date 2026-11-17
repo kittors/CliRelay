@@ -390,6 +390,8 @@ func (w *Watcher) logDryRun(plan domainPlan, now time.Time) {
 
 func addReason(s *nodeState, now time.Time) string {
 	switch {
+	case s.Standby && !s.lastChange.Equal(now):
+		return "standby node: no primary node is serving"
 	case s.lastChange.Equal(now):
 		return fmt.Sprintf("node recovered after %d consecutive successful probes", s.successes)
 	case s.egress != nil && !s.egress.healthy:
@@ -402,6 +404,9 @@ func addReason(s *nodeState, now time.Time) string {
 }
 
 func removeReason(s *nodeState, recover int) string {
+	if s.standbyHeld {
+		return "standby node: a primary node is serving"
+	}
 	if s.sidelined {
 		e := s.egress
 		if e.successes > 0 || e.lastFailure == "" {

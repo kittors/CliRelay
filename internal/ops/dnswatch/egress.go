@@ -2,6 +2,7 @@ package dnswatch
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 )
@@ -32,10 +33,11 @@ func tier(s *nodeState) string {
 // healthy nodes when there are any and the degraded ones otherwise: a node
 // that cannot reach its proxies leaves DNS while a peer still can, and an
 // outage that degrades every node, such as the proxy provider itself being
-// down, changes nothing. With the egress probe off, every flag stays clear.
+// down, changes nothing. With the egress probe off, only the standby rule
+// below sets any flag.
 func (w *Watcher) markDesired(anyHealthy bool) {
 	for _, s := range w.nodes {
-		s.sidelined, s.egressPending = false, false
+		s.sidelined, s.egressPending, s.standbyHeld = false, false, false
 		if s.egress == nil || !anyHealthy {
 			continue
 		}
@@ -43,6 +45,18 @@ func (w *Watcher) markDesired(anyHealthy bool) {
 		// A node whose egress passes only because DNS listed it at startup
 		// keeps its records but is not added anywhere until a probe agrees.
 		s.egressPending = !s.egress.confirmed
+	}
+	// Standby nodes stay out while any primary would be in DNS after the rules
+	// above, so a primary that is down or sidelined for its egress lets the
+	// spares take over. planDomain adds before it removes, so the hand-over in
+	// either direction publishes the incoming node before pulling the other.
+	primaryServes := slices.ContainsFunc(w.nodes, func(s *nodeState) bool {
+		return !s.Standby && s.healthy && !s.sidelined
+	})
+	for _, s := range w.nodes {
+		if s.Standby && primaryServes {
+			s.sidelined, s.standbyHeld = true, true
+		}
 	}
 }
 
@@ -115,9 +129,11 @@ func (w *Watcher) trackAllDegraded(healthy, degraded []string) {
 }
 
 // consecutiveFailures is the failure streak behind a removal: the egress
-// check's for a sidelined node, readiness's otherwise.
+// check's for a node sidelined for its egress, readiness's otherwise. A
+// standby held out while a primary serves is sidelined without any egress
+// state (the egress probe may be off), so it reports its readiness streak.
 func consecutiveFailures(s *nodeState) int {
-	if s.sidelined {
+	if s.sidelined && !s.standbyHeld {
 		return s.egress.failures
 	}
 	return s.failures

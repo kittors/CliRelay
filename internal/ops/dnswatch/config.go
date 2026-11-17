@@ -7,7 +7,8 @@
 // each node's egress check and, while any node passes both, leaves out ready
 // nodes that cannot reach their upstream proxies. It never deletes the last
 // healthy record and never touches records that do not belong to a configured
-// node.
+// node. Nodes marked standby stay out of DNS while any other node would be in
+// it, which turns the set into a primary with warm spares.
 //
 // The records are DNS only (grey cloud) by default, so clients connect to the
 // nodes directly. With proxied set they are proxied (orange cloud): clients
@@ -28,6 +29,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -116,6 +118,12 @@ type CloudflareConfig struct {
 type Node struct {
 	Name string `yaml:"name" json:"name"`
 	IP   string `yaml:"ip" json:"ip"`
+	// Standby keeps the node out of DNS while any primary (non-standby) node
+	// would be in it. Standby nodes follow the ordinary rules only once every
+	// primary node is out, so one node can carry the traffic with the others
+	// as warm spares; when a primary recovers, it is added back first and the
+	// standby records are removed after it.
+	Standby bool `yaml:"standby" json:"standby,omitempty"`
 }
 
 // ProbeConfig controls the readiness probe sent to every node.
@@ -308,6 +316,9 @@ func (c *Config) validate() error {
 			fail("nodes[%d].ip %s is used twice", i, node.IP)
 		}
 		seenIPs[node.IP] = true
+	}
+	if len(c.Nodes) > 0 && !slices.ContainsFunc(c.Nodes, func(n Node) bool { return !n.Standby }) {
+		fail("nodes must include at least one node without standby: true")
 	}
 
 	p := c.Probe
