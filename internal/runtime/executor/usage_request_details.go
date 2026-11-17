@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/clientident"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/contentmoderation"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/diagnostics"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/logging"
@@ -38,6 +39,20 @@ func apiKeyFromContext(ctx context.Context) string {
 		}
 	}
 	return ""
+}
+
+// usageRequestClient names the caller of the inbound request ctx serves, for the
+// request log's Agent column. Requests without a gateway request behind them
+// (internal jobs) have no caller to name.
+func usageRequestClient(ctx context.Context) clientident.Client {
+	if ctx == nil {
+		return clientident.Client{}
+	}
+	ginCtx, ok := ctx.Value(util.ContextKeyGin).(*gin.Context)
+	if !ok || ginCtx == nil || ginCtx.Request == nil {
+		return clientident.Client{}
+	}
+	return clientident.Identify(ginCtx.Request.Header)
 }
 
 func usageRequestMetadata(ctx context.Context) (identifier, requestID string, responseStatus int) {

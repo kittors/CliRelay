@@ -15,7 +15,7 @@ func QueryStats(params LogQueryParams) (LogStats, error) {
 	}
 	params = normalizeLogQueryParams(params)
 	// Explicit empty multi-selects match no rows.
-	if params.MatchNoAPIKeys || params.MatchNoAPIKeyIDs || params.MatchNoModels || params.MatchNoStatuses || params.MatchNoChannels {
+	if params.MatchNoAPIKeys || params.MatchNoAPIKeyIDs || params.MatchNoModels || params.MatchNoStatuses || params.MatchNoChannels || params.MatchNoClientNames {
 		return LogStats{CacheRate: 0}, nil
 	}
 
@@ -48,8 +48,12 @@ func queryStatsRequiresDetailAggregation(params LogQueryParams) bool {
 		return true
 	}
 
-	// Which check ended a request is a column of the detail rows only.
+	// Which check ended a request, and who sent it, are columns of the detail
+	// rows only.
 	if condition, _ := guardKindCondition(params.GuardKinds); condition != "" {
+		return true
+	}
+	if condition, _ := clientNameCondition(params.ClientNames); condition != "" {
 		return true
 	}
 

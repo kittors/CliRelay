@@ -420,6 +420,7 @@ func (r *usageReporter) emit(ctx context.Context, detail coreusage.Detail, faile
 	}
 	firstTokenMs := firstTokenLatencyMsFromContext(ctx, r.requestedAt)
 	apiIdentifier, requestID, responseStatus := usageRequestMetadata(ctx)
+	client := usageRequestClient(ctx)
 	record := coreusage.Record{
 		Provider:              r.provider,
 		Model:                 r.model,
@@ -441,6 +442,9 @@ func (r *usageReporter) emit(ctx context.Context, detail coreusage.Detail, faile
 		FirstTokenMs:          firstTokenMs,
 		Failed:                failed,
 		GuardKind:             guardKind,
+		ClientName:            client.Name,
+		ClientVersion:         client.Version,
+		UserAgent:             client.UserAgent,
 		APIIdentifier:         apiIdentifier,
 		RequestID:             requestID,
 		ResponseStatus:        responseStatus,

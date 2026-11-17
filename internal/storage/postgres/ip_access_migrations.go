@@ -72,6 +72,9 @@ func laterRuntimeMigrations() []Migration {
 		// Machine snapshots of hosts without a node (the database host). See
 		// clusterHostsSQL.
 		{Version: "202611170002_cluster_hosts", SQL: clusterHostsSQL},
+		// Who sent each request, for the request log's Agent column. See
+		// requestLogClientSQL.
+		{Version: "202611180001_request_log_client", SQL: requestLogClientSQL},
 	}
 }
 

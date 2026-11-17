@@ -42,7 +42,7 @@
       },
       {
         "path": "internal/usage/usage_db.go",
-        "max_lines": 952
+        "max_lines": 911
       },
       {
         "path": "sdk/api/handlers/handlers.go",

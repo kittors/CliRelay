@@ -11,8 +11,8 @@ import (
 
 func TestRuntimeMigrationsCoverCoreTables(t *testing.T) {
 	migrations := RuntimeMigrations()
-	if len(migrations) != 51 {
-		t.Fatalf("RuntimeMigrations len = %d, want 51", len(migrations))
+	if len(migrations) != 52 {
+		t.Fatalf("RuntimeMigrations len = %d, want 52", len(migrations))
 	}
 	// Membership table of multi-instance deployments.
 	if migrations[31].Version != "202609250001_cluster_nodes" {
@@ -175,6 +175,16 @@ func TestRuntimeMigrationsCoverCoreTables(t *testing.T) {
 		t.Fatalf("cluster hosts migration = %q: %q", got.Version, got.SQL)
 	} else if strings.Contains(got.SQL, "cluster_nodes") || strings.Contains(got.SQL, "ALTER TABLE") || strings.Contains(got.SQL, "DROP") {
 		t.Fatalf("cluster hosts migration must only create its own table: %q", got.SQL)
+	}
+	// Client columns on request_logs: constant defaults, a catalog change on
+	// PostgreSQL 11 and later, and nothing that rewrites or indexes the rows.
+	if got := migrations[51]; got.Version != "202611180001_request_log_client" ||
+		!strings.Contains(got.SQL, "ADD COLUMN IF NOT EXISTS client_name TEXT NOT NULL DEFAULT ''") ||
+		!strings.Contains(got.SQL, "ADD COLUMN IF NOT EXISTS client_version TEXT NOT NULL DEFAULT ''") ||
+		!strings.Contains(got.SQL, "ADD COLUMN IF NOT EXISTS user_agent TEXT NOT NULL DEFAULT ''") {
+		t.Fatalf("request log client migration = %q: %q", got.Version, got.SQL)
+	} else if strings.Contains(got.SQL, "INDEX") || strings.Contains(got.SQL, "UPDATE") {
+		t.Fatalf("request log client migration must only add columns: %q", got.SQL)
 	}
 	// Appended from laterRuntimeMigrations() because migrations.go sits at its
 	// structure-gate size ceiling.
