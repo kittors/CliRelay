@@ -407,7 +407,13 @@ func DescribeTokenPath(path string) string {
 func (c *Config) LogAttrs() []any {
 	nodes := make([]string, 0, len(c.Nodes))
 	for _, node := range c.Nodes {
-		nodes = append(nodes, node.Name+"="+node.IP)
+		entry := node.Name + "=" + node.IP
+		if node.Standby {
+			// Marked so that `-check` shows which node is the spare; a
+			// misplaced standby line otherwise only shows once DNS changes.
+			entry += "(standby)"
+		}
+		nodes = append(nodes, entry)
 	}
 	egressProbe := "off"
 	if c.Probe.EgressPath != "" {

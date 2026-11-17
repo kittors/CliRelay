@@ -99,11 +99,18 @@ func TestSystemdUnitMatchesExampleConfig(t *testing.T) {
 		"CapabilityBoundingSet=\n",
 		"RestartPreventExitStatus=2",
 		"LoadCredential=dnswatch.yaml:/etc/clirelay-dnswatch/dnswatch.yaml",
-		"ExecStart=/usr/local/bin/clirelay-dnswatch -config %d/dnswatch.yaml",
+		"ExecStart=/usr/local/bin/clirelay-dnswatch -config ${CREDENTIALS_DIRECTORY}/dnswatch.yaml",
 		"Environment=GOMEMLIMIT=",
 	} {
 		if !strings.Contains(unit, directive) {
 			t.Errorf("unit lacks %q", directive)
+		}
+	}
+	// systemd 249 (Ubuntu 22.04) does not know the %d specifier and refuses to
+	// load a unit that uses it anywhere, so only comments may mention it.
+	for _, line := range strings.Split(unit, "\n") {
+		if !strings.HasPrefix(strings.TrimSpace(line), "#") && strings.Contains(line, "%d") {
+			t.Errorf("unit uses the %%d specifier, which systemd 249 cannot resolve: %q", line)
 		}
 	}
 

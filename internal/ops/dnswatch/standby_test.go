@@ -17,6 +17,16 @@ func TestParseConfigReadsStandby(t *testing.T) {
 	if cfg.Nodes[0].Standby || !cfg.Nodes[1].Standby {
 		t.Fatalf("standby flags = %v, %v; want only the second node standby", cfg.Nodes[0].Standby, cfg.Nodes[1].Standby)
 	}
+	attrs := cfg.LogAttrs()
+	var nodes any
+	for i := 0; i+1 < len(attrs); i += 2 {
+		if attrs[i] == "nodes" {
+			nodes = attrs[i+1]
+		}
+	}
+	if want := "node-a=203.0.113.11,node-b=203.0.113.12(standby)"; nodes != want {
+		t.Fatalf("LogAttrs nodes = %v, want %q", nodes, want)
+	}
 }
 
 // A standby that DNS still lists next to a serving primary is pulled, with a
