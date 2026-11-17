@@ -26,6 +26,14 @@ const (
 	DefaultMaxBackoff     = 30 * time.Second
 	DefaultStableAfter    = time.Minute
 
+	DefaultFailureWindow    = 10 * time.Second
+	DefaultFailureThreshold = 3
+	DefaultFailureRatio     = 0.5
+	// DefaultOutageAfter is half again the health interval, so that every
+	// streak long enough to count spans a whole probe: a link that only
+	// drops packets lets that probe through and ends the streak.
+	DefaultOutageAfter = 3 * time.Second
+
 	// BackgroundTimeout bounds commands issued off the request path: counter
 	// flushes, lease renewals and health probes.
 	BackgroundTimeout = 2 * time.Second
@@ -33,6 +41,11 @@ const (
 	// downReminderInterval spaces the warning repeated while the server stays
 	// unreachable, so an outage is visible in the log without flooding it.
 	downReminderInterval = 5 * time.Minute
+
+	// failureLogInterval spaces the log of commands that failed without
+	// marking the client down, so the loss on the link shows in the log
+	// without one line per lost command.
+	failureLogInterval = time.Minute
 )
 
 // ErrUnavailable is returned without touching the network while the client is
@@ -54,6 +67,20 @@ type Options struct {
 	// StableAfter is how long the server must stay healthy before a new
 	// failure is treated as a fresh outage rather than as flapping.
 	StableAfter time.Duration
+	// FailureWindow, FailureThreshold and FailureRatio decide when commands
+	// lost to timeouts or broken connections mark the server down: at least
+	// FailureThreshold of them within FailureWindow, making up at least
+	// FailureRatio of the request-path commands and probes in it. Until then
+	// each lost command falls back to node-local state on its own and the
+	// next one tries the server again.
+	FailureWindow    time.Duration
+	FailureThreshold int
+	FailureRatio     float64
+	// OutageAfter marks the server down without waiting for the ratio when
+	// nothing succeeds: FailureThreshold failures in a row spanning at least
+	// this long. Keep it longer than HealthInterval, so that a probe falls
+	// inside every such streak.
+	OutageAfter time.Duration
 }
 
 func (o Options) withDefaults() Options {
@@ -74,6 +101,19 @@ func (o Options) withDefaults() Options {
 	}
 	if o.StableAfter <= 0 {
 		o.StableAfter = DefaultStableAfter
+	}
+	if o.FailureWindow <= 0 {
+		o.FailureWindow = DefaultFailureWindow
+	}
+	if o.FailureThreshold <= 0 {
+		o.FailureThreshold = DefaultFailureThreshold
+	}
+	// Written so that NaN takes the default too.
+	if !(o.FailureRatio > 0 && o.FailureRatio <= 1) {
+		o.FailureRatio = DefaultFailureRatio
+	}
+	if o.OutageAfter <= 0 {
+		o.OutageAfter = DefaultOutageAfter
 	}
 	if strings.TrimSpace(o.NodeID) == "" {
 		o.NodeID = "local"
@@ -113,6 +153,8 @@ type Client struct {
 	backoff      time.Duration
 	lastReminder time.Time
 	lastOpErrLog time.Time
+	lastLossLog  time.Time
+	failures     failureTracker
 }
 
 // New builds a client for cfg without connecting. Call Start to probe the
@@ -168,13 +210,21 @@ func New(cfg config.ClusterRedisConfig, opts Options) (*Client, error) {
 	return c, nil
 }
 
+// contextDialer opens connections, wrapping every failure in dialError so
+// that classifyError can tell a refused dial from a lost reply.
 func contextDialer(timeout time.Duration, tlsCfg *tls.Config) func(context.Context, string, string) (net.Conn, error) {
 	netDialer := &net.Dialer{Timeout: timeout, KeepAlive: 5 * time.Minute}
-	if tlsCfg == nil {
-		return netDialer.DialContext
+	dial := netDialer.DialContext
+	if tlsCfg != nil {
+		dial = (&tls.Dialer{NetDialer: netDialer, Config: tlsCfg}).DialContext
 	}
-	tlsDialer := &tls.Dialer{NetDialer: netDialer, Config: tlsCfg}
-	return tlsDialer.DialContext
+	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		conn, err := dial(ctx, network, addr)
+		if err != nil {
+			return nil, &dialError{err: err}
+		}
+		return conn, nil
+	}
 }
 
 // Start probes the server once and starts the background health loop. It is
@@ -196,7 +246,8 @@ func (c *Client) Start() {
 }
 
 // Close stops the health loop and closes the connection pool. It waits for an
-// in-flight probe, which is bounded by BackgroundTimeout plus the op timeout.
+// in-flight probe, which is bounded by twice BackgroundTimeout plus the op
+// timeout: a probe retries once, and not after Close has begun.
 func (c *Client) Close() {
 	if c == nil {
 		return
@@ -268,12 +319,10 @@ func (c *Client) Eval(ctx context.Context, script *redis.Script, keys []string, 
 	if !c.Available() {
 		return nil, ErrUnavailable
 	}
-	opCtx, cancel := c.opContext(ctx, c.opts.OpTimeout)
+	opCtx, cancel, callerBound := c.opContext(ctx, c.opts.OpTimeout)
 	defer cancel()
 	res, err := script.Run(opCtx, c.rdb, keys, args...).Result()
-	if err != nil && !errors.Is(err, redis.Nil) {
-		c.Observe(err)
-	}
+	c.observe(err, true, callerBound)
 	return res, err
 }
 
@@ -282,12 +331,10 @@ func (c *Client) EvalBackground(ctx context.Context, script *redis.Script, keys 
 	if !c.Available() {
 		return nil, ErrUnavailable
 	}
-	opCtx, cancel := c.opContext(ctx, BackgroundTimeout)
+	opCtx, cancel, callerBound := c.opContext(ctx, BackgroundTimeout)
 	defer cancel()
 	res, err := script.Run(opCtx, c.rdb, keys, args...).Result()
-	if err != nil && !errors.Is(err, redis.Nil) {
-		c.Observe(err)
-	}
+	c.observe(err, false, callerBound)
 	return res, err
 }
 
@@ -296,11 +343,11 @@ func (c *Client) PipelineBackground(ctx context.Context, fn func(redis.Pipeliner
 	if !c.Available() {
 		return ErrUnavailable
 	}
-	opCtx, cancel := c.opContext(ctx, BackgroundTimeout)
+	opCtx, cancel, callerBound := c.opContext(ctx, BackgroundTimeout)
 	defer cancel()
 	_, err := c.rdb.Pipelined(opCtx, fn)
+	c.observe(err, false, callerBound)
 	if err != nil && !errors.Is(err, redis.Nil) {
-		c.Observe(err)
 		return err
 	}
 	return nil
@@ -315,79 +362,131 @@ func (c *Client) TxPipelineBackground(ctx context.Context, fn func(redis.Pipelin
 	if !c.Available() {
 		return ErrUnavailable
 	}
-	opCtx, cancel := c.opContext(ctx, BackgroundTimeout)
+	opCtx, cancel, callerBound := c.opContext(ctx, BackgroundTimeout)
 	defer cancel()
 	_, err := c.rdb.TxPipelined(opCtx, fn)
+	c.observe(err, false, callerBound)
 	if err != nil && !errors.Is(err, redis.Nil) {
-		c.Observe(err)
 		return err
 	}
 	return nil
 }
 
 // opContext bounds one command by timeout, or by the caller's deadline when
-// that is earlier. The caller's cancellation is not inherited (see Eval).
-func (c *Client) opContext(parent context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+// that is earlier, which callerBound reports. The caller's cancellation is
+// not inherited (see Eval).
+func (c *Client) opContext(parent context.Context, timeout time.Duration) (ctx context.Context, cancel context.CancelFunc, callerBound bool) {
 	if parent == nil {
 		parent = context.Background()
 	}
 	deadline := time.Now().Add(timeout)
 	if d, ok := parent.Deadline(); ok && d.Before(deadline) {
 		deadline = d
+		callerBound = true
 	}
-	return context.WithDeadline(context.WithoutCancel(parent), deadline)
+	ctx, cancel = context.WithDeadline(context.WithoutCancel(parent), deadline)
+	return ctx, cancel, callerBound
 }
 
-// Observe classifies a command error. A connectivity failure marks the client
-// down so that later requests skip Redis; an error the server returned for
-// that one command (a script bug, a wrong type) only fails that command.
+// observe records the outcome of one command issued through the wrappers.
+//
+// countSuccess is set for request-path commands: their successes show the
+// server answering within the request-path budget, which is what availability
+// means here. A background command succeeding within its longer timeout shows
+// no such thing, though its failures still count.
+//
+// callerBound is set when the caller's deadline, earlier than ours, bounded
+// the command. A timeout is then the caller's budget running out and says
+// nothing about the server.
+func (c *Client) observe(err error, countSuccess, callerBound bool) {
+	if err == nil || errors.Is(err, redis.Nil) {
+		if countSuccess {
+			c.recordSuccess()
+		}
+		return
+	}
+	if callerBound && isTimeout(err) {
+		return
+	}
+	c.Observe(err)
+}
+
+// Observe classifies a command error. A fatal one (a refused dial, a reply
+// such as LOADING or NOAUTH) marks the client down so that later requests
+// skip Redis. A transient one (a timeout, a broken connection) fails only
+// that command and counts towards the failure window, which marks the client
+// down once enough of them add up. An error the server returned for that one
+// command (a script bug, a wrong type) only fails that command.
 func (c *Client) Observe(err error) {
 	if c == nil || err == nil {
 		return
 	}
-	if IsConnectivityError(err) {
-		c.markDown(err)
+	switch classifyError(err) {
+	case failureFatal:
+		c.markDown(err, "")
+	case failureTransient:
+		c.recordTransient(err)
+	case failureCommand:
+		c.mu.Lock()
+		logIt := time.Since(c.lastOpErrLog) >= time.Minute
+		if logIt {
+			c.lastOpErrLog = time.Now()
+		}
+		c.mu.Unlock()
+		if logIt {
+			log.WithError(err).Warn("cluster redis: command failed; falling back to node-local state for it")
+		}
+	}
+}
+
+// recordSuccess counts a success held to the request-path budget.
+func (c *Client) recordSuccess() {
+	if !c.available.Load() {
 		return
 	}
+	now := time.Now()
 	c.mu.Lock()
-	logIt := time.Since(c.lastOpErrLog) >= time.Minute
+	c.failures.success(now, c.opts)
+	c.mu.Unlock()
+}
+
+// recordTransient counts a transient failure, and marks the client down once
+// the failures add up to an outage (see failureTracker.failure).
+func (c *Client) recordTransient(err error) {
+	if !c.available.Load() {
+		c.mu.Lock()
+		c.lastErr = err
+		c.mu.Unlock()
+		return
+	}
+	now := time.Now()
+	c.mu.Lock()
+	outage, reason := c.failures.failure(now, c.opts)
+	logIt := !outage && now.Sub(c.lastLossLog) >= failureLogInterval
+	var ok, failed int
 	if logIt {
-		c.lastOpErrLog = time.Now()
+		c.lastLossLog = now
+		ok, failed = c.failures.totals(now, c.opts)
 	}
 	c.mu.Unlock()
+	if outage {
+		c.markDown(err, reason)
+		return
+	}
 	if logIt {
-		log.WithError(err).Warn("cluster redis: command failed; falling back to node-local state for it")
+		log.WithError(err).WithFields(log.Fields{
+			"addr":   c.addr,
+			"failed": failed,
+			"total":  ok + failed,
+			"window": c.opts.FailureWindow.String(),
+		}).Info("cluster redis: command failed and fell back to node-local state; the client stays available")
 	}
 }
 
-// unusableServerPrefixes are error replies that mean the server as a whole
-// cannot serve us right now, as opposed to rejecting one command.
-var unusableServerPrefixes = []string{
-	"LOADING", "READONLY", "MASTERDOWN", "BUSY", "NOAUTH", "WRONGPASS",
-	"NOPERM", "CLUSTERDOWN", "TRYAGAIN", "MISCONF",
-}
-
-// IsConnectivityError reports whether err means the server cannot be used,
-// rather than that one command was rejected. The caller's own cancellation is
-// not the server's fault and does not count.
-func IsConnectivityError(err error) bool {
-	if err == nil || errors.Is(err, redis.Nil) || errors.Is(err, context.Canceled) {
-		return false
-	}
-	var replyErr redis.Error
-	if errors.As(err, &replyErr) {
-		msg := strings.TrimSpace(replyErr.Error())
-		for _, prefix := range unusableServerPrefixes {
-			if strings.HasPrefix(msg, prefix) {
-				return true
-			}
-		}
-		return false
-	}
-	return true
-}
-
-func (c *Client) markDown(err error) {
+// markDown takes the client out of the request path. reason says why
+// transient failures added up to an outage; it is empty when err alone is
+// fatal.
+func (c *Client) markDown(err error, reason string) {
 	if !c.available.CompareAndSwap(true, false) {
 		c.mu.Lock()
 		c.lastErr = err
@@ -408,8 +507,13 @@ func (c *Client) markDown(err error) {
 	c.lastErr = err
 	c.changedAt = now
 	c.lastReminder = now
+	c.failures.reset()
 	c.mu.Unlock()
-	log.WithError(err).WithField("addr", c.addr).Warn("cluster redis: marked unavailable; limits, slots and affinity fall back to node-local state")
+	entry := log.WithError(err).WithField("addr", c.addr)
+	if reason != "" {
+		entry = entry.WithField("reason", reason)
+	}
+	entry.Warn("cluster redis: marked unavailable; limits, slots and affinity fall back to node-local state")
 	if !flapping {
 		select {
 		case c.probeNow <- struct{}{}:
@@ -460,21 +564,41 @@ func (c *Client) healthLoop() {
 // server that answers PING but refuses writes (a replica after failover, a
 // full disk) is just as useless to the counters.
 //
-// The first attempt may have to open a connection, so it gets the background
-// timeout. The server only counts as available when a command on a warm
-// connection completes within the request-path budget: a Redis that answers,
-// but slower than requests may wait, must stay out of the request path.
+// Each attempt first writes with the background timeout, since it may have to
+// open a connection, then again on that now warm connection within the
+// request-path budget: a Redis that answers, but slower than requests may
+// wait, must stay out of the request path.
+//
+// An attempt that loses a command is made once more. One dropped packet costs
+// a retransmission timeout, at least 200ms on Linux, which alone exceeds the
+// request-path budget; on a link losing one packet in ten a single attempt
+// would fail one probe in five, and keep a recovered server out for a whole
+// backoff. Two lost attempts in a row are rare on a link that merely drops
+// packets, and common on one that is down.
 func (c *Client) probe() {
 	value := strconv.FormatInt(time.Now().UnixMilli(), 10)
-	err := c.probeOnce(BackgroundTimeout, value)
-	if err == nil {
-		err = c.probeOnce(c.opts.OpTimeout, value)
+	err := c.probeAttempt(value)
+	if err != nil && classifyError(err) == failureTransient {
+		select {
+		case <-c.stop:
+			return
+		default:
+		}
+		err = c.probeAttempt(value)
 	}
 	if err != nil {
 		c.probeFailed(err)
 		return
 	}
 	c.probeSucceeded()
+}
+
+func (c *Client) probeAttempt(value string) error {
+	err := c.probeOnce(BackgroundTimeout, value)
+	if err == nil {
+		err = c.probeOnce(c.opts.OpTimeout, value)
+	}
+	return err
 }
 
 func (c *Client) probeOnce(timeout time.Duration, value string) error {
@@ -487,15 +611,20 @@ func (c *Client) probeOnce(timeout time.Duration, value string) error {
 }
 
 func (c *Client) probeSucceeded() {
-	now := time.Now()
 	if c.available.Load() {
+		c.recordSuccess()
 		return
 	}
+	now := time.Now()
 	c.mu.Lock()
 	downSince := c.changedAt
 	c.healthySince = now
 	c.changedAt = now
 	c.lastErr = nil
+	// Failures from before the outage say nothing about the server now; the
+	// probe that just got through does.
+	c.failures.reset()
+	c.failures.success(now, c.opts)
 	c.mu.Unlock()
 	c.available.Store(true)
 	entry := log.WithField("addr", c.addr)
@@ -507,7 +636,16 @@ func (c *Client) probeSucceeded() {
 
 func (c *Client) probeFailed(err error) {
 	if c.available.Load() {
-		c.markDown(err)
+		// A probe that lost both attempts counts like a lost request-path
+		// command. Any other failure is a server that refuses the health write,
+		// which is as useless to the counters as one that does not answer.
+		switch classifyError(err) {
+		case failureTransient:
+			c.recordTransient(err)
+		case failureNone:
+		default:
+			c.markDown(err, "")
+		}
 		return
 	}
 	now := time.Now()
