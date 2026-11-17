@@ -88,6 +88,7 @@ func (s *Service) ManagementLogs(input ManagementLogQueryInput) (map[string]any,
 	if filters.GuardKinds == nil {
 		filters.GuardKinds = make([]string, 0)
 	}
+	ensureClientFacets(&filters)
 
 	return map[string]any{
 		"items":   result.Items,
@@ -99,8 +100,27 @@ func (s *Service) ManagementLogs(input ManagementLogQueryInput) (map[string]any,
 		// The panel reads this to tell a backend that has dropped the secret-keyed
 		// filter facets (api_keys, api_key_names, api_key_counts) from an older one,
 		// and one that has loop protection from one that has not.
-		"capabilities": map[string]bool{CapabilityAPIKeyIDFilters: true, CapabilityLoopGuard: true},
+		"capabilities": map[string]bool{CapabilityAPIKeyIDFilters: true, CapabilityLoopGuard: true, CapabilityRequestLogClients: true},
 	}, nil
+}
+
+// CapabilityRequestLogClients is declared by /usage/logs once rows carry
+// client_name, client_version and user_agent, the client_name / client_names
+// and client_names_empty query parameters select callers, and
+// filters.client_names / client_name_counts list them ("__unknown__" for the
+// requests without one). The public lookup has no capability map; its filters
+// carry client_names on a backend that has them.
+const CapabilityRequestLogClients = "request-log-clients"
+
+// ensureClientFacets gives the client facet a stable JSON shape ([] and {}),
+// never null.
+func ensureClientFacets(filters *usage.FilterOptions) {
+	if filters.ClientNames == nil {
+		filters.ClientNames = make([]string, 0)
+	}
+	if filters.ClientNameCounts == nil {
+		filters.ClientNameCounts = make(map[string]int64)
+	}
 }
 
 // CapabilityLoopGuard is declared by /usage/logs once the backend has loop
@@ -154,9 +174,11 @@ func (s *Service) PublicUsageLogs(input PublicLogQueryInput) (map[string]any, er
 		Days:                  input.Days,
 		Models:                input.Models,
 		Statuses:              input.Statuses,
+		ClientNames:           input.ClientNames,
 		MatchNoModels:         input.MatchNoModels,
 		MatchNoChannels:       input.MatchNoChannels,
 		MatchNoStatuses:       input.MatchNoStatuses,
+		MatchNoClientNames:    input.MatchNoClientNames,
 		AuthSubjectIDs:        authSubjectIDs,
 		AuthIndexes:           authIndexes,
 		ChannelNames:          channelNames,
@@ -282,6 +304,7 @@ func (s *Service) PublicUsageLogs(input PublicLogQueryInput) (map[string]any, er
 	if filters.APIKeyIDCounts == nil {
 		filters.APIKeyIDCounts = make(map[string]int64)
 	}
+	ensureClientFacets(&filters)
 
 	return map[string]any{
 		"items":        result.Items,
@@ -298,6 +321,9 @@ func (s *Service) PublicUsageLogs(input PublicLogQueryInput) (map[string]any, er
 			"channels":          filters.Channels,
 			"channel_options":   filters.ChannelOptions,
 			"statuses":          filters.Statuses,
+			// The caller's own clients: every row is the lookup subject's.
+			"client_names":       filters.ClientNames,
+			"client_name_counts": filters.ClientNameCounts,
 		},
 	}, nil
 }

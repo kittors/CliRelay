@@ -31,3 +31,16 @@ const requestLogGuardKindSQL = `
 ALTER TABLE request_logs
 ADD COLUMN IF NOT EXISTS guard_kind TEXT NOT NULL DEFAULT '';
 `
+
+// requestLogClientSQL records who sent a request: the client named from its
+// headers, the version it reported and its raw User-Agent (see
+// internal/usage/request_log_client.go). Existing rows keep the empty defaults,
+// which read as "unknown client". Constant defaults make this a catalog change,
+// like the migrations above. No index, for the same reason as guard_kind: the
+// filter and the facet read a window the (tenant_id, timestamp) index narrows.
+const requestLogClientSQL = `
+ALTER TABLE request_logs
+ADD COLUMN IF NOT EXISTS client_name TEXT NOT NULL DEFAULT '',
+ADD COLUMN IF NOT EXISTS client_version TEXT NOT NULL DEFAULT '',
+ADD COLUMN IF NOT EXISTS user_agent TEXT NOT NULL DEFAULT '';
+`
