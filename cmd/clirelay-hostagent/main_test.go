@@ -2,10 +2,30 @@ package main
 
 import (
 	"errors"
+	"os"
+	"strings"
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/nodemetrics"
 )
+
+// The unit runs on the database host. On Ubuntu 22.04 its systemd 249 does
+// not know the %d specifier and refuses to load a unit that uses one.
+func TestSystemdUnitAvoidsTheCredentialsSpecifier(t *testing.T) {
+	data, err := os.ReadFile("../../deploy/cluster/hostagent/clirelay-hostagent.service")
+	if err != nil {
+		t.Fatalf("read unit: %v", err)
+	}
+	unit := string(data)
+	if !strings.Contains(unit, "-dsn-file ${CREDENTIALS_DIRECTORY}/dsn") {
+		t.Errorf("ExecStart must read the DSN from ${CREDENTIALS_DIRECTORY}")
+	}
+	for _, line := range strings.Split(unit, "\n") {
+		if !strings.HasPrefix(strings.TrimSpace(line), "#") && strings.Contains(line, "%d") {
+			t.Errorf("unit uses the %%d specifier, which systemd 249 cannot resolve: %q", line)
+		}
+	}
+}
 
 func TestPathFlags(t *testing.T) {
 	var paths pathFlags

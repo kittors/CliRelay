@@ -8,14 +8,21 @@
 # SQL can tell the leader how large the database is, not how much room is left
 # under it: that is why this runs on the database host itself.
 #
-# Requires systemd >= 248 for LoadCredential= with the %d specifier, and nodes
-# new enough to have created cluster_hosts (migration 202611170002).
+# Requires systemd >= 247 for LoadCredential= and $CREDENTIALS_DIRECTORY, and
+# nodes new enough to have created cluster_hosts (migration 202611170002).
+# ExecStart names the credentials directory as ${CREDENTIALS_DIRECTORY}, not
+# with the %d specifier: systemd 249 (Ubuntu 22.04) does not know %d and
+# refuses to load the unit ("Failed to resolve unit specifiers ... Invalid
+# slot"), while the variable is expanded at start on every version that has
+# LoadCredential=.
 #
 #   install -m 0755 clirelay-hostagent /usr/local/bin/clirelay-hostagent
 #   install -d -m 0755 /etc/clirelay-hostagent
 #   install -m 0600 /dev/null /etc/clirelay-hostagent/dsn   # then write the DSN into it
 #   install -m 0644 clirelay-hostagent.service /etc/systemd/system/
 #   # edit the -path lines below to the database's data and backup directories
+#   # (drop the backups line where the backups are kept on another machine;
+#   # a drop-in that resets ExecStart= keeps this file as shipped)
 #   /usr/local/bin/clirelay-hostagent -once -path database=/opt/clirelay-data/pg   # check what it sees
 #   systemctl daemon-reload && systemctl enable --now clirelay-hostagent
 #
@@ -39,10 +46,10 @@ StartLimitIntervalSec=0
 [Service]
 Type=exec
 # The DSN stays root-only in /etc; systemd copies it into a private
-# credentials directory (%d) only this service can read.
+# credentials directory ($CREDENTIALS_DIRECTORY) only this service can read.
 LoadCredential=dsn:/etc/clirelay-hostagent/dsn
 ExecStart=/usr/local/bin/clirelay-hostagent \
-    -dsn-file %d/dsn \
+    -dsn-file ${CREDENTIALS_DIRECTORY}/dsn \
     -host-id db \
     -role database \
     -path database=/opt/clirelay-data/pg \
