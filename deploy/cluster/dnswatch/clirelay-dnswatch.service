@@ -4,7 +4,12 @@
 # Run it on the arbiter (third) machine, never on an application node: a node
 # cannot tell whether clients can still reach it.
 #
-# Requires systemd >= 248 for LoadCredential= with the %d specifier.
+# Requires systemd >= 247 for LoadCredential= and $CREDENTIALS_DIRECTORY.
+# ExecStart names the credentials directory as ${CREDENTIALS_DIRECTORY}, not
+# with the %d specifier: systemd 249 (Ubuntu 22.04) does not know %d and
+# refuses to load the unit ("Failed to resolve unit specifiers ... Invalid
+# slot"), while the variable is expanded at start on every version that has
+# LoadCredential=.
 #
 #   install -m 0755 clirelay-dnswatch /usr/local/bin/clirelay-dnswatch
 #   install -d -m 0755 /etc/clirelay-dnswatch
@@ -25,11 +30,12 @@ StartLimitIntervalSec=0
 [Service]
 Type=exec
 # The config and the token stay root-only in /etc. systemd copies them into a
-# private credentials directory (%d) that only this service can read; the
-# config names its token file relative to itself, so both resolve there.
+# private credentials directory ($CREDENTIALS_DIRECTORY) that only this
+# service can read; the config names its token file relative to itself, so
+# both resolve there.
 LoadCredential=dnswatch.yaml:/etc/clirelay-dnswatch/dnswatch.yaml
 LoadCredential=cf-token:/etc/clirelay-dnswatch/cf-token
-ExecStart=/usr/local/bin/clirelay-dnswatch -config %d/dnswatch.yaml
+ExecStart=/usr/local/bin/clirelay-dnswatch -config ${CREDENTIALS_DIRECTORY}/dnswatch.yaml
 Restart=always
 RestartSec=5s
 # Exit status 2 means a bad config or token file, which a restart cannot fix.
