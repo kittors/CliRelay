@@ -305,12 +305,24 @@ GitHub Actions 的 `Deploy CliRelay` 按节点逐台部署：
 
 发版必须保持新旧版本能同时在线：数据库迁移只做"先扩展、后收缩"（加表、加列），删字段放到下一个版本。
 
+### 4.10 节点、磁盘与数据库监测
+
+面板仪表盘的「服务器节点」区（`GET /v0/management/cluster`，每 10 秒取一次）每台节点一张紧凑卡片，数据库单独一张；每张卡片把最需要关注的数放在最上面，其余点开再看。
+
+- **每台节点的磁盘**：每 5 秒一次的快照报告根分区，以及进程会写入的每个目录所在的文件系统：工作目录（二进制与 `config.yaml`）、`auth-dir`、日志目录、请求体缓存（默认在临时目录，有的主机上是约 2 GB 的 tmpfs）、用量队列。同一文件系统上的目录合成一项。每项有总量、已用、可用（与 `df` 一致：可用不含给 root 预留的块）、inode、挂载点与文件系统类型，以及最近约 1 小时的用量变化，面板据此估算多久写满。要多看别的目录，用逗号分隔写进 `CLIRELAY_NODE_DISK_PATHS`。已用（含 inode）达 80% 或按当前速度 3 天内写满时面板提示留意，达 90% 或 1 天内写满时告急。
+- **数据库，由 leader 查**：leader（单节点就是它自己）每 30 秒用连接池里的一条连接读一遍 PostgreSQL 的统计视图，结果放进自己快照的 `database` 段：版本与启动时间、连接数与 `max_connections`、库大小、`pg_wal` 大小与 `max_wal_size`、每个复制槽（是否活跃、`wal_status`、保留的 WAL、`safe_wal_size`）、每条复制连接（状态、未发送与未落盘的字节、最近一次回复）、最老的事务和事务中空闲、锁等待、事务 ID 年龄，以及最近 5 分钟的提交数、缓存命中、死锁与临时文件字节。非 leader 不查。`pg_ls_waldir()` 需要超级用户或 `pg_monitor`；没有 `pg_read_all_stats` 的角色看不到别的角色会话的状态。权限不够的部分留空，其余照常报告。某一轮查询失败时保留上一轮的数，并标明错误和数据的时间。
+- **数据库主机的磁盘**：SQL 查不到可用空间，数据库主机上也没有节点，所以在那台机器上跑 `cmd/clirelay-hostagent`：它每 15 秒把本机快照的机器部分（含 steal 的 CPU、负载、内存、指定目录所在的磁盘）写进 `cluster_hosts` 表，`GET /v0/management/cluster` 以 `hosts` 返回，面板在数据库卡片里显示 `database` 角色主机的数据。它只需要经回环地址连库，和一个只能写这张表的角色，不开任何端口。单元文件 `deploy/cluster/hostagent/clirelay-hostagent.service` 的文件头列了安装步骤和角色授权；`clirelay-hostagent -once -path database=<数据目录>` 打印它会上报的内容。
+  - 考虑过、没采用的：用 `COPY ... FROM PROGRAM` 读 `df`，要求应用账号是超级用户，并且等于在库服务器上执行 shell；node_exporter 一类的导出器要开端口、配凭据，还要另一个采集方。现在的做法复用节点自己的采样代码，走集群本来就依赖的数据库连接。
+  - 主机上报部署之前，数据库卡片照常显示库的状态，主机磁盘一栏注明未上报。
+
 ## 5. 运维手册
 
 | 要做的事 | 命令 |
 |---|---|
 | 一屏查看集群状态 | `deploy/cluster/bin/cluster-status.sh` |
 | 查看应用集群成员 | `GET /v0/management/cluster`；响应头 `X-CliRelay-Node` 标明请求落在哪台 |
+| 查看节点资源、磁盘与数据库 | 仪表盘的「服务器节点」区，或 `GET /v0/management/cluster`（每个节点的 `snapshot`、leader 快照里的 `database`、`hosts`），见 4.10 |
+| 查看数据库主机上报了什么 | 在数据库主机上 `clirelay-hostagent -once -path database=<数据目录>`；`journalctl -u clirelay-hostagent` |
 | 查看数据库拓扑 | `docker exec clirelay-patroni patronictl -c /etc/patroni/patroni.yml list` |
 | 计划内切换主库 | `patronictl ... switchover --leader <当前> --candidate <目标> --force` |
 | 维护某个节点 | 仲裁机上 `touch /etc/clirelay-dnswatch/hold`；nginx 把本机 upstream 标记为 `down` 后重载；维护完再恢复 |
@@ -369,7 +381,7 @@ GitHub Actions 的 `Deploy CliRelay` 按节点逐台部署：
   - 主节点所在机器整台消失时，锁约 30 秒内释放，靠的是会话级 TCP keepalive。不设的话，Linux 默认要约 2 小时。
   - 以下维护任务只在主节点运行：账号状态探测、OpenRouter 价格同步、共享表的日志维护与保留、用量汇总追平、会话与审计清理、IP 规则清理、OAuth 会话与异步任务过期清理、warmup 策略调度。
 - **成员表** `cluster_nodes`：每 5 秒心跳一次。`GET /v0/management/cluster` 可以查看所有节点、主节点和在线数；每个响应都带 `X-CliRelay-Node`，标明请求落在哪台。
-- **节点资源快照**：每次心跳同时把本节点的资源快照（`internal/nodemetrics`，每 5 秒采一次）写进 `snapshot` 列，`GET /v0/management/cluster` 给每个节点带上 `snapshot`、`snapshot_at`；`GET /v0/management/config` 的 `capabilities` 里声明 `node-metrics`，面板只在有这个能力的版本上显示节点视图。快照包括：从 `/proc/stat` 算出的整机 CPU，执行（`busy_cores`）和被宿主机拿走的时间（`steal_cores`）分开；负载、内存；slot 所在 cgroup 的配额、用量与限流（`cpu.stat`、`cpu.max`、`memory.current/high/max`）；在途请求、最近一分钟的请求数与入 / 出字节；出口熔断；库与 Redis 的往返耗时；版本和启动时间。CPU（整机与 cgroup）取最近约 30 秒的平均，单个 5 秒步长抖动太大；`shared_redis`（configured、available、since）表示限流与会话粘性是集群共享，还是已退化为本机计数。整机 CPU 必须从 `/proc/stat` 算：内核没开 `CONFIG_PARAVIRT_TIME_ACCOUNTING` 时，cgroup 和进程的 CPU 都含 steal。单节点不写这张表，但同样在接口里报本机快照；读不到的字段（其他操作系统、cgroup v1 主机）留空。
+- **节点资源快照**：每次心跳同时把本节点的资源快照（`internal/nodemetrics`，每 5 秒采一次）写进 `snapshot` 列，`GET /v0/management/cluster` 给每个节点带上 `snapshot`、`snapshot_at`；`GET /v0/management/config` 的 `capabilities` 里声明 `node-metrics`，面板只在有这个能力的版本上显示节点视图。快照包括：从 `/proc/stat` 算出的整机 CPU，执行（`busy_cores`）和被宿主机拿走的时间（`steal_cores`）分开；负载、内存；slot 所在 cgroup 的配额、用量与限流（`cpu.stat`、`cpu.max`、`memory.current/high/max`）；在途请求、最近一分钟的请求数与入 / 出字节；出口熔断；库与 Redis 的往返耗时；版本和启动时间。CPU（整机与 cgroup）取最近约 30 秒的平均，单个 5 秒步长抖动太大；`shared_redis`（configured、available、since）表示限流与会话粘性是集群共享，还是已退化为本机计数。整机 CPU 必须从 `/proc/stat` 算：内核没开 `CONFIG_PARAVIRT_TIME_ACCOUNTING` 时，cgroup 和进程的 CPU 都含 steal。单节点不写这张表，但同样在接口里报本机快照；读不到的字段（其他操作系统、cgroup v1 主机）留空。2026-11-17 起快照还有 `disks`（进程写入的各个文件系统），leader 的快照另有 `database`（PostgreSQL 服务本身）；没有节点的主机经 `cluster_hosts` 上报（见 4.10）。
 - **迁移锁**：数据库迁移、YAML 导入和各类回填都在集群级 advisory lock 下执行，两台同时升级也不会互相踩踏。
 
 ### 6.2 凭据（OAuth 账号）

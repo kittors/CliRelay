@@ -29,3 +29,20 @@ const clusterNodeSnapshotSQL = `
 ALTER TABLE cluster_nodes ADD COLUMN IF NOT EXISTS snapshot JSONB;
 ALTER TABLE cluster_nodes ADD COLUMN IF NOT EXISTS snapshot_at TIMESTAMPTZ;
 `
+
+// clusterHostsSQL adds the snapshots of machines that run no node, which
+// cmd/clirelay-hostagent writes: the database host above all, whose free
+// disk space SQL cannot see. Each host upserts one row; snapshot_at comes
+// from the database clock, like the membership table's timestamps. The
+// table is separate from cluster_nodes because a host is not a member: it
+// takes no part in leadership, and nothing that counts or probes the nodes
+// may see it.
+const clusterHostsSQL = `
+CREATE TABLE IF NOT EXISTS cluster_hosts (
+  host_id     TEXT PRIMARY KEY,
+  role        TEXT NOT NULL DEFAULT '',
+  version     TEXT NOT NULL DEFAULT '',
+  snapshot    JSONB NOT NULL,
+  snapshot_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+`

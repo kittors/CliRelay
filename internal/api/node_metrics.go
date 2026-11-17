@@ -2,11 +2,20 @@ package api
 
 import (
 	"context"
+	"database/sql"
 	"net"
+	"os"
+	"strings"
+	"sync"
+	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/api/bodyutil"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/buildinfo"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/cluster"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/nodemetrics"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/egressbreaker"
 )
 
@@ -15,8 +24,23 @@ import (
 // stores the latest snapshot in the membership table, and
 // GET /v0/management/cluster shows it for every node.
 
+// nodeDiskPathsEnv lists extra directories, comma-separated, whose
+// filesystems the node snapshot reports besides the ones the process writes
+// to: a backup directory on its own volume, for instance.
+const nodeDiskPathsEnv = "CLIRELAY_NODE_DISK_PATHS"
+
+// diskPathsRefresh is how long the resolved directory list is reused.
+// Resolving the log directory creates and removes a probe file, which the
+// 5-second snapshot loop should not do every time.
+const diskPathsRefresh = time.Minute
+
 // startNodeMetrics points the collector at this server and starts sampling.
+// The database probe samples the PostgreSQL server while this node leads.
 func (s *Server) startNodeMetrics() {
+	probe := nodemetrics.DefaultDatabaseProbe()
+	probe.SetSources(runtimePostgresDB, func() bool { return cluster.Default().IsLeader() })
+	probe.Start()
+
 	collector := nodemetrics.Default()
 	collector.SetSources(nodemetrics.Sources{
 		Version:     buildinfo.Version,
@@ -25,6 +49,8 @@ func (s *Server) startNodeMetrics() {
 		PingRedis:   s.pingNodeRedis,
 		Egress:      s.egressSnapshot,
 		SharedRedis: s.sharedRedisSnapshot,
+		DiskPaths:   s.cachedDiskPaths(),
+		Database:    probe.Latest,
 	})
 	collector.Start()
 }
@@ -34,6 +60,62 @@ func (s *Server) startNodeMetrics() {
 // cluster runtime above all) are torn down after the drain.
 func (s *Server) stopNodeMetrics() {
 	nodemetrics.Default().Stop()
+	nodemetrics.DefaultDatabaseProbe().Stop()
+}
+
+// runtimePostgresDB is the runtime pool when it is PostgreSQL; the database
+// probe has nothing to read on SQLite.
+func runtimePostgresDB() *sql.DB {
+	if usage.RuntimeDriver() != "postgres" {
+		return nil
+	}
+	return usage.RuntimeDB()
+}
+
+// cachedDiskPaths returns the snapshot's directory source, which resolves
+// the list at most once a minute.
+func (s *Server) cachedDiskPaths() func() []nodemetrics.DiskPath {
+	var (
+		mu       sync.Mutex
+		cached   []nodemetrics.DiskPath
+		cachedAt time.Time
+	)
+	return func() []nodemetrics.DiskPath {
+		mu.Lock()
+		defer mu.Unlock()
+		if cached == nil || time.Since(cachedAt) >= diskPathsRefresh {
+			cached, cachedAt = s.nodeDiskPaths(), time.Now()
+		}
+		return cached
+	}
+}
+
+// nodeDiskPaths lists the directories this process writes to, by what they
+// hold. The snapshot reports the filesystem of each (and of the root), so a
+// small tmpfs holding the request body cache shows up next to the disk with
+// the logs.
+func (s *Server) nodeDiskPaths() []nodemetrics.DiskPath {
+	var paths []nodemetrics.DiskPath
+	add := func(use, path string) {
+		if path = strings.TrimSpace(path); path != "" {
+			paths = append(paths, nodemetrics.DiskPath{Use: use, Path: path})
+		}
+	}
+	if wd, err := os.Getwd(); err == nil {
+		add(nodemetrics.DiskUseWorkdir, wd)
+	}
+	if cfg := s.liveConfig(nil); cfg != nil {
+		if dir, err := util.ResolveAuthDir(cfg.AuthDir); err == nil {
+			add(nodemetrics.DiskUseAuth, dir)
+		}
+		add(nodemetrics.DiskUseLogs, logging.ResolveLogDirectory(cfg))
+	}
+	add(nodemetrics.DiskUseBodyCache, bodyutil.RequestBodyCacheDir())
+	add(nodemetrics.DiskUseUsageSpool, usage.UsageSpoolDir())
+	for _, extra := range strings.Split(os.Getenv(nodeDiskPathsEnv), ",") {
+		add(nodemetrics.DiskUseExtra, extra)
+	}
+	return paths
 }
 
 // listenCounted opens the server's listening socket, counting the bytes of
