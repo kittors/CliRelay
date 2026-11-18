@@ -146,6 +146,44 @@ func TestAutofillSkipsListingsThatDisagreeOnPrice(t *testing.T) {
 	}
 }
 
+func TestAutofillLeavesModelsTheListingGivesNoPrice(t *testing.T) {
+	initPricingResyncTestDB(t)
+	zero := OpenRouterRemotePricing{Prompt: "0", Completion: "0"}
+	useOpenRouterListing(t,
+		// Video generators such as x-ai/grok-imagine-video-1.5 list zero prompt and
+		// completion prices and nothing else we can bill.
+		OpenRouterRemoteModel{ID: "x-ai/unpriced-video", Name: "Unpriced video", Description: "From OpenRouter", Pricing: zero,
+			Architecture: OpenRouterRemoteArchitecture{OutputModalities: []string{"video"}}},
+		// Grok Imagine is billed per call against the subscription, and the
+		// registry keeps its price at zero on purpose.
+		OpenRouterRemoteModel{ID: "x-ai/grok-imagine-image", Name: "Grok Imagine", Description: "From OpenRouter", Pricing: zero,
+			Architecture: OpenRouterRemoteArchitecture{OutputModalities: []string{"image"}}},
+	)
+	if err := UpsertModelConfigForTenant(systemTenantID, ModelConfigRow{ModelID: "unpriced-video", Enabled: true, PricingMode: "token", Source: "legacy-pricing"}); err != nil {
+		t.Fatalf("legacy row: %v", err)
+	}
+	imageBefore, imageExisted := modelConfigStoreForTenant(systemTenantID).GetModelConfig("grok-imagine-image")
+	logTenantRequest(t, resyncTenant, "unpriced-video")
+	logTenantRequest(t, resyncTenant, "grok-imagine-image")
+
+	// Every run sees the models still unpriced; none may write them.
+	for run := 0; run < 2; run++ {
+		runModelCatalogAutofill(context.Background(), time.Now())
+	}
+
+	video, _ := modelConfigStoreForTenant(systemTenantID).GetModelConfig("unpriced-video")
+	if video.Source != "legacy-pricing" || video.Description != "" {
+		t.Fatalf("rewrote a row it could not price: %+v", video)
+	}
+	image, imageExists := modelConfigStoreForTenant(systemTenantID).GetModelConfig("grok-imagine-image")
+	if imageExists != imageExisted || image.Source != imageBefore.Source || image.PricePerCall != 0 {
+		t.Fatalf("Grok Imagine row %+v (existed %v) became %+v (exists %v)", imageBefore, imageExisted, image, imageExists)
+	}
+	if jobs := pendingJobs(t, systemTenantID); len(jobs) != 0 {
+		t.Fatalf("queued %d fill jobs without a price: %+v", len(jobs), jobs)
+	}
+}
+
 func TestOpenRouterSyncDoesNotRewriteRowsThatDidNotChange(t *testing.T) {
 	initPricingResyncTestDB(t)
 	models := []OpenRouterRemoteModel{
