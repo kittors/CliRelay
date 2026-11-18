@@ -165,12 +165,24 @@ func autofillRemoteIndex(models []OpenRouterRemoteModel) map[string][]OpenRouter
 // autofillRemoteFor picks the listing to fill a model from. Listings of the
 // same model by several providers usually share a price; when they do not, no
 // choice is safe and the model is skipped.
+//
+// A listing that yields no price is skipped too. Video and music generators
+// (x-ai/grok-imagine-video-1.5, google/veo-3.1, google/lyria-3-pro-preview)
+// list zero prompt and completion prices, and an image model billed per call
+// stays at zero without a registry default (Grok Imagine is billed against the
+// subscription). Filling from such a listing wrote a row that was still
+// unpriced, so every run rewrote it and queued an empty fill job. autofillMerge
+// prices the row through this same blank-row computation, so a row it writes
+// is priced.
 func autofillRemoteFor(index map[string][]OpenRouterRemoteModel, modelID string) (OpenRouterRemoteModel, bool) {
 	listings := index[strings.ToLower(strings.TrimSpace(modelID))]
 	if len(listings) == 0 {
 		return OpenRouterRemoteModel{}, false
 	}
 	first := autofillPricedRow(ModelConfigRow{ModelID: modelID}, listings[0])
+	if !hasEffectiveModelPricing(first) {
+		return OpenRouterRemoteModel{}, false
+	}
 	for _, other := range listings[1:] {
 		if !samePricing(first, autofillPricedRow(ModelConfigRow{ModelID: modelID}, other)) {
 			return OpenRouterRemoteModel{}, false
