@@ -26,7 +26,7 @@ func TestRegisterManagementRouteTable(t *testing.T) {
 		routes[key] = route
 	}
 
-	if got, want := len(routes), 411; got != want {
+	if got, want := len(routes), 412; got != want {
 		t.Fatalf("route count = %d, want %d", got, want)
 	}
 	if got, want := sortedRouteKeys(routes), expectedManagementRoutes(); !slices.Equal(got, want) {
@@ -495,6 +495,7 @@ func expectedManagementRoutes() []string {
 		"GET /v0/management/model-owner-presets",
 		"GET /v0/management/model-path-availability",
 		"GET /v0/management/model-pricing",
+		"GET /v0/management/pricing-resync-jobs",
 		"GET /v0/management/models",
 		"GET /v0/management/models/configured-availability",
 		"GET /v0/management/models/test/:task_id",

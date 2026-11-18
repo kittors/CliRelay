@@ -208,7 +208,9 @@ func permissionForManagementRequest(method, path string) string {
 			return "api_keys.write"
 		}
 		return "api_keys.read"
-	case strings.HasPrefix(relative, "/model"), strings.Contains(relative, "model-"):
+	// Pricing resync jobs recompute request costs after a model price edit: the
+	// same people who price models read their progress.
+	case strings.HasPrefix(relative, "/model"), strings.Contains(relative, "model-"), relative == "/pricing-resync-jobs":
 		if write {
 			return "models.write"
 		}

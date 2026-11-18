@@ -75,6 +75,12 @@ func laterRuntimeMigrations() []Migration {
 		// Who sent each request, for the request log's Agent column. See
 		// requestLogClientSQL.
 		{Version: "202611180001_request_log_client", SQL: requestLogClientSQL},
+		// One-hour cache writes on request_logs, so a price change can recompute
+		// a stored cost exactly. See requestLogCacheWrite1hSQL.
+		{Version: "202611180002_request_log_cache_write_1h", SQL: requestLogCacheWrite1hSQL},
+		// Queue of request-cost recomputations after a price change. See
+		// pricing_resync_migrations.go.
+		{Version: "202611180003_pricing_resync_jobs", SQL: pricingResyncJobsSQL},
 	}
 }
 

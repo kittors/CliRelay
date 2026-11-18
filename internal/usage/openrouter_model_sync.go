@@ -132,9 +132,10 @@ func SyncOpenRouterModelListForTenant(ctx context.Context, tenantID string, mode
 			continue
 		}
 		legacyModelIDs := openRouterLegacyLocalModelIDs(tenantID, remoteModelID, owner, modelID)
-		if existing, exists := GetModelConfigForTenant(tenantID, modelID); exists {
+		if existing, exists, inherited := openRouterRowForTenant(tenantID, modelID); exists {
+			before := existing
 			openRouterApplyModelSync(&existing, model, owner)
-			if err := UpsertModelConfigForTenant(tenantID, existing); err != nil {
+			if err := openRouterUpsertIfChanged(tenantID, before, existing, inherited); err != nil {
 				return result, fmt.Errorf("sync openrouter model pricing %s: %w", modelID, err)
 			}
 			if err := openRouterDeleteLegacyOpenRouterRows(tenantID, modelID, legacyModelIDs); err != nil {
@@ -711,57 +712,6 @@ func openRouterDeleteLegacyOpenRouterRows(tenantID, baseModelID string, modelIDs
 	return nil
 }
 
-func openRouterSyncExistingAliasRows(tenantID, baseModelID string, model OpenRouterRemoteModel, owner string, modelIDs []string) error {
-	for _, modelID := range modelIDs {
-		existing, exists := GetModelConfigForTenant(tenantID, modelID)
-		if !exists {
-			continue
-		}
-		if existing.Source == openRouterModelSource && !openRouterIsDateSuffixAlias(modelID, baseModelID) {
-			continue
-		}
-		openRouterApplyModelSync(&existing, model, owner)
-		if err := UpsertModelConfigForTenant(tenantID, existing); err != nil {
-			return fmt.Errorf("sync openrouter model alias %s: %w", modelID, err)
-		}
-	}
-	return nil
-}
-
-func openRouterSyncExistingWrapperRows(tenantID, baseModelID string, model OpenRouterRemoteModel) error {
-	for _, wrapperID := range openRouterWrapperModelIDs(baseModelID) {
-		existing, exists := GetModelConfigForTenant(tenantID, wrapperID)
-		if !exists {
-			continue
-		}
-		switch {
-		case strings.HasPrefix(wrapperID, "cline-pass/"):
-			existing.OwnedBy = "cline"
-		case strings.HasPrefix(wrapperID, "ollama/"):
-			existing.OwnedBy = "ollama"
-		}
-		if description := openRouterModelDescription(model); description != "" && openRouterShouldSyncDescription(existing) {
-			existing.Description = description
-		}
-		openRouterApplyModelSyncValues(&existing, model)
-		if err := UpsertModelConfigForTenant(tenantID, existing); err != nil {
-			return fmt.Errorf("sync openrouter model wrapper %s: %w", wrapperID, err)
-		}
-	}
-	return nil
-}
-
-func openRouterWrapperModelIDs(baseModelID string) []string {
-	baseModelID = strings.TrimSpace(baseModelID)
-	if baseModelID == "" || strings.Contains(baseModelID, "/") {
-		return nil
-	}
-	return []string{
-		"cline-pass/" + baseModelID,
-		"ollama/" + baseModelID,
-	}
-}
-
 func openRouterStaticBaseModelRow(modelID string) (ModelConfigRow, bool) {
 	modelID = strings.TrimSpace(modelID)
 	if modelID == "" {
@@ -922,11 +872,11 @@ func openRouterMergeVariantGroups(tenantID string, models []OpenRouterRemoteMode
 			updated = true
 		}
 
-		if bestDesc != "" && openRouterShouldSyncDescription(baseModel) {
+		if bestDesc != "" && bestDesc != baseModel.Description && openRouterShouldSyncDescription(baseModel) {
 			baseModel.Description = bestDesc
 			updated = true
 		}
-		if bestDisplayName != "" && openRouterShouldSyncDisplayName(baseModel) {
+		if bestDisplayName != "" && bestDisplayName != baseModel.DisplayName && openRouterShouldSyncDisplayName(baseModel) {
 			baseModel.DisplayName = bestDisplayName
 			updated = true
 		}

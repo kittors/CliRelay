@@ -124,12 +124,14 @@ func (h *ModelsHandler) GetModelConfigs(c *gin.Context) {
 
 // PostModelConfig creates or updates a database-backed model configuration row.
 func (h *ModelsHandler) PostModelConfig(c *gin.Context) {
-	var payload modelcatalog.ModelConfigPayload
-	if err := c.ShouldBindJSON(&payload); err != nil {
+	var body modelConfigEditRequest
+	if err := c.ShouldBindJSON(&body); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
 		return
 	}
-	saved, err := h.service(c).UpsertModelConfig(payload, "", modelConfigScope(c))
+	tenantID := effectiveTenantID(c)
+	before := pricingFingerprints(tenantID, body.ID)
+	saved, err := h.service(c).UpsertModelConfig(body.ModelConfigPayload, "", modelConfigScope(c))
 	if err != nil {
 		if errors.Is(err, modelcatalog.ErrModelIDRequired) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -138,18 +140,22 @@ func (h *ModelsHandler) PostModelConfig(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	queuePricingResyncAfterEdit(tenantID, before, resyncModeFor(body.ResyncHistory))
 	h.notifyModelConfigMutated(c)
 	c.JSON(http.StatusOK, saved)
 }
 
 // PutModelConfig updates a database-backed model configuration row.
 func (h *ModelsHandler) PutModelConfig(c *gin.Context) {
-	var payload modelcatalog.ModelConfigPayload
-	if err := c.ShouldBindJSON(&payload); err != nil {
+	var body modelConfigEditRequest
+	if err := c.ShouldBindJSON(&body); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
 		return
 	}
-	saved, err := h.service(c).UpsertModelConfig(payload, modelConfigParamID(c), modelConfigScope(c))
+	tenantID := effectiveTenantID(c)
+	// A rename moves the price from the old ID to the new one: both are touched.
+	before := pricingFingerprints(tenantID, body.ID, modelConfigParamID(c))
+	saved, err := h.service(c).UpsertModelConfig(body.ModelConfigPayload, modelConfigParamID(c), modelConfigScope(c))
 	if err != nil {
 		if errors.Is(err, modelcatalog.ErrModelIDRequired) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -158,12 +164,15 @@ func (h *ModelsHandler) PutModelConfig(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	queuePricingResyncAfterEdit(tenantID, before, resyncModeFor(body.ResyncHistory))
 	h.notifyModelConfigMutated(c)
 	c.JSON(http.StatusOK, saved)
 }
 
 // DeleteModelConfig deletes a database-backed model configuration row.
 func (h *ModelsHandler) DeleteModelConfig(c *gin.Context) {
+	tenantID := effectiveTenantID(c)
+	before := pricingFingerprints(tenantID, modelConfigParamID(c))
 	if err := h.service(c).DeleteModelConfig(modelConfigParamID(c)); err != nil {
 		if errors.Is(err, modelcatalog.ErrModelIDRequired) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -172,6 +181,7 @@ func (h *ModelsHandler) DeleteModelConfig(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	queuePricingResyncAfterEdit(tenantID, before, usage.PricingResyncFill)
 	h.notifyModelConfigMutated(c)
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
@@ -244,11 +254,18 @@ func (h *ModelsHandler) PutModelPricing(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
 		return
 	}
+	tenantID := effectiveTenantID(c)
+	ids := make([]string, 0, len(body.Items))
+	for _, item := range body.Items {
+		ids = append(ids, item.ModelID)
+	}
+	before := pricingFingerprints(tenantID, ids...)
 	payload, err := h.service(c).UpdatePricing(body.Items)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	queuePricingResyncAfterEdit(tenantID, before, usage.PricingResyncFill)
 	c.JSON(http.StatusOK, payload)
 }
 
@@ -281,7 +298,9 @@ func (h *ModelsHandler) PostOpenRouterModelSyncRun(c *gin.Context) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	// Detached from the request: a browser or proxy giving up on a slow sync used
+	// to cancel it halfway ("context canceled") and answer 502.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Minute)
 	defer cancel()
 
 	result, state, err := h.service(c).RunOpenRouterModelSync(ctx)

@@ -106,8 +106,8 @@ func insertRequestLogRowTx(tx usageMetadataWriteTx, plan requestLogWritePlan) er
 	insertSQL := `INSERT INTO request_logs
 		(tenant_id, timestamp, api_key, api_key_id, auth_subject_id, api_key_name, model, thinking_level, upstream_model, upstream_response_model, vision_fallback_model, source, channel_name, auth_index,
 		 failed, streaming, latency_ms, first_token_ms, input_tokens, output_tokens, reasoning_tokens, cached_tokens, total_tokens, cost,
-		 cache_read_tokens, cache_write_tokens, prompt_tokens, session_id, guard_kind, client_name, client_version, user_agent)
-	 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+		 cache_read_tokens, cache_write_tokens, prompt_tokens, session_id, guard_kind, client_name, client_version, user_agent, cache_write_1h_tokens)
+	 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 	insertArgs := []any{
 		plan.tenantID, entry.Timestamp.UTC().Format(time.RFC3339Nano),
 		entry.APIKey, entry.APIKeyID, entry.AuthSubjectID, entry.APIKeyName, entry.Model, entry.ThinkingLevel,
@@ -116,7 +116,7 @@ func insertRequestLogRowTx(tx usageMetadataWriteTx, plan requestLogWritePlan) er
 		entry.Tokens.InputTokens, entry.Tokens.OutputTokens, entry.Tokens.ReasoningTokens,
 		entry.Tokens.CachedTokens, entry.Tokens.TotalTokens, plan.cost,
 		cacheRead, cacheWrite, promptTokens, plan.sessionID, entry.GuardKind,
-		entry.ClientName, entry.ClientVersion, entry.UserAgent,
+		entry.ClientName, entry.ClientVersion, entry.UserAgent, requestLogCacheWrite1h(entry.Tokens),
 	}
 
 	if !plan.storeContent {
