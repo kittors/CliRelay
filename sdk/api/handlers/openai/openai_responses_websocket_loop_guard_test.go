@@ -267,7 +267,7 @@ func TestResponsesWebsocketSurfacesTheErrorOfAStreamThatEndedWithOne(t *testing.
 			Error:      &loopdetect.ReplyLoopError{Trip: loopdetect.ReplyTrip{Window: 256, Distinct: 4, Units: []string{"Okay."}}},
 		}
 		close(errs)
-		_, _, _ = h.forwardResponsesWebsocket(c, conn, func(...interface{}) {}, data, errs, &strings.Builder{}, "test")
+		_, _, _ = h.forwardResponsesWebsocket(c, conn, func(...interface{}) {}, data, errs, &strings.Builder{}, "test", nil)
 	})
 	server := httptest.NewServer(router)
 	defer server.Close()

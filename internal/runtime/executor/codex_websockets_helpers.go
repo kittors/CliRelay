@@ -289,8 +289,14 @@ func parseCodexWebsocketError(payload []byte) (error, bool) {
 	}
 
 	headers := parseCodexWebsocketErrorHeaders(payload)
+	// Over the websocket an exhausted allowance arrives as this event instead of
+	// an HTTP 429, with the same body (usage_limit_reached, resets_at) and the
+	// same rate-limit headers. It is parsed as the HTTP answer is, so the
+	// executor itself publishes when the allowance comes back. A reset time the
+	// scheduler only infers is advisory and dropped when cooling is disabled,
+	// which left an exhausted account selectable again at once.
 	return statusErrWithHeaders{
-		statusErr: statusErr{code: status, msg: string(out)},
+		statusErr: newCodexStatusErr(status, out, headers),
 		headers:   headers,
 	}, true
 }
