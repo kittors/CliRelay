@@ -4,8 +4,11 @@ import (
 	"context"
 	"testing"
 
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/modeldiscovery"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	sdkmodelcatalog "github.com/router-for-me/CLIProxyAPI/v6/sdk/modelcatalog"
 )
 
 type modelSourceStub struct {
@@ -330,4 +333,59 @@ func containsModelID(models []map[string]any, id string) bool {
 		}
 	}
 	return false
+}
+
+// Refreshing one account's models runs with that account's tenant configuration,
+// like its requests do (#1300). The account names its proxy by ID and each tenant
+// keeps its own pool; with the system configuration the ID reached the system
+// tenant's entry or no proxy, the refresh missed upstream, and the panel quietly
+// kept the old Antigravity list.
+func TestLiveModelRefreshRunsWithTheAccountsTenantConfig(t *testing.T) {
+	ResetDiscoveryCacheForTest()
+	t.Cleanup(modeldiscovery.SetTenantConfigForTest(func(base *config.Config, tenantID string) config.Config {
+		tenantCfg := *base
+		tenantCfg.ProxyURL = "socks5://proxy-of-" + tenantID
+		return tenantCfg
+	}))
+	var fetchedWith string
+	previous := fetchAntigravityModels
+	fetchAntigravityModels = func(_ context.Context, _ *coreauth.Auth, cfg *config.Config) []*sdkmodelcatalog.ModelInfo {
+		if cfg != nil {
+			fetchedWith = cfg.ProxyURL
+		}
+		return []*sdkmodelcatalog.ModelInfo{{ID: "gemini-3.1-pro", DisplayName: "Gemini 3.1 Pro"}}
+	}
+	t.Cleanup(func() { fetchAntigravityModels = previous })
+
+	manager := coreauth.NewManager(nil, nil, nil)
+	if _, err := manager.Register(context.Background(), &coreauth.Auth{
+		ID:       "antigravity-auth",
+		FileName: "antigravity.json",
+		Provider: "antigravity",
+		TenantID: "tenant-a",
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	system := &config.Config{}
+	system.ProxyURL = "socks5://system-proxy"
+
+	_, label := ListModelEntriesLiveForTenant(
+		context.Background(),
+		manager,
+		&modelSourceStub{},
+		&modelRegistrarStub{},
+		system,
+		"tenant-a",
+		"antigravity.json",
+		true,
+	)
+	if label != "upstream" {
+		t.Fatalf("source label = %q, want upstream", label)
+	}
+	if fetchedWith != "socks5://proxy-of-tenant-a" {
+		t.Fatalf("refresh fetched with proxy %q, want the account's tenant proxy socks5://proxy-of-tenant-a", fetchedWith)
+	}
+	if system.ProxyURL != "socks5://system-proxy" {
+		t.Fatalf("system configuration changed to %q", system.ProxyURL)
+	}
 }
