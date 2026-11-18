@@ -119,6 +119,21 @@ func TestAutofillFillsATenantsUnpricedSeedRow(t *testing.T) {
 	}
 }
 
+func TestAutofillIgnoresModelsThatNeverAnswered(t *testing.T) {
+	initPricingResyncTestDB(t)
+	useOpenRouterListing(t, listing("openai/never-served", "0.000002", "0.00001"))
+	InsertRequestLog(RequestLogEntry{
+		TrustedTenantID: resyncTenant, APIKey: "sk-autofill", APIKeyID: "key-autofill", Model: "never-served", Source: "codex",
+		Failed: true, Timestamp: time.Now().UTC().Add(-time.Minute),
+	})
+
+	runModelCatalogAutofill(context.Background(), time.Now())
+
+	if _, ok := modelConfigStoreForTenant(systemTenantID).GetModelConfig("never-served"); ok {
+		t.Fatal("a model no upstream answered got a catalog row")
+	}
+}
+
 func TestAutofillSkipsListingsThatDisagreeOnPrice(t *testing.T) {
 	initPricingResyncTestDB(t)
 	useOpenRouterListing(t, listing("openai/dup-model", "0.000002", "0.00001"), listing("azure/dup-model", "0.000003", "0.00001"))

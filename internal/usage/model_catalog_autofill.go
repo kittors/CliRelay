@@ -82,8 +82,8 @@ type autofillTarget struct {
 }
 
 // modelCatalogAutofillTargets lists the tenant and model pairs without an
-// effective price: models with requests in the last days, per tenant, and the
-// models the registry serves, for the system catalog.
+// effective price: models that served requests in the last days, per tenant,
+// and the models the registry serves, for the system catalog.
 func modelCatalogAutofillTargets(now time.Time) ([]autofillTarget, error) {
 	db := getReadDB()
 	if db == nil {
@@ -109,7 +109,10 @@ func modelCatalogAutofillTargets(now time.Time) ([]autofillTarget, error) {
 		targets = append(targets, autofillTarget{tenantID: tenantID, modelID: modelID})
 	}
 	since := localDayKeyAtLocation(now.Add(-pricingResyncRetention-24*time.Hour), metadataForUsageDB(db).loc)
-	rows, err := db.Query(`SELECT DISTINCT tenant_id, model FROM usage_rollup_buckets WHERE bucket_kind = ? AND bucket_start >= ?`, rollupBucketDay, since)
+	// Only models that answered at least once: a name a client asked for that no
+	// upstream serves must not get a catalog row of its own.
+	rows, err := db.Query(`SELECT DISTINCT tenant_id, model FROM usage_rollup_buckets
+		WHERE bucket_kind = ? AND bucket_start >= ? AND success_count > 0`, rollupBucketDay, since)
 	if err != nil {
 		return nil, fmt.Errorf("usage: autofill models in use: %w", err)
 	}
