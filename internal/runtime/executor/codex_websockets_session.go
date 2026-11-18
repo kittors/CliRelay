@@ -126,7 +126,6 @@ func (e *CodexWebsocketsExecutor) ensureUpstreamConn(ctx context.Context, auth *
 	sess.conn = conn
 	sess.wsURL = wsURL
 	sess.authID = authID
-	sess.connCreateSent = false
 	sess.readerConn = conn
 	sess.connMu.Unlock()
 
@@ -212,7 +211,6 @@ func (e *CodexWebsocketsExecutor) invalidateUpstreamConn(sess *codexWebsocketSes
 		return
 	}
 	sess.conn = nil
-	sess.connCreateSent = false
 	if sess.readerConn == conn {
 		sess.readerConn = nil
 	}
@@ -279,7 +277,6 @@ func (e *CodexWebsocketsExecutor) closeExecutionSession(sess *codexWebsocketSess
 	authID := sess.authID
 	wsURL := sess.wsURL
 	sess.conn = nil
-	sess.connCreateSent = false
 	if sess.readerConn == conn {
 		sess.readerConn = nil
 	}

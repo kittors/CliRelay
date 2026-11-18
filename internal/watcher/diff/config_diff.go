@@ -30,6 +30,13 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 	if oldCfg.CodexRequestZstdEnabled() != newCfg.CodexRequestZstdEnabled() {
 		changes = append(changes, fmt.Sprintf("codex-request-zstd: %t -> %t", oldCfg.CodexRequestZstdEnabled(), newCfg.CodexRequestZstdEnabled()))
 	}
+	if oldCfg.CodexUpstreamIncrementalMode() != newCfg.CodexUpstreamIncrementalMode() {
+		changes = append(changes, fmt.Sprintf("codex-upstream-incremental.mode: %s -> %s", oldCfg.CodexUpstreamIncrementalMode(), newCfg.CodexUpstreamIncrementalMode()))
+	}
+	if len(oldCfg.CodexUpstreamIncremental.AllowKeys) != len(newCfg.CodexUpstreamIncremental.AllowKeys) {
+		// Counts only: the entries may be keys themselves.
+		changes = append(changes, fmt.Sprintf("codex-upstream-incremental.allow-keys: %d -> %d entries", len(oldCfg.CodexUpstreamIncremental.AllowKeys), len(newCfg.CodexUpstreamIncremental.AllowKeys)))
+	}
 	if oldCfg.ResponsesWebsocketEnabled() != newCfg.ResponsesWebsocketEnabled() {
 		changes = append(changes, fmt.Sprintf("responses-websocket.disabled: %t -> %t", !oldCfg.ResponsesWebsocketEnabled(), !newCfg.ResponsesWebsocketEnabled()))
 	}

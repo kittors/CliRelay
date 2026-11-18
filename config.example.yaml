@@ -411,6 +411,22 @@ streaming:
 # send plain JSON, e.g. to read the bytes on the wire through an inspecting proxy.
 # codex-request-zstd: false
 
+# Incremental requests to the Codex upstream (ChatGPT accounts). With store=false
+# every turn re-sends the whole conversation, screenshots included; on one
+# upstream websocket the backend keeps the last response, so a turn can send only
+# what it adds plus previous_response_id. The relay compares each request with
+# the previous turn of its conversation itself, so HTTP Responses and Chat
+# Completions clients benefit without any change. Anything that does not line up
+# goes in full; nothing here can fail a turn the HTTP transport would answer.
+# codex-upstream-incremental:
+#   mode: shadow              # off (default) | shadow: compare and log, send as before | on: send increments
+#   allow-keys:               # "on" only for these downstream keys (others are compared as in shadow); empty = all
+#     - "sha256:<hex sha256 of the key>"
+#   max-first-request-mb: 15  # larger full requests keep going over HTTP
+#   max-chains: 256           # upstream websockets kept open between turns
+#   max-chains-per-auth: 16
+#   idle-timeout-seconds: 300
+
 # Client-facing Responses WebSocket (GET /v1/responses, /backend-api/codex/responses).
 # Over it Codex sends only what a turn adds (previous_response_id plus the new
 # input items); over HTTP it re-sends the whole conversation every turn,

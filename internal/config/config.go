@@ -187,6 +187,10 @@ type Config struct {
 	// means on; set false to send plain JSON. See CodexRequestZstdEnabled.
 	CodexRequestZstd *bool `yaml:"codex-request-zstd,omitempty" json:"codex-request-zstd,omitempty"`
 
+	// CodexUpstreamIncremental sends Codex turns upstream as increments over a
+	// websocket pinned to the conversation. See CodexUpstreamIncrementalConfig.
+	CodexUpstreamIncremental CodexUpstreamIncrementalConfig `yaml:"codex-upstream-incremental,omitempty" json:"codex-upstream-incremental,omitempty"`
+
 	// ProxyPool stores reusable outbound proxies that can be referenced by providers and auth files.
 	ProxyPool []ProxyPoolEntry `yaml:"proxy-pool,omitempty" json:"proxy-pool,omitempty"`
 
