@@ -128,7 +128,11 @@ func TestCodexReasoningContentWebsocketRegression(t *testing.T) {
 			}
 			executor := NewCodexWebsocketsExecutor(&config.Config{})
 			sess := executor.getOrCreateSession("schema-regression")
+			// Recorded as a real connection is: a socket opened for another
+			// credential or URL is replaced, which would dial chatgpt.com.
 			sess.conn = conn
+			sess.authID = codexOAuthAuth().ID
+			sess.wsURL = "wss://chatgpt.com/backend-api/codex/responses"
 			defer executor.CloseExecutionSession("schema-regression")
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()

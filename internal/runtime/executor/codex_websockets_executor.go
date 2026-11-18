@@ -54,6 +54,12 @@ type codexWebsocketSession struct {
 	activeCh     chan codexWebsocketRead
 	activeDone   <-chan struct{}
 	activeCancel context.CancelFunc
+	// activeConn is the socket the active request reads from. Only that
+	// socket's reader may end the request's channel when a read fails: a socket
+	// the session already dropped (invalidated, or replaced because the client
+	// connection moved to another credential) can fail after the next request
+	// took the channel, and closing it would fail that request.
+	activeConn *websocket.Conn
 
 	readerConn *websocket.Conn
 }
@@ -184,7 +190,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 	var readCh chan codexWebsocketRead
 	if sess != nil {
 		readCh = make(chan codexWebsocketRead, 4096)
-		sess.setActive(readCh)
+		sess.setActive(readCh, conn)
 		defer sess.clearActive(readCh)
 	}
 
@@ -202,6 +208,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 			if errDialRetry == nil && connRetry != nil {
 				wsReqBodyRetry := buildCodexWebsocketRequestBody(body)
 				recorder.RecordRequest(wsURL, "WEBSOCKET", wsHeaders.Clone(), wsReqBodyRetry)
+				sess.retargetActive(readCh, connRetry)
 				if errSendRetry := writeCodexWebsocketMessage(sess, connRetry, wsReqBodyRetry); errSendRetry == nil {
 					conn = connRetry
 				} else {
@@ -370,7 +377,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 	var readCh chan codexWebsocketRead
 	if sess != nil {
 		readCh = make(chan codexWebsocketRead, 4096)
-		sess.setActive(readCh)
+		sess.setActive(readCh, conn)
 	}
 
 	if errSend := writeCodexWebsocketMessage(sess, conn, wsReqBody); errSend != nil {
@@ -391,6 +398,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 			}
 			wsReqBodyRetry := buildCodexWebsocketRequestBody(body)
 			recorder.RecordRequest(wsURL, "WEBSOCKET", wsHeaders.Clone(), wsReqBodyRetry)
+			sess.retargetActive(readCh, connRetry)
 			if errSendRetry := writeCodexWebsocketMessage(sess, connRetry, wsReqBodyRetry); errSendRetry != nil {
 				recorder.RecordResponseError(errSendRetry)
 				e.invalidateUpstreamConn(sess, connRetry, "send_error", errSendRetry)
