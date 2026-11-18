@@ -268,6 +268,11 @@ func fetchLiveModelsForAuth(ctx context.Context, auth *coreauth.Auth, cfg *confi
 	}
 	fetchCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
 	defer cancel()
+	// Per-account model discovery must use the same tenant runtime configuration
+	// as the account's request path. In particular, ProxyID is resolved against
+	// the tenant's proxy pool; using the system config here can make a refresh
+	// miss upstream and silently fall back to an old Antigravity model cache.
+	cfg = modeldiscovery.CredentialConfig(cfg, auth)
 
 	provider := normalizeDiscoveryProvider(auth.Provider)
 	// Preserve raw provider for non-shared fetch paths (antigravity, etc.).
