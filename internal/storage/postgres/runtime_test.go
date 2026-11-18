@@ -11,8 +11,8 @@ import (
 
 func TestRuntimeMigrationsCoverCoreTables(t *testing.T) {
 	migrations := RuntimeMigrations()
-	if len(migrations) != 52 {
-		t.Fatalf("RuntimeMigrations len = %d, want 52", len(migrations))
+	if len(migrations) != 54 {
+		t.Fatalf("RuntimeMigrations len = %d, want 54", len(migrations))
 	}
 	// Membership table of multi-instance deployments.
 	if migrations[31].Version != "202609250001_cluster_nodes" {
@@ -185,6 +185,19 @@ func TestRuntimeMigrationsCoverCoreTables(t *testing.T) {
 		t.Fatalf("request log client migration = %q: %q", got.Version, got.SQL)
 	} else if strings.Contains(got.SQL, "INDEX") || strings.Contains(got.SQL, "UPDATE") {
 		t.Fatalf("request log client migration must only add columns: %q", got.SQL)
+	}
+	// One-hour cache writes: a nullable column, a catalog change that leaves the
+	// existing rows untouched.
+	if got := migrations[52]; got.Version != "202611180002_request_log_cache_write_1h" ||
+		!strings.Contains(got.SQL, "ADD COLUMN IF NOT EXISTS cache_write_1h_tokens BIGINT;") {
+		t.Fatalf("request log one-hour cache migration = %q: %q", got.Version, got.SQL)
+	} else if strings.Contains(got.SQL, "INDEX") || strings.Contains(got.SQL, "UPDATE") || strings.Contains(got.SQL, "DEFAULT") {
+		t.Fatalf("request log one-hour cache migration must only add a nullable column: %q", got.SQL)
+	}
+	if got := migrations[53]; got.Version != "202611180003_pricing_resync_jobs" ||
+		!strings.Contains(got.SQL, "CREATE TABLE IF NOT EXISTS pricing_resync_jobs") ||
+		!strings.Contains(got.SQL, "ON pricing_resync_jobs(status, not_before)") {
+		t.Fatalf("pricing resync jobs migration = %q: %q", got.Version, got.SQL)
 	}
 	// Appended from laterRuntimeMigrations() because migrations.go sits at its
 	// structure-gate size ceiling.

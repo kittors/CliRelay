@@ -19,6 +19,8 @@ type AuthGroupOwnerMappingRow = sqlmodelconfig.AuthGroupOwnerMappingRow
 
 func initModelConfigTables(db *sql.DB) {
 	sqlmodelconfig.InitTables(db)
+	// Price changes queue recomputations of the requests already logged.
+	ensurePricingResyncJobsTable(db)
 }
 
 func modelConfigStore() sqlmodelconfig.Store {

@@ -735,23 +735,25 @@ func seedDefaultModelConfigRows(db *sql.DB) {
 	}
 }
 
+// mergeLegacyPricingIntoModelConfigs folds the legacy price table into the
+// system catalog on startup. The system tenant's legacy rows are its own prices
+// and update its rows. Another tenant's legacy row only seeds a model the system
+// catalog lacks: it used to overwrite the system price on every start, which made
+// one tenant's own price the price of every tenant inheriting the system catalog.
 func mergeLegacyPricingIntoModelConfigs(db *sql.DB) {
-	rows, err := db.Query("SELECT model_id, input_price_per_million, output_price_per_million, cached_price_per_million FROM model_pricing")
+	rows, err := db.Query("SELECT model_id, input_price_per_million, output_price_per_million, cached_price_per_million, CAST(tenant_id AS TEXT) FROM model_pricing")
 	if err != nil {
 		return
 	}
 
 	type legacyPricingRow struct {
-		modelID string
-		input   float64
-		output  float64
-		cached  float64
+		modelID, tenantID     string
+		input, output, cached float64
 	}
-
 	legacyRows := make([]legacyPricingRow, 0)
 	for rows.Next() {
 		var row legacyPricingRow
-		if err := rows.Scan(&row.modelID, &row.input, &row.output, &row.cached); err != nil {
+		if err := rows.Scan(&row.modelID, &row.input, &row.output, &row.cached, &row.tenantID); err != nil {
 			continue
 		}
 		row.modelID = strings.TrimSpace(row.modelID)
@@ -764,23 +766,17 @@ func mergeLegacyPricingIntoModelConfigs(db *sql.DB) {
 
 	now := nowRFC3339()
 	for _, row := range legacyRows {
-		_, _ = db.Exec(
-			`INSERT INTO model_configs
+		onConflict := `DO UPDATE SET pricing_mode = 'token', input_price_per_million = excluded.input_price_per_million,
+			   output_price_per_million = excluded.output_price_per_million,
+			   cached_price_per_million = excluded.cached_price_per_million, updated_at = excluded.updated_at`
+		if strings.TrimSpace(row.tenantID) != "00000000-0000-0000-0000-000000000001" {
+			onConflict = `DO NOTHING`
+		}
+		_, _ = db.Exec(`INSERT INTO model_configs
 			 (tenant_id, model_id, owned_by, description, enabled, pricing_mode, input_price_per_million, output_price_per_million, cached_price_per_million, price_per_call, source, updated_at)
 			 VALUES (?, ?, '', '', 1, 'token', ?, ?, ?, 0, 'legacy-pricing', ?)
-			 ON CONFLICT(tenant_id, model_id) DO UPDATE SET
-			   pricing_mode = 'token',
-			   input_price_per_million = excluded.input_price_per_million,
-			   output_price_per_million = excluded.output_price_per_million,
-			   cached_price_per_million = excluded.cached_price_per_million,
-			   updated_at = excluded.updated_at`,
-			"00000000-0000-0000-0000-000000000001",
-			row.modelID,
-			row.input,
-			row.output,
-			row.cached,
-			now,
-		)
+			 ON CONFLICT(tenant_id, model_id) `+onConflict,
+			"00000000-0000-0000-0000-000000000001", row.modelID, row.input, row.output, row.cached, now)
 	}
 }
 

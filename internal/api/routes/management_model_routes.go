@@ -46,4 +46,6 @@ func registerManagementModelRoutes(group *gin.RouterGroup, h *managementhandlers
 	group.PUT("/codex-oauth-admission", h.PutCodexOAuthAdmission)
 	group.GET("/model-pricing", models.GetModelPricing)
 	group.PUT("/model-pricing", models.PutModelPricing)
+	// Recomputations of logged request costs after a price change.
+	group.GET("/pricing-resync-jobs", models.GetPricingResyncJobs)
 }

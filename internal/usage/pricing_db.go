@@ -493,18 +493,6 @@ func resolveModelPricingRowForTenant(tenantID, modelID string) (ModelConfigRow, 
 	})
 }
 
-// resolveModelPricing returns the effective pricing for a model from either
-// ModelConfigRow cache or ModelPricingRow cache, along with a boolean indicating
-// whether the model is enabled (or found at all).
-// Both lookups inherit system-tenant catalog prices when the business tenant has no override.
-func resolveModelPricingForTenant(tenantID, modelID string) (inputPrice, outputPrice, cachedPrice, cacheReadPrice, cacheWritePrice float64, enabled bool) {
-	row, ok := resolveModelPricingRowForTenant(tenantID, modelID)
-	if !ok {
-		return 0, 0, 0, 0, 0, false
-	}
-	return row.InputPricePerMillion, row.OutputPricePerMillion, row.CachedPricePerMillion, row.CacheReadPricePerMillion, row.CacheWritePricePerMillion, row.Enabled
-}
-
 // CalculateCost computes the cost for a request based on the model's pricing.
 // It uses the legacy cached_tokens field and OpenAI-compatible heuristic.
 // Returns 0 if no pricing is configured for the model.
@@ -522,16 +510,6 @@ func CalculateCostForTenant(tenantID, modelID string, inputTokens, outputTokens,
 	return calculateTokenCost(inputTokens, outputTokens, cachedTokens, row.InputPricePerMillion, row.OutputPricePerMillion, row.CachedPricePerMillion)
 }
 
-// resolveCallPricing checks whether a model uses "call" pricing mode and returns
-// the per-call price if so, along with a boolean. This avoids re-checking the
-// model config cache directly in CalculateCostV2.
-func resolveCallPricingForTenant(tenantID, modelID string) (pricePerCall float64, isCall bool) {
-	if row, ok := resolveModelPricingRowForTenant(tenantID, modelID); ok && row.Enabled && normalizePricingMode(row.PricingMode) == "call" {
-		return row.PricePerCall, true
-	}
-	return 0, false
-}
-
 // CalculateCostV2 computes the cost using the semantic cache read/write pricing model.
 // It uses cache_read_tokens, cache_write_tokens, and cache_read_included_in_input
 // from TokenStats for accurate cost calculation.
@@ -539,15 +517,24 @@ func CalculateCostV2(modelID string, tokens TokenStats) float64 {
 	return CalculateCostV2ForTenant(systemTenantID, modelID, tokens)
 }
 func CalculateCostV2ForTenant(tenantID, modelID string, tokens TokenStats) float64 {
-	// Check for per-call pricing first
-	if pricePerCall, isCall := resolveCallPricingForTenant(tenantID, modelID); isCall {
-		return pricePerCall
-	}
+	row, ok := resolveModelPricingRowForTenant(tenantID, modelID)
+	return costForResolvedPricing(row, ok, tokens)
+}
 
-	inputPrice, outputPrice, cachedPrice, cacheReadPrice, cacheWritePrice, enabled := resolveModelPricingForTenant(tenantID, modelID)
-	if !enabled {
+// costForResolvedPricing is CalculateCostV2 on a price row already resolved for
+// the tenant and model. The live write path and the pricing resync both price
+// through it, so a recomputed cost is the cost the request was logged with
+// whenever the price is the same.
+func costForResolvedPricing(row ModelConfigRow, ok bool, tokens TokenStats) float64 {
+	if !ok || !row.Enabled {
 		return 0
 	}
+	// Per-call pricing ignores tokens.
+	if normalizePricingMode(row.PricingMode) == "call" {
+		return row.PricePerCall
+	}
+	inputPrice, outputPrice, cachedPrice := row.InputPricePerMillion, row.OutputPricePerMillion, row.CachedPricePerMillion
+	cacheReadPrice, cacheWritePrice := row.CacheReadPricePerMillion, row.CacheWritePricePerMillion
 
 	// Use cache read/write tokens from the stats; fall back to legacy CachedTokens
 	// for the field that is populated.
