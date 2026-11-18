@@ -141,6 +141,10 @@ func buildRequestDetailContent(ctx context.Context, includeBodies ...bool) strin
 	if timing := upstreamTimingFromContext(ginCtx); len(timing) > 0 {
 		detail["upstream_timing"] = timing
 	}
+	// Whether the Codex turn went upstream as an increment, and why not.
+	if incremental := codexIncrementalRecordFromContext(ginCtx); len(incremental) > 0 {
+		detail["codex_incremental"] = incremental
+	}
 	if diagnostic := diagnostics.FromGin(ginCtx); diagnostic != nil {
 		if snapshot := diagnostic.Snapshot(); !snapshot.IsZero() {
 			detail["diagnostic"] = snapshot

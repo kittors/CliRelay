@@ -29,6 +29,9 @@ var dataTag = []byte("data:")
 // If api_key is unavailable on auth, it falls back to legacy via ClientAdapter.
 type CodexExecutor struct {
 	cfg *config.Config
+	// incremental replaces the process-wide chain pool (codex_incremental.go);
+	// tests set it.
+	incremental *codexIncrementalPool
 }
 
 func NewCodexExecutor(cfg *config.Config) *CodexExecutor { return &CodexExecutor{cfg: cfg} }
@@ -169,7 +172,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	body = applyCodexServiceTierPolicy(body, execCtx.Request.Payload, auth)
 
 	url := strings.TrimSuffix(baseURL, "/") + "/responses"
-	httpReq, err := e.cacheHelper(execCtx.Context, auth, execCtx.SourceFormat, url, req, body, execCtx.Options)
+	httpReq, sentBody, err := e.cacheRequest(execCtx.Context, auth, execCtx.SourceFormat, url, req, body, execCtx.Options)
 	if err != nil {
 		return resp, err
 	}
@@ -177,7 +180,9 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	applyCodexHeaders(httpReq, e.cfg, auth, apiKey, true)
 	applyCodexServiceTierRoutingHint(httpReq.Header, body, auth)
 	recorder := execCtx.Recorder()
-	httpResp, err := e.doCodexResponses(execCtx, recorder, httpReq, body) //nolint:bodyclose // body is closed by the defer below.
+	incremental := e.beginCodexIncrementalTurn(execCtx, sentBody)
+	defer incremental.finish()
+	httpResp, err := e.doCodexResponsesIncremental(execCtx, recorder, httpReq, body, incremental, apiKey) //nolint:bodyclose // body is closed by the defer below.
 	if err != nil {
 		recorder.RecordResponseError(err)
 		reporter.publishFailureWithContentBytes(execCtx.Context, req.Payload, err.Error())
@@ -250,6 +255,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		imageStream.observe(line)
 		line = normalizeCodexImageGenerationCallStatus(line)
 		line = imageStream.rewriteAssistantMarkdown(line)
+		incremental.observe(gjson.GetBytes(line, "type").String(), line)
 
 		if detail, ok := parseCodexUsage(line); ok {
 			reporter.publishWithContentBytes(execCtx.Context, detail, req.Payload, string(data))
@@ -392,7 +398,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	body = applyCodexServiceTierPolicy(body, execCtx.Request.Payload, auth)
 
 	url := strings.TrimSuffix(baseURL, "/") + "/responses"
-	httpReq, err := e.cacheHelper(execCtx.Context, auth, execCtx.SourceFormat, url, req, body, execCtx.Options)
+	httpReq, sentBody, err := e.cacheRequest(execCtx.Context, auth, execCtx.SourceFormat, url, req, body, execCtx.Options)
 	if err != nil {
 		return nil, err
 	}
@@ -400,8 +406,15 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	applyCodexHeaders(httpReq, e.cfg, auth, apiKey, true)
 	applyCodexServiceTierRoutingHint(httpReq.Header, body, auth)
 	recorder := execCtx.Recorder()
+	incremental := e.beginCodexIncrementalTurn(execCtx, sentBody)
+	streaming := false
+	defer func() {
+		if !streaming {
+			incremental.finish()
+		}
+	}()
 	//nolint:bodyclose // success body is consumed and closed by the stream goroutine below.
-	httpResp, err := e.doCodexResponses(execCtx, recorder, httpReq, body)
+	httpResp, err := e.doCodexResponsesIncremental(execCtx, recorder, httpReq, body, incremental, apiKey)
 	if err != nil {
 		recorder.RecordResponseError(err)
 		reporter.publishFailureWithContentBytes(execCtx.Context, req.Payload, err.Error())
@@ -425,8 +438,12 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	}
 	out := make(chan cliproxyexecutor.StreamChunk)
 	reporter.setInputContentBytes(req.Payload)
+	streaming = true
 	go func() {
 		defer close(out)
+		// After the body is closed, so a websocket turn is released only once
+		// nothing reads it.
+		defer incremental.finish()
 		defer func() {
 			if errClose := httpResp.Body.Close(); errClose != nil {
 				log.Errorf("codex executor: close response body error: %v", errClose)
@@ -469,7 +486,9 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 			// The framer preserves original multiline data fields. Inspect their
 			// joined JSON without changing the lines forwarded to the translator.
 			for _, payload := range codexResponsesSSEPayloads(eventLines) {
-				switch gjson.GetBytes(payload, "type").String() {
+				eventType := gjson.GetBytes(payload, "type").String()
+				incremental.observe(eventType, payload)
+				switch eventType {
 				case "response.completed", "response.incomplete":
 					terminal.observe(payload)
 				case "response.failed", "error":
@@ -687,6 +706,13 @@ func maybeStripCodexHistoryDataURLImagesOnRequest(req cliproxyexecutor.Request, 
 }
 
 func (e *CodexExecutor) cacheHelper(ctx context.Context, auth *cliproxyauth.Auth, from sdktranslator.Format, url string, req cliproxyexecutor.Request, rawJSON []byte, opts cliproxyexecutor.Options) (*http.Request, error) {
+	httpReq, _, err := e.cacheRequest(ctx, auth, from, url, req, rawJSON, opts)
+	return httpReq, err
+}
+
+// cacheRequest is cacheHelper also returning the body as sent, prompt_cache_key
+// included, for callers that read it again (codex_incremental.go).
+func (e *CodexExecutor) cacheRequest(ctx context.Context, auth *cliproxyauth.Auth, from sdktranslator.Format, url string, req cliproxyexecutor.Request, rawJSON []byte, opts cliproxyexecutor.Options) (*http.Request, []byte, error) {
 	var cache codexCache
 	if from == "claude" {
 		userIDResult := gjson.GetBytes(req.Payload, "metadata.user_id")
@@ -716,17 +742,29 @@ func (e *CodexExecutor) cacheHelper(ctx context.Context, auth *cliproxyauth.Auth
 	}
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(rawJSON))
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	if cache.ID != "" {
-		if from == "openai" {
-			if codexChatSessionHeaderApplies(e.cfg) {
-				httpReq.Header.Set("Session_id", cache.ID)
-			}
-		} else {
-			httpReq.Header.Set("Conversation_id", cache.ID)
-			httpReq.Header.Set("Session_id", cache.ID)
+	for key, values := range codexPromptCacheSessionHeaders(e.cfg, from, cache.ID) {
+		httpReq.Header[key] = values
+	}
+	return httpReq, rawJSON, nil
+}
+
+// codexPromptCacheSessionHeaders are the session headers that go with a prompt
+// cache key. The incremental websocket handshake sends the same ones, so a turn
+// moved onto the socket keeps the cache routing it had over HTTP.
+func codexPromptCacheSessionHeaders(cfg *config.Config, from sdktranslator.Format, cacheID string) http.Header {
+	headers := http.Header{}
+	if cacheID == "" {
+		return headers
+	}
+	if from == "openai" {
+		if codexChatSessionHeaderApplies(cfg) {
+			headers.Set("Session_id", cacheID)
 		}
+		return headers
 	}
-	return httpReq, nil
+	headers.Set("Conversation_id", cacheID)
+	headers.Set("Session_id", cacheID)
+	return headers
 }
