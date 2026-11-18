@@ -11,7 +11,7 @@ import (
 	"testing"
 	"unicode/utf16"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/contentmoderation"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/contentmoderation"
 )
 
 // jsonEscapeAll writes every character of s as a \uXXXX escape, the way

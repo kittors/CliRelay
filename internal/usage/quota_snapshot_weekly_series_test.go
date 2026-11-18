@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 )
 
 func seedDailyQuotaSnapshot(t *testing.T, tenantID, dateKey, authIndex, quotaKey string, percent float64) {

@@ -9,7 +9,7 @@ import (
 
 	"entgo.io/ent/dialect/sql/sqlgraph"
 	"entgo.io/ent/schema/field"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/storage/postgres/ent/ccswitchimportconfig"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/storage/postgres/ent/ccswitchimportconfig"
 )
 
 // CcSwitchImportConfigCreate is the builder for creating a CcSwitchImportConfig entity.

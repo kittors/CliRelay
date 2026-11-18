@@ -10,11 +10,11 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/configsync"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/storage/sqlstore/resourcegrants"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/testutil/postgrestest"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/configsync"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/storage/sqlstore/resourcegrants"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/testutil/postgrestest"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/usage"
 )
 
 // TestPostgresSharedResourceGrants runs the grant model on PostgreSQL, where

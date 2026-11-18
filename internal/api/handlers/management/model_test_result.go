@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/util/c2pa"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/util/c2pa"
 	"github.com/tidwall/gjson"
 )
 

@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/diagnostics"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/diagnostics"
 )
 
 func TestSanitizeForFilenameNormalizesUnsafeCharacters(t *testing.T) {

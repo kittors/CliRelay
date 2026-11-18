@@ -5,8 +5,8 @@ import (
 	"strings"
 	"time"
 
-	internalxai "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/xai"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	internalxai "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/xai"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
 
 const xaiUsingAPIKey = "using_api"

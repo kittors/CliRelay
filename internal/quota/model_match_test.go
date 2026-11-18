@@ -3,7 +3,7 @@ package quota
 import (
 	"testing"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/thinking"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
 )
 
 func TestNormalizeModelNameStripsSuffixesLikeThinking(t *testing.T) {

@@ -9,11 +9,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	managementapitools "github.com/router-for-me/CLIProxyAPI/v6/internal/management/apitools"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
-	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	managementapitools "github.com/router-for-me/CLIProxyAPI/v8/internal/management/apitools"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/usage"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	_ "modernc.org/sqlite"
 )
 

@@ -9,9 +9,9 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/accessfreeze"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/identity"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/accessfreeze"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/identity"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/usage"
 )
 
 // Per-provider access freezes (package accessfreeze): when an upstream refuses

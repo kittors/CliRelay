@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/cluster/sharedredis"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/cluster/sharedredis"
 )
 
 // Shared auto-ban counters. A source failing authentication on several nodes

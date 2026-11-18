@@ -7,12 +7,12 @@ package serviceapp
 import (
 	"context"
 
-	internalserviceapp "github.com/router-for-me/CLIProxyAPI/v6/internal/app/service"
-	sdkaccess "github.com/router-for-me/CLIProxyAPI/v6/sdk/access"
-	sdkAuth "github.com/router-for-me/CLIProxyAPI/v6/sdk/auth"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
-	"github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
-	sdkmodelcatalog "github.com/router-for-me/CLIProxyAPI/v6/sdk/modelcatalog"
+	internalserviceapp "github.com/router-for-me/CLIProxyAPI/v8/internal/app/service"
+	sdkaccess "github.com/router-for-me/CLIProxyAPI/v8/sdk/access"
+	sdkAuth "github.com/router-for-me/CLIProxyAPI/v8/sdk/auth"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
+	sdkmodelcatalog "github.com/router-for-me/CLIProxyAPI/v8/sdk/modelcatalog"
 )
 
 type RuntimeAuthUpdateAction = internalserviceapp.RuntimeAuthUpdateAction
@@ -79,7 +79,7 @@ func NewDefaultAuthManager() *sdkAuth.Manager {
 	return internalserviceapp.NewDefaultAuthManager()
 }
 
-func BuildAPIKeyClients(cfg *config.Config) (int, int, int, int, int, int, int, int) {
+func BuildAPIKeyClients(cfg *config.Config) (int, int, int, int, int, int, int) {
 	return internalserviceapp.BuildAPIKeyClients(cfg)
 }
 

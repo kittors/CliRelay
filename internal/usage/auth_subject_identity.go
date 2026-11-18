@@ -7,7 +7,7 @@ import (
 
 	"github.com/google/uuid"
 
-	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
 
 // AuthSubjectIdentity is the single account identity contract used by status,

@@ -7,9 +7,9 @@ import (
 	"sync"
 	"time"
 
-	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
-	"github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
-	serviceapp "github.com/router-for-me/CLIProxyAPI/v6/sdkbridge/service"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
+	serviceapp "github.com/router-for-me/CLIProxyAPI/v8/sdkbridge/service"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -88,7 +88,10 @@ type liveModelFetcher struct {
 
 func (st *liveModelFetcher) applyDefaults() {
 	if st.fetch == nil {
-		st.fetch = serviceapp.DiscoverCredentialModels
+		st.fetch = func(ctx context.Context, auth *coreauth.Auth, cfg *config.Config, provider string) ([]*ModelInfo, error) {
+			models, err := serviceapp.DiscoverCredentialModels(ctx, auth, cfg, provider)
+			return convertDiscoveredModels(models), err
+		}
 	}
 	if st.now == nil {
 		st.now = time.Now
@@ -122,7 +125,7 @@ func (st *liveModelFetcher) applyDefaults() {
 func (s *Service) selfListedModels(a *coreauth.Auth, provider string, excluded []string) ([]*ModelInfo, string) {
 	models, source := s.modelLists.lookup(a.ID, provider)
 	if len(models) == 0 {
-		models, source = serviceapp.CredentialModelFloor(provider), modelListSourceFloor
+		models, source = convertDiscoveredModels(serviceapp.CredentialModelFloor(provider)), modelListSourceFloor
 	}
 	if a.Status != coreauth.StatusDisabled {
 		s.requestLiveModelList(a.ID, provider)

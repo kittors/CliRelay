@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -18,7 +19,6 @@ const (
 	tabAuthFiles
 	tabAPIKeys
 	tabOAuth
-	tabUsage
 	tabLogs
 )
 
@@ -40,26 +40,36 @@ type App struct {
 	auth      authTabModel
 	keys      keysTabModel
 	oauth     oauthTabModel
-	usage     usageTabModel
 	logs      logsTabModel
 
 	client *Client
+
+	// fatalErr records a non-recoverable startup failure (e.g. the target does
+	// not expose a supported management API) so Run can exit non-zero after the
+	// Bubble Tea program ends.
+	fatalErr error
 
 	width  int
 	height int
 	ready  bool
 
 	// Track which tabs have been initialized (fetched data)
-	initialized [7]bool
+	initialized [6]bool
 }
 
 type authConnectMsg struct {
-	cfg map[string]any
-	err error
+	cfg   map[string]any
+	err   error
+	fatal error // non-nil when the server cannot serve the management API at all
 }
 
-// NewApp creates the root TUI application model.
+// NewApp creates the root TUI application model targeting localhost on the given port.
 func NewApp(port int, secretKey string, hook *LogHook) App {
+	return NewAppWithBaseURL(fmt.Sprintf("http://127.0.0.1:%d", port), secretKey, hook)
+}
+
+// NewAppWithBaseURL creates the root TUI application model targeting the specified management base URL.
+func NewAppWithBaseURL(baseURL string, secretKey string, hook *LogHook) App {
 	standalone := hook != nil
 	authRequired := !standalone
 	ti := textinput.New()
@@ -69,7 +79,7 @@ func NewApp(port int, secretKey string, hook *LogHook) App {
 	ti.SetValue(strings.TrimSpace(secretKey))
 	ti.Focus()
 
-	client := NewClient(port, secretKey)
+	client := NewClientWithBaseURL(baseURL, secretKey)
 	app := App{
 		activeTab:     tabDashboard,
 		standalone:    standalone,
@@ -81,10 +91,9 @@ func NewApp(port int, secretKey string, hook *LogHook) App {
 		auth:          newAuthTabModel(client),
 		keys:          newKeysTabModel(client),
 		oauth:         newOAuthTabModel(client),
-		usage:         newUsageTabModel(client),
 		logs:          newLogsTabModel(client, hook),
 		client:        client,
-		initialized: [7]bool{
+		initialized: [6]bool{
 			tabDashboard: true,
 			tabLogs:      true,
 		},
@@ -92,13 +101,16 @@ func NewApp(port int, secretKey string, hook *LogHook) App {
 
 	app.refreshTabs()
 	if authRequired {
-		app.initialized = [7]bool{}
+		app.initialized = [6]bool{}
 	}
 	app.setAuthInputPrompt()
 	return app
 }
 
 func (a App) Init() tea.Cmd {
+	if a.fatalErr != nil {
+		return tea.Quit
+	}
 	if !a.authenticated {
 		return textinput.Blink
 	}
@@ -128,12 +140,15 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.auth.SetSize(contentW, contentH)
 		a.keys.SetSize(contentW, contentH)
 		a.oauth.SetSize(contentW, contentH)
-		a.usage.SetSize(contentW, contentH)
 		a.logs.SetSize(contentW, contentH)
 		return a, nil
 
 	case authConnectMsg:
 		a.authConnecting = false
+		if msg.fatal != nil {
+			a.fatalErr = msg.fatal
+			return a, tea.Quit
+		}
 		if msg.err != nil {
 			a.authError = fmt.Sprintf(T("auth_gate_connect_fail"), msg.err.Error())
 			return a, nil
@@ -142,7 +157,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.authenticated = true
 		a.logsEnabled = a.standalone || isLogsEnabledFromConfig(msg.cfg)
 		a.refreshTabs()
-		a.initialized = [7]bool{}
+		a.initialized = [6]bool{}
 		a.initialized[tabDashboard] = true
 		cmds := []tea.Cmd{a.dashboard.Init()}
 		if a.logsEnabled {
@@ -258,8 +273,6 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.keys, cmd = a.keys.Update(msg)
 	case tabOAuth:
 		a.oauth, cmd = a.oauth.Update(msg)
-	case tabUsage:
-		a.usage, cmd = a.usage.Update(msg)
 	case tabLogs:
 		a.logs, cmd = a.logs.Update(msg)
 	}
@@ -322,8 +335,6 @@ func (a *App) initTabIfNeeded(_ int) tea.Cmd {
 		return a.keys.Init()
 	case tabOAuth:
 		return a.oauth.Init()
-	case tabUsage:
-		return a.usage.Init()
 	case tabLogs:
 		if !a.logsEnabled {
 			return nil
@@ -360,8 +371,6 @@ func (a App) View() string {
 		sb.WriteString(a.keys.View())
 	case tabOAuth:
 		sb.WriteString(a.oauth.View())
-	case tabUsage:
-		sb.WriteString(a.usage.View())
 	case tabLogs:
 		if a.logsEnabled {
 			sb.WriteString(a.logs.View())
@@ -489,21 +498,50 @@ func (a App) connectWithPassword(password string) tea.Cmd {
 	return func() tea.Msg {
 		a.client.SetSecretKey(password)
 		cfg, errGetConfig := a.client.GetConfig()
-		return authConnectMsg{cfg: cfg, err: errGetConfig}
+		if errGetConfig == nil {
+			return authConnectMsg{cfg: cfg}
+		}
+		// A definitive unsupported server (both contracts absent) is fatal, not
+		// a retryable auth failure. Transient probe failures (503/429/network)
+		// are NOT fatal: they keep the previous retry behavior.
+		if errSupport := a.client.CheckManagementSupport(); errors.Is(errSupport, ErrManagementUnsupported) {
+			return authConnectMsg{err: errGetConfig, fatal: errSupport}
+		}
+		return authConnectMsg{err: errGetConfig}
 	}
 }
 
-// Run starts the TUI application.
+// Run starts the TUI application targeting localhost on the given port.
 // output specifies where bubbletea renders. If nil, defaults to os.Stdout.
 func Run(port int, secretKey string, hook *LogHook, output io.Writer) error {
+	return RunWithBaseURL(fmt.Sprintf("http://127.0.0.1:%d", port), secretKey, hook, output)
+}
+
+// RunWithBaseURL starts the TUI application targeting the specified management base URL.
+// output specifies where bubbletea renders. If nil, defaults to os.Stdout.
+func RunWithBaseURL(baseURL string, secretKey string, hook *LogHook, output io.Writer) error {
 	if output == nil {
 		output = os.Stdout
 	}
-	InitLocaleFromEnv()
-	app := NewApp(port, secretKey, hook)
+	app := NewAppWithBaseURL(baseURL, secretKey, hook)
+	// Pre-flight the management contract in client mode so a target that
+	// definitively exposes neither v8 nor v0 fails fast with a non-zero exit.
+	// Transient probe failures (503/429/network) are not fatal here: they enter
+	// the normal auth-gate flow where the user can retry.
+	if hook == nil {
+		if err := app.client.CheckManagementSupport(); errors.Is(err, ErrManagementUnsupported) {
+			return err
+		}
+	}
 	p := tea.NewProgram(app, tea.WithAltScreen(), tea.WithOutput(output))
-	_, err := p.Run()
-	return err
+	final, err := p.Run()
+	if err != nil {
+		return err
+	}
+	if app2, ok := final.(App); ok {
+		return app2.fatalErr
+	}
+	return app.fatalErr
 }
 
 func (a App) broadcastToAllTabs(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -527,10 +565,6 @@ func (a App) broadcastToAllTabs(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, cmd)
 	}
 	a.oauth, cmd = a.oauth.Update(msg)
-	if cmd != nil {
-		cmds = append(cmds, cmd)
-	}
-	a.usage, cmd = a.usage.Update(msg)
 	if cmd != nil {
 		cmds = append(cmds, cmd)
 	}

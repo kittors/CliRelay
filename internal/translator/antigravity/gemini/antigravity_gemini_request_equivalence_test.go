@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	responses "github.com/router-for-me/CLIProxyAPI/v6/internal/translator/gemini/openai/responses"
+	responses "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/gemini/openai/responses"
 	log "github.com/sirupsen/logrus"
 )
 

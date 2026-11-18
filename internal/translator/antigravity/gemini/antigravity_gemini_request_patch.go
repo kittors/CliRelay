@@ -1,10 +1,32 @@
 package gemini
 
 import (
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/translator/gemini/common"
+	"fmt"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/translator/gemini/common"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
+
+func markThoughtSignaturesToSkipSlow(rawJSON []byte) []byte {
+	gjson.GetBytes(rawJSON, "request.contents").ForEach(func(key, content gjson.Result) bool {
+		if content.Get("role").String() != "model" {
+			return true
+		}
+		content.Get("parts").ForEach(func(partKey, part gjson.Result) bool {
+			mark := part.Get("thought").Bool()
+			if !mark && part.Get("functionCall").Exists() {
+				sig := part.Get("thoughtSignature").String()
+				mark = sig == "" || len(sig) < 50
+			}
+			if mark {
+				rawJSON, _ = sjson.SetBytes(rawJSON, fmt.Sprintf("request.contents.%d.parts.%d.thoughtSignature", key.Int(), partKey.Int()), skipThoughtSignatureSentinel)
+			}
+			return true
+		})
+		return true
+	})
+	return rawJSON
+}
 
 // skipThoughtSignatureSentinel asks the upstream to skip thought-signature
 // validation for Gemini-family models.

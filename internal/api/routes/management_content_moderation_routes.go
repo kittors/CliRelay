@@ -2,7 +2,7 @@ package routes
 
 import (
 	"github.com/gin-gonic/gin"
-	managementhandlers "github.com/router-for-me/CLIProxyAPI/v6/internal/api/handlers/management"
+	managementhandlers "github.com/router-for-me/CLIProxyAPI/v8/internal/api/handlers/management"
 )
 
 func registerManagementContentModerationRoutes(group *gin.RouterGroup, h *managementhandlers.Handler) {

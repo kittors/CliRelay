@@ -3,7 +3,7 @@ package authfiles
 import (
 	"strings"
 
-	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
 
 // BindProxyID attaches a proxy-pool entry to an auth record.

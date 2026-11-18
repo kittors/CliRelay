@@ -7,6 +7,74 @@ import (
 	"strings"
 )
 
+const (
+	DefaultClaudeMaxInputTokens  = 200000
+	DefaultClaudeMaxOutputTokens = 8192
+)
+
+// GetCodexFreeModels returns the Codex model catalog used for free-plan OAuth
+// accounts. The local catalog does not split plan tiers, so it includes the
+// common OpenAI catalog plus the built-in Codex capability definitions.
+func GetCodexFreeModels() []*ModelInfo {
+	return codexOAuthModels()
+}
+
+// GetCodexTeamModels returns the Codex model catalog used for team-plan OAuth
+// accounts.
+func GetCodexTeamModels() []*ModelInfo {
+	return codexOAuthModels()
+}
+
+// GetCodexPlusModels returns the Codex model catalog used for plus-plan OAuth
+// accounts.
+func GetCodexPlusModels() []*ModelInfo {
+	return codexOAuthModels()
+}
+
+// GetCodexProModels returns the Codex model catalog used for pro-plan OAuth
+// accounts.
+func GetCodexProModels() []*ModelInfo {
+	return codexOAuthModels()
+}
+
+func codexOAuthModels() []*ModelInfo {
+	models := append([]*ModelInfo(nil), GetOpenAIModels()...)
+	models = append(models, getGPT56ModelDefinitions()...)
+	models = append(models, getGPT6ModelDefinitions()...)
+	return cloneModelInfosUnique(models)
+}
+
+func normalizeAntigravityCapabilityModelID(modelID string) string {
+	modelID = strings.ToLower(strings.TrimSpace(modelID))
+	if slash := strings.LastIndexByte(modelID, '/'); slash >= 0 {
+		modelID = modelID[slash+1:]
+	}
+	return modelID
+}
+
+// AntigravityWebSearchModelFor returns the Antigravity model that should run a
+// native web search request for modelID.
+func AntigravityWebSearchModelFor(modelID string) string {
+	modelID = normalizeAntigravityCapabilityModelID(modelID)
+	if modelID == "" {
+		return ""
+	}
+	for _, model := range GetGlobalRegistry().GetAvailableModelsByProvider("antigravity") {
+		if model == nil {
+			continue
+		}
+		current := normalizeAntigravityCapabilityModelID(model.ID)
+		if current != modelID {
+			continue
+		}
+		if model.SupportsWebSearch || (model.NativeCapabilities != nil && model.NativeCapabilities.WebSearch != nil && *model.NativeCapabilities.WebSearch) {
+			return current
+		}
+		return ""
+	}
+	return ""
+}
+
 // GetStaticModelDefinitionsByChannel returns static model definitions for a given channel/provider.
 // It returns nil when the channel is unknown.
 //
@@ -91,6 +159,11 @@ func GetStaticModelDefinitionsByChannel(channel string) []*ModelInfo {
 	}
 }
 
+// GetAntigravityModels returns the built-in Antigravity capability catalog.
+func GetAntigravityModels() []*ModelInfo {
+	return GetStaticModelDefinitionsByChannel("antigravity")
+}
+
 // LookupStaticModelInfo searches all static model definitions for a model by ID.
 // Returns nil if no matching model is found.
 func LookupStaticModelInfo(modelID string) *ModelInfo {
@@ -132,6 +205,17 @@ func LookupStaticModelInfo(modelID string) *ModelInfo {
 		}
 	}
 
+	return nil
+}
+
+// LookupStaticModelInfoByChannel resolves a model using one provider channel's
+// static catalog.
+func LookupStaticModelInfoByChannel(modelID, channel string) *ModelInfo {
+	for _, model := range GetStaticModelDefinitionsByChannel(channel) {
+		if model != nil && strings.EqualFold(strings.TrimSpace(model.ID), strings.TrimSpace(modelID)) {
+			return model
+		}
+	}
 	return nil
 }
 

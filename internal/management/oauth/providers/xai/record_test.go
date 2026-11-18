@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	internalxai "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/xai"
+	internalxai "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/xai"
 )
 
 func TestRecordFromTokenStorageBuildsPersistableRecord(t *testing.T) {

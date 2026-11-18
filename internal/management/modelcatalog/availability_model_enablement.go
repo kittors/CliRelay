@@ -7,8 +7,8 @@ package modelcatalog
 import (
 	"strings"
 
-	modelconfigsettings "github.com/router-for-me/CLIProxyAPI/v6/internal/management/settings/modelconfig"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
+	modelconfigsettings "github.com/router-for-me/CLIProxyAPI/v8/internal/management/settings/modelconfig"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/usage"
 )
 
 func mappedOwnerRowModelKeys(rows []usage.ModelConfigRow, ownerKeys map[string]bool) map[string]bool {

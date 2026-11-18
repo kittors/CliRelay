@@ -1,6 +1,6 @@
 package usage
 
-import "github.com/router-for-me/CLIProxyAPI/v6/internal/cluster"
+import "github.com/router-for-me/CLIProxyAPI/v8/internal/cluster"
 
 // redisUsageSnapshotKey is the key the in-memory statistics snapshot is saved
 // under in the top-level Redis.

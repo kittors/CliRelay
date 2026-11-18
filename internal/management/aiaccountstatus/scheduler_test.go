@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	managementapitools "github.com/router-for-me/CLIProxyAPI/v6/internal/management/apitools"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	managementapitools "github.com/router-for-me/CLIProxyAPI/v8/internal/management/apitools"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
 
 // The reason the scheduler exists: an account nobody is looking at still gets

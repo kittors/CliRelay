@@ -6,10 +6,10 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/configsync"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/contentmoderation"
-	sqlsettings "github.com/router-for-me/CLIProxyAPI/v6/internal/storage/sqlstore/settings"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/configsync"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/contentmoderation"
+	sqlsettings "github.com/router-for-me/CLIProxyAPI/v8/internal/storage/sqlstore/settings"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/usage"
 )
 
 // SecretMaskingSettings stores a tenant's outbound secret masking settings as a

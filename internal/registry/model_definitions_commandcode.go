@@ -92,3 +92,19 @@ func GetCommandCodeModels() []*ModelInfo {
 	}
 	return models
 }
+
+// GetMetaModels returns the Meta-owned subset of the shared Command Code
+// catalog. Meta credentials use the same upstream model identifiers.
+func GetMetaModels() []*ModelInfo {
+	var out []*ModelInfo
+	for _, model := range GetCommandCodeModels() {
+		if model == nil || len(model.ID) < len("meta/") || model.ID[:len("meta/")] != "meta/" {
+			continue
+		}
+		copy := *model
+		copy.OwnedBy = "meta"
+		copy.Type = "meta"
+		out = append(out, &copy)
+	}
+	return out
+}

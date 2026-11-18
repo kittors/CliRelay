@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/cluster"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/cluster"
 )
 
 // memoryPolicyStore stands in for the warmup_policies table.

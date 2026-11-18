@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	settingsstore "github.com/router-for-me/CLIProxyAPI/v6/internal/management/settings/store"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	settingsstore "github.com/router-for-me/CLIProxyAPI/v8/internal/management/settings/store"
 )
 
 func TestCodexAlphaSearchManagementPersistence(t *testing.T) {

@@ -4,17 +4,20 @@ package watcher
 
 import (
 	"context"
+	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/codexcarrier"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/watcher/synthesizer"
 	"gopkg.in/yaml.v3"
 
-	sdkAuth "github.com/router-for-me/CLIProxyAPI/v6/sdk/auth"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	sdkAuth "github.com/router-for-me/CLIProxyAPI/v8/sdk/auth"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -30,33 +33,49 @@ type authDirProvider interface {
 
 // Watcher manages file watching for configuration and authentication files
 type Watcher struct {
-	configPath        string
-	authDir           string
-	config            *config.Config
-	clientsMutex      sync.RWMutex
-	authRefreshMu     sync.Mutex
-	configReloadMu    sync.Mutex
-	configReloadTimer *time.Timer
-	authReloadMu      sync.Mutex
-	authReloadTimer   *time.Timer
-	pendingAuthPaths  map[string]string
-	reloadCallback    func(*config.Config)
-	watcher           *fsnotify.Watcher
-	lastAuthHashes    map[string]string
-	lastAuthContents  map[string]*coreauth.Auth
-	lastRemoveTimes   map[string]time.Time
-	lastConfigHash    string
-	authQueue         chan<- AuthUpdate
-	currentAuths      map[string]*coreauth.Auth
-	runtimeAuths      map[string]*coreauth.Auth
-	dispatchMu        sync.Mutex
-	dispatchCond      *sync.Cond
-	pendingUpdates    map[string]AuthUpdate
-	pendingOrder      []string
-	dispatchCancel    context.CancelFunc
-	storePersister    storePersister
-	mirroredAuthDir   string
-	oldConfigYaml     []byte
+	configPath                 string
+	authDir                    string
+	watchMu                    sync.Mutex
+	started                    bool
+	watchedAuthDir             string
+	config                     *config.Config
+	clientsMutex               sync.RWMutex
+	authRescanMu               sync.Mutex
+	authReloadMu               sync.Mutex
+	authReloadTimer            *time.Timer
+	pendingAuthPaths           map[string]string
+	configReloadMu             sync.Mutex
+	configReloadTimer          *time.Timer
+	configApplyMu              sync.Mutex // Serializes config file reloads so they apply in file order.
+	serverUpdateMu             sync.Mutex
+	serverUpdateTimer          *time.Timer
+	serverUpdateLast           time.Time
+	serverUpdatePend           bool
+	stopped                    atomic.Bool
+	reloadCallback             func(*config.Config)
+	watcher                    *fsnotify.Watcher
+	lastAuthHashes             map[string]string
+	lastAuthContents           map[string]*coreauth.Auth
+	fileAuthsByPath            map[string]map[string]*coreauth.Auth
+	lastRemoveTimes            map[string]time.Time
+	lastConfigHash             string
+	authQueue                  chan<- AuthUpdate
+	currentAuths               map[string]*coreauth.Auth
+	pendingProviderReloadAuths map[string]*coreauth.Auth
+	authRevisions              map[string]uint64 // Includes deletion tombstones; guarded by clientsMutex.
+	persistedAuthRevisions     map[string]uint64 // Latest revision stamped by dispatchPersistedAuthUpdateWithRevision; guarded by clientsMutex.
+	fileObservations           map[string]uint64 // Tracks file events even when content is unchanged.
+	activeAuthScans            int               // Guarded by clientsMutex.
+	runtimeAuths               map[string]*coreauth.Auth
+	dispatchMu                 sync.Mutex
+	dispatchCond               *sync.Cond
+	pendingUpdates             map[string]AuthUpdate
+	pendingOrder               []string
+	dispatchCancel             context.CancelFunc
+	storePersister             storePersister
+	pluginAuthParser           synthesizer.PluginAuthParser
+	mirroredAuthDir            string
+	oldConfigYaml              []byte
 }
 
 // AuthUpdateAction represents the type of change detected in auth sources.
@@ -70,9 +89,35 @@ const (
 
 // AuthUpdate describes an incremental change to auth configuration.
 type AuthUpdate struct {
-	Action AuthUpdateAction
-	ID     string
-	Auth   *coreauth.Auth
+	Action      AuthUpdateAction
+	ID          string
+	Auth        *coreauth.Auth
+	revision    uint64 // Watcher-local ordering, independent of runtime auth generations.
+	fileRemoval bool   // The source file was removed, not just an ID from its content.
+}
+
+// IsFileRemoval reports whether this delete was observed as a whole-file removal.
+func (u AuthUpdate) IsFileRemoval() bool {
+	return u.fileRemoval
+}
+
+// SetFileRemoval marks a delete as a whole-file removal rather than a per-ID diff.
+func (u *AuthUpdate) SetFileRemoval(fileRemoval bool) {
+	if u != nil {
+		u.fileRemoval = fileRemoval
+	}
+}
+
+// Revision returns the monotonic watcher revision assigned to this update.
+func (u AuthUpdate) Revision() uint64 {
+	return u.revision
+}
+
+// SetRevision updates the revision counter for this update.
+func (u *AuthUpdate) SetRevision(rev uint64) {
+	if u != nil {
+		u.revision = rev
+	}
 }
 
 const (
@@ -81,11 +126,7 @@ const (
 	replaceCheckDelay        = 50 * time.Millisecond
 	configReloadDebounce     = 150 * time.Millisecond
 	authRemoveDebounceWindow = 1 * time.Second
-	// configRewatchAttempts and configRewatchDelay bound the retry used to re-arm the
-	// config watch when the path is momentarily absent (delete-then-create rather than
-	// a single rename).
-	configRewatchAttempts = 5
-	configRewatchDelay    = 50 * time.Millisecond
+	serverUpdateDebounce     = 1 * time.Second
 )
 
 // NewWatcher creates a new file watcher instance
@@ -95,11 +136,12 @@ func NewWatcher(configPath, authDir string, reloadCallback func(*config.Config))
 		return nil, errNewWatcher
 	}
 	w := &Watcher{
-		configPath:     configPath,
-		authDir:        authDir,
-		reloadCallback: reloadCallback,
-		watcher:        watcher,
-		lastAuthHashes: make(map[string]string),
+		configPath:      configPath,
+		authDir:         authDir,
+		reloadCallback:  reloadCallback,
+		watcher:         watcher,
+		lastAuthHashes:  make(map[string]string),
+		fileAuthsByPath: make(map[string]map[string]*coreauth.Auth),
 	}
 	w.dispatchCond = sync.NewCond(&w.dispatchMu)
 	if store := sdkAuth.GetTokenStore(); store != nil {
@@ -124,24 +166,95 @@ func (w *Watcher) Start(ctx context.Context) error {
 
 // Stop stops the file watcher
 func (w *Watcher) Stop() error {
+	w.stopped.Store(true)
 	w.stopDispatch()
 	w.stopConfigReloadTimer()
 	w.stopAuthReloadTimer()
+	w.stopServerUpdateTimer()
 	return w.watcher.Close()
 }
 
 // SetConfig updates the current configuration
 func (w *Watcher) SetConfig(cfg *config.Config) {
+	cloned := cfg.CloneForRuntime()
+	w.clientsMutex.Lock()
+	if cloned != nil {
+		if w.mirroredAuthDir != "" {
+			cloned.AuthDir = w.mirroredAuthDir
+			w.authDir = w.mirroredAuthDir
+		} else if trimmedAuthDir := strings.TrimSpace(cloned.AuthDir); trimmedAuthDir != "" {
+			if resolvedAuthDir, errResolveAuthDir := util.ResolveAuthDir(trimmedAuthDir); errResolveAuthDir == nil && resolvedAuthDir != "" {
+				cloned.AuthDir = resolvedAuthDir
+				w.authDir = resolvedAuthDir
+			} else if w.authDir == "" {
+				w.authDir = trimmedAuthDir
+			}
+		}
+	}
+	w.config = cloned
+	w.oldConfigYaml, _ = yaml.Marshal(cloned)
+	w.clientsMutex.Unlock()
+	w.syncAuthDirWatch()
+}
+
+func (w *Watcher) currentAuthDirLocked() string {
+	if w == nil {
+		return ""
+	}
+	if authDir := strings.TrimSpace(w.authDir); authDir != "" {
+		return authDir
+	}
+	if w.config != nil {
+		if cfgAuthDir := strings.TrimSpace(w.config.AuthDir); cfgAuthDir != "" {
+			if resolved, errResolve := util.ResolveAuthDir(cfgAuthDir); errResolve == nil && resolved != "" {
+				return resolved
+			}
+			return cfgAuthDir
+		}
+	}
+	return ""
+}
+
+func (w *Watcher) currentAuthDir() string {
+	if w == nil {
+		return ""
+	}
+	w.clientsMutex.RLock()
+	defer w.clientsMutex.RUnlock()
+	return w.currentAuthDirLocked()
+}
+
+func (w *Watcher) isPathInAuthDir(path, authDir string) bool {
+	normalizedPath := w.normalizeAuthPath(path)
+	normalizedDir := w.normalizeAuthPath(authDir)
+	if normalizedPath == "" || normalizedDir == "" {
+		return false
+	}
+	return w.sameNormalizedAuthPath(filepath.Dir(normalizedPath), normalizedDir)
+}
+
+func (w *Watcher) isPathInCurrentAuthDirLocked(path string) bool {
+	authDir := w.currentAuthDirLocked()
+	if authDir == "" {
+		return true
+	}
+	return w.isPathInAuthDir(path, authDir)
+}
+
+func (w *Watcher) isPathInCurrentAuthDir(path string) bool {
+	if w == nil {
+		return false
+	}
+	w.clientsMutex.RLock()
+	defer w.clientsMutex.RUnlock()
+	return w.isPathInCurrentAuthDirLocked(path)
+}
+
+// SetPluginAuthParser updates the plugin auth parser used for file auth synthesis.
+func (w *Watcher) SetPluginAuthParser(parser synthesizer.PluginAuthParser) {
 	w.clientsMutex.Lock()
 	defer w.clientsMutex.Unlock()
-	w.config = cfg
-	w.oldConfigYaml, _ = yaml.Marshal(cfg)
-	// The Codex image carrier is resolved from package state on outbound request
-	// paths that have no config handy; publishing the override on reload is what
-	// makes an operator's change take effect without a restart.
-	if cfg != nil {
-		codexcarrier.SetOverride(cfg.CodexImageBaseModel)
-	}
+	w.pluginAuthParser = parser
 }
 
 // SetAuthUpdateQueue sets the queue used to emit auth updates.
@@ -156,10 +269,30 @@ func (w *Watcher) DispatchRuntimeAuthUpdate(update AuthUpdate) bool {
 	return w.dispatchRuntimeAuthUpdate(update)
 }
 
+// DispatchPersistedAuthUpdate pushes already-persisted file auth updates through the watcher queue.
+// Returns true if the update was enqueued; false if no queue is configured.
+func (w *Watcher) DispatchPersistedAuthUpdate(update AuthUpdate) bool {
+	return w.dispatchPersistedAuthUpdate(update)
+}
+
+// DispatchPersistedAuthUpdateWithRevision pushes already-persisted file auth updates through the watcher queue
+// and returns the stamped monotonic revision.
+func (w *Watcher) DispatchPersistedAuthUpdateWithRevision(update *AuthUpdate) (bool, uint64) {
+	return w.dispatchPersistedAuthUpdateWithRevision(update)
+}
+
+// RereadDiscardedFileSnapshot invalidates watcher caches for a file snapshot
+// discarded by the manager's digest fence and re-reads the backing file.
+func (w *Watcher) RereadDiscardedFileSnapshot(auth *coreauth.Auth) {
+	w.rereadDiscardedFileSnapshot(auth)
+}
+
 // SnapshotCoreAuths converts current clients snapshot into core auth entries.
 func (w *Watcher) SnapshotCoreAuths() []*coreauth.Auth {
 	w.clientsMutex.RLock()
 	cfg := w.config
+	authDir := w.currentAuthDirLocked()
+	parser := w.pluginAuthParser
 	w.clientsMutex.RUnlock()
-	return snapshotCoreAuths(cfg, w.authDir)
+	return snapshotCoreAuths(cfg, authDir, parser)
 }

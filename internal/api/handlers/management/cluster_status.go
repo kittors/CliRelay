@@ -6,9 +6,9 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/cluster"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/nodemetrics"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/cluster"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/nodemetrics"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/usage"
 )
 
 // GetClusterStatus reports this node's view of the cluster: whether cluster

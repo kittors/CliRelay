@@ -3,8 +3,8 @@ package modelcatalog
 import (
 	"context"
 
-	modelconfigsettings "github.com/router-for-me/CLIProxyAPI/v6/internal/management/settings/modelconfig"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
+	modelconfigsettings "github.com/router-for-me/CLIProxyAPI/v8/internal/management/settings/modelconfig"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/usage"
 )
 
 // External sync contract:

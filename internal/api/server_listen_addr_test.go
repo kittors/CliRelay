@@ -4,7 +4,7 @@ import (
 	"testing"
 
 	gin "github.com/gin-gonic/gin"
-	proxyconfig "github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	proxyconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 )
 
 func TestBuildHTTPServerListenAddr(t *testing.T) {

@@ -6,9 +6,9 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	coreexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
-	sdkrequestctx "github.com/router-for-me/CLIProxyAPI/v6/sdk/requestctx"
-	sdkrouting "github.com/router-for-me/CLIProxyAPI/v6/sdk/routing"
+	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	sdkrequestctx "github.com/router-for-me/CLIProxyAPI/v8/sdk/requestctx"
+	sdkrouting "github.com/router-for-me/CLIProxyAPI/v8/sdk/routing"
 )
 
 const idempotencyKeyMetadataKey = "idempotency_key"

@@ -4,14 +4,45 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/egressbreaker"
-	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
+	internalconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/egressbreaker"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
+	"golang.org/x/sync/semaphore"
 )
+
+const (
+	refreshWorkTimeout  = 3 * time.Minute
+	refreshStoreTimeout = 30 * time.Second
+)
+
+type PermanentAuthError struct {
+	Reason string
+	Cause  error
+}
+
+func (e *PermanentAuthError) Error() string {
+	if e == nil {
+		return ""
+	}
+	if e.Cause != nil {
+		return fmt.Sprintf("permanent auth failure: %s: %v", e.Reason, e.Cause)
+	}
+	return fmt.Sprintf("permanent auth failure: %s", e.Reason)
+}
+
+func (e *PermanentAuthError) Unwrap() error { return e.Cause }
+
+func IsPermanentAuthError(err error) bool {
+	var permanent *PermanentAuthError
+	return errors.As(err, &permanent)
+}
 
 // ProviderExecutor defines the contract required by Manager to execute provider calls.
 type ProviderExecutor interface {
@@ -31,76 +62,42 @@ type ProviderExecutor interface {
 	HttpRequest(ctx context.Context, auth *Auth, req *http.Request) (*http.Response, error)
 }
 
+// APIKeyConfigExecutor provides an execution-local view without OAuth-only
+// configuration. The registered executor and its shared session state stay intact.
+type APIKeyConfigExecutor interface {
+	ForAPIKey() ProviderExecutor
+}
+
+// RequestAuthPreparer lets an executor update missing auth metadata immediately
+// before a request. Manager serializes and persists returned updates.
+type RequestAuthPreparer interface {
+	ShouldPrepareRequestAuth(auth *Auth) bool
+	PrepareRequestAuth(ctx context.Context, auth *Auth) (*Auth, error)
+}
+
 // ExecutionSessionCloser allows executors to release per-session runtime resources.
 type ExecutionSessionCloser interface {
 	CloseExecutionSession(sessionID string)
 }
 
-const (
-	// CloseAllExecutionSessionsID asks an executor to release all active execution sessions.
-	// Executors that do not support this marker may ignore it.
-	CloseAllExecutionSessionsID = "__all_execution_sessions__"
-)
-
-// RefreshEvaluator allows runtime state to override refresh decisions.
-type RefreshEvaluator interface {
-	ShouldRefresh(now time.Time, auth *Auth) bool
+// ExecutionSessionSharer reports whether a replaced executor shares its execution
+// session store with the replacement executor so active sessions stay open.
+type ExecutionSessionSharer interface {
+	SharesExecutionSessionsWith(other ProviderExecutor) bool
 }
 
-const (
-	refreshCheckInterval  = 5 * time.Second
-	refreshMaxConcurrency = 16
-	refreshPendingBackoff = time.Minute
-	refreshFailureBackoff = 5 * time.Minute
-	// refreshWorkTimeout bounds a background refresh's exchange once it no
-	// longer follows the refresh loop. It exceeds refreshguard.ExchangeTimeout
-	// (2 minutes), which bounds the providers that rotate refresh tokens.
-	refreshWorkTimeout = 3 * time.Minute
-	// refreshStoreTimeout bounds storing a refresh result. It starts when the
-	// exchange returns, so a slow exchange cannot leave the write no time.
-	refreshStoreTimeout = 30 * time.Second
-	quotaBackoffBase    = time.Second
-	quotaBackoffMax     = 30 * time.Minute
-)
-
-// PermanentAuthError indicates a refresh failure that should be surfaced as
-// unavailable instead of retried immediately. It is not proof that the user
-// intentionally removed the credential.
-type PermanentAuthError struct {
-	Reason string
-	Cause  error
+// ExecutorUnwrapper exposes the underlying executor for wrappers so reuse and
+// session-lifecycle decisions can consult the service-owned executor even when
+// a wrapper hides its concrete type. Wrappers should return their immediate
+// inner executor; the manager follows the chain.
+type ExecutorUnwrapper interface {
+	Unwrap() ProviderExecutor
 }
 
-func (e *PermanentAuthError) Error() string {
-	if e.Cause != nil {
-		return fmt.Sprintf("permanent auth failure: %s: %v", e.Reason, e.Cause)
-	}
-	return fmt.Sprintf("permanent auth failure: %s", e.Reason)
-}
-
-func (e *PermanentAuthError) Unwrap() error { return e.Cause }
-
-// IsPermanentAuthError reports whether err (or any error in its chain)
-// is a PermanentAuthError.
-func IsPermanentAuthError(err error) bool {
-	var p *PermanentAuthError
-	return errors.As(err, &p)
-}
-
-var quotaCooldownDisabled atomic.Bool
-
-// SetQuotaCooldownDisabled toggles quota cooldown scheduling globally.
-func SetQuotaCooldownDisabled(disable bool) {
-	quotaCooldownDisabled.Store(disable)
-}
-
-func quotaCooldownDisabledForAuth(auth *Auth) bool {
-	if auth != nil {
-		if override, ok := auth.DisableCoolingOverride(); ok {
-			return override
-		}
-	}
-	return quotaCooldownDisabled.Load()
+// AuthExecutionSessionCloser allows executors to release execution sessions
+// associated with a removed credential without tearing down other credentials' sessions.
+type AuthExecutionSessionCloser interface {
+	CloseAuthExecutionSessions(authID string)
 }
 
 // Result captures execution outcome used to adjust auth state.
@@ -111,30 +108,79 @@ type Result struct {
 	Provider string
 	// Model is the upstream model identifier used for the request.
 	Model string
+	// RouteModel is the requested logical route model before alias resolution.
+	RouteModel string
 	// Success marks whether the execution succeeded.
 	Success bool
+	// CompletedResponse reports that the upstream execution produced a completed
+	// generation response (as opposed to an incomplete stream or non-generation call).
+	CompletedResponse bool
 	// RetryAfter carries a provider supplied retry hint (e.g. 429 retryDelay).
 	RetryAfter *time.Duration
-	// RetryAfterAdvisory marks RetryAfter as the manager's own reading of the
-	// upstream response (headers, error fields, message text) rather than a value
-	// the executor published after parsing the provider's documented format.
-	//
-	// The difference matters for disable-cooling: an operator who switched
-	// cooling off for an account has asked for failures to be retried at once, and
-	// a generic guess must not override that. A value an executor published
-	// itself (Codex's resets_at, xAI's weekly window) states when an allowance
-	// comes back and is honoured either way, as it always was.
+	// RetryAfterAdvisory marks a retry hint that should not trigger cooldowns.
 	RetryAfterAdvisory bool
 	// Headers carries upstream response headers used for provider-specific
 	// runtime health decisions such as Anthropic rate-limit windows.
 	Headers http.Header
+	// CredentialScope indicates that the failure affects the whole credential across models (e.g. Anthropic 5h/7d unified limits).
+	CredentialScope bool
 	// Error describes the failure when Success is false.
 	Error *Error
+	// Options carries execution request options (headers, metadata, etc.) for result tracking.
+	Options cliproxyexecutor.Options
+	// SkipQuotaObservation reports that this result must not replace the last
+	// observed watermark. Count-tokens requests reuse the credential but are not
+	// generation traffic; their response headers are not a generation snapshot.
+	SkipQuotaObservation bool
+	// AccessToken captures the active access token under which the request was executed.
+	AccessToken string
+	// RefreshToken captures the refresh credential associated with the request,
+	// used to distinguish a same-account OAuth token rotation from a genuine
+	// credential replacement when evaluating result staleness.
+	RefreshToken string
+	// CredentialVersion captures the credential version under which the request was executed.
+	CredentialVersion uint64
+	// RegistrationEpoch captures the registration epoch under which the request was executed.
+	RegistrationEpoch uint64
+	// ExecutionSeq is the manager-local monotonic sequence assigned when the
+	// execution was dispatched upstream. It orders in-flight executions so a
+	// success dispatched before a cooldown was recorded cannot clear that
+	// cooldown. Zero means unknown (direct MarkResult callers) and is exempt
+	// from the ordering guard.
+	ExecutionSeq uint64
 }
 
 // Selector chooses an auth candidate for execution.
 type Selector interface {
 	Pick(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, auths []*Auth) (*Auth, error)
+}
+
+type PluginScheduler interface {
+	PickAuth(context.Context, pluginapi.SchedulerPickRequest) (pluginapi.SchedulerPickResponse, bool, error)
+}
+
+// PluginSchedulerAcrossPriorities is an optional interface implemented by schedulers
+// that opt into receiving candidates across all priority tiers.
+type PluginSchedulerAcrossPriorities interface {
+	SchedulerWantsAcrossPriorities() bool
+}
+
+// PluginSchedulerContinuity is an optional interface implemented by schedulers
+// that evaluate bounded pre-admission and pre-output-429 continuity for Codex requests.
+type PluginSchedulerContinuity interface {
+	HasSchedulerContinuity() bool
+	EvaluateSchedulerContinuity(context.Context, pluginapi.SchedulerContinuityRequest) (pluginapi.SchedulerContinuityResponse, bool, error)
+}
+
+type pluginSchedulerState interface {
+	HasScheduler() bool
+}
+
+// StoppableSelector is an optional interface for selectors that hold resources.
+// Selectors that implement this interface will have Stop called during shutdown.
+type StoppableSelector interface {
+	Selector
+	Stop()
 }
 
 // Hook captures lifecycle callbacks for observing auth changes.
@@ -145,16 +191,6 @@ type Hook interface {
 	OnAuthUpdated(ctx context.Context, auth *Auth)
 	// OnResult fires when execution result is recorded.
 	OnResult(ctx context.Context, result Result)
-}
-
-// AuthLoadedHook and AuthDeletedHook are optional lifecycle extensions. Keeping
-// them separate preserves compatibility with existing Hook implementations.
-type AuthLoadedHook interface {
-	OnAuthLoaded(ctx context.Context, auth *Auth)
-}
-
-type AuthDeletedHook interface {
-	OnAuthDeleted(ctx context.Context, auth *Auth)
 }
 
 // NoopHook provides optional hook defaults.
@@ -169,92 +205,142 @@ func (NoopHook) OnAuthUpdated(context.Context, *Auth) {}
 // OnResult implements Hook.
 func (NoopHook) OnResult(context.Context, Result) {}
 
+// ResultPolicy allows inspecting and mutating an execution result before in-memory quota mutations,
+// cooldown persistence, and scheduler/registry publishing.
+// Implementations of ResultPolicy must be safe for concurrent use by multiple goroutines.
+type ResultPolicy interface {
+	ApplyResultPolicy(ctx context.Context, result Result) Result
+}
+
+// ResultPolicyFunc enables using a plain function as a ResultPolicy.
+type ResultPolicyFunc func(ctx context.Context, result Result) Result
+
+// ApplyResultPolicy calls f(ctx, result).
+func (f ResultPolicyFunc) ApplyResultPolicy(ctx context.Context, result Result) Result {
+	return f(ctx, result)
+}
+
+type resultPolicyHolder struct {
+	policy ResultPolicy
+}
+
 // Manager orchestrates auth lifecycle, selection, execution, and persistence.
 type Manager struct {
-	store                 Store
-	executors             map[string]ProviderExecutor
-	tenantExecutors       map[string]map[string]ProviderExecutor
-	selector              Selector
-	roundRobinSelector    *RoundRobinSelector
-	fillFirstSelector     *FillFirstSelector
-	leastLoadSelector     *LeastLoadSelector
-	resetAwareSelector    *ResetAwareSelector
-	sessionStickySelector *SessionStickySelector
-	scheduler             *schedulerDeps
-	hook                  Hook
-	mu                    sync.RWMutex
-	auths                 map[string]*Auth
+	inFlightTracker           *inFlightTracker
+	store                     Store
+	cooldownStore             CooldownStateStore
+	pendingCooldownStateStore CooldownStateStore
+	executors                 map[string]ProviderExecutor
+	tenantExecutors           map[string]map[string]ProviderExecutor
+	executorRevisions         map[string]uint64
+	selector                  Selector
+	hook                      Hook
+	resultPolicy              atomic.Pointer[resultPolicyHolder]
+	mu                        sync.RWMutex
+	selectorMu                sync.Mutex
+	configCooldownMu          sync.Mutex
+	syncSchedulerMu           sync.Mutex
+	// executionSeq stamps upstream dispatches with a monotonic sequence used
+	// to reject cooldown clears from executions dispatched before the cooldown.
+	executionSeq       atomic.Uint64
+	structuralEpoch    atomic.Uint64
+	syncedVersion      atomic.Uint64
+	auths              map[string]*Auth
+	authEpochs         map[string]uint64
+	authChangeWatchers map[string]map[chan struct{}]struct{}
+	scheduler          *authScheduler
+	// pluginScheduler runs outside m.mu before falling back to native selection.
+	pluginScheduler PluginScheduler
+	// modelRegistry is the optional registry used for per-client model snapshots.
+	modelRegistry ModelRegistry
+	// cooldownPublisher broadcasts cooldowns to peer nodes when configured.
+	cooldownPublisher atomic.Pointer[cooldownPublisherRef]
+	// egress tracks proxy health before request translation and dispatch.
+	egress *egressbreaker.Breaker
+	// concurrencyLimiter enforces per-auth request concurrency and optionally
+	// coordinates slots across cluster nodes.
+	concurrencyLimiter      *AccountConcurrencyLimiter
+	requestModerator        RequestModerator
+	upstreamRefusalObserver UpstreamRefusalObserver
+	sessionSchedulerDeps    *schedulerDeps
+	sharedAuthGrants        atomic.Pointer[sharedAuthGrantIndex]
+	// quotaObservations coalesces live quota windows before handing them to hooks.
+	quotaObservations quotaObservationBook
+	// quotaProbeAfter tracks the next scheduled quota probe per auth.
+	quotaProbeAfter map[string]time.Time
+	// continuityClock overrides time.Now and timer waiting in unit tests.
+	continuityClock continuityClock
+	// homeRuntimeAuths retains legacy session auth lookups for non-execution callers.
+	homeRuntimeAuths map[string]map[string]*Auth
+	// homeRuntimeAuthOwners prevents a stale selection from clearing a replacement auth.
+	homeRuntimeAuthOwners map[string]map[string]*HomeDispatchSelection
+	// homeSessionSelections owns retained Home selections for websocket sessions.
+	homeSessionSelections map[string]map[homeSessionSelectionKey]*HomeDispatchSelection
+	homeSessionLocks      sync.Map
+	homeSessionAliases    homeSessionAliasCache
 	// providerOffsets tracks per-model provider rotation state for multi-provider routing.
-	providerOffsets map[string]int
+	providerOffsets             map[string]int
+	homeDispatchBundle          atomic.Pointer[HomeDispatchBundle]
+	homeInFlightPublisherConfig atomic.Pointer[HomeInFlightPublisherConfig]
 
 	// Retry controls request retry behavior.
-	requestRetry     atomic.Int32
-	maxRetryInterval atomic.Int64
-	// busyWaiters counts requests waiting for a cooling account, capped by
-	// maxBusyWaiters; see busy_wait.go.
-	busyWaiters    atomic.Int32
+	requestRetry        atomic.Int32
+	maxRetryCredentials atomic.Int32
+	maxRetryInterval    atomic.Int64
+	// busyWaiters counts requests waiting for a cooling account.
+	busyWaiters atomic.Int32
+	// maxBusyWaiters caps simultaneous busy-waiting requests.
 	maxBusyWaiters atomic.Int32
-	// busyWaitSpread picks where in the wake-up window a waiter resumes; nil
-	// means uniformly at random. Tests replace it to make the spread exact.
-	busyWaitSpread func(window time.Duration) time.Duration
-
+	// busyWaitSpread allows tests and hosts to control wake-up jitter.
+	busyWaitSpread func(time.Duration) time.Duration
 	// accountConcurrencyWait is how long a request may queue for a saturated
 	// account before failing, in nanoseconds. Zero disables queuing.
 	accountConcurrencyWait atomic.Int64
 	// accountConcurrencyQueueDepth caps queued requests per account. Zero means unlimited.
 	accountConcurrencyQueueDepth atomic.Int32
 
-	// oauthModelAlias stores tenant -> channel -> alias mappings used during OAuth execution.
+	// oauthModelAlias stores global OAuth model alias mappings (alias -> upstream name) keyed by channel.
 	oauthModelAlias atomic.Value
 
-	// apiKeyModelAlias caches resolved model alias mappings for API-key auths.
-	// Keyed by auth.ID, value is alias(lower) -> upstream model (including suffix).
-	apiKeyModelAlias atomic.Value
+	// apiKeyModelRouting atomically publishes per-auth aliases and configured capabilities.
+	apiKeyModelRouting atomic.Value
 
-	// runtimeConfig stores the narrowed runtime config snapshot used for
-	// request-time routing and alias resolution.
+	// modelPoolOffsets tracks per-auth alias pool rotation state.
+	modelPoolOffsets map[string]int
+
+	// runtimeConfig stores the latest application config for request-time decisions.
+	// It is initialized in NewManager; never Load() before first Store().
 	runtimeConfig atomic.Value
-
-	// sharedAuthGrants holds which system credentials other tenants may use;
-	// see shared_grants.go.
-	sharedAuthGrants atomic.Pointer[sharedAuthGrantIndex]
+	// tenantRuntimeConfigs stores immutable per-tenant routing snapshots while
+	// runtimeConfig remains the legacy process-wide config used by refresh and
+	// lifecycle code.
+	tenantRuntimeConfigs atomic.Value
 
 	// Optional HTTP RoundTripper provider injected by host.
 	rtProvider RoundTripperProvider
 
-	// egress is the breaker consulted before an executor is called; nil means
-	// the process-wide one, which the upstream transports report to. See
-	// conductor_egress.go.
-	egress *egressbreaker.Breaker
-
-	modelRegistry ModelRegistry
-
-	requestModerator RequestModerator
-
-	// upstreamRefusalObserver hears of the attempts an upstream refused for
-	// their content; see upstream_content_refusal.go.
-	upstreamRefusalObserver UpstreamRefusalObserver
-
-	concurrencyLimiter *AccountConcurrencyLimiter
-
-	// cooldownPublisher receives the cooldowns this process sets, for peers;
-	// see conductor_cooldown_cluster.go.
-	cooldownPublisher atomic.Pointer[cooldownPublisherRef]
-
-	// quotaObservations coalesces the quota windows executors observe on live
-	// answers before they reach the host's hook; see quota_observation.go.
-	quotaObservations quotaObservationBook
-
 	// Auto refresh state
-	refreshCancel    context.CancelFunc
-	refreshSemaphore chan struct{}
-	quotaProbeAfter  map[string]time.Time
-	// refreshInflight counts the refreshes the auto-refresh loop started;
-	// WaitForRefreshes waits for them at shutdown.
-	refreshInflight sync.WaitGroup
-
-	// refreshCoordinator holds a refreshCoordinatorHolder; see SetRefreshCoordinator.
+	refreshCancel      context.CancelFunc
+	refreshLoop        *authAutoRefreshLoop
+	refreshSemaphore   chan struct{}
+	refreshInflight    sync.WaitGroup
 	refreshCoordinator atomic.Value
+	// refreshJobs retains queued and running jobs across loop restarts under m.mu.
+	refreshJobs map[string]*authRefreshJob
+
+	requestPrepareLocks sync.Map
+	// refreshLocks serializes credential refresh per auth ID so concurrent
+	// 401 recoveries and auto-refresh workers do not race the same refresh_token.
+	refreshLocks sync.Map
+	// persistLocks serializes disk persistence per auth ID and guards against out-of-order writes.
+	persistLocks sync.Map
+	// authMutationLocks coordinate credential mutations without blocking unrelated readers.
+	authMutationLocks      sync.Map
+	metadataPersistCancels sync.Map
+	metadataSaveGate       sync.Map
+	// authLoadGate allows concurrent credential transactions, but excludes whole-store reloads.
+	// Mutations acquire one permit; Load acquires all permits before reading the store.
+	authLoadGate *semaphore.Weighted
 }
 
 // NewManager constructs a manager with optional custom selector and hook.
@@ -265,73 +351,39 @@ func NewManager(store Store, selector Selector, hook Hook) *Manager {
 	if hook == nil {
 		hook = NoopHook{}
 	}
-	limiter := NewAccountConcurrencyLimiter()
-	deps := &schedulerDeps{tracker: newSelectionPressureTracker(), limiter: limiter}
-
-	roundRobinSelector, _ := selector.(*RoundRobinSelector)
-	if roundRobinSelector == nil {
-		roundRobinSelector = &RoundRobinSelector{}
-	}
-	roundRobinSelector.deps = deps
-	fillFirstSelector, _ := selector.(*FillFirstSelector)
-	if fillFirstSelector == nil {
-		fillFirstSelector = &FillFirstSelector{}
-	}
-	fillFirstSelector.deps = deps
-	leastLoadSelector := &LeastLoadSelector{deps: deps}
-	resetAwareSelector := &ResetAwareSelector{deps: deps}
-	sessionStickySelector, _ := selector.(*SessionStickySelector)
-	if sessionStickySelector == nil {
-		sessionStickySelector = NewSessionStickySelector(roundRobinSelector)
-	}
-	sessionStickySelector.deps = deps
-
 	manager := &Manager{
+		inFlightTracker:       newInFlightTracker(),
 		store:                 store,
+		authLoadGate:          semaphore.NewWeighted(math.MaxInt64),
 		executors:             make(map[string]ProviderExecutor),
 		tenantExecutors:       make(map[string]map[string]ProviderExecutor),
+		executorRevisions:     make(map[string]uint64),
 		selector:              selector,
-		roundRobinSelector:    roundRobinSelector,
-		fillFirstSelector:     fillFirstSelector,
-		leastLoadSelector:     leastLoadSelector,
-		resetAwareSelector:    resetAwareSelector,
-		sessionStickySelector: sessionStickySelector,
-		scheduler:             deps,
 		hook:                  hook,
 		auths:                 make(map[string]*Auth),
+		authEpochs:            make(map[string]uint64),
+		homeRuntimeAuths:      make(map[string]map[string]*Auth),
+		homeRuntimeAuthOwners: make(map[string]map[string]*HomeDispatchSelection),
+		homeSessionSelections: make(map[string]map[homeSessionSelectionKey]*HomeDispatchSelection),
 		providerOffsets:       make(map[string]int),
-		concurrencyLimiter:    limiter,
+		modelPoolOffsets:      make(map[string]int),
+		concurrencyLimiter:    NewAccountConcurrencyLimiter(),
+		egress:                egressbreaker.Default(),
 		refreshSemaphore:      make(chan struct{}, refreshMaxConcurrency),
 		quotaProbeAfter:       make(map[string]time.Time),
-	}
-	// Hosts that never call SetAccountConcurrencyConfig still get queuing rather
-	// than hard failures on a busy account.
-	manager.accountConcurrencyWait.Store(DefaultAccountConcurrencyWait.Nanoseconds())
-	// Sticky delegates new conversations to whichever distribution the group
-	// configures, so it needs to reach the manager's singleton selectors.
-	sessionStickySelector.distribution = func(name string) Selector {
-		return manager.distributionSelectorLocked(name)
+		sessionSchedulerDeps:  &schedulerDeps{tracker: newSelectionPressureTracker(), limiter: NewAccountConcurrencyLimiter()},
 	}
 	// atomic.Value requires non-nil initial value.
-	manager.runtimeConfig.Store(runtimeConfigSnapshotSet{defaultTenantID: newRuntimeConfigSnapshot(nil)})
-	manager.apiKeyModelAlias.Store(apiKeyModelAliasTable(nil))
-	AttachDefaultModelRegistry(manager)
-	manager.adoptStoreRefreshCoordinator(store)
+	manager.runtimeConfig.Store(&internalconfig.Config{})
+	manager.tenantRuntimeConfigs.Store(runtimeConfigSnapshotSet{})
+	manager.accountConcurrencyWait.Store(DefaultAccountConcurrencyWait.Nanoseconds())
+	manager.apiKeyModelRouting.Store(&apiKeyModelRoutingSnapshot{config: &internalconfig.Config{}})
+	defaultInFlightConfig, errInFlightConfig := HomeInFlightPublisherConfigFromConfig(internalconfig.DefaultCredentialInFlightConfig())
+	if errInFlightConfig == nil {
+		manager.ApplyHomeInFlightPublisherConfig(defaultInFlightConfig)
+	}
+	manager.scheduler = newAuthScheduler(selector)
 	return manager
-}
-
-// SetHook replaces lifecycle callbacks. It is intended for host wiring before
-// Load/Register traffic starts.
-func (m *Manager) SetHook(hook Hook) {
-	if m == nil {
-		return
-	}
-	if hook == nil {
-		hook = NoopHook{}
-	}
-	m.mu.Lock()
-	m.hook = hook
-	m.mu.Unlock()
 }
 
 func (m *Manager) SetModelRegistry(registry ModelRegistry) {
@@ -343,12 +395,20 @@ func (m *Manager) SetModelRegistry(registry ModelRegistry) {
 	m.mu.Unlock()
 }
 
-// ConcurrencyLimiter returns the manager's AccountConcurrencyLimiter instance.
-func (m *Manager) ConcurrencyLimiter() *AccountConcurrencyLimiter {
+// SetAccountConcurrencyConfig updates how requests queue for accounts that are
+// at their concurrency limit.
+func (m *Manager) SetAccountConcurrencyConfig(waitTimeout time.Duration, maxQueueDepth int) {
 	if m == nil {
-		return nil
+		return
 	}
-	return m.concurrencyLimiter
+	if waitTimeout < 0 {
+		waitTimeout = 0
+	}
+	if maxQueueDepth < 0 {
+		maxQueueDepth = 0
+	}
+	m.accountConcurrencyWait.Store(waitTimeout.Nanoseconds())
+	m.accountConcurrencyQueueDepth.Store(int32(maxQueueDepth))
 }
 
 func (m *Manager) acquireAccountSlot(auth *Auth) (func(), error) {
@@ -358,9 +418,6 @@ func (m *Manager) acquireAccountSlot(auth *Auth) (func(), error) {
 	return m.concurrencyLimiter.AcquireSlot(auth)
 }
 
-// waitAccountSlot queues for a slot on any of the given auths. It is the fallback
-// used once every candidate is saturated, so a burst does not fail requests that
-// a short wait could serve.
 func (m *Manager) waitAccountSlot(ctx context.Context, auths []*Auth) (func(), string, error) {
 	if m == nil || m.concurrencyLimiter == nil || len(auths) == 0 {
 		return nil, "", ErrAccountConcurrencyExceeded
@@ -368,4 +425,52 @@ func (m *Manager) waitAccountSlot(ctx context.Context, auths []*Auth) (func(), s
 	timeout := time.Duration(m.accountConcurrencyWait.Load())
 	maxQueueDepth := int(m.accountConcurrencyQueueDepth.Load())
 	return m.concurrencyLimiter.AcquireSlotWait(ctx, auths, timeout, maxQueueDepth)
+}
+
+const defaultBusyWaitMaxWaiters = 64
+
+// SetBusyWaitConfig updates the process-wide busy-wait waiter cap. Non-positive
+// values leave the default in effect; oversized values clamp to int32 max.
+func (m *Manager) SetBusyWaitConfig(maxWaiters int) {
+	if m == nil || maxWaiters <= 0 {
+		return
+	}
+	const maxInt32 = int64(^uint32(0) >> 1)
+	value := int64(maxWaiters)
+	if value > maxInt32 {
+		value = maxInt32
+	}
+	m.maxBusyWaiters.Store(int32(value))
+}
+
+// ConcurrencyLimiter returns the manager's account concurrency limiter.
+func (m *Manager) ConcurrencyLimiter() *AccountConcurrencyLimiter {
+	if m == nil {
+		return nil
+	}
+	return m.concurrencyLimiter
+}
+
+// SetResultPolicy sets an execution result policy invoked before in-memory quota mutations and persistence.
+func (m *Manager) SetResultPolicy(policy ResultPolicy) {
+	if m == nil {
+		return
+	}
+	if policy == nil {
+		m.resultPolicy.Store(nil)
+		return
+	}
+	m.resultPolicy.Store(&resultPolicyHolder{policy: policy})
+}
+
+// ResultPolicy returns the current execution result policy, or nil if none is configured.
+func (m *Manager) ResultPolicy() ResultPolicy {
+	if m == nil {
+		return nil
+	}
+	holder := m.resultPolicy.Load()
+	if holder == nil {
+		return nil
+	}
+	return holder.policy
 }

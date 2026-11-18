@@ -5,7 +5,7 @@ import (
 	"math/rand"
 	"testing"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/testutil/translatortest"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/testutil/translatortest"
 )
 
 // The patched tool renames must match the per-path renames they fall back to

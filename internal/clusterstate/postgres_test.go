@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	postgresstore "github.com/router-for-me/CLIProxyAPI/v6/internal/storage/postgres"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/storage/postgres/compatdriver"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	postgresstore "github.com/router-for-me/CLIProxyAPI/v8/internal/storage/postgres"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/storage/postgres/compatdriver"
 )
 
 // openTestDB migrates a disposable database, so these tests neither see nor

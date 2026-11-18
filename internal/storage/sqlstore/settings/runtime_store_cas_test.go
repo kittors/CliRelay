@@ -8,10 +8,10 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/cluster"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/configsync"
-	runtimeconfig "github.com/router-for-me/CLIProxyAPI/v6/internal/management/settings/runtimeconfig"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/cluster"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/configsync"
+	runtimeconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/management/settings/runtimeconfig"
 	_ "modernc.org/sqlite"
 )
 

@@ -8,8 +8,8 @@ import (
 	"sync"
 	"time"
 
-	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
-	sdkconfig "github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	sdkconfig "github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
 )
 
 // Busy waiting: when every account that may serve a request is cooling down
@@ -91,7 +91,7 @@ func waitBeforeRetry(ctx context.Context, wait time.Duration) error {
 	if waiter, ok := ctx.Value(retryWaiterKey{}).(RetryWaiter); ok && waiter != nil {
 		return waiter(ctx, wait)
 	}
-	return waitForCooldown(ctx, wait)
+	return waitForCooldown(ctx, wait, wait)
 }
 
 // retryWaitBudget is the busy waiting one request has done so far.
@@ -188,7 +188,7 @@ func (m *Manager) nextRetryPlan(
 	// A retry that excludes accounts must not wait for one of them, and the
 	// request-retry wait cannot tell them apart.
 	if _, excluding := retryExclusionsFromMetadata(opts.Metadata); !excluding {
-		if wait, ok := m.shouldRetryAfterError(err, attempt, providers, model, maxWait, opts.Metadata); ok {
+		if wait, ok := newCooldownService(m).shouldRetryAfterError(err, attempt, providers, model, maxWait, opts.Metadata); ok {
 			return retryPlan{kind: SimulatedRetryWaitRequestRetry, wait: wait}, true
 		}
 	}
@@ -232,6 +232,9 @@ func (m *Manager) BusyWaitMaxWaiters() int {
 	}
 	if limit := int(m.maxBusyWaiters.Load()); limit > 0 {
 		return limit
+	}
+	if defaultBusyWaitMaxWaiters > 0 {
+		return defaultBusyWaitMaxWaiters
 	}
 	return sdkconfig.StreamingConfig{}.BusyWaiters()
 }

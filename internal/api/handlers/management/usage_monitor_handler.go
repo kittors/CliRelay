@@ -5,8 +5,8 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	managementusagelogs "github.com/router-for-me/CLIProxyAPI/v6/internal/management/usagelogs"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
+	managementusagelogs "github.com/router-for-me/CLIProxyAPI/v8/internal/management/usagelogs"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/usage"
 	log "github.com/sirupsen/logrus"
 )
 

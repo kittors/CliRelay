@@ -5,9 +5,9 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/api/bodyutil"
-	internalrouting "github.com/router-for-me/CLIProxyAPI/v6/internal/routing"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/api/bodyutil"
+	internalrouting "github.com/router-for-me/CLIProxyAPI/v8/internal/routing"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/usage"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )

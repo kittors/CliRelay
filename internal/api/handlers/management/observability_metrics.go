@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/observability"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/observability"
 )
 
 // observabilityMetricsView is what the panel sees of the metrics endpoint

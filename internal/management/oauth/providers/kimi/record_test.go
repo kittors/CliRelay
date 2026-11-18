@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	internalkimi "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/kimi"
+	internalkimi "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/kimi"
 )
 
 func TestRecordFromAuthBundleBuildsPersistableRecord(t *testing.T) {

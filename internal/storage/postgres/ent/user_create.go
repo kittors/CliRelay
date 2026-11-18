@@ -10,7 +10,7 @@ import (
 
 	"entgo.io/ent/dialect/sql/sqlgraph"
 	"entgo.io/ent/schema/field"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/storage/postgres/ent/user"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/storage/postgres/ent/user"
 )
 
 // UserCreate is the builder for creating a User entity.

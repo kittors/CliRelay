@@ -3,7 +3,7 @@ package routing
 import (
 	"context"
 
-	sdkrouting "github.com/router-for-me/CLIProxyAPI/v6/sdk/routing"
+	sdkrouting "github.com/router-for-me/CLIProxyAPI/v8/sdk/routing"
 )
 
 const GinPathRouteContextKey = sdkrouting.GinPathRouteContextKey

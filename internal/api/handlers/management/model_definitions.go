@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 )
 
 var (
@@ -61,6 +61,12 @@ func (h *Handler) GetStaticModelDefinitions(c *gin.Context) {
 		"channel": normalizedChannel,
 		"models":  models,
 	})
+}
+
+// RefreshModelDefinitions keeps the management refresh action compatible with
+// older panels. Definitions are fetched on demand by GetStaticModelDefinitions.
+func (h *Handler) RefreshModelDefinitions(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
 
 func fetchOllamaCloudModelDefinitions(ctx context.Context) ([]*registry.ModelInfo, error) {

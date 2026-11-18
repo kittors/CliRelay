@@ -4,8 +4,8 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/management/patchfield"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/management/patchfield"
 )
 
 var ErrProviderAPIKeyRequired = errors.New("api-key is required")

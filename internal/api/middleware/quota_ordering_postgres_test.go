@@ -7,12 +7,12 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/accesspolicy"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/quota"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/quota/inflight"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/testutil/postgrestest"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/accesspolicy"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/quota"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/quota/inflight"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/testutil/postgrestest"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/usage"
 )
 
 // These tests force a database read to return its pre-commit value after the

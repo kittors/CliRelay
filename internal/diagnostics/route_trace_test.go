@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/routetrace"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/routetrace"
 )
 
 // The in-flight set is global, so each test lists the requests of its own

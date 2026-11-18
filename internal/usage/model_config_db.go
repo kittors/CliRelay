@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	sqlmodelconfig "github.com/router-for-me/CLIProxyAPI/v6/internal/storage/sqlstore/modelconfig"
+	sqlmodelconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/storage/sqlstore/modelconfig"
 )
 
 // Compatibility bridge contract:

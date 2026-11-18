@@ -7,12 +7,12 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/configsync"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/identity"
-	proxypoolsettings "github.com/router-for-me/CLIProxyAPI/v6/internal/management/settings/proxypool"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/storage/sqlstore/resourcegrants"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/configsync"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/identity"
+	proxypoolsettings "github.com/router-for-me/CLIProxyAPI/v8/internal/management/settings/proxypool"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/storage/sqlstore/resourcegrants"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/usage"
 )
 
 // sharedProxyAPIEntry is a platform proxy as a grantee sees it. It never

@@ -2,278 +2,257 @@ package usage
 
 import (
 	"context"
-	"os"
-	"sync"
+	"net/http"
+	"runtime"
 	"testing"
 	"time"
+	"weak"
 )
 
-type blockingPlugin struct {
-	started chan struct{}
-	release chan struct{}
-	once    sync.Once
+func TestStreamFromContextDefaultsMissingToFalse(t *testing.T) {
+	if StreamFromContext(context.Background()) {
+		t.Fatalf("StreamFromContext(background) = true, want false")
+	}
 }
 
-func (p *blockingPlugin) HandleUsage(context.Context, Record) {
-	p.once.Do(func() { close(p.started) })
-	<-p.release
+func TestStreamFromContextHonorsExplicitTrue(t *testing.T) {
+	ctx := WithStream(context.Background(), true)
+	if !StreamFromContext(ctx) {
+		t.Fatalf("StreamFromContext(true) = false, want true")
+	}
 }
 
-func TestManagerBoundsPendingQueue(t *testing.T) {
-	manager := NewManager(1)
-	plugin := &blockingPlugin{started: make(chan struct{}), release: make(chan struct{})}
-	manager.Register(plugin)
+func TestRecordStreamField(t *testing.T) {
+	record := Record{
+		Provider: "openai",
+		Model:    "gpt-5.4",
+		Stream:   true,
+	}
+	if !record.Stream {
+		t.Fatalf("Record.Stream = false, want true")
+	}
+}
 
-	manager.Publish(context.Background(), Record{Model: "first"})
+func TestRecordBaseURLField(t *testing.T) {
+	record := Record{
+		Provider: "openai",
+		Model:    "gpt-5.4",
+		BaseURL:  "https://custom-gateway.example.com/v1",
+	}
+	if record.BaseURL != "https://custom-gateway.example.com/v1" {
+		t.Fatalf("Record.BaseURL = %q, want %q", record.BaseURL, "https://custom-gateway.example.com/v1")
+	}
+}
+
+func TestGenerateEnabledDefaultsNilToTrue(t *testing.T) {
+	if !GenerateEnabled(nil) {
+		t.Fatalf("GenerateEnabled(nil) = false, want true")
+	}
+}
+
+func TestGenerateEnabledHonorsExplicitFalse(t *testing.T) {
+	if GenerateEnabled(GenerateFlag(false)) {
+		t.Fatalf("GenerateEnabled(false) = true, want false")
+	}
+}
+
+func TestGenerateEnabledHonorsExplicitTrue(t *testing.T) {
+	if !GenerateEnabled(GenerateFlag(true)) {
+		t.Fatalf("GenerateEnabled(true) = false, want true")
+	}
+}
+
+func TestGenerateFromContextDefaultsMissingToTrue(t *testing.T) {
+	if !GenerateFromContext(context.Background()) {
+		t.Fatalf("GenerateFromContext(background) = false, want true")
+	}
+}
+
+func TestGenerateFromContextHonorsExplicitFalse(t *testing.T) {
+	ctx := WithGenerate(context.Background(), false)
+	if GenerateFromContext(ctx) {
+		t.Fatalf("GenerateFromContext(false) = true, want false")
+	}
+}
+
+func TestRecordOmittedGenerateIsEnabled(t *testing.T) {
+	// Existing callers construct Record without setting Generate.
+	// Omission must remain distinguishable from explicit false and default to true.
+	record := Record{
+		Provider: "openai",
+		Model:    "gpt-5.4",
+	}
+	if record.Generate != nil {
+		t.Fatalf("Record.Generate = %v, want nil for omitted field", record.Generate)
+	}
+	if !GenerateEnabled(record.Generate) {
+		t.Fatalf("GenerateEnabled(omitted) = false, want true")
+	}
+}
+
+func TestAccessProviderAndIsNativeKeyFromContext(t *testing.T) {
+	bg := context.Background()
+	if provider := AccessProviderFromContext(bg); provider != "" {
+		t.Fatalf("AccessProviderFromContext(bg) = %q, want empty", provider)
+	}
+	if _, ok := IsNativeKeyFromContext(bg); ok {
+		t.Fatalf("IsNativeKeyFromContext(bg) reported ok, want false")
+	}
+
+	ctx := WithAccessProvider(bg, "config-inline")
+	if provider := AccessProviderFromContext(ctx); provider != "config-inline" {
+		t.Fatalf("AccessProviderFromContext(ctx) = %q, want %q", provider, "config-inline")
+	}
+
+	ctxNative := WithIsNativeKey(ctx, true)
+	if val, ok := IsNativeKeyFromContext(ctxNative); !ok || !val {
+		t.Fatalf("IsNativeKeyFromContext(ctxNative) = (%v, %v), want (true, true)", val, ok)
+	}
+
+	ctxNonNative := WithIsNativeKey(ctx, false)
+	if val, ok := IsNativeKeyFromContext(ctxNonNative); !ok || val {
+		t.Fatalf("IsNativeKeyFromContext(ctxNonNative) = (%v, %v), want (false, true)", val, ok)
+	}
+}
+
+func TestIsNativeAccessProvider(t *testing.T) {
+	tests := []struct {
+		provider string
+		want     bool
+	}{
+		{"config-inline", true},
+		{"CONFIG-INLINE", true},
+		{"config-api-key", true},
+		{"CONFIG-API-KEY", true},
+		{"  config-inline  ", true},
+		{"custom-plugin", false},
+		{"realtime-client-secret", false},
+		{"", false},
+	}
+	for _, tt := range tests {
+		if got := IsNativeAccessProvider(tt.provider); got != tt.want {
+			t.Errorf("IsNativeAccessProvider(%q) = %v, want %v", tt.provider, got, tt.want)
+		}
+	}
+}
+
+func TestRecordNativeKeyFields(t *testing.T) {
+	record := Record{
+		Provider:       "openai",
+		Model:          "gpt-5.4",
+		APIKey:         "sk-test-123",
+		IsNativeKey:    true,
+		AccessProvider: "config-inline",
+	}
+	if !record.IsNativeKey {
+		t.Fatalf("Record.IsNativeKey = false, want true")
+	}
+	if record.AccessProvider != "config-inline" {
+		t.Fatalf("Record.AccessProvider = %q, want %q", record.AccessProvider, "config-inline")
+	}
+}
+
+type captureUsagePlugin struct {
+	records chan Record
+}
+
+func (p *captureUsagePlugin) HandleUsage(_ context.Context, record Record) {
+	p.records <- record
+}
+
+func TestManagerPublishBackfillsContextAuthFields(t *testing.T) {
+	mgr := NewManager(10)
+	t.Cleanup(mgr.Stop)
+	plugin := &captureUsagePlugin{records: make(chan Record, 1)}
+	mgr.Register(plugin)
+
+	ctx := WithAPIKey(context.Background(), "sk-ctx-key")
+	ctx = WithAccessProvider(ctx, "config-inline")
+
+	mgr.Publish(ctx, Record{
+		Provider: "openai",
+		Model:    "gpt-5.4",
+	})
+
 	select {
-	case <-plugin.started:
-	case <-time.After(time.Second):
-		t.Fatal("worker did not start first record")
-	}
-
-	manager.Publish(context.Background(), Record{Model: "second"})
-	thirdDone := make(chan struct{})
-	go func() {
-		manager.Publish(context.Background(), Record{Model: "third"})
-		close(thirdDone)
-	}()
-
-	select {
-	case <-thirdDone:
-		t.Fatal("third publish must wait while the bounded queue is full")
-	case <-time.After(50 * time.Millisecond):
-	}
-
-	close(plugin.release)
-	select {
-	case <-thirdDone:
-	case <-time.After(time.Second):
-		t.Fatal("third publish did not resume after queue capacity became available")
-	}
-	manager.Stop()
-}
-
-type observingPlugin struct {
-	seen chan Record
-}
-
-func (p *observingPlugin) HandleUsage(_ context.Context, record Record) {
-	p.seen <- record
-}
-
-func TestManagerCleansDeferredContentAfterDispatch(t *testing.T) {
-	file, err := os.CreateTemp("", "usage-manager-test-*")
-	if err != nil {
-		t.Fatalf("CreateTemp: %v", err)
-	}
-	path := file.Name()
-	if _, err = file.WriteString("payload"); err != nil {
-		t.Fatalf("write temp content: %v", err)
-	}
-	if err = file.Close(); err != nil {
-		t.Fatalf("close temp content: %v", err)
-	}
-
-	manager := NewManager(1)
-	plugin := &observingPlugin{seen: make(chan Record, 1)}
-	manager.Register(plugin)
-	manager.Publish(context.Background(), Record{OutputContentPath: path})
-
-	select {
-	case record := <-plugin.seen:
-		if record.OutputContentPath != path {
-			t.Fatalf("path = %q, want %q", record.OutputContentPath, path)
+	case got := <-plugin.records:
+		if got.APIKey != "sk-ctx-key" {
+			t.Fatalf("got.APIKey = %q, want sk-ctx-key", got.APIKey)
+		}
+		if got.AccessProvider != "config-inline" {
+			t.Fatalf("got.AccessProvider = %q, want config-inline", got.AccessProvider)
+		}
+		if !got.IsNativeKey {
+			t.Fatalf("got.IsNativeKey = false, want true")
 		}
 	case <-time.After(time.Second):
-		t.Fatal("plugin did not receive record")
+		t.Fatal("timed out waiting for usage record")
+	}
+}
+
+type notifyUsagePlugin struct {
+	delivered chan struct{}
+}
+
+func (p *notifyUsagePlugin) HandleUsage(_ context.Context, _ Record) {
+	p.delivered <- struct{}{}
+}
+
+type retainedRequestPayload struct {
+	data [64 << 10]byte
+}
+
+type retainedRequestContextKey struct{}
+
+//go:noinline
+func publishConsumableRecord(mgr *Manager) (weak.Pointer[retainedRequestPayload], weak.Pointer[CacheDetails], weak.Pointer[string]) {
+	ctxPayload := &retainedRequestPayload{}
+	cacheDetails := &CacheDetails{}
+	headerSlice := []string{"req-header-value"}
+
+	ctx := context.WithValue(context.Background(), retainedRequestContextKey{}, ctxPayload)
+	mgr.Publish(ctx, Record{
+		Provider:        "openai",
+		Model:           "gpt-5.4",
+		ResponseHeaders: http.Header{"X-Request-Id": headerSlice},
+		Detail: Detail{
+			CacheDetails: cacheDetails,
+		},
+	})
+
+	return weak.Make(ctxPayload), weak.Make(cacheDetails), weak.Make(&headerSlice[0])
+}
+
+func TestManagerReleasesConsumedQueueItemReferencesWhenIdle(t *testing.T) {
+	mgr := NewManager(10)
+	t.Cleanup(mgr.Stop)
+
+	plugin := &notifyUsagePlugin{delivered: make(chan struct{}, 1)}
+	mgr.Register(plugin)
+
+	ctxWeak, detailWeak, headerWeak := publishConsumableRecord(mgr)
+
+	select {
+	case <-plugin.delivered:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for usage record dispatch")
 	}
 
-	deadline := time.Now().Add(time.Second)
-	for {
-		_, err = os.Stat(path)
-		if os.IsNotExist(err) {
+	for range 10 {
+		runtime.Gosched()
+		runtime.GC()
+		if ctxWeak.Value() == nil && detailWeak.Value() == nil && headerWeak.Value() == nil {
 			break
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("deferred content was not cleaned, stat err=%v", err)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	manager.Stop()
-}
-
-type contextCapturePlugin struct {
-	seen chan context.Context
-}
-
-func (p *contextCapturePlugin) HandleUsage(ctx context.Context, _ Record) {
-	p.seen <- ctx
-}
-
-func TestManagerDoesNotRetainRequestContext(t *testing.T) {
-	type requestContextKey struct{}
-	manager := NewManager(1)
-	plugin := &contextCapturePlugin{seen: make(chan context.Context, 1)}
-	manager.Register(plugin)
-	requestCtx := context.WithValue(context.Background(), requestContextKey{}, "large-request-state")
-	manager.Publish(requestCtx, Record{APIIdentifier: "POST /v1/responses"})
-
-	select {
-	case pluginCtx := <-plugin.seen:
-		if got := pluginCtx.Value(requestContextKey{}); got != nil {
-			t.Fatalf("async plugin retained request context value: %v", got)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("plugin did not receive record")
-	}
-	manager.Stop()
-}
-
-func TestManagerOverflowHandlerKeepsPublishNonBlocking(t *testing.T) {
-	manager := NewManager(1)
-	plugin := &blockingPlugin{started: make(chan struct{}), release: make(chan struct{})}
-	manager.Register(plugin)
-	overflowed := make(chan Record, 4)
-	manager.SetOverflowHandler(func(record Record) bool {
-		overflowed <- record
-		return true
-	})
-
-	manager.Publish(context.Background(), Record{Model: "first"})
-	select {
-	case <-plugin.started:
-	case <-time.After(time.Second):
-		t.Fatal("worker did not start first record")
-	}
-	manager.Publish(context.Background(), Record{Model: "second"})
-
-	thirdDone := make(chan struct{})
-	go func() {
-		manager.Publish(context.Background(), Record{Model: "third"})
-		close(thirdDone)
-	}()
-	select {
-	case <-thirdDone:
-	case <-time.After(time.Second):
-		t.Fatal("publish blocked on a full queue although an overflow handler is installed")
-	}
-	select {
-	case record := <-overflowed:
-		if record.Model != "third" {
-			t.Fatalf("overflowed model = %q, want third", record.Model)
-		}
-		if record.IdempotencyKey == "" {
-			t.Fatal("overflowed record has no idempotency key")
-		}
-	default:
-		t.Fatal("overflow handler did not receive the record the queue could not take")
 	}
 
-	close(plugin.release)
-	manager.Stop()
-}
-
-func TestManagerOverflowHandlerReleasesWaitingPublishers(t *testing.T) {
-	manager := NewManager(1)
-	plugin := &blockingPlugin{started: make(chan struct{}), release: make(chan struct{})}
-	manager.Register(plugin)
-	manager.Publish(context.Background(), Record{Model: "first"})
-	<-plugin.started
-	manager.Publish(context.Background(), Record{Model: "second"})
-
-	waiting := make(chan struct{})
-	go func() {
-		manager.Publish(context.Background(), Record{Model: "third"})
-		close(waiting)
-	}()
-	select {
-	case <-waiting:
-		t.Fatal("publish must wait while no overflow handler is installed")
-	case <-time.After(50 * time.Millisecond):
+	if ctxWeak.Value() != nil {
+		t.Fatalf("consumed request context payload is still retained while manager is idle")
 	}
-
-	overflowed := make(chan Record, 1)
-	manager.SetOverflowHandler(func(record Record) bool {
-		overflowed <- record
-		return true
-	})
-	select {
-	case <-waiting:
-	case <-time.After(time.Second):
-		t.Fatal("installing an overflow handler did not release the waiting publisher")
+	if detailWeak.Value() != nil {
+		t.Fatalf("consumed record Detail.CacheDetails is still retained while manager is idle")
 	}
-	if record := <-overflowed; record.Model != "third" {
-		t.Fatalf("overflowed model = %q, want third", record.Model)
-	}
-	close(plugin.release)
-	manager.Stop()
-}
-
-func TestManagerAssignsIdempotencyKeyOnce(t *testing.T) {
-	manager := NewManager(4)
-	plugin := &observingPlugin{seen: make(chan Record, 2)}
-	manager.Register(plugin)
-
-	manager.Publish(context.Background(), Record{Model: "generated"})
-	manager.Publish(context.Background(), Record{Model: "preset", IdempotencyKey: "caller-key"})
-
-	first := <-plugin.seen
-	second := <-plugin.seen
-	if first.IdempotencyKey == "" {
-		t.Fatal("Publish did not assign an idempotency key")
-	}
-	if second.IdempotencyKey != "caller-key" {
-		t.Fatalf("preset key = %q, want caller-key", second.IdempotencyKey)
-	}
-	manager.Stop()
-}
-
-func TestManagerStoppedPublishGoesToOverflowHandler(t *testing.T) {
-	manager := NewManager(4)
-	manager.Start(context.Background())
-	overflowed := make(chan Record, 1)
-	manager.SetOverflowHandler(func(record Record) bool {
-		overflowed <- record
-		return true
-	})
-	manager.Stop()
-	manager.Publish(context.Background(), Record{Model: "late"})
-	select {
-	case record := <-overflowed:
-		if record.Model != "late" {
-			t.Fatalf("overflowed model = %q, want late", record.Model)
-		}
-	default:
-		t.Fatal("a record published after Stop was dropped instead of overflowed")
-	}
-}
-
-func TestManagerWaitReturnsAfterQueueDrains(t *testing.T) {
-	manager := NewManager(8)
-	plugin := &blockingPlugin{started: make(chan struct{}), release: make(chan struct{})}
-	manager.Register(plugin)
-	manager.Publish(context.Background(), Record{Model: "first"})
-	manager.Publish(context.Background(), Record{Model: "second"})
-	<-plugin.started
-	manager.Stop()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
-	if manager.Wait(ctx) {
-		cancel()
-		t.Fatal("Wait returned before the blocked dispatcher drained its queue")
-	}
-	cancel()
-
-	close(plugin.release)
-	ctx, cancel = context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	if !manager.Wait(ctx) {
-		t.Fatal("Wait did not observe the dispatcher exiting after the queue drained")
-	}
-	if pending := manager.Pending(); pending != 0 {
-		t.Fatalf("pending = %d after drain, want 0", pending)
-	}
-	if !NewManager(1).Wait(context.Background()) {
-		t.Fatal("Wait on a never-started manager must return immediately")
+	if headerWeak.Value() != nil {
+		t.Fatalf("consumed record ResponseHeaders backing value is still retained while manager is idle")
 	}
 }

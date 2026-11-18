@@ -2,8 +2,8 @@ package api
 
 import (
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/contentmoderation"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/contentmoderation"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/usage"
 )
 
 // privacyMaskRecordMiddleware writes the privacy masking record of a request

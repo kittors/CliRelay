@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/storage/postgres/compatdriver"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/storage/postgres/compatdriver"
 )
 
 func counters(at time.Time, commits, hit, read uint64) databaseCounters {

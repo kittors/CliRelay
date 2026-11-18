@@ -5,8 +5,8 @@ import (
 	"strings"
 	"time"
 
-	internalqwen "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/qwen"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	internalqwen "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/qwen"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
 
 func RecordFromTokenStorage(tokenStorage *internalqwen.QwenTokenStorage, now time.Time) *coreauth.Auth {

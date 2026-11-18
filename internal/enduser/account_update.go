@@ -6,10 +6,10 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/identity"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/quota"
-	sqlapikey "github.com/router-for-me/CLIProxyAPI/v6/internal/storage/sqlstore/apikey"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/identity"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/quota"
+	sqlapikey "github.com/router-for-me/CLIProxyAPI/v8/internal/storage/sqlstore/apikey"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/usage"
 )
 
 // UpdateUser 修改账号资料、状态与额度/权限，全部在一个事务里完成：账号行更新、

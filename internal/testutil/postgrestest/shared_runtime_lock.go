@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/storage/postgres/compatdriver"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/storage/postgres/compatdriver"
 )
 
 const sharedRuntimeLockSQL = `SELECT pg_advisory_lock(hashtext('clirelay_shared_runtime_test_db')::bigint)`

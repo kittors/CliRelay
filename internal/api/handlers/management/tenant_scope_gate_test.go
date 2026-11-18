@@ -3,7 +3,7 @@ package management
 import (
 	"testing"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/identity"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/identity"
 )
 
 func TestDeniesTenantResourceScopeAllowsPlatformAdminOnGlobalLogs(t *testing.T) {

@@ -1,10 +1,10 @@
 package management
 
 import (
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/alerting"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/cluster"
-	settingsstore "github.com/router-for-me/CLIProxyAPI/v6/internal/management/settings/store"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/alerting"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/cluster"
+	settingsstore "github.com/router-for-me/CLIProxyAPI/v8/internal/management/settings/store"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
 
 // alertDispatcher returns the one dispatcher the alert service and the

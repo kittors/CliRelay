@@ -8,8 +8,8 @@ import (
 	"time"
 
 	gin "github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/diagnostics"
-	sdkaccess "github.com/router-for-me/CLIProxyAPI/v6/sdk/access"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/diagnostics"
+	sdkaccess "github.com/router-for-me/CLIProxyAPI/v8/sdk/access"
 )
 
 type tenantKeyProvider struct{ result sdkaccess.Result }

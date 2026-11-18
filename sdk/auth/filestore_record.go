@@ -1,9 +1,10 @@
 package auth
 
 import (
+	"strings"
 	"time"
 
-	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
 
 // NewFileAuthRecord builds the runtime Auth for credential document metadata
@@ -47,4 +48,37 @@ func fileAuthLabel(metadata map[string]any) string {
 		return project
 	}
 	return ""
+}
+
+// buildFileAuthAttributes keeps disk-loaded credentials aligned with OAuth login
+// and management upload registration.
+func buildFileAuthAttributes(path string, metadata map[string]any) map[string]string {
+	attrs := map[string]string{"path": path}
+	if email := metadataString(metadata, "email"); email != "" {
+		attrs["email"] = email
+	}
+	if authKind := metadataString(metadata, "auth_kind", "authKind"); authKind != "" {
+		attrs["auth_kind"] = authKind
+	}
+	if baseURL := metadataString(metadata, "base_url", "base-url", "baseUrl"); baseURL != "" {
+		attrs["base_url"] = baseURL
+	}
+	if apiKey := metadataString(metadata, "api_key", "api-key", "apiKey"); apiKey != "" {
+		attrs["api_key"] = apiKey
+	}
+	if raw, ok := metadata["using_api"]; ok {
+		switch value := raw.(type) {
+		case bool:
+			if value {
+				attrs["using_api"] = "true"
+			} else {
+				attrs["using_api"] = "false"
+			}
+		case string:
+			if trimmed := strings.TrimSpace(value); trimmed != "" {
+				attrs["using_api"] = trimmed
+			}
+		}
+	}
+	return attrs
 }

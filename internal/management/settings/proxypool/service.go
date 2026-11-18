@@ -4,10 +4,10 @@ import (
 	"context"
 	"errors"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/configsync"
-	sqlproxypool "github.com/router-for-me/CLIProxyAPI/v6/internal/storage/sqlstore/proxypool"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/configsync"
+	sqlproxypool "github.com/router-for-me/CLIProxyAPI/v8/internal/storage/sqlstore/proxypool"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/usage"
 )
 
 var ErrItemNotFound = errors.New("item not found")

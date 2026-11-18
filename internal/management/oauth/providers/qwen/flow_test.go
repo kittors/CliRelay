@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	internalqwen "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/qwen"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	internalqwen "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/qwen"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
 
 type qwenDeviceAuthStub struct {

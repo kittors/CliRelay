@@ -5,9 +5,9 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	apikeysettings "github.com/router-for-me/CLIProxyAPI/v6/internal/management/settings/apikey"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/quota"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
+	apikeysettings "github.com/router-for-me/CLIProxyAPI/v8/internal/management/settings/apikey"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/quota"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/usage"
 	log "github.com/sirupsen/logrus"
 )
 

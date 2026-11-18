@@ -19,6 +19,23 @@ const (
 // Config represents the application's configuration, loaded from a YAML file.
 type Config struct {
 	SDKConfig `yaml:",inline"`
+	// Models configures optional on-disk model catalogs used by the runtime.
+	Models  ModelCatalogs `yaml:"models,omitempty" json:"models,omitempty"`
+	KVStore KVStoreConfig `yaml:"kv-store,omitempty" json:"kv-store,omitempty"`
+	// Home stores runtime-only control-plane settings supplied by the Home launcher.
+	Home HomeConfig `yaml:"-" json:"-"`
+	// ProxyPoolPublisher fences shared proxy transport snapshots by runtime owner.
+	ProxyPoolPublisher uint64 `yaml:"-" json:"-"`
+	// ProxyPoolGeneration fences obsolete proxy transport snapshots after reload.
+	ProxyPoolGeneration uint64 `yaml:"-" json:"-"`
+	// Plugins configures dynamic plugin discovery and per-plugin settings.
+	Plugins PluginsConfig `yaml:"plugins" json:"plugins"`
+	// Discovery configures local network service advertising.
+	Discovery DiscoveryConfig `yaml:"discovery" json:"discovery"`
+	// CredentialConcurrency contains Home-managed credential lifecycle settings.
+	CredentialConcurrency CredentialConcurrencyConfig `yaml:"credential-concurrency" json:"credential-concurrency"`
+	// CredentialInFlight configures credential observation snapshots.
+	CredentialInFlight CredentialInFlightConfig `yaml:"credential-in-flight" json:"credential-in-flight"`
 	// Host is the network host/interface on which the API server will bind.
 	// Default is empty ("") to bind all interfaces (IPv4 + IPv6). Use "127.0.0.1" or "localhost" for local-only access.
 	Host string `yaml:"host" json:"-"`
@@ -33,6 +50,9 @@ type Config struct {
 	// RequestBody controls request-body limits for public model API endpoints.
 	RequestBody RequestBodyConfig `yaml:"request-body,omitempty" json:"request-body,omitempty"`
 
+	// ServerResponseCompression controls compression of downstream HTTP responses.
+	ServerResponseCompression ResponseCompressionConfig `yaml:"server-response-compression,omitempty" json:"server-response-compression,omitempty"`
+
 	// Timezone configures the project's timezone (IANA name, e.g. "Asia/Shanghai").
 	// It affects "today" boundaries and day-based aggregation in monitoring/usage pages.
 	// When empty, the process local timezone (time.Local) is used.
@@ -43,6 +63,9 @@ type Config struct {
 
 	// Redis config controls the Redis connection for usage persistence.
 	Redis RedisConfig `yaml:"redis" json:"redis"`
+
+	// RedisUsageQueueRetentionSeconds controls how long usage queue items are retained.
+	RedisUsageQueueRetentionSeconds int `yaml:"redis-usage-queue-retention-seconds,omitempty" json:"redis-usage-queue-retention-seconds,omitempty"`
 
 	// Cluster config controls multi-instance deployment. Disabled by default.
 	Cluster ClusterConfig `yaml:"cluster,omitempty" json:"cluster,omitempty"`
@@ -65,6 +88,9 @@ type Config struct {
 
 	// RemoteManagement nests management-related options under 'remote-management'.
 	RemoteManagement RemoteManagement `yaml:"remote-management" json:"-"`
+
+	// Codex configures provider-wide Codex request behavior.
+	Codex CodexConfig `yaml:"codex" json:"codex"`
 
 	// AutoUpdate controls Docker-first update checks and updater sidecar integration.
 	AutoUpdate AutoUpdateConfig `yaml:"auto-update" json:"auto-update"`
@@ -118,10 +144,22 @@ type Config struct {
 	// DisableCooling disables quota cooldown scheduling when true.
 	DisableCooling bool `yaml:"disable-cooling" json:"disable-cooling"`
 
+	// SaveCooldownStatus persists runtime cooldown status next to auth files.
+	SaveCooldownStatus bool `yaml:"save-cooldown-status" json:"save-cooldown-status"`
+
+	// TransientErrorCooldownSeconds controls cooldowns for transient upstream errors.
+	TransientErrorCooldownSeconds int `yaml:"transient-error-cooldown-seconds" json:"transient-error-cooldown-seconds"`
+
 	// RequestRetry defines the retry times when the request failed.
 	RequestRetry int `yaml:"request-retry" json:"request-retry"`
+	// MaxRetryCredentials limits the number of credentials tried in each retry round.
+	MaxRetryCredentials int `yaml:"max-retry-credentials" json:"max-retry-credentials"`
 	// MaxRetryInterval defines the maximum wait time in seconds before retrying a cooled-down credential.
 	MaxRetryInterval int `yaml:"max-retry-interval" json:"max-retry-interval"`
+
+	// AuthAutoRefreshWorkers overrides the size of the auth refresh worker pool.
+	// Values <= 0 use the built-in default.
+	AuthAutoRefreshWorkers int `yaml:"auth-auto-refresh-workers" json:"auth-auto-refresh-workers"`
 
 	// AccountConcurrency controls how requests queue for AI accounts that are at
 	// their per-account concurrency limit.
@@ -132,6 +170,13 @@ type Config struct {
 
 	// Antigravity configures provider-wide Antigravity request behavior.
 	Antigravity AntigravityConfig `yaml:"antigravity" json:"antigravity"`
+	// AntigravitySignatureCacheEnabled controls the process-wide signature cache.
+	AntigravitySignatureCacheEnabled *bool `yaml:"antigravity-signature-cache-enabled,omitempty" json:"antigravity-signature-cache-enabled,omitempty"`
+	// AntigravitySignatureBypassStrict controls strict validation of cached signatures.
+	AntigravitySignatureBypassStrict *bool `yaml:"antigravity-signature-bypass-strict,omitempty" json:"antigravity-signature-bypass-strict,omitempty"`
+
+	// Devin configures provider-wide Devin request behavior.
+	Devin DevinConfig `yaml:"devin" json:"devin"`
 
 	// Routing controls credential selection behavior.
 	Routing RoutingConfig `yaml:"routing" json:"routing"`
@@ -142,11 +187,26 @@ type Config struct {
 	// GeminiKey defines Gemini API key configurations with optional routing overrides.
 	GeminiKey []GeminiKey `yaml:"gemini-api-key" json:"gemini-api-key"`
 
+	// InteractionsKey defines native Google Interactions API key configurations.
+	InteractionsKey []GeminiKey `yaml:"interactions-api-key" json:"interactions-api-key"`
+
 	// Codex defines a list of Codex API key configurations as specified in the YAML configuration file.
 	CodexKey []CodexKey `yaml:"codex-api-key" json:"codex-api-key"`
 
+	// XAIKey defines xAI API key configurations using the Codex-compatible shape.
+	XAIKey []XAIKey `yaml:"xai-api-key" json:"xai-api-key"`
+
+	// XAI configures provider-wide xAI request behavior.
+	XAI XAIConfig `yaml:"xai" json:"xai"`
+
+	// MetaKey defines Meta API key configurations using the Codex-compatible shape.
+	MetaKey []MetaKey `yaml:"meta-api-key" json:"meta-api-key"`
+
 	// ClaudeKey defines a list of Claude API key configurations as specified in the YAML configuration file.
 	ClaudeKey []ClaudeKey `yaml:"claude-api-key" json:"claude-api-key"`
+
+	// Claude configures provider-wide Claude request behavior.
+	Claude ClaudeConfig `yaml:"claude" json:"claude"`
 
 	// BedrockKey defines AWS Bedrock Runtime credential configurations.
 	BedrockKey []BedrockKey `yaml:"bedrock-api-key" json:"bedrock-api-key"`
@@ -163,9 +223,22 @@ type Config struct {
 	// CommandCodeKey defines Command Code Provider API key configurations.
 	CommandCodeKey []CommandCodeKey `yaml:"commandcode-api-key" json:"commandcode-api-key"`
 
+	// OAuthRequestScopedErrors defines per-provider request-scoped error rules
+	// applied to OAuth/file-backed credentials.
+	OAuthRequestScopedErrors map[string][]RequestScopedErrorRule `yaml:"oauth-request-scoped-errors,omitempty" json:"oauth-request-scoped-errors,omitempty"`
+
+	// OAuthSettings defines per-channel model settings applied to OAuth-backed credentials.
+	OAuthSettings map[string][]OAuthModelSetting `yaml:"oauth-settings,omitempty" json:"oauth-settings,omitempty"`
+
 	// ClaudeHeaderDefaults configures default header values for Claude API requests.
 	// These are used as fallbacks when the client does not send its own headers.
 	ClaudeHeaderDefaults ClaudeHeaderDefaults `yaml:"claude-header-defaults" json:"claude-header-defaults"`
+
+	// CodexHeaderDefaults configures fallback header values for Codex requests.
+	CodexHeaderDefaults CodexHeaderDefaults `yaml:"codex-header-defaults" json:"codex-header-defaults"`
+
+	// DisableClaudeCloakMode globally disables Claude request cloaking when true.
+	DisableClaudeCloakMode bool `yaml:"disable-claude-cloak-mode" json:"disable-claude-cloak-mode"`
 
 	// KimiHeaderDefaults configures default header values for Kimi API requests.
 	// These control how requests appear in the Kimi console (e.g., User-Agent as source).
@@ -292,11 +365,32 @@ func (cfg *Config) RequestBodyCacheDir() string {
 // ClaudeHeaderDefaults configures default header values injected into Claude API requests
 // when the client does not send them. Update these when Claude Code releases a new version.
 type ClaudeHeaderDefaults struct {
-	UserAgent      string `yaml:"user-agent" json:"user-agent"`
-	PackageVersion string `yaml:"package-version" json:"package-version"`
-	RuntimeVersion string `yaml:"runtime-version" json:"runtime-version"`
-	Timeout        string `yaml:"timeout" json:"timeout"`
+	UserAgent              string   `yaml:"user-agent" json:"user-agent"`
+	PackageVersion         string   `yaml:"package-version" json:"package-version"`
+	RuntimeVersion         string   `yaml:"runtime-version" json:"runtime-version"`
+	OS                     string   `yaml:"os" json:"os"`
+	Arch                   string   `yaml:"arch" json:"arch"`
+	Timeout                string   `yaml:"timeout" json:"timeout"`
+	Timezone               string   `yaml:"timezone" json:"timezone"`
+	StabilizeDeviceProfile *bool    `yaml:"stabilize-device-profile,omitempty" json:"stabilize-device-profile,omitempty"`
+	NativeEntrypoints      []string `yaml:"native-entrypoints,omitempty" json:"native-entrypoints,omitempty"`
+	AnthropicBetaStrip     []string `yaml:"anthropic-beta-strip,omitempty" json:"anthropic-beta-strip,omitempty"`
+	AnthropicBetaAppend    []string `yaml:"anthropic-beta-append,omitempty" json:"anthropic-beta-append,omitempty"`
+	InjectDiagnostics      *bool    `yaml:"inject-diagnostics,omitempty" json:"inject-diagnostics,omitempty"`
+	ClientRequestID        string   `yaml:"client-request-id,omitempty" json:"client-request-id,omitempty"`
 }
+
+// CodexHeaderDefaults configures fallback header values injected into Codex requests.
+type CodexHeaderDefaults struct {
+	UserAgent    string `yaml:"user-agent" json:"user-agent"`
+	BetaFeatures string `yaml:"beta-features" json:"beta-features"`
+}
+
+const (
+	ClaudeClientRequestIDOn          = "on"
+	ClaudeClientRequestIDOff         = "off"
+	ClaudeClientRequestIDPassthrough = "passthrough"
+)
 
 // KimiHeaderDefaults configures default header values for Kimi API requests.
 // These headers identify the client to the Kimi API and affect how requests

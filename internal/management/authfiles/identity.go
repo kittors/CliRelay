@@ -3,8 +3,8 @@ package authfiles
 import (
 	"strings"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/auth/codex"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/auth/codex"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
 
 // Email returns the display email stored in auth metadata or attributes.

@@ -10,7 +10,7 @@ import (
 
 	"entgo.io/ent/dialect/sql/sqlgraph"
 	"entgo.io/ent/schema/field"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/storage/postgres/ent/authsubjectquotacycle"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/storage/postgres/ent/authsubjectquotacycle"
 )
 
 // AuthSubjectQuotaCycleCreate is the builder for creating a AuthSubjectQuotaCycle entity.

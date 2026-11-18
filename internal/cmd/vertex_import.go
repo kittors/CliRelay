@@ -4,23 +4,23 @@ package cmd
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/auth/vertex"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
-	sdkAuth "github.com/router-for-me/CLIProxyAPI/v6/sdk/auth"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	"github.com/MoeForge/moego/json"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/auth/vertex"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
+	sdkAuth "github.com/router-for-me/CLIProxyAPI/v8/sdk/auth"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
 )
 
 // DoVertexImport imports a Google Cloud service account key JSON and persists
 // it as a "vertex" provider credential. The file content is embedded in the auth
 // file to allow portable deployment across stores.
-func DoVertexImport(cfg *config.Config, keyPath string) {
+func DoVertexImport(cfg *config.Config, keyPath string, prefix string) {
 	if cfg == nil {
 		cfg = &config.Config{}
 	}
@@ -60,15 +60,30 @@ func DoVertexImport(cfg *config.Config, keyPath string) {
 		log.Warn("vertex-import: client_email missing in service account json")
 	}
 	// Default location if not provided by user. Can be edited in the saved file later.
-	location := "us-central1"
+	location := "global"
 
-	fileName := fmt.Sprintf("vertex-%s.json", sanitizeFilePart(projectID))
+	// Normalize and validate prefix: must be a single segment (no "/" allowed).
+	prefix = strings.TrimSpace(prefix)
+	prefix = strings.Trim(prefix, "/")
+	if prefix != "" && strings.Contains(prefix, "/") {
+		log.Errorf("vertex-import: prefix must be a single segment (no '/' allowed): %q", prefix)
+		return
+	}
+
+	// Include prefix in filename so importing the same project with different
+	// prefixes creates separate credential files instead of overwriting.
+	baseName := sanitizeFilePart(projectID)
+	if prefix != "" {
+		baseName = sanitizeFilePart(prefix) + "-" + baseName
+	}
+	fileName := fmt.Sprintf("vertex-%s.json", baseName)
 	// Build auth record
 	storage := &vertex.VertexCredentialStorage{
 		ServiceAccount: sa,
 		ProjectID:      projectID,
 		Email:          email,
 		Location:       location,
+		Prefix:         prefix,
 	}
 	metadata := map[string]any{
 		"service_account": sa,
@@ -76,6 +91,7 @@ func DoVertexImport(cfg *config.Config, keyPath string) {
 		"email":           email,
 		"location":        location,
 		"type":            "vertex",
+		"prefix":          prefix,
 		"label":           labelForVertex(projectID, email),
 	}
 	record := &coreauth.Auth{

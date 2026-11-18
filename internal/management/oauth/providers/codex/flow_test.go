@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	internalcodex "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/codex"
-	oauthsession "github.com/router-for-me/CLIProxyAPI/v6/internal/management/oauth/session"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	internalcodex "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/codex"
+	oauthsession "github.com/router-for-me/CLIProxyAPI/v8/internal/management/oauth/session"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
 
 type codexOAuthAuthStub struct {

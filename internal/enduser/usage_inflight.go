@@ -1,8 +1,8 @@
 package enduser
 
 import (
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/quota"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/quota/inflight"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/quota"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/quota/inflight"
 )
 
 // keyUsageView is a key's usage view with what its requests in flight on this

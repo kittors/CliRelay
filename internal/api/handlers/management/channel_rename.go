@@ -5,11 +5,11 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/identity"
-	apikeysettings "github.com/router-for-me/CLIProxyAPI/v6/internal/management/settings/apikey"
-	oauthsettings "github.com/router-for-me/CLIProxyAPI/v6/internal/management/settings/oauth"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/identity"
+	apikeysettings "github.com/router-for-me/CLIProxyAPI/v8/internal/management/settings/apikey"
+	oauthsettings "github.com/router-for-me/CLIProxyAPI/v8/internal/management/settings/oauth"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/usage"
 )
 
 func (h *Handler) renameChannelReferences(oldNames []string, newName string) error {

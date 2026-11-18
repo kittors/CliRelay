@@ -7,8 +7,8 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/identity"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/loginlockout"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/identity"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/loginlockout"
 )
 
 func newLoginFailureContext(t *testing.T) (*gin.Context, *httptest.ResponseRecorder) {

@@ -77,6 +77,14 @@ func startPart(buf *bytes.Buffer, first *bool, partType string) {
 	buf.WriteByte('"')
 }
 
+func appendArrayElement(buf *bytes.Buffer, first *bool, prefix string) {
+	if !*first {
+		buf.WriteByte(',')
+	}
+	*first = false
+	buf.WriteString(prefix)
+}
+
 // writeStringMember adds to the open part a member named name, which needs no
 // escaping, whose value is the string value.
 func writeStringMember(buf *bytes.Buffer, name, value string) {

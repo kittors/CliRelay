@@ -4,7 +4,7 @@ import (
 	"context"
 	"sync"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/cluster/sharedredis"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/cluster/sharedredis"
 )
 
 // accountSlotPool holds this node's cluster-wide slots on upstream accounts.

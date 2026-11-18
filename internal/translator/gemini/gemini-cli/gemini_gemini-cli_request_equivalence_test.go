@@ -3,7 +3,7 @@ package geminiCLI
 import (
 	"testing"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/testutil/translatortest"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/testutil/translatortest"
 )
 
 func TestConvertGeminiCLIRequestToGemini_MatchesReference(t *testing.T) {

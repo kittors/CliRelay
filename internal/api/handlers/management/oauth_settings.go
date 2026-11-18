@@ -5,9 +5,9 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	oauthsettings "github.com/router-for-me/CLIProxyAPI/v6/internal/management/settings/oauth"
-	settingsstore "github.com/router-for-me/CLIProxyAPI/v6/internal/management/settings/store"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	oauthsettings "github.com/router-for-me/CLIProxyAPI/v8/internal/management/settings/oauth"
+	settingsstore "github.com/router-for-me/CLIProxyAPI/v8/internal/management/settings/store"
 )
 
 func oauthSettingsService(h *ProviderKeysHandler, c *gin.Context) *oauthsettings.Service {

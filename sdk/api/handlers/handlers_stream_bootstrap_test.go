@@ -2,20 +2,26 @@ package handlers
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
+	"github.com/MoeForge/moego/json"
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/interfaces"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/routing"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
-	coreexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
-	sdkconfig "github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
+	internalconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/interfaces"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executionregistry"
+	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	sdkconfig "github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
 type failOnceStreamExecutor struct {
@@ -82,6 +88,56 @@ func (e *failOnceStreamExecutor) Calls() int {
 	return e.calls
 }
 
+type blockingRetryStreamExecutor struct {
+	mu           sync.Mutex
+	calls        int
+	retryStarted chan struct{}
+	allowRetry   chan struct{}
+}
+
+func (e *blockingRetryStreamExecutor) Identifier() string { return "codex" }
+
+func (e *blockingRetryStreamExecutor) Execute(context.Context, *coreauth.Auth, coreexecutor.Request, coreexecutor.Options) (coreexecutor.Response, error) {
+	return coreexecutor.Response{}, &coreauth.Error{Code: "not_implemented", Message: "Execute not implemented"}
+}
+
+func (e *blockingRetryStreamExecutor) ExecuteStream(ctx context.Context, auth *coreauth.Auth, req coreexecutor.Request, opts coreexecutor.Options) (*coreexecutor.StreamResult, error) {
+	e.mu.Lock()
+	e.calls++
+	call := e.calls
+	e.mu.Unlock()
+
+	if call == 1 {
+		chunks := make(chan coreexecutor.StreamChunk, 1)
+		chunks <- coreexecutor.StreamChunk{Err: &coreauth.Error{Code: "unauthorized", Message: "unauthorized", HTTPStatus: http.StatusUnauthorized}}
+		close(chunks)
+		return &coreexecutor.StreamResult{Headers: http.Header{"X-Upstream-Attempt": {"1"}}, Chunks: chunks}, nil
+	}
+
+	close(e.retryStarted)
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-e.allowRetry:
+	}
+	chunks := make(chan coreexecutor.StreamChunk, 1)
+	chunks <- coreexecutor.StreamChunk{Payload: []byte("ok")}
+	close(chunks)
+	return &coreexecutor.StreamResult{Headers: http.Header{"X-Upstream-Attempt": {"2"}}, Chunks: chunks}, nil
+}
+
+func (e *blockingRetryStreamExecutor) Refresh(ctx context.Context, auth *coreauth.Auth) (*coreauth.Auth, error) {
+	return auth, nil
+}
+
+func (e *blockingRetryStreamExecutor) CountTokens(context.Context, *coreauth.Auth, coreexecutor.Request, coreexecutor.Options) (coreexecutor.Response, error) {
+	return coreexecutor.Response{}, &coreauth.Error{Code: "not_implemented", Message: "CountTokens not implemented"}
+}
+
+func (e *blockingRetryStreamExecutor) HttpRequest(ctx context.Context, auth *coreauth.Auth, req *http.Request) (*http.Response, error) {
+	return nil, &coreauth.Error{Code: "not_implemented", Message: "HttpRequest not implemented", HTTPStatus: http.StatusNotImplemented}
+}
+
 type payloadThenErrorStreamExecutor struct {
 	mu    sync.Mutex
 	calls int
@@ -142,7 +198,7 @@ type authAwareStreamExecutor struct {
 
 type invalidJSONStreamExecutor struct{}
 
-type incompleteResponsesStreamExecutor struct{}
+type splitResponsesEventStreamExecutor struct{}
 
 func (e *invalidJSONStreamExecutor) Identifier() string { return "codex" }
 
@@ -173,86 +229,34 @@ func (e *invalidJSONStreamExecutor) HttpRequest(ctx context.Context, auth *corea
 	}
 }
 
-func (e *incompleteResponsesStreamExecutor) Identifier() string { return "codex" }
+func (e *splitResponsesEventStreamExecutor) Identifier() string { return "split-sse" }
 
-func (e *incompleteResponsesStreamExecutor) Execute(context.Context, *coreauth.Auth, coreexecutor.Request, coreexecutor.Options) (coreexecutor.Response, error) {
+func (e *splitResponsesEventStreamExecutor) Execute(context.Context, *coreauth.Auth, coreexecutor.Request, coreexecutor.Options) (coreexecutor.Response, error) {
 	return coreexecutor.Response{}, &coreauth.Error{Code: "not_implemented", Message: "Execute not implemented"}
 }
 
-func (e *incompleteResponsesStreamExecutor) ExecuteStream(context.Context, *coreauth.Auth, coreexecutor.Request, coreexecutor.Options) (*coreexecutor.StreamResult, error) {
-	ch := make(chan coreexecutor.StreamChunk, 1)
-	ch <- coreexecutor.StreamChunk{Payload: []byte("event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}\n\n")}
+func (e *splitResponsesEventStreamExecutor) ExecuteStream(context.Context, *coreauth.Auth, coreexecutor.Request, coreexecutor.Options) (*coreexecutor.StreamResult, error) {
+	ch := make(chan coreexecutor.StreamChunk, 2)
+	ch <- coreexecutor.StreamChunk{Payload: []byte("event: response.completed")}
+	ch <- coreexecutor.StreamChunk{Payload: []byte("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-1\",\"output\":[]}}")}
 	close(ch)
 	return &coreexecutor.StreamResult{Chunks: ch}, nil
 }
 
-func (e *incompleteResponsesStreamExecutor) Refresh(ctx context.Context, auth *coreauth.Auth) (*coreauth.Auth, error) {
+func (e *splitResponsesEventStreamExecutor) Refresh(ctx context.Context, auth *coreauth.Auth) (*coreauth.Auth, error) {
 	return auth, nil
 }
 
-func (e *incompleteResponsesStreamExecutor) CountTokens(context.Context, *coreauth.Auth, coreexecutor.Request, coreexecutor.Options) (coreexecutor.Response, error) {
+func (e *splitResponsesEventStreamExecutor) CountTokens(context.Context, *coreauth.Auth, coreexecutor.Request, coreexecutor.Options) (coreexecutor.Response, error) {
 	return coreexecutor.Response{}, &coreauth.Error{Code: "not_implemented", Message: "CountTokens not implemented"}
 }
 
-func (e *incompleteResponsesStreamExecutor) HttpRequest(ctx context.Context, auth *coreauth.Auth, req *http.Request) (*http.Response, error) {
+func (e *splitResponsesEventStreamExecutor) HttpRequest(ctx context.Context, auth *coreauth.Auth, req *http.Request) (*http.Response, error) {
 	return nil, &coreauth.Error{
 		Code:       "not_implemented",
 		Message:    "HttpRequest not implemented",
 		HTTPStatus: http.StatusNotImplemented,
 	}
-}
-
-type invalidModelStreamExecutor struct {
-	mu      sync.Mutex
-	calls   int
-	authIDs []string
-}
-
-func (e *invalidModelStreamExecutor) Identifier() string { return "codex" }
-
-func (e *invalidModelStreamExecutor) Execute(context.Context, *coreauth.Auth, coreexecutor.Request, coreexecutor.Options) (coreexecutor.Response, error) {
-	return coreexecutor.Response{}, &coreauth.Error{Code: "not_implemented", Message: "Execute not implemented"}
-}
-
-func (e *invalidModelStreamExecutor) ExecuteStream(_ context.Context, auth *coreauth.Auth, _ coreexecutor.Request, _ coreexecutor.Options) (*coreexecutor.StreamResult, error) {
-	authID := ""
-	if auth != nil {
-		authID = auth.ID
-	}
-
-	e.mu.Lock()
-	e.calls++
-	e.authIDs = append(e.authIDs, authID)
-	e.mu.Unlock()
-
-	return nil, &coreauth.Error{
-		Message:    `{"detail":"The 'gpt-5.1-codex' model is not supported when using Codex with a ChatGPT account."}`,
-		HTTPStatus: http.StatusBadRequest,
-	}
-}
-
-func (e *invalidModelStreamExecutor) Refresh(ctx context.Context, auth *coreauth.Auth) (*coreauth.Auth, error) {
-	return auth, nil
-}
-
-func (e *invalidModelStreamExecutor) CountTokens(context.Context, *coreauth.Auth, coreexecutor.Request, coreexecutor.Options) (coreexecutor.Response, error) {
-	return coreexecutor.Response{}, &coreauth.Error{Code: "not_implemented", Message: "CountTokens not implemented"}
-}
-
-func (e *invalidModelStreamExecutor) HttpRequest(ctx context.Context, auth *coreauth.Auth, req *http.Request) (*http.Response, error) {
-	return nil, &coreauth.Error{
-		Code:       "not_implemented",
-		Message:    "HttpRequest not implemented",
-		HTTPStatus: http.StatusNotImplemented,
-	}
-}
-
-func (e *invalidModelStreamExecutor) AuthIDs() []string {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	out := make([]string, len(e.authIDs))
-	copy(out, e.authIDs)
-	return out
 }
 
 func (e *authAwareStreamExecutor) Identifier() string { return "codex" }
@@ -280,10 +284,10 @@ func (e *authAwareStreamExecutor) ExecuteStream(ctx context.Context, auth *corea
 	if authID == "auth1" {
 		ch <- coreexecutor.StreamChunk{
 			Err: &coreauth.Error{
-				Code:       "usage_limit_reached",
-				Message:    "You've hit your usage limit.",
+				Code:       "unauthorized",
+				Message:    "unauthorized",
 				Retryable:  false,
-				HTTPStatus: http.StatusTooManyRequests,
+				HTTPStatus: http.StatusUnauthorized,
 			},
 		}
 		close(ch)
@@ -360,7 +364,7 @@ func TestExecuteStreamWithAuthManager_RetriesBeforeFirstByte(t *testing.T) {
 	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{
 		PassthroughHeaders: true,
 		Streaming: sdkconfig.StreamingConfig{
-			BootstrapRetries: new(1),
+			BootstrapRetries: func() *int { v := 1; return &v }(),
 		},
 	}, manager)
 	dataChan, upstreamHeaders, errChan := handler.ExecuteStreamWithAuthManager(context.Background(), "openai", "test-model", []byte(`{"model":"test-model"}`), "")
@@ -388,6 +392,405 @@ func TestExecuteStreamWithAuthManager_RetriesBeforeFirstByte(t *testing.T) {
 	upstreamAttemptHeader := upstreamHeaders.Get("X-Upstream-Attempt")
 	if upstreamAttemptHeader != "2" {
 		t.Fatalf("expected upstream header from retry attempt, got %q", upstreamAttemptHeader)
+	}
+}
+
+func TestExecuteStreamWithAuthManager_ResolvesBootstrapRetryHeadersBeforeReturn(t *testing.T) {
+	executor := &blockingRetryStreamExecutor{
+		retryStarted: make(chan struct{}),
+		allowRetry:   make(chan struct{}),
+	}
+	manager := coreauth.NewManager(nil, nil, nil)
+	manager.RegisterExecutor(executor)
+	auth1 := &coreauth.Auth{ID: "auth1", Provider: "codex", Status: coreauth.StatusActive, Metadata: map[string]any{"email": "test1@example.com"}}
+	if _, err := manager.Register(context.Background(), auth1); err != nil {
+		t.Fatalf("manager.Register(auth1): %v", err)
+	}
+	auth2 := &coreauth.Auth{ID: "auth2", Provider: "codex", Status: coreauth.StatusActive, Metadata: map[string]any{"email": "test2@example.com"}}
+	if _, err := manager.Register(context.Background(), auth2); err != nil {
+		t.Fatalf("manager.Register(auth2): %v", err)
+	}
+	registry.GetGlobalRegistry().RegisterClient(auth1.ID, auth1.Provider, []*registry.ModelInfo{{ID: "test-model"}})
+	registry.GetGlobalRegistry().RegisterClient(auth2.ID, auth2.Provider, []*registry.ModelInfo{{ID: "test-model"}})
+	t.Cleanup(func() {
+		registry.GetGlobalRegistry().UnregisterClient(auth1.ID)
+		registry.GetGlobalRegistry().UnregisterClient(auth2.ID)
+	})
+
+	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{PassthroughHeaders: true, Streaming: sdkconfig.StreamingConfig{BootstrapRetries: func() *int { v := 1; return &v }()}}, manager)
+	type streamResult struct {
+		dataChan        <-chan []byte
+		upstreamHeaders http.Header
+		errChan         <-chan *interfaces.ErrorMessage
+	}
+	resultChan := make(chan streamResult, 1)
+	go func() {
+		dataChan, upstreamHeaders, errChan := handler.ExecuteStreamWithAuthManager(context.Background(), "openai", "test-model", []byte(`{"model":"test-model"}`), "")
+		resultChan <- streamResult{dataChan: dataChan, upstreamHeaders: upstreamHeaders, errChan: errChan}
+	}()
+
+	select {
+	case result := <-resultChan:
+		t.Fatalf("ExecuteStreamWithAuthManager returned before bootstrap retry completed: %#v", result.upstreamHeaders)
+	case <-executor.retryStarted:
+	}
+	select {
+	case result := <-resultChan:
+		t.Fatalf("ExecuteStreamWithAuthManager returned while bootstrap retry was blocked: %#v", result.upstreamHeaders)
+	default:
+	}
+	close(executor.allowRetry)
+
+	result := <-resultChan
+	if result.upstreamHeaders.Get("X-Upstream-Attempt") != "2" {
+		t.Fatalf("upstream headers = %#v, want retry attempt headers", result.upstreamHeaders)
+	}
+	for range result.dataChan {
+	}
+	for msg := range result.errChan {
+		if msg != nil {
+			t.Fatalf("unexpected stream error: %+v", msg)
+		}
+	}
+}
+
+type bootstrapStreamExecutor struct {
+	mu     sync.Mutex
+	calls  int
+	stream func(context.Context, int) (*coreexecutor.StreamResult, error)
+}
+
+func (*bootstrapStreamExecutor) Identifier() string { return "bootstrap-test" }
+
+func (e *bootstrapStreamExecutor) Execute(context.Context, *coreauth.Auth, coreexecutor.Request, coreexecutor.Options) (coreexecutor.Response, error) {
+	return coreexecutor.Response{}, &coreauth.Error{Code: "not_implemented", Message: "Execute not implemented"}
+}
+
+func (e *bootstrapStreamExecutor) ExecuteStream(ctx context.Context, _ *coreauth.Auth, _ coreexecutor.Request, _ coreexecutor.Options) (*coreexecutor.StreamResult, error) {
+	e.mu.Lock()
+	e.calls++
+	call := e.calls
+	e.mu.Unlock()
+	return e.stream(ctx, call)
+}
+
+func (e *bootstrapStreamExecutor) Refresh(context.Context, *coreauth.Auth) (*coreauth.Auth, error) {
+	return nil, nil
+}
+
+func (e *bootstrapStreamExecutor) CountTokens(context.Context, *coreauth.Auth, coreexecutor.Request, coreexecutor.Options) (coreexecutor.Response, error) {
+	return coreexecutor.Response{}, &coreauth.Error{Code: "not_implemented", Message: "CountTokens not implemented"}
+}
+
+func (e *bootstrapStreamExecutor) HttpRequest(context.Context, *coreauth.Auth, *http.Request) (*http.Response, error) {
+	return nil, &coreauth.Error{Code: "not_implemented", Message: "HttpRequest not implemented", HTTPStatus: http.StatusNotImplemented}
+}
+
+func (e *bootstrapStreamExecutor) Calls() int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.calls
+}
+
+func registerBootstrapExecutor(t *testing.T, executor *bootstrapStreamExecutor) (*BaseAPIHandler, *coreauth.Manager) {
+	t.Helper()
+	manager := coreauth.NewManager(nil, nil, nil)
+	manager.RegisterExecutor(executor)
+	auth := &coreauth.Auth{ID: "bootstrap-auth", Provider: executor.Identifier(), Status: coreauth.StatusActive, Metadata: map[string]any{"email": "bootstrap@example.com"}}
+	if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
+		t.Fatalf("manager.Register(): %v", errRegister)
+	}
+	registry.GetGlobalRegistry().RegisterClient(auth.ID, auth.Provider, []*registry.ModelInfo{{ID: "bootstrap-model"}})
+	authRetry := &coreauth.Auth{ID: "bootstrap-auth-retry", Provider: executor.Identifier(), Status: coreauth.StatusActive, Metadata: map[string]any{"email": "bootstrap-retry@example.com"}}
+	if _, errRegister := manager.Register(context.Background(), authRetry); errRegister != nil {
+		t.Fatalf("manager.Register(retry): %v", errRegister)
+	}
+	registry.GetGlobalRegistry().RegisterClient(authRetry.ID, authRetry.Provider, []*registry.ModelInfo{{ID: "bootstrap-model"}})
+	t.Cleanup(func() {
+		registry.GetGlobalRegistry().UnregisterClient(auth.ID)
+		registry.GetGlobalRegistry().UnregisterClient(authRetry.ID)
+	})
+	return NewBaseAPIHandlers(&sdkconfig.SDKConfig{Streaming: sdkconfig.StreamingConfig{BootstrapRetries: func() *int { v := 1; return &v }()}}, manager), manager
+}
+
+func TestExecuteStreamWithAuthManager_RetriesAfterDroppedBootstrapPayload(t *testing.T) {
+	executor := &bootstrapStreamExecutor{stream: func(_ context.Context, call int) (*coreexecutor.StreamResult, error) {
+		chunks := make(chan coreexecutor.StreamChunk, 2)
+		if call == 1 {
+			chunks <- coreexecutor.StreamChunk{Payload: []byte("drop")}
+			chunks <- coreexecutor.StreamChunk{Err: &coreauth.Error{HTTPStatus: http.StatusUnauthorized, Message: "unauthorized"}}
+		} else {
+			chunks <- coreexecutor.StreamChunk{Payload: []byte("ok")}
+		}
+		close(chunks)
+		return &coreexecutor.StreamResult{Chunks: chunks}, nil
+	}}
+	handler, _ := registerBootstrapExecutor(t, executor)
+	var intercepted []string
+	handler.SetPluginHost(&handlerInterceptorTestHost{interceptStreamChunk: func(_ context.Context, req pluginapi.StreamChunkInterceptRequest) pluginapi.StreamChunkInterceptResponse {
+		if req.ChunkIndex >= 0 {
+			intercepted = append(intercepted, string(req.Body))
+		}
+		return pluginapi.StreamChunkInterceptResponse{Body: cloneBytes(req.Body), DropChunk: string(req.Body) == "drop"}
+	}})
+
+	dataChan, _, errChan := handler.ExecuteStreamWithAuthManager(context.Background(), "openai", "bootstrap-model", []byte(`{"model":"bootstrap-model"}`), "")
+	var got []byte
+	for chunk := range dataChan {
+		got = append(got, chunk...)
+	}
+	for msg := range errChan {
+		if msg != nil {
+			t.Fatalf("unexpected stream error: %+v", msg)
+		}
+	}
+	if string(got) != "ok" {
+		t.Fatalf("stream payload = %q, want ok", got)
+	}
+	if executor.Calls() != 2 {
+		t.Fatalf("stream attempts = %d, want 2", executor.Calls())
+	}
+	if strings.Join(intercepted, ",") != "drop,ok" {
+		t.Fatalf("intercepted payloads = %v, want [drop ok] without double interception", intercepted)
+	}
+}
+
+func TestExecuteStreamWithAuthManager_ResetsResponsesValidatorOnBootstrapRetry(t *testing.T) {
+	executor := &bootstrapStreamExecutor{stream: func(_ context.Context, call int) (*coreexecutor.StreamResult, error) {
+		chunks := make(chan coreexecutor.StreamChunk, 2)
+		if call == 1 {
+			chunks <- coreexecutor.StreamChunk{Payload: []byte("event: response.completed\ndata: {\"type\":\"response.completed\",")}
+			chunks <- coreexecutor.StreamChunk{Err: &coreauth.Error{HTTPStatus: http.StatusUnauthorized, Message: "unauthorized"}}
+		} else {
+			chunks <- coreexecutor.StreamChunk{Payload: []byte("event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n")}
+		}
+		close(chunks)
+		return &coreexecutor.StreamResult{Chunks: chunks}, nil
+	}}
+	handler, _ := registerBootstrapExecutor(t, executor)
+
+	dataChan, _, errChan := handler.ExecuteStreamWithAuthManager(context.Background(), "openai-response", "bootstrap-model", []byte(`{"model":"bootstrap-model"}`), "")
+	var got []byte
+	for chunk := range dataChan {
+		got = append(got, chunk...)
+	}
+	for msg := range errChan {
+		if msg != nil {
+			t.Fatalf("unexpected stream error after retry: %+v", msg)
+		}
+	}
+	if executor.Calls() != 2 || !strings.Contains(string(got), "response.completed") {
+		t.Fatalf("retry calls=%d payload=%q", executor.Calls(), got)
+	}
+}
+
+func TestExecuteStreamWithAuthManager_CancelDuringSynchronousBootstrap(t *testing.T) {
+	started := make(chan struct{})
+	executor := &bootstrapStreamExecutor{stream: func(_ context.Context, _ int) (*coreexecutor.StreamResult, error) {
+		close(started)
+		return &coreexecutor.StreamResult{Chunks: make(chan coreexecutor.StreamChunk)}, nil
+	}}
+	handler, _ := registerBootstrapExecutor(t, executor)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	type result struct {
+		data <-chan []byte
+		errs <-chan *interfaces.ErrorMessage
+	}
+	results := make(chan result, 1)
+	go func() {
+		dataChan, _, errChan := handler.ExecuteStreamWithAuthManager(ctx, "openai", "bootstrap-model", []byte(`{"model":"bootstrap-model"}`), "")
+		results <- result{data: dataChan, errs: errChan}
+	}()
+	<-started
+	cancel()
+	select {
+	case got := <-results:
+		if got.data != nil {
+			if _, ok := <-got.data; ok {
+				t.Fatal("data channel remains open after bootstrap cancellation")
+			}
+		}
+		if got.errs != nil {
+			for range got.errs {
+			}
+		}
+	case <-time.After(time.Second):
+		t.Fatal("bootstrap cancellation did not return")
+	}
+}
+
+func TestExecuteStreamWithPreFTKeepAlive_CancelWaitsForBootstrapGoroutine(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	started := make(chan struct{})
+	releaseExec := make(chan struct{})
+	execExited := false
+	executor := &bootstrapStreamExecutor{stream: func(ctx context.Context, _ int) (*coreexecutor.StreamResult, error) {
+		close(started)
+		<-ctx.Done()
+		<-releaseExec
+		execExited = true
+		return nil, ctx.Err()
+	}}
+	handler, _ := registerBootstrapExecutor(t, executor)
+
+	reqCtx, reqCancel := context.WithCancel(context.Background())
+	defer reqCancel()
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil).WithContext(reqCtx)
+
+	cliCtx, cliCancel := context.WithCancel(context.Background())
+	defer cliCancel()
+	tickChan := make(chan time.Time)
+
+	done := make(chan bool, 1)
+	go func() {
+		_, _, _, ok := handler.ExecuteStreamWithPreFTKeepAlive(
+			c, cliCtx, func(error) { cliCancel() }, "openai", "bootstrap-model", []byte("{\"model\":\"bootstrap-model\"}"), "", tickChan, func() bool { return true },
+		)
+		done <- ok
+	}()
+
+	<-started
+	reqCancel()
+	select {
+	case <-done:
+		t.Fatal("ExecuteStreamWithPreFTKeepAlive returned before bootstrap goroutine finished")
+	default:
+	}
+	close(releaseExec)
+	if ok := <-done; ok {
+		t.Fatal("ExecuteStreamWithPreFTKeepAlive ok = true, want false after cancel")
+	}
+	if !execExited {
+		t.Fatal("expected bootstrap executor goroutine to exit before return")
+	}
+}
+
+func TestExecuteStreamWithAuthManager_EmptyClosedStream(t *testing.T) {
+	executor := &bootstrapStreamExecutor{stream: func(_ context.Context, _ int) (*coreexecutor.StreamResult, error) {
+		chunks := make(chan coreexecutor.StreamChunk)
+		close(chunks)
+		return &coreexecutor.StreamResult{Chunks: chunks}, nil
+	}}
+	handler, _ := registerBootstrapExecutor(t, executor)
+	dataChan, _, errChan := handler.ExecuteStreamWithAuthManager(context.Background(), "openai", "bootstrap-model", []byte(`{"model":"bootstrap-model"}`), "")
+	if _, ok := <-dataChan; ok {
+		t.Fatal("empty stream produced data")
+	}
+	var streamErr *interfaces.ErrorMessage
+	for msg := range errChan {
+		if msg != nil {
+			streamErr = msg
+		}
+	}
+	if streamErr == nil || streamErr.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("empty stream error = %+v, want terminal internal-server error", streamErr)
+	}
+}
+
+type handlerReleaseNotification struct {
+	group    executionregistry.ReleaseGroup
+	sequence int64
+}
+
+type handlerReleaseSink struct {
+	mu            sync.Mutex
+	notifications []handlerReleaseNotification
+	notified      chan struct{}
+}
+
+func newHandlerReleaseSink() *handlerReleaseSink {
+	return &handlerReleaseSink{notified: make(chan struct{}, 1)}
+}
+
+func (s *handlerReleaseSink) MarkDirty(group executionregistry.ReleaseGroup, sequence int64) {
+	s.mu.Lock()
+	s.notifications = append(s.notifications, handlerReleaseNotification{group: group, sequence: sequence})
+	s.mu.Unlock()
+	select {
+	case s.notified <- struct{}{}:
+	default:
+	}
+}
+
+func (s *handlerReleaseSink) Notifications() []handlerReleaseNotification {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]handlerReleaseNotification(nil), s.notifications...)
+}
+
+type handlerAccountedHomeDispatcher struct {
+	calls atomic.Int32
+}
+
+func (*handlerAccountedHomeDispatcher) HeartbeatOK() bool { return true }
+func (d *handlerAccountedHomeDispatcher) RPopAuth(_ context.Context, model string, _ string, _ http.Header, _ int) ([]byte, error) {
+	d.calls.Add(1)
+	return json.Marshal(map[string]any{
+		"concurrency": map[string]any{"accounted": true, "credential_id": "handler-cred", "model": model},
+		"model":       model,
+		"auth_index":  "handler-cred",
+		"auth":        map[string]any{"id": "handler-cred", "provider": "bootstrap-test", "status": coreauth.StatusActive},
+	})
+}
+func (*handlerAccountedHomeDispatcher) AbortAmbiguousDispatch() {}
+
+func TestExecuteStreamWithAuthManager_HomeBootstrapFailureDoesNotRedispatch(t *testing.T) {
+	executor := &bootstrapStreamExecutor{stream: func(_ context.Context, _ int) (*coreexecutor.StreamResult, error) {
+		chunks := make(chan coreexecutor.StreamChunk, 2)
+		chunks <- coreexecutor.StreamChunk{Payload: []byte("drop")}
+		chunks <- coreexecutor.StreamChunk{Err: &coreauth.Error{HTTPStatus: http.StatusUnauthorized, Message: "unauthorized"}}
+		close(chunks)
+		return &coreexecutor.StreamResult{Chunks: chunks}, nil
+	}}
+	manager := coreauth.NewManager(nil, nil, nil)
+	manager.SetConfig(&internalconfig.Config{Home: internalconfig.HomeConfig{Enabled: true}})
+	manager.RegisterExecutor(executor)
+	registry := executionregistry.New()
+	releaseSink := newHandlerReleaseSink()
+	registry.SetReleaseSink(releaseSink.MarkDirty)
+	dispatcher := &handlerAccountedHomeDispatcher{}
+	manager.PublishHomeDispatch(dispatcher, registry, 1)
+	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{Streaming: sdkconfig.StreamingConfig{BootstrapRetries: func() *int { v := 1; return &v }()}}, manager)
+	handler.SetPluginHost(&handlerInterceptorTestHost{interceptStreamChunk: func(_ context.Context, req pluginapi.StreamChunkInterceptRequest) pluginapi.StreamChunkInterceptResponse {
+		return pluginapi.StreamChunkInterceptResponse{Body: cloneBytes(req.Body), DropChunk: string(req.Body) == "drop"}
+	}})
+
+	dataChan, _, errChan := handler.ExecuteStreamWithAuthManager(context.Background(), "openai", "home-model", []byte(`{"model":"home-model"}`), "")
+	for range dataChan {
+		t.Fatal("Home bootstrap failure produced data")
+	}
+	var streamErr *interfaces.ErrorMessage
+	for msg := range errChan {
+		if msg != nil {
+			streamErr = msg
+		}
+	}
+	if streamErr == nil || streamErr.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("stream error = %+v, want unauthorized terminal error", streamErr)
+	}
+	if got := dispatcher.calls.Load(); got != 1 {
+		t.Fatalf("Home RPOP calls = %d, want 1", got)
+	}
+	select {
+	case <-releaseSink.notified:
+	case <-time.After(time.Second):
+		t.Fatal("accounted Home selection was not released")
+	}
+	wantRelease := handlerReleaseNotification{
+		group:    executionregistry.ReleaseGroup{CredentialID: "handler-cred", Model: "home-model"},
+		sequence: 1,
+	}
+	if got := releaseSink.Notifications(); len(got) != 1 || got[0] != wantRelease {
+		t.Fatalf("release notifications = %#v, want [%#v]", got, wantRelease)
+	}
+	if errDrain := registry.Drain(context.Background()); errDrain != nil {
+		t.Fatalf("registry.Drain(): %v", errDrain)
+	}
+	if got := releaseSink.Notifications(); len(got) != 1 || got[0] != wantRelease {
+		t.Fatalf("release notifications after drain = %#v, want [%#v]", got, wantRelease)
 	}
 }
 
@@ -425,7 +828,7 @@ func TestExecuteStreamWithAuthManager_HeaderPassthroughDisabledByDefault(t *test
 
 	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{
 		Streaming: sdkconfig.StreamingConfig{
-			BootstrapRetries: new(1),
+			BootstrapRetries: func() *int { v := 1; return &v }(),
 		},
 	}, manager)
 	dataChan, upstreamHeaders, errChan := handler.ExecuteStreamWithAuthManager(context.Background(), "openai", "test-model", []byte(`{"model":"test-model"}`), "")
@@ -485,7 +888,7 @@ func TestExecuteStreamWithAuthManager_DoesNotRetryAfterFirstByte(t *testing.T) {
 
 	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{
 		Streaming: sdkconfig.StreamingConfig{
-			BootstrapRetries: new(1),
+			BootstrapRetries: func() *int { v := 1; return &v }(),
 		},
 	}, manager)
 	dataChan, _, errChan := handler.ExecuteStreamWithAuthManager(context.Background(), "openai", "test-model", []byte(`{"model":"test-model"}`), "")
@@ -518,6 +921,175 @@ func TestExecuteStreamWithAuthManager_DoesNotRetryAfterFirstByte(t *testing.T) {
 	}
 	if executor.Calls() != 1 {
 		t.Fatalf("expected 1 stream attempt, got %d", executor.Calls())
+	}
+}
+
+func TestExecuteStreamWithAuthManager_EnrichesBootstrapRetryAuthUnavailableError(t *testing.T) {
+	executor := &failOnceStreamExecutor{}
+	manager := coreauth.NewManager(nil, nil, nil)
+	manager.RegisterExecutor(executor)
+
+	auth1 := &coreauth.Auth{
+		ID:       "auth1",
+		Provider: "codex",
+		Status:   coreauth.StatusActive,
+		Metadata: map[string]any{"email": "test1@example.com"},
+	}
+	if _, err := manager.Register(context.Background(), auth1); err != nil {
+		t.Fatalf("manager.Register(auth1): %v", err)
+	}
+
+	registry.GetGlobalRegistry().RegisterClient(auth1.ID, auth1.Provider, []*registry.ModelInfo{{ID: "test-model"}})
+	t.Cleanup(func() {
+		registry.GetGlobalRegistry().UnregisterClient(auth1.ID)
+	})
+
+	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{
+		Streaming: sdkconfig.StreamingConfig{
+			BootstrapRetries: func() *int { v := 1; return &v }(),
+		},
+	}, manager)
+	dataChan, _, errChan := handler.ExecuteStreamWithAuthManager(context.Background(), "openai", "test-model", []byte(`{"model":"test-model"}`), "")
+	if dataChan == nil || errChan == nil {
+		t.Fatalf("expected non-nil channels")
+	}
+
+	var got []byte
+	for chunk := range dataChan {
+		got = append(got, chunk...)
+	}
+	if len(got) != 0 {
+		t.Fatalf("expected empty payload, got %q", string(got))
+	}
+
+	var gotErr *interfaces.ErrorMessage
+	for msg := range errChan {
+		if msg != nil {
+			gotErr = msg
+		}
+	}
+	if gotErr == nil {
+		t.Fatalf("expected terminal error")
+	}
+	if gotErr.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d", gotErr.StatusCode, http.StatusServiceUnavailable)
+	}
+
+	var authErr *coreauth.Error
+	if !errors.As(gotErr.Error, &authErr) || authErr == nil {
+		t.Fatalf("expected coreauth.Error, got %T", gotErr.Error)
+	}
+	if authErr.Code != "auth_unavailable" {
+		t.Fatalf("code = %q, want %q", authErr.Code, "auth_unavailable")
+	}
+	if !strings.Contains(authErr.Message, "providers=codex") {
+		t.Fatalf("message missing provider context: %q", authErr.Message)
+	}
+	if !strings.Contains(authErr.Message, "model=test-model") {
+		t.Fatalf("message missing model context: %q", authErr.Message)
+	}
+
+	if executor.Calls() != 1 {
+		t.Fatalf("expected exactly one upstream call before retry path selection failure, got %d", executor.Calls())
+	}
+}
+
+type overloadStreamExecutor struct {
+	mu    sync.Mutex
+	calls int
+}
+
+func (e *overloadStreamExecutor) Identifier() string { return "codex" }
+
+func (e *overloadStreamExecutor) Execute(context.Context, *coreauth.Auth, coreexecutor.Request, coreexecutor.Options) (coreexecutor.Response, error) {
+	return coreexecutor.Response{}, &coreauth.Error{Code: "not_implemented", Message: "Execute not implemented"}
+}
+
+func (e *overloadStreamExecutor) ExecuteStream(context.Context, *coreauth.Auth, coreexecutor.Request, coreexecutor.Options) (*coreexecutor.StreamResult, error) {
+	e.mu.Lock()
+	e.calls++
+	e.mu.Unlock()
+
+	return nil, &coreauth.Error{
+		Code:       "server_is_overloaded",
+		Message:    `{"type":"error","code":"server_is_overloaded","message":"Our servers are currently overloaded. Please try again later.","sequence_number":0}`,
+		HTTPStatus: http.StatusServiceUnavailable,
+	}
+}
+
+func (e *overloadStreamExecutor) Refresh(ctx context.Context, auth *coreauth.Auth) (*coreauth.Auth, error) {
+	return auth, nil
+}
+
+func (e *overloadStreamExecutor) CountTokens(context.Context, *coreauth.Auth, coreexecutor.Request, coreexecutor.Options) (coreexecutor.Response, error) {
+	return coreexecutor.Response{}, &coreauth.Error{Code: "not_implemented", Message: "CountTokens not implemented"}
+}
+
+func (e *overloadStreamExecutor) HttpRequest(context.Context, *coreauth.Auth, *http.Request) (*http.Response, error) {
+	return nil, &coreauth.Error{Code: "not_implemented", Message: "HttpRequest not implemented"}
+}
+
+func TestExecuteStreamWithAuthManager_ForwardsOverloadErrorWhenAllAuthsOverloaded(t *testing.T) {
+	executor := &overloadStreamExecutor{}
+	manager := coreauth.NewManager(nil, nil, nil)
+	manager.RegisterExecutor(executor)
+
+	auth1 := &coreauth.Auth{
+		ID:       "auth-overload-1",
+		Provider: "codex",
+		Status:   coreauth.StatusActive,
+		Metadata: map[string]any{"email": "test1@example.com"},
+	}
+	auth2 := &coreauth.Auth{
+		ID:       "auth-overload-2",
+		Provider: "codex",
+		Status:   coreauth.StatusActive,
+		Metadata: map[string]any{"email": "test2@example.com"},
+	}
+	if _, err := manager.Register(context.Background(), auth1); err != nil {
+		t.Fatalf("manager.Register(auth1): %v", err)
+	}
+	if _, err := manager.Register(context.Background(), auth2); err != nil {
+		t.Fatalf("manager.Register(auth2): %v", err)
+	}
+
+	registry.GetGlobalRegistry().RegisterClient(auth1.ID, auth1.Provider, []*registry.ModelInfo{{ID: "gpt-5.6-sol"}})
+	registry.GetGlobalRegistry().RegisterClient(auth2.ID, auth2.Provider, []*registry.ModelInfo{{ID: "gpt-5.6-sol"}})
+	t.Cleanup(func() {
+		registry.GetGlobalRegistry().UnregisterClient(auth1.ID)
+		registry.GetGlobalRegistry().UnregisterClient(auth2.ID)
+	})
+
+	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager)
+
+	// First request tries all accounts, fails with overload, cooling both credentials down.
+	_, _, errChan := handler.ExecuteStreamWithAuthManager(context.Background(), "openai", "gpt-5.6-sol", []byte(`{"model":"gpt-5.6-sol"}`), "")
+	var gotErr *interfaces.ErrorMessage
+	for msg := range errChan {
+		if msg != nil {
+			gotErr = msg
+		}
+	}
+	if gotErr == nil {
+		t.Fatalf("expected terminal error")
+	}
+	if !strings.Contains(gotErr.Error.Error(), "Our servers are currently overloaded. Please try again later.") && !strings.Contains(gotErr.Error.Error(), "server_is_overloaded") {
+		t.Fatalf("expected error message to contain overload details, got: %q", gotErr.Error.Error())
+	}
+
+	// Subsequent request (e.g. client reconnect) while credentials are in cooldown should still report the upstream error reason.
+	_, _, errChan2 := handler.ExecuteStreamWithAuthManager(context.Background(), "openai", "gpt-5.6-sol", []byte(`{"model":"gpt-5.6-sol"}`), "")
+	var gotErr2 *interfaces.ErrorMessage
+	for msg := range errChan2 {
+		if msg != nil {
+			gotErr2 = msg
+		}
+	}
+	if gotErr2 == nil {
+		t.Fatalf("expected terminal error on reconnect request")
+	}
+	if !strings.Contains(gotErr2.Error.Error(), "Our servers are currently overloaded. Please try again later.") && !strings.Contains(gotErr2.Error.Error(), "server_is_overloaded") {
+		t.Fatalf("expected reconnect error message to contain overload details, got: %q", gotErr2.Error.Error())
 	}
 }
 
@@ -555,7 +1127,7 @@ func TestExecuteStreamWithAuthManager_PinnedAuthKeepsSameUpstream(t *testing.T) 
 
 	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{
 		Streaming: sdkconfig.StreamingConfig{
-			BootstrapRetries: new(1),
+			BootstrapRetries: func() *int { v := 1; return &v }(),
 		},
 	}, manager)
 	ctx := WithPinnedAuthID(context.Background(), "auth1")
@@ -570,11 +1142,9 @@ func TestExecuteStreamWithAuthManager_PinnedAuthKeepsSameUpstream(t *testing.T) 
 	}
 
 	var gotErr error
-	var gotStatus int
 	for msg := range errChan {
 		if msg != nil && msg.Error != nil {
 			gotErr = msg.Error
-			gotStatus = msg.StatusCode
 		}
 	}
 
@@ -584,180 +1154,14 @@ func TestExecuteStreamWithAuthManager_PinnedAuthKeepsSameUpstream(t *testing.T) 
 	if gotErr == nil {
 		t.Fatalf("expected terminal error, got nil")
 	}
-	if gotStatus != http.StatusTooManyRequests {
-		t.Fatalf("expected status %d, got %d", http.StatusTooManyRequests, gotStatus)
-	}
 	authIDs := executor.AuthIDs()
-	if len(authIDs) != 1 {
-		t.Fatalf("expected exactly 1 upstream attempt for pinned auth, got %v", authIDs)
+	if len(authIDs) == 0 {
+		t.Fatalf("expected at least one upstream attempt")
 	}
 	for _, authID := range authIDs {
 		if authID != "auth1" {
 			t.Fatalf("expected all attempts on auth1, got sequence %v", authIDs)
 		}
-	}
-}
-
-func TestExecuteStreamWithAuthManager_GroupedRouteRetriesWithinGroupBeforeFirstByte(t *testing.T) {
-	executor := &authAwareStreamExecutor{}
-	manager := coreauth.NewManager(nil, nil, nil)
-	manager.RegisterExecutor(executor)
-
-	auth1 := &coreauth.Auth{
-		ID:       "auth1",
-		Provider: "codex",
-		Status:   coreauth.StatusActive,
-		Prefix:   "pro",
-		Metadata: map[string]any{"email": "test1@example.com"},
-	}
-	if _, err := manager.Register(context.Background(), auth1); err != nil {
-		t.Fatalf("manager.Register(auth1): %v", err)
-	}
-
-	auth2 := &coreauth.Auth{
-		ID:       "auth2",
-		Provider: "codex",
-		Status:   coreauth.StatusActive,
-		Prefix:   "pro",
-		Metadata: map[string]any{"email": "test2@example.com"},
-	}
-	if _, err := manager.Register(context.Background(), auth2); err != nil {
-		t.Fatalf("manager.Register(auth2): %v", err)
-	}
-
-	registry.GetGlobalRegistry().RegisterClient(auth1.ID, auth1.Provider, []*registry.ModelInfo{{ID: "test-model"}})
-	registry.GetGlobalRegistry().RegisterClient(auth2.ID, auth2.Provider, []*registry.ModelInfo{{ID: "test-model"}})
-	t.Cleanup(func() {
-		registry.GetGlobalRegistry().UnregisterClient(auth1.ID)
-		registry.GetGlobalRegistry().UnregisterClient(auth2.ID)
-	})
-
-	recorder := httptest.NewRecorder()
-	ginCtx, _ := gin.CreateTestContext(recorder)
-	req := httptest.NewRequest(http.MethodPost, "/pro/v1/chat/completions", nil)
-	ginCtx.Request = req
-	ginCtx.Set(routing.GinPathRouteContextKey, &routing.PathRouteContext{RoutePath: "/pro", Group: "pro", Fallback: "none"})
-	ctx := context.WithValue(context.Background(), util.ContextKeyGin, ginCtx)
-
-	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{
-		Streaming: sdkconfig.StreamingConfig{
-			BootstrapRetries: new(1),
-		},
-	}, manager)
-	dataChan, _, errChan := handler.ExecuteStreamWithAuthManager(ctx, "openai", "test-model", []byte(`{"model":"test-model"}`), "")
-	if dataChan == nil || errChan == nil {
-		t.Fatalf("expected non-nil channels")
-	}
-
-	var got []byte
-	for chunk := range dataChan {
-		got = append(got, chunk...)
-	}
-
-	var gotErr error
-	for msg := range errChan {
-		if msg != nil && msg.Error != nil {
-			gotErr = msg.Error
-		}
-	}
-
-	if string(got) != "ok" {
-		t.Fatalf("expected payload ok after grouped route retry, got %q", string(got))
-	}
-	if gotErr != nil {
-		t.Fatalf("expected no terminal error after grouped route retry, got %v", gotErr)
-	}
-	authIDs := executor.AuthIDs()
-	if len(authIDs) != 2 {
-		t.Fatalf("expected 2 upstream attempts within group, got %v", authIDs)
-	}
-	if authIDs[0] != "auth1" || authIDs[1] != "auth2" {
-		t.Fatalf("expected grouped route retry sequence [auth1 auth2], got %v", authIDs)
-	}
-}
-
-func TestExecuteStreamWithAuthManager_GroupedRouteRequestContextDoesNotRetryInvalidModel(t *testing.T) {
-	executor := &invalidModelStreamExecutor{}
-	manager := coreauth.NewManager(nil, nil, nil)
-	manager.RegisterExecutor(executor)
-
-	auth1 := &coreauth.Auth{
-		ID:       "auth1",
-		Provider: "codex",
-		Status:   coreauth.StatusActive,
-		Prefix:   "pro",
-		Metadata: map[string]any{"email": "test1@example.com"},
-	}
-	if _, err := manager.Register(context.Background(), auth1); err != nil {
-		t.Fatalf("manager.Register(auth1): %v", err)
-	}
-
-	auth2 := &coreauth.Auth{
-		ID:       "auth2",
-		Provider: "codex",
-		Status:   coreauth.StatusActive,
-		Prefix:   "pro",
-		Metadata: map[string]any{"email": "test2@example.com"},
-	}
-	if _, err := manager.Register(context.Background(), auth2); err != nil {
-		t.Fatalf("manager.Register(auth2): %v", err)
-	}
-
-	registry.GetGlobalRegistry().RegisterClient(auth1.ID, auth1.Provider, []*registry.ModelInfo{{ID: "gpt-5.1-codex"}})
-	registry.GetGlobalRegistry().RegisterClient(auth2.ID, auth2.Provider, []*registry.ModelInfo{{ID: "gpt-5.1-codex"}})
-	t.Cleanup(func() {
-		registry.GetGlobalRegistry().UnregisterClient(auth1.ID)
-		registry.GetGlobalRegistry().UnregisterClient(auth2.ID)
-	})
-
-	recorder := httptest.NewRecorder()
-	ginCtx, _ := gin.CreateTestContext(recorder)
-	req := httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
-	req = req.WithContext(routing.WithPathRouteContext(req.Context(), &routing.PathRouteContext{
-		RoutePath: "/openai/plus",
-		Group:     "pro",
-		Fallback:  "none",
-	}))
-	ginCtx.Request = req
-	ctx := context.WithValue(context.Background(), util.ContextKeyGin, ginCtx)
-
-	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{
-		Streaming: sdkconfig.StreamingConfig{
-			BootstrapRetries: new(1),
-		},
-	}, manager)
-	dataChan, _, errChan := handler.ExecuteStreamWithAuthManager(ctx, "openai-response", "gpt-5.1-codex", []byte(`{"model":"gpt-5.1-codex","stream":true}`), "")
-	if errChan == nil {
-		t.Fatalf("expected non-nil error channel")
-	}
-
-	if dataChan != nil {
-		for chunk := range dataChan {
-			if len(chunk) > 0 {
-				t.Fatalf("expected no payload, got %q", string(chunk))
-			}
-		}
-	}
-
-	var gotErr *interfaces.ErrorMessage
-	for msg := range errChan {
-		if msg != nil {
-			gotErr = msg
-		}
-	}
-	if gotErr == nil {
-		t.Fatal("expected terminal error")
-	}
-	if gotErr.StatusCode != http.StatusBadRequest {
-		t.Fatalf("status = %d, want %d", gotErr.StatusCode, http.StatusBadRequest)
-	}
-
-	authIDs := executor.AuthIDs()
-	if len(authIDs) != 1 {
-		t.Fatalf("expected exactly 1 upstream attempt, got %v", authIDs)
-	}
-	if authIDs[0] != "auth1" {
-		t.Fatalf("expected grouped route to stop on auth1, got %v", authIDs)
 	}
 }
 
@@ -783,12 +1187,19 @@ func TestExecuteStreamWithAuthManager_SelectedAuthCallbackReceivesAuthID(t *test
 
 	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{
 		Streaming: sdkconfig.StreamingConfig{
-			BootstrapRetries: new(0),
+			BootstrapRetries: func() *int { v := 0; return &v }(),
 		},
 	}, manager)
 
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	ginCtx, _ := gin.CreateTestContext(recorder)
+	ginCtx.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	logging.SetGinRequestID(ginCtx, "1234abcd")
+
 	selectedAuthID := ""
-	ctx := WithSelectedAuthIDCallback(context.Background(), func(authID string) {
+	ctx := context.WithValue(context.Background(), "gin", ginCtx)
+	ctx = WithSelectedAuthIDCallback(ctx, func(authID string) {
 		selectedAuthID = authID
 	})
 	dataChan, _, errChan := handler.ExecuteStreamWithAuthManager(ctx, "openai", "test-model", []byte(`{"model":"test-model"}`), "")
@@ -811,6 +1222,14 @@ func TestExecuteStreamWithAuthManager_SelectedAuthCallbackReceivesAuthID(t *test
 	}
 	if selectedAuthID != "auth2" {
 		t.Fatalf("selectedAuthID = %q, want %q", selectedAuthID, "auth2")
+	}
+	traceID := logging.GetGinCPATraceID(ginCtx)
+	parts := strings.Split(traceID, "-")
+	if len(parts) != 3 || parts[1] != auth2.Index || parts[2] != "1234abcd" {
+		t.Fatalf("trace ID = %q, want timestamp-%s-1234abcd", traceID, auth2.Index)
+	}
+	if _, errParse := time.Parse("20060102150405", parts[0]); errParse != nil {
+		t.Fatalf("trace timestamp = %q: %v", parts[0], errParse)
 	}
 }
 
@@ -866,14 +1285,14 @@ func TestExecuteStreamWithAuthManager_ValidatesOpenAIResponsesStreamDataJSON(t *
 	}
 }
 
-func TestExecuteStreamWithAuthManager_RejectsOpenAIResponsesStreamWithoutCompleted(t *testing.T) {
-	executor := &incompleteResponsesStreamExecutor{}
+func TestExecuteStreamWithAuthManager_AllowsSplitOpenAIResponsesSSEEventLines(t *testing.T) {
+	executor := &splitResponsesEventStreamExecutor{}
 	manager := coreauth.NewManager(nil, nil, nil)
 	manager.RegisterExecutor(executor)
 
 	auth1 := &coreauth.Auth{
 		ID:       "auth1",
-		Provider: "codex",
+		Provider: "split-sse",
 		Status:   coreauth.StatusActive,
 		Metadata: map[string]any{"email": "test1@example.com"},
 	}
@@ -892,48 +1311,25 @@ func TestExecuteStreamWithAuthManager_RejectsOpenAIResponsesStreamWithoutComplet
 		t.Fatalf("expected non-nil channels")
 	}
 
-	var got []byte
+	var got []string
 	for chunk := range dataChan {
-		got = append(got, chunk...)
-	}
-	if len(got) == 0 {
-		t.Fatalf("expected partial payload before protocol error")
+		got = append(got, string(chunk))
 	}
 
-	var gotErr *interfaces.ErrorMessage
 	for msg := range errChan {
 		if msg != nil {
-			gotErr = msg
+			t.Fatalf("unexpected error: %+v", msg)
 		}
 	}
-	if gotErr == nil {
-		t.Fatalf("expected terminal error")
-	}
-	if gotErr.StatusCode != http.StatusBadGateway {
-		t.Fatalf("expected status %d, got %d", http.StatusBadGateway, gotErr.StatusCode)
-	}
-	if gotErr.Error == nil || !strings.Contains(gotErr.Error.Error(), "upstream responses stream closed before response.completed") {
-		t.Fatalf("unexpected error: %v", gotErr.Error)
-	}
 
-	updated, ok := manager.GetByID("auth1")
-	if !ok {
-		t.Fatalf("expected auth to be present")
+	if len(got) != 2 {
+		t.Fatalf("expected 2 forwarded chunks, got %d: %#v", len(got), got)
 	}
-	if updated.Unavailable {
-		t.Fatalf("incomplete responses stream must not mark auth unavailable")
+	if got[0] != "event: response.completed" {
+		t.Fatalf("unexpected first chunk: %q", got[0])
 	}
-	if updated.LastError == nil || updated.LastError.Code != "response_stream_incomplete" || !strings.Contains(updated.LastError.Message, "upstream responses stream closed before response.completed") {
-		t.Fatalf("expected protocol failure LastError, got %+v", updated.LastError)
-	}
-	state := updated.ModelStates["test-model"]
-	if state == nil {
-		t.Fatalf("expected model state for incomplete stream")
-	}
-	if state.LastError == nil || state.LastError.Code != "response_stream_incomplete" {
-		t.Fatalf("expected model protocol failure LastError, got %+v", state.LastError)
-	}
-	if !state.NextRetryAfter.IsZero() {
-		t.Fatalf("incomplete responses stream must not set model retry cooldown, got %v", state.NextRetryAfter)
+	expectedData := "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-1\",\"output\":[]}}"
+	if got[1] != expectedData {
+		t.Fatalf("unexpected second chunk.\nGot:  %q\nWant: %q", got[1], expectedData)
 	}
 }

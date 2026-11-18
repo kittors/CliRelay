@@ -5,13 +5,13 @@ import (
 	"sync"
 	"time"
 
-	managementHandlers "github.com/router-for-me/CLIProxyAPI/v6/internal/api/handlers/management"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/cluster"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/clusterstate"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	oauthsession "github.com/router-for-me/CLIProxyAPI/v6/internal/management/oauth/session"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
-	openaihandlers "github.com/router-for-me/CLIProxyAPI/v6/sdk/api/handlers/openai"
+	managementHandlers "github.com/router-for-me/CLIProxyAPI/v8/internal/api/handlers/management"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/cluster"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/clusterstate"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	oauthsession "github.com/router-for-me/CLIProxyAPI/v8/internal/management/oauth/session"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/usage"
+	openaihandlers "github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers/openai"
 )
 
 var (

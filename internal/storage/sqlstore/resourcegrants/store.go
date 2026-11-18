@@ -21,7 +21,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/configsync"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/configsync"
 	log "github.com/sirupsen/logrus"
 )
 

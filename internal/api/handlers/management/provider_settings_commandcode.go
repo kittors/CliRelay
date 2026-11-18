@@ -8,9 +8,9 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	providersettings "github.com/router-for-me/CLIProxyAPI/v6/internal/management/settings/providers"
-	settingsstore "github.com/router-for-me/CLIProxyAPI/v6/internal/management/settings/store"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	providersettings "github.com/router-for-me/CLIProxyAPI/v8/internal/management/settings/providers"
+	settingsstore "github.com/router-for-me/CLIProxyAPI/v8/internal/management/settings/store"
 )
 
 // Command Code provider key endpoints.

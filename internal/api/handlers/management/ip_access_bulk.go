@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/ipaccess"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/ipaccess"
 )
 
 // maxBulkRuleIDs caps one bulk request. Operators select from a page, so this is

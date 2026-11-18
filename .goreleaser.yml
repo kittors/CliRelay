@@ -13,7 +13,7 @@ builds:
     binary: cli-proxy-api
     # Inject into internal/buildinfo (cmd/server reads these; main.Version is unused).
     ldflags:
-      - -s -w -X 'github.com/router-for-me/CLIProxyAPI/v6/internal/buildinfo.Version={{.Version}}' -X 'github.com/router-for-me/CLIProxyAPI/v6/internal/buildinfo.Commit={{.ShortCommit}}' -X 'github.com/router-for-me/CLIProxyAPI/v6/internal/buildinfo.BuildDate={{.Date}}'
+      - -s -w -X 'github.com/router-for-me/CLIProxyAPI/v8/internal/buildinfo.Version={{.Version}}' -X 'github.com/router-for-me/CLIProxyAPI/v8/internal/buildinfo.Commit={{.ShortCommit}}' -X 'github.com/router-for-me/CLIProxyAPI/v8/internal/buildinfo.BuildDate={{.Date}}'
 archives:
   - id: "cli-proxy-api"
     format: tar.gz

@@ -4,14 +4,15 @@ import (
 	"context"
 	"encoding/json"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/management/settings/runtimeconfig"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/management/settings/runtimeconfigpersist"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/management/settings/runtimeconfig"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/management/settings/runtimeconfigpersist"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/usage"
 )
 
 const (
 	RuntimeSettingGeminiKeys           = runtimeconfig.RuntimeSettingGeminiKeys
+	RuntimeSettingInteractionsKeys     = runtimeconfig.RuntimeSettingInteractionsKeys
 	RuntimeSettingCodexKeys            = runtimeconfig.RuntimeSettingCodexKeys
 	RuntimeSettingClaudeKeys           = runtimeconfig.RuntimeSettingClaudeKeys
 	RuntimeSettingBedrockKeys          = runtimeconfig.RuntimeSettingBedrockKeys

@@ -7,12 +7,12 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	claudeauth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/claude"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/identity"
-	managementapitools "github.com/router-for-me/CLIProxyAPI/v6/internal/management/apitools"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	claudeauth "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/claude"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/identity"
+	managementapitools "github.com/router-for-me/CLIProxyAPI/v8/internal/management/apitools"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/usage"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
 
 const defaultAPICallTimeout = 60 * time.Second
@@ -138,6 +138,25 @@ func (h *APIToolsHandler) authByIndex(authIndex string) *coreauth.Auth {
 
 func (h *APIToolsHandler) apiCallTransport(auth *coreauth.Auth) http.RoundTripper {
 	return h.service().APICallTransport(auth)
+}
+
+// resolveTokenForAuth keeps older management handlers source-compatible while
+// the token refresh implementation lives in the tenant-aware API tools service.
+// The optional proxy argument is retained for callers from the pre-v8 handler.
+func (h *Handler) resolveTokenForAuth(ctx context.Context, auth *coreauth.Auth, _ ...string) (string, error) {
+	if h == nil {
+		return "", nil
+	}
+	return h.APITools().resolveTokenForAuth(ctx, auth)
+}
+
+// apiCallTransport keeps older management handlers source-compatible while
+// transport construction lives in the tenant-aware API tools service.
+func (h *Handler) apiCallTransport(auth *coreauth.Auth, _ ...string) http.RoundTripper {
+	if h == nil {
+		return nil
+	}
+	return h.APITools().apiCallTransport(auth)
 }
 
 func normalizedStringSlicesEqual(a []string, b []string) bool {

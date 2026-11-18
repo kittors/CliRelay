@@ -2,18 +2,18 @@ package executor
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/MoeForge/moego/json"
 	"io"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
-	sdkmodelcatalog "github.com/router-for-me/CLIProxyAPI/v6/sdk/modelcatalog"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	sdkmodelcatalog "github.com/router-for-me/CLIProxyAPI/v8/sdk/modelcatalog"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -134,7 +134,7 @@ func DiscoverXAIModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config
 		return nil, err
 	}
 	// CLI chat proxy needs the same identity headers as Responses; official API keeps plain Bearer.
-	applyXAIChatHeaders(req, cfg, auth, token, false)
+	applyXAIChatHeaders(req, auth, token, false, "")
 
 	resp, err := newProxyAwareHTTPClient(ctx, cfg, auth, 0).Do(req)
 	if err != nil {

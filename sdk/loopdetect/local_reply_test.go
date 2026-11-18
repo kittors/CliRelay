@@ -6,13 +6,13 @@ import (
 	"strings"
 	"testing"
 
-	claudeopenai "github.com/router-for-me/CLIProxyAPI/v6/internal/translator/claude/openai/chat-completions"
-	codexclaude "github.com/router-for-me/CLIProxyAPI/v6/internal/translator/codex/claude"
-	codexopenai "github.com/router-for-me/CLIProxyAPI/v6/internal/translator/codex/openai/chat-completions"
-	geminiclaude "github.com/router-for-me/CLIProxyAPI/v6/internal/translator/gemini/claude"
-	geminiopenai "github.com/router-for-me/CLIProxyAPI/v6/internal/translator/gemini/openai/chat-completions"
-	openaiclaude "github.com/router-for-me/CLIProxyAPI/v6/internal/translator/openai/claude"
-	"github.com/router-for-me/CLIProxyAPI/v6/sdk/loopdetect"
+	claudeopenai "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/claude/openai/chat-completions"
+	codexclaude "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/codex/claude"
+	codexopenai "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/codex/openai/chat-completions"
+	geminiclaude "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/gemini/claude"
+	geminiopenai "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/gemini/openai/chat-completions"
+	openaiclaude "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/openai/claude"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/loopdetect"
 	"github.com/tidwall/gjson"
 )
 

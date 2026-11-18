@@ -6,7 +6,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/cluster/sharedstate"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/cluster/sharedstate"
 )
 
 // Login throttling across a cluster.

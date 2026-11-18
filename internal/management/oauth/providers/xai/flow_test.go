@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	internalxai "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/xai"
-	oauthsession "github.com/router-for-me/CLIProxyAPI/v6/internal/management/oauth/session"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	internalxai "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/xai"
+	oauthsession "github.com/router-for-me/CLIProxyAPI/v8/internal/management/oauth/session"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
 
 type xaiOAuthAuthStub struct {

@@ -4,9 +4,9 @@ import (
 	"context"
 	"errors"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/configsync"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/configsync"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/usage"
 )
 
 // SaveConfig persists the settings the live (system tenant) config changed.

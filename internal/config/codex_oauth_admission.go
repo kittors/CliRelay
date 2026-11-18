@@ -1,6 +1,6 @@
 package config
 
-import "github.com/router-for-me/CLIProxyAPI/v6/internal/codexadmission"
+import "github.com/router-for-me/CLIProxyAPI/v8/internal/codexadmission"
 
 // CodexOAuthAdmissionConfig stores global fixed allowed-client presets for Codex OAuth admission.
 type CodexOAuthAdmissionConfig struct {

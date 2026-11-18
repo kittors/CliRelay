@@ -4,9 +4,9 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	sdkaccess "github.com/router-for-me/CLIProxyAPI/v6/sdk/access"
-	"github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	sdkaccess "github.com/router-for-me/CLIProxyAPI/v8/sdk/access"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -19,6 +19,9 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	engine := newServerEngine(cfg, optionState)
 	requestLogger, toggle := configureRequestLoggerMiddleware(engine, cfg, configFilePath, optionState)
 	s := newServerRuntimeState(engine, cfg, authManager, accessManager, configFilePath, requestLogger, toggle)
+	s.pluginHost = optionState.pluginHost
+	s.interceptorHost = optionState.pluginInterceptorHost
+	s.exampleAPIKeySafeModeEnabled = optionState.exampleAPIKeySafeMode
 	s.egress = s.newEgressProber()
 	s.installDynamicMiddleware(configFilePath)
 	s.applyInitialRuntimeConfig(cfg, authManager)

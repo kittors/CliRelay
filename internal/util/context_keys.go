@@ -1,6 +1,6 @@
 package util
 
-import sdkrequestctx "github.com/router-for-me/CLIProxyAPI/v6/sdk/requestctx"
+import sdkrequestctx "github.com/router-for-me/CLIProxyAPI/v8/sdk/requestctx"
 
 // ContextKey preserves the historical internal alias while delegating the
 // public request-context contract to the SDK layer.

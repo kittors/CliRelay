@@ -2,7 +2,7 @@
 
 package runtime
 
-// The schema-stitching logic is generated in github.com/router-for-me/CLIProxyAPI/v6/internal/storage/postgres/ent/runtime.go
+// The schema-stitching logic is generated in github.com/router-for-me/CLIProxyAPI/v8/internal/storage/postgres/ent/runtime.go
 
 const (
 	Version = "v0.14.6"                                         // Version of ent codegen.

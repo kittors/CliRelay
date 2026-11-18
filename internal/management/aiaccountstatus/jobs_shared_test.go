@@ -5,11 +5,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/cluster"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	managementapitools "github.com/router-for-me/CLIProxyAPI/v6/internal/management/apitools"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/management/jobsnapshot"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/cluster"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	managementapitools "github.com/router-for-me/CLIProxyAPI/v8/internal/management/apitools"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/management/jobsnapshot"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
 
 // sharedJobNodes gives node A a refresh service that probes through probe,

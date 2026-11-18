@@ -4,12 +4,18 @@
 // embed CLIProxyAPI without importing internal packages.
 package config
 
-import bridgeconfig "github.com/router-for-me/CLIProxyAPI/v6/sdkbridge/config"
+import bridgeconfig "github.com/router-for-me/CLIProxyAPI/v8/sdkbridge/config"
 
 type SDKConfig = bridgeconfig.SDKConfig
+type ClaudeCodeConfig = bridgeconfig.ClaudeCodeConfig
+type ClientConfig = bridgeconfig.ClientConfig
+type CodexClientConfig = bridgeconfig.CodexClientConfig
+type ClaudeClientConfig = bridgeconfig.ClaudeClientConfig
+type DisableImageGenerationMode = bridgeconfig.DisableImageGenerationMode
 
 type Config = bridgeconfig.Config
 type APIKeyEntry = bridgeconfig.APIKeyEntry
+type ModelCatalogs = bridgeconfig.ModelCatalogs
 
 type StreamingConfig = bridgeconfig.StreamingConfig
 type ResponsesWebsocketConfig = bridgeconfig.ResponsesWebsocketConfig
@@ -28,11 +34,17 @@ type PayloadConfig = bridgeconfig.PayloadConfig
 type PayloadRule = bridgeconfig.PayloadRule
 type PayloadFilterRule = bridgeconfig.PayloadFilterRule
 type PayloadModelRule = bridgeconfig.PayloadModelRule
+type PayloadReplaceRule = bridgeconfig.PayloadReplaceRule
+type PayloadReplaceTarget = bridgeconfig.PayloadReplaceTarget
+type PayloadReplacement = bridgeconfig.PayloadReplacement
 
 type GeminiKey = bridgeconfig.GeminiKey
 type CodexKey = bridgeconfig.CodexKey
 type ClaudeKey = bridgeconfig.ClaudeKey
 type BedrockKey = bridgeconfig.BedrockKey
+type XAIKey = bridgeconfig.XAIKey
+type XAIModel = bridgeconfig.XAIModel
+type MetaKey = bridgeconfig.MetaKey
 type BedrockModel = bridgeconfig.BedrockModel
 type OpenCodeGoKey = bridgeconfig.OpenCodeGoKey
 type OpenCodeGoModel = bridgeconfig.OpenCodeGoModel
@@ -47,6 +59,8 @@ type VertexCompatModel = bridgeconfig.VertexCompatModel
 type OpenAICompatibility = bridgeconfig.OpenAICompatibility
 type OpenAICompatibilityAPIKey = bridgeconfig.OpenAICompatibilityAPIKey
 type OpenAICompatibilityModel = bridgeconfig.OpenAICompatibilityModel
+type ProxyConnectionPoolConfig = bridgeconfig.ProxyConnectionPoolConfig
+type OAuthModelSetting = bridgeconfig.OAuthModelSetting
 
 type TLS = bridgeconfig.TLSConfig
 
@@ -74,6 +88,12 @@ func MigrateLegacyPriorities(priorities map[string]int) map[string]int {
 }
 
 func LoadConfig(configFile string) (*Config, error) { return bridgeconfig.LoadConfig(configFile) }
+
+func ParseConfigBytes(data []byte) (*Config, error) { return bridgeconfig.ParseConfigBytes(data) }
+
+func ResolveOAuthModelSetting(settings []OAuthModelSetting, modelID, metadataModelID, modelName string) *OAuthModelSetting {
+	return bridgeconfig.ResolveOAuthModelSetting(settings, modelID, metadataModelID, modelName)
+}
 
 func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	return bridgeconfig.LoadConfigOptional(configFile, optional)

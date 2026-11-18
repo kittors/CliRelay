@@ -95,19 +95,19 @@ func emitResponsesImageEvents(st *geminiToResponsesState, nextSeq func() int, im
 	added, _ = sjson.Set(added, "sequence_number", nextSeq())
 	added, _ = sjson.Set(added, "output_index", index)
 	added, _ = sjson.SetRaw(added, "item", responsesImageItemJSON(itemID, "in_progress", image, false))
-	events = append(events, emitEvent("response.output_item.added", added))
+	events = append(events, string(emitEvent("response.output_item.added", []byte(added))))
 
 	generated := `{"type":"response.image_generation_call.completed","sequence_number":0,"output_index":0,"item_id":""}`
 	generated, _ = sjson.Set(generated, "sequence_number", nextSeq())
 	generated, _ = sjson.Set(generated, "output_index", index)
 	generated, _ = sjson.Set(generated, "item_id", itemID)
-	events = append(events, emitEvent("response.image_generation_call.completed", generated))
+	events = append(events, string(emitEvent("response.image_generation_call.completed", []byte(generated))))
 
 	done := `{"type":"response.output_item.done","sequence_number":0,"output_index":0,"item":{}}`
 	done, _ = sjson.Set(done, "sequence_number", nextSeq())
 	done, _ = sjson.Set(done, "output_index", index)
 	done, _ = sjson.SetRaw(done, "item", responsesImageItemJSON(itemID, "completed", image, true))
-	events = append(events, emitEvent("response.output_item.done", done))
+	events = append(events, string(emitEvent("response.output_item.done", []byte(done))))
 
 	return events
 }

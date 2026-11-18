@@ -4,7 +4,7 @@ import (
 	"sort"
 	"sync"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/quota"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/quota"
 )
 
 // modelGate serializes decisions drawing on the same key or account. It is

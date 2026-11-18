@@ -9,7 +9,7 @@ import (
 
 	"entgo.io/ent"
 	"entgo.io/ent/dialect/sql"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/storage/postgres/ent/role"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/storage/postgres/ent/role"
 )
 
 // Role is the model entity for the Role schema.

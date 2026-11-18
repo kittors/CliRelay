@@ -1,6 +1,6 @@
 package usagelogs
 
-import "github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
+import "github.com/router-for-me/CLIProxyAPI/v8/internal/usage"
 
 type ManagementLogQueryInput struct {
 	Page int

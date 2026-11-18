@@ -2,12 +2,12 @@ package management
 
 import (
 	"encoding/json"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/configsync"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/configsync"
 	"net/http"
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/usage"
 )
 
 func (h *Handler) GetCcSwitchImportConfigs(c *gin.Context) {

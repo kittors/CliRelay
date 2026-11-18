@@ -3,7 +3,7 @@ package usagelogs
 import (
 	"strings"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/usage"
 )
 
 func canonicalChannelAuthIndex(authIndex string, authIndexGroup map[string][]string) string {

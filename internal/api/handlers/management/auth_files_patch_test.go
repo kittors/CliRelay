@@ -12,11 +12,11 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/codexadmission"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	managementauthfiles "github.com/router-for-me/CLIProxyAPI/v6/internal/management/authfiles"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/codexadmission"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	managementauthfiles "github.com/router-for-me/CLIProxyAPI/v8/internal/management/authfiles"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/usage"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
 
 type failingAuthStore struct {

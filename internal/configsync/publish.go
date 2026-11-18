@@ -5,7 +5,7 @@ import (
 	"database/sql"
 	"sync/atomic"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/cluster"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/cluster"
 )
 
 // PublishFunc queues one configuration event inside tx.

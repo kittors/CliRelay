@@ -3,9 +3,9 @@ package usage
 import (
 	"context"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/configsync"
-	sqlapikey "github.com/router-for-me/CLIProxyAPI/v6/internal/storage/sqlstore/apikey"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/configsync"
+	sqlapikey "github.com/router-for-me/CLIProxyAPI/v8/internal/storage/sqlstore/apikey"
 )
 
 // ConfigCollectionVersion returns the version of a whole-replace collection

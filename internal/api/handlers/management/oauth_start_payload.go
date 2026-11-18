@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	internalclaude "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/claude"
+	internalclaude "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/claude"
 )
 
 // How a started login finishes, reported to the panel as "flow".

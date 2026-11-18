@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/quota"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/quota"
 )
 
 // 5 小时配额窗口是「首次消费锚定的固定窗口」，不是滚动窗口：

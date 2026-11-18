@@ -1,6 +1,6 @@
 package modelconfig
 
-import "github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
+import "github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 
 // applyImageGenerationSeedDefaults stamps the billing and modality shape an
 // image-generation model needs onto a seed row.

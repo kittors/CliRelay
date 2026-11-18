@@ -10,7 +10,7 @@ import (
 	"strings"
 	"sync/atomic"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/quota"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/quota"
 )
 
 // Policy 是一把 Key 的生效策略。所有字段在发布后只读，可被并发请求共享。

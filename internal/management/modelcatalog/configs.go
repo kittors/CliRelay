@@ -3,12 +3,12 @@ package modelcatalog
 import (
 	"context"
 	"errors"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/configsync"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/configsync"
 	"strings"
 	"time"
 
-	modelconfigsettings "github.com/router-for-me/CLIProxyAPI/v6/internal/management/settings/modelconfig"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
+	modelconfigsettings "github.com/router-for-me/CLIProxyAPI/v8/internal/management/settings/modelconfig"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/usage"
 )
 
 var ErrModelIDRequired = errors.New("model id is required")

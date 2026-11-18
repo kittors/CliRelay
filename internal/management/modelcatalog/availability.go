@@ -5,12 +5,12 @@ import (
 	"strings"
 	"time"
 
-	managementauthfiles "github.com/router-for-me/CLIProxyAPI/v6/internal/management/authfiles"
-	modelconfigsettings "github.com/router-for-me/CLIProxyAPI/v6/internal/management/settings/modelconfig"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
-	internalrouting "github.com/router-for-me/CLIProxyAPI/v6/internal/routing"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	managementauthfiles "github.com/router-for-me/CLIProxyAPI/v8/internal/management/authfiles"
+	modelconfigsettings "github.com/router-for-me/CLIProxyAPI/v8/internal/management/settings/modelconfig"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
+	internalrouting "github.com/router-for-me/CLIProxyAPI/v8/internal/routing"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/usage"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
 
 // defaultChannelGroupName is the implicit routing pool that every active,

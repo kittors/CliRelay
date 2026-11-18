@@ -12,9 +12,9 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/identity"
-	postgresstore "github.com/router-for-me/CLIProxyAPI/v6/internal/storage/postgres"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/identity"
+	postgresstore "github.com/router-for-me/CLIProxyAPI/v8/internal/storage/postgres"
 )
 
 // TestManagementAuditRecordsOnlySecurityRelevantRequests pins the write policy

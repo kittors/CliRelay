@@ -4,7 +4,7 @@ import (
 	"context"
 	"net/http"
 
-	managementupdate "github.com/router-for-me/CLIProxyAPI/v6/internal/management/updateflow"
+	managementupdate "github.com/router-for-me/CLIProxyAPI/v8/internal/management/updateflow"
 )
 
 type updateCheckResponse = managementupdate.CheckResponse

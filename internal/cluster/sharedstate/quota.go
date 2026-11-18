@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/cluster/sharedredis"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/cluster/sharedredis"
 )
 
 // Per-subject request and token windows.

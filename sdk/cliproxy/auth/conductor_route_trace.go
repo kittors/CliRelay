@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/routetrace"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/routetrace"
 )
 
 // The scheduler's side of the route trace (package routetrace). Steps are

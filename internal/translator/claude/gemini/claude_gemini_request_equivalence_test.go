@@ -3,7 +3,7 @@ package gemini
 import (
 	"testing"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/testutil/translatortest"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/testutil/translatortest"
 )
 
 // Function calls get a random toolu_ id: Gemini has none to pair them by.

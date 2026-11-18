@@ -3,7 +3,7 @@ package auth
 import (
 	"strings"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/egressbreaker"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/egressbreaker"
 )
 
 // The scheduler's side of the egress breaker (package egressbreaker).

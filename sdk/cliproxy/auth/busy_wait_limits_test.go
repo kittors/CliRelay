@@ -10,7 +10,7 @@ import (
 	"testing/synctest"
 	"time"
 
-	sdkconfig "github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
+	sdkconfig "github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
 )
 
 // promisedBusyWaitRounds is the contract the tests below hold the scheduler to:

@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	internalrouting "github.com/router-for-me/CLIProxyAPI/v6/internal/routing"
+	internalrouting "github.com/router-for-me/CLIProxyAPI/v8/internal/routing"
 )
 
 // A virtual model is a model name the gateway serves from one of several real

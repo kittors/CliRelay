@@ -5,9 +5,9 @@ import (
 	"errors"
 	"net/http"
 
-	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
-	"github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/routetrace"
-	sdktranslator "github.com/router-for-me/CLIProxyAPI/v6/sdk/translator"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/routetrace"
+	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 )
 
 // errNoSaturatedCandidate marks "there was nothing to queue on", which is an
@@ -85,7 +85,7 @@ func runExecutionWithRetry[T any](
 		return zero, &Error{Code: "provider_not_found", Message: "no provider supplied"}
 	}
 
-	_, maxWait := manager.retrySettings()
+	_, _, maxWait := manager.retrySettings()
 	budget := retryWaitBudgetFor(ctx)
 	trace := routetrace.FromContext(ctx)
 	trace.SetRequest(req.Model, opts.Stream, isSinglePickRouteRequest(opts.Metadata))
@@ -365,7 +365,7 @@ func (s executionService) nextMixedCandidate(ctx context.Context, scope *mixedEx
 
 	entry := logEntryWithRequestID(ctx)
 	debugLogAuthSelection(entry, auth, provider, req.Model)
-	publishSelectedAuthMetadata(scope.opts.Metadata, auth.ID)
+	publishSelectedAuthMetadata(scope.opts.Metadata, auth)
 	scope.tried[auth.ID] = struct{}{}
 
 	return &mixedExecutionCandidate{

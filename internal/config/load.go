@@ -71,10 +71,13 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	cfg.RequestBody.ModelMaxMB = DefaultModelRequestBodyMB
 	cfg.RequestBody.DiskThresholdMB = DefaultRequestBodyDiskThresholdMB
 	cfg.UsageStatisticsEnabled = false
+	cfg.RedisUsageQueueRetentionSeconds = 60
 	cfg.SystemStatsCacheSeconds = 60
 	cfg.SystemStatsWebSocketMaxAgeSeconds = int(DefaultSystemStatsWebSocketMaxAge / time.Second)
 	cfg.RequestLogStorage = DefaultRequestLogStorageConfig()
 	cfg.DisableCooling = false
+	cfg.SaveCooldownStatus = false
+	cfg.TransientErrorCooldownSeconds = 0
 	cfg.Routing.IncludeDefaultGroup = true
 	cfg.Pprof.Enable = false
 	cfg.Pprof.Addr = DefaultPprofAddr
@@ -123,6 +126,7 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	cfg.SanitizeIdentityFingerprint()
 	cfg.SanitizeCodexOAuthAdmission()
 	cfg.SanitizeOAuthModelAlias()
+	cfg.SanitizeOAuthSettings()
 	cfg.OAuthExcludedModels = NormalizeOAuthExcludedModels(cfg.OAuthExcludedModels)
 	cfg.SanitizeAutoUpdate()
 	cfg.SanitizeOpenAICompatibility()
@@ -133,6 +137,9 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	cfg.SanitizeOllamaCloudKeys()
 	cfg.SanitizeCommandCodeKeys()
 	cfg.SanitizeGeminiKeys()
+	cfg.SanitizeInteractionsKeys()
+	cfg.SanitizeXAIKeys()
+	cfg.SanitizeMetaKeys()
 	cfg.SanitizeProxyWarmup()
 	cfg.SanitizeAccountStatusRefresh()
 
@@ -152,6 +159,9 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	}
 	if cfg.MaxRetryInterval < 0 {
 		cfg.MaxRetryInterval = 0
+	}
+	if cfg.MaxRetryCredentials < 0 {
+		cfg.MaxRetryCredentials = 0
 	}
 	if cfg.Pprof.Addr == "" {
 		cfg.Pprof.Addr = DefaultPprofAddr
@@ -216,6 +226,11 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	}
 	if cfg.SystemStatsCacheSeconds <= 0 {
 		cfg.SystemStatsCacheSeconds = 60
+	}
+	if cfg.RedisUsageQueueRetentionSeconds <= 0 {
+		cfg.RedisUsageQueueRetentionSeconds = 60
+	} else if cfg.RedisUsageQueueRetentionSeconds > 3600 {
+		cfg.RedisUsageQueueRetentionSeconds = 3600
 	}
 	cfg.SystemStatsWebSocketMaxAgeSeconds = int(cfg.SystemStatsWebSocketMaxAge() / time.Second)
 	if cfg.Streaming.KeepAliveSeconds == 0 {

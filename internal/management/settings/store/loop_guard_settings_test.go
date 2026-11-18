@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	proxyconfig "github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/loopguard"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
+	proxyconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/loopguard"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/usage"
 	// The request log runs on SQLite when no PostgreSQL is configured.
 	_ "modernc.org/sqlite"
 )

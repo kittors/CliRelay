@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/quota"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/quota/inflight"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/quota"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/quota/inflight"
 )
 
 func TestKeyUsageViewShowsWhatTheKeyHasInFlight(t *testing.T) {

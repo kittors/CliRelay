@@ -9,7 +9,7 @@ import (
 
 	"entgo.io/ent"
 	"entgo.io/ent/dialect/sql"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/storage/postgres/ent/authgroupmodelownermapping"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/storage/postgres/ent/authgroupmodelownermapping"
 )
 
 // AuthGroupModelOwnerMapping is the model entity for the AuthGroupModelOwnerMapping schema.

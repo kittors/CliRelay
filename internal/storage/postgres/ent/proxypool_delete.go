@@ -8,8 +8,8 @@ import (
 	"entgo.io/ent/dialect/sql"
 	"entgo.io/ent/dialect/sql/sqlgraph"
 	"entgo.io/ent/schema/field"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/storage/postgres/ent/predicate"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/storage/postgres/ent/proxypool"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/storage/postgres/ent/predicate"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/storage/postgres/ent/proxypool"
 )
 
 // ProxyPoolDelete is the builder for deleting a ProxyPool entity.

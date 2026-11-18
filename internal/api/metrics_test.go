@@ -7,8 +7,8 @@ import (
 	"testing"
 
 	dto "github.com/prometheus/client_model/go"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/observability"
-	"github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/observability"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
 
 // defaultSeries reads one series of the process-wide exporter, 0 when absent.

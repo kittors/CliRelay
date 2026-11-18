@@ -7,10 +7,10 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/identity"
-	apikeysettings "github.com/router-for-me/CLIProxyAPI/v6/internal/management/settings/apikey"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/quota"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/identity"
+	apikeysettings "github.com/router-for-me/CLIProxyAPI/v8/internal/management/settings/apikey"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/quota"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/usage"
 )
 
 type periodSpendingResetRequest struct {

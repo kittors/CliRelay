@@ -4,8 +4,8 @@ import (
 	"strings"
 	"time"
 
-	internalantigravity "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/antigravity"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	internalantigravity "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/antigravity"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
 
 func RecordFromTokenResponse(tokenResp *internalantigravity.TokenResponse, email, projectID string, now time.Time) *coreauth.Auth {

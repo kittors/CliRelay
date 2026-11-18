@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/cluster"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/cluster"
 )
 
 func TestJanitorSweepsOnLeaderOnly(t *testing.T) {

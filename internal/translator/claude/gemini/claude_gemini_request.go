@@ -6,24 +6,14 @@
 package gemini
 
 import (
-	"crypto/rand"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
-	"math/big"
 	"strings"
 
-	"github.com/google/uuid"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/thinking"
-	translatorcommon "github.com/router-for-me/CLIProxyAPI/v6/internal/translator/common"
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
-)
-
-var (
-	user    = ""
-	account = ""
-	session = ""
+	"github.com/MoeForge/moego/ojson"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
+	translatorcommon "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/common"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 )
 
 // ConvertGeminiRequestToClaude parses and transforms a Gemini API request into Claude Code API format.
@@ -44,39 +34,44 @@ var (
 //
 // Returns:
 //   - []byte: The transformed request data in Claude Code API format
-func ConvertGeminiRequestToClaude(modelName string, inputRawJSON []byte, stream bool) []byte {
-	rawJSON := inputRawJSON
+func ConvertGeminiRequestToClaude(modelName string, inputRawJSON []byte, stream bool) ([]byte, error) {
+	return convertGeminiRequestToClaude(modelName, inputRawJSON, stream)
 
-	if account == "" {
-		u, _ := uuid.NewRandom()
-		account = u.String()
-	}
-	if session == "" {
-		u, _ := uuid.NewRandom()
-		session = u.String()
-	}
-	if user == "" {
-		sum := sha256.Sum256([]byte(account + session))
-		user = hex.EncodeToString(sum[:])
-	}
-	userID := fmt.Sprintf("user_%s_account_%s_session_%s", user, account, session)
+}
+
+// convertGeminiRequestToClaude also reports a user turn that was left empty
+// because its only attachment has no Claude equivalent.
+func convertGeminiRequestToClaude(modelName string, inputRawJSON []byte, stream bool) ([]byte, error) {
+	rawJSON := inputRawJSON
+	var drops translatorcommon.UserTurnDrops
+	var toolOutputErr error
+
+	userID := translatorcommon.DeriveClaudeUserID(rawJSON)
 
 	// Base Claude message payload
-	out := fmt.Sprintf(`{"model":"","max_tokens":32000,"messages":[],"metadata":{"user_id":"%s"}}`, userID)
+	outDoc := ojson.NewDoc([]byte(`{"model":"","max_tokens":32000,"messages":[],"metadata":{}}`))
+	_ = outDoc.Set("metadata.user_id", userID)
 
-	root := gjson.ParseBytes(rawJSON)
+	root := util.ParseGJSONBytesNoCopy(rawJSON)
+	messageAccumulator := translatorcommon.NewClaudeMessageAccumulator(int(root.Get("contents.#").Int()) + 1)
 
-	// Helper for generating tool call IDs in the form: toolu_<alphanum>
-	// This ensures unique identifiers for tool calls in the Claude Code format
-	genToolCallID := func() string {
-		const letters = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-		var b strings.Builder
-		// 24 chars random suffix for uniqueness
-		for i := 0; i < 24; i++ {
-			n, _ := rand.Int(rand.Reader, big.NewInt(int64(len(letters))))
-			b.WriteByte(letters[n.Int64()])
+	getGeminiToolID := func(value ojson.Result) string {
+		if toolID := strings.TrimSpace(value.Get("id").String()); toolID != "" {
+			return toolID
 		}
-		return "toolu_" + b.String()
+		return strings.TrimSpace(value.Get("call_id").String())
+	}
+
+	removePendingToolID := func(ids []string, toolID string) []string {
+		if toolID == "" {
+			return ids
+		}
+		for idx, pendingID := range ids {
+			if pendingID == toolID {
+				return append(ids[:idx], ids[idx+1:]...)
+			}
+		}
+		return ids
 	}
 
 	// FIFO queue to store tool call IDs for matching with tool results
@@ -84,55 +79,86 @@ func ConvertGeminiRequestToClaude(modelName string, inputRawJSON []byte, stream 
 	// functionCalls, so we keep a FIFO queue of generated tool IDs and
 	// consume them in order when functionResponses arrive.
 	var pendingToolIDs []string
+	toolCallCounter := 0
 
 	// Model mapping to specify which Claude Code model to use
-	out, _ = sjson.Set(out, "model", modelName)
+	_ = outDoc.Set("model", modelName)
+	if serviceTier := root.Get("service_tier"); serviceTier.Exists() && serviceTier.Type == ojson.String {
+		_ = outDoc.Set("service_tier", serviceTier.String())
+	}
 
 	// Generation config extraction from Gemini format
 	if genConfig := root.Get("generationConfig"); genConfig.Exists() {
 		// Max output tokens configuration
 		if maxTokens := genConfig.Get("maxOutputTokens"); maxTokens.Exists() {
-			out, _ = sjson.Set(out, "max_tokens", maxTokens.Int())
+			_ = outDoc.Set("max_tokens", maxTokens.Int())
 		}
-		// Temperature setting for controlling response randomness
-		if temp := genConfig.Get("temperature"); temp.Exists() {
-			out, _ = sjson.Set(out, "temperature", temp.Float())
-		} else if topP := genConfig.Get("topP"); topP.Exists() {
-			// Top P setting for nucleus sampling (filtered out if temperature is set)
-			out, _ = sjson.Set(out, "top_p", topP.Float())
+		// Top P setting for nucleus sampling.
+		if topP := genConfig.Get("topP"); topP.Exists() {
+			_ = outDoc.Set("top_p", topP.Float())
 		}
 		// Stop sequences configuration for custom termination conditions
 		if stopSeqs := genConfig.Get("stopSequences"); stopSeqs.Exists() && stopSeqs.IsArray() {
 			var stopSequences []string
-			stopSeqs.ForEach(func(_, value gjson.Result) bool {
+			stopSeqs.ForEach(func(_, value ojson.Result) bool {
 				stopSequences = append(stopSequences, value.String())
 				return true
 			})
 			if len(stopSequences) > 0 {
-				out, _ = sjson.Set(out, "stop_sequences", stopSequences)
+				_ = outDoc.Set("stop_sequences", stopSequences)
 			}
 		}
 		// Include thoughts configuration for reasoning process visibility
 		// Translator only does format conversion, ApplyThinking handles model capability validation.
 		if thinkingConfig := genConfig.Get("thinkingConfig"); thinkingConfig.Exists() && thinkingConfig.IsObject() {
+			mi := registry.LookupModelInfo(modelName, "claude")
+			supportsAdaptive := mi != nil && mi.Thinking != nil && len(mi.Thinking.Levels) > 0
+			supportsMax := supportsAdaptive && thinking.HasLevel(mi.Thinking.Levels, string(thinking.LevelMax))
+			supportsDynamic := supportsAdaptive && mi.Thinking.DynamicAllowed
+
+			// MapToClaudeEffort normalizes levels (e.g. minimal→low, xhigh→high) to avoid
+			// validation errors since validate treats same-provider unsupported levels as errors.
 			thinkingLevel := thinkingConfig.Get("thinkingLevel")
 			if !thinkingLevel.Exists() {
 				thinkingLevel = thinkingConfig.Get("thinking_level")
 			}
 			if thinkingLevel.Exists() {
 				level := strings.ToLower(strings.TrimSpace(thinkingLevel.String()))
-				switch level {
-				case "":
-				case "none":
-					out, _ = sjson.Set(out, "thinking.type", "disabled")
-					out, _ = sjson.Delete(out, "thinking.budget_tokens")
-				case "auto":
-					out, _ = sjson.Set(out, "thinking.type", "enabled")
-					out, _ = sjson.Delete(out, "thinking.budget_tokens")
-				default:
-					if budget, ok := thinking.ConvertLevelToBudget(level); ok {
-						out, _ = sjson.Set(out, "thinking.type", "enabled")
-						out, _ = sjson.Set(out, "thinking.budget_tokens", budget)
+				if supportsAdaptive {
+					switch {
+					case level == "":
+					case level == "none":
+						_ = outDoc.Set("thinking.type", "disabled")
+						_ = outDoc.Delete("thinking.budget_tokens")
+						_ = outDoc.Delete("output_config.effort")
+					case level == "auto" && supportsDynamic:
+						_ = outDoc.Set("thinking.type", "adaptive")
+						_ = outDoc.Delete("thinking.budget_tokens")
+						_ = outDoc.Delete("output_config.effort")
+					default:
+						if !thinking.HasLevel(mi.Thinking.Levels, level) {
+							if mapped, ok := thinking.MapToClaudeEffort(level, supportsMax); ok {
+								level = mapped
+							}
+						}
+						_ = outDoc.Set("thinking.type", "adaptive")
+						_ = outDoc.Delete("thinking.budget_tokens")
+						_ = outDoc.Set("output_config.effort", level)
+					}
+				} else {
+					switch level {
+					case "":
+					case "none":
+						_ = outDoc.Set("thinking.type", "disabled")
+						_ = outDoc.Delete("thinking.budget_tokens")
+					case "auto":
+						_ = outDoc.Set("thinking.type", "enabled")
+						_ = outDoc.Delete("thinking.budget_tokens")
+					default:
+						if budget, ok := thinking.ConvertLevelToBudget(level); ok {
+							_ = outDoc.Set("thinking.type", "enabled")
+							_ = outDoc.Set("thinking.budget_tokens", budget)
+						}
 					}
 				}
 			} else {
@@ -142,39 +168,59 @@ func ConvertGeminiRequestToClaude(modelName string, inputRawJSON []byte, stream 
 				}
 				if thinkingBudget.Exists() {
 					budget := int(thinkingBudget.Int())
-					switch budget {
-					case 0:
-						out, _ = sjson.Set(out, "thinking.type", "disabled")
-						out, _ = sjson.Delete(out, "thinking.budget_tokens")
-					case -1:
-						out, _ = sjson.Set(out, "thinking.type", "enabled")
-						out, _ = sjson.Delete(out, "thinking.budget_tokens")
-					default:
-						out, _ = sjson.Set(out, "thinking.type", "enabled")
-						out, _ = sjson.Set(out, "thinking.budget_tokens", budget)
+					if supportsAdaptive {
+						switch {
+						case budget == 0:
+							_ = outDoc.Set("thinking.type", "disabled")
+							_ = outDoc.Delete("thinking.budget_tokens")
+							_ = outDoc.Delete("output_config.effort")
+						case budget == -1 && supportsDynamic:
+							_ = outDoc.Set("thinking.type", "adaptive")
+							_ = outDoc.Delete("thinking.budget_tokens")
+							_ = outDoc.Delete("output_config.effort")
+						default:
+							level, ok := thinking.ConvertBudgetToLevel(budget)
+							if ok {
+								if !thinking.HasLevel(mi.Thinking.Levels, level) {
+									if mapped, okM := thinking.MapToClaudeEffort(level, supportsMax); okM {
+										level = mapped
+									}
+								}
+								_ = outDoc.Set("thinking.type", "adaptive")
+								_ = outDoc.Delete("thinking.budget_tokens")
+								_ = outDoc.Set("output_config.effort", level)
+							}
+						}
+					} else {
+						switch budget {
+						case 0:
+							_ = outDoc.Set("thinking.type", "disabled")
+							_ = outDoc.Delete("thinking.budget_tokens")
+						case -1:
+							_ = outDoc.Set("thinking.type", "enabled")
+							_ = outDoc.Delete("thinking.budget_tokens")
+						default:
+							_ = outDoc.Set("thinking.type", "enabled")
+							_ = outDoc.Set("thinking.budget_tokens", budget)
+						}
 					}
-				} else if includeThoughts := thinkingConfig.Get("includeThoughts"); includeThoughts.Exists() && includeThoughts.Type == gjson.True {
-					out, _ = sjson.Set(out, "thinking.type", "enabled")
-				} else if includeThoughts := thinkingConfig.Get("include_thoughts"); includeThoughts.Exists() && includeThoughts.Type == gjson.True {
-					out, _ = sjson.Set(out, "thinking.type", "enabled")
 				}
 			}
 		}
 	}
 
-	// Messages are collected here and written into out once, after the
-	// contents. sjson.SetRaw(out, "messages.-1", ...) per message copied the
-	// whole request each time, which grew with the square of the history (see
-	// translatorcommon.JSONArrayBuilder). The template already holds
-	// "messages":[] and nothing reads it back before it is written, so the
-	// result is byte-for-byte the same.
-	var messageNodes translatorcommon.JSONArrayBuilder
-
 	// System instruction conversion to Claude Code format
-	if sysInstr := root.Get("system_instruction"); sysInstr.Exists() {
+	sysInstr := root.Get("systemInstruction")
+	if !sysInstr.Exists() {
+		sysInstr = root.Get("system_instruction")
+	}
+	if sysInstr.Exists() {
 		if parts := sysInstr.Get("parts"); parts.Exists() && parts.IsArray() {
 			var systemText strings.Builder
-			parts.ForEach(func(_, part gjson.Result) bool {
+			parts.ForEach(func(_, part ojson.Result) bool {
+				if translatorcommon.IsGeminiThoughtPart(part) {
+					return true
+				}
 				if text := part.Get("text"); text.Exists() {
 					if systemText.Len() > 0 {
 						systemText.WriteString("\n")
@@ -184,166 +230,187 @@ func ConvertGeminiRequestToClaude(modelName string, inputRawJSON []byte, stream 
 				return true
 			})
 			if systemText.Len() > 0 {
-				// Create system message in Claude Code format
-				systemMessage := `{"role":"user","content":[{"type":"text","text":""}]}`
-				systemMessage, _ = sjson.Set(systemMessage, "content.0.text", systemText.String())
-				messageNodes.Append(systemMessage)
+				// Create system message in Claude Code format.
+				systemMessage := []byte(`{"role":"user","content":[{"type":"text","text":""}]}`)
+				systemMessage, _ = ojson.SetBytes(systemMessage, "content.0.text", systemText.String())
+				messageAccumulator.Append(systemMessage)
+				messageAccumulator.Flush()
 			}
 		}
 	}
 
 	// Contents conversion to messages with proper role mapping
 	if contents := root.Get("contents"); contents.Exists() && contents.IsArray() {
-		contents.ForEach(func(_, content gjson.Result) bool {
-			role := content.Get("role").String()
-			// Map Gemini roles to Claude Code roles
-			if role == "model" {
-				role = "assistant"
-			}
-
-			if role == "function" {
+		previousRole := ""
+		contents.ForEach(func(_, content ojson.Result) bool {
+			parts := content.Get("parts")
+			role := translatorcommon.NormalizeGeminiTurnRole(content.Get("role").String(), parts, previousRole)
+			// Some Gemini clients label tool results as model turns; Claude requires user turns.
+			hasFunctionResponse := translatorcommon.GeminiPartsHaveFunctionResponse(parts)
+			if hasFunctionResponse && !translatorcommon.GeminiPartsHaveFunctionCall(parts) {
 				role = "user"
 			}
 
-			if role == "tool" {
-				role = "user"
+			contentItems := make([][]byte, 0, 4)
+			// Counts what this turn sends; whitespace-only text is forwarded but never sendable.
+			sendable := 0
+			flushContent := func() {
+				if role != "assistant" {
+					drops.EndTurn(sendable)
+				}
+				if len(contentItems) > 0 {
+					msgDoc := ojson.NewDoc([]byte(`{"role":"","content":[]}`))
+					_ = msgDoc.Set("role", role)
+					_ = msgDoc.SetRawBytes("content", translatorcommon.JoinRawArray(contentItems))
+					messageAccumulator.Append(msgDoc.Bytes())
+				}
+				contentItems = contentItems[:0]
+				sendable = 0
 			}
+			// Split mixed function calls and results without losing their order or IDs.
+			switchRole := func(nextRole string) {
+				if role != nextRole {
+					flushContent()
+					role = nextRole
+				}
+			}
+			if parts.Exists() && parts.IsArray() {
+				parts.ForEach(func(_, part ojson.Result) bool {
+					if translatorcommon.IsGeminiThoughtPart(part) {
+						return true
+					}
 
-			// Create message structure in Claude Code format
-			msg := `{"role":"","content":[]}`
-			msg, _ = sjson.Set(msg, "role", role)
-
-			if parts := content.Get("parts"); parts.Exists() && parts.IsArray() {
-				parts.ForEach(func(_, part gjson.Result) bool {
 					// Text content conversion
 					if text := part.Get("text"); text.Exists() {
-						textContent := `{"type":"text","text":""}`
-						textContent, _ = sjson.Set(textContent, "text", text.String())
-						msg, _ = sjson.SetRaw(msg, "content.-1", textContent)
+						textContent := []byte(`{"type":"text","text":""}`)
+						textContent, _ = ojson.SetBytes(textContent, "text", text.String())
+						contentItems = append(contentItems, textContent)
+						if strings.TrimSpace(text.String()) != "" {
+							sendable++
+						}
 						return true
 					}
 
 					// Function call (from model/assistant) conversion to tool use
-					if fc := part.Get("functionCall"); fc.Exists() && role == "assistant" {
-						toolUse := `{"type":"tool_use","id":"","name":"","input":{}}`
+					if fc := translatorcommon.GeminiPartFunctionCall(part); fc.Exists() && (role == "assistant" || hasFunctionResponse) {
+						switchRole("assistant")
+						toolUseDoc := ojson.NewDoc([]byte(`{"type":"tool_use","id":"","name":"","input":{}}`))
 
-						// Generate a unique tool ID and enqueue it for later matching
-						// with the corresponding functionResponse
-						toolID := genToolCallID()
+						// Reuse gateway-provided IDs when present, otherwise generate one for pairing.
+						toolID := getGeminiToolID(fc)
+						if toolID == "" {
+							toolCallCounter++
+							toolID = fmt.Sprintf("toolu_gemini_%016d", toolCallCounter)
+						}
 						pendingToolIDs = append(pendingToolIDs, toolID)
-						toolUse, _ = sjson.Set(toolUse, "id", toolID)
+						_ = toolUseDoc.Set("id", toolID)
 
 						if name := fc.Get("name"); name.Exists() {
-							toolUse, _ = sjson.Set(toolUse, "name", name.String())
+							_ = toolUseDoc.Set("name", util.SanitizeClaudeFunctionName(name.String()))
 						}
 						if args := fc.Get("args"); args.Exists() && args.IsObject() {
-							toolUse, _ = sjson.SetRaw(toolUse, "input", args.Raw)
+							_ = toolUseDoc.SetRaw("input", args.Raw)
 						}
-						msg, _ = sjson.SetRaw(msg, "content.-1", toolUse)
+						contentItems = append(contentItems, toolUseDoc.Bytes())
+						sendable++
 						return true
 					}
 
 					// Function response (from user) conversion to tool result
-					if fr := part.Get("functionResponse"); fr.Exists() {
-						toolResult := `{"type":"tool_result","tool_use_id":"","content":""}`
+					if fr := translatorcommon.GeminiPartFunctionResponse(part); fr.Exists() {
+						switchRole("user")
+						toolResultDoc := ojson.NewDoc([]byte(`{"type":"tool_result","tool_use_id":"","content":""}`))
 
 						// Attach the oldest queued tool_id to pair the response
 						// with its call. If the queue is empty, generate a new id.
 						var toolID string
-						if len(pendingToolIDs) > 0 {
+						if customID := getGeminiToolID(fr); customID != "" {
+							toolID = customID
+							pendingToolIDs = removePendingToolID(pendingToolIDs, toolID)
+						} else if len(pendingToolIDs) > 0 {
 							toolID = pendingToolIDs[0]
 							// Pop the first element from the queue
 							pendingToolIDs = pendingToolIDs[1:]
 						} else {
 							// Fallback: generate new ID if no pending tool_use found
-							toolID = genToolCallID()
+							toolCallCounter++
+							toolID = fmt.Sprintf("toolu_gemini_%016d", toolCallCounter)
 						}
-						toolResult, _ = sjson.Set(toolResult, "tool_use_id", toolID)
+						_ = toolResultDoc.Set("tool_use_id", toolID)
 
-						parsed := translatorcommon.ParseGeminiFunctionResponse(fr)
-						if parsed.HasImage() {
-							toolResult, _ = sjson.SetRaw(toolResult, "content", translatorcommon.ToClaudeContent(parsed))
-						} else if len(parsed.Parts) > 0 {
-							toolResult, _ = sjson.Set(toolResult, "content", parsed.Text())
-						} else if parsed.Raw.Exists() {
-							toolResult, _ = sjson.Set(toolResult, "content", parsed.Text())
+						// Extract result content and any nested multimodal parts from functionResponse.
+						if errTool := setClaudeToolResultContentFromGemini(toolResultDoc, fr, role == "assistant", &drops); errTool != nil && toolOutputErr == nil {
+							toolOutputErr = errTool
 						}
-						msg, _ = sjson.SetRaw(msg, "content.-1", toolResult)
+						contentItems = append(contentItems, toolResultDoc.Bytes())
+						sendable++
 						return true
 					}
 
-					// Image content (inline_data) conversion to Claude Code format
-					if inlineData := part.Get("inline_data"); inlineData.Exists() {
-						imageContent := `{"type":"image","source":{"type":"base64","media_type":"","data":""}}`
-						if mimeType := inlineData.Get("mime_type"); mimeType.Exists() {
-							imageContent, _ = sjson.Set(imageContent, "source.media_type", mimeType.String())
+					// Inline data conversion to Claude Code content format. Only model content
+					// keeps a placeholder for media Claude cannot read; a user attachment is
+					// never replaced by text, so it is recorded as dropped instead.
+					if inlineData := geminiClaudeInlineData(part); inlineData.Exists() {
+						if contentPart, ok := claudeContentPartFromGeminiInlineData(inlineData, role == "assistant"); ok {
+							contentItems = append(contentItems, contentPart)
+							sendable++
+						} else if role != "assistant" {
+							drops.Drop("inlineData")
 						}
-						if data := inlineData.Get("data"); data.Exists() {
-							imageContent, _ = sjson.Set(imageContent, "source.data", data.String())
-						}
-						msg, _ = sjson.SetRaw(msg, "content.-1", imageContent)
 						return true
 					}
 
-					// File data conversion to text content with file info
-					if fileData := part.Get("file_data"); fileData.Exists() {
-						// For file data, we'll convert to text content with file info
-						textContent := `{"type":"text","text":""}`
-						fileInfo := "File: " + fileData.Get("file_uri").String()
-						if mimeType := fileData.Get("mime_type"); mimeType.Exists() {
-							fileInfo += " (Type: " + mimeType.String() + ")"
+					// File data conversion to Claude Code content format
+					if fileData := geminiClaudeFileData(part); fileData.Exists() {
+						if contentPart, ok := claudeContentPartFromGeminiFileData(fileData); ok {
+							contentItems = append(contentItems, contentPart)
+							sendable++
+						} else if role != "assistant" {
+							drops.Drop("fileData")
 						}
-						textContent, _ = sjson.Set(textContent, "text", fileInfo)
-						msg, _ = sjson.SetRaw(msg, "content.-1", textContent)
 						return true
 					}
 
 					return true
 				})
 			}
-
-			// Only add message if it has content
-			if contentArray := gjson.Get(msg, "content"); contentArray.Exists() && len(contentArray.Array()) > 0 {
-				messageNodes.Append(msg)
-			}
+			flushContent()
+			previousRole = role
 
 			return true
 		})
 	}
-	if messageNodes.Len() > 0 {
-		out, _ = sjson.SetRaw(out, "messages", messageNodes.String())
-	}
+	messages := messageAccumulator.Messages()
+	orderGeminiClaudeToolResults(messages)
+	translatorcommon.SetRawArrayItemsDoc(outDoc, "messages", messages)
 
 	// Tools mapping: Gemini functionDeclarations -> Claude Code tools
 	if tools := root.Get("tools"); tools.Exists() && tools.IsArray() {
 		var anthropicTools []interface{}
 
-		tools.ForEach(func(_, tool gjson.Result) bool {
+		tools.ForEach(func(_, tool ojson.Result) bool {
 			if funcDecls := tool.Get("functionDeclarations"); funcDecls.Exists() && funcDecls.IsArray() {
-				funcDecls.ForEach(func(_, funcDecl gjson.Result) bool {
-					anthropicTool := `{"name":"","description":"","input_schema":{}}`
+				funcDecls.ForEach(func(_, funcDecl ojson.Result) bool {
+					toolDoc := ojson.NewDoc([]byte(`{"name":"","description":"","input_schema":{"type":"object","properties":{}}}`))
 
 					if name := funcDecl.Get("name"); name.Exists() {
-						anthropicTool, _ = sjson.Set(anthropicTool, "name", name.String())
+						_ = toolDoc.Set("name", util.SanitizeClaudeFunctionName(name.String()))
 					}
 					if desc := funcDecl.Get("description"); desc.Exists() {
-						anthropicTool, _ = sjson.Set(anthropicTool, "description", desc.String())
+						_ = toolDoc.Set("description", desc.String())
 					}
 					if params := funcDecl.Get("parameters"); params.Exists() {
-						// Clean up the parameters schema for Claude Code compatibility
-						cleaned := params.Raw
-						cleaned, _ = sjson.Set(cleaned, "additionalProperties", false)
-						cleaned, _ = sjson.Set(cleaned, "$schema", "http://json-schema.org/draft-07/schema#")
-						anthropicTool, _ = sjson.SetRaw(anthropicTool, "input_schema", cleaned)
+						cleaned := normalizeClaudeToolSchema(params)
+						_ = toolDoc.SetRawBytes("input_schema", cleaned)
 					} else if params = funcDecl.Get("parametersJsonSchema"); params.Exists() {
-						// Clean up the parameters schema for Claude Code compatibility
-						cleaned := params.Raw
-						cleaned, _ = sjson.Set(cleaned, "additionalProperties", false)
-						cleaned, _ = sjson.Set(cleaned, "$schema", "http://json-schema.org/draft-07/schema#")
-						anthropicTool, _ = sjson.SetRaw(anthropicTool, "input_schema", cleaned)
+						cleaned := normalizeClaudeToolSchema(params)
+						_ = toolDoc.SetRawBytes("input_schema", cleaned)
+					} else {
+						_ = toolDoc.SetRaw("input_schema", `{"type":"object","properties":{}}`)
 					}
 
-					anthropicTools = append(anthropicTools, gjson.Parse(anthropicTool).Value())
+					anthropicTool := lowercaseClaudeToolSchemaTypes(toolDoc.Bytes())
+					anthropicTools = append(anthropicTools, util.ParseGJSONBytesNoCopy(anthropicTool).Value())
 					return true
 				})
 			}
@@ -351,31 +418,308 @@ func ConvertGeminiRequestToClaude(modelName string, inputRawJSON []byte, stream 
 		})
 
 		if len(anthropicTools) > 0 {
-			out, _ = sjson.Set(out, "tools", anthropicTools)
+			_ = outDoc.Set("tools", anthropicTools)
 		}
 	}
 
 	// Tool config mapping from Gemini format to Claude Code format
 	if toolConfig := root.Get("tool_config"); toolConfig.Exists() {
-		if funcCalling := toolConfig.Get("function_calling_config"); funcCalling.Exists() {
-			if mode := funcCalling.Get("mode"); mode.Exists() {
-				switch mode.String() {
-				case "AUTO":
-					out, _ = sjson.SetRaw(out, "tool_choice", `{"type":"auto"}`)
-				case "NONE":
-					out, _ = sjson.SetRaw(out, "tool_choice", `{"type":"none"}`)
-				case "ANY":
-					out, _ = sjson.SetRaw(out, "tool_choice", `{"type":"any"}`)
-				}
-			}
-		}
+		setClaudeToolChoiceFromGeminiToolConfigDoc(outDoc, toolConfig.Get("function_calling_config"))
+	} else if toolConfig := root.Get("toolConfig"); toolConfig.Exists() {
+		setClaudeToolChoiceFromGeminiToolConfigDoc(outDoc, toolConfig.Get("functionCallingConfig"))
 	}
 
 	// Stream setting configuration
-	out, _ = sjson.Set(out, "stream", stream)
+	_ = outDoc.Set("stream", stream)
 
-	// Convert tool parameter types to lowercase for Claude Code compatibility
-	out = translatorcommon.LowerToolSchemaTypes(out)
+	errResult := drops.Err()
+	if errResult == nil {
+		errResult = toolOutputErr
+	}
+	return thinking.ApplyTranslatedSummaryToClaude(outDoc.Bytes(), rawJSON, "gemini", modelName), errResult
+}
 
-	return translatorcommon.OutputFormatFromGemini(root).WriteClaude([]byte(out), modelName)
+// orderGeminiClaudeToolResults keeps tool results before other user content,
+// including when adjacent Gemini user turns were merged into one Claude turn.
+func orderGeminiClaudeToolResults(messages [][]byte) {
+	for i, message := range messages {
+		root := util.ParseGJSONBytesNoCopy(message)
+		if root.Get("role").String() != "user" {
+			continue
+		}
+		var results, other [][]byte
+		hasOther, needsReorder := false, false
+		root.Get("content").ForEach(func(_, part ojson.Result) bool {
+			if part.Get("type").String() == "tool_result" {
+				results = append(results, []byte(part.Raw))
+				needsReorder = needsReorder || hasOther
+			} else {
+				other = append(other, []byte(part.Raw))
+				hasOther = true
+			}
+			return true
+		})
+		if needsReorder {
+			messageDoc := ojson.NewDoc(message)
+			_ = messageDoc.SetRawBytes("content", translatorcommon.JoinRawArray(append(results, other...)))
+			messages[i] = messageDoc.Bytes()
+		}
+	}
+}
+
+func normalizeClaudeToolSchema(parameters ojson.Result) []byte {
+	cleanedDoc := ojson.NewDocString(util.NormalizeJSONSchemaNumericConstraints(parameters.Raw))
+	if parameters.Get("additionalProperties").Type != ojson.False {
+		_ = cleanedDoc.Set("additionalProperties", false)
+	}
+	const schema = "http://json-schema.org/draft-07/schema#"
+	currentSchema := parameters.Get("$schema")
+	if currentSchema.Type != ojson.String || currentSchema.String() != schema {
+		_ = cleanedDoc.Set("$schema", schema)
+	}
+	return cleanedDoc.Bytes()
+}
+
+func lowercaseClaudeToolSchemaTypes(tool []byte) []byte {
+	var pathsToLower []string
+	util.Walk(util.ParseGJSONBytesNoCopy(tool), "", "type", &pathsToLower)
+	var toolDoc *ojson.Doc
+	for _, path := range pathsToLower {
+		typeValue := ojson.GetBytesNoCopy(tool, path)
+		normalizedType := strings.ToLower(typeValue.String())
+		if typeValue.Type == ojson.String && normalizedType == typeValue.String() {
+			continue
+		}
+		if toolDoc == nil {
+			toolDoc = ojson.NewDoc(tool)
+		}
+		_ = toolDoc.Set(path, normalizedType)
+	}
+	if toolDoc != nil {
+		return toolDoc.Bytes()
+	}
+	return tool
+}
+
+func setClaudeToolChoiceFromGeminiToolConfigDoc(outDoc *ojson.Doc, funcCalling ojson.Result) {
+	if !funcCalling.Exists() {
+		return
+	}
+	mode := funcCalling.Get("mode")
+	if !mode.Exists() {
+		return
+	}
+	switch mode.String() {
+	case "AUTO":
+		_ = outDoc.SetRaw("tool_choice", `{"type":"auto"}`)
+	case "NONE":
+		_ = outDoc.SetRaw("tool_choice", `{"type":"none"}`)
+	case "ANY":
+		allowedNames := funcCalling.Get("allowedFunctionNames")
+		if !allowedNames.Exists() {
+			allowedNames = funcCalling.Get("allowed_function_names")
+		}
+		allowedNameItems := allowedNames.Array()
+		if allowedNames.IsArray() && len(allowedNameItems) == 1 {
+			choice := []byte(`{"type":"tool","name":""}`)
+			choice, _ = ojson.SetBytes(choice, "name", util.SanitizeClaudeFunctionName(allowedNameItems[0].String()))
+			_ = outDoc.SetRawBytes("tool_choice", choice)
+		} else {
+			_ = outDoc.SetRaw("tool_choice", `{"type":"any"}`)
+		}
+	}
+}
+
+func geminiClaudeInlineData(part ojson.Result) ojson.Result {
+	inlineData := part.Get("inlineData")
+	if inlineData.Exists() {
+		return inlineData
+	}
+	return part.Get("inline_data")
+}
+
+func geminiClaudeFileData(part ojson.Result) ojson.Result {
+	fileData := part.Get("fileData")
+	if fileData.Exists() {
+		return fileData
+	}
+	return part.Get("file_data")
+}
+
+// claudeContentPartFromGeminiInlineData maps inline bytes onto a Claude block.
+// Media that Claude cannot read becomes placeholder text only when
+// keepPlaceholder is set; otherwise it reports false so the caller can refuse it.
+func claudeContentPartFromGeminiInlineData(inlineData ojson.Result, keepPlaceholder bool) ([]byte, bool) {
+	mimeType := inlineData.Get("mimeType").String()
+	if mimeType == "" {
+		mimeType = inlineData.Get("mime_type").String()
+	}
+	data := inlineData.Get("data").String()
+	if mimeType == "" || data == "" {
+		return nil, false
+	}
+	lowerMimeType := strings.ToLower(mimeType)
+	switch {
+	case strings.HasPrefix(lowerMimeType, "image/"):
+		imageDoc := ojson.NewDoc([]byte(`{"type":"image","source":{"type":"base64","media_type":"","data":""}}`))
+		_ = imageDoc.Set("source.media_type", mimeType)
+		_ = imageDoc.Set("source.data", data)
+		return imageDoc.Bytes(), true
+	case strings.HasPrefix(lowerMimeType, "application/"), strings.HasPrefix(lowerMimeType, "text/"):
+		docDoc := ojson.NewDoc([]byte(`{"type":"document","source":{"type":"base64","media_type":"","data":""}}`))
+		_ = docDoc.Set("source.media_type", mimeType)
+		_ = docDoc.Set("source.data", data)
+		return docDoc.Bytes(), true
+	default:
+		if !keepPlaceholder {
+			return nil, false
+		}
+		return claudeTextContentPart(fmt.Sprintf("Media content: inline data (Type: %s)", mimeType)), true
+	}
+}
+
+func claudeContentPartFromGeminiFileData(fileData ojson.Result) ([]byte, bool) {
+	fileURI := fileData.Get("fileUri").String()
+	if fileURI == "" {
+		fileURI = fileData.Get("file_uri").String()
+	}
+	if fileURI == "" {
+		return nil, false
+	}
+	mimeType := fileData.Get("mimeType").String()
+	if mimeType == "" {
+		mimeType = fileData.Get("mime_type").String()
+	}
+	lowerMimeType := strings.ToLower(mimeType)
+	switch {
+	case strings.HasPrefix(lowerMimeType, "image/"):
+		imageContent := []byte(`{"type":"image","source":{"type":"url","url":""}}`)
+		imageContent, _ = ojson.SetBytes(imageContent, "source.url", fileURI)
+		return imageContent, true
+	case strings.HasPrefix(lowerMimeType, "application/"), strings.HasPrefix(lowerMimeType, "text/"):
+		docDoc := ojson.NewDoc([]byte(`{"type":"document","source":{"type":"url","url":""}}`))
+		_ = docDoc.Set("source.url", fileURI)
+		if mimeType != "" {
+			_ = docDoc.Set("source.media_type", mimeType)
+		}
+		return docDoc.Bytes(), true
+	default:
+		fileInfo := "File: " + fileURI
+		if mimeType != "" {
+			fileInfo += " (Type: " + mimeType + ")"
+		}
+		return claudeTextContentPart(fileInfo), true
+	}
+}
+
+func claudeTextContentPart(text string) []byte {
+	textContent := []byte(`{"type":"text","text":""}`)
+	textContent, _ = ojson.SetBytes(textContent, "text", text)
+	return textContent
+}
+
+func isEmptyGeminiClaudeResponseObject(v ojson.Result) bool {
+	if !v.Exists() {
+		return true
+	}
+	if v.IsObject() {
+		empty := true
+		v.ForEach(func(_, _ ojson.Result) bool {
+			empty = false
+			return false
+		})
+		return empty
+	}
+	return strings.TrimSpace(v.Raw) == ""
+}
+
+func geminiClaudeResponseHasOnlyResultKey(responseField ojson.Result) bool {
+	if !responseField.IsObject() {
+		return false
+	}
+	hasResult := false
+	onlyResult := true
+	responseField.ForEach(func(key, _ ojson.Result) bool {
+		if key.String() == "result" {
+			hasResult = true
+			return true
+		}
+		onlyResult = false
+		return false
+	})
+	return hasResult && onlyResult
+}
+
+func setClaudeToolResultContentFromGemini(toolResultDoc *ojson.Doc, fr ojson.Result, isAssistant bool, drops *translatorcommon.UserTurnDrops) error {
+	resultField := fr.Get("response.result")
+	responseField := fr.Get("response")
+	hasBaseText := false
+	baseText := ""
+	if resultField.Exists() && geminiClaudeResponseHasOnlyResultKey(responseField) {
+		baseText = resultField.String()
+		hasBaseText = strings.TrimSpace(baseText) != ""
+	} else if !isEmptyGeminiClaudeResponseObject(responseField) {
+		baseText = responseField.Raw
+		hasBaseText = true
+	}
+
+	var nestedBlocks [][]byte
+	droppedType := ""
+	if frParts := fr.Get("parts"); frParts.Exists() && frParts.IsArray() {
+		frParts.ForEach(func(_, nested ojson.Result) bool {
+			if text := nested.Get("text"); text.Exists() {
+				if strings.TrimSpace(text.String()) != "" {
+					nestedBlocks = append(nestedBlocks, claudeTextContentPart(text.String()))
+				}
+				return true
+			}
+			if inlineData := geminiClaudeInlineData(nested); inlineData.Exists() {
+				if contentPart, ok := claudeContentPartFromGeminiInlineData(inlineData, isAssistant); ok {
+					nestedBlocks = append(nestedBlocks, contentPart)
+				} else if !isAssistant {
+					if droppedType == "" {
+						droppedType = "inlineData"
+					}
+					if drops != nil {
+						drops.Drop("inlineData")
+					}
+				}
+				return true
+			}
+			if fileData := geminiClaudeFileData(nested); fileData.Exists() {
+				if contentPart, ok := claudeContentPartFromGeminiFileData(fileData); ok {
+					nestedBlocks = append(nestedBlocks, contentPart)
+				} else if !isAssistant {
+					if droppedType == "" {
+						droppedType = "fileData"
+					}
+					if drops != nil {
+						drops.Drop("fileData")
+					}
+				}
+				return true
+			}
+			return true
+		})
+	}
+
+	if len(nestedBlocks) > 0 {
+		blocks := make([][]byte, 0, len(nestedBlocks)+1)
+		if hasBaseText {
+			blocks = append(blocks, claudeTextContentPart(baseText))
+		}
+		blocks = append(blocks, nestedBlocks...)
+		_ = toolResultDoc.SetRawBytes("content", translatorcommon.JoinRawArray(blocks))
+		return nil
+	}
+
+	if resultField.Exists() && geminiClaudeResponseHasOnlyResultKey(responseField) {
+		_ = toolResultDoc.Set("content", resultField.String())
+	} else if responseField.Exists() {
+		_ = toolResultDoc.Set("content", responseField.Raw)
+	}
+	if droppedType != "" && !hasBaseText {
+		return &translatorcommon.UnsupportedPartError{Type: droppedType}
+	}
+	return nil
 }

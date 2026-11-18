@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strings"
 
-	internalclaude "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/claude"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	internalclaude "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/claude"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
 
 func RecordFromTokenStorage(tokenStorage *internalclaude.ClaudeTokenStorage) *coreauth.Auth {

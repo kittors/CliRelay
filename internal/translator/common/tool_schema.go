@@ -3,8 +3,8 @@ package common
 import (
 	"strings"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
-	"github.com/tidwall/gjson"
+	"github.com/MoeForge/moego/ojson"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	"github.com/tidwall/sjson"
 )
 
@@ -20,14 +20,14 @@ import (
 // property that is itself named "type".
 func LowerToolSchemaTypes(out string) string {
 	var paths []string
-	tools := gjson.Get(out, "tools")
+	tools := ojson.Get(out, "tools")
 	util.Walk(tools, "", "type", &paths)
 	if len(paths) == 0 {
 		return out
 	}
 	raw := tools.Raw
 	for _, p := range paths {
-		raw, _ = sjson.Set(raw, p, strings.ToLower(gjson.Get(raw, p).String()))
+		raw, _ = sjson.Set(raw, p, strings.ToLower(ojson.Get(raw, p).String()))
 	}
 	out, _ = sjson.SetRaw(out, "tools", raw)
 	return out

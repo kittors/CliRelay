@@ -1,84 +1,13 @@
 package auth
 
 import (
-	"context"
 	"fmt"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
-	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 )
-
-func canonicalModelKey(model string) string {
-	model = strings.TrimSpace(model)
-	if model == "" {
-		return ""
-	}
-	parsed := parseModelSuffix(model)
-	modelName := strings.TrimSpace(parsed.ModelName)
-	if modelName == "" {
-		return model
-	}
-	return modelName
-}
-
-func authWebsocketsEnabled(auth *Auth) bool {
-	if auth == nil {
-		return false
-	}
-	if len(auth.Attributes) > 0 {
-		if raw := strings.TrimSpace(auth.Attributes["websockets"]); raw != "" {
-			parsed, errParse := strconv.ParseBool(raw)
-			if errParse == nil {
-				return parsed
-			}
-		}
-	}
-	if len(auth.Metadata) == 0 {
-		return false
-	}
-	raw, ok := auth.Metadata["websockets"]
-	if !ok || raw == nil {
-		return false
-	}
-	switch v := raw.(type) {
-	case bool:
-		return v
-	case string:
-		parsed, errParse := strconv.ParseBool(strings.TrimSpace(v))
-		if errParse == nil {
-			return parsed
-		}
-	default:
-	}
-	return false
-}
-
-func preferCodexWebsocketAuths(ctx context.Context, provider string, available []*Auth) []*Auth {
-	if len(available) == 0 {
-		return available
-	}
-	if !cliproxyexecutor.DownstreamWebsocket(ctx) {
-		return available
-	}
-	if !strings.EqualFold(strings.TrimSpace(provider), "codex") {
-		return available
-	}
-
-	wsEnabled := make([]*Auth, 0, len(available))
-	for i := 0; i < len(available); i++ {
-		candidate := available[i]
-		if authWebsocketsEnabled(candidate) {
-			wsEnabled = append(wsEnabled, candidate)
-		}
-	}
-	if len(wsEnabled) > 0 {
-		return wsEnabled
-	}
-	return available
-}
 
 // collectAvailableAuths partitions candidates into "can serve now" and the
 // diagnostic counters used to explain an empty result. Weight filtering is not
@@ -190,62 +119,6 @@ func weightedSelectionScope(meta map[string]any) string {
 // therefore meant "share" in one group and "hard cutoff" in another, and an
 // account with no configured priority (tier 0) was silently excluded from any
 // group where somebody else had set 1.
-func getAvailableAuths(auths []*Auth, provider, model string, now time.Time) ([]*Auth, error) {
-	if len(auths) == 0 {
-		return nil, &Error{Code: "auth_not_found", Message: "no auth candidates"}
-	}
-
-	available, cooldownCount, earliest, temporaryCount, temporaryEarliest := collectAvailableAuths(auths, model, now)
-	if len(available) == 0 {
-		if cooldownCount == len(auths) && !earliest.IsZero() {
-			providerForError := provider
-			if providerForError == "mixed" {
-				providerForError = ""
-			}
-			resetIn := earliest.Sub(now)
-			if resetIn < 0 {
-				resetIn = 0
-			}
-			return nil, newModelCooldownError(model, providerForError, resetIn)
-		}
-		if temporaryCount == len(auths) && !temporaryEarliest.IsZero() {
-			// Every candidate is parked, but only for a moment. Answering 503 here
-			// costs more than it saves: the reply is instant, so a retrying client
-			// simply asks again and again inside the same window, turning one
-			// upstream blip into a burst of failures. Let the soonest-recovering
-			// credential try instead and report whatever upstream actually says.
-			if candidate := earliestOptimisticCandidate(auths, model, now); candidate != nil {
-				return []*Auth{candidate}, nil
-			}
-			providerForError := provider
-			if providerForError == "mixed" {
-				providerForError = ""
-			}
-			resetIn := temporaryEarliest.Sub(now)
-			if resetIn < 0 {
-				resetIn = 0
-			}
-			return nil, newModelUnavailableError(model, providerForError, resetIn)
-		}
-		return nil, &Error{Code: "auth_unavailable", Message: "no auth available"}
-	}
-
-	scheduled := make([]*Auth, 0, len(available))
-	for _, candidate := range available {
-		if authParticipatesInSelection(candidate) {
-			scheduled = append(scheduled, candidate)
-		}
-	}
-	if len(scheduled) == 0 {
-		// Healthy accounts exist but every one of them is weighted 0. Saying
-		// "no auth available" here would send the operator hunting for a quota
-		// or auth problem that does not exist.
-		return nil, &Error{Code: "auth_excluded_by_weight", Message: "every candidate in this routing scope is configured with weight 0"}
-	}
-
-	sort.Slice(scheduled, func(i, j int) bool { return scheduled[i].ID < scheduled[j].ID })
-	return scheduled, nil
-}
 
 // optimisticRetryWindow bounds how near a recovery has to be before a request is
 // allowed through an empty pool. It covers a load-shed back-off without reaching
@@ -280,11 +153,6 @@ func earliestOptimisticCandidate(auths []*Auth, model string, now time.Time) *Au
 		}
 	}
 	return best
-}
-
-func isAuthBlockedForModel(auth *Auth, model string, now time.Time) (bool, blockReason, time.Time) {
-	block := authBlockForModel(auth, model, now)
-	return block.blocked, block.reason, block.next
 }
 
 // authBlock is why a credential cannot serve a model right now. lastErr and

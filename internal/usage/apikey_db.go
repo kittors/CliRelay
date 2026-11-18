@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	sqlapikey "github.com/router-for-me/CLIProxyAPI/v6/internal/storage/sqlstore/apikey"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	sqlapikey "github.com/router-for-me/CLIProxyAPI/v8/internal/storage/sqlstore/apikey"
 	log "github.com/sirupsen/logrus"
 )
 

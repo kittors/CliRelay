@@ -4,7 +4,8 @@ import (
 	"strings"
 	"time"
 
-	sdkconfig "github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
+	internalconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	sdkconfig "github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
 )
 
 type runtimeConfigSnapshot struct {
@@ -136,6 +137,16 @@ func (m *Manager) currentRuntimeConfig() *runtimeConfigSnapshot {
 func (m *Manager) currentRuntimeConfigForTenant(tenantID string) *runtimeConfigSnapshot {
 	if m == nil {
 		return emptyRuntimeConfigSnapshot
+	}
+	if set, ok := m.tenantRuntimeConfigs.Load().(runtimeConfigSnapshotSet); ok {
+		if cfg := set[normalizedTenantID(tenantID)]; cfg != nil {
+			return cfg
+		}
+	}
+	// Compatibility for callers and older tests that still publish the
+	// process-wide internal config directly.
+	if cfg, ok := m.runtimeConfig.Load().(*internalconfig.Config); ok && cfg != nil {
+		return newRuntimeConfigSnapshot(cfg)
 	}
 	set, _ := m.runtimeConfig.Load().(runtimeConfigSnapshotSet)
 	if cfg := set[normalizedTenantID(tenantID)]; cfg != nil {

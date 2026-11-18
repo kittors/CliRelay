@@ -3,8 +3,8 @@ package auth
 import (
 	"testing"
 
-	sdkconfig "github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
-	sdkrouting "github.com/router-for-me/CLIProxyAPI/v6/sdk/routing"
+	sdkconfig "github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
+	sdkrouting "github.com/router-for-me/CLIProxyAPI/v8/sdk/routing"
 )
 
 // The groups are the ones of the 2026-10-28 report: a CC Switch preset routed to

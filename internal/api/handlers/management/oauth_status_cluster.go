@@ -4,7 +4,7 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
-	oauthsession "github.com/router-for-me/CLIProxyAPI/v6/internal/management/oauth/session"
+	oauthsession "github.com/router-for-me/CLIProxyAPI/v8/internal/management/oauth/session"
 )
 
 // respondSharedAuthStatus answers get-auth-status from the shared session
@@ -17,11 +17,27 @@ import (
 // GetAuthStatus follows the same rules now that the memory store keeps
 // superseded sessions as tombstones instead of deleting them.
 func respondSharedAuthStatus(c *gin.Context, state string) bool {
-	shared := sharedOAuthSessions.Load()
+	shared := sharedOAuthSessionStore()
 	if shared == nil {
 		return false
 	}
-	lookup, err := shared.Lookup(state)
+	lookupStore, ok := shared.(sharedOAuthSessionLookup)
+	if !ok {
+		session, found := shared.Get(state)
+		if !found {
+			c.JSON(http.StatusNotFound, gin.H{"status": "error", "error": "oauth state not found or expired", "code": oauthCodeSessionExpired})
+			return true
+		}
+		if session.Status == oauthsession.StatusCompleted {
+			c.JSON(http.StatusOK, gin.H{"status": "ok"})
+		} else if session.Status != "" {
+			c.JSON(http.StatusOK, gin.H{"status": "error", "error": session.Status})
+		} else {
+			c.JSON(http.StatusOK, gin.H{"status": "wait"})
+		}
+		return true
+	}
+	lookup, err := lookupStore.Lookup(state)
 	if err != nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"status": "error", "error": "oauth session store unavailable"})
 		return true
@@ -59,11 +75,15 @@ func respondSharedAuthStatus(c *gin.Context, state string) bool {
 // Another tenant's state is never reported, so the answer reveals nothing a
 // plain "unknown state" would not.
 func sharedOAuthStateSuperseded(c *gin.Context, state string) bool {
-	shared := sharedOAuthSessions.Load()
+	shared := sharedOAuthSessionStore()
 	if shared == nil {
 		return false
 	}
-	lookup, err := shared.Lookup(state)
+	lookupStore, ok := shared.(sharedOAuthSessionLookup)
+	if !ok {
+		return false
+	}
+	lookup, err := lookupStore.Lookup(state)
 	if err != nil || lookup.Outcome != oauthsession.LookupSuperseded {
 		return false
 	}

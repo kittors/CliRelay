@@ -36,7 +36,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/quota"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/quota"
 )
 
 // DefaultSettleAfter bounds how long a finished request waits for its usage

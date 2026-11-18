@@ -7,9 +7,9 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/identity"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/ipaccess"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/loginlockout"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/identity"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/ipaccess"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/loginlockout"
 )
 
 // writePasswordPolicyError emits a per-rule error code when the failure is a

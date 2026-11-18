@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/accesspolicy"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/quota"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/quota/inflight"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/accesspolicy"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/quota"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/quota/inflight"
 )
 
 // These regressions reproduced on dev 068757f3 before the ordering fix.

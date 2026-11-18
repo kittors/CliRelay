@@ -1,7 +1,7 @@
 package enduser
 
 import (
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/identity"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/identity"
 	"golang.org/x/crypto/bcrypt"
 )
 

@@ -5,9 +5,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/codexadmission"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/management/patchfield"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/codexadmission"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/management/patchfield"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
 
 // FieldPatch carries editable auth-file fields from the management API into

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 )
 
 const (
@@ -15,24 +16,203 @@ const (
 	writeTimeout         = 10 * time.Second
 	maxInboundMessageLen = 64 << 20 // 64 MiB
 	heartbeatInterval    = 30 * time.Second
+	pendingChannelBuffer = 64
 )
 
 var errClosed = errors.New("websocket session closed")
 
 type pendingRequest struct {
-	ch        chan Message
-	done      chan struct{}
-	closeOnce sync.Once
+	mu         sync.Mutex
+	ch         chan Message
+	closed     bool
+	terminal   bool
+	done       chan struct{}
+	reqCtx     context.Context
+	stopCancel func() bool
+	onBlocked  func()
+}
+
+func newPendingRequest(ctx context.Context) *pendingRequest {
+	return &pendingRequest{
+		ch:     make(chan Message, pendingChannelBuffer),
+		done:   make(chan struct{}),
+		reqCtx: ctx,
+	}
+}
+
+func (pr *pendingRequest) ensureInitializedLocked(ctx context.Context) {
+	if pr.done == nil {
+		pr.done = make(chan struct{})
+	}
+	if pr.ch == nil {
+		pr.ch = make(chan Message, pendingChannelBuffer)
+	}
+	if pr.reqCtx == nil && ctx != nil {
+		pr.reqCtx = ctx
+	}
+}
+
+func (pr *pendingRequest) deliver(sessClosed <-chan struct{}, msg Message) bool {
+	if pr == nil {
+		return false
+	}
+	pr.mu.Lock()
+	defer pr.mu.Unlock()
+	pr.ensureInitializedLocked(nil)
+	if pr.closed || pr.terminal {
+		return false
+	}
+
+	var ctxDone <-chan struct{}
+	if pr.reqCtx != nil {
+		ctxDone = pr.reqCtx.Done()
+	}
+
+	if pr.onBlocked != nil && len(pr.ch) == cap(pr.ch) {
+		fn := pr.onBlocked
+		pr.onBlocked = nil
+		fn()
+	}
+
+	select {
+	case <-pr.done:
+		return false
+	case <-sessClosed:
+		return false
+	case <-ctxDone:
+		return false
+	case pr.ch <- msg:
+		return true
+	}
+}
+
+func (pr *pendingRequest) deliverTerminal(sessClosed <-chan struct{}, msg Message) bool {
+	if pr == nil {
+		return false
+	}
+	pr.mu.Lock()
+	defer pr.mu.Unlock()
+	pr.ensureInitializedLocked(nil)
+	if pr.closed || pr.terminal {
+		return false
+	}
+
+	var ctxDone <-chan struct{}
+	if pr.reqCtx != nil {
+		ctxDone = pr.reqCtx.Done()
+	}
+
+	if pr.onBlocked != nil && len(pr.ch) == cap(pr.ch) {
+		fn := pr.onBlocked
+		pr.onBlocked = nil
+		fn()
+	}
+
+	select {
+	case <-pr.done:
+		return false
+	case <-sessClosed:
+		return false
+	case <-ctxDone:
+		return false
+	case pr.ch <- msg:
+		pr.terminal = true
+		return true
+	}
+}
+
+func (pr *pendingRequest) setOnBlocked(fn func()) {
+	if pr == nil {
+		return
+	}
+	pr.mu.Lock()
+	defer pr.mu.Unlock()
+	pr.onBlocked = fn
+}
+
+func (pr *pendingRequest) setStopCancel(stop func() bool) {
+	if pr == nil {
+		return
+	}
+	pr.mu.Lock()
+	defer pr.mu.Unlock()
+	pr.stopCancel = stop
+}
+
+func (pr *pendingRequest) cancel() {
+	if pr == nil {
+		return
+	}
+	pr.mu.Lock()
+	defer pr.mu.Unlock()
+	pr.ensureInitializedLocked(nil)
+	if pr.closed {
+		return
+	}
+	pr.closed = true
+	if pr.stopCancel != nil {
+		pr.stopCancel()
+	}
+	select {
+	case <-pr.done:
+	default:
+		close(pr.done)
+	}
+	close(pr.ch)
+}
+
+func (pr *pendingRequest) cancelWithError(cause error) {
+	if pr == nil {
+		return
+	}
+	pr.mu.Lock()
+	defer pr.mu.Unlock()
+	pr.ensureInitializedLocked(nil)
+	if pr.closed {
+		return
+	}
+	pr.closed = true
+	if pr.stopCancel != nil {
+		pr.stopCancel()
+	}
+	select {
+	case <-pr.done:
+	default:
+		close(pr.done)
+	}
+	if !pr.terminal && cause != nil {
+		msg := Message{Type: MessageTypeError, Payload: map[string]any{"error": cause.Error()}}
+		select {
+		case pr.ch <- msg:
+		default:
+			select {
+			case <-pr.ch:
+			default:
+			}
+			select {
+			case pr.ch <- msg:
+			default:
+			}
+		}
+	}
+	close(pr.ch)
 }
 
 func (pr *pendingRequest) close() {
 	if pr == nil {
 		return
 	}
-	pr.closeOnce.Do(func() {
-		close(pr.ch)
-		close(pr.done)
-	})
+	pr.mu.Lock()
+	defer pr.mu.Unlock()
+	pr.ensureInitializedLocked(nil)
+	if pr.closed {
+		return
+	}
+	pr.closed = true
+	if pr.stopCancel != nil {
+		pr.stopCancel()
+	}
+	close(pr.ch)
 }
 
 type session struct {
@@ -55,15 +235,9 @@ func newSession(conn *websocket.Conn, mgr *Manager, id string) *session {
 		closed:   make(chan struct{}),
 	}
 	conn.SetReadLimit(maxInboundMessageLen)
-	if err := conn.SetReadDeadline(time.Now().Add(readTimeout)); err != nil {
-		_ = conn.Close()
-	}
+	conn.SetReadDeadline(time.Now().Add(readTimeout))
 	conn.SetPongHandler(func(string) error {
-		// If we fail to extend the read deadline, close the connection so the
-		// session is eventually cleaned up.
-		if err := conn.SetReadDeadline(time.Now().Add(readTimeout)); err != nil {
-			return err
-		}
+		conn.SetReadDeadline(time.Now().Add(readTimeout))
 		return nil
 	})
 	s.startHeartbeat()
@@ -108,27 +282,50 @@ func (s *session) run(ctx context.Context) {
 
 func (s *session) dispatch(msg Message) {
 	if msg.Type == MessageTypePing {
-		// Pong responses are transport-level keepalive traffic initiated by the
-		// websocket peer, not by any caller request. They therefore use a detached
-		// context and rely on the session connection lifecycle for cleanup.
 		_ = s.send(context.Background(), Message{ID: msg.ID, Type: MessageTypePong})
 		return
 	}
 	if value, ok := s.pending.Load(msg.ID); ok {
 		req := value.(*pendingRequest)
-		select {
-		case req.ch <- msg:
-		default:
-		}
-		if msg.Type == MessageTypeHTTPResp || msg.Type == MessageTypeError || msg.Type == MessageTypeStreamEnd {
+		isTerminal := msg.Type == MessageTypeHTTPResp || msg.Type == MessageTypeError || msg.Type == MessageTypeStreamEnd
+		if isTerminal {
+			delivered := req.deliverTerminal(s.closed, msg)
 			if actual, loaded := s.pending.LoadAndDelete(msg.ID); loaded {
-				actual.(*pendingRequest).close()
+				actualReq := actual.(*pendingRequest)
+				if delivered {
+					actualReq.close()
+				} else {
+					var cause error
+					select {
+					case <-s.closed:
+						cause = errClosed
+					default:
+						if actualReq.reqCtx != nil && actualReq.reqCtx.Err() != nil {
+							cause = actualReq.reqCtx.Err()
+						} else if msg.Type == MessageTypeError {
+							if errMsg, ok := msg.Payload["error"].(string); ok && errMsg != "" {
+								cause = errors.New(errMsg)
+							} else {
+								cause = errors.New("wsrelay: upstream error")
+							}
+						}
+					}
+					if cause != nil {
+						actualReq.cancelWithError(cause)
+					} else {
+						actualReq.cancel()
+					}
+				}
 			}
+		} else {
+			req.deliver(s.closed, msg)
 		}
 		return
 	}
 	if msg.Type == MessageTypeHTTPResp || msg.Type == MessageTypeError || msg.Type == MessageTypeStreamEnd {
-		s.manager.logDebugf("wsrelay: received terminal message for unknown id %s (provider=%s)", msg.ID, s.provider)
+		if s.manager != nil {
+			s.manager.logDebugf("wsrelay: received terminal message for unknown id %s (provider=%s)", msg.ID, s.provider)
+		}
 	}
 }
 
@@ -143,6 +340,7 @@ func (s *session) send(ctx context.Context, msg Message) error {
 	if err := s.conn.SetWriteDeadline(time.Now().Add(writeTimeout)); err != nil {
 		return fmt.Errorf("set write deadline: %w", err)
 	}
+	cliproxyexecutor.MarkUpstreamAttempt(ctx)
 	if err := s.conn.WriteJSON(msg); err != nil {
 		return fmt.Errorf("write json: %w", err)
 	}
@@ -153,11 +351,19 @@ func (s *session) request(ctx context.Context, msg Message) (<-chan Message, err
 	if msg.ID == "" {
 		return nil, fmt.Errorf("wsrelay: message id is required")
 	}
-	if _, loaded := s.pending.LoadOrStore(msg.ID, &pendingRequest{ch: make(chan Message, 8), done: make(chan struct{})}); loaded {
+	req := newPendingRequest(ctx)
+	if _, loaded := s.pending.LoadOrStore(msg.ID, req); loaded {
+		req.close()
 		return nil, fmt.Errorf("wsrelay: duplicate message id %s", msg.ID)
 	}
-	value, _ := s.pending.Load(msg.ID)
-	req := value.(*pendingRequest)
+	if ctx != nil {
+		stop := context.AfterFunc(ctx, func() {
+			if actual, loaded := s.pending.LoadAndDelete(msg.ID); loaded {
+				actual.(*pendingRequest).cancel()
+			}
+		})
+		req.setStopCancel(stop)
+	}
 	if err := s.send(ctx, msg); err != nil {
 		if actual, loaded := s.pending.LoadAndDelete(msg.ID); loaded {
 			req := actual.(*pendingRequest)
@@ -165,18 +371,6 @@ func (s *session) request(ctx context.Context, msg Message) (<-chan Message, err
 		}
 		return nil, err
 	}
-	// The request waiter is owned by the pending request and exits on request
-	// completion, session shutdown, or caller cancellation.
-	go func(pr *pendingRequest) {
-		select {
-		case <-ctx.Done():
-			if actual, loaded := s.pending.LoadAndDelete(msg.ID); loaded {
-				actual.(*pendingRequest).close()
-			}
-		case <-pr.done:
-		case <-s.closed:
-		}
-	}(req)
 	return req.ch, nil
 }
 
@@ -184,17 +378,15 @@ func (s *session) cleanup(cause error) {
 	s.closeOnce.Do(func() {
 		close(s.closed)
 		s.pending.Range(func(key, value any) bool {
-			req := value.(*pendingRequest)
-			msg := Message{ID: key.(string), Type: MessageTypeError, Payload: map[string]any{"error": cause.Error()}}
-			select {
-			case req.ch <- msg:
-			default:
+			if actual, loaded := s.pending.LoadAndDelete(key); loaded {
+				req := actual.(*pendingRequest)
+				req.cancelWithError(cause)
 			}
-			s.pending.Delete(key)
-			req.close()
 			return true
 		})
-		_ = s.conn.Close()
+		if s.conn != nil {
+			_ = s.conn.Close()
+		}
 		if s.manager != nil {
 			s.manager.handleSessionClosed(s, cause)
 		}

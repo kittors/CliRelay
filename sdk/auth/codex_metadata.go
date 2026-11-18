@@ -8,6 +8,17 @@ import (
 	"time"
 )
 
+func metadataString(metadata map[string]any, keys ...string) string {
+	for _, key := range keys {
+		if value, ok := metadata[key].(string); ok {
+			if trimmed := strings.TrimSpace(value); trimmed != "" {
+				return trimmed
+			}
+		}
+	}
+	return ""
+}
+
 func normalizeCodexAuthMetadata(metadata map[string]any) {
 	if metadata == nil {
 		return

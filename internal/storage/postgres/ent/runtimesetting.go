@@ -8,7 +8,7 @@ import (
 
 	"entgo.io/ent"
 	"entgo.io/ent/dialect/sql"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/storage/postgres/ent/runtimesetting"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/storage/postgres/ent/runtimesetting"
 )
 
 // RuntimeSetting is the model entity for the RuntimeSetting schema.

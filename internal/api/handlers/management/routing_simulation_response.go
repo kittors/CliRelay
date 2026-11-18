@@ -3,7 +3,7 @@ package management
 import (
 	"time"
 
-	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
 
 // routingSimulationResponse is what GET /routing-simulation returns. Times are

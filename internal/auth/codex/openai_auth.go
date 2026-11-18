@@ -6,64 +6,71 @@ package codex
 
 import (
 	"context"
-	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/auth/refreshguard"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
-	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	"github.com/MoeForge/moego/json"
+	"github.com/MoeForge/moego/ojson"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	log "github.com/sirupsen/logrus"
+	"golang.org/x/sync/singleflight"
 )
 
 // OAuth configuration constants for OpenAI Codex
 const (
-	AuthURL     = "https://auth.openai.com/oauth/authorize"
-	TokenURL    = "https://auth.openai.com/oauth/token"
-	ClientID    = "app_EMoamEEZ73f0CkXaXp7hrann"
-	RedirectURI = "http://localhost:1455/auth/callback"
+	AuthURL             = "https://auth.openai.com/oauth/authorize"
+	TokenURL            = "https://auth.openai.com/oauth/token"
+	ClientID            = "app_EMoamEEZ73f0CkXaXp7hrann"
+	RedirectURI         = "http://localhost:1455/auth/callback"
+	codexRefreshTimeout = 30 * time.Second
 )
 
 // CodexAuth handles the OpenAI OAuth2 authentication flow.
 // It manages the HTTP client and provides methods for generating authorization URLs,
 // exchanging authorization codes for tokens, and refreshing access tokens.
 type CodexAuth struct {
-	httpClient *http.Client
+	httpClient        *http.Client
+	siwcAgentNameHint string
+	refreshJournal    RefreshJournal
 }
+
+var codexRefreshGroup singleflight.Group
 
 // NewCodexAuth creates a new CodexAuth service instance.
 // It initializes an HTTP client with proxy settings from the provided configuration.
 func NewCodexAuth(cfg *config.Config) *CodexAuth {
-	return NewCodexAuthWithProxy(cfg, "")
+	return NewCodexAuthWithProxyURL(cfg, "")
 }
 
-// NewCodexAuthWithProxy is NewCodexAuth pinned to one egress proxy.
-//
-// Token refresh has to leave from the same address as the credential's own
-// requests; see resolveAuthProxyURL in the executor package for what goes wrong
-// when the two diverge. An empty proxyURL keeps the configured default.
-func NewCodexAuthWithProxy(cfg *config.Config, proxyURL string) *CodexAuth {
-	sdkCfg := sdkConfigWithProxy(cfg, proxyURL)
-	return &CodexAuth{
-		httpClient: util.SetProxy(sdkCfg, util.NewHTTPClient(util.DefaultHTTPClientTimeout)),
-	}
-}
-
-// sdkConfigWithProxy copies the SDK config with proxyURL substituted, so pinning
-// an egress proxy cannot mutate shared configuration.
-func sdkConfigWithProxy(cfg *config.Config, proxyURL string) *config.SDKConfig {
+// NewCodexAuthWithProxyURL creates a new CodexAuth service instance.
+// proxyURL takes precedence over cfg.ProxyURL when non-empty.
+func NewCodexAuthWithProxyURL(cfg *config.Config, proxyURL string) *CodexAuth {
+	effectiveProxyURL := strings.TrimSpace(proxyURL)
 	var sdkCfg config.SDKConfig
+	agentNameHint := SIWCAgentNameHint
 	if cfg != nil {
 		sdkCfg = cfg.SDKConfig
+		if effectiveProxyURL == "" {
+			effectiveProxyURL = strings.TrimSpace(cfg.ProxyURL)
+		}
+		agentNameHint = cfg.Codex.EffectiveSignInWithChatGPTIdentifier()
 	}
-	if proxyURL = strings.TrimSpace(proxyURL); proxyURL != "" {
-		sdkCfg.ProxyURL = proxyURL
+	sdkCfg.ProxyURL = effectiveProxyURL
+	var journal RefreshJournal
+	if cfg != nil && strings.TrimSpace(cfg.AuthDir) != "" {
+		journal = &FileRefreshJournal{Dir: cfg.AuthDir}
 	}
-	return &sdkCfg
+	return &CodexAuth{
+		httpClient:        util.SetProxy(&sdkCfg, &http.Client{}),
+		siwcAgentNameHint: agentNameHint,
+		refreshJournal:    journal,
+	}
 }
 
 // GenerateAuthURL creates the OAuth authorization URL with PKCE (Proof Key for Code Exchange).
@@ -134,7 +141,7 @@ func (o *CodexAuth) ExchangeCodeForTokensWithRedirect(ctx context.Context, code,
 		_ = resp.Body.Close()
 	}()
 
-	body, err := util.ReadHTTPResponseBody("codex-oauth", resp.Body)
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read token response: %w", err)
 	}
@@ -165,9 +172,11 @@ func (o *CodexAuth) ExchangeCodeForTokensWithRedirect(ctx context.Context, code,
 
 	accountID := ""
 	email := ""
+	planType := DefaultPlanType
 	if claims != nil {
 		accountID = claims.GetAccountID()
 		email = claims.GetUserEmail()
+		planType = claims.GetPlanType()
 	}
 
 	// Create token data
@@ -177,6 +186,7 @@ func (o *CodexAuth) ExchangeCodeForTokensWithRedirect(ctx context.Context, code,
 		RefreshToken: tokenResp.RefreshToken,
 		AccountID:    accountID,
 		Email:        email,
+		PlanType:     planType,
 		Expire:       time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second).Format(time.RFC3339),
 	}
 
@@ -192,24 +202,35 @@ func (o *CodexAuth) ExchangeCodeForTokensWithRedirect(ctx context.Context, code,
 // RefreshTokens refreshes an access token using a refresh token.
 // This method is called when an access token has expired. It makes a request to the
 // token endpoint to obtain a new set of tokens.
-//
-// OpenAI refresh tokens are single-use, so the exchange runs through
-// refreshguard: it finishes even if ctx ends, and concurrent refreshes of one
-// token share a single request.
 func (o *CodexAuth) RefreshTokens(ctx context.Context, refreshToken string) (*CodexTokenData, error) {
 	if refreshToken == "" {
 		return nil, fmt.Errorf("refresh token is required")
 	}
-	return refreshguard.Exchange(ctx, refreshGuardProvider, refreshToken, func(ctx context.Context) (*CodexTokenData, error) {
-		return o.refreshOnce(ctx, refreshToken)
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	result, err, _ := codexRefreshGroup.Do(refreshToken, func() (interface{}, error) {
+		refreshCtx, cancelRefresh := context.WithTimeout(context.WithoutCancel(ctx), codexRefreshTimeout)
+		defer cancelRefresh()
+		if errReadiness := codexRefreshReadiness(refreshCtx, "Codex"); errReadiness != nil {
+			return nil, errReadiness
+		}
+		return journalRefresh(refreshCtx, o.journal(ctx), ClientID, refreshToken, func() (*CodexTokenData, error) {
+			return o.refreshTokensSingleFlight(refreshCtx, refreshToken)
+		}, decodeRefreshReceipt)
 	})
+	if err != nil {
+		return nil, err
+	}
+	tokenData, ok := result.(*CodexTokenData)
+	if !ok || tokenData == nil {
+		return nil, fmt.Errorf("token refresh failed: invalid single-flight result")
+	}
+	return tokenData, nil
 }
 
-// refreshGuardProvider scopes Codex exchanges in refreshguard; RefreshTokens and
-// RefreshTokensWithRetry share it, so either one joins the other's exchange.
-const refreshGuardProvider = "codex"
-
-func (o *CodexAuth) refreshOnce(ctx context.Context, refreshToken string) (*CodexTokenData, error) {
+func (o *CodexAuth) refreshTokensSingleFlight(ctx context.Context, refreshToken string) (*CodexTokenData, error) {
 	data := url.Values{
 		"client_id":     {ClientID},
 		"grant_type":    {"refresh_token"},
@@ -217,29 +238,35 @@ func (o *CodexAuth) refreshOnce(ctx context.Context, refreshToken string) (*Code
 		"scope":         {"openid profile email"},
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", TokenURL, strings.NewReader(data.Encode()))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create refresh request: %w", err)
+	req, errReq := http.NewRequestWithContext(ctx, "POST", TokenURL, strings.NewReader(data.Encode()))
+	if errReq != nil {
+		return nil, &RefreshPreSendError{Stage: "request-create", Cause: errReq}
 	}
 
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
 
-	resp, err := o.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("token refresh request failed: %w", err)
+	resp, errDo := o.doRefreshRequest(req)
+	if errDo != nil {
+		return nil, errDo
 	}
 	defer func() {
-		_ = resp.Body.Close()
+		if errClose := resp.Body.Close(); errClose != nil {
+			log.Errorf("token refresh response body close error: %v", errClose)
+		}
 	}()
 
-	body, err := util.ReadHTTPResponseBody("codex-oauth", resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read refresh response: %w", err)
+	body, errRead := io.ReadAll(resp.Body)
+	if errRead != nil {
+		return nil, &RefreshOutcomeUnknownError{Stage: "response-read", Cause: errRead}
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("token refresh failed with status %d: %s", resp.StatusCode, string(body))
+		errResponse := fmt.Errorf("token refresh failed with status %d: %s", resp.StatusCode, string(body))
+		if isNonRetryableRefreshErr(errResponse) {
+			return nil, errResponse
+		}
+		return nil, &RefreshOutcomeUnknownError{Stage: "response-status", Cause: errResponse}
 	}
 
 	var tokenResp struct {
@@ -250,21 +277,31 @@ func (o *CodexAuth) refreshOnce(ctx context.Context, refreshToken string) (*Code
 		ExpiresIn    int    `json:"expires_in"`
 	}
 
-	if err = json.Unmarshal(body, &tokenResp); err != nil {
-		return nil, fmt.Errorf("failed to parse refresh response: %w", err)
+	if !ojson.ValidBytes(body) {
+		return nil, &RefreshOutcomeUnknownError{Stage: "response-decode"}
+	}
+	response := ojson.ParseBytes(body)
+	tokenResp.AccessToken = response.Get("access_token").String()
+	tokenResp.RefreshToken = response.Get("refresh_token").String()
+	tokenResp.IDToken = response.Get("id_token").String()
+	tokenResp.ExpiresIn = int(response.Get("expires_in").Int())
+	if response.Get("access_token").Type != ojson.String || strings.TrimSpace(tokenResp.AccessToken) == "" || response.Get("expires_in").Type != ojson.Number || tokenResp.ExpiresIn <= 0 || response.Get("refresh_token").Type != ojson.String || strings.TrimSpace(tokenResp.RefreshToken) == "" {
+		return nil, &RefreshOutcomeUnknownError{Stage: "response-decode"}
 	}
 
 	// Extract account ID from ID token
-	claims, err := ParseJWTToken(tokenResp.IDToken)
-	if err != nil {
-		log.Warnf("Failed to parse refreshed ID token: %v", err)
+	claims, errParseJWT := ParseJWTToken(tokenResp.IDToken)
+	if errParseJWT != nil {
+		log.Warnf("Failed to parse refreshed ID token: %v", errParseJWT)
 	}
 
 	accountID := ""
 	email := ""
+	planType := DefaultPlanType
 	if claims != nil {
 		accountID = claims.GetAccountID()
 		email = claims.Email
+		planType = claims.GetPlanType()
 	}
 
 	return &CodexTokenData{
@@ -273,6 +310,7 @@ func (o *CodexAuth) refreshOnce(ctx context.Context, refreshToken string) (*Code
 		RefreshToken: tokenResp.RefreshToken,
 		AccountID:    accountID,
 		Email:        email,
+		PlanType:     planType,
 		Expire:       time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second).Format(time.RFC3339),
 	}, nil
 }
@@ -280,6 +318,10 @@ func (o *CodexAuth) refreshOnce(ctx context.Context, refreshToken string) (*Code
 // CreateTokenStorage creates a new CodexTokenStorage from a CodexAuthBundle.
 // It populates the storage struct with token data, user information, and timestamps.
 func (o *CodexAuth) CreateTokenStorage(bundle *CodexAuthBundle) *CodexTokenStorage {
+	planType := DefaultPlanType
+	if bundle != nil && strings.TrimSpace(bundle.TokenData.PlanType) != "" {
+		planType = strings.TrimSpace(bundle.TokenData.PlanType)
+	}
 	storage := &CodexTokenStorage{
 		IDToken:      bundle.TokenData.IDToken,
 		AccessToken:  bundle.TokenData.AccessToken,
@@ -288,6 +330,7 @@ func (o *CodexAuth) CreateTokenStorage(bundle *CodexAuthBundle) *CodexTokenStora
 		LastRefresh:  bundle.LastRefresh,
 		Email:        bundle.TokenData.Email,
 		Expire:       bundle.TokenData.Expire,
+		PlanType:     planType,
 	}
 
 	return storage
@@ -296,20 +339,10 @@ func (o *CodexAuth) CreateTokenStorage(bundle *CodexAuthBundle) *CodexTokenStora
 // RefreshTokensWithRetry refreshes tokens with a built-in retry mechanism.
 // It attempts to refresh the tokens up to a specified maximum number of retries,
 // with an exponential backoff strategy to handle transient network errors.
-//
-// The attempts run as one refreshguard exchange: they continue if ctx ends, and
-// a concurrent refresh of the same token waits for their result instead of
-// presenting the token a second time.
 func (o *CodexAuth) RefreshTokensWithRetry(ctx context.Context, refreshToken string, maxRetries int) (*CodexTokenData, error) {
-	if refreshToken == "" {
-		return nil, fmt.Errorf("refresh token is required")
+	if maxRetries <= 0 {
+		maxRetries = 1
 	}
-	return refreshguard.Exchange(ctx, refreshGuardProvider, refreshToken, func(ctx context.Context) (*CodexTokenData, error) {
-		return o.refreshWithRetry(ctx, refreshToken, maxRetries)
-	})
-}
-
-func (o *CodexAuth) refreshWithRetry(ctx context.Context, refreshToken string, maxRetries int) (*CodexTokenData, error) {
 	var lastErr error
 
 	for attempt := 0; attempt < maxRetries; attempt++ {
@@ -322,16 +355,16 @@ func (o *CodexAuth) refreshWithRetry(ctx context.Context, refreshToken string, m
 			}
 		}
 
-		tokenData, err := o.refreshOnce(ctx, refreshToken)
+		tokenData, err := o.RefreshTokens(ctx, refreshToken)
 		if err == nil {
 			return tokenData, nil
 		}
+		if errors.Is(err, context.Canceled) || errors.Is(err, ErrSIWCRefreshDeferred) {
+			return nil, err
+		}
 		if isNonRetryableRefreshErr(err) {
 			log.Warnf("Token refresh attempt %d failed with non-retryable error: %v", attempt+1, err)
-			return nil, &cliproxyauth.PermanentAuthError{
-				Reason: "credential revoked or expired",
-				Cause:  err,
-			}
+			return nil, err
 		}
 
 		lastErr = err
@@ -342,19 +375,37 @@ func (o *CodexAuth) refreshWithRetry(ctx context.Context, refreshToken string, m
 }
 
 func isNonRetryableRefreshErr(err error) bool {
-	if err == nil {
+	if err == nil || IsRefreshPreSendError(err) {
 		return false
 	}
+	if IsRefreshOutcomeUnknown(err) {
+		return true
+	}
 	raw := strings.ToLower(err.Error())
-	return strings.Contains(raw, "refresh_token_reused") ||
-		strings.Contains(raw, "invalid_grant") ||
-		strings.Contains(raw, "token has been revoked") ||
-		strings.Contains(raw, "token has been expired")
+	for _, token := range []string{
+		"refresh_token_reused",
+		"refresh_token_expired",
+		"refresh_token_invalidated",
+		"token_revoked",
+		"invalid_grant",
+		"invalid_client",
+		"status 401",
+		"401 unauthorized",
+		"request failed (401)",
+	} {
+		if strings.Contains(raw, token) {
+			return true
+		}
+	}
+	return false
 }
 
 // UpdateTokenStorage updates an existing CodexTokenStorage with new token data.
 // This is typically called after a successful token refresh to persist the new credentials.
 func (o *CodexAuth) UpdateTokenStorage(storage *CodexTokenStorage, tokenData *CodexTokenData) {
+	if storage == nil || tokenData == nil {
+		return
+	}
 	storage.IDToken = tokenData.IDToken
 	storage.AccessToken = tokenData.AccessToken
 	storage.RefreshToken = tokenData.RefreshToken
@@ -362,4 +413,14 @@ func (o *CodexAuth) UpdateTokenStorage(storage *CodexTokenStorage, tokenData *Co
 	storage.LastRefresh = time.Now().Format(time.RFC3339)
 	storage.Email = tokenData.Email
 	storage.Expire = tokenData.Expire
+	planType := DefaultPlanType
+	if strings.TrimSpace(tokenData.PlanType) != "" {
+		planType = strings.TrimSpace(tokenData.PlanType)
+	}
+	storage.PlanType = planType
+}
+
+// NewCodexAuthWithProxy is the v8 compatibility name for a proxy-pinned auth client.
+func NewCodexAuthWithProxy(cfg *config.Config, proxyURL string) *CodexAuth {
+	return NewCodexAuthWithProxyURL(cfg, proxyURL)
 }

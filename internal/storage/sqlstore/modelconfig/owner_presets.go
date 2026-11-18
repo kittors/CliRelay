@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/configsync"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/configsync"
 )
 
 // ReplaceModelOwnerPresets replaces the tenant's owner presets whatever the

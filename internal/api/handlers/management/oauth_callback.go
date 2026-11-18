@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	oauthsession "github.com/router-for-me/CLIProxyAPI/v8/internal/management/oauth/session"
 )
 
 type oauthCallbackRequest struct {
@@ -28,7 +29,13 @@ func (h *Handler) PostOAuthCallback(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "error": "invalid body"})
 		return
 	}
+	h.handleOAuthCallback(c, req)
+}
 
+// handleOAuthCallback processes a decoded callback. Keeping this entry point
+// separate lets the v8 SIWC callback route fall back to the legacy callback
+// semantics for ordinary OAuth sessions without manufacturing a request body.
+func (h *Handler) handleOAuthCallback(c *gin.Context, req oauthCallbackRequest) {
 	canonicalProvider, err := NormalizeOAuthProvider(req.Provider)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "error": "unsupported provider"})
@@ -71,6 +78,43 @@ func (h *Handler) PostOAuthCallback(c *gin.Context) {
 	if code == "" && errMsg == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "error": "code or error is required"})
 		return
+	}
+
+	if shared := sharedOAuthSessionStore(); shared != nil {
+		if session, ok := shared.Get(state); ok {
+			if session.Status == oauthsession.StatusCompleted {
+				c.JSON(http.StatusOK, gin.H{"status": "ok", "already_processed": true})
+				return
+			}
+			if session.Status != "" {
+				c.JSON(http.StatusConflict, gin.H{"status": "error", "error": session.Status})
+				return
+			}
+			if !strings.EqualFold(session.Provider, canonicalProvider) {
+				c.JSON(http.StatusBadRequest, gin.H{"status": "error", "error": "provider does not match state"})
+				return
+			}
+			if session.TenantID != "" && session.TenantID != effectiveTenantID(c) {
+				c.JSON(http.StatusForbidden, gin.H{"status": "error", "error": "oauth state belongs to another tenant"})
+				return
+			}
+			if session.TenantID != "" {
+				if err = h.identity().ValidateTenantAccess(c.Request.Context(), session.TenantID); err != nil {
+					identityError(c, err)
+					return
+				}
+			}
+			if errDeliver := shared.DeliverCallback(h.cfg.AuthDir, canonicalProvider, state, code, errMsg); errDeliver == nil {
+				c.JSON(http.StatusOK, gin.H{"status": "ok"})
+				return
+			} else if !errors.Is(errDeliver, oauthsession.ErrNotPending) {
+				c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "error": "failed to persist oauth callback"})
+				return
+			}
+		} else if sharedOAuthStateSuperseded(c, state) {
+			c.JSON(http.StatusConflict, gin.H{"status": "error", "error": oauthSupersededMessage, "code": oauthCodeSessionSuperseded})
+			return
+		}
 	}
 
 	sessionProvider, sessionTenantID, sessionStatus, ok := GetOAuthSessionWithTenant(state)

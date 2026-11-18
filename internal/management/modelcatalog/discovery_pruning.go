@@ -1,6 +1,6 @@
 package modelcatalog
 
-import "github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
+import "github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 
 // survivesDiscoveryPruning reports whether a model must be kept even when a
 // provider's live listing does not mention it.

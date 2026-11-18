@@ -11,7 +11,7 @@ import (
 
 	"golang.org/x/crypto/bcrypt"
 
-	proxyconfig "github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	proxyconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 )
 
 func TestManagementProviderConfigSaveUpdatesConfiguredAvailability(t *testing.T) {

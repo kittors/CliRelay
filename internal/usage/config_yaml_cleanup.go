@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	runtimeconfig "github.com/router-for-me/CLIProxyAPI/v6/internal/management/settings/runtimeconfig"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	runtimeconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/management/settings/runtimeconfig"
 	log "github.com/sirupsen/logrus"
 	"gopkg.in/yaml.v3"
 )

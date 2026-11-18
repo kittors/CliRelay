@@ -6,20 +6,21 @@
 package claude
 
 import (
-	"bytes"
 	"strings"
 
-	translatorcommon "github.com/router-for-me/CLIProxyAPI/v6/internal/translator/common"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/translator/gemini/common"
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
+	"github.com/MoeForge/moego/ojson"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
+	sigcompat "github.com/router-for-me/CLIProxyAPI/v8/internal/signature"
+	translatorcommon "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/common"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/translator/gemini/common"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 )
 
 const geminiClaudeThoughtSignature = "skip_thought_signature_validator"
 
 // ConvertClaudeRequestToGemini parses a Claude API request and returns a complete
-// Gemini CLI request body (as JSON bytes) ready to be sent via SendRawMessageStream.
-// All JSON transformations are performed using gjson/sjson.
+// Gemini request body (as JSON bytes) ready to be sent via SendRawMessageStream.
+// All JSON transformations are performed using gjson/ojson.
 //
 // Parameters:
 //   - modelName: The name of the model.
@@ -27,83 +28,160 @@ const geminiClaudeThoughtSignature = "skip_thought_signature_validator"
 //   - stream: A boolean indicating if the request is for a streaming response.
 //
 // Returns:
-//   - []byte: The transformed request in Gemini CLI format.
-func ConvertClaudeRequestToGemini(modelName string, inputRawJSON []byte, _ bool) []byte {
-	rawJSON := inputRawJSON
-	rawJSON = bytes.Replace(rawJSON, []byte(`"url":{"type":"string","format":"uri",`), []byte(`"url":{"type":"string",`), -1)
+//   - []byte: The transformed request in Gemini format.
+func ConvertClaudeRequestToGemini(modelName string, inputRawJSON []byte, stream bool) ([]byte, error) {
+	return convertClaudeRequestToGemini(modelName, inputRawJSON, stream, false)
 
-	// Build output Gemini CLI request JSON
-	out := `{"contents":[]}`
-	out, _ = sjson.Set(out, "model", modelName)
+}
+
+// ConvertClaudeRequestToGeminiWithCompat preserves assistant thinking blocks
+// with empty signatures for configured compatibility endpoints.
+func ConvertClaudeRequestToGeminiWithCompat(modelName string, inputRawJSON []byte, stream bool) ([]byte, error) {
+	return convertClaudeRequestToGemini(modelName, inputRawJSON, stream, true)
+}
+
+func convertClaudeRequestToGemini(modelName string, inputRawJSON []byte, _ bool, preserveEmptyThinkingBlocks bool) ([]byte, error) {
+	// The internal commentary marker must be restored as assistant text before
+	// any thinking handling, so it is never dropped or mapped to thought.
+	rawJSON, _ := sigcompat.RestoreCodexCommentaryMarkers(inputRawJSON)
+	var drops translatorcommon.UserTurnDrops
+	// Build output Gemini request JSON
+	outDoc := ojson.NewDocString(`{"contents":[]}`)
+	_ = outDoc.Set("model", modelName)
 
 	// system instruction
-	if systemResult := gjson.GetBytes(rawJSON, "system"); systemResult.IsArray() {
-		systemInstruction := `{"role":"user","parts":[]}`
-		hasSystemParts := false
-		systemResult.ForEach(func(_, systemPromptResult gjson.Result) bool {
+	if systemResult := ojson.GetBytesNoCopy(rawJSON, "system"); systemResult.IsArray() {
+		systemParts := make([][]byte, 0, 2)
+		systemResult.ForEach(func(_, systemPromptResult ojson.Result) bool {
 			if systemPromptResult.Get("type").String() == "text" {
 				textResult := systemPromptResult.Get("text")
-				if textResult.Type == gjson.String {
-					part := `{"text":""}`
-					part, _ = sjson.Set(part, "text", textResult.String())
-					systemInstruction, _ = sjson.SetRaw(systemInstruction, "parts.-1", part)
-					hasSystemParts = true
+				if textResult.Type == ojson.String {
+					if util.IsClaudeCodeAttributionSystemText(textResult.String()) {
+						return true
+					}
+					part := []byte(`{"text":""}`)
+					part, _ = ojson.SetBytes(part, "text", textResult.String())
+					systemParts = append(systemParts, part)
 				}
 			}
 			return true
 		})
-		if hasSystemParts {
-			out, _ = sjson.SetRaw(out, "system_instruction", systemInstruction)
+		if len(systemParts) > 0 {
+			systemInstruction := []byte(`{"role":"user","parts":[]}`)
+			systemInstruction, _ = ojson.SetRawBytes(systemInstruction, "parts", translatorcommon.JoinRawArray(systemParts))
+			_ = outDoc.SetRawBytes("systemInstruction", systemInstruction)
 		}
-	} else if systemResult.Type == gjson.String {
-		out, _ = sjson.Set(out, "system_instruction.parts.-1.text", systemResult.String())
+	} else if systemResult.Type == ojson.String && !util.IsClaudeCodeAttributionSystemText(systemResult.String()) {
+		part := []byte(`{"text":""}`)
+		part, _ = ojson.SetBytes(part, "text", systemResult.String())
+		systemInstruction := []byte(`{"parts":[]}`)
+		systemInstruction = translatorcommon.SetRawArrayItems(systemInstruction, "parts", [][]byte{part})
+		_ = outDoc.SetRawBytes("systemInstruction", systemInstruction)
 	}
 
-	// Contents are collected here and written into out once after the
-	// messages. sjson.SetRaw(out, "contents.-1", ...) per message copied the
-	// whole request each time, which grew with the square of the history (see
-	// translatorcommon.JSONArrayBuilder). The template already holds an empty
-	// contents array and nothing reads it back before it is written, so the
-	// result is byte-for-byte the same.
-	var contentNodes translatorcommon.JSONArrayBuilder
-
 	// contents
-	if messagesResult := gjson.GetBytes(rawJSON, "messages"); messagesResult.IsArray() {
-		messagesResult.ForEach(func(_, messageResult gjson.Result) bool {
+	if messagesResult := ojson.GetBytesNoCopy(rawJSON, "messages"); messagesResult.IsArray() {
+		contentItems := translatorcommon.NewRawArrayItems(messagesResult.Get("#").Int())
+		toolNameByID := make(map[string]string)
+		var pendingToolUseIDs []string
+		messagesResult.ForEach(func(_, messageResult ojson.Result) bool {
 			roleResult := messageResult.Get("role")
-			if roleResult.Type != gjson.String {
+			if roleResult.Type != ojson.String {
 				return true
 			}
-			role := roleResult.String()
+			originalRole := roleResult.String()
+			var precedingToolUseIDs []string
+			if originalRole != "system" && originalRole != "developer" {
+				precedingToolUseIDs = pendingToolUseIDs
+				pendingToolUseIDs = nil
+			}
+			role := originalRole
 			if role == "assistant" {
 				role = "model"
+			} else if role == "system" || role == "developer" {
+				role = "user"
 			}
 
-			contentJSON := `{"role":"","parts":[]}`
-			contentJSON, _ = sjson.Set(contentJSON, "role", role)
-
+			partItems := make([][]byte, 0, 4)
 			contentsResult := messageResult.Get("content")
+			if roleResult.String() == "system" || roleResult.String() == "developer" {
+				if reminderText, ok := translatorcommon.ClaudeMessageSystemReminderText(contentsResult); ok {
+					part := []byte(`{"text":""}`)
+					part, _ = ojson.SetBytes(part, "text", reminderText)
+					partItems = append(partItems, part)
+					contentItems = append(contentItems, geminiContentWithParts(role, partItems))
+				}
+				return true
+			}
 			if contentsResult.IsArray() {
-				contentsResult.ForEach(func(_, contentResult gjson.Result) bool {
+				if originalRole == "user" {
+					contentsResult = translatorcommon.AlignClaudeToolResults(contentsResult, precedingToolUseIDs)
+				}
+				var carrierSignatures map[int]string
+				if originalRole == "assistant" {
+					carrierSignatures = geminiClaudeCarrierSignatures(contentsResult.Array())
+				}
+				contentsResult.ForEach(func(contentIndex, contentResult ojson.Result) bool {
+					carrierSignature := carrierSignatures[int(contentIndex.Int())]
 					switch contentResult.Get("type").String() {
 					case "text":
-						if contentResult.Get("text").String() == "" {
+						text := contentResult.Get("text").String()
+						if text == "" {
 							return true
 						}
-						part := `{"text":""}`
-						part, _ = sjson.Set(part, "text", contentResult.Get("text").String())
-						contentJSON, _ = sjson.SetRaw(contentJSON, "parts.-1", part)
+						partDoc := ojson.NewDocString(`{"text":""}`)
+						_ = partDoc.Set("text", text)
+						if carrierSignature != "" {
+							_ = partDoc.Set("thoughtSignature", carrierSignature)
+						}
+						partItems = append(partItems, partDoc.Bytes())
+
+					case "thinking":
+						if contentResult.Get("thinking").String() == "" && strings.TrimSpace(contentResult.Get("signature").String()) != "" {
+							if carrierSignature != "" {
+								partDoc := ojson.NewDocString(`{"text":"","thought":true}`)
+								_ = partDoc.Set("thoughtSignature", carrierSignature)
+								partItems = append(partItems, partDoc.Bytes())
+							}
+							return true
+						}
+						if !preserveEmptyThinkingBlocks {
+							return true
+						}
+						partDoc := ojson.NewDocString(`{"text":"","thought":true,"thoughtSignature":""}`)
+						_ = partDoc.Set("text", contentResult.Get("thinking").String())
+						signature := sigcompat.GeminiReplaySignatureOrBypass(contentResult.Get("signature").String(), sigcompat.SignatureBlockKindGeminiModelPart)
+						if carrierSignature != "" {
+							signature = carrierSignature
+						}
+						_ = partDoc.Set("thoughtSignature", signature)
+						partItems = append(partItems, partDoc.Bytes())
 
 					case "tool_use":
 						functionName := contentResult.Get("name").String()
+						toolUseID := contentResult.Get("id").String()
+						if toolUseID != "" && functionName != "" {
+							toolNameByID[toolUseID] = functionName
+						}
+						functionName = util.SanitizeFunctionName(functionName)
 						functionArgs := contentResult.Get("input").String()
-						argsResult := gjson.Parse(functionArgs)
-						if argsResult.IsObject() && gjson.Valid(functionArgs) {
-							part := `{"thoughtSignature":"","functionCall":{"name":"","args":{}}}`
-							part, _ = sjson.Set(part, "thoughtSignature", geminiClaudeThoughtSignature)
-							part, _ = sjson.Set(part, "functionCall.name", functionName)
-							part, _ = sjson.SetRaw(part, "functionCall.args", functionArgs)
-							contentJSON, _ = sjson.SetRaw(contentJSON, "parts.-1", part)
+						argsResult := ojson.Parse(functionArgs)
+						if argsResult.IsObject() && ojson.Valid(functionArgs) {
+							partDoc := ojson.NewDocString(`{"thoughtSignature":"","functionCall":{"name":"","args":{}}}`)
+							signature := geminiClaudeThoughtSignature
+							if carrierSignature != "" {
+								signature = carrierSignature
+							}
+							_ = partDoc.Set("thoughtSignature", signature)
+							if toolUseID != "" {
+								_ = partDoc.Set("functionCall.id", toolUseID)
+							}
+							_ = partDoc.Set("functionCall.name", functionName)
+							_ = partDoc.SetRaw("functionCall.args", functionArgs)
+							partItems = append(partItems, partDoc.Bytes())
+							if originalRole == "assistant" {
+								pendingToolUseIDs = append(pendingToolUseIDs, toolUseID)
+							}
 						}
 
 					case "tool_result":
@@ -111,120 +189,270 @@ func ConvertClaudeRequestToGemini(modelName string, inputRawJSON []byte, _ bool)
 						if toolCallID == "" {
 							return true
 						}
-						funcName := toolCallID
-						toolCallIDs := strings.Split(toolCallID, "-")
-						if len(toolCallIDs) > 1 {
-							funcName = strings.Join(toolCallIDs[0:len(toolCallIDs)-1], "-")
+						funcName := toolNameByID[toolCallID]
+						if funcName == "" {
+							funcName = toolNameFromClaudeToolUseID(toolCallID)
 						}
-						part := `{"functionResponse":{"name":"","response":{"result":""}}}`
-						part, _ = sjson.Set(part, "functionResponse.name", funcName)
-						if parsed := translatorcommon.ParseToolResult(contentResult.Get("content")); parsed.HasImage() {
-							fr := translatorcommon.SetGeminiFunctionResponse(gjson.Get(part, "functionResponse").Raw, parsed)
-							part, _ = sjson.SetRaw(part, "functionResponse", fr)
+						if funcName == "" {
+							funcName = toolCallID
+						}
+						funcName = util.SanitizeFunctionName(funcName)
+						toolResult := util.ConvertClaudeToolResult(contentResult)
+						partDoc := ojson.NewDocString(`{"functionResponse":{"name":"","response":{}}}`)
+						_ = partDoc.Set("functionResponse.id", toolCallID)
+						_ = partDoc.Set("functionResponse.name", funcName)
+						resultPath := "functionResponse.response.result"
+						if toolResult.IsError {
+							resultPath = "functionResponse.response.error"
+						}
+						if toolResult.ResultIsRaw {
+							translatorcommon.SetGeminiFunctionResponseRawDoc(partDoc, resultPath, toolResult.Result)
 						} else {
-							part, _ = sjson.Set(part, "functionResponse.response.result", contentResult.Get("content").Raw)
+							_ = partDoc.Set(resultPath, toolResult.Result)
 						}
-						contentJSON, _ = sjson.SetRaw(contentJSON, "parts.-1", part)
+						for _, img := range toolResult.Images {
+							imagePartDoc := ojson.NewDocString(`{"inlineData":{"mimeType":"","data":""}}`)
+							_ = imagePartDoc.Set("inlineData.mimeType", img.MimeType)
+							_ = imagePartDoc.Set("inlineData.data", img.Data)
+							_ = partDoc.SetRawBytes("functionResponse.parts.-1", imagePartDoc.Bytes())
+						}
+						partItems = append(partItems, partDoc.Bytes())
 
-					case "image":
-						sourceResult := contentResult.Get("source")
-						if sourceResult.Get("type").String() != "base64" {
+					case "document":
+						emitGeminiText := func(text string) {
+							partDoc := ojson.NewDocString(`{"text":""}`)
+							_ = partDoc.Set("text", text)
+							if carrierSignature != "" {
+								_ = partDoc.Set("thoughtSignature", carrierSignature)
+							}
+							partItems = append(partItems, partDoc.Bytes())
+						}
+						if docText, ok := translatorcommon.ClaudeDocumentTextBlock(contentResult); ok {
+							emitGeminiText(docText)
 							return true
 						}
-						inlineData := `{}`
-						if mimeType := sourceResult.Get("media_type").String(); mimeType != "" {
-							inlineData, _ = sjson.Set(inlineData, "mimeType", mimeType)
+						var onImageDrop func()
+						if originalRole == "user" {
+							onImageDrop = func() { drops.Drop("image") }
 						}
-						if data := sourceResult.Get("data").String(); data != "" {
-							inlineData, _ = sjson.Set(inlineData, "data", data)
+						if translatorcommon.ExpandClaudeContentDocument(
+							contentResult,
+							emitGeminiText,
+							func(img ojson.Result) ([]byte, bool) {
+								p := claudeBase64InlineData(img.Get("source"))
+								return p, p != nil
+							},
+							func(p []byte) { partItems = append(partItems, p) },
+							onImageDrop,
+						) {
+							return true
 						}
-						part := `{}`
-						part, _ = sjson.SetRaw(part, "inlineData", inlineData)
-						contentJSON, _ = sjson.SetRaw(contentJSON, "parts.-1", part)
+						if part := claudeBase64InlineData(contentResult.Get("source")); part != nil {
+							partItems = append(partItems, part)
+						} else if originalRole == "user" {
+							drops.Drop("document")
+						}
+					case "image", "container_upload":
+						if part := claudeBase64InlineData(contentResult.Get("source")); part != nil {
+							partItems = append(partItems, part)
+						} else if originalRole == "user" {
+							// A part that cannot be inlined (url or file source) is dropped; the turn is refused only if nothing else is left.
+							drops.Drop(contentResult.Get("type").String())
+						}
+					default:
+						return true
 					}
 					return true
 				})
-				if len(gjson.Get(contentJSON, "parts").Array()) == 0 {
-					return true
+				if role == "user" {
+					partItems = translatorcommon.ReorderGeminiUserParts(partItems)
 				}
-				contentNodes.Append(contentJSON)
-			} else if contentsResult.Type == gjson.String {
-				if contentsResult.String() == "" {
-					return true
+				if originalRole == "user" {
+					// Whitespace-only text is forwarded but never keeps an emptied turn alive.
+					drops.EndTurn(translatorcommon.CountSendableGeminiParts(partItems))
 				}
-				part := `{"text":""}`
-				part, _ = sjson.Set(part, "text", contentsResult.String())
-				contentJSON, _ = sjson.SetRaw(contentJSON, "parts.-1", part)
-				contentNodes.Append(contentJSON)
+				if len(partItems) > 0 {
+					contentItems = append(contentItems, geminiContentWithParts(role, partItems))
+				}
+			} else if contentsResult.Type == ojson.String {
+				part := []byte(`{"text":""}`)
+				part, _ = ojson.SetBytes(part, "text", contentsResult.String())
+				partItems = append(partItems, part)
+				contentItems = append(contentItems, geminiContentWithParts(role, partItems))
 			}
 			return true
 		})
-	}
 
-	if contentNodes.Len() > 0 {
-		out, _ = sjson.SetRaw(out, "contents", contentNodes.String())
+		// Strip a trailing model turn with unanswered function calls.
+		if len(contentItems) > 0 {
+			last := util.ParseGJSONBytesNoCopy(contentItems[len(contentItems)-1])
+			if last.Get("role").String() == "model" {
+				hasFunctionCall := false
+				last.Get("parts").ForEach(func(_, part ojson.Result) bool {
+					if part.Get("functionCall").Exists() {
+						hasFunctionCall = true
+						return false
+					}
+					return true
+				})
+				if hasFunctionCall {
+					contentItems = contentItems[:len(contentItems)-1]
+				}
+			}
+		}
+		translatorcommon.SetRawArrayItemsDoc(outDoc, "contents", translatorcommon.MergeAdjacentGeminiContents(contentItems))
 	}
 
 	// tools
-	if toolsResult := gjson.GetBytes(rawJSON, "tools"); toolsResult.IsArray() {
-		// Declarations are collected and the tools array written once: appending
-		// each one to tools.0.functionDeclarations copied the whole request,
-		// contents included, per tool. The old code created the array right
-		// before the first append, so it sits at the same place either way.
-		var declarations translatorcommon.JSONArrayBuilder
-		toolsResult.ForEach(func(_, toolResult gjson.Result) bool {
+	var toolItems [][]byte
+	hasStrictTool := false
+	if toolsResult := ojson.GetBytesNoCopy(rawJSON, "tools"); toolsResult.IsArray() {
+		toolsResult.ForEach(func(_, toolResult ojson.Result) bool {
+			if toolResult.Get("strict").Type == ojson.True {
+				hasStrictTool = true
+			}
 			inputSchemaResult := toolResult.Get("input_schema")
 			if inputSchemaResult.Exists() && inputSchemaResult.IsObject() {
-				inputSchema := inputSchemaResult.Raw
-				tool, _ := sjson.Delete(toolResult.Raw, "input_schema")
-				tool, _ = sjson.SetRaw(tool, "parametersJsonSchema", inputSchema)
-				tool, _ = sjson.Delete(tool, "strict")
-				tool, _ = sjson.Delete(tool, "input_examples")
-				tool, _ = sjson.Delete(tool, "type")
-				tool, _ = sjson.Delete(tool, "cache_control")
-				if gjson.Valid(tool) && gjson.Parse(tool).IsObject() {
-					declarations.Append(tool)
+				inputSchema := util.CleanJSONSchemaForGeminiJSONSchema(inputSchemaResult.Raw)
+				toolDoc := ojson.NewDocString(toolResult.Raw)
+				if errDelete := toolDoc.Delete("input_schema"); errDelete != nil {
+					return true
+				}
+				if errSetRaw := toolDoc.SetRaw("parametersJsonSchema", inputSchema); errSetRaw != nil {
+					return true
+				}
+				for _, path := range []string{"strict", "input_examples", "type", "cache_control", "defer_loading", "eager_input_streaming"} {
+					if toolResult.Get(path).Exists() {
+						_ = toolDoc.Delete(path)
+					}
+				}
+				nameResult := toolResult.Get("name")
+				originalName := nameResult.String()
+				sanitizedName := util.SanitizeFunctionName(originalName)
+				if nameResult.Type != ojson.String || sanitizedName != originalName {
+					_ = toolDoc.Set("name", sanitizedName)
+				}
+				tool := toolDoc.Bytes()
+				if ojson.ValidBytes(tool) && util.ParseGJSONBytesNoCopy(tool).IsObject() {
+					toolItems = append(toolItems, tool)
 				}
 			}
 			return true
 		})
-		if declarations.Len() > 0 {
-			out, _ = sjson.SetRaw(out, "tools", `[{"functionDeclarations":`+declarations.String()+`}]`)
-		} else {
-			out, _ = sjson.Delete(out, "tools")
+		if len(toolItems) > 0 {
+			tools := []byte(`[{"functionDeclarations":[]}]`)
+			tools, _ = ojson.SetRawBytes(tools, "0.functionDeclarations", translatorcommon.JoinRawArray(toolItems))
+			_ = outDoc.SetRawBytes("tools", tools)
 		}
 	}
 
-	// Map Anthropic thinking -> Gemini thinkingBudget/include_thoughts when enabled
+	// tool_choice
+	toolChoiceResult := ojson.GetBytesNoCopy(rawJSON, "tool_choice")
+	if toolChoiceResult.Exists() && toolChoiceResult.Type != ojson.Null {
+		toolChoiceType := ""
+		toolChoiceName := ""
+		if toolChoiceResult.IsObject() {
+			toolChoiceType = toolChoiceResult.Get("type").String()
+			toolChoiceName = toolChoiceResult.Get("name").String()
+		} else if toolChoiceResult.Type == ojson.String {
+			toolChoiceType = toolChoiceResult.String()
+		}
+
+		switch toolChoiceType {
+		case "auto":
+			if hasStrictTool {
+				_ = outDoc.Set("toolConfig.functionCallingConfig.mode", "VALIDATED")
+			} else {
+				_ = outDoc.Set("toolConfig.functionCallingConfig.mode", "AUTO")
+			}
+		case "none":
+			_ = outDoc.Set("toolConfig.functionCallingConfig.mode", "NONE")
+		case "any":
+			_ = outDoc.Set("toolConfig.functionCallingConfig.mode", "ANY")
+		case "tool":
+			_ = outDoc.Set("toolConfig.functionCallingConfig.mode", "ANY")
+			if toolChoiceName != "" {
+				_ = outDoc.Set("toolConfig.functionCallingConfig.allowedFunctionNames", []string{util.SanitizeFunctionName(toolChoiceName)})
+			}
+		}
+	} else if hasStrictTool && len(toolItems) > 0 {
+		_ = outDoc.Set("toolConfig.functionCallingConfig.mode", "VALIDATED")
+	}
+
+	// Map Anthropic thinking -> Gemini thinking config when enabled
 	// Translator only does format conversion, ApplyThinking handles model capability validation.
-	if t := gjson.GetBytes(rawJSON, "thinking"); t.Exists() && t.IsObject() {
+	if t := ojson.GetBytesNoCopy(rawJSON, "thinking"); t.Exists() && t.IsObject() {
 		switch t.Get("type").String() {
 		case "enabled":
-			if b := t.Get("budget_tokens"); b.Exists() && b.Type == gjson.Number {
+			if b := t.Get("budget_tokens"); b.Exists() && b.Type == ojson.Number {
 				budget := int(b.Int())
-				out, _ = sjson.Set(out, "generationConfig.thinkingConfig.thinkingBudget", budget)
-				out, _ = sjson.Set(out, "generationConfig.thinkingConfig.includeThoughts", true)
+				_ = outDoc.Set("generationConfig.thinkingConfig.thinkingBudget", budget)
 			}
-		case "adaptive":
-			// Keep adaptive as a high level sentinel; ApplyThinking resolves it
-			// to model-specific max capability.
-			out, _ = sjson.Set(out, "generationConfig.thinkingConfig.thinkingLevel", "high")
-			out, _ = sjson.Set(out, "generationConfig.thinkingConfig.includeThoughts", true)
+		case "adaptive", "auto":
+			// For adaptive thinking:
+			// - If output_config.effort is explicitly present, pass through as thinkingLevel.
+			// - Otherwise, treat it as "enabled with target-model maximum" and emit thinkingBudget=max.
+			// ApplyThinking handles clamping to target model's supported levels.
+			effort := ""
+			if v := ojson.GetBytesNoCopy(rawJSON, "output_config.effort"); v.Exists() && v.Type == ojson.String {
+				effort = strings.ToLower(strings.TrimSpace(v.String()))
+			}
+			if effort != "" {
+				_ = outDoc.Set("generationConfig.thinkingConfig.thinkingLevel", effort)
+			} else {
+				maxBudget := 0
+				if mi := registry.LookupModelInfo(modelName, "gemini"); mi != nil && mi.Thinking != nil {
+					maxBudget = mi.Thinking.Max
+				}
+				if maxBudget > 0 {
+					_ = outDoc.Set("generationConfig.thinkingConfig.thinkingBudget", maxBudget)
+				} else {
+					_ = outDoc.Set("generationConfig.thinkingConfig.thinkingLevel", "high")
+				}
+			}
 		}
 	}
-	if v := gjson.GetBytes(rawJSON, "temperature"); v.Exists() && v.Type == gjson.Number {
-		out, _ = sjson.Set(out, "generationConfig.temperature", v.Num)
+	if v := ojson.GetBytesNoCopy(rawJSON, "temperature"); v.Exists() && v.Type == ojson.Number {
+		_ = outDoc.Set("generationConfig.temperature", v.Num)
 	}
-	if v := gjson.GetBytes(rawJSON, "top_p"); v.Exists() && v.Type == gjson.Number {
-		out, _ = sjson.Set(out, "generationConfig.topP", v.Num)
+	if v := ojson.GetBytesNoCopy(rawJSON, "top_p"); v.Exists() && v.Type == ojson.Number {
+		_ = outDoc.Set("generationConfig.topP", v.Num)
 	}
-	if v := gjson.GetBytes(rawJSON, "top_k"); v.Exists() && v.Type == gjson.Number {
-		out, _ = sjson.Set(out, "generationConfig.topK", v.Num)
+	if v := ojson.GetBytesNoCopy(rawJSON, "top_k"); v.Exists() && v.Type == ojson.Number {
+		_ = outDoc.Set("generationConfig.topK", v.Num)
 	}
 
-	result := []byte(out)
-	result = translatorcommon.OutputFormatFromClaude(gjson.ParseBytes(rawJSON)).WriteGemini(result, "", modelName)
-	result = common.AttachDefaultSafetySettings(result, "safetySettings")
+	common.AttachDefaultSafetySettingsDoc(outDoc, "safetySettings")
 
-	return result
+	return outDoc.Bytes(), drops.Err()
+}
+
+func claudeBase64InlineData(source ojson.Result) []byte {
+	if source.Get("type").String() != "base64" {
+		return nil
+	}
+	mimeType := source.Get("media_type").String()
+	data := source.Get("data").String()
+	if mimeType == "" || data == "" {
+		return nil
+	}
+	partDoc := ojson.NewDocString(`{"inline_data":{"mime_type":"","data":""}}`)
+	_ = partDoc.Set("inline_data.mime_type", mimeType)
+	_ = partDoc.Set("inline_data.data", data)
+	return partDoc.Bytes()
+}
+
+func geminiContentWithParts(role string, parts [][]byte) []byte {
+	contentDoc := ojson.NewDocString(`{"role":"","parts":[]}`)
+	_ = contentDoc.Set("role", role)
+	_ = contentDoc.SetRawBytes("parts", translatorcommon.JoinRawArray(parts))
+	return contentDoc.Bytes()
+}
+
+func toolNameFromClaudeToolUseID(toolUseID string) string {
+	parts := strings.Split(toolUseID, "-")
+	if len(parts) <= 1 {
+		return ""
+	}
+	return strings.Join(parts[0:len(parts)-1], "-")
 }

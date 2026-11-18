@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/configsync"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/quota"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/configsync"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/quota"
 )
 
 // ReplaceAll replaces the tenant's API keys with entries whatever the stored

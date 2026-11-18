@@ -195,7 +195,7 @@ func (m logsTabModel) renderLogs() string {
 	if !m.autoScroll {
 		scrollStatus = warningStyle.Render(T("logs_paused"))
 	}
-	filterLabel := T("logs_filter_all")
+	filterLabel := "ALL"
 	if m.filter != "" {
 		filterLabel = strings.ToUpper(m.filter) + "+"
 	}
@@ -210,7 +210,7 @@ func (m logsTabModel) renderLogs() string {
 	sb.WriteString("\n")
 
 	if m.lastErr != nil {
-		sb.WriteString(errorStyle.Render(T("error_prefix") + m.lastErr.Error()))
+		sb.WriteString(errorStyle.Render("⚠ Error: " + m.lastErr.Error()))
 		sb.WriteString("\n")
 	}
 

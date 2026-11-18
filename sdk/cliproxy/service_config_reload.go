@@ -3,11 +3,10 @@ package cliproxy
 import (
 	"context"
 	"strings"
-	"time"
 
-	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
-	"github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
-	serviceapp "github.com/router-for-me/CLIProxyAPI/v6/sdkbridge/service"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
+	serviceapp "github.com/router-for-me/CLIProxyAPI/v8/sdkbridge/service"
 )
 
 func (s *Service) startOpenRouterModelSync(ctx context.Context) {
@@ -26,16 +25,6 @@ func (s *Service) syncConfigDerivedAuths(cfg *config.Config) {
 		return
 	}
 	serviceapp.SyncConfigDerivedAuths(cfg, s.coreManager)
-}
-
-func (s *Service) applyRetryConfig(cfg *config.Config) {
-	if s == nil || s.coreManager == nil || cfg == nil {
-		return
-	}
-	maxInterval := time.Duration(cfg.MaxRetryInterval) * time.Second
-	s.coreManager.SetRetryConfig(cfg.RequestRetry, maxInterval)
-	s.coreManager.SetAccountConcurrencyConfig(cfg.AccountConcurrency.WaitTimeout(), cfg.AccountConcurrency.QueueDepth())
-	s.coreManager.SetBusyWaitConfig(cfg.Streaming.BusyWaitMaxWaiters)
 }
 
 func (s *Service) applyConfigReload(newCfg *config.Config, refreshRegisteredModels bool) {

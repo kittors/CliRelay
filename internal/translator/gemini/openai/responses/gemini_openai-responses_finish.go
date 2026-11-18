@@ -3,7 +3,7 @@ package responses
 import (
 	"strings"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/translator/common"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/translator/common"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -82,7 +82,7 @@ func finishGeminiResponsesStream(modelName string, root gjson.Result, completed 
 	finish := geminiResponsesFinishOf(modelName, root)
 	eventType := "response." + finish.status
 	completed, _ = sjson.Set(completed, "type", eventType)
-	return emitEvent(eventType, finish.apply(completed, "response."))
+	return string(emitEvent(eventType, []byte(finish.apply(completed, "response."))))
 }
 
 // finishGeminiResponsesBody sets the status of a non-stream response from its

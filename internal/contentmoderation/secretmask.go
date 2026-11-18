@@ -1,8 +1,8 @@
 package contentmoderation
 
 import (
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/privacymask"
-	sdktranslator "github.com/router-for-me/CLIProxyAPI/v6/sdk/translator"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/privacymask"
+	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 )
 
 // Outbound secret masking: a tenant may switch it on to keep the credentials

@@ -8,7 +8,7 @@ import (
 	"testing"
 	"unicode/utf8"
 
-	sdktranslator "github.com/router-for-me/CLIProxyAPI/v6/sdk/translator"
+	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 )
 
 // looseKw is a keyword rule that ignores the separators between its characters.

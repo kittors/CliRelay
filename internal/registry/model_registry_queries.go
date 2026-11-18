@@ -19,6 +19,24 @@ type ModelClientSource struct {
 	UpstreamModelID string `json:"upstream_model_id,omitempty"`
 }
 
+// GetAvailableModelInfos returns the public model metadata for every model
+// with at least one registered provider.
+func (r *ModelRegistry) GetAvailableModelInfos() []*ModelInfo {
+	if r == nil {
+		return nil
+	}
+	r.mutex.RLock()
+	defer r.mutex.RUnlock()
+	infos := make([]*ModelInfo, 0, len(r.models))
+	for _, registration := range r.models {
+		if registration == nil || registration.Count <= 0 || registration.Info == nil {
+			continue
+		}
+		infos = append(infos, registration.Info)
+	}
+	return cloneModelInfosUnique(infos)
+}
+
 // GetAvailableModels returns all models that have at least one available client.
 func (r *ModelRegistry) GetAvailableModels(handlerType string) []map[string]any {
 	r.mutex.RLock()
@@ -215,10 +233,27 @@ func (r *ModelRegistry) GetModelCount(modelID string) int {
 
 // GetModelProviders returns provider identifiers that currently supply the given model.
 func (r *ModelRegistry) GetModelProviders(modelID string) []string {
+	modelID = strings.TrimSpace(modelID)
+	if modelID == "" {
+		return nil
+	}
 	r.mutex.RLock()
 	defer r.mutex.RUnlock()
 
 	registration, exists := r.models[modelID]
+	if !exists {
+		// Public aliases may resolve to the canonical model registered by an
+		// upstream client. Keep provider lookup alias-aware so routing can
+		// preserve the caller's model name while sending the canonical wire
+		// model downstream.
+		for registeredID, candidate := range r.models {
+			if equivalentVideoModelID(registeredID, modelID) {
+				registration = candidate
+				exists = true
+				break
+			}
+		}
+	}
 	if !exists || registration == nil || len(registration.Providers) == 0 {
 		return nil
 	}

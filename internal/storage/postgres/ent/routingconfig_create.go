@@ -9,7 +9,7 @@ import (
 
 	"entgo.io/ent/dialect/sql/sqlgraph"
 	"entgo.io/ent/schema/field"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/storage/postgres/ent/routingconfig"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/storage/postgres/ent/routingconfig"
 )
 
 // RoutingConfigCreate is the builder for creating a RoutingConfig entity.

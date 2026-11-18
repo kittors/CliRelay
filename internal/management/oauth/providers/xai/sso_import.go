@@ -7,10 +7,10 @@ import (
 	"strings"
 	"time"
 
-	internalxai "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/xai"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/management/oauth/credentialimport"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	internalxai "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/xai"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/management/oauth/credentialimport"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
 
 // SSOConverter is the part of XAIAuth an SSO import needs; tests fake it.

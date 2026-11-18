@@ -4,7 +4,7 @@ import (
 	"time"
 	"unicode/utf16"
 
-	sdktranslator "github.com/router-for-me/CLIProxyAPI/v6/sdk/translator"
+	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 )
 
 // What the word guard did to a request, as the request log and the panel's test

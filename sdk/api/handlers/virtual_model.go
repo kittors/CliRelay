@@ -10,9 +10,9 @@ import (
 	"sync"
 
 	"github.com/gin-gonic/gin"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
-	"github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/routetrace"
-	sdkrouting "github.com/router-for-me/CLIProxyAPI/v6/sdk/routing"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/routetrace"
+	sdkrouting "github.com/router-for-me/CLIProxyAPI/v8/sdk/routing"
 )
 
 // A virtual model is a model name a tenant serves from one of several real
@@ -207,7 +207,7 @@ func (h *BaseAPIHandler) newVirtualModelRun(ctx context.Context, plan *VirtualMo
 	}
 	for _, i := range order {
 		member := plan.Members[i]
-		if _, _, errMsg := h.getRequestDetails(run.memberContext(member, false), member.Model); errMsg != nil {
+		if _, _, errMsg := h.getRequestDetails(member.Model); errMsg != nil {
 			run.passOver(i, routetrace.MemberNoProvider, errorText(errMsg))
 			run.noProvider = true
 			continue

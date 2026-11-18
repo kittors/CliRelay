@@ -8,12 +8,12 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	internalapisdkbridge "github.com/router-for-me/CLIProxyAPI/v6/internal/api/sdkbridge"
-	sdkaccess "github.com/router-for-me/CLIProxyAPI/v6/sdk/access"
-	"github.com/router-for-me/CLIProxyAPI/v6/sdk/api/handlers"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
-	sdkconfig "github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
-	sdklogging "github.com/router-for-me/CLIProxyAPI/v6/sdk/logging"
+	internalapisdkbridge "github.com/router-for-me/CLIProxyAPI/v8/internal/api/sdkbridge"
+	sdkaccess "github.com/router-for-me/CLIProxyAPI/v8/sdk/access"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	sdkconfig "github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
+	sdklogging "github.com/router-for-me/CLIProxyAPI/v8/sdk/logging"
 )
 
 type Server = internalapisdkbridge.Server

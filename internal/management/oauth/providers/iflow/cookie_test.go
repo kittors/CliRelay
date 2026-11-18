@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	internaliflow "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/iflow"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	internaliflow "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/iflow"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
 
 type iflowCookieAuthStub struct {

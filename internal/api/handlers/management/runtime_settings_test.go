@@ -7,10 +7,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/codexadmission"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	settingsstore "github.com/router-for-me/CLIProxyAPI/v6/internal/management/settings/store"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/codexadmission"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	settingsstore "github.com/router-for-me/CLIProxyAPI/v8/internal/management/settings/store"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/usage"
 )
 
 func TestPutIdentityFingerprintPersistsToSQLite(t *testing.T) {

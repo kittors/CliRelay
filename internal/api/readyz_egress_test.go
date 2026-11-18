@@ -15,9 +15,9 @@ import (
 	"testing"
 	"time"
 
-	proxyconfig "github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/egresshealth"
-	sqlproxypool "github.com/router-for-me/CLIProxyAPI/v6/internal/storage/sqlstore/proxypool"
+	proxyconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/egresshealth"
+	sqlproxypool "github.com/router-for-me/CLIProxyAPI/v8/internal/storage/sqlstore/proxypool"
 )
 
 func serveEgressReadyz(server *Server) *httptest.ResponseRecorder {

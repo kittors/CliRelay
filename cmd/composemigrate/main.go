@@ -12,7 +12,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/deploy/composeplan"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/deploy/composeplan"
 )
 
 func main() {

@@ -12,10 +12,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/cluster"
-	postgresstore "github.com/router-for-me/CLIProxyAPI/v6/internal/storage/postgres"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/storage/postgres/compatdriver"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/cluster"
+	postgresstore "github.com/router-for-me/CLIProxyAPI/v8/internal/storage/postgres"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/storage/postgres/compatdriver"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
 
 // testEnv is one simulated cluster: a shared backend and a memory bus.

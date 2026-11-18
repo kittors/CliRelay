@@ -5,10 +5,10 @@ import (
 	"strings"
 	"testing"
 
-	internalconfig "github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
-	sdkmodelcatalog "github.com/router-for-me/CLIProxyAPI/v6/sdk/modelcatalog"
-	sdkrouting "github.com/router-for-me/CLIProxyAPI/v6/sdk/routing"
+	internalconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	sdkmodelcatalog "github.com/router-for-me/CLIProxyAPI/v8/sdk/modelcatalog"
+	sdkrouting "github.com/router-for-me/CLIProxyAPI/v8/sdk/routing"
 )
 
 // restrictedGroupManager reproduces the production shape that made this bug so hard

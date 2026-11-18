@@ -4,8 +4,8 @@ import (
 	"strconv"
 	"strings"
 
-	sdkconfig "github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
-	sdkrouting "github.com/router-for-me/CLIProxyAPI/v6/sdk/routing"
+	sdkconfig "github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
+	sdkrouting "github.com/router-for-me/CLIProxyAPI/v8/sdk/routing"
 )
 
 func channelGroupScheduling(cfg *runtimeConfigSnapshot, groupName string) (runtimeGroupScheduling, bool) {

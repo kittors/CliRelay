@@ -2,9 +2,9 @@
 package builtin
 
 import (
-	sdktranslator "github.com/router-for-me/CLIProxyAPI/v6/sdk/translator"
+	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 
-	_ "github.com/router-for-me/CLIProxyAPI/v6/sdkbridge/translator"
+	_ "github.com/router-for-me/CLIProxyAPI/v8/internal/translator"
 )
 
 // Registry exposes the default registry populated with all built-in translators.

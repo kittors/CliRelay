@@ -5,7 +5,7 @@ import (
 	"math/rand"
 	"testing"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/testutil/translatortest"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/testutil/translatortest"
 )
 
 // Each patch must produce what the per-path edit it replaced produces, on

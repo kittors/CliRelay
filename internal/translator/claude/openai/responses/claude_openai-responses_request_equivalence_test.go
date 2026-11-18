@@ -3,7 +3,7 @@ package responses
 import (
 	"testing"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/testutil/translatortest"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/testutil/translatortest"
 )
 
 // Tool calls that arrive without a call_id get a random toolu_ id.

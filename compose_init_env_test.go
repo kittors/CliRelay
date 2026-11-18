@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/deploy/composeplan"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/identity"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/deploy/composeplan"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/identity"
 )
 
 func TestComposeInitEnvGeneratesMissingEnv(t *testing.T) {

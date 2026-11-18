@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	sdkmodelcatalog "github.com/router-for-me/CLIProxyAPI/v6/sdk/modelcatalog"
+	sdkmodelcatalog "github.com/router-for-me/CLIProxyAPI/v8/sdk/modelcatalog"
 )
 
 // Keeping the stored lists across restarts.

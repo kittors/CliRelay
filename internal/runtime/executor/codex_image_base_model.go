@@ -3,8 +3,8 @@ package executor
 import (
 	"strings"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/codexcarrier"
-	sdkmodelcatalog "github.com/router-for-me/CLIProxyAPI/v6/sdk/modelcatalog"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/codexcarrier"
+	sdkmodelcatalog "github.com/router-for-me/CLIProxyAPI/v8/sdk/modelcatalog"
 )
 
 // Carrier model wiring for Codex image generation.

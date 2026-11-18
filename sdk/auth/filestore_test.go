@@ -2,13 +2,14 @@ package auth
 
 import (
 	"context"
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 
-	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	"github.com/MoeForge/moego/json"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/auth/codex"
+	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
 func TestExtractAccessToken(t *testing.T) {
@@ -88,269 +89,466 @@ func TestExtractAccessToken(t *testing.T) {
 	}
 }
 
-func TestFileTokenStoreListAppliesRoutingMetadata(t *testing.T) {
-	dir := t.TempDir()
-	fileName := "claude-max.json"
-	data := []byte(`{"type":"claude","email":"max@example.com","prefix":"team-b","proxy_url":"http://auth-proxy.local:8080","proxy_id":"premium-egress"}`)
-	if err := os.WriteFile(filepath.Join(dir, fileName), data, 0o600); err != nil {
-		t.Fatalf("WriteFile: %v", err)
+func TestFileTokenStoreSaveExistingMetadataSetsFileAttributes(t *testing.T) {
+	tests := []struct {
+		name          string
+		existingToken string
+		savedToken    string
+	}{
+		{name: "unchanged content", existingToken: "token", savedToken: "token"},
+		{name: "overwritten content", existingToken: "old-token", savedToken: "new-token"},
 	}
 
-	store := NewFileTokenStore()
-	store.SetBaseDir(dir)
-	auths, err := store.List(context.Background())
-	if err != nil {
-		t.Fatalf("List: %v", err)
-	}
-	if len(auths) != 1 {
-		t.Fatalf("auth count = %d, want 1", len(auths))
-	}
-	auth := auths[0]
-	if auth.Prefix != "team-b" {
-		t.Fatalf("Prefix = %q, want team-b", auth.Prefix)
-	}
-	if auth.ProxyURL != "http://auth-proxy.local:8080" {
-		t.Fatalf("ProxyURL = %q, want auth proxy", auth.ProxyURL)
-	}
-	if auth.ProxyID != "premium-egress" {
-		t.Fatalf("ProxyID = %q, want premium-egress", auth.ProxyID)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			baseDir := t.TempDir()
+			fileName := "antigravity-user.json"
+			path := filepath.Join(baseDir, fileName)
+			existing := []byte(`{"type":"antigravity","access_token":"` + tt.existingToken + `","disabled":false}`)
+			if errWrite := os.WriteFile(path, existing, 0o600); errWrite != nil {
+				t.Fatalf("write existing auth file: %v", errWrite)
+			}
+
+			store := NewFileTokenStore()
+			store.SetBaseDir(baseDir)
+			auth := &cliproxyauth.Auth{
+				ID:       fileName,
+				FileName: fileName,
+				Metadata: map[string]any{
+					"type":         "antigravity",
+					"access_token": tt.savedToken,
+				},
+			}
+
+			savedPath, errSave := store.Save(context.Background(), auth)
+			if errSave != nil {
+				t.Fatalf("Save() error = %v", errSave)
+			}
+			if savedPath != path {
+				t.Fatalf("Save() path = %q, want %q", savedPath, path)
+			}
+			if got := auth.Attributes[cliproxyauth.AttributePath]; got != path {
+				t.Errorf("path attribute = %q, want %q", got, path)
+			}
+			if got := auth.Attributes[cliproxyauth.AttributeSource]; got != path {
+				t.Errorf("source attribute = %q, want %q", got, path)
+			}
+			if got := auth.Attributes[cliproxyauth.AttributeSourceBackend]; got != cliproxyauth.AuthSourceFile {
+				t.Errorf("source backend attribute = %q, want %q", got, cliproxyauth.AuthSourceFile)
+			}
+			persisted, errRead := os.ReadFile(path)
+			if errRead != nil {
+				t.Fatalf("read saved auth file: %v", errRead)
+			}
+			expected := []byte(`{"type":"antigravity","access_token":"` + tt.savedToken + `","disabled":false}`)
+			if !jsonEqual(persisted, expected) {
+				t.Errorf("saved auth file = %s, want JSON equal to %s", persisted, expected)
+			}
+		})
 	}
 }
 
-func TestFileTokenStoreListInfersCodexProviderForOpenAIOAuthJSON(t *testing.T) {
-	dir := t.TempDir()
-	fileName := "openai-oauth.json"
-	data := []byte(`{"chatgpt_account_id":"acct-123","client_id":"app_test","access_token":"access-token","id_token":"id-token","email":"subscriber@example.com","plan_type":"plus"}`)
-	if err := os.WriteFile(filepath.Join(dir, fileName), data, 0o600); err != nil {
-		t.Fatalf("WriteFile: %v", err)
+func TestFileTokenStoreNormalizesLegacyCredentialMetadata(t *testing.T) {
+	t.Run("save", func(t *testing.T) {
+		baseDir := t.TempDir()
+		store := NewFileTokenStore()
+		store.SetBaseDir(baseDir)
+		auth := &cliproxyauth.Auth{
+			ID:       "legacy-save.json",
+			FileName: "legacy-save.json",
+			Metadata: map[string]any{
+				"type":            "codex",
+				"request-retry":   2,
+				"request_retry":   0,
+				"disable-cooling": true,
+			},
+		}
+
+		path, errSave := store.Save(context.Background(), auth)
+		if errSave != nil {
+			t.Fatalf("Save() error = %v", errSave)
+		}
+		persisted, errRead := os.ReadFile(path)
+		if errRead != nil {
+			t.Fatalf("read saved auth file: %v", errRead)
+		}
+		want := []byte(`{"type":"codex","request_retry":0,"disable_cooling":true,"disabled":false}`)
+		if !jsonEqual(persisted, want) {
+			t.Fatalf("saved auth file = %s, want JSON equal to %s", persisted, want)
+		}
+	})
+
+	t.Run("list", func(t *testing.T) {
+		baseDir := t.TempDir()
+		path := filepath.Join(baseDir, "legacy-list.json")
+		if errWrite := os.WriteFile(path, []byte(`{"type":"codex","request-retry":2,"disable-cooling":true}`), 0o600); errWrite != nil {
+			t.Fatalf("write legacy auth file: %v", errWrite)
+		}
+		store := NewFileTokenStore()
+		store.SetBaseDir(baseDir)
+
+		auths, errList := store.List(context.Background())
+		if errList != nil {
+			t.Fatalf("List() error = %v", errList)
+		}
+		if len(auths) != 1 {
+			t.Fatalf("List() len = %d, want 1", len(auths))
+		}
+		if got := auths[0].Metadata["request_retry"]; got != float64(2) {
+			t.Fatalf("listed request_retry = %#v, want 2", got)
+		}
+		if got := auths[0].Metadata["disable_cooling"]; got != true {
+			t.Fatalf("listed disable_cooling = %#v, want true", got)
+		}
+		for _, legacy := range []string{"request-retry", "disable-cooling"} {
+			if _, exists := auths[0].Metadata[legacy]; exists {
+				t.Fatalf("listed metadata retained %q: %#v", legacy, auths[0].Metadata)
+			}
+		}
+	})
+}
+
+func TestFileTokenStoreSaveRejectsInvalidWeight(t *testing.T) {
+	baseDir := t.TempDir()
+	store := NewFileTokenStore()
+	store.SetBaseDir(baseDir)
+	auth := &cliproxyauth.Auth{
+		ID:       "invalid.json",
+		FileName: "invalid.json",
+		Metadata: map[string]any{
+			"type":                       "test",
+			cliproxyauth.AttributeWeight: 1.5,
+		},
 	}
 
-	store := NewFileTokenStore()
-	store.SetBaseDir(dir)
-	auths, err := store.List(context.Background())
-	if err != nil {
-		t.Fatalf("List: %v", err)
+	if _, errSave := store.Save(context.Background(), auth); errSave == nil {
+		t.Fatal("Save() accepted an invalid weight")
 	}
-	if len(auths) != 1 {
-		t.Fatalf("auth count = %d, want 1", len(auths))
-	}
-	if auths[0].Provider != "codex" {
-		t.Fatalf("Provider = %q, want codex", auths[0].Provider)
-	}
-	if auths[0].Metadata["type"] != "codex" {
-		t.Fatalf("metadata type = %#v, want codex", auths[0].Metadata["type"])
+	if _, errStat := os.Stat(filepath.Join(baseDir, auth.FileName)); !os.IsNotExist(errStat) {
+		t.Fatalf("invalid auth file was persisted: %v", errStat)
 	}
 }
 
-func TestFileTokenStoreListNormalizesOpenAIBundleJSONForCodex(t *testing.T) {
-	dir := t.TempDir()
-	fileName := "openai-bundle.json"
-	accountID := "acct-bundle"
-	issuedAt := int64(1_779_210_280)
-	expiresAt := int64(1_780_074_280)
-	accessToken := makeJWTForTest(t, map[string]any{
-		"iat": issuedAt,
-		"exp": expiresAt,
-		"https://api.openai.com/auth": map[string]any{
-			"chatgpt_account_id": accountID,
-			"chatgpt_plan_type":  "plus",
-			"chatgpt_user_id":    "user-bundle",
-		},
-	})
-	idToken := makeJWTForTest(t, map[string]any{
-		"email": "bundle@example.com",
-		"iat":   issuedAt,
-		"exp":   expiresAt,
-		"https://api.openai.com/auth": map[string]any{
-			"chatgpt_account_id": accountID,
-			"chatgpt_plan_type":  "plus",
-			"chatgpt_user_id":    "user-bundle",
-		},
-	})
-	data, err := json.Marshal(map[string]any{
-		"version":              1,
-		"platform":             "openai",
-		"account_claims_email": "bundle@example.com",
-		"access_token":         accessToken,
-		"id_token":             idToken,
-		"refresh_token":        "",
-		"client_id":            "app_test",
-		"chatgpt_account_id":   accountID,
-		"disabled":             false,
-	})
-	if err != nil {
-		t.Fatalf("Marshal: %v", err)
-	}
-	path := filepath.Join(dir, fileName)
-	if err := os.WriteFile(path, data, 0o600); err != nil {
-		t.Fatalf("WriteFile: %v", err)
+func TestFileTokenStoreListSkipsInvalidPluginSourceWeight(t *testing.T) {
+	baseDir := t.TempDir()
+	path := filepath.Join(baseDir, "plugin.json")
+	if errWrite := os.WriteFile(path, []byte(`{"type":"plugin","weight":"invalid"}`), 0o600); errWrite != nil {
+		t.Fatalf("write auth file: %v", errWrite)
 	}
 
+	parserCalled := false
+	RegisterPluginAuthParser(fileStoreMultiAuthParserFunc(func(context.Context, pluginapi.AuthParseRequest) ([]*cliproxyauth.Auth, bool, error) {
+		parserCalled = true
+		return []*cliproxyauth.Auth{{ID: "plugin.json", Provider: "plugin"}}, true, nil
+	}))
+	t.Cleanup(func() {
+		RegisterPluginAuthParser(nil)
+	})
+
 	store := NewFileTokenStore()
-	store.SetBaseDir(dir)
-	auths, err := store.List(context.Background())
-	if err != nil {
-		t.Fatalf("List: %v", err)
+	store.SetBaseDir(baseDir)
+	auths, errList := store.List(context.Background())
+	if errList != nil {
+		t.Fatalf("List() error = %v", errList)
 	}
-	if len(auths) != 1 {
-		t.Fatalf("auth count = %d, want 1", len(auths))
+	if parserCalled {
+		t.Fatal("plugin parser was called for an invalid persisted source")
 	}
-	wantExpired := time.Unix(expiresAt, 0).UTC().Format(time.RFC3339)
-	wantLastRefresh := time.Unix(issuedAt, 0).UTC().Format(time.RFC3339)
-	for key, want := range map[string]any{
-		"type":            "codex",
-		"account_id":      accountID,
-		"chatgpt_user_id": "user-bundle",
-		"email":           "bundle@example.com",
-		"expired":         wantExpired,
-		"last_refresh":    wantLastRefresh,
-		"plan_type":       "plus",
-	} {
-		if got := auths[0].Metadata[key]; got != want {
-			t.Fatalf("metadata[%s] = %#v, want %#v", key, got, want)
+	if len(auths) != 0 {
+		t.Fatalf("List() returned invalid plugin auths: %#v", auths)
+	}
+}
+
+func TestFileTokenStoreListExpandsPluginMultiAuths(t *testing.T) {
+	baseDir := t.TempDir()
+	path := filepath.Join(baseDir, "geminicli.json")
+	if errWrite := os.WriteFile(path, []byte(`{"type":"gemini-cli","weight":3,"headers":{"X-Test":"value"}}`), 0o600); errWrite != nil {
+		t.Fatalf("write auth file: %v", errWrite)
+	}
+
+	RegisterPluginAuthParser(fileStoreMultiAuthParserFunc(func(ctx context.Context, req pluginapi.AuthParseRequest) ([]*cliproxyauth.Auth, bool, error) {
+		if req.Provider != "gemini-cli" || req.Path != path || req.FileName != "geminicli.json" {
+			t.Fatalf("ParseAuths request = %#v, want file context", req)
+		}
+		return []*cliproxyauth.Auth{
+			{
+				ID:       "geminicli.json",
+				Provider: "gemini-cli",
+				Metadata: map[string]any{
+					"type": "gemini-cli",
+					"headers": map[string]any{
+						"X-Test": "value",
+					},
+				},
+			},
+			nil,
+			{
+				ID:       "geminicli-project-a.json",
+				Provider: "gemini-cli",
+				Metadata: map[string]any{
+					"type":       "gemini-cli",
+					"project_id": "project-a",
+					"headers": map[string]any{
+						"X-Test": "value",
+					},
+				},
+			},
+		}, true, nil
+	}))
+	t.Cleanup(func() {
+		RegisterPluginAuthParser(nil)
+	})
+
+	store := NewFileTokenStore()
+	store.SetBaseDir(baseDir)
+	auths, errList := store.List(context.Background())
+	if errList != nil {
+		t.Fatalf("List() error = %v", errList)
+	}
+	if len(auths) != 2 {
+		t.Fatalf("List() len = %d, want two plugin auths", len(auths))
+	}
+	if firstIndex, secondIndex := auths[0].EnsureIndex(), auths[1].EnsureIndex(); firstIndex == "" || firstIndex == secondIndex {
+		t.Fatalf("auth indexes = %q/%q, want distinct non-empty indexes", firstIndex, secondIndex)
+	}
+	for _, auth := range auths {
+		if !cliproxyauth.IsPluginVirtualAuth(auth) {
+			t.Fatalf("auth attributes = %#v, want plugin virtual marker", auth.Attributes)
+		}
+		if auth.Attributes[cliproxyauth.AttributeVirtualSource] != path {
+			t.Fatalf("virtual_source = %q, want %q", auth.Attributes[cliproxyauth.AttributeVirtualSource], path)
+		}
+		if auth.Attributes["path"] != path || auth.Attributes["source"] != path {
+			t.Fatalf("auth attributes = %#v, want source path", auth.Attributes)
+		}
+		if gotHeader := auth.Attributes["header:X-Test"]; gotHeader != "value" {
+			t.Fatalf("header:X-Test = %q, want value", gotHeader)
+		}
+		if gotWeight := auth.Attributes[cliproxyauth.AttributeWeight]; gotWeight != "3" {
+			t.Fatalf("weight = %q, want 3", gotWeight)
 		}
 	}
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("ReadFile: %v", err)
-	}
-	var persisted map[string]any
-	if err := json.Unmarshal(raw, &persisted); err != nil {
-		t.Fatalf("Unmarshal persisted: %v", err)
-	}
-	if persisted["account_id"] != accountID || persisted["type"] != "codex" {
-		t.Fatalf("persisted normalized fields = %#v", persisted)
+	if gotProject := auths[1].Metadata["project_id"]; gotProject != "project-a" {
+		t.Fatalf("project_id = %#v, want project-a", gotProject)
 	}
 }
 
-func TestFileTokenStoreListNormalizesXAIImportMetadata(t *testing.T) {
-	dir := t.TempDir()
-	fileName := "xai-import.json"
-	// Simulate a cross-tenant downloaded file missing runtime fields.
-	data, err := json.Marshal(map[string]any{
-		"type":          "xai",
-		"email":         "disk@example.com",
-		"access_token":  "access",
-		"refresh_token": "refresh",
-		"sub":           "sub-disk",
+func TestFileTokenStoreListAppliesSourcePriorityToPluginAuths(t *testing.T) {
+	for _, testCase := range []struct {
+		name         string
+		raw          string
+		want         string
+		wantMetadata any
+	}{
+		{name: "number", raw: `{"type":"plugin","priority":1}`, want: "1", wantMetadata: float64(1)},
+		{name: "string", raw: `{"type":"plugin","priority":" 2 "}`, want: "2", wantMetadata: " 2 "},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			baseDir := t.TempDir()
+			path := filepath.Join(baseDir, "plugin.json")
+			if errWrite := os.WriteFile(path, []byte(testCase.raw), 0o600); errWrite != nil {
+				t.Fatalf("write auth file: %v", errWrite)
+			}
+			RegisterPluginAuthParser(fileStoreMultiAuthParserFunc(func(context.Context, pluginapi.AuthParseRequest) ([]*cliproxyauth.Auth, bool, error) {
+				return []*cliproxyauth.Auth{
+					{ID: "first", Provider: "plugin", Metadata: map[string]any{"project_id": "first"}},
+					{ID: "second", Provider: "plugin", Metadata: map[string]any{"project_id": "second"}},
+				}, true, nil
+			}))
+			t.Cleanup(func() { RegisterPluginAuthParser(nil) })
+
+			store := NewFileTokenStore()
+			store.SetBaseDir(baseDir)
+			auths, errList := store.List(context.Background())
+			if errList != nil {
+				t.Fatalf("List() error = %v", errList)
+			}
+			if len(auths) != 2 {
+				t.Fatalf("List() len = %d, want 2", len(auths))
+			}
+			for _, auth := range auths {
+				if got := auth.Attributes["priority"]; got != testCase.want {
+					t.Errorf("auth %s priority attribute = %q, want %q", auth.ID, got, testCase.want)
+				}
+				if got := auth.Attributes[cliproxyauth.AttributeFilePriority]; got != "true" {
+					t.Errorf("auth %s file priority marker = %q, want true", auth.ID, got)
+				}
+				if got := auth.Metadata["priority"]; got != testCase.wantMetadata {
+					t.Errorf("auth %s priority metadata = %v, want %v", auth.ID, got, testCase.wantMetadata)
+				}
+			}
+		})
+	}
+}
+
+func TestFileTokenStoreListAppliesSourceDisabledToPluginMultiAuths(t *testing.T) {
+	baseDir := t.TempDir()
+	path := filepath.Join(baseDir, "geminicli.json")
+	if errWrite := os.WriteFile(path, []byte(`{"type":"gemini-cli","disabled":true}`), 0o600); errWrite != nil {
+		t.Fatalf("write auth file: %v", errWrite)
+	}
+
+	RegisterPluginAuthParser(fileStoreMultiAuthParserFunc(func(context.Context, pluginapi.AuthParseRequest) ([]*cliproxyauth.Auth, bool, error) {
+		return []*cliproxyauth.Auth{
+			{ID: "geminicli.json", Provider: "gemini-cli", Metadata: map[string]any{"type": "gemini-cli"}},
+			{ID: "geminicli-project-a.json", Provider: "gemini-cli", Metadata: map[string]any{"type": "gemini-cli", "project_id": "project-a"}},
+		}, true, nil
+	}))
+	t.Cleanup(func() {
+		RegisterPluginAuthParser(nil)
 	})
-	if err != nil {
-		t.Fatalf("Marshal: %v", err)
-	}
-	path := filepath.Join(dir, fileName)
-	if err := os.WriteFile(path, data, 0o600); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
 
 	store := NewFileTokenStore()
-	store.SetBaseDir(dir)
-	auths, err := store.List(context.Background())
-	if err != nil {
-		t.Fatalf("List: %v", err)
+	store.SetBaseDir(baseDir)
+	auths, errList := store.List(context.Background())
+	if errList != nil {
+		t.Fatalf("List() error = %v", errList)
 	}
-	if len(auths) != 1 {
-		t.Fatalf("auth count = %d, want 1", len(auths))
+	if len(auths) != 2 {
+		t.Fatalf("List() len = %d, want two plugin auths", len(auths))
 	}
-	auth := auths[0]
-	if auth.Provider != "xai" || auth.FileName != fileName {
-		t.Fatalf("provider/FileName = %q/%q", auth.Provider, auth.FileName)
-	}
-	if auth.Attributes["auth_kind"] != "oauth" {
-		t.Fatalf("auth_kind = %q", auth.Attributes["auth_kind"])
-	}
-	if auth.Attributes["base_url"] != "https://api.x.ai/v1" {
-		t.Fatalf("base_url = %q", auth.Attributes["base_url"])
-	}
-	if auth.Attributes["using_api"] != "false" {
-		t.Fatalf("using_api = %q", auth.Attributes["using_api"])
-	}
-	if auth.Metadata["auth_kind"] != "oauth" || auth.Metadata["base_url"] != "https://api.x.ai/v1" {
-		t.Fatalf("metadata = %#v", auth.Metadata)
-	}
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("ReadFile: %v", err)
-	}
-	var persisted map[string]any
-	if err := json.Unmarshal(raw, &persisted); err != nil {
-		t.Fatalf("Unmarshal: %v", err)
-	}
-	if persisted["auth_kind"] != "oauth" || persisted["type"] != "xai" {
-		t.Fatalf("persisted = %#v", persisted)
+	for _, auth := range auths {
+		if !auth.Disabled || auth.Status != cliproxyauth.StatusDisabled {
+			t.Fatalf("auth %s disabled/status = %v/%s, want disabled", auth.ID, auth.Disabled, auth.Status)
+		}
+		if got, _ := auth.Metadata["disabled"].(bool); !got {
+			t.Fatalf("auth %s metadata disabled = %#v, want true", auth.ID, auth.Metadata["disabled"])
+		}
 	}
 }
 
-func TestNormalizeAuthMetadataXAIAndClaude(t *testing.T) {
-	t.Parallel()
-	xai := NormalizeAuthMetadata(map[string]any{
-		"type":          "xai",
-		"access_token":  "a",
-		"refresh_token": "r",
-	}, "xai")
-	if xai["auth_kind"] != "oauth" || xai["base_url"] != "https://api.x.ai/v1" {
-		t.Fatalf("xai normalize = %#v", xai)
-	}
-	if xai["using_api"] != false {
-		t.Fatalf("xai using_api = %#v, want false", xai["using_api"])
-	}
-	if xai["token_endpoint"] != "https://auth.x.ai/oauth2/token" {
-		t.Fatalf("token_endpoint = %#v", xai["token_endpoint"])
+func TestFileTokenStoreListPluginHandledEmptySuppressesBuiltin(t *testing.T) {
+	baseDir := t.TempDir()
+	path := filepath.Join(baseDir, "codex.json")
+	if errWrite := os.WriteFile(path, []byte(`{"type":"codex","access_token":"token"}`), 0o600); errWrite != nil {
+		t.Fatalf("write auth file: %v", errWrite)
 	}
 
-	claude := NormalizeAuthMetadata(map[string]any{
-		"access_token":  "a",
-		"refresh_token": "r",
-		"email":         "c@example.com",
-	}, "claude")
-	if claude["type"] != "claude" || claude["auth_kind"] != "oauth" {
-		t.Fatalf("claude normalize = %#v", claude)
-	}
+	RegisterPluginAuthParser(fileStoreMultiAuthParserFunc(func(context.Context, pluginapi.AuthParseRequest) ([]*cliproxyauth.Auth, bool, error) {
+		return nil, true, nil
+	}))
+	t.Cleanup(func() {
+		RegisterPluginAuthParser(nil)
+	})
 
-	kimi := NormalizeAuthMetadata(map[string]any{
-		"refresh_token": "r",
-	}, "kimi")
-	if kimi["type"] != "kimi" || kimi["auth_kind"] != "oauth" {
-		t.Fatalf("kimi normalize = %#v", kimi)
+	store := NewFileTokenStore()
+	store.SetBaseDir(baseDir)
+	auths, errList := store.List(context.Background())
+	if errList != nil {
+		t.Fatalf("List() error = %v", errList)
+	}
+	if len(auths) != 0 {
+		t.Fatalf("List() len = %d, want plugin-handled empty result", len(auths))
 	}
 }
 
-func TestFileTokenStoreSavePersistsRoutingMetadata(t *testing.T) {
-	dir := t.TempDir()
-	fileName := "claude-pro.json"
-	store := NewFileTokenStore()
-	store.SetBaseDir(dir)
+type fileStoreMultiAuthParserFunc func(context.Context, pluginapi.AuthParseRequest) ([]*cliproxyauth.Auth, bool, error)
 
-	_, err := store.Save(context.Background(), &cliproxyauth.Auth{
+func (f fileStoreMultiAuthParserFunc) ParseAuth(context.Context, pluginapi.AuthParseRequest) (*cliproxyauth.Auth, bool, error) {
+	return nil, false, nil
+}
+
+func (f fileStoreMultiAuthParserFunc) ParseAuths(ctx context.Context, req pluginapi.AuthParseRequest) ([]*cliproxyauth.Auth, bool, error) {
+	return f(ctx, req)
+}
+
+func TestFileTokenStoreSaveReadModifyWritePreservesSIWC(t *testing.T) {
+	baseDir := t.TempDir()
+	fileName := "codex-siwc.json"
+	path := filepath.Join(baseDir, fileName)
+	onDisk := []byte(`{"type":"codex","access_token":"outer-disk","refresh_token":"outer-ref-disk","use_siwc":true,"siwc":{"access_token":"siwc-disk","refresh_token":"siwc-ref-disk","client_id":"oaiapp_disk","device_id":"e61bbe28-07ef-466d-8e5d-a344f94ab305"}}`)
+	if errWrite := os.WriteFile(path, onDisk, 0o600); errWrite != nil {
+		t.Fatalf("write initial file: %v", errWrite)
+	}
+
+	store := NewFileTokenStore()
+	store.SetBaseDir(baseDir)
+
+	// Save an Auth whose in-memory Metadata only updated outer tokens and forgot siwc/use_siwc
+	authOuter := &cliproxyauth.Auth{
 		ID:       fileName,
 		FileName: fileName,
-		Provider: "claude",
-		Prefix:   "team-c",
-		ProxyURL: "http://auth-proxy.local:8080",
-		ProxyID:  "premium-egress",
+		Provider: "codex",
 		Metadata: map[string]any{
-			"type":  "claude",
-			"email": "pro@example.com",
+			"type":          "codex",
+			"access_token":  "outer-new",
+			"refresh_token": "outer-ref-new",
 		},
-	})
-	if err != nil {
-		t.Fatalf("Save: %v", err)
+	}
+	var original map[string]any
+	if errUnmarshal := json.Unmarshal(onDisk, &original); errUnmarshal != nil {
+		t.Fatal(errUnmarshal)
+	}
+	authOuter.CodexRefreshPatch = codex.NewCredentialRefreshPatch(original, authOuter.Metadata, true, false)
+	if _, errSave := store.Save(context.Background(), authOuter); errSave != nil {
+		t.Fatalf("Save outer error: %v", errSave)
+	}
+	if authOuter.Metadata["use_siwc"] != true {
+		t.Fatalf("in-memory Metadata should be synced with disk use_siwc, got %v", authOuter.Metadata["use_siwc"])
+	}
+	siwcMem, ok := authOuter.Metadata["siwc"].(map[string]any)
+	if !ok || siwcMem["access_token"] != "siwc-disk" || siwcMem["client_id"] != "oaiapp_disk" {
+		t.Fatalf("in-memory Metadata should be synced with disk siwc, got %#v", authOuter.Metadata["siwc"])
 	}
 
-	raw, err := os.ReadFile(filepath.Join(dir, fileName))
-	if err != nil {
-		t.Fatalf("ReadFile: %v", err)
+	// Now save an Auth that updates only siwc.access_token and siwc.refresh_token
+	authSIWC := &cliproxyauth.Auth{
+		ID:       fileName,
+		FileName: fileName,
+		Provider: "codex",
+		Metadata: map[string]any{
+			"type": "codex",
+			"siwc": map[string]any{
+				"access_token":  "siwc-new",
+				"refresh_token": "siwc-ref-new",
+			},
+		},
 	}
-	var metadata map[string]any
-	if err := json.Unmarshal(raw, &metadata); err != nil {
-		t.Fatalf("Unmarshal: %v", err)
+	authSIWC.CodexRefreshPatch = codex.NewCredentialRefreshPatch(authOuter.Metadata, authSIWC.Metadata, false, true)
+	if _, errSave := store.Save(context.Background(), authSIWC); errSave != nil {
+		t.Fatalf("Save siwc error: %v", errSave)
 	}
-	if metadata["prefix"] != "team-c" {
-		t.Fatalf("prefix = %#v, want team-c", metadata["prefix"])
+	if authSIWC.Metadata["access_token"] != "outer-new" || authSIWC.Metadata["use_siwc"] != true {
+		t.Fatalf("outer or use_siwc lost on disk/memory: %#v", authSIWC.Metadata)
 	}
-	if metadata["proxy_url"] != "http://auth-proxy.local:8080" {
-		t.Fatalf("proxy_url = %#v, want auth proxy", metadata["proxy_url"])
+	siwcFinal, ok := authSIWC.Metadata["siwc"].(map[string]any)
+	if !ok || siwcFinal["access_token"] != "siwc-new" || siwcFinal["client_id"] != "oaiapp_disk" || siwcFinal["device_id"] != "e61bbe28-07ef-466d-8e5d-a344f94ab305" {
+		t.Fatalf("siwcFinal unexpected: %#v", siwcFinal)
 	}
-	if metadata["proxy_id"] != "premium-egress" {
-		t.Fatalf("proxy_id = %#v, want premium-egress", metadata["proxy_id"])
+}
+
+func TestFileTokenStoreSaveAllowsDeletingNonCredentialMetadata(t *testing.T) {
+	baseDir := t.TempDir()
+	fileName := "codex-proxy.json"
+	path := filepath.Join(baseDir, fileName)
+	onDisk := []byte(`{"type":"codex","access_token":"outer-1","proxy_url":"http://old-proxy:8080","use_siwc":true,"siwc":{"access_token":"siwc-1","refresh_token":"siwc-ref-1","client_id":"oaiapp_1"}}`)
+	if errWrite := os.WriteFile(path, onDisk, 0o600); errWrite != nil {
+		t.Fatalf("write initial file: %v", errWrite)
+	}
+
+	store := NewFileTokenStore()
+	store.SetBaseDir(baseDir)
+
+	// Operator clears proxy_url from Metadata and saves
+	auth := &cliproxyauth.Auth{
+		ID:       fileName,
+		FileName: fileName,
+		Provider: "codex",
+		Metadata: map[string]any{
+			"type":         "codex",
+			"access_token": "outer-1",
+			"use_siwc":     true,
+			"siwc": map[string]any{
+				"access_token":  "siwc-1",
+				"refresh_token": "siwc-ref-1",
+				"client_id":     "oaiapp_1",
+			},
+		},
+	}
+	if _, errSave := store.Save(context.Background(), auth); errSave != nil {
+		t.Fatalf("Save error: %v", errSave)
+	}
+	if _, exists := auth.Metadata["proxy_url"]; exists {
+		t.Fatalf("deleted proxy_url was resurrected in memory: %v", auth.Metadata["proxy_url"])
 	}
 }

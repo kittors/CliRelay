@@ -5,8 +5,6 @@ import (
 	"net/http"
 	"strings"
 	"time"
-
-	"github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/retryhint"
 )
 
 type cooldownService struct {
@@ -25,42 +23,7 @@ func newCooldownService(manager *Manager) cooldownService {
 	return cooldownService{manager: manager}
 }
 
-func (m *Manager) retrySettings() (int, time.Duration) {
-	if m == nil {
-		return 0, 0
-	}
-	return int(m.requestRetry.Load()), time.Duration(m.maxRetryInterval.Load())
-}
-
-func (m *Manager) closestCooldownWait(providers []string, model string, attempt int) (time.Duration, bool) {
-	return newCooldownService(m).closestWait(providers, model, attempt)
-}
-
-func (m *Manager) shouldRetryAfterError(err error, attempt int, providers []string, model string, maxWait time.Duration, meta map[string]any) (time.Duration, bool) {
-	return newCooldownService(m).shouldRetryAfterError(err, attempt, providers, model, maxWait, meta)
-}
-
-func waitForCooldown(ctx context.Context, wait time.Duration) error {
-	if wait <= 0 {
-		return nil
-	}
-	timer := time.NewTimer(wait)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-timer.C:
-		return nil
-	}
-}
-
 // MarkResult records an execution result and notifies hooks.
-func (m *Manager) MarkResult(ctx context.Context, result Result) {
-	newCooldownService(m).markResult(ctx, result)
-	// Every attempt's result passes here, a stream that failed after its first
-	// byte included, so this is where an upstream content refusal is reported.
-	m.observeUpstreamRefusal(ctx, result)
-}
 
 func (s cooldownService) closestWait(providers []string, model string, attempt int) (time.Duration, bool) {
 	if s.manager == nil || len(providers) == 0 {
@@ -428,9 +391,6 @@ func isQuotaExhaustionError(err *Error, retryAfter *time.Duration) bool {
 // not recognise keeps the previous behaviour and is treated as exhaustion, so
 // growing the lists can only narrow the cases that suspend a model, never widen
 // them.
-func isTransientRateLimitError(err *Error) bool {
-	return err != nil && retryhint.ClassifyMessage(err.Message) == retryhint.KindRateLimit
-}
 
 // applyTransientRateLimitLocked backs off briefly without declaring the model
 // out of quota: no quota state, no suspension, so the next scheduling pass can

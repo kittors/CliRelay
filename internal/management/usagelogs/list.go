@@ -5,10 +5,10 @@ import (
 	"strconv"
 	"strings"
 
-	managementauthfiles "github.com/router-for-me/CLIProxyAPI/v6/internal/management/authfiles"
-	apikeysettings "github.com/router-for-me/CLIProxyAPI/v6/internal/management/settings/apikey"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	managementauthfiles "github.com/router-for-me/CLIProxyAPI/v8/internal/management/authfiles"
+	apikeysettings "github.com/router-for-me/CLIProxyAPI/v8/internal/management/settings/apikey"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/usage"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
 
 type authChannelMeta struct {

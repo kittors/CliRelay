@@ -11,8 +11,8 @@ import (
 	"entgo.io/ent/dialect/sql"
 	"entgo.io/ent/dialect/sql/sqlgraph"
 	"entgo.io/ent/schema/field"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/storage/postgres/ent/modelconfig"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/storage/postgres/ent/predicate"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/storage/postgres/ent/modelconfig"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/storage/postgres/ent/predicate"
 )
 
 // ModelConfigQuery is the builder for querying ModelConfig entities.

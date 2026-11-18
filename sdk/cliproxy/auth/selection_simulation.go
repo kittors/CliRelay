@@ -6,8 +6,8 @@ import (
 	"sort"
 	"time"
 
-	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
-	sdkconfig "github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	sdkconfig "github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
 )
 
 // Routing simulation.
@@ -468,8 +468,8 @@ func candidateByID(candidates []*Auth, id string) *Auth {
 // (chat and messages requests may; token counts may not). It takes no waiter
 // slot and no round of the request's budget.
 func (m *Manager) simulatedRetryWait(ctx context.Context, err error, providers []string, model string, meta map[string]any) (time.Duration, string) {
-	_, maxWait := m.retrySettings()
-	if wait, ok := m.shouldRetryAfterError(err, 0, providers, model, maxWait, meta); ok {
+	_, _, maxWait := m.retrySettings()
+	if wait, ok := newCooldownService(m).shouldRetryAfterError(err, 0, providers, model, maxWait, meta); ok {
 		return wait, SimulatedRetryWaitRequestRetry
 	}
 	opts := cliproxyexecutor.Options{Metadata: meta}
@@ -512,84 +512,24 @@ type scratchSelectors struct {
 }
 
 func (m *Manager) newScratchSelectorsLocked() *scratchSelectors {
-	return &scratchSelectors{manager: m, deps: m.scheduler.scratchCopy(), byName: make(map[string]Selector)}
+	return &scratchSelectors{
+		manager: m,
+		deps:    &schedulerDeps{tracker: newSelectionPressureTracker(), limiter: m.concurrencyLimiter},
+		byName:  make(map[string]Selector),
+	}
 }
 
-// selectorFor returns the copy serving a routing scope. A sticky group gets its
-// distribution: stickiness only pins conversations already running, and a
-// simulated request belongs to none.
-func (s *scratchSelectors) selectorFor(cfg *runtimeConfigSnapshot, routeGroup string, allowedGroups map[string]struct{}) Selector {
-	name := sdkconfig.NormalizeDistribution(scopedScheduling(cfg, routeGroup, allowedGroups).Distribution)
-	if selector, ok := s.byName[name]; ok {
+// selectorFor returns the manager's configured selector for the simulation.
+func (s *scratchSelectors) selectorFor(_ *runtimeConfigSnapshot, _ string, _ map[string]struct{}) Selector {
+	if selector, ok := s.byName["default"]; ok {
 		return selector
 	}
-	var selector Selector
-	switch name {
-	case sdkconfig.DistributionFillFirst:
-		selector = &FillFirstSelector{deps: s.deps}
-	case sdkconfig.DistributionLeastLoad:
-		selector = &LeastLoadSelector{deps: s.deps}
-	case sdkconfig.DistributionResetAware:
-		selector = &ResetAwareSelector{deps: s.deps}
-	default:
-		selector = s.manager.roundRobinSelector.scratchCopy(s.deps)
+	selector := s.manager.selector
+	if selector == nil {
+		selector = &RoundRobinSelector{}
 	}
-	s.byName[name] = selector
+	s.byName["default"] = selector
 	return selector
-}
-
-// scratchCopy returns deps whose selection pressure is a copy, so observing a
-// simulated pick does not count against the live account. The quota source and
-// the concurrency limiter are only read.
-func (d *schedulerDeps) scratchCopy() *schedulerDeps {
-	if d == nil {
-		return nil
-	}
-	return &schedulerDeps{tracker: d.tracker.snapshot(), limiter: d.limiter, quota: d.quota}
-}
-
-func (t *selectionPressureTracker) snapshot() *selectionPressureTracker {
-	if t == nil {
-		return nil
-	}
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	copied := &selectionPressureTracker{counters: make(map[string]decayCounter, len(t.counters)), maxKeys: t.maxKeys}
-	for id, counter := range t.counters {
-		copied.counters[id] = counter
-	}
-	return copied
-}
-
-// scratchCopy returns a round-robin selector that starts from this one's
-// cursors and weighted scores. One case is not reproducible: a gemini-cli
-// virtual-parent cursor the live selector has not created yet starts at a
-// random credential (Pick seeds it with rand.IntN), so for the first request of
-// such a model the copy and the live selector may start on different ones.
-func (s *RoundRobinSelector) scratchCopy(deps *schedulerDeps) *RoundRobinSelector {
-	copied := &RoundRobinSelector{deps: deps}
-	if s == nil {
-		return copied
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	copied.maxKeys = s.maxKeys
-	copied.cursors = make(map[string]int, len(s.cursors))
-	for key, cursor := range s.cursors {
-		copied.cursors[key] = cursor
-	}
-	copied.weighted = make(map[string]*weightedCursorState, len(s.weighted))
-	for key, state := range s.weighted {
-		if state == nil {
-			continue
-		}
-		current := make(map[string]int, len(state.current))
-		for id, score := range state.current {
-			current[id] = score
-		}
-		copied.weighted[key] = &weightedCursorState{current: current, tieCursor: state.tieCursor}
-	}
-	return copied
 }
 
 // usage reports an account's running requests and the limit this process

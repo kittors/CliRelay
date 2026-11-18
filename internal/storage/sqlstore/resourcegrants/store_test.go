@@ -6,7 +6,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/configsync"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/configsync"
 	_ "modernc.org/sqlite"
 )
 

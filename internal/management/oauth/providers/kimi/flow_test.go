@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	internalkimi "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/kimi"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	internalkimi "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/kimi"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
 
 type kimiDeviceAuthStub struct {

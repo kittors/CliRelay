@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	internalclaude "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/claude"
+	internalclaude "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/claude"
 )
 
 func TestRecordFromTokenStorageBuildsPersistableRecord(t *testing.T) {

@@ -4,7 +4,7 @@ import (
 	"context"
 	"net/http"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/wsrelay"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/wsrelay"
 	log "github.com/sirupsen/logrus"
 )
 

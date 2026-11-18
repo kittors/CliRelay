@@ -3,8 +3,8 @@ package thinking_test
 import (
 	"testing"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/thinking"
-	_ "github.com/router-for-me/CLIProxyAPI/v6/internal/thinking/provider/xai"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
+	_ "github.com/router-for-me/CLIProxyAPI/v8/internal/thinking/provider/xai"
 	"github.com/tidwall/gjson"
 )
 

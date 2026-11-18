@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/quota"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/quota"
 )
 
 func TestValidatePeriodPayloadJSONDetectsNormalizedDayConflict(t *testing.T) {

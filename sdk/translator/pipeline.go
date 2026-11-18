@@ -1,13 +1,22 @@
 package translator
 
-import "context"
+import (
+	"context"
+
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
+)
 
 // RequestEnvelope represents a request in the translation pipeline.
 type RequestEnvelope struct {
-	Format Format
-	Model  string
-	Stream bool
-	Body   []byte
+	Format    Format
+	Model     string
+	Stream    bool
+	Body      []byte
+	ModelInfo *registry.ModelInfo
+	// ConfigurationUpdatesChanged reports that a plugin normalizer modified Responses updates.
+	ConfigurationUpdatesChanged bool
+	// Err is a request-scoped translation failure. Callers must not send Body upstream when it is set.
+	Err error
 }
 
 // ResponseEnvelope represents a response in the translation pipeline.
@@ -16,7 +25,7 @@ type ResponseEnvelope struct {
 	Model  string
 	Stream bool
 	Body   []byte
-	Chunks []string
+	Chunks [][]byte
 }
 
 // RequestMiddleware decorates request translation.
@@ -63,10 +72,7 @@ func (p *Pipeline) UseResponse(mw ResponseMiddleware) {
 // TranslateRequest applies middleware and registry transformations.
 func (p *Pipeline) TranslateRequest(ctx context.Context, from, to Format, req RequestEnvelope) (RequestEnvelope, error) {
 	terminal := func(ctx context.Context, input RequestEnvelope) (RequestEnvelope, error) {
-		translated := p.registry.TranslateRequest(from, to, input.Model, input.Body, input.Stream)
-		input.Body = translated
-		input.Format = to
-		return input, nil
+		return p.registry.TranslateRequestEnvelope(ctx, from, to, input), nil
 	}
 
 	handler := terminal
@@ -87,7 +93,7 @@ func (p *Pipeline) TranslateResponse(ctx context.Context, from, to Format, resp 
 		if input.Stream {
 			input.Chunks = p.registry.TranslateStream(ctx, from, to, input.Model, originalReq, translatedReq, input.Body, param)
 		} else {
-			input.Body = []byte(p.registry.TranslateNonStream(ctx, from, to, input.Model, originalReq, translatedReq, input.Body, param))
+			input.Body = p.registry.TranslateNonStream(ctx, from, to, input.Model, originalReq, translatedReq, input.Body, param)
 		}
 		input.Format = to
 		return input, nil

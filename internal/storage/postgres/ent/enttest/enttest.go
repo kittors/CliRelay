@@ -5,12 +5,12 @@ package enttest
 import (
 	"context"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/storage/postgres/ent"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/storage/postgres/ent"
 	// required by schema hooks.
-	_ "github.com/router-for-me/CLIProxyAPI/v6/internal/storage/postgres/ent/runtime"
+	_ "github.com/router-for-me/CLIProxyAPI/v8/internal/storage/postgres/ent/runtime"
 
 	"entgo.io/ent/dialect/sql/schema"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/storage/postgres/ent/migrate"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/storage/postgres/ent/migrate"
 )
 
 type (

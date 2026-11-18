@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/privacymask"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/privacymask"
 )
 
 func normalized(t *testing.T, p MaskPolicy) MaskPolicy {

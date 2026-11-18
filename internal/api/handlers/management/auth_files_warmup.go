@@ -7,7 +7,7 @@ import (
 	"sync/atomic"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/management/warmup"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/management/warmup"
 	log "github.com/sirupsen/logrus"
 )
 

@@ -7,9 +7,9 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/identity"
-	managementusagelogs "github.com/router-for-me/CLIProxyAPI/v6/internal/management/usagelogs"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/identity"
+	managementusagelogs "github.com/router-for-me/CLIProxyAPI/v8/internal/management/usagelogs"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/usage"
 	log "github.com/sirupsen/logrus"
 )
 

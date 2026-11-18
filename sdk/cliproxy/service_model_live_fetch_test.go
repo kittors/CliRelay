@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
-	"github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
-	serviceapp "github.com/router-for-me/CLIProxyAPI/v6/sdkbridge/service"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
+	serviceapp "github.com/router-for-me/CLIProxyAPI/v8/sdkbridge/service"
 )
 
 // listedOnlyModel stands for a model an upstream lists and no compiled-in list

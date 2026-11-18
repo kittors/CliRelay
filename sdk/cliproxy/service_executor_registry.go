@@ -3,20 +3,8 @@ package cliproxy
 import (
 	"strings"
 
-	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
-	serviceapp "github.com/router-for-me/CLIProxyAPI/v6/sdkbridge/service"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
-
-func (s *Service) ensureExecutorsForAuth(a *coreauth.Auth) {
-	s.ensureExecutorsForAuthWithMode(a, false)
-}
-
-func (s *Service) ensureExecutorsForAuthWithMode(a *coreauth.Auth, forceReplace bool) {
-	if s == nil {
-		return
-	}
-	serviceapp.RegisterExecutorForAuth(s.coreManager, s.cfg, a, forceReplace, s.wsGateway)
-}
 
 // rebindExecutors refreshes provider executors so they observe the latest configuration.
 func (s *Service) rebindExecutors() {

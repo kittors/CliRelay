@@ -11,8 +11,8 @@ import (
 	"entgo.io/ent/dialect/sql"
 	"entgo.io/ent/dialect/sql/sqlgraph"
 	"entgo.io/ent/schema/field"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/storage/postgres/ent/authfilequotasnapshotpoint"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/storage/postgres/ent/predicate"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/storage/postgres/ent/authfilequotasnapshotpoint"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/storage/postgres/ent/predicate"
 )
 
 // AuthFileQuotaSnapshotPointQuery is the builder for querying AuthFileQuotaSnapshotPoint entities.

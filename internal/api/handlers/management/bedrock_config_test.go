@@ -10,7 +10,7 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 )
 
 func performBedrockConfigRequest(method string, path string, body []byte, handler gin.HandlerFunc) *httptest.ResponseRecorder {

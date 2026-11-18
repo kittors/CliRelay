@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/storage/postgres/compatdriver"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/storage/postgres/compatdriver"
 	_ "modernc.org/sqlite"
 )
 

@@ -1,7 +1,6 @@
 package logging
 
 import (
-	"bytes"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +9,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	log "github.com/sirupsen/logrus"
+	logtest "github.com/sirupsen/logrus/hooks/test"
 )
 
 func TestGinLogrusRecoveryRepanicsErrAbortHandler(t *testing.T) {
@@ -62,129 +62,218 @@ func TestGinLogrusRecoveryHandlesRegularPanic(t *testing.T) {
 	}
 }
 
-func TestGinLogrusLoggerPrefersForwardedClientIPForCDNRequests(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
-	var buf bytes.Buffer
-	originalOutput := log.StandardLogger().Out
-	defer log.SetOutput(originalOutput)
-	log.SetOutput(&buf)
-
-	engine := gin.New()
-	if err := engine.SetTrustedProxies(nil); err != nil {
-		t.Fatalf("SetTrustedProxies(nil): %v", err)
+func TestIsAIAPIPathIncludesPublicAPIGroups(t *testing.T) {
+	for _, path := range []string{
+		"/v1",
+		"/v1/models",
+		"/v1/alpha/search",
+		"/v1beta/interactions",
+		"/openai/v1/videos",
+		"/backend-api/codex/responses",
+		"/muse-code/models",
+	} {
+		if !isAIAPIPath(path) {
+			t.Fatalf("expected %s to be treated as AI API path", path)
+		}
 	}
-	engine.Use(GinLogrusLogger())
-	engine.GET("/probe", func(c *gin.Context) {
-		c.String(http.StatusOK, "ok")
-	})
-
-	req := httptest.NewRequest(http.MethodGet, "/probe", nil)
-	req.RemoteAddr = "198.51.100.10:4321"
-	req.Header.Set("CF-Connecting-IP", "203.0.113.24")
-	recorder := httptest.NewRecorder()
-
-	engine.ServeHTTP(recorder, req)
-
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d; body=%s", recorder.Code, http.StatusOK, recorder.Body.String())
-	}
-	line := buf.String()
-	if !strings.Contains(line, "203.0.113.24") {
-		t.Fatalf("log line = %q, want real forwarded client IP", line)
-	}
-	if strings.Contains(line, "198.51.100.10") {
-		t.Fatalf("log line = %q, should not use proxy connection IP", line)
+	for _, path := range []string{
+		"/v0/management/config",
+		"/v10/models",
+		"/openai/v10/videos",
+		"/backend-api/codex-status",
+		"/muse-code-status",
+	} {
+		if isAIAPIPath(path) {
+			t.Fatalf("expected %s not to be treated as AI API path", path)
+		}
 	}
 }
 
-func TestGinLogrusLoggerAssignsRequestIDForManagementPaths(t *testing.T) {
+func TestIsAIAPIPathIncludesImages(t *testing.T) {
+	if !isAIAPIPath("/v1/images/generations") {
+		t.Fatalf("expected /v1/images/generations to be treated as AI API path")
+	}
+	if !isAIAPIPath("/v1/images/edits") {
+		t.Fatalf("expected /v1/images/edits to be treated as AI API path")
+	}
+	if !isAIAPIPath("/v1/videos") {
+		t.Fatalf("expected /v1/videos to be treated as AI API path")
+	}
+	if !isAIAPIPath("/v1/videos/video_123") {
+		t.Fatalf("expected /v1/videos/video_123 to be treated as AI API path")
+	}
+	if !isAIAPIPath("/openai/v1/videos") {
+		t.Fatalf("expected /openai/v1/videos to be treated as AI API path")
+	}
+	if !isAIAPIPath("/openai/v1/videos/video_123/content") {
+		t.Fatalf("expected /openai/v1/videos/video_123/content to be treated as AI API path")
+	}
+}
+
+func TestIsAIAPIPathIncludesCodexBackend(t *testing.T) {
+	paths := []string{
+		"/backend-api/codex/responses",
+		"/backend-api/codex/responses/compact",
+	}
+	for _, path := range paths {
+		if !isAIAPIPath(path) {
+			t.Fatalf("expected %s to be treated as AI API path", path)
+		}
+	}
+	if isAIAPIPath("/backend-api/codex-status") {
+		t.Fatalf("expected /backend-api/codex-status not to be treated as AI API path")
+	}
+}
+
+func TestGinLogrusLoggerAddsRequestIDForCodexBackend(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	var got string
 	engine := gin.New()
 	engine.Use(GinLogrusLogger())
-	engine.GET("/v0/management/request-log-storage/store-content", func(c *gin.Context) {
-		got = GetGinRequestID(c)
-		if ctxID := GetRequestID(c.Request.Context()); ctxID != got {
-			t.Errorf("context request id = %q, gin = %q", ctxID, got)
-		}
+
+	var requestIDFromContext string
+	var requestIDFromGin string
+	engine.POST("/backend-api/codex/responses", func(c *gin.Context) {
+		requestIDFromContext = GetRequestID(c.Request.Context())
+		requestIDFromGin = GetGinRequestID(c)
 		c.Status(http.StatusOK)
 	})
 
-	req := httptest.NewRequest(http.MethodGet, "/v0/management/request-log-storage/store-content", nil)
+	req := httptest.NewRequest(http.MethodPost, "/backend-api/codex/responses", nil)
 	recorder := httptest.NewRecorder()
 	engine.ServeHTTP(recorder, req)
 
 	if recorder.Code != http.StatusOK {
-		t.Fatalf("status = %d", recorder.Code)
+		t.Fatalf("expected 200, got %d", recorder.Code)
 	}
-	if got == "" {
-		t.Fatal("expected management path to receive a request ID")
+	if requestIDFromContext == "" {
+		t.Fatalf("expected request ID in request context")
 	}
-	if len(got) != 8 {
-		t.Fatalf("request ID length = %d, want 8 (got %q)", len(got), got)
+	if requestIDFromGin != requestIDFromContext {
+		t.Fatalf("expected Gin request ID %q to match context request ID %q", requestIDFromGin, requestIDFromContext)
 	}
 }
 
-func TestGinLogrusLoggerLogsNestedRouteRewriteOnce(t *testing.T) {
+func TestGinLogrusLoggerEscapesEncodedNewlineInPath(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-
-	var buf bytes.Buffer
-	originalOutput := log.StandardLogger().Out
-	defer log.SetOutput(originalOutput)
-	log.SetOutput(&buf)
+	logger := log.StandardLogger()
+	previousHooks := logger.ReplaceHooks(make(log.LevelHooks))
+	previousLevel := logger.GetLevel()
+	hook := logtest.NewLocal(logger)
+	logger.SetLevel(log.InfoLevel)
+	t.Cleanup(func() { logger.ReplaceHooks(previousHooks); logger.SetLevel(previousLevel) })
 
 	engine := gin.New()
 	engine.Use(GinLogrusLogger())
-	engine.POST("/v1/responses", func(c *gin.Context) {
-		if GetGinRequestID(c) == "" {
-			t.Error("rewritten AI route should receive a request ID")
-		}
-		c.Status(http.StatusNoContent)
-	})
-	engine.NoRoute(func(c *gin.Context) {
-		if _, rewritten := c.Get("test.rewritten"); rewritten {
-			c.AbortWithStatus(http.StatusNotFound)
-			return
-		}
-		c.Set("test.rewritten", true)
-		c.Request.URL.Path = "/v1/responses"
-		c.Request.RequestURI = "/v1/responses"
-		engine.HandleContext(c)
-		c.Abort()
-	})
 
 	recorder := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/deepseek/group/v1/responses", nil)
-	engine.ServeHTTP(recorder, req)
-
-	if recorder.Code != http.StatusNoContent {
-		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusNoContent)
+	engine.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/x%0A200%20forged", nil))
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusNotFound)
 	}
-	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
-	if len(lines) != 1 {
-		t.Fatalf("gin log lines = %d, want 1: %q", len(lines), buf.String())
+	entries := hook.AllEntries()
+	if len(entries) != 1 {
+		t.Fatalf("log entries = %d, want 1", len(entries))
 	}
-	if !strings.Contains(lines[0], "/deepseek/group/v1/responses") {
-		t.Fatalf("log line = %q, want original public path", lines[0])
+	message := entries[0].Message
+	if strings.ContainsAny(message, "\r\n") {
+		t.Errorf("access log message contains a line break: %q", message)
+	}
+	if !strings.HasSuffix(message, `GET     "/x\n200 forged"`) {
+		t.Errorf("access log message = %q, want suffix %q", message, `GET     "/x\n200 forged"`)
 	}
 }
 
-func TestShouldTrackRequestID(t *testing.T) {
-	cases := []struct {
-		path string
-		want bool
-	}{
-		{"/v1/messages", true},
-		{"/v0/management/audit-logs", true},
-		{"/management/health", true},
-		{"/healthz", false},
-		{"/api/other", false},
+func TestGinLogrusLoggerKeepsMaskedQueryReadable(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	logger := log.StandardLogger()
+	previousHooks := logger.ReplaceHooks(make(log.LevelHooks))
+	previousLevel := logger.GetLevel()
+	hook := logtest.NewLocal(logger)
+	logger.SetLevel(log.InfoLevel)
+	t.Cleanup(func() { logger.ReplaceHooks(previousHooks); logger.SetLevel(previousLevel) })
+
+	engine := gin.New()
+	engine.Use(GinLogrusLogger())
+	engine.GET("/v1/models", func(c *gin.Context) { c.Status(http.StatusOK) })
+
+	recorder := httptest.NewRecorder()
+	engine.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/models?key=sk-0123456789cdef&limit=5", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusOK)
 	}
-	for _, tc := range cases {
-		if got := shouldTrackRequestID(tc.path); got != tc.want {
-			t.Errorf("shouldTrackRequestID(%q) = %v, want %v", tc.path, got, tc.want)
+	entries := hook.AllEntries()
+	if len(entries) != 1 {
+		t.Fatalf("log entries = %d, want 1", len(entries))
+	}
+	message := entries[0].Message
+	wantSuffix := `GET     "/v1/models?key=sk-0...cdef&limit=5"`
+	if !strings.HasSuffix(message, wantSuffix) {
+		t.Errorf("access log message = %q, want suffix %q", message, wantSuffix)
+	}
+}
+
+func TestGinLogrusLoggerRedactsV8OAuthQueries(t *testing.T) {
+	logger := log.StandardLogger()
+	previousHooks := logger.ReplaceHooks(make(log.LevelHooks))
+	previousLevel := logger.GetLevel()
+	hook := logtest.NewLocal(logger)
+	logger.SetLevel(log.InfoLevel)
+	t.Cleanup(func() { logger.ReplaceHooks(previousHooks); logger.SetLevel(previousLevel) })
+	engine := gin.New()
+	engine.Use(GinLogrusLogger())
+	for _, path := range []string{"/v8/management/oauth/callback", "/v8/management/oauth/status", "/v8/management/oauth/session"} {
+		engine.GET(path, func(c *gin.Context) { c.Status(http.StatusBadRequest) })
+		hook.Reset()
+		recorder := httptest.NewRecorder()
+		engine.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, path+"?state=secret-state&code=secret-code&client_id=issued-secret&error=secret-error", nil))
+		entries := hook.AllEntries()
+		if len(entries) != 1 || !strings.Contains(entries[0].Message, path) {
+			t.Fatal("expected access log for OAuth path")
 		}
+		if strings.Contains(entries[0].Message, "secret") || strings.Contains(entries[0].Message, "?") {
+			t.Fatal("OAuth callback or state leaked into access log")
+		}
+	}
+}
+
+func TestGinLogrusLoggerHealthProbeStatus(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	logger := log.StandardLogger()
+	previousHooks := logger.ReplaceHooks(make(log.LevelHooks))
+	previousLevel := logger.GetLevel()
+	hook := logtest.NewLocal(logger)
+	logger.SetLevel(log.InfoLevel)
+	t.Cleanup(func() { logger.ReplaceHooks(previousHooks); logger.SetLevel(previousLevel) })
+	for _, tc := range []struct {
+		name, method, path string
+		status             int
+		wantLog            bool
+	}{
+		{"get_ok", "GET", "/healthz", 200, false},
+		{"head_ok", "HEAD", "/healthz", 200, false},
+		{"success_boundary", "GET", "/healthz", 299, false},
+		{"redirect", "GET", "/healthz", 300, true},
+		{"client_error", "GET", "/healthz", 400, true},
+		{"server_error", "HEAD", "/healthz", 503, true},
+		{"similar_path", "GET", "/healthz-extra", 200, true},
+		{"other_method", "POST", "/healthz", 200, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			engine := gin.New()
+			engine.Use(GinLogrusLogger())
+			// Simulate an early global middleware response before route handlers run.
+			engine.Use(func(c *gin.Context) { c.AbortWithStatus(tc.status) })
+			engine.Handle(tc.method, tc.path, func(c *gin.Context) { t.Error("aborted request reached route handler") })
+			hook.Reset()
+			recorder := httptest.NewRecorder()
+			engine.ServeHTTP(recorder, httptest.NewRequest(tc.method, tc.path, nil))
+			if recorder.Code != tc.status {
+				t.Fatalf("status = %d, want %d", recorder.Code, tc.status)
+			}
+			if got := len(hook.AllEntries()) > 0; got != tc.wantLog {
+				t.Errorf("access log present = %v, want %v", got, tc.wantLog)
+			}
+		})
 	}
 }

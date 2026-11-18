@@ -1136,6 +1136,8 @@ func GetAntigravityModelConfig() map[string]*AntigravityModelConfig {
 		"gemini-3.1-pro-low":         {Thinking: &ThinkingSupport{Min: 128, Max: 32768, ZeroAllowed: false, DynamicAllowed: true, Levels: []string{"low", "high"}}},
 		"gemini-3-flash":             {Thinking: &ThinkingSupport{Min: 128, Max: 32768, ZeroAllowed: false, DynamicAllowed: true, Levels: []string{"minimal", "low", "medium", "high"}}},
 		"gemini-3-flash-agent":       {Thinking: &ThinkingSupport{Min: 32, Max: 32768, ZeroAllowed: false, DynamicAllowed: true, Levels: []string{"minimal", "low", "medium", "high"}}},
+		"gemini-3.8-flash-high":      {Thinking: &ThinkingSupport{Min: 1, Max: 65535, ZeroAllowed: false, DynamicAllowed: true, Levels: []string{"low", "medium", "high"}}},
+		"gemini-3.8-flash-low":       {Thinking: &ThinkingSupport{Min: 1, Max: 65535, ZeroAllowed: false, DynamicAllowed: true, Levels: []string{"low", "medium", "high"}}},
 		"gemini-3.1-flash-image":     {},
 		"claude-sonnet-4-5-thinking": {Thinking: &ThinkingSupport{Min: 1024, Max: 128000, ZeroAllowed: true, DynamicAllowed: true}, MaxCompletionTokens: 64000},
 		"claude-opus-4-5-thinking":   {Thinking: &ThinkingSupport{Min: 1024, Max: 128000, ZeroAllowed: true, DynamicAllowed: true}, MaxCompletionTokens: 64000},

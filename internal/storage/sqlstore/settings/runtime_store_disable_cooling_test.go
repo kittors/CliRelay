@@ -5,8 +5,8 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	runtimeconfig "github.com/router-for-me/CLIProxyAPI/v6/internal/management/settings/runtimeconfig"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	runtimeconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/management/settings/runtimeconfig"
 )
 
 // The panel's global switch is saved by writing disable-cooling into the

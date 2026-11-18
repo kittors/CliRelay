@@ -8,12 +8,12 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	serviceapp "github.com/router-for-me/CLIProxyAPI/v6/internal/app/service"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/identity"
-	providersettings "github.com/router-for-me/CLIProxyAPI/v6/internal/management/settings/providers"
-	settingsstore "github.com/router-for-me/CLIProxyAPI/v6/internal/management/settings/store"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	serviceapp "github.com/router-for-me/CLIProxyAPI/v8/internal/app/service"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/identity"
+	providersettings "github.com/router-for-me/CLIProxyAPI/v8/internal/management/settings/providers"
+	settingsstore "github.com/router-for-me/CLIProxyAPI/v8/internal/management/settings/store"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
 
 type ProviderKeysHandler struct {
@@ -176,6 +176,75 @@ func (h *ProviderKeysHandler) DeleteGeminiKey(c *gin.Context) {
 		}
 	}
 	c.JSON(400, gin.H{"error": "missing api-key or index"})
+}
+
+// interactions-api-key: []GeminiKey
+func (h *ProviderKeysHandler) GetInteractionsKeys(c *gin.Context) {
+	h.jsonWithRequestVersion(c, settingsstore.RuntimeSettingInteractionsKeys, providerListBody("interactions-api-key", providerSettingsService(h, c).InteractionsKeys()))
+}
+
+func (h *ProviderKeysHandler) PutInteractionsKeys(c *gin.Context) {
+	data, err := c.GetRawData()
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "failed to read body"})
+		return
+	}
+	var arr []config.GeminiKey
+	if err = json.Unmarshal(data, &arr); err != nil {
+		var obj struct {
+			Items []config.GeminiKey `json:"items"`
+		}
+		if errItems := json.Unmarshal(data, &obj); errItems != nil || len(obj.Items) == 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+			return
+		}
+		arr = obj.Items
+	}
+	if err := providerSettingsService(h, c).ReplaceInteractionsKeys(arr); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	h.persistProviderSettings(c)
+}
+
+func (h *ProviderKeysHandler) PatchInteractionsKey(c *gin.Context) {
+	var body struct {
+		Index *int                             `json:"index"`
+		Match *string                          `json:"match"`
+		Value *providersettings.GeminiKeyPatch `json:"value"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil || body.Value == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		return
+	}
+	if err := providerSettingsService(h, c).PatchInteractionsKey(body.Index, body.Match, *body.Value); err != nil {
+		if errors.Is(err, providersettings.ErrItemNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "item not found"})
+			return
+		}
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	h.persistProviderSettings(c)
+}
+
+func (h *ProviderKeysHandler) DeleteInteractionsKey(c *gin.Context) {
+	if val := strings.TrimSpace(c.Query("api-key")); val != "" {
+		if providerSettingsService(h, c).DeleteInteractionsKeyByAPIKey(val) {
+			h.persistProviderSettings(c)
+		} else {
+			c.JSON(http.StatusNotFound, gin.H{"error": "item not found"})
+		}
+		return
+	}
+	if idxStr := c.Query("index"); idxStr != "" {
+		var idx int
+		if _, err := fmt.Sscanf(idxStr, "%d", &idx); err == nil && providerSettingsService(h, c).DeleteInteractionsKeyByIndex(idx) {
+			h.persistProviderSettings(c)
+			return
+		}
+	}
+	c.JSON(http.StatusBadRequest, gin.H{"error": "missing api-key or index"})
 }
 
 // claude-api-key: []ClaudeKey

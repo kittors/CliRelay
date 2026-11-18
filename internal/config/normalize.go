@@ -133,13 +133,64 @@ func (cfg *Config) SanitizeOAuthModelAlias() {
 				continue
 			}
 			seenAlias[aliasKey] = struct{}{}
-			clean = append(clean, OAuthModelAlias{Name: name, Alias: alias, Fork: entry.Fork})
+			var openAPI *bool
+			if entry.OpenAPI != nil {
+				value := *entry.OpenAPI
+				openAPI = &value
+			}
+			clean = append(clean, OAuthModelAlias{
+				OpenAPI:      openAPI,
+				Name:         name,
+				Alias:        alias,
+				Fork:         entry.Fork,
+				DisplayName:  strings.TrimSpace(entry.DisplayName),
+				ForceMapping: entry.ForceMapping,
+			})
 		}
 		if len(clean) > 0 {
 			out[channel] = clean
 		}
 	}
 	cfg.OAuthModelAlias = out
+}
+
+// SanitizeOAuthSettings normalizes channel keys and removes duplicate model
+// settings while preserving the last occurrence's position.
+func (cfg *Config) SanitizeOAuthSettings() {
+	if cfg == nil || len(cfg.OAuthSettings) == 0 {
+		return
+	}
+	out := make(map[string][]OAuthModelSetting, len(cfg.OAuthSettings))
+	for rawChannel, settings := range cfg.OAuthSettings {
+		channel := strings.ToLower(strings.TrimSpace(rawChannel))
+		if channel == "" {
+			continue
+		}
+		seen := make(map[string]struct{}, len(settings))
+		reversed := make([]OAuthModelSetting, 0, len(settings))
+		for i := len(settings) - 1; i >= 0; i-- {
+			entry := settings[i]
+			entry.Name = strings.TrimSpace(entry.Name)
+			entry.Alias = strings.TrimSpace(entry.Alias)
+			if entry.Name == "" {
+				continue
+			}
+			key := strings.ToLower(entry.Name) + "->" + strings.ToLower(entry.Alias)
+			if _, exists := seen[key]; exists {
+				continue
+			}
+			seen[key] = struct{}{}
+			if entry.OpenAPI != nil {
+				value := *entry.OpenAPI
+				entry.OpenAPI = &value
+			}
+			reversed = append(reversed, entry)
+		}
+		for i := len(reversed) - 1; i >= 0; i-- {
+			out[channel] = append(out[channel], reversed[i])
+		}
+	}
+	cfg.OAuthSettings = out
 }
 
 // SanitizeOpenAICompatibility removes OpenAI-compatibility provider entries that are
@@ -544,6 +595,39 @@ func (cfg *Config) SanitizeGeminiKeys() {
 		out = append(out, entry)
 	}
 	cfg.GeminiKey = out
+}
+
+// SanitizeInteractionsKeys deduplicates and normalizes native Interactions credentials.
+// The base URL is part of the identity because one API key may intentionally
+// be routed to more than one compatible Interactions endpoint.
+func (cfg *Config) SanitizeInteractionsKeys() {
+	if cfg == nil {
+		return
+	}
+
+	seen := make(map[string]struct{}, len(cfg.InteractionsKey))
+	out := cfg.InteractionsKey[:0]
+	for i := range cfg.InteractionsKey {
+		entry := cfg.InteractionsKey[i]
+		entry.APIKey = strings.TrimSpace(entry.APIKey)
+		if entry.APIKey == "" {
+			continue
+		}
+		entry.Name = strings.TrimSpace(entry.Name)
+		entry.Prefix = normalizeModelPrefix(entry.Prefix)
+		entry.BaseURL = strings.TrimSpace(entry.BaseURL)
+		entry.ProxyURL = strings.TrimSpace(entry.ProxyURL)
+		entry.ProxyID = strings.TrimSpace(entry.ProxyID)
+		entry.Headers = NormalizeHeaders(entry.Headers)
+		entry.ExcludedModels = NormalizeExcludedModels(entry.ExcludedModels)
+		key := entry.APIKey + "\x00" + entry.BaseURL
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, entry)
+	}
+	cfg.InteractionsKey = out
 }
 
 func normalizeModelPrefix(prefix string) string {

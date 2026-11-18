@@ -3,9 +3,9 @@ package usage
 import (
 	"context"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	sqlproxypool "github.com/router-for-me/CLIProxyAPI/v6/internal/storage/sqlstore/proxypool"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/storage/sqlstore/resourcegrants"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	sqlproxypool "github.com/router-for-me/CLIProxyAPI/v8/internal/storage/sqlstore/proxypool"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/storage/sqlstore/resourcegrants"
 	log "github.com/sirupsen/logrus"
 )
 

@@ -4,10 +4,59 @@
 // debug settings, proxy configuration, and API keys.
 package config
 
-import "github.com/router-for-me/CLIProxyAPI/v6/internal/quota"
+import (
+	"bytes"
+	"fmt"
+	"math"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/MoeForge/moego/json"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/quota"
+	"gopkg.in/yaml.v3"
+)
 
 // SDKConfig represents the application's configuration, loaded from a YAML file.
 type SDKConfig struct {
+	// OAuthOnlyFields records provider settings that apply only after OAuth
+	// credential selection and must not affect API-key credentials.
+	OAuthOnlyFields map[string]bool `yaml:"-" json:"-"`
+	// GitHubToken optionally authenticates GitHub API requests made by management
+	// update and model-catalog helpers.
+	GitHubToken string `yaml:"github-token,omitempty" json:"github-token,omitempty"`
+
+	// MaxRequestBodyBytes limits the size of incoming HTTP request bodies.
+	// Values <= 0 disable the limit.
+	MaxRequestBodyBytes int64 `yaml:"max-request-body-bytes" json:"max-request-body-bytes"`
+
+	// Client contains client-specific compatibility switches retained from the
+	// upstream v8 configuration shape.
+	Client ClientConfig `yaml:"client,omitempty" json:"client,omitempty"`
+
+	// DisableImageGeneration controls whether the built-in image_generation tool is injected or allowed.
+	DisableImageGeneration DisableImageGenerationMode `yaml:"disable-image-generation" json:"disable-image-generation"`
+
+	// GPTImage2BaseModel selects the base model used by the hosted image_generation path.
+	GPTImage2BaseModel string `yaml:"gpt-image-2-base-model,omitempty" json:"gpt-image-2-base-model,omitempty"`
+
+	// VideoResultAuthCacheTTL pins video result IDs to their creating credential
+	// for the configured duration.
+	VideoResultAuthCacheTTL string `yaml:"video-result-auth-cache-ttl,omitempty" json:"video-result-auth-cache-ttl,omitempty"`
+
+	// CodexResponseSteering mirrors the provider-wide runtime setting for API handlers.
+	CodexResponseSteering bool `yaml:"-" json:"-"`
+
+	// CodexOrphanDelegationCompatibility mirrors the provider-wide runtime setting for API handlers.
+	CodexOrphanDelegationCompatibility bool `yaml:"-" json:"-"`
+
+	// TLSHandshakeTimeoutSeconds bounds upstream TLS handshakes made by the
+	// shared transport. Non-positive values disable the bound.
+	TLSHandshakeTimeoutSeconds int `yaml:"tls-handshake-timeout-seconds,omitempty" json:"tls-handshake-timeout-seconds,omitempty"`
+
+	// ClaudeCode configures Claude Code compatibility behavior.
+	ClaudeCode ClaudeCodeConfig `yaml:"claude-code" json:"claude-code"`
+
 	// ProxyURL is the URL of an optional proxy server to use for outbound requests.
 	ProxyURL string `yaml:"proxy-url" json:"proxy-url"`
 
@@ -63,6 +112,203 @@ type SDKConfig struct {
 	CACert string `yaml:"ca-cert" json:"ca-cert"`
 }
 
+// ClaudeCodeConfig configures Claude Code compatibility behavior.
+type ClaudeCodeConfig struct {
+	DisableCloakingModelList bool `yaml:"disable-cloaking-model-list" json:"disable-cloaking-model-list"`
+}
+
+type ClientConfig struct {
+	Codex  CodexClientConfig  `yaml:"codex,omitempty" json:"codex,omitempty"`
+	Claude ClaudeClientConfig `yaml:"claude,omitempty" json:"claude,omitempty"`
+}
+
+type CodexClientConfig struct {
+	OptimizeMultiAgentV2 bool                            `yaml:"optimize-multi-agent-v2,omitempty" json:"optimize-multi-agent-v2,omitempty"`
+	EnableApplyPatch     bool                            `yaml:"enable-apply-patch,omitempty" json:"enable-apply-patch,omitempty"`
+	WebSearchResultCache CodexWebSearchResultCacheConfig `yaml:"web-search-result-cache" json:"web-search-result-cache"`
+}
+
+type ClaudeClientConfig struct {
+	DisableCommentary   bool `yaml:"disable-commentary,omitempty" json:"disable-commentary,omitempty"`
+	ShowCodexCommentary bool `yaml:"show-codex-commentary,omitempty" json:"show-codex-commentary,omitempty"`
+}
+
+const (
+	DefaultCodexWebSearchResultCacheTTL    = 24 * time.Hour
+	DefaultCodexWebSearchResultCacheLimit  = 1024
+	maxCodexWebSearchResultCacheTTLSeconds = int64(math.MaxInt64 / time.Second)
+)
+
+type CodexWebSearchResultCacheConfig struct {
+	Enabled bool   `yaml:"enabled" json:"enabled"`
+	TTL     string `yaml:"ttl" json:"ttl"`
+	Limit   int    `yaml:"limit" json:"limit"`
+}
+
+func (c CodexWebSearchResultCacheConfig) Validate() error {
+	if _, err := parseCodexWebSearchResultCacheTTL(c.TTL); err != nil {
+		return err
+	}
+	if c.Limit < 0 {
+		return fmt.Errorf("client.codex.web-search-result-cache.limit must not be negative")
+	}
+	return nil
+}
+
+func (c CodexWebSearchResultCacheConfig) EffectiveTTL() time.Duration {
+	d, err := parseCodexWebSearchResultCacheTTL(c.TTL)
+	if err != nil || d <= 0 {
+		return DefaultCodexWebSearchResultCacheTTL
+	}
+	return d
+}
+
+func (c CodexWebSearchResultCacheConfig) EffectiveLimit() int {
+	if c.Limit > 0 {
+		return c.Limit
+	}
+	return DefaultCodexWebSearchResultCacheLimit
+}
+
+func (c *CodexWebSearchResultCacheConfig) UnmarshalYAML(value *yaml.Node) error {
+	if c == nil {
+		return nil
+	}
+	if value == nil || value.Kind == 0 || value.Tag == "!!null" {
+		*c = CodexWebSearchResultCacheConfig{}
+		return nil
+	}
+	if value.Kind != yaml.MappingNode {
+		return fmt.Errorf("client.codex.web-search-result-cache must be a mapping")
+	}
+	var next CodexWebSearchResultCacheConfig
+	seen := make(map[string]bool, len(value.Content)/2)
+	for i := 0; i+1 < len(value.Content); i += 2 {
+		keyNode, valNode := value.Content[i], value.Content[i+1]
+		if keyNode == nil || valNode == nil {
+			continue
+		}
+		if seen[keyNode.Value] {
+			return fmt.Errorf("client.codex.web-search-result-cache: duplicate field %q", keyNode.Value)
+		}
+		seen[keyNode.Value] = true
+		switch keyNode.Value {
+		case "enabled":
+			if valNode.Tag == "!!null" {
+				continue
+			}
+			if valNode.Kind != yaml.ScalarNode || valNode.Tag != "!!bool" {
+				return fmt.Errorf("client.codex.web-search-result-cache.enabled must be a boolean")
+			}
+			if err := valNode.Decode(&next.Enabled); err != nil {
+				return fmt.Errorf("client.codex.web-search-result-cache.enabled: %w", err)
+			}
+		case "ttl":
+			if valNode.Tag == "!!null" {
+				continue
+			}
+			if valNode.Kind != yaml.ScalarNode || (valNode.Tag != "!!str" && valNode.Tag != "!!int") {
+				return fmt.Errorf("client.codex.web-search-result-cache.ttl must be a duration string or integer seconds")
+			}
+			next.TTL = strings.TrimSpace(valNode.Value)
+		case "limit":
+			if valNode.Tag == "!!null" {
+				continue
+			}
+			if valNode.Kind != yaml.ScalarNode || valNode.Tag != "!!int" {
+				return fmt.Errorf("client.codex.web-search-result-cache.limit must be an integer")
+			}
+			if err := valNode.Decode(&next.Limit); err != nil {
+				return fmt.Errorf("client.codex.web-search-result-cache.limit: %w", err)
+			}
+		default:
+			return fmt.Errorf("client.codex.web-search-result-cache: unknown field %q", keyNode.Value)
+		}
+	}
+	if err := next.Validate(); err != nil {
+		return err
+	}
+	*c = next
+	return nil
+}
+
+func (c *CodexWebSearchResultCacheConfig) UnmarshalJSON(data []byte) error {
+	if c == nil {
+		return nil
+	}
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		*c = CodexWebSearchResultCacheConfig{}
+		return nil
+	}
+	var raw struct {
+		Enabled bool            `json:"enabled"`
+		TTL     json.RawMessage `json:"ttl"`
+		Limit   int             `json:"limit"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(trimmed))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&raw); err != nil {
+		return err
+	}
+	ttl, err := parseCodexWebSearchResultCacheTTLJSON(raw.TTL)
+	if err != nil {
+		return err
+	}
+	next := CodexWebSearchResultCacheConfig{Enabled: raw.Enabled, TTL: ttl, Limit: raw.Limit}
+	if err := next.Validate(); err != nil {
+		return err
+	}
+	*c = next
+	return nil
+}
+
+func parseCodexWebSearchResultCacheTTLJSON(raw json.RawMessage) (string, error) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return "", nil
+	}
+	if trimmed[0] == '"' {
+		var value string
+		if err := json.Unmarshal(trimmed, &value); err != nil {
+			return "", fmt.Errorf("client.codex.web-search-result-cache.ttl: %w", err)
+		}
+		return strings.TrimSpace(value), nil
+	}
+	var seconds int64
+	if err := json.Unmarshal(trimmed, &seconds); err != nil {
+		return "", fmt.Errorf("client.codex.web-search-result-cache.ttl must be a duration string or integer seconds")
+	}
+	return strconv.FormatInt(seconds, 10), nil
+}
+
+func parseCodexWebSearchResultCacheTTL(raw string) (time.Duration, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || raw == "0" {
+		return DefaultCodexWebSearchResultCacheTTL, nil
+	}
+	if seconds, err := strconv.ParseInt(raw, 10, 64); err == nil {
+		if seconds < 0 {
+			return 0, fmt.Errorf("client.codex.web-search-result-cache.ttl must not be negative")
+		}
+		if seconds > maxCodexWebSearchResultCacheTTLSeconds {
+			return 0, fmt.Errorf("client.codex.web-search-result-cache.ttl overflows duration")
+		}
+		return time.Duration(seconds) * time.Second, nil
+	}
+	duration, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0, fmt.Errorf("client.codex.web-search-result-cache.ttl %q is invalid: %w", raw, err)
+	}
+	if duration < 0 {
+		return 0, fmt.Errorf("client.codex.web-search-result-cache.ttl must not be negative")
+	}
+	if duration == 0 {
+		return DefaultCodexWebSearchResultCacheTTL, nil
+	}
+	return duration, nil
+}
+
 // RequestLogStorageConfig controls retention and cleanup of request log metadata/bodies.
 // Stats live in usage_rollup_buckets and are never deleted by these policies.
 type RequestLogStorageConfig struct {
@@ -112,10 +358,9 @@ type StreamingConfig struct {
 	// BootstrapRetries controls how many times a streaming request may move to another account when the
 	// upstream fails before any byte has reached the client.
 	//
-	// It is a pointer because "not configured" and "configured as 0" mean different things: nil takes the
-	// built-in default (handlers.StreamingBootstrapRetries, on by default), while an explicit 0 or a
-	// negative value turns the retries off. An int with omitempty could not tell the two apart, so a
-	// config that had written 0 to switch them off would silently turn them back on.
+	// It is a pointer because "not configured" and "configured as 0" mean
+	// different things: nil takes the built-in default while an explicit 0
+	// disables retries.
 	BootstrapRetries *int `yaml:"bootstrap-retries,omitempty" json:"bootstrap-retries,omitempty"`
 
 	// BusyWaitMaxWaiters caps how many requests, across the whole process, may sit in a busy wait at
@@ -132,6 +377,10 @@ type StreamingConfig struct {
 	// It only matters while some group has busy waiting on. A reload applies it to waits that start
 	// afterwards; requests already waiting keep their slot.
 	BusyWaitMaxWaiters int `yaml:"busy-wait-max-waiters,omitempty" json:"busy-wait-max-waiters,omitempty"`
+
+	// SendKeepAliveBeforeFT sends SSE heartbeats before the first token when
+	// keep-alives are enabled.
+	SendKeepAliveBeforeFT bool `yaml:"send-keepalive-before-ft,omitempty" json:"send-keepalive-before-ft,omitempty"`
 }
 
 // DefaultBusyWaitMaxWaiters is how many requests may wait for a cooling account at once when

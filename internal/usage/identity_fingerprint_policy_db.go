@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/identityfingerprint"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/identityfingerprint"
 )
 
 var (

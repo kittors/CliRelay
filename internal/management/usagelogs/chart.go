@@ -1,6 +1,6 @@
 package usagelogs
 
-import "github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
+import "github.com/router-for-me/CLIProxyAPI/v8/internal/usage"
 
 func (s *Service) PublicChartData(apiKey string, days int) (map[string]any, error) {
 	chartData, err := usage.QueryPublicChartData(apiKey, days)

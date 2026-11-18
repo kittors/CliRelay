@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/testutil/proxytest"
-	"github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/egressbreaker"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/testutil/proxytest"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/egressbreaker"
 )
 
 // The fingerprint transport tunnels through the proxy itself, so it marks the

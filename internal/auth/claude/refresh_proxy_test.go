@@ -3,7 +3,7 @@ package claude
 import (
 	"testing"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 )
 
 // Pinning a credential's proxy must not leak into the shared config, and the

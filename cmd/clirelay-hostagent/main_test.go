@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/nodemetrics"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/nodemetrics"
 )
 
 // The unit runs on the database host. On Ubuntu 22.04 its systemd 249 does

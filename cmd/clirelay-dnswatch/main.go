@@ -13,7 +13,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/ops/dnswatch"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/ops/dnswatch"
 )
 
 const defaultConfigPath = "/etc/clirelay-dnswatch/dnswatch.yaml"

@@ -2,8 +2,8 @@ package routes
 
 import (
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/api/bodyutil"
-	managementhandlers "github.com/router-for-me/CLIProxyAPI/v6/internal/api/handlers/management"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/api/bodyutil"
+	managementhandlers "github.com/router-for-me/CLIProxyAPI/v8/internal/api/handlers/management"
 )
 
 type ManagementOptions struct {

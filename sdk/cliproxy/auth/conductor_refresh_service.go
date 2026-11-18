@@ -15,40 +15,11 @@ func newRefreshService(manager *Manager) refreshService {
 	return refreshService{manager: manager}
 }
 
-// StartAutoRefresh launches a background loop that evaluates auth freshness
-// every few seconds and triggers refresh operations when required.
-// Only one loop is kept alive; starting a new one cancels the previous run.
-func (m *Manager) StartAutoRefresh(parent context.Context, interval time.Duration) {
-	newRefreshService(m).startAutoRefresh(parent, interval)
-}
-
-// StopAutoRefresh cancels the background refresh loop, if running.
-func (m *Manager) StopAutoRefresh() {
-	newRefreshService(m).stopAutoRefresh()
-}
-
+// checkRefreshes is kept as a package-level Manager method for compatibility
+// with older in-package callers and tests. The refresh service owns the
+// implementation so the background loop and explicit checks share one path.
 func (m *Manager) checkRefreshes(ctx context.Context) {
 	newRefreshService(m).checkRefreshes(ctx)
-}
-
-func (m *Manager) refreshAuthWithLimit(ctx context.Context, id string) {
-	newRefreshService(m).refreshAuthWithLimit(ctx, id)
-}
-
-func (m *Manager) snapshotAuths() []*Auth {
-	return newRefreshService(m).snapshotAuths()
-}
-
-func (m *Manager) shouldRefresh(a *Auth, now time.Time) bool {
-	return newRefreshService(m).shouldRefresh(a, now)
-}
-
-func (m *Manager) markRefreshPending(id string, now time.Time) bool {
-	return newRefreshService(m).markRefreshPending(id, now)
-}
-
-func (m *Manager) refreshAuth(ctx context.Context, id string) {
-	newRefreshService(m).refreshAuth(ctx, id)
 }
 
 func (m *Manager) recoverRotatedRefreshToken(ctx context.Context, id string, used *Auth, now time.Time, refreshErr error) bool {

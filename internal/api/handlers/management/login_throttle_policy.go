@@ -3,7 +3,7 @@ package management
 import (
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 )
 
 // throttleWindow is one observation window of a sliding-window counter.

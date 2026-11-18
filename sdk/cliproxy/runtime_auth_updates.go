@@ -1,17 +1,13 @@
 package cliproxy
 
-import coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+import "github.com/router-for-me/CLIProxyAPI/v8/internal/watcher"
 
-type runtimeAuthUpdateAction string
+// runtimeAuthUpdate is retained as a source-compatible alias for older embedders.
+type runtimeAuthUpdate = watcher.AuthUpdate
+type runtimeAuthUpdateAction = watcher.AuthUpdateAction
 
 const (
-	runtimeAuthUpdateActionAdd    runtimeAuthUpdateAction = "add"
-	runtimeAuthUpdateActionModify runtimeAuthUpdateAction = "modify"
-	runtimeAuthUpdateActionDelete runtimeAuthUpdateAction = "delete"
+	runtimeAuthUpdateActionAdd    = watcher.AuthUpdateActionAdd
+	runtimeAuthUpdateActionModify = watcher.AuthUpdateActionModify
+	runtimeAuthUpdateActionDelete = watcher.AuthUpdateActionDelete
 )
-
-type runtimeAuthUpdate struct {
-	Action runtimeAuthUpdateAction
-	ID     string
-	Auth   *coreauth.Auth
-}

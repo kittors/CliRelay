@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
 
 // The functions here take *StreamErrorMessage, the sdk alias of
@@ -83,4 +84,11 @@ func (h *BaseAPIHandler) writeErrorResponse(c *gin.Context, msg *StreamErrorMess
 	}
 	c.Status(status)
 	_, _ = c.Writer.Write(body)
+}
+
+func localRetryAfter(msg *StreamErrorMessage) string {
+	if msg == nil || msg.Error == nil {
+		return ""
+	}
+	return coreauth.SafeResponseHeaders(msg.Error).Get("Retry-After")
 }

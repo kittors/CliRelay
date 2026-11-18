@@ -12,59 +12,20 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/identity"
-	managementauthfiles "github.com/router-for-me/CLIProxyAPI/v6/internal/management/authfiles"
-	antigravityprovider "github.com/router-for-me/CLIProxyAPI/v6/internal/management/oauth/providers/antigravity"
-	claudeprovider "github.com/router-for-me/CLIProxyAPI/v6/internal/management/oauth/providers/claude"
-	codexprovider "github.com/router-for-me/CLIProxyAPI/v6/internal/management/oauth/providers/codex"
-	geminicli "github.com/router-for-me/CLIProxyAPI/v6/internal/management/oauth/providers/geminicli"
-	iflowprovider "github.com/router-for-me/CLIProxyAPI/v6/internal/management/oauth/providers/iflow"
-	kimiprovider "github.com/router-for-me/CLIProxyAPI/v6/internal/management/oauth/providers/kimi"
-	qwenprovider "github.com/router-for-me/CLIProxyAPI/v6/internal/management/oauth/providers/qwen"
-	xaiprovider "github.com/router-for-me/CLIProxyAPI/v6/internal/management/oauth/providers/xai"
-	oauthsession "github.com/router-for-me/CLIProxyAPI/v6/internal/management/oauth/session"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/identity"
+	managementauthfiles "github.com/router-for-me/CLIProxyAPI/v8/internal/management/authfiles"
+	geminicli "github.com/router-for-me/CLIProxyAPI/v8/internal/management/oauth/providers/geminicli"
+	iflowprovider "github.com/router-for-me/CLIProxyAPI/v8/internal/management/oauth/providers/iflow"
+	qwenprovider "github.com/router-for-me/CLIProxyAPI/v8/internal/management/oauth/providers/qwen"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/usage"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
 )
 
 const (
-	anthropicCallbackPort    = 54545
 	geminiCallbackPort       = 8085
-	codexCallbackPort        = 1455
 	oauthCallbackWaitTimeout = oauthSessionTTL
 )
-
-func isWebUIRequest(c *gin.Context) bool {
-	raw := strings.TrimSpace(c.Query("is_webui"))
-	if raw == "" {
-		return false
-	}
-	switch strings.ToLower(raw) {
-	case "1", "true", "yes", "on":
-		return true
-	default:
-		return false
-	}
-}
-
-func (h *Handler) managementCallbackURL(path string) (string, error) {
-	if h == nil || h.cfg == nil || h.cfg.Port <= 0 {
-		return "", fmt.Errorf("server port is not configured")
-	}
-	if !strings.HasPrefix(path, "/") {
-		path = "/" + path
-	}
-	scheme := "http"
-	if h.cfg.TLS.Enable {
-		scheme = "https"
-	}
-	return fmt.Sprintf("%s://127.0.0.1:%d%s", scheme, h.cfg.Port, path), nil
-}
-
-func (h *Handler) saveTokenRecord(ctx context.Context, record *coreauth.Auth) (string, error) {
-	return h.saveTenantTokenRecord(ctx, "", record)
-}
 
 func (h *Handler) saveTenantTokenRecord(ctx context.Context, tenantID string, record *coreauth.Auth) (string, error) {
 	if h == nil || h.cfg == nil || record == nil {
@@ -211,51 +172,6 @@ func (h *Handler) tenantOAuthBindings(c *gin.Context) (
 	return authDir, saveRecord, registerSession, completeProvider
 }
 
-func (h *Handler) RequestAnthropicToken(c *gin.Context) {
-	ctx := detachedAuthContext(c)
-	authDir, saveRecord, registerSession, completeProvider := h.tenantOAuthBindings(c)
-
-	result, err := claudeprovider.StartOAuthLogin(ctx, claudeprovider.OAuthLoginOptions{
-		AuthDir:  authDir,
-		Config:   h.cfg,
-		ProxyURL: h.resolveOAuthProxyURL(c),
-		WebUI:    isWebUIRequest(c),
-		// callback_mode=code: Anthropic's page shows the code to paste back, so a
-		// remote panel never sends the browser to a localhost it cannot open.
-		UsePlatformCallback:   strings.EqualFold(strings.TrimSpace(c.Query("callback_mode")), "code"),
-		PreferredCallbackPort: anthropicCallbackPort,
-		CallbackTarget:        h.managementCallbackURL,
-		WaitCallback:          WaitOAuthCallbackFile,
-		CallbackWaitTimeout:   oauthCallbackWaitTimeout,
-		SaveRecord:            saveRecord,
-		Sessions: claudeprovider.SessionCallbacks{
-			Register:         registerSession,
-			SetError:         SetOAuthSessionError,
-			Complete:         CompleteOAuthSession,
-			CompleteProvider: completeProvider,
-		},
-	})
-	if err != nil {
-		switch {
-		case errors.Is(err, claudeprovider.ErrPKCEGeneration):
-			log.Errorf("Failed to generate PKCE codes: %v", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate PKCE codes"})
-		case errors.Is(err, claudeprovider.ErrStateGeneration):
-			log.Errorf("Failed to generate state parameter: %v", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate state parameter"})
-		case errors.Is(err, claudeprovider.ErrAuthURL):
-			log.Errorf("Failed to generate authorization URL: %v", err)
-			c.JSON(http.StatusInternalServerError, oauthStartFailure("failed to generate authorization url", err))
-		default:
-			log.WithError(err).Error("failed to start anthropic oauth flow")
-			c.JSON(http.StatusInternalServerError, oauthStartFailure("failed to generate authorization url", err))
-		}
-		return
-	}
-
-	c.JSON(http.StatusOK, oauthStartPayload(anthropicLoginFlow(result.AuthURL), result.AuthURL, result.State, oauthSessionExpiry(time.Now()), nil))
-}
-
 func (h *Handler) RequestGeminiCLIToken(c *gin.Context) {
 	ctx := detachedAuthContext(c)
 	authDir, saveRecord, registerSession, completeProvider := h.tenantOAuthBindings(c)
@@ -299,91 +215,6 @@ func (h *Handler) RequestGeminiCLIToken(c *gin.Context) {
 	c.JSON(http.StatusOK, oauthStartPayload(oauthFlowRedirect, result.AuthURL, result.State, oauthSessionExpiry(time.Now()), nil))
 }
 
-func (h *Handler) RequestCodexToken(c *gin.Context) {
-	ctx := detachedAuthContext(c)
-	authDir, saveRecord, registerSession, completeProvider := h.tenantOAuthBindings(c)
-
-	result, err := codexprovider.StartOAuthLogin(ctx, codexprovider.OAuthLoginOptions{
-		AuthDir:             authDir,
-		Config:              h.cfg,
-		ProxyURL:            h.resolveOAuthProxyURL(c),
-		WebUI:               isWebUIRequest(c),
-		CallbackPort:        codexCallbackPort,
-		CallbackTarget:      h.managementCallbackURL,
-		WaitCallback:        WaitOAuthCallbackFile,
-		CallbackWaitTimeout: oauthCallbackWaitTimeout,
-		SaveRecord:          saveRecord,
-		Sessions: codexprovider.SessionCallbacks{
-			Register:         registerSession,
-			SetError:         SetOAuthSessionError,
-			Complete:         CompleteOAuthSession,
-			CompleteProvider: completeProvider,
-		},
-	})
-	if err != nil {
-		switch {
-		case errors.Is(err, codexprovider.ErrPKCEGeneration):
-			log.Errorf("Failed to generate PKCE codes: %v", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate PKCE codes"})
-		case errors.Is(err, codexprovider.ErrStateGeneration):
-			log.Errorf("Failed to generate state parameter: %v", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate state parameter"})
-		case errors.Is(err, codexprovider.ErrAuthURL):
-			log.Errorf("Failed to generate authorization URL: %v", err)
-			c.JSON(http.StatusInternalServerError, oauthStartFailure("failed to generate authorization url", err))
-		default:
-			log.WithError(err).Error("failed to start codex oauth flow")
-			c.JSON(http.StatusInternalServerError, oauthStartFailure("failed to generate authorization url", err))
-		}
-		return
-	}
-
-	c.JSON(http.StatusOK, oauthStartPayload(oauthFlowRedirect, result.AuthURL, result.State, oauthSessionExpiry(time.Now()), nil))
-}
-
-func (h *Handler) RequestAntigravityToken(c *gin.Context) {
-	ctx := detachedAuthContext(c)
-	authDir, saveRecord, registerSession, completeProvider := h.tenantOAuthBindings(c)
-
-	result, err := antigravityprovider.StartOAuthLogin(ctx, antigravityprovider.OAuthLoginOptions{
-		AuthDir:             authDir,
-		Config:              h.cfg,
-		ProxyURL:            h.resolveOAuthProxyURL(c),
-		WebUI:               isWebUIRequest(c),
-		CallbackTarget:      h.managementCallbackURL,
-		WaitCallback:        WaitOAuthCallbackFile,
-		CallbackWaitTimeout: oauthCallbackWaitTimeout,
-		SaveRecord:          saveRecord,
-		Sessions: antigravityprovider.SessionCallbacks{
-			Register:         registerSession,
-			SetError:         SetOAuthSessionError,
-			Complete:         CompleteOAuthSession,
-			CompleteProvider: completeProvider,
-		},
-	})
-	if err != nil {
-		switch {
-		case errors.Is(err, antigravityprovider.ErrStateGeneration):
-			log.Errorf("Failed to generate state parameter: %v", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate state parameter"})
-		case errors.Is(err, antigravityprovider.ErrCallbackUnavailable):
-			log.WithError(err).Error("failed to compute antigravity callback target")
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "callback server unavailable"})
-		case errors.Is(err, antigravityprovider.ErrCallbackStart):
-			log.WithError(err).Error("failed to start antigravity callback forwarder")
-			c.JSON(http.StatusInternalServerError, oauthStartFailure("failed to start callback server", err))
-		case errors.Is(err, antigravityprovider.ErrOAuthClientIDMissing):
-			c.JSON(http.StatusBadRequest, gin.H{"error": "antigravity oauth client-id not configured"})
-		default:
-			log.WithError(err).Error("failed to start antigravity oauth flow")
-			c.JSON(http.StatusInternalServerError, oauthStartFailure("failed to start oauth flow", err))
-		}
-		return
-	}
-
-	c.JSON(http.StatusOK, oauthStartPayload(oauthFlowRedirect, result.AuthURL, result.State, oauthSessionExpiry(time.Now()), nil))
-}
-
 func (h *Handler) RequestQwenToken(c *gin.Context) {
 	ctx := detachedAuthContext(c)
 	_, saveRecord, registerSession, _ := h.tenantOAuthBindings(c)
@@ -404,77 +235,6 @@ func (h *Handler) RequestQwenToken(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, oauthStartPayload(oauthFlowDevice, result.AuthURL, result.State, deviceLoginExpiry(time.Now(), result.ExpiresIn), deviceLoginExtra(result.UserCode, result.VerificationURI, result.ExpiresIn)))
-}
-
-func (h *Handler) RequestKimiToken(c *gin.Context) {
-	ctx := detachedAuthContext(c)
-	_, saveRecord, registerSession, completeProvider := h.tenantOAuthBindings(c)
-
-	result, err := kimiprovider.StartDeviceLogin(ctx, kimiprovider.DeviceLoginOptions{
-		Config:     h.cfg,
-		SaveRecord: saveRecord,
-		Sessions: kimiprovider.SessionCallbacks{
-			Register:         registerSession,
-			SetError:         SetOAuthSessionError,
-			Complete:         CompleteOAuthSession,
-			CompleteProvider: completeProvider,
-		},
-	})
-	if err != nil {
-		log.Errorf("Failed to generate authorization URL: %v", err)
-		c.JSON(http.StatusInternalServerError, oauthStartFailure("failed to generate authorization url", err))
-		return
-	}
-
-	c.JSON(http.StatusOK, oauthStartPayload(oauthFlowDevice, result.AuthURL, result.State, deviceLoginExpiry(time.Now(), result.ExpiresIn), deviceLoginExtra(result.UserCode, result.VerificationURI, result.ExpiresIn)))
-}
-
-func (h *Handler) RequestXAIToken(c *gin.Context) {
-	ctx := detachedAuthContext(c)
-	authDir, saveRecord, registerSession, completeProvider := h.tenantOAuthBindings(c)
-
-	result, err := xaiprovider.StartOAuthLogin(ctx, xaiprovider.OAuthLoginOptions{
-		AuthDir:             authDir,
-		Config:              h.cfg,
-		ProxyURL:            h.resolveOAuthProxyURL(c),
-		WebUI:               isWebUIRequest(c),
-		UsingAPI:            queryBool(c, "using_api"),
-		CallbackTarget:      h.managementCallbackURL,
-		WaitCallback:        WaitOAuthCallbackFile,
-		CallbackWaitTimeout: oauthCallbackWaitTimeout,
-		SaveRecord:          saveRecord,
-		Sessions: xaiprovider.SessionCallbacks{
-			Register:         registerSession,
-			SetError:         SetOAuthSessionError,
-			Complete:         CompleteOAuthSession,
-			CompleteProvider: completeProvider,
-		},
-	})
-	if err != nil {
-		switch {
-		case errors.Is(err, xaiprovider.ErrPKCEGeneration):
-			log.WithError(err).Error("failed to generate xai PKCE codes")
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate PKCE codes"})
-		case errors.Is(err, xaiprovider.ErrStateGeneration):
-			log.WithError(err).Error("failed to generate xai state parameter")
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate state parameter"})
-		case errors.Is(err, xaiprovider.ErrCallbackUnavailable):
-			log.WithError(err).Error("failed to compute xai callback target")
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "callback server unavailable"})
-		case errors.Is(err, xaiprovider.ErrCallbackStart):
-			log.WithError(err).Error("failed to start xai callback forwarder")
-			c.JSON(http.StatusInternalServerError, oauthStartFailure("failed to start callback server", err))
-		case errors.Is(err, xaiprovider.ErrDiscovery), errors.Is(err, xaiprovider.ErrAuthURL):
-			log.WithError(err).Error("failed to start xai oauth flow")
-			c.JSON(http.StatusInternalServerError, oauthStartFailure("failed to generate authorization url", err))
-		default:
-			log.WithError(err).Error("failed to start xai oauth flow")
-			c.JSON(http.StatusInternalServerError, oauthStartFailure("failed to start oauth flow", err))
-		}
-		return
-	}
-
-	c.JSON(http.StatusOK, oauthStartPayload(oauthFlowRedirect, result.AuthURL, result.State, oauthSessionExpiry(time.Now()), nil))
 }
 
 func (h *Handler) RequestIFlowToken(c *gin.Context) {
@@ -566,62 +326,7 @@ func (h *Handler) RequestIFlowCookieToken(c *gin.Context) {
 	})
 }
 
-func (h *Handler) GetAuthStatus(c *gin.Context) {
-	state := strings.TrimSpace(c.Query("state"))
-	if state == "" {
-		c.JSON(http.StatusOK, gin.H{"status": "ok"})
-		return
-	}
-	if err := ValidateOAuthState(state); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "error": "invalid state"})
-		return
-	}
-	if respondSharedAuthStatus(c, state) {
-		return
-	}
-
-	_, tenantID, status, ok := GetOAuthSessionWithTenant(state)
-	if !ok {
-		// Every login registers its session (and a superseded one now leaves a
-		// tombstone, answered below), so an unknown state means the session
-		// expired or the process restarted and lost it. Answering "ok" here used
-		// to announce a login that never finished; report it the way the cluster
-		// store already does.
-		c.JSON(http.StatusNotFound, gin.H{"status": "error", "error": oauthsession.MessageExpired, "code": oauthCodeSessionExpired})
-		return
-	}
-	if tenantID != "" && tenantID != effectiveTenantID(c) {
-		c.JSON(http.StatusNotFound, gin.H{"status": "error", "error": "unknown or expired state"})
-		return
-	}
-	// A login replaced by another completed login of the same provider keeps
-	// answering "ok", as it always has: from the operator's point of view the
-	// provider is now signed in.
-	if status == oauthSessionStatusCompleted || status == oauthSessionStatusSuperseded {
-		c.JSON(http.StatusOK, gin.H{"status": "ok"})
-		return
-	}
-	if status != "" {
-		c.JSON(http.StatusOK, gin.H{"status": "error", "error": status})
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{"status": "wait"})
-}
-
 // PopulateAuthContext extracts request info and adds it to the context
-func PopulateAuthContext(ctx context.Context, c *gin.Context) context.Context {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	if c == nil || c.Request == nil {
-		return ctx
-	}
-	info := &coreauth.RequestInfo{
-		Query:   c.Request.URL.Query(),
-		Headers: c.Request.Header,
-	}
-	return coreauth.WithRequestInfo(ctx, info)
-}
 
 func requestAuthContext(c *gin.Context) context.Context {
 	if c != nil && c.Request != nil {

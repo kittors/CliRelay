@@ -3,7 +3,7 @@ package thinking
 import (
 	"strings"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 )
 
 // levelToBudgetMap defines the standard Level → Budget mapping.
@@ -16,10 +16,9 @@ var levelToBudgetMap = map[string]int{
 	"medium":  8192,
 	"high":    24576,
 	"xhigh":   32768,
-	// The largest budget any Claude model accepts; providers clamp it to their
-	// own ceiling and to max_tokens. Without an entry the translators dropped
-	// "max" altogether and the request ran at the model's default effort.
-	"max": BudgetMax,
+	// "max" is used by Claude adaptive thinking effort. We map it to a large budget
+	// and rely on per-model clamping when converting to budget-only providers.
+	"max": 128000,
 }
 
 // ConvertLevelToBudget converts a thinking level to a budget value.
@@ -55,12 +54,9 @@ const (
 	// ThresholdMedium is the upper bound for "medium" level (1025-8192)
 	ThresholdMedium = 8192
 	// ThresholdHigh is the upper bound for "high" level (8193-24576)
-	ThresholdHigh = 24576
-	// ThresholdXHigh is the upper bound for "xhigh" level (24577-127999).
-	// Only BudgetMax and above read back as "max", so the budgets clients
-	// actually send (below max_tokens, which is at most 128000) map as before.
+	ThresholdHigh  = 24576
 	ThresholdXHigh = BudgetMax - 1
-	// BudgetMax is the budget the "max" level converts to.
+	// BudgetMax is the budget represented by the max effort level.
 	BudgetMax = 128000
 )
 
@@ -76,8 +72,7 @@ const (
 //   - 513-1024  → low
 //   - 1025-8192 → medium
 //   - 8193-24576 → high
-//   - 24577-127999 → xhigh
-//   - 128000+   → max
+//   - 24577+    → xhigh
 //
 // Returns:
 //   - level: The converted thinking level string
@@ -106,6 +101,68 @@ func ConvertBudgetToLevel(budget int) (string, bool) {
 	}
 }
 
+// LevelAbove reports whether effort is strictly above the configured ceiling.
+func LevelAbove(level, ceiling ThinkingLevel) bool {
+	rank := func(v ThinkingLevel) int {
+		switch strings.ToLower(strings.TrimSpace(string(v))) {
+		case "none":
+			return 0
+		case "minimal":
+			return 1
+		case "low":
+			return 2
+		case "medium":
+			return 3
+		case "high":
+			return 4
+		case "xhigh":
+			return 5
+		case "max":
+			return 6
+		default:
+			return -1
+		}
+	}
+	return rank(level) > rank(ceiling)
+}
+
+// HasLevel reports whether the given target level exists in the levels slice.
+// Matching is case-insensitive with leading/trailing whitespace trimmed.
+func HasLevel(levels []string, target string) bool {
+	for _, level := range levels {
+		if strings.EqualFold(strings.TrimSpace(level), target) {
+			return true
+		}
+	}
+	return false
+}
+
+// MapToClaudeEffort maps a generic thinking level string to a Claude adaptive
+// thinking effort value (low/medium/high/max).
+//
+// supportsMax indicates whether the target model supports "max" effort.
+// Returns the mapped effort and true if the level is valid, or ("", false) otherwise.
+func MapToClaudeEffort(level string, supportsMax bool) (string, bool) {
+	level = strings.ToLower(strings.TrimSpace(level))
+	switch level {
+	case "":
+		return "", false
+	case "minimal":
+		return "low", true
+	case "low", "medium", "high":
+		return level, true
+	case "xhigh", "max":
+		if supportsMax {
+			return "max", true
+		}
+		return "high", true
+	case "auto":
+		return "high", true
+	default:
+		return "", false
+	}
+}
+
 // ModelCapability describes the thinking format support of a model.
 type ModelCapability int
 
@@ -127,8 +184,8 @@ const (
 // This is an internal function used by validation and conversion helpers.
 // It analyzes the model's ThinkingSupport configuration to classify the model:
 //   - CapabilityNone: modelInfo.Thinking is nil (model doesn't support thinking)
-//   - CapabilityBudgetOnly: Has Min/Max but no Levels (Claude up to 4.6, Gemini 2.5)
-//   - CapabilityLevelOnly: Has Levels but no Min/Max (OpenAI, iFlow, Claude Opus 4.7+ adaptive)
+//   - CapabilityBudgetOnly: Has Min/Max but no Levels (Claude, Gemini 2.5)
+//   - CapabilityLevelOnly: Has Levels but no Min/Max (OpenAI, Codex, Kimi)
 //   - CapabilityHybrid: Has both Min/Max and Levels (Gemini 3)
 //
 // Note: Returns a special sentinel value when modelInfo itself is nil (unknown model).

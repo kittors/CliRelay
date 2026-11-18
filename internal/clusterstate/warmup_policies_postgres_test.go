@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/management/warmup"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/management/warmup"
 )
 
 func TestWarmupPoliciesStore(t *testing.T) {

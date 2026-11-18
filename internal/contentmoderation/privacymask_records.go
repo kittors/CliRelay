@@ -13,7 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/privacymask"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/privacymask"
 	log "github.com/sirupsen/logrus"
 )
 

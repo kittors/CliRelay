@@ -2,7 +2,7 @@ package routes
 
 import (
 	"github.com/gin-gonic/gin"
-	managementhandlers "github.com/router-for-me/CLIProxyAPI/v6/internal/api/handlers/management"
+	managementhandlers "github.com/router-for-me/CLIProxyAPI/v8/internal/api/handlers/management"
 )
 
 func registerManagementAPIKeyRoutes(group *gin.RouterGroup, h *managementhandlers.Handler) {
@@ -27,6 +27,11 @@ func registerManagementAPIKeyRoutes(group *gin.RouterGroup, h *managementhandler
 	group.PUT("/gemini-api-key", keys.PutGeminiKeys)
 	group.PATCH("/gemini-api-key", keys.PatchGeminiKey)
 	group.DELETE("/gemini-api-key", keys.DeleteGeminiKey)
+
+	group.GET("/interactions-api-key", keys.GetInteractionsKeys)
+	group.PUT("/interactions-api-key", keys.PutInteractionsKeys)
+	group.PATCH("/interactions-api-key", keys.PatchInteractionsKey)
+	group.DELETE("/interactions-api-key", keys.DeleteInteractionsKey)
 }
 
 func registerManagementProviderRoutes(group *gin.RouterGroup, h *managementhandlers.Handler) {

@@ -46,7 +46,7 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/api/bodyutil"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/api/bodyutil"
 )
 
 // These bounded frames reproduce GO-2026-6865. The malformed Huffman weights

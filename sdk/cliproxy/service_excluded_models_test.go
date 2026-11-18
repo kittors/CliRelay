@@ -2,205 +2,27 @@ package cliproxy
 
 import (
 	"context"
-	"path/filepath"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
-	internalconfig "github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
-	"github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
+	internalregistry "github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
 )
 
-func TestApplyConfigReloadRefreshesModelRegistryForConfigAuths(t *testing.T) {
-	cfg := &config.Config{
-		GeminiKey: []config.GeminiKey{{
-			APIKey: "gemini-hot-reload-key",
-			Models: []internalconfig.GeminiModel{{Name: "models/gemini-hot-reload-model", Alias: "gemini-hot-reload-model"}},
-		}},
-	}
-	manager := coreauth.NewManager(nil, nil, nil)
-	service := &Service{cfg: cfg, coreManager: manager}
-	auth := &coreauth.Auth{
-		ID:       "gemini-hot-reload-auth",
-		Provider: "gemini",
-		Status:   coreauth.StatusActive,
-		Attributes: map[string]string{
-			"api_key":   "gemini-hot-reload-key",
-			"auth_kind": "apikey",
-			"source":    "config:gemini[test]",
-		},
-	}
-	ctx := context.Background()
-	if _, err := manager.Register(ctx, auth); err != nil {
-		t.Fatalf("register auth: %v", err)
-	}
-
-	registry := GlobalModelRegistry()
-	registry.UnregisterClient(auth.ID)
-	t.Cleanup(func() {
-		registry.UnregisterClient(auth.ID)
-	})
-
-	service.registerModelsForAuth(ctx, auth)
-	if !hasModelID(registry.GetAvailableModelsByProvider("gemini"), "gemini-hot-reload-model") {
-		t.Fatal("expected model to be registered before config reload")
-	}
-
-	next := *cfg
-	next.GeminiKey = []config.GeminiKey{{
-		APIKey:         "gemini-hot-reload-key",
-		Models:         []internalconfig.GeminiModel{{Name: "models/gemini-hot-reload-model", Alias: "gemini-hot-reload-model"}},
-		ExcludedModels: []string{"*"},
-	}}
-	service.applyConfigReload(&next, true)
-
-	if hasModelID(registry.GetAvailableModelsByProvider("gemini"), "gemini-hot-reload-model") {
-		t.Fatal("expected model registry to drop disabled provider models after config reload")
-	}
-}
-
-func TestApplyConfigReloadDisableAllModelsPreventsClaudeAPIKeySelection(t *testing.T) {
-	cfg := &config.Config{
-		Routing: config.RoutingConfig{IncludeDefaultGroup: true},
-		ClaudeKey: []config.ClaudeKey{{
-			APIKey:  "sk-claude-hot-reload-key",
-			Name:    "Kimi渠道",
-			BaseURL: "https://api.kimi.com/coding/",
-			Models:  []internalconfig.ClaudeModel{{Name: "K2.6", Alias: "claude-sonnet-4-6"}},
-		}},
-	}
-	manager := coreauth.NewManager(nil, nil, nil)
-	service := &Service{cfg: cfg, coreManager: manager}
-	auth := &coreauth.Auth{
-		ID:       "claude-hot-reload-auth",
-		Provider: "claude",
-		Label:    "Kimi渠道",
-		Status:   coreauth.StatusActive,
-		Attributes: map[string]string{
-			"api_key":   "sk-claude-hot-reload-key",
-			"base_url":  "https://api.kimi.com/coding/",
-			"auth_kind": "apikey",
-			"source":    "config:claude[test]",
-		},
-	}
-	ctx := context.Background()
-	if _, err := manager.Register(ctx, auth); err != nil {
-		t.Fatalf("register auth: %v", err)
-	}
-
-	registry := GlobalModelRegistry()
-	registry.UnregisterClient(auth.ID)
-	t.Cleanup(func() {
-		registry.UnregisterClient(auth.ID)
-	})
-
-	service.registerModelsForAuth(ctx, auth)
-	if !manager.CanServeModelWithScopes("claude-sonnet-4-6", nil, nil, "") {
-		t.Fatal("expected model to be routeable before disable-all config")
-	}
-
-	next := *cfg
-	next.ClaudeKey = []config.ClaudeKey{{
-		APIKey:         "sk-claude-hot-reload-key",
-		Name:           "Kimi渠道",
-		BaseURL:        "https://api.kimi.com/coding/",
-		Models:         []internalconfig.ClaudeModel{{Name: "K2.6", Alias: "claude-sonnet-4-6"}},
-		ExcludedModels: []string{"*"},
-	}}
-	service.applyConfigReload(&next, true)
-
-	updated, ok := manager.GetByID(auth.ID)
-	if !ok {
-		t.Fatal("expected config auth to remain registered as disabled")
-	}
-	if !updated.Disabled || updated.Status != coreauth.StatusDisabled {
-		t.Fatalf("expected disabled config auth, got disabled=%t status=%s", updated.Disabled, updated.Status)
-	}
-	if manager.CanServeModelWithScopes("claude-sonnet-4-6", nil, nil, "") {
-		t.Fatal("disabled config auth should not be routeable")
-	}
-}
-
-func TestApplyConfigReloadDropsDisabledOpenAICompatibleProviderModels(t *testing.T) {
-	cfg := &config.Config{
-		OpenAICompatibility: []config.OpenAICompatibility{{
-			Name:    "Compat Hot Reload",
-			BaseURL: "https://compat.example.com/v1",
-			Models: []config.OpenAICompatibilityModel{{
-				Name:  "upstream-compat-hot-reload-model",
-				Alias: "compat-hot-reload-model",
-			}},
-		}},
-	}
-	manager := coreauth.NewManager(nil, nil, nil)
-	service := &Service{cfg: cfg, coreManager: manager}
-	auth := &coreauth.Auth{
-		ID:       "compat-hot-reload-auth",
-		Provider: "compat hot reload",
-		Status:   coreauth.StatusActive,
-		Attributes: map[string]string{
-			"auth_kind":    "apikey",
-			"compat_name":  "Compat Hot Reload",
-			"provider_key": "compat hot reload",
-			"source":       "config:compat hot reload[test]",
-		},
-	}
-	ctx := context.Background()
-	if _, err := manager.Register(ctx, auth); err != nil {
-		t.Fatalf("register auth: %v", err)
-	}
-
-	registry := GlobalModelRegistry()
-	registry.UnregisterClient(auth.ID)
-	t.Cleanup(func() {
-		registry.UnregisterClient(auth.ID)
-	})
-
-	service.registerModelsForAuth(ctx, auth)
-	if !hasModelID(registry.GetAvailableModelsByProvider("compat hot reload"), "compat-hot-reload-model") {
-		t.Fatal("expected compatible provider model to be registered before config reload")
-	}
-
-	next := *cfg
-	next.OpenAICompatibility = []config.OpenAICompatibility{{
-		Name:     "Compat Hot Reload",
-		Disabled: true,
-		BaseURL:  "https://compat.example.com/v1",
-		Models: []config.OpenAICompatibilityModel{{
-			Name:  "upstream-compat-hot-reload-model",
-			Alias: "compat-hot-reload-model",
-		}},
-	}}
-	service.applyConfigReload(&next, true)
-
-	if hasModelID(registry.GetAvailableModelsByProvider("compat hot reload"), "compat-hot-reload-model") {
-		t.Fatal("expected model registry to drop disabled OpenAI-compatible provider models after config reload")
-	}
-}
-
-func hasModelID(models []*ModelInfo, id string) bool {
-	for _, model := range models {
-		if model != nil && strings.EqualFold(strings.TrimSpace(model.ID), id) {
-			return true
-		}
-	}
-	return false
-}
-
-func TestRegisterModelsForAuth_UsesPreMergedExcludedModelsAttribute(t *testing.T) {
+func TestRegisterModelsForAuth_CredentialExcludedModelsOverrideGlobal(t *testing.T) {
 	service := &Service{
 		cfg: &config.Config{
 			OAuthExcludedModels: map[string][]string{
-				"gemini-cli": {"gemini-2.5-pro"},
+				"gemini": {"gemini-2.5-pro"},
 			},
 		},
 	}
 	auth := &coreauth.Auth{
-		ID:       "auth-gemini-cli",
-		Provider: "gemini-cli",
+		ID:       "auth-gemini",
+		Provider: "gemini",
 		Status:   coreauth.StatusActive,
 		Attributes: map[string]string{
 			"auth_kind":       "oauth",
@@ -216,9 +38,9 @@ func TestRegisterModelsForAuth_UsesPreMergedExcludedModelsAttribute(t *testing.T
 
 	service.registerModelsForAuth(context.Background(), auth)
 
-	models := registry.GetAvailableModelsByProvider("gemini-cli")
+	models := registry.GetAvailableModelsByProvider("gemini")
 	if len(models) == 0 {
-		t.Fatal("expected gemini-cli models to be registered")
+		t.Fatal("expected gemini models to be registered")
 	}
 
 	for _, model := range models {
@@ -246,34 +68,24 @@ func TestRegisterModelsForAuth_UsesPreMergedExcludedModelsAttribute(t *testing.T
 	}
 }
 
-func TestRegisterModelsForAuth_AddsUserModelConfigsForOAuthProvider(t *testing.T) {
-	usage.CloseDB()
-	dbPath := filepath.Join(t.TempDir(), "usage.db")
-	if err := usage.InitDB(dbPath, internalconfig.RequestLogStorageConfig{}, time.UTC); err != nil {
-		t.Fatalf("InitDB() error = %v", err)
+func TestRegisterModelsForAuth_MetaOAuthAliasAndExcludedModels(t *testing.T) {
+	service := &Service{
+		cfg: &config.Config{
+			OAuthExcludedModels: map[string][]string{
+				"meta": {"muse-spark-1.1"},
+			},
+			OAuthModelAlias: map[string][]config.OAuthModelAlias{
+				"meta": {{Name: "muse-spark-1.3", Alias: "muse-latest"}},
+			},
+		},
 	}
-	t.Cleanup(usage.CloseDB)
-
-	if err := usage.UpsertModelConfig(usage.ModelConfigRow{
-		ModelID:     "claude-opus-4-7",
-		OwnedBy:     "claude",
-		Description: "User-defined Claude OAuth model",
-		Enabled:     true,
-		Source:      "user",
-	}); err != nil {
-		t.Fatalf("UpsertModelConfig() error = %v", err)
-	}
-
-	service := &Service{cfg: &config.Config{}}
 	auth := &coreauth.Auth{
-		ID:       "claude-oauth-user-models",
-		Provider: "claude",
+		ID:       "auth-meta-oauth",
+		Provider: "meta",
 		Status:   coreauth.StatusActive,
 		Attributes: map[string]string{
 			"auth_kind": "oauth",
-		},
-		Metadata: map[string]any{
-			"email": "claude@example.com",
+			"api_key":   "LLM|minted",
 		},
 	}
 
@@ -285,216 +97,282 @@ func TestRegisterModelsForAuth_AddsUserModelConfigsForOAuthProvider(t *testing.T
 
 	service.registerModelsForAuth(context.Background(), auth)
 
-	if !hasModelID(registry.GetAvailableModelsByProvider("claude"), "claude-opus-4-7") {
-		t.Fatal("expected user-defined Claude model config to be registered for Claude OAuth auth")
-	}
-}
-
-func TestRefreshRegisteredModels_AddsCodexOwnedModelConfigsForCodexOAuth(t *testing.T) {
-	usage.CloseDB()
-	dbPath := filepath.Join(t.TempDir(), "usage.db")
-	if err := usage.InitDB(dbPath, internalconfig.RequestLogStorageConfig{}, time.UTC); err != nil {
-		t.Fatalf("InitDB() error = %v", err)
-	}
-	t.Cleanup(usage.CloseDB)
-
-	const modelID = "gpt-codex-user-defined"
-	if err := usage.UpsertModelConfig(usage.ModelConfigRow{
-		ModelID:     modelID,
-		OwnedBy:     "codex",
-		Description: "User-defined Codex OAuth model",
-		Enabled:     true,
-		Source:      "user",
-	}); err != nil {
-		t.Fatalf("UpsertModelConfig() error = %v", err)
+	models := registry.GetModelsForClient(auth.ID)
+	if len(models) == 0 {
+		t.Fatal("expected meta models to be registered")
 	}
 
-	manager := coreauth.NewManager(nil, nil, nil)
-	service := &Service{cfg: &config.Config{}, coreManager: manager}
-	auth := &coreauth.Auth{
-		ID:       "codex-oauth-user-models",
-		Provider: "codex",
-		Status:   coreauth.StatusActive,
-		Attributes: map[string]string{
-			"auth_kind": "oauth",
-		},
-		Metadata: map[string]any{
-			"email": "codex@example.com",
-		},
-	}
-	if _, err := manager.Register(context.Background(), auth); err != nil {
-		t.Fatalf("Register() error = %v", err)
-	}
-
-	registry := GlobalModelRegistry()
-	registry.UnregisterClient(auth.ID)
-	t.Cleanup(func() {
-		registry.UnregisterClient(auth.ID)
-	})
-
-	service.refreshRegisteredModels(context.Background())
-	if !hasModelID(registry.GetModelsForClient(auth.ID), modelID) {
-		t.Fatal("expected Codex-owned model config to be registered for Codex OAuth auth")
-	}
-
-	if err := usage.DeleteModelConfig(modelID); err != nil {
-		t.Fatalf("DeleteModelConfig() error = %v", err)
-	}
-	service.refreshRegisteredModels(context.Background())
-	if hasModelID(registry.GetModelsForClient(auth.ID), modelID) {
-		t.Fatal("expected deleted Codex-owned model config to be removed after registry refresh")
-	}
-}
-
-func TestRegisterModelsForAuth_DoesNotAddOpenAIOwnedModelConfigsForCodexOAuth(t *testing.T) {
-	usage.CloseDB()
-	dbPath := filepath.Join(t.TempDir(), "usage.db")
-	if err := usage.InitDB(dbPath, internalconfig.RequestLogStorageConfig{}, time.UTC); err != nil {
-		t.Fatalf("InitDB() error = %v", err)
-	}
-	t.Cleanup(usage.CloseDB)
-
-	const modelID = "openai-owned-not-codex"
-	if err := usage.UpsertModelConfig(usage.ModelConfigRow{
-		ModelID:     modelID,
-		OwnedBy:     "openai",
-		Description: "OpenAI model library entry",
-		Enabled:     true,
-		Source:      "openrouter",
-	}); err != nil {
-		t.Fatalf("UpsertModelConfig() error = %v", err)
-	}
-
-	service := &Service{cfg: &config.Config{}}
-	auth := &coreauth.Auth{
-		ID:       "codex-oauth-openai-owned-models",
-		Provider: "codex",
-		Status:   coreauth.StatusActive,
-		Attributes: map[string]string{
-			"auth_kind": "oauth",
-		},
-		Metadata: map[string]any{
-			"email": "codex@example.com",
-		},
-	}
-
-	registry := GlobalModelRegistry()
-	registry.UnregisterClient(auth.ID)
-	t.Cleanup(func() {
-		registry.UnregisterClient(auth.ID)
-	})
-
-	service.registerModelsForAuth(context.Background(), auth)
-	if hasModelID(registry.GetModelsForClient(auth.ID), modelID) {
-		t.Fatal("did not expect OpenAI-owned model config to be registered as Codex OAuth model")
-	}
-}
-
-func TestRegisterModelsForAuth_ClaudeOAuthStaticMaxModelIsRouteableWithoutModelConfig(t *testing.T) {
-	usage.CloseDB()
-	dbPath := filepath.Join(t.TempDir(), "usage.db")
-	if err := usage.InitDB(dbPath, internalconfig.RequestLogStorageConfig{}, time.UTC); err != nil {
-		t.Fatalf("InitDB() error = %v", err)
-	}
-	t.Cleanup(usage.CloseDB)
-
-	service := &Service{cfg: &config.Config{}}
-	auth := &coreauth.Auth{
-		ID:       "claude-oauth-static-max-models",
-		Provider: "claude",
-		Status:   coreauth.StatusActive,
-		Metadata: map[string]any{
-			"email": "claude@example.com",
-		},
-	}
-
-	registry := GlobalModelRegistry()
-	registry.UnregisterClient(auth.ID)
-	t.Cleanup(func() {
-		registry.UnregisterClient(auth.ID)
-	})
-
-	service.registerModelsForAuth(context.Background(), auth)
-
-	providers := util.GetProviderName("claude-opus-4-7")
-	for _, provider := range providers {
-		if provider == "claude" {
-			return
+	seenLatest := false
+	for _, model := range models {
+		if model == nil {
+			continue
+		}
+		modelID := strings.TrimSpace(model.ID)
+		switch {
+		case strings.EqualFold(modelID, "muse-spark-1.1"):
+			t.Fatalf("expected model %q to be excluded by oauth-excluded-models", modelID)
+		case strings.EqualFold(modelID, "muse-spark-1.3"):
+			t.Fatalf("expected model %q to be renamed by oauth-model-alias", modelID)
+		case strings.EqualFold(modelID, "muse-latest"):
+			seenLatest = true
 		}
 	}
-	t.Fatalf("expected claude-opus-4-7 to route to claude after Claude OAuth registration, got providers %v", providers)
+	if !seenLatest {
+		t.Fatal("expected oauth-model-alias to expose muse-latest")
+	}
 }
 
-func TestRegisterModelsForAuth_AddsUserModelConfigsForOAuthProviderInferredFromAccountInfo(t *testing.T) {
-	usage.CloseDB()
-	dbPath := filepath.Join(t.TempDir(), "usage.db")
-	if err := usage.InitDB(dbPath, internalconfig.RequestLogStorageConfig{}, time.UTC); err != nil {
-		t.Fatalf("InitDB() error = %v", err)
+func TestRegisterModelsForAuth_OpenAICompatibilityImageModelType(t *testing.T) {
+	service := &Service{
+		cfg: &config.Config{
+			OpenAICompatibility: []config.OpenAICompatibility{
+				{
+					Name:    "images",
+					BaseURL: "https://example.com/v1",
+					Models: []config.OpenAICompatibilityModel{
+						{Name: "upstream-image", Alias: "compat-image", Image: true},
+						{Name: "upstream-chat", Alias: "compat-chat"},
+					},
+				},
+			},
+		},
 	}
-	t.Cleanup(usage.CloseDB)
-
-	if err := usage.UpsertModelConfig(usage.ModelConfigRow{
-		ModelID:     "claude-opus-4-7",
-		OwnedBy:     "anthropic",
-		Description: "User-defined Claude OAuth model",
-		Enabled:     true,
-		Source:      "user",
-	}); err != nil {
-		t.Fatalf("UpsertModelConfig() error = %v", err)
-	}
-
-	service := &Service{cfg: &config.Config{}}
 	auth := &coreauth.Auth{
-		ID:       "claude-oauth-account-info-models",
-		Provider: "claude",
+		ID:       "auth-openai-compat-image",
+		Provider: "openai-compatibility",
 		Status:   coreauth.StatusActive,
-		Metadata: map[string]any{
-			"email": "claude@example.com",
+		Attributes: map[string]string{
+			"auth_kind":    "api_key",
+			"compat_name":  "images",
+			"provider_key": "images",
 		},
 	}
 
-	registry := GlobalModelRegistry()
+	modelRegistry := internalregistry.GetGlobalRegistry()
+	modelRegistry.UnregisterClient(auth.ID)
+	t.Cleanup(func() {
+		modelRegistry.UnregisterClient(auth.ID)
+	})
+
+	service.registerModelsForAuth(context.Background(), auth)
+
+	models := modelRegistry.GetModelsForClient(auth.ID)
+	var imageModel *internalregistry.ModelInfo
+	var chatModel *internalregistry.ModelInfo
+	for _, model := range models {
+		if model == nil {
+			continue
+		}
+		switch strings.TrimSpace(model.ID) {
+		case "compat-image":
+			imageModel = model
+		case "compat-chat":
+			chatModel = model
+		}
+	}
+	if imageModel == nil {
+		t.Fatal("expected compat-image to be registered")
+	}
+	if imageModel.Type != internalregistry.OpenAIImageModelType {
+		t.Fatalf("image model type = %q, want %q", imageModel.Type, internalregistry.OpenAIImageModelType)
+	}
+	if imageModel.Thinking != nil {
+		t.Fatalf("image model thinking = %+v, want nil", imageModel.Thinking)
+	}
+	if chatModel == nil {
+		t.Fatal("expected compat-chat to be registered")
+	}
+	if chatModel.Type != "openai-compatibility" {
+		t.Fatalf("chat model type = %q, want openai-compatibility", chatModel.Type)
+	}
+	if chatModel.Thinking == nil {
+		t.Fatal("expected chat model to keep default thinking support")
+	}
+}
+
+func TestRegisterModelsForAuth_OpenAICompatibilityInputModalities(t *testing.T) {
+	service := &Service{
+		cfg: &config.Config{
+			OpenAICompatibility: []config.OpenAICompatibility{
+				{
+					Name:    "mimo",
+					BaseURL: "https://example.com/v1",
+					Models: []config.OpenAICompatibilityModel{
+						{
+							Name:             "mimo-v2.5-pro",
+							Alias:            "mimo-v2.5-pro",
+							InputModalities:  []string{"text", "image"},
+							OutputModalities: []string{"text"},
+						},
+						{Name: "upstream-image", Alias: "compat-image", Image: true},
+					},
+				},
+			},
+		},
+	}
+	auth := &coreauth.Auth{
+		ID:       "auth-openai-compat-modalities",
+		Provider: "openai-compatibility",
+		Status:   coreauth.StatusActive,
+		Attributes: map[string]string{
+			"auth_kind":    "api_key",
+			"compat_name":  "mimo",
+			"provider_key": "mimo",
+		},
+	}
+
+	modelRegistry := internalregistry.GetGlobalRegistry()
+	modelRegistry.UnregisterClient(auth.ID)
+	t.Cleanup(func() {
+		modelRegistry.UnregisterClient(auth.ID)
+	})
+
+	service.registerModelsForAuth(context.Background(), auth)
+
+	models := modelRegistry.GetModelsForClient(auth.ID)
+	var visionModel *internalregistry.ModelInfo
+	var imageEndpointModel *internalregistry.ModelInfo
+	for _, model := range models {
+		if model == nil {
+			continue
+		}
+		switch strings.TrimSpace(model.ID) {
+		case "mimo-v2.5-pro":
+			visionModel = model
+		case "compat-image":
+			imageEndpointModel = model
+		}
+	}
+	if visionModel == nil {
+		t.Fatal("expected mimo-v2.5-pro to be registered")
+	}
+	if visionModel.Type != "openai-compatibility" {
+		t.Fatalf("vision model type = %q, want openai-compatibility", visionModel.Type)
+	}
+	if got := strings.Join(visionModel.SupportedInputModalities, ","); got != "text,image" {
+		t.Fatalf("SupportedInputModalities = %q, want text,image", got)
+	}
+	if got := strings.Join(visionModel.SupportedOutputModalities, ","); got != "text" {
+		t.Fatalf("SupportedOutputModalities = %q, want text", got)
+	}
+	if imageEndpointModel == nil {
+		t.Fatal("expected compat-image to be registered")
+	}
+	if imageEndpointModel.Type != internalregistry.OpenAIImageModelType {
+		t.Fatalf("image endpoint model type = %q, want %q", imageEndpointModel.Type, internalregistry.OpenAIImageModelType)
+	}
+	if len(imageEndpointModel.SupportedInputModalities) != 0 {
+		t.Fatalf("image endpoint model should not inherit chat input modalities: %+v", imageEndpointModel.SupportedInputModalities)
+	}
+}
+
+func TestRegisterModelsForAuth_AntigravityFetchesWebSearchCapability(t *testing.T) {
+	var sawFetch bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != antigravityModelsPath {
+			t.Fatalf("path = %q, want %s", r.URL.Path, antigravityModelsPath)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer token" {
+			t.Fatalf("Authorization = %q, want bearer token", got)
+		}
+		sawFetch = true
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+				"models": {
+					"gemini-3.1-flash-lite": {
+						"displayName": "Gemini 3.1 Flash Lite",
+						"maxTokens": 1,
+						"maxOutputTokens": 2
+					},
+					"fetched-only-search-model": {
+						"displayName": "Fetched Only Search Model"
+					}
+				},
+				"webSearchModelIds": ["gemini-3.1-flash-lite", "fetched-only-search-model"]
+			}`))
+	}))
+	defer server.Close()
+
+	service := &Service{cfg: &config.Config{}}
+	auth := &coreauth.Auth{
+		ID:       "auth-antigravity-fetch-models",
+		Provider: "antigravity",
+		Status:   coreauth.StatusActive,
+		Attributes: map[string]string{
+			"base_url": server.URL,
+		},
+		Metadata: map[string]any{
+			"access_token": "token",
+		},
+	}
+
+	registry := internalregistry.GetGlobalRegistry()
 	registry.UnregisterClient(auth.ID)
 	t.Cleanup(func() {
 		registry.UnregisterClient(auth.ID)
 	})
 
 	service.registerModelsForAuth(context.Background(), auth)
+	service.WaitAntigravityProbes()
+	if !sawFetch {
+		t.Fatal("expected fetchAvailableModels request")
+	}
 
-	if !hasModelID(registry.GetAvailableModelsByProvider("claude"), "claude-opus-4-7") {
-		t.Fatal("expected Claude OAuth model config to be registered when oauth is inferred from account info")
+	models := registry.GetModelsForClient(auth.ID)
+	staticModels := internalregistry.GetAntigravityModels()
+	staticByID := make(map[string]*internalregistry.ModelInfo, len(staticModels))
+	for _, model := range staticModels {
+		if model != nil {
+			staticByID[model.ID] = model
+		}
+	}
+
+	var webSearchModel, agentModel, staticOnlyModel, fetchedOnlyModel *internalregistry.ModelInfo
+	for _, model := range models {
+		if model == nil {
+			continue
+		}
+		switch strings.TrimSpace(model.ID) {
+		case "gemini-3.1-flash-lite":
+			webSearchModel = model
+		case "gemini-pro-agent":
+			agentModel = model
+		case "gpt-oss-120b-medium":
+			staticOnlyModel = model
+		case "fetched-only-search-model":
+			fetchedOnlyModel = model
+		}
+	}
+	if webSearchModel == nil {
+		t.Fatal("expected gemini-3.1-flash-lite to be registered")
+	}
+	if !webSearchModel.SupportsWebSearch {
+		t.Fatal("expected gemini-3.1-flash-lite to support web search")
+	}
+	staticWebSearchModel := staticByID["gemini-3.1-flash-lite"]
+	if staticWebSearchModel == nil {
+		t.Fatal("expected static gemini-3.1-flash-lite definition")
+	}
+	if webSearchModel.ContextLength != staticWebSearchModel.ContextLength || webSearchModel.MaxCompletionTokens != staticWebSearchModel.MaxCompletionTokens {
+		t.Fatalf("static token limits should be preserved, got=%#v static=%#v", webSearchModel, staticWebSearchModel)
+	}
+	if agentModel != nil || staticOnlyModel != nil {
+		t.Fatal("models absent from the account catalog must not be registered")
+	}
+	if fetchedOnlyModel != nil {
+		t.Fatalf("fetched-only model should not be registered: %#v", fetchedOnlyModel)
 	}
 }
 
-func TestRegisterModelsForAuth_AddsOpenRouterAnthropicModelConfigsForOAuthProvider(t *testing.T) {
-	usage.CloseDB()
-	dbPath := filepath.Join(t.TempDir(), "usage.db")
-	if err := usage.InitDB(dbPath, internalconfig.RequestLogStorageConfig{}, time.UTC); err != nil {
-		t.Fatalf("InitDB() error = %v", err)
-	}
-	t.Cleanup(usage.CloseDB)
-
-	if err := usage.UpsertModelConfig(usage.ModelConfigRow{
-		ModelID:     "claude-opus-4-7",
-		OwnedBy:     "anthropic",
-		Description: "OpenRouter-synced Claude model",
-		Enabled:     true,
-		Source:      "openrouter",
-	}); err != nil {
-		t.Fatalf("UpsertModelConfig() error = %v", err)
-	}
-
-	service := &Service{cfg: &config.Config{}}
+func TestRegisterModelsForAuth_DevinSWE16SlowIncluded(t *testing.T) {
+	service := &Service{}
 	auth := &coreauth.Auth{
-		ID:       "claude-oauth-openrouter-models",
-		Provider: "claude",
+		ID:       "auth-devin-test-swe16slow",
+		Provider: "devin",
 		Status:   coreauth.StatusActive,
 		Attributes: map[string]string{
 			"auth_kind": "oauth",
 		},
-		Metadata: map[string]any{
-			"email": "claude@example.com",
-		},
 	}
 
 	registry := GlobalModelRegistry()
@@ -505,52 +383,18 @@ func TestRegisterModelsForAuth_AddsOpenRouterAnthropicModelConfigsForOAuthProvid
 
 	service.registerModelsForAuth(context.Background(), auth)
 
-	if !hasModelID(registry.GetAvailableModelsByProvider("claude"), "claude-opus-4-7") {
-		t.Fatal("expected OpenRouter-synced Anthropic model config to be registered for Claude OAuth auth")
+	models := registry.GetModelsForClient(auth.ID)
+	var foundSlow *internalregistry.ModelInfo
+	for _, m := range models {
+		if m != nil && m.ID == "devin/swe-1-6-slow" {
+			foundSlow = m
+			break
+		}
 	}
-}
-
-func TestRegisterModelsForAuth_AddsClaudeCodeModelConfigsForOAuthProvider(t *testing.T) {
-	usage.CloseDB()
-	dbPath := filepath.Join(t.TempDir(), "usage.db")
-	if err := usage.InitDB(dbPath, internalconfig.RequestLogStorageConfig{}, time.UTC); err != nil {
-		t.Fatalf("InitDB() error = %v", err)
+	if foundSlow == nil {
+		t.Fatal("expected devin/swe-1-6-slow to be registered for devin auth")
 	}
-	t.Cleanup(usage.CloseDB)
-
-	const modelID = "claude-code-custom-model"
-	if err := usage.UpsertModelConfig(usage.ModelConfigRow{
-		ModelID:     modelID,
-		OwnedBy:     "claude-code",
-		Description: "Claude Code model library entry",
-		Enabled:     true,
-		Source:      "seed",
-	}); err != nil {
-		t.Fatalf("UpsertModelConfig() error = %v", err)
-	}
-
-	service := &Service{cfg: &config.Config{}}
-	auth := &coreauth.Auth{
-		ID:       "claude-oauth-claude-code-models",
-		Provider: "claude",
-		Status:   coreauth.StatusActive,
-		Attributes: map[string]string{
-			"auth_kind": "oauth",
-		},
-		Metadata: map[string]any{
-			"email": "claude@example.com",
-		},
-	}
-
-	registry := GlobalModelRegistry()
-	registry.UnregisterClient(auth.ID)
-	t.Cleanup(func() {
-		registry.UnregisterClient(auth.ID)
-	})
-
-	service.registerModelsForAuth(context.Background(), auth)
-
-	if !hasModelID(registry.GetAvailableModelsByProvider("claude"), modelID) {
-		t.Fatal("expected Claude Code model config to be registered for Claude OAuth auth")
+	if foundSlow.DisplayName != "SWE-1.6 Slow" {
+		t.Errorf("DisplayName = %q, want 'SWE-1.6 Slow'", foundSlow.DisplayName)
 	}
 }

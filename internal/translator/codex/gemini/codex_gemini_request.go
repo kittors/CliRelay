@@ -6,15 +6,15 @@
 package gemini
 
 import (
-	"crypto/rand"
-	"math/big"
+	"fmt"
 	"strconv"
 	"strings"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/thinking"
-	translatorcommon "github.com/router-for-me/CLIProxyAPI/v6/internal/translator/common"
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
+	"github.com/MoeForge/moego/base64"
+	"github.com/MoeForge/moego/ojson"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
+	translatorcommon "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/common"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 )
 
 // ConvertGeminiRequestToCodex parses and transforms a Gemini API request into Codex API format.
@@ -34,12 +34,13 @@ import (
 //
 // Returns:
 //   - []byte: The transformed request data in Codex API format
-func ConvertGeminiRequestToCodex(modelName string, inputRawJSON []byte, _ bool) []byte {
+func ConvertGeminiRequestToCodex(modelName string, inputRawJSON []byte, _ bool) ([]byte, error) {
 	rawJSON := inputRawJSON
 	// Base template
-	out := `{"model":"","instructions":"","input":[]}`
+	outDoc := ojson.NewDocString(`{"model":"","instructions":"","input":[]}`)
 
-	root := gjson.ParseBytes(rawJSON)
+	root := util.ParseGJSONBytesNoCopy(rawJSON)
+	inputItems := translatorcommon.NewRawArrayItems(root.Get("contents.#").Int())
 
 	// Pre-compute tool name shortening map from declared functionDeclarations
 	shortMap := map[string]string{}
@@ -62,51 +63,64 @@ func ConvertGeminiRequestToCodex(modelName string, inputRawJSON []byte, _ bool) 
 		}
 	}
 
-	// helper for generating paired call IDs in the form: call_<alphanum>
+	// helper for generating paired call IDs in the form: call_gemini_<seq>
 	// Gemini uses sequential pairing across possibly multiple in-flight
 	// functionCalls, so we keep a FIFO queue of generated call IDs and
 	// consume them in order when functionResponses arrive.
 	var pendingCallIDs []string
+	callCounter := 0
+	emittedThoughtSignatures := map[string]bool{}
+	signatureTargetModel := translatorcommon.ResolveCodexReplayTargetModel(modelName, inputRawJSON)
 
-	// genCallID creates a random call id like: call_<8chars>
-	genCallID := func() string {
-		const letters = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-		var b strings.Builder
-		// 8 chars random suffix
-		for i := 0; i < 24; i++ {
-			n, _ := rand.Int(rand.Reader, big.NewInt(int64(len(letters))))
-			b.WriteByte(letters[n.Int64()])
+	getGeminiCallID := func(value ojson.Result) string {
+		if callID := strings.TrimSpace(value.Get("id").String()); callID != "" {
+			return callID
 		}
-		return "call_" + b.String()
+		return strings.TrimSpace(value.Get("call_id").String())
+	}
+
+	removePendingCallID := func(ids []string, callID string) []string {
+		if callID == "" {
+			return ids
+		}
+		for idx, pendingID := range ids {
+			if pendingID == callID {
+				return append(ids[:idx], ids[idx+1:]...)
+			}
+		}
+		return ids
 	}
 
 	// Model
-	out, _ = sjson.Set(out, "model", modelName)
-
-	// Input items are collected here and written into out once, after the
-	// contents. sjson.SetRaw(out, "input.-1", ...) per item copied the whole
-	// request each time, which grew with the square of the history (see
-	// translatorcommon.JSONArrayBuilder). The template already holds
-	// "input":[] and nothing reads it back before it is written, so the result
-	// is byte-for-byte the same.
-	var inputItems translatorcommon.JSONArrayBuilder
+	_ = outDoc.Set("model", modelName)
+	if serviceTier := normalizeGeminiCodexServiceTier(root.Get("service_tier")); serviceTier != "" {
+		_ = outDoc.Set("service_tier", serviceTier)
+	}
 
 	// System instruction -> as a user message with input_text parts
 	sysParts := root.Get("system_instruction.parts")
+	if !sysParts.Exists() {
+		sysParts = root.Get("systemInstruction.parts")
+	}
 	if sysParts.IsArray() {
-		msg := `{"type":"message","role":"developer","content":[]}`
+		contentItems := make([][]byte, 0, 2)
 		arr := sysParts.Array()
 		for i := 0; i < len(arr); i++ {
 			p := arr[i]
+			if translatorcommon.IsGeminiThoughtPart(p) {
+				continue
+			}
 			if t := p.Get("text"); t.Exists() {
-				part := `{}`
-				part, _ = sjson.Set(part, "type", "input_text")
-				part, _ = sjson.Set(part, "text", t.String())
-				msg, _ = sjson.SetRaw(msg, "content.-1", part)
+				partDoc := ojson.NewDocString(`{}`)
+				_ = partDoc.Set("type", "input_text")
+				_ = partDoc.Set("text", t.String())
+				contentItems = append(contentItems, partDoc.Bytes())
 			}
 		}
-		if len(gjson.Get(msg, "content").Array()) > 0 {
-			inputItems.Append(msg)
+		if len(contentItems) > 0 {
+			msg := []byte(`{"type":"message","role":"developer","content":[]}`)
+			msg, _ = ojson.SetRawBytes(msg, "content", translatorcommon.JoinRawArray(contentItems))
+			inputItems = append(inputItems, msg)
 		}
 	}
 
@@ -114,39 +128,108 @@ func ConvertGeminiRequestToCodex(modelName string, inputRawJSON []byte, _ bool) 
 	contents := root.Get("contents")
 	if contents.IsArray() {
 		items := contents.Array()
+		previousRole := ""
+		pendingTurnCallCount := 0
+		var pendingToolAudioRelay []codexGeminiToolAudioGroup
+		flushPendingToolAudioRelay := func() {
+			if len(pendingToolAudioRelay) == 0 {
+				return
+			}
+			relayItems := buildCodexGeminiToolAudioRelayItems(pendingToolAudioRelay)
+			msgDoc := ojson.NewDocString(`{"type":"message","role":"user","content":[]}`)
+			_ = msgDoc.SetRawBytes("content", translatorcommon.JoinRawArray(relayItems))
+			inputItems = append(inputItems, msgDoc.Bytes())
+			pendingToolAudioRelay = nil
+		}
+
 		for i := 0; i < len(items); i++ {
 			item := items[i]
-			role := item.Get("role").String()
-			if role == "model" {
-				role = "assistant"
-			}
-
 			parts := item.Get("parts")
 			if !parts.IsArray() {
 				continue
 			}
+
+			role := translatorcommon.NormalizeGeminiTurnRole(item.Get("role").String(), parts, previousRole)
+			previousRole = role
+			hasTurnFR := translatorcommon.GeminiPartsHaveFunctionResponse(parts)
+			if !hasTurnFR {
+				pendingTurnCallCount = 0
+				flushPendingToolAudioRelay()
+			}
 			parr := parts.Array()
+			var pendingThoughtSummaryParts [][]byte
 			for j := 0; j < len(parr); j++ {
 				p := parr[j]
+
+				// A thoughtSignature is replayable reasoning state, not visible
+				// content. Restore it as a reasoning item only when its detected
+				// family matches this request's target model family, so a Muse
+				// (or GPT/Grok) signature can never be replayed to a wrong upstream
+				// through the Gemini ingress. Unmatched signatures fall through to
+				// the existing hidden-thought drop below.
+				if role == "assistant" {
+					if rawSignature := geminiPartThoughtSignature(p); rawSignature != "" {
+						if normalizedSignature, ok := normalizedGeminiThoughtSignatureForCodexTarget(signatureTargetModel, rawSignature); ok && !emittedThoughtSignatures[normalizedSignature] {
+							reasoningItemDoc := ojson.NewDocString(`{"type":"reasoning","encrypted_content":"","summary":[]}`)
+							_ = reasoningItemDoc.Set("encrypted_content", normalizedSignature)
+							summaryParts := pendingThoughtSummaryParts
+							pendingThoughtSummaryParts = nil
+							if translatorcommon.IsGeminiThoughtPart(p) {
+								if thoughtText := p.Get("text").String(); thoughtText != "" {
+									summaryPart := []byte(`{"type":"summary_text","text":""}`)
+									summaryPart, _ = ojson.SetBytes(summaryPart, "text", thoughtText)
+									summaryParts = append(summaryParts, summaryPart)
+								}
+							}
+							if len(summaryParts) > 0 {
+								_ = reasoningItemDoc.SetRawBytes("summary", translatorcommon.JoinRawArray(summaryParts))
+							}
+							inputItems = append(inputItems, reasoningItemDoc.Bytes())
+							emittedThoughtSignatures[normalizedSignature] = true
+						} else {
+							pendingThoughtSummaryParts = nil
+						}
+					} else if translatorcommon.IsGeminiThoughtPart(p) {
+						if thoughtText := p.Get("text").String(); thoughtText != "" {
+							summaryPart := []byte(`{"type":"summary_text","text":""}`)
+							summaryPart, _ = ojson.SetBytes(summaryPart, "text", thoughtText)
+							pendingThoughtSummaryParts = append(pendingThoughtSummaryParts, summaryPart)
+						}
+					} else {
+						pendingThoughtSummaryParts = nil
+					}
+				}
+
+				if translatorcommon.IsGeminiThoughtPart(p) {
+					continue
+				}
+
 				// text part
 				if t := p.Get("text"); t.Exists() {
-					msg := `{"type":"message","role":"","content":[]}`
-					msg, _ = sjson.Set(msg, "role", role)
 					partType := "input_text"
 					if role == "assistant" {
 						partType = "output_text"
 					}
-					part := `{}`
-					part, _ = sjson.Set(part, "type", partType)
-					part, _ = sjson.Set(part, "text", t.String())
-					msg, _ = sjson.SetRaw(msg, "content.-1", part)
-					inputItems.Append(msg)
+					partDoc := ojson.NewDocString(`{}`)
+					_ = partDoc.Set("type", partType)
+					_ = partDoc.Set("text", t.String())
+					inputItems = append(inputItems, codexMessageWithPart(role, partDoc.Bytes()))
+					continue
+				}
+
+				if contentPart, ok := codexContentPartFromGeminiInlineData(p); ok {
+					inputItems = append(inputItems, codexMessageWithPart(role, contentPart))
+					continue
+				}
+
+				if contentPart, ok := codexContentPartFromGeminiFileData(p); ok {
+					inputItems = append(inputItems, codexMessageWithPart(role, contentPart))
 					continue
 				}
 
 				// function call from model
-				if fc := p.Get("functionCall"); fc.Exists() {
-					fn := `{"type":"function_call"}`
+				if fc := translatorcommon.GeminiPartFunctionCall(p); fc.Exists() {
+					fnDoc := ojson.NewDocString(`{"type":"function_call"}`)
 					if name := fc.Get("name"); name.Exists() {
 						n := name.String()
 						if short, ok := shortMap[n]; ok {
@@ -154,63 +237,73 @@ func ConvertGeminiRequestToCodex(modelName string, inputRawJSON []byte, _ bool) 
 						} else {
 							n = shortenNameIfNeeded(n)
 						}
-						fn, _ = sjson.Set(fn, "name", n)
+						_ = fnDoc.Set("name", n)
 					}
 					if args := fc.Get("args"); args.Exists() {
-						fn, _ = sjson.Set(fn, "arguments", args.Raw)
+						_ = fnDoc.Set("arguments", args.Raw)
 					}
-					// generate a paired random call_id and enqueue it so the
-					// corresponding functionResponse can pop the earliest id
-					// to preserve ordering when multiple calls are present.
-					id := genCallID()
-					fn, _ = sjson.Set(fn, "call_id", id)
+					// Reuse gateway-provided IDs when present, otherwise generate one for pairing.
+					id := getGeminiCallID(fc)
+					if id == "" {
+						callCounter++
+						id = fmt.Sprintf("call_gemini_%016d", callCounter)
+					}
+					_ = fnDoc.Set("call_id", id)
 					pendingCallIDs = append(pendingCallIDs, id)
-					inputItems.Append(fn)
+					inputItems = append(inputItems, fnDoc.Bytes())
+					pendingTurnCallCount++
 					continue
 				}
 
 				// function response from user
-				if fr := p.Get("functionResponse"); fr.Exists() {
-					fno := `{"type":"function_call_output"}`
-					parsed := translatorcommon.ParseGeminiFunctionResponse(fr)
-					if parsed.HasImage() {
-						fno, _ = sjson.SetRaw(fno, "output", translatorcommon.ToResponsesOutput(parsed))
-					} else if len(parsed.Parts) > 0 {
-						fno, _ = sjson.Set(fno, "output", parsed.Text())
-					} else if parsed.Raw.Exists() {
-						fno, _ = sjson.Set(fno, "output", parsed.Text())
+				if fr := translatorcommon.GeminiPartFunctionResponse(p); fr.Exists() {
+					if pendingTurnCallCount > 0 {
+						pendingTurnCallCount--
 					}
-					// fno, _ = sjson.Set(fno, "call_id", "call_W6nRJzFXyPM2LFBbfo98qAbq")
+					fnoDoc := ojson.NewDocString(`{"type":"function_call_output"}`)
+					audioItems := setCodexFunctionCallOutputFromGemini(fnoDoc, fr)
 					// attach the oldest queued call_id to pair the response
 					// with its call. If the queue is empty, generate a new id.
 					var id string
-					if len(pendingCallIDs) > 0 {
+					if customID := getGeminiCallID(fr); customID != "" {
+						id = customID
+						pendingCallIDs = removePendingCallID(pendingCallIDs, id)
+					} else if len(pendingCallIDs) > 0 {
 						id = pendingCallIDs[0]
 						// pop the first element
 						pendingCallIDs = pendingCallIDs[1:]
 					} else {
-						id = genCallID()
+						callCounter++
+						id = fmt.Sprintf("call_gemini_%016d", callCounter)
 					}
-					fno, _ = sjson.Set(fno, "call_id", id)
-					inputItems.Append(fno)
+					if len(audioItems) > 0 {
+						pendingToolAudioRelay = append(pendingToolAudioRelay, codexGeminiToolAudioGroup{
+							toolName: fr.Get("name").String(),
+							callID:   id,
+							items:    audioItems,
+						})
+					}
+					_ = fnoDoc.Set("call_id", id)
+					inputItems = append(inputItems, fnoDoc.Bytes())
 					continue
 				}
 			}
+			if pendingTurnCallCount == 0 {
+				flushPendingToolAudioRelay()
+			}
 		}
+		flushPendingToolAudioRelay()
 	}
 
-	if inputItems.Len() > 0 {
-		out, _ = sjson.SetRaw(out, "input", inputItems.String())
-	}
+	translatorcommon.SetRawArrayItemsDoc(outDoc, "input", inputItems)
 
 	// Tools mapping: Gemini functionDeclarations -> Codex tools
 	tools := root.Get("tools")
+	hasTools := false
 	if tools.IsArray() {
-		// The tools are collected and written over the empty array once, for
-		// the same reason as the input: each append copied the whole request.
-		out, _ = sjson.SetRaw(out, "tools", `[]`)
-		out, _ = sjson.Set(out, "tool_choice", "auto")
-		var toolNodes translatorcommon.JSONArrayBuilder
+		hasTools = true
+		var toolItems [][]byte
+		_ = outDoc.Set("tool_choice", "auto")
 		tarr := tools.Array()
 		for i := 0; i < len(tarr); i++ {
 			td := tarr[i]
@@ -221,8 +314,8 @@ func ConvertGeminiRequestToCodex(modelName string, inputRawJSON []byte, _ bool) 
 			farr := fns.Array()
 			for j := 0; j < len(farr); j++ {
 				fn := farr[j]
-				tool := `{}`
-				tool, _ = sjson.Set(tool, "type", "function")
+				toolDoc := ojson.NewDocString(`{}`)
+				_ = toolDoc.Set("type", "function")
 				if v := fn.Get("name"); v.Exists() {
 					name := v.String()
 					if short, ok := shortMap[name]; ok {
@@ -230,41 +323,84 @@ func ConvertGeminiRequestToCodex(modelName string, inputRawJSON []byte, _ bool) 
 					} else {
 						name = shortenNameIfNeeded(name)
 					}
-					tool, _ = sjson.Set(tool, "name", name)
+					_ = toolDoc.Set("name", name)
 				}
 				if v := fn.Get("description"); v.Exists() {
-					tool, _ = sjson.Set(tool, "description", v.String())
+					_ = toolDoc.Set("description", v.String())
 				}
 				if prm := fn.Get("parameters"); prm.Exists() {
-					// Remove optional $schema field if present
-					cleaned := prm.Raw
-					cleaned, _ = sjson.Delete(cleaned, "$schema")
-					cleaned, _ = sjson.Set(cleaned, "additionalProperties", false)
-					tool, _ = sjson.SetRaw(tool, "parameters", cleaned)
+					cleaned := cleanGeminiCodexToolParameters(prm)
+					_ = toolDoc.SetRawBytes("parameters", cleaned)
 				} else if prm = fn.Get("parametersJsonSchema"); prm.Exists() {
-					// Remove optional $schema field if present
-					cleaned := prm.Raw
-					cleaned, _ = sjson.Delete(cleaned, "$schema")
-					cleaned, _ = sjson.Set(cleaned, "additionalProperties", false)
-					tool, _ = sjson.SetRaw(tool, "parameters", cleaned)
+					cleaned := cleanGeminiCodexToolParameters(prm)
+					_ = toolDoc.SetRawBytes("parameters", cleaned)
 				}
-				tool, _ = sjson.Set(tool, "strict", false)
-				toolNodes.Append(tool)
+				_ = toolDoc.Set("strict", false)
+				toolItems = append(toolItems, toolDoc.Bytes())
 			}
 		}
-		if toolNodes.Len() > 0 {
-			out, _ = sjson.SetRaw(out, "tools", toolNodes.String())
+		toolsRaw := translatorcommon.JoinRawArray(toolItems)
+		var pathsToLower []string
+		toolsResult := util.ParseGJSONBytesNoCopy(toolsRaw)
+		util.Walk(toolsResult, "", "type", &pathsToLower)
+		if len(pathsToLower) > 0 {
+			toolsDoc := ojson.NewDoc(toolsRaw)
+			mutatedTools := false
+			for _, p := range pathsToLower {
+				typeValue := toolsResult.Get(p)
+				if typeValue.Type != ojson.String {
+					continue
+				}
+				normalizedType := strings.ToLower(typeValue.String())
+				if normalizedType == typeValue.String() {
+					continue
+				}
+				_ = toolsDoc.Set(p, normalizedType)
+				mutatedTools = true
+			}
+			if mutatedTools {
+				toolsRaw = toolsDoc.Bytes()
+			}
 		}
+		_ = outDoc.SetRawBytes("tools", toolsRaw)
 	}
 
 	// Fixed flags aligning with Codex expectations
-	out, _ = sjson.Set(out, "parallel_tool_calls", true)
+	_ = outDoc.Set("parallel_tool_calls", true)
+	setCodexToolChoiceFromGeminiToolConfigDoc(outDoc, hasTools, root.Get("toolConfig.functionCallingConfig"))
+
+	genConfig := root.Get("generationConfig")
+	if !genConfig.Exists() {
+		genConfig = root.Get("generation_config")
+	}
+	for _, v := range []ojson.Result{
+		genConfig.Get("maxOutputTokens"),
+		genConfig.Get("max_output_tokens"),
+		root.Get("maxOutputTokens"),
+		root.Get("max_output_tokens"),
+		root.Get("max_tokens"),
+	} {
+		if v.Type == ojson.Number {
+			_ = outDoc.Set("max_output_tokens", v.Int())
+			break
+		}
+	}
 
 	// Convert Gemini thinkingConfig to Codex reasoning.effort.
 	// Note: Google official Python SDK sends snake_case fields (thinking_level/thinking_budget).
 	effortSet := false
-	if genConfig := root.Get("generationConfig"); genConfig.Exists() {
-		if thinkingConfig := genConfig.Get("thinkingConfig"); thinkingConfig.Exists() && thinkingConfig.IsObject() {
+	if genConfig.Exists() {
+		thinkingLevel := genConfig.Get("thinkingLevel")
+		if !thinkingLevel.Exists() {
+			thinkingLevel = genConfig.Get("thinking_level")
+		}
+		if thinkingLevel.Exists() {
+			effort := strings.ToLower(strings.TrimSpace(thinkingLevel.String()))
+			if effort != "" {
+				_ = outDoc.Set("reasoning.effort", effort)
+				effortSet = true
+			}
+		} else if thinkingConfig := genConfig.Get("thinkingConfig"); thinkingConfig.Exists() && thinkingConfig.IsObject() {
 			thinkingLevel := thinkingConfig.Get("thinkingLevel")
 			if !thinkingLevel.Exists() {
 				thinkingLevel = thinkingConfig.Get("thinking_level")
@@ -272,7 +408,7 @@ func ConvertGeminiRequestToCodex(modelName string, inputRawJSON []byte, _ bool) 
 			if thinkingLevel.Exists() {
 				effort := strings.ToLower(strings.TrimSpace(thinkingLevel.String()))
 				if effort != "" {
-					out, _ = sjson.Set(out, "reasoning.effort", effort)
+					_ = outDoc.Set("reasoning.effort", effort)
 					effortSet = true
 				}
 			} else {
@@ -282,7 +418,7 @@ func ConvertGeminiRequestToCodex(modelName string, inputRawJSON []byte, _ bool) 
 				}
 				if thinkingBudget.Exists() {
 					if effort, ok := thinking.ConvertBudgetToLevel(int(thinkingBudget.Int())); ok {
-						out, _ = sjson.Set(out, "reasoning.effort", effort)
+						_ = outDoc.Set("reasoning.effort", effort)
 						effortSet = true
 					}
 				}
@@ -291,16 +427,401 @@ func ConvertGeminiRequestToCodex(modelName string, inputRawJSON []byte, _ bool) 
 	}
 	if !effortSet {
 		// No thinking config, set default effort
-		out, _ = sjson.Set(out, "reasoning.effort", "medium")
+		_ = outDoc.Set("reasoning.effort", "medium")
 	}
-	out, _ = sjson.Set(out, "reasoning.summary", "auto")
-	out, _ = sjson.Set(out, "stream", true)
-	out, _ = sjson.Set(out, "store", false)
-	out, _ = sjson.Set(out, "include", []string{"reasoning.encrypted_content"})
+	// OpenAI documents reasoning summaries as explicit opt-in output. Leave
+	// reasoning.summary to the source request's canonical summary intent instead
+	// of coupling it to reasoning effort.
+	_ = outDoc.Set("stream", true)
+	_ = outDoc.Set("store", false)
+	_ = outDoc.Set("include", []string{"reasoning.encrypted_content"})
 
-	out = translatorcommon.LowerToolSchemaTypes(out)
+	return outDoc.Bytes(), nil
+}
 
-	return translatorcommon.OutputFormatFromGemini(root).WriteResponses([]byte(out))
+// geminiPartThoughtSignature extracts a part's thought signature under either
+// the camelCase or snake_case field spelling.
+func geminiPartThoughtSignature(part ojson.Result) string {
+	if signature := strings.TrimSpace(part.Get("thoughtSignature").String()); signature != "" {
+		return signature
+	}
+	return strings.TrimSpace(part.Get("thought_signature").String())
+}
+
+// decodeGeminiCodexThoughtSignature unwraps the carrier written by
+// encodeGeminiCodexThoughtSignature. Values without the carrier magic are
+// returned unchanged, preserving legacy raw-signature echoes.
+func decodeGeminiCodexThoughtSignature(value string) string {
+	value = strings.TrimSpace(value)
+	decoded, err := base64.StdEncoding.DecodeString(value)
+	if err != nil || !strings.HasPrefix(string(decoded), geminiCodexThoughtSignatureCarrierMagic) {
+		return value
+	}
+	return strings.TrimSpace(strings.TrimPrefix(string(decoded), geminiCodexThoughtSignatureCarrierMagic))
+}
+
+// normalizedGeminiThoughtSignatureForCodexTarget unwraps and normalizes a
+// client-echoed thought signature for the Codex-format upstream serving
+// modelName, returning the exact value that may be written as reasoning
+// encrypted_content. The carrier magic written by
+// encodeGeminiCodexThoughtSignature is stripped first; the family match and
+// normalization rules live in translatorcommon.CodexReplaySignatureForTarget.
+func normalizedGeminiThoughtSignatureForCodexTarget(modelName, rawSignature string) (string, bool) {
+	return translatorcommon.CodexReplaySignatureForTarget(modelName, decodeGeminiCodexThoughtSignature(rawSignature))
+}
+
+func setCodexToolChoiceFromGeminiToolConfigDoc(doc *ojson.Doc, hasTools bool, functionCallingConfig ojson.Result) {
+	if !functionCallingConfig.Exists() {
+		return
+	}
+	mode := functionCallingConfig.Get("mode").String()
+	switch mode {
+	case "NONE":
+		_ = doc.Set("tool_choice", "none")
+	case "AUTO":
+		if !hasTools {
+			_ = doc.Set("tool_choice", "auto")
+		}
+	case "ANY":
+		allowedNames := functionCallingConfig.Get("allowedFunctionNames")
+		allowedNameItems := allowedNames.Array()
+		if allowedNames.IsArray() && len(allowedNameItems) == 1 {
+			choice := []byte(`{"type":"function","name":""}`)
+			choice, _ = ojson.SetBytes(choice, "name", shortenNameIfNeeded(allowedNameItems[0].String()))
+			_ = doc.SetRawBytes("tool_choice", choice)
+		} else {
+			_ = doc.Set("tool_choice", "required")
+		}
+	}
+}
+
+func setCodexToolChoiceFromGeminiToolConfig(out []byte, functionCallingConfig ojson.Result) []byte {
+	if !functionCallingConfig.Exists() {
+		return out
+	}
+	mode := functionCallingConfig.Get("mode").String()
+	switch mode {
+	case "NONE":
+		out, _ = ojson.SetBytes(out, "tool_choice", "none")
+	case "AUTO":
+		current := ojson.GetBytesNoCopy(out, "tool_choice")
+		if current.Type != ojson.String || current.String() != "auto" {
+			out, _ = ojson.SetBytes(out, "tool_choice", "auto")
+		}
+	case "ANY":
+		allowedNames := functionCallingConfig.Get("allowedFunctionNames")
+		allowedNameItems := allowedNames.Array()
+		if allowedNames.IsArray() && len(allowedNameItems) == 1 {
+			choice := []byte(`{"type":"function","name":""}`)
+			choice, _ = ojson.SetBytes(choice, "name", shortenNameIfNeeded(allowedNameItems[0].String()))
+			out, _ = ojson.SetRawBytes(out, "tool_choice", choice)
+		} else {
+			out, _ = ojson.SetBytes(out, "tool_choice", "required")
+		}
+	}
+	return out
+}
+
+func cleanGeminiCodexToolParameters(parameters ojson.Result) []byte {
+	cleaned := util.NormalizeJSONSchemaNumericConstraints(parameters.Raw)
+	hasSchema := parameters.Get("$schema").Exists()
+	needsAdditionalProps := parameters.Get("additionalProperties").Type != ojson.False
+	if !hasSchema && !needsAdditionalProps {
+		return []byte(cleaned)
+	}
+	doc := ojson.NewDocString(cleaned)
+	if hasSchema {
+		_ = doc.Delete("$schema")
+	}
+	if needsAdditionalProps {
+		_ = doc.Set("additionalProperties", false)
+	}
+	return doc.Bytes()
+}
+
+func codexMessageWithPart(role string, part []byte) []byte {
+	msgDoc := ojson.NewDocString(`{"type":"message","role":"","content":[]}`)
+	_ = msgDoc.Set("role", role)
+	_ = msgDoc.SetRawBytes("content", translatorcommon.JoinRawArray([][]byte{part}))
+	return msgDoc.Bytes()
+}
+
+func normalizeGeminiCodexServiceTier(serviceTier ojson.Result) string {
+	if !serviceTier.Exists() || serviceTier.Type != ojson.String {
+		return ""
+	}
+	switch strings.ToLower(strings.TrimSpace(serviceTier.String())) {
+	case "priority", "fast":
+		return "priority"
+	}
+	return ""
+}
+
+type codexGeminiToolAudioGroup struct {
+	toolName string
+	callID   string
+	items    [][]byte
+}
+
+func buildCodexGeminiToolAudioRelayItems(groups []codexGeminiToolAudioGroup) [][]byte {
+	if len(groups) == 1 {
+		var notice string
+		g := groups[0]
+		switch {
+		case g.toolName != "" && g.callID != "":
+			notice = fmt.Sprintf("Audio returned by tool %s (%s):", g.toolName, g.callID)
+		case g.toolName != "":
+			notice = fmt.Sprintf("Audio returned by tool %s:", g.toolName)
+		case g.callID != "":
+			notice = fmt.Sprintf("Audio returned by tool call %s:", g.callID)
+		default:
+			notice = "Audio returned by the preceding tool call(s):"
+		}
+		noticeDoc := ojson.NewDocString(`{"type":"input_text","text":""}`)
+		_ = noticeDoc.Set("text", notice)
+		relayItems := make([][]byte, 0, len(g.items)+1)
+		relayItems = append(relayItems, noticeDoc.Bytes())
+		relayItems = append(relayItems, g.items...)
+		return relayItems
+	}
+	noticeDoc := ojson.NewDocString(`{"type":"input_text","text":"Audio returned by the preceding tool call(s):"}`)
+	totalAudio := 0
+	for _, group := range groups {
+		totalAudio += len(group.items)
+	}
+	relayItems := make([][]byte, 0, totalAudio+len(groups)+1)
+	relayItems = append(relayItems, noticeDoc.Bytes())
+	for _, group := range groups {
+		var label string
+		switch {
+		case group.toolName != "" && group.callID != "":
+			label = fmt.Sprintf("Tool %s (%s):", group.toolName, group.callID)
+		case group.toolName != "":
+			label = fmt.Sprintf("Tool %s:", group.toolName)
+		case group.callID != "":
+			label = fmt.Sprintf("Tool call %s:", group.callID)
+		default:
+			label = "Tool:"
+		}
+		labelDoc := ojson.NewDocString(`{"type":"input_text","text":""}`)
+		_ = labelDoc.Set("text", label)
+		relayItems = append(relayItems, labelDoc.Bytes())
+		relayItems = append(relayItems, group.items...)
+	}
+	return relayItems
+}
+
+func isEmptyGeminiCodexResponseObject(v ojson.Result) bool {
+	if !v.Exists() {
+		return true
+	}
+	if v.IsObject() {
+		empty := true
+		v.ForEach(func(_, _ ojson.Result) bool {
+			empty = false
+			return false
+		})
+		return empty
+	}
+	return strings.TrimSpace(v.Raw) == ""
+}
+
+func geminiCodexResponseHasOnlyResultKey(responseField ojson.Result) bool {
+	if !responseField.IsObject() {
+		return false
+	}
+	hasResult := false
+	onlyResult := true
+	responseField.ForEach(func(key, _ ojson.Result) bool {
+		if key.String() == "result" {
+			hasResult = true
+			return true
+		}
+		onlyResult = false
+		return false
+	})
+	return hasResult && onlyResult
+}
+
+func setCodexFunctionCallOutputFromGemini(fnoDoc *ojson.Doc, fr ojson.Result) [][]byte {
+	res := fr.Get("response.result")
+	resp := fr.Get("response")
+	hasBaseText := false
+	baseText := ""
+	if res.Exists() && geminiCodexResponseHasOnlyResultKey(resp) {
+		baseText = res.String()
+		hasBaseText = strings.TrimSpace(baseText) != ""
+	} else if !isEmptyGeminiCodexResponseObject(resp) {
+		baseText = resp.Raw
+		hasBaseText = true
+	}
+
+	var nestedItems [][]byte
+	var relayedAudioItems [][]byte
+	if frParts := fr.Get("parts"); frParts.Exists() && frParts.IsArray() {
+		for _, nested := range frParts.Array() {
+			if t := nested.Get("text"); t.Exists() {
+				if strings.TrimSpace(t.String()) != "" {
+					partDoc := ojson.NewDocString(`{"type":"input_text","text":""}`)
+					_ = partDoc.Set("text", t.String())
+					nestedItems = append(nestedItems, partDoc.Bytes())
+				}
+				continue
+			}
+			if contentPart, ok := codexContentPartFromGeminiInlineData(nested); ok {
+				// Codex function_call_output.output only allows input_text, input_image, and input_file.
+				// Audio parts are relayed as a user message after the contiguous tool outputs.
+				if ojson.GetBytesNoCopy(contentPart, "type").String() == "input_audio" {
+					relayedAudioItems = append(relayedAudioItems, contentPart)
+				} else {
+					nestedItems = append(nestedItems, contentPart)
+				}
+				continue
+			}
+			if contentPart, ok := codexContentPartFromGeminiFileData(nested); ok {
+				nestedItems = append(nestedItems, contentPart)
+				continue
+			}
+		}
+	}
+
+	if len(nestedItems) > 0 {
+		outputItems := make([][]byte, 0, len(nestedItems)+1)
+		if hasBaseText {
+			textDoc := ojson.NewDocString(`{"type":"input_text","text":""}`)
+			_ = textDoc.Set("text", baseText)
+			outputItems = append(outputItems, textDoc.Bytes())
+		}
+		outputItems = append(outputItems, nestedItems...)
+		_ = fnoDoc.SetRawBytes("output", translatorcommon.JoinRawArray(outputItems))
+		return relayedAudioItems
+	}
+
+	// Prefer a string result if present; otherwise embed the raw response as a string.
+	if res.Exists() && geminiCodexResponseHasOnlyResultKey(resp) {
+		_ = fnoDoc.Set("output", res.String())
+	} else if resp.Exists() && !isEmptyGeminiCodexResponseObject(resp) {
+		_ = fnoDoc.Set("output", resp.Raw)
+	} else if len(relayedAudioItems) > 0 {
+		_ = fnoDoc.Set("output", "[Tool returned audio content; the audio follows in the next user message.]")
+	} else if resp.Exists() {
+		_ = fnoDoc.Set("output", resp.Raw)
+	}
+	return relayedAudioItems
+}
+
+func codexContentPartFromGeminiInlineData(part ojson.Result) ([]byte, bool) {
+	inlineData := part.Get("inlineData")
+	if !inlineData.Exists() {
+		inlineData = part.Get("inline_data")
+	}
+	if !inlineData.Exists() {
+		return nil, false
+	}
+	mimeType := inlineData.Get("mimeType").String()
+	if mimeType == "" {
+		mimeType = inlineData.Get("mime_type").String()
+	}
+	data := inlineData.Get("data").String()
+	if mimeType == "" || data == "" {
+		return nil, false
+	}
+	lowerMimeType := strings.ToLower(mimeType)
+	switch {
+	case strings.HasPrefix(lowerMimeType, "image/"):
+		contentPart := []byte(`{"type":"input_image","image_url":""}`)
+		contentPart, _ = ojson.SetBytes(contentPart, "image_url", fmt.Sprintf("data:%s;base64,%s", mimeType, data))
+		return contentPart, true
+	case strings.HasPrefix(lowerMimeType, "audio/"):
+		contentPartDoc := ojson.NewDocString(`{"type":"input_audio","input_audio":{"data":"","format":""}}`)
+		_ = contentPartDoc.Set("input_audio.data", data)
+		_ = contentPartDoc.Set("input_audio.format", codexInputAudioFormatFromMIME(mimeType))
+		return contentPartDoc.Bytes(), true
+	default:
+		fileData := data
+		if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(fileData)), "data:") {
+			fileData = fmt.Sprintf("data:%s;base64,%s", mimeType, data)
+		}
+		contentPartDoc := ojson.NewDocString(`{"type":"input_file","file_data":"","filename":""}`)
+		_ = contentPartDoc.Set("file_data", fileData)
+		_ = contentPartDoc.Set("filename", codexFileNameFromMIME(mimeType))
+		return contentPartDoc.Bytes(), true
+	}
+}
+
+func codexContentPartFromGeminiFileData(part ojson.Result) ([]byte, bool) {
+	fileData := part.Get("fileData")
+	if !fileData.Exists() {
+		fileData = part.Get("file_data")
+	}
+	if !fileData.Exists() {
+		return nil, false
+	}
+	fileURI := fileData.Get("fileUri").String()
+	if fileURI == "" {
+		fileURI = fileData.Get("file_uri").String()
+	}
+	if fileURI == "" {
+		return nil, false
+	}
+	mimeType := fileData.Get("mimeType").String()
+	if mimeType == "" {
+		mimeType = fileData.Get("mime_type").String()
+	}
+	lowerMimeType := strings.ToLower(mimeType)
+	if strings.HasPrefix(lowerMimeType, "image/") {
+		contentPart := []byte(`{"type":"input_image","image_url":""}`)
+		contentPart, _ = ojson.SetBytes(contentPart, "image_url", fileURI)
+		return contentPart, true
+	}
+	if strings.HasPrefix(lowerMimeType, "video/") || strings.HasPrefix(lowerMimeType, "application/") || strings.HasPrefix(lowerMimeType, "text/") {
+		contentPartDoc := ojson.NewDocString(`{"type":"input_file","file_url":"","filename":""}`)
+		_ = contentPartDoc.Set("file_url", fileURI)
+		_ = contentPartDoc.Set("filename", codexFileNameFromMIME(mimeType))
+		return contentPartDoc.Bytes(), true
+	}
+	fileInfo := "File: " + fileURI
+	if mimeType != "" {
+		fileInfo += " (Type: " + mimeType + ")"
+	}
+	contentPart := []byte(`{"type":"input_text","text":""}`)
+	contentPart, _ = ojson.SetBytes(contentPart, "text", fileInfo)
+	return contentPart, true
+}
+
+func codexInputAudioFormatFromMIME(mimeType string) string {
+	switch strings.ToLower(strings.TrimSpace(mimeType)) {
+	case "audio/wav", "audio/wave", "audio/x-wav":
+		return "wav"
+	case "audio/flac":
+		return "flac"
+	case "audio/opus", "audio/ogg":
+		return "opus"
+	case "audio/pcm", "audio/l16":
+		return "pcm16"
+	default:
+		return "mp3"
+	}
+}
+
+func codexFileNameFromMIME(mimeType string) string {
+	switch strings.ToLower(strings.TrimSpace(mimeType)) {
+	case "application/pdf":
+		return "document.pdf"
+	case "text/plain":
+		return "document.txt"
+	case "text/csv":
+		return "document.csv"
+	case "application/json":
+		return "document.json"
+	case "application/xml", "text/xml":
+		return "document.xml"
+	default:
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(mimeType)), "video/") {
+			return "video"
+		}
+		return "document"
+	}
 }
 
 // shortenNameIfNeeded applies the simple shortening rule for a single name.

@@ -1,22 +1,17 @@
 // Package claude implements thinking configuration scaffolding for Claude models.
-//
-// Claude models up to 4.6 use the thinking.budget_tokens format with values in
-// the range 1024-128000. Some Claude models support ZeroAllowed (sonnet-4-5,
-// opus-4-5), while older models do not. Opus 4.7 and later reject budgets and
-// only take adaptive thinking with output_config.effort; see adaptive.go.
-// See: _bmad-output/planning-artifacts/architecture.md#Epic-6
 package claude
 
 import (
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/thinking"
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
+	"github.com/MoeForge/moego/ojson"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 )
 
 // Applier implements thinking.ProviderApplier for Claude models.
-// This applier is stateless and holds no configuration.
 type Applier struct{}
+
+var _ thinking.ProviderDocApplier = (*Applier)(nil)
 
 // NewApplier creates a new Claude thinking applier.
 func NewApplier() *Applier {
@@ -28,89 +23,198 @@ func init() {
 }
 
 // Apply applies thinking configuration to Claude request body.
-//
-// IMPORTANT: This method expects config to be pre-validated by thinking.ValidateConfig.
-// ValidateConfig handles:
-//   - Mode conversion (Level→Budget, Auto→Budget)
-//   - Budget clamping to model range
-//   - ZeroAllowed constraint enforcement
-//
-// For budget-based models Apply only processes ModeBudget and ModeNone; other
-// modes are passed through unchanged. Models that declare adaptive thinking go
-// to applyAdaptive instead, configured models included.
-//
-// Expected output format when enabled:
-//
-//	{
-//	  "thinking": {
-//	    "type": "enabled",
-//	    "budget_tokens": 16384
-//	  }
-//	}
-//
-// Expected output format when disabled:
-//
-//	{
-//	  "thinking": {
-//	    "type": "disabled"
-//	  }
-//	}
 func (a *Applier) Apply(body []byte, config thinking.ThinkingConfig, modelInfo *registry.ModelInfo) ([]byte, error) {
-	if thinking.AdaptiveThinkingOf(modelInfo) != nil {
+	if !thinking.IsUserDefinedModel(modelInfo) && modelInfo.Thinking == nil {
+		return body, nil
+	}
+	if config.Mode != thinking.ModeBudget && config.Mode != thinking.ModeNone && config.Mode != thinking.ModeAuto && config.Mode != thinking.ModeLevel {
+		return body, nil
+	}
+	if thinking.IsUserDefinedModel(modelInfo) && config.Mode == thinking.ModeLevel && config.Level == "" {
+		return body, nil
+	}
+	if !thinking.IsUserDefinedModel(modelInfo) && config.Mode == thinking.ModeLevel {
+		supportsAdaptive := modelInfo != nil && modelInfo.Thinking != nil && len(modelInfo.Thinking.Levels) > 0
+		if !(supportsAdaptive && config.Level != "") {
+			if _, ok := thinking.ConvertLevelToBudget(string(config.Level)); !ok {
+				return body, nil
+			}
+		}
+	}
+
+	if len(body) == 0 || !ojson.ValidBytes(body) {
+		body = []byte("{}")
+	}
+	if modelInfo != nil && modelInfo.Thinking != nil && modelInfo.Thinking.Adaptive != nil {
 		return applyAdaptive(body, config, modelInfo.Thinking), nil
 	}
-	if thinking.IsUserDefinedModel(modelInfo) {
-		return a.applyCompatibleClaude(body, config, modelInfo)
+	doc := ojson.NewDoc(body)
+	if errApply := a.ApplyDoc(doc, config, modelInfo); errApply != nil {
+		return body, errApply
 	}
-	if modelInfo.Thinking == nil {
-		return body, nil
-	}
-
-	// Only process ModeBudget and ModeNone; other modes pass through
-	// (caller should use ValidateConfig first to normalize modes)
-	if config.Mode != thinking.ModeBudget && config.Mode != thinking.ModeNone {
-		return body, nil
-	}
-
-	if len(body) == 0 || !gjson.ValidBytes(body) {
-		body = []byte(`{}`)
-	}
-
-	// Budget is expected to be pre-validated by ValidateConfig (clamped, ZeroAllowed enforced)
-	// Decide enabled/disabled based on budget value
-	if config.Budget == 0 {
-		result, _ := sjson.SetBytes(body, "thinking.type", "disabled")
-		result, _ = sjson.DeleteBytes(result, "thinking.budget_tokens")
-		return result, nil
-	}
-
-	result, _ := sjson.SetBytes(body, "thinking.type", "enabled")
-	result, _ = sjson.SetBytes(result, "thinking.budget_tokens", config.Budget)
-
-	// Ensure max_tokens > thinking.budget_tokens (Anthropic API constraint)
-	result = a.normalizeClaudeBudget(result, config.Budget, modelInfo)
-	return result, nil
+	return doc.Bytes(), nil
 }
 
-// normalizeClaudeBudget applies Claude-specific constraints to ensure max_tokens > budget_tokens.
-// Anthropic API requires this constraint; violating it returns a 400 error.
-func (a *Applier) normalizeClaudeBudget(body []byte, budgetTokens int, modelInfo *registry.ModelInfo) []byte {
+// ApplyDoc applies thinking configuration onto doc in place.
+func (a *Applier) ApplyDoc(doc *ojson.Doc, config thinking.ThinkingConfig, modelInfo *registry.ModelInfo) error {
+	if doc == nil {
+		return nil
+	}
+	if thinking.IsUserDefinedModel(modelInfo) {
+		return applyCompatibleClaudeDoc(doc, config)
+	}
+	if modelInfo.Thinking == nil {
+		return nil
+	}
+
+	if modelInfo.Thinking.Adaptive != nil {
+		return applyAdaptiveDoc(doc, config, modelInfo.Thinking)
+	}
+
+	supportsAdaptive := modelInfo != nil && modelInfo.Thinking != nil && len(modelInfo.Thinking.Levels) > 0
+
+	switch config.Mode {
+	case thinking.ModeNone:
+		disableThinkingDoc(doc, modelInfo)
+		return nil
+
+	case thinking.ModeLevel:
+		if supportsAdaptive && config.Level != "" {
+			_ = doc.Set("thinking.type", "adaptive")
+			_ = util.DeleteJSONDocIfExists(doc, "thinking.budget_tokens")
+			_ = doc.Set("output_config.effort", string(config.Level))
+			return nil
+		}
+
+		if budget, ok := thinking.ConvertLevelToBudget(string(config.Level)); ok {
+			config.Mode = thinking.ModeBudget
+			config.Budget = budget
+			config.Level = ""
+		} else {
+			return nil
+		}
+		fallthrough
+
+	case thinking.ModeBudget:
+		if config.Budget == 0 {
+			disableThinkingDoc(doc, modelInfo)
+			return nil
+		}
+
+		_ = doc.Set("thinking.type", "enabled")
+		budget := config.Budget
+		if maxTokens := doc.Get("max_tokens").Int(); maxTokens > 0 && budget >= int(maxTokens) {
+			budget = int(maxTokens) - 1
+		}
+		_ = doc.Set("thinking.budget_tokens", budget)
+		_ = util.DeleteJSONDocIfExists(doc, "output_config.effort")
+		if oc := doc.Get("output_config"); oc.Exists() && oc.IsObject() && len(oc.Map()) == 0 {
+			_ = doc.Delete("output_config")
+		}
+
+		a.normalizeClaudeBudgetDoc(doc, config.Budget, modelInfo)
+		return nil
+
+	case thinking.ModeAuto:
+		thinkingType := "enabled"
+		if supportsAdaptive {
+			thinkingType = "adaptive"
+		}
+		_ = doc.Set("thinking.type", thinkingType)
+		_ = util.DeleteJSONDocIfExists(doc, "thinking.budget_tokens")
+		_ = util.DeleteJSONDocIfExists(doc, "output_config.effort")
+		if oc := doc.Get("output_config"); oc.Exists() && oc.IsObject() && len(oc.Map()) == 0 {
+			_ = doc.Delete("output_config")
+		}
+		return nil
+
+	default:
+		return nil
+	}
+}
+
+func applyAdaptiveDoc(doc *ojson.Doc, config thinking.ThinkingConfig, support *registry.ThinkingSupport) error {
+	if doc == nil {
+		return nil
+	}
+	switch config.Mode {
+	case thinking.ModeBudget:
+		level, ok := thinking.ConvertBudgetToLevel(config.Budget)
+		if !ok {
+			return nil
+		}
+		config = thinking.ThinkingConfig{Mode: thinking.ModeLevel, Level: thinking.ThinkingLevel(level)}
+	case thinking.ModeLevel:
+		if config.Level == "" {
+			return nil
+		}
+		if doc.Get("thinking.type").String() != "adaptive" {
+			display := doc.Get("thinking.display").String()
+			if display == "" {
+				display = "summarized"
+			}
+			_ = doc.SetRaw("thinking", `{"type":"adaptive"}`)
+			_ = doc.Set("thinking.display", display)
+		} else {
+			_ = doc.Delete("thinking.budget_tokens")
+		}
+		_ = doc.Set("output_config.effort", string(config.Level))
+		return nil
+	case thinking.ModeAuto:
+		if doc.Get("thinking.type").String() != "adaptive" {
+			display := doc.Get("thinking.display").String()
+			if display == "" {
+				display = "summarized"
+			}
+			_ = doc.SetRaw("thinking", `{"type":"adaptive"}`)
+			_ = doc.Set("thinking.display", display)
+		} else {
+			_ = doc.Delete("thinking.budget_tokens")
+		}
+		return nil
+	case thinking.ModeNone:
+		adaptive := support.Adaptive
+		if adaptive == nil || adaptive.Off == registry.ClaudeThinkingAlwaysOn {
+			_ = doc.Delete("thinking")
+			if doc.Get("output_config.effort").String() == "" {
+				_ = doc.Set("output_config.effort", string(lowestEffort(support)))
+			}
+			return nil
+		}
+		_ = doc.SetRaw("thinking", `{}`)
+		_ = doc.Set("thinking.type", adaptive.Off)
+		ceiling := thinking.ThinkingLevel(adaptive.OffMaxLevel)
+		if ceiling != "" && thinking.LevelAbove(thinking.ThinkingLevel(doc.Get("output_config.effort").String()), ceiling) {
+			_ = doc.Set("output_config.effort", string(ceiling))
+		}
+		return nil
+	}
+	return nil
+}
+
+func disableThinkingDoc(doc *ojson.Doc, modelInfo *registry.ModelInfo) {
+	disableType := "disabled"
+	if modelInfo != nil && modelInfo.Thinking != nil && modelInfo.Thinking.DisableType != "" {
+		disableType = modelInfo.Thinking.DisableType
+	}
+	_ = doc.SetRaw("thinking", "{}")
+	_ = doc.Set("thinking.type", disableType)
+	_ = util.DeleteJSONDocIfExists(doc, "output_config.effort")
+	if oc := doc.Get("output_config"); oc.Exists() && oc.IsObject() && len(oc.Map()) == 0 {
+		_ = doc.Delete("output_config")
+	}
+}
+
+func (a *Applier) normalizeClaudeBudgetDoc(doc *ojson.Doc, budgetTokens int, modelInfo *registry.ModelInfo) {
 	if budgetTokens <= 0 {
-		return body
+		return
 	}
 
-	// Ensure the request satisfies Claude constraints:
-	//  1) Determine effective max_tokens (request overrides model default)
-	//  2) If budget_tokens >= max_tokens, reduce budget_tokens to max_tokens-1
-	//  3) If the adjusted budget falls below the model minimum, leave the request unchanged
-	//  4) If max_tokens came from model default, write it back into the request
-
-	effectiveMax, setDefaultMax := a.effectiveMaxTokens(body, modelInfo)
+	effectiveMax, setDefaultMax := a.effectiveMaxTokensDoc(doc, modelInfo)
 	if setDefaultMax && effectiveMax > 0 {
-		body, _ = sjson.SetBytes(body, "max_tokens", effectiveMax)
+		_ = doc.Set("max_tokens", effectiveMax)
 	}
 
-	// Compute the budget we would apply after enforcing budget_tokens < max_tokens.
 	adjustedBudget := budgetTokens
 	if effectiveMax > 0 && adjustedBudget >= effectiveMax {
 		adjustedBudget = effectiveMax - 1
@@ -121,23 +225,16 @@ func (a *Applier) normalizeClaudeBudget(body []byte, budgetTokens int, modelInfo
 		minBudget = modelInfo.Thinking.Min
 	}
 	if minBudget > 0 && adjustedBudget > 0 && adjustedBudget < minBudget {
-		// If enforcing the max_tokens constraint would push the budget below the model minimum,
-		// leave the request unchanged.
-		return body
+		return
 	}
 
 	if adjustedBudget != budgetTokens {
-		body, _ = sjson.SetBytes(body, "thinking.budget_tokens", adjustedBudget)
+		_ = doc.Set("thinking.budget_tokens", adjustedBudget)
 	}
-
-	return body
 }
 
-// effectiveMaxTokens returns the max tokens to cap thinking:
-// prefer request-provided max_tokens; otherwise fall back to model default.
-// The boolean indicates whether the value came from the model default (and thus should be written back).
-func (a *Applier) effectiveMaxTokens(body []byte, modelInfo *registry.ModelInfo) (max int, fromModel bool) {
-	if maxTok := gjson.GetBytes(body, "max_tokens"); maxTok.Exists() && maxTok.Int() > 0 {
+func (a *Applier) effectiveMaxTokensDoc(doc *ojson.Doc, modelInfo *registry.ModelInfo) (max int, fromModel bool) {
+	if maxTok := doc.Get("max_tokens"); maxTok.Exists() && maxTok.Int() > 0 {
 		return int(maxTok.Int()), false
 	}
 	if modelInfo != nil && modelInfo.MaxCompletionTokens > 0 {
@@ -146,30 +243,44 @@ func (a *Applier) effectiveMaxTokens(body []byte, modelInfo *registry.ModelInfo)
 	return 0, false
 }
 
-func (a *Applier) applyCompatibleClaude(body []byte, config thinking.ThinkingConfig, modelInfo *registry.ModelInfo) ([]byte, error) {
-	if config.Mode != thinking.ModeBudget && config.Mode != thinking.ModeNone && config.Mode != thinking.ModeAuto {
-		return body, nil
-	}
-
-	if len(body) == 0 || !gjson.ValidBytes(body) {
-		body = []byte(`{}`)
-	}
-
+func applyCompatibleClaudeDoc(doc *ojson.Doc, config thinking.ThinkingConfig) error {
 	switch config.Mode {
 	case thinking.ModeNone:
-		result, _ := sjson.SetBytes(body, "thinking.type", "disabled")
-		result, _ = sjson.DeleteBytes(result, "thinking.budget_tokens")
-		return result, nil
+		disableThinkingDoc(doc, nil)
+		return nil
 	case thinking.ModeAuto:
-		result, _ := sjson.SetBytes(body, "thinking.type", "enabled")
-		result, _ = sjson.DeleteBytes(result, "thinking.budget_tokens")
-		return result, nil
+		_ = doc.Set("thinking.type", "enabled")
+		_ = util.DeleteJSONDocIfExists(doc, "thinking.budget_tokens")
+		_ = util.DeleteJSONDocIfExists(doc, "output_config.effort")
+		if oc := doc.Get("output_config"); oc.Exists() && oc.IsObject() && len(oc.Map()) == 0 {
+			_ = doc.Delete("output_config")
+		}
+		return nil
+	case thinking.ModeLevel:
+		if config.Level == "" {
+			return nil
+		}
+		_ = doc.Set("thinking.type", "adaptive")
+		_ = util.DeleteJSONDocIfExists(doc, "thinking.budget_tokens")
+		_ = doc.Set("output_config.effort", string(config.Level))
+		return nil
+	case thinking.ModeBudget:
+		if config.Budget == 0 {
+			disableThinkingDoc(doc, nil)
+			return nil
+		}
+		_ = doc.Set("thinking.type", "enabled")
+		budget := config.Budget
+		if maxTokens := doc.Get("max_tokens").Int(); maxTokens > 0 && budget >= int(maxTokens) {
+			budget = int(maxTokens) - 1
+		}
+		_ = doc.Set("thinking.budget_tokens", budget)
+		_ = util.DeleteJSONDocIfExists(doc, "output_config.effort")
+		if oc := doc.Get("output_config"); oc.Exists() && oc.IsObject() && len(oc.Map()) == 0 {
+			_ = doc.Delete("output_config")
+		}
+		return nil
 	default:
-		result, _ := sjson.SetBytes(body, "thinking.type", "enabled")
-		result, _ = sjson.SetBytes(result, "thinking.budget_tokens", config.Budget)
-		// budget_tokens >= max_tokens is a 400 whatever the model is. The
-		// translators write "xhigh" as 32768 and "max" as 128000 next to their
-		// default max_tokens of 32000, so cap the budget below max_tokens.
-		return a.normalizeClaudeBudget(result, config.Budget, modelInfo), nil
+		return nil
 	}
 }

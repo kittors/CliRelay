@@ -17,70 +17,6 @@ import (
 	"github.com/tidwall/sjson"
 )
 
-// ClaudeResponsesRedactedThinkingPrefix marks a Responses reasoning item whose
-// encrypted_content carries an Anthropic redacted_thinking payload rather than
-// a thinking signature. Responses has no redacted reasoning type and Anthropic
-// requires redacted_thinking blocks to be replayed verbatim, so the payload
-// rides in encrypted_content behind this marker and is restored on the way
-// back. The marker is not a valid signature anywhere, so no other upstream can
-// mistake it for one.
-const ClaudeResponsesRedactedThinkingPrefix = "claude-redacted-thinking:"
-
-// claudeReasoningCarrier returns the encrypted_content value for a Claude
-// thinking or redacted_thinking content block.
-func claudeReasoningCarrier(contentBlock gjson.Result) string {
-	if contentBlock.Get("type").String() == "redacted_thinking" {
-		if data := contentBlock.Get("data").String(); data != "" {
-			return ClaudeResponsesRedactedThinkingPrefix + data
-		}
-		return ""
-	}
-	return contentBlock.Get("signature").String()
-}
-
-// claudeReasoningItem builds the Responses reasoning item that mirrors one
-// Claude thinking block. encrypted_content is only set when there is something
-// to carry, so a client never replays an empty signature it would have to drop.
-func claudeReasoningItem(id, text, encryptedContent string) string {
-	item := `{"id":"","type":"reasoning","status":"completed","summary":[]}`
-	item, _ = sjson.Set(item, "id", id)
-	if text != "" {
-		item, _ = sjson.SetRaw(item, "summary.-1", `{"type":"summary_text","text":""}`)
-		item, _ = sjson.Set(item, "summary.0.text", text)
-	}
-	if encryptedContent != "" {
-		item, _ = sjson.Set(item, "encrypted_content", encryptedContent)
-	}
-	return item
-}
-
-// convertResponsesReasoningToClaudeThinking rebuilds the Claude thinking block
-// behind a replayed Responses reasoning item. It returns "" when the item
-// carries nothing Anthropic would accept: Anthropic rejects a thinking block
-// whose signature is missing, empty or not its own, so such an item is dropped
-// rather than replayed. Anthropic does not check the text against the
-// signature, which is what makes restoring the summary text safe.
-func convertResponsesReasoningToClaudeThinking(item gjson.Result) string {
-	encrypted := strings.TrimSpace(item.Get("encrypted_content").String())
-	if strings.HasPrefix(encrypted, ClaudeResponsesRedactedThinkingPrefix) {
-		data := strings.TrimSpace(strings.TrimPrefix(encrypted, ClaudeResponsesRedactedThinkingPrefix))
-		if data == "" {
-			return ""
-		}
-		block := `{"type":"redacted_thinking","data":""}`
-		block, _ = sjson.Set(block, "data", data)
-		return block
-	}
-	signature, ok := claudeThinkingSignature(encrypted)
-	if !ok {
-		return ""
-	}
-	block := `{"type":"thinking","thinking":"","signature":""}`
-	block, _ = sjson.Set(block, "thinking", responsesReasoningText(item))
-	block, _ = sjson.Set(block, "signature", signature)
-	return block
-}
-
 // claudeThinkingSignature reports whether encrypted_content holds an Anthropic
 // thinking signature and returns it. Sending another family's value (a GPT
 // "gAAAA" blob, the Gemini skip sentinel) as a Claude signature fails the whole
@@ -134,29 +70,6 @@ func decodeSignatureBase64(s string) ([]byte, bool) {
 		}
 	}
 	return nil, false
-}
-
-// responsesReasoningText collects a reasoning item's text. Claude output only
-// fills summary[], but clients echo the item through whichever array their SDK
-// models, so content[] (reasoning_text) is read when summary[] is empty.
-func responsesReasoningText(item gjson.Result) string {
-	collect := func(parts gjson.Result) string {
-		var b strings.Builder
-		parts.ForEach(func(_, part gjson.Result) bool {
-			if text := part.Get("text").String(); text != "" {
-				if b.Len() > 0 {
-					b.WriteString("\n\n")
-				}
-				b.WriteString(text)
-			}
-			return true
-		})
-		return b.String()
-	}
-	if text := collect(item.Get("summary")); text != "" {
-		return text
-	}
-	return collect(item.Get("content"))
 }
 
 // stripTrailingClaudeThinking removes thinking blocks at the end of the final

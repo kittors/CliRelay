@@ -6,7 +6,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/storage/postgres/ent"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/storage/postgres/ent"
 )
 
 // The APIKeyFunc type is an adapter to allow the use of ordinary

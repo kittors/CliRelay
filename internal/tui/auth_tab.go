@@ -13,14 +13,14 @@ import (
 
 // editableField represents an editable field on an auth file.
 type editableField struct {
-	labelKey string
-	key      string // API field key: "prefix", "proxy_url", "priority"
+	label string
+	key   string // API field key: "prefix", "proxy_url", "priority"
 }
 
 var authEditableFields = []editableField{
-	{labelKey: "auth_field_prefix", key: "prefix"},
-	{labelKey: "auth_field_proxy_url", key: "proxy_url"},
-	{labelKey: "auth_field_priority", key: "priority"},
+	{label: "Prefix", key: "prefix"},
+	{label: "Proxy URL", key: "proxy_url"},
+	{label: "Priority", key: "priority"},
 }
 
 // authTabModel displays auth credential files with interactive management.
@@ -77,7 +77,6 @@ func (m authTabModel) fetchFiles() tea.Msg {
 func (m authTabModel) Update(msg tea.Msg) (authTabModel, tea.Cmd) {
 	switch msg := msg.(type) {
 	case localeChangedMsg:
-		m.refreshEditPrompt()
 		m.viewport.SetContent(m.renderContent())
 		return m, nil
 	case authFilesMsg:
@@ -139,7 +138,7 @@ func (m *authTabModel) startEdit(fieldIdx int) tea.Cmd {
 	currentVal := getAnyString(f, key)
 	m.editInput.SetValue(currentVal)
 	m.editInput.Focus()
-	m.editInput.Prompt = fmt.Sprintf("  %s: ", T(authEditableFields[fieldIdx].labelKey))
+	m.editInput.Prompt = fmt.Sprintf("  %s: ", authEditableFields[fieldIdx].label)
 	m.viewport.SetContent(m.renderContent())
 	return textinput.Blink
 }
@@ -178,7 +177,7 @@ func (m authTabModel) renderContent() string {
 	sb.WriteString("\n")
 
 	if m.err != nil {
-		sb.WriteString(errorStyle.Render(T("error_prefix") + m.err.Error()))
+		sb.WriteString(errorStyle.Render("⚠ Error: " + m.err.Error()))
 		sb.WriteString("\n")
 		return sb.String()
 	}
@@ -192,6 +191,12 @@ func (m authTabModel) renderContent() string {
 	for i, f := range m.files {
 		name := getString(f, "name")
 		channel := getString(f, "channel")
+		if channel == "" {
+			channel = getString(f, "provider")
+		}
+		if channel == "" {
+			channel = getString(f, "type")
+		}
 		email := getString(f, "email")
 		disabled := getBool(f, "disabled")
 
@@ -200,6 +205,19 @@ func (m authTabModel) renderContent() string {
 		if disabled {
 			statusIcon = lipgloss.NewStyle().Foreground(colorMuted).Render("○")
 			statusText = T("status_disabled")
+		} else if getBool(f, "requires_sign_in") {
+			statusIcon = warningStyle.Render("⚠")
+			statusText = "sign-in required"
+			if getBool(f, "unavailable") {
+				statusIcon = errorStyle.Render("✗")
+				statusText = "expired (sign-in required)"
+			}
+		} else if getBool(f, "unavailable") {
+			statusIcon = errorStyle.Render("✗")
+			statusText = getString(f, "status")
+			if statusText == "" {
+				statusText = "unavailable"
+			}
 		}
 
 		cursor := "  "
@@ -267,24 +285,29 @@ func (m authTabModel) renderDetail(f map[string]any) string {
 	sb.WriteString("    ┌─────────────────────────────────────────────\n")
 
 	fields := []struct {
-		labelKey string
+		label    string
 		key      string
 		editable bool
 	}{
-		{"auth_field_name", "name", false},
-		{"auth_field_channel", "channel", false},
-		{"auth_field_email", "email", false},
-		{"auth_field_status", "status", false},
-		{"auth_field_status_msg", "status_message", false},
-		{"auth_field_file_name", "file_name", false},
-		{"auth_field_auth_type", "auth_type", false},
-		{"auth_field_prefix", "prefix", true},
-		{"auth_field_proxy_url", "proxy_url", true},
-		{"auth_field_priority", "priority", true},
-		{"auth_field_project_id", "project_id", false},
-		{"auth_field_disabled", "disabled", false},
-		{"auth_field_created", "created_at", false},
-		{"auth_field_updated", "updated_at", false},
+		{"Name", "name", false},
+		{"Channel", "channel", false},
+		{"Email", "email", false},
+		{"Status", "status", false},
+		{"Status Msg", "status_message", false},
+		{"Renewal", "renewal_state", false},
+		{"Stage", "recovery_stage", false},
+		{"Token Exp", "access_token_expires_at", false},
+		{"Next Action", "next_action", false},
+		{"Hint", "recovery_hint", false},
+		{"File Name", "file_name", false},
+		{"Auth Type", "auth_type", false},
+		{"Prefix", "prefix", true},
+		{"Proxy URL", "proxy_url", true},
+		{"Priority", "priority", true},
+		{"Project ID", "project_id", false},
+		{"Disabled", "disabled", false},
+		{"Created", "created_at", false},
+		{"Updated", "updated_at", false},
 	}
 
 	for _, field := range fields {
@@ -301,7 +324,7 @@ func (m authTabModel) renderDetail(f map[string]any) string {
 			editMark = editableMarker
 		}
 		line := fmt.Sprintf("    │ %s %s%s",
-			labelStyle.Render(fmt.Sprintf("%-12s:", T(field.labelKey))),
+			labelStyle.Render(fmt.Sprintf("%-12s:", field.label)),
 			valueStyle.Render(val),
 			editMark)
 		sb.WriteString(line)
@@ -353,7 +376,7 @@ func (m authTabModel) handleEditInput(msg tea.KeyMsg) (authTabModel, tea.Cmd) {
 			if err != nil {
 				return authActionMsg{err: err}
 			}
-			return authActionMsg{action: fmt.Sprintf(T("updated_field"), T(authFieldLabelKey(fieldKey)), fileName)}
+			return authActionMsg{action: fmt.Sprintf(T("updated_field"), fieldKey, fileName)}
 		}
 	case "esc":
 		m.editing = false
@@ -366,48 +389,6 @@ func (m authTabModel) handleEditInput(msg tea.KeyMsg) (authTabModel, tea.Cmd) {
 		m.viewport.SetContent(m.renderContent())
 		return m, cmd
 	}
-}
-
-func authFieldLabelKey(fieldKey string) string {
-	switch fieldKey {
-	case "name":
-		return "auth_field_name"
-	case "channel":
-		return "auth_field_channel"
-	case "email":
-		return "auth_field_email"
-	case "status":
-		return "auth_field_status"
-	case "status_message":
-		return "auth_field_status_msg"
-	case "file_name":
-		return "auth_field_file_name"
-	case "auth_type":
-		return "auth_field_auth_type"
-	case "prefix":
-		return "auth_field_prefix"
-	case "proxy_url":
-		return "auth_field_proxy_url"
-	case "priority":
-		return "auth_field_priority"
-	case "project_id":
-		return "auth_field_project_id"
-	case "disabled":
-		return "auth_field_disabled"
-	case "created_at":
-		return "auth_field_created"
-	case "updated_at":
-		return "auth_field_updated"
-	default:
-		return fieldKey
-	}
-}
-
-func (m *authTabModel) refreshEditPrompt() {
-	if m == nil || !m.editing || m.editField < 0 || m.editField >= len(authEditableFields) {
-		return
-	}
-	m.editInput.Prompt = fmt.Sprintf("  %s: ", T(authEditableFields[m.editField].labelKey))
 }
 
 func (m authTabModel) handleConfirmInput(msg tea.KeyMsg) (authTabModel, tea.Cmd) {
@@ -491,6 +472,19 @@ func (m authTabModel) handleNormalInput(msg tea.KeyMsg) (authTabModel, tea.Cmd) 
 	case "r":
 		m.status = ""
 		return m, m.fetchFiles
+	case "R":
+		if m.cursor < len(m.files) {
+			f := m.files[m.cursor]
+			name := getString(f, "name")
+			return m, func() tea.Msg {
+				err := m.client.RefreshAuthFile(name)
+				if err != nil {
+					return authActionMsg{err: err}
+				}
+				return authActionMsg{action: fmt.Sprintf(T("refreshed_auth"), name)}
+			}
+		}
+		return m, nil
 	default:
 		var cmd tea.Cmd
 		m.viewport, cmd = m.viewport.Update(msg)

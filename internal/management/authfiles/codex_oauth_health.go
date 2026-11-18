@@ -1,7 +1,7 @@
 package authfiles
 
 import (
-	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
 
 // CodexOAuthHealth is the public view of a Codex account's sign-in health: whether

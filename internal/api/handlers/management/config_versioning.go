@@ -11,11 +11,11 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	serviceapp "github.com/router-for-me/CLIProxyAPI/v6/internal/app/service"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/configsync"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/identity"
-	settingsstore "github.com/router-for-me/CLIProxyAPI/v6/internal/management/settings/store"
+	serviceapp "github.com/router-for-me/CLIProxyAPI/v8/internal/app/service"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/configsync"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/identity"
+	settingsstore "github.com/router-for-me/CLIProxyAPI/v8/internal/management/settings/store"
 )
 
 const configVersionContextKey = "management.config_version"

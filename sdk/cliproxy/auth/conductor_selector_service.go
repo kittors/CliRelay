@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"strings"
 
-	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 )
 
 type selectionScope struct {
@@ -184,15 +184,6 @@ func optionsForSelectionScope(opts cliproxyexecutor.Options, routeGroup string, 
 	}
 	next.Metadata = meta
 	return next
-}
-
-func (m *Manager) pickNext(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, tried map[string]struct{}) (*Auth, ProviderExecutor, error) {
-	return newSelectorService(m).pickProvider(ctx, provider, model, opts, tried)
-}
-
-func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model string, opts cliproxyexecutor.Options, tried map[string]struct{}) (*Auth, ProviderExecutor, string, error) {
-	auth, executor, provider, _, err := newSelectorService(m).pickMixed(ctx, providers, model, opts, tried)
-	return auth, executor, provider, err
 }
 
 func (s selectorService) pickProvider(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, tried map[string]struct{}) (*Auth, ProviderExecutor, error) {

@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"testing"
 
-	internalclaude "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/claude"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/management/oauth/credentialimport"
+	internalclaude "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/claude"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/management/oauth/credentialimport"
 )
 
 type fakeSessionAuthorizer struct {

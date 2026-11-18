@@ -5,8 +5,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/contentmoderation"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/contentmoderation"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/usage"
 )
 
 // The runtime database going away is a failed read, not a tenant without a

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/cluster"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/cluster"
 )
 
 // joinTestCluster makes this process a node of an in-memory cluster.

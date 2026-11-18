@@ -3,7 +3,7 @@ package claude
 import (
 	"testing"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/testutil/translatortest"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/testutil/translatortest"
 )
 
 func TestConvertClaudeRequestToGemini_MatchesReference(t *testing.T) {

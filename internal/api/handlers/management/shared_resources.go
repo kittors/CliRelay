@@ -8,10 +8,10 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	serviceapp "github.com/router-for-me/CLIProxyAPI/v6/internal/app/service"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/identity"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/storage/sqlstore/resourcegrants"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
+	serviceapp "github.com/router-for-me/CLIProxyAPI/v8/internal/app/service"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/identity"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/storage/sqlstore/resourcegrants"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/usage"
 )
 
 // Platform-shared resources: proxies and AI account credentials the system

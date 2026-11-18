@@ -5,7 +5,7 @@ import (
 	"sort"
 	"strings"
 
-	sdkrouting "github.com/router-for-me/CLIProxyAPI/v6/sdk/routing"
+	sdkrouting "github.com/router-for-me/CLIProxyAPI/v8/sdk/routing"
 )
 
 // Selection diagnostics.

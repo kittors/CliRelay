@@ -5,7 +5,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/secretscrub"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/secretscrub"
 )
 
 // Subject kinds.

@@ -3,7 +3,7 @@ package usage
 import (
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/quota"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/quota"
 )
 
 // PeriodResetAt reports when the calendar window of period that contains now

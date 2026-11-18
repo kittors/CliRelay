@@ -1,30 +1,14 @@
 package auth
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"strings"
-	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/egressbreaker"
-	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/egressbreaker"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 )
-
-func cloneError(err *Error) *Error {
-	if err == nil {
-		return nil
-	}
-	return &Error{
-		Code:               err.Code,
-		Message:            err.Message,
-		Retryable:          err.Retryable,
-		HTTPStatus:         err.HTTPStatus,
-		QuotaWindow:        err.QuotaWindow,
-		QuotaWindowMinutes: err.QuotaWindowMinutes,
-	}
-}
 
 func errorFromExecution(err error) *Error {
 	// A failure of the account's proxy is named by its code, so that what
@@ -64,38 +48,6 @@ func errorFromExecution(err error) *Error {
 	return result
 }
 
-func statusCodeFromError(err error) int {
-	if err == nil {
-		return 0
-	}
-	type statusCoder interface {
-		StatusCode() int
-	}
-	var sc statusCoder
-	if errors.As(err, &sc) && sc != nil {
-		return sc.StatusCode()
-	}
-	return 0
-}
-
-func retryAfterFromError(err error) *time.Duration {
-	if err == nil {
-		return nil
-	}
-	type retryAfterProvider interface {
-		RetryAfter() *time.Duration
-	}
-	rap, ok := err.(retryAfterProvider)
-	if !ok || rap == nil {
-		return nil
-	}
-	retryAfter := rap.RetryAfter()
-	if retryAfter == nil {
-		return nil
-	}
-	return new(*retryAfter)
-}
-
 func headersFromError(err error) http.Header {
 	if err == nil {
 		return nil
@@ -112,13 +64,6 @@ func headersFromError(err error) http.Header {
 		return headers.Clone()
 	}
 	return nil
-}
-
-func statusCodeFromResult(err *Error) int {
-	if err == nil {
-		return 0
-	}
-	return err.StatusCode()
 }
 
 // IsRequestFault reports whether err is the upstream refusing the request
@@ -154,60 +99,6 @@ func FailureCause(err error) string {
 // error that should not be retried or failed over to another auth. Switching
 // credentials cannot fix a malformed request body (for example an image that is
 // too small for the upstream vision API).
-func isRequestInvalidError(err error) bool {
-	if err == nil {
-		return false
-	}
-	status := statusCodeFromError(err)
-	if status != http.StatusBadRequest {
-		return false
-	}
-
-	var authErr *Error
-	if errors.As(err, &authErr) && authErr != nil {
-		if isInvalidRequestSignal(authErr.Code) || isInvalidRequestSignal(authErr.Message) {
-			return true
-		}
-	}
-
-	message := strings.TrimSpace(err.Error())
-	if message == "" {
-		return false
-	}
-	if isInvalidRequestSignal(message) {
-		return true
-	}
-
-	var payload map[string]any
-	if !json.Valid([]byte(message)) {
-		return false
-	}
-	if errParse := json.Unmarshal([]byte(message), &payload); errParse != nil {
-		return false
-	}
-	// Providers use different shapes:
-	// - OpenAI-style: {"error":{"type":"invalid_request_error",...}}
-	// - xAI-style:    {"code":"invalid-argument","error":"..."}
-	// - Google-style: {"error":{"status":"INVALID_ARGUMENT","message":"..."}}
-	signals := []string{
-		stringValue(payload["code"]),
-		stringValue(payload["type"]),
-		stringValue(payload["status"]),
-		stringValue(payload["detail"]),
-		stringValue(payload["error"]),
-		stringValue(payload["message"]),
-		nestedString(payload, "error", "type"),
-		nestedString(payload, "error", "code"),
-		nestedString(payload, "error", "status"),
-		nestedString(payload, "error", "message"),
-	}
-	for _, signal := range signals {
-		if isInvalidRequestSignal(signal) {
-			return true
-		}
-	}
-	return false
-}
 
 func isInvalidRequestSignal(raw string) bool {
 	signal := strings.ToLower(strings.TrimSpace(raw))

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/contentmoderation"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/contentmoderation"
 )
 
 func reviewByIndex(t *testing.T, body map[string]any) map[int]map[string]any {

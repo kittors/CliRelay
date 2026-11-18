@@ -6,9 +6,10 @@ import (
 	"sync"
 	"time"
 
-	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
-	"github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
-	serviceapp "github.com/router-for-me/CLIProxyAPI/v6/sdkbridge/service"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
+	sdkmodelcatalog "github.com/router-for-me/CLIProxyAPI/v8/sdk/modelcatalog"
+	serviceapp "github.com/router-for-me/CLIProxyAPI/v8/sdkbridge/service"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -65,7 +66,7 @@ func (s *Service) withLiveDiscoveredModels(a *coreauth.Auth, provider, authKind 
 	if strings.EqualFold(strings.TrimSpace(authKind), "apikey") || !serviceapp.IsProviderDiscoveryCredential(a, provider) {
 		return models
 	}
-	live := serviceapp.ProviderDiscoverySnapshot(a.TenantID, provider)
+	live := convertDiscoveredModels(serviceapp.ProviderDiscoverySnapshot(a.TenantID, provider))
 	if len(live) == 0 {
 		// Nothing stored for this tenant yet: its first credential, or a start whose
 		// first fetch has not answered. Ask for one; its arrival re-registers this
@@ -74,6 +75,31 @@ func (s *Service) withLiveDiscoveredModels(a *coreauth.Auth, provider, authKind 
 		return models
 	}
 	return mergeLiveDiscoveredModels(models, live)
+}
+
+func convertDiscoveredModels(models []*sdkmodelcatalog.ModelInfo) []*ModelInfo {
+	if len(models) == 0 {
+		return nil
+	}
+	out := make([]*ModelInfo, 0, len(models))
+	for _, model := range models {
+		if model == nil {
+			continue
+		}
+		out = append(out, &ModelInfo{
+			ID:                         model.ID,
+			Object:                     model.Object,
+			Created:                    model.Created,
+			OwnedBy:                    model.OwnedBy,
+			Type:                       model.Type,
+			DisplayName:                model.DisplayName,
+			Description:                model.Description,
+			ContextLength:              model.ContextLength,
+			MaxCompletionTokens:        model.MaxCompletionTokens,
+			SupportedGenerationMethods: append([]string(nil), model.SupportedGenerationMethods...),
+		})
+	}
+	return out
 }
 
 // mergeLiveDiscoveredModels appends the discovered models the base set lacks. A

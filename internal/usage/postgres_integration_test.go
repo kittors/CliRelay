@@ -11,9 +11,9 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/identityfingerprint"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/testutil/postgrestest"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/identityfingerprint"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/testutil/postgrestest"
 )
 
 // truncateRuntimeTables empties the tables the test below fills. The shared

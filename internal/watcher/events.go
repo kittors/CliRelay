@@ -6,7 +6,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -14,7 +13,6 @@ import (
 	"time"
 
 	"github.com/fsnotify/fsnotify"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -35,16 +33,58 @@ func (w *Watcher) start(ctx context.Context) error {
 	}
 	log.Debugf("watching config file: %s", w.configPath)
 
-	if errAddAuthDir := w.addAuthDirectoryWatches(); errAddAuthDir != nil {
-		log.Errorf("failed to watch auth directory %s: %v", w.authDir, errAddAuthDir)
+	w.watchMu.Lock()
+	authDir := w.currentAuthDir()
+	if errAddAuthDir := w.watcher.Add(authDir); errAddAuthDir != nil {
+		w.watchMu.Unlock()
+		log.Errorf("failed to watch auth directory %s: %v", authDir, errAddAuthDir)
 		return errAddAuthDir
 	}
-	log.Debugf("watching auth directory: %s", w.authDir)
+	w.started = true
+	w.watchedAuthDir = authDir
+	w.watchMu.Unlock()
+	log.Debugf("watching auth directory: %s", authDir)
 
 	go w.processEvents(ctx)
 
 	w.reloadClients(true, nil, false)
 	return nil
+}
+
+func (w *Watcher) syncAuthDirWatch() {
+	if w == nil || w.watcher == nil || w.stopped.Load() {
+		return
+	}
+	w.watchMu.Lock()
+	defer w.watchMu.Unlock()
+	if !w.started || w.stopped.Load() {
+		return
+	}
+	target := strings.TrimSpace(w.currentAuthDir())
+	oldWatched := strings.TrimSpace(w.watchedAuthDir)
+	if oldWatched == target {
+		return
+	}
+	if oldWatched != "" && !w.sameNormalizedAuthPath(oldWatched, w.configPath) && !w.sameNormalizedAuthPath(oldWatched, target) {
+		if errRemove := w.watcher.Remove(oldWatched); errRemove != nil {
+			log.Debugf("failed to remove previous auth directory watch %s: %v", oldWatched, errRemove)
+		}
+		w.watchedAuthDir = ""
+	}
+	if target == "" {
+		w.watchedAuthDir = ""
+		return
+	}
+	if w.watchedAuthDir != "" && w.sameNormalizedAuthPath(w.watchedAuthDir, target) {
+		w.watchedAuthDir = target
+		return
+	}
+	if errAdd := w.watcher.Add(target); errAdd != nil {
+		log.Errorf("failed to watch auth directory %s: %v", target, errAdd)
+		return
+	}
+	w.watchedAuthDir = target
+	log.Debugf("watching auth directory: %s", target)
 }
 
 func (w *Watcher) processEvents(ctx context.Context) {
@@ -66,67 +106,15 @@ func (w *Watcher) processEvents(ctx context.Context) {
 	}
 }
 
-// rewatchConfigFile re-arms the watch on the config path after an event that may have
-// replaced its inode. Adding an already-watched path is a no-op, so this is safe to call
-// on every config event.
-//
-// A rename-based replace publishes the new file before the old inode's watch is dropped,
-// so the first attempt normally succeeds. The bounded retry covers delete-then-create
-// sequences, where the path is briefly absent.
-func (w *Watcher) rewatchConfigFile() {
-	if w == nil || w.watcher == nil {
-		return
-	}
-	if err := w.watcher.Add(w.configPath); err == nil {
-		return
-	} else if errors.Is(err, fsnotify.ErrClosed) {
-		return
-	}
-	go func() {
-		for attempt := 0; attempt < configRewatchAttempts; attempt++ {
-			time.Sleep(configRewatchDelay)
-			err := w.watcher.Add(w.configPath)
-			if err == nil {
-				return
-			}
-			if errors.Is(err, fsnotify.ErrClosed) {
-				return
-			}
-		}
-		// Worth a warning rather than a debug line: hot-reload is silently inactive from
-		// here on, which is otherwise indistinguishable from "nothing changed".
-		log.Warnf("config watch for %s could not be re-established; configuration hot-reload is inactive until restart", w.configPath)
-	}()
-}
-
 func (w *Watcher) handleEvent(event fsnotify.Event) {
-	if event.Op&fsnotify.Create != 0 {
-		if info, err := os.Stat(event.Name); err == nil && info.IsDir() {
-			if util.IsReservedAuthPath(w.authDir, event.Name) {
-				return
-			}
-			if errAdd := w.watcher.Add(event.Name); errAdd != nil {
-				log.WithError(errAdd).Warnf("failed to watch tenant auth directory %s", event.Name)
-			}
-			return
-		}
-	}
 	// Filter only relevant events: config file or auth-dir JSON files.
-	//
-	// Remove belongs here because config.yaml is replaced atomically (temp file +
-	// rename). On inotify the watched inode sees CHMOD then REMOVE — never Write or
-	// Create — so without Remove the replacement would be dropped entirely. Chmod is
-	// watched too, but only to re-arm the watch: a bare permission change is not a
-	// content change and must not trigger a reload.
-	configOps := fsnotify.Write | fsnotify.Create | fsnotify.Rename | fsnotify.Remove
-	configWatchOps := configOps | fsnotify.Chmod
+	configOps := fsnotify.Write | fsnotify.Create | fsnotify.Rename
 	normalizedName := w.normalizeAuthPath(event.Name)
 	normalizedConfigPath := w.normalizeAuthPath(w.configPath)
-	normalizedAuthDir := w.normalizeAuthPath(w.authDir)
-	isConfigEvent := normalizedName == normalizedConfigPath && event.Op&configWatchOps != 0
+	normalizedAuthDir := w.normalizeAuthPath(w.currentAuthDir())
+	isConfigEvent := normalizedName == normalizedConfigPath && event.Op&configOps != 0
 	authOps := fsnotify.Create | fsnotify.Write | fsnotify.Remove | fsnotify.Rename
-	isAuthJSON := strings.HasPrefix(normalizedName, normalizedAuthDir) && strings.HasSuffix(normalizedName, ".json") && event.Op&authOps != 0 &&
-		!util.IsReservedAuthPath(w.authDir, event.Name)
+	isAuthJSON := filepath.Dir(normalizedName) == normalizedAuthDir && strings.HasSuffix(normalizedName, ".json") && event.Op&authOps != 0
 	if !isConfigEvent && !isAuthJSON {
 		// Ignore unrelated files (e.g., cookie snapshots *.cookie) and other noise.
 		return
@@ -138,18 +126,18 @@ func (w *Watcher) handleEvent(event fsnotify.Event) {
 	// Handle config file changes
 	if isConfigEvent {
 		log.Debugf("config file change details - operation: %s, timestamp: %s", event.Op.String(), now.Format("2006-01-02 15:04:05.000"))
-		// An atomic replace points the path at a new inode, and inotify watches inodes:
-		// the old watch is dropped silently (IN_IGNORED, no error on the Errors channel),
-		// so every later change would go unnoticed. Re-arm before reloading, otherwise the
-		// first atomic save permanently kills config hot-reload on Linux.
-		w.rewatchConfigFile()
-		if event.Op&configOps != 0 {
-			w.scheduleConfigReload()
-		}
+		w.scheduleConfigReload()
 		return
 	}
 
 	// Handle auth directory changes incrementally (.json only)
+	w.authRescanMu.Lock()
+	defer w.authRescanMu.Unlock()
+	if !w.isPathInAuthDir(normalizedName, w.currentAuthDir()) {
+		return
+	}
+	w.observeAuthFile(event.Name)
+
 	if event.Op&(fsnotify.Remove|fsnotify.Rename) != 0 {
 		if w.shouldDebounceRemove(normalizedName, now) {
 			log.Debugf("debouncing remove event for %s", filepath.Base(event.Name))
@@ -158,13 +146,34 @@ func (w *Watcher) handleEvent(event fsnotify.Event) {
 		// Atomic replace on some platforms may surface as Rename (or Remove) before the new file is ready.
 		// Wait briefly; if the path exists again, treat as an update instead of removal.
 		time.Sleep(replaceCheckDelay)
+		if !w.isPathInAuthDir(normalizedName, w.currentAuthDir()) {
+			return
+		}
+		statSucceeded := false
 		if _, statErr := os.Stat(event.Name); statErr == nil {
+			statSucceeded = true
+		} else if w.isKnownAuthFile(event.Name) {
+			// On macOS (and under disk I/O pressure), atomic replace (e.g. os.Rename from temp file)
+			// can trigger a NOTE_DELETE before the target inode is fully visible. Retry briefly
+			// before treating a known auth file as permanently removed.
+			for attempt := 0; attempt < 3; attempt++ {
+				time.Sleep(25 * time.Millisecond)
+				if !w.isPathInAuthDir(normalizedName, w.currentAuthDir()) {
+					return
+				}
+				if _, retryErr := os.Stat(event.Name); retryErr == nil {
+					statSucceeded = true
+					break
+				}
+			}
+		}
+		if statSucceeded {
 			if unchanged, errSame := w.authFileUnchanged(event.Name); errSame == nil && unchanged {
 				log.Debugf("auth file unchanged (hash match), skipping reload: %s", filepath.Base(event.Name))
 				return
 			}
 			log.Infof("auth file changed (%s): %s, processing incrementally", event.Op.String(), filepath.Base(event.Name))
-			w.addOrUpdateClient(event.Name)
+			w.addOrUpdateClientLocked(event.Name)
 			return
 		}
 		if !w.isKnownAuthFile(event.Name) {
@@ -172,7 +181,7 @@ func (w *Watcher) handleEvent(event fsnotify.Event) {
 			return
 		}
 		log.Infof("auth file changed (%s): %s, processing incrementally", event.Op.String(), filepath.Base(event.Name))
-		w.removeClient(event.Name)
+		w.removeClientLocked(event.Name)
 		return
 	}
 	if event.Op&(fsnotify.Create|fsnotify.Write) != 0 {
@@ -180,24 +189,34 @@ func (w *Watcher) handleEvent(event fsnotify.Event) {
 			log.Debugf("auth file unchanged (hash match), skipping reload: %s", filepath.Base(event.Name))
 			return
 		}
-		// Coalesce bursty writes (token refresh + probe markers) before reload.
-		w.scheduleAuthFileUpdate(event.Name)
+		log.Infof("auth file changed (%s): %s, processing incrementally", event.Op.String(), filepath.Base(event.Name))
+		w.addOrUpdateClientLocked(event.Name)
 	}
 }
 
-func (w *Watcher) addAuthDirectoryWatches() error {
-	return filepath.WalkDir(w.authDir, func(path string, entry os.DirEntry, err error) error {
-		if err != nil {
-			return err
+// observeAuthFile invalidates in-flight scans even if hash or content deduplication
+// suppresses an update. It must not invalidate an otherwise valid queued auth event.
+func (w *Watcher) observeAuthFile(path string) {
+	normalized := w.normalizeAuthPath(path)
+	if normalized == "" {
+		return
+	}
+	w.clientsMutex.Lock()
+	defer w.clientsMutex.Unlock()
+	if !w.isPathInCurrentAuthDirLocked(normalized) {
+		return
+	}
+	if w.fileObservations == nil {
+		w.fileObservations = make(map[string]uint64)
+	}
+	w.fileObservations[normalized]++
+	if w.activeAuthScans > 0 {
+		// A reload may cache a hash before publishing its auth. Force the event
+		// to parse it even if the scan finishes first, retaining the known path.
+		if _, known := w.lastAuthHashes[normalized]; known {
+			w.lastAuthHashes[normalized] = ""
 		}
-		if entry.IsDir() {
-			if path != w.authDir && util.IsReservedAuthSubdir(entry.Name()) {
-				return filepath.SkipDir
-			}
-			return w.watcher.Add(path)
-		}
-		return nil
-	})
+	}
 }
 
 func (w *Watcher) authFileUnchanged(path string) (bool, error) {

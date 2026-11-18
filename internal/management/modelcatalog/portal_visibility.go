@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"strings"
 
-	modelconfigsettings "github.com/router-for-me/CLIProxyAPI/v6/internal/management/settings/modelconfig"
+	modelconfigsettings "github.com/router-for-me/CLIProxyAPI/v8/internal/management/settings/modelconfig"
 )
 
 const portalRootModelsPath = "/v1/models"

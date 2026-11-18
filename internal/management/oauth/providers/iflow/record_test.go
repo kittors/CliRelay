@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	internaliflow "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/iflow"
+	internaliflow "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/iflow"
 )
 
 func TestRecordFromTokenStorageBuildsEmailRecord(t *testing.T) {

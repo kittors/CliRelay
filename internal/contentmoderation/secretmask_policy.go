@@ -8,7 +8,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/privacymask"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/privacymask"
 )
 
 // MaskPolicy is what privacy masking does to a tenant's requests. It is the

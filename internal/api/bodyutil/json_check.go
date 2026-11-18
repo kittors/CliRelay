@@ -7,7 +7,7 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v6/sdk/jsonstrict"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/jsonstrict"
 )
 
 // checkedJSONBodyKey holds the stored body CheckJSONRequestBody last passed.

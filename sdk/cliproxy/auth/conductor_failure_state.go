@@ -5,9 +5,13 @@ import (
 	"time"
 )
 
-func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Duration, now time.Time) {
+func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Duration, now time.Time, disableCooling ...bool) {
 	if auth == nil {
 		return
+	}
+	coolingDisabled := quotaCooldownDisabledForAuth(auth)
+	if len(disableCooling) > 0 {
+		coolingDisabled = disableCooling[0]
 	}
 	auth.Unavailable = true
 	auth.Status = StatusError
@@ -39,7 +43,7 @@ func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Durati
 		applyAuthQuotaFailureState(auth, resultErr, retryAfter, now)
 	case 408, 500, 502, 503, 504:
 		auth.StatusMessage = "transient upstream error"
-		if quotaCooldownDisabledForAuth(auth) {
+		if coolingDisabled {
 			auth.NextRetryAfter = time.Time{}
 		} else if wait, ok := upstreamFailureCooldown(Result{RetryAfter: retryAfter}); ok {
 			auth.NextRetryAfter = now.Add(wait)
@@ -51,7 +55,7 @@ func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Durati
 			auth.StatusMessage = "request failed"
 		}
 		// A 529 only backs off when the upstream names a time (see the model path).
-		if statusCode == statusSiteOverloaded && !quotaCooldownDisabledForAuth(auth) {
+		if statusCode == statusSiteOverloaded && !coolingDisabled {
 			if wait, ok := upstreamFailureCooldown(Result{RetryAfter: retryAfter}); ok {
 				auth.NextRetryAfter = now.Add(wait)
 			}
@@ -127,19 +131,3 @@ func isXAIWeekBalanceExhaustedError(resultErr *Error) bool {
 }
 
 // nextQuotaCooldown returns the next cooldown duration and updated backoff level for repeated quota errors.
-func nextQuotaCooldown(prevLevel int, disableCooling bool) (time.Duration, int) {
-	if prevLevel < 0 {
-		prevLevel = 0
-	}
-	if disableCooling {
-		return 0, prevLevel
-	}
-	cooldown := quotaBackoffBase * time.Duration(1<<prevLevel)
-	if cooldown < quotaBackoffBase {
-		cooldown = quotaBackoffBase
-	}
-	if cooldown >= quotaBackoffMax {
-		return quotaBackoffMax, prevLevel
-	}
-	return cooldown, prevLevel + 1
-}

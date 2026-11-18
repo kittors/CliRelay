@@ -6,10 +6,10 @@ import (
 	"net/http"
 	"strings"
 
-	sdklogging "github.com/router-for-me/CLIProxyAPI/v6/sdk/logging"
-	"github.com/router-for-me/CLIProxyAPI/v6/sdk/modelcatalog"
-	sdkrouting "github.com/router-for-me/CLIProxyAPI/v6/sdk/routing"
-	sdkthinking "github.com/router-for-me/CLIProxyAPI/v6/sdk/thinking"
+	sdklogging "github.com/router-for-me/CLIProxyAPI/v8/sdk/logging"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/modelcatalog"
+	sdkrouting "github.com/router-for-me/CLIProxyAPI/v8/sdk/routing"
+	sdkthinking "github.com/router-for-me/CLIProxyAPI/v8/sdk/thinking"
 )
 
 func ResolveRequestDetails(ctx context.Context, modelName string) (providers []string, normalizedModel string, err *sdklogging.ErrorMessage) {

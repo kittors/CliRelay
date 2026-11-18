@@ -13,7 +13,7 @@ import (
 
 // configField represents a single editable config field.
 type configField struct {
-	labelKey string
+	label    string
 	apiPath  string // management API path (e.g. "debug", "proxy-url")
 	kind     string // "bool", "int", "string", "readonly"
 	value    string // current display value
@@ -263,7 +263,7 @@ func (m configTabModel) renderContent() string {
 	sb.WriteString("\n\n")
 
 	if m.err != nil {
-		sb.WriteString(errorStyle.Render("  " + T("error_prefix") + m.err.Error()))
+		sb.WriteString(errorStyle.Render("  ⚠ Error: " + m.err.Error()))
 		return sb.String()
 	}
 
@@ -293,7 +293,7 @@ func (m configTabModel) renderContent() string {
 			Foreground(colorInfo).
 			Bold(isSelected).
 			Width(32).
-			Render(T(f.labelKey))
+			Render(f.label)
 
 		var valueStr string
 		if m.editing && isSelected {
@@ -302,9 +302,9 @@ func (m configTabModel) renderContent() string {
 			switch f.kind {
 			case "bool":
 				if f.value == "true" {
-					valueStr = successStyle.Render(T("bool_on"))
+					valueStr = successStyle.Render("● ON")
 				} else {
-					valueStr = lipgloss.NewStyle().Foreground(colorMuted).Render(T("bool_off"))
+					valueStr = lipgloss.NewStyle().Foreground(colorMuted).Render("○ OFF")
 				}
 			case "readonly":
 				valueStr = lipgloss.NewStyle().Foreground(colorSubtext).Render(f.value)
@@ -327,51 +327,39 @@ func (m configTabModel) parseConfig(cfg map[string]any) []configField {
 	var fields []configField
 
 	// Server settings
-	fields = append(fields, configField{"config_field_port", "port", "readonly", fmt.Sprintf("%.0f", getFloat(cfg, "port")), nil})
-	fields = append(fields, configField{"config_field_host", "host", "readonly", getString(cfg, "host"), nil})
-	fields = append(fields, configField{"config_field_debug", "debug", "bool", fmt.Sprintf("%v", getBool(cfg, "debug")), nil})
-	fields = append(fields, configField{"config_field_proxy_url", "proxy-url", "string", getString(cfg, "proxy-url"), nil})
-	fields = append(fields, configField{"config_field_request_retry", "request-retry", "int", fmt.Sprintf("%.0f", getFloat(cfg, "request-retry")), nil})
-	fields = append(fields, configField{"config_field_max_retry_interval", "max-retry-interval", "int", fmt.Sprintf("%.0f", getFloat(cfg, "max-retry-interval")), nil})
-	fields = append(fields, configField{"config_field_force_model_prefix", "force-model-prefix", "string", getString(cfg, "force-model-prefix"), nil})
+	fields = append(fields, configField{"Port", "port", "readonly", fmt.Sprintf("%.0f", getFloat(cfg, "port")), nil})
+	fields = append(fields, configField{"Host", "host", "readonly", getString(cfg, "host"), nil})
+	fields = append(fields, configField{"Debug", "debug", "bool", fmt.Sprintf("%v", getBool(cfg, "debug")), nil})
+	fields = append(fields, configField{"Proxy URL", "proxy-url", "string", getString(cfg, "proxy-url"), nil})
+	fields = append(fields, configField{"Request Retry", "request-retry", "int", fmt.Sprintf("%.0f", getFloat(cfg, "request-retry")), nil})
+	fields = append(fields, configField{"Max Retry Interval (s)", "max-retry-interval", "int", fmt.Sprintf("%.0f", getFloat(cfg, "max-retry-interval")), nil})
+	fields = append(fields, configField{"Force Model Prefix", "force-model-prefix", "string", getString(cfg, "force-model-prefix"), nil})
 
 	// Logging
-	fields = append(fields, configField{"config_field_logging_to_file", "logging-to-file", "bool", fmt.Sprintf("%v", getBool(cfg, "logging-to-file")), nil})
-	fields = append(fields, configField{"config_field_logs_max_total_size_mb", "logs-max-total-size-mb", "int", fmt.Sprintf("%.0f", getFloat(cfg, "logs-max-total-size-mb")), nil})
-	fields = append(fields, configField{"config_field_error_logs_max_files", "error-logs-max-files", "int", fmt.Sprintf("%.0f", getFloat(cfg, "error-logs-max-files")), nil})
-	fields = append(fields, configField{"config_field_usage_stats_enabled", "usage-statistics-enabled", "bool", fmt.Sprintf("%v", getBool(cfg, "usage-statistics-enabled")), nil})
-	fields = append(fields, configField{"config_field_request_log", "request-log", "bool", fmt.Sprintf("%v", getBool(cfg, "request-log")), nil})
+	fields = append(fields, configField{"Logging to File", "logging-to-file", "bool", fmt.Sprintf("%v", getBool(cfg, "logging-to-file")), nil})
+	fields = append(fields, configField{"Logs Max Total Size (MB)", "logs-max-total-size-mb", "int", fmt.Sprintf("%.0f", getFloat(cfg, "logs-max-total-size-mb")), nil})
+	fields = append(fields, configField{"Error Logs Max Files", "error-logs-max-files", "int", fmt.Sprintf("%.0f", getFloat(cfg, "error-logs-max-files")), nil})
+	fields = append(fields, configField{"Usage Stats Enabled", "usage-statistics-enabled", "bool", fmt.Sprintf("%v", getBool(cfg, "usage-statistics-enabled")), nil})
+	fields = append(fields, configField{"Request Log", "request-log", "bool", fmt.Sprintf("%v", getBool(cfg, "request-log")), nil})
 
 	// Quota exceeded
-	fields = append(fields, configField{"config_field_switch_project_on_quota", "quota-exceeded/switch-project", "bool", fmt.Sprintf("%v", getBoolNested(cfg, "quota-exceeded", "switch-project")), nil})
-	fields = append(fields, configField{"config_field_switch_preview_model", "quota-exceeded/switch-preview-model", "bool", fmt.Sprintf("%v", getBoolNested(cfg, "quota-exceeded", "switch-preview-model")), nil})
+	fields = append(fields, configField{"Switch Project on Quota", "quota-exceeded/switch-project", "bool", fmt.Sprintf("%v", getBoolNested(cfg, "quota-exceeded", "switch-project")), nil})
+	fields = append(fields, configField{"Switch Preview Model", "quota-exceeded/switch-preview-model", "bool", fmt.Sprintf("%v", getBoolNested(cfg, "quota-exceeded", "switch-preview-model")), nil})
 
 	// Routing
 	if routing, ok := cfg["routing"].(map[string]any); ok {
-		fields = append(fields, configField{"config_field_routing_strategy", "routing/strategy", "string", getString(routing, "strategy"), nil})
+		fields = append(fields, configField{"Routing Strategy", "routing/strategy", "string", getString(routing, "strategy"), nil})
 	} else {
-		fields = append(fields, configField{"config_field_routing_strategy", "routing/strategy", "string", "", nil})
+		fields = append(fields, configField{"Routing Strategy", "routing/strategy", "string", "", nil})
 	}
 
 	// WebSocket auth
-	fields = append(fields, configField{"config_field_websocket_auth", "ws-auth", "bool", fmt.Sprintf("%v", getBool(cfg, "ws-auth")), nil})
-
-	// AMP settings
-	if amp, ok := cfg["ampcode"].(map[string]any); ok {
-		upstreamURL := getString(amp, "upstream-url")
-		upstreamAPIKey := getString(amp, "upstream-api-key")
-		fields = append(fields, configField{"config_field_amp_upstream_url", "ampcode/upstream-url", "string", upstreamURL, upstreamURL})
-		fields = append(fields, configField{"config_field_amp_upstream_api_key", "ampcode/upstream-api-key", "string", maskIfNotEmpty(upstreamAPIKey), upstreamAPIKey})
-		fields = append(fields, configField{"config_field_amp_restrict_mgmt_localhost", "ampcode/restrict-management-to-localhost", "bool", fmt.Sprintf("%v", getBool(amp, "restrict-management-to-localhost")), nil})
-	}
+	fields = append(fields, configField{"WebSocket Auth", "ws-auth", "bool", fmt.Sprintf("%v", getBool(cfg, "ws-auth")), nil})
 
 	return fields
 }
 
 func fieldSection(apiPath string) string {
-	if strings.HasPrefix(apiPath, "ampcode/") {
-		return T("section_ampcode")
-	}
 	if strings.HasPrefix(apiPath, "quota-exceeded/") {
 		return T("section_quota")
 	}
@@ -403,11 +391,4 @@ func getBoolNested(m map[string]any, keys ...string) bool {
 		}
 	}
 	return false
-}
-
-func maskIfNotEmpty(s string) string {
-	if s == "" {
-		return T("not_set")
-	}
-	return maskKey(s)
 }

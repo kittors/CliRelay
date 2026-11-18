@@ -24,8 +24,8 @@ import (
   "context"
   "net/http"
 
-  coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
-  clipexec "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
+  coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+  clipexec "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 )
 
 type Executor struct{}
@@ -82,7 +82,7 @@ package myprov
 
 import (
   "context"
-  sdktr "github.com/router-for-me/CLIProxyAPI/v6/sdk/translator"
+  sdktr "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 )
 
 const (

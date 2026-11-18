@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/authevents"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/authevents"
 )
 
 // exportPageSize is the database page size used while streaming. Large enough to

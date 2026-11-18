@@ -5,6 +5,18 @@ import (
 	"strings"
 )
 
+// gatewayHeaderPrefixes lists header name prefixes injected by known AI gateway
+// proxies. Claude Code's client-side telemetry detects these and reports the
+// gateway type, so we strip them from upstream responses to avoid detection.
+var gatewayHeaderPrefixes = []string{
+	"x-litellm-",
+	"helicone-",
+	"x-portkey-",
+	"cf-aig-",
+	"x-kong-",
+	"x-bt-",
+}
+
 // hopByHopHeaders lists RFC 7230 Section 6.1 hop-by-hop headers that MUST NOT
 // be forwarded by proxies, plus security-sensitive headers that should not leak.
 var hopByHopHeaders = map[string]struct{}{
@@ -24,17 +36,20 @@ var hopByHopHeaders = map[string]struct{}{
 	"Content-Encoding": {},
 }
 
-var blockedUpstreamHeaderPrefixes = []string{
-	"X-Codex-",
-	"X-Openai-Proxy-",
-	"Cf-",
+var cpaReservedResponseHeaders = map[string]struct{}{
+	"Access-Control-Allow-Credentials": {},
+	"Access-Control-Allow-Headers":     {},
+	"Access-Control-Allow-Methods":     {},
+	"Access-Control-Allow-Origin":      {},
+	"Access-Control-Expose-Headers":    {},
+	"Access-Control-Max-Age":           {},
+	"X-Cpa-Trace-Id":                   {},
 }
 
-var blockedUpstreamHeaders = map[string]struct{}{
-	"Alt-Svc":       {},
-	"Nel":           {},
-	"Report-To":     {},
-	"Server-Timing": {},
+// IsCPAReservedResponseHeader reports whether a downstream response header is managed by CPA.
+func IsCPAReservedResponseHeader(name string) bool {
+	_, reserved := cpaReservedResponseHeaders[http.CanonicalHeaderKey(name)]
+	return reserved
 }
 
 // FilterUpstreamHeaders returns a copy of src with hop-by-hop and security-sensitive
@@ -47,10 +62,29 @@ func FilterUpstreamHeaders(src http.Header) http.Header {
 	dst := make(http.Header)
 	for key, values := range src {
 		canonicalKey := http.CanonicalHeaderKey(key)
-		if isBlockedUpstreamHeader(canonicalKey) {
+		if _, blocked := hopByHopHeaders[canonicalKey]; blocked {
+			continue
+		}
+		if _, reserved := cpaReservedResponseHeaders[canonicalKey]; reserved {
 			continue
 		}
 		if _, scoped := connectionScoped[canonicalKey]; scoped {
+			continue
+		}
+		if isProviderFingerprintHeader(canonicalKey) {
+			continue
+		}
+		// Strip headers injected by known AI gateway proxies to avoid
+		// Claude Code client-side gateway detection.
+		lowerKey := strings.ToLower(key)
+		gatewayMatch := false
+		for _, prefix := range gatewayHeaderPrefixes {
+			if strings.HasPrefix(lowerKey, prefix) {
+				gatewayMatch = true
+				break
+			}
+		}
+		if gatewayMatch {
 			continue
 		}
 		dst[key] = values
@@ -59,6 +93,15 @@ func FilterUpstreamHeaders(src http.Header) http.Header {
 		return nil
 	}
 	return dst
+}
+
+func isProviderFingerprintHeader(key string) bool {
+	switch strings.ToLower(strings.TrimSpace(key)) {
+	case "x-codex-active-limit", "x-openai-proxy-wasm", "cf-ray", "server-timing":
+		return true
+	default:
+		return false
+	}
 }
 
 func connectionScopedHeaders(src http.Header) map[string]struct{} {
@@ -90,19 +133,4 @@ func WriteUpstreamHeaders(dst http.Header, src http.Header) {
 			dst.Add(key, v)
 		}
 	}
-}
-
-func isBlockedUpstreamHeader(canonicalKey string) bool {
-	if _, blocked := hopByHopHeaders[canonicalKey]; blocked {
-		return true
-	}
-	if _, blocked := blockedUpstreamHeaders[canonicalKey]; blocked {
-		return true
-	}
-	for _, prefix := range blockedUpstreamHeaderPrefixes {
-		if strings.HasPrefix(canonicalKey, prefix) {
-			return true
-		}
-	}
-	return false
 }

@@ -4,9 +4,9 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/codexadmission"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	settingsstore "github.com/router-for-me/CLIProxyAPI/v6/internal/management/settings/store"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/codexadmission"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	settingsstore "github.com/router-for-me/CLIProxyAPI/v8/internal/management/settings/store"
 )
 
 type codexOAuthAdmissionResponse struct {

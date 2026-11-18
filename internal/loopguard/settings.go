@@ -14,8 +14,8 @@ import (
 	"maps"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/configsync"
-	"github.com/router-for-me/CLIProxyAPI/v6/sdk/loopdetect"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/configsync"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/loopdetect"
 )
 
 // SettingKey is the runtime_settings row of a tenant holding its Settings.

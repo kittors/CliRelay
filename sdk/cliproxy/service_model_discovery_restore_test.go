@@ -5,9 +5,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/modeldiscovery"
-	"github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
-	serviceapp "github.com/router-for-me/CLIProxyAPI/v6/sdkbridge/service"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/modeldiscovery"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
+	serviceapp "github.com/router-for-me/CLIProxyAPI/v8/sdkbridge/service"
 )
 
 // After a restart the models only the manifest lists route from the saved list,

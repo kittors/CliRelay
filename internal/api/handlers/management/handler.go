@@ -13,53 +13,70 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/alerting"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/contentmoderation"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/identity"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/loopguard"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/management/aiaccountstatus"
-	imagegeneration "github.com/router-for-me/CLIProxyAPI/v6/internal/management/imagegeneration"
-	settingsstore "github.com/router-for-me/CLIProxyAPI/v6/internal/management/settings/store"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/management/warmup"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/observability"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
-	sdkaccess "github.com/router-for-me/CLIProxyAPI/v6/sdk/access"
-	sdkAuth "github.com/router-for-me/CLIProxyAPI/v6/sdk/auth"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
-	"github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/egressbreaker"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/alerting"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/contentmoderation"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/identity"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/loopguard"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/management/aiaccountstatus"
+	imagegeneration "github.com/router-for-me/CLIProxyAPI/v8/internal/management/imagegeneration"
+	settingsstore "github.com/router-for-me/CLIProxyAPI/v8/internal/management/settings/store"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/management/warmup"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/observability"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/pluginhost"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/pluginstore"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/usage"
+	sdkaccess "github.com/router-for-me/CLIProxyAPI/v8/sdk/access"
+	sdkAuth "github.com/router-for-me/CLIProxyAPI/v8/sdk/auth"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/egressbreaker"
 )
 
 // Handler aggregates config reference, persistence path and helpers.
 type Handler struct {
-	cfg                  *config.Config
-	configFilePath       string
-	mu                   sync.Mutex
-	loginThrottle        *loginThrottle
-	auditRepeat          *auditRepeatLimiter
-	authManager          *coreauth.Manager
-	usageStats           *usage.RequestStatistics
-	tokenStore           coreauth.Store
-	localPassword        string
-	allowRemoteOverride  bool
-	envSecret            string
-	logDir               string
-	postAuthHook         coreauth.PostAuthHook
-	onConfigMutated      func(*config.Config)
-	onModelConfigMutated func(tenantID string)
-	startTime            time.Time
-	accessManager        *sdkaccess.Manager
-	trendCacheMu         sync.Mutex
-	trendCache           map[string]trendCacheEntry
-	systemStatsCacheMu   sync.Mutex
-	systemStatsCache     systemStatsCacheEntry
-	imageGeneration      *imagegeneration.Service
-	videoGeneration      *imagegeneration.Service
-	modelTest            *imagegeneration.Service
-	identityService      *identity.Service
-	aiAccountStatus      *aiaccountstatus.Service
-	statusScheduler      *aiaccountstatus.Scheduler
-	warmupSvc            *warmup.Service
+	cfg                     *config.Config
+	configFilePath          string
+	mu                      sync.Mutex
+	authStatusMu            sync.Mutex
+	reloadMu                sync.Mutex
+	reloadGeneration        uint64
+	appliedReloadGeneration uint64
+	loginThrottle           *loginThrottle
+	auditRepeat             *auditRepeatLimiter
+	authManager             *coreauth.Manager
+	usageStats              *usage.RequestStatistics
+	tokenStore              coreauth.Store
+	localPassword           string
+	allowRemoteOverride     bool
+	envSecret               string
+	logDir                  string
+	postAuthHook            coreauth.PostAuthHook
+	postAuthPersistHook     coreauth.PostAuthHook
+	pluginHost              *pluginhost.Host
+	pluginStoreRegistryURL  string
+	pluginStoreHTTPClient   pluginstore.HTTPDoer
+	pluginStoreRateLimiter  *pluginstore.GitHubRateLimiter
+	pluginReleases          pluginReleaseCache
+	siwcOAuthFactory        func(*config.Config, string) siwcOAuthService
+	v8AuthUploadMu          sync.Mutex
+	siwcCommitMu            sync.Mutex
+	pluginLoginSaveMu       sync.Mutex
+	onConfigMutated         func(*config.Config)
+	configReloadHook        func(context.Context, *config.Config)
+	onModelConfigMutated    func(tenantID string)
+	startTime               time.Time
+	accessManager           *sdkaccess.Manager
+	trendCacheMu            sync.Mutex
+	trendCache              map[string]trendCacheEntry
+	systemStatsCacheMu      sync.Mutex
+	systemStatsCache        systemStatsCacheEntry
+	imageGeneration         *imagegeneration.Service
+	videoGeneration         *imagegeneration.Service
+	modelTest               *imagegeneration.Service
+	identityService         *identity.Service
+	aiAccountStatus         *aiaccountstatus.Service
+	statusScheduler         *aiaccountstatus.Scheduler
+	warmupSvc               *warmup.Service
 	// alertService serves the /alerts routes, alertEngine evaluates the rules in
 	// the background and alertSender delivers for both. All three are built on
 	// first use (see alerts_bootstrap.go).
@@ -83,6 +100,12 @@ type Handler struct {
 	loopGuard *loopguard.Registry
 	// secretMasking overrides the process-wide secret masking settings in tests.
 	secretMasking *contentmoderation.SecretMaskingRegistry
+	authCache     managementAuthCache
+}
+
+type configReloadSnapshot struct {
+	cfg        *config.Config
+	generation uint64
 }
 
 type trendCacheEntry struct {
@@ -112,6 +135,7 @@ func NewHandler(cfg *config.Config, configFilePath string, manager *coreauth.Man
 		authManager:         manager,
 		usageStats:          usage.GetRequestStatistics(),
 		tokenStore:          sdkAuth.GetTokenStore(),
+		authCache:           managementAuthCache{entries: make(map[[32]byte]managementAuthCacheEntry), inflight: make(map[[32]byte]*managementAuthLookup)},
 		allowRemoteOverride: envSecret != "",
 		envSecret:           envSecret,
 		startTime:           time.Now(),
@@ -121,6 +145,42 @@ func NewHandler(cfg *config.Config, configFilePath string, manager *coreauth.Man
 	h.videoGeneration = h.newVideoGenerationService()
 	h.modelTest = h.newModelTestService()
 	return h
+}
+
+// configSnapshot returns a runtime-safe copy for work performed outside the
+// request lock.
+func (h *Handler) configSnapshot() *config.Config {
+	if h == nil {
+		return nil
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.cfg == nil {
+		return nil
+	}
+	return h.cfg.CloneForRuntime()
+}
+
+func (h *Handler) pluginHostSnapshot() *pluginhost.Host {
+	if h == nil {
+		return nil
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.pluginHost
+}
+
+func (h *Handler) oauthConfigWithProxy(proxyURL string) *config.Config {
+	cfg := h.configSnapshot()
+	proxyURL = strings.TrimSpace(proxyURL)
+	if proxyURL == "" {
+		return cfg
+	}
+	if cfg == nil {
+		cfg = &config.Config{}
+	}
+	cfg.ProxyURL = proxyURL
+	return cfg
 }
 
 func (h *Handler) warmupService() *warmup.Service {
@@ -220,7 +280,88 @@ func (h *Handler) SetAuthManager(manager *coreauth.Manager) {
 	h.ensureImageGenerationService()
 }
 
+// SetPluginHost updates the plugin host used by management endpoints.
+func (h *Handler) SetPluginHost(host *pluginhost.Host) {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	h.pluginHost = host
+	h.mu.Unlock()
+}
+
 func (h *Handler) SetConfigMutatedHook(fn func(*config.Config)) { h.onConfigMutated = fn }
+
+func (h *Handler) SetConfigReloadHook(fn func(context.Context, *config.Config)) {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	h.configReloadHook = fn
+	h.mu.Unlock()
+}
+
+func (h *Handler) reloadSnapshotConfigLocked() configReloadSnapshot {
+	if h == nil || h.cfg == nil {
+		return configReloadSnapshot{}
+	}
+	h.reloadGeneration++
+	return configReloadSnapshot{cfg: h.cfg.CloneForRuntime(), generation: h.reloadGeneration}
+}
+
+func (h *Handler) saveConfigAndSnapshotLocked(c *gin.Context) (configReloadSnapshot, bool) {
+	if h == nil || h.cfg == nil {
+		return configReloadSnapshot{}, false
+	}
+	if errSave := config.SaveConfigPreserveComments(h.configFilePath, h.cfg); errSave != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to save config: %v", errSave)})
+		return configReloadSnapshot{}, false
+	}
+	return h.reloadSnapshotConfigLocked(), true
+}
+
+// persistLocked saves a plugin configuration mutation while h.mu is held.
+func (h *Handler) persistLocked(c *gin.Context) {
+	snapshot, ok := h.saveConfigAndSnapshotLocked(c)
+	if !ok {
+		return
+	}
+	h.reloadConfigAfterManagementSaveAsync(c.Request.Context(), snapshot)
+	c.JSON(http.StatusOK, gin.H{"status": "ok"})
+}
+
+func (h *Handler) reloadConfigAfterManagementSave(ctx context.Context, snapshot configReloadSnapshot) {
+	if h == nil || snapshot.cfg == nil || snapshot.generation == 0 {
+		return
+	}
+	h.reloadMu.Lock()
+	defer h.reloadMu.Unlock()
+	h.mu.Lock()
+	if snapshot.generation < h.appliedReloadGeneration {
+		h.mu.Unlock()
+		return
+	}
+	hook := h.configReloadHook
+	mutated := h.onConfigMutated
+	h.mu.Unlock()
+	if hook != nil {
+		hook(ctx, snapshot.cfg)
+	} else if mutated != nil {
+		mutated(snapshot.cfg)
+	}
+	h.mu.Lock()
+	if snapshot.generation > h.appliedReloadGeneration {
+		h.appliedReloadGeneration = snapshot.generation
+	}
+	h.mu.Unlock()
+}
+
+func (h *Handler) reloadConfigAfterManagementSaveAsync(ctx context.Context, snapshot configReloadSnapshot) {
+	if h == nil || snapshot.cfg == nil || snapshot.generation == 0 {
+		return
+	}
+	go h.reloadConfigAfterManagementSave(ctx, snapshot)
+}
 
 func (h *Handler) SetModelConfigMutatedHook(fn func(tenantID string)) { h.onModelConfigMutated = fn }
 

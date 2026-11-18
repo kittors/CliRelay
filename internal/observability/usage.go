@@ -4,7 +4,7 @@ import (
 	"context"
 	"sync"
 
-	coreusage "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/usage"
+	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 )
 
 // ObserveUsage records one upstream request from its usage record. The usage
@@ -26,16 +26,24 @@ func (e *Exporter) ObserveUsage(record coreusage.Record) {
 
 	e.upstreamRequests.WithLabelValues(provider, model, outcome).Inc()
 	if !record.Failed {
+		latencyMs := record.LatencyMs
+		if latencyMs <= 0 {
+			latencyMs = record.Latency.Milliseconds()
+		}
 		// A failed attempt's duration says how fast it failed, which would
 		// drag the latency of real answers towards zero; failures are
 		// counted above instead.
-		if record.LatencyMs > 0 {
-			e.upstreamDuration.WithLabelValues(provider, model).Observe(float64(record.LatencyMs) / 1000)
+		if latencyMs > 0 {
+			e.upstreamDuration.WithLabelValues(provider, model).Observe(float64(latencyMs) / 1000)
+		}
+		firstTokenMs := record.FirstTokenMs
+		if firstTokenMs <= 0 {
+			firstTokenMs = record.TTFT.Milliseconds()
 		}
 		// Non-streamed responses arrive whole, so their "first token" is the
 		// full duration again.
-		if record.Streaming && record.FirstTokenMs > 0 {
-			e.upstreamFirstToken.WithLabelValues(provider, model).Observe(float64(record.FirstTokenMs) / 1000)
+		if (record.Streaming || record.Stream) && firstTokenMs > 0 {
+			e.upstreamFirstToken.WithLabelValues(provider, model).Observe(float64(firstTokenMs) / 1000)
 		}
 	}
 	for tokenType, count := range tokenBreakdown(record.Detail) {
@@ -65,10 +73,17 @@ func tokenBreakdown(detail coreusage.Detail) map[string]int64 {
 	return map[string]int64{
 		"input":       input,
 		"cache_read":  read,
-		"cache_write": max(detail.CacheWriteTokens, 0),
+		"cache_write": max(cacheWriteTokens(detail), 0),
 		"output":      max(detail.OutputTokens, 0),
 		"reasoning":   max(detail.ReasoningTokens, 0),
 	}
+}
+
+func cacheWriteTokens(detail coreusage.Detail) int64 {
+	if detail.CacheWriteTokens > 0 {
+		return detail.CacheWriteTokens
+	}
+	return detail.CacheCreationTokens
 }
 
 type usagePlugin struct{ exporter *Exporter }

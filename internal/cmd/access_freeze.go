@@ -4,8 +4,8 @@ import (
 	"context"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/accessfreeze"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/accessfreeze"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/usage"
 )
 
 // accessFreezeLoadTimeout bounds the first read of the standing freezes at

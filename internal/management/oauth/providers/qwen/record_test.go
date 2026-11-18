@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	internalqwen "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/qwen"
+	internalqwen "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/qwen"
 )
 
 func TestRecordFromTokenStorageBuildsTimestampedRecord(t *testing.T) {

@@ -2,9 +2,9 @@ package management
 
 import (
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	ampsettings "github.com/router-for-me/CLIProxyAPI/v6/internal/management/settings/amp"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/management/settings/runtimeconfig"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	ampsettings "github.com/router-for-me/CLIProxyAPI/v8/internal/management/settings/amp"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/management/settings/runtimeconfig"
 )
 
 func ampSettingsService(h *Handler) *ampsettings.Service {

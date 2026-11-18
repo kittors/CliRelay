@@ -2,18 +2,18 @@ package handlers
 
 import (
 	"context"
-	"net/http/httptest"
+	"net/http"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
-	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
-	internalrouting "github.com/router-for-me/CLIProxyAPI/v6/internal/routing"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
-	coreexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
-	sdkconfig "github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
+	"github.com/MoeForge/moego/json"
+	"github.com/MoeForge/moego/ojson"
+
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	sdkconfig "github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
 )
 
 func TestGetRequestDetails_PreservesSuffix(t *testing.T) {
@@ -30,19 +30,12 @@ func TestGetRequestDetails_PreservesSuffix(t *testing.T) {
 	modelRegistry.RegisterClient("test-request-details-claude", "claude", []*registry.ModelInfo{
 		{ID: "claude-sonnet-4-5", Created: now + 5},
 	})
-	modelRegistry.RegisterClient("test-request-details-opencode-go", "opencode-go", []*registry.ModelInfo{
-		{ID: "deepseek-v4-flash", Created: now + 10},
-	})
-	modelRegistry.RegisterClient("test-request-details-custom", "openai", []*registry.ModelInfo{
-		{ID: "custom-model[beta]", Created: now + 15},
-	})
 
 	// Ensure cleanup of all test registrations.
 	clientIDs := []string{
 		"test-request-details-gemini",
 		"test-request-details-openai",
 		"test-request-details-claude",
-		"test-request-details-opencode-go",
 	}
 	for _, clientID := range clientIDs {
 		id := clientID
@@ -103,41 +96,6 @@ func TestGetRequestDetails_PreservesSuffix(t *testing.T) {
 			wantErr:       false,
 		},
 		{
-			name:          "bracket suffix 1M stripped for provider lookup",
-			inputModel:    "deepseek-v4-flash[1M]",
-			wantProviders: []string{"opencode-go"},
-			wantModel:     "deepseek-v4-flash",
-			wantErr:       false,
-		},
-		{
-			name:          "bracket suffix 128K stripped",
-			inputModel:    "deepseek-v4-flash[128K]",
-			wantProviders: []string{"opencode-go"},
-			wantModel:     "deepseek-v4-flash",
-			wantErr:       false,
-		},
-		{
-			name:          "bracket suffix unknown model",
-			inputModel:    "unknown-model[1M]",
-			wantProviders: nil,
-			wantModel:     "",
-			wantErr:       true,
-		},
-		{
-			name:          "bracket suffix preserved round bracket thinking suffix",
-			inputModel:    "deepseek-v4-flash[1M](8192)",
-			wantProviders: []string{"opencode-go"},
-			wantModel:     "deepseek-v4-flash(8192)",
-			wantErr:       false,
-		},
-		{
-			name:          "custom model with bracket suffix preserved",
-			inputModel:    "custom-model[beta]",
-			wantProviders: []string{"openai"},
-			wantModel:     "custom-model[beta]",
-			wantErr:       false,
-		},
-		{
 			name:          "special suffix auto preserved",
 			inputModel:    "claude-sonnet-4-5(auto)",
 			wantProviders: []string{"claude"},
@@ -148,7 +106,7 @@ func TestGetRequestDetails_PreservesSuffix(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			providers, model, errMsg := handler.getRequestDetails(context.Background(), tt.inputModel)
+			providers, model, errMsg := handler.getRequestDetails(tt.inputModel)
 			if (errMsg != nil) != tt.wantErr {
 				t.Fatalf("getRequestDetails() error = %v, wantErr %v", errMsg, tt.wantErr)
 			}
@@ -165,185 +123,208 @@ func TestGetRequestDetails_PreservesSuffix(t *testing.T) {
 	}
 }
 
-func TestGetRequestDetails_AllowedGroupResolvesPrefixedModelProvider(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
-	modelRegistry := registry.GetGlobalRegistry()
-	now := time.Now().Unix()
-	modelRegistry.RegisterClient("test-request-details-pro", "openai", []*registry.ModelInfo{
-		{ID: "pro/gpt-5", Created: now},
-	})
-	t.Cleanup(func() {
-		modelRegistry.UnregisterClient("test-request-details-pro")
-	})
-
+// TestGetRequestDetails_UnknownModelErrorResistsJSONInjection pins the unroutable
+// model error body against client-controlled model names. The name is echoed into
+// the body, so formatting it into a JSON literal would let a caller corrupt the
+// payload or overwrite the error code that clients branch on.
+func TestGetRequestDetails_UnknownModelErrorResistsJSONInjection(t *testing.T) {
 	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, coreauth.NewManager(nil, nil, nil))
-	ginCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
-	ginCtx.Set("accessMetadata", map[string]string{"allowed-channel-groups": "pro"})
-	ctx := context.WithValue(context.Background(), util.ContextKeyGin, ginCtx)
 
-	providers, model, errMsg := handler.getRequestDetails(ctx, "gpt-5")
-	if errMsg != nil {
-		t.Fatalf("getRequestDetails() unexpected error = %v", errMsg)
-	}
-	if !reflect.DeepEqual(providers, []string{"openai"}) {
-		t.Fatalf("providers = %v, want [openai]", providers)
-	}
-	if model != "gpt-5" {
-		t.Fatalf("model = %q, want gpt-5", model)
+	for _, model := range []string{
+		"unroutable-model",
+		`foo"bar`,
+		`x","code":"insufficient_quota","x":"`,
+		`x"}}`,
+		`foo\bar`,
+		"foo\nbar",
+	} {
+		t.Run(model, func(t *testing.T) {
+			_, _, errMsg := handler.getRequestDetails(model)
+			if errMsg == nil || errMsg.Error == nil {
+				t.Fatal("expected an error for an unroutable model")
+			}
+			if errMsg.StatusCode != http.StatusBadRequest {
+				t.Fatalf("status = %d, want %d", errMsg.StatusCode, http.StatusBadRequest)
+			}
+			body := errMsg.Error.Error()
+			if !json.Valid([]byte(body)) {
+				t.Fatalf("error body is not valid JSON: %s", body)
+			}
+			if got := ojson.Get(body, "error.code").String(); got != "model_not_found" {
+				t.Fatalf("error code = %q, want model_not_found; the caller controlled the body: %s", got, body)
+			}
+			if got, want := ojson.Get(body, "error.message").String(), "unknown provider for model "+model; got != want {
+				t.Fatalf("error message = %q, want %q", got, want)
+			}
+		})
 	}
 }
 
-func TestGetRequestDetails_RouteGroupRejectsConflictingModelPrefix(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
+func TestGetRequestDetails_ImageModelReturns503(t *testing.T) {
 	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, coreauth.NewManager(nil, nil, nil))
-	ginCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
-	ginCtx.Set(internalrouting.GinPathRouteContextKey, &internalrouting.PathRouteContext{
-		RoutePath: "/pro",
-		Group:     "pro",
-		Fallback:  "none",
-	})
-	ctx := context.WithValue(context.Background(), util.ContextKeyGin, ginCtx)
 
-	_, _, errMsg := handler.getRequestDetails(ctx, "free/gpt-5")
-	if errMsg == nil {
-		t.Fatal("expected model_prefix_conflict error")
+	imageOnlyModels := []string{
+		"gpt-image-1.5",
+		"gpt-image-2",
+		"codex/gpt-image-2",
+		"gpt-image-2.5-flare",
+		"codex/gpt-image-2.5-flare",
+		"gpt-image-2.5-sunburst",
+		"codex/gpt-image-2.5-sunburst",
+		"gpt-image-2.5",
+		"codex/gpt-image-2.5",
+		"gpt-image-2.6-flare",
+		"codex/gpt-image-2.6-flare",
+		"gpt-image-2.6-sunburst",
+		"codex/gpt-image-2.6-sunburst",
+		"gpt-image-2.6",
+		"codex/gpt-image-2.6",
+		"grok-imagine-image",
+		"xai/grok-imagine-image",
+		"grok-imagine-image-quality",
+		"xai/grok-imagine-image-quality",
+		"grok-imagine-image-2.0",
+		"xai/grok-imagine-image-2.0",
 	}
-	if errMsg.StatusCode != 400 {
-		t.Fatalf("status = %d, want 400", errMsg.StatusCode)
+	for _, model := range imageOnlyModels {
+		t.Run(model, func(t *testing.T) {
+			_, _, errMsg := handler.getRequestDetails(model)
+			if errMsg == nil {
+				t.Fatalf("expected error for %s, got nil", model)
+			}
+			if errMsg.StatusCode != http.StatusServiceUnavailable {
+				t.Fatalf("unexpected status code: got %d want %d", errMsg.StatusCode, http.StatusServiceUnavailable)
+			}
+			if errMsg.Error == nil {
+				t.Fatalf("expected error message, got nil")
+			}
+			msg := errMsg.Error.Error()
+			if !strings.Contains(msg, "/v1/images/generations") || !strings.Contains(msg, "/v1/images/edits") {
+				t.Fatalf("unexpected error message: %q", msg)
+			}
+		})
 	}
 }
 
-func TestGetRequestDetails_CcSwitchMappedTargetModelAllowsProviderPrefix(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
-	modelRegistry := registry.GetGlobalRegistry()
-	now := time.Now().Unix()
-	modelRegistry.RegisterClient("test-request-details-ccswitch-target", "deepseek", []*registry.ModelInfo{
-		{ID: "cline-pass/deepseek-v4-flash", Created: now},
-	})
-	t.Cleanup(func() {
-		modelRegistry.UnregisterClient("test-request-details-ccswitch-target")
-	})
-
+func TestValidateImageOnlyModel_AllowsImageEndpoints(t *testing.T) {
 	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, coreauth.NewManager(nil, nil, nil))
-	ginCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
-	ginCtx.Set(internalrouting.GinPathRouteContextKey, &internalrouting.PathRouteContext{
-		RoutePath: "/group1/cs_test",
-		Group:     "group1",
-		Fallback:  "none",
-		CcSwitch: &internalrouting.CcSwitchRouteContext{
-			ClientType: "claude",
-			ModelMappings: []internalrouting.CcSwitchModelMapping{
-				{
-					RequestModel: "claude-sonnet-5",
-					TargetModel:  "cline-pass/deepseek-v4-flash",
-				},
-			},
-		},
-	})
-	ctx := context.WithValue(context.Background(), util.ContextKeyGin, ginCtx)
 
-	providers, model, errMsg := handler.getRequestDetails(ctx, "cline-pass/deepseek-v4-flash")
-	if errMsg != nil {
-		t.Fatalf("getRequestDetails() unexpected error = %v", errMsg)
+	imageOnlyModels := []string{
+		"gpt-image-1.5",
+		"gpt-image-2",
+		"codex/gpt-image-2",
+		"gpt-image-2.5-flare",
+		"codex/gpt-image-2.5-flare",
+		"gpt-image-2.5-sunburst",
+		"codex/gpt-image-2.5-sunburst",
+		"gpt-image-2.5",
+		"codex/gpt-image-2.5",
+		"gpt-image-2.6-flare",
+		"codex/gpt-image-2.6-flare",
+		"gpt-image-2.6-sunburst",
+		"codex/gpt-image-2.6-sunburst",
+		"gpt-image-2.6",
+		"codex/gpt-image-2.6",
+		"grok-imagine-image",
+		"xai/grok-imagine-image",
+		"grok-imagine-image-quality",
+		"xai/grok-imagine-image-quality",
+		"grok-imagine-image-2.0",
+		"xai/grok-imagine-image-2.0",
 	}
-	if !reflect.DeepEqual(providers, []string{"deepseek"}) {
-		t.Fatalf("providers = %v, want [deepseek]", providers)
-	}
-	if model != "cline-pass/deepseek-v4-flash" {
-		t.Fatalf("model = %q, want cline-pass/deepseek-v4-flash", model)
-	}
-}
-
-func TestRequestExecutionMetadata_UsesPathRouteContextFromRequestContext(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
-	ginCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
-	ginCtx.Request = httptest.NewRequest("POST", "/openai/plus/v1/responses", nil)
-	route := &internalrouting.PathRouteContext{
-		RoutePath: "/openai/plus",
-		Group:     "pro",
-		Fallback:  "none",
-	}
-	ctx := internalrouting.WithPathRouteContext(context.Background(), route)
-	ctx = context.WithValue(ctx, util.ContextKeyGin, ginCtx)
-
-	meta := requestExecutionMetadata(ctx)
-	if got := meta["route_group"]; got != "pro" {
-		t.Fatalf("route_group = %v, want %q", got, "pro")
-	}
-	if got := meta["route_fallback"]; got != "none" {
-		t.Fatalf("route_fallback = %v, want %q", got, "none")
+	for _, model := range imageOnlyModels {
+		t.Run(model, func(t *testing.T) {
+			if errMsg := handler.validateImageOnlyModel(model, true); errMsg != nil {
+				t.Fatalf("validateImageOnlyModel(%q, true) = %+v, want nil", model, errMsg)
+			}
+			if errMsg := handler.validateImageOnlyModel(model, false); errMsg == nil {
+				t.Fatalf("validateImageOnlyModel(%q, false) = nil, want image-only error", model)
+			} else if errMsg.StatusCode != http.StatusServiceUnavailable {
+				t.Fatalf("unexpected status code: got %d want %d", errMsg.StatusCode, http.StatusServiceUnavailable)
+			}
+		})
 	}
 }
 
-func TestRequestExecutionMetadata_CapturesSessionStickyHeader(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
-	ginCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
-	ginCtx.Request = httptest.NewRequest("POST", "/v1/responses", nil)
-	ginCtx.Request.Header.Set("Session-Id", "sess-1")
-
-	ctx := context.WithValue(context.Background(), util.ContextKeyGin, ginCtx)
-	meta := requestExecutionMetadata(ctx)
-	if got := meta[coreexecutor.SessionStickyMetadataKey]; got != "header:session-id:sess-1" {
-		t.Fatalf("session sticky key = %v, want header:session-id:sess-1", got)
+func TestIsOpenAIImageOnlyModel(t *testing.T) {
+	tests := []struct {
+		model string
+		want  bool
+	}{
+		{model: "gpt-image-1.5", want: true},
+		{model: "gpt-image-2", want: true},
+		{model: "codex/gpt-image-1.5", want: true},
+		{model: "gpt-image-2.5-flare", want: true},
+		{model: "codex/gpt-image-2.5-flare", want: true},
+		{model: "gpt-image-2.5-sunburst", want: true},
+		{model: "codex/gpt-image-2.5-sunburst", want: true},
+		{model: "gpt-image-2.5", want: true},
+		{model: "codex/gpt-image-2.5", want: true},
+		{model: "gpt-image-2.6-flare", want: true},
+		{model: "codex/gpt-image-2.6-flare", want: true},
+		{model: "gpt-image-2.6-sunburst", want: true},
+		{model: "codex/gpt-image-2.6-sunburst", want: true},
+		{model: "gpt-image-2.6", want: true},
+		{model: "codex/gpt-image-2.6", want: true},
+		{model: "grok-imagine-image", want: true},
+		{model: "xai/grok-imagine-image", want: true},
+		{model: "XAI/Grok-Imagine-Image-Quality", want: true},
+		{model: "grok-imagine-image-quality", want: true},
+		{model: "grok-imagine-image-2.0", want: true},
+		{model: "xai/grok-imagine-image-2.0", want: true},
+		{model: "grok-3", want: false},
+		{model: "gpt-5.2", want: false},
+		{model: "grok-imagine-video", want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			if got := isOpenAIImageOnlyModel(tt.model); got != tt.want {
+				t.Fatalf("isOpenAIImageOnlyModel(%q) = %v, want %v", tt.model, got, tt.want)
+			}
+		})
 	}
 }
 
-func TestRequestExecutionMetadata_CapturesGrokSessionStickyHeaders(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+func TestExecuteImageWithAuthManager_AllowsImageOnlyModels(t *testing.T) {
+	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, coreauth.NewManager(nil, nil, nil))
 
-	t.Run("session id", func(t *testing.T) {
-		ginCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
-		ginCtx.Request = httptest.NewRequest("POST", "/v1/chat/completions", nil)
-		ginCtx.Request.Header.Set("X-Grok-Session-Id", "019f5a53-5c9c-7222-a74c-3dbab60349d3")
-		ginCtx.Request.Header.Set("X-Grok-Conv-Id", "should-not-win")
-
-		ctx := context.WithValue(context.Background(), util.ContextKeyGin, ginCtx)
-		meta := requestExecutionMetadata(ctx)
-		want := "header:x-grok-session-id:019f5a53-5c9c-7222-a74c-3dbab60349d3"
-		if got := meta[coreexecutor.SessionStickyMetadataKey]; got != want {
-			t.Fatalf("session sticky key = %v, want %s", got, want)
-		}
-	})
-
-	t.Run("conv id fallback", func(t *testing.T) {
-		ginCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
-		ginCtx.Request = httptest.NewRequest("POST", "/v1/chat/completions", nil)
-		ginCtx.Request.Header.Set("X-Grok-Conv-Id", "019f5a53-5c9c-7222-a74c-3dbab60349d3")
-
-		ctx := context.WithValue(context.Background(), util.ContextKeyGin, ginCtx)
-		meta := requestExecutionMetadata(ctx)
-		want := "header:x-grok-conv-id:019f5a53-5c9c-7222-a74c-3dbab60349d3"
-		if got := meta[coreexecutor.SessionStickyMetadataKey]; got != want {
-			t.Fatalf("session sticky key = %v, want %s", got, want)
-		}
-	})
-}
-
-func TestRequestExecutionMetadata_UsesGinRequestContextPathRouteAfterHandleContextReset(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
-	route := &internalrouting.PathRouteContext{
-		RoutePath: "/openai/plus",
-		Group:     "pro",
-		Fallback:  "none",
+	imageOnlyModels := []string{
+		"gpt-image-1.5",
+		"gpt-image-2",
+		"gpt-image-2.5-flare",
+		"gpt-image-2.5-sunburst",
+		"gpt-image-2.5",
+		"gpt-image-2.6-flare",
+		"gpt-image-2.6-sunburst",
+		"gpt-image-2.6",
+		"grok-imagine-image",
+		"grok-imagine-image-quality",
+		"xai/grok-imagine-image-quality",
+		"grok-imagine-image-2.0",
+		"xai/grok-imagine-image-2.0",
 	}
-	req := httptest.NewRequest("POST", "/v1/responses", nil)
-	req = req.WithContext(internalrouting.WithPathRouteContext(req.Context(), route))
+	for _, model := range imageOnlyModels {
+		t.Run(model, func(t *testing.T) {
+			body := []byte(`{"model":"` + model + `","prompt":"draw"}`)
+			_, _, errMsg := handler.ExecuteImageWithAuthManager(context.Background(), "openai-image", model, body, "")
+			if errMsg == nil {
+				t.Fatal("expected auth selection error, got nil")
+			}
+			if errMsg.Error == nil {
+				t.Fatal("expected error message, got nil")
+			}
+			msg := errMsg.Error.Error()
+			if strings.Contains(msg, "only supported on /v1/images/generations") {
+				t.Fatalf("ExecuteImageWithAuthManager rejected image-only model: %q", msg)
+			}
 
-	ginCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
-	ginCtx.Request = req
-
-	ctx := context.WithValue(context.Background(), util.ContextKeyGin, ginCtx)
-	meta := requestExecutionMetadata(ctx)
-	if got := meta["route_group"]; got != "pro" {
-		t.Fatalf("route_group = %v, want %q", got, "pro")
-	}
-	if got := meta["route_fallback"]; got != "none" {
-		t.Fatalf("route_fallback = %v, want %q", got, "none")
+			_, _, errMsg = handler.ExecuteWithAuthManager(context.Background(), "openai-image", model, body, "")
+			if errMsg == nil {
+				t.Fatal("expected image-only rejection for non-image execution path, got nil")
+			}
+			if errMsg.Error == nil || !strings.Contains(errMsg.Error.Error(), "only supported on /v1/images/generations") {
+				t.Fatalf("unexpected non-image execution error: %+v", errMsg)
+			}
+		})
 	}
 }

@@ -4,7 +4,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/ipaccess"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/ipaccess"
 )
 
 // applyThrottleOverride rebuilds the limiter's policy table from config and then

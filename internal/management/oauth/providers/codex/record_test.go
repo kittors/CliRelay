@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"testing"
 
-	internalcodex "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/codex"
+	internalcodex "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/codex"
 )
 
 func TestRecordFromTokenStorageUsesPlanAndAccountHashFromIDToken(t *testing.T) {

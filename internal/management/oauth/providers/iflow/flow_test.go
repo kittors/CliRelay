@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	internaliflow "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/iflow"
-	oauthsession "github.com/router-for-me/CLIProxyAPI/v6/internal/management/oauth/session"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	internaliflow "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/iflow"
+	oauthsession "github.com/router-for-me/CLIProxyAPI/v8/internal/management/oauth/session"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
 
 type iflowOAuthAuthStub struct {

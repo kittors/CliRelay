@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/authevents"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/ipaccess"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/authevents"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/ipaccess"
 )
 
 // summaryWindows are the aggregation ranges the panel offers. Bounded to a

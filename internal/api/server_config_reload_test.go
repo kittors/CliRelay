@@ -3,7 +3,7 @@ package api
 import (
 	"testing"
 
-	proxyconfig "github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	proxyconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 )
 
 func TestUpdateManagementRouteAvailability_TogglesRemoteSecretState(t *testing.T) {

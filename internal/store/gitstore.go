@@ -19,8 +19,8 @@ import (
 	"github.com/go-git/go-git/v6/plumbing/object"
 	"github.com/go-git/go-git/v6/plumbing/transport"
 	"github.com/go-git/go-git/v6/plumbing/transport/http"
-	baseauth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth"
-	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	baseauth "github.com/router-for-me/CLIProxyAPI/v8/internal/auth"
+	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
 
 // gcInterval defines minimum time between garbage collection runs.
@@ -28,15 +28,16 @@ const gcInterval = 5 * time.Minute
 
 // GitTokenStore persists token records and auth metadata using git as the backing storage.
 type GitTokenStore struct {
-	mu        sync.Mutex
-	dirLock   sync.RWMutex
-	baseDir   string
-	repoDir   string
-	configDir string
-	remote    string
-	username  string
-	password  string
-	lastGC    time.Time
+	mu            sync.Mutex
+	dirLock       sync.RWMutex
+	baseDir       string
+	repoDir       string
+	configDir     string
+	remote        string
+	username      string
+	password      string
+	lastGC        time.Time
+	refreshClaims sync.Map
 }
 
 // NewGitTokenStore creates a token store that saves credentials to disk through the

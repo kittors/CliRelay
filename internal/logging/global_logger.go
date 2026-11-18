@@ -6,23 +6,44 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	log "github.com/sirupsen/logrus"
 	"gopkg.in/natefinch/lumberjack.v2"
 )
 
 var (
 	setupOnce      sync.Once
-	writerMu       sync.Mutex
+	writerMu       sync.RWMutex
+	consoleMu      sync.Mutex
 	logWriter      *lumberjack.Logger
 	ginInfoWriter  *io.PipeWriter
 	ginErrorWriter *io.PipeWriter
+	consoleWriter  io.Writer = os.Stderr
 )
+
+func init() {
+	config.SetV8MigrationWarnFunc(logV8MigrationWarning)
+}
+
+func logV8MigrationWarning(section, msg string) {
+	writerMu.RLock()
+	defer writerMu.RUnlock()
+
+	log.Warn(msg)
+	if logWriter != nil {
+		consoleMu.Lock()
+		if consoleWriter != nil {
+			_, _ = fmt.Fprintf(consoleWriter, "WARNING: %s\n", msg)
+		}
+		consoleMu.Unlock()
+	}
+}
 
 // LogFormatter defines a custom log format for logrus.
 // This formatter adds timestamp, level, request ID, and source location to each log entry.
@@ -30,15 +51,42 @@ var (
 type LogFormatter struct{}
 
 // logFieldOrder defines the display order for common log fields.
-//
-// This is an allowlist: a field absent from it is silently dropped. That bit us
-// in production — the auth-throttle warnings carried scope/key/counts and none
-// of it was ever printed, so "credential failure armed a block" appeared with no
-// indication of which address or account triggered it, which is the only part an
-// operator needs. Any new structured field must be registered here to be visible.
-var logFieldOrder = []string{"provider", "model", "mode", "budget", "level", "original_mode", "original_value", "min", "max", "clamped_to", "error_class", "tenant_id", "policy_tenant_id", "profile_id", "profile_version", "resolution_source", "channel_type", "channel_id", "action", "latency_ms", "cache_hit", "category", "score", "error",
-	// auth-throttle / ip-access diagnostics
-	"scope", "key", "shared", "short_count", "long_count", "limit", "long_limit", "outcome", "block_for", "generation", "path", "method", "ua", "relay_header"}
+var logFieldOrder = []string{
+	"provider", "model",
+	"plugin_id", "plugin_name", "source_id",
+	"version", "active_version", "retired_version", "overwritten",
+	"mode", "budget", "level", "original_mode", "original_value", "min", "max", "clamped_to", "error",
+	"credential", "auth_id", "auth_index", "connection", "proxy_scheme", "remote_transport",
+	"operation", "upstream_host", "reused", "was_idle", "idle_time",
+	"media_session_id", "call_id", "peer", "state", "reason",
+}
+
+var quotedLogFields = map[string]struct{}{
+	"credential":       {},
+	"auth_id":          {},
+	"auth_index":       {},
+	"upstream_host":    {},
+	"operation":        {},
+	"connection":       {},
+	"proxy_scheme":     {},
+	"remote_transport": {},
+	"media_session_id": {},
+	"call_id":          {},
+	"peer":             {},
+	"state":            {},
+	"reason":           {},
+}
+
+var pluginPathFieldOrder = []string{"path", "active_path", "retired_path"}
+
+func formatLogFieldValue(key string, value any) string {
+	if _, quoted := quotedLogFields[key]; quoted {
+		if stringValue, ok := value.(string); ok {
+			return strconv.Quote(stringValue)
+		}
+	}
+	return fmt.Sprint(value)
+}
 
 // Format renders a single log entry with custom formatting.
 func (m *LogFormatter) Format(entry *log.Entry) ([]byte, error) {
@@ -54,7 +102,7 @@ func (m *LogFormatter) Format(entry *log.Entry) ([]byte, error) {
 
 	reqID := "--------"
 	if id, ok := entry.Data["request_id"].(string); ok && id != "" {
-		reqID = id
+		reqID = ShortRequestID(id)
 	}
 
 	level := entry.Level.String()
@@ -69,7 +117,14 @@ func (m *LogFormatter) Format(entry *log.Entry) ([]byte, error) {
 		var fields []string
 		for _, k := range logFieldOrder {
 			if v, ok := entry.Data[k]; ok {
-				fields = append(fields, fmt.Sprintf("%s=%v", k, v))
+				fields = append(fields, fmt.Sprintf("%s=%s", k, formatLogFieldValue(k, v)))
+			}
+		}
+		if pluginID, ok := entry.Data["plugin_id"]; ok && strings.TrimSpace(fmt.Sprint(pluginID)) != "" {
+			for _, k := range pluginPathFieldOrder {
+				if v, ok := entry.Data[k]; ok {
+					fields = append(fields, fmt.Sprintf("%s=%v", k, v))
+				}
 			}
 		}
 		if len(fields) > 0 {

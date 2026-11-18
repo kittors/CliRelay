@@ -1,17 +1,16 @@
 package xai
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
-	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/misc"
+	"github.com/MoeForge/moego/json"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/misc"
 	log "github.com/sirupsen/logrus"
 )
 
+// TokenStorage stores xAI OAuth credentials on disk.
 type TokenStorage struct {
 	Type          string `json:"type"`
 	AccessToken   string `json:"access_token"`
@@ -31,10 +30,12 @@ type TokenStorage struct {
 	Metadata map[string]any `json:"-"`
 }
 
+// SetMetadata allows the token store to merge status fields before saving.
 func (ts *TokenStorage) SetMetadata(meta map[string]any) {
 	ts.Metadata = meta
 }
 
+// SaveTokenToFile writes xAI credentials to a JSON auth file.
 func (ts *TokenStorage) SaveTokenToFile(authFilePath string) error {
 	misc.LogSavingCredentials(authFilePath)
 	ts.Type = "xai"
@@ -42,6 +43,12 @@ func (ts *TokenStorage) SaveTokenToFile(authFilePath string) error {
 	if errMkdirAll := os.MkdirAll(filepath.Dir(authFilePath), 0o700); errMkdirAll != nil {
 		return fmt.Errorf("xai token storage: create directory: %w", errMkdirAll)
 	}
+
+	data, errMerge := misc.MergeMetadata(ts, ts.Metadata)
+	if errMerge != nil {
+		return fmt.Errorf("xai token storage: merge metadata: %w", errMerge)
+	}
+
 	file, err := os.Create(authFilePath)
 	if err != nil {
 		return fmt.Errorf("xai token storage: create token file: %w", err)
@@ -52,49 +59,10 @@ func (ts *TokenStorage) SaveTokenToFile(authFilePath string) error {
 		}
 	}()
 
-	data, errMerge := misc.MergeMetadata(ts, ts.Metadata)
-	if errMerge != nil {
-		return fmt.Errorf("xai token storage: merge metadata: %w", errMerge)
-	}
 	encoder := json.NewEncoder(file)
 	encoder.SetIndent("", "  ")
 	if err = encoder.Encode(data); err != nil {
 		return fmt.Errorf("xai token storage: write token file: %w", err)
 	}
 	return nil
-}
-
-func CredentialFileName(email, subject string) string {
-	email = sanitizeFileSegment(email)
-	if email != "" {
-		return fmt.Sprintf("xai-%s.json", email)
-	}
-	subject = sanitizeFileSegment(subject)
-	if subject != "" {
-		return fmt.Sprintf("xai-%s.json", subject)
-	}
-	return fmt.Sprintf("xai-%d.json", time.Now().UnixMilli())
-}
-
-func sanitizeFileSegment(value string) string {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return ""
-	}
-	var b strings.Builder
-	for _, r := range value {
-		switch {
-		case r >= 'a' && r <= 'z':
-			b.WriteRune(r)
-		case r >= 'A' && r <= 'Z':
-			b.WriteRune(r)
-		case r >= '0' && r <= '9':
-			b.WriteRune(r)
-		case r == '@' || r == '.' || r == '_' || r == '-':
-			b.WriteRune(r)
-		default:
-			b.WriteRune('-')
-		}
-	}
-	return strings.Trim(b.String(), "-")
 }

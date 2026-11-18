@@ -3,7 +3,7 @@ package modelcatalog
 import (
 	"strings"
 
-	internalrouting "github.com/router-for-me/CLIProxyAPI/v6/internal/routing"
+	internalrouting "github.com/router-for-me/CLIProxyAPI/v8/internal/routing"
 )
 
 // filterModelsByRoutingAllowedModels drops models the effective channel group's

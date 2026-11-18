@@ -7,10 +7,10 @@ import (
 	"testing"
 	"time"
 
-	geminiauth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/gemini"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	oauthsession "github.com/router-for-me/CLIProxyAPI/v6/internal/management/oauth/session"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	geminiauth "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/gemini"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	oauthsession "github.com/router-for-me/CLIProxyAPI/v8/internal/management/oauth/session"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	"golang.org/x/oauth2"
 )
 

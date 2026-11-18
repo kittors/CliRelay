@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	internalconfig "github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	modelconfigsettings "github.com/router-for-me/CLIProxyAPI/v6/internal/management/settings/modelconfig"
-	internalusage "github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
+	internalconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	modelconfigsettings "github.com/router-for-me/CLIProxyAPI/v8/internal/management/settings/modelconfig"
+	internalusage "github.com/router-for-me/CLIProxyAPI/v8/internal/usage"
 )
 
 func initCatalogScopeTestDB(t *testing.T) {

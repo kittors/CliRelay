@@ -4,29 +4,9 @@ import (
 	"strings"
 	"time"
 
-	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
-	"github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
 )
-
-func openAICompatInfoFromAuth(a *coreauth.Auth) (providerKey string, compatName string, ok bool) {
-	if a == nil {
-		return "", "", false
-	}
-	if len(a.Attributes) > 0 {
-		providerKey = strings.TrimSpace(a.Attributes["provider_key"])
-		compatName = strings.TrimSpace(a.Attributes["compat_name"])
-		if compatName != "" {
-			if providerKey == "" {
-				providerKey = compatName
-			}
-			return strings.ToLower(providerKey), compatName, true
-		}
-	}
-	if strings.EqualFold(strings.TrimSpace(a.Provider), "openai-compatibility") {
-		return "openai-compatibility", strings.TrimSpace(a.Label), true
-	}
-	return "", "", false
-}
 
 func openAICompatAuthEntryActive(compat *config.OpenAICompatibility, auth *coreauth.Auth) bool {
 	if compat == nil || compat.Disabled {

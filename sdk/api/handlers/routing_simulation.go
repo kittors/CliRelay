@@ -1,30 +1,24 @@
 package handlers
 
 import (
-	"context"
 	"fmt"
 	"net/http"
 
-	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
-	coreexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/interfaces"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	"golang.org/x/net/context"
 )
 
-// SimulateRouting reports where ExecuteWithAuthManager would send a request for
-// modelName, without sending it: the providers and model it resolves, then the
-// auth manager's simulated selection. ctx must carry the request's gin context,
-// as the one ExecuteWithAuthManager receives does. It changes no state.
-//
-// The error is the one ExecuteWithAuthManager would return before selection,
-// so WriteErrorResponse renders it the way a real request sees it.
-func (h *BaseAPIHandler) SimulateRouting(ctx context.Context, modelName string) (*coreauth.SelectionSimulation, *StreamErrorMessage) {
-	providers, normalizedModel, errMsg := h.getRequestDetails(ctx, modelName)
+// SimulateRouting resolves providers and asks the conductor for its dry-run
+// credential selection. It performs no upstream request.
+func (h *BaseAPIHandler) SimulateRouting(ctx context.Context, model string) (*coreauth.SelectionSimulation, *interfaces.ErrorMessage) {
+	if h == nil || h.AuthManager == nil {
+		return nil, &interfaces.ErrorMessage{StatusCode: http.StatusServiceUnavailable, Error: fmt.Errorf("auth manager unavailable")}
+	}
+	providers, normalized, errMsg := h.getRequestDetails(model)
 	if errMsg != nil {
 		return nil, errMsg
 	}
-	if h.AuthManager == nil {
-		return nil, &StreamErrorMessage{StatusCode: http.StatusInternalServerError, Error: fmt.Errorf("auth manager unavailable")}
-	}
-	reqMeta := requestExecutionMetadata(ctx)
-	reqMeta[coreexecutor.RequestedModelMetadataKey] = normalizedModel
-	return h.AuthManager.SimulateSelection(ctx, providers, normalizedModel, reqMeta), nil
+	simulation := h.AuthManager.SimulateSelection(ctx, providers, normalized, requestExecutionMetadata(ctx))
+	return simulation, nil
 }

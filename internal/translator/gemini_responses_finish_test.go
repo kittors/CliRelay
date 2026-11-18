@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/translator/translator"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/translator/translator"
 	"github.com/tidwall/gjson"
 )
 

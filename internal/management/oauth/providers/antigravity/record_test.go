@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	internalantigravity "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/antigravity"
+	internalantigravity "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/antigravity"
 )
 
 func TestRecordFromTokenResponseBuildsPersistableRecord(t *testing.T) {

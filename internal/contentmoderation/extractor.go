@@ -3,8 +3,8 @@ package contentmoderation
 import (
 	"strings"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/sdk/jsonstrict"
-	sdktranslator "github.com/router-for-me/CLIProxyAPI/v6/sdk/translator"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/jsonstrict"
+	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 	"github.com/tidwall/gjson"
 )
 

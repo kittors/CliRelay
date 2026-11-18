@@ -4,7 +4,7 @@ import (
 	"context"
 	"database/sql"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/configsync"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/configsync"
 )
 
 // commitKeyChange commits a transaction that changed API keys. It bumps the

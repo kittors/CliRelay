@@ -7,7 +7,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 )
 
 // DiffOpenAICompatibility produces human-readable change descriptions.
@@ -16,14 +16,14 @@ func DiffOpenAICompatibility(oldList, newList []config.OpenAICompatibility) []st
 	oldMap := make(map[string]config.OpenAICompatibility, len(oldList))
 	oldLabels := make(map[string]string, len(oldList))
 	for idx, entry := range oldList {
-		key, label := openAICompatKey(entry, idx)
+		key, label := uniqueOpenAICompatKey(oldMap, entry, idx)
 		oldMap[key] = entry
 		oldLabels[key] = label
 	}
 	newMap := make(map[string]config.OpenAICompatibility, len(newList))
 	newLabels := make(map[string]string, len(newList))
 	for idx, entry := range newList {
-		key, label := openAICompatKey(entry, idx)
+		key, label := uniqueOpenAICompatKey(newMap, entry, idx)
 		newMap[key] = entry
 		newLabels[key] = label
 	}
@@ -60,6 +60,17 @@ func DiffOpenAICompatibility(oldList, newList []config.OpenAICompatibility) []st
 	return changes
 }
 
+func uniqueOpenAICompatKey(existing map[string]config.OpenAICompatibility, entry config.OpenAICompatibility, index int) (string, string) {
+	key, label := openAICompatKey(entry, index)
+	baseKey := key
+	for duplicateIndex := 1; ; duplicateIndex++ {
+		if _, exists := existing[key]; !exists {
+			return key, label
+		}
+		key = fmt.Sprintf("duplicate:%s:%d", baseKey, duplicateIndex)
+	}
+}
+
 func describeOpenAICompatibilityUpdate(oldEntry, newEntry config.OpenAICompatibility) string {
 	oldKeyCount := countAPIKeys(oldEntry)
 	newKeyCount := countAPIKeys(newEntry)
@@ -68,6 +79,15 @@ func describeOpenAICompatibilityUpdate(oldEntry, newEntry config.OpenAICompatibi
 	details := make([]string, 0, 3)
 	if oldEntry.Disabled != newEntry.Disabled {
 		details = append(details, fmt.Sprintf("disabled %t -> %t", oldEntry.Disabled, newEntry.Disabled))
+	}
+	if oldEntry.SupportPromptCacheKey != newEntry.SupportPromptCacheKey {
+		details = append(details, fmt.Sprintf("support-prompt-cache-key %t -> %t", oldEntry.SupportPromptCacheKey, newEntry.SupportPromptCacheKey))
+	}
+	if !optionalBoolEqual(oldEntry.DisableCooling, newEntry.DisableCooling) {
+		details = append(details, fmt.Sprintf("disable-cooling %s -> %s", formatOptionalBool(oldEntry.DisableCooling), formatOptionalBool(newEntry.DisableCooling)))
+	}
+	if !optionalIntEqual(oldEntry.RequestRetry, newEntry.RequestRetry) {
+		details = append(details, fmt.Sprintf("request-retry %s -> %s", formatOptionalInt(oldEntry.RequestRetry), formatOptionalInt(newEntry.RequestRetry)))
 	}
 	if oldKeyCount != newKeyCount {
 		details = append(details, fmt.Sprintf("api-keys %d -> %d", oldKeyCount, newKeyCount))
@@ -78,16 +98,50 @@ func describeOpenAICompatibilityUpdate(oldEntry, newEntry config.OpenAICompatibi
 	if !equalStringMap(oldEntry.Headers, newEntry.Headers) {
 		details = append(details, "headers updated")
 	}
-	if oldEntry.CodexToolBridge != newEntry.CodexToolBridge {
-		details = append(details, fmt.Sprintf("codex-tool-bridge %t -> %t", oldEntry.CodexToolBridge, newEntry.CodexToolBridge))
-	}
-	if formatCoolingOverride(oldEntry.DisableCooling) != formatCoolingOverride(newEntry.DisableCooling) {
-		details = append(details, fmt.Sprintf("disable-cooling %s -> %s", formatCoolingOverride(oldEntry.DisableCooling), formatCoolingOverride(newEntry.DisableCooling)))
+	if openAICompatConnectionPoolChanged(oldEntry, newEntry) {
+		details = append(details, "connection-pool updated")
 	}
 	if len(details) == 0 {
 		return ""
 	}
 	return "(" + strings.Join(details, ", ") + ")"
+}
+
+func openAICompatConnectionPoolChanged(oldEntry, newEntry config.OpenAICompatibility) bool {
+	if !connectionPoolConfigEqual(oldEntry.ConnectionPool, newEntry.ConnectionPool) {
+		return true
+	}
+	if len(oldEntry.APIKeyEntries) != len(newEntry.APIKeyEntries) {
+		for _, item := range oldEntry.APIKeyEntries {
+			if item.ConnectionPool != nil {
+				return true
+			}
+		}
+		for _, item := range newEntry.APIKeyEntries {
+			if item.ConnectionPool != nil {
+				return true
+			}
+		}
+		return false
+	}
+	for i := range oldEntry.APIKeyEntries {
+		if !connectionPoolConfigEqual(oldEntry.APIKeyEntries[i].ConnectionPool, newEntry.APIKeyEntries[i].ConnectionPool) {
+			return true
+		}
+	}
+	return false
+}
+
+func connectionPoolConfigEqual(a, b *config.ProxyConnectionPoolConfig) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+	return optionalBoolEqual(a.Enabled, b.Enabled) &&
+		strings.TrimSpace(a.IdleConnTimeout) == strings.TrimSpace(b.IdleConnTimeout) &&
+		optionalIntEqual(a.MaxIdleConnsPerHost, b.MaxIdleConnsPerHost)
 }
 
 func countAPIKeys(entry config.OpenAICompatibility) int {
@@ -120,7 +174,7 @@ func openAICompatKey(entry config.OpenAICompatibility, index int) (string, strin
 	}
 	base := strings.TrimSpace(entry.BaseURL)
 	if base != "" {
-		return "base:" + base, base
+		return "base:" + base, formatURL(base)
 	}
 	for _, model := range entry.Models {
 		alias := strings.TrimSpace(model.Alias)
@@ -151,9 +205,6 @@ func openAICompatSignature(entry config.OpenAICompatibility) string {
 	if v := strings.TrimSpace(entry.BaseURL); v != "" {
 		parts = append(parts, "base="+v)
 	}
-	if entry.Disabled {
-		parts = append(parts, "disabled=true")
-	}
 
 	models := make([]string, 0, len(entry.Models))
 	for _, model := range entry.Models {
@@ -162,7 +213,7 @@ func openAICompatSignature(entry config.OpenAICompatibility) string {
 		if name == "" && alias == "" {
 			continue
 		}
-		models = append(models, strings.ToLower(name)+"|"+strings.ToLower(alias))
+		models = append(models, strings.ToLower(name)+"|"+strings.ToLower(alias)+"|"+strings.TrimSpace(model.DisplayName)+"|"+fmt.Sprintf("image=%t", model.Image))
 	}
 	if len(models) > 0 {
 		sort.Strings(models)

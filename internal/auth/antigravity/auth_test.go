@@ -2,66 +2,171 @@ package antigravity
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"strings"
 	"testing"
-
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 )
 
-type discoveryRoundTripper func(*http.Request) (*http.Response, error)
+type roundTripperFunc func(*http.Request) (*http.Response, error)
 
-func (f discoveryRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+func (f roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return f(req)
 }
 
-func TestFetchAccountDetailsUsesAntigravityClientIdentity(t *testing.T) {
-	client := &http.Client{Transport: discoveryRoundTripper(func(req *http.Request) (*http.Response, error) {
-		if req.Method != http.MethodPost || req.URL.String() != APIEndpoint+"/"+APIVersion+":loadCodeAssist" {
-			return nil, fmt.Errorf("unexpected discovery request: %s %s", req.Method, req.URL)
-		}
-		if got := req.Header.Get("User-Agent"); got != ClientUserAgent {
-			t.Errorf("discovery User-Agent = %q, want %q", got, ClientUserAgent)
-			return nil, fmt.Errorf("discovery must identify the Antigravity client")
-		}
-		return &http.Response{
-			StatusCode: http.StatusOK,
-			Header:     make(http.Header),
-			Body:       io.NopCloser(strings.NewReader(`{"cloudaicompanionProject":"test-project","currentTier":{"id":"free-tier","name":"Antigravity"}}`)),
-		}, nil
-	})}
-
-	info, err := NewAntigravityAuth(nil, client).FetchAccountDetails(context.Background(), "test-token")
+func TestBuildAuthURLIncludesAICodeScope(t *testing.T) {
+	parsedURL, err := url.Parse(NewAntigravityAuth(nil, nil).BuildAuthURL("state", "http://localhost/callback"))
 	if err != nil {
-		t.Fatalf("FetchAccountDetails: %v", err)
+		t.Fatalf("parse auth URL: %v", err)
 	}
-	if info.ProjectID != "test-project" || info.TierID != "free-tier" || info.PlanType != "Antigravity" {
-		t.Fatalf("unexpected account details: %+v", info)
+
+	for _, scope := range strings.Fields(parsedURL.Query().Get("scope")) {
+		if scope == "https://www.googleapis.com/auth/aicode" {
+			return
+		}
+	}
+	t.Fatalf("authorization URL scope does not include %q", "https://www.googleapis.com/auth/aicode")
+}
+
+func TestFetchProjectIDFromLoadCodeAssist(t *testing.T) {
+	auth := NewAntigravityAuth(nil, &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.String() != "https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist" {
+			t.Fatalf("unexpected request URL: %s", req.URL.String())
+		}
+		assertLoadCodeAssistHeaders(t, req)
+		assertJSONContains(t, req, `"ideType":"ANTIGRAVITY"`)
+		return jsonResponse(`{"cloudaicompanionProject":"cogent-snow-4mnnp"}`), nil
+	})})
+
+	projectID, err := auth.FetchProjectID(context.Background(), "access-token")
+	if err != nil {
+		t.Fatalf("FetchProjectID error: %v", err)
+	}
+	if projectID != "cogent-snow-4mnnp" {
+		t.Fatalf("projectID = %q", projectID)
 	}
 }
 
-func TestBuildAuthURLUsesDefaultAntigravityClient(t *testing.T) {
-	t.Setenv(config.EnvAntigravityOAuthClientID, "")
-	t.Setenv(config.EnvAntigravityOAuthClientSecret, "")
+func TestFetchProjectIDFallsBackToDailyOnboardUser(t *testing.T) {
+	var sawOnboard bool
+	auth := NewAntigravityAuth(nil, &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		switch req.URL.String() {
+		case "https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist":
+			assertLoadCodeAssistHeaders(t, req)
+			return jsonResponse(`{"allowedTiers":[{"id":"free-tier","isDefault":true}]}`), nil
+		case "https://daily-cloudcode-pa.googleapis.com/v1internal:onboardUser":
+			sawOnboard = true
+			assertOnboardUserHeaders(t, req)
+			assertJSONContains(t, req, `"tier_id":"free-tier"`)
+			assertJSONContains(t, req, `"ide_type":"ANTIGRAVITY"`)
+			return jsonResponse(`{
+				"done": true,
+				"response": {
+					"cloudaicompanionProject": {
+						"id": "cogent-snow-4mnnp",
+						"name": "cogent-snow-4mnnp",
+						"projectNumber": "22597072101"
+					}
+				}
+			}`), nil
+		default:
+			t.Fatalf("unexpected request URL: %s", req.URL.String())
+			return nil, nil
+		}
+	})})
 
-	auth := NewAntigravityAuth(&config.Config{}, nil)
-
-	authURL := auth.BuildAuthURL("state-value", "http://localhost:51121/oauth-callback")
-	if authURL == "" {
-		t.Fatal("authURL is empty, want URL with default Antigravity client")
-	}
-
-	parsed, err := url.Parse(authURL)
+	projectID, err := auth.FetchProjectID(context.Background(), "access-token")
 	if err != nil {
-		t.Fatalf("parse authURL: %v", err)
+		t.Fatalf("FetchProjectID error: %v", err)
 	}
-	if got := parsed.Query().Get("client_id"); got != config.AntigravityOAuthClientID {
-		t.Fatalf("client_id = %q, want default Antigravity client", got)
+	if !sawOnboard {
+		t.Fatalf("expected onboardUser fallback")
 	}
-	if got := parsed.Query().Get("state"); got != "state-value" {
-		t.Fatalf("state = %q, want state-value", got)
+	if projectID != "cogent-snow-4mnnp" {
+		t.Fatalf("projectID = %q", projectID)
+	}
+}
+
+func TestFetchProjectIDUpstreamForbiddenReturnsStatus403(t *testing.T) {
+	auth := NewAntigravityAuth(nil, &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusForbidden,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"error":{"code":403,"message":"The caller does not have permission"}}`)),
+		}, nil
+	})})
+
+	_, err := auth.FetchProjectID(context.Background(), "access-token")
+	if err == nil {
+		t.Fatalf("expected error from 403 response")
+	}
+	type statusCoder interface {
+		StatusCode() int
+	}
+	sc, ok := err.(statusCoder)
+	if !ok || sc.StatusCode() != http.StatusForbidden {
+		t.Fatalf("expected status code %d, got %T (%v)", http.StatusForbidden, err, err)
+	}
+}
+
+func assertLoadCodeAssistHeaders(t *testing.T, req *http.Request) {
+	t.Helper()
+	if got := req.Header.Get("Authorization"); got != "Bearer access-token" {
+		t.Fatalf("Authorization = %q", got)
+	}
+	if got := req.Header.Get("Accept"); got != "" {
+		t.Fatalf("Accept = %q, want omitted", got)
+	}
+	if got := req.Header.Get("X-Goog-Api-Client"); got != "" {
+		t.Fatalf("X-Goog-Api-Client = %q, want empty", got)
+	}
+	userAgent := req.Header.Get("User-Agent")
+	if !strings.HasPrefix(userAgent, "antigravity/hub/") {
+		t.Fatalf("User-Agent = %q", userAgent)
+	}
+	if strings.Contains(userAgent, "google-api-nodejs-client/") {
+		t.Fatalf("User-Agent = %q", userAgent)
+	}
+}
+
+func assertOnboardUserHeaders(t *testing.T, req *http.Request) {
+	t.Helper()
+	if got := req.Header.Get("Authorization"); got != "Bearer access-token" {
+		t.Fatalf("Authorization = %q", got)
+	}
+	if got := req.Header.Get("Accept"); got != "*/*" {
+		t.Fatalf("Accept = %q", got)
+	}
+	if got := req.Header.Get("X-Goog-Api-Client"); got != "gl-node/22.21.1" {
+		t.Fatalf("X-Goog-Api-Client = %q", got)
+	}
+	userAgent := req.Header.Get("User-Agent")
+	if !strings.HasPrefix(userAgent, "antigravity/hub/") {
+		t.Fatalf("User-Agent = %q", userAgent)
+	}
+	if !strings.Contains(userAgent, "google-api-nodejs-client/10.3.0") {
+		t.Fatalf("User-Agent = %q", userAgent)
+	}
+}
+
+func assertJSONContains(t *testing.T, req *http.Request, want string) {
+	t.Helper()
+	body, err := io.ReadAll(req.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	bodyText := string(body)
+	req.Body = io.NopCloser(strings.NewReader(bodyText))
+	if !strings.Contains(bodyText, want) {
+		t.Fatalf("body missing %s: %s", want, bodyText)
+	}
+}
+
+func jsonResponse(body string) *http.Response {
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(strings.NewReader(body)),
 	}
 }

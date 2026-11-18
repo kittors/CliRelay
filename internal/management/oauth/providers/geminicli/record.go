@@ -1,8 +1,8 @@
 package geminicli
 
 import (
-	geminiauth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/gemini"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	geminiauth "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/gemini"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
 
 func RecordFromTokenStorage(tokenStorage *geminiauth.GeminiTokenStorage) *coreauth.Auth {

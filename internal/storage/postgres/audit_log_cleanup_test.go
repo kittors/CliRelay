@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	_ "github.com/router-for-me/CLIProxyAPI/v6/internal/storage/postgres/compatdriver"
+	_ "github.com/router-for-me/CLIProxyAPI/v8/internal/storage/postgres/compatdriver"
 )
 
 // TestAuditLogReadNoiseCleanupMigration covers the one-time cleanup of rows the

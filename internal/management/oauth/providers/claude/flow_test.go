@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	internalclaude "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/claude"
-	oauthsession "github.com/router-for-me/CLIProxyAPI/v6/internal/management/oauth/session"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	internalclaude "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/claude"
+	oauthsession "github.com/router-for-me/CLIProxyAPI/v8/internal/management/oauth/session"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
 
 type claudeOAuthAuthStub struct {

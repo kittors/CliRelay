@@ -2,19 +2,19 @@ package executor
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/MoeForge/moego/json"
 	"io"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
 
-	kimiauth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/kimi"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
-	sdkmodelcatalog "github.com/router-for-me/CLIProxyAPI/v6/sdk/modelcatalog"
+	kimiauth "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/kimi"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	sdkmodelcatalog "github.com/router-for-me/CLIProxyAPI/v8/sdk/modelcatalog"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -136,7 +136,7 @@ func DiscoverKimiModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *confi
 	}
 	// Same identity headers as chat traffic: the gateway rejects requests that do
 	// not look like kimi-cli, and the device id must match the account's.
-	applyKimiHeadersWithAuth(req, token, false, auth, cfg)
+	applyKimiHeadersWithAuth(req, token, false, auth)
 
 	resp, err := newProxyAwareHTTPClient(ctx, cfg, auth, 0).Do(req)
 	if err != nil {

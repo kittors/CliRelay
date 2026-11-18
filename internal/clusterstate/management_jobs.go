@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/management/jobsnapshot"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/management/jobsnapshot"
 )
 
 // ManagementJobs is the management_jobs table, the shared jobsnapshot.Store.

@@ -17,7 +17,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/cluster/sharedredis"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/cluster/sharedredis"
 )
 
 // Default lease timing. A lease is renewed every LeaseTTL/3 while the request

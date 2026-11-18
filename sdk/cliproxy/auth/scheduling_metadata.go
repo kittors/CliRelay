@@ -4,7 +4,7 @@ import (
 	"strconv"
 	"strings"
 
-	sdkconfig "github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
+	sdkconfig "github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
 )
 
 // Selection-scoped metadata keys. The Selector interface is fixed by the SDK

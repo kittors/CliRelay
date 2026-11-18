@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/tlsfingerprint"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/tlsfingerprint"
 	"gopkg.in/yaml.v3"
 )
 

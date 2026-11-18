@@ -2,23 +2,54 @@ package auth
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io/fs"
-	"maps"
-	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
-	"reflect"
+	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
-	baseauth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
-	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	"github.com/MoeForge/moego/json"
+	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
+
+// PluginAuthParser parses auth JSON owned by plugin providers.
+type PluginAuthParser interface {
+	ParseAuth(context.Context, pluginapi.AuthParseRequest) (*cliproxyauth.Auth, bool, error)
+}
+
+// PluginMultiAuthParser expands one auth JSON payload into multiple plugin auth records.
+// Returning handled=true with an empty slice means the plugin intentionally suppresses built-in parsing.
+type PluginMultiAuthParser interface {
+	ParseAuths(context.Context, pluginapi.AuthParseRequest) ([]*cliproxyauth.Auth, bool, error)
+}
+
+type pluginAuthParserHolder struct {
+	parser PluginAuthParser
+}
+
+var pluginAuthParserValue atomic.Value
+
+// RegisterPluginAuthParser registers the current plugin auth parser.
+func RegisterPluginAuthParser(parser PluginAuthParser) {
+	pluginAuthParserValue.Store(pluginAuthParserHolder{parser: parser})
+}
+
+func currentPluginAuthParser() PluginAuthParser {
+	value := pluginAuthParserValue.Load()
+	if value == nil {
+		return nil
+	}
+	holder, ok := value.(pluginAuthParserHolder)
+	if !ok {
+		return nil
+	}
+	return holder.parser
+}
 
 // FileTokenStore persists token records and auth metadata using the filesystem as backing storage.
 type FileTokenStore struct {
@@ -45,6 +76,10 @@ func (s *FileTokenStore) Save(ctx context.Context, auth *cliproxyauth.Auth) (str
 	if auth == nil {
 		return "", fmt.Errorf("auth filestore: auth is nil")
 	}
+	cliproxyauth.NormalizeCredentialMetadata(auth.Metadata)
+	if errWeight := cliproxyauth.ValidateAuthWeight(auth); errWeight != nil {
+		return "", fmt.Errorf("auth filestore: %w", errWeight)
+	}
 
 	path, err := s.resolveAuthPath(auth)
 	if err != nil {
@@ -54,7 +89,10 @@ func (s *FileTokenStore) Save(ctx context.Context, auth *cliproxyauth.Auth) (str
 		return "", fmt.Errorf("auth filestore: missing file path attribute for %s", auth.ID)
 	}
 
-	if auth.Disabled {
+	// Runtime updates must not recreate a disabled credential whose source file
+	// was deliberately removed. Login and migration callers explicitly mark the
+	// save when creating a missing disabled credential is intentional.
+	if auth.Disabled && !cliproxyauth.HasAuthCreationIntent(ctx) {
 		if _, statErr := os.Stat(path); os.IsNotExist(statErr) {
 			return "", nil
 		}
@@ -66,53 +104,68 @@ func (s *FileTokenStore) Save(ctx context.Context, auth *cliproxyauth.Auth) (str
 	if err = os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return "", fmt.Errorf("auth filestore: create dir failed: %w", err)
 	}
-	syncRoutingMetadata(auth)
-	// Both branches serialize auth.Metadata, so the disabled flag has to be
-	// mirrored before either of them runs; the Storage branch used to skip it,
-	// which lost every enable/disable made on an OAuth credential.
-	cliproxyauth.SyncPersistedDisabled(auth)
 
-	switch {
-	case auth.Storage != nil:
-		baseauth.ApplyMetadata(auth.Storage, auth.Metadata)
-		if err = auth.Storage.SaveTokenToFile(path); err != nil {
-			return "", err
+	// metadataSetter is a private interface for TokenStorage implementations that support metadata injection.
+	type metadataSetter interface {
+		SetMetadata(map[string]any)
+	}
+
+	if handled, errCodex := cliproxyauth.PersistCodexAuthFile(ctx, path, auth); handled {
+		if errCodex != nil {
+			return "", errCodex
 		}
-	case auth.Metadata != nil:
-		raw, errMarshal := json.Marshal(auth.Metadata)
-		if errMarshal != nil {
-			return "", fmt.Errorf("auth filestore: marshal metadata failed: %w", errMarshal)
+	} else {
+		switch {
+		case auth.Storage != nil:
+			if auth.Metadata == nil {
+				auth.Metadata = make(map[string]any)
+			}
+			auth.Metadata["disabled"] = auth.Disabled
+			if setter, ok := auth.Storage.(metadataSetter); ok {
+				setter.SetMetadata(auth.Metadata)
+			}
+			if err = auth.Storage.SaveTokenToFile(path); err != nil {
+				return "", err
+			}
+		case auth.Metadata != nil:
+			auth.Metadata["disabled"] = auth.Disabled
+			raw, errMarshal := json.Marshal(auth.Metadata)
+			if errMarshal != nil {
+				return "", fmt.Errorf("auth filestore: marshal metadata failed: %w", errMarshal)
+			}
+			if existing, errRead := os.ReadFile(path); errRead == nil {
+				if jsonEqual(existing, raw) {
+					break
+				}
+				file, errOpen := os.OpenFile(path, os.O_WRONLY|os.O_TRUNC, 0o600)
+				if errOpen != nil {
+					return "", fmt.Errorf("auth filestore: open existing failed: %w", errOpen)
+				}
+				if _, errWrite := file.Write(raw); errWrite != nil {
+					_ = file.Close()
+					return "", fmt.Errorf("auth filestore: write existing failed: %w", errWrite)
+				}
+				if errClose := file.Close(); errClose != nil {
+					return "", fmt.Errorf("auth filestore: close existing failed: %w", errClose)
+				}
+			} else if os.IsNotExist(errRead) {
+				if errWrite := os.WriteFile(path, raw, 0o600); errWrite != nil {
+					return "", fmt.Errorf("auth filestore: write file failed: %w", errWrite)
+				}
+			} else {
+				return "", fmt.Errorf("auth filestore: read existing failed: %w", errRead)
+			}
+		default:
+			return "", fmt.Errorf("auth filestore: nothing to persist for %s", auth.ID)
 		}
-		if existing, errRead := os.ReadFile(path); errRead == nil {
-			if jsonEqual(existing, raw) {
-				return path, nil
-			}
-			file, errOpen := os.OpenFile(path, os.O_WRONLY|os.O_TRUNC, 0o600)
-			if errOpen != nil {
-				return "", fmt.Errorf("auth filestore: open existing failed: %w", errOpen)
-			}
-			if _, errWrite := file.Write(raw); errWrite != nil {
-				_ = file.Close()
-				return "", fmt.Errorf("auth filestore: write existing failed: %w", errWrite)
-			}
-			if errClose := file.Close(); errClose != nil {
-				return "", fmt.Errorf("auth filestore: close existing failed: %w", errClose)
-			}
-			return path, nil
-		} else if !os.IsNotExist(errRead) {
-			return "", fmt.Errorf("auth filestore: read existing failed: %w", errRead)
-		}
-		if errWrite := os.WriteFile(path, raw, 0o600); errWrite != nil {
-			return "", fmt.Errorf("auth filestore: write file failed: %w", errWrite)
-		}
-	default:
-		return "", fmt.Errorf("auth filestore: nothing to persist for %s", auth.ID)
 	}
 
 	if auth.Attributes == nil {
 		auth.Attributes = make(map[string]string)
 	}
-	auth.Attributes["path"] = path
+	auth.Attributes[cliproxyauth.AttributePath] = path
+	auth.Attributes[cliproxyauth.AttributeSource] = path
+	auth.Attributes[cliproxyauth.AttributeSourceBackend] = cliproxyauth.AuthSourceFile
 
 	if strings.TrimSpace(auth.FileName) == "" {
 		auth.FileName = auth.ID
@@ -133,21 +186,17 @@ func (s *FileTokenStore) List(ctx context.Context) ([]*cliproxyauth.Auth, error)
 			return walkErr
 		}
 		if d.IsDir() {
-			// Credentials cluster mode set aside must never load as live accounts.
-			if path != dir && util.IsReservedAuthSubdir(d.Name()) {
-				return filepath.SkipDir
-			}
 			return nil
 		}
 		if !strings.HasSuffix(strings.ToLower(d.Name()), ".json") {
 			return nil
 		}
-		auth, err := s.readAuthFile(path, dir)
-		if err != nil {
+		auths, errReadAuths := s.readAuthFiles(path, dir)
+		if errReadAuths != nil {
 			return nil
 		}
-		if auth != nil {
-			entries = append(entries, auth)
+		if len(auths) > 0 {
+			entries = append(entries, auths...)
 		}
 		return nil
 	})
@@ -184,7 +233,7 @@ func (s *FileTokenStore) resolveDeletePath(id string) (string, error) {
 	return filepath.Join(dir, id), nil
 }
 
-func (s *FileTokenStore) readAuthFile(path, baseDir string) (*cliproxyauth.Auth, error) {
+func (s *FileTokenStore) readAuthFiles(path, baseDir string) ([]*cliproxyauth.Auth, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read file: %w", err)
@@ -196,336 +245,179 @@ func (s *FileTokenStore) readAuthFile(path, baseDir string) (*cliproxyauth.Auth,
 	if err = json.Unmarshal(data, &metadata); err != nil {
 		return nil, fmt.Errorf("unmarshal auth json: %w", err)
 	}
-	provider := InferAuthProvider(metadata)
-	// Normalize on every disk load so imported OAuth JSON (xai/claude/kimi/gemini/codex)
-	// converges to the same shape as a fresh login after restart or cross-tenant copy.
-	normalized := NormalizeAuthMetadata(metadata, provider)
-	if !reflect.DeepEqual(metadata, normalized) {
-		metadata = normalized
-		if raw, errMarshal := json.Marshal(metadata); errMarshal == nil {
-			if file, errOpen := os.OpenFile(path, os.O_WRONLY|os.O_TRUNC, 0o600); errOpen == nil {
-				_, _ = file.Write(raw)
-				_ = file.Close()
-			}
-		}
+	cliproxyauth.NormalizeCredentialMetadata(metadata)
+	if errWeight := cliproxyauth.ValidateAuthWeight(&cliproxyauth.Auth{Metadata: metadata}); errWeight != nil {
+		return nil, errWeight
 	}
-	// Antigravity is deliberately not handled here: its project discovery runs
-	// in the executor, through the account's own egress proxy and under its
-	// back-off. Probing on every file read used http.DefaultClient — Google
-	// reached straight from this host, with no timeout — and the only thing
-	// that had kept it quiet was the never-expiring "no project" flag (#1032).
-	if provider == "gemini" {
-		projectID := ""
-		if pid, ok := metadata["project_id"].(string); ok {
-			projectID = strings.TrimSpace(pid)
-		}
-		// Skip network project discovery on every auth-file read when we already
-		// failed or recently probed — otherwise onboardUser + auth WRITE storms
-		// the watcher and hot-reloads the whole client set.
-		if projectID == "" && !ShouldSkipAntigravityProjectIDProbe(metadata, time.Now(), 0) {
-			accessToken := extractAccessToken(metadata)
-			// For gemini type, the stored access_token is likely expired (~1h lifetime).
-			// Refresh it using the long-lived refresh_token before querying.
-			if provider == "gemini" {
-				if tokenMap, ok := metadata["token"].(map[string]any); ok {
-					if refreshed, errRefresh := refreshGeminiAccessToken(tokenMap, http.DefaultClient); errRefresh == nil {
-						accessToken = refreshed
+	provider, _ := metadata["type"].(string)
+	provider = strings.TrimSpace(provider)
+	if strings.EqualFold(provider, "gemini") {
+		return nil, nil
+	}
+	info, errStat := os.Stat(path)
+	if errStat != nil {
+		return nil, fmt.Errorf("stat file: %w", errStat)
+	}
+	if parser := currentPluginAuthParser(); parser != nil {
+		auths, handled, errParse := parsePluginAuthFile(parser, pluginapi.AuthParseRequest{
+			Provider: provider,
+			Path:     path,
+			FileName: s.idFor(path, baseDir),
+			RawJSON:  data,
+		})
+		if errParse == nil && handled {
+			auths = compactPluginAuths(auths)
+			if len(auths) == 0 {
+				return nil, nil
+			}
+			disabled, _ := metadata["disabled"].(bool)
+			for index, auth := range auths {
+				if auth == nil {
+					continue
+				}
+				cliproxyauth.NormalizeCredentialMetadata(auth.Metadata)
+				if len(auths) > 1 {
+					cliproxyauth.MarkPluginVirtualAuth(auth, path, index)
+				}
+				auth.CreatedAt = info.ModTime()
+				auth.UpdatedAt = info.ModTime()
+				if auth.Attributes == nil {
+					auth.Attributes = make(map[string]string)
+				}
+				auth.Attributes[cliproxyauth.AttributePath] = path
+				auth.Attributes[cliproxyauth.AttributeSource] = path
+				auth.Attributes[cliproxyauth.AttributeSourceBackend] = cliproxyauth.AuthSourceFile
+				if disabled {
+					auth.Disabled = true
+					auth.Status = cliproxyauth.StatusDisabled
+					if auth.Metadata == nil {
+						auth.Metadata = make(map[string]any)
+					}
+					auth.Metadata["disabled"] = true
+				}
+				if p, ok := metadata["proxy_url"].(string); ok && auth.ProxyURL == "" {
+					auth.ProxyURL = strings.TrimSpace(p)
+				}
+				if pref, ok := metadata["prefix"].(string); ok && auth.Prefix == "" {
+					auth.Prefix = strings.Trim(strings.TrimSpace(pref), "/")
+				}
+				if errWeight := cliproxyauth.ApplyAuthWeightMetadata(auth, metadata); errWeight != nil {
+					return nil, errWeight
+				}
+				cliproxyauth.ApplyAuthPriorityMetadata(auth, metadata)
+				if _, inherited := auth.Attributes[cliproxyauth.AttributeFilePriority]; inherited {
+					if setter, ok := auth.Storage.(interface{ SetMetadata(map[string]any) }); ok {
+						setter.SetMetadata(auth.Metadata)
 					}
 				}
+				cliproxyauth.ApplyCustomHeadersFromMetadata(auth)
 			}
-			if accessToken != "" {
-				fetchedProjectID, errFetch := FetchAntigravityProjectID(context.Background(), accessToken, http.DefaultClient)
-				changed := false
-				if errFetch != nil {
-					MarkAntigravityProjectIDProbeFailure(metadata, errFetch, time.Now())
-					changed = true
-				} else if trimmed := strings.TrimSpace(fetchedProjectID); trimmed != "" {
-					metadata["project_id"] = trimmed
-					ClearAntigravityProjectIDProbeMarkers(metadata)
-					changed = true
-				} else {
-					MarkAntigravityProjectIDProbeFailure(metadata, ErrAntigravityNoProjectID, time.Now())
-					changed = true
-				}
-				if changed {
-					if raw, errMarshal := json.Marshal(metadata); errMarshal == nil {
-						if existing, errRead := os.ReadFile(path); errRead != nil || !jsonEqual(existing, raw) {
-							if file, errOpen := os.OpenFile(path, os.O_WRONLY|os.O_TRUNC, 0o600); errOpen == nil {
-								_, _ = file.Write(raw)
-								_ = file.Close()
-							}
-						}
-					}
-				}
-			}
+			return auths, nil
 		}
 	}
-	info, err := os.Stat(path)
-	if err != nil {
-		return nil, fmt.Errorf("stat file: %w", err)
+	if provider == "" {
+		provider = "unknown"
 	}
-	return NewFileAuthRecord(s.idFor(path, baseDir), path, provider, metadata, info.ModTime()), nil
-}
-
-// buildFileAuthAttributes keeps disk-loaded credentials aligned with OAuth login
-// and management upload registration (auth_kind/base_url/using_api/email).
-func buildFileAuthAttributes(path string, metadata map[string]any) map[string]string {
-	attrs := map[string]string{"path": path}
-	if email := metadataString(metadata, "email"); email != "" {
-		attrs["email"] = email
+	info, errStat = os.Stat(path)
+	if errStat != nil {
+		return nil, fmt.Errorf("stat file: %w", errStat)
 	}
-	if authKind := metadataString(metadata, "auth_kind", "authKind"); authKind != "" {
-		attrs["auth_kind"] = authKind
+	id := s.idFor(path, baseDir)
+	disabled, _ := metadata["disabled"].(bool)
+	status := cliproxyauth.StatusActive
+	if disabled {
+		status = cliproxyauth.StatusDisabled
 	}
-	if baseURL := metadataString(metadata, "base_url", "base-url", "baseUrl"); baseURL != "" {
-		attrs["base_url"] = baseURL
+	proxyURL := ""
+	if p, ok := metadata["proxy_url"].(string); ok {
+		proxyURL = strings.TrimSpace(p)
 	}
-	if apiKey := metadataString(metadata, "api_key", "api-key", "apiKey"); apiKey != "" {
-		attrs["api_key"] = apiKey
-	}
-	if raw, ok := metadata["using_api"]; ok {
-		switch value := raw.(type) {
-		case bool:
-			if value {
-				attrs["using_api"] = "true"
-			} else {
-				attrs["using_api"] = "false"
-			}
-		case string:
-			if trimmed := strings.TrimSpace(value); trimmed != "" {
-				attrs["using_api"] = trimmed
-			}
+	prefix := ""
+	if rawPrefix, ok := metadata["prefix"].(string); ok {
+		trimmed := strings.TrimSpace(rawPrefix)
+		trimmed = strings.Trim(trimmed, "/")
+		if trimmed != "" && !strings.Contains(trimmed, "/") {
+			prefix = trimmed
 		}
 	}
-	return attrs
+	auth := &cliproxyauth.Auth{
+		ID:       id,
+		Provider: provider,
+		FileName: id,
+		Label:    s.labelFor(metadata),
+		Prefix:   prefix,
+		ProxyURL: proxyURL,
+		Status:   status,
+		Disabled: disabled,
+		Attributes: map[string]string{
+			cliproxyauth.AttributePath:          path,
+			cliproxyauth.AttributeSource:        path,
+			cliproxyauth.AttributeSourceBackend: cliproxyauth.AuthSourceFile,
+		},
+		Metadata:         metadata,
+		CreatedAt:        info.ModTime(),
+		UpdatedAt:        info.ModTime(),
+		LastRefreshedAt:  time.Time{},
+		NextRefreshAfter: time.Time{},
+	}
+	if email, ok := metadata["email"].(string); ok && email != "" {
+		auth.Attributes["email"] = email
+	}
+	cliproxyauth.ApplyCustomHeadersFromMetadata(auth)
+	return []*cliproxyauth.Auth{auth}, nil
 }
 
-func metadataString(metadata map[string]any, keys ...string) string {
-	if len(metadata) == 0 {
-		return ""
+func (s *FileTokenStore) readAuthFile(path, baseDir string) (*cliproxyauth.Auth, error) {
+	auths, errReadAuths := s.readAuthFiles(path, baseDir)
+	if errReadAuths != nil || len(auths) == 0 {
+		return nil, errReadAuths
 	}
-	for _, key := range keys {
-		if key == "" {
+	return auths[0], nil
+}
+
+func parsePluginAuthFile(parser PluginAuthParser, req pluginapi.AuthParseRequest) ([]*cliproxyauth.Auth, bool, error) {
+	if parser == nil {
+		return nil, false, nil
+	}
+	if multiParser, ok := parser.(PluginMultiAuthParser); ok {
+		return multiParser.ParseAuths(context.Background(), req)
+	}
+	auth, handled, errParse := parser.ParseAuth(context.Background(), req)
+	if errParse != nil || !handled || auth == nil {
+		return nil, handled, errParse
+	}
+	return []*cliproxyauth.Auth{auth}, true, nil
+}
+
+func compactPluginAuths(auths []*cliproxyauth.Auth) []*cliproxyauth.Auth {
+	if len(auths) == 0 {
+		return nil
+	}
+	out := auths[:0]
+	for _, auth := range auths {
+		if auth == nil {
 			continue
 		}
-		if raw, ok := metadata[key].(string); ok {
-			if value := strings.TrimSpace(raw); value != "" {
-				return value
-			}
+		if errWeight := cliproxyauth.ValidateAuthWeight(auth); errWeight != nil {
+			continue
 		}
+		out = append(out, auth)
 	}
-	return ""
-}
-
-// InferAuthProvider returns the explicit provider type, or derives it for
-// credential JSON shapes that are produced by supported OAuth flows.
-func InferAuthProvider(metadata map[string]any) string {
-	provider := metadataString(metadata, "type")
-	if provider == "" && isCodexOAuthMetadata(metadata) {
-		provider = "codex"
-		if metadata != nil {
-			metadata["type"] = provider
-		}
-	}
-	if provider == "" {
-		return "unknown"
-	}
-	return provider
-}
-
-func isCodexOAuthMetadata(metadata map[string]any) bool {
-	if len(metadata) == 0 {
-		return false
-	}
-	hasAccount := metadataString(metadata, "chatgpt_account_id", "chatgptAccountID", "account_id") != ""
-	hasToken := metadataString(metadata, "access_token", "id_token", "refresh_token", "session_token") != ""
-	hasOpenAIClient := strings.HasPrefix(metadataString(metadata, "client_id"), "app_")
-	hasCodexClaims := metadataString(metadata, "chatgpt_plan_type", "account_claims_email") != ""
-	return hasToken && (hasAccount || hasOpenAIClient || hasCodexClaims)
-}
-
-// NormalizeAuthMetadata fills canonical fields expected by provider executors
-// while preserving any source-specific metadata that may be useful later.
-// Imported OAuth JSON (cross-tenant upload) must produce the same shape as a
-// fresh login, otherwise executors and management quota calls fail silently.
-func NormalizeAuthMetadata(metadata map[string]any, provider string) map[string]any {
-	if len(metadata) == 0 {
-		return metadata
-	}
-	normalized := maps.Clone(metadata)
-	switch strings.ToLower(strings.TrimSpace(provider)) {
-	case "codex":
-		normalizeCodexAuthMetadata(normalized)
-	case "xai", "x-ai", "grok":
-		normalizeXAIAuthMetadata(normalized)
-	case "claude", "anthropic":
-		normalizeClaudeAuthMetadata(normalized)
-	case "kimi":
-		normalizeKimiAuthMetadata(normalized)
-	case "gemini-cli", "gemini", "antigravity":
-		normalizeGeminiFamilyAuthMetadata(normalized, provider)
-	}
-	return normalized
-}
-
-func normalizeXAIAuthMetadata(metadata map[string]any) {
-	if metadata == nil {
-		return
-	}
-	metadata["type"] = "xai"
-	if metadataString(metadata, "auth_kind", "authKind") == "" {
-		// OAuth credential files always carry refresh_token; API-key files use api_key.
-		if metadataString(metadata, "refresh_token", "refreshToken") != "" ||
-			metadataString(metadata, "access_token", "accessToken") != "" {
-			metadata["auth_kind"] = "oauth"
-		} else if metadataString(metadata, "api_key", "apiKey") != "" {
-			metadata["auth_kind"] = "api_key"
-		}
-	} else if kind := metadataString(metadata, "auth_kind", "authKind"); kind != "" {
-		metadata["auth_kind"] = kind
-	}
-	if metadataString(metadata, "base_url", "baseUrl") == "" {
-		metadata["base_url"] = "https://api.x.ai/v1"
-	} else if baseURL := metadataString(metadata, "base_url", "baseUrl"); baseURL != "" {
-		metadata["base_url"] = baseURL
-	}
-	if metadataString(metadata, "token_endpoint", "tokenEndpoint") == "" {
-		metadata["token_endpoint"] = "https://auth.x.ai/oauth2/token"
-	}
-	if email := metadataString(metadata, "email"); email != "" {
-		metadata["email"] = email
-	}
-	if sub := metadataString(metadata, "sub", "subject", "user_id", "userId"); sub != "" {
-		metadata["sub"] = sub
-	}
-	// Prefer JWT claims when local fields are missing or stale after export/import.
-	normalizeXAIMetadataFromJWT(metadataString(metadata, "access_token", "accessToken"), metadata)
-	normalizeXAIMetadataFromJWT(metadataString(metadata, "id_token", "idToken"), metadata)
-	// OAuth credentials default to Grok Build (using_api=false) when unset.
-	if _, ok := metadata["using_api"]; !ok {
-		if strings.EqualFold(metadataString(metadata, "auth_kind"), "oauth") {
-			metadata["using_api"] = false
-		}
-	}
-}
-
-func normalizeXAIMetadataFromJWT(token string, metadata map[string]any) {
-	claims, ok := parseJWTClaimsMap(token)
-	if !ok {
-		return
-	}
-	if metadataString(metadata, "sub") == "" {
-		if sub, ok := claims["sub"].(string); ok && strings.TrimSpace(sub) != "" {
-			metadata["sub"] = strings.TrimSpace(sub)
-		} else if principal, ok := claims["principal_id"].(string); ok && strings.TrimSpace(principal) != "" {
-			metadata["sub"] = strings.TrimSpace(principal)
-		}
-	}
-	if metadataString(metadata, "email") == "" {
-		if email, ok := claims["email"].(string); ok && strings.TrimSpace(email) != "" {
-			metadata["email"] = strings.TrimSpace(email)
-		}
-	}
-	if metadataString(metadata, "expired") == "" {
-		if exp, ok := jwtNumericClaim(claims, "exp"); ok && exp > 0 {
-			metadata["expired"] = time.Unix(exp, 0).UTC().Format(time.RFC3339)
-		}
-	}
-}
-
-func normalizeClaudeAuthMetadata(metadata map[string]any) {
-	if metadata == nil {
-		return
-	}
-	if metadataString(metadata, "type") == "" {
-		metadata["type"] = "claude"
-	}
-	if email := metadataString(metadata, "email"); email != "" {
-		metadata["email"] = email
-	}
-	if metadataString(metadata, "auth_kind", "authKind") == "" {
-		if metadataString(metadata, "refresh_token", "refreshToken") != "" ||
-			metadataString(metadata, "access_token", "accessToken") != "" {
-			metadata["auth_kind"] = "oauth"
-		}
-	}
-}
-
-func normalizeKimiAuthMetadata(metadata map[string]any) {
-	if metadata == nil {
-		return
-	}
-	if metadataString(metadata, "type") == "" {
-		metadata["type"] = "kimi"
-	}
-	if metadataString(metadata, "auth_kind", "authKind") == "" {
-		if metadataString(metadata, "refresh_token", "refreshToken") != "" ||
-			metadataString(metadata, "access_token", "accessToken") != "" {
-			metadata["auth_kind"] = "oauth"
-		}
-	}
-}
-
-func normalizeGeminiFamilyAuthMetadata(metadata map[string]any, provider string) {
-	if metadata == nil {
-		return
-	}
-	provider = strings.ToLower(strings.TrimSpace(provider))
-	if provider == "" {
-		provider = "gemini"
-	}
-	if metadataString(metadata, "type") == "" {
-		metadata["type"] = provider
-	}
-	if metadataString(metadata, "auth_kind", "authKind") == "" {
-		if metadataString(metadata, "refresh_token", "refreshToken") != "" ||
-			hasNestedRefreshToken(metadata) {
-			metadata["auth_kind"] = "oauth"
-		}
-	}
-}
-
-func hasNestedRefreshToken(metadata map[string]any) bool {
-	tokenRaw, ok := metadata["token"].(map[string]any)
-	if !ok || tokenRaw == nil {
-		return false
-	}
-	return metadataString(tokenRaw, "refresh_token", "refreshToken") != ""
-}
-
-func syncRoutingMetadata(auth *cliproxyauth.Auth) {
-	if auth == nil {
-		return
-	}
-	prefix := strings.TrimSpace(auth.Prefix)
-	proxyURL := strings.TrimSpace(auth.ProxyURL)
-	proxyID := strings.TrimSpace(auth.ProxyID)
-	if prefix == "" && proxyURL == "" && proxyID == "" {
-		return
-	}
-	if auth.Metadata == nil {
-		auth.Metadata = make(map[string]any)
-	}
-	if prefix != "" {
-		auth.Metadata["prefix"] = prefix
-	}
-	if proxyURL != "" {
-		auth.Metadata["proxy_url"] = proxyURL
-	}
-	if proxyID != "" {
-		auth.Metadata["proxy_id"] = proxyID
-	}
+	return out
 }
 
 func (s *FileTokenStore) idFor(path, baseDir string) string {
-	if baseDir == "" {
-		return path
+	id := path
+	if baseDir != "" {
+		if rel, errRel := filepath.Rel(baseDir, path); errRel == nil && rel != "" {
+			id = rel
+		}
 	}
-	rel, err := filepath.Rel(baseDir, path)
-	if err != nil {
-		return path
+	// On Windows, normalize ID casing to avoid duplicate auth entries caused by case-insensitive paths.
+	if runtime.GOOS == "windows" {
+		id = strings.ToLower(id)
 	}
-	return rel
+	return id
 }
 
 func (s *FileTokenStore) resolveAuthPath(auth *cliproxyauth.Auth) (string, error) {
@@ -559,6 +451,22 @@ func (s *FileTokenStore) resolveAuthPath(auth *cliproxyauth.Auth) (string, error
 	return filepath.Join(dir, auth.ID), nil
 }
 
+func (s *FileTokenStore) labelFor(metadata map[string]any) string {
+	if metadata == nil {
+		return ""
+	}
+	if v, ok := metadata["label"].(string); ok && v != "" {
+		return v
+	}
+	if v, ok := metadata["email"].(string); ok && v != "" {
+		return v
+	}
+	if project, ok := metadata["project_id"].(string); ok && project != "" {
+		return project
+	}
+	return ""
+}
+
 func (s *FileTokenStore) baseDirSnapshot() string {
 	s.dirLock.RLock()
 	defer s.dirLock.RUnlock()
@@ -579,51 +487,6 @@ func extractAccessToken(metadata map[string]any) string {
 		}
 	}
 	return ""
-}
-
-func refreshGeminiAccessToken(tokenMap map[string]any, httpClient *http.Client) (string, error) {
-	refreshToken, _ := tokenMap["refresh_token"].(string)
-	clientID, _ := tokenMap["client_id"].(string)
-	clientSecret, _ := tokenMap["client_secret"].(string)
-	tokenURI, _ := tokenMap["token_uri"].(string)
-
-	if refreshToken == "" || clientID == "" || clientSecret == "" {
-		return "", fmt.Errorf("missing refresh credentials")
-	}
-	if tokenURI == "" {
-		tokenURI = "https://oauth2.googleapis.com/token"
-	}
-
-	data := url.Values{
-		"grant_type":    {"refresh_token"},
-		"refresh_token": {refreshToken},
-		"client_id":     {clientID},
-		"client_secret": {clientSecret},
-	}
-
-	resp, err := httpClient.PostForm(tokenURI, data)
-	if err != nil {
-		return "", fmt.Errorf("refresh request: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	body, _ := util.ReadHTTPResponseBody("codex-device", resp.Body)
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("refresh failed: status %d", resp.StatusCode)
-	}
-
-	var result map[string]any
-	if errUnmarshal := json.Unmarshal(body, &result); errUnmarshal != nil {
-		return "", fmt.Errorf("decode refresh response: %w", errUnmarshal)
-	}
-
-	newAccessToken, _ := result["access_token"].(string)
-	if newAccessToken == "" {
-		return "", fmt.Errorf("no access_token in refresh response")
-	}
-
-	tokenMap["access_token"] = newAccessToken
-	return newAccessToken, nil
 }
 
 // jsonEqual compares two JSON blobs by parsing them into Go objects and deep comparing.

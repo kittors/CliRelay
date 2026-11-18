@@ -12,15 +12,15 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	coreapi "github.com/router-for-me/CLIProxyAPI/v6/internal/api"
-	internalmanagement "github.com/router-for-me/CLIProxyAPI/v6/internal/api/handlers/management"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/interfaces"
-	internallogging "github.com/router-for-me/CLIProxyAPI/v6/internal/logging"
-	sdkaccess "github.com/router-for-me/CLIProxyAPI/v6/sdk/access"
-	"github.com/router-for-me/CLIProxyAPI/v6/sdk/api/handlers"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
-	sdkconfig "github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
-	sdklogging "github.com/router-for-me/CLIProxyAPI/v6/sdk/logging"
+	coreapi "github.com/router-for-me/CLIProxyAPI/v8/internal/api"
+	internalmanagement "github.com/router-for-me/CLIProxyAPI/v8/internal/api/handlers/management"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/interfaces"
+	internallogging "github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
+	sdkaccess "github.com/router-for-me/CLIProxyAPI/v8/sdk/access"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	sdkconfig "github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
+	sdklogging "github.com/router-for-me/CLIProxyAPI/v8/sdk/logging"
 )
 
 type Server struct {
@@ -138,8 +138,8 @@ type sdkRequestLoggerAdapter struct {
 	inner sdklogging.RequestLogger
 }
 
-func (a sdkRequestLoggerAdapter) LogRequest(url, method string, requestHeaders map[string][]string, body []byte, statusCode int, responseHeaders map[string][]string, response, apiRequest, apiResponse []byte, apiResponseErrors []*interfaces.ErrorMessage, requestID string, requestTimestamp, apiResponseTimestamp time.Time) error {
-	return a.inner.LogRequest(url, method, requestHeaders, body, statusCode, responseHeaders, response, apiRequest, apiResponse, convertErrorMessages(apiResponseErrors), requestID, requestTimestamp, apiResponseTimestamp)
+func (a sdkRequestLoggerAdapter) LogRequest(url, method string, requestHeaders map[string][]string, body []byte, statusCode int, responseHeaders map[string][]string, response, websocketTimeline, apiRequest, apiResponse, apiWebsocketTimeline []byte, apiResponseErrors []*interfaces.ErrorMessage, requestID string, requestTimestamp, apiResponseTimestamp time.Time) error {
+	return a.inner.LogRequest(url, method, requestHeaders, body, statusCode, responseHeaders, response, websocketTimeline, apiRequest, apiResponse, apiWebsocketTimeline, convertErrorMessages(apiResponseErrors), requestID, requestTimestamp, apiResponseTimestamp)
 }
 
 func (a sdkRequestLoggerAdapter) LogStreamingRequest(url, method string, headers map[string][]string, body []byte, requestID string) (internallogging.StreamingLogWriter, error) {
@@ -166,7 +166,17 @@ func (a sdkStreamingLogWriterAdapter) WriteChunkAsync(chunk []byte) {
 }
 
 func (a sdkStreamingLogWriterAdapter) NoteDroppedChunks(n int) {
-	a.inner.NoteDroppedChunks(n)
+	if writer, ok := any(a.inner).(interface{ NoteDroppedChunks(int) }); ok {
+		writer.NoteDroppedChunks(n)
+	}
+}
+
+func (a sdkStreamingLogWriterAdapter) WriteAPIResponseErrors(errors []*interfaces.ErrorMessage) error {
+	return a.inner.WriteAPIResponseErrors(errors)
+}
+
+func (a sdkStreamingLogWriterAdapter) WriteAPIWebsocketTimeline(timeline []byte) error {
+	return a.inner.WriteAPIWebsocketTimeline(timeline)
 }
 
 func (a sdkStreamingLogWriterAdapter) WriteStatus(status int, headers map[string][]string) error {

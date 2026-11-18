@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/management/warmup"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/management/warmup"
 )
 
 // WarmupPolicies is the warmup_policies table.

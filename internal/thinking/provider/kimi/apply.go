@@ -1,28 +1,19 @@
 // Package kimi implements thinking configuration for Kimi (Moonshot AI) models.
-//
-// Kimi models use the OpenAI-compatible reasoning_effort format with discrete levels
-// (low/medium/high). The provider strips any existing thinking config and applies
-// the unified ThinkingConfig in OpenAI format.
 package kimi
 
 import (
 	"fmt"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/thinking"
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
+	"github.com/MoeForge/moego/ojson"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 )
 
 // Applier implements thinking.ProviderApplier for Kimi models.
-//
-// Kimi-specific behavior:
-//   - Output format: reasoning_effort (string: low/medium/high)
-//   - Uses OpenAI-compatible format
-//   - Supports budget-to-level conversion
 type Applier struct{}
 
-var _ thinking.ProviderApplier = (*Applier)(nil)
+var _ thinking.ProviderDocApplier = (*Applier)(nil)
 
 // NewApplier creates a new Kimi thinking applier.
 func NewApplier() *Applier {
@@ -30,97 +21,128 @@ func NewApplier() *Applier {
 }
 
 func init() {
-	thinking.RegisterProvider("kimi", NewApplier())
+	applier := NewApplier()
+	thinking.RegisterProvider("kimi", applier)
+	thinking.RegisterProvider("kimi-ai", applier)
+	thinking.RegisterProvider("kimi.ai", applier)
+	thinking.RegisterProvider("kimi.com", applier)
 }
 
 // Apply applies thinking configuration to Kimi request body.
-//
-// Expected output format:
-//
-//	{
-//	  "reasoning_effort": "high"
-//	}
 func (a *Applier) Apply(body []byte, config thinking.ThinkingConfig, modelInfo *registry.ModelInfo) ([]byte, error) {
-	if thinking.IsUserDefinedModel(modelInfo) {
-		return applyCompatibleKimi(body, config)
-	}
-	if modelInfo.Thinking == nil {
+	if !thinking.IsUserDefinedModel(modelInfo) && modelInfo.Thinking == nil {
 		return body, nil
 	}
-
-	if len(body) == 0 || !gjson.ValidBytes(body) {
-		body = []byte(`{}`)
-	}
-
-	var effort string
-	switch config.Mode {
-	case thinking.ModeLevel:
-		if config.Level == "" {
-			return body, nil
-		}
-		effort = string(config.Level)
-	case thinking.ModeNone:
-		// Kimi uses "none" to disable thinking
-		effort = string(thinking.LevelNone)
-	case thinking.ModeBudget:
-		// Convert budget to level using threshold mapping
-		level, ok := thinking.ConvertBudgetToLevel(config.Budget)
-		if !ok {
-			return body, nil
-		}
-		effort = level
-	case thinking.ModeAuto:
-		// Auto mode maps to "auto" effort
-		effort = string(thinking.LevelAuto)
-	default:
+	effort, disable, ok := resolveKimiAction(config, modelInfo)
+	if !ok {
 		return body, nil
 	}
-
-	if effort == "" {
-		return body, nil
+	if len(body) == 0 || !ojson.ValidBytes(body) {
+		body = []byte("{}")
 	}
-
-	result, err := sjson.SetBytes(body, "reasoning_effort", effort)
+	doc := ojson.NewDoc(body)
+	var err error
+	if disable {
+		err = applyDisabledThinkingDoc(doc)
+	} else {
+		err = applyEnabledThinkingDoc(doc, effort)
+	}
 	if err != nil {
-		return body, fmt.Errorf("kimi thinking: failed to set reasoning_effort: %w", err)
+		return body, err
 	}
-	return result, nil
+	return doc.Bytes(), nil
 }
 
-// applyCompatibleKimi applies thinking config for user-defined Kimi models.
-func applyCompatibleKimi(body []byte, config thinking.ThinkingConfig) ([]byte, error) {
-	if len(body) == 0 || !gjson.ValidBytes(body) {
-		body = []byte(`{}`)
+// ApplyDoc applies thinking configuration onto doc in place.
+func (a *Applier) ApplyDoc(doc *ojson.Doc, config thinking.ThinkingConfig, modelInfo *registry.ModelInfo) error {
+	if doc == nil {
+		return nil
+	}
+	if !thinking.IsUserDefinedModel(modelInfo) && modelInfo.Thinking == nil {
+		return nil
+	}
+	effort, disable, ok := resolveKimiAction(config, modelInfo)
+	if !ok {
+		return nil
+	}
+	if disable {
+		return applyDisabledThinkingDoc(doc)
+	}
+	return applyEnabledThinkingDoc(doc, effort)
+}
+
+func resolveKimiAction(config thinking.ThinkingConfig, modelInfo *registry.ModelInfo) (effort string, disable bool, ok bool) {
+	if thinking.IsUserDefinedModel(modelInfo) {
+		switch config.Mode {
+		case thinking.ModeLevel:
+			if config.Level == "" {
+				return "", false, false
+			}
+			return string(config.Level), false, true
+		case thinking.ModeNone:
+			if config.Level == "" || config.Level == thinking.LevelNone {
+				return "", true, true
+			}
+			return string(config.Level), false, true
+		case thinking.ModeAuto:
+			return string(thinking.LevelAuto), false, true
+		case thinking.ModeBudget:
+			level, okConvert := thinking.ConvertBudgetToLevel(config.Budget)
+			if !okConvert {
+				return "", false, false
+			}
+			return level, false, true
+		default:
+			return "", false, false
+		}
 	}
 
-	var effort string
 	switch config.Mode {
 	case thinking.ModeLevel:
 		if config.Level == "" {
-			return body, nil
+			return "", false, false
 		}
-		effort = string(config.Level)
+		return string(config.Level), false, true
 	case thinking.ModeNone:
-		effort = string(thinking.LevelNone)
-		if config.Level != "" {
-			effort = string(config.Level)
+		if config.Level != "" && config.Level != thinking.LevelNone {
+			return string(config.Level), false, true
 		}
-	case thinking.ModeAuto:
-		effort = string(thinking.LevelAuto)
+		return "", true, true
 	case thinking.ModeBudget:
-		// Convert budget to level
-		level, ok := thinking.ConvertBudgetToLevel(config.Budget)
-		if !ok {
-			return body, nil
+		level, okConvert := thinking.ConvertBudgetToLevel(config.Budget)
+		if !okConvert {
+			return "", false, false
 		}
-		effort = level
+		return level, false, true
+	case thinking.ModeAuto:
+		return string(thinking.LevelAuto), false, true
 	default:
-		return body, nil
+		return "", false, false
 	}
+}
 
-	result, err := sjson.SetBytes(body, "reasoning_effort", effort)
-	if err != nil {
-		return body, fmt.Errorf("kimi thinking: failed to set reasoning_effort: %w", err)
+func applyEnabledThinkingDoc(doc *ojson.Doc, effort string) error {
+	if errDeleteLegacyEffort := util.DeleteJSONDocIfExists(doc, "reasoning_effort"); errDeleteLegacyEffort != nil {
+		return fmt.Errorf("kimi thinking: failed to clear reasoning_effort: %w", errDeleteLegacyEffort)
 	}
-	return result, nil
+	if errSetType := doc.Set("thinking.type", "enabled"); errSetType != nil {
+		return fmt.Errorf("kimi thinking: failed to set thinking.type: %w", errSetType)
+	}
+	if errSetEffort := doc.Set("thinking.effort", effort); errSetEffort != nil {
+		return fmt.Errorf("kimi thinking: failed to set thinking.effort: %w", errSetEffort)
+	}
+	return nil
+}
+
+func applyDisabledThinkingDoc(doc *ojson.Doc) error {
+	if errDeleteThinking := util.DeleteJSONDocIfExists(doc, "thinking"); errDeleteThinking != nil {
+		return fmt.Errorf("kimi thinking: failed to clear thinking object: %w", errDeleteThinking)
+	}
+	if errDeleteEffort := util.DeleteJSONDocIfExists(doc, "reasoning_effort"); errDeleteEffort != nil {
+		return fmt.Errorf("kimi thinking: failed to clear reasoning_effort: %w", errDeleteEffort)
+	}
+	if errSetType := doc.Set("thinking.type", "disabled"); errSetType != nil {
+		return fmt.Errorf("kimi thinking: failed to set thinking.type: %w", errSetType)
+	}
+	return nil
 }

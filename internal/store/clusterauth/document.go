@@ -9,9 +9,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	baseauth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth"
-	sdkauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/auth"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	baseauth "github.com/router-for-me/CLIProxyAPI/v8/internal/auth"
+	sdkauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/auth"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
 
 // persistedDocument returns the JSON document a save writes for auth, built

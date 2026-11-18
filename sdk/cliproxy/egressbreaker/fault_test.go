@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/testutil/proxytest"
-	"github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/egressbreaker"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/testutil/proxytest"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/egressbreaker"
 	"golang.org/x/net/proxy"
 )
 

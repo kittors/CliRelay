@@ -9,7 +9,7 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/observability"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/observability"
 )
 
 type observabilityTestStore struct {

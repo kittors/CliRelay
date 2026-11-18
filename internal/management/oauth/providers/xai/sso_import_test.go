@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	internalxai "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/xai"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/management/oauth/credentialimport"
+	internalxai "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/xai"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/management/oauth/credentialimport"
 )
 
 type fakeSSOConverter struct {

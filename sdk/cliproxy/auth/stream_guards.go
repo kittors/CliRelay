@@ -3,7 +3,7 @@ package auth
 import (
 	"time"
 
-	sdkconfig "github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
+	sdkconfig "github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
 )
 
 // streamGuards are the limits a channel group puts on waiting for an upstream:

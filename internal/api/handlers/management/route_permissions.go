@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/identity"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/identity"
 )
 
 // ManagementRequestPermission returns the RBAC permission for a management

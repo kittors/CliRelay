@@ -5,7 +5,7 @@ import (
 	"sort"
 	"time"
 
-	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 )
 
 // ResetAwareSelector spends first the quota a reset is about to wipe out.

@@ -14,36 +14,42 @@ import (
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
-	baseauth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/misc"
-	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	baseauth "github.com/router-for-me/CLIProxyAPI/v8/internal/auth"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/misc"
+	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
 )
 
 const (
-	defaultConfigTable = "config_store"
-	defaultAuthTable   = "auth_store"
-	defaultConfigKey   = "config"
+	defaultConfigTable   = "config_store"
+	defaultAuthTable     = "auth_store"
+	defaultCooldownTable = "cooldown_store"
+	defaultConfigKey     = "config"
 )
 
 // PostgresStoreConfig captures configuration required to initialize a Postgres-backed store.
 type PostgresStoreConfig struct {
-	DSN         string
-	Schema      string
-	ConfigTable string
-	AuthTable   string
-	SpoolDir    string
+	DSN           string
+	Schema        string
+	ConfigTable   string
+	AuthTable     string
+	CooldownTable string
+	SpoolDir      string
 }
 
 // PostgresStore persists configuration and authentication metadata using PostgreSQL as backend
 // while mirroring data to a local workspace so existing file-based workflows continue to operate.
 type PostgresStore struct {
-	db         *sql.DB
-	cfg        PostgresStoreConfig
-	spoolRoot  string
-	configPath string
-	authDir    string
-	mu         sync.Mutex
+	db                 *sql.DB
+	cfg                PostgresStoreConfig
+	spoolRoot          string
+	configPath         string
+	authDir            string
+	cooldownStore      *postgresCooldownStateStore
+	mu                 sync.Mutex
+	refreshSchemaMu    sync.Mutex
+	refreshSchemaReady bool
+	refreshClaims      sync.Map
 }
 
 // NewPostgresStore establishes a connection to PostgreSQL and prepares the local workspace.
@@ -58,6 +64,9 @@ func NewPostgresStore(ctx context.Context, cfg PostgresStoreConfig) (*PostgresSt
 	}
 	if cfg.AuthTable == "" {
 		cfg.AuthTable = defaultAuthTable
+	}
+	if cfg.CooldownTable == "" {
+		cfg.CooldownTable = defaultCooldownTable
 	}
 
 	spoolRoot := strings.TrimSpace(cfg.SpoolDir)
@@ -97,6 +106,7 @@ func NewPostgresStore(ctx context.Context, cfg PostgresStoreConfig) (*PostgresSt
 		configPath: filepath.Join(configDir, "config.yaml"),
 		authDir:    authDir,
 	}
+	store.cooldownStore = &postgresCooldownStateStore{store: store}
 	return store, nil
 }
 

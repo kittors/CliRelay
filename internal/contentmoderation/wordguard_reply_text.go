@@ -4,7 +4,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	sdktranslator "github.com/router-for-me/CLIProxyAPI/v6/sdk/translator"
+	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 )
 
 // maxReplyHold bounds how much text one stream position keeps back while it

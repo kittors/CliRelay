@@ -2,6 +2,11 @@ package executor
 
 import "strings"
 
+const (
+	AccessFrozenProvidersKey   = "frozen-providers"
+	FrozenProvidersMetadataKey = "frozen-providers"
+)
+
 // CopyAccessSelectionScope copies what the API key authentication found that
 // scopes credential selection from the request's access metadata into
 // execution metadata: the channels and channel groups the key may use, and the

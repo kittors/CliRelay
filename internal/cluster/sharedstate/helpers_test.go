@@ -11,8 +11,8 @@ import (
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/cluster/sharedredis"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/cluster/sharedredis"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 )
 
 // realRedisEnv points the script tests at a real Redis (for example a local

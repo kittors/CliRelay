@@ -5,8 +5,8 @@ import (
 	"database/sql"
 	"strings"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	sqlrouting "github.com/router-for-me/CLIProxyAPI/v6/internal/storage/sqlstore/routing"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	sqlrouting "github.com/router-for-me/CLIProxyAPI/v8/internal/storage/sqlstore/routing"
 	log "github.com/sirupsen/logrus"
 )
 

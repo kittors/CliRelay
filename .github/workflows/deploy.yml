@@ -119,9 +119,9 @@ jobs:
           echo "app_version=${VERSION}" >> "$GITHUB_OUTPUT"
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
             -ldflags="-s -w \
-              -X 'github.com/router-for-me/CLIProxyAPI/v6/internal/buildinfo.Version=${VERSION}' \
-              -X 'github.com/router-for-me/CLIProxyAPI/v6/internal/buildinfo.Commit=${{ github.sha }}' \
-              -X 'github.com/router-for-me/CLIProxyAPI/v6/internal/buildinfo.BuildDate=${BUILD_DATE}'" \
+              -X 'github.com/router-for-me/CLIProxyAPI/v8/internal/buildinfo.Version=${VERSION}' \
+              -X 'github.com/router-for-me/CLIProxyAPI/v8/internal/buildinfo.Commit=${{ github.sha }}' \
+              -X 'github.com/router-for-me/CLIProxyAPI/v8/internal/buildinfo.BuildDate=${BUILD_DATE}'" \
             -o cli-proxy-api-new ./cmd/server/
 
       # Every node gets this exact binary; nothing is rebuilt per node.

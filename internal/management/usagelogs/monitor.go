@@ -4,7 +4,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/usage"
 )
 
 // MonitorQuery is the parsed filter of the monitor center endpoints.

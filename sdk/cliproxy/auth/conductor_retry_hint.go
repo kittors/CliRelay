@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/retryhint"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/retryhint"
 )
 
 // Hints the scheduler reads for itself.

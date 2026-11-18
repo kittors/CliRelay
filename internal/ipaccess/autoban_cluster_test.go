@@ -6,9 +6,9 @@ import (
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/cluster/sharedredis"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/cluster/sharedstate"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/cluster/sharedredis"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/cluster/sharedstate"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 )
 
 func installClusterAutoBan(t *testing.T) *miniredis.Miniredis {

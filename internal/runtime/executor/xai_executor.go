@@ -1,50 +1,121 @@
 package executor
 
 import (
-	"bufio"
-	"bytes"
 	"context"
 	"fmt"
 	"net/http"
-	"strconv"
 	"strings"
-	"time"
 
-	xaiauth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/xai"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/thinking"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
-	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
-	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
-	sdktranslator "github.com/router-for-me/CLIProxyAPI/v6/sdk/translator"
-	log "github.com/sirupsen/logrus"
-	"github.com/tidwall/gjson"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
+	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+)
+
+var (
+	xaiDataTag  = []byte("data:")
+	xaiEventTag = []byte("event:")
 )
 
 const (
-	xaiUsingAPIAttr    = "using_api"
-	xaiTokenAuthHeader = "X-XAI-Token-Auth"
-	xaiTokenAuthValue  = "xai-grok-cli"
+	xaiImageHandlerType        = "openai-image"
+	xaiVideoHandlerType        = "openai-video"
+	xaiSpeechHandlerType       = "openai-speech"
+	xaiCustomToolType          = "custom"
+	xaiFunctionToolType        = "function"
+	xaiImageGenerationToolType = "image_generation"
+	xaiNamespaceToolType       = "namespace"
+	xaiToolSearchType          = "tool_search"
+	xaiWebSearchToolType       = "web_search"
+	xaiClientWebSearchAlias    = "clientfn_web_search"
+	xaiXSearchToolType         = "x_search"
+	xaiMaxTools                = 200
+	// Codex Desktop injects codex_app.automation_update with a large oneOf+$ref
+	// schema. xAI's free/build Responses path accepts the HTTP request but never
+	// emits SSE when that schema is present, so Desktop hangs on "thinking".
+	xaiCodexAppNamespaceName    = "codex_app"
+	xaiAutomationUpdateToolName = "automation_update"
+	// Permissive placeholder schema: keeps the tool callable without the hang.
+	xaiSafeFunctionParameters   = `{"type":"object","properties":{},"additionalProperties":true}`
+	xaiImagesGenerationsPath    = "/images/generations"
+	xaiImagesEditsPath          = "/images/edits"
+	xaiDefaultImageEndpointPath = xaiImagesGenerationsPath
+	xaiVideosGenerationsPath    = "/videos/generations"
+	xaiVideosEditsPath          = "/videos/edits"
+	xaiVideosExtensionsPath     = "/videos/extensions"
+	xaiVideosPath               = "/videos"
+	xaiTTSPath                  = "/tts"
+	xaiIdempotencyKeyMetaKey    = "idempotency_key"
+	xaiComposerModelPrefix      = "grok-composer-"
+	xaiTokenAuthHeader          = "X-XAI-Token-Auth"
+	xaiTokenAuthValue           = "xai-grok-cli"
+	xaiClientVersionHeader      = "x-grok-client-version"
+	// Keep in sync with the current Grok CLI client version that chat-proxy
+	// expects. The server rejects older versions with HTTP 426; it required
+	// 1.0.13+ as of 2026-10-01 (#6249).
+	// This hardcoded value serves as fallback if npm registry resolution fails.
+	xaiClientVersionFallback      = helps.DefaultXAIFallbackClientVersion
+	xaiClientVersionValue         = xaiClientVersionFallback
+	xaiClientIdentifierHeader     = "x-grok-client-identifier"
+	xaiClientIdentifierValue      = "grok-shell"
+	xaiAuthenticateResponseHeader = "x-authenticateresponse"
+	xaiAuthenticateResponseValue  = "authenticate-response"
+	// xaiUsingAPIAttr enables the official API path for HTTP chat and media.
+	xaiUsingAPIAttr = "using_api"
 )
 
-// XAIExecutor executes Grok requests through xAI's Responses API.
+// xaiXSearchToolJSON is the native X Search tool injected when enabled by config.
+// Internal subtool traces are still filtered downstream when this tool is present.
+var xaiXSearchToolJSON = []byte(`{"type":"x_search"}`)
+
+// XAIExecutor is a stateless executor for xAI Grok's Responses API.
 type XAIExecutor struct {
 	cfg *config.Config
 }
 
-func NewXAIExecutor(cfg *config.Config) *XAIExecutor { return &XAIExecutor{cfg: cfg} }
+// NewXAIExecutor creates a new xAI executor.
+func NewXAIExecutor(cfg *config.Config) *XAIExecutor {
+	return &XAIExecutor{cfg: cfg}
+}
 
-func (e *XAIExecutor) Identifier() string { return "xai" }
+// xaiClientVersion returns the active Grok CLI client version (dynamically fetched
+// from npm or falling back to xaiClientVersionFallback).
+func xaiClientVersion() string {
+	return helps.GetXAIClientVersion()
+}
 
+// StartXAIVersionUpdater starts the periodic Grok CLI version updater from npm.
+// proxyURL is the global outbound proxy; an empty value inherits the process environment.
+func StartXAIVersionUpdater(ctx context.Context, proxyURL string) {
+	helps.StartXAIVersionUpdater(ctx, proxyURL)
+}
+
+// Identifier returns the provider identifier.
+func (e *XAIExecutor) Identifier() string {
+	return "xai"
+}
+
+// PrepareRequest injects xAI credentials into the outgoing HTTP request.
 func (e *XAIExecutor) PrepareRequest(req *http.Request, auth *cliproxyauth.Auth) error {
 	if req == nil {
 		return nil
 	}
 	token, _ := xaiCreds(auth)
-	applyXAIHeaders(req, e.cfg, auth, token, false)
+	if strings.TrimSpace(token) != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	} else {
+		req.Header.Del("Authorization")
+	}
+	ensureXAIUserAgent(req)
+	var attrs map[string]string
+	if auth != nil {
+		attrs = auth.Attributes
+	}
+	util.ApplyCustomHeadersFromAttrs(req, attrs)
 	return nil
 }
 
+// HttpRequest injects xAI credentials into the request and executes it.
 func (e *XAIExecutor) HttpRequest(ctx context.Context, auth *cliproxyauth.Auth, req *http.Request) (*http.Response, error) {
 	if req == nil {
 		return nil, fmt.Errorf("xai executor: request is nil")
@@ -53,468 +124,12 @@ func (e *XAIExecutor) HttpRequest(ctx context.Context, auth *cliproxyauth.Auth, 
 		ctx = req.Context()
 	}
 	httpReq := req.WithContext(ctx)
-	if err := e.PrepareRequest(httpReq, auth); err != nil {
-		return nil, err
+	if errPrepare := e.PrepareRequest(httpReq, auth); errPrepare != nil {
+		return nil, errPrepare
 	}
-	httpClient := newProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
+	httpClient := helps.NewProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
 	return httpClient.Do(httpReq)
 }
 
-func (e *XAIExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
-	if xaiIsMediaAlt(opts.Alt) {
-		return e.executeImageGeneration(ctx, auth, req, opts)
-	}
-	if xaiIsVideoAlt(opts.Alt) {
-		if strings.TrimSpace(opts.Alt) == xaiVideoStatusAlt {
-			return e.executeVideoStatus(ctx, auth, req, opts)
-		}
-		return e.executeVideoGeneration(ctx, auth, req, opts)
-	}
-	if opts.Alt == "responses/compact" {
-		return resp, statusErr{code: http.StatusNotImplemented, msg: "/responses/compact not supported"}
-	}
-	execCtx, body, toolNames, err := e.prepareResponsesRequest(ctx, auth, req, opts, true)
-	if err != nil {
-		return resp, err
-	}
-	reporter := execCtx.Reporter()
-	defer reporter.trackFailure(execCtx.Context, &err)
-
-	token, _ := xaiCreds(auth)
-	endpoint := strings.TrimSuffix(xaiChatBaseURL(auth), "/") + "/responses"
-	httpReq, err := http.NewRequestWithContext(execCtx.Context, http.MethodPost, endpoint, bytes.NewReader(body))
-	if err != nil {
-		return resp, err
-	}
-	applyXAIChatHeaders(httpReq, e.cfg, auth, token, true)
-	recorder := execCtx.Recorder()
-	recorder.RecordRequest(endpoint, http.MethodPost, httpReq.Header.Clone(), body)
-
-	httpClient := execCtx.HTTPClient(0)
-	httpResp, err := httpClient.Do(httpReq) //nolint:bodyclose // body is closed by the defer below.
-	if err != nil {
-		recorder.RecordResponseError(err)
-		reporter.publishFailureWithContentBytes(execCtx.Context, req.Payload, err.Error())
-		return resp, err
-	}
-	defer func() {
-		if errClose := httpResp.Body.Close(); errClose != nil {
-			log.Errorf("xai executor: close response body error: %v", errClose)
-		}
-	}()
-	recorder.RecordResponseMetadata(httpResp.StatusCode, httpResp.Header.Clone())
-	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
-		b := readUpstreamErrorBody(e.Identifier(), httpResp.Body)
-		recorder.AppendResponseChunk(b)
-		logWithRequestID(execCtx.Context).Debugf("request error, error status: %d, error message: %s", httpResp.StatusCode, summarizeErrorBody(httpResp.Header.Get("Content-Type"), b))
-		reporter.publishFailureWithContentBytes(execCtx.Context, req.Payload, string(b))
-		// Parse 402 balance-exhausted into weekly quota cooldown metadata.
-		err = newXAIStatusErr(httpResp.StatusCode, b, httpResp.Header)
-		return resp, err
-	}
-	data, err := readUpstreamResponseBody(e.Identifier(), httpResp.Body)
-	if err != nil {
-		recorder.RecordResponseError(err)
-		return resp, err
-	}
-	recorder.AppendResponseChunk(data)
-
-	pendingOutputItems := make([][]byte, 0, 1)
-	pendingOutputKeys := make([]string, 0, 1)
-	pendingSeen := make(map[string]struct{})
-	var streamErr error
-	for _, line := range bytes.Split(data, []byte("\n")) {
-		if !bytes.HasPrefix(line, dataTag) {
-			continue
-		}
-		payload, _ := toolNames.restoreEvent(bytes.TrimSpace(line[len(dataTag):]))
-		switch gjson.GetBytes(payload, "type").String() {
-		case "response.failed", "error":
-			streamErr = codexResponsesFailedStatusErr(payload)
-			continue
-		}
-		if item, key, ok := extractCodexResponsesOutputItemDone(payload); ok {
-			if _, exists := pendingSeen[key]; !exists {
-				pendingSeen[key] = struct{}{}
-				pendingOutputItems = append(pendingOutputItems, item)
-				pendingOutputKeys = append(pendingOutputKeys, key)
-			}
-			continue
-		}
-		if gjson.GetBytes(payload, "type").String() != "response.completed" {
-			continue
-		}
-		payload = mergeCodexResponsesCompletedOutput(payload, pendingOutputItems, pendingOutputKeys)
-		if detail, ok := parseCodexUsage(payload); ok {
-			reporter.publishWithContentBytes(execCtx.Context, detail, req.Payload, string(data))
-		}
-		var param any
-		out := sdktranslator.TranslateNonStream(execCtx.Context, execCtx.Execution.TargetFormat, execCtx.SourceFormat, req.Model, execCtx.OriginalPayload, body, payload, &param)
-		return cliproxyexecutor.Response{Payload: []byte(out), Headers: httpResp.Header.Clone()}, nil
-	}
-	if streamErr != nil {
-		reporter.publishFailureWithContentBytes(execCtx.Context, req.Payload, streamErr.Error())
-		return resp, streamErr
-	}
-	err = statusErr{code: http.StatusRequestTimeout, msg: "xai stream error: stream disconnected before response.completed"}
-	return resp, err
-}
-
-func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (_ *cliproxyexecutor.StreamResult, err error) {
-	if xaiIsMediaAlt(opts.Alt) {
-		return e.executeImageGenerationStream(ctx, auth, req, opts)
-	}
-	if xaiIsVideoAlt(opts.Alt) {
-		// The video endpoints have no streaming form; a single terminal chunk keeps
-		// callers that reach this through a shared handler from having to know.
-		resp, videoErr := e.Execute(ctx, auth, req, opts)
-		if videoErr != nil {
-			return nil, videoErr
-		}
-		chunks := make(chan cliproxyexecutor.StreamChunk, 1)
-		chunks <- cliproxyexecutor.StreamChunk{Payload: resp.Payload}
-		close(chunks)
-		return &cliproxyexecutor.StreamResult{Chunks: chunks}, nil
-	}
-	if opts.Alt == "responses/compact" {
-		return nil, statusErr{code: http.StatusBadRequest, msg: "streaming not supported for /responses/compact"}
-	}
-	execCtx, body, toolNames, err := e.prepareResponsesRequest(ctx, auth, req, opts, true)
-	if err != nil {
-		return nil, err
-	}
-	reporter := execCtx.Reporter()
-	defer reporter.trackFailure(execCtx.Context, &err)
-
-	token, _ := xaiCreds(auth)
-	endpoint := strings.TrimSuffix(xaiChatBaseURL(auth), "/") + "/responses"
-	httpReq, err := http.NewRequestWithContext(execCtx.Context, http.MethodPost, endpoint, bytes.NewReader(body))
-	if err != nil {
-		return nil, err
-	}
-	applyXAIChatHeaders(httpReq, e.cfg, auth, token, true)
-	recorder := execCtx.Recorder()
-	recorder.RecordRequest(endpoint, http.MethodPost, httpReq.Header.Clone(), body)
-
-	httpClient := execCtx.HTTPClient(0)
-	httpResp, err := httpClient.Do(httpReq) //nolint:bodyclose // success body is consumed and closed by the stream goroutine below.
-	if err != nil {
-		recorder.RecordResponseError(err)
-		reporter.publishFailureWithContentBytes(execCtx.Context, req.Payload, err.Error())
-		return nil, err
-	}
-	recorder.RecordResponseMetadata(httpResp.StatusCode, httpResp.Header.Clone())
-	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
-		data := readUpstreamErrorBody(e.Identifier(), httpResp.Body)
-		if errClose := httpResp.Body.Close(); errClose != nil {
-			log.Errorf("xai executor: close response body error: %v", errClose)
-		}
-		recorder.AppendResponseChunk(data)
-		logWithRequestID(execCtx.Context).Debugf("request error, error status: %d, error message: %s", httpResp.StatusCode, summarizeErrorBody(httpResp.Header.Get("Content-Type"), data))
-		reporter.publishFailureWithContentBytes(execCtx.Context, req.Payload, string(data))
-		// Parse 402 balance-exhausted into weekly quota cooldown metadata.
-		err = newXAIStatusErr(httpResp.StatusCode, data, httpResp.Header)
-		return nil, err
-	}
-
-	out := make(chan cliproxyexecutor.StreamChunk)
-	reporter.setInputContentBytes(req.Payload)
-	go func() {
-		defer close(out)
-		defer func() {
-			if errClose := httpResp.Body.Close(); errClose != nil {
-				log.Errorf("xai executor: close response body error: %v", errClose)
-			}
-		}()
-		scanner := bufio.NewScanner(httpResp.Body)
-		scanner.Buffer(nil, streamScannerBuffer)
-		var param any
-		completed := false
-		for scanner.Scan() {
-			line := scanner.Bytes()
-			recorder.AppendResponseChunk(line)
-			reporter.appendOutputChunk(line)
-
-			var terminalErr error
-			if bytes.HasPrefix(line, dataTag) {
-				payload := bytes.TrimSpace(line[len(dataTag):])
-				switch gjson.GetBytes(payload, "type").String() {
-				case "response.completed":
-					completed = true
-					if detail, ok := parseCodexUsage(payload); ok {
-						reporter.publish(execCtx.Context, detail)
-					}
-				case "response.failed", "error":
-					terminalErr = codexResponsesFailedStatusErr(payload)
-				}
-			}
-
-			// The recorder and usage reporter above keep Grok's own line; the
-			// client gets calls back under the namespaces it declared.
-			chunks := sdktranslator.TranslateStream(execCtx.Context, execCtx.Execution.TargetFormat, execCtx.SourceFormat, req.Model, execCtx.OriginalPayload, body, toolNames.restoreSSELine(bytes.Clone(line)), &param)
-			for i := range chunks {
-				out <- cliproxyexecutor.StreamChunk{Payload: []byte(chunks[i])}
-			}
-			if terminalErr != nil {
-				recorder.RecordResponseError(terminalErr)
-				reporter.publishFailure(execCtx.Context)
-				out <- cliproxyexecutor.StreamChunk{Err: terminalErr}
-				return
-			}
-		}
-		if errScan := scanner.Err(); errScan != nil {
-			recorder.RecordResponseError(errScan)
-			reporter.publishFailure(execCtx.Context)
-			out <- cliproxyexecutor.StreamChunk{Err: errScan}
-			return
-		}
-		if completed {
-			reporter.ensurePublished(execCtx.Context)
-			return
-		}
-		streamErr := newCodexResponsesIncompleteError()
-		recorder.RecordResponseError(streamErr)
-		reporter.publishFailure(execCtx.Context)
-		out <- cliproxyexecutor.StreamChunk{Err: streamErr}
-	}()
-	return &cliproxyexecutor.StreamResult{Headers: httpResp.Header.Clone(), Chunks: out}, nil
-}
-
-func (e *XAIExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
-	execCtx, body, _, err := e.prepareResponsesRequest(ctx, auth, req, opts, false)
-	if err != nil {
-		return cliproxyexecutor.Response{}, err
-	}
-	enc, err := tokenizerForCodexModel(execCtx.BaseModel)
-	if err != nil {
-		return cliproxyexecutor.Response{}, fmt.Errorf("xai executor: tokenizer init failed: %w", err)
-	}
-	count, err := countCodexInputTokens(enc, body)
-	if err != nil {
-		return cliproxyexecutor.Response{}, fmt.Errorf("xai executor: token counting failed: %w", err)
-	}
-	usageJSON := fmt.Sprintf(`{"response":{"usage":{"input_tokens":%d,"output_tokens":0,"total_tokens":%d}}}`, count, count)
-	translated := sdktranslator.TranslateTokenCount(execCtx.Context, execCtx.Execution.TargetFormat, execCtx.SourceFormat, count, []byte(usageJSON))
-	return cliproxyexecutor.Response{Payload: []byte(translated)}, nil
-}
-
-func (e *XAIExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*cliproxyauth.Auth, error) {
-	log.Debugf("xai executor: refresh called")
-	if auth == nil {
-		return nil, fmt.Errorf("xai executor: auth is nil")
-	}
-	refreshToken := xaiMetadataString(auth.Metadata, "refresh_token")
-	if refreshToken == "" {
-		return auth, nil
-	}
-	tokenEndpoint := xaiMetadataString(auth.Metadata, "token_endpoint")
-	// The refresh leaves through the proxy the credential's requests use, its
-	// proxy-pool entry included. auth.ProxyURL alone skipped a pool binding and
-	// fell back to the global proxy-url: when that proxy died, accounts whose
-	// own pool proxy was fine stopped refreshing and went 401 once the 6-hour
-	// access token ran out (2026-11-09, kittors/CliRelay#1122).
-	svc := xaiauth.NewXAIAuthWithProxyURL(e.cfg, resolveAuthProxyURL(e.cfg, auth))
-	td, err := svc.RefreshTokens(ctx, refreshToken, tokenEndpoint)
-	if err != nil {
-		return nil, err
-	}
-	if auth.Metadata == nil {
-		auth.Metadata = make(map[string]any)
-	}
-	auth.Metadata["type"] = "xai"
-	auth.Metadata["auth_kind"] = "oauth"
-	auth.Metadata["access_token"] = td.AccessToken
-	if td.RefreshToken != "" {
-		auth.Metadata["refresh_token"] = td.RefreshToken
-	}
-	if td.IDToken != "" {
-		auth.Metadata["id_token"] = td.IDToken
-	}
-	if td.TokenType != "" {
-		auth.Metadata["token_type"] = td.TokenType
-	}
-	if td.ExpiresIn > 0 {
-		auth.Metadata["expires_in"] = td.ExpiresIn
-	}
-	if td.Expire != "" {
-		auth.Metadata["expired"] = td.Expire
-	}
-	if td.Email != "" {
-		auth.Metadata["email"] = td.Email
-	}
-	if td.Subject != "" {
-		auth.Metadata["sub"] = td.Subject
-	}
-	if tokenEndpoint != "" {
-		auth.Metadata["token_endpoint"] = tokenEndpoint
-	}
-	if xaiMetadataString(auth.Metadata, "base_url") == "" {
-		auth.Metadata["base_url"] = xaiauth.DefaultAPIBaseURL
-	}
-	auth.Metadata["last_refresh"] = time.Now().UTC().Format(time.RFC3339)
-	if auth.Attributes == nil {
-		auth.Attributes = make(map[string]string)
-	}
-	auth.Attributes["auth_kind"] = "oauth"
-	if strings.TrimSpace(auth.Attributes["base_url"]) == "" {
-		auth.Attributes["base_url"] = xaiauth.DefaultAPIBaseURL
-	}
-	return auth, nil
-}
-
-// prepareResponsesRequest builds the body sent to xAI. The returned names map
-// the flat tool names it invented for Codex namespace tools back to the
-// namespaced originals; it is nil for requests that carried none.
-func (e *XAIExecutor) prepareResponsesRequest(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, stream bool) (*ExecutionContext, []byte, *xaiNamespaceToolNames, error) {
-	execCtx := newExecutionContext(ctx, e.Identifier(), e.cfg, auth, req, opts, ExecutionOptions{
-		TargetFormat:      sdktranslator.FromString("codex"),
-		TranslateAsStream: stream,
-	})
-	body, originalTranslated := execCtx.TranslateRequestPair(req.Payload)
-
-	var err error
-	body, err = thinking.ApplyThinking(body, req.Model, execCtx.SourceFormat.String(), e.Identifier(), e.Identifier())
-	if err != nil {
-		return nil, nil, nil, err
-	}
-	body = execCtx.ApplyPayloadConfig(body, originalTranslated)
-	body = ensureTranslatedCodexModel(body, execCtx.BaseModel)
-	body = sanitizeCodexResponsesRequest(body)
-	body, toolNames := flattenXAINamespaceTools(body)
-	body = stripXAIUnsupportedWebSearchOptions(body)
-	// After flattening, so namespace children and lifted Lite tools are checked too.
-	body = normalizeXAIToolParameterRoots(body)
-	sets := map[string][]byte{
-		"stream": util.JSONBool(stream),
-	}
-	if !gjson.GetBytes(body, "instructions").Exists() {
-		sets["instructions"] = util.JSONString(extractSystemMessagesAsInstructions(execCtx.Request.Payload))
-	}
-	body = util.MutateTopLevelObject(body, sets, []string{
-		"previous_response_id",
-		"prompt_cache_retention",
-		"safety_identifier",
-		"stream_options",
-	})
-	return execCtx, body, toolNames, nil
-}
-
-func xaiCreds(auth *cliproxyauth.Auth) (token, baseURL string) {
-	if auth == nil {
-		return "", ""
-	}
-	if auth.Attributes != nil {
-		token = strings.TrimSpace(auth.Attributes["api_key"])
-		baseURL = strings.TrimSpace(auth.Attributes["base_url"])
-	}
-	if auth.Metadata != nil {
-		if token == "" {
-			token = xaiMetadataString(auth.Metadata, "access_token")
-		}
-		if baseURL == "" {
-			baseURL = xaiMetadataString(auth.Metadata, "base_url")
-		}
-	}
-	return token, baseURL
-}
-
-// xaiUsingAPI reports whether non-media HTTP chat should use the official API.
-// OAuth credentials default to Grok Build when using_api is not persisted yet.
-func xaiUsingAPI(auth *cliproxyauth.Auth) bool {
-	if auth == nil {
-		return true
-	}
-	if raw := strings.TrimSpace(auth.Attributes[xaiUsingAPIAttr]); raw != "" {
-		if usingAPI, err := strconv.ParseBool(raw); err == nil {
-			return usingAPI
-		}
-	}
-	if raw, ok := auth.Metadata[xaiUsingAPIAttr]; ok {
-		switch value := raw.(type) {
-		case bool:
-			return value
-		case string:
-			if usingAPI, err := strconv.ParseBool(strings.TrimSpace(value)); err == nil {
-				return usingAPI
-			}
-		}
-	}
-	if authKind := strings.TrimSpace(auth.Attributes["auth_kind"]); authKind != "" {
-		return !strings.EqualFold(authKind, "oauth")
-	}
-	return !strings.EqualFold(xaiMetadataString(auth.Metadata, "auth_kind"), "oauth")
-}
-
-// xaiChatBaseURL selects the base URL for non-media HTTP chat and model listing.
-// using_api=false (Grok Build OAuth) uses CLIChatProxyBaseURL; using_api=true
-// and generic media/PrepareRequest paths keep the configured API base URL.
-func xaiChatBaseURL(auth *cliproxyauth.Auth) string {
-	_, baseURL := xaiCreds(auth)
-	if xaiUsingAPI(auth) {
-		if baseURL == "" {
-			return xaiauth.DefaultAPIBaseURL
-		}
-		return baseURL
-	}
-	if baseURL != "" && !xaiIsBaseURL(baseURL, xaiauth.DefaultAPIBaseURL) {
-		return baseURL
-	}
-	return xaiauth.CLIChatProxyBaseURL
-}
-
-func xaiIsBaseURL(baseURL, target string) bool {
-	normalize := func(value string) string {
-		return strings.TrimRight(strings.TrimSpace(value), "/")
-	}
-	return normalize(baseURL) == normalize(target)
-}
-
-func applyXAIHeaders(r *http.Request, cfg *config.Config, auth *cliproxyauth.Auth, token string, stream bool) {
-	r.Header.Set("Content-Type", "application/json")
-	if strings.TrimSpace(token) != "" {
-		r.Header.Set("Authorization", "Bearer "+token)
-	}
-	if stream {
-		r.Header.Set("Accept", "text/event-stream")
-	} else {
-		r.Header.Set("Accept", "application/json")
-	}
-	r.Header.Set("Connection", "Keep-Alive")
-	var attrs map[string]string
-	if auth != nil {
-		attrs = auth.Attributes
-	}
-	util.ApplyCustomHeadersFromAttrs(r, attrs)
-	applyXAIPassthroughHeaders(r.Header, identityFingerprintHeadersFromContext(r.Context()))
-	if fp, clientMode, ok := xaiIdentityFingerprint(cfg, auth, r.Context()); ok {
-		applyXAIIdentityFingerprintHeaders(r.Header, fp, clientMode)
-	}
-}
-
-func applyXAIChatHeaders(r *http.Request, cfg *config.Config, auth *cliproxyauth.Auth, token string, stream bool) {
-	applyXAIHeaders(r, cfg, auth, token, stream)
-	if xaiUsingAPI(auth) || !xaiIsBaseURL(xaiChatBaseURL(auth), xaiauth.CLIChatProxyBaseURL) {
-		return
-	}
-	r.Header.Set(xaiTokenAuthHeader, xaiTokenAuthValue)
-	// cli-chat-proxy answers a request without a client version with 426
-	// ("(none) is outdated"), so one always goes; the identity's own wins.
-	// This used to overwrite it with the builtin constant, which sent a
-	// learned grok-shell/1.0.77 User-Agent beside version 1.0.46 (2026-11-09).
-	// An outdated learned identity is kept out by ResolveXAI's floor instead.
-	if strings.TrimSpace(r.Header.Get("X-Grok-Client-Version")) == "" {
-		r.Header.Set("X-Grok-Client-Version", config.DefaultXAIFingerprintClientVersion)
-	}
-}
-
-func xaiMetadataString(meta map[string]any, key string) string {
-	if meta == nil {
-		return ""
-	}
-	switch v := meta[key].(type) {
-	case string:
-		return strings.TrimSpace(v)
-	default:
-		return ""
-	}
-}
+// SupportsApplyPatch reports the actual executor contract, independent of its provider name.
+func (e *XAIExecutor) SupportsApplyPatch() bool { return e != nil }

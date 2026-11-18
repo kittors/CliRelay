@@ -4,8 +4,8 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/quota"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/quota"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/usage"
 )
 
 type PeriodLimitMissingError struct {

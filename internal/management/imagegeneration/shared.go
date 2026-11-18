@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/management/jobsnapshot"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/management/jobsnapshot"
 	log "github.com/sirupsen/logrus"
 )
 

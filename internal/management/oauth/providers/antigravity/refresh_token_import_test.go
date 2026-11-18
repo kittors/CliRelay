@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	internalantigravity "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/antigravity"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/management/oauth/credentialimport"
+	internalantigravity "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/antigravity"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/management/oauth/credentialimport"
 )
 
 type fakeRefreshClient struct {

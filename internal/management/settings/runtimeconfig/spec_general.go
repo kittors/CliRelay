@@ -5,7 +5,7 @@ import (
 	"reflect"
 	"strings"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -23,21 +23,22 @@ import (
 // trusted-proxies, timezone and auto-update (it drives the updater sidecar of
 // the node that serves the request). Those stay in each node's config.yaml.
 const (
-	RuntimeSettingDebug              = "debug"
-	RuntimeSettingRequestRetry       = "request-retry"
-	RuntimeSettingMaxRetryInterval   = "max-retry-interval"
-	RuntimeSettingDisableCooling     = "disable-cooling"
-	RuntimeSettingQuotaExceeded      = "quota-exceeded"
-	RuntimeSettingForceModelPrefix   = "force-model-prefix"
-	RuntimeSettingWebsocketAuth      = "ws-auth"
-	RuntimeSettingAmpCode            = "ampcode"
-	RuntimeSettingRequestLog         = "request-log"
-	RuntimeSettingUsageStatistics    = "usage-statistics-enabled"
-	RuntimeSettingLoggingToFile      = "logging-to-file"
-	RuntimeSettingLogsMaxTotalSizeMB = "logs-max-total-size-mb"
-	RuntimeSettingErrorLogsMaxFiles  = "error-logs-max-files"
-	RuntimeSettingRequestLogStorage  = "request-log-storage"
-	RuntimeSettingProxyURL           = "proxy-url"
+	RuntimeSettingDebug               = "debug"
+	RuntimeSettingRequestRetry        = "request-retry"
+	RuntimeSettingMaxRetryCredentials = "max-retry-credentials"
+	RuntimeSettingMaxRetryInterval    = "max-retry-interval"
+	RuntimeSettingDisableCooling      = "disable-cooling"
+	RuntimeSettingQuotaExceeded       = "quota-exceeded"
+	RuntimeSettingForceModelPrefix    = "force-model-prefix"
+	RuntimeSettingWebsocketAuth       = "ws-auth"
+	RuntimeSettingAmpCode             = "ampcode"
+	RuntimeSettingRequestLog          = "request-log"
+	RuntimeSettingUsageStatistics     = "usage-statistics-enabled"
+	RuntimeSettingLoggingToFile       = "logging-to-file"
+	RuntimeSettingLogsMaxTotalSizeMB  = "logs-max-total-size-mb"
+	RuntimeSettingErrorLogsMaxFiles   = "error-logs-max-files"
+	RuntimeSettingRequestLogStorage   = "request-log-storage"
+	RuntimeSettingProxyURL            = "proxy-url"
 )
 
 // Specs lists every runtime setting a config.Config is built from.
@@ -65,6 +66,7 @@ func generalSpecs() []Spec {
 	return []Spec{
 		valueSpec(RuntimeSettingDebug, func(c *config.Config) *bool { return &c.Debug }, isTrue),
 		valueSpec(RuntimeSettingRequestRetry, func(c *config.Config) *int { return &c.RequestRetry }, isNonZero),
+		valueSpec(RuntimeSettingMaxRetryCredentials, func(c *config.Config) *int { return &c.MaxRetryCredentials }, isNonZero),
 		valueSpec(RuntimeSettingMaxRetryInterval, func(c *config.Config) *int { return &c.MaxRetryInterval }, isNonZero),
 		valueSpec(RuntimeSettingDisableCooling, func(c *config.Config) *bool { return &c.DisableCooling }, isTrue),
 		valueSpec(RuntimeSettingQuotaExceeded, func(c *config.Config) *config.QuotaExceeded { return &c.QuotaExceeded },

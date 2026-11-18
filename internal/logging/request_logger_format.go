@@ -2,17 +2,19 @@ package logging
 
 import (
 	"bytes"
-	"encoding/json"
+	"compress/flate"
+	"compress/gzip"
 	"fmt"
 	"io"
 	"os"
 	"strings"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/buildinfo"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/diagnostics"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/interfaces"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
+	"github.com/andybalholm/brotli"
+	"github.com/klauspost/compress/zstd"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/buildinfo"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/interfaces"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -21,8 +23,15 @@ func (l *FileRequestLogger) writeNonStreamingLog(
 	url, method string,
 	requestHeaders map[string][]string,
 	requestBody []byte,
+	requestBodyPath string,
+	websocketTimeline []byte,
+	websocketTimelineSource *FileBodySource,
 	apiRequest []byte,
+	apiRequestSource *FileBodySource,
 	apiResponse []byte,
+	apiResponseSource *FileBodySource,
+	apiWebsocketTimeline []byte,
+	apiWebsocketTimelineSource *FileBodySource,
 	apiResponseErrors []*interfaces.ErrorMessage,
 	statusCode int,
 	responseHeaders map[string][]string,
@@ -30,24 +39,40 @@ func (l *FileRequestLogger) writeNonStreamingLog(
 	decompressErr error,
 	requestTimestamp time.Time,
 	apiResponseTimestamp time.Time,
-	diagnostic diagnostics.Snapshot,
 ) error {
+	apiResponseErrors, diagnostics := splitResponseDiagnostics(apiResponseErrors)
 	if requestTimestamp.IsZero() {
 		requestTimestamp = time.Now()
 	}
-	if errWrite := writeRequestInfoWithBody(w, url, method, requestHeaders, requestBody, "", requestTimestamp, diagnostic); errWrite != nil {
+	isWebsocketTranscript := hasSectionPayload(websocketTimeline) || hasFileBodySourcePayload(websocketTimelineSource)
+	downstreamTransport := inferDownstreamTransport(requestHeaders, websocketTimeline, websocketTimelineSource)
+	upstreamTransport := inferUpstreamTransport(apiRequest, apiRequestSource, apiResponse, apiResponseSource, apiWebsocketTimeline, apiWebsocketTimelineSource, apiResponseErrors)
+	if errWrite := writeRequestInfoWithBody(w, url, method, requestHeaders, requestBody, requestBodyPath, requestTimestamp, downstreamTransport, upstreamTransport, !isWebsocketTranscript); errWrite != nil {
 		return errWrite
 	}
-	if errWrite := writeAPISection(w, "=== API REQUEST ===\n", "=== API REQUEST", apiRequest, time.Time{}); errWrite != nil {
+	if errWrite := writeAPISectionWithSource(w, "=== WEBSOCKET TIMELINE ===\n", "=== WEBSOCKET TIMELINE", websocketTimeline, websocketTimelineSource, time.Time{}); errWrite != nil {
+		return errWrite
+	}
+	if errWrite := writeAPISectionWithSource(w, "=== API WEBSOCKET TIMELINE ===\n", "=== API WEBSOCKET TIMELINE", apiWebsocketTimeline, apiWebsocketTimelineSource, time.Time{}); errWrite != nil {
+		return errWrite
+	}
+	if errWrite := writePreformattedAPISectionWithSource(w, "=== API REQUEST ===\n", "=== API REQUEST", apiRequest, apiRequestSource, time.Time{}); errWrite != nil {
 		return errWrite
 	}
 	if errWrite := writeAPIErrorResponses(w, apiResponseErrors); errWrite != nil {
 		return errWrite
 	}
-	if errWrite := writeAPISection(w, "=== API RESPONSE ===\n", "=== API RESPONSE", apiResponse, apiResponseTimestamp); errWrite != nil {
+	if errWrite := writePreformattedAPISectionWithSource(w, "=== API RESPONSE ===\n", "=== API RESPONSE", apiResponse, apiResponseSource, apiResponseTimestamp); errWrite != nil {
 		return errWrite
 	}
-	return writeResponseSection(w, statusCode, true, responseHeaders, bytes.NewReader(response), decompressErr, true)
+	if isWebsocketTranscript {
+		// Keep websocket exchanges in their timelines; include only local diagnostics here.
+		if len(diagnostics) == 0 {
+			return nil
+		}
+		return writeResponseSection(w, 0, false, nil, nil, nil, true, diagnostics)
+	}
+	return writeResponseSection(w, statusCode, true, responseHeaders, bytes.NewReader(response), decompressErr, true, diagnostics)
 }
 
 func writeRequestInfoWithBody(
@@ -57,7 +82,9 @@ func writeRequestInfoWithBody(
 	body []byte,
 	bodyPath string,
 	timestamp time.Time,
-	diagnostic diagnostics.Snapshot,
+	downstreamTransport string,
+	upstreamTransport string,
+	includeBody bool,
 ) error {
 	if _, errWrite := io.WriteString(w, "=== REQUEST INFO ===\n"); errWrite != nil {
 		return errWrite
@@ -68,39 +95,24 @@ func writeRequestInfoWithBody(
 	if _, errWrite := io.WriteString(w, fmt.Sprintf("URL: %s\n", url)); errWrite != nil {
 		return errWrite
 	}
-	if diagnostic.EffectiveURL != "" && diagnostic.EffectiveURL != url {
-		if _, errWrite := io.WriteString(w, fmt.Sprintf("Effective URL: %s\n", diagnostic.EffectiveURL)); errWrite != nil {
-			return errWrite
-		}
-	}
-	if diagnostic.RequestID != "" {
-		if _, errWrite := io.WriteString(w, fmt.Sprintf("Request ID: %s\n", diagnostic.RequestID)); errWrite != nil {
-			return errWrite
-		}
-	}
 	if _, errWrite := io.WriteString(w, fmt.Sprintf("Method: %s\n", method)); errWrite != nil {
 		return errWrite
+	}
+	if strings.TrimSpace(downstreamTransport) != "" {
+		if _, errWrite := io.WriteString(w, fmt.Sprintf("Downstream Transport: %s\n", downstreamTransport)); errWrite != nil {
+			return errWrite
+		}
+	}
+	if strings.TrimSpace(upstreamTransport) != "" {
+		if _, errWrite := io.WriteString(w, fmt.Sprintf("Upstream Transport: %s\n", upstreamTransport)); errWrite != nil {
+			return errWrite
+		}
 	}
 	if _, errWrite := io.WriteString(w, fmt.Sprintf("Timestamp: %s\n", timestamp.Format(time.RFC3339Nano))); errWrite != nil {
 		return errWrite
 	}
-	if _, errWrite := io.WriteString(w, "\n"); errWrite != nil {
+	if errWrite := writeSectionSpacing(w, 1); errWrite != nil {
 		return errWrite
-	}
-	if hasDiagnosticMetadata(diagnostic) {
-		if _, errWrite := io.WriteString(w, "=== DIAGNOSTIC METADATA ===\n"); errWrite != nil {
-			return errWrite
-		}
-		data, errJSON := json.MarshalIndent(diagnostic, "", "  ")
-		if errJSON != nil {
-			return errJSON
-		}
-		if _, errWrite := w.Write(data); errWrite != nil {
-			return errWrite
-		}
-		if _, errWrite := io.WriteString(w, "\n\n"); errWrite != nil {
-			return errWrite
-		}
 	}
 
 	if _, errWrite := io.WriteString(w, "=== HEADERS ===\n"); errWrite != nil {
@@ -108,51 +120,149 @@ func writeRequestInfoWithBody(
 	}
 	for key, values := range headers {
 		for _, value := range values {
-			if _, errWrite := io.WriteString(w, fmt.Sprintf("%s: %s\n", key, util.MaskSensitiveHeaderValue(key, value))); errWrite != nil {
+			masked := util.MaskSensitiveHeaderValue(key, value)
+			if _, errWrite := io.WriteString(w, fmt.Sprintf("%s: %s\n", key, masked)); errWrite != nil {
 				return errWrite
 			}
 		}
 	}
-	if _, errWrite := io.WriteString(w, "\n"); errWrite != nil {
+	if errWrite := writeSectionSpacing(w, 1); errWrite != nil {
 		return errWrite
+	}
+
+	if !includeBody {
+		return nil
 	}
 
 	if _, errWrite := io.WriteString(w, "=== REQUEST BODY ===\n"); errWrite != nil {
 		return errWrite
 	}
+
+	bodyTrailingNewlines := 1
 	if bodyPath != "" {
 		bodyFile, errOpen := os.Open(bodyPath)
 		if errOpen != nil {
 			return errOpen
 		}
-		if _, errCopy := io.Copy(w, bodyFile); errCopy != nil {
+		tracker := &trailingNewlineTrackingWriter{writer: w}
+		written, errCopy := io.Copy(tracker, bodyFile)
+		if errCopy != nil {
 			_ = bodyFile.Close()
 			return errCopy
+		}
+		if written > 0 {
+			bodyTrailingNewlines = tracker.trailingNewlines
 		}
 		if errClose := bodyFile.Close(); errClose != nil {
 			log.WithError(errClose).Warn("failed to close request body temp file")
 		}
 	} else if _, errWrite := w.Write(body); errWrite != nil {
 		return errWrite
+	} else if len(body) > 0 {
+		bodyTrailingNewlines = countTrailingNewlinesBytes(body)
 	}
-
-	if _, errWrite := io.WriteString(w, "\n\n"); errWrite != nil {
+	if errWrite := writeSectionSpacing(w, bodyTrailingNewlines); errWrite != nil {
 		return errWrite
 	}
 	return nil
 }
 
-func hasDiagnosticMetadata(diagnostic diagnostics.Snapshot) bool {
-	return diagnostic.RequestID != "" ||
-		diagnostic.OriginalURL != "" ||
-		diagnostic.EffectiveURL != "" ||
-		diagnostic.Route != nil ||
-		diagnostic.Auth != nil ||
-		diagnostic.Quota != nil ||
-		diagnostic.Upstream != nil ||
-		diagnostic.Egress != nil ||
-		diagnostic.Response != nil ||
-		diagnostic.Body != nil
+func countTrailingNewlinesBytes(payload []byte) int {
+	count := 0
+	for i := len(payload) - 1; i >= 0; i-- {
+		if payload[i] != '\n' {
+			break
+		}
+		count++
+	}
+	return count
+}
+
+func writeSectionSpacing(w io.Writer, trailingNewlines int) error {
+	missingNewlines := 3 - trailingNewlines
+	if missingNewlines <= 0 {
+		return nil
+	}
+	_, errWrite := io.WriteString(w, strings.Repeat("\n", missingNewlines))
+	return errWrite
+}
+
+type trailingNewlineTrackingWriter struct {
+	writer           io.Writer
+	trailingNewlines int
+}
+
+func (t *trailingNewlineTrackingWriter) Write(payload []byte) (int, error) {
+	written, errWrite := t.writer.Write(payload)
+	if written > 0 {
+		writtenPayload := payload[:written]
+		trailingNewlines := countTrailingNewlinesBytes(writtenPayload)
+		if trailingNewlines == len(writtenPayload) {
+			t.trailingNewlines += trailingNewlines
+		} else {
+			t.trailingNewlines = trailingNewlines
+		}
+	}
+	return written, errWrite
+}
+
+func hasSectionPayload(payload []byte) bool {
+	return len(bytes.TrimSpace(payload)) > 0
+}
+
+func hasFileBodySourcePayload(source *FileBodySource) bool {
+	return source != nil && source.HasPayload()
+}
+
+func inferDownstreamTransport(headers map[string][]string, websocketTimeline []byte, websocketTimelineSource *FileBodySource) string {
+	if hasSectionPayload(websocketTimeline) || hasFileBodySourcePayload(websocketTimelineSource) {
+		return "websocket"
+	}
+	for key, values := range headers {
+		if strings.EqualFold(strings.TrimSpace(key), "Upgrade") {
+			for _, value := range values {
+				if strings.EqualFold(strings.TrimSpace(value), "websocket") {
+					return "websocket"
+				}
+			}
+		}
+	}
+	return "http"
+}
+
+func inferUpstreamTransport(apiRequest []byte, apiRequestSource *FileBodySource, apiResponse []byte, apiResponseSource *FileBodySource, apiWebsocketTimeline []byte, apiWebsocketTimelineSource *FileBodySource, _ []*interfaces.ErrorMessage) string {
+	hasHTTP := hasSectionPayload(apiRequest) || hasFileBodySourcePayload(apiRequestSource) || hasSectionPayload(apiResponse) || hasFileBodySourcePayload(apiResponseSource)
+	hasWS := hasSectionPayload(apiWebsocketTimeline) || hasFileBodySourcePayload(apiWebsocketTimelineSource)
+	switch {
+	case hasHTTP && hasWS:
+		return "websocket+http"
+	case hasWS:
+		return "websocket"
+	case hasHTTP:
+		return "http"
+	default:
+		return ""
+	}
+}
+
+func writeLogPart(w io.Writer, payload []byte, prependNewline bool) error {
+	if w == nil {
+		return nil
+	}
+	if prependNewline {
+		if _, errWrite := io.WriteString(w, "\n"); errWrite != nil {
+			return errWrite
+		}
+	}
+	if _, errWrite := w.Write(payload); errWrite != nil {
+		return errWrite
+	}
+	if !bytes.HasSuffix(payload, []byte("\n")) {
+		if _, errWrite := io.WriteString(w, "\n"); errWrite != nil {
+			return errWrite
+		}
+	}
+	return nil
 }
 
 func writeAPISection(w io.Writer, sectionHeader string, sectionPrefix string, payload []byte, timestamp time.Time) error {
@@ -163,11 +273,6 @@ func writeAPISection(w io.Writer, sectionHeader string, sectionPrefix string, pa
 	if bytes.HasPrefix(payload, []byte(sectionPrefix)) {
 		if _, errWrite := w.Write(payload); errWrite != nil {
 			return errWrite
-		}
-		if !bytes.HasSuffix(payload, []byte("\n")) {
-			if _, errWrite := io.WriteString(w, "\n"); errWrite != nil {
-				return errWrite
-			}
 		}
 	} else {
 		if _, errWrite := io.WriteString(w, sectionHeader); errWrite != nil {
@@ -181,15 +286,76 @@ func writeAPISection(w io.Writer, sectionHeader string, sectionPrefix string, pa
 		if _, errWrite := w.Write(payload); errWrite != nil {
 			return errWrite
 		}
-		if _, errWrite := io.WriteString(w, "\n"); errWrite != nil {
-			return errWrite
-		}
 	}
 
-	if _, errWrite := io.WriteString(w, "\n"); errWrite != nil {
+	if errWrite := writeSectionSpacing(w, countTrailingNewlinesBytes(payload)); errWrite != nil {
 		return errWrite
 	}
 	return nil
+}
+
+func writeAPISectionWithSource(w io.Writer, sectionHeader string, sectionPrefix string, payload []byte, source *FileBodySource, timestamp time.Time) error {
+	if !hasFileBodySourcePayload(source) {
+		return writeAPISection(w, sectionHeader, sectionPrefix, payload, timestamp)
+	}
+	if len(payload) > 0 {
+		if errWrite := writeAPISection(w, sectionHeader, sectionPrefix, payload, timestamp); errWrite != nil {
+			return errWrite
+		}
+	}
+	if _, errWrite := io.WriteString(w, sectionHeader); errWrite != nil {
+		return errWrite
+	}
+	if !timestamp.IsZero() {
+		if _, errWrite := io.WriteString(w, fmt.Sprintf("Timestamp: %s\n", timestamp.Format(time.RFC3339Nano))); errWrite != nil {
+			return errWrite
+		}
+	}
+	tracker := &trailingNewlineTrackingWriter{writer: w}
+	if _, errWrite := source.WriteTo(tracker); errWrite != nil {
+		return errWrite
+	}
+	if errWrite := writeSectionSpacing(w, tracker.trailingNewlines); errWrite != nil {
+		return errWrite
+	}
+	return nil
+}
+
+func writePreformattedAPISectionWithSource(w io.Writer, sectionHeader string, sectionPrefix string, payload []byte, source *FileBodySource, timestamp time.Time) error {
+	if !hasFileBodySourcePayload(source) {
+		return writeAPISection(w, sectionHeader, sectionPrefix, payload, timestamp)
+	}
+	if len(payload) > 0 {
+		if errWrite := writeAPISection(w, sectionHeader, sectionPrefix, payload, timestamp); errWrite != nil {
+			return errWrite
+		}
+	}
+	tracker := &trailingNewlineTrackingWriter{writer: w}
+	if _, errWrite := source.WriteTo(tracker); errWrite != nil {
+		return errWrite
+	}
+	if errWrite := writeSectionSpacing(w, tracker.trailingNewlines); errWrite != nil {
+		return errWrite
+	}
+	return nil
+}
+
+// splitResponseDiagnostics separates log-only local failures from API errors without
+// changing the logger interfaces or treating a recovered attempt as a failed response.
+func splitResponseDiagnostics(entries []*interfaces.ErrorMessage) ([]*interfaces.ErrorMessage, []string) {
+	var apiErrors []*interfaces.ErrorMessage
+	var diagnostics []string
+	for _, entry := range entries {
+		if entry == nil {
+			continue
+		}
+		if diagnostic, ok := entry.Error.(responseDiagnostic); ok {
+			diagnostics = append(diagnostics, string(diagnostic))
+		} else {
+			apiErrors = append(apiErrors, entry)
+		}
+	}
+	return apiErrors, diagnostics
 }
 
 func writeAPIErrorResponses(w io.Writer, apiResponseErrors []*interfaces.ErrorMessage) error {
@@ -203,19 +369,24 @@ func writeAPIErrorResponses(w io.Writer, apiResponseErrors []*interfaces.ErrorMe
 		if _, errWrite := io.WriteString(w, fmt.Sprintf("HTTP Status: %d\n", apiResponseErrors[i].StatusCode)); errWrite != nil {
 			return errWrite
 		}
+		trailingNewlines := 1
 		if apiResponseErrors[i].Error != nil {
-			if _, errWrite := io.WriteString(w, apiResponseErrors[i].Error.Error()); errWrite != nil {
+			errText := apiResponseErrors[i].Error.Error()
+			if _, errWrite := io.WriteString(w, errText); errWrite != nil {
 				return errWrite
 			}
+			if errText != "" {
+				trailingNewlines = countTrailingNewlinesBytes([]byte(errText))
+			}
 		}
-		if _, errWrite := io.WriteString(w, "\n\n"); errWrite != nil {
+		if errWrite := writeSectionSpacing(w, trailingNewlines); errWrite != nil {
 			return errWrite
 		}
 	}
 	return nil
 }
 
-func writeResponseSection(w io.Writer, statusCode int, statusWritten bool, responseHeaders map[string][]string, responseReader io.Reader, decompressErr error, trailingNewline bool) error {
+func writeResponseSection(w io.Writer, statusCode int, statusWritten bool, responseHeaders map[string][]string, responseReader io.Reader, decompressErr error, trailingNewline bool, diagnostics []string) error {
 	if _, errWrite := io.WriteString(w, "=== RESPONSE ===\n"); errWrite != nil {
 		return errWrite
 	}
@@ -224,19 +395,37 @@ func writeResponseSection(w io.Writer, statusCode int, statusWritten bool, respo
 			return errWrite
 		}
 	}
-	for key, values := range responseHeaders {
-		for _, value := range values {
-			if _, errWrite := io.WriteString(w, fmt.Sprintf("%s: %s\n", key, value)); errWrite != nil {
+
+	for _, diagnostic := range diagnostics {
+		if _, errWrite := fmt.Fprintf(w, "Error: %s\n", diagnostic); errWrite != nil {
+			return errWrite
+		}
+	}
+
+	// Diagnostic-only websocket sections have no HTTP headers or body to display.
+	if statusWritten || responseHeaders != nil || responseReader != nil {
+		if _, errWrite := io.WriteString(w, "\nHeaders:\n"); errWrite != nil {
+			return errWrite
+		}
+		if len(responseHeaders) == 0 {
+			if _, errWrite := io.WriteString(w, "<none>\n"); errWrite != nil {
 				return errWrite
 			}
 		}
-	}
-	if _, errWrite := io.WriteString(w, "\n"); errWrite != nil {
-		return errWrite
-	}
-	if responseReader != nil {
-		if _, errCopy := io.Copy(w, responseReader); errCopy != nil {
-			return errCopy
+		for key, values := range responseHeaders {
+			for _, value := range values {
+				if _, errWrite := io.WriteString(w, fmt.Sprintf("%s: %s\n", key, value)); errWrite != nil {
+					return errWrite
+				}
+			}
+		}
+		if _, errWrite := io.WriteString(w, "\nBody:\n"); errWrite != nil {
+			return errWrite
+		}
+		if responseReader != nil {
+			if _, errCopy := io.Copy(w, responseReader); errCopy != nil {
+				return errCopy
+			}
 		}
 	}
 	if decompressErr != nil {
@@ -244,6 +433,7 @@ func writeResponseSection(w io.Writer, statusCode int, statusWritten bool, respo
 			return errWrite
 		}
 	}
+
 	if trailingNewline {
 		if _, errWrite := io.WriteString(w, "\n"); errWrite != nil {
 			return errWrite
@@ -252,11 +442,59 @@ func writeResponseSection(w io.Writer, statusCode int, statusWritten bool, respo
 	return nil
 }
 
-// formatLogContent remains as a lightweight formatter for tests and any future
-// callers that need the non-streaming text representation without hitting disk.
-func (l *FileRequestLogger) formatLogContent(url, method string, headers map[string][]string, body, apiRequest, apiResponse, response []byte, status int, responseHeaders map[string][]string, apiResponseErrors []*interfaces.ErrorMessage) string {
+// formatLogContent creates the complete log content for non-streaming requests.
+//
+// Parameters:
+//   - url: The request URL
+//   - method: The HTTP method
+//   - headers: The request headers
+//   - body: The request body
+//   - websocketTimeline: The downstream websocket event timeline
+//   - apiRequest: The API request data
+//   - apiResponse: The API response data
+//   - response: The raw response data
+//   - status: The response status code
+//   - responseHeaders: The response headers
+//
+// Returns:
+//   - string: The formatted log content
+func (l *FileRequestLogger) formatLogContent(url, method string, headers map[string][]string, body, websocketTimeline, apiRequest, apiResponse, apiWebsocketTimeline, response []byte, status int, responseHeaders map[string][]string, apiResponseErrors []*interfaces.ErrorMessage) string {
+	apiResponseErrors, diagnostics := splitResponseDiagnostics(apiResponseErrors)
 	var content strings.Builder
-	content.WriteString(l.formatRequestInfo(url, method, headers, body))
+	isWebsocketTranscript := hasSectionPayload(websocketTimeline)
+	downstreamTransport := inferDownstreamTransport(headers, websocketTimeline, nil)
+	upstreamTransport := inferUpstreamTransport(apiRequest, nil, apiResponse, nil, apiWebsocketTimeline, nil, apiResponseErrors)
+
+	// Request info
+	content.WriteString(l.formatRequestInfo(url, method, headers, body, downstreamTransport, upstreamTransport, !isWebsocketTranscript))
+
+	if len(websocketTimeline) > 0 {
+		if bytes.HasPrefix(websocketTimeline, []byte("=== WEBSOCKET TIMELINE")) {
+			content.Write(websocketTimeline)
+			if !bytes.HasSuffix(websocketTimeline, []byte("\n")) {
+				content.WriteString("\n")
+			}
+		} else {
+			content.WriteString("=== WEBSOCKET TIMELINE ===\n")
+			content.Write(websocketTimeline)
+			content.WriteString("\n")
+		}
+		content.WriteString("\n")
+	}
+
+	if len(apiWebsocketTimeline) > 0 {
+		if bytes.HasPrefix(apiWebsocketTimeline, []byte("=== API WEBSOCKET TIMELINE")) {
+			content.Write(apiWebsocketTimeline)
+			if !bytes.HasSuffix(apiWebsocketTimeline, []byte("\n")) {
+				content.WriteString("\n")
+			}
+		} else {
+			content.WriteString("=== API WEBSOCKET TIMELINE ===\n")
+			content.Write(apiWebsocketTimeline)
+			content.WriteString("\n")
+		}
+		content.WriteString("\n")
+	}
 
 	if len(apiRequest) > 0 {
 		if bytes.HasPrefix(apiRequest, []byte("=== API REQUEST")) {
@@ -273,14 +511,9 @@ func (l *FileRequestLogger) formatLogContent(url, method string, headers map[str
 	}
 
 	for i := 0; i < len(apiResponseErrors); i++ {
-		if apiResponseErrors[i] == nil {
-			continue
-		}
 		content.WriteString("=== API ERROR RESPONSE ===\n")
 		content.WriteString(fmt.Sprintf("HTTP Status: %d\n", apiResponseErrors[i].StatusCode))
-		if apiResponseErrors[i].Error != nil {
-			content.WriteString(apiResponseErrors[i].Error.Error())
-		}
+		content.WriteString(apiResponseErrors[i].Error.Error())
 		content.WriteString("\n\n")
 	}
 
@@ -298,37 +531,213 @@ func (l *FileRequestLogger) formatLogContent(url, method string, headers map[str
 		content.WriteString("\n")
 	}
 
+	if isWebsocketTranscript {
+		if len(diagnostics) > 0 {
+			content.WriteString("=== RESPONSE ===\n")
+			for _, diagnostic := range diagnostics {
+				content.WriteString(fmt.Sprintf("Error: %s\n", diagnostic))
+			}
+		}
+		return content.String()
+	}
+
+	// Response section
 	content.WriteString("=== RESPONSE ===\n")
 	content.WriteString(fmt.Sprintf("Status: %d\n", status))
+	for _, diagnostic := range diagnostics {
+		content.WriteString(fmt.Sprintf("Error: %s\n", diagnostic))
+	}
+
+	content.WriteString("\nHeaders:\n")
+	if len(responseHeaders) == 0 {
+		content.WriteString("<none>\n")
+	}
 	for key, values := range responseHeaders {
 		for _, value := range values {
 			content.WriteString(fmt.Sprintf("%s: %s\n", key, value))
 		}
 	}
-	content.WriteString("\n")
+
+	content.WriteString("\nBody:\n")
 	content.Write(response)
 	content.WriteString("\n")
+
 	return content.String()
 }
 
-func (l *FileRequestLogger) formatRequestInfo(url, method string, headers map[string][]string, body []byte) string {
+// decompressResponse decompresses response data based on Content-Encoding header.
+//
+// Parameters:
+//   - responseHeaders: The response headers
+//   - response: The response data to decompress
+//
+// Returns:
+//   - []byte: The decompressed response data
+//   - error: An error if decompression fails, nil otherwise
+func (l *FileRequestLogger) decompressResponse(responseHeaders map[string][]string, response []byte) ([]byte, error) {
+	if responseHeaders == nil || len(response) == 0 {
+		return response, nil
+	}
+
+	// Check Content-Encoding header
+	var contentEncoding string
+	for key, values := range responseHeaders {
+		if strings.ToLower(key) == "content-encoding" && len(values) > 0 {
+			contentEncoding = strings.ToLower(values[0])
+			break
+		}
+	}
+
+	switch contentEncoding {
+	case "gzip":
+		return l.decompressGzip(response)
+	case "deflate":
+		return l.decompressDeflate(response)
+	case "br":
+		return l.decompressBrotli(response)
+	case "zstd":
+		return l.decompressZstd(response)
+	default:
+		// No compression or unsupported compression
+		return response, nil
+	}
+}
+
+// decompressGzip decompresses gzip-encoded data.
+//
+// Parameters:
+//   - data: The gzip-encoded data to decompress
+//
+// Returns:
+//   - []byte: The decompressed data
+//   - error: An error if decompression fails, nil otherwise
+func (l *FileRequestLogger) decompressGzip(data []byte) ([]byte, error) {
+	reader, err := gzip.NewReader(bytes.NewReader(data))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create gzip reader: %w", err)
+	}
+	defer func() {
+		if errClose := reader.Close(); errClose != nil {
+			log.WithError(errClose).Warn("failed to close gzip reader in request logger")
+		}
+	}()
+
+	decompressed, err := io.ReadAll(reader)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decompress gzip data: %w", err)
+	}
+
+	return decompressed, nil
+}
+
+// decompressDeflate decompresses deflate-encoded data.
+//
+// Parameters:
+//   - data: The deflate-encoded data to decompress
+//
+// Returns:
+//   - []byte: The decompressed data
+//   - error: An error if decompression fails, nil otherwise
+func (l *FileRequestLogger) decompressDeflate(data []byte) ([]byte, error) {
+	reader := flate.NewReader(bytes.NewReader(data))
+	defer func() {
+		if errClose := reader.Close(); errClose != nil {
+			log.WithError(errClose).Warn("failed to close deflate reader in request logger")
+		}
+	}()
+
+	decompressed, err := io.ReadAll(reader)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decompress deflate data: %w", err)
+	}
+
+	return decompressed, nil
+}
+
+// decompressBrotli decompresses brotli-encoded data.
+//
+// Parameters:
+//   - data: The brotli-encoded data to decompress
+//
+// Returns:
+//   - []byte: The decompressed data
+//   - error: An error if decompression fails, nil otherwise
+func (l *FileRequestLogger) decompressBrotli(data []byte) ([]byte, error) {
+	reader := brotli.NewReader(bytes.NewReader(data))
+
+	decompressed, err := io.ReadAll(reader)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decompress brotli data: %w", err)
+	}
+
+	return decompressed, nil
+}
+
+// decompressZstd decompresses zstd-encoded data.
+//
+// Parameters:
+//   - data: The zstd-encoded data to decompress
+//
+// Returns:
+//   - []byte: The decompressed data
+//   - error: An error if decompression fails, nil otherwise
+func (l *FileRequestLogger) decompressZstd(data []byte) ([]byte, error) {
+	decoder, err := zstd.NewReader(bytes.NewReader(data))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create zstd reader: %w", err)
+	}
+	defer decoder.Close()
+
+	decompressed, err := io.ReadAll(decoder)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decompress zstd data: %w", err)
+	}
+
+	return decompressed, nil
+}
+
+// formatRequestInfo creates the request information section of the log.
+//
+// Parameters:
+//   - url: The request URL
+//   - method: The HTTP method
+//   - headers: The request headers
+//   - body: The request body
+//
+// Returns:
+//   - string: The formatted request information
+func (l *FileRequestLogger) formatRequestInfo(url, method string, headers map[string][]string, body []byte, downstreamTransport string, upstreamTransport string, includeBody bool) string {
 	var content strings.Builder
+
 	content.WriteString("=== REQUEST INFO ===\n")
 	content.WriteString(fmt.Sprintf("Version: %s\n", buildinfo.Version))
 	content.WriteString(fmt.Sprintf("URL: %s\n", url))
 	content.WriteString(fmt.Sprintf("Method: %s\n", method))
+	if strings.TrimSpace(downstreamTransport) != "" {
+		content.WriteString(fmt.Sprintf("Downstream Transport: %s\n", downstreamTransport))
+	}
+	if strings.TrimSpace(upstreamTransport) != "" {
+		content.WriteString(fmt.Sprintf("Upstream Transport: %s\n", upstreamTransport))
+	}
 	content.WriteString(fmt.Sprintf("Timestamp: %s\n", time.Now().Format(time.RFC3339Nano)))
 	content.WriteString("\n")
 
 	content.WriteString("=== HEADERS ===\n")
 	for key, values := range headers {
 		for _, value := range values {
-			content.WriteString(fmt.Sprintf("%s: %s\n", key, util.MaskSensitiveHeaderValue(key, value)))
+			masked := util.MaskSensitiveHeaderValue(key, value)
+			content.WriteString(fmt.Sprintf("%s: %s\n", key, masked))
 		}
 	}
 	content.WriteString("\n")
+
+	if !includeBody {
+		return content.String()
+	}
+
 	content.WriteString("=== REQUEST BODY ===\n")
 	content.Write(body)
 	content.WriteString("\n\n")
+
 	return content.String()
 }

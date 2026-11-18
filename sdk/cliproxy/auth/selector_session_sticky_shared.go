@@ -57,10 +57,10 @@ func (m *Manager) SetSessionAffinityStore(store SessionAffinityStore) {
 		return
 	}
 	m.mu.Lock()
-	if m.scheduler == nil {
-		m.scheduler = &schedulerDeps{tracker: newSelectionPressureTracker(), limiter: m.concurrencyLimiter}
+	if m.sessionSchedulerDeps == nil {
+		m.sessionSchedulerDeps = &schedulerDeps{tracker: newSelectionPressureTracker(), limiter: m.concurrencyLimiter}
 	}
-	deps := m.scheduler
+	deps := m.sessionSchedulerDeps
 	m.mu.Unlock()
 	if store == nil {
 		deps.affinity.Store(nil)

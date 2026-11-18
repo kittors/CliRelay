@@ -43,9 +43,13 @@ type RemoteManagement struct {
 	SecretKey string `yaml:"secret-key"`
 	// DisableControlPanel skips serving and syncing the bundled management UI when true.
 	DisableControlPanel bool `yaml:"disable-control-panel"`
+	// DisableAutoUpdatePanel disables periodic background management panel updates.
+	DisableAutoUpdatePanel bool `yaml:"disable-auto-update-panel"`
 	// PanelGitHubRepository overrides the GitHub repository used to fetch the management panel asset.
 	// Accepts either a repository URL (https://github.com/org/repo) or an API releases endpoint.
 	PanelGitHubRepository string `yaml:"panel-github-repository"`
+	// BaseURL specifies the base URL of the remote management API for TUI client mode.
+	BaseURL string `yaml:"base-url,omitempty" json:"base-url,omitempty"`
 	// Auth tunes login throttling and session token lifetimes.
 	// Zero values fall back to the built-in defaults documented per field.
 	Auth AuthHardening `yaml:"auth,omitempty"`
@@ -117,6 +121,10 @@ type QuotaExceeded struct {
 
 	// SwitchPreviewModel indicates whether to automatically switch to a preview model when a quota is exceeded.
 	SwitchPreviewModel bool `yaml:"switch-preview-model" json:"switch-preview-model"`
+
+	// AntigravityCredits enables fallback to credentials with available AI credits
+	// when the primary Antigravity route is exhausted.
+	AntigravityCredits bool `yaml:"antigravity-credits" json:"antigravity-credits"`
 }
 
 // RoutingConfig configures how credentials are selected for requests.
@@ -137,6 +145,17 @@ type RoutingConfig struct {
 	// VirtualModels are model names served from one of several real models
 	// (routing_virtual_models.go).
 	VirtualModels []VirtualModel `yaml:"virtual-models,omitempty" json:"virtual-models,omitempty"`
+
+	// SessionAffinityTTL controls retention of session-to-auth bindings.
+	SessionAffinityTTL string `yaml:"session-affinity-ttl,omitempty" json:"session-affinity-ttl,omitempty"`
+
+	// SessionAffinity pins a request session to one credential when enabled.
+	SessionAffinity bool `yaml:"session-affinity,omitempty" json:"session-affinity,omitempty"`
+	// SessionAffinitySubagents controls whether delegated subagent requests share
+	// the parent session's affinity binding.
+	SessionAffinitySubagents *bool `yaml:"session-affinity-subagents,omitempty" json:"session-affinity-subagents,omitempty"`
+	// SessionAffinityRebindOn controls when an affinity binding may move.
+	SessionAffinityRebindOn string `yaml:"session-affinity-rebind-on,omitempty" json:"session-affinity-rebind-on,omitempty"`
 }
 
 // OAuthModelAlias defines a model ID alias for a specific channel.
@@ -144,9 +163,12 @@ type RoutingConfig struct {
 // When Fork is true, the alias is added as an additional model in listings while
 // keeping the original model ID available.
 type OAuthModelAlias struct {
-	Name  string `yaml:"name" json:"name"`
-	Alias string `yaml:"alias" json:"alias"`
-	Fork  bool   `yaml:"fork,omitempty" json:"fork,omitempty"`
+	OpenAPI      *bool  `yaml:"openapi,omitempty" json:"openapi,omitempty"`
+	Name         string `yaml:"name" json:"name"`
+	Alias        string `yaml:"alias" json:"alias"`
+	Fork         bool   `yaml:"fork,omitempty" json:"fork,omitempty"`
+	DisplayName  string `yaml:"display-name,omitempty" json:"display-name,omitempty"`
+	ForceMapping bool   `yaml:"force-mapping,omitempty" json:"force-mapping,omitempty"`
 }
 
 // AmpModelMapping defines a model name mapping for Amp CLI requests.
@@ -216,6 +238,8 @@ type PayloadConfig struct {
 	Override []PayloadRule `yaml:"override" json:"override"`
 	// OverrideRaw defines rules that always set raw JSON values, overwriting any existing values.
 	OverrideRaw []PayloadRule `yaml:"override-raw" json:"override-raw"`
+	// Replace defines ordered literal and regular-expression replacements in strings.
+	Replace []PayloadReplaceRule `yaml:"replace" json:"replace"`
 	// Filter defines rules that remove parameters from the payload by JSON path.
 	Filter []PayloadFilterRule `yaml:"filter" json:"filter"`
 }
@@ -243,12 +267,41 @@ type PayloadModelRule struct {
 	Name string `yaml:"name" json:"name"`
 	// Protocol restricts the rule to a specific translator format (e.g., "gemini", "responses").
 	Protocol string `yaml:"protocol" json:"protocol"`
+	// Headers restricts the rule to requests whose headers match all configured wildcard patterns.
+	Headers map[string]string `yaml:"headers" json:"headers"`
+	// FromProtocol restricts the rule to a specific source protocol.
+	FromProtocol string `yaml:"from-protocol" json:"from-protocol"`
+	// Match requires payload JSON paths to equal the configured values.
+	Match []map[string]any `yaml:"match" json:"match"`
+	// NotMatch requires payload JSON paths to not equal the configured values.
+	NotMatch []map[string]any `yaml:"not-match" json:"not-match"`
+	// Exist requires payload JSON paths to exist and not be null.
+	Exist []string `yaml:"exist" json:"exist"`
+	// NotExist requires payload JSON paths to be missing or null.
+	NotExist []string `yaml:"not-exist" json:"not-exist"`
 }
 
 // AntigravityConfig configures provider-wide Antigravity request behavior.
 type AntigravityConfig struct {
 	// SensitiveWords is a list of words to obfuscate with zero-width characters in system instructions.
-	SensitiveWords []string `yaml:"sensitive-words,omitempty" json:"sensitive-words,omitempty"`
+	SensitiveWords           []string                        `yaml:"sensitive-words,omitempty" json:"sensitive-words,omitempty"`
+	SensitiveWordsReplace    map[string]string               `yaml:"sensitive-words-replace,omitempty" json:"sensitive-words-replace,omitempty"`
+	SensitivePatternsReplace []SensitivePatternRule          `yaml:"sensitive-patterns-replace,omitempty" json:"sensitive-patterns-replace,omitempty"`
+	ConnectionPool           AntigravityConnectionPoolConfig `yaml:"connection-pool,omitempty" json:"connection-pool,omitempty"`
+	TOSPauseWindow           string                          `yaml:"tos-pause-window,omitempty" json:"tos-pause-window,omitempty"`
+}
+
+type AntigravityConnectionPoolConfig struct {
+	Enabled             *bool  `yaml:"enabled,omitempty" json:"enabled,omitempty"`
+	IdleConnTimeout     string `yaml:"idle-conn-timeout,omitempty" json:"idle-conn-timeout,omitempty"`
+	MaxIdleConnsPerHost *int   `yaml:"max-idle-conns-per-host,omitempty" json:"max-idle-conns-per-host,omitempty"`
+}
+
+// DevinConfig configures provider-wide Devin request behavior.
+type DevinConfig struct {
+	SensitiveWords           []string               `yaml:"sensitive-words,omitempty" json:"sensitive-words,omitempty"`
+	SensitiveWordsReplace    map[string]string      `yaml:"sensitive-words-replace,omitempty" json:"sensitive-words-replace,omitempty"`
+	SensitivePatternsReplace []SensitivePatternRule `yaml:"sensitive-patterns-replace,omitempty" json:"sensitive-patterns-replace,omitempty"`
 }
 
 // CloakConfig configures request cloaking for non-Claude-Code clients.
@@ -268,6 +321,12 @@ type CloakConfig struct {
 	// SensitiveWords is a list of words to obfuscate with zero-width characters.
 	// This can help bypass certain content filters.
 	SensitiveWords []string `yaml:"sensitive-words,omitempty" json:"sensitive-words,omitempty"`
+
+	// SensitiveWordsReplace maps sensitive words or phrases to literal replacements.
+	SensitiveWordsReplace map[string]string `yaml:"sensitive-words-replace,omitempty" json:"sensitive-words-replace,omitempty"`
+
+	// SensitivePatternsReplace defines ordered regular-expression replacements.
+	SensitivePatternsReplace []SensitivePatternRule `yaml:"sensitive-patterns-replace,omitempty" json:"sensitive-patterns-replace,omitempty"`
 
 	// CacheUserID controls whether Claude user_id values are cached per API key.
 	// When false, a fresh random user_id is generated for every request.

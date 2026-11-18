@@ -1,12 +1,18 @@
 // Package config hosts SDK bridge aliases for server configuration types.
 package config
 
-import internalconfig "github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+import internalconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 
 type SDKConfig = internalconfig.SDKConfig
+type ClaudeCodeConfig = internalconfig.ClaudeCodeConfig
+type DisableImageGenerationMode = internalconfig.DisableImageGenerationMode
+type ClientConfig = internalconfig.ClientConfig
+type CodexClientConfig = internalconfig.CodexClientConfig
+type ClaudeClientConfig = internalconfig.ClaudeClientConfig
 
 type Config = internalconfig.Config
 type APIKeyEntry = internalconfig.APIKeyEntry
+type ModelCatalogs = internalconfig.ModelCatalogs
 
 type StreamingConfig = internalconfig.StreamingConfig
 type ResponsesWebsocketConfig = internalconfig.ResponsesWebsocketConfig
@@ -25,11 +31,17 @@ type PayloadConfig = internalconfig.PayloadConfig
 type PayloadRule = internalconfig.PayloadRule
 type PayloadFilterRule = internalconfig.PayloadFilterRule
 type PayloadModelRule = internalconfig.PayloadModelRule
+type PayloadReplaceRule = internalconfig.PayloadReplaceRule
+type PayloadReplaceTarget = internalconfig.PayloadReplaceTarget
+type PayloadReplacement = internalconfig.PayloadReplacement
 
 type GeminiKey = internalconfig.GeminiKey
 type CodexKey = internalconfig.CodexKey
 type ClaudeKey = internalconfig.ClaudeKey
 type BedrockKey = internalconfig.BedrockKey
+type XAIKey = internalconfig.XAIKey
+type XAIModel = internalconfig.XAIModel
+type MetaKey = internalconfig.MetaKey
 type BedrockModel = internalconfig.BedrockModel
 type OpenCodeGoKey = internalconfig.OpenCodeGoKey
 type OpenCodeGoModel = internalconfig.OpenCodeGoModel
@@ -44,6 +56,8 @@ type VertexCompatModel = internalconfig.VertexCompatModel
 type OpenAICompatibility = internalconfig.OpenAICompatibility
 type OpenAICompatibilityAPIKey = internalconfig.OpenAICompatibilityAPIKey
 type OpenAICompatibilityModel = internalconfig.OpenAICompatibilityModel
+type ProxyConnectionPoolConfig = internalconfig.ProxyConnectionPoolConfig
+type OAuthModelSetting = internalconfig.OAuthModelSetting
 
 type TLS = internalconfig.TLSConfig
 
@@ -71,6 +85,12 @@ func MigrateLegacyPriorities(priorities map[string]int) map[string]int {
 }
 
 func LoadConfig(configFile string) (*Config, error) { return internalconfig.LoadConfig(configFile) }
+
+func ParseConfigBytes(data []byte) (*Config, error) { return internalconfig.ParseConfigBytes(data) }
+
+func ResolveOAuthModelSetting(settings []OAuthModelSetting, modelID, metadataModelID, modelName string) *OAuthModelSetting {
+	return internalconfig.ResolveOAuthModelSetting(settings, modelID, metadataModelID, modelName)
+}
 
 func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	return internalconfig.LoadConfigOptional(configFile, optional)

@@ -3,7 +3,7 @@ package accesspolicy
 import (
 	"testing"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/quota"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/quota"
 )
 
 func TestPublishSkipsEmptyPoliciesAndLookupIsByKey(t *testing.T) {

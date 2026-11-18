@@ -8,9 +8,9 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/buildinfo"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	managementupdate "github.com/router-for-me/CLIProxyAPI/v6/internal/management/updateflow"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/buildinfo"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	managementupdate "github.com/router-for-me/CLIProxyAPI/v8/internal/management/updateflow"
 )
 
 func (h *Handler) GetAutoUpdateEnabled(c *gin.Context) {

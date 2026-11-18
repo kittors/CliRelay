@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
-	sdkrouting "github.com/router-for-me/CLIProxyAPI/v6/sdk/routing"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
+	sdkrouting "github.com/router-for-me/CLIProxyAPI/v8/sdk/routing"
 )
 
 func TestResolveRequestDetails_RouteGroupRejectsConflictingModelPrefix(t *testing.T) {

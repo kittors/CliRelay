@@ -5,18 +5,84 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/watcher/diff"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/constant"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/watcher/diff"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
 
 // ConfigSynthesizer generates Auth entries from configuration API keys.
-// It handles Gemini, Claude, Bedrock, Codex, OpenCode Go, Cline, Ollama Cloud, OpenAI-compat, and Vertex-compat providers.
+// It handles Gemini, Interactions, Claude, Codex, xAI, OpenAI-compat, and Vertex-compat providers.
 type ConfigSynthesizer struct{}
 
 // NewConfigSynthesizer creates a new ConfigSynthesizer instance.
 func NewConfigSynthesizer() *ConfigSynthesizer {
 	return &ConfigSynthesizer{}
+}
+
+// authProxyConnectionPool converts a per-credential pool override from config into
+// the SDK representation carried on the auth record. Values are copied so the auth
+// snapshot never aliases a live config field.
+func authProxyConnectionPool(pool *config.ProxyConnectionPoolConfig) *coreauth.ProxyConnectionPoolOverride {
+	if pool == nil {
+		return nil
+	}
+	out := &coreauth.ProxyConnectionPoolOverride{IdleConnTimeout: pool.IdleConnTimeout}
+	if pool.Enabled != nil {
+		enabled := *pool.Enabled
+		out.Enabled = &enabled
+	}
+	if pool.MaxIdleConnsPerHost != nil {
+		maxIdle := *pool.MaxIdleConnsPerHost
+		out.MaxIdleConnsPerHost = &maxIdle
+	}
+	// A block without fields is still the opt-in: it asks for the pool defaults. It
+	// must therefore stay non-nil, or an operator writing `connection-pool: {}` (or
+	// inheriting an empty group block) would silently get no pooling at all.
+	return out
+}
+
+// openAICompatConnectionPool resolves the pool override for one OpenAI-compatible
+// key: the per-key block wins field by field, so a key that overrides only one value
+// keeps inheriting the provider-group default for the rest.
+// OpenAICompatConnectionPool resolves the effective connection-pool config for an OpenAI-compatible entry.
+func OpenAICompatConnectionPool(compat *config.OpenAICompatibility, entry *config.OpenAICompatibilityAPIKey) *config.ProxyConnectionPoolConfig {
+	return openAICompatConnectionPool(compat, entry)
+}
+
+func openAICompatConnectionPool(compat *config.OpenAICompatibility, entry *config.OpenAICompatibilityAPIKey) *config.ProxyConnectionPoolConfig {
+	var group *config.ProxyConnectionPoolConfig
+	if compat != nil {
+		group = compat.ConnectionPool
+	}
+	if entry == nil || entry.ConnectionPool == nil {
+		return group
+	}
+	merged := *entry.ConnectionPool
+	if group != nil {
+		if merged.Enabled == nil {
+			merged.Enabled = group.Enabled
+		}
+		if strings.TrimSpace(merged.IdleConnTimeout) == "" {
+			merged.IdleConnTimeout = group.IdleConnTimeout
+		}
+		if merged.MaxIdleConnsPerHost == nil {
+			merged.MaxIdleConnsPerHost = group.MaxIdleConnsPerHost
+		}
+	}
+	return &merged
+}
+
+func addWeightToAttrs(weight *int, attrs map[string]string) {
+	if weight == nil {
+		return
+	}
+	normalized := *weight
+	if normalized <= 0 {
+		normalized = 0
+	}
+	attrs[coreauth.AttributeWeight] = strconv.Itoa(normalized)
 }
 
 // Synthesize generates Auth entries from config API keys.
@@ -25,23 +91,22 @@ func (s *ConfigSynthesizer) Synthesize(ctx *SynthesisContext) ([]*coreauth.Auth,
 	if ctx == nil || ctx.Config == nil {
 		return out, nil
 	}
+	if errValidate := ctx.Config.ValidateCredentialWeights(); errValidate != nil {
+		return nil, fmt.Errorf("synthesize config API key auths: %w", errValidate)
+	}
 
 	// Gemini API Keys
 	out = append(out, s.synthesizeGeminiKeys(ctx)...)
+	// Native Interactions API Keys
+	out = append(out, s.synthesizeInteractionsKeys(ctx)...)
 	// Claude API Keys
 	out = append(out, s.synthesizeClaudeKeys(ctx)...)
-	// AWS Bedrock Runtime credentials
-	out = append(out, s.synthesizeBedrockKeys(ctx)...)
 	// Codex API Keys
 	out = append(out, s.synthesizeCodexKeys(ctx)...)
-	// OpenCode Go API Keys
-	out = append(out, s.synthesizeOpenCodeGoKeys(ctx)...)
-	// Cline API Keys
-	out = append(out, s.synthesizeClineKeys(ctx)...)
-	// Ollama Cloud API Keys
-	out = append(out, s.synthesizeOllamaCloudKeys(ctx)...)
-	// Command Code API Keys
-	out = append(out, s.synthesizeCommandCodeKeys(ctx)...)
+	// xAI API Keys
+	out = append(out, s.synthesizeXAIKeys(ctx)...)
+	// Meta API Keys
+	out = append(out, s.synthesizeMetaKeys(ctx)...)
 	// OpenAI-compat
 	out = append(out, s.synthesizeOpenAICompat(ctx)...)
 	// Vertex-compat
@@ -52,29 +117,50 @@ func (s *ConfigSynthesizer) Synthesize(ctx *SynthesisContext) ([]*coreauth.Auth,
 
 // synthesizeGeminiKeys creates Auth entries for Gemini API keys.
 func (s *ConfigSynthesizer) synthesizeGeminiKeys(ctx *SynthesisContext) []*coreauth.Auth {
-	cfg := ctx.Config
+	return s.synthesizeGeminiKeyEntries(ctx, ctx.Config.GeminiKey, "gemini:apikey", "gemini", "gemini-apikey", constant.Gemini)
+}
+
+// synthesizeInteractionsKeys creates Auth entries for native Interactions API keys.
+func (s *ConfigSynthesizer) synthesizeInteractionsKeys(ctx *SynthesisContext) []*coreauth.Auth {
+	return s.synthesizeGeminiKeyEntries(ctx, ctx.Config.InteractionsKey, "gemini-interactions:apikey", "interactions", "interactions-apikey", constant.GeminiInteractions)
+}
+
+func (s *ConfigSynthesizer) synthesizeGeminiKeyEntries(ctx *SynthesisContext, entries []config.GeminiKey, idKind, sourceName, label, provider string) []*coreauth.Auth {
 	now := ctx.Now
 	idGen := ctx.IDGenerator
 
-	out := make([]*coreauth.Auth, 0, len(cfg.GeminiKey))
-	for i := range cfg.GeminiKey {
-		entry := cfg.GeminiKey[i]
+	out := make([]*coreauth.Auth, 0, len(entries))
+	for i := range entries {
+		entry := entries[i]
 		key := strings.TrimSpace(entry.APIKey)
-		if key == "" {
+		base := strings.TrimSpace(entry.BaseURL)
+		if key == "" && base == "" {
 			continue
 		}
 		prefix := strings.TrimSpace(entry.Prefix)
-		base := strings.TrimSpace(entry.BaseURL)
 		proxyURL := strings.TrimSpace(entry.ProxyURL)
-		proxyID := strings.TrimSpace(entry.ProxyID)
-		id, token := idGen.Next("gemini:apikey", key, base)
-		attrs := map[string]string{
-			"source":  fmt.Sprintf("config:gemini[%s]", token),
-			"api_key": key,
+		idParts := []string{key, base, proxyURL, prefix, config.FormatSortedHeaders(entry.Headers)}
+		if poolID := config.FormatConnectionPoolDedupID(entry.ConnectionPool); poolID != "" {
+			idParts = append(idParts, poolID)
 		}
+		id, token := idGen.Next(idKind, idParts...)
+		attrs := map[string]string{
+			"source":       fmt.Sprintf("config:%s[%s]", sourceName, token),
+			"config_index": strconv.Itoa(i),
+		}
+		if key != "" {
+			attrs["api_key"] = key
+		}
+		metadata := map[string]any{}
+		if entry.DisableCooling != nil {
+			metadata["disable_cooling"] = *entry.DisableCooling
+		}
+		addRequestRetryToMetadata(entry.RequestRetry, metadata)
+		addRequestScopedErrorsToMetadata(entry.RequestScopedErrors, metadata)
 		if entry.Priority != 0 {
 			attrs["priority"] = strconv.Itoa(entry.Priority)
 		}
+		addWeightToAttrs(entry.Weight, attrs)
 		if base != "" {
 			attrs["base_url"] = base
 		}
@@ -82,26 +168,24 @@ func (s *ConfigSynthesizer) synthesizeGeminiKeys(ctx *SynthesisContext) []*corea
 			attrs["models_hash"] = hash
 		}
 		addConfigHeadersToAttrs(entry.Headers, attrs)
-		label := strings.TrimSpace(entry.Name)
-		if label == "" {
-			label = "gemini-apikey"
-		}
-		addProviderBindingAttrs(attrs, "", entry.ID)
-		addDisableCoolingAttr(attrs, entry.DisableCooling)
 		a := &coreauth.Auth{
 			ID:         id,
-			Provider:   "gemini",
+			Provider:   provider,
 			Label:      label,
 			Prefix:     prefix,
 			Status:     coreauth.StatusActive,
 			ProxyURL:   proxyURL,
-			ProxyID:    proxyID,
 			Attributes: attrs,
+			Metadata:   metadata,
 			CreatedAt:  now,
 			UpdatedAt:  now,
+
+			ProxyConnectionPool: authProxyConnectionPool(entry.ConnectionPool),
 		}
-		ApplyAuthExcludedModelsMeta(a, cfg, entry.ExcludedModels, "apikey")
-		ApplyDisableAllModelsState(a, entry.ExcludedModels)
+		ApplyAuthExcludedModelsMeta(a, entry.ExcludedModels, "apikey")
+		if len(a.Metadata) == 0 {
+			a.Metadata = nil
+		}
 		out = append(out, a)
 	}
 	return out
@@ -117,144 +201,68 @@ func (s *ConfigSynthesizer) synthesizeClaudeKeys(ctx *SynthesisContext) []*corea
 	for i := range cfg.ClaudeKey {
 		ck := cfg.ClaudeKey[i]
 		key := strings.TrimSpace(ck.APIKey)
-		if key == "" {
+		base := strings.TrimSpace(ck.BaseURL)
+		if key == "" && base == "" {
 			continue
 		}
 		prefix := strings.TrimSpace(ck.Prefix)
-		base := strings.TrimSpace(ck.BaseURL)
-		id, token := idGen.Next("claude:apikey", key, base)
-		attrs := map[string]string{
-			"source":  fmt.Sprintf("config:claude[%s]", token),
-			"api_key": key,
+		proxyURL := strings.TrimSpace(ck.ProxyURL)
+		idParts := []string{key, base, proxyURL, prefix, config.FormatSortedHeaders(ck.Headers)}
+		if poolID := config.FormatConnectionPoolDedupID(ck.ConnectionPool); poolID != "" {
+			idParts = append(idParts, poolID)
 		}
+		id, token := idGen.Next("claude:apikey", idParts...)
+		attrs := map[string]string{
+			"source":       fmt.Sprintf("config:claude[%s]", token),
+			"config_index": strconv.Itoa(i),
+		}
+		if key != "" {
+			attrs["api_key"] = key
+		}
+		metadata := map[string]any{}
+		if ck.DisableCooling != nil {
+			metadata["disable_cooling"] = *ck.DisableCooling
+		}
+		addRequestRetryToMetadata(ck.RequestRetry, metadata)
+		addRequestScopedErrorsToMetadata(ck.RequestScopedErrors, metadata)
 		if ck.Priority != 0 {
 			attrs["priority"] = strconv.Itoa(ck.Priority)
 		}
+		addWeightToAttrs(ck.Weight, attrs)
 		if base != "" {
 			attrs["base_url"] = base
+		}
+		if ck.RebuildMidSystemMessage {
+			attrs["rebuild_mid_system_message"] = "true"
+		}
+		if ck.NativeToolSearch {
+			attrs["native_tool_search"] = "true"
+		}
+		if profile := strings.ToLower(strings.TrimSpace(ck.FingerprintProfile)); profile != "" {
+			attrs["fingerprint_profile"] = profile
 		}
 		if hash := diff.ComputeClaudeModelsHash(ck.Models); hash != "" {
 			attrs["models_hash"] = hash
 		}
 		addConfigHeadersToAttrs(ck.Headers, attrs)
-		if ck.SkipAnthropicProcessing {
-			attrs["skip_anthropic_processing"] = "true"
-		}
-		proxyURL := strings.TrimSpace(ck.ProxyURL)
-		proxyID := strings.TrimSpace(ck.ProxyID)
-		label := strings.TrimSpace(ck.Name)
-		if label == "" {
-			label = "claude-apikey"
-		}
-		addProviderBindingAttrs(attrs, "", ck.ID)
-		addDisableCoolingAttr(attrs, ck.DisableCooling)
 		a := &coreauth.Auth{
 			ID:         id,
 			Provider:   "claude",
-			Label:      label,
+			Label:      "claude-apikey",
 			Prefix:     prefix,
 			Status:     coreauth.StatusActive,
 			ProxyURL:   proxyURL,
-			ProxyID:    proxyID,
 			Attributes: attrs,
+			Metadata:   metadata,
 			CreatedAt:  now,
 			UpdatedAt:  now,
-		}
-		ApplyAuthExcludedModelsMeta(a, cfg, ck.ExcludedModels, "apikey")
-		ApplyDisableAllModelsState(a, ck.ExcludedModels)
-		out = append(out, a)
-	}
-	return out
-}
 
-// synthesizeBedrockKeys creates Auth entries for AWS Bedrock Runtime credentials.
-func (s *ConfigSynthesizer) synthesizeBedrockKeys(ctx *SynthesisContext) []*coreauth.Auth {
-	cfg := ctx.Config
-	now := ctx.Now
-	idGen := ctx.IDGenerator
-
-	out := make([]*coreauth.Auth, 0, len(cfg.BedrockKey))
-	for i := range cfg.BedrockKey {
-		entry := cfg.BedrockKey[i]
-		authMode := strings.ToLower(strings.TrimSpace(entry.AuthMode))
-		switch authMode {
-		case "apikey", "api_key", "api-key":
-			authMode = "api-key"
-		default:
-			authMode = "sigv4"
+			ProxyConnectionPool: authProxyConnectionPool(ck.ConnectionPool),
 		}
-
-		region := strings.TrimSpace(entry.Region)
-		if region == "" {
-			region = "us-east-1"
+		ApplyAuthExcludedModelsMeta(a, ck.ExcludedModels, "apikey")
+		if len(a.Metadata) == 0 {
+			a.Metadata = nil
 		}
-		base := strings.TrimSpace(entry.BaseURL)
-		proxyURL := strings.TrimSpace(entry.ProxyURL)
-		proxyID := strings.TrimSpace(entry.ProxyID)
-		prefix := strings.TrimSpace(entry.Prefix)
-
-		attrs := map[string]string{
-			"auth_mode": authMode,
-			"region":    region,
-		}
-		idParts := []string{authMode, region, base, proxyURL}
-		switch authMode {
-		case "api-key":
-			key := strings.TrimSpace(entry.APIKey)
-			if key == "" {
-				continue
-			}
-			attrs["api_key"] = key
-			idParts = append(idParts, key)
-		default:
-			accessKeyID := strings.TrimSpace(entry.AccessKeyID)
-			secretAccessKey := strings.TrimSpace(entry.SecretAccessKey)
-			if accessKeyID == "" || secretAccessKey == "" {
-				continue
-			}
-			attrs["api_key"] = accessKeyID
-			attrs["access_key_id"] = accessKeyID
-			attrs["secret_access_key"] = secretAccessKey
-			if sessionToken := strings.TrimSpace(entry.SessionToken); sessionToken != "" {
-				attrs["session_token"] = sessionToken
-			}
-			idParts = append(idParts, accessKeyID, secretAccessKey, strings.TrimSpace(entry.SessionToken))
-		}
-		if entry.Priority != 0 {
-			attrs["priority"] = strconv.Itoa(entry.Priority)
-		}
-		if base != "" {
-			attrs["base_url"] = base
-		}
-		if entry.ForceGlobal {
-			attrs["force_global"] = "true"
-		}
-		if hash := diff.ComputeBedrockModelsHash(entry.Models); hash != "" {
-			attrs["models_hash"] = hash
-		}
-		addConfigHeadersToAttrs(entry.Headers, attrs)
-		addProviderBindingAttrs(attrs, "", entry.ID)
-		addDisableCoolingAttr(attrs, entry.DisableCooling)
-		id, token := idGen.Next("bedrock:apikey", idParts...)
-		attrs["source"] = fmt.Sprintf("config:bedrock[%s]", token)
-		label := strings.TrimSpace(entry.Name)
-		if label == "" {
-			label = "bedrock-apikey"
-		}
-		a := &coreauth.Auth{
-			ID:         id,
-			Provider:   "bedrock",
-			Label:      label,
-			Prefix:     prefix,
-			Status:     coreauth.StatusActive,
-			ProxyURL:   proxyURL,
-			ProxyID:    proxyID,
-			Attributes: attrs,
-			CreatedAt:  now,
-			UpdatedAt:  now,
-		}
-		ApplyAuthExcludedModelsMeta(a, cfg, entry.ExcludedModels, "apikey")
-		ApplyDisableAllModelsState(a, entry.ExcludedModels)
 		out = append(out, a)
 	}
 	return out
@@ -262,314 +270,88 @@ func (s *ConfigSynthesizer) synthesizeBedrockKeys(ctx *SynthesisContext) []*core
 
 // synthesizeCodexKeys creates Auth entries for Codex API keys.
 func (s *ConfigSynthesizer) synthesizeCodexKeys(ctx *SynthesisContext) []*coreauth.Auth {
-	cfg := ctx.Config
+	return s.synthesizeCodexStyleKeys(ctx, ctx.Config.CodexKey, "codex")
+}
+
+// synthesizeXAIKeys creates Auth entries for xAI API keys.
+func (s *ConfigSynthesizer) synthesizeXAIKeys(ctx *SynthesisContext) []*coreauth.Auth {
+	return s.synthesizeCodexStyleKeys(ctx, ctx.Config.XAIKey, "xai")
+}
+
+// synthesizeMetaKeys creates Auth entries for Meta API keys.
+func (s *ConfigSynthesizer) synthesizeMetaKeys(ctx *SynthesisContext) []*coreauth.Auth {
+	return s.synthesizeCodexStyleKeys(ctx, ctx.Config.MetaKey, "meta")
+}
+
+func (s *ConfigSynthesizer) synthesizeCodexStyleKeys(ctx *SynthesisContext, entries []config.CodexKey, provider string) []*coreauth.Auth {
 	now := ctx.Now
 	idGen := ctx.IDGenerator
 
-	out := make([]*coreauth.Auth, 0, len(cfg.CodexKey))
-	for i := range cfg.CodexKey {
-		ck := cfg.CodexKey[i]
-		key := strings.TrimSpace(ck.APIKey)
-		if key == "" {
+	out := make([]*coreauth.Auth, 0, len(entries))
+	for i := range entries {
+		entry := entries[i]
+		key := strings.TrimSpace(entry.APIKey)
+		baseURL := strings.TrimSpace(entry.BaseURL)
+		if key == "" && baseURL == "" {
 			continue
 		}
-		prefix := strings.TrimSpace(ck.Prefix)
-		id, token := idGen.Next("codex:apikey", key, ck.BaseURL)
+		prefix := strings.TrimSpace(entry.Prefix)
+		proxyURL := strings.TrimSpace(entry.ProxyURL)
+		idParts := []string{key, baseURL, proxyURL, prefix, config.FormatSortedHeaders(entry.Headers)}
+		if poolID := config.FormatConnectionPoolDedupID(entry.ConnectionPool); poolID != "" {
+			idParts = append(idParts, poolID)
+		}
+		id, token := idGen.Next(provider+":apikey", idParts...)
 		attrs := map[string]string{
-			"source":  fmt.Sprintf("config:codex[%s]", token),
-			"api_key": key,
+			"source":       fmt.Sprintf("config:%s[%s]", provider, token),
+			"config_index": strconv.Itoa(i),
 		}
-		if ck.Priority != 0 {
-			attrs["priority"] = strconv.Itoa(ck.Priority)
+		if key != "" {
+			attrs["api_key"] = key
 		}
-		if ck.BaseURL != "" {
-			attrs["base_url"] = ck.BaseURL
+		metadata := map[string]any{}
+		if entry.DisableCooling != nil {
+			metadata["disable_cooling"] = *entry.DisableCooling
 		}
-		if ck.Websockets {
+		addRequestRetryToMetadata(entry.RequestRetry, metadata)
+		addRequestScopedErrorsToMetadata(entry.RequestScopedErrors, metadata)
+		if entry.Priority != 0 {
+			attrs["priority"] = strconv.Itoa(entry.Priority)
+		}
+		addWeightToAttrs(entry.Weight, attrs)
+		if baseURL != "" {
+			attrs["base_url"] = baseURL
+		}
+		if entry.Websockets {
 			attrs["websockets"] = "true"
 		}
-		if ck.AlphaSearch {
-			attrs["alpha_search"] = "true"
+		if provider == "codex" && entry.AlphaSearch {
+			attrs[coreauth.AttributeCodexAlphaSearch] = "true"
 		}
-		if hash := diff.ComputeCodexModelsHash(ck.Models); hash != "" {
+		if provider == "codex" && entry.DisableCodexCloaking != nil {
+			attrs[coreauth.AttributeCodexDisableCloaking] = strconv.FormatBool(*entry.DisableCodexCloaking)
+		}
+		if hash := diff.ComputeCodexModelsHash(entry.Models); hash != "" {
 			attrs["models_hash"] = hash
-		}
-		addConfigHeadersToAttrs(ck.Headers, attrs)
-		proxyURL := strings.TrimSpace(ck.ProxyURL)
-		proxyID := strings.TrimSpace(ck.ProxyID)
-		label := strings.TrimSpace(ck.Name)
-		if label == "" {
-			label = "codex-apikey"
-		}
-		addProviderBindingAttrs(attrs, "", ck.ID)
-		addDisableCoolingAttr(attrs, ck.DisableCooling)
-		a := &coreauth.Auth{
-			ID:         id,
-			Provider:   "codex",
-			Label:      label,
-			Prefix:     prefix,
-			Status:     coreauth.StatusActive,
-			ProxyURL:   proxyURL,
-			ProxyID:    proxyID,
-			Attributes: attrs,
-			CreatedAt:  now,
-			UpdatedAt:  now,
-		}
-		ApplyAuthExcludedModelsMeta(a, cfg, ck.ExcludedModels, "apikey")
-		ApplyDisableAllModelsState(a, ck.ExcludedModels)
-		out = append(out, a)
-	}
-	return out
-}
-
-// synthesizeOpenCodeGoKeys creates Auth entries for OpenCode Go API keys.
-func (s *ConfigSynthesizer) synthesizeOpenCodeGoKeys(ctx *SynthesisContext) []*coreauth.Auth {
-	cfg := ctx.Config
-	now := ctx.Now
-	idGen := ctx.IDGenerator
-
-	out := make([]*coreauth.Auth, 0, len(cfg.OpenCodeGoKey))
-	for i := range cfg.OpenCodeGoKey {
-		entry := cfg.OpenCodeGoKey[i]
-		key := strings.TrimSpace(entry.APIKey)
-		if key == "" {
-			continue
-		}
-		prefix := strings.TrimSpace(entry.Prefix)
-		proxyURL := strings.TrimSpace(entry.ProxyURL)
-		proxyID := strings.TrimSpace(entry.ProxyID)
-		id, token := idGen.Next("opencode-go:apikey", key, proxyURL)
-		attrs := map[string]string{
-			"source":  fmt.Sprintf("config:opencode-go[%s]", token),
-			"api_key": key,
-		}
-		if entry.Priority != 0 {
-			attrs["priority"] = strconv.Itoa(entry.Priority)
-		}
-		if hash := diff.ComputeOpenCodeGoModelsHash(entry.Models); hash != "" {
-			attrs["models_hash"] = hash
-		}
-		if visionFallbackModel := strings.TrimSpace(entry.VisionFallbackModel); visionFallbackModel != "" {
-			attrs["vision_fallback_model"] = visionFallbackModel
-		}
-		addCodexToolBridgeAttr(attrs, entry.CodexToolBridge)
-		addConfigHeadersToAttrs(entry.Headers, attrs)
-		label := strings.TrimSpace(entry.Name)
-		if label == "" {
-			label = "opencode-go-apikey"
-		}
-		addProviderBindingAttrs(attrs, "", entry.ID)
-		addDisableCoolingAttr(attrs, entry.DisableCooling)
-		a := &coreauth.Auth{
-			ID:         id,
-			Provider:   "opencode-go",
-			Label:      label,
-			Prefix:     prefix,
-			Status:     coreauth.StatusActive,
-			ProxyURL:   proxyURL,
-			ProxyID:    proxyID,
-			Attributes: attrs,
-			CreatedAt:  now,
-			UpdatedAt:  now,
-		}
-		ApplyAuthExcludedModelsMeta(a, cfg, entry.ExcludedModels, "apikey")
-		ApplyConfigDisabledState(a, entry.Disabled)
-		out = append(out, a)
-	}
-	return out
-}
-
-// synthesizeClineKeys creates Auth entries for ClinePass API keys.
-func (s *ConfigSynthesizer) synthesizeClineKeys(ctx *SynthesisContext) []*coreauth.Auth {
-	cfg := ctx.Config
-	now := ctx.Now
-	idGen := ctx.IDGenerator
-
-	out := make([]*coreauth.Auth, 0, len(cfg.ClineKey))
-	for i := range cfg.ClineKey {
-		entry := cfg.ClineKey[i]
-		key := strings.TrimSpace(entry.APIKey)
-		if key == "" {
-			continue
-		}
-		prefix := strings.TrimSpace(entry.Prefix)
-		base := strings.TrimSpace(entry.BaseURL)
-		if base == "" {
-			base = config.DefaultClineBaseURL
-		}
-		base = strings.TrimSuffix(base, "/")
-		proxyURL := strings.TrimSpace(entry.ProxyURL)
-		proxyID := strings.TrimSpace(entry.ProxyID)
-		id, token := idGen.Next("cline:apikey", key, base, proxyURL)
-		attrs := map[string]string{
-			"source":       fmt.Sprintf("config:cline[%s]", token),
-			"api_key":      key,
-			"base_url":     base,
-			"compat_name":  "ClinePass",
-			"provider_key": "cline",
-		}
-		if entry.Priority != 0 {
-			attrs["priority"] = strconv.Itoa(entry.Priority)
-		}
-		if hash := diff.ComputeClineModelsHash(entry.Models); hash != "" {
-			attrs["models_hash"] = hash
-		}
-		if visionFallbackModel := strings.TrimSpace(entry.VisionFallbackModel); visionFallbackModel != "" {
-			attrs["vision_fallback_model"] = visionFallbackModel
 		}
 		addConfigHeadersToAttrs(entry.Headers, attrs)
-		label := strings.TrimSpace(entry.Name)
-		if label == "" {
-			label = "cline-apikey"
-		}
-		addProviderBindingAttrs(attrs, "", entry.ID)
-		addDisableCoolingAttr(attrs, entry.DisableCooling)
 		a := &coreauth.Auth{
-			ID:         id,
-			Provider:   "cline",
-			Label:      label,
-			Prefix:     prefix,
-			Status:     coreauth.StatusActive,
-			ProxyURL:   proxyURL,
-			ProxyID:    proxyID,
-			Attributes: attrs,
-			CreatedAt:  now,
-			UpdatedAt:  now,
+			ID:                  id,
+			Provider:            provider,
+			Label:               provider + "-apikey",
+			Prefix:              prefix,
+			Status:              coreauth.StatusActive,
+			ProxyURL:            strings.TrimSpace(entry.ProxyURL),
+			Attributes:          attrs,
+			Metadata:            metadata,
+			CreatedAt:           now,
+			UpdatedAt:           now,
+			ProxyConnectionPool: authProxyConnectionPool(entry.ConnectionPool),
 		}
-		ApplyAuthExcludedModelsMeta(a, cfg, entry.ExcludedModels, "apikey")
-		ApplyConfigDisabledState(a, entry.Disabled)
-		out = append(out, a)
-	}
-	return out
-}
-
-// synthesizeCommandCodeKeys creates Auth entries for Command Code API keys.
-//
-// Command Code speaks plain OpenAI on its Provider API, so the auth carries
-// compat metadata and is served by the shared OpenAI-compatible executor rather
-// than a dedicated one.
-func (s *ConfigSynthesizer) synthesizeCommandCodeKeys(ctx *SynthesisContext) []*coreauth.Auth {
-	cfg := ctx.Config
-	now := ctx.Now
-	idGen := ctx.IDGenerator
-
-	out := make([]*coreauth.Auth, 0, len(cfg.CommandCodeKey))
-	for i := range cfg.CommandCodeKey {
-		entry := cfg.CommandCodeKey[i]
-		key := strings.TrimSpace(entry.APIKey)
-		if key == "" {
-			continue
+		ApplyAuthExcludedModelsMeta(a, entry.ExcludedModels, "apikey")
+		if len(a.Metadata) == 0 {
+			a.Metadata = nil
 		}
-		prefix := strings.TrimSpace(entry.Prefix)
-		base := strings.TrimSpace(entry.BaseURL)
-		if base == "" {
-			base = config.DefaultCommandCodeBaseURL
-		}
-		base = strings.TrimSuffix(base, "/")
-		proxyURL := strings.TrimSpace(entry.ProxyURL)
-		proxyID := strings.TrimSpace(entry.ProxyID)
-		id, token := idGen.Next("commandcode:apikey", key, base, proxyURL)
-		attrs := map[string]string{
-			"source":       fmt.Sprintf("config:commandcode[%s]", token),
-			"api_key":      key,
-			"base_url":     base,
-			"compat_name":  "Command Code",
-			"provider_key": "commandcode",
-		}
-		if entry.Priority != 0 {
-			attrs["priority"] = strconv.Itoa(entry.Priority)
-		}
-		if hash := diff.ComputeCommandCodeModelsHash(entry.Models); hash != "" {
-			attrs["models_hash"] = hash
-		}
-		if visionFallbackModel := strings.TrimSpace(entry.VisionFallbackModel); visionFallbackModel != "" {
-			attrs["vision_fallback_model"] = visionFallbackModel
-		}
-		addConfigHeadersToAttrs(entry.Headers, attrs)
-		label := strings.TrimSpace(entry.Name)
-		if label == "" {
-			label = "commandcode-apikey"
-		}
-		addProviderBindingAttrs(attrs, "", entry.ID)
-		addDisableCoolingAttr(attrs, entry.DisableCooling)
-		a := &coreauth.Auth{
-			ID:         id,
-			Provider:   "commandcode",
-			Label:      label,
-			Prefix:     prefix,
-			Status:     coreauth.StatusActive,
-			ProxyURL:   proxyURL,
-			ProxyID:    proxyID,
-			Attributes: attrs,
-			CreatedAt:  now,
-			UpdatedAt:  now,
-		}
-		ApplyAuthExcludedModelsMeta(a, cfg, entry.ExcludedModels, "apikey")
-		ApplyConfigDisabledState(a, entry.Disabled)
-		out = append(out, a)
-	}
-	return out
-}
-
-// synthesizeOllamaCloudKeys creates Auth entries for Ollama Cloud API keys.
-func (s *ConfigSynthesizer) synthesizeOllamaCloudKeys(ctx *SynthesisContext) []*coreauth.Auth {
-	cfg := ctx.Config
-	now := ctx.Now
-	idGen := ctx.IDGenerator
-
-	out := make([]*coreauth.Auth, 0, len(cfg.OllamaCloudKey))
-	for i := range cfg.OllamaCloudKey {
-		entry := cfg.OllamaCloudKey[i]
-		key := strings.TrimSpace(entry.APIKey)
-		if key == "" {
-			continue
-		}
-		prefix := strings.TrimSpace(entry.Prefix)
-		base := strings.TrimSpace(entry.BaseURL)
-		if base == "" {
-			base = config.DefaultOllamaCloudBaseURL
-		}
-		base = strings.TrimSuffix(base, "/")
-		proxyURL := strings.TrimSpace(entry.ProxyURL)
-		proxyID := strings.TrimSpace(entry.ProxyID)
-		id, token := idGen.Next("ollama-cloud:apikey", key, base, proxyURL)
-		attrs := map[string]string{
-			"source":       fmt.Sprintf("config:ollama-cloud[%s]", token),
-			"api_key":      key,
-			"base_url":     base,
-			"compat_name":  "Ollama Cloud",
-			"provider_key": "ollama-cloud",
-		}
-		if entry.Priority != 0 {
-			attrs["priority"] = strconv.Itoa(entry.Priority)
-		}
-		if hash := diff.ComputeOllamaCloudModelsHash(entry.Models); hash != "" {
-			attrs["models_hash"] = hash
-		}
-		if visionFallbackModel := strings.TrimSpace(entry.VisionFallbackModel); visionFallbackModel != "" {
-			attrs["vision_fallback_model"] = visionFallbackModel
-		}
-		addConfigHeadersToAttrs(entry.Headers, attrs)
-		label := strings.TrimSpace(entry.Name)
-		if label == "" {
-			label = "ollama-cloud-apikey"
-		}
-		addProviderBindingAttrs(attrs, "", entry.ID)
-		addDisableCoolingAttr(attrs, entry.DisableCooling)
-		a := &coreauth.Auth{
-			ID:         id,
-			Provider:   "ollama-cloud",
-			Label:      label,
-			Prefix:     prefix,
-			Status:     coreauth.StatusActive,
-			ProxyURL:   proxyURL,
-			ProxyID:    proxyID,
-			Attributes: attrs,
-			CreatedAt:  now,
-			UpdatedAt:  now,
-		}
-		ApplyAuthExcludedModelsMeta(a, cfg, entry.ExcludedModels, "apikey")
-		ApplyConfigDisabledState(a, entry.Disabled)
 		out = append(out, a)
 	}
 	return out
@@ -592,82 +374,109 @@ func (s *ConfigSynthesizer) synthesizeOpenAICompat(ctx *SynthesisContext) []*cor
 		if providerName == "" {
 			providerName = "openai-compatibility"
 		}
+		internalProviderKey := util.OpenAICompatibleProviderKey(providerName)
 		base := strings.TrimSpace(compat.BaseURL)
+		disableCooling := compat.DisableCooling
 
 		// Handle new APIKeyEntries format (preferred)
-		hasAPIKeyEntries := len(compat.APIKeyEntries) > 0
+		createdEntries := 0
 		for j := range compat.APIKeyEntries {
 			entry := &compat.APIKeyEntries[j]
-			if entry.Disabled {
-				continue
-			}
 			key := strings.TrimSpace(entry.APIKey)
 			proxyURL := strings.TrimSpace(entry.ProxyURL)
-			proxyID := strings.TrimSpace(entry.ProxyID)
+			effectivePool := openAICompatConnectionPool(compat, entry)
 			idKind := fmt.Sprintf("openai-compatibility:%s", providerName)
-			id, token := idGen.Next(idKind, key, base, proxyURL)
+			idParts := []string{key, base, proxyURL}
+			if poolID := config.FormatConnectionPoolDedupID(effectivePool); poolID != "" {
+				idParts = append(idParts, poolID)
+			}
+			id, token := idGen.Next(idKind, idParts...)
 			attrs := map[string]string{
 				"source":       fmt.Sprintf("config:%s[%s]", providerName, token),
 				"base_url":     base,
 				"compat_name":  compat.Name,
-				"provider_key": providerName,
+				"provider_key": internalProviderKey,
+				"config_index": strconv.Itoa(i),
 			}
+			metadata := map[string]any{}
+			if disableCooling != nil {
+				metadata["disable_cooling"] = *disableCooling
+			}
+			addRequestRetryToMetadata(compat.RequestRetry, metadata)
+			addRequestScopedErrorsToMetadata(compat.RequestScopedErrors, metadata)
 			if compat.Priority != 0 {
 				attrs["priority"] = strconv.Itoa(compat.Priority)
 			}
+			addWeightToAttrs(entry.Weight, attrs)
 			if key != "" {
 				attrs["api_key"] = key
 			}
 			if hash := diff.ComputeOpenAICompatModelsHash(compat.Models); hash != "" {
 				attrs["models_hash"] = hash
 			}
-			addCodexToolBridgeAttr(attrs, compat.CodexToolBridge)
 			addConfigHeadersToAttrs(compat.Headers, attrs)
-			addProviderBindingAttrs(attrs, compat.ID, entry.ID)
-			addDisableCoolingAttr(attrs, compat.DisableCooling)
 			a := &coreauth.Auth{
-				ID:         id,
-				Provider:   providerName,
-				Label:      compat.Name,
-				Prefix:     prefix,
-				Status:     coreauth.StatusActive,
-				ProxyURL:   proxyURL,
-				ProxyID:    proxyID,
-				Attributes: attrs,
-				CreatedAt:  now,
-				UpdatedAt:  now,
+				ID:                  id,
+				Provider:            internalProviderKey,
+				Label:               compat.Name,
+				Prefix:              prefix,
+				Status:              coreauth.StatusActive,
+				ProxyURL:            proxyURL,
+				Attributes:          attrs,
+				Metadata:            metadata,
+				CreatedAt:           now,
+				UpdatedAt:           now,
+				ProxyConnectionPool: authProxyConnectionPool(openAICompatConnectionPool(compat, entry)),
+			}
+			if len(a.Metadata) == 0 {
+				a.Metadata = nil
 			}
 			out = append(out, a)
+			createdEntries++
 		}
 		// Fallback: create entry without API key if no APIKeyEntries
-		if !hasAPIKeyEntries {
+		if createdEntries == 0 {
+			effectivePool := openAICompatConnectionPool(compat, nil)
 			idKind := fmt.Sprintf("openai-compatibility:%s", providerName)
-			id, token := idGen.Next(idKind, base)
+			idParts := []string{base}
+			if poolID := config.FormatConnectionPoolDedupID(effectivePool); poolID != "" {
+				idParts = append(idParts, poolID)
+			}
+			id, token := idGen.Next(idKind, idParts...)
 			attrs := map[string]string{
 				"source":       fmt.Sprintf("config:%s[%s]", providerName, token),
 				"base_url":     base,
 				"compat_name":  compat.Name,
-				"provider_key": providerName,
+				"provider_key": internalProviderKey,
+				"config_index": strconv.Itoa(i),
 			}
+			metadata := map[string]any{}
+			if disableCooling != nil {
+				metadata["disable_cooling"] = *disableCooling
+			}
+			addRequestRetryToMetadata(compat.RequestRetry, metadata)
+			addRequestScopedErrorsToMetadata(compat.RequestScopedErrors, metadata)
 			if compat.Priority != 0 {
 				attrs["priority"] = strconv.Itoa(compat.Priority)
 			}
 			if hash := diff.ComputeOpenAICompatModelsHash(compat.Models); hash != "" {
 				attrs["models_hash"] = hash
 			}
-			addCodexToolBridgeAttr(attrs, compat.CodexToolBridge)
 			addConfigHeadersToAttrs(compat.Headers, attrs)
-			addProviderBindingAttrs(attrs, compat.ID, "")
-			addDisableCoolingAttr(attrs, compat.DisableCooling)
 			a := &coreauth.Auth{
-				ID:         id,
-				Provider:   providerName,
-				Label:      compat.Name,
-				Prefix:     prefix,
-				Status:     coreauth.StatusActive,
-				Attributes: attrs,
-				CreatedAt:  now,
-				UpdatedAt:  now,
+				ID:                  id,
+				Provider:            internalProviderKey,
+				Label:               compat.Name,
+				Prefix:              prefix,
+				Status:              coreauth.StatusActive,
+				Attributes:          attrs,
+				Metadata:            metadata,
+				CreatedAt:           now,
+				UpdatedAt:           now,
+				ProxyConnectionPool: authProxyConnectionPool(openAICompatConnectionPool(compat, nil)),
+			}
+			if len(a.Metadata) == 0 {
+				a.Metadata = nil
 			}
 			out = append(out, a)
 		}
@@ -690,26 +499,43 @@ func (s *ConfigSynthesizer) synthesizeVertexCompat(ctx *SynthesisContext) []*cor
 		key := strings.TrimSpace(compat.APIKey)
 		prefix := strings.TrimSpace(compat.Prefix)
 		proxyURL := strings.TrimSpace(compat.ProxyURL)
-		proxyID := strings.TrimSpace(compat.ProxyID)
 		idKind := "vertex:apikey"
-		id, token := idGen.Next(idKind, key, base, proxyURL)
+		idParts := []string{key, base, proxyURL}
+		if poolID := config.FormatConnectionPoolDedupID(compat.ConnectionPool); poolID != "" {
+			idParts = append(idParts, poolID)
+		}
+		id, token := idGen.Next(idKind, idParts...)
 		attrs := map[string]string{
 			"source":       fmt.Sprintf("config:vertex-apikey[%s]", token),
 			"base_url":     base,
 			"provider_key": providerName,
+			"config_index": strconv.Itoa(i),
 		}
 		if compat.Priority != 0 {
 			attrs["priority"] = strconv.Itoa(compat.Priority)
 		}
+		addWeightToAttrs(compat.Weight, attrs)
 		if key != "" {
 			attrs["api_key"] = key
 		}
 		if hash := diff.ComputeVertexCompatModelsHash(compat.Models); hash != "" {
 			attrs["models_hash"] = hash
 		}
+		if compat.OpenAPI != nil {
+			attrs["openapi"] = strconv.FormatBool(*compat.OpenAPI)
+		}
+		if loc := strings.TrimSpace(compat.OpenAPILocation); loc != "" {
+			attrs["openapi_location"] = loc
+		}
+		if compat.Interactions != nil && *compat.Interactions {
+			attrs["interactions"] = "true"
+		}
 		addConfigHeadersToAttrs(compat.Headers, attrs)
-		addProviderBindingAttrs(attrs, "", compat.ID)
-		addDisableCoolingAttr(attrs, compat.DisableCooling)
+		metadata := map[string]any{}
+		if compat.DisableCooling != nil {
+			metadata["disable_cooling"] = *compat.DisableCooling
+		}
+		addRequestRetryToMetadata(compat.RequestRetry, metadata)
 		a := &coreauth.Auth{
 			ID:         id,
 			Provider:   providerName,
@@ -717,12 +543,17 @@ func (s *ConfigSynthesizer) synthesizeVertexCompat(ctx *SynthesisContext) []*cor
 			Prefix:     prefix,
 			Status:     coreauth.StatusActive,
 			ProxyURL:   proxyURL,
-			ProxyID:    proxyID,
 			Attributes: attrs,
+			Metadata:   metadata,
 			CreatedAt:  now,
 			UpdatedAt:  now,
+
+			ProxyConnectionPool: authProxyConnectionPool(compat.ConnectionPool),
 		}
-		ApplyAuthExcludedModelsMeta(a, cfg, nil, "apikey")
+		ApplyAuthExcludedModelsMeta(a, compat.ExcludedModels, "apikey")
+		if len(a.Metadata) == 0 {
+			a.Metadata = nil
+		}
 		out = append(out, a)
 	}
 	return out

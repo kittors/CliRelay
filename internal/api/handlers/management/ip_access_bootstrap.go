@@ -4,10 +4,10 @@ import (
 	"context"
 	"strings"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/authevents"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/ipaccess"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/authevents"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/ipaccess"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/usage"
 )
 
 // ensureIPAccessRuntime binds the allow/deny list and the attempt log to

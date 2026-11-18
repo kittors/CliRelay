@@ -7,8 +7,8 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/authevents"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/enduser"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/authevents"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/enduser"
 )
 
 // portalAttemptWindow bounds what an end user can look back over. They are

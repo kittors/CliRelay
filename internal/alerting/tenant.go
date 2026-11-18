@@ -1,6 +1,6 @@
 package alerting
 
-import "github.com/router-for-me/CLIProxyAPI/v6/internal/configsync"
+import "github.com/router-for-me/CLIProxyAPI/v8/internal/configsync"
 
 // systemTenantID mirrors identity.SystemTenantID; see configsync for why it is
 // duplicated rather than imported.

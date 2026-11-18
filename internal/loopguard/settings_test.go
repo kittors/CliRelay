@@ -5,7 +5,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/sdk/loopdetect"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/loopdetect"
 )
 
 func replyLimits(window, distinct int) *loopdetect.ReplyLimits {

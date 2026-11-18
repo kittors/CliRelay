@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	serviceapp "github.com/router-for-me/CLIProxyAPI/v6/sdkbridge/service"
+	serviceapp "github.com/router-for-me/CLIProxyAPI/v8/sdkbridge/service"
 	log "github.com/sirupsen/logrus"
 )
 

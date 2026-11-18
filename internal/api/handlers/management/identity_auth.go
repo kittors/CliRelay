@@ -9,9 +9,9 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/identity"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/logging"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/identity"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/usage"
 )
 
 const managementPrincipalKey = "managementPrincipal"
@@ -136,7 +136,7 @@ func (h *Handler) recordManagementAuditWithDenial(c *gin.Context, principal iden
 		requestID = logging.GetRequestID(c.Request.Context())
 	}
 	if requestID == "" {
-		requestID = logging.GenerateRequestID()
+		requestID, _ = logging.GenerateRequestID()
 		logging.SetGinRequestID(c, requestID)
 		if c.Request != nil {
 			c.Request = c.Request.WithContext(logging.WithRequestID(c.Request.Context(), requestID))

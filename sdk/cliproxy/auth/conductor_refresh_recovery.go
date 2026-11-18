@@ -78,10 +78,6 @@ func authAccessTokenUsable(auth *Auth, now time.Time) bool {
 	return !hasExpiry || expiry.After(now)
 }
 
-func authRefreshToken(auth *Auth) string {
-	return authTokenValue(auth, "refresh_token", "refreshToken")
-}
-
 func authTokenValue(auth *Auth, keys ...string) string {
 	if auth == nil {
 		return ""

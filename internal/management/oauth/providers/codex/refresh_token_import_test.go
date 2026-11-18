@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	internalcodex "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/codex"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/management/oauth/credentialimport"
+	internalcodex "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/codex"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/management/oauth/credentialimport"
 )
 
 type fakeRefresher struct {

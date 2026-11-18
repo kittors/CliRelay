@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	internaliflow "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/iflow"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	internaliflow "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/iflow"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 )
 
 var (

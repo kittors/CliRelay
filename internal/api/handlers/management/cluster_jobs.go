@@ -3,10 +3,10 @@ package management
 import (
 	"sync/atomic"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/cluster"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/management/aiaccountstatus"
-	imagegeneration "github.com/router-for-me/CLIProxyAPI/v6/internal/management/imagegeneration"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/management/jobsnapshot"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/cluster"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/management/aiaccountstatus"
+	imagegeneration "github.com/router-for-me/CLIProxyAPI/v8/internal/management/imagegeneration"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/management/jobsnapshot"
 )
 
 // Kinds under which console jobs are shared between cluster nodes.

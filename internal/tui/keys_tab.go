@@ -13,37 +13,44 @@ import (
 
 // keysTabModel displays and manages API keys.
 type keysTabModel struct {
-	client   *Client
-	viewport viewport.Model
-	keys     []string
-	gemini   []map[string]any
-	claude   []map[string]any
-	codex    []map[string]any
-	vertex   []map[string]any
-	openai   []map[string]any
-	err      error
-	width    int
-	height   int
-	ready    bool
-	cursor   int
-	confirm  int // -1 = no deletion pending
-	status   string
+	client       *Client
+	viewport     viewport.Model
+	keys         []string
+	gemini       []map[string]any
+	interactions []map[string]any
+	claude       []map[string]any
+	codex        []map[string]any
+	xai          []map[string]any
+	vertex       []map[string]any
+	openai       []map[string]any
+	err          error
+	width        int
+	height       int
+	ready        bool
+	cursor       int
+	confirm      int // -1 = no deletion pending
+	status       string
 
 	// Editing / Adding
 	editing   bool
 	adding    bool
 	editIdx   int
 	editInput textinput.Model
+	// pendingValue binds the key the user targeted when they pressed e/d, so a
+	// background refresh cannot make a later write hit a shifted entry.
+	pendingValue string
 }
 
 type keysDataMsg struct {
-	apiKeys []string
-	gemini  []map[string]any
-	claude  []map[string]any
-	codex   []map[string]any
-	vertex  []map[string]any
-	openai  []map[string]any
-	err     error
+	apiKeys      []string
+	gemini       []map[string]any
+	interactions []map[string]any
+	claude       []map[string]any
+	codex        []map[string]any
+	xai          []map[string]any
+	vertex       []map[string]any
+	openai       []map[string]any
+	err          error
 }
 
 type keyActionMsg struct {
@@ -75,8 +82,10 @@ func (m keysTabModel) fetchKeys() tea.Msg {
 	}
 	result.apiKeys = apiKeys
 	result.gemini, _ = m.client.GetGeminiKeys()
+	result.interactions, _ = m.client.GetInteractionsKeys()
 	result.claude, _ = m.client.GetClaudeKeys()
 	result.codex, _ = m.client.GetCodexKeys()
+	result.xai, _ = m.client.GetXAIKeys()
 	result.vertex, _ = m.client.GetVertexKeys()
 	result.openai, _ = m.client.GetOpenAICompat()
 	return result
@@ -85,7 +94,6 @@ func (m keysTabModel) fetchKeys() tea.Msg {
 func (m keysTabModel) Update(msg tea.Msg) (keysTabModel, tea.Cmd) {
 	switch msg := msg.(type) {
 	case localeChangedMsg:
-		m.refreshInputPrompt()
 		m.viewport.SetContent(m.renderContent())
 		return m, nil
 	case keysDataMsg:
@@ -95,8 +103,10 @@ func (m keysTabModel) Update(msg tea.Msg) (keysTabModel, tea.Cmd) {
 			m.err = nil
 			m.keys = msg.apiKeys
 			m.gemini = msg.gemini
+			m.interactions = msg.interactions
 			m.claude = msg.claude
 			m.codex = msg.codex
+			m.xai = msg.xai
 			m.vertex = msg.vertex
 			m.openai = msg.openai
 			if m.cursor >= len(m.keys) {
@@ -144,7 +154,7 @@ func (m keysTabModel) Update(msg tea.Msg) (keysTabModel, tea.Cmd) {
 					}
 				}
 				return m, func() tea.Msg {
-					err := m.client.EditAPIKey(editIdx, value)
+					err := m.client.EditAPIKey(editIdx, value, m.pendingValue)
 					if err != nil {
 						return keyActionMsg{err: err}
 					}
@@ -169,9 +179,10 @@ func (m keysTabModel) Update(msg tea.Msg) (keysTabModel, tea.Cmd) {
 			switch msg.String() {
 			case "y", "Y":
 				idx := m.confirm
+				expected := m.pendingValue
 				m.confirm = -1
 				return m, func() tea.Msg {
-					err := m.client.DeleteAPIKey(idx)
+					err := m.client.DeleteAPIKey(idx, expected)
 					if err != nil {
 						return keyActionMsg{err: err}
 					}
@@ -214,6 +225,7 @@ func (m keysTabModel) Update(msg tea.Msg) (keysTabModel, tea.Cmd) {
 				m.editing = true
 				m.adding = false
 				m.editIdx = m.cursor
+				m.pendingValue = m.keys[m.cursor]
 				m.editInput.SetValue(m.keys[m.cursor])
 				m.editInput.Prompt = T("edit_key_prompt")
 				m.editInput.Focus()
@@ -225,6 +237,7 @@ func (m keysTabModel) Update(msg tea.Msg) (keysTabModel, tea.Cmd) {
 			// Delete selected key
 			if m.cursor < len(m.keys) {
 				m.confirm = m.cursor
+				m.pendingValue = m.keys[m.cursor]
 				m.viewport.SetContent(m.renderContent())
 			}
 			return m, nil
@@ -340,13 +353,15 @@ func (m keysTabModel) renderContent() string {
 	sb.WriteString("\n")
 
 	// ━━━ Provider Keys (read-only display) ━━━
-	renderProviderKeys(&sb, "provider_gemini_api_keys", m.gemini)
-	renderProviderKeys(&sb, "provider_claude_api_keys", m.claude)
-	renderProviderKeys(&sb, "provider_codex_api_keys", m.codex)
-	renderProviderKeys(&sb, "provider_vertex_api_keys", m.vertex)
+	renderProviderKeys(&sb, "Gemini API Keys", m.gemini)
+	renderProviderKeys(&sb, "Interactions API Keys", m.interactions)
+	renderProviderKeys(&sb, "Claude API Keys", m.claude)
+	renderProviderKeys(&sb, "Codex API Keys", m.codex)
+	renderProviderKeys(&sb, "xAI API Keys", m.xai)
+	renderProviderKeys(&sb, "Vertex API Keys", m.vertex)
 
 	if len(m.openai) > 0 {
-		renderSection(&sb, "provider_openai_compatibility", len(m.openai))
+		renderSection(&sb, "OpenAI Compatibility", len(m.openai))
 		for i, entry := range m.openai {
 			name := getString(entry, "name")
 			baseURL := getString(entry, "base-url")
@@ -371,17 +386,17 @@ func (m keysTabModel) renderContent() string {
 	return sb.String()
 }
 
-func renderSection(sb *strings.Builder, titleKey string, count int) {
-	header := fmt.Sprintf("%s (%d)", T(titleKey), count)
+func renderSection(sb *strings.Builder, title string, count int) {
+	header := fmt.Sprintf("%s (%d)", title, count)
 	sb.WriteString(tableHeaderStyle.Render("  " + header))
 	sb.WriteString("\n")
 }
 
-func renderProviderKeys(sb *strings.Builder, titleKey string, keys []map[string]any) {
+func renderProviderKeys(sb *strings.Builder, title string, keys []map[string]any) {
 	if len(keys) == 0 {
 		return
 	}
-	renderSection(sb, titleKey, len(keys))
+	renderSection(sb, title, len(keys))
 	for i, key := range keys {
 		apiKey := getString(key, "api-key")
 		prefix := getString(key, "prefix")
@@ -403,16 +418,4 @@ func maskKey(key string) string {
 		return strings.Repeat("*", len(key))
 	}
 	return key[:4] + strings.Repeat("*", len(key)-8) + key[len(key)-4:]
-}
-
-func (m *keysTabModel) refreshInputPrompt() {
-	if m == nil {
-		return
-	}
-	switch {
-	case m.adding:
-		m.editInput.Prompt = T("new_key_prompt")
-	case m.editing:
-		m.editInput.Prompt = T("edit_key_prompt")
-	}
 }

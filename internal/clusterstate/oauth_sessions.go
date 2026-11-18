@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"time"
 
-	oauthsession "github.com/router-for-me/CLIProxyAPI/v6/internal/management/oauth/session"
+	oauthsession "github.com/router-for-me/CLIProxyAPI/v8/internal/management/oauth/session"
 )
 
 // OAuthSessions is the oauth_sessions table, the shared oauthsession.Repo.

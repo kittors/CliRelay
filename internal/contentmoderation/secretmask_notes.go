@@ -3,7 +3,7 @@ package contentmoderation
 import (
 	"unicode/utf8"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/privacymask"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/privacymask"
 )
 
 // maskNotes collects, while the first copy of a request is masked, what its

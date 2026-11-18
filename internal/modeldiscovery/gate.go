@@ -3,7 +3,7 @@ package modeldiscovery
 import (
 	"strings"
 
-	sdkrouting "github.com/router-for-me/CLIProxyAPI/v6/sdk/routing"
+	sdkrouting "github.com/router-for-me/CLIProxyAPI/v8/sdk/routing"
 )
 
 // followedProvider is the provider whose discovered list a channel group that

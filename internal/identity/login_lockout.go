@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/loginlockout"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/loginlockout"
 	log "github.com/sirupsen/logrus"
 )
 

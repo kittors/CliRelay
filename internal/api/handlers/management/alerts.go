@@ -7,7 +7,7 @@ import (
 	"strconv"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/alerting"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/alerting"
 	log "github.com/sirupsen/logrus"
 )
 
