@@ -1,0 +1,247 @@
+{"project":"golden-project","model":"gemini-2.5-pro","userAgent":"antigravity","requestType":"agent","requestId":"agent-00000000-0000-0000-0000-000000000000","request":{
+    "contents": [
+      {
+        "role": "user",
+        "parts": [
+          {
+            "text": "Review main.go"
+          }
+        ]
+      },
+      {
+        "role": "model",
+        "parts": [
+          {
+            "functionCall": {
+              "name": "read_file",
+              "args": {
+                "absolute_path": "/src/main.go"
+              }
+            },
+            "thoughtSignature": "golden-unknown-signature-gemini-1"
+          }
+        ]
+      },
+      {
+        "role": "user",
+        "parts": [
+          {
+            "functionResponse": {
+              "name": "read_file",
+              "response": {
+                "output": "package main\n"
+              }
+            }
+          }
+        ]
+      },
+      {
+        "role": "model",
+        "parts": [
+          {
+            "functionCall": {
+              "name": "search_file_content",
+              "args": {
+                "include": "*.go"
+              ,"description":"pattern: func main"}
+            }
+          }
+        ]
+      },
+      {
+        "role": "user",
+        "parts": [
+          {
+            "functionResponse": {
+              "name": "search_file_content",
+              "response": {
+                "output": "main.go:3"
+              }
+            }
+          }
+        ]
+      },
+      {
+        "role": "model",
+        "parts": [
+          {
+            "text": "Thinking about it",
+            "thought": true
+          ,"thoughtSignature":"skip_thought_signature_validator"},
+          {
+            "text": "Looks fine."
+          }
+        ]
+      },
+      {
+        "role": "user",
+        "parts": [
+          {
+            "text": "Give me the verdict as JSON."
+          }
+        ]
+      }
+    ],
+    "systemInstruction": {
+      "parts": [
+        {
+          "text": "You are Gemini CLI."
+        }
+      ]
+    },
+    "tools": [
+      {
+        "functionDeclarations": [
+          {
+            "name": "read_file",
+            "description": "Reads a file."
+          ,"parameters":{
+              "type": "object",
+              "properties": {
+                "absolute_path": {
+                  "type": "string",
+                  "description": "Absolute path (pattern: ^/)"
+                },
+                "offset": {
+                  "type": "number"
+                },
+                "limit": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "absolute_path"
+              ]
+            }},
+          {
+            "name": "search_file_content",
+            "description": "Searches file contents."
+          ,"parameters":{
+              "type": "object",
+              "properties": {
+                "pattern": {
+                  "type": "string"
+                },
+                "path": {
+                  "type": "string"
+                },
+                "include": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "pattern"
+              ]
+            }},
+          {
+            "name": "run_shell_command",
+            "description": "Runs a shell command.",
+            "parameters": {
+              "type": "OBJECT",
+              "properties": {
+                "command": {
+                  "type": "STRING"
+                },
+                "directory": {
+                  "type": "STRING"
+                }
+              },
+              "required": [
+                "command"
+              ]
+            }
+          },
+          {
+            "name": "write_file",
+            "description": "Writes a file."
+          ,"parameters":{
+              "type": "object",
+              "properties": {
+                "file_path": {
+                  "type": "string"
+                },
+                "content": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "file_path",
+                "content"
+              ]
+            ,"description":"No extra properties allowed"}},
+          {
+            "name": "save_memory",
+            "description": "Saves a fact."
+          ,"parameters":{
+              "type": "object",
+              "properties": {
+                "fact": {
+                  "type": "string"
+                ,"description":"minLength: 1 (maxLength: 500)"}
+              },
+              "required": [
+                "fact"
+              ]
+            }},
+          {
+            "name": "list_directory",
+            "description": "Lists a directory."
+          ,"parameters":{
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string"
+                },
+                "ignore": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "file_filtering_options": {
+                  "type": "object",
+                  "properties": {
+                    "respect_git_ignore": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              },
+              "required": [
+                "path"
+              ]
+            }}
+        ]
+      },
+      {
+        "googleSearch": {}
+      }
+    ],
+    "toolConfig": {
+      "functionCallingConfig": {
+        "mode": "AUTO"
+      }
+    },
+    "generationConfig": {
+      "temperature": 0,
+      "topP": 1,
+      "responseMimeType": "application/json",
+      "responseJsonSchema": {
+        "type": "object",
+        "properties": {
+          "verdict": {
+            "type": "string",
+            "enum": ["pass","fail"]
+          ,"description":"Allowed: pass, fail"},
+          "score": {
+            "type": "string",
+            "enum": ["1","2","3"]
+          ,"description":"Allowed: 1, 2, 3"},
+          "notes": {
+            "type": "string"
+          ,"description":"maxLength: 2000 ((nullable))"}
+        },
+        "required": ["verdict","score"]
+      ,"description":"No extra properties allowed"}
+    }
+  ,"sessionId":"-7484613460839099606"}}
