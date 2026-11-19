@@ -8,61 +8,32 @@ import (
 	"github.com/tidwall/gjson"
 )
 
-const (
-	parametersJSONSchemaKey = "parametersJsonSchema"
-	parametersKey           = "parameters"
-)
-
-// CleanAntigravityRequestSchemas renames every "parametersJsonSchema" key in an
-// Antigravity request to "parameters" and cleans the JSON schemas in it: the
-// Antigravity cleanup when addPlaceholder is set (the Claude family and
-// gemini-3-pro-high), the Gemini one otherwise.
+// cleanSchemaDoc returns what cleanJSONSchema returns for doc, byte for byte.
+// CleanAntigravityRequestSchemas hands it one schema at a time, wrapped in the
+// skeleton of the path the schema has in the request.
 //
-// The result is byte for byte what renaming each of those keys with RenameKey, in
-// Walk order, and then running CleanJSONSchemaForAntigravity or
-// CleanJSONSchemaForGemini over the whole payload returns. That is what
-// buildRequest used to do, and it rewrote the whole payload, screenshots included,
-// once per edit: a 5.4 MB request with forty raw tool schemas allocated 25 GB, and
-// on 2026-11-19 it was 60% of everything the relay allocated.
-//
-// Every edit the cleanup makes stays close to a key it looked up, so this runs the
-// same code on the smallest subtrees holding such keys, each wrapped in a skeleton
-// that keeps its real path, and splices the results back in a single pass. A payload
-// it cannot vouch for goes through the whole-payload path, which is the old code.
-//
-// That includes keys the cleanup was never meant for: function call arguments in
-// request.contents are cleaned as if they were schemas (a replayed Grep call loses
-// its "pattern"). That is a defect of the cleanup, kept here on purpose so that this
-// change moves no byte; fixing it is a behaviour change of its own.
-func CleanAntigravityRequestSchemas(payload string, addPlaceholder bool) string {
-	if out, ok := renameAndCleanScoped(payload, addPlaceholder); ok {
+// cleanJSONSchema rewrites the whole document once per edit. Run over whole
+// requests, screenshots included, that was 60% of everything the relay allocated
+// on 2026-11-19 (a 5.4 MB request with forty raw tool schemas allocated 25 GB),
+// and a single large schema still pays it. Every edit the cleanup makes stays close
+// to a key it looked up, so this runs the same code on the smallest subtrees holding
+// such keys, each wrapped in a skeleton that keeps its real path, and splices the
+// results back in a single pass. A document it cannot vouch for goes through
+// cleanJSONSchema itself.
+func cleanSchemaDoc(doc string, addPlaceholder bool) string {
+	if out, ok := cleanSchemaDocScoped(doc, addPlaceholder); ok {
 		return out
 	}
-	return renameAndCleanWholePayload(payload, addPlaceholder)
+	return cleanJSONSchema(doc, addPlaceholder)
 }
 
-// renameAndCleanWholePayload is what buildRequest ran before: it is the reference
-// the scoped path is held to, and its fallback.
-func renameAndCleanWholePayload(payload string, addPlaceholder bool) string {
-	paths := make([]string, 0)
-	Walk(gjson.Parse(payload), "", parametersJSONSchemaKey, &paths)
-	for _, p := range paths {
-		// RenameKey returns "" when the key is gone, which happens when one
-		// parametersJsonSchema sits inside another; the scoped path never gets
-		// here with such a payload, and the old behaviour is kept for it.
-		payload, _ = RenameKey(payload, p, p[:len(p)-len(parametersJSONSchemaKey)]+parametersKey)
-	}
-	return cleanJSONSchema(payload, addPlaceholder)
-}
-
-// scopeKeys are the keys the cleanup (and the rename ahead of it) looks up
-// anywhere in a document. "type" is looked up too, but only some of its values
-// lead to an edit, so isScopeKey decides it separately. Any new key a cleanup pass
-// looks up has to be added here, or the scoped path will skip the subtrees that
-// hold it; TestScopeKeysCoverEveryKeyTheCleanupEdits catches a missing one.
+// scopeKeys are the keys the cleanup looks up anywhere in a document. "type" is
+// looked up too, but only some of its values lead to an edit, so isScopeKey
+// decides it separately. Any new key a cleanup pass looks up has to be added here,
+// or the scoped path will skip the subtrees that hold it;
+// TestScopeKeysCoverEveryKeyTheCleanupEdits catches a missing one.
 var scopeKeys = func() map[string]struct{} {
 	keys := []string{
-		parametersJSONSchemaKey,
 		"$ref", "const", "enum", "additionalProperties", "allOf", "anyOf", "oneOf", "required",
 		"$schema", "$defs", "definitions", "$id", "propertyNames", "patternProperties", "enumTitles", "prefill",
 		"nullable", "title", "_", "reason",
@@ -103,8 +74,8 @@ func isScopeKey(key string, value gjson.Result) bool {
 type scopeSeg struct {
 	key        string
 	index      int    // -1 for an object key
-	raw        string // the value, as a slice of the payload
-	start, end int    // the value's span in the payload
+	raw        string // the value, as a slice of the document
+	start, end int    // the value's span in the document
 	object     bool
 }
 
@@ -130,7 +101,7 @@ func (s scopeSeg) safe() bool {
 }
 
 // scopeUnit is a subtree the cleanup runs on by itself: path leads to it (the
-// skeleton), start and end are its span in the payload.
+// skeleton), start and end are its span in the document.
 type scopeUnit struct {
 	start, end int
 	path       []scopeSeg
@@ -171,12 +142,14 @@ func aliasFree(key string) bool {
 	return true
 }
 
-func renameAndCleanScoped(payload string, addPlaceholder bool) (string, bool) {
+// cleanSchemaDocScoped returns what cleanJSONSchema returns for doc, and false if it
+// cannot vouch for that.
+func cleanSchemaDocScoped(doc string, addPlaceholder bool) (string, bool) {
 	// Offsets come from the parse below, and they are only exact on valid JSON.
-	if !gjson.Valid(payload) {
+	if !gjson.Valid(doc) {
 		return "", false
 	}
-	root := gjson.Parse(payload)
+	root := gjson.Parse(doc)
 	if !root.IsObject() {
 		return "", false
 	}
@@ -188,20 +161,20 @@ func renameAndCleanScoped(payload string, addPlaceholder bool) (string, bool) {
 	if len(scan.units) == 0 {
 		// Nothing the cleanup looks for is present, and with nothing found it
 		// returns its input unchanged.
-		return payload, true
+		return doc, true
 	}
 	units := mergeScopeUnits(scan.units)
 	for _, u := range units {
-		// gjson reports offsets into the payload it parsed (leading whitespace
+		// gjson reports offsets into the document it parsed (leading whitespace
 		// included); make sure each span really is the value the scan saw.
-		if u.end > len(payload) || payload[u.start:u.end] != u.path[len(u.path)-1].raw {
+		if u.end > len(doc) || doc[u.start:u.end] != u.path[len(u.path)-1].raw {
 			return "", false
 		}
 	}
 	if anyInsideUnit(scan.risky, units) {
 		return "", false
 	}
-	size := len(payload)
+	size := len(doc)
 	for i := range units {
 		cleaned, ok := cleanScopeUnit(units[i], addPlaceholder)
 		if !ok {
@@ -214,11 +187,11 @@ func renameAndCleanScoped(payload string, addPlaceholder bool) (string, bool) {
 	out.Grow(size)
 	prev := 0
 	for _, u := range units {
-		out.WriteString(payload[prev:u.start])
+		out.WriteString(doc[prev:u.start])
 		out.WriteString(u.cleaned)
 		prev = u.end
 	}
-	out.WriteString(payload[prev:])
+	out.WriteString(doc[prev:])
 	return out.String(), true
 }
 
@@ -242,7 +215,8 @@ func (s *scopeScan) walk(node gjson.Result, depth int) {
 			seg.key = key.String()
 			// Paths name the first of two equal keys, so a duplicate makes the
 			// cleanup edit one node twice and the other never. The entrypoints
-			// reject such bodies (#1267); anything else gets the old code.
+			// reject such bodies (#1267); anything else gets cleanJSONSchema on
+			// the whole document.
 			if !s.noteKey(keysBase, &manyKeys, seg.key) {
 				s.fallback = true
 				return false
@@ -382,9 +356,9 @@ func mergeScopeUnits(units []scopeUnit) []scopeUnit {
 	return merged
 }
 
-// cleanScopeUnit runs the whole-payload cleanup on a document holding only the
-// unit, under its real path (array steps become object keys, which every path the
-// cleanup builds resolves the same way), and returns the unit as cleaned.
+// cleanScopeUnit runs cleanJSONSchema on a document holding only the unit, under
+// its real path (array steps become object keys, which every path the cleanup
+// builds resolves the same way), and returns the unit as cleaned.
 func cleanScopeUnit(u scopeUnit, addPlaceholder bool) (string, bool) {
 	var prefix strings.Builder
 	for _, seg := range u.path {
@@ -398,15 +372,7 @@ func cleanScopeUnit(u scopeUnit, addPlaceholder bool) (string, bool) {
 	}
 	head := prefix.String()
 	tail := strings.Repeat("}", len(u.path))
-	out := renameAndCleanWholePayload(head+u.path[len(u.path)-1].raw+tail, addPlaceholder)
 	// The skeleton holds no scope key, so the cleanup cannot have edited it; check
-	// rather than assume, and let anything unexpected take the whole-payload path.
-	if len(out) < len(head)+len(tail) || !strings.HasPrefix(out, head) || !strings.HasSuffix(out, tail) {
-		return "", false
-	}
-	cleaned := out[len(head) : len(out)-len(tail)]
-	if !gjson.Valid(cleaned) {
-		return "", false
-	}
-	return cleaned, true
+	// rather than assume, and let anything unexpected clean the whole document.
+	return unwrapSkeleton(cleanJSONSchema(head+u.path[len(u.path)-1].raw+tail, addPlaceholder), head, tail)
 }

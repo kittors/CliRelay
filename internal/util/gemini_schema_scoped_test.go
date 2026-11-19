@@ -12,63 +12,66 @@ import (
 	"testing"
 )
 
-// The scoped cleanup is only worth having if it is indistinguishable from the
-// whole-payload one, so every test here compares the two byte for byte.
+// The scoped cleanup is only worth having if it is indistinguishable from
+// cleanJSONSchema, so every test here compares the two byte for byte. They run on
+// whole requests as well as single schemas: the scoped path has to match on any
+// document, and requests reach more of its decisions.
 
-func assertScopedMatchesWhole(t *testing.T, payload string, addPlaceholder bool) (scoped bool) {
+func assertScopedMatchesWhole(t *testing.T, doc string, addPlaceholder bool) (scoped bool) {
 	t.Helper()
-	want := renameAndCleanWholePayload(payload, addPlaceholder)
-	got, ok := renameAndCleanScoped(payload, addPlaceholder)
+	want := cleanJSONSchema(doc, addPlaceholder)
+	got, ok := cleanSchemaDocScoped(doc, addPlaceholder)
 	if ok && got != want {
-		t.Fatalf("scoped cleanup differs (addPlaceholder=%v)\ninput: %s\nwant:  %s\ngot:   %s", addPlaceholder, payload, want, got)
+		t.Fatalf("scoped cleanup differs (addPlaceholder=%v)\ninput: %s\nwant:  %s\ngot:   %s", addPlaceholder, doc, want, got)
 	}
-	if public := CleanAntigravityRequestSchemas(payload, addPlaceholder); public != want {
-		t.Fatalf("CleanAntigravityRequestSchemas differs (addPlaceholder=%v)\ninput: %s\nwant:  %s\ngot:   %s", addPlaceholder, payload, want, public)
+	if public := cleanSchemaDoc(doc, addPlaceholder); public != want {
+		t.Fatalf("cleanSchemaDoc differs (addPlaceholder=%v)\ninput: %s\nwant:  %s\ngot:   %s", addPlaceholder, doc, want, public)
 	}
 	return ok
 }
 
-// scopedCleanupCases are small requests reaching each decision of the scoped
-// path, the fallbacks included; the fuzz test starts from them too.
+// scopedCleanupCases are small documents reaching each decision of the scoped
+// path, the fallbacks included; the request tests and the fuzz tests start from
+// them too.
 var scopedCleanupCases = map[string]string{
-	"no schema at all":      `{"project":"p","request":{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}}`,
-	"function call as data": `{"request":{"contents":[{"role":"model","parts":[{"functionCall":{"name":"Grep","args":{"pattern":"TODO","type":"go","title":"t"}}}]}]}}`,
-	"rename and clean":      `{"request":{"tools":[{"functionDeclarations":[{"name":"a","parametersJsonSchema":{"$schema":"x","type":"object","properties":{"p":{"type":["string","null"],"format":"uri"}},"required":["p"],"additionalProperties":false}}]}]}}`,
-	"both spellings":        `{"request":{"tools":[{"function_declarations":[{"name":"a","parameters":{"type":"object"},"parametersJsonSchema":{"type":"object","properties":{"n":{"type":"integer","default":1}}}}]}]}}`,
-	"response schema":       `{"request":{"generationConfig":{"responseJsonSchema":{"type":"object","properties":{"v":{"enum":[1,2]}},"required":["v","w"]}}}}`,
-	"indented":              "{\n  \"request\": {\n    \"tools\": [\n      {\n        \"functionDeclarations\": [\n          {\"name\": \"a\", \"parametersJsonSchema\": {\"type\": \"object\", \"properties\": {\"s\": {\"type\": \"string\", \"minLength\": 1, \"maxLength\": 2}}}}\n        ]\n      }\n    ]\n  }\n}",
-	"leading whitespace":    "  \n" + `{"request":{"tools":[{"functionDeclarations":[{"name":"a","parametersJsonSchema":{"type":"object","x-a":1}}]}]}}`,
-	"nested rename":         `{"request":{"tools":[{"functionDeclarations":[{"name":"a","parametersJsonSchema":{"type":"object","properties":{"parametersJsonSchema":{"type":"string"}}}}]}]}}`,
-	"keyword near root":     `{"request":{"title":"x","tools":[]}}`,
-	"duplicate request":     `{"request":{"tools":[{"functionDeclarations":[{"name":"a","parametersJsonSchema":{"type":"object","format":"x"}}]}]},"request":{"contents":[]}}`,
-	"duplicate inside":      `{"request":{"tools":[{"functionDeclarations":[{"name":"a","parametersJsonSchema":{"type":"object","format":"x","format":"y"}}]}]}}`,
-	"unsafe step":           `{"request":{"contents":[{"parts":[{"functionCall":{"args":{"src/a.go":{"type":"object"},"pipe|x":{"format":"f"},"pipe":{"x":{"format":"g"}}}}}]}]}}`,
-	"escaped properties":    `{"request":{"tools":[{"functionDeclarations":[{"name":"a","parametersJsonSchema":{"type":"object","properties":{"a.properties":{"_":{"type":"boolean"}},"a.required":["_"]}}}]}]}}`,
-	"anyOf into type":       `{"request":{"tools":[{"functionDeclarations":[{"name":"a","parametersJsonSchema":{"type":"object","properties":{"k":{"type":{"anyOf":["object"]},"description":"d"}}}}]}]}}`,
-	"not an object":         `[{"type":["a","null"]}]`,
-	"invalid json":          `{"request":{"tools":[{"type":["a","null"]}]`,
+	"no schema at all":       `{"project":"p","request":{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}}`,
+	"function call as data":  `{"request":{"contents":[{"role":"model","parts":[{"functionCall":{"name":"Grep","args":{"pattern":"TODO","type":"go","title":"t"}}}]}]}}`,
+	"raw tool schema":        `{"request":{"tools":[{"functionDeclarations":[{"name":"a","parametersJsonSchema":{"$schema":"x","type":"object","properties":{"p":{"type":["string","null"],"format":"uri"}},"required":["p"],"additionalProperties":false}}]}]}}`,
+	"both spellings":         `{"request":{"tools":[{"function_declarations":[{"name":"a","parameters":{"type":"object"},"parametersJsonSchema":{"type":"object","properties":{"n":{"type":"integer","default":1}}}}]}]}}`,
+	"response schema":        `{"request":{"generationConfig":{"responseJsonSchema":{"type":"object","properties":{"v":{"enum":[1,2]}},"required":["v","w"]}}}}`,
+	"indented":               "{\n  \"request\": {\n    \"tools\": [\n      {\n        \"functionDeclarations\": [\n          {\"name\": \"a\", \"parametersJsonSchema\": {\"type\": \"object\", \"properties\": {\"s\": {\"type\": \"string\", \"minLength\": 1, \"maxLength\": 2}}}}\n        ]\n      }\n    ]\n  }\n}",
+	"leading whitespace":     "  \n" + `{"request":{"tools":[{"functionDeclarations":[{"name":"a","parametersJsonSchema":{"type":"object","x-a":1}}]}]}}`,
+	"nested declaration key": `{"request":{"tools":[{"functionDeclarations":[{"name":"a","parametersJsonSchema":{"type":"object","properties":{"parametersJsonSchema":{"type":"string"}}}}]}]}}`,
+	"keyword near root":      `{"request":{"title":"x","tools":[]}}`,
+	"duplicate request":      `{"request":{"tools":[{"functionDeclarations":[{"name":"a","parametersJsonSchema":{"type":"object","format":"x"}}]}]},"request":{"contents":[]}}`,
+	"duplicate inside":       `{"request":{"tools":[{"functionDeclarations":[{"name":"a","parametersJsonSchema":{"type":"object","format":"x","format":"y"}}]}]}}`,
+	"unsafe step":            `{"request":{"contents":[{"parts":[{"functionCall":{"args":{"src/a.go":{"type":"object"},"pipe|x":{"format":"f"},"pipe":{"x":{"format":"g"}}}}}]}]}}`,
+	"escaped properties":     `{"request":{"tools":[{"functionDeclarations":[{"name":"a","parametersJsonSchema":{"type":"object","properties":{"a.properties":{"_":{"type":"boolean"}},"a.required":["_"]}}}]}]}}`,
+	"anyOf into type":        `{"request":{"tools":[{"functionDeclarations":[{"name":"a","parametersJsonSchema":{"type":"object","properties":{"k":{"type":{"anyOf":["object"]},"description":"d"}}}}]}]}}`,
+	"not an object":          `[{"type":["a","null"]}]`,
+	"invalid json":           `{"request":{"tools":[{"type":["a","null"]}]`,
 }
 
-func TestCleanAntigravityRequestSchemasMatchesWholePayload(t *testing.T) {
-	for name, payload := range scopedCleanupCases {
+func TestCleanSchemaDocScopedMatchesWhole(t *testing.T) {
+	for name, doc := range scopedCleanupCases {
 		t.Run(name, func(t *testing.T) {
-			assertScopedMatchesWhole(t, payload, true)
-			assertScopedMatchesWhole(t, payload, false)
+			assertScopedMatchesWhole(t, doc, true)
+			assertScopedMatchesWhole(t, doc, false)
 		})
 	}
 }
 
-// TestCleanAntigravityRequestSchemasMatchesWholePayloadOnRandomRequests runs both
-// cleanups over requests built from every keyword the cleanup knows, property
-// names that collide with them or need escaping, nested and indented schemas and
-// function calls whose arguments look like schemas.
-func TestCleanAntigravityRequestSchemasMatchesWholePayloadOnRandomRequests(t *testing.T) {
+// TestCleanSchemaDocScopedMatchesWholeOnRandomRequests runs both cleanups over
+// requests built from every keyword the cleanup knows, property names that collide
+// with them or need escaping, nested and indented schemas and function calls whose
+// arguments look like schemas.
+func TestCleanSchemaDocScopedMatchesWholeOnRandomRequests(t *testing.T) {
 	const n = 600
 	scoped := 0
 	for seed := int64(0); seed < n; seed++ {
-		payload := randomSchemaRequest(rand.New(rand.NewSource(seed)))
+		doc, _ := randomSchemaRequest(rand.New(rand.NewSource(seed)))
 		for _, addPlaceholder := range []bool{true, false} {
-			if assertScopedMatchesWhole(t, payload, addPlaceholder) {
+			if assertScopedMatchesWhole(t, doc, addPlaceholder) {
 				scoped++
 			}
 		}
@@ -84,7 +87,7 @@ func TestCleanAntigravityRequestSchemasMatchesWholePayloadOnRandomRequests(t *te
 // TestScopeKeysCoverEveryKeyTheCleanupEdits feeds the scoped path every string
 // literal of the cleanup's source, as a key, with values of every kind, in the
 // places a key can stand in a schema. A key the cleanup edits but scopeKeys does
-// not list would leave the scoped output behind the whole-payload one.
+// not list would leave the scoped output behind cleanJSONSchema's.
 func TestScopeKeysCoverEveryKeyTheCleanupEdits(t *testing.T) {
 	literals := map[string]struct{}{"x-anything": {}, "type": {}}
 	fset := token.NewFileSet()
@@ -114,13 +117,13 @@ func TestScopeKeysCoverEveryKeyTheCleanupEdits(t *testing.T) {
 		key, _ := json.Marshal(literal)
 		for _, value := range values {
 			for _, shape := range shapes {
-				payload := fmt.Sprintf(shape, string(key)+":"+value)
+				doc := fmt.Sprintf(shape, string(key)+":"+value)
 				for _, addPlaceholder := range []bool{true, false} {
 					// A literal equal to a key the shape already has makes a
-					// duplicate, which is meant to take the whole-payload path.
+					// duplicate, which is meant to take cleanJSONSchema itself.
 					duplicate := strings.Contains(shape, `{`+string(key)+`:`) || strings.Contains(shape, `,`+string(key)+`:`)
-					if !assertScopedMatchesWhole(t, payload, addPlaceholder) && !duplicate {
-						t.Fatalf("probe %q took the whole-payload path: %s", literal, payload)
+					if !assertScopedMatchesWhole(t, doc, addPlaceholder) && !duplicate {
+						t.Fatalf("probe %q did not take the scoped path: %s", literal, doc)
 					}
 				}
 			}
@@ -128,44 +131,46 @@ func TestScopeKeysCoverEveryKeyTheCleanupEdits(t *testing.T) {
 	}
 }
 
-// FuzzCleanAntigravityRequestSchemas holds the scoped cleanup to the
-// whole-payload one on arbitrary input. Plain `go test` runs the seeds; the seeds
-// are small and large inputs are skipped, because the whole-payload cleanup is
-// quadratic and would leave the fuzzer a handful of runs a minute.
-func FuzzCleanAntigravityRequestSchemas(f *testing.F) {
-	for _, payload := range scopedCleanupCases {
-		f.Add(payload, true)
-		f.Add(payload, false)
+// FuzzCleanSchemaDoc holds the scoped cleanup to cleanJSONSchema on arbitrary
+// input. Plain `go test` runs the seeds; the seeds are small and large inputs are
+// skipped, because cleanJSONSchema is quadratic and would leave the fuzzer a handful
+// of runs a minute.
+func FuzzCleanSchemaDoc(f *testing.F) {
+	for _, doc := range scopedCleanupCases {
+		f.Add(doc, true)
+		f.Add(doc, false)
 	}
-	f.Fuzz(func(t *testing.T, payload string, addPlaceholder bool) {
-		if len(payload) > 4096 {
+	f.Fuzz(func(t *testing.T, doc string, addPlaceholder bool) {
+		if len(doc) > 4096 {
 			t.Skip()
 		}
-		want, panicked := wholePayloadOrPanic(payload, addPlaceholder)
+		want, panicked := cleanJSONSchemaOrPanic(doc, addPlaceholder)
 		if panicked {
-			t.Skip("the whole-payload cleanup itself panics on this input")
+			t.Skip("cleanJSONSchema itself panics on this input")
 		}
-		if got := CleanAntigravityRequestSchemas(payload, addPlaceholder); got != want {
-			t.Fatalf("scoped cleanup differs (addPlaceholder=%v)\ninput: %q\nwant:  %q\ngot:   %q", addPlaceholder, payload, want, got)
+		if got := cleanSchemaDoc(doc, addPlaceholder); got != want {
+			t.Fatalf("scoped cleanup differs (addPlaceholder=%v)\ninput: %q\nwant:  %q\ngot:   %q", addPlaceholder, doc, want, got)
 		}
 	})
 }
 
-func wholePayloadOrPanic(payload string, addPlaceholder bool) (out string, panicked bool) {
+func cleanJSONSchemaOrPanic(doc string, addPlaceholder bool) (out string, panicked bool) {
 	defer func() {
 		if recover() != nil {
 			panicked = true
 		}
 	}()
-	return renameAndCleanWholePayload(payload, addPlaceholder), false
+	return cleanJSONSchema(doc, addPlaceholder), false
 }
 
 // randomSchemaRequest builds an Antigravity request whose tools, response schema
-// and function call arguments are drawn from schemaGen.
-func randomSchemaRequest(r *rand.Rand) string {
-	// One request in ten may hold keys gjson paths misread, duplicate keys or a
-	// parametersJsonSchema nested in another (which the old rename empties the
-	// payload over); each must take the whole-payload path and still match.
+// and function call arguments are drawn from schemaGen. preFixComparable reports
+// whether the request is one the cleanup that predates confining it to schemas
+// handled like any other: one request in ten may hold keys gjson paths misread,
+// duplicate keys or a parametersJsonSchema nested in another (which that cleanup
+// emptied the payload over), and one in twenty a keyword outside any schema and
+// outside contents, which it edited and the confined cleanup leaves alone.
+func randomSchemaRequest(r *rand.Rand) (payload string, preFixComparable bool) {
 	g := schemaGen{r: r, misread: r.Intn(10) == 0, duplicates: r.Intn(10) == 0, nested: r.Intn(10) == 0}
 	var decls []string
 	for i := r.Intn(5); i >= 0; i-- {
@@ -201,14 +206,15 @@ func randomSchemaRequest(r *rand.Rand) string {
 	if g.chance(3) {
 		request += `,"generationConfig":{"responseSchema":` + g.schema(0) + `}`
 	}
-	if g.chance(20) {
+	stray := g.chance(20)
+	if stray {
 		request += `,` + g.pick(`"title":"near root"`, `"x-root":1`, `"request":{}`)
 	}
-	payload := `{"project":"p",` + g.ws() + `"request":{` + request + `},"model":"m"}`
+	payload = `{"project":"p",` + g.ws() + `"request":{` + request + `},"model":"m"}`
 	if g.chance(15) {
 		payload = "\n " + payload
 	}
-	return payload
+	return payload, !g.misread && !g.duplicates && !g.nested && !stray
 }
 
 type schemaGen struct {
@@ -223,8 +229,8 @@ func (g schemaGen) ws() string { return g.pick("", "", "", " ", "\n  ") }
 
 // propertyName mixes plain names, names of keywords (which the cleanup must leave
 // alone as property names), names it escapes, and now and then one that gjson
-// paths read as something else, which sends the request down the whole-payload
-// path.
+// paths read as something else, which sends the document down cleanJSONSchema
+// itself.
 func (g schemaGen) propertyName() string {
 	name := g.pick("a", "b", "path", "mode", "value", "items", "description",
 		"format", "type", "title", "pattern", "required", "properties", "default", "enum", "const", "$ref", "_", "reason",
@@ -247,8 +253,8 @@ func (g schemaGen) scalar() string {
 // schema returns a random schema object; deeper levels get fewer children.
 func (g schemaGen) schema(depth int) string {
 	// Three levels and a few children per level reach every keyword pairing the
-	// cleanup has; deeper trees only grow the payload, and the whole-payload
-	// cleanup this is compared with is quadratic in it.
+	// cleanup has; deeper trees only grow the payload, and cleanJSONSchema, which
+	// this is compared with, is quadratic in it.
 	if depth > 3 {
 		return `{"type":"string"}`
 	}
