@@ -74,17 +74,10 @@ func (e *AntigravityExecutor) buildRequest(ctx context.Context, auth *cliproxyau
 	sanitized = stripAntigravityUnsupportedThinkingConfig(sanitized, modelName)
 	payloadStr = string(sanitized)
 
-	paths := make([]string, 0)
-	util.Walk(gjson.Parse(payloadStr), "", "parametersJsonSchema", &paths)
-	for _, p := range paths {
-		payloadStr, _ = util.RenameKey(payloadStr, p, p[:len(p)-len("parametersJsonSchema")]+"parameters")
-	}
-
-	if useAntigravitySchema {
-		payloadStr = util.CleanJSONSchemaForAntigravity(payloadStr)
-	} else {
-		payloadStr = util.CleanJSONSchemaForGemini(payloadStr)
-	}
+	// Rename parametersJsonSchema to parameters and clean every schema. Doing that
+	// over the whole payload rewrote it, screenshots included, once per edit; this
+	// cleans only the subtrees that need it and gives the same bytes.
+	payloadStr = util.CleanAntigravityRequestSchemas(payloadStr, useAntigravitySchema)
 
 	if useAntigravitySchema {
 		systemInstructionPartsResult := gjson.Get(payloadStr, "request.systemInstruction.parts")
