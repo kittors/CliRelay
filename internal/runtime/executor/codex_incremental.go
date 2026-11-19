@@ -64,7 +64,7 @@ type codexIncrementalObservedItem struct {
 	role     codexIncrementalItemRole
 	itemType string
 	raw      string
-	callKey  string
+	call     codexIncrementalCall
 }
 
 func (e *CodexExecutor) incrementalPool() *codexIncrementalPool {
@@ -181,6 +181,7 @@ func (e *CodexExecutor) beginCodexIncrementalTurn(execCtx *ExecutionContext, bod
 	}
 	if reason != "" {
 		turn.miss(reason)
+		turn.noteEcho(reason, match)
 		return turn
 	}
 	turn.match = match
@@ -228,6 +229,26 @@ func (t *codexIncrementalTurn) miss(reason string) {
 	})
 }
 
+// noteEcho records, for a turn that did not continue its chain because of what
+// it sent back of the previous reply, the shape of that: how many items followed
+// the previous input, how many of them were echoed output, and which part of
+// the echo differed. Counts and part names only, never content.
+func (t *codexIncrementalTurn) noteEcho(reason string, match codexIncrementalMatch) {
+	switch reason {
+	case "output_not_echoed":
+		t.record.update(func(r *codexIncrementalRecord) { r.After = match.after })
+	case "echoed_output_mismatch":
+		t.record.update(func(r *codexIncrementalRecord) {
+			r.After, r.Echoed = match.after, match.echoed
+			if d := match.diff; d != nil {
+				r.EchoDiff, r.EchoDiffAt = d.parts, d.at
+				r.BaseCalls, r.EchoedCalls = d.baseCalls, d.echoedCalls
+				r.BaseTextBytes, r.EchoedTextBytes = d.baseTextBytes, d.echoedTextBytes
+			}
+		})
+	}
+}
+
 // codexIncrementalCreateSize is the size of the increment message, without
 // building it.
 func codexIncrementalCreateSize(cur *codexIncrementalRequest, newItems []codexIncrementalInputItem, previousResponseID string) int {
@@ -236,7 +257,7 @@ func codexIncrementalCreateSize(cur *codexIncrementalRequest, newItems []codexIn
 		if i > 0 {
 			size++
 		}
-		size += len(item.raw)
+		size += item.size()
 	}
 	// ,"previous_response_id":"…" and ,"type":"response.create"
 	return size + len(previousResponseID) + 51
@@ -285,7 +306,7 @@ func (t *codexIncrementalTurn) observe(eventType string, payload []byte) {
 		case codexItemText:
 			observed.raw = item.Raw
 		case codexItemCall:
-			observed.callKey = codexIncrementalCallKey(item.Raw, itemType)
+			observed.call = codexIncrementalCallOf(item.Raw, itemType)
 		}
 		t.observed = append(t.observed, observed)
 	case "response.completed":
@@ -319,13 +340,14 @@ func (t *codexIncrementalTurn) outputProjection() (codexIncrementalProjection, s
 	items := append([]codexIncrementalObservedItem(nil), t.observed...)
 	sort.SliceStable(items, func(i, j int) bool { return items[i].index < items[j].index })
 	text := sha256.New()
-	var calls []string
+	textBytes := 0
+	var calls []codexIncrementalCall
 	for _, item := range items {
 		switch item.role {
 		case codexItemText:
-			writeCodexAssistantText(text, item.raw)
+			textBytes += writeCodexAssistantText(text, item.raw)
 		case codexItemCall:
-			calls = append(calls, item.callKey)
+			calls = append(calls, item.call)
 		case codexItemSkipped:
 		default:
 			itemType := item.itemType
@@ -335,7 +357,7 @@ func (t *codexIncrementalTurn) outputProjection() (codexIncrementalProjection, s
 			return codexIncrementalProjection{}, "output_item_unsupported:" + itemType
 		}
 	}
-	return codexIncrementalProjection{text: codexIncrementalDigestSum(text), calls: calls}, ""
+	return codexIncrementalProjection{text: codexIncrementalDigestSum(text), textBytes: textBytes, calls: calls}, ""
 }
 
 // finish settles the turn: a completed reply becomes the chain's next base,

@@ -41,7 +41,21 @@ type codexIncrementalRecord struct {
 	// turn's item count and the first item this one changed.
 	PrevItems  int `json:"prev_items,omitempty"`
 	MismatchAt int `json:"mismatch_at,omitempty"`
-	FullBytes  int `json:"full_bytes,omitempty"`
+	// After is how many items followed the previous input, for a turn that
+	// did not send back the previous reply as it was given (output_not_echoed:
+	// 0 is a plain retry; echoed_output_mismatch).
+	After int `json:"after_items,omitempty"`
+	// EchoDiff names the parts of an echoed_output_mismatch that differ (text,
+	// call_kind, call_id, call_name, call_payload, call_count, joined by "+"),
+	// EchoDiffAt the call it names, and the rest the sizes on both sides: the
+	// previous reply's calls and text bytes against what came back.
+	EchoDiff        string `json:"echo_diff,omitempty"`
+	EchoDiffAt      int    `json:"echo_diff_at,omitempty"`
+	BaseCalls       int    `json:"base_calls,omitempty"`
+	EchoedCalls     int    `json:"echoed_calls,omitempty"`
+	BaseTextBytes   int    `json:"base_text_bytes,omitempty"`
+	EchoedTextBytes int    `json:"echoed_text_bytes,omitempty"`
+	FullBytes       int    `json:"full_bytes,omitempty"`
 	// SentBytes is what went upstream, or in shadow mode what would have.
 	SentBytes  int    `json:"sent_bytes,omitempty"`
 	ChainTurn  int    `json:"chain_turn,omitempty"`
@@ -99,6 +113,22 @@ func (r *codexIncrementalRecord) snapshot() map[string]any {
 	if r.Reason == "input_prefix_mismatch" {
 		// 0 is a real position here: the very first item changed.
 		out["mismatch_at"] = r.MismatchAt
+	}
+	switch r.Reason {
+	case "output_not_echoed", "echoed_output_mismatch":
+		// 0 is a real count here: nothing followed the previous input.
+		out["after_items"] = r.After
+	}
+	if r.EchoDiff != "" {
+		out["echo_diff"] = r.EchoDiff
+		if strings.Contains(r.EchoDiff, "call_") {
+			// 0 is a real position here: the first call differs.
+			out["echo_diff_at"] = r.EchoDiffAt
+		}
+		out["base_calls"] = r.BaseCalls
+		out["echoed_calls"] = r.EchoedCalls
+		out["base_text_bytes"] = r.BaseTextBytes
+		out["echoed_text_bytes"] = r.EchoedTextBytes
 	}
 	setNonZero("full_bytes", r.FullBytes)
 	setNonZero("sent_bytes", r.SentBytes)
