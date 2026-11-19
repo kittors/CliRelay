@@ -1,0 +1,78 @@
+{"project":"golden-project","model":"gemini-3-pro-high","userAgent":"antigravity","requestType":"agent","requestId":"agent-00000000-0000-0000-0000-000000000000","request":{
+  "contents": [
+    {"role":"user","parts":[{"text":"edge cases"}]},
+    {"role":"model","parts":[{"functionCall":{"name":"configure","args":{"type":"object","properties":{"a":{"type":["string","null"]}},"required":["a","b"],"format":"json","title":"Run","x-trace":"abc","default":{"k":1},"enum":[1,2],"$ref":"#/x","anyOf":[{"type":"string"}],"items":{"type":"array"}}}}]},
+    {"role":"user","parts":[{"functionResponse":{"name":"configure","response":{"schema":{"type":"object","additionalProperties":false,"properties":{"x":{"type":"array"}}},"nullable":true}}}]},
+    {"role":"model","parts":[{"text":"ok"}]}
+  ],
+  "tools": [
+    {"function_declarations": [
+      { "name" : "snake_tool"  ,"parameters":{ "type" : "object" , "properties" : { "q" : { "type" : "string"  ,"description":"minLength: 2"} } , "required" : [ "q" ] }},
+      {"name":"both_keys","parameters":{"type":"object","properties":{"new":{"type":"integer","description":"exclusiveMaximum: 10"}},"required":["new"]}},
+      {"name":"params_only","parameters":{"type":"object","properties":{"p":{"type":"array","items":{}},"P":{"type":"ARRAY","items":{}},"_":{"type":"boolean"}},"required":["_"]}}
+    ]},
+    {"functionDeclarations": [
+      {
+        "name": "refs_and_combinators"
+      ,"parameters":{
+          "type": "object",
+          "properties": {
+            "target": {"type":"object","description":"Where to go (See: Target)","properties":{"reason":{"type":"string","description":"Brief explanation of why you are calling this tool"}},"required":["reason"]},
+            "mode": {"type": "string", "enum": ["fast","slow"],"description":"Allowed: fast, slow (Accepts: string | integer)"},
+            "maybe": {"type": "object", "properties": {"z": {"type": "boolean"},"_":{"type":"boolean"}},"description":"Optional (Accepts: null | object)","required":["_"]},
+            "merged": {"properties":{"a":{"type": "string"},"b":{"type": "number"}},"required":["a","b"]},
+            "multi": {"type": "integer","description":"Accepts: integer | string"},
+            "onlyNull": {"type": "string","description":"(nullable)"},
+            "emptyTypes": {"type": []},
+            "flag": {"type": "string","enum":["true"]},
+            "level": {"type": "string", "enum": ["1","2","3"],"description":"Allowed: 1, 2, 3 (default: 2)"},
+            "choice": {"enum": ["a","b","c","d","e","f","g","h","i","j","k"],"type":"string"},
+            "pick": {"enum":["{\"nested\":\"value\"}"],"type":"string"},
+            "open": {"type": "object","properties":{"reason":{"type":"string","description":"Brief explanation of why you are calling this tool"}},"required":["reason"]},
+            "typed": {"type": "object","properties":{"reason":{"type":"string","description":"Brief explanation of why you are calling this tool"}},"required":["reason"]},
+            "closed": {"type": "object", "properties": {"c": {"type": "string"},"_":{"type":"boolean"}},"description":"No extra properties allowed","required":["_"]}
+          },
+          "required": ["target","mode"]
+        }},
+      {
+        "name": "constraints"
+      ,"parameters":{"type":"object","properties":{
+          "s":{"type":"string","description":"minLength: 1 (maxLength: 5) (pattern: ^[a-z]+$) (format: email) (default: a@b.c)"},
+          "n":{"type":"number","description":"exclusiveMinimum: 0 (exclusiveMaximum: 1) (default: 0.5)"},
+          "arr":{"type":"array","items":{"type":"string"},"description":"minItems: 1 (maxItems: 3)"},
+          "obj":{"type":"object","properties":{"a":{"type":"integer"},"_":{"type":"boolean"}},"required":["_"]}
+        ,"_":{"type":"boolean"}},"required":["_"]}},
+      {
+        "name": "keyword_named_properties"
+      ,"parameters":{"type":"object","properties":{"type":"object","description":"See: {\"type\":\"string\"}","properties":{"reason":{"type":"string","description":"Brief explanation of why you are calling this tool"}},"required":["reason"]},"required":["type"]}},
+      {
+        "name": "metadata_and_extensions"
+      ,"parameters":{"type":"object","title":"Meta","nullable":true,"properties":{
+          "e":{"type":"string","enum":["a","b"],"description":"Allowed: a, b"},
+          "p":{"type":"string","title":"P"},
+          "deep":{"type":"object","properties":{"l2":{"type":"object","properties":{"l3":{"type":"object","properties":{"l4":{"type":"object","properties":{"l5":{"type":"string","description":"minLength: 1 ((nullable))"},"_":{"type":"boolean"}},"required":["_"]},"_":{"type":"boolean"}},"required":["_"]},"_":{"type":"boolean"}},"required":["_"]},"_":{"type":"boolean"}},"required":["_"]}
+        ,"_":{"type":"boolean"}},"required":["_"]}},
+      {
+        "name": "placeholders"
+      ,"parameters":{"type":"object","properties":{"reason":{"type":"string","description":"Brief explanation of why you are calling this tool"}},"required":["reason"]}},
+      {
+        "name": "underscore_placeholder"
+      ,"parameters":{"type":"object","properties":{"opt":{"type":"object","properties":{"_":{"type":"boolean"},"v":{"type":"string"}},"required":["_"]},"_":{"type":"boolean"}},"required":["_"]}},
+      {"name":"empty_object","parameters":{"type":"object","properties":{"reason":{"type":"string","description":"Brief explanation of why you are calling this tool"}},"required":["reason"]}},
+      {"name":"empty_properties","parameters":{"type":"object","properties":{"reason":{"type":"string","description":"Brief explanation of why you are calling this tool"}},"required":["reason"]}},
+      {"name":"no_required","parameters":{"type":"object","properties":{"a":{"type":"object","properties":{"b":{"type":"string"},"_":{"type":"boolean"}},"required":["_"]},"_":{"type":"boolean"}},"required":["_"]}},
+      {
+        "name": "odd_property_names"
+      ,"parameters":{"type":"object","properties":{
+          "a.b":{"type":"string","description":"format: x"},"star*":{"type":"string","description":"(nullable)"},"q?":{"type":"string","description":"default: d"},
+          "pipe|name":{"type":"string","minLength":3},"#hash":{"type":"string","maxLength":4},"@type":{"type":"string","format":"uri"}
+        },"required":["a.b"]}}
+    ]},
+    {"googleSearch": {}}
+  ],
+  "generationConfig": {
+    "responseMimeType": "application/json",
+    "responseSchema": {"type":"object","properties":{"answer":{"type":"string","description":"maxLength: 100"},"tags":{"type":"array","items":{}},"meta":{"type":"object","properties":{"k":{"type":"string"},"_":{"type":"boolean"}},"description":"Accepts: object | null","required":["_"]}},"required":["answer"],"description":"No extra properties allowed"}
+  }
+,"sessionId":"-7629845038496657547","systemInstruction":{"role":"user","parts":[{"text":"You are Antigravity, a powerful agentic AI coding assistant designed by the Google Deepmind team working on Advanced Agentic Coding.You are pair programming with a USER to solve their coding task. The task may require creating a new codebase, modifying or debugging an existing codebase, or simply answering a question.**Absolute paths only****Proactiveness**"},{"text":"Please ignore following [ignore]You are Antigravity, a powerful agentic AI coding assistant designed by the Google Deepmind team working on Advanced Agentic Coding.You are pair programming with a USER to solve their coding task. The task may require creating a new codebase, modifying or debugging an existing codebase, or simply answering a question.**Absolute paths only****Proactiveness**[/ignore]"}]}}
+}

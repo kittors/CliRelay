@@ -1,10 +1,13 @@
 package executor
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
+	"unsafe"
 
 	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 // Items of a two-turn tool conversation, in the shapes each side uses.
@@ -48,8 +51,16 @@ func TestParseCodexIncrementalRequestLocatesInput(t *testing.T) {
 	if got := string(body[req.inputStart:req.inputEnd]); got != "["+incDeveloper+","+incUser1+"]" {
 		t.Fatalf("input slice = %s", got)
 	}
-	if len(req.items) != 2 || req.items[1].raw != incUser1 {
+	if len(req.items) != 2 || req.itemView(req.items[1]) != incUser1 {
 		t.Fatalf("items = %+v", req.items)
+	}
+	// The items are the body's own bytes, not a copy of them.
+	if item := req.items[1]; unsafe.StringData(req.itemView(item)) != &body[item.start] {
+		t.Fatal("item view does not share the body's memory")
+	}
+	req.dropContent()
+	if got := req.itemView(req.items[1]); got != "" || len(req.itemDigests()) != 2 {
+		t.Fatalf("after dropContent view = %q, digests = %d", got, len(req.itemDigests()))
 	}
 	if req.promptCacheKey != "pck-1" || req.hasType {
 		t.Fatalf("promptCacheKey=%q hasType=%t", req.promptCacheKey, req.hasType)
@@ -120,6 +131,18 @@ func TestMatchCodexIncremental(t *testing.T) {
 			name:   "client dropped the reply",
 			base:   incBase(t, first, output...),
 			body:   incBody(incDeveloper, incUser1, incUser2),
+			reason: "output_not_echoed",
+		},
+		{
+			name:   "client sent the same turn again",
+			base:   incBase(t, first, output...),
+			body:   first,
+			reason: "output_not_echoed",
+		},
+		{
+			name:   "client sent back part of the reply",
+			base:   incBase(t, first, output...),
+			body:   incBody(incDeveloper, incUser1, incChatMessage, incUser2),
 			reason: "echoed_output_mismatch",
 		},
 		{
@@ -218,5 +241,164 @@ func TestBuildCodexFullCreateKeepsTheBody(t *testing.T) {
 	typed := []byte(`{"type":"x","input":[]}`)
 	if got := gjson.GetBytes(buildCodexFullCreate(mustParseIncremental(t, typed)), "type").String(); got != "response.create" {
 		t.Fatalf("type = %q", got)
+	}
+}
+
+// incEscape writes a JSON \u escape for hex, built at run time so the source
+// holds no escape a tool could rewrite.
+func incEscape(hex string) string { return "\\" + "u" + hex }
+
+// incGoMarshalArgs is how magpie hands a custom tool's input back: wrapped by
+// Go's json.Marshal, which escapes < > and &.
+func incGoMarshalArgs(t *testing.T, input string) string {
+	t.Helper()
+	out, err := json.Marshal(map[string]string{"input": input})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(out)
+}
+
+// incModelArgs writes {"input": input} the way the model does: < > and & as
+// they are.
+func incModelArgs(t *testing.T, input string) string {
+	t.Helper()
+	var b strings.Builder
+	enc := json.NewEncoder(&b)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(map[string]string{"input": input}); err != nil {
+		t.Fatal(err)
+	}
+	return strings.TrimSuffix(b.String(), "\n")
+}
+
+func TestCodexIncrementalArgumentsCompareByValue(t *testing.T) {
+	patch := "*** Begin Patch\n*** Update File: a.tsx\n+<div>{a && b}</div>\n*** End Patch"
+	modelArgs := incModelArgs(t, patch)
+	marshalled := incGoMarshalArgs(t, patch)
+	if !strings.Contains(marshalled, incEscape("0026")) || strings.Contains(modelArgs, incEscape("0026")) {
+		t.Fatalf("fixture: model %s, marshalled %s", modelArgs, marshalled)
+	}
+	for _, tc := range []struct {
+		name  string
+		a, b  string
+		equal bool
+	}{
+		{"same bytes", `{"cmd":"ls"}`, `{"cmd":"ls"}`, true},
+		{"html escapes of a re-marshalled input", modelArgs, marshalled, true},
+		{"whitespace between tokens", `{"cmd": "ls",  "workdir" :"/r"}`, `{"cmd":"ls","workdir":"/r"}`, true},
+		{"escaped slash", `{"p":"a\/b"}`, `{"p":"a/b"}`, true},
+		{"escaped and plain character", `{"t":"` + incEscape("4e2d") + `"}`, `{"t":"中"}`, true},
+		{"surrogate pair and the character", `{"t":"` + incEscape("d83d") + incEscape("de00") + `"}`, `{"t":"😀"}`, true},
+		{"nested values", `{"a":{"b":[1,"x<y",true,null]}}`, `{"a": {"b": [1, "x` + incEscape("003c") + `y", true, null]}}`, true},
+		{"different lone surrogates", `{"t":"` + incEscape("d800") + `"}`, `{"t":"` + incEscape("dc00") + `"}`, false},
+		{"lone surrogate and U+FFFD", `{"t":"` + incEscape("d800") + `"}`, `{"t":"` + "�" + `"}`, false},
+		{"trimmed input", `{"input":"patch\n"}`, `{"input":"patch"}`, false},
+		{"key order", `{"a":1,"b":2}`, `{"b":2,"a":1}`, false},
+		{"number literal", `{"n":1.0}`, `{"n":1}`, false},
+		{"string and number", `{"n":"1"}`, `{"n":1}`, false},
+		{"string boundaries", `["ab","c"]`, `["a","bc"]`, false},
+		{"not JSON, same bytes", `{"cmd":`, `{"cmd":`, true},
+		{"not JSON, different bytes", `{"cmd":`, `{"cmd": `, false},
+		{"JSON and the same text not parsed", `"ls"`, `ls`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := codexIncrementalArgumentsDigest(tc.a) == codexIncrementalArgumentsDigest(tc.b); got != tc.equal {
+				t.Fatalf("equal = %t, want %t for %s and %s", got, tc.equal, tc.a, tc.b)
+			}
+		})
+	}
+}
+
+func incCallItem(t *testing.T, base, args string) string {
+	t.Helper()
+	out, err := sjson.Set(base, "arguments", args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+// A Chat client that re-encodes the arguments it hands back (magpie wrapping
+// apply_patch input with json.Marshal) still continues the chain; one that
+// changes what they hold does not.
+func TestMatchCodexIncrementalReEncodedArguments(t *testing.T) {
+	patch := "*** Begin Patch\n+if (a < b && c > d) {}\n*** End Patch"
+	modelCall := `{"type":"function_call","id":"fc_1","status":"completed","call_id":"call_1","name":"apply_patch","arguments":""}`
+	chatCall := `{"type":"function_call","call_id":"call_1","name":"apply_patch","arguments":""}`
+	modelArgs := incModelArgs(t, patch)
+	first := incBody(incDeveloper, incUser1)
+	base := incBase(t, first, incReasoning, incOutMessage, incCallItem(t, modelCall, modelArgs))
+
+	echoed := incCallItem(t, chatCall, incGoMarshalArgs(t, patch))
+	match, reason := matchCodexIncremental(base, mustParseIncremental(t, incBody(incDeveloper, incUser1, incChatMessage, echoed, incCallOutput)))
+	if reason != "" || len(match.newItems) != 1 || match.echoed != 2 {
+		t.Fatalf("re-encoded arguments: reason = %q, new = %d, echoed = %d", reason, len(match.newItems), match.echoed)
+	}
+
+	trimmed := incCallItem(t, chatCall, incGoMarshalArgs(t, strings.TrimSuffix(patch, " Patch")))
+	match, reason = matchCodexIncremental(base, mustParseIncremental(t, incBody(incDeveloper, incUser1, incChatMessage, trimmed, incCallOutput)))
+	if reason != "echoed_output_mismatch" || match.diff == nil || match.diff.parts != "call_payload" || match.diff.at != 0 {
+		t.Fatalf("changed arguments: reason = %q, diff = %+v", reason, match.diff)
+	}
+}
+
+func TestCodexIncrementalEchoDiffNamesThePart(t *testing.T) {
+	first := incBody(incDeveloper, incUser1)
+	base := incBase(t, first, incReasoning, incOutMessage, incOutCall)
+	otherCall := strings.Replace(incChatCall, "call_1", "call_9", 1)
+	edited := strings.Replace(incChatMessage, "Checking.", "Checking!!", 1)
+	for _, tc := range []struct {
+		name   string
+		echoed []string
+		parts  string
+		at     int
+	}{
+		{"text", []string{edited, incChatCall}, "text", -1},
+		{"call id", []string{incChatMessage, otherCall}, "call_id", 0},
+		{"call name", []string{incChatMessage, strings.Replace(incChatCall, "exec_command", "view_image", 1)}, "call_name", 0},
+		{"extra call", []string{incChatMessage, incChatCall, otherCall}, "call_count", 1},
+		{"text and call", []string{edited, strings.Replace(incChatCall, "ls", "pwd", 1)}, "text+call_payload", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			items := append([]string{incDeveloper, incUser1}, tc.echoed...)
+			items = append(items, incCallOutput)
+			match, reason := matchCodexIncremental(base, mustParseIncremental(t, incBody(items...)))
+			if reason != "echoed_output_mismatch" || match.diff == nil {
+				t.Fatalf("reason = %q, diff = %+v", reason, match.diff)
+			}
+			d := match.diff
+			if d.parts != tc.parts || d.at != tc.at || d.baseCalls != 1 || d.echoedCalls != len(tc.echoed)-1 || d.baseTextBytes != len("Checking.") {
+				t.Fatalf("diff = %+v, want parts %q at %d", d, tc.parts, tc.at)
+			}
+			if match.echoed != len(tc.echoed) || match.after != len(tc.echoed)+1 {
+				t.Fatalf("echoed = %d after = %d", match.echoed, match.after)
+			}
+		})
+	}
+}
+
+func TestCodexIncrementalRecordReportsTheEcho(t *testing.T) {
+	first := incBody(incDeveloper, incUser1)
+	base := incBase(t, first, incReasoning, incOutMessage, incOutCall)
+	turn := &codexIncrementalTurn{record: &codexIncrementalRecord{Mode: "shadow", Result: "skip", Transport: "http"}}
+	match, reason := matchCodexIncremental(base, mustParseIncremental(t, incBody(incDeveloper, incUser1, incChatMessage, strings.Replace(incChatCall, "call_1", "call_9", 1), incCallOutput)))
+	turn.miss(reason)
+	turn.noteEcho(reason, match)
+	got := turn.record.snapshot()
+	want := map[string]any{"reason": "echoed_output_mismatch", "echo_diff": "call_id", "echo_diff_at": 0, "echoed_items": 2, "after_items": 3,
+		"base_calls": 1, "echoed_calls": 1, "base_text_bytes": len("Checking."), "echoed_text_bytes": len("Checking.")}
+	for key, value := range want {
+		if got[key] != value {
+			t.Fatalf("snapshot[%s] = %v, want %v (snapshot %v)", key, got[key], value, got)
+		}
+	}
+
+	retry := &codexIncrementalTurn{record: &codexIncrementalRecord{Mode: "shadow", Result: "skip", Transport: "http"}}
+	match, reason = matchCodexIncremental(base, mustParseIncremental(t, first))
+	retry.miss(reason)
+	retry.noteEcho(reason, match)
+	if got := retry.record.snapshot(); got["reason"] != "output_not_echoed" || got["after_items"] != 0 || got["echo_diff"] != nil {
+		t.Fatalf("retry snapshot = %v", got)
 	}
 }

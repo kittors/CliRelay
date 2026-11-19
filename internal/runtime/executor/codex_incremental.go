@@ -64,7 +64,7 @@ type codexIncrementalObservedItem struct {
 	role     codexIncrementalItemRole
 	itemType string
 	raw      string
-	callKey  string
+	call     codexIncrementalCall
 }
 
 func (e *CodexExecutor) incrementalPool() *codexIncrementalPool {
@@ -181,6 +181,7 @@ func (e *CodexExecutor) beginCodexIncrementalTurn(execCtx *ExecutionContext, bod
 	}
 	if reason != "" {
 		turn.miss(reason)
+		turn.noteEcho(reason, match)
 		return turn
 	}
 	turn.match = match
@@ -228,6 +229,26 @@ func (t *codexIncrementalTurn) miss(reason string) {
 	})
 }
 
+// noteEcho records, for a turn that did not continue its chain because of what
+// it sent back of the previous reply, the shape of that: how many items followed
+// the previous input, how many of them were echoed output, and which part of
+// the echo differed. Counts and part names only, never content.
+func (t *codexIncrementalTurn) noteEcho(reason string, match codexIncrementalMatch) {
+	switch reason {
+	case "output_not_echoed":
+		t.record.update(func(r *codexIncrementalRecord) { r.After = match.after })
+	case "echoed_output_mismatch":
+		t.record.update(func(r *codexIncrementalRecord) {
+			r.After, r.Echoed = match.after, match.echoed
+			if d := match.diff; d != nil {
+				r.EchoDiff, r.EchoDiffAt = d.parts, d.at
+				r.BaseCalls, r.EchoedCalls = d.baseCalls, d.echoedCalls
+				r.BaseTextBytes, r.EchoedTextBytes = d.baseTextBytes, d.echoedTextBytes
+			}
+		})
+	}
+}
+
 // codexIncrementalCreateSize is the size of the increment message, without
 // building it.
 func codexIncrementalCreateSize(cur *codexIncrementalRequest, newItems []codexIncrementalInputItem, previousResponseID string) int {
@@ -236,7 +257,7 @@ func codexIncrementalCreateSize(cur *codexIncrementalRequest, newItems []codexIn
 		if i > 0 {
 			size++
 		}
-		size += len(item.raw)
+		size += item.size()
 	}
 	// ,"previous_response_id":"…" and ,"type":"response.create"
 	return size + len(previousResponseID) + 51
@@ -244,7 +265,8 @@ func codexIncrementalCreateSize(cur *codexIncrementalRequest, newItems []codexIn
 
 // codexIncrementalConversationKey names the conversation a request belongs to.
 // The downstream caller is part of it, so two tenants or two keys never share a
-// chain even if they send the same session identifier.
+// chain even if they send the same session identifier. So is the client thread,
+// when the request names one: a request that names none keeps the key it had.
 func codexIncrementalConversationKey(execCtx *ExecutionContext, cur *codexIncrementalRequest, apiKey string) string {
 	session := ""
 	switch {
@@ -262,8 +284,65 @@ func codexIncrementalConversationKey(execCtx *ExecutionContext, cur *codexIncrem
 	}
 	tenant := cliproxyauth.NormalizedTenantID(metadataText(execCtx.Options.Metadata, cliproxyexecutor.TenantMetadataKey))
 	keyDigest := sha256.Sum256([]byte(apiKey))
-	sum := sha256.Sum256([]byte(strings.Join([]string{"codex-incremental:v1", tenant, hex.EncodeToString(keyDigest[:]), execCtx.SourceFormat.String(), session}, "\x00")))
+	parts := []string{"codex-incremental:v1", tenant, hex.EncodeToString(keyDigest[:]), execCtx.SourceFormat.String(), session}
+	if thread := codexIncrementalThreadID(execCtx); thread != "" {
+		parts = append(parts, "thread:"+thread)
+	}
+	sum := sha256.Sum256([]byte(strings.Join(parts, "\x00")))
 	return hex.EncodeToString(sum[:16])
+}
+
+// codexIncrementalThreadID is the client thread a request comes from, or "" when
+// it names none.
+//
+// Codex runs every thread of a session, the root and each sub-agent it spawns,
+// under the session's id: over HTTP all of them send the same prompt_cache_key,
+// over Chat the key derived from the shared Session_id header is the same, and
+// they share the opening of their history. Keyed on the session alone, a root
+// and three sub-agents took turns on one key's chains and kept taking each
+// other's (11-19 16:36–18:58, Codex Desktop over HTTP: 25.7% of sub-agent turns
+// missed with input_prefix_mismatch, against 4.9% of root turns).
+// The thread id is what tells them apart: the Thread-Id header, else the
+// thread_id of the X-Codex-Turn-Metadata header, else, on the client websocket,
+// where Codex sends its per-request headers in the body, the thread the
+// request's client_metadata names.
+//
+// All of it is read from what the client sent. The body going upstream is no
+// use here: fingerprint convergence has rewritten its client_metadata by then,
+// and the session and full modes give every thread the same id.
+func codexIncrementalThreadID(execCtx *ExecutionContext) string {
+	if ginCtx := ginContextFrom(execCtx.Context); ginCtx != nil && ginCtx.Request != nil {
+		if thread := strings.TrimSpace(ginCtx.Request.Header.Get("Thread-Id")); thread != "" {
+			return thread
+		}
+		if thread := codexTurnMetadataThreadID(ginCtx.Request.Header.Get("X-Codex-Turn-Metadata")); thread != "" {
+			return thread
+		}
+	}
+	if executionSessionIDFromOptions(execCtx.Options) == "" {
+		// Not the client websocket: the body is not read again for a field only
+		// the websocket carries there.
+		return ""
+	}
+	metadata := gjson.GetBytes(execCtx.Request.Payload, "client_metadata")
+	if !metadata.IsObject() {
+		return ""
+	}
+	if thread := strings.TrimSpace(metadata.Get("thread_id").String()); thread != "" {
+		return thread
+	}
+	return codexTurnMetadataThreadID(metadata.Get("x-codex-turn-metadata").String())
+}
+
+// codexTurnMetadataThreadID reads thread_id out of Codex's turn metadata, a JSON
+// object sent as a header over HTTP and as a string in client_metadata over the
+// client websocket.
+func codexTurnMetadataThreadID(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || !gjson.Valid(raw) {
+		return ""
+	}
+	return strings.TrimSpace(gjson.Get(raw, "thread_id").String())
 }
 
 // observe reads one event of the reply. Both transports pass every event
@@ -285,7 +364,7 @@ func (t *codexIncrementalTurn) observe(eventType string, payload []byte) {
 		case codexItemText:
 			observed.raw = item.Raw
 		case codexItemCall:
-			observed.callKey = codexIncrementalCallKey(item.Raw, itemType)
+			observed.call = codexIncrementalCallOf(item.Raw, itemType)
 		}
 		t.observed = append(t.observed, observed)
 	case "response.completed":
@@ -319,13 +398,14 @@ func (t *codexIncrementalTurn) outputProjection() (codexIncrementalProjection, s
 	items := append([]codexIncrementalObservedItem(nil), t.observed...)
 	sort.SliceStable(items, func(i, j int) bool { return items[i].index < items[j].index })
 	text := sha256.New()
-	var calls []string
+	textBytes := 0
+	var calls []codexIncrementalCall
 	for _, item := range items {
 		switch item.role {
 		case codexItemText:
-			writeCodexAssistantText(text, item.raw)
+			textBytes += writeCodexAssistantText(text, item.raw)
 		case codexItemCall:
-			calls = append(calls, item.callKey)
+			calls = append(calls, item.call)
 		case codexItemSkipped:
 		default:
 			itemType := item.itemType
@@ -335,7 +415,7 @@ func (t *codexIncrementalTurn) outputProjection() (codexIncrementalProjection, s
 			return codexIncrementalProjection{}, "output_item_unsupported:" + itemType
 		}
 	}
-	return codexIncrementalProjection{text: codexIncrementalDigestSum(text), calls: calls}, ""
+	return codexIncrementalProjection{text: codexIncrementalDigestSum(text), textBytes: textBytes, calls: calls}, ""
 }
 
 // finish settles the turn: a completed reply becomes the chain's next base,

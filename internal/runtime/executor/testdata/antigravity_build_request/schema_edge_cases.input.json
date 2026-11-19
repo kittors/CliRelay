@@ -1,0 +1,92 @@
+{
+  "contents": [
+    {"role":"user","parts":[{"text":"edge cases"}]},
+    {"role":"model","parts":[{"functionCall":{"name":"configure","args":{"type":"object","properties":{"a":{"type":["string","null"]}},"required":["a","b"],"format":"json","title":"Run","x-trace":"abc","default":{"k":1},"enum":[1,2],"$ref":"#/x","anyOf":[{"type":"string"}],"items":{"type":"array"}}}}]},
+    {"role":"user","parts":[{"functionResponse":{"name":"configure","response":{"schema":{"type":"object","additionalProperties":false,"properties":{"x":{"type":"array"}}},"nullable":true}}}]},
+    {"role":"model","parts":[{"text":"ok"}]}
+  ],
+  "tools": [
+    {"function_declarations": [
+      { "name" : "snake_tool" , "parametersJsonSchema" : { "type" : "object" , "properties" : { "q" : { "type" : "string" , "minLength" : 2 } } , "required" : [ "q" ] } },
+      {"name":"both_keys","parameters":{"type":"object","properties":{"old":{"type":"string"}}},"parametersJsonSchema":{"type":"object","properties":{"new":{"type":"integer","exclusiveMaximum":10}},"required":["new"]}},
+      {"name":"params_only","parameters":{"type":"object","properties":{"p":{"type":"array"},"P":{"type":"ARRAY"}}}}
+    ]},
+    {"functionDeclarations": [
+      {
+        "name": "refs_and_combinators",
+        "parametersJsonSchema": {
+          "type": "object",
+          "properties": {
+            "target": {"$ref": "#/definitions/Target", "description": "Where to go"},
+            "mode": {"oneOf": [{"type": "string", "enum": ["fast", "slow"]}, {"type": "integer"}]},
+            "maybe": {"anyOf": [{"type": "null"}, {"type": "object", "properties": {"z": {"type": "boolean"}}}], "description": "Optional"},
+            "merged": {"allOf": [{"properties": {"a": {"type": "string"}}, "required": ["a"]}, {"properties": {"b": {"type": "number"}}, "required": ["b", "a"]}]},
+            "multi": {"type": ["integer", "string"]},
+            "onlyNull": {"type": ["null"]},
+            "emptyTypes": {"type": []},
+            "flag": {"type": "boolean", "const": true},
+            "level": {"type": "integer", "enum": [1, 2, 3], "default": 2},
+            "choice": {"enum": ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k"]},
+            "pick": {"const": {"nested": "value"}},
+            "open": {"type": "object", "additionalProperties": true},
+            "typed": {"type": "object", "additionalProperties": {"type": "string"}},
+            "closed": {"type": "object", "additionalProperties": false, "properties": {"c": {"type": "string"}}}
+          },
+          "required": ["target", "mode", "ghost"],
+          "definitions": {"Target": {"type": "object", "properties": {"host": {"type": "string", "format": "hostname"}}}},
+          "$defs": {"Unused": {"type": "string"}}
+        }
+      },
+      {
+        "name": "constraints",
+        "parametersJsonSchema": {"type":"object","properties":{
+          "s":{"type":"string","minLength":1,"maxLength":5,"pattern":"^[a-z]+$","format":"email","default":"a@b.c","examples":["x@y.z"]},
+          "n":{"type":"number","exclusiveMinimum":0,"exclusiveMaximum":1,"default":0.5,"examples":[0.1,0.2]},
+          "arr":{"type":"array","minItems":1,"maxItems":3,"items":{"type":"string"}},
+          "obj":{"type":"object","default":{"a":1},"examples":[{"a":2}],"properties":{"a":{"type":"integer"}}}
+        }}
+      },
+      {
+        "name": "keyword_named_properties",
+        "parametersJsonSchema": {"type":"object","properties":{
+          "format":{"type":"string"},"type":{"type":"string","enum":["x","y"]},"title":{"type":"string"},
+          "pattern":{"type":"string"},"required":{"type":"boolean"},"properties":{"type":"object","properties":{"inner":{"type":"string","nullable":true}}},
+          "default":{"type":"string"},"x-custom":{"type":"string","x-hidden":true},"$ref":{"type":"string"},"enum":{"type":"array","items":{"type":"string"}},
+          "_":{"type":"boolean"},"reason":{"type":"string","description":"Brief explanation of why you are calling this tool"}
+        },"required":["format","type","missing"]}
+      },
+      {
+        "name": "metadata_and_extensions",
+        "parametersJsonSchema": {"type":"object","title":"Meta","nullable":true,"x-google-enum-descriptions":["a","b"],"propertyNames":{"pattern":"^[a-z]+$"},"patternProperties":{"^x_":{"type":"string"}},"properties":{
+          "e":{"type":"string","enum":["a","b"],"enumTitles":["A","B"],"x-google-enum-descriptions":["first","second"]},
+          "p":{"type":"string","prefill":"hello","title":"P"},
+          "deep":{"type":"object","x-meta":{"type":["string","null"],"format":"x"},"properties":{"l2":{"type":"object","properties":{"l3":{"type":"object","properties":{"l4":{"type":"object","properties":{"l5":{"type":["string","null"],"minLength":1}},"required":["l5"]}}}}}}}
+        }}
+      },
+      {
+        "name": "placeholders",
+        "parametersJsonSchema": {"type":"object","properties":{"reason":{"type":"string","description":"Brief explanation of why you are calling this tool"}},"required":["reason"]}
+      },
+      {
+        "name": "underscore_placeholder",
+        "parametersJsonSchema": {"type":"object","properties":{"opt":{"type":"object","properties":{"_":{"type":"boolean"},"v":{"type":"string"}},"required":["_"]}}}
+      },
+      {"name":"empty_object","parametersJsonSchema":{"type":"object"}},
+      {"name":"empty_properties","parametersJsonSchema":{"type":"object","properties":{}}},
+      {"name":"no_required","parametersJsonSchema":{"type":"object","properties":{"a":{"type":"object","properties":{"b":{"type":"string"}}}}}},
+      {
+        "name": "odd_property_names",
+        "parametersJsonSchema": {"type":"object","properties":{
+          "a.b":{"type":"string","format":"x"},"star*":{"type":["string","null"]},"q?":{"type":"string","default":"d"},
+          "pipe|name":{"type":"string","minLength":3},"#hash":{"type":"string","maxLength":4},"@type":{"type":"string","format":"uri"}
+        },"required":["a.b","pipe|name"]}
+      }
+    ]},
+    {"googleSearch": {}}
+  ],
+  "generationConfig": {
+    "responseMimeType": "application/json",
+    "responseSchema": {"type":"object","properties":{"answer":{"type":"string","maxLength":100},"tags":{"type":"array"},"meta":{"anyOf":[{"type":"object","properties":{"k":{"type":"string"}}},{"type":"null"}]}},"required":["answer","nope"],"additionalProperties":false,"x-order":["answer"]},
+    "maxOutputTokens": 1024
+  }
+}
