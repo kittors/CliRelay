@@ -238,9 +238,16 @@ func (c chatTurn) message() string {
 
 func runChatTurn(t *testing.T, exec *CodexExecutor, auth *cliproxyauth.Auth, messages []string) chatTurn {
 	t.Helper()
+	return runChatTurnIn(t, exec, incCtx(), auth, cliproxyexecutor.Options{}, messages)
+}
+
+// runChatTurnIn is runChatTurn for a given request context and options.
+func runChatTurnIn(t *testing.T, exec *CodexExecutor, ctx context.Context, auth *cliproxyauth.Auth, opts cliproxyexecutor.Options, messages []string) chatTurn {
+	t.Helper()
 	payload := `{"model":"gpt-5.4","stream":true,"messages":[` + strings.Join(messages, ",") + `],"tools":` + incChatTools + `}`
 	format := sdktranslator.FromString("openai")
-	stream, err := exec.ExecuteStream(incCtx(), auth, cliproxyexecutor.Request{Model: "gpt-5.4", Payload: []byte(payload), Format: format}, cliproxyexecutor.Options{SourceFormat: format, Stream: true})
+	opts.SourceFormat, opts.Stream = format, true
+	stream, err := exec.ExecuteStream(ctx, auth, cliproxyexecutor.Request{Model: "gpt-5.4", Payload: []byte(payload), Format: format}, opts)
 	if err != nil {
 		t.Fatalf("ExecuteStream() error = %v", err)
 	}

@@ -265,7 +265,8 @@ func codexIncrementalCreateSize(cur *codexIncrementalRequest, newItems []codexIn
 
 // codexIncrementalConversationKey names the conversation a request belongs to.
 // The downstream caller is part of it, so two tenants or two keys never share a
-// chain even if they send the same session identifier.
+// chain even if they send the same session identifier. So is the client thread,
+// when the request names one: a request that names none keeps the key it had.
 func codexIncrementalConversationKey(execCtx *ExecutionContext, cur *codexIncrementalRequest, apiKey string) string {
 	session := ""
 	switch {
@@ -283,8 +284,65 @@ func codexIncrementalConversationKey(execCtx *ExecutionContext, cur *codexIncrem
 	}
 	tenant := cliproxyauth.NormalizedTenantID(metadataText(execCtx.Options.Metadata, cliproxyexecutor.TenantMetadataKey))
 	keyDigest := sha256.Sum256([]byte(apiKey))
-	sum := sha256.Sum256([]byte(strings.Join([]string{"codex-incremental:v1", tenant, hex.EncodeToString(keyDigest[:]), execCtx.SourceFormat.String(), session}, "\x00")))
+	parts := []string{"codex-incremental:v1", tenant, hex.EncodeToString(keyDigest[:]), execCtx.SourceFormat.String(), session}
+	if thread := codexIncrementalThreadID(execCtx); thread != "" {
+		parts = append(parts, "thread:"+thread)
+	}
+	sum := sha256.Sum256([]byte(strings.Join(parts, "\x00")))
 	return hex.EncodeToString(sum[:16])
+}
+
+// codexIncrementalThreadID is the client thread a request comes from, or "" when
+// it names none.
+//
+// Codex runs every thread of a session, the root and each sub-agent it spawns,
+// under the session's id: over HTTP all of them send the same prompt_cache_key,
+// over Chat the key derived from the shared Session_id header is the same, and
+// they share the opening of their history. Keyed on the session alone, a root
+// and three sub-agents took turns on one key's chains and kept taking each
+// other's (11-19 16:36–18:58, Codex Desktop over HTTP: 25.7% of sub-agent turns
+// missed with input_prefix_mismatch, against 4.9% of root turns).
+// The thread id is what tells them apart: the Thread-Id header, else the
+// thread_id of the X-Codex-Turn-Metadata header, else, on the client websocket,
+// where Codex sends its per-request headers in the body, the thread the
+// request's client_metadata names.
+//
+// All of it is read from what the client sent. The body going upstream is no
+// use here: fingerprint convergence has rewritten its client_metadata by then,
+// and the session and full modes give every thread the same id.
+func codexIncrementalThreadID(execCtx *ExecutionContext) string {
+	if ginCtx := ginContextFrom(execCtx.Context); ginCtx != nil && ginCtx.Request != nil {
+		if thread := strings.TrimSpace(ginCtx.Request.Header.Get("Thread-Id")); thread != "" {
+			return thread
+		}
+		if thread := codexTurnMetadataThreadID(ginCtx.Request.Header.Get("X-Codex-Turn-Metadata")); thread != "" {
+			return thread
+		}
+	}
+	if executionSessionIDFromOptions(execCtx.Options) == "" {
+		// Not the client websocket: the body is not read again for a field only
+		// the websocket carries there.
+		return ""
+	}
+	metadata := gjson.GetBytes(execCtx.Request.Payload, "client_metadata")
+	if !metadata.IsObject() {
+		return ""
+	}
+	if thread := strings.TrimSpace(metadata.Get("thread_id").String()); thread != "" {
+		return thread
+	}
+	return codexTurnMetadataThreadID(metadata.Get("x-codex-turn-metadata").String())
+}
+
+// codexTurnMetadataThreadID reads thread_id out of Codex's turn metadata, a JSON
+// object sent as a header over HTTP and as a string in client_metadata over the
+// client websocket.
+func codexTurnMetadataThreadID(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || !gjson.Valid(raw) {
+		return ""
+	}
+	return strings.TrimSpace(gjson.Get(raw, "thread_id").String())
 }
 
 // observe reads one event of the reply. Both transports pass every event
