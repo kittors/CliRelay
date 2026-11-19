@@ -1,8 +1,8 @@
 {"project":"golden-project","model":"claude-sonnet-4-5","userAgent":"antigravity","requestType":"agent","requestId":"agent-00000000-0000-0000-0000-000000000000","request":{
   "contents": [
     {"role":"user","parts":[{"text":"edge cases"}]},
-    {"role":"model","parts":[{"functionCall":{"name":"configure","args":{"type":"object","description":"See: x","properties":{"reason":{"type":"string","description":"Brief explanation of why you are calling this tool"}},"required":["reason"]}}}]},
-    {"role":"user","parts":[{"functionResponse":{"name":"configure","response":{"schema":{"type":"object","properties":{"x":{"type":"array"},"_":{"type":"boolean"}},"description":"No extra properties allowed","required":["_"]},"nullable":true}}}]},
+    {"role":"model","parts":[{"functionCall":{"name":"configure","args":{"type":"object","properties":{"a":{"type":["string","null"]}},"required":["a","b"],"format":"json","title":"Run","x-trace":"abc","default":{"k":1},"enum":[1,2],"$ref":"#/x","anyOf":[{"type":"string"}],"items":{"type":"array"}}}}]},
+    {"role":"user","parts":[{"functionResponse":{"name":"configure","response":{"schema":{"type":"object","additionalProperties":false,"properties":{"x":{"type":"array"}}},"nullable":true}}}]},
     {"role":"model","parts":[{"text":"ok"}]}
   ],
   "tools": [

@@ -28,13 +28,15 @@ var antigravityBuildGoldenModels = []string{"claude-sonnet-4-5", "gemini-2.5-pro
 var antigravityGoldenRequestID = regexp.MustCompile(`"requestId":"agent-[0-9a-f-]{36}"`)
 
 // TestAntigravityBuildRequestGolden pins the body buildRequest sends upstream,
-// byte for byte. The schema cleanup used to rewrite the whole payload for every
-// edit, so making it cheaper must not move a single byte; the golden files were
-// written by the implementation that predates that change.
+// byte for byte. The golden files were first written by the implementation that
+// cleaned the whole payload (the scoped cleanup then had to match them), and
+// rewritten once when the cleanup was confined to the schemas a request declares:
+// the function calls and responses replayed in contents now go upstream as the
+// client sent them, and nothing else moved.
 //
 // The inputs are raw on purpose (tool schemas nobody has cleaned yet, function
 // calls whose arguments use schema keywords as data, indented and oddly spaced
-// JSON), because that is where a scoped cleanup could drift from the old one.
+// JSON), because that is where the cleanup could drift.
 func TestAntigravityBuildRequestGolden(t *testing.T) {
 	inputs, err := filepath.Glob(filepath.Join(antigravityBuildGoldenDir, "*.input.json"))
 	if err != nil {

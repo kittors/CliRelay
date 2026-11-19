@@ -42,8 +42,9 @@
             "functionCall": {
               "name": "search_file_content",
               "args": {
+                "pattern": "func main",
                 "include": "*.go"
-              ,"description":"pattern: func main"}
+              }
             }
           }
         ]

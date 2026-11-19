@@ -74,9 +74,10 @@ func (e *AntigravityExecutor) buildRequest(ctx context.Context, auth *cliproxyau
 	sanitized = stripAntigravityUnsupportedThinkingConfig(sanitized, modelName)
 	payloadStr = string(sanitized)
 
-	// Rename parametersJsonSchema to parameters and clean every schema. Doing that
-	// over the whole payload rewrote it, screenshots included, once per edit; this
-	// cleans only the subtrees that need it and gives the same bytes.
+	// Rename each function declaration's parametersJsonSchema to parameters and
+	// clean the schemas the request declares (tools and the response schema), and
+	// nothing else: the function calls replayed in contents are data, and cleaning
+	// them as schemas showed the model calls it never made.
 	payloadStr = util.CleanAntigravityRequestSchemas(payloadStr, useAntigravitySchema)
 
 	if useAntigravitySchema {
