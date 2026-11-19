@@ -131,6 +131,21 @@ func newRuntime(coord func() *cluster.Coordinator, client *sharedredis.Client, s
 	return rt
 }
 
+// PingRedis makes one round trip to the cluster Redis, for the node's
+// resource snapshot. configured is false when this node has none. It asks the
+// server even while the client counts it as down, since the point is to time
+// the server, not to use it.
+func (rt *Runtime) PingRedis(ctx context.Context) (configured bool, err error) {
+	if rt == nil || rt.client == nil {
+		return false, nil
+	}
+	rdb := rt.client.Redis()
+	if rdb == nil {
+		return false, nil
+	}
+	return true, rdb.Ping(ctx).Err()
+}
+
 // Attach wires manager: cluster-wide account slots, shared session affinity
 // and cooldown relaying.
 func (rt *Runtime) Attach(manager *coreauth.Manager) {

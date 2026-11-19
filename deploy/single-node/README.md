@@ -10,8 +10,22 @@ uploads them. After a change is merged, root copies them to the host.
 
 | File | Installed as | What it does |
 |---|---|---|
-| `clirelay-watchdog.sh` | `/usr/local/bin/clirelay-watchdog.sh` | SIGKILLs the active slot after two failed `/readyz` probes in a row, so `Restart=always` replaces a hung process. Watches only the slot `/opt/clirelay2/.active-port` names, skips a slot within 180 s of starting, and never starts a unit |
+| `clirelay-watchdog.sh` | `/usr/local/bin/clirelay-watchdog.sh` | SIGKILLs the active slot once it has stopped answering HTTP, so `Restart=always` replaces a hung process. A slow slot (one that still answers, even with 503) is left alone. Watches only the slot `/opt/clirelay2/.active-port` names, skips a slot within 180 s of starting, and never starts a unit |
 | `clirelay-watchdog.service` | `/etc/systemd/system/clirelay-watchdog.service` | Runs the watchdog; logs go to `journalctl -u clirelay-watchdog` |
+
+What the watchdog counts, every `WATCHDOG_INTERVAL` (30 s):
+
+| The slot | Counted as | Action |
+|---|---|---|
+| answers `/readyz` with any HTTP status (204, or 503 `postgres` / `redis` / `draining`, ...) | alive | count cleared; a non-2xx answer is logged with its reason |
+| sends nothing on `/readyz` within 8 s, but answers `/healthz` within 15 s | slow | count cleared, logged |
+| answers neither: timeout, or the connection closed or reset without a reply | hung | SIGKILL after `WATCHDOG_FAILS` (4) such rounds in a row |
+| refuses the connection, after answering at least once since it started | not listening (a drain after a SIGTERM that did not come from systemd, or a process that closed its listener) | SIGKILL after `WATCHDOG_REFUSED_FAILS` (20) rounds in a row, about 10 min, past the 300 s shutdown grace plus 90 s of shutdown work |
+| refuses the connection and has not answered since it started | still starting | left alone, logged once |
+| is not `active`/`running` (crashed, stopping, stopped) or started under 180 s ago | | left alone |
+
+Before each SIGKILL it writes the slot's memory, CPU and process state to
+`/var/log/clirelay-watchdog/hang-<time>-<port>.txt`.
 
 Install or update the watchdog:
 
@@ -28,6 +42,16 @@ draining process (cutting its shutdown grace) and started it again, leaving
 the retired build running next to the new one. `scripts/gha-node-verify.sh`
 now looks at the old slot again 90 s after it stopped and fails the rollout
 if anything brought it back.
+
+On 2026-11-16 the next version counted any non-2xx `/readyz` as a failure.
+A slot pinned on CPU by a quadratic request translation (fixed in #1301)
+answered 503 `postgres` to four probes in a row, because its 2 s PostgreSQL
+ping timed out; the watchdog SIGKILLed it at 17:06, cutting every request in
+flight, and the clients' retries kept the new process busier still. Its
+snapshot showed a sleeping process with 206 established connections and no
+memory pressure. `/readyz` says whether the slot should get traffic, not
+whether it is alive, so the watchdog now only kills a slot that sends no
+HTTP answer at all.
 
 ## Backups
 

@@ -587,7 +587,8 @@ func isTenantScopedManagementPath(path string) bool {
 		strings.HasPrefix(relative, "/model-openrouter-sync"),
 		relative == "/model-owner-presets",
 		relative == "/auth-group-model-owner-mappings",
-		relative == "/model-pricing":
+		relative == "/model-pricing",
+		relative == "/pricing-resync-jobs":
 		return true
 	case relative == "/channel-groups",
 		relative == "/ccswitch-import-configs",

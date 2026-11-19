@@ -148,10 +148,13 @@ func (c *cloudflareClient) listARecords(ctx context.Context, name string) ([]dns
 	}
 }
 
-// createARecord publishes ip under name, always unproxied: dnswatch exists to
-// steer clients straight to the nodes, which an orange-cloud record would hide.
-func (c *cloudflareClient) createARecord(ctx context.Context, name, ip string, ttl int) (dnsRecord, error) {
-	payload := dnsRecord{Type: "A", Name: name, Content: ip, TTL: ttl, Proxied: false}
+// createARecord publishes ip under name. DNS only (grey cloud), the record
+// sends clients straight to the node; proxied (orange cloud), it sends them to
+// Cloudflare, which forwards to the node, and removing it takes the node out
+// at the edge at once rather than after resolvers' caches expire. The caller
+// picks the mode from the config and passes AutomaticTTL for proxied records.
+func (c *cloudflareClient) createARecord(ctx context.Context, name, ip string, ttl int, proxied bool) (dnsRecord, error) {
+	payload := dnsRecord{Type: "A", Name: name, Content: ip, TTL: ttl, Proxied: proxied}
 	envelope, err := c.do(ctx, http.MethodPost, c.recordsPath(), nil, payload)
 	if err != nil {
 		return dnsRecord{}, err
@@ -161,6 +164,28 @@ func (c *cloudflareClient) createARecord(ctx context.Context, name, ip string, t
 		return dnsRecord{}, fmt.Errorf("cloudflare create %s %s: decode record: %w", name, ip, err)
 	}
 	return created, nil
+}
+
+// proxyPatch turns the proxy on for an existing record. The TTL is sent along
+// because proxied records only take the automatic one.
+type proxyPatch struct {
+	Proxied bool `json:"proxied"`
+	TTL     int  `json:"ttl"`
+}
+
+// proxyRecord turns the proxy on for the record with the given id, leaving its
+// name and content alone. There is no counterpart that turns it off: dnswatch
+// never publishes a node's address on its own (see Config.Proxied).
+func (c *cloudflareClient) proxyRecord(ctx context.Context, id string) (dnsRecord, error) {
+	envelope, err := c.do(ctx, http.MethodPatch, c.recordsPath()+"/"+url.PathEscape(id), nil, proxyPatch{Proxied: true, TTL: AutomaticTTL})
+	if err != nil {
+		return dnsRecord{}, err
+	}
+	var updated dnsRecord
+	if err := json.Unmarshal(envelope.Result, &updated); err != nil {
+		return dnsRecord{}, fmt.Errorf("cloudflare proxy record %s: decode record: %w", id, err)
+	}
+	return updated, nil
 }
 
 // deleteRecord removes the record with the given id.

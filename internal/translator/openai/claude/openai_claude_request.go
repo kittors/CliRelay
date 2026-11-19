@@ -6,6 +6,7 @@
 package claude
 
 import (
+	"encoding/json"
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/thinking"
@@ -85,8 +86,26 @@ func ConvertClaudeRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 		}
 	}
 
-	// Process messages and system
-	var messagesJSON = "[]"
+	// Process messages and system. Messages are collected here and written into
+	// out once: sjson.Set(messagesJSON, "-1", ...) per message re-parsed and
+	// copied every message added so far, which grew with the square of the
+	// history (see common.JSONArrayBuilder). Nothing reads the array back before
+	// it is written, so the result is byte-for-byte the same.
+	var messageNodes common.JSONArrayBuilder
+	// sjson.Set re-encoded each message through encoding/json, which sorts
+	// object keys and escapes <, > and &; the messages sent upstream have
+	// always been in that form. When encoding failed sjson emptied the whole
+	// array and no message was sent, which messagesLost keeps. Every value in
+	// these messages is a string, so it does not happen in practice.
+	messagesLost := false
+	appendMessage := func(msg string) {
+		encoded, err := json.Marshal(gjson.Parse(msg).Value())
+		if err != nil {
+			messagesLost = true
+			return
+		}
+		messageNodes.Append(string(encoded))
+	}
 	validToolUseIDs := make(map[string]bool)
 
 	// Handle system message first
@@ -114,7 +133,7 @@ func ConvertClaudeRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 	}
 	// Only add system message if it has content
 	if hasSystemContent {
-		messagesJSON, _ = sjson.SetRaw(messagesJSON, "-1", systemMsgJSON)
+		messageNodes.Append(systemMsgJSON)
 	}
 
 	// Process Anthropic messages
@@ -210,7 +229,7 @@ func ConvertClaudeRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 				// Therefore, we emit tool_result messages FIRST (they respond to the previous assistant's tool_calls),
 				// then emit the current message's content.
 				for _, toolResultJSON := range toolResults {
-					messagesJSON, _ = sjson.Set(messagesJSON, "-1", gjson.Parse(toolResultJSON).Value())
+					appendMessage(toolResultJSON)
 				}
 
 				// For assistant messages: emit a single unified message with content, tool_calls, and reasoning_content
@@ -241,7 +260,7 @@ func ConvertClaudeRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 							msgJSON, _ = sjson.Set(msgJSON, "tool_calls", toolCalls)
 						}
 
-						messagesJSON, _ = sjson.Set(messagesJSON, "-1", gjson.Parse(msgJSON).Value())
+						appendMessage(msgJSON)
 					}
 				} else {
 					// For non-assistant roles: emit content message if we have content
@@ -256,7 +275,7 @@ func ConvertClaudeRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 						}
 						msgJSON, _ = sjson.SetRaw(msgJSON, "content", contentArrayJSON)
 
-						messagesJSON, _ = sjson.Set(messagesJSON, "-1", gjson.Parse(msgJSON).Value())
+						appendMessage(msgJSON)
 					}
 				}
 
@@ -265,16 +284,17 @@ func ConvertClaudeRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 				msgJSON := `{"role":"","content":""}`
 				msgJSON, _ = sjson.Set(msgJSON, "role", role)
 				msgJSON, _ = sjson.Set(msgJSON, "content", contentResult.String())
-				messagesJSON, _ = sjson.Set(messagesJSON, "-1", gjson.Parse(msgJSON).Value())
+				appendMessage(msgJSON)
 			}
 
 			return true
 		})
 	}
 
-	// Set messages
-	if gjson.Parse(messagesJSON).IsArray() && len(gjson.Parse(messagesJSON).Array()) > 0 {
-		out, _ = sjson.SetRaw(out, "messages", messagesJSON)
+	// Set messages. Every element is a non-empty JSON value, so the array the
+	// old check parsed had elements exactly when one was added.
+	if messageNodes.Len() > 0 && !messagesLost {
+		out, _ = sjson.SetRaw(out, "messages", messageNodes.String())
 	}
 
 	// Process tools - convert Anthropic tools to OpenAI functions

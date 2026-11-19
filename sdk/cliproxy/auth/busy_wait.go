@@ -254,7 +254,7 @@ func (m *Manager) busyWaitUntilRecovery(ctx context.Context, err error, provider
 	if err == nil || ctx.Err() != nil || isSinglePickRouteRequest(opts.Metadata) {
 		return 0, false
 	}
-	if statusCodeFromError(err) == http.StatusOK || isRequestInvalidError(err) || isContentPolicyViolation(err) {
+	if statusCodeFromError(err) == http.StatusOK || isRequestFault(err) || isProviderAccessFrozen(err) {
 		return 0, false
 	}
 	limit := m.streamGuardsFor(opts.Metadata).busyWaitMax

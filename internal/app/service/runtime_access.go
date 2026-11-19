@@ -147,6 +147,9 @@ func BuildAPIKeyClients(cfg *config.Config) (int, int, int, int, int, int, int, 
 
 func StartOpenRouterModelSync(ctx context.Context) {
 	internalusage.StartOpenRouterModelSyncScheduler(ctx)
+	// Price changes and catalog autofill reach the requests already logged
+	// through the leader-only pricing resync worker (see pricing_resync.go).
+	internalusage.StartPricingResyncWorker(ctx)
 }
 
 func ApplyDBBackedRuntimeSettings(cfg *config.Config, configPath string) {

@@ -89,4 +89,9 @@ func (e *CodexAutoExecutor) CloseExecutionSession(sessionID string) {
 		return
 	}
 	e.wsExec.CloseExecutionSession(sessionID)
+	// The incremental chains are process-wide and outlive executors, so the
+	// "replace every session" signal of a config reload leaves them alone.
+	if e.httpExec != nil && sessionID != cliproxyauth.CloseAllExecutionSessionsID {
+		e.httpExec.closeIncrementalSession(sessionID)
+	}
 }

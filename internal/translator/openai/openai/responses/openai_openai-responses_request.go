@@ -49,11 +49,19 @@ func ConvertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 		out, _ = sjson.Set(out, "parallel_tool_calls", parallelToolCalls.Bool())
 	}
 
+	// Messages are collected here and written into out once, after the input.
+	// sjson.SetRaw(out, "messages.-1", ...) per message re-parsed and copied
+	// the whole request each time, which grew with the square of a Codex
+	// session's history (see common.JSONArrayBuilder). The template already
+	// holds "messages":[] and nothing reads the array back before it is
+	// written, so the result is byte-for-byte the same.
+	var messages common.JSONArrayBuilder
+
 	// Convert instructions to system message
 	if instructions := root.Get("instructions"); instructions.Exists() {
 		systemMessage := `{"role":"system","content":""}`
 		systemMessage, _ = sjson.Set(systemMessage, "content", instructions.String())
-		out, _ = sjson.SetRaw(out, "messages.-1", systemMessage)
+		messages.Append(systemMessage)
 	}
 
 	// Convert input array to messages
@@ -72,7 +80,7 @@ func ConvertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 		flushReasoning := func() {
 			if len(reasoningParts) > 0 {
 				message := withReasoning(`{"role":"assistant","content":""}`)
-				out, _ = sjson.SetRaw(out, "messages.-1", message)
+				messages.Append(message)
 			}
 		}
 		input.ForEach(func(_, item gjson.Result) bool {
@@ -139,7 +147,7 @@ func ConvertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 				}
 
 				message = withReasoning(message)
-				out, _ = sjson.SetRaw(out, "messages.-1", message)
+				messages.Append(message)
 
 			case "function_call":
 				// Handle function call conversion to assistant message with tool_calls
@@ -161,7 +169,7 @@ func ConvertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 
 				assistantMessage, _ = sjson.SetRaw(assistantMessage, "tool_calls.0", toolCall)
 				assistantMessage = withReasoning(assistantMessage)
-				out, _ = sjson.SetRaw(out, "messages.-1", assistantMessage)
+				messages.Append(assistantMessage)
 
 			case "function_call_output":
 				// Handle function call output conversion to tool message
@@ -175,7 +183,7 @@ func ConvertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 					toolMessage, _ = sjson.SetRaw(toolMessage, "content", common.ToChatContent(common.ParseToolResult(output)))
 				}
 
-				out, _ = sjson.SetRaw(out, "messages.-1", toolMessage)
+				messages.Append(toolMessage)
 			}
 
 			return true
@@ -185,7 +193,11 @@ func ConvertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 		msg := "{}"
 		msg, _ = sjson.Set(msg, "role", "user")
 		msg, _ = sjson.Set(msg, "content", input.String())
-		out, _ = sjson.SetRaw(out, "messages.-1", msg)
+		messages.Append(msg)
+	}
+
+	if messages.Len() > 0 {
+		out, _ = sjson.SetRaw(out, "messages", messages.String())
 	}
 
 	// Convert tools from responses format to chat completions format

@@ -115,6 +115,17 @@ func requestLogCacheValues(tokens TokenStats) (read, write sql.NullInt64, prompt
 	return read, write, promptTokenTotal(tokens)
 }
 
+// requestLogCacheWrite1h returns what request_logs stores for the cache writes
+// that went to the one-hour cache: NULL when the upstream did not report cache
+// use, like the other cache columns. With it a stored row holds every input of
+// CalculateCostV2, so a price change can recompute the row exactly.
+func requestLogCacheWrite1h(tokens TokenStats) sql.NullInt64 {
+	if !tokens.CacheReported {
+		return sql.NullInt64{}
+	}
+	return sql.NullInt64{Int64: tokens.CacheWrite1hTokens, Valid: true}
+}
+
 // cacheTotalsFromStoredRow rebuilds a request's contribution from its
 // request_logs columns. read is NULL on rows whose cache use is unknown.
 func cacheTotalsFromStoredRow(read, write, prompt sql.NullInt64) cacheTotals {
@@ -150,14 +161,16 @@ func (c *cacheTotals) scanTargets() []any {
 }
 
 // migrateRequestLogCacheColumns adds the cache and session columns to a SQLite
-// request_logs table. PostgreSQL gets them from the runtime migration
-// 202610300001_request_log_cache_and_session.
+// request_logs table. PostgreSQL gets them from the runtime migrations
+// 202610300001_request_log_cache_and_session and
+// 202611180002_request_log_cache_write_1h.
 func migrateRequestLogCacheColumns(db *sql.DB) {
 	addSQLiteColumns(db, "request_logs", []string{
 		"cache_read_tokens INTEGER",
 		"cache_write_tokens INTEGER",
 		"prompt_tokens INTEGER",
 		"session_id TEXT NOT NULL DEFAULT ''",
+		"cache_write_1h_tokens INTEGER",
 	})
 }
 

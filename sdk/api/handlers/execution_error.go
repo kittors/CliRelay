@@ -14,6 +14,9 @@ func executionError(err error) *StreamErrorMessage {
 	if msg := egressUnavailableMessage(err); msg != nil {
 		return msg
 	}
+	if msg := providerAccessFrozenMessage(err); msg != nil {
+		return msg
+	}
 	status := http.StatusInternalServerError
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		status = 499 // Client Closed Request

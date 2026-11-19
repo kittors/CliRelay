@@ -20,8 +20,7 @@ type MetadataAccessors struct {
 }
 
 func BuildScopedExecutionMetadata(ctx context.Context) map[string]any {
-	allowedChannels := ""
-	allowedChannelGroups := ""
+	var accessMetadata map[string]string
 	routeGroup := ""
 	routeFallback := ""
 	tenantID := ""
@@ -35,10 +34,7 @@ func BuildScopedExecutionMetadata(ctx context.Context) map[string]any {
 			tenantID = strings.TrimSpace(tenantID)
 		}
 		if metadataVal, exists := ginCtx.Get("accessMetadata"); exists {
-			if metadata, okMeta := metadataVal.(map[string]string); okMeta {
-				allowedChannels = strings.TrimSpace(metadata["allowed-channels"])
-				allowedChannelGroups = strings.TrimSpace(metadata["allowed-channel-groups"])
-			}
+			accessMetadata, _ = metadataVal.(map[string]string)
 		}
 		if routeVal, exists := ginCtx.Get(sdkrouting.GinPathRouteContextKey); exists {
 			if route, okRoute := routeVal.(*sdkrouting.PathRouteContext); okRoute && route != nil {
@@ -61,12 +57,7 @@ func BuildScopedExecutionMetadata(ctx context.Context) map[string]any {
 	if tenantID != "" {
 		meta[coreexecutor.TenantMetadataKey] = tenantID
 	}
-	if allowedChannels != "" {
-		meta["allowed-channels"] = allowedChannels
-	}
-	if allowedChannelGroups != "" {
-		meta["allowed-channel-groups"] = allowedChannelGroups
-	}
+	coreexecutor.CopyAccessSelectionScope(accessMetadata, meta)
 	if routeGroup != "" {
 		meta[coreexecutor.RouteGroupMetadataKey] = routeGroup
 	}

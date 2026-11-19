@@ -9,8 +9,8 @@ import (
 	"fmt"
 	"strings"
 
+	translatorcommon "github.com/router-for-me/CLIProxyAPI/v6/internal/translator/common"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/translator/gemini/common"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -52,87 +52,55 @@ func ConvertGeminiRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 	}
 	rawJSON = []byte(template)
 
-	// Normalize roles in request.contents: default to valid values if missing/invalid
-	contents := gjson.GetBytes(rawJSON, "request.contents")
-	if contents.Exists() {
-		prevRole := ""
-		idx := 0
-		contents.ForEach(func(_ gjson.Result, value gjson.Result) bool {
-			role := value.Get("role").String()
-			valid := role == "user" || role == "model"
-			if role == "" || !valid {
-				var newRole string
-				if prevRole == "" {
-					newRole = "user"
-				} else if prevRole == "user" {
-					newRole = "model"
-				} else {
-					newRole = "user"
-				}
-				path := fmt.Sprintf("request.contents.%d.role", idx)
-				rawJSON, _ = sjson.SetBytes(rawJSON, path, newRole)
-				role = newRole
-			}
-			prevRole = role
-			idx++
-			return true
-		})
-	}
-
-	toolsResult := gjson.GetBytes(rawJSON, "request.tools")
-	if toolsResult.Exists() && toolsResult.IsArray() {
-		toolResults := toolsResult.Array()
-		for i := 0; i < len(toolResults); i++ {
-			functionDeclarationsResult := gjson.GetBytes(rawJSON, fmt.Sprintf("request.tools.%d.function_declarations", i))
-			if functionDeclarationsResult.Exists() && functionDeclarationsResult.IsArray() {
-				functionDeclarationsResults := functionDeclarationsResult.Array()
-				for j := 0; j < len(functionDeclarationsResults); j++ {
-					parametersResult := gjson.GetBytes(rawJSON, fmt.Sprintf("request.tools.%d.function_declarations.%d.parameters", i, j))
-					if parametersResult.Exists() {
-						strJson, _ := util.RenameKey(string(rawJSON), fmt.Sprintf("request.tools.%d.function_declarations.%d.parameters", i, j), fmt.Sprintf("request.tools.%d.function_declarations.%d.parametersJsonSchema", i, j))
-						rawJSON = []byte(strJson)
-					}
-				}
-			}
-		}
-	}
+	// The three edits below run in the order they always have. Each one patches
+	// small elements and splices them back in one pass instead of editing the
+	// whole request once per element; see common.RawPatch.
+	rawJSON = common.NormalizeContentRoles(rawJSON, "request.contents")
+	rawJSON = common.RenameFunctionDeclarationParameters(rawJSON, "request.tools")
 
 	// Gemini-specific handling for non-Claude models:
 	// - Add skip_thought_signature_validator to functionCall parts so upstream can bypass signature validation.
 	// - Also mark thinking parts with the same sentinel when present (we keep the parts; we only annotate them).
 	if !strings.Contains(modelName, "claude") {
-		const skipSentinel = "skip_thought_signature_validator"
-
-		gjson.GetBytes(rawJSON, "request.contents").ForEach(func(contentIdx, content gjson.Result) bool {
-			if content.Get("role").String() == "model" {
-				// First pass: collect indices of thinking parts to mark with skip sentinel
-				var thinkingIndicesToSkipSignature []int64
-				content.Get("parts").ForEach(func(partIdx, part gjson.Result) bool {
-					// Collect indices of thinking blocks to mark with skip sentinel
-					if part.Get("thought").Bool() {
-						thinkingIndicesToSkipSignature = append(thinkingIndicesToSkipSignature, partIdx.Int())
-					}
-					// Add skip sentinel to functionCall parts
-					if part.Get("functionCall").Exists() {
-						existingSig := part.Get("thoughtSignature").String()
-						if existingSig == "" || len(existingSig) < 50 {
-							rawJSON, _ = sjson.SetBytes(rawJSON, fmt.Sprintf("request.contents.%d.parts.%d.thoughtSignature", contentIdx.Int(), partIdx.Int()), skipSentinel)
-						}
-					}
-					return true
-				})
-
-				// Add skip_thought_signature_validator sentinel to thinking blocks in reverse order to preserve indices
-				for i := len(thinkingIndicesToSkipSignature) - 1; i >= 0; i-- {
-					idx := thinkingIndicesToSkipSignature[i]
-					rawJSON, _ = sjson.SetBytes(rawJSON, fmt.Sprintf("request.contents.%d.parts.%d.thoughtSignature", contentIdx.Int(), idx), skipSentinel)
-				}
-			}
-			return true
-		})
+		rawJSON = markThoughtSignaturesToSkip(rawJSON)
 	}
 
 	return common.AttachDefaultSafetySettings(rawJSON, "request.safetySettings")
+}
+
+// markThoughtSignaturesToSkipSlow is the original per-path sentinel edit. It
+// now runs only when markThoughtSignaturesToSkip cannot patch parts in place.
+func markThoughtSignaturesToSkipSlow(rawJSON []byte) []byte {
+	const skipSentinel = skipThoughtSignatureSentinel
+
+	gjson.GetBytes(rawJSON, "request.contents").ForEach(func(contentIdx, content gjson.Result) bool {
+		if content.Get("role").String() == "model" {
+			// First pass: collect indices of thinking parts to mark with skip sentinel
+			var thinkingIndicesToSkipSignature []int64
+			content.Get("parts").ForEach(func(partIdx, part gjson.Result) bool {
+				// Collect indices of thinking blocks to mark with skip sentinel
+				if part.Get("thought").Bool() {
+					thinkingIndicesToSkipSignature = append(thinkingIndicesToSkipSignature, partIdx.Int())
+				}
+				// Add skip sentinel to functionCall parts
+				if part.Get("functionCall").Exists() {
+					existingSig := part.Get("thoughtSignature").String()
+					if existingSig == "" || len(existingSig) < 50 {
+						rawJSON, _ = sjson.SetBytes(rawJSON, fmt.Sprintf("request.contents.%d.parts.%d.thoughtSignature", contentIdx.Int(), partIdx.Int()), skipSentinel)
+					}
+				}
+				return true
+			})
+
+			// Add skip_thought_signature_validator sentinel to thinking blocks in reverse order to preserve indices
+			for i := len(thinkingIndicesToSkipSignature) - 1; i >= 0; i-- {
+				idx := thinkingIndicesToSkipSignature[i]
+				rawJSON, _ = sjson.SetBytes(rawJSON, fmt.Sprintf("request.contents.%d.parts.%d.thoughtSignature", contentIdx.Int(), idx), skipSentinel)
+			}
+		}
+		return true
+	})
+	return rawJSON
 }
 
 // FunctionCallGroup represents a group of function calls and their responses
@@ -187,8 +155,10 @@ func fixCLIToolResponse(input string) (string, error) {
 		return input, fmt.Errorf("contents not found in input")
 	}
 
-	// Initialize data structures for processing and grouping
-	contentsWrapper := `{"contents":[]}`
+	// Initialize data structures for processing and grouping. The new contents
+	// array is built once instead of appending to a wrapper document per
+	// content, which re-parsed and copied everything appended so far each time.
+	var newContents translatorcommon.JSONArrayBuilder
 	var pendingGroups []*FunctionCallGroup // Groups awaiting completion with responses
 	var collectedResponses []gjson.Result  // Standalone responses to be matched
 
@@ -220,16 +190,8 @@ func fixCLIToolResponse(input string) (string, error) {
 					collectedResponses = collectedResponses[group.ResponsesNeeded:]
 
 					// Create merged function response content
-					functionResponseContent := `{"parts":[],"role":"function"}`
-					for _, response := range groupResponses {
-						partRaw := parseFunctionResponseRaw(response)
-						if partRaw != "" {
-							functionResponseContent, _ = sjson.SetRaw(functionResponseContent, "parts.-1", partRaw)
-						}
-					}
-
-					if gjson.Get(functionResponseContent, "parts.#").Int() > 0 {
-						contentsWrapper, _ = sjson.SetRaw(contentsWrapper, "contents.-1", functionResponseContent)
+					if merged, ok := mergedFunctionResponseContent(groupResponses); ok {
+						newContents.Append(merged)
 					}
 
 					// Remove this group as it's been satisfied
@@ -257,7 +219,7 @@ func fixCLIToolResponse(input string) (string, error) {
 					log.Warnf("failed to parse model content")
 					return true
 				}
-				contentsWrapper, _ = sjson.SetRaw(contentsWrapper, "contents.-1", value.Raw)
+				newContents.Append(value.Raw)
 
 				// Create a new group for tracking responses
 				group := &FunctionCallGroup{
@@ -270,7 +232,7 @@ func fixCLIToolResponse(input string) (string, error) {
 					log.Warnf("failed to parse content")
 					return true
 				}
-				contentsWrapper, _ = sjson.SetRaw(contentsWrapper, "contents.-1", value.Raw)
+				newContents.Append(value.Raw)
 			}
 		} else {
 			// Non-model content (user, etc.)
@@ -278,7 +240,7 @@ func fixCLIToolResponse(input string) (string, error) {
 				log.Warnf("failed to parse content")
 				return true
 			}
-			contentsWrapper, _ = sjson.SetRaw(contentsWrapper, "contents.-1", value.Raw)
+			newContents.Append(value.Raw)
 		}
 
 		return true
@@ -290,23 +252,32 @@ func fixCLIToolResponse(input string) (string, error) {
 			groupResponses := collectedResponses[:group.ResponsesNeeded]
 			collectedResponses = collectedResponses[group.ResponsesNeeded:]
 
-			functionResponseContent := `{"parts":[],"role":"function"}`
-			for _, response := range groupResponses {
-				partRaw := parseFunctionResponseRaw(response)
-				if partRaw != "" {
-					functionResponseContent, _ = sjson.SetRaw(functionResponseContent, "parts.-1", partRaw)
-				}
-			}
-
-			if gjson.Get(functionResponseContent, "parts.#").Int() > 0 {
-				contentsWrapper, _ = sjson.SetRaw(contentsWrapper, "contents.-1", functionResponseContent)
+			if merged, ok := mergedFunctionResponseContent(groupResponses); ok {
+				newContents.Append(merged)
 			}
 		}
 	}
 
 	// Update the original JSON with the new contents
 	result := input
-	result, _ = sjson.SetRaw(result, "request.contents", gjson.Get(contentsWrapper, "contents").Raw)
+	result, _ = sjson.SetRaw(result, "request.contents", newContents.String())
 
 	return result, nil
+}
+
+// mergedFunctionResponseContent merges a group's responses into one
+// function-role content, the same bytes the old per-part sjson appends onto
+// {"parts":[],"role":"function"} produced. It reports false when no response
+// yields a part, where the old code skipped the content.
+func mergedFunctionResponseContent(responses []gjson.Result) (string, bool) {
+	var parts translatorcommon.JSONArrayBuilder
+	for _, response := range responses {
+		if partRaw := parseFunctionResponseRaw(response); partRaw != "" {
+			parts.Append(partRaw)
+		}
+	}
+	if parts.Len() == 0 {
+		return "", false
+	}
+	return `{"parts":` + parts.String() + `,"role":"function"}`, true
 }

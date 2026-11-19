@@ -6,10 +6,7 @@
 package geminiCLI
 
 import (
-	"fmt"
-
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/translator/gemini/common"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -27,37 +24,11 @@ func ConvertGeminiCLIRequestToGemini(_ string, inputRawJSON []byte, _ bool) []by
 		rawJSON, _ = sjson.DeleteBytes(rawJSON, "systemInstruction")
 	}
 
-	toolsResult := gjson.GetBytes(rawJSON, "tools")
-	if toolsResult.Exists() && toolsResult.IsArray() {
-		toolResults := toolsResult.Array()
-		for i := 0; i < len(toolResults); i++ {
-			functionDeclarationsResult := gjson.GetBytes(rawJSON, fmt.Sprintf("tools.%d.function_declarations", i))
-			if functionDeclarationsResult.Exists() && functionDeclarationsResult.IsArray() {
-				functionDeclarationsResults := functionDeclarationsResult.Array()
-				for j := 0; j < len(functionDeclarationsResults); j++ {
-					parametersResult := gjson.GetBytes(rawJSON, fmt.Sprintf("tools.%d.function_declarations.%d.parameters", i, j))
-					if parametersResult.Exists() {
-						strJson, _ := util.RenameKey(string(rawJSON), fmt.Sprintf("tools.%d.function_declarations.%d.parameters", i, j), fmt.Sprintf("tools.%d.function_declarations.%d.parametersJsonSchema", i, j))
-						rawJSON = []byte(strJson)
-					}
-				}
-			}
-		}
-	}
-
-	gjson.GetBytes(rawJSON, "contents").ForEach(func(key, content gjson.Result) bool {
-		if content.Get("role").String() == "model" {
-			content.Get("parts").ForEach(func(partKey, part gjson.Result) bool {
-				if part.Get("functionCall").Exists() {
-					rawJSON, _ = sjson.SetBytes(rawJSON, fmt.Sprintf("contents.%d.parts.%d.thoughtSignature", key.Int(), partKey.Int()), "skip_thought_signature_validator")
-				} else if part.Get("thoughtSignature").Exists() {
-					rawJSON, _ = sjson.SetBytes(rawJSON, fmt.Sprintf("contents.%d.parts.%d.thoughtSignature", key.Int(), partKey.Int()), "skip_thought_signature_validator")
-				}
-				return true
-			})
-		}
-		return true
-	})
+	// These two edits used to rewrite the whole request once per declaration
+	// and per part, which grew with the square of a long session. Each now
+	// patches the elements it changes in one pass (see common.RawPatch).
+	rawJSON = common.RenameFunctionDeclarationParameters(rawJSON, "tools")
+	rawJSON = common.SkipThoughtSignatureValidation(rawJSON, "contents")
 
 	return common.AttachDefaultSafetySettings(rawJSON, "safetySettings")
 }

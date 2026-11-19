@@ -74,6 +74,9 @@ type pgNode struct {
 	dsn       string
 	db        *sql.DB
 	t         pgTimings
+	// snapshot supplies the resource snapshot each heartbeat stores; nil
+	// stores none.
+	snapshot func() json.RawMessage
 
 	// startedAt is the database time this process registered its row. It
 	// tells this process's row apart from one written by another process
@@ -105,14 +108,15 @@ type pgNode struct {
 // coordinator from Prepare is shared before its backend exists, so the
 // backend is attached atomically once Start has connected it.
 type backendSlot struct {
-	node   atomic.Pointer[pgNode]
-	mu     sync.Mutex
-	closed bool
-	nodeID string
+	node    atomic.Pointer[pgNode]
+	mu      sync.Mutex
+	closed  bool
+	nodeID  string
+	version string
 }
 
 func newBackendSlot(c *Coordinator) *backendSlot {
-	slot := &backendSlot{nodeID: c.nodeID}
+	slot := &backendSlot{nodeID: c.nodeID, version: c.version}
 	c.transport = slot
 	c.nodesProvider = slot.nodes
 	return slot
@@ -157,7 +161,7 @@ func (s *backendSlot) nodes(ctx context.Context) ([]NodeStatus, error) {
 	}
 	// Not connected yet: report only this node, as a follower.
 	now := time.Now()
-	return []NodeStatus{{NodeID: s.nodeID, StartedAt: now, LastSeen: now, Active: true, Self: true}}, nil
+	return []NodeStatus{{NodeID: s.nodeID, Version: s.version, StartedAt: processStartedAt, LastSeen: now, Active: true, Self: true}}, nil
 }
 
 // startPostgres builds the PostgreSQL-backed coordinator: the LISTEN
@@ -184,6 +188,7 @@ func startPostgresWith(ctx context.Context, nodeID string, opts Options, timings
 	}
 	if slot == nil {
 		c = newCoordinator(true, nodeID)
+		c.version = strings.TrimSpace(opts.Version)
 		slot = newBackendSlot(c)
 	}
 	p := &pgNode{
@@ -194,6 +199,7 @@ func startPostgresWith(ctx context.Context, nodeID string, opts Options, timings
 		dsn:       dsn,
 		db:        opts.DB,
 		t:         timings,
+		snapshot:  opts.Snapshot,
 		kick:      make(chan struct{}, 1),
 	}
 	if err := p.start(ctx); err != nil {

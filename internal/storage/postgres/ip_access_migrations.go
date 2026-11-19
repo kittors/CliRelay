@@ -64,6 +64,23 @@ func laterRuntimeMigrations() []Migration {
 		// request_log_content_body_migrations.go.
 		{Version: "202611100002_request_log_content_bodies_stripped", SQL: requestLogContentBodiesStrippedSQL},
 		{Version: "202611100003_request_log_content_unstripped_index", SQL: requestLogContentUnstrippedIndexSQL},
+		// Per-provider freezes of requesters an upstream refused for their
+		// content. See access_freeze_migrations.go.
+		{Version: "202611130001_access_freezes", SQL: accessFreezesSQL},
+		// Resource snapshots in the membership rows. See clusterNodeSnapshotSQL.
+		{Version: "202611170001_cluster_node_snapshot", SQL: clusterNodeSnapshotSQL},
+		// Machine snapshots of hosts without a node (the database host). See
+		// clusterHostsSQL.
+		{Version: "202611170002_cluster_hosts", SQL: clusterHostsSQL},
+		// Who sent each request, for the request log's Agent column. See
+		// requestLogClientSQL.
+		{Version: "202611180001_request_log_client", SQL: requestLogClientSQL},
+		// One-hour cache writes on request_logs, so a price change can recompute
+		// a stored cost exactly. See requestLogCacheWrite1hSQL.
+		{Version: "202611180002_request_log_cache_write_1h", SQL: requestLogCacheWrite1hSQL},
+		// Queue of request-cost recomputations after a price change. See
+		// pricing_resync_migrations.go.
+		{Version: "202611180003_pricing_resync_jobs", SQL: pricingResyncJobsSQL},
 	}
 }
 

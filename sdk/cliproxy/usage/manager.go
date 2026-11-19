@@ -46,6 +46,14 @@ type Record struct {
 	// and a request it is set on is Failed.
 	GuardKind string
 
+	// ClientName, ClientVersion and UserAgent describe the caller: the client
+	// named from the inbound request's headers (internal/clientident), the
+	// version it reported and its raw User-Agent. They label the request log's
+	// Agent column, and are empty when the request carried no User-Agent.
+	ClientName    string
+	ClientVersion string
+	UserAgent     string
+
 	// TrustedTenantID is set only by authenticated internal execution paths.
 	// When empty, persistence resolves the tenant from the real API key.
 	TrustedTenantID string

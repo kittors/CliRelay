@@ -38,29 +38,21 @@ func writeCodexWebsocketMessage(sess *codexWebsocketSession, conn *websocket.Con
 	return conn.WriteMessage(websocket.TextMessage, payload)
 }
 
-func buildCodexWebsocketRequestBody(body []byte, allowAppend bool) []byte {
+// buildCodexWebsocketRequestBody wraps a Responses body as the websocket's
+// `response.create` message. A continuation is the same message carrying
+// previous_response_id; there is no other message type for it.
+//
+// This used to rewrite continuations as `response.append`, on the belief that
+// the ChatGPT backend closed the socket with 1008 on a `response.create` that
+// carried previous_response_id. On 2026-11-18 it was the other way round: a
+// create with previous_response_id continued on the same connection (store=false,
+// 646 bytes sent, the model still answered about the previous turn's image),
+// while `response.append` drew 400 "Expected a 'response.create' websocket
+// message." Upstream CLIProxyAPI dropped `response.append` in 5ebc58fab for the
+// same reason, and the official client (0.166+) only sends `response.create`.
+func buildCodexWebsocketRequestBody(body []byte) []byte {
 	if len(body) == 0 {
 		return nil
-	}
-
-	// Codex CLI websocket v2 uses `response.create` with `previous_response_id` for incremental turns.
-	// The upstream ChatGPT Codex websocket currently rejects that with close 1008 (policy violation).
-	// Fall back to v1 `response.append` semantics on the same websocket connection to keep the session alive.
-	//
-	// NOTE: The upstream expects the first websocket event on each connection to be `response.create`,
-	// so we only use `response.append` after we have initialized the current connection.
-	if allowAppend {
-		if prev := strings.TrimSpace(gjson.GetBytes(body, "previous_response_id").String()); prev != "" {
-			inputNode := gjson.GetBytes(body, "input")
-			wsReqBody := []byte(`{}`)
-			wsReqBody, _ = sjson.SetBytes(wsReqBody, "type", "response.append")
-			if inputNode.Exists() && inputNode.IsArray() && strings.TrimSpace(inputNode.Raw) != "" {
-				wsReqBody, _ = sjson.SetRawBytes(wsReqBody, "input", []byte(inputNode.Raw))
-				return wsReqBody
-			}
-			wsReqBody, _ = sjson.SetRawBytes(wsReqBody, "input", []byte("[]"))
-			return wsReqBody
-		}
 	}
 
 	wsReqBody, errSet := sjson.SetBytes(bytes.Clone(body), "type", "response.create")
@@ -104,21 +96,6 @@ func readCodexWebsocketMessage(ctx context.Context, sess *codexWebsocketSession,
 			return ev.msgType, ev.payload, nil
 		}
 	}
-}
-
-func markCodexWebsocketCreateSent(sess *codexWebsocketSession, conn *websocket.Conn, payload []byte) {
-	if sess == nil || conn == nil || len(payload) == 0 {
-		return
-	}
-	if strings.TrimSpace(gjson.GetBytes(payload, "type").String()) != "response.create" {
-		return
-	}
-
-	sess.connMu.Lock()
-	if sess.conn == conn {
-		sess.connCreateSent = true
-	}
-	sess.connMu.Unlock()
 }
 
 func buildCodexResponsesWebsocketURL(httpURL string) (string, error) {
@@ -312,8 +289,14 @@ func parseCodexWebsocketError(payload []byte) (error, bool) {
 	}
 
 	headers := parseCodexWebsocketErrorHeaders(payload)
+	// Over the websocket an exhausted allowance arrives as this event instead of
+	// an HTTP 429, with the same body (usage_limit_reached, resets_at) and the
+	// same rate-limit headers. It is parsed as the HTTP answer is, so the
+	// executor itself publishes when the allowance comes back. A reset time the
+	// scheduler only infers is advisory and dropped when cooling is disabled,
+	// which left an exhausted account selectable again at once.
 	return statusErrWithHeaders{
-		statusErr: statusErr{code: status, msg: string(out)},
+		statusErr: newCodexStatusErr(status, out, headers),
 		headers:   headers,
 	}, true
 }

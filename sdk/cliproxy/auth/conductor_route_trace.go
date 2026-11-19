@@ -87,6 +87,10 @@ func tracedFailure(err error) routetrace.Outcome {
 // prefers that one.
 func failureCause(err error) string {
 	switch {
+	// Before request_invalid: a refusal may also carry an invalid-request
+	// signal, and saying it was the content is the more useful of the two.
+	case isUpstreamContentRefusal(err):
+		return routetrace.CauseUpstreamContentRefusal
 	case isRequestInvalidError(err):
 		return routetrace.CauseRequestInvalid
 	case isContentPolicyViolation(err):
@@ -129,7 +133,7 @@ func (m *Manager) accountBlockAfter(authID, model, errorCause string) (string, t
 	}
 	m.mu.RUnlock()
 	switch errorCause {
-	case routetrace.CauseRequestInvalid, routetrace.CauseContentPolicy, routetrace.CauseFirstTokenTimeout, routetrace.CauseStreamIncomplete:
+	case routetrace.CauseRequestInvalid, routetrace.CauseContentPolicy, routetrace.CauseUpstreamContentRefusal, routetrace.CauseFirstTokenTimeout, routetrace.CauseStreamIncomplete:
 		return blocked, until, errorCause
 	}
 	if blocked != "" && blockCause != "" {

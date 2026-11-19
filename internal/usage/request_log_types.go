@@ -56,6 +56,13 @@ type LogRow struct {
 	// ("reply_loop" or "tool_loop"), empty for every other request. A request
 	// it is set on is also Failed.
 	GuardKind string `json:"guard_kind,omitempty"`
+	// ClientName, ClientVersion and UserAgent name the caller (see
+	// request_log_client.go); empty for requests without a User-Agent and for
+	// rows logged before they were stored. They are always present in the JSON:
+	// the panel tells a backend that stores them from an older one by the keys.
+	ClientName    string `json:"client_name"`
+	ClientVersion string `json:"client_version"`
+	UserAgent     string `json:"user_agent"`
 }
 
 // LogQueryParams holds filter/pagination parameters for QueryLogs.
@@ -89,6 +96,10 @@ type LogQueryParams struct {
 	// GuardKinds selects the requests loop protection ended ("reply_loop",
 	// "tool_loop"); empty selects all requests.
 	GuardKinds []string
+	// ClientNames selects requests by caller; ClientNameUnknown selects the ones
+	// without a client name. MatchNoClientNames is an explicit empty selection.
+	ClientNames        []string
+	MatchNoClientNames bool
 }
 
 // LogQueryResult holds the paginated query result.
@@ -116,6 +127,11 @@ type FilterOptions struct {
 	Statuses       []string              `json:"statuses"`
 	// GuardKinds lists the loop protection outcomes present in the window.
 	GuardKinds []string `json:"guard_kinds"`
+	// ClientNames lists the callers in the window, most requests first, with
+	// ClientNameUnknown for the requests without one; ClientNameCounts has
+	// their request counts.
+	ClientNames      []string         `json:"client_names"`
+	ClientNameCounts map[string]int64 `json:"client_name_counts"`
 }
 
 // ChannelFilterOption is one selectable channel in request-log filters.

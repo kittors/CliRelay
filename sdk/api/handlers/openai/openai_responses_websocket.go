@@ -16,7 +16,6 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/api/handlers"
-	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/routetrace"
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/jsonstrict"
 	log "github.com/sirupsen/logrus"
@@ -223,6 +222,10 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 			continue
 		}
 		transcript.lastRequest = updatedLastRequest
+		// An increment passed on to an upstream that keeps the context is all the
+		// transcript holds of this turn: it cannot be expanded into a complete
+		// request once the connection moves to another credential (classify).
+		transcript.partial = allowIncrementalInputWithPreviousResponseID && gjson.GetBytes(updatedLastRequest, "previous_response_id").Exists()
 		transcript.observeWindow(payload)
 		requestJSON, _, _ = rewriteCcSwitchOpenAIRequestModel(requestJSON, c)
 
@@ -303,18 +306,7 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 			// Deferred so the slot comes back however the turn ends: completed,
 			// failed upstream, client gone, or a panic.
 			defer releaseQuota()
-			cliCtx, cliCancel := h.GetContextWithCancel(h, c, c.Request.Context())
-			cliCtx = cliproxyexecutor.WithDownstreamWebsocket(cliCtx)
-			cliCtx = handlers.WithExecutionSessionID(cliCtx, passthroughSessionID)
-			if pinnedAuthID != "" {
-				cliCtx = handlers.WithPinnedAuthID(cliCtx, pinnedAuthID)
-			} else {
-				cliCtx = handlers.WithSelectedAuthIDCallback(cliCtx, func(authID string) {
-					pinnedAuthID = strings.TrimSpace(authID)
-				})
-			}
-			dataChan, _, errChan := h.ExecuteStreamWithAuthManager(cliCtx, h.HandlerType(), modelName, requestJSON, "")
-			return h.forwardResponsesWebsocket(c, conn, cliCancel, dataChan, errChan, &wsBodyLog, passthroughSessionID)
+			return h.runResponsesWebsocketTurn(c, conn, &pinnedAuthID, passthroughSessionID, modelName, requestJSON, &wsBodyLog)
 		}()
 		if errForward != nil {
 			wsTerminateErr = errForward
@@ -500,11 +492,29 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 	errs <-chan *interfaces.ErrorMessage,
 	wsBodyLog *strings.Builder,
 	sessionID string,
+	// releasePin, when set, is asked before a failure that nothing preceded is
+	// reported; true means the pin was released and the turn is placed again
+	// (errResponsesWebsocketPinReleased) instead.
+	releasePin func() bool,
 ) ([]byte, string, error) {
 	completed := false
 	completedOutput := []byte("[]")
 	responseID := ""
 	var collected websocketOutputCollector
+	// wrote is whether any event of the reply reached the client; past the first
+	// one the turn cannot be placed again.
+	wrote := false
+	placeAgain := func(errMsg *interfaces.ErrorMessage) bool {
+		if wrote || releasePin == nil || !releasePin() {
+			return false
+		}
+		if errMsg != nil {
+			cancel(errMsg.Error)
+		} else {
+			cancel(nil)
+		}
+		return true
+	}
 
 	for {
 		select {
@@ -515,6 +525,9 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 			if !ok {
 				errs = nil
 				continue
+			}
+			if errMsg != nil && placeAgain(errMsg) {
+				return completedOutput, responseID, errResponsesWebsocketPinReleased
 			}
 			if errMsg != nil {
 				h.LoggingAPIResponseError(context.WithValue(c.Request.Context(), util.ContextKeyGin, c), errMsg)
@@ -563,6 +576,9 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 							errMsg = pending
 						}
 					default:
+					}
+					if placeAgain(errMsg) {
+						return completedOutput, responseID, errResponsesWebsocketPinReleased
 					}
 					h.LoggingAPIResponseError(context.WithValue(c.Request.Context(), util.ContextKeyGin, c), errMsg)
 					markAPIResponseTimestamp(c)
@@ -613,6 +629,7 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 				// 	websocketPayloadEventType(payloads[i]),
 				// 	websocketPayloadPreview(payloads[i]),
 				// )
+				wrote = true
 				if errWrite := conn.WriteMessage(websocket.TextMessage, payloads[i]); errWrite != nil {
 					log.Warnf(
 						"responses websocket: downstream_out write failed id=%s event=%s error=%v",

@@ -53,7 +53,7 @@ func QueryLogs(params LogQueryParams) (LogQueryResult, error) {
 	offset := (params.Page - 1) * params.Size
 	querySQL := "SELECT id, timestamp, api_key, api_key_id, api_key_name, model, thinking_level, upstream_model, upstream_response_model, vision_fallback_model, source, channel_name, auth_index, auth_subject_id, " +
 		"failed, streaming, latency_ms, first_token_ms, input_tokens, output_tokens, reasoning_tokens, cached_tokens, total_tokens, " +
-		"cost, cache_read_tokens, cache_write_tokens, prompt_tokens, session_id, guard_kind, " +
+		"cost, cache_read_tokens, cache_write_tokens, prompt_tokens, session_id, guard_kind, client_name, client_version, user_agent, " +
 		"(CASE WHEN EXISTS (SELECT 1 FROM request_log_content content WHERE content.tenant_id = request_logs.tenant_id AND content.log_id = request_logs.id) " +
 		"OR length(input_content) > 0 OR length(output_content) > 0 THEN 1 ELSE 0 END) as has_content " +
 		"FROM request_logs" + where +
@@ -78,7 +78,8 @@ func QueryLogs(params LogQueryParams) (LogQueryResult, error) {
 			&row.AuthIndex, &row.AuthSubjectID, &failedInt, &streamingInt, &row.LatencyMs, &row.FirstTokenMs,
 			&row.InputTokens, &row.OutputTokens, &row.ReasoningTokens,
 			&row.CachedTokens, &row.TotalTokens, &row.Cost,
-			&cacheRead, &cacheWrite, &promptTokens, &row.SessionID, &row.GuardKind, &hasContentInt,
+			&cacheRead, &cacheWrite, &promptTokens, &row.SessionID, &row.GuardKind,
+			&row.ClientName, &row.ClientVersion, &row.UserAgent, &hasContentInt,
 		); err != nil {
 			log.Warnf("usage: scan log row failed: %v", err)
 			return LogQueryResult{}, fmt.Errorf("usage: scan row: %w", err)
@@ -189,14 +190,16 @@ func QueryFiltersForLogs(params LogQueryParams) (FilterOptions, error) {
 	if db == nil {
 		// Ensure stable JSON shape: slices => [] (not null), maps => {} (not null).
 		return FilterOptions{
-			APIKeyIDs:      make([]string, 0),
-			APIKeyIDNames:  make(map[string]string),
-			APIKeyIDCounts: make(map[string]int64),
-			Models:         make([]string, 0),
-			Channels:       make([]string, 0),
-			ChannelOptions: make([]ChannelFilterOption, 0),
-			Statuses:       make([]string, 0),
-			GuardKinds:     make([]string, 0),
+			APIKeyIDs:        make([]string, 0),
+			APIKeyIDNames:    make(map[string]string),
+			APIKeyIDCounts:   make(map[string]int64),
+			Models:           make([]string, 0),
+			Channels:         make([]string, 0),
+			ChannelOptions:   make([]ChannelFilterOption, 0),
+			Statuses:         make([]string, 0),
+			GuardKinds:       make([]string, 0),
+			ClientNames:      make([]string, 0),
+			ClientNameCounts: make(map[string]int64),
 		}, nil
 	}
 
@@ -225,6 +228,10 @@ func QueryFiltersForLogs(params LogQueryParams) (FilterOptions, error) {
 	if err != nil {
 		return FilterOptions{}, err
 	}
+	clientNames, clientNameCounts, err := queryDistinctClientNames(db, params.withoutFacet("client_name"))
+	if err != nil {
+		return FilterOptions{}, err
+	}
 
 	channelNames := make([]string, 0, len(channelRows))
 	seenNames := make(map[string]struct{}, len(channelRows))
@@ -245,14 +252,16 @@ func QueryFiltersForLogs(params LogQueryParams) (FilterOptions, error) {
 	}
 
 	return FilterOptions{
-		APIKeyIDs:      keyIDs,
-		APIKeyIDNames:  keyIDNames,
-		APIKeyIDCounts: keyIDCounts,
-		Models:         models,
-		Channels:       channelNames,
-		ChannelOptions: channelRows,
-		Statuses:       statuses,
-		GuardKinds:     guardKinds,
+		APIKeyIDs:        keyIDs,
+		APIKeyIDNames:    keyIDNames,
+		APIKeyIDCounts:   keyIDCounts,
+		Models:           models,
+		Channels:         channelNames,
+		ChannelOptions:   channelRows,
+		Statuses:         statuses,
+		GuardKinds:       guardKinds,
+		ClientNames:      clientNames,
+		ClientNameCounts: clientNameCounts,
 	}, nil
 }
 
@@ -281,6 +290,9 @@ func (params LogQueryParams) withoutFacet(facet string) LogQueryParams {
 		params.MatchNoStatuses = false
 	case "guard_kind":
 		params.GuardKinds = nil
+	case "client_name":
+		params.ClientNames = nil
+		params.MatchNoClientNames = false
 	}
 	return params
 }
@@ -522,7 +534,7 @@ func requestedStatusFilter(statuses []string) (hasSuccess, hasFailed bool) {
 
 func buildWhereClause(params LogQueryParams) (string, []interface{}) {
 	params = normalizeLogQueryParams(params)
-	if params.MatchNoAPIKeys || params.MatchNoAPIKeyIDs || params.MatchNoModels || params.MatchNoStatuses || params.MatchNoChannels {
+	if params.MatchNoAPIKeys || params.MatchNoAPIKeyIDs || params.MatchNoModels || params.MatchNoStatuses || params.MatchNoChannels || params.MatchNoClientNames {
 		return " WHERE 1 = 0", nil
 	}
 	conditions := make([]string, 0, 5)
@@ -568,6 +580,7 @@ func buildWhereClause(params LogQueryParams) (string, []interface{}) {
 		conditions = append(conditions, condition)
 		args = append(args, guardArgs...)
 	}
+	conditions, args = appendClientNameCondition(conditions, args, params.ClientNames)
 	if len(params.AuthSubjectIDs) > 0 || len(params.AuthIndexes) > 0 || len(params.ChannelNames) > 0 {
 		filterConditions := make([]string, 0, 3)
 

@@ -65,8 +65,12 @@ func ConvertClaudeRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 		hasSystemInstruction = true
 	}
 
-	// contents
-	contentsJSON := "[]"
+	// contents are collected here and written into the request once.
+	// sjson.SetRaw(contentsJSON, "-1", ...) per message re-parsed and copied
+	// every content added so far, which grew with the square of the history
+	// (see translatorcommon.JSONArrayBuilder); nothing reads the array back
+	// before it is written, so the result is byte-for-byte the same.
+	var contentNodes translatorcommon.JSONArrayBuilder
 	hasContents := false
 
 	messagesResult := gjson.GetBytes(rawJSON, "messages")
@@ -350,7 +354,7 @@ func ConvertClaudeRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 					continue
 				}
 
-				contentsJSON, _ = sjson.SetRaw(contentsJSON, "-1", clientContentJSON)
+				contentNodes.Append(clientContentJSON)
 				hasContents = true
 			} else if contentsResult.Type == gjson.String {
 				prompt := contentsResult.String()
@@ -359,7 +363,7 @@ func ConvertClaudeRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 					partJSON, _ = sjson.Set(partJSON, "text", prompt)
 				}
 				clientContentJSON, _ = sjson.SetRaw(clientContentJSON, "parts.-1", partJSON)
-				contentsJSON, _ = sjson.SetRaw(contentsJSON, "-1", clientContentJSON)
+				contentNodes.Append(clientContentJSON)
 				hasContents = true
 			}
 		}
@@ -426,7 +430,7 @@ func ConvertClaudeRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 		out, _ = sjson.SetRaw(out, "request.systemInstruction", systemInstructionJSON)
 	}
 	if hasContents {
-		out, _ = sjson.SetRaw(out, "request.contents", contentsJSON)
+		out, _ = sjson.SetRaw(out, "request.contents", contentNodes.String())
 	}
 	if toolDeclCount > 0 {
 		out, _ = sjson.SetRaw(out, "request.tools", toolsJSON)

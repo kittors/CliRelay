@@ -16,6 +16,9 @@ type selectionScope struct {
 	pinnedAuthID    string
 	allowedChannels map[string]struct{}
 	allowedGroups   map[string]struct{}
+	// frozenProviders are the providers the requester's access is frozen for,
+	// each with the notice the requester is shown (upstream_content_refusal.go).
+	frozenProviders map[string]string
 	routeGroup      string
 	routeFallback   string
 	// tenantWide drops the implicit "default" group a request without a route
@@ -35,6 +38,7 @@ func newSelectionScope(cfg *runtimeConfigSnapshot, model string, meta map[string
 		pinnedAuthID:    pinnedAuthIDFromMetadata(meta),
 		allowedChannels: allowedChannelsFromMetadata(meta),
 		allowedGroups:   allowedChannelGroupsFromMetadata(meta),
+		frozenProviders: frozenProvidersFromMetadata(meta),
 		routeGroup:      routeGroupFromMetadata(meta),
 		routeFallback:   routeFallbackFromMetadata(meta),
 		tenantWide:      tenantWideSelectionFromMetadata(meta),
@@ -129,6 +133,9 @@ func (s selectionScope) candidateExclusion(candidate *Auth, scopedRouteGroup str
 	}
 	if !authAllowedByGroups(s.cfg, candidate, s.allowedGroups) {
 		return ExcludedAllowedGroups
+	}
+	if _, frozen := s.frozenNotice(candidate); frozen {
+		return ExcludedFrozen
 	}
 	if scopedRouteGroup != "" && !authInRouteGroup(s.cfg, candidate, scopedRouteGroup) {
 		return ExcludedRouteGroup

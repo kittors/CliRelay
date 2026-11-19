@@ -162,6 +162,14 @@ func TestResponsesWebsocketTranscriptClassify(t *testing.T) {
 		lastResponseID:     "resp_1",
 		lastWindowID:       "w:0",
 	}
+	// The last turn was an increment an upstream that keeps the context
+	// continued, so the transcript holds that increment alone.
+	partial := &responsesWebsocketTranscript{
+		lastRequest:        []byte(`{"model":"m","previous_response_id":"resp_0","input":[{"id":"u2"}]}`),
+		lastResponseOutput: []byte(`[]`),
+		lastResponseID:     "resp_1",
+		partial:            true,
+	}
 	cases := []struct {
 		name        string
 		transcript  *responsesWebsocketTranscript
@@ -169,6 +177,9 @@ func TestResponsesWebsocketTranscriptClassify(t *testing.T) {
 		passthrough bool
 		want        wsTurn
 	}{
+		{"partial transcript, same upstream", partial, `{"type":"response.create","previous_response_id":"resp_1","input":[]}`, true, wsTurnFollowUp},
+		{"partial transcript, moved off the upstream", partial, `{"type":"response.create","previous_response_id":"resp_1","input":[]}`, false, wsTurnUnknownPrevious},
+		{"partial transcript, complete request", partial, `{"type":"response.create","input":[]}`, false, wsTurnNewRoot},
 		{"first request", newResponsesWebsocketTranscript(), `{"type":"response.create","previous_response_id":"resp_x"}`, false, wsTurnFollowUp},
 		{"v1 append", held, `{"type":"response.append","input":[]}`, false, wsTurnFollowUp},
 		{"complete request", held, `{"type":"response.create","input":[]}`, false, wsTurnNewRoot},

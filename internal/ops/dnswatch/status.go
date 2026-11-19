@@ -16,11 +16,13 @@ import (
 // the ready nodes failing their egress check and stays 0 while the egress
 // probe is off.
 type Status struct {
-	StartedAt     time.Time               `json:"started_at"`
-	UpdatedAt     time.Time               `json:"updated_at"`
-	Initialized   bool                    `json:"initialized"`
-	DryRun        bool                    `json:"dry_run"`
-	Hold          bool                    `json:"hold"`
+	StartedAt   time.Time `json:"started_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+	Initialized bool      `json:"initialized"`
+	DryRun      bool      `json:"dry_run"`
+	Hold        bool      `json:"hold"`
+	// Proxied is the configured proxy status of the records.
+	Proxied       bool                    `json:"proxied"`
 	HealthyNodes  int                     `json:"healthy_nodes"`
 	DegradedNodes int                     `json:"degraded_nodes"`
 	Nodes         []NodeStatus            `json:"nodes"`
@@ -36,6 +38,7 @@ type Status struct {
 type NodeStatus struct {
 	Name                 string     `json:"name"`
 	IP                   string     `json:"ip"`
+	Standby              bool       `json:"standby,omitempty"`
 	Healthy              bool       `json:"healthy"`
 	State                string     `json:"state"`
 	Confirmed            bool       `json:"confirmed"`
@@ -64,9 +67,13 @@ type EgressStatus struct {
 }
 
 // RecordStatus is what dnswatch last saw published under one hostname.
+// ProxyMismatch lists the nodes whose record here does not have the
+// configured proxy status: DNS-only records it could not proxy yet, or, with
+// proxied off, proxied records it leaves alone.
 type RecordStatus struct {
-	Nodes []string `json:"nodes"`
-	Other []string `json:"other,omitempty"`
+	Nodes         []string `json:"nodes"`
+	Other         []string `json:"other,omitempty"`
+	ProxyMismatch []string `json:"proxy_mismatch,omitempty"`
 }
 
 // ReconcileStatus describes the most recent reconciliation attempt.
@@ -133,6 +140,7 @@ func (w *Watcher) publish() {
 		Initialized:   w.initialized,
 		DryRun:        w.cfg.DryRun,
 		Hold:          w.hold,
+		Proxied:       w.cfg.Proxied,
 		Nodes:         make([]NodeStatus, 0, len(w.nodes)),
 		Records:       make(map[string]RecordStatus, len(w.records)),
 		LastReconcile: w.lastReconcile,
@@ -144,6 +152,7 @@ func (w *Watcher) publish() {
 		node := NodeStatus{
 			Name:                 s.Name,
 			IP:                   s.IP,
+			Standby:              s.Standby,
 			Healthy:              s.healthy,
 			State:                tier(s),
 			Confirmed:            s.confirmed,
@@ -178,8 +187,9 @@ func (w *Watcher) publish() {
 	}
 	for name, view := range w.records {
 		snapshot.Records[name] = RecordStatus{
-			Nodes: append([]string{}, view.Nodes...),
-			Other: slices.Clone(view.Other),
+			Nodes:         append([]string{}, view.Nodes...),
+			Other:         slices.Clone(view.Other),
+			ProxyMismatch: slices.Clone(view.ProxyMismatch),
 		}
 	}
 	w.mu.Lock()
@@ -201,7 +211,7 @@ func cloneStatus(s Status) Status {
 	}
 	s.Records = maps.Clone(s.Records)
 	for name, record := range s.Records {
-		s.Records[name] = RecordStatus{Nodes: slices.Clone(record.Nodes), Other: slices.Clone(record.Other)}
+		s.Records[name] = RecordStatus{Nodes: slices.Clone(record.Nodes), Other: slices.Clone(record.Other), ProxyMismatch: slices.Clone(record.ProxyMismatch)}
 	}
 	return s
 }

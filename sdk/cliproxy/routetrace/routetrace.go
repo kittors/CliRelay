@@ -68,6 +68,10 @@ const (
 	CauseRequestInvalid = "request_invalid"
 	// CauseContentPolicy is a request refused by the content moderation policy.
 	CauseContentPolicy = "content_policy"
+	// CauseUpstreamContentRefusal is a request an upstream's safety classifier
+	// refused for its content (Codex's cyber_policy). Another account runs the
+	// same classifier, so the request is not tried on one.
+	CauseUpstreamContentRefusal = "upstream_content_refusal"
 	// CauseFirstTokenTimeout is a stream that produced no data within the
 	// channel group's first-token timeout.
 	CauseFirstTokenTimeout = "first_token_timeout"

@@ -16,23 +16,49 @@ cloudflare:
   # Zone ID from the zone's Overview page in the Cloudflare dashboard.
   zone_id: "REPLACE_WITH_ZONE_ID"
 
-# Hostnames whose A records follow node health. dnswatch creates unproxied
-# (grey cloud) A records so clients connect to the nodes directly.
+# Hostnames whose A records follow node health.
 records:
   - relay.07230805.xyz
   - code.07230805.xyz
-# TTL in seconds for the records dnswatch creates. 60 is the lowest value
-# Cloudflare accepts outside Enterprise zones; it bounds how long resolvers
-# keep sending clients to a node after it is pulled.
-ttl: 60
+
+# Publish the records proxied (orange cloud): clients connect to Cloudflare,
+# which forwards to the nodes, and a pulled node stops receiving traffic at
+# Cloudflare's edge at once. Every node must then serve a valid certificate
+# for the records and accept Cloudflare's connections.
+#
+# Cloudflare serves all A records of a name as proxied while one of them is,
+# and as DNS only, with the node addresses public, once none is. So with
+# proxied: true dnswatch also turns the proxy on for node records it finds DNS
+# only, and holds back a removal that would leave a name DNS only. It never
+# turns a proxy off, in either mode.
+#
+# false (the default when the line is missing) publishes DNS-only (grey
+# cloud) records that send clients straight to the nodes.
+proxied: true
+
+# TTL in seconds for the records dnswatch creates. Leave it out: proxied
+# records always have Cloudflare's automatic TTL (1), and any other value is
+# refused with proxied: true. With proxied: false it defaults to 60, the
+# lowest value Cloudflare accepts outside Enterprise zones, which bounds how
+# long resolvers keep sending clients to a node after it is pulled.
+# ttl: 60
 
 # Application nodes (public IPv4). Only A records whose content is one of
 # these addresses are ever added or removed; every other record is left alone.
+#
+# By default every healthy node is published and Cloudflare spreads the
+# traffic over them. A node with `standby: true` is a warm spare instead: it
+# stays out of DNS while any node without it would be in DNS, takes over once
+# every such primary is down (or sidelined by the egress probe while the spare
+# passes it), and is pulled again after a primary recovers. Each hand-over
+# publishes the incoming node before it removes the outgoing one. At least one
+# node must not be standby.
 nodes:
   - name: app-1
     ip: REPLACE_WITH_APP_1_IPV4
   - name: app-2
     ip: REPLACE_WITH_APP_2_IPV4
+    # standby: true
 
 probe:
   # Each round sends GET https://<node ip><path> to every node with TLS SNI

@@ -29,6 +29,36 @@ func (h *BaseAPIHandler) PinnedAuthServesModel(ctx context.Context, authID, mode
 	return h.AuthManager.AuthServesModel(tenantIDFromExecutionContext(ctx), authID, providers, normalizedModel)
 }
 
+// PinnedAuthReleaseReason reports why a long-lived session should give up the
+// credential it pinned before serving modelName, or "" to keep it. ctx must
+// carry the gin context, as for PinnedAuthServesModel.
+//
+// The pin goes when the credential cannot serve the model at all
+// (PinnedAuthServesModel) and when it is out of service for longer than a
+// moment (coreauth.Manager.PinnedAuthHeldBack): an exhausted quota, a rejected
+// or disabled credential. Selection then places the session afresh on a
+// credential that can serve it, as it places an HTTP request.
+func (h *BaseAPIHandler) PinnedAuthReleaseReason(ctx context.Context, authID, modelName string) string {
+	authID = strings.TrimSpace(authID)
+	modelName = strings.TrimSpace(modelName)
+	if h == nil || h.AuthManager == nil || authID == "" || modelName == "" {
+		return ""
+	}
+	providers, normalizedModel, errMsg := h.getRequestDetails(ctx, modelName)
+	if errMsg != nil {
+		// As in PinnedAuthServesModel: keep the pin and let the request report
+		// the real error.
+		return ""
+	}
+	if !h.AuthManager.AuthServesModel(tenantIDFromExecutionContext(ctx), authID, providers, normalizedModel) {
+		return "credential cannot serve the requested model"
+	}
+	if held, reason := h.AuthManager.PinnedAuthHeldBack(authID, normalizedModel); held {
+		return reason
+	}
+	return ""
+}
+
 func tenantIDFromExecutionContext(ctx context.Context) string {
 	if ctx == nil {
 		return ""

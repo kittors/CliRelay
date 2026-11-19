@@ -48,8 +48,13 @@ func TestExampleConfigDocumentsTheDefaults(t *testing.T) {
 	if !slices.Equal(cfg.Records, []string{"relay.07230805.xyz", "code.07230805.xyz"}) || cfg.Probe.Host != "relay.07230805.xyz" {
 		t.Fatalf("unexpected records/host: %v %s", cfg.Records, cfg.Probe.Host)
 	}
+	// relay sits behind Cloudflare's proxy, so the example manages proxied
+	// records, which leaves the TTL at its only allowed value.
+	if !cfg.Proxied || cfg.TTL != AutomaticTTL {
+		t.Fatalf("the example should publish proxied records with the automatic TTL, got proxied=%v ttl=%d", cfg.Proxied, cfg.TTL)
+	}
 	p := cfg.Probe
-	if cfg.TTL != DefaultTTL || p.Path != DefaultProbePath || p.Interval != DefaultProbeInterval ||
+	if p.Path != DefaultProbePath || p.Interval != DefaultProbeInterval ||
 		p.Timeout != DefaultProbeTimeout || p.FailThreshold != DefaultFailThreshold ||
 		p.RecoverThreshold != DefaultRecoverThreshold || !slices.Equal(p.ExpectStatus, defaultExpectStatus) ||
 		cfg.MinChangeInterval != DefaultMinChangeInterval || cfg.SummaryInterval != DefaultSummaryInterval {
@@ -60,6 +65,26 @@ func TestExampleConfigDocumentsTheDefaults(t *testing.T) {
 	}
 	if cfg.StatusListen != "127.0.0.1:9109" || cfg.AlertWebhook != "" {
 		t.Fatalf("unexpected optional settings: status_listen=%q", cfg.StatusListen)
+	}
+}
+
+// Switching the example to DNS-only records must not need a TTL edit: the
+// documented default applies once the ttl line is left out.
+func TestExampleConfigSwitchesToDNSOnlyWithoutATTLEdit(t *testing.T) {
+	example := strings.NewReplacer(
+		"REPLACE_WITH_ZONE_ID", testZoneID,
+		"REPLACE_WITH_APP_1_IPV4", "198.51.100.10",
+		"REPLACE_WITH_APP_2_IPV4", "198.51.100.20",
+	).Replace(readDeployFile(t, "dnswatch.example.yaml"))
+	if strings.Count(example, "\nproxied: true\n") != 1 {
+		t.Fatal("the example should set proxied: true on a line of its own")
+	}
+	cfg, err := ParseConfig([]byte(strings.Replace(example, "\nproxied: true\n", "\nproxied: false\n", 1)))
+	if err != nil {
+		t.Fatalf("the example with proxied: false must parse: %v", err)
+	}
+	if cfg.Proxied || cfg.TTL != DefaultTTL {
+		t.Fatalf("proxied=%v ttl=%d, want DNS-only records with ttl %d", cfg.Proxied, cfg.TTL, DefaultTTL)
 	}
 }
 
@@ -74,11 +99,18 @@ func TestSystemdUnitMatchesExampleConfig(t *testing.T) {
 		"CapabilityBoundingSet=\n",
 		"RestartPreventExitStatus=2",
 		"LoadCredential=dnswatch.yaml:/etc/clirelay-dnswatch/dnswatch.yaml",
-		"ExecStart=/usr/local/bin/clirelay-dnswatch -config %d/dnswatch.yaml",
+		"ExecStart=/usr/local/bin/clirelay-dnswatch -config ${CREDENTIALS_DIRECTORY}/dnswatch.yaml",
 		"Environment=GOMEMLIMIT=",
 	} {
 		if !strings.Contains(unit, directive) {
 			t.Errorf("unit lacks %q", directive)
+		}
+	}
+	// systemd 249 (Ubuntu 22.04) does not know the %d specifier and refuses to
+	// load a unit that uses it anywhere, so only comments may mention it.
+	for _, line := range strings.Split(unit, "\n") {
+		if !strings.HasPrefix(strings.TrimSpace(line), "#") && strings.Contains(line, "%d") {
+			t.Errorf("unit uses the %%d specifier, which systemd 249 cannot resolve: %q", line)
 		}
 	}
 

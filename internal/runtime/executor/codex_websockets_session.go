@@ -12,7 +12,8 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-func (s *codexWebsocketSession) setActive(ch chan codexWebsocketRead) {
+// setActive makes ch the channel of the request now reading conn.
+func (s *codexWebsocketSession) setActive(ch chan codexWebsocketRead, conn *websocket.Conn) {
 	if s == nil {
 		return
 	}
@@ -23,12 +24,63 @@ func (s *codexWebsocketSession) setActive(ch chan codexWebsocketRead) {
 		s.activeDone = nil
 	}
 	s.activeCh = ch
+	s.activeConn = nil
 	if ch != nil {
+		s.activeConn = conn
 		activeCtx, activeCancel := context.WithCancel(context.Background())
 		s.activeDone = activeCtx.Done()
 		s.activeCancel = activeCancel
 	}
 	s.activeMu.Unlock()
+}
+
+// retargetActive moves the active request ch to conn, the socket it resent its
+// request on after the previous one failed.
+func (s *codexWebsocketSession) retargetActive(ch chan codexWebsocketRead, conn *websocket.Conn) {
+	if s == nil {
+		return
+	}
+	s.activeMu.Lock()
+	if s.activeCh == ch {
+		s.activeConn = conn
+	}
+	s.activeMu.Unlock()
+}
+
+// detachActive lets go of conn as the active request's socket, so its reader
+// failing once the socket is closed leaves the request alone.
+func (s *codexWebsocketSession) detachActive(conn *websocket.Conn) {
+	if s == nil || conn == nil {
+		return
+	}
+	s.activeMu.Lock()
+	if s.activeConn == conn {
+		s.activeConn = nil
+	}
+	s.activeMu.Unlock()
+}
+
+// failActiveRead hands a read failure of conn to the request reading it, and
+// ends that request's channel. A request on another socket is not touched.
+func (s *codexWebsocketSession) failActiveRead(conn *websocket.Conn, err error) {
+	if s == nil {
+		return
+	}
+	s.activeMu.Lock()
+	ch := s.activeCh
+	done := s.activeDone
+	owned := ch != nil && s.activeConn == conn
+	s.activeMu.Unlock()
+	if !owned {
+		return
+	}
+	select {
+	case ch <- codexWebsocketRead{conn: conn, err: err}:
+	case <-done:
+	default:
+	}
+	s.clearActive(ch)
+	close(ch)
 }
 
 func (s *codexWebsocketSession) clearActive(ch chan codexWebsocketRead) {
@@ -38,6 +90,7 @@ func (s *codexWebsocketSession) clearActive(ch chan codexWebsocketRead) {
 	s.activeMu.Lock()
 	if s.activeCh == ch {
 		s.activeCh = nil
+		s.activeConn = nil
 		if s.activeCancel != nil {
 			s.activeCancel()
 		}
@@ -97,7 +150,19 @@ func (e *CodexWebsocketsExecutor) ensureUpstreamConn(ctx context.Context, auth *
 	sess.connMu.Lock()
 	conn := sess.conn
 	readerConn := sess.readerConn
+	connAuthID := sess.authID
+	connURL := sess.wsURL
 	sess.connMu.Unlock()
+	if conn != nil && (connAuthID != authID || connURL != wsURL) {
+		// A socket authenticates once, as the credential that opened it, and the
+		// upstream keeps that account's context on it. The execution session is
+		// the client connection, which moves to another credential when its pin
+		// is released (an exhausted quota, a switched model). Reusing the socket
+		// then would run the request under the previous account's identity and
+		// quota while this one is charged for it, so it is replaced.
+		e.invalidateUpstreamConn(sess, conn, "credential_changed", nil)
+		conn = nil
+	}
 	if conn != nil {
 		if readerConn != conn {
 			sess.connMu.Lock()
@@ -126,7 +191,6 @@ func (e *CodexWebsocketsExecutor) ensureUpstreamConn(ctx context.Context, auth *
 	sess.conn = conn
 	sess.wsURL = wsURL
 	sess.authID = authID
-	sess.connCreateSent = false
 	sess.readerConn = conn
 	sess.connMu.Unlock()
 
@@ -144,19 +208,7 @@ func (e *CodexWebsocketsExecutor) readUpstreamLoop(sess *codexWebsocketSession, 
 		_ = conn.SetReadDeadline(time.Now().Add(codexResponsesWebsocketIdleTimeout))
 		msgType, payload, errRead := conn.ReadMessage()
 		if errRead != nil {
-			sess.activeMu.Lock()
-			ch := sess.activeCh
-			done := sess.activeDone
-			sess.activeMu.Unlock()
-			if ch != nil {
-				select {
-				case ch <- codexWebsocketRead{conn: conn, err: errRead}:
-				case <-done:
-				default:
-				}
-				sess.clearActive(ch)
-				close(ch)
-			}
+			sess.failActiveRead(conn, errRead)
 			e.invalidateUpstreamConn(sess, conn, "upstream_disconnected", errRead)
 			return
 		}
@@ -164,19 +216,7 @@ func (e *CodexWebsocketsExecutor) readUpstreamLoop(sess *codexWebsocketSession, 
 		if msgType != websocket.TextMessage {
 			if msgType == websocket.BinaryMessage {
 				errBinary := fmt.Errorf("codex websockets executor: unexpected binary message")
-				sess.activeMu.Lock()
-				ch := sess.activeCh
-				done := sess.activeDone
-				sess.activeMu.Unlock()
-				if ch != nil {
-					select {
-					case ch <- codexWebsocketRead{conn: conn, err: errBinary}:
-					case <-done:
-					default:
-					}
-					sess.clearActive(ch)
-					close(ch)
-				}
+				sess.failActiveRead(conn, errBinary)
 				e.invalidateUpstreamConn(sess, conn, "unexpected_binary", errBinary)
 				return
 			}
@@ -201,6 +241,9 @@ func (e *CodexWebsocketsExecutor) invalidateUpstreamConn(sess *codexWebsocketSes
 	if sess == nil || conn == nil {
 		return
 	}
+	// The socket is going away on purpose: its reader failing after the close
+	// must not end the channel a request on the next socket reads.
+	sess.detachActive(conn)
 
 	sess.connMu.Lock()
 	current := sess.conn
@@ -212,7 +255,6 @@ func (e *CodexWebsocketsExecutor) invalidateUpstreamConn(sess *codexWebsocketSes
 		return
 	}
 	sess.conn = nil
-	sess.connCreateSent = false
 	if sess.readerConn == conn {
 		sess.readerConn = nil
 	}
@@ -279,7 +321,6 @@ func (e *CodexWebsocketsExecutor) closeExecutionSession(sess *codexWebsocketSess
 	authID := sess.authID
 	wsURL := sess.wsURL
 	sess.conn = nil
-	sess.connCreateSent = false
 	if sess.readerConn == conn {
 		sess.readerConn = nil
 	}

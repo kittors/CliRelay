@@ -142,6 +142,15 @@ func Warm(ctx context.Context, auth *coreauth.Auth, cfg *config.Config, tenantID
 // which tenant a fetch was configured for without a database.
 var tenantRuntimeConfig = usage.BuildTenantRuntimeConfig
 
+// SetTenantConfigForTest makes CredentialConfig build tenant configurations with
+// build and returns a func restoring the real builder. Other packages' tests use it
+// to see which configuration a credential's fetch ran with, without a database.
+func SetTenantConfigForTest(build func(base *config.Config, tenantID string) config.Config) func() {
+	previous := tenantRuntimeConfig
+	tenantRuntimeConfig = build
+	return func() { tenantRuntimeConfig = previous }
+}
+
 // CredentialConfig returns the configuration a credential's own requests run
 // with: its tenant's, not the system's.
 //

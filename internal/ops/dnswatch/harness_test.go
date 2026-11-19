@@ -161,6 +161,9 @@ type harnessOptions struct {
 	config func(*Config)
 	// realClock uses time.Now instead of the fake clock, for Run tests.
 	realClock bool
+	// proxied runs dnswatch with proxied: true; a nil seed then publishes
+	// both nodes proxied under both hostnames.
+	proxied bool
 }
 
 func newHarness(t *testing.T, opts harnessOptions) *harness {
@@ -178,8 +181,13 @@ func newHarness(t *testing.T, opts harnessOptions) *harness {
 	h.nodeA, h.nodeB = newFakeNode(t, h.pki), newFakeNode(t, h.pki)
 	h.router.route(testIPA, h.nodeA)
 	h.router.route(testIPB, h.nodeB)
+	h.cf.wantProxied = opts.proxied
 	seed := opts.seed
-	if seed == nil {
+	switch {
+	case seed != nil:
+	case opts.proxied:
+		seed = publishBothProxied
+	default:
 		seed = publishBoth
 	}
 	seed(h.cf)
@@ -192,6 +200,7 @@ func newHarness(t *testing.T, opts harnessOptions) *harness {
 		// Debouncing has its own test; elsewhere it must not interfere.
 		MinChangeInterval: time.Millisecond,
 		AlertWebhook:      h.alerts.server.URL,
+		Proxied:           opts.proxied,
 	}
 	if opts.config != nil {
 		opts.config(h.cfg)
@@ -220,6 +229,14 @@ func publishBoth(f *fakeCloudflare) {
 	for _, name := range []string{testRelay, testCode} {
 		f.seed(name, "A", testIPA)
 		f.seed(name, "A", testIPB)
+	}
+}
+
+// publishBothProxied lists both nodes under both hostnames, proxied.
+func publishBothProxied(f *fakeCloudflare) {
+	for _, name := range []string{testRelay, testCode} {
+		f.seedProxied(name, testIPA)
+		f.seedProxied(name, testIPB)
 	}
 }
 
@@ -254,6 +271,17 @@ func (h *harness) expectBothRecords(want ...string) {
 	h.t.Helper()
 	h.expectIPs(testRelay, want...)
 	h.expectIPs(testCode, want...)
+}
+
+// expectBothProxied checks the proxied A records under both hostnames.
+func (h *harness) expectBothProxied(want ...string) {
+	h.t.Helper()
+	slices.Sort(want)
+	for _, name := range []string{testRelay, testCode} {
+		if got := h.cf.proxiedIPs(name); !slices.Equal(got, want) {
+			h.t.Fatalf("%s proxied A records = %v, want %v", name, got, want)
+		}
+	}
 }
 
 func (h *harness) nodeStatus(name string) NodeStatus {

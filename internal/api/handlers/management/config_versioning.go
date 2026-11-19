@@ -313,13 +313,16 @@ type configCapabilities struct {
 	// PrivacyMasking: the /privacy-masking routes (settings, preview, records)
 	// and the portal's /v0/portal/privacy-masking.
 	PrivacyMasking bool `json:"privacy-masking"`
+	// NodeMetrics: GET /cluster carries each node's resource snapshot
+	// (snapshot, snapshot_at), which the dashboard's node view shows.
+	NodeMetrics bool `json:"node-metrics"`
 }
 
 func newConfigResponse(cfg *config.Config, versions map[string]int64) configResponse {
 	return configResponse{
 		Config:                 cfg,
 		RuntimeSettingVersions: versions,
-		Capabilities:           configCapabilities{PayloadRulesDryRun: true, Alerts: true, PoolCapacity: true, PrivacyMasking: true},
+		Capabilities:           configCapabilities{PayloadRulesDryRun: true, Alerts: true, PoolCapacity: true, PrivacyMasking: true, NodeMetrics: true},
 	}
 }
 

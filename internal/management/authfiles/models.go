@@ -257,6 +257,13 @@ func warmSharedDiscovery(
 	return converted, len(converted) > 0
 }
 
+// The per-account fetchers. Tests replace them to see what a refresh fetched with.
+var (
+	fetchClaudeModels      = executor.FetchClaudeModels
+	fetchCodexModels       = executor.FetchCodexModels
+	fetchAntigravityModels = executor.FetchAntigravityModels
+)
+
 // fetchLiveModelsForAuth serves the per-account refresh path: providers without a
 // shared list, and Codex / Claude API keys whose relay has a catalog of its own.
 func fetchLiveModelsForAuth(ctx context.Context, auth *coreauth.Auth, cfg *config.Config) ([]*registry.ModelInfo, string, bool) {
@@ -268,6 +275,11 @@ func fetchLiveModelsForAuth(ctx context.Context, auth *coreauth.Auth, cfg *confi
 	}
 	fetchCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
 	defer cancel()
+	// Per-account model discovery must use the same tenant runtime configuration
+	// as the account's request path. In particular, ProxyID is resolved against
+	// the tenant's proxy pool; using the system config here can make a refresh
+	// miss upstream and silently fall back to an old Antigravity model cache.
+	cfg = modeldiscovery.CredentialConfig(cfg, auth)
 
 	provider := normalizeDiscoveryProvider(auth.Provider)
 	// Preserve raw provider for non-shared fetch paths (antigravity, etc.).
@@ -277,12 +289,12 @@ func fetchLiveModelsForAuth(ctx context.Context, auth *coreauth.Auth, cfg *confi
 	switch {
 	case provider == "claude":
 		// Display only: registration owns the runtime registry.
-		sdkModels = executor.FetchClaudeModels(fetchCtx, auth, cfg)
+		sdkModels = fetchClaudeModels(fetchCtx, auth, cfg)
 	case provider == "codex":
 		// Display only: registration owns the runtime registry.
-		sdkModels = executor.FetchCodexModels(fetchCtx, auth, cfg)
+		sdkModels = fetchCodexModels(fetchCtx, auth, cfg)
 	case rawProvider == "antigravity":
-		sdkModels = executor.FetchAntigravityModels(fetchCtx, auth, cfg)
+		sdkModels = fetchAntigravityModels(fetchCtx, auth, cfg)
 		updateRegistry = true
 		provider = rawProvider
 	default:

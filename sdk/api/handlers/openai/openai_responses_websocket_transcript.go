@@ -67,6 +67,11 @@ type responsesWebsocketTranscript struct {
 	// lastWindowID is Codex's local context window. Codex opens a new window when
 	// it compacts the conversation.
 	lastWindowID string
+	// partial is set while lastRequest is an increment passed on to an upstream
+	// that keeps the context (previous_response_id plus the items added since)
+	// rather than the complete conversation. The rest of the conversation lives
+	// on that upstream, so the transcript cannot expand the next increment.
+	partial bool
 }
 
 func newResponsesWebsocketTranscript() *responsesWebsocketTranscript {
@@ -108,6 +113,11 @@ const (
 // context window it may keep naming the previous window's last response (the
 // window id changes), and a remote compaction replays the conversation with
 // compaction items in it. Both start a new transcript.
+//
+// An increment is expanded only from a complete transcript. One that holds just
+// the last increment (partial) leaves the rest of the conversation on the
+// upstream that kept the context; once the connection moved off that upstream
+// (its pin was released), the client is asked for the turn in full.
 func (t *responsesWebsocketTranscript) classify(payload []byte, upstreamKeepsContext bool) wsTurn {
 	if len(t.lastRequest) == 0 || strings.TrimSpace(gjson.GetBytes(payload, "type").String()) != wsRequestTypeCreate {
 		return wsTurnFollowUp
@@ -119,7 +129,7 @@ func (t *responsesWebsocketTranscript) classify(payload []byte, upstreamKeepsCon
 	if t.windowChanged(payload) || websocketInputHasCompaction(payload) {
 		return wsTurnStaleRoot
 	}
-	if upstreamKeepsContext || previousID == t.lastResponseID {
+	if upstreamKeepsContext || (previousID == t.lastResponseID && !t.partial) {
 		return wsTurnFollowUp
 	}
 	return wsTurnUnknownPrevious

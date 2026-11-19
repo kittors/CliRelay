@@ -31,3 +31,28 @@ const requestLogGuardKindSQL = `
 ALTER TABLE request_logs
 ADD COLUMN IF NOT EXISTS guard_kind TEXT NOT NULL DEFAULT '';
 `
+
+// requestLogClientSQL records who sent a request: the client named from its
+// headers, the version it reported and its raw User-Agent (see
+// internal/usage/request_log_client.go). Existing rows keep the empty defaults,
+// which read as "unknown client". Constant defaults make this a catalog change,
+// like the migrations above. No index, for the same reason as guard_kind: the
+// filter and the facet read a window the (tenant_id, timestamp) index narrows.
+const requestLogClientSQL = `
+ALTER TABLE request_logs
+ADD COLUMN IF NOT EXISTS client_name TEXT NOT NULL DEFAULT '',
+ADD COLUMN IF NOT EXISTS client_version TEXT NOT NULL DEFAULT '',
+ADD COLUMN IF NOT EXISTS user_agent TEXT NOT NULL DEFAULT '';
+`
+
+// requestLogCacheWrite1hSQL keeps how many of a request's cache writes went to
+// Anthropic's one-hour cache, which is billed at a higher rate than the
+// five-minute one. With it a stored row holds every input the cost function
+// reads, so a later price change can recompute the row exactly (see
+// internal/usage/pricing_resync.go). NULL where cache use was not reported and
+// on the rows written before it; those rows are not recomputed when they have
+// cache writes. Nullable, so this is a catalog change.
+const requestLogCacheWrite1hSQL = `
+ALTER TABLE request_logs
+ADD COLUMN IF NOT EXISTS cache_write_1h_tokens BIGINT;
+`

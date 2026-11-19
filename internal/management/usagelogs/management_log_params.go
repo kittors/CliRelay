@@ -33,6 +33,8 @@ func (s *Service) managementLogParams(input ManagementLogQueryInput, maps nameMa
 		Models:                input.Models,
 		Statuses:              input.Statuses,
 		GuardKinds:            input.GuardKinds,
+		ClientNames:           input.ClientNames,
+		MatchNoClientNames:    input.MatchNoClientNames,
 		MatchNoAPIKeys:        input.MatchNoAPIKeys,
 		MatchNoAPIKeyIDs:      input.MatchNoAPIKeyIDs,
 		MatchNoModels:         input.MatchNoModels,

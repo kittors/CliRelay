@@ -137,6 +137,9 @@ type Builder struct {
 	coreAuthHook coreauth.Hook
 
 	requestModerator coreauth.RequestModerator
+	// upstreamRefusalObserver hears of the requests an upstream refused for
+	// their content.
+	upstreamRefusalObserver coreauth.UpstreamRefusalObserver
 
 	// serverOptions contains additional server configuration options.
 	serverOptions []api.ServerOption
@@ -225,6 +228,14 @@ func (b *Builder) WithCoreAuthHook(hook coreauth.Hook) *Builder {
 // the SDK to the host's persistence implementation.
 func (b *Builder) WithRequestModerator(moderator coreauth.RequestModerator) *Builder {
 	b.requestModerator = moderator
+	return b
+}
+
+// WithUpstreamRefusalObserver lets the host act on the requests an upstream's
+// safety classifier refused for their content (for example by freezing the
+// requester's access to that provider), without coupling the SDK to it.
+func (b *Builder) WithUpstreamRefusalObserver(observer coreauth.UpstreamRefusalObserver) *Builder {
+	b.upstreamRefusalObserver = observer
 	return b
 }
 
@@ -318,6 +329,7 @@ func (b *Builder) Build() (*Service, error) {
 		coreManager.SetHook(b.coreAuthHook)
 	}
 	coreManager.SetRequestModerator(b.requestModerator)
+	coreManager.SetUpstreamRefusalObserver(b.upstreamRefusalObserver)
 	// Attach a default RoundTripper provider so providers can opt-in per-auth transports.
 	coreManager.SetRoundTripperProvider(newDefaultRoundTripperProvider())
 	coreManager.SetConfig(b.cfg)

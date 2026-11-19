@@ -41,6 +41,8 @@ type fakeCloudflare struct {
 	// createLandsBeforeFault applies a POST before replying with the fault,
 	// like a request whose reply was lost after Cloudflare stored the record.
 	createLandsBeforeFault bool
+	// wantProxied is the proxy status every create must ask for.
+	wantProxied bool
 }
 
 type cfFault struct {
@@ -63,6 +65,14 @@ func (f *fakeCloudflare) seed(name, recordType, content string) string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.insertLocked(dnsRecord{Type: recordType, Name: name, Content: content, TTL: 300})
+}
+
+// seedProxied adds a proxied A record, which Cloudflare stores with the
+// automatic TTL.
+func (f *fakeCloudflare) seedProxied(name, content string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.insertLocked(dnsRecord{Type: "A", Name: name, Content: content, TTL: AutomaticTTL, Proxied: true})
 }
 
 func (f *fakeCloudflare) insertLocked(rec dnsRecord) string {
@@ -93,6 +103,20 @@ func (f *fakeCloudflare) aIPs(name string) []string {
 	var ips []string
 	for _, rec := range f.records {
 		if rec.Type == "A" && rec.Name == name {
+			ips = append(ips, rec.Content)
+		}
+	}
+	slices.Sort(ips)
+	return ips
+}
+
+// proxiedIPs returns the sorted contents of the proxied A records under name.
+func (f *fakeCloudflare) proxiedIPs(name string) []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var ips []string
+	for _, rec := range f.records {
+		if rec.Type == "A" && rec.Name == name && rec.Proxied {
 			ips = append(ips, rec.Content)
 		}
 	}
@@ -155,6 +179,8 @@ func (f *fakeCloudflare) serve(w http.ResponseWriter, r *http.Request) {
 		f.createLocked(w, r, fault)
 	case r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, collection+"/"):
 		f.deleteLocked(w, strings.TrimPrefix(r.URL.Path, collection+"/"))
+	case r.Method == http.MethodPatch && strings.HasPrefix(r.URL.Path, collection+"/"):
+		f.patchLocked(w, r, strings.TrimPrefix(r.URL.Path, collection+"/"))
 	default:
 		writeCFError(w, http.StatusNotFound, 7003, "Could not route to "+r.URL.Path)
 	}
@@ -220,9 +246,13 @@ func (f *fakeCloudflare) createLocked(w http.ResponseWriter, r *http.Request, fa
 		writeCFError(w, http.StatusBadRequest, 9207, "Request body is invalid")
 		return
 	}
-	// dnswatch must send exactly the documented shape.
-	if body["type"] != "A" || body["proxied"] != false {
-		f.t.Errorf("create request must be an unproxied A record, got %v", body)
+	// dnswatch must send exactly the documented shape, with the configured
+	// proxy status and, for a proxied record, the automatic TTL.
+	if body["type"] != "A" || body["proxied"] != f.wantProxied {
+		f.t.Errorf("create request must be an A record with proxied=%v, got %v", f.wantProxied, body)
+	}
+	if f.wantProxied && body["ttl"] != float64(AutomaticTTL) {
+		f.t.Errorf("a proxied record must ask for the automatic TTL, got %v", body)
 	}
 	for _, key := range []string{"type", "name", "content", "ttl", "proxied"} {
 		if _, ok := body[key]; !ok {
@@ -238,7 +268,8 @@ func (f *fakeCloudflare) createLocked(w http.ResponseWriter, r *http.Request, fa
 			return
 		}
 	}
-	id := f.insertLocked(dnsRecord{Type: "A", Name: name, Content: content, TTL: int(ttl)})
+	proxied, _ := body["proxied"].(bool)
+	id := f.insertLocked(dnsRecord{Type: "A", Name: name, Content: content, TTL: int(ttl), Proxied: proxied})
 	f.writes = append(f.writes, "POST "+name+" "+content)
 	if fault != nil {
 		// The record landed, but the client sees an error.
@@ -257,6 +288,28 @@ func (f *fakeCloudflare) deleteLocked(w http.ResponseWriter, id string) {
 	delete(f.records, id)
 	f.writes = append(f.writes, "DELETE "+rec.Name+" "+rec.Content)
 	writeCFJSON(w, http.StatusOK, map[string]any{"success": true, "errors": []any{}, "result": map[string]string{"id": id}})
+}
+
+// patchLocked applies a PATCH. dnswatch only ever turns the proxy on, so
+// anything else in the body is a bug.
+func (f *fakeCloudflare) patchLocked(w http.ResponseWriter, r *http.Request, id string) {
+	var body map[string]any
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeCFError(w, http.StatusBadRequest, 9207, "Request body is invalid")
+		return
+	}
+	if len(body) != 2 || body["proxied"] != true || body["ttl"] != float64(AutomaticTTL) {
+		f.t.Errorf("a patch may only turn the proxy on with the automatic TTL, got %v", body)
+	}
+	rec, ok := f.records[id]
+	if !ok {
+		writeCFError(w, http.StatusNotFound, 81044, "Record does not exist.")
+		return
+	}
+	rec.Proxied, rec.TTL = true, AutomaticTTL
+	f.records[id] = rec
+	f.writes = append(f.writes, "PATCH "+rec.Name+" "+rec.Content)
+	writeCFJSON(w, http.StatusOK, map[string]any{"success": true, "errors": []any{}, "result": rec})
 }
 
 func writeCFError(w http.ResponseWriter, status, code int, message string) {

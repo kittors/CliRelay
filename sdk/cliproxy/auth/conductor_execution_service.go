@@ -163,7 +163,7 @@ func (s executionService) executeMixedOnce(ctx context.Context, providers []stri
 			}
 			s.manager.MarkResult(candidate.execCtx, result)
 			s.manager.finishTracedAttempt(attempt, candidate.auth.ID, scope.routeModel, errExec, false)
-			if isRequestInvalidError(errExec) || scope.singlePickRoute {
+			if isRequestFault(errExec) || scope.singlePickRoute {
 				return cliproxyexecutor.Response{}, errExec
 			}
 			scope.lastErr = errExec
@@ -204,7 +204,7 @@ func (s executionService) executeCountMixedOnce(ctx context.Context, providers [
 			// A token count leaves the account's state alone (no MarkResult),
 			// so its failure is described from the error alone.
 			attempt.Finish(tracedFailure(errExec))
-			if isRequestInvalidError(errExec) || scope.singlePickRoute {
+			if isRequestFault(errExec) || scope.singlePickRoute {
 				return cliproxyexecutor.Response{}, errExec
 			}
 			scope.lastErr = errExec
@@ -248,7 +248,7 @@ func (s executionService) executeStreamMixedOnce(ctx context.Context, providers 
 			}
 			s.manager.MarkResult(candidate.execCtx, result)
 			s.manager.finishTracedAttempt(attempt, candidate.auth.ID, scope.routeModel, errStream, true)
-			if isRequestInvalidError(errStream) || scope.singlePickRoute {
+			if isRequestFault(errStream) || scope.singlePickRoute {
 				return nil, errStream
 			}
 			scope.failed = append(scope.failed, candidate.auth.ID)

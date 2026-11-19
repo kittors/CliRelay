@@ -32,6 +32,9 @@ func accessPolicyCapabilities() gin.H {
 		// GET /end-users/:id/api-keys 返回已暂停的 Key，PATCH 接受 disabled，
 		// GET .../:key_id/secret 按需取明文。
 		"owned-key-admin": true,
+		// GET/POST /end-users/access-freezes*、门户 GET /v0/portal/access-freezes：
+		// 上游以内容安全为由拒绝后按上游类型冻结的记录、证据、解冻与阈值。
+		"access-freezes": true,
 	}
 }
 

@@ -231,6 +231,10 @@ type Manager struct {
 
 	requestModerator RequestModerator
 
+	// upstreamRefusalObserver hears of the attempts an upstream refused for
+	// their content; see upstream_content_refusal.go.
+	upstreamRefusalObserver UpstreamRefusalObserver
+
 	concurrencyLimiter *AccountConcurrencyLimiter
 
 	// cooldownPublisher receives the cooldowns this process sets, for peers;

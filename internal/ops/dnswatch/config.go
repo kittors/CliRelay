@@ -7,7 +7,14 @@
 // each node's egress check and, while any node passes both, leaves out ready
 // nodes that cannot reach their upstream proxies. It never deletes the last
 // healthy record and never touches records that do not belong to a configured
-// node.
+// node. Nodes marked standby stay out of DNS while any other node would be in
+// it, which turns the set into a primary with warm spares.
+//
+// The records are DNS only (grey cloud) by default, so clients connect to the
+// nodes directly. With proxied set they are proxied (orange cloud): clients
+// connect to Cloudflare, which forwards to the nodes, and a removed record
+// stops receiving traffic at Cloudflare's edge at once instead of lingering
+// in resolver caches for the TTL.
 package dnswatch
 
 import (
@@ -22,6 +29,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -31,8 +39,15 @@ import (
 
 // Defaults applied to settings that are omitted (left at zero).
 const (
-	DefaultAPIBaseURL        = "https://api.cloudflare.com/client/v4"
-	DefaultTTL               = 60
+	DefaultAPIBaseURL = "https://api.cloudflare.com/client/v4"
+	// DefaultTTL applies to DNS-only records: the lowest TTL Cloudflare takes
+	// outside Enterprise zones, which bounds how long resolvers keep sending
+	// clients to a node after its record is removed.
+	DefaultTTL = 60
+	// AutomaticTTL is Cloudflare's "automatic" TTL. Proxied records always
+	// have it: Cloudflare answers for them with its own addresses and does
+	// not let their TTL be edited.
+	AutomaticTTL             = 1
 	DefaultProbePath         = "/readyz"
 	DefaultProbeInterval     = 10 * time.Second
 	DefaultProbeTimeout      = 5 * time.Second
@@ -57,8 +72,16 @@ type Config struct {
 	Cloudflare CloudflareConfig `yaml:"cloudflare"`
 	// Records are the hostnames whose A record set follows node health.
 	Records []string `yaml:"records"`
-	// TTL applies to every record dnswatch creates. Records are always
-	// created unproxied (grey cloud) so clients connect to the nodes directly.
+	// Proxied publishes the records proxied (orange cloud) instead of DNS
+	// only (grey cloud). Cloudflare serves every A record of a name as
+	// proxied while at least one of them is, and as DNS only, with the node
+	// addresses public, once none is; so in this mode dnswatch also turns the
+	// proxy on for node records it finds DNS only, and holds back removals
+	// until it has. It never turns the proxy off: a published address cannot
+	// be taken back.
+	Proxied bool `yaml:"proxied"`
+	// TTL applies to every record dnswatch creates. It defaults to DefaultTTL,
+	// or to AutomaticTTL (the only value proxied records take) with Proxied.
 	TTL   int         `yaml:"ttl"`
 	Nodes []Node      `yaml:"nodes"`
 	Probe ProbeConfig `yaml:"probe"`
@@ -95,6 +118,12 @@ type CloudflareConfig struct {
 type Node struct {
 	Name string `yaml:"name" json:"name"`
 	IP   string `yaml:"ip" json:"ip"`
+	// Standby keeps the node out of DNS while any primary (non-standby) node
+	// would be in it. Standby nodes follow the ordinary rules only once every
+	// primary node is out, so one node can carry the traffic with the others
+	// as warm spares; when a primary recovers, it is added back first and the
+	// standby records are removed after it.
+	Standby bool `yaml:"standby" json:"standby,omitempty"`
 }
 
 // ProbeConfig controls the readiness probe sent to every node.
@@ -178,6 +207,9 @@ func (c *Config) applyDefaults() {
 	}
 	if c.TTL == 0 {
 		c.TTL = DefaultTTL
+		if c.Proxied {
+			c.TTL = AutomaticTTL
+		}
 	}
 	for i := range c.Nodes {
 		c.Nodes[i].Name = strings.TrimSpace(c.Nodes[i].Name)
@@ -254,7 +286,12 @@ func (c *Config) validate() error {
 		seenRecords[name] = true
 	}
 	// Cloudflare takes 1 ("automatic") or an explicit 30..86400 seconds.
-	if c.TTL != 1 && (c.TTL < 30 || c.TTL > 86400) {
+	switch {
+	case c.Proxied && c.TTL != AutomaticTTL:
+		// Refused rather than ignored, so the config cannot claim a TTL the
+		// records do not have.
+		fail("ttl must be 1 (automatic) or left out with proxied: true; Cloudflare does not let proxied records have another TTL")
+	case c.TTL != AutomaticTTL && (c.TTL < 30 || c.TTL > 86400):
 		fail("ttl must be 1 (automatic) or between 30 and 86400 seconds")
 	}
 
@@ -279,6 +316,9 @@ func (c *Config) validate() error {
 			fail("nodes[%d].ip %s is used twice", i, node.IP)
 		}
 		seenIPs[node.IP] = true
+	}
+	if len(c.Nodes) > 0 && !slices.ContainsFunc(c.Nodes, func(n Node) bool { return !n.Standby }) {
+		fail("nodes must include at least one node without standby: true")
 	}
 
 	p := c.Probe
@@ -367,7 +407,13 @@ func DescribeTokenPath(path string) string {
 func (c *Config) LogAttrs() []any {
 	nodes := make([]string, 0, len(c.Nodes))
 	for _, node := range c.Nodes {
-		nodes = append(nodes, node.Name+"="+node.IP)
+		entry := node.Name + "=" + node.IP
+		if node.Standby {
+			// Marked so that `-check` shows which node is the spare; a
+			// misplaced standby line otherwise only shows once DNS changes.
+			entry += "(standby)"
+		}
+		nodes = append(nodes, entry)
 	}
 	egressProbe := "off"
 	if c.Probe.EgressPath != "" {
@@ -377,6 +423,7 @@ func (c *Config) LogAttrs() []any {
 		"zone_id", c.Cloudflare.ZoneID,
 		"api_token_file", DescribeTokenPath(c.Cloudflare.APITokenFile),
 		"records", strings.Join(c.Records, ","),
+		"proxied", c.Proxied,
 		"ttl", c.TTL,
 		"nodes", strings.Join(nodes, ","),
 		"probe", "https://<node-ip>" + c.Probe.Path,

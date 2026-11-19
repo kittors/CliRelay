@@ -48,17 +48,18 @@ type codexWebsocketSession struct {
 	wsURL  string
 	authID string
 
-	// connCreateSent tracks whether a `response.create` message has been successfully sent
-	// on the current websocket connection. The upstream expects the first message on each
-	// connection to be `response.create`.
-	connCreateSent bool
-
 	writeMu sync.Mutex
 
 	activeMu     sync.Mutex
 	activeCh     chan codexWebsocketRead
 	activeDone   <-chan struct{}
 	activeCancel context.CancelFunc
+	// activeConn is the socket the active request reads from. Only that
+	// socket's reader may end the request's channel when a read fails: a socket
+	// the session already dropped (invalidated, or replaced because the client
+	// connection moved to another credential) can fail after the next request
+	// took the channel, and closing it would fail that request.
+	activeConn *websocket.Conn
 
 	readerConn *websocket.Conn
 }
@@ -148,13 +149,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 		defer sess.reqMu.Unlock()
 	}
 
-	allowAppend := true
-	if sess != nil {
-		sess.connMu.Lock()
-		allowAppend = sess.connCreateSent
-		sess.connMu.Unlock()
-	}
-	wsReqBody := buildCodexWebsocketRequestBody(body, allowAppend)
+	wsReqBody := buildCodexWebsocketRequestBody(body)
 	recorder.RecordRequest(wsURL, "WEBSOCKET", wsHeaders.Clone(), wsReqBody)
 
 	conn, respHS, errDial := e.ensureUpstreamConn(execCtx.Context, auth, sess, authID, wsURL, wsHeaders)
@@ -195,7 +190,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 	var readCh chan codexWebsocketRead
 	if sess != nil {
 		readCh = make(chan codexWebsocketRead, 4096)
-		sess.setActive(readCh)
+		sess.setActive(readCh, conn)
 		defer sess.clearActive(readCh)
 	}
 
@@ -211,14 +206,11 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 				_ = websocketHandshakeBody(respRetry)
 			}
 			if errDialRetry == nil && connRetry != nil {
-				sess.connMu.Lock()
-				allowAppend = sess.connCreateSent
-				sess.connMu.Unlock()
-				wsReqBodyRetry := buildCodexWebsocketRequestBody(body, allowAppend)
+				wsReqBodyRetry := buildCodexWebsocketRequestBody(body)
 				recorder.RecordRequest(wsURL, "WEBSOCKET", wsHeaders.Clone(), wsReqBodyRetry)
+				sess.retargetActive(readCh, connRetry)
 				if errSendRetry := writeCodexWebsocketMessage(sess, connRetry, wsReqBodyRetry); errSendRetry == nil {
 					conn = connRetry
-					wsReqBody = wsReqBodyRetry
 				} else {
 					e.invalidateUpstreamConn(sess, connRetry, "send_error", errSendRetry)
 					recorder.RecordResponseError(errSendRetry)
@@ -233,7 +225,6 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 			return resp, errSend
 		}
 	}
-	markCodexWebsocketCreateSent(sess, conn, wsReqBody)
 
 	for {
 		if execCtx.Context != nil && execCtx.Context.Err() != nil {
@@ -349,13 +340,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 		sess.reqMu.Lock()
 	}
 
-	allowAppend := true
-	if sess != nil {
-		sess.connMu.Lock()
-		allowAppend = sess.connCreateSent
-		sess.connMu.Unlock()
-	}
-	wsReqBody := buildCodexWebsocketRequestBody(body, allowAppend)
+	wsReqBody := buildCodexWebsocketRequestBody(body)
 	recorder.RecordRequest(wsURL, "WEBSOCKET", wsHeaders.Clone(), wsReqBody)
 
 	conn, respHS, errDial := e.ensureUpstreamConn(execCtx.Context, auth, sess, authID, wsURL, wsHeaders)
@@ -392,7 +377,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 	var readCh chan codexWebsocketRead
 	if sess != nil {
 		readCh = make(chan codexWebsocketRead, 4096)
-		sess.setActive(readCh)
+		sess.setActive(readCh, conn)
 	}
 
 	if errSend := writeCodexWebsocketMessage(sess, conn, wsReqBody); errSend != nil {
@@ -411,11 +396,9 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 				sess.reqMu.Unlock()
 				return nil, errDialRetry
 			}
-			sess.connMu.Lock()
-			allowAppend = sess.connCreateSent
-			sess.connMu.Unlock()
-			wsReqBodyRetry := buildCodexWebsocketRequestBody(body, allowAppend)
+			wsReqBodyRetry := buildCodexWebsocketRequestBody(body)
 			recorder.RecordRequest(wsURL, "WEBSOCKET", wsHeaders.Clone(), wsReqBodyRetry)
+			sess.retargetActive(readCh, connRetry)
 			if errSendRetry := writeCodexWebsocketMessage(sess, connRetry, wsReqBodyRetry); errSendRetry != nil {
 				recorder.RecordResponseError(errSendRetry)
 				e.invalidateUpstreamConn(sess, connRetry, "send_error", errSendRetry)
@@ -424,7 +407,6 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 				return nil, errSendRetry
 			}
 			conn = connRetry
-			wsReqBody = wsReqBodyRetry
 		} else {
 			logCodexWebsocketDisconnected(executionSessionID, authID, wsURL, "send_error", errSend)
 			if errClose := conn.Close(); errClose != nil {
@@ -433,7 +415,6 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 			return nil, errSend
 		}
 	}
-	markCodexWebsocketCreateSent(sess, conn, wsReqBody)
 
 	out := make(chan cliproxyexecutor.StreamChunk)
 	go func() {

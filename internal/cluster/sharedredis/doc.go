@@ -10,10 +10,18 @@
 //
 //   - every request-path command is bounded by a short timeout (200ms by
 //     default) and is never retried;
-//   - a connectivity failure marks the client unavailable at once, so later
-//     requests skip Redis entirely instead of each paying the timeout;
-//   - a background probe brings it back, backing off while the server stays
-//     down and while it keeps flapping.
+//   - a command lost to a timeout or a broken connection falls back on its
+//     own. A lossy link loses a share of the commands, one dropped packet
+//     being enough to miss the timeout, and that must not take the whole
+//     node off the shared state;
+//   - the client is marked unavailable, so that later requests skip Redis
+//     entirely instead of each paying the timeout, when the server cannot be
+//     used (a refused dial, a reply such as LOADING or NOAUTH), or when the
+//     lost commands make up a large share of a short window or keep failing
+//     with nothing succeeding;
+//   - a background probe, given a second try when one attempt is lost, brings
+//     it back, backing off while the server stays down and while it keeps
+//     flapping.
 //
 // Callers check Available and fall back to their node-local behaviour whenever
 // it is false or a command fails. Redis being slow or down must never make a

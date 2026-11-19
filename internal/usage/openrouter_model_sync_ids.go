@@ -137,8 +137,9 @@ func openRouterExistingDateSuffixAliasIDs(tenantID, modelID string) []string {
 	}
 	prefix := modelID + "-"
 	var aliases []string
-	for _, row := range ListModelConfigsForTenant(tenantID) {
-		aliasID := strings.TrimSpace(row.ModelID)
+	// IDs by prefix, not the whole catalog: this runs for every listing of a sync.
+	for _, id := range modelConfigIDsWithPrefix(tenantID, prefix) {
+		aliasID := strings.TrimSpace(id)
 		if aliasID == modelID || !strings.HasPrefix(aliasID, prefix) {
 			continue
 		}

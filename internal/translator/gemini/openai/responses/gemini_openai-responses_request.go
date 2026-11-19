@@ -108,6 +108,17 @@ func ConvertOpenAIResponsesRequestToGemini(modelName string, inputRawJSON []byte
 			i++
 		}
 
+		// Contents are collected here and written into out once after the loop.
+		// sjson.SetRaw(out, "contents.-1", ...) per item copied the whole request
+		// each time (see translatorcommon.JSONArrayBuilder). The template already holds
+		// "contents":[] as its first key and nothing in the loop reads the array
+		// back, so the result is byte-for-byte the same.
+		var contents translatorcommon.JSONArrayBuilder
+		// callNames maps a call_id to the name of the first function_call that
+		// carries it: the match the old code found by rescanning the whole input
+		// for every function_call_output. Built on first use.
+		var callNames map[string]string
+
 		for _, item := range normalized {
 			itemType := item.Get("type").String()
 			itemRole := item.Get("role").String()
@@ -165,7 +176,7 @@ func ConvertOpenAIResponsesRequestToGemini(modelName string, inputRawJSON []byte
 						for _, part := range currentParts {
 							one, _ = sjson.SetRaw(one, "parts.-1", part)
 						}
-						out, _ = sjson.SetRaw(out, "contents.-1", one)
+						contents.Append(one)
 						currentParts = nil
 					}
 
@@ -261,7 +272,7 @@ func ConvertOpenAIResponsesRequestToGemini(modelName string, inputRawJSON []byte
 					one := `{"role":"","parts":[{"text":""}]}`
 					one, _ = sjson.Set(one, "role", effRole)
 					one, _ = sjson.Set(one, "parts.0.text", contentArray.String())
-					out, _ = sjson.SetRaw(out, "contents.-1", one)
+					contents.Append(one)
 				}
 			case "function_call":
 				// Handle function calls - convert to model message with functionCall
@@ -281,7 +292,7 @@ func ConvertOpenAIResponsesRequestToGemini(modelName string, inputRawJSON []byte
 				}
 
 				modelContent, _ = sjson.SetRaw(modelContent, "parts.-1", functionCall)
-				out, _ = sjson.SetRaw(out, "contents.-1", modelContent)
+				contents.Append(modelContent)
 
 			case "function_call_output":
 				// Handle function call outputs - convert to function message with functionResponse
@@ -295,15 +306,11 @@ func ConvertOpenAIResponsesRequestToGemini(modelName string, inputRawJSON []byte
 				functionName := "unknown" // This should ideally be matched with the corresponding function_call
 
 				// Find the corresponding function call name by matching call_id
-				// We need to look back through the input array to find the matching call
-				if inputArray := root.Get("input"); inputArray.Exists() && inputArray.IsArray() {
-					inputArray.ForEach(func(_, prevItem gjson.Result) bool {
-						if prevItem.Get("type").String() == "function_call" && prevItem.Get("call_id").String() == callID {
-							functionName = prevItem.Get("name").String()
-							return false // Stop iteration
-						}
-						return true
-					})
+				if callNames == nil {
+					callNames = functionCallNamesByID(input)
+				}
+				if name, ok := callNames[callID]; ok {
+					functionName = name
 				}
 
 				functionResponse, _ = sjson.Set(functionResponse, "functionResponse.name", functionName)
@@ -330,7 +337,7 @@ func ConvertOpenAIResponsesRequestToGemini(modelName string, inputRawJSON []byte
 					}
 				}
 				functionContent, _ = sjson.SetRaw(functionContent, "parts.-1", functionResponse)
-				out, _ = sjson.SetRaw(out, "contents.-1", functionContent)
+				contents.Append(functionContent)
 
 			case "reasoning":
 				thoughtContent := `{"role":"model","parts":[]}`
@@ -339,8 +346,11 @@ func ConvertOpenAIResponsesRequestToGemini(modelName string, inputRawJSON []byte
 				thought, _ = sjson.Set(thought, "thoughtSignature", item.Get("encrypted_content").String())
 
 				thoughtContent, _ = sjson.SetRaw(thoughtContent, "parts.-1", thought)
-				out, _ = sjson.SetRaw(out, "contents.-1", thoughtContent)
+				contents.Append(thoughtContent)
 			}
+		}
+		if contents.Len() > 0 {
+			out, _ = sjson.SetRaw(out, "contents", contents.String())
 		}
 	} else if input.Exists() && input.Type == gjson.String {
 		// Simple string input conversion to user message
@@ -467,4 +477,22 @@ func geminiSchemaType(propType gjson.Result) string {
 		}
 	}
 	return "STRING"
+}
+
+// functionCallNamesByID maps each call_id in input to the name of the first
+// function_call item that carries it. Only items whose type is exactly
+// "function_call" count, as in the per-output scan this replaces.
+func functionCallNamesByID(input gjson.Result) map[string]string {
+	names := make(map[string]string)
+	input.ForEach(func(_, item gjson.Result) bool {
+		if item.Get("type").String() != "function_call" {
+			return true
+		}
+		id := item.Get("call_id").String()
+		if _, seen := names[id]; !seen {
+			names[id] = item.Get("name").String()
+		}
+		return true
+	})
+	return names
 }

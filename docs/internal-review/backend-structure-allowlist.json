@@ -30,7 +30,7 @@
       },
       {
         "path": "internal/storage/sqlstore/modelconfig/store.go",
-        "max_lines": 895
+        "max_lines": 891
       },
       {
         "path": "internal/usage/ai_account_subject_store.go",
@@ -38,15 +38,15 @@
       },
       {
         "path": "internal/usage/openrouter_model_sync.go",
-        "max_lines": 1047
+        "max_lines": 997
       },
       {
         "path": "internal/usage/usage_db.go",
-        "max_lines": 952
+        "max_lines": 911
       },
       {
         "path": "sdk/api/handlers/handlers.go",
-        "max_lines": 953
+        "max_lines": 944
       }
     ]
   },

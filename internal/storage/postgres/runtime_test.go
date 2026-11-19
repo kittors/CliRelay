@@ -11,8 +11,8 @@ import (
 
 func TestRuntimeMigrationsCoverCoreTables(t *testing.T) {
 	migrations := RuntimeMigrations()
-	if len(migrations) != 48 {
-		t.Fatalf("RuntimeMigrations len = %d, want 48", len(migrations))
+	if len(migrations) != 54 {
+		t.Fatalf("RuntimeMigrations len = %d, want 54", len(migrations))
 	}
 	// Membership table of multi-instance deployments.
 	if migrations[31].Version != "202609250001_cluster_nodes" {
@@ -148,6 +148,56 @@ func TestRuntimeMigrationsCoverCoreTables(t *testing.T) {
 		t.Fatalf("unstripped index migration = %q: %q", got.Version, got.SQL)
 	} else if strings.Contains(got.SQL, "ALTER TABLE") || strings.Contains(got.SQL, "UPDATE") {
 		t.Fatalf("unstripped index migration must only add the partial index: %q", got.SQL)
+	}
+	// Access freezes: three new tables and their indexes, nothing that touches
+	// an existing table. The partial unique index is what keeps two refusals in
+	// flight at once from freezing a requester twice.
+	if got := migrations[48]; got.Version != "202611130001_access_freezes" ||
+		!strings.Contains(got.SQL, "CREATE UNIQUE INDEX IF NOT EXISTS uq_access_freezes_active") ||
+		!strings.Contains(got.SQL, "WHERE released_at IS NULL") {
+		t.Fatalf("access freeze migration = %q: %q", got.Version, got.SQL)
+	} else if strings.Contains(got.SQL, "ALTER TABLE") || strings.Contains(got.SQL, "UPDATE") || strings.Contains(got.SQL, "DROP") {
+		t.Fatalf("access freeze migration must only create its own tables: %q", got.SQL)
+	}
+	// Node snapshots: two nullable columns on cluster_nodes and nothing else,
+	// so the migration is a catalog change that cannot hold a lock for long.
+	if got := migrations[49]; got.Version != "202611170001_cluster_node_snapshot" ||
+		!strings.Contains(got.SQL, "ADD COLUMN IF NOT EXISTS snapshot JSONB") ||
+		!strings.Contains(got.SQL, "ADD COLUMN IF NOT EXISTS snapshot_at TIMESTAMPTZ") {
+		t.Fatalf("cluster node snapshot migration = %q: %q", got.Version, got.SQL)
+	} else if strings.Contains(got.SQL, "DEFAULT") || strings.Contains(got.SQL, "UPDATE") || strings.Contains(got.SQL, "INDEX") {
+		t.Fatalf("cluster node snapshot migration must only add nullable columns: %q", got.SQL)
+	}
+	// Host snapshots: a table of their own, nothing that touches the
+	// membership table the nodes and dnswatch read.
+	if got := migrations[50]; got.Version != "202611170002_cluster_hosts" ||
+		!strings.Contains(got.SQL, "CREATE TABLE IF NOT EXISTS cluster_hosts") {
+		t.Fatalf("cluster hosts migration = %q: %q", got.Version, got.SQL)
+	} else if strings.Contains(got.SQL, "cluster_nodes") || strings.Contains(got.SQL, "ALTER TABLE") || strings.Contains(got.SQL, "DROP") {
+		t.Fatalf("cluster hosts migration must only create its own table: %q", got.SQL)
+	}
+	// Client columns on request_logs: constant defaults, a catalog change on
+	// PostgreSQL 11 and later, and nothing that rewrites or indexes the rows.
+	if got := migrations[51]; got.Version != "202611180001_request_log_client" ||
+		!strings.Contains(got.SQL, "ADD COLUMN IF NOT EXISTS client_name TEXT NOT NULL DEFAULT ''") ||
+		!strings.Contains(got.SQL, "ADD COLUMN IF NOT EXISTS client_version TEXT NOT NULL DEFAULT ''") ||
+		!strings.Contains(got.SQL, "ADD COLUMN IF NOT EXISTS user_agent TEXT NOT NULL DEFAULT ''") {
+		t.Fatalf("request log client migration = %q: %q", got.Version, got.SQL)
+	} else if strings.Contains(got.SQL, "INDEX") || strings.Contains(got.SQL, "UPDATE") {
+		t.Fatalf("request log client migration must only add columns: %q", got.SQL)
+	}
+	// One-hour cache writes: a nullable column, a catalog change that leaves the
+	// existing rows untouched.
+	if got := migrations[52]; got.Version != "202611180002_request_log_cache_write_1h" ||
+		!strings.Contains(got.SQL, "ADD COLUMN IF NOT EXISTS cache_write_1h_tokens BIGINT;") {
+		t.Fatalf("request log one-hour cache migration = %q: %q", got.Version, got.SQL)
+	} else if strings.Contains(got.SQL, "INDEX") || strings.Contains(got.SQL, "UPDATE") || strings.Contains(got.SQL, "DEFAULT") {
+		t.Fatalf("request log one-hour cache migration must only add a nullable column: %q", got.SQL)
+	}
+	if got := migrations[53]; got.Version != "202611180003_pricing_resync_jobs" ||
+		!strings.Contains(got.SQL, "CREATE TABLE IF NOT EXISTS pricing_resync_jobs") ||
+		!strings.Contains(got.SQL, "ON pricing_resync_jobs(status, not_before)") {
+		t.Fatalf("pricing resync jobs migration = %q: %q", got.Version, got.SQL)
 	}
 	// Appended from laterRuntimeMigrations() because migrations.go sits at its
 	// structure-gate size ceiling.
