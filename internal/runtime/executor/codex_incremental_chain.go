@@ -7,9 +7,12 @@ import (
 
 const (
 	// codexIncrementalChainsPerConversation bounds the chains one conversation key
-	// keeps. Sub-agents and side requests (titles, summaries) often share their
-	// parent's session identity while sending a different history; with a single
-	// chain they would overwrite each other's base every turn.
+	// keeps. Side requests (titles, summaries), and the sub-agents of clients that
+	// do not name their threads, share their parent's key while sending a
+	// different history; with a single chain they would overwrite each other's
+	// base every turn. Codex names its threads, and each has a key of its own
+	// (codexIncrementalThreadID): more threads than chains on one key kept
+	// taking each other's chain.
 	codexIncrementalChainsPerConversation = 3
 	// codexIncrementalMaxShadowChains bounds chains without a connection. Each
 	// holds 16 bytes per input item of its last turn.
