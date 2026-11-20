@@ -310,10 +310,21 @@ func (s selectorService) pickLocked(
 		}
 		scheduling := scopedScheduling(scope.cfg, selectorRouteGroup, scope.allowedGroups)
 		selector := selectorFor(scope.cfg, selectorRouteGroup, scope.allowedGroups)
+		unsaturated := candidates
 		if s.manager.concurrencyLimiter != nil {
-			candidates = s.manager.concurrencyLimiter.FilterAvailableCandidates(candidates)
+			unsaturated = s.manager.concurrencyLimiter.FilterAvailableCandidates(candidates)
 		}
-		selected, errPick := selector.Pick(ctx, selectorProvider, scope.model, optionsForSelectionScope(opts, selectorRouteGroup, scheduling), candidates)
+		scopedOpts := optionsForSelectionScope(opts, selectorRouteGroup, scheduling)
+		var selected *Auth
+		var errPick error
+		if sticky, ok := selector.(*SessionStickySelector); ok {
+			// Stickiness also sees accounts at their concurrency limit: a binding
+			// stands while its account is saturated, and the request queues there
+			// (selector_session_sticky_saturation.go).
+			selected, errPick = sticky.pick(ctx, selectorProvider, scope.model, scopedOpts, candidates, unsaturated)
+		} else {
+			selected, errPick = selector.Pick(ctx, selectorProvider, scope.model, scopedOpts, unsaturated)
+		}
 		if errPick != nil {
 			return nil, "", errPick
 		}

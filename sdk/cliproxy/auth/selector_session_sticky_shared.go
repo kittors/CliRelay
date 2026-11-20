@@ -101,11 +101,11 @@ func (s *SessionStickySelector) honour(ctx context.Context, key, model string, a
 	}
 
 	// The same release rules as the local table: request budget spent, the
-	// account no longer eligible, or the account too loaded.
+	// account no longer eligible, or its quota too far spent.
 	bound := findAuthByRef(available, binding.AccountRef)
 	if bound == nil ||
 		(limits.maxRequests > 0 && binding.Served >= limits.maxRequests) ||
-		(limits.releaseAtLoad > 0 && s.deps.loadRatio(bound, model) >= limits.releaseAtLoad) {
+		(limits.releaseAtLoad > 0 && s.deps.quotaLoadRatio(bound, model) >= limits.releaseAtLoad) {
 		_ = store.Release(ctx, key, binding.AccountRef)
 		s.deleteBinding(key)
 		return nil

@@ -38,6 +38,17 @@ func (d *schedulerDeps) loadRatio(auth *Auth, model string) float64 {
 	return accountLoadRatio(auth, model, d.limiter, d.quota)
 }
 
+// quotaLoadRatio is loadRatio without the in-flight share. Session stickiness
+// releases a binding on it (sticky release-at-load), never on concurrency: an
+// account at its concurrency limit is busy for seconds, while moving the
+// conversation off it costs the conversation its prompt cache for good.
+func (d *schedulerDeps) quotaLoadRatio(auth *Auth, model string) float64 {
+	if d == nil {
+		return 0
+	}
+	return accountQuotaLoadRatio(auth, model, d.quota)
+}
+
 // quotaWindows returns the quota source's window view, or nil when the source
 // only reports ratios.
 func (d *schedulerDeps) quotaWindows() QuotaWindowSource {
