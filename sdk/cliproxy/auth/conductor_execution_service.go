@@ -36,6 +36,10 @@ type mixedExecutionScope struct {
 	// lastErr keeps the most recent failover reason so an exhausted candidate list
 	// reports why every candidate was rejected instead of a generic "no auth".
 	lastErr error
+	// sticky records what session stickiness decided for this request, so a
+	// bound account found at its concurrency limit is queued on rather than
+	// failed over (selector_session_sticky_saturation.go).
+	sticky stickyPickNote
 }
 
 type mixedExecutionCandidate struct {
@@ -287,10 +291,13 @@ func (s executionService) newMixedScope(providers []string, req cliproxyexecutor
 // slot, along with the release function the caller must invoke.
 //
 // Idle accounts are taken immediately so a healthy pool keeps its low latency.
-// Only when every candidate is saturated does the request queue on them, which is
-// what makes a per-account limit a throttle instead of an error: a single-pick
-// route (pinned auth or sticky session) has nowhere to fail over to, so failing
-// fast there would reject requests the account could serve moments later.
+// A request queues when every candidate is saturated, which is what makes a
+// per-account limit a throttle instead of an error: a single-pick route (pinned
+// auth) has nowhere to fail over to, so failing fast there would reject requests
+// the account could serve moments later. It also queues when the saturated
+// account is the one its session is bound to: the conversation's prompt cache
+// lives there, and a wait of seconds costs less than a full-price turn
+// elsewhere. Only once that wait runs out does the request alone move.
 func (s executionService) nextReadyCandidate(ctx context.Context, scope *mixedExecutionScope, req cliproxyexecutor.Request) (*mixedExecutionCandidate, func(), error) {
 	for {
 		candidate, errPick := s.nextMixedCandidate(ctx, scope, req)
@@ -318,9 +325,38 @@ func (s executionService) nextReadyCandidate(ctx context.Context, scope *mixedEx
 			return nil, nil, errSlot
 		}
 		traceSkip(ctx, candidate)
+		if scope.sticky.holds(candidate.auth.ID) {
+			queuedRelease, errWait := s.waitForBoundSlot(ctx, candidate)
+			if errWait == nil {
+				return candidate, queuedRelease, nil
+			}
+			if ctx.Err() != nil {
+				return nil, nil, errWait
+			}
+			// Not in time: this request alone goes elsewhere and the binding
+			// stays. The account has had its wait, so it does not join the queue
+			// of saturated candidates either.
+			scope.sticky.overflow = true
+			scope.lastErr = errWait
+			continue
+		}
 		scope.saturated = append(scope.saturated, candidate)
 		scope.lastErr = errSlot
 	}
+}
+
+// waitForBoundSlot queues on the account the request's session is bound to, for
+// as long as a request may wait on any saturated account.
+func (s executionService) waitForBoundSlot(ctx context.Context, candidate *mixedExecutionCandidate) (func(), error) {
+	queue := routetrace.FromContext(ctx).BeginQueue(1)
+	releaseSlot, _, err := s.manager.waitAccountSlot(ctx, []*Auth{candidate.auth})
+	if err != nil {
+		queue.End(err)
+		return nil, err
+	}
+	queue.Granted(tracedAttemptInfo(candidate))
+	queue.End(nil)
+	return releaseSlot, nil
 }
 
 // waitForSaturatedSlot queues on every candidate that was skipped for being at its
@@ -358,7 +394,8 @@ func (s executionService) waitForSaturatedSlot(ctx context.Context, scope *mixed
 }
 
 func (s executionService) nextMixedCandidate(ctx context.Context, scope *mixedExecutionScope, req cliproxyexecutor.Request) (*mixedExecutionCandidate, error) {
-	auth, executor, provider, routeGroup, errPick := newSelectorService(s.manager).pickMixed(ctx, scope.providers, scope.routeModel, scope.opts, scope.tried)
+	scope.sticky.record("")
+	auth, executor, provider, routeGroup, errPick := newSelectorService(s.manager).pickMixed(withStickyPickNote(ctx, &scope.sticky), scope.providers, scope.routeModel, scope.opts, scope.tried)
 	if errPick != nil {
 		return nil, errPick
 	}

@@ -158,17 +158,32 @@ func accountLoadRatio(auth *Auth, model string, limiter *AccountConcurrencyLimit
 	if limiter != nil {
 		ratio = limiter.GetLoadRate(auth.ID, auth.ConcurrencyLimit())
 	}
-	if quota != nil {
-		quotaRatio, ok := 0.0, false
-		if byModel, supports := quota.(ModelQuotaLoadSource); supports && canonicalModelKey(model) != "" {
-			quotaRatio, ok = byModel.QuotaLoadRatioForModel(auth, canonicalModelKey(model))
-		} else {
-			quotaRatio, ok = quota.QuotaLoadRatio(auth)
-		}
-		if ok && quotaRatio > ratio {
-			ratio = quotaRatio
-		}
+	if quotaRatio := accountQuotaLoadRatio(auth, model, quota); quotaRatio > ratio {
+		ratio = quotaRatio
 	}
+	return clampLoadRatio(ratio)
+}
+
+// accountQuotaLoadRatio is the quota half of accountLoadRatio on its own: how
+// much of the windows that limit model the account has used, in [0,1], and 0
+// when there is no source or it cannot tell.
+func accountQuotaLoadRatio(auth *Auth, model string, quota QuotaLoadSource) float64 {
+	if auth == nil || quota == nil {
+		return 0
+	}
+	quotaRatio, ok := 0.0, false
+	if byModel, supports := quota.(ModelQuotaLoadSource); supports && canonicalModelKey(model) != "" {
+		quotaRatio, ok = byModel.QuotaLoadRatioForModel(auth, canonicalModelKey(model))
+	} else {
+		quotaRatio, ok = quota.QuotaLoadRatio(auth)
+	}
+	if !ok {
+		return 0
+	}
+	return clampLoadRatio(quotaRatio)
+}
+
+func clampLoadRatio(ratio float64) float64 {
 	if ratio < 0 {
 		return 0
 	}

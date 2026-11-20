@@ -52,32 +52,12 @@ func NewSessionStickySelector(fallback Selector) *SessionStickySelector {
 	return &SessionStickySelector{fallback: fallback}
 }
 
+// Pick serves the request on its session's bound auth when that binding still
+// stands, and binds a new pick otherwise. The manager's own selection calls
+// pick with the saturated accounts kept apart (see
+// selector_session_sticky_saturation.go); Pick hands the same list for both.
 func (s *SessionStickySelector) Pick(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, auths []*Auth) (*Auth, error) {
-	key := sessionStickySelectionKey(provider, opts, sessionStickyKey(opts))
-	if key == "" {
-		return s.pickFallback(ctx, provider, model, opts, auths)
-	}
-
-	now := time.Now()
-	available, err := getAvailableAuths(auths, provider, model, now)
-	if err != nil {
-		return nil, err
-	}
-	available = preferCodexWebsocketAuths(ctx, provider, available)
-
-	limits := stickyLimitsFromMetadata(opts.Metadata)
-	if bound := s.honour(ctx, key, model, available, limits, now); bound != nil {
-		return bound, nil
-	}
-
-	selected, err := s.pickFallback(ctx, provider, model, opts, available)
-	if err != nil {
-		return nil, err
-	}
-	if selected != nil && strings.TrimSpace(selected.ID) != "" {
-		selected = s.bindSelected(ctx, key, selected, available, now)
-	}
-	return selected, nil
+	return s.pick(ctx, provider, model, opts, auths, auths)
 }
 
 // honourBinding returns the bound auth when the binding is still valid, and
@@ -114,7 +94,7 @@ func (s *SessionStickySelector) honourBinding(key, model string, available []*Au
 		delete(s.bindings, key)
 		return nil
 	}
-	if limits.releaseAtLoad > 0 && s.deps.loadRatio(bound, model) >= limits.releaseAtLoad {
+	if limits.releaseAtLoad > 0 && s.deps.quotaLoadRatio(bound, model) >= limits.releaseAtLoad {
 		delete(s.bindings, key)
 		return nil
 	}
