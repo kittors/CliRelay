@@ -81,7 +81,7 @@ func endUserError(c *gin.Context, err error) {
 	case errors.Is(err, enduser.ErrValidation):
 		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": gin.H{"code": "validation_failed", "message": err.Error()}})
 	default:
-		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "internal_error", "message": err.Error()}})
+		abortStoreFailure(c, err)
 	}
 }
 

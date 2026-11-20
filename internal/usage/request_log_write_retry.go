@@ -3,16 +3,12 @@ package usage
 import (
 	"context"
 	"database/sql"
-	"database/sql/driver"
 	"errors"
 	"fmt"
-	"io"
-	"net"
 	"strings"
-	"syscall"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/storage/dberr"
 )
 
 // Retry policy for request log writes that fail because the database is
@@ -86,27 +82,6 @@ func (b boundTx) QueryRow(query string, args ...any) *sql.Row {
 func (b boundTx) Commit() error   { return b.tx.Commit() }
 func (b boundTx) Rollback() error { return b.tx.Rollback() }
 
-// transientDBErrorMarkers catch connection failures that reach us as plain
-// strings, for example after a driver wrapped them with fmt.Errorf("%v").
-var transientDBErrorMarkers = []string{
-	"sql: database is closed",
-	"driver: bad connection",
-	"conn closed",
-	"connection refused",
-	"connection reset",
-	"broken pipe",
-	"unexpected eof",
-	"server closed the connection",
-	"failed to connect",
-	"i/o timeout",
-	"no such host",
-	"the database system is shutting down",
-	"the database system is starting up",
-	"the database system is in recovery mode",
-	"cannot execute insert in a read-only transaction",
-	"committed locally, but might not have been replicated",
-}
-
 // commitUncertainError marks a failure of COMMIT itself: the server may or may
 // not have committed, so a later duplicate of the same key is only trusted
 // after requestLogCommitSettleWindow.
@@ -120,51 +95,7 @@ func (e *commitUncertainError) Unwrap() error { return e.err }
 // the data. Only these are worth retrying and spooling: a rejected row fails
 // the same way on every replay.
 func isTransientDBError(err error) bool {
-	if err == nil {
-		return false
-	}
-	for _, target := range []error{
-		errUsageDBUnavailable, driver.ErrBadConn, sql.ErrConnDone, sql.ErrTxDone,
-		io.EOF, io.ErrUnexpectedEOF, context.DeadlineExceeded, net.ErrClosed,
-		syscall.ECONNREFUSED, syscall.ECONNRESET, syscall.EPIPE,
-	} {
-		if errors.Is(err, target) {
-			return true
-		}
-	}
-	var sqlState interface{ SQLState() string }
-	if errors.As(err, &sqlState) {
-		return isTransientSQLState(sqlState.SQLState())
-	}
-	var connectErr *pgconn.ConnectError
-	if errors.As(err, &connectErr) || pgconn.Timeout(err) {
-		return true
-	}
-	var netErr net.Error
-	if errors.As(err, &netErr) {
-		return true
-	}
-	msg := strings.ToLower(err.Error())
-	for _, marker := range transientDBErrorMarkers {
-		if strings.Contains(msg, marker) {
-			return true
-		}
-	}
-	return false
-}
-
-func isTransientSQLState(code string) bool {
-	switch {
-	case strings.HasPrefix(code, "08"): // connection_exception class
-		return true
-	case code == "57P01", code == "57P02", code == "57P03": // admin/crash shutdown, cannot connect now
-		return true
-	case code == "25006": // read_only_sql_transaction: the pool still points at a demoted primary
-		return true
-	case code == "53300": // too_many_connections: every node reconnecting at once after a failover
-		return true
-	}
-	return false
+	return errors.Is(err, errUsageDBUnavailable) || dberr.IsTransient(err)
 }
 
 type requestLogWriteOutcome int
