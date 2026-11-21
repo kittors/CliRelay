@@ -121,7 +121,10 @@ func DisabledModelIDsForTenant(tenantID string) map[string]struct{} {
 			return fresh.ids, nil
 		}
 
-		rows := usage.ListModelConfigsForTenant(tenantID)
+		// Only model_id and enabled. This runs every TTL for every tenant on every
+		// node; reading whole rows here was the database host's largest outbound
+		// flow (see usage.ModelEnabledState). The merge is the full listing's.
+		rows := usage.ListModelEnabledStatesForTenant(tenantID)
 		disabled := make(map[string]struct{})
 		for _, row := range rows {
 			if row.Enabled {
