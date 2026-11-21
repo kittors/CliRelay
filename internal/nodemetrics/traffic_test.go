@@ -43,7 +43,16 @@ func TestListenerCountsRequestAndResponseBytes(t *testing.T) {
 		t.Fatalf("the wrapper changed the response: %d bytes", len(got))
 	}
 
+	// The server adds a write to the counters once the call returns, which
+	// can be after the client has read the bytes it carried: the reply's
+	// last write may not be counted yet. Wait for the counters to reach the
+	// bodies; past the deadline the checks below report what was counted.
 	counts := c.traffic.load()
+	short := func() bool { return counts.bytesIn < uint64(len(body)) || counts.bytesOut < uint64(len(reply)) }
+	for deadline := time.Now().Add(3 * time.Second); short() && time.Now().Before(deadline); {
+		time.Sleep(time.Millisecond)
+		counts = c.traffic.load()
+	}
 	// Headers come on top of the bodies on both sides.
 	if counts.bytesIn < uint64(len(body)) || counts.bytesIn > uint64(len(body))+1024 {
 		t.Fatalf("bytes in = %d for a %d-byte body", counts.bytesIn, len(body))
