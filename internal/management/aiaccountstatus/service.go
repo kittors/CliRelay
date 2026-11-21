@@ -470,13 +470,7 @@ func (s *Service) refreshOne(jobID, tenantID string, auth *coreauth.Auth, subjec
 
 	checked := time.Now().UTC()
 	if probeErr == nil {
-		asserted := readProviderAssertedAccountFacts(auth)
-		if strings.TrimSpace(probe.PlanType) == "" {
-			probe.PlanType = asserted.PlanType
-		}
-		probe.SubscriptionStartedAt = asserted.SubscriptionStarted
-		probe.SubscriptionExpiresAt = asserted.SubscriptionExpires
-		probe.SubscriptionSource = asserted.SubscriptionSource
+		mergeProviderAssertedFacts(&probe, auth, checked)
 	}
 	if probeErr != nil {
 		// Probe outcomes were previously invisible in logs, so "the panel shows a
@@ -542,7 +536,7 @@ func (s *Service) refreshOne(jobID, tenantID string, auth *coreauth.Auth, subjec
 		ResetCreditCount:       probe.ResetCreditCount,
 		ResetCreditExpirations: probe.ResetCreditExpirations,
 		UpstreamCheckedAt:      &checked,
-		ExpiresAt:              probe.SubscriptionExpiresAt,
+		ExpiresAt:              probe.Subscription.ExpiresAt,
 		UpdatedAt:              checked,
 	}
 	if len(probe.Quotas) > 0 {
@@ -582,9 +576,8 @@ func (s *Service) refreshOne(jobID, tenantID string, auth *coreauth.Auth, subjec
 	// status/version must not depend on a legacy reload succeeding.
 	if err := usage.UpsertAIAccountSubjectStatus(usage.AIAccountSubjectStatusRecord{
 		AuthSubjectID: subjectID, Provider: auth.Provider, LastProbeState: string(RefreshSuccess),
-		HealthStatus: healthStatus, PlanType: strings.TrimSpace(probe.PlanType),
-		SubscriptionStartedAt: probe.SubscriptionStartedAt, SubscriptionExpiresAt: probe.SubscriptionExpiresAt,
-		SubscriptionSource: probe.SubscriptionSource, RestrictionSummary: record.RestrictionSummary, Quotas: probe.Quotas,
+		HealthStatus: healthStatus, PlanType: strings.TrimSpace(probe.PlanType), Subscription: probe.Subscription,
+		RestrictionSummary: record.RestrictionSummary, Quotas: probe.Quotas,
 		ResetCreditCount: probe.ResetCreditCount, ResetCreditExpirations: probe.ResetCreditExpirations,
 		UpstreamCheckedAt: &checked, UpdatedAt: checked,
 	}); err != nil {

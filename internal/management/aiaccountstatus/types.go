@@ -73,10 +73,10 @@ type AccountStatusView struct {
 	ResetCreditCount          *int64                        `json:"reset_credit_count,omitempty"`
 	ResetCreditExpirations    []string                      `json:"reset_credit_expirations,omitempty"`
 	Usage                     usage.AuthSubjectUsageSummary `json:"usage"`
-	SubscriptionStartedAt     *time.Time                    `json:"subscription_started_at,omitempty"`
-	SubscriptionExpiresAt     *time.Time                    `json:"subscription_expires_at,omitempty"`
-	SubscriptionSource        string                        `json:"subscription_source,omitempty"`
-	UpstreamCheckedAt         *time.Time                    `json:"upstream_checked_at,omitempty"`
+	// The subscription_* fields, flattened into this object. Token snapshots
+	// past their end are left out (see AIAccountSubscription.Presentable).
+	usage.AIAccountSubscription
+	UpstreamCheckedAt *time.Time `json:"upstream_checked_at,omitempty"`
 	// QuotaObservedAt dates the quota payload itself. It lags UpstreamCheckedAt
 	// whenever probes are failing or returning partial window sets, which is what
 	// lets the panel mark quota values as stale instead of implying they are live.
