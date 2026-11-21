@@ -32,8 +32,17 @@ func TestServerFeedsTheNodeSnapshot(t *testing.T) {
 	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("status = %d through the counting listener", resp.StatusCode)
 	}
+	// The server adds a write to the counters once the call returns, which
+	// can be after the client has read the response it carried. Wait for
+	// the totals to catch up; past the deadline the check below reports
+	// what was counted.
 	gotRequests, gotIn, gotOut := collector.Totals()
-	if gotRequests < requests+1 || gotIn <= bytesIn || gotOut <= bytesOut {
+	notCounted := func() bool { return gotRequests < requests+1 || gotIn <= bytesIn || gotOut <= bytesOut }
+	for deadline := time.Now().Add(3 * time.Second); notCounted() && time.Now().Before(deadline); {
+		time.Sleep(time.Millisecond)
+		gotRequests, gotIn, gotOut = collector.Totals()
+	}
+	if notCounted() {
 		t.Fatalf("request and bytes were not counted: requests %d->%d, in %d->%d, out %d->%d",
 			requests, gotRequests, bytesIn, gotIn, bytesOut, gotOut)
 	}
