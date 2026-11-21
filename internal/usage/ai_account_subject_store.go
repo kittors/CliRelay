@@ -176,11 +176,7 @@ func ensureAIAccountSharedSubjectTables(db *sql.DB) error {
 		if _, err := db.Exec(aiAccountSharedSubjectTablesSQL); err != nil {
 			return fmt.Errorf("usage: ensure ai account shared subject tables: %w", err)
 		}
-		// Additive migration for SQLite databases created before cycle token projection.
-		_, _ = db.Exec(`ALTER TABLE ai_account_subject_usage_buckets ADD COLUMN total_tokens INTEGER NOT NULL DEFAULT 0`)
-		// Additive migration for databases created before quota freshness tracking.
-		_, _ = db.Exec(`ALTER TABLE ai_account_subject_status ADD COLUMN quota_observed_at DATETIME`)
-		backfillSQLiteQuotaObservedAt(db)
+		applySQLiteSharedSubjectAdditiveColumns(db)
 	}
 	ensureUsageProjectionMarkerTable(db)
 	if err := setProjectionMarker(db, aiAccountSharedSchemaMarker, "done"); err != nil {
@@ -501,12 +497,12 @@ func backfillSharedStatusForSubject(db *sql.DB, subjectID string) error {
 	}
 	subscriptionSource := ""
 	if row.ExpiresAt != nil {
-		subscriptionSource = "migration"
+		subscriptionSource = SubscriptionSourceMigration
 	}
 	return UpsertAIAccountSubjectStatus(AIAccountSubjectStatusRecord{
 		AuthSubjectID: row.AuthSubjectID, Provider: row.Provider, LastProbeState: normalizeProbeState(row.RefreshState),
-		HealthStatus: row.HealthStatus, PlanType: row.PlanType, SubscriptionExpiresAt: row.ExpiresAt,
-		SubscriptionSource: subscriptionSource, RestrictionSummary: row.RestrictionSummary, ErrorCode: row.ErrorCode,
+		HealthStatus: row.HealthStatus, PlanType: row.PlanType,
+		Subscription: AIAccountSubscription{ExpiresAt: row.ExpiresAt, Source: subscriptionSource}, RestrictionSummary: row.RestrictionSummary, ErrorCode: row.ErrorCode,
 		ErrorSummary: errorSummary, Quotas: row.Quotas, ResetCreditCount: row.ResetCreditCount,
 		ResetCreditExpirations: row.ResetCreditExpirations, UpstreamCheckedAt: row.UpstreamCheckedAt, UpdatedAt: row.UpdatedAt,
 	})

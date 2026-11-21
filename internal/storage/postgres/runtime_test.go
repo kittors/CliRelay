@@ -11,8 +11,8 @@ import (
 
 func TestRuntimeMigrationsCoverCoreTables(t *testing.T) {
 	migrations := RuntimeMigrations()
-	if len(migrations) != 54 {
-		t.Fatalf("RuntimeMigrations len = %d, want 54", len(migrations))
+	if len(migrations) != 55 {
+		t.Fatalf("RuntimeMigrations len = %d, want 55", len(migrations))
 	}
 	// Membership table of multi-instance deployments.
 	if migrations[31].Version != "202609250001_cluster_nodes" {
@@ -198,6 +198,17 @@ func TestRuntimeMigrationsCoverCoreTables(t *testing.T) {
 		!strings.Contains(got.SQL, "CREATE TABLE IF NOT EXISTS pricing_resync_jobs") ||
 		!strings.Contains(got.SQL, "ON pricing_resync_jobs(status, not_before)") {
 		t.Fatalf("pricing resync jobs migration = %q: %q", got.Version, got.SQL)
+	}
+	// Billing-cycle columns: additive columns on the shared status, and the
+	// one data repair limited to token snapshots already past their end. A
+	// live read (source 'probe') must never be cleared by it.
+	if got := migrations[54]; got.Version != "202611200001_ai_account_subscription_cycle" ||
+		!strings.Contains(got.SQL, "ADD COLUMN IF NOT EXISTS subscription_renews_at TIMESTAMPTZ") ||
+		!strings.Contains(got.SQL, "ADD COLUMN IF NOT EXISTS subscription_checked_at TIMESTAMPTZ") ||
+		!strings.Contains(got.SQL, "WHERE subscription_source IN ('signed_claims', 'migration')") {
+		t.Fatalf("ai account subscription cycle migration = %q: %q", got.Version, got.SQL)
+	} else if strings.Contains(got.SQL, "'probe'") || strings.Contains(got.SQL, "DROP") {
+		t.Fatalf("ai account subscription cycle migration must leave live reads alone: %q", got.SQL)
 	}
 	// Appended from laterRuntimeMigrations() because migrations.go sits at its
 	// structure-gate size ceiling.

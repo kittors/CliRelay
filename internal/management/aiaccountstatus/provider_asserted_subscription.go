@@ -12,10 +12,22 @@ import (
 )
 
 type providerAssertedAccountFacts struct {
-	PlanType            string
-	SubscriptionStarted *time.Time
-	SubscriptionExpires *time.Time
-	SubscriptionSource  string
+	PlanType     string
+	Subscription usage.AIAccountSubscription
+}
+
+// mergeProviderAssertedFacts fills in what the probe itself did not report: the
+// plan type, and the subscription when no live billing read happened this
+// round. A live read is never replaced; subscriptionUpsertAssignments keeps the
+// same rule for the stored row.
+func mergeProviderAssertedFacts(probe *ProbeResult, auth *coreauth.Auth, now time.Time) {
+	asserted := readProviderAssertedAccountFacts(auth, now)
+	if strings.TrimSpace(probe.PlanType) == "" {
+		probe.PlanType = asserted.PlanType
+	}
+	if probe.Subscription.Source == "" {
+		probe.Subscription = asserted.Subscription
+	}
 }
 
 // readProviderAssertedAccountFacts only consumes provider token claims. Auth-file
@@ -23,7 +35,13 @@ type providerAssertedAccountFacts struct {
 // the shared subject status table. Stored OAuth tokens were obtained through the
 // provider authentication flow; this helper only decodes their already-issued
 // claims and never persists token material.
-func readProviderAssertedAccountFacts(auth *coreauth.Auth) providerAssertedAccountFacts {
+//
+// The subscription claims are a snapshot taken at the OAuth login: Codex
+// re-issues the id_token on refresh without updating them (live 2026-11-20:
+// tokens issued 11-19 still said active_until 10-10, last_checked 09-10). The
+// snapshot is used only while its end is still ahead; past it, the claims say
+// nothing about whether the plan renewed.
+func readProviderAssertedAccountFacts(auth *coreauth.Auth, now time.Time) providerAssertedAccountFacts {
 	if auth == nil || normalizeProvider(auth.Provider) != "codex" {
 		return providerAssertedAccountFacts{}
 	}
@@ -50,10 +68,11 @@ func readProviderAssertedAccountFacts(auth *coreauth.Auth) providerAssertedAccou
 		facts := providerAssertedAccountFacts{
 			PlanType: strings.ToLower(strings.TrimSpace(readClaimString(authClaims, "chatgpt_plan_type", "plan_type"))),
 		}
-		facts.SubscriptionStarted = parseProviderClaimTime(authClaims["chatgpt_subscription_active_start"])
-		facts.SubscriptionExpires = parseProviderClaimTime(authClaims["chatgpt_subscription_active_until"])
-		if facts.SubscriptionStarted != nil || facts.SubscriptionExpires != nil {
-			facts.SubscriptionSource = "signed_claims"
+		if expires := parseProviderClaimTime(authClaims["chatgpt_subscription_active_until"]); expires != nil && expires.After(now) {
+			facts.Subscription = usage.AIAccountSubscription{
+				StartedAt: parseProviderClaimTime(authClaims["chatgpt_subscription_active_start"]),
+				ExpiresAt: expires, Source: usage.SubscriptionSourceSignedClaims,
+			}
 		}
 		return facts
 	}

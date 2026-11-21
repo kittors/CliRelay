@@ -123,7 +123,7 @@ func (f liveFixture) probe(t *testing.T, at time.Time, windows ...QuotaWindowDTO
 	credits := int64(2)
 	if err := UpsertAIAccountSubjectStatus(AIAccountSubjectStatusRecord{
 		AuthSubjectID: f.identity.ID, Provider: "codex", LastProbeState: "success", HealthStatus: "healthy",
-		PlanType: "plus", SubscriptionStartedAt: &started, SubscriptionExpiresAt: &expires, SubscriptionSource: "probe",
+		PlanType: "plus", Subscription: AIAccountSubscription{StartedAt: &started, ExpiresAt: &expires, Source: "probe"},
 		RestrictionSummary: "none", Quotas: windows, ResetCreditCount: &credits, ResetCreditExpirations: []string{"2026-12-01T00:00:00Z"},
 		UpstreamCheckedAt: &at, UpdatedAt: at,
 	}); err != nil {
@@ -197,12 +197,12 @@ func TestMergeObservedQuotaMovesOnlyTheWindowsItReported(t *testing.T) {
 	// A live reading is not a probe: nothing about the account's plan, health or
 	// probe history moves, and the version still advances for readers that poll it.
 	if after.PlanType != before.PlanType || after.HealthStatus != before.HealthStatus || after.LastProbeState != before.LastProbeState ||
-		after.RestrictionSummary != before.RestrictionSummary || after.SubscriptionSource != before.SubscriptionSource ||
+		after.RestrictionSummary != before.RestrictionSummary || after.Subscription.Source != before.Subscription.Source ||
 		after.ErrorCode != "" || after.ErrorSummary != "" {
 		t.Fatalf("probe-owned fields changed:\n before %+v\n after  %+v", before, after)
 	}
-	if after.SubscriptionStartedAt == nil || !after.SubscriptionStartedAt.Equal(*before.SubscriptionStartedAt) ||
-		after.SubscriptionExpiresAt == nil || !after.SubscriptionExpiresAt.Equal(*before.SubscriptionExpiresAt) {
+	if after.Subscription.StartedAt == nil || !after.Subscription.StartedAt.Equal(*before.Subscription.StartedAt) ||
+		after.Subscription.ExpiresAt == nil || !after.Subscription.ExpiresAt.Equal(*before.Subscription.ExpiresAt) {
 		t.Fatalf("subscription dates changed: %+v -> %+v", before, after)
 	}
 	if after.ResetCreditCount == nil || *after.ResetCreditCount != 2 || len(after.ResetCreditExpirations) != 1 {

@@ -81,6 +81,9 @@ func laterRuntimeMigrations() []Migration {
 		// Queue of request-cost recomputations after a price change. See
 		// pricing_resync_migrations.go.
 		{Version: "202611180003_pricing_resync_jobs", SQL: pricingResyncJobsSQL},
+		// Live billing-cycle columns on the shared AI-account status, and the
+		// stale token snapshots dropped. See aiAccountSubscriptionCycleSQL.
+		{Version: "202611200001_ai_account_subscription_cycle", SQL: aiAccountSubscriptionCycleSQL},
 	}
 }
 

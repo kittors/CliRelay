@@ -19,3 +19,26 @@ SET quota_observed_at = COALESCE(
 )
 WHERE s.quota_observed_at IS NULL AND s.quota_json <> '[]';
 `
+
+// aiAccountSubscriptionCycleSQL adds the billing-cycle details a live read of
+// the provider returns (Codex accounts/check entitlement), and drops the token
+// snapshots that are past their end.
+//
+// Those snapshots never described the plan after its first cycle: Codex keeps
+// the chatgpt_subscription_active_* claims from the OAuth login when it
+// re-issues tokens on refresh. On 2026-11-20 every signed_claims row in
+// production had ended between 07-11 and 10-10 while the plans kept renewing,
+// so the panel would have shown each one as long expired. The next live read
+// fills the dates back in.
+const aiAccountSubscriptionCycleSQL = `
+ALTER TABLE ai_account_subject_status ADD COLUMN IF NOT EXISTS subscription_renews_at TIMESTAMPTZ;
+ALTER TABLE ai_account_subject_status ADD COLUMN IF NOT EXISTS subscription_cancels_at TIMESTAMPTZ;
+ALTER TABLE ai_account_subject_status ADD COLUMN IF NOT EXISTS subscription_period TEXT NOT NULL DEFAULT '';
+ALTER TABLE ai_account_subject_status ADD COLUMN IF NOT EXISTS subscription_state TEXT NOT NULL DEFAULT '';
+ALTER TABLE ai_account_subject_status ADD COLUMN IF NOT EXISTS subscription_checked_at TIMESTAMPTZ;
+
+UPDATE ai_account_subject_status
+SET subscription_started_at = NULL, subscription_expires_at = NULL, subscription_source = ''
+WHERE subscription_source IN ('signed_claims', 'migration')
+  AND (subscription_expires_at IS NULL OR subscription_expires_at <= now());
+`

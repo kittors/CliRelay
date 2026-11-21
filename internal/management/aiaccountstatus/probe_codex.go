@@ -21,8 +21,11 @@ const (
 	codexResetCreditsURL = "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits"
 )
 
-func probeCodex(ctx context.Context, svc *managementapitools.Service, auth *coreauth.Auth) (ProbeResult, error) {
-	body, err := doAuthGET(ctx, svc, auth, codexUsageURL, map[string]string{
+// codexProbeHeaders is the header set of every Codex status request. Codex
+// clients build all their backend requests from one header set, so wham/usage,
+// the reset-credit list and accounts/check go out alike.
+func codexProbeHeaders() map[string]string {
+	return map[string]string{
 		"Content-Type":   "application/json",
 		"User-Agent":     config.DefaultCodexFingerprintUserAgent,
 		"Originator":     "Codex Desktop",
@@ -31,11 +34,21 @@ func probeCodex(ctx context.Context, svc *managementapitools.Service, auth *core
 		"Sec-Fetch-Site": "none",
 		"Sec-Fetch-Mode": "no-cors",
 		"Sec-Fetch-Dest": "empty",
-	}, func(req *http.Request) {
-		if accountID := codexAccountID(auth); accountID != "" {
+	}
+}
+
+// withCodexAccount pins a request to one ChatGPT workspace.
+func withCodexAccount(accountID string) func(*http.Request) {
+	return func(req *http.Request) {
+		if accountID != "" {
 			req.Header.Set("Chatgpt-Account-Id", accountID)
 		}
-	})
+	}
+}
+
+func probeCodex(ctx context.Context, svc *managementapitools.Service, auth *coreauth.Auth) (ProbeResult, error) {
+	pinAccount := withCodexAccount(codexAccountID(auth))
+	body, err := doAuthGET(ctx, svc, auth, codexUsageURL, codexProbeHeaders(), pinAccount)
 	if err != nil {
 		return ProbeResult{}, err
 	}
@@ -51,23 +64,15 @@ func probeCodex(ctx context.Context, svc *managementapitools.Service, auth *core
 		v := count.Int()
 		result.ResetCreditCount = &v
 		if v > 0 {
-			if expBody, expErr := doAuthGET(ctx, svc, auth, codexResetCreditsURL, map[string]string{
-				"Content-Type":   "application/json",
-				"User-Agent":     config.DefaultCodexFingerprintUserAgent,
-				"Originator":     "Codex Desktop",
-				"OpenAI-Beta":    "codex-1",
-				"Accept":         "application/json",
-				"Sec-Fetch-Site": "none",
-				"Sec-Fetch-Mode": "no-cors",
-				"Sec-Fetch-Dest": "empty",
-			}, func(req *http.Request) {
-				if accountID := codexAccountID(auth); accountID != "" {
-					req.Header.Set("Chatgpt-Account-Id", accountID)
-				}
-			}); expErr == nil {
+			if expBody, expErr := doAuthGET(ctx, svc, auth, codexResetCreditsURL, codexProbeHeaders(), pinAccount); expErr == nil {
 				result.ResetCreditExpirations = parseCodexResetExpirations(expBody)
 			}
 		}
+	}
+	// The billing cycle is read at most daily (codexSubscriptionDue); a failed
+	// read never fails the quota probe.
+	if subscription, ok := readCodexSubscriptionIfDue(ctx, svc, auth, time.Now().UTC()); ok {
+		result.Subscription = subscription
 	}
 	return result, nil
 }

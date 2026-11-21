@@ -18,7 +18,7 @@
       },
       {
         "path": "internal/management/aiaccountstatus/service.go",
-        "max_lines": 836
+        "max_lines": 829
       },
       {
         "path": "internal/management/modelcatalog/availability.go",
@@ -34,7 +34,7 @@
       },
       {
         "path": "internal/usage/ai_account_subject_store.go",
-        "max_lines": 905
+        "max_lines": 901
       },
       {
         "path": "internal/usage/openrouter_model_sync.go",

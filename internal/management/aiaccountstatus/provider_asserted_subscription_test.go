@@ -30,8 +30,10 @@ func TestRefreshPersistsOnlyProviderAssertedSubscription(t *testing.T) {
 	}
 	t.Cleanup(func() { usage.CloseDB(); _ = os.Remove(usage.GetDBPath()) })
 
-	started := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
-	expires := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	// A snapshot still ahead of its end; one past it is dropped (see
+	// TestProviderClaimsPastTheirEndAreNotUsed).
+	started := time.Now().UTC().Add(-10 * 24 * time.Hour).Truncate(time.Second)
+	expires := started.Add(30 * 24 * time.Hour)
 	token := makeProviderJWTForTest(t, map[string]any{
 		"https://api.openai.com/auth": map[string]any{
 			"chatgpt_account_id":                "acct-asserted",
@@ -67,11 +69,12 @@ func TestRefreshPersistsOnlyProviderAssertedSubscription(t *testing.T) {
 		t.Fatalf("response=%+v err=%v", response, err)
 	}
 	item := response.Items[0]
-	if item.PlanType != "plus" || item.SubscriptionSource != "signed_claims" {
+	subscription := item.AIAccountSubscription
+	if item.PlanType != "plus" || subscription.Source != "signed_claims" {
 		t.Fatalf("shared asserted fields=%+v", item)
 	}
-	if item.SubscriptionStartedAt == nil || !item.SubscriptionStartedAt.Equal(started) || item.SubscriptionExpiresAt == nil || !item.SubscriptionExpiresAt.Equal(expires) {
-		t.Fatalf("subscription start=%v expires=%v", item.SubscriptionStartedAt, item.SubscriptionExpiresAt)
+	if subscription.StartedAt == nil || !subscription.StartedAt.Equal(started) || subscription.ExpiresAt == nil || !subscription.ExpiresAt.Equal(expires) {
+		t.Fatalf("subscription start=%v expires=%v", subscription.StartedAt, subscription.ExpiresAt)
 	}
 }
 
@@ -80,12 +83,64 @@ func TestProviderClaimsMustMatchStableAccountID(t *testing.T) {
 		"https://api.openai.com/auth": map[string]any{
 			"chatgpt_account_id":                "different-account",
 			"chatgpt_plan_type":                 "plus",
-			"chatgpt_subscription_active_until": "2026-08-01T00:00:00Z",
+			"chatgpt_subscription_active_until": "2099-08-01T00:00:00Z",
 		},
 	})
 	auth := &coreauth.Auth{Provider: "codex", TenantID: "tenant-a", Metadata: map[string]any{"account_id": "expected-account", "id_token": token}}
-	facts := readProviderAssertedAccountFacts(auth)
-	if facts.PlanType != "" || facts.SubscriptionStarted != nil || facts.SubscriptionExpires != nil || facts.SubscriptionSource != "" {
+	facts := readProviderAssertedAccountFacts(auth, time.Now())
+	if facts.PlanType != "" || facts.Subscription != (usage.AIAccountSubscription{}) {
 		t.Fatalf("mismatched claims were trusted: %+v", facts)
+	}
+}
+
+// Codex re-issues id_tokens on refresh without updating the subscription
+// claims, so a snapshot past its end says nothing about the plan today: the
+// plan type is still read, the dates are not.
+func TestProviderClaimsPastTheirEndAreNotUsed(t *testing.T) {
+	now := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
+	token := makeProviderJWTForTest(t, map[string]any{
+		"https://api.openai.com/auth": map[string]any{
+			"chatgpt_account_id":                "acct-stale",
+			"chatgpt_plan_type":                 "pro",
+			"chatgpt_subscription_active_start": "2026-09-10T05:02:42+00:00",
+			"chatgpt_subscription_active_until": "2026-10-10T05:03:33+00:00",
+		},
+	})
+	auth := &coreauth.Auth{Provider: "codex", TenantID: "tenant-a", Metadata: map[string]any{"account_id": "acct-stale", "id_token": token}}
+	facts := readProviderAssertedAccountFacts(auth, now)
+	if facts.PlanType != "pro" {
+		t.Fatalf("plan type = %q, want pro", facts.PlanType)
+	}
+	if facts.Subscription != (usage.AIAccountSubscription{}) {
+		t.Fatalf("stale snapshot was used: %+v", facts.Subscription)
+	}
+}
+
+// A live billing read reported by the probe is never replaced by the token
+// snapshot, even one still ahead of its end.
+func TestMergeProviderAssertedFactsKeepsLiveRead(t *testing.T) {
+	now := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
+	token := makeProviderJWTForTest(t, map[string]any{
+		"https://api.openai.com/auth": map[string]any{
+			"chatgpt_account_id":                "acct-live",
+			"chatgpt_plan_type":                 "pro",
+			"chatgpt_subscription_active_until": "2026-12-01T00:00:00Z",
+		},
+	})
+	auth := &coreauth.Auth{Provider: "codex", TenantID: "tenant-a", Metadata: map[string]any{"account_id": "acct-live", "id_token": token}}
+	renews := time.Date(2026, 12, 10, 5, 3, 33, 0, time.UTC)
+	probe := ProbeResult{Subscription: usage.AIAccountSubscription{Source: usage.SubscriptionSourceProbe, RenewsAt: &renews, ExpiresAt: &renews}}
+	mergeProviderAssertedFacts(&probe, auth, now)
+	if probe.Subscription.Source != usage.SubscriptionSourceProbe || !probe.Subscription.ExpiresAt.Equal(renews) {
+		t.Fatalf("live read replaced: %+v", probe.Subscription)
+	}
+	if probe.PlanType != "pro" {
+		t.Fatalf("plan type not filled from claims: %q", probe.PlanType)
+	}
+
+	probe = ProbeResult{}
+	mergeProviderAssertedFacts(&probe, auth, now)
+	if probe.Subscription.Source != usage.SubscriptionSourceSignedClaims {
+		t.Fatalf("claims not used without a live read: %+v", probe.Subscription)
 	}
 }
