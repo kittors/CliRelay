@@ -121,17 +121,20 @@ func DisabledModelIDsForTenant(tenantID string) map[string]struct{} {
 			return fresh.ids, nil
 		}
 
-		// Only model_id and enabled. This runs every TTL for every tenant on every
-		// node; reading whole rows here was the database host's largest outbound
-		// flow (see usage.ModelEnabledState). The merge is the full listing's.
-		rows := usage.ListModelEnabledStatesForTenant(tenantID)
+		// This runs every TTL for every tenant on every node, and reading whole
+		// rows here was the database host's largest outbound flow (see
+		// usage.ModelEnabledState). Most catalogs disable nothing (none did on
+		// 2026-11-21), so ask first and list only when a disabled row exists; the
+		// listing reads only model_id and enabled and merges like the full one.
 		disabled := make(map[string]struct{})
-		for _, row := range rows {
-			if row.Enabled {
-				continue
-			}
-			if key := NormalizeModelKey(row.ModelID); key != "" {
-				disabled[key] = struct{}{}
+		if has, err := usage.HasDisabledModelConfigsForTenant(tenantID); err != nil || has {
+			for _, row := range usage.ListModelEnabledStatesForTenant(tenantID) {
+				if row.Enabled {
+					continue
+				}
+				if key := NormalizeModelKey(row.ModelID); key != "" {
+					disabled[key] = struct{}{}
+				}
 			}
 		}
 

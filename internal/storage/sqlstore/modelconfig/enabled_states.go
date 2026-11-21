@@ -1,6 +1,11 @@
 package modelconfig
 
-import log "github.com/sirupsen/logrus"
+import (
+	"database/sql"
+	"errors"
+
+	log "github.com/sirupsen/logrus"
+)
 
 // ModelEnabledState is the part of a model_configs row that the disabled-model
 // filter reads.
@@ -40,4 +45,25 @@ func (s Store) ListModelEnabledStates() []ModelEnabledState {
 		}
 	}
 	return result
+}
+
+// HasDisabledModels reports whether any row of the store's tenant has
+// enabled = 0.
+//
+// It lets the disabled-model filter skip listing in the common case: on
+// 2026-11-21 no tenant had a single disabled model, yet every refresh listed
+// about 2,000 rows to find that out.
+func (s Store) HasDisabledModels() (bool, error) {
+	if s.db == nil {
+		return false, nil
+	}
+	var one int
+	err := s.db.QueryRow(`SELECT 1 FROM model_configs WHERE tenant_id = ? AND enabled = 0 LIMIT 1`, s.tenantID).Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
 }

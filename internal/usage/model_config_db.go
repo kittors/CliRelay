@@ -107,6 +107,21 @@ func ListModelEnabledStatesForTenant(tenantID string) []ModelEnabledState {
 	return mergeInheritedModelRows(systemRows, tenantRows, func(row ModelEnabledState) string { return row.ModelID })
 }
 
+// HasDisabledModelConfigsForTenant reports whether the tenant's merged catalog
+// can hold a disabled model.
+//
+// Every merged row is a stored row of the tenant or of the system catalog, so
+// when neither has a row with enabled = 0 the merged listing has none either
+// and the disabled set is empty. An error means "unknown": callers should list.
+func HasDisabledModelConfigsForTenant(tenantID string) (bool, error) {
+	tenantID = normalizeTenantID(tenantID)
+	has, err := modelConfigStoreForTenant(tenantID).HasDisabledModels()
+	if err != nil || has || isSystemTenant(tenantID) {
+		return has, err
+	}
+	return modelConfigStoreForTenant(systemTenantID).HasDisabledModels()
+}
+
 // mergeInheritedModelRows lays a business tenant's rows over the system catalog.
 // Tenant overrides win for the same model_id (case-insensitive); rows with an
 // empty model_id are dropped. Both listings above share it so that what the

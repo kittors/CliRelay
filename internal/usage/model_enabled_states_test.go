@@ -62,3 +62,46 @@ func TestListModelEnabledStatesForTenantMatchesFullListing(t *testing.T) {
 		t.Error("system row Case-Differs should be replaced by the tenant's case-differs row")
 	}
 }
+
+// The disabled-model filter skips listing when this says no disabled row can
+// reach the tenant's merged catalog, so it must say yes whenever the tenant or
+// the system catalog holds one, and only then.
+func TestHasDisabledModelConfigsForTenantFollowsStoredRows(t *testing.T) {
+	initModelConfigTestDB(t)
+	const otherTenant = "00000000-0000-0000-0000-0000000000bb"
+
+	check := func(step, tenantID string, want bool) {
+		t.Helper()
+		got, err := HasDisabledModelConfigsForTenant(tenantID)
+		if err != nil {
+			t.Fatalf("%s: HasDisabledModelConfigsForTenant(%q) error = %v", step, tenantID, err)
+		}
+		if got != want {
+			t.Errorf("%s: HasDisabledModelConfigsForTenant(%q) = %v, want %v", step, tenantID, got, want)
+		}
+	}
+	seed := func(tenantID, modelID string, enabled bool) {
+		t.Helper()
+		row := ModelConfigRow{ModelID: modelID, Enabled: enabled, PricingMode: "token", Source: "user"}
+		if err := UpsertModelConfigForTenant(tenantID, row); err != nil {
+			t.Fatalf("UpsertModelConfigForTenant(%s, %s) error = %v", tenantID, modelID, err)
+		}
+	}
+	all := []string{"", systemTenantID, businessTenantID, otherTenant}
+
+	seed(systemTenantID, "sys-on", true)
+	seed(businessTenantID, "tenant-on", true)
+	for _, tenantID := range all {
+		check("nothing disabled", tenantID, false)
+	}
+
+	seed(businessTenantID, "tenant-off", false)
+	check("tenant row disabled", businessTenantID, true)
+	check("tenant row disabled", systemTenantID, false)
+	check("tenant row disabled", otherTenant, false)
+
+	seed(systemTenantID, "sys-off", false)
+	for _, tenantID := range all {
+		check("system row disabled", tenantID, true)
+	}
+}
