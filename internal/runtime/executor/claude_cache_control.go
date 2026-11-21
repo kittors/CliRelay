@@ -56,7 +56,7 @@ func countClientCacheControls(payload []byte) int {
 // isClaudeIdentityBlock reports whether a system block is the one the identity
 // fingerprint prepends.
 func isClaudeIdentityBlock(item gjson.Result) bool {
-	return item.Get("text").String() == claudeCodeIdentityText
+	return item.Get("type").String() == "text" && item.Get("text").Type == gjson.String && item.Get("text").String() == claudeCodeIdentityText
 }
 
 // claudeCacheControlPaths lists explicit breakpoints. Identity paths come
