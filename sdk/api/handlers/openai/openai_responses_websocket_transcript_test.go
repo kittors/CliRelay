@@ -180,7 +180,9 @@ func TestResponsesWebsocketTranscriptClassify(t *testing.T) {
 		{"partial transcript, same upstream", partial, `{"type":"response.create","previous_response_id":"resp_1","input":[]}`, true, wsTurnFollowUp},
 		{"partial transcript, moved off the upstream", partial, `{"type":"response.create","previous_response_id":"resp_1","input":[]}`, false, wsTurnUnknownPrevious},
 		{"partial transcript, complete request", partial, `{"type":"response.create","input":[]}`, false, wsTurnNewRoot},
-		{"first request", newResponsesWebsocketTranscript(), `{"type":"response.create","previous_response_id":"resp_x"}`, false, wsTurnFollowUp},
+		{"first complete request", newResponsesWebsocketTranscript(), `{"type":"response.create","input":[]}`, false, wsTurnNewRoot},
+		{"first increment without history", newResponsesWebsocketTranscript(), `{"type":"response.create","previous_response_id":"resp_x","input":[]}`, false, wsTurnUnknownPrevious},
+		{"first compaction replay", newResponsesWebsocketTranscript(), `{"type":"response.create","previous_response_id":"resp_x","input":[{"type":"compaction"}]}`, false, wsTurnStaleRoot},
 		{"v1 append", held, `{"type":"response.append","input":[]}`, false, wsTurnFollowUp},
 		{"complete request", held, `{"type":"response.create","input":[]}`, false, wsTurnNewRoot},
 		{"increment on the last response", held, `{"type":"response.create","previous_response_id":"resp_1","input":[]}`, false, wsTurnFollowUp},
@@ -317,6 +319,40 @@ func TestResponsesWebsocketAsksForTheFullRequestOnAnUnknownPrevious(t *testing.T
 	wsScriptTurn(t, conn, wsScriptCreate("["+wsScriptUser("u1")+","+wsScriptUser("u2")+"]", ""))
 	if got := strings.Join(inputIDs(exec.upstream(t)[1]), ","); got != "u1,u2" {
 		t.Fatalf("the retried full request must go upstream as sent, upstream input = %s", got)
+	}
+}
+
+func TestResponsesWebsocketRejectsAnIncrementAfterReconnect(t *testing.T) {
+	exec := newWSScriptExecutor(t)
+	url := newWSScriptServer(t, exec, nil)
+	first := wsScriptDial(t, url, nil)
+	events := wsScriptTurn(t, first, wsScriptCreate("["+wsScriptUser("u1")+"]", ""))
+	id := gjson.Get(events[len(events)-1], "response.id").String()
+	if id == "" {
+		t.Fatal("first turn returned no response ID")
+	}
+	_ = first.Close()
+
+	conn := wsScriptDial(t, url, nil)
+	events = wsScriptTurn(t, conn, wsScriptCreate("["+wsScriptUser("u2")+"]", fmt.Sprintf(`"previous_response_id":%q`, id)))
+	reply := gjson.Parse(events[len(events)-1])
+	if reply.Get("type").String() != "error" || reply.Get("status").Int() != http.StatusBadRequest ||
+		reply.Get("error.code").String() != wsErrorCodePreviousResponseNotFound {
+		t.Fatalf("expected previous_response_not_found after reconnect, got %s", reply.Raw)
+	}
+	if n := len(exec.upstream(t)); n != 1 {
+		t.Fatalf("orphaned increment reached the executor, calls = %d", n)
+	}
+
+	full := "[" + wsScriptUser("u1") + "," + wsScriptUser("u2") + "]"
+	events = wsScriptTurn(t, conn, wsScriptCreate(full, `"tools":[{"type":"function","name":"edit_file"}]`))
+	if got := gjson.Get(events[len(events)-1], "type").String(); got != "response.completed" {
+		t.Fatalf("full retry ended with %s", got)
+	}
+	upstream := exec.upstream(t)
+	if len(upstream) != 2 || strings.Join(inputIDs(upstream[1]), ",") != "u1,u2" ||
+		gjson.GetBytes(upstream[1], "tools.0.name").String() != "edit_file" {
+		t.Fatal("full retry did not reach the executor with its history and tool")
 	}
 }
 

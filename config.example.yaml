@@ -431,7 +431,9 @@ streaming:
 # Over it Codex sends only what a turn adds (previous_response_id plus the new
 # input items); over HTTP it re-sends the whole conversation every turn,
 # screenshots included. Codex uses it when its provider sets
-# supports_websockets = true.
+# supports_websockets = true. After reconnecting, send the full input. A first
+# turn that needs a previous connection's response gets previous_response_not_found
+# and can be retried in full on the same socket.
 # responses-websocket:
 #   disabled: false           # true answers the upgrade with 426, and Codex falls back to HTTP at once
 #   compression: true         # permessage-deflate for clients that offer it

@@ -87,8 +87,8 @@ func (t *responsesWebsocketTranscript) sizeBytes() int64 {
 type wsTurn int
 
 const (
-	// wsTurnFollowUp goes to the existing normalizer: the first request on the
-	// connection, a v1 response.append, or an increment naming the last response
+	// wsTurnFollowUp goes to the existing normalizer for a v1 response.append,
+	// an unrecognized message type, or an increment naming the last response
 	// (any increment, when the upstream keeps the context itself).
 	wsTurnFollowUp wsTurn = iota
 	// wsTurnNewRoot is a complete request that replaces the transcript.
@@ -114,12 +114,14 @@ const (
 // window id changes), and a remote compaction replays the conversation with
 // compaction items in it. Both start a new transcript.
 //
+// A new connection has neither a transcript nor a pinned upstream. Its first
+// increment must ask for full input just like any other unknown response ID.
 // An increment is expanded only from a complete transcript. One that holds just
 // the last increment (partial) leaves the rest of the conversation on the
 // upstream that kept the context; once the connection moved off that upstream
 // (its pin was released), the client is asked for the turn in full.
 func (t *responsesWebsocketTranscript) classify(payload []byte, upstreamKeepsContext bool) wsTurn {
-	if len(t.lastRequest) == 0 || strings.TrimSpace(gjson.GetBytes(payload, "type").String()) != wsRequestTypeCreate {
+	if strings.TrimSpace(gjson.GetBytes(payload, "type").String()) != wsRequestTypeCreate {
 		return wsTurnFollowUp
 	}
 	previousID := strings.TrimSpace(gjson.GetBytes(payload, "previous_response_id").String())
