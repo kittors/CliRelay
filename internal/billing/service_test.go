@@ -450,4 +450,33 @@ func TestBillingEndToEndSubscriptionQuotaAndIdempotency(t *testing.T) {
 	if cacheRefreshes.Load() < refreshesBefore+4 {
 		t.Fatalf("expected cache refresh on every AdjustEntitlement call")
 	}
+
+	// 10. Key-scoped billing overview, checkout, order history & cross-key isolation (/#/apikey-usage).
+	keyOv, err := svc.GetAPIKeyOverview(ctx, tenantID, keyID)
+	if err != nil || !keyOv.Enabled || !keyOv.HasBillingInfo || len(keyOv.Target.Plans) != 4 {
+		t.Fatalf("GetAPIKeyOverview: %+v err=%v", keyOv, err)
+	}
+	if keyOv.Target.ExpiresAt == nil || keyOv.OrdersCount < 2 {
+		t.Fatalf("expected key overview expiry and order count >= 2, got %+v", keyOv)
+	}
+	keyOrder, err := svc.CreateAPIKeyOrder(ctx, tenantID, keyID, baseURL, CreateOrderInput{
+		PlanID:     subPlan.ID,
+		PayChannel: ChannelWeChat,
+	})
+	if err != nil || keyOrder.Source != "apikey_usage" || keyOrder.Status != OrderStatusPending {
+		t.Fatalf("CreateAPIKeyOrder: %+v err=%v", keyOrder, err)
+	}
+	keyOrders, err := svc.ListAPIKeyOrders(ctx, tenantID, keyID, 1, 20)
+	if err != nil || keyOrders.Total < 3 {
+		t.Fatalf("ListAPIKeyOrders: %+v err=%v", keyOrders, err)
+	}
+	// Sibling key must NOT see keyID's orders.
+	if _, err := svc.GetOrderForAPIKey(ctx, tenantID, histKeyID, keyOrder.OrderNo, false); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected sibling key denied with ErrNotFound, got %v", err)
+	}
+	// histKeyID has no binding but has historical orders -> HasBillingInfo=true, Enabled=false.
+	histOv, err := svc.GetAPIKeyOverview(ctx, tenantID, histKeyID)
+	if err != nil || histOv.Enabled || !histOv.HasBillingInfo || histOv.OrdersCount != 2 {
+		t.Fatalf("GetAPIKeyOverview histKeyID: %+v err=%v", histOv, err)
+	}
 }

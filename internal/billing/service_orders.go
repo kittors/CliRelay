@@ -35,6 +35,22 @@ func (s *Service) CreatePublicOrder(ctx context.Context, publicCode, fallbackBas
 	return s.createCheckoutOrder(ctx, b, "public_link", "public:"+b.PublicCode, fallbackBaseURL, input)
 }
 
+// CreateAPIKeyOrder creates a live XunhuPay order directly for a caller presenting a specific API key.
+func (s *Service) CreateAPIKeyOrder(ctx context.Context, tenantID, keyID, fallbackBaseURL string, input CreateOrderInput) (Order, error) {
+	b, err := s.store.GetBindingByTarget(ctx, tenantID, TargetKindAPIKey, keyID)
+	if err != nil {
+		return Order{}, err
+	}
+	if !b.Enabled {
+		return Order{}, ErrNotFound
+	}
+	meta := s.lookupTargetMeta(ctx, tenantID, TargetKindAPIKey, keyID)
+	if !meta.Active {
+		return Order{}, ErrNotFound
+	}
+	return s.createCheckoutOrder(ctx, b, "apikey_usage", "key:"+meta.KeyMasked, fallbackBaseURL, input)
+}
+
 func (s *Service) createCheckoutOrder(ctx context.Context, b Binding, source, createdBy, fallbackBaseURL string, input CreateOrderInput) (Order, error) {
 	st, _, err := s.store.GetSettings(ctx, b.TenantID)
 	if err != nil {
@@ -96,8 +112,11 @@ func (s *Service) createCheckoutOrder(ctx context.Context, b Binding, source, cr
 	}
 	notifyURL := BuildNotifyURL(baseURL, b.TenantID, channel)
 	returnURL := strings.TrimRight(baseURL, "/") + "/#/apikey-lookup"
-	if source == "public_link" && b.PublicCode != "" {
+	switch {
+	case source == "public_link" && b.PublicCode != "":
 		returnURL = BuildPublicPayURL(baseURL, b.PublicCode)
+	case source == "apikey_usage":
+		returnURL = strings.TrimRight(baseURL, "/") + "/#/apikey-usage"
 	}
 
 	targetLabel := meta.Label
@@ -406,6 +425,31 @@ func (s *Service) GetOrderForPublicCode(ctx context.Context, publicCode, orderNo
 	}
 	if sync && (o.Status == OrderStatusPending || o.Status == OrderStatusExpired) {
 		return s.SyncOrderStatus(ctx, b.TenantID, orderNo, true)
+	}
+	return o, nil
+}
+
+// ListAPIKeyOrders returns orders belonging strictly to a single API key.
+func (s *Service) ListAPIKeyOrders(ctx context.Context, tenantID, keyID string, page, size int) (OrderListResult, error) {
+	return s.store.ListOrders(ctx, tenantID, OrderFilter{
+		TargetKind: TargetKindAPIKey,
+		TargetID:   strings.TrimSpace(keyID),
+		Page:       page,
+		Size:       size,
+	})
+}
+
+// GetOrderForAPIKey fetches one order strictly owned by the presented API key, optionally syncing XunhuPay.
+func (s *Service) GetOrderForAPIKey(ctx context.Context, tenantID, keyID, orderNo string, sync bool) (Order, error) {
+	o, err := s.store.GetOrderByNo(ctx, tenantID, orderNo)
+	if err != nil {
+		return Order{}, err
+	}
+	if o.TargetKind != TargetKindAPIKey || o.TargetID != strings.TrimSpace(keyID) {
+		return Order{}, ErrNotFound
+	}
+	if sync && (o.Status == OrderStatusPending || o.Status == OrderStatusExpired) {
+		return s.SyncOrderStatus(ctx, tenantID, orderNo, true)
 	}
 	return o, nil
 }

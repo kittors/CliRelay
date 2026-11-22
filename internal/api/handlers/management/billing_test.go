@@ -138,6 +138,10 @@ func TestBillingHandlersAdminPublicAndWebhook(t *testing.T) {
 	pub.POST("/billing/pay/:code/orders", h.PostPublicBillingOrder)
 	pub.GET("/billing/pay/:code/orders/:order_no", h.GetPublicBillingOrder)
 	pub.POST("/billing/callback/xunhupay/:tenant_id/:channel", h.PostPublicXunhuPayCallback)
+	pub.POST("/billing/key/overview", h.PostPublicKeyBillingOverview)
+	pub.POST("/billing/key/orders", h.PostPublicKeyBillingOrder)
+	pub.POST("/billing/key/orders/list", h.PostPublicKeyBillingOrders)
+	pub.POST("/billing/key/orders/status", h.PostPublicKeyBillingOrderStatus)
 
 	doJSON := func(method, path string, body any) *httptest.ResponseRecorder {
 		var buf bytes.Buffer
@@ -269,5 +273,15 @@ func TestBillingHandlersAdminPublicAndWebhook(t *testing.T) {
 	_ = json.Unmarshal(rec.Body.Bytes(), &entView)
 	if entView.ExpiresAt == nil || time.Until(*entView.ExpiresAt).Hours()/24 < 89 {
 		t.Fatalf("expected expiry extended to ~90 days (30+60), got %+v", entView)
+	}
+
+	// 8. Public key-scoped billing rejects empty and placeholder API keys cleanly.
+	rec = doJSON(http.MethodPost, "/v0/management/public/billing/key/overview", map[string]any{"api_key": ""})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("empty api_key expected 400, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	rec = doJSON(http.MethodPost, "/v0/management/public/billing/key/overview", map[string]any{"api_key": "your-api-key-1"})
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("placeholder api_key expected 401, got %d body=%s", rec.Code, rec.Body.String())
 	}
 }
