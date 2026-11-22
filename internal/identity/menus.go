@@ -105,6 +105,7 @@ var MenuCatalog = []MenuSeed{
 	// product entry is「用户账号」with multi-key management under each user.
 	{Code: "access.api-keys", ParentCode: "group.access", Type: "menu", Path: "/access/api-keys", Component: "api-keys", LabelKey: "shell.nav_api_keys", Icon: "sparkles", PermissionCode: "api_keys.read", SortOrder: 30, HideMenu: true},
 	{Code: "access.end-users", ParentCode: "group.access", Type: "menu", Path: "/access/end-users", Component: "end-users", LabelKey: "shell.nav_end_users", Icon: "user-round", PermissionCode: "end_users.read", SortOrder: 25},
+	{Code: "access.billing", ParentCode: "group.access", Type: "menu", Path: "/access/billing", Component: "billing", LabelKey: "shell.nav_billing", Icon: "wallet", PermissionCode: "tenant_settings.read", SortOrder: 35},
 	// Stable code kept; API Key permission profiles belong with client credentials.
 	{Code: "system.api-key-permissions", ParentCode: "group.access", Type: "menu", Path: "/access/api-key-permissions", Component: "api-key-permissions", LabelKey: "shell.nav_api_key_permissions", Icon: "shield-check", PermissionCode: "api_key_profiles.read", SortOrder: 40},
 	// Stable code kept for existing menu references; content moderation belongs with access credentials.

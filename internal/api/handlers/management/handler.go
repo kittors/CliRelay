@@ -14,6 +14,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/alerting"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/billing"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/contentmoderation"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/identity"
@@ -83,6 +84,8 @@ type Handler struct {
 	loopGuard *loopguard.Registry
 	// secretMasking overrides the process-wide secret masking settings in tests.
 	secretMasking *contentmoderation.SecretMaskingRegistry
+	// billingSvc serves tenant payment settings, plans, bindings, orders and XunhuPay webhooks.
+	billingSvc *billing.Service
 }
 
 type trendCacheEntry struct {

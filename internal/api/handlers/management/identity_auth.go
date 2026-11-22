@@ -606,7 +606,8 @@ func isTenantScopedManagementPath(path string) bool {
 		return true
 	// Alert channels and thresholds belong to the tenant: it is told about its own
 	// accounts, keys and end users and nothing else (see package alerting).
-	case relative == "/alerts", strings.HasPrefix(relative, "/alerts/"):
+	case relative == "/alerts", strings.HasPrefix(relative, "/alerts/"),
+		relative == "/billing", strings.HasPrefix(relative, "/billing/"):
 		return true
 	// Tenant auth-file quota/connectivity probes use /api-call with a
 	// tenant-scoped auth_index (AuthByIndex + ListForTenant). Blocking this

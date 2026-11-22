@@ -55,6 +55,8 @@ type User struct {
 	QuotaUsage *quota.UsageView `json:"quota-usage,omitempty"`
 	// CappedCells 是本次修改连带压低的 Key 额度格子（CappedKeys 只含其中美元周期部分）。
 	CappedCells []quota.CappedCell `json:"capped-cells,omitempty"`
+	// ExpiresAt 是付费订阅到期时间，未设置表示无期限限制。
+	ExpiresAt *time.Time `json:"expires_at,omitempty"`
 }
 
 // QuotaPatch updates account-level limits. Nil field = leave unchanged.
@@ -117,6 +119,7 @@ type APIKey struct {
 	QuotaLimits quota.Matrix      `json:"quota-limits"`
 	ModelRules  []quota.ModelRule `json:"model-rules"`
 	QuotaUsage  *quota.UsageView  `json:"quota-usage,omitempty"`
+	ExpiresAt   *time.Time        `json:"expires_at,omitempty"`
 }
 
 type LoginResult struct {

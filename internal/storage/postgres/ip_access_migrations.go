@@ -84,6 +84,9 @@ func laterRuntimeMigrations() []Migration {
 		// Live billing-cycle columns on the shared AI-account status, and the
 		// stale token snapshots dropped. See aiAccountSubscriptionCycleSQL.
 		{Version: "202611200001_ai_account_subscription_cycle", SQL: aiAccountSubscriptionCycleSQL},
+		// Tenant-scoped portal billing settings, plans, key/account bindings,
+		// subscription expiration entitlements, and order ledger. See billing_migrations.go.
+		{Version: "202611220001_portal_billing", SQL: billingTablesSQL},
 	}
 }
 

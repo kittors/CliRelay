@@ -319,6 +319,12 @@ func permissionForManagementRequest(method, path string) string {
 			return "tenant_settings.write"
 		}
 		return "tenant_settings.read"
+	// Portal billing configuration, plans, target bindings and payment orders are tenant-scoped.
+	case relative == "/billing" || strings.HasPrefix(relative, "/billing/"):
+		if write {
+			return "tenant_settings.write"
+		}
+		return "tenant_settings.read"
 	case strings.HasSuffix(relative, "/usage") && strings.Contains(relative, "api-key"):
 		return "providers.test"
 	case strings.Contains(relative, "api-key"), strings.HasPrefix(relative, "/openai-compatibility"):

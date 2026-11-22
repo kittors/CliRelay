@@ -55,6 +55,8 @@ func registerIdentityAuthRoutes(engine *gin.Engine, h *managementhandlers.Handle
 	portal.GET("/privacy-masking/records/:key", h.GetPortalPrivacyMaskingRecord)
 	// The signed-in user's standing access freezes and the notice of each.
 	portal.GET("/access-freezes", h.GetPortalAccessFreezes)
+	// Self-service portal billing (checkout & order history).
+	registerPortalBillingRoutes(portal, h)
 }
 
 func registerManagementIdentityRoutes(group *gin.RouterGroup, h *managementhandlers.Handler) {

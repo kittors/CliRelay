@@ -179,8 +179,13 @@ func (h *Handler) GetPortalMe(c *gin.Context) {
 	// the portal's privacy masking tab, read only: the rules that apply and the
 	// user's own records (privacy_masking_portal.go)
 	capabilities["privacy-masking"] = true
-	c.JSON(http.StatusOK, gin.H{"user": user, "capabilities": capabilities,
-		"word_policy_allowed": h.portalWordAllowed(c, user)})
+	capabilities["billing"] = true
+	c.JSON(http.StatusOK, gin.H{
+		"user":                user,
+		"capabilities":        capabilities,
+		"word_policy_allowed": h.portalWordAllowed(c, user),
+		"billing_enabled":     h.portalBillingEnabled(c, user),
+	})
 }
 
 func (h *Handler) PutPortalPassword(c *gin.Context) {

@@ -11,8 +11,8 @@ import (
 
 func TestRuntimeMigrationsCoverCoreTables(t *testing.T) {
 	migrations := RuntimeMigrations()
-	if len(migrations) != 55 {
-		t.Fatalf("RuntimeMigrations len = %d, want 55", len(migrations))
+	if len(migrations) != 56 {
+		t.Fatalf("RuntimeMigrations len = %d, want 56", len(migrations))
 	}
 	// Membership table of multi-instance deployments.
 	if migrations[31].Version != "202609250001_cluster_nodes" {
@@ -209,6 +209,21 @@ func TestRuntimeMigrationsCoverCoreTables(t *testing.T) {
 		t.Fatalf("ai account subscription cycle migration = %q: %q", got.Version, got.SQL)
 	} else if strings.Contains(got.SQL, "'probe'") || strings.Contains(got.SQL, "DROP") {
 		t.Fatalf("ai account subscription cycle migration must leave live reads alone: %q", got.SQL)
+	}
+	if got := migrations[55]; got.Version != "202611220001_portal_billing" {
+		t.Fatalf("portal billing migration version = %q", got.Version)
+	} else {
+		for _, table := range []string{
+			"CREATE TABLE IF NOT EXISTS billing_settings",
+			"CREATE TABLE IF NOT EXISTS billing_plans",
+			"CREATE TABLE IF NOT EXISTS billing_bindings",
+			"CREATE TABLE IF NOT EXISTS billing_entitlements",
+			"CREATE TABLE IF NOT EXISTS billing_orders",
+		} {
+			if !strings.Contains(got.SQL, table) {
+				t.Fatalf("portal billing migration missing %q", table)
+			}
+		}
 	}
 	// Appended from laterRuntimeMigrations() because migrations.go sits at its
 	// structure-gate size ceiling.
