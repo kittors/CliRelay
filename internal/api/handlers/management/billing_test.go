@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -128,6 +129,7 @@ func TestBillingHandlersAdminPublicAndWebhook(t *testing.T) {
 	admin.GET("/billing/plans", h.GetBillingPlans)
 	admin.PUT("/billing/bindings", h.PutBillingBinding)
 	admin.GET("/billing/bindings", h.GetBillingBindings)
+	admin.PATCH("/billing/entitlements", h.PatchBillingEntitlement)
 	admin.GET("/billing/orders", h.GetBillingOrders)
 	admin.POST("/billing/orders/manual", h.PostBillingManualOrder)
 
@@ -251,5 +253,21 @@ func TestBillingHandlersAdminPublicAndWebhook(t *testing.T) {
 	_ = json.Unmarshal(rec.Body.Bytes(), &list)
 	if list.Total != 1 || list.Summary.TotalAmountCents != 3000 || list.Summary.PaidCount != 1 {
 		t.Fatalf("unexpected order list summary: %+v", list)
+	}
+
+	// 7. Operator freely adjusts key duration via PATCH /billing/entitlements.
+	rec = doJSON(http.MethodPatch, "/v0/management/billing/entitlements", map[string]any{
+		"target_kind": "api_key",
+		"target_id":   keyID,
+		"mode":        "add_days",
+		"delta_days":  60,
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PATCH entitlements status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var entView billing.EntitlementView
+	_ = json.Unmarshal(rec.Body.Bytes(), &entView)
+	if entView.ExpiresAt == nil || time.Until(*entView.ExpiresAt).Hours()/24 < 89 {
+		t.Fatalf("expected expiry extended to ~90 days (30+60), got %+v", entView)
 	}
 }

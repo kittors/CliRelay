@@ -17,6 +17,7 @@ func registerManagementBillingRoutes(group *gin.RouterGroup, h *managementhandle
 	group.PUT("/billing/bindings", h.PutBillingBinding)
 	group.POST("/billing/bindings/:id/rotate-code", h.PostBillingBindingRotateCode)
 	group.DELETE("/billing/bindings/:id", h.DeleteBillingBinding)
+	group.PATCH("/billing/entitlements", h.PatchBillingEntitlement)
 	group.GET("/billing/orders", h.GetBillingOrders)
 	group.POST("/billing/orders/:order_no/sync", h.PostBillingOrderSync)
 	group.POST("/billing/orders/:order_no/fulfill", h.PostBillingOrderFulfill)

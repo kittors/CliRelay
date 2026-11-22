@@ -289,6 +289,29 @@ func (h *Handler) DeleteBillingBinding(c *gin.Context) {
 	c.Status(http.StatusNoContent)
 }
 
+func (h *Handler) PatchBillingEntitlement(c *gin.Context) {
+	principal, _ := principalFromContext(c)
+	tenantID := effectiveTenantID(c)
+	var input billing.AdjustEntitlementInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"code": "invalid_billing_request", "message": "invalid JSON body"}})
+		return
+	}
+	view, err := h.billingService().AdjustEntitlement(c.Request.Context(), tenantID, input)
+	if err != nil {
+		respondBillingError(c, err)
+		return
+	}
+	if audit := identity.Default(); audit != nil {
+		audit.RecordAudit(c.Request.Context(), identity.AuditEvent{
+			TenantID: tenantID, ActorKind: principal.Kind, ActorUserID: principal.User.ID, ActorSessionID: principal.SessionID,
+			Action: "billing.entitlement.adjust", ResourceType: string(view.TargetKind), ResourceID: view.TargetID, Result: "success",
+			Changes: map[string]any{"mode": input.Mode, "delta_days": input.DeltaDays, "expires_at": view.ExpiresAt},
+		})
+	}
+	c.JSON(http.StatusOK, view)
+}
+
 func (h *Handler) GetBillingOrders(c *gin.Context) {
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	size, _ := strconv.Atoi(c.DefaultQuery("size", "20"))
