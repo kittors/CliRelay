@@ -1,6 +1,7 @@
 package management
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -8,6 +9,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/billing"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/enduser"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/identity"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/quota"
@@ -60,6 +62,7 @@ func decorateEndUsers(items []enduser.User) error {
 			return err
 		}
 		profiles := usage.ListAPIKeyPermissionProfilesForTenant(tenantID)
+		acctExpiries, _ := billingAccountExpiriesForTenant(tenantID)
 		for _, i := range indexes {
 			effective := usage.EffectiveEndUserQuotaWithProfiles(items[i].AccountQuota(), profiles)
 			enduser.ApplyEffectiveQuota(&items[i], effective)
@@ -74,6 +77,10 @@ func decorateEndUsers(items []enduser.User) error {
 			view.InFlight = inflight.Default().Held(inflight.AccountName(items[i].ID)).Usage()
 			items[i].QuotaUsage = &view
 			items[i].DailySpendingResetCount = resetCounts[items[i].ID]
+			if exp, ok := acctExpiries[items[i].ID]; ok {
+				t := exp
+				items[i].ExpiresAt = &t
+			}
 		}
 	}
 	return nil
@@ -86,6 +93,39 @@ func decorateEndUser(user *enduser.User) error {
 	}
 	*user = items[0]
 	return nil
+}
+
+func billingAccountExpiriesForTenant(tenantID string) (map[string]time.Time, map[string]time.Time) {
+	store := billing.DefaultStore()
+	if store == nil {
+		if db := usage.RuntimeDB(); db != nil {
+			store = billing.NewStore(db)
+		}
+	}
+	if store == nil {
+		return nil, nil
+	}
+	accts, keys, err := store.ListEntitlementsForTenant(context.Background(), tenantID)
+	if err != nil {
+		return nil, nil
+	}
+	return accts, keys
+}
+
+func decorateEndUserKeyExpiries(tenantID string, items []enduser.APIKey) {
+	if len(items) == 0 {
+		return
+	}
+	_, keyExpiries := billingAccountExpiriesForTenant(tenantID)
+	if len(keyExpiries) == 0 {
+		return
+	}
+	for i := range items {
+		if exp, ok := keyExpiries[items[i].ID]; ok {
+			t := exp
+			items[i].ExpiresAt = &t
+		}
+	}
 }
 
 // writeAccessPolicyError 把访问策略相关的校验错误映射成结构化 400，返回是否已处理。

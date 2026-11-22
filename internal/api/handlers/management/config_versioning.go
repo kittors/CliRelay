@@ -316,13 +316,16 @@ type configCapabilities struct {
 	// NodeMetrics: GET /cluster carries each node's resource snapshot
 	// (snapshot, snapshot_at), which the dashboard's node view shows.
 	NodeMetrics bool `json:"node-metrics"`
+	// Billing: the /billing routes (settings, plans, target bindings, orders,
+	// portal self-service checkout and XunhuPay webhooks).
+	Billing bool `json:"billing"`
 }
 
 func newConfigResponse(cfg *config.Config, versions map[string]int64) configResponse {
 	return configResponse{
 		Config:                 cfg,
 		RuntimeSettingVersions: versions,
-		Capabilities:           configCapabilities{PayloadRulesDryRun: true, Alerts: true, PoolCapacity: true, PrivacyMasking: true, NodeMetrics: true},
+		Capabilities:           configCapabilities{PayloadRulesDryRun: true, Alerts: true, PoolCapacity: true, PrivacyMasking: true, NodeMetrics: true, Billing: true},
 	}
 }
 

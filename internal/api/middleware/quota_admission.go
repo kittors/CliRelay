@@ -39,6 +39,8 @@ type quotaPolicy struct {
 	dailySpendingLimit float64
 	accountPeriod      quota.PeriodSpendingLimits
 	keyPeriod          quota.PeriodSpendingLimits
+	accountExpiresAt   time.Time
+	keyExpiresAt       time.Time
 
 	// access 是这把 Key 的结构化访问策略；没有使用新能力的 Key 为 nil。
 	access *accesspolicy.Policy
@@ -70,6 +72,8 @@ func parseQuotaPolicy(apiKey string, metadata map[string]string) quotaPolicy {
 		dailySpendingLimit: parseFloatMetadata(metadata, "daily-spending-limit"),
 		accountPeriod:      parsePeriodLimitsMetadata(metadata, "account-period-spending-limit-"),
 		keyPeriod:          parsePeriodLimitsMetadata(metadata, "key-period-spending-limit-"),
+		accountExpiresAt:   parseTimeMetadata(metadata, "account-expires-at"),
+		keyExpiresAt:       parseTimeMetadata(metadata, "key-expires-at"),
 	}
 	if access := accesspolicy.Lookup(apiKey); access != nil {
 		policy.access = access
@@ -78,10 +82,56 @@ func parseQuotaPolicy(apiKey string, metadata map[string]string) quotaPolicy {
 	return policy
 }
 
+func parseTimeMetadata(metadata map[string]string, key string) time.Time {
+	if metadata == nil {
+		return time.Time{}
+	}
+	raw := strings.TrimSpace(metadata[key])
+	if raw == "" {
+		return time.Time{}
+	}
+	if parsed, err := time.Parse(time.RFC3339, raw); err == nil {
+		return parsed
+	}
+	return time.Time{}
+}
+
+func (p *quotaPolicy) checkExpiration(now time.Time) *quotaVerdict {
+	if !p.accountExpiresAt.IsZero() && !now.Before(p.accountExpiresAt) {
+		return subscriptionExpiredVerdict("account", p.accountExpiresAt)
+	}
+	if !p.keyExpiresAt.IsZero() && !now.Before(p.keyExpiresAt) {
+		return subscriptionExpiredVerdict("key", p.keyExpiresAt)
+	}
+	return nil
+}
+
+func subscriptionExpiredVerdict(scope string, expiredAt time.Time) *quotaVerdict {
+	const code = "subscription_expired"
+	const errType = "billing_error"
+	label := "API key"
+	if scope == "account" {
+		label = "Account"
+	}
+	message := fmt.Sprintf("%s subscription expired at %s. Please renew in the portal to continue.", label, expiredAt.UTC().Format(time.RFC3339))
+	return &quotaVerdict{
+		status: http.StatusPaymentRequired,
+		body: gin.H{"error": gin.H{
+			"message": message, "type": errType, "code": code, "scope": scope,
+		}},
+		headers: []quotaHeader{
+			{"X-CliRelay-Quota-Code", code},
+			{"X-CliRelay-Quota-Rejected-By", code},
+			{"X-CliRelay-Quota-Scope", scope},
+		},
+		rejection: &quotaRejectionDiagnostics{rejectedBy: code, code: code, errType: errType, message: message},
+	}
+}
+
 func (p *quotaPolicy) hasLimits() bool {
 	return p.dailyLimit > 0 || p.totalQuota > 0 || p.concurrencyLimit > 0 || p.rpmLimit > 0 || p.tpmLimit > 0 ||
 		p.spendingLimit > 0 || p.dailySpendingLimit > 0 || hasPeriodLimits(p.accountPeriod) || hasPeriodLimits(p.keyPeriod) ||
-		p.hasPolicyCells()
+		!p.accountExpiresAt.IsZero() || !p.keyExpiresAt.IsZero() || p.hasPolicyCells()
 }
 
 // hasModelRules reports per-model rules, which the model policy middleware
@@ -118,6 +168,9 @@ func (p *quotaPolicy) record(c *gin.Context) {
 // run on this node's counters with this node's share of each limit; outside a
 // cluster the share is the whole limit.
 func (p *quotaPolicy) admit() (release func(), verdict *quotaVerdict) {
+	if verdict := p.checkExpiration(time.Now()); verdict != nil {
+		return nil, verdict
+	}
 	// The reservation is taken before the checks read usage, so of two
 	// requests admitted at the same moment the later one always sees the
 	// earlier one, without holding a lock across the usage reads.

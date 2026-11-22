@@ -26,7 +26,7 @@ func TestRegisterManagementRouteTable(t *testing.T) {
 		routes[key] = route
 	}
 
-	if got, want := len(routes), 412; got != want {
+	if got, want := len(routes), 435; got != want {
 		t.Fatalf("route count = %d, want %d", got, want)
 	}
 	if got, want := sortedRouteKeys(routes), expectedManagementRoutes(); !slices.Equal(got, want) {
@@ -193,6 +193,21 @@ func TestManagementRoutePermissionsComplete(t *testing.T) {
 		{http.MethodPut, "/v0/management/alerts/settings", "tenant_settings.write"},
 		{http.MethodPost, "/v0/management/alerts/test", "tenant_settings.write"},
 		{http.MethodGet, "/v0/management/alerts/events", "tenant_settings.read"},
+		{http.MethodGet, "/v0/management/billing/settings", "tenant_settings.read"},
+		{http.MethodPut, "/v0/management/billing/settings", "tenant_settings.write"},
+		{http.MethodPost, "/v0/management/billing/settings/test", "tenant_settings.write"},
+		{http.MethodGet, "/v0/management/billing/plans", "tenant_settings.read"},
+		{http.MethodPost, "/v0/management/billing/plans", "tenant_settings.write"},
+		{http.MethodPatch, "/v0/management/billing/plans/plan-1", "tenant_settings.write"},
+		{http.MethodDelete, "/v0/management/billing/plans/plan-1", "tenant_settings.write"},
+		{http.MethodGet, "/v0/management/billing/bindings", "tenant_settings.read"},
+		{http.MethodPut, "/v0/management/billing/bindings", "tenant_settings.write"},
+		{http.MethodPost, "/v0/management/billing/bindings/b-1/rotate-code", "tenant_settings.write"},
+		{http.MethodDelete, "/v0/management/billing/bindings/b-1", "tenant_settings.write"},
+		{http.MethodGet, "/v0/management/billing/orders", "tenant_settings.read"},
+		{http.MethodPost, "/v0/management/billing/orders/CP123/sync", "tenant_settings.write"},
+		{http.MethodPost, "/v0/management/billing/orders/CP123/fulfill", "tenant_settings.write"},
+		{http.MethodPost, "/v0/management/billing/orders/manual", "tenant_settings.write"},
 		{http.MethodGet, "/v0/management/cluster", "system.status.read"},
 		{http.MethodPost, "/v0/management/payload-rules/dry-run", "system.config.write"},
 		// /metrics exposes every tenant's traffic: platform operators only.
@@ -313,6 +328,10 @@ func expectedManagementRoutes() []string {
 		"GET /v0/portal/privacy-masking/records",
 		"GET /v0/portal/privacy-masking/records/:key",
 		"GET /v0/portal/access-freezes",
+		"GET /v0/portal/billing/overview",
+		"POST /v0/portal/billing/orders",
+		"GET /v0/portal/billing/orders",
+		"GET /v0/portal/billing/orders/:order_no",
 		"POST /v0/portal/auth/login",
 		"POST /v0/portal/auth/logout",
 		"GET /v0/portal/auth/me",
@@ -419,6 +438,25 @@ func expectedManagementRoutes() []string {
 		"GET /v0/management/alerts/settings",
 		"POST /v0/management/alerts/test",
 		"PUT /v0/management/alerts/settings",
+		"GET /v0/management/billing/settings",
+		"PUT /v0/management/billing/settings",
+		"POST /v0/management/billing/settings/test",
+		"GET /v0/management/billing/plans",
+		"POST /v0/management/billing/plans",
+		"PATCH /v0/management/billing/plans/:id",
+		"DELETE /v0/management/billing/plans/:id",
+		"GET /v0/management/billing/bindings",
+		"PUT /v0/management/billing/bindings",
+		"POST /v0/management/billing/bindings/:id/rotate-code",
+		"DELETE /v0/management/billing/bindings/:id",
+		"GET /v0/management/billing/orders",
+		"POST /v0/management/billing/orders/:order_no/sync",
+		"POST /v0/management/billing/orders/:order_no/fulfill",
+		"POST /v0/management/billing/orders/manual",
+		"GET /v0/management/public/billing/pay/:code",
+		"POST /v0/management/public/billing/pay/:code/orders",
+		"GET /v0/management/public/billing/pay/:code/orders/:order_no",
+		"POST /v0/management/public/billing/callback/xunhupay/:tenant_id/:channel",
 		"GET /v0/management/ampcode",
 		"GET /v0/management/ampcode/force-model-mappings",
 		"GET /v0/management/ampcode/model-mappings",

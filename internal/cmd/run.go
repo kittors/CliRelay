@@ -16,6 +16,7 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/api"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/api/middleware"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/billing"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/contentmoderation"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/enduser"
@@ -267,6 +268,7 @@ func initializeRuntimeDataStack(cfg *config.Config, configPath string, loc *time
 	identityService := identity.NewService(usage.RuntimeDB())
 	enduserService := enduser.NewService(usage.RuntimeDB())
 	enduser.SetDefault(enduserService)
+	billing.SetDefaultStore(billing.NewStore(usage.RuntimeDB()))
 	if err := bootstrapIdentity(context.Background(), identityService, bootstrapPassword); err != nil {
 		return err
 	}

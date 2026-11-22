@@ -402,11 +402,13 @@ func (h *Handler) GetEndUserAPIKeys(c *gin.Context) {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "end user service unavailable"})
 		return
 	}
-	items, err := svc.ListKeys(c.Request.Context(), effectiveTenantID(c), c.Param("id"))
+	tenantID := effectiveTenantID(c)
+	items, err := svc.ListKeys(c.Request.Context(), tenantID, c.Param("id"))
 	if err != nil {
 		endUserError(c, err)
 		return
 	}
+	decorateEndUserKeyExpiries(tenantID, items)
 	c.JSON(http.StatusOK, gin.H{"items": items, "capabilities": accessPolicyCapabilities()})
 }
 
@@ -562,7 +564,9 @@ func (h *Handler) GetPortalAPIKeys(c *gin.Context) {
 		endUserError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"items": activePortalKeys(items), "capabilities": accessPolicyCapabilities()})
+	active := activePortalKeys(items)
+	decorateEndUserKeyExpiries(user.TenantID, active)
+	c.JSON(http.StatusOK, gin.H{"items": active, "capabilities": accessPolicyCapabilities()})
 }
 
 // activePortalKeys 只把启用的 Key 交给门户：暂停由管理员决定，也只能由管理员恢复。

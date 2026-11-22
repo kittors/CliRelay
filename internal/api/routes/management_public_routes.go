@@ -33,5 +33,6 @@ func registerPublicManagementRoutes(engine *gin.Engine, h *managementhandlers.Ha
 		pub.GET("/usage/chart-data", usageLogs.GetPublicUsageChartData)
 		pub.POST("/usage/chart-data", usageLogs.GetPublicUsageChartData)
 		pub.POST("/usage/summary", h.GetPublicUsageSummary)
+		registerPublicBillingRoutes(pub, h)
 	}
 }
