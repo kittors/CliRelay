@@ -157,7 +157,11 @@ func respondBillingError(c *gin.Context, err error) {
 	case errors.Is(err, billing.ErrInvalidTransition):
 		c.JSON(http.StatusConflict, gin.H{"error": gin.H{"code": "invalid_order_state", "message": err.Error()}})
 	case errors.Is(err, billing.ErrProviderFailed):
-		c.JSON(http.StatusBadGateway, gin.H{"error": gin.H{"code": "provider_failed", "message": err.Error()}})
+		// Log upstream payment gateway failures and return 424 Failed Dependency rather than 502:
+		// Cloudflare intercepts origin HTTP 502 responses and replaces the JSON error body with
+		// a generic Cloudflare 502 HTML page, hiding the real gateway error from the frontend.
+		log.WithError(err).Warn("billing: payment provider request failed")
+		c.JSON(http.StatusFailedDependency, gin.H{"error": gin.H{"code": "provider_failed", "message": err.Error()}})
 	default:
 		log.WithError(err).Warn("billing: request failed")
 		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "billing_failed", "message": "billing operation failed"}})

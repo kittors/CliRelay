@@ -284,4 +284,15 @@ func TestBillingHandlersAdminPublicAndWebhook(t *testing.T) {
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("placeholder api_key expected 401, got %d body=%s", rec.Code, rec.Body.String())
 	}
+
+	// 9. Payment gateway failure returns 424 JSON (never 502, which Cloudflare replaces with HTML).
+	failRec := httptest.NewRecorder()
+	failCtx, _ := gin.CreateTestContext(failRec)
+	respondBillingError(failCtx, billing.ErrProviderFailed)
+	if failRec.Code != http.StatusFailedDependency {
+		t.Fatalf("ErrProviderFailed expected 424, got %d body=%s", failRec.Code, failRec.Body.String())
+	}
+	if !strings.Contains(failRec.Body.String(), `"provider_failed"`) {
+		t.Fatalf("expected provider_failed JSON body, got %s", failRec.Body.String())
+	}
 }
