@@ -395,3 +395,14 @@ type PublicPayInfo struct {
 	Channels []string         `json:"channels"`
 	Target   PortalTargetView `json:"target"`
 }
+
+// APIKeyBillingOverview is the key-scoped billing view served on /#/apikey-usage
+// when a caller proves ownership by presenting the plaintext API key in a POST body.
+type APIKeyBillingOverview struct {
+	Enabled        bool             `json:"enabled"`
+	HasBillingInfo bool             `json:"has_billing_info"`
+	Currency       string           `json:"currency"`
+	Channels       []string         `json:"channels"`
+	Target         PortalTargetView `json:"target"`
+	OrdersCount    int64            `json:"orders_count"`
+}

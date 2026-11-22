@@ -26,7 +26,7 @@ func TestRegisterManagementRouteTable(t *testing.T) {
 		routes[key] = route
 	}
 
-	if got, want := len(routes), 436; got != want {
+	if got, want := len(routes), 440; got != want {
 		t.Fatalf("route count = %d, want %d", got, want)
 	}
 	if got, want := sortedRouteKeys(routes), expectedManagementRoutes(); !slices.Equal(got, want) {
@@ -459,6 +459,10 @@ func expectedManagementRoutes() []string {
 		"POST /v0/management/public/billing/pay/:code/orders",
 		"GET /v0/management/public/billing/pay/:code/orders/:order_no",
 		"POST /v0/management/public/billing/callback/xunhupay/:tenant_id/:channel",
+		"POST /v0/management/public/billing/key/overview",
+		"POST /v0/management/public/billing/key/orders",
+		"POST /v0/management/public/billing/key/orders/list",
+		"POST /v0/management/public/billing/key/orders/status",
 		"GET /v0/management/ampcode",
 		"GET /v0/management/ampcode/force-model-mappings",
 		"GET /v0/management/ampcode/model-mappings",

@@ -36,4 +36,8 @@ func registerPublicBillingRoutes(pub *gin.RouterGroup, h *managementhandlers.Han
 	pub.POST("/billing/pay/:code/orders", h.PostPublicBillingOrder)
 	pub.GET("/billing/pay/:code/orders/:order_no", h.GetPublicBillingOrder)
 	pub.POST("/billing/callback/xunhupay/:tenant_id/:channel", h.PostPublicXunhuPayCallback)
+	pub.POST("/billing/key/overview", h.PostPublicKeyBillingOverview)
+	pub.POST("/billing/key/orders", h.PostPublicKeyBillingOrder)
+	pub.POST("/billing/key/orders/list", h.PostPublicKeyBillingOrders)
+	pub.POST("/billing/key/orders/status", h.PostPublicKeyBillingOrderStatus)
 }

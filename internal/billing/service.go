@@ -2,6 +2,7 @@ package billing
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"time"
@@ -508,6 +509,84 @@ func (s *Service) GetPublicPayInfo(ctx context.Context, publicCode string) (Publ
 			LifetimeLimitUSD: meta.LifetimeLimitUSD,
 			LifetimeUsedUSD:  meta.LifetimeUsedUSD,
 			Note:             b.Note,
+			Plans:            targetPlans,
+		},
+	}, nil
+}
+
+// GetAPIKeyOverview returns key-scoped subscription expiry, bound plans, and order count
+// for a caller presenting a specific API key on /#/apikey-usage. It strictly scopes to
+// this single API key and never exposes sibling keys under the owning end-user account.
+func (s *Service) GetAPIKeyOverview(ctx context.Context, tenantID, keyID string) (APIKeyBillingOverview, error) {
+	meta := s.lookupTargetMeta(ctx, tenantID, TargetKindAPIKey, keyID)
+	if !meta.Active {
+		return APIKeyBillingOverview{}, ErrNotFound
+	}
+	st, _, err := s.store.GetSettings(ctx, tenantID)
+	if err != nil {
+		return APIKeyBillingOverview{}, err
+	}
+	channels := st.EnabledChannels()
+
+	exp, _ := s.store.GetEntitlement(ctx, tenantID, TargetKindAPIKey, keyID)
+	if exp == nil && meta.EndUserID != "" {
+		// Fall back to owning account expiry if the key itself has no separate expiry,
+		// because account expiration also gates requests for this key.
+		exp, _ = s.store.GetEntitlement(ctx, tenantID, TargetKindEndUser, meta.EndUserID)
+	}
+
+	var binding Binding
+	hasBinding := false
+	if b, bErr := s.store.GetBindingByTarget(ctx, tenantID, TargetKindAPIKey, keyID); bErr == nil {
+		binding = b
+		hasBinding = true
+	} else if !errors.Is(bErr, ErrNotFound) {
+		return APIKeyBillingOverview{}, bErr
+	}
+
+	targetPlans := make([]PortalPlanView, 0)
+	if hasBinding && binding.Enabled {
+		plans, pErr := s.store.ListPlans(ctx, tenantID, true)
+		if pErr != nil {
+			return APIKeyBillingOverview{}, pErr
+		}
+		planByID := make(map[string]Plan, len(plans))
+		for _, p := range plans {
+			planByID[p.ID] = p
+		}
+		targetPlans = resolveBindingPlans(binding, planByID)
+	}
+
+	ordersRes, _ := s.store.ListOrders(ctx, tenantID, OrderFilter{
+		TargetKind: TargetKindAPIKey,
+		TargetID:   keyID,
+		Page:       1,
+		Size:       1,
+	})
+
+	canCheckout := st.Enabled && len(channels) > 0 && hasBinding && binding.Enabled && len(targetPlans) > 0
+	if !canCheckout {
+		channels = []string{}
+		targetPlans = []PortalPlanView{}
+	}
+	hasInfo := canCheckout || exp != nil || ordersRes.Total > 0
+
+	return APIKeyBillingOverview{
+		Enabled:        canCheckout,
+		HasBillingInfo: hasInfo,
+		Currency:       st.Currency,
+		Channels:       channels,
+		OrdersCount:    ordersRes.Total,
+		Target: PortalTargetView{
+			BindingID:        binding.ID,
+			TargetKind:       TargetKindAPIKey,
+			TargetID:         keyID,
+			Label:            meta.Label,
+			KeyMasked:        meta.KeyMasked,
+			ExpiresAt:        exp,
+			LifetimeLimitUSD: meta.LifetimeLimitUSD,
+			LifetimeUsedUSD:  meta.LifetimeUsedUSD,
+			Note:             binding.Note,
 			Plans:            targetPlans,
 		},
 	}, nil
