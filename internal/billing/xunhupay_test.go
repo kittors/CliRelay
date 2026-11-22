@@ -151,3 +151,77 @@ func TestXunhuClientCreateQueryAndTest(t *testing.T) {
 		t.Fatal("expected TestChannel with wrong secret to fail")
 	}
 }
+
+func TestXunhuClientHandlesLiveNumericOpenIDAndTotalAmount(t *testing.T) {
+	t.Parallel()
+	secret := "live-format-secret"
+	appID := "201906174553"
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/do":
+			// Matches exact wire format returned by live api.xunhupay.com/payment/do.html:
+			// openid is a JSON integer rather than a quoted string.
+			_, _ = w.Write([]byte(`{"openid":20310609781,"url_qrcode":"https://api.xunhupay.com/payments/wechat/qrcode_v3?id=20310609781","url":"https://api.xunhupay.com/payments/wechat/index?id=20310609781","errcode":0,"errmsg":"success!","hash":"abc"}`))
+		case "/query":
+			// Matches exact wire format returned by live api.xunhupay.com/payment/query.html:
+			// amount is returned in total_amount, transaction_id may be null or string.
+			_, _ = w.Write([]byte(`{"errcode":"0","errmsg":"","data":{"open_order_id":"20310609781","total_amount":"204.00","status":"OD","transaction_id":"420000202611229999"}}`))
+		case "/query-empty":
+			// PHP gateways often encode empty associative arrays as [].
+			_, _ = w.Write([]byte(`{"errcode":0,"errmsg":"","data":[]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := NewXunhuClient(server.Client())
+	ctx := context.Background()
+
+	created, err := client.CreatePayment(ctx, XunhuCreateRequest{
+		GatewayURL:   server.URL + "/do",
+		AppID:        appID,
+		AppSecret:    secret,
+		Channel:      ChannelWeChat,
+		TradeOrderID: "ORD202611220001",
+		AmountCents:  20400,
+		Title:        "codex 套餐1",
+		NotifyURL:    "https://code.example.test/v0/management/public/billing/callback/xunhupay/t1/wechat",
+	})
+	if err != nil {
+		t.Fatalf("CreatePayment with numeric openid failed: %v", err)
+	}
+	if created.OpenOrderID != "20310609781" {
+		t.Fatalf("OpenOrderID = %q, want 20310609781", created.OpenOrderID)
+	}
+	if created.QRCodeURL != "https://api.xunhupay.com/payments/wechat/qrcode_v3?id=20310609781" {
+		t.Fatalf("unexpected QRCodeURL: %q", created.QRCodeURL)
+	}
+
+	queried, err := client.QueryOrder(ctx, XunhuQueryRequest{
+		QueryURL:     server.URL + "/query",
+		AppID:        appID,
+		AppSecret:    secret,
+		TradeOrderID: "ORD202611220001",
+	})
+	if err != nil {
+		t.Fatalf("QueryOrder with total_amount failed: %v", err)
+	}
+	if queried.Status != "OD" || queried.AmountCents != 20400 || queried.OpenOrderID != "20310609781" || queried.TransactionID != "420000202611229999" {
+		t.Fatalf("unexpected query result: %+v", queried)
+	}
+
+	emptyQueried, err := client.QueryOrder(ctx, XunhuQueryRequest{
+		QueryURL:     server.URL + "/query-empty",
+		AppID:        appID,
+		AppSecret:    secret,
+		TradeOrderID: "ORD-NONE",
+	})
+	if err != nil {
+		t.Fatalf("QueryOrder with empty array data failed: %v", err)
+	}
+	if emptyQueried.Status != "" || emptyQueried.AmountCents != 0 {
+		t.Fatalf("unexpected empty query result: %+v", emptyQueried)
+	}
+}

@@ -1,6 +1,7 @@
 package billing
 
 import (
+	"bytes"
 	"context"
 	"crypto/md5" //nolint:gosec // XunhuPay protocol mandates MD5 request/callback signatures.
 	"crypto/rand"
@@ -17,6 +18,81 @@ import (
 	"strings"
 	"time"
 )
+
+// flexString unmarshals JSON strings, numbers, booleans, or null into a string without losing
+// precision. XunhuPay's PHP gateway returns numeric IDs in some endpoints (e.g. "openid":20310609781
+// on payment/do.html) and quoted strings in others (e.g. "open_order_id":"20310609781" on query).
+type flexString string
+
+func (f *flexString) UnmarshalJSON(data []byte) error {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		*f = ""
+		return nil
+	}
+	if trimmed[0] == '"' {
+		var s string
+		if err := json.Unmarshal(trimmed, &s); err != nil {
+			return err
+		}
+		*f = flexString(s)
+		return nil
+	}
+	// Preserve exact numeric or boolean literal text (no float64 rounding).
+	dec := json.NewDecoder(bytes.NewReader(trimmed))
+	dec.UseNumber()
+	var v any
+	if err := dec.Decode(&v); err != nil {
+		return err
+	}
+	switch n := v.(type) {
+	case json.Number:
+		*f = flexString(n.String())
+	case bool:
+		*f = flexString(strconv.FormatBool(n))
+	default:
+		*f = flexString(fmt.Sprint(v))
+	}
+	return nil
+}
+
+func (f flexString) String() string {
+	return strings.TrimSpace(string(f))
+}
+
+// flexInt unmarshals JSON integer or numeric string (or null) into int.
+type flexInt int
+
+func (f *flexInt) UnmarshalJSON(data []byte) error {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		*f = 0
+		return nil
+	}
+	if trimmed[0] == '"' {
+		var s string
+		if err := json.Unmarshal(trimmed, &s); err != nil {
+			return err
+		}
+		s = strings.TrimSpace(s)
+		if s == "" {
+			*f = 0
+			return nil
+		}
+		n, err := strconv.Atoi(s)
+		if err != nil {
+			return err
+		}
+		*f = flexInt(n)
+		return nil
+	}
+	var n int
+	if err := json.Unmarshal(trimmed, &n); err != nil {
+		return err
+	}
+	*f = flexInt(n)
+	return nil
+}
 
 // XunhuClient implements the XunhuPay (虎皮椒) v1.1 HTTP protocol for order
 // creation, order status polling, and credential/connectivity verification.
@@ -132,30 +208,37 @@ func (c *XunhuClient) CreatePayment(ctx context.Context, req XunhuCreateRequest)
 		return XunhuCreateResponse{}, err
 	}
 	var resp struct {
-		ErrCode   int    `json:"errcode"`
-		ErrMsg    string `json:"errmsg"`
-		OpenID    string `json:"openid"`
-		URLQRCode string `json:"url_qrcode"`
-		URL       string `json:"url"`
-		Hash      string `json:"hash"`
+		ErrCode     flexInt    `json:"errcode"`
+		ErrMsg      flexString `json:"errmsg"`
+		OpenID      flexString `json:"openid"`
+		OpenOrderID flexString `json:"open_order_id"`
+		URLQRCode   flexString `json:"url_qrcode"`
+		URL         flexString `json:"url"`
+		Hash        flexString `json:"hash"`
 	}
 	if err := json.Unmarshal(raw, &resp); err != nil {
-		return XunhuCreateResponse{}, fmt.Errorf("%w: invalid xunhupay response", ErrProviderFailed)
+		return XunhuCreateResponse{}, fmt.Errorf("%w: invalid xunhupay response: %v", ErrProviderFailed, err)
 	}
-	if resp.ErrCode != 0 {
-		msg := strings.TrimSpace(resp.ErrMsg)
+	if int(resp.ErrCode) != 0 {
+		msg := resp.ErrMsg.String()
 		if msg == "" {
-			msg = fmt.Sprintf("errcode %d", resp.ErrCode)
+			msg = fmt.Sprintf("errcode %d", int(resp.ErrCode))
 		}
 		return XunhuCreateResponse{}, fmt.Errorf("%w: xunhupay: %s", ErrProviderFailed, msg)
 	}
-	if strings.TrimSpace(resp.URLQRCode) == "" && strings.TrimSpace(resp.URL) == "" {
+	qrURL := resp.URLQRCode.String()
+	payURL := resp.URL.String()
+	if qrURL == "" && payURL == "" {
 		return XunhuCreateResponse{}, fmt.Errorf("%w: xunhupay returned neither qrcode nor pay url", ErrProviderFailed)
 	}
+	openOrderID := resp.OpenID.String()
+	if openOrderID == "" {
+		openOrderID = resp.OpenOrderID.String()
+	}
 	return XunhuCreateResponse{
-		OpenOrderID: strings.TrimSpace(resp.OpenID),
-		QRCodeURL:   strings.TrimSpace(resp.URLQRCode),
-		PayURL:      strings.TrimSpace(resp.URL),
+		OpenOrderID: openOrderID,
+		QRCodeURL:   qrURL,
+		PayURL:      payURL,
 	}, nil
 }
 
@@ -167,9 +250,10 @@ type XunhuQueryRequest struct {
 }
 
 type XunhuQueryResponse struct {
-	Status      string // "OD" (paid), "WP" (waiting), "CD" (closed)
-	OpenOrderID string
-	AmountCents int
+	Status        string // "OD" (paid), "WP" (waiting), "CD" (closed)
+	OpenOrderID   string
+	TransactionID string
+	AmountCents   int
 }
 
 // QueryOrder queries XunhuPay payment/query.html for the latest order status.
@@ -198,38 +282,45 @@ func (c *XunhuClient) QueryOrder(ctx context.Context, req XunhuQueryRequest) (Xu
 		return XunhuQueryResponse{}, err
 	}
 	var envelope struct {
-		ErrCode int             `json:"errcode"`
-		ErrMsg  string          `json:"errmsg"`
+		ErrCode flexInt         `json:"errcode"`
+		ErrMsg  flexString      `json:"errmsg"`
 		Data    json.RawMessage `json:"data"`
 	}
 	if err := json.Unmarshal(raw, &envelope); err != nil {
-		return XunhuQueryResponse{}, fmt.Errorf("%w: invalid xunhupay query response", ErrProviderFailed)
+		return XunhuQueryResponse{}, fmt.Errorf("%w: invalid xunhupay query response: %v", ErrProviderFailed, err)
 	}
-	if envelope.ErrCode != 0 {
-		msg := strings.TrimSpace(envelope.ErrMsg)
+	if int(envelope.ErrCode) != 0 {
+		msg := envelope.ErrMsg.String()
 		if msg == "" {
-			msg = fmt.Sprintf("errcode %d", envelope.ErrCode)
+			msg = fmt.Sprintf("errcode %d", int(envelope.ErrCode))
 		}
 		return XunhuQueryResponse{}, fmt.Errorf("%w: xunhupay query: %s", ErrProviderFailed, msg)
 	}
 	var data struct {
-		Status      string `json:"status"`
-		OpenOrderID string `json:"open_order_id"`
-		TotalFee    any    `json:"total_fee"`
+		Status        flexString `json:"status"`
+		OpenOrderID   flexString `json:"open_order_id"`
+		TransactionID flexString `json:"transaction_id"`
+		TotalAmount   flexString `json:"total_amount"` // Observed field on live XunhuPay payment/query.html
+		TotalFee      flexString `json:"total_fee"`    // Legacy/documented alias
 	}
-	if len(envelope.Data) > 0 {
-		_ = json.Unmarshal(envelope.Data, &data)
+	if trimmedData := bytes.TrimSpace(envelope.Data); len(trimmedData) > 0 && trimmedData[0] == '{' {
+		_ = json.Unmarshal(trimmedData, &data)
 	}
 	cents := 0
-	if data.TotalFee != nil {
-		if parsed, parseErr := ParseCNYCents(fmt.Sprint(data.TotalFee)); parseErr == nil {
+	amountRaw := data.TotalAmount.String()
+	if amountRaw == "" {
+		amountRaw = data.TotalFee.String()
+	}
+	if amountRaw != "" {
+		if parsed, parseErr := ParseCNYCents(amountRaw); parseErr == nil {
 			cents = parsed
 		}
 	}
 	return XunhuQueryResponse{
-		Status:      strings.ToUpper(strings.TrimSpace(data.Status)),
-		OpenOrderID: strings.TrimSpace(data.OpenOrderID),
-		AmountCents: cents,
+		Status:        strings.ToUpper(data.Status.String()),
+		OpenOrderID:   data.OpenOrderID.String(),
+		TransactionID: data.TransactionID.String(),
+		AmountCents:   cents,
 	}, nil
 }
 
@@ -259,24 +350,25 @@ func (c *XunhuClient) TestChannel(ctx context.Context, queryURL, appID, appSecre
 		return err
 	}
 	var resp struct {
-		ErrCode int    `json:"errcode"`
-		ErrMsg  string `json:"errmsg"`
+		ErrCode flexInt    `json:"errcode"`
+		ErrMsg  flexString `json:"errmsg"`
 	}
 	if err := json.Unmarshal(raw, &resp); err != nil {
-		return fmt.Errorf("%w: unexpected response from xunhupay gateway", ErrProviderFailed)
+		return fmt.Errorf("%w: unexpected response from xunhupay gateway: %v", ErrProviderFailed, err)
 	}
 	// XunhuPay returns errcode 0 (empty data) or "order not found" (commonly errcode 404/500 with
 	// order-missing message) when credentials and signature are valid. Signature or appid errors
 	// explicitly mention hash/sign/appid/secret.
-	if resp.ErrCode == 0 {
+	if int(resp.ErrCode) == 0 {
 		return nil
 	}
-	lower := strings.ToLower(resp.ErrMsg)
+	errMsg := resp.ErrMsg.String()
+	lower := strings.ToLower(errMsg)
 	if strings.Contains(lower, "hash") || strings.Contains(lower, "sign") ||
 		strings.Contains(lower, "appid") || strings.Contains(lower, "secret") ||
-		strings.Contains(resp.ErrMsg, "签名") || strings.Contains(resp.ErrMsg, "密钥") ||
-		strings.Contains(resp.ErrMsg, "商户") {
-		return fmt.Errorf("%w: xunhupay rejected credentials: %s", ErrProviderFailed, strings.TrimSpace(resp.ErrMsg))
+		strings.Contains(errMsg, "签名") || strings.Contains(errMsg, "密钥") ||
+		strings.Contains(errMsg, "商户") {
+		return fmt.Errorf("%w: xunhupay rejected credentials: %s", ErrProviderFailed, errMsg)
 	}
 	return nil
 }

@@ -264,7 +264,7 @@ func (s *Service) SyncOrderStatus(ctx context.Context, tenantID, orderNo string,
 		if qResp.AmountCents > 0 && qResp.AmountCents != o.AmountCents {
 			return o, ErrAmountMismatch
 		}
-		return s.confirmAndFulfill(ctx, tenantID, o.OrderNo, qResp.OpenOrderID, "", time.Now().UTC(), false)
+		return s.confirmAndFulfill(ctx, tenantID, o.OrderNo, qResp.OpenOrderID, qResp.TransactionID, time.Now().UTC(), false)
 	}
 	return s.store.GetOrderByNo(ctx, tenantID, o.OrderNo)
 }
