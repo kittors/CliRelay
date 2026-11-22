@@ -255,7 +255,8 @@ func (s *Service) ManualFulfill(ctx context.Context, tenantID, orderNo string) (
 	return s.confirmAndFulfill(ctx, tenantID, orderNo, "", "", time.Now().UTC(), true)
 }
 
-// CreateManualOrder records an offline payment (e.g. direct WeChat transfer) and immediately fulfills it.
+// CreateManualOrder records an offline payment (e.g. direct WeChat transfer or historical backfill)
+// and fulfills it according to extend_mode (extend_current | from_paid_at | record_only).
 func (s *Service) CreateManualOrder(ctx context.Context, tenantID, actorName string, input ManualOrderInput) (Order, error) {
 	if input.TargetKind != TargetKindEndUser && input.TargetKind != TargetKindAPIKey {
 		return Order{}, fieldErr("target_kind", "target_kind must be end_user or api_key")
@@ -272,25 +273,51 @@ func (s *Service) CreateManualOrder(ctx context.Context, tenantID, actorName str
 	if !meta.Active {
 		return Order{}, ErrNotFound
 	}
-	amountCents := input.AmountCents
-	if plan.Kind == PlanKindCustomQuota {
-		if input.CustomAmountCents > 0 {
-			amountCents = input.CustomAmountCents
+	extendMode := strings.ToLower(strings.TrimSpace(input.ExtendMode))
+	if extendMode == "" {
+		extendMode = ManualExtendCurrent
+	}
+	if extendMode != ManualExtendCurrent && extendMode != ManualExtendFromPaidAt && extendMode != ManualExtendRecordOnly {
+		return Order{}, fieldErr("extend_mode", "extend_mode must be extend_current, from_paid_at, or record_only")
+	}
+	if input.DurationDays < 0 || input.DurationDays > 3650 {
+		return Order{}, fieldErr("duration_days", "duration_days must be between 0 and 3650")
+	}
+	if input.DurationDays > 0 && plan.Kind == PlanKindSubscription {
+		plan.DurationDays = input.DurationDays
+	}
+
+	var amountCents int
+	if input.AmountCents != nil {
+		if *input.AmountCents < 0 {
+			return Order{}, fieldErr("amount_cents", "amount_cents cannot be negative")
 		}
-		if amountCents <= 0 {
-			return Order{}, fieldErr("amount_cents", "amount must be positive")
-		}
-	} else if amountCents <= 0 {
+		amountCents = *input.AmountCents
+	} else if plan.Kind == PlanKindCustomQuota {
+		amountCents = input.CustomAmountCents
+	} else {
 		amountCents = plan.PriceCents
 	}
+	if plan.Kind == PlanKindCustomQuota && extendMode != ManualExtendRecordOnly && amountCents <= 0 {
+		return Order{}, fieldErr("amount_cents", "amount must be positive")
+	}
+
 	now := time.Now().UTC()
-	orderNo, err := GenerateOrderNo(now)
+	paidAt := now
+	if input.PaidAt != nil && !input.PaidAt.IsZero() {
+		paidAt = input.PaidAt.UTC()
+	}
+	orderNo, err := GenerateOrderNo(paidAt)
 	if err != nil {
 		return Order{}, err
 	}
 	targetLabel := meta.Label
 	if meta.KeyMasked != "" {
 		targetLabel = fmt.Sprintf("%s (%s)", meta.Label, meta.KeyMasked)
+	}
+	source := "admin_manual"
+	if extendMode == ManualExtendFromPaidAt {
+		source = "admin_manual_from_paid_at"
 	}
 	order := Order{
 		ID:           uuid.NewString(),
@@ -309,16 +336,26 @@ func (s *Service) CreateManualOrder(ctx context.Context, tenantID, actorName str
 		AmountCents:  amountCents,
 		Currency:     DefaultCurrency,
 		Status:       OrderStatusPending,
-		Source:       "admin_manual",
+		Source:       source,
 		CreatedBy:    strings.TrimSpace(actorName),
-		ExpiresAt:    now,
-		CreatedAt:    now,
+		ExpiresAt:    paidAt,
+		CreatedAt:    paidAt,
 		UpdatedAt:    now,
 	}
 	if _, err := s.store.CreateOrder(ctx, order); err != nil {
 		return Order{}, err
 	}
-	return s.confirmAndFulfill(ctx, tenantID, order.OrderNo, "manual", strings.TrimSpace(input.Note), now, true)
+	if extendMode == ManualExtendRecordOnly {
+		if _, _, err := s.store.ClaimOrderForFulfillment(ctx, tenantID, order.OrderNo, "manual", strings.TrimSpace(input.Note), paidAt, true); err != nil {
+			return Order{}, err
+		}
+		summary := "线下收款补录（仅记账，未变更当前到期时间/额度）"
+		if note := strings.TrimSpace(input.Note); note != "" {
+			summary = summary + " · " + note
+		}
+		return s.store.MarkOrderFulfilled(ctx, tenantID, order.OrderNo, summary, paidAt)
+	}
+	return s.confirmAndFulfill(ctx, tenantID, order.OrderNo, "manual", strings.TrimSpace(input.Note), paidAt, true)
 }
 
 func (s *Service) confirmAndFulfill(ctx context.Context, tenantID, orderNo, providerOrderID, providerTradeNo string, paidAt time.Time, forceRetry bool) (Order, error) {

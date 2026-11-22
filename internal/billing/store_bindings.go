@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/configsync"
 )
 
 const bindingSelectColumns = `
@@ -331,31 +332,97 @@ func (s *Store) ListAllExpiries(ctx context.Context) (map[string]time.Time, map[
 	return accounts, keys, rows.Err()
 }
 
-// SetEntitlementExpiry sets or clears (when expiresAt is nil) a target's subscription expiration.
+// SetEntitlementExpiry sets or clears (when expiresAt is nil) a target's subscription expiration
+// and bumps configsync so all cluster nodes refresh their access-provider expiry caches.
 func (s *Store) SetEntitlementExpiry(ctx context.Context, tenantID string, kind TargetKind, targetID string, expiresAt *time.Time) error {
 	if !s.usable() {
 		return ErrUnavailable
 	}
-	now := time.Now().UTC()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if err := setEntitlementExpiryTx(ctx, tx, tenantID, kind, strings.TrimSpace(targetID), expiresAt, time.Now().UTC()); err != nil {
+		return err
+	}
+	return commitWithConfigSync(ctx, tx, tenantID)
+}
+
+// AdjustEntitlementDays adds (positive) or subtracts (negative) days from a target's expiry
+// and bumps configsync for cluster-wide propagation.
+func (s *Store) AdjustEntitlementDays(ctx context.Context, tenantID string, kind TargetKind, targetID string, deltaDays int, now time.Time) (time.Time, error) {
+	if !s.usable() {
+		return time.Time{}, ErrUnavailable
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return time.Time{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	trimmedID := strings.TrimSpace(targetID)
+	var raw any
+	err = tx.QueryRowContext(ctx, `
+		SELECT expires_at FROM billing_entitlements
+		 WHERE tenant_id = ? AND target_kind = ? AND target_id = ?
+	`, tenantID, string(kind), trimmedID).Scan(&raw)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return time.Time{}, err
+	}
+	base := now.UTC()
+	if current, ok := parseAnyTime(raw); ok {
+		if deltaDays > 0 {
+			if current.After(base) {
+				base = current
+			}
+		} else {
+			base = current
+		}
+	}
+	next := base.Add(time.Duration(deltaDays) * 24 * time.Hour)
+	if err := setEntitlementExpiryTx(ctx, tx, tenantID, kind, trimmedID, &next, now.UTC()); err != nil {
+		return time.Time{}, err
+	}
+	if err := commitWithConfigSync(ctx, tx, tenantID); err != nil {
+		return time.Time{}, err
+	}
+	return next, nil
+}
+
+func setEntitlementExpiryTx(ctx context.Context, tx *sql.Tx, tenantID string, kind TargetKind, targetID string, expiresAt *time.Time, now time.Time) error {
 	if expiresAt == nil {
-		_, err := s.db.ExecContext(ctx, `
+		_, err := tx.ExecContext(ctx, `
 			DELETE FROM billing_entitlements
 			 WHERE tenant_id = ? AND target_kind = ? AND target_id = ?
-		`, tenantID, string(kind), strings.TrimSpace(targetID))
+		`, tenantID, string(kind), targetID)
 		return err
 	}
 	exp := expiresAt.UTC()
-	_, err := s.db.ExecContext(ctx, `
+	_, err := tx.ExecContext(ctx, `
 		INSERT INTO billing_entitlements (tenant_id, target_kind, target_id, expires_at, updated_at)
 		VALUES (?, ?, ?, ?, ?)
 		ON CONFLICT (tenant_id, target_kind, target_id) DO UPDATE SET
 			expires_at = EXCLUDED.expires_at,
 			updated_at = EXCLUDED.updated_at
-	`, tenantID, string(kind), strings.TrimSpace(targetID), exp, now)
+	`, tenantID, string(kind), targetID, exp, now.UTC())
 	return err
 }
 
-func extendEntitlementExpiryTx(ctx context.Context, tx *sql.Tx, tenantID string, kind TargetKind, targetID string, days int, now time.Time) (time.Time, error) {
+func commitWithConfigSync(ctx context.Context, tx *sql.Tx, tenantID string) error {
+	if err := configsync.BumpAndCommit(ctx, tx, configsync.DomainAPIKeys, tenantID,
+		configsync.Event(configsync.DomainEndUsers, tenantID)); err != nil {
+		// In unit tests without config_versions table, fall back to direct commit cleanly.
+		if !isMissingTableErr(err) {
+			return err
+		}
+		return tx.Commit()
+	}
+	return nil
+}
+
+func extendEntitlementExpiryTx(ctx context.Context, tx *sql.Tx, tenantID string, kind TargetKind, targetID string, days int, baseFloor time.Time, now time.Time) (time.Time, error) {
 	var raw any
 	err := tx.QueryRowContext(ctx, `
 		SELECT expires_at FROM billing_entitlements
@@ -364,18 +431,12 @@ func extendEntitlementExpiryTx(ctx context.Context, tx *sql.Tx, tenantID string,
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return time.Time{}, err
 	}
-	base := now.UTC()
+	base := baseFloor.UTC()
 	if current, ok := parseAnyTime(raw); ok && current.After(base) {
 		base = current
 	}
 	next := base.Add(time.Duration(days) * 24 * time.Hour)
-	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO billing_entitlements (tenant_id, target_kind, target_id, expires_at, updated_at)
-		VALUES (?, ?, ?, ?, ?)
-		ON CONFLICT (tenant_id, target_kind, target_id) DO UPDATE SET
-			expires_at = EXCLUDED.expires_at,
-			updated_at = EXCLUDED.updated_at
-	`, tenantID, string(kind), targetID, next, now.UTC()); err != nil {
+	if err := setEntitlementExpiryTx(ctx, tx, tenantID, kind, targetID, &next, now.UTC()); err != nil {
 		return time.Time{}, err
 	}
 	return next, nil

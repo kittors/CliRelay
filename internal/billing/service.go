@@ -334,6 +334,60 @@ func (s *Service) DeleteBinding(ctx context.Context, tenantID, bindingID string)
 	return s.store.DeleteBinding(ctx, tenantID, bindingID)
 }
 
+// AdjustEntitlement lets an operator directly set, clear, extend (+N days), or shorten (-N days)
+// an end-user or API key's subscription expiration, propagating the change across cluster nodes.
+func (s *Service) AdjustEntitlement(ctx context.Context, tenantID string, input AdjustEntitlementInput) (EntitlementView, error) {
+	if input.TargetKind != TargetKindEndUser && input.TargetKind != TargetKindAPIKey {
+		return EntitlementView{}, fieldErr("target_kind", "target_kind must be end_user or api_key")
+	}
+	input.TargetID = strings.TrimSpace(input.TargetID)
+	if input.TargetID == "" {
+		return EntitlementView{}, fieldErr("target_id", "target_id is required")
+	}
+	meta := s.lookupTargetMeta(ctx, tenantID, input.TargetKind, input.TargetID)
+	if !meta.Active {
+		return EntitlementView{}, ErrNotFound
+	}
+	mode := strings.ToLower(strings.TrimSpace(input.Mode))
+	if mode == "" {
+		if input.DeltaDays != 0 {
+			mode = EntitlementModeAddDays
+		} else {
+			mode = EntitlementModeSet
+		}
+	}
+	var resultExp *time.Time
+	switch mode {
+	case EntitlementModeSet:
+		if err := s.store.SetEntitlementExpiry(ctx, tenantID, input.TargetKind, input.TargetID, input.ExpiresAt); err != nil {
+			return EntitlementView{}, err
+		}
+		if input.ExpiresAt != nil {
+			t := input.ExpiresAt.UTC()
+			resultExp = &t
+		}
+	case EntitlementModeAddDays:
+		if input.DeltaDays == 0 || input.DeltaDays < -3650 || input.DeltaDays > 3650 {
+			return EntitlementView{}, fieldErr("delta_days", "delta_days must be non-zero and within [-3650, 3650]")
+		}
+		next, err := s.store.AdjustEntitlementDays(ctx, tenantID, input.TargetKind, input.TargetID, input.DeltaDays, time.Now().UTC())
+		if err != nil {
+			return EntitlementView{}, err
+		}
+		resultExp = &next
+	default:
+		return EntitlementView{}, fieldErr("mode", "mode must be set or add_days")
+	}
+	if s.onQuotaChanged != nil {
+		_ = s.onQuotaChanged()
+	}
+	return EntitlementView{
+		TargetKind: input.TargetKind,
+		TargetID:   input.TargetID,
+		ExpiresAt:  resultExp,
+	}, nil
+}
+
 // HasPortalBilling reports whether the signed-in portal user has at least one active
 // binding with at least one enabled plan while tenant billing is enabled.
 func (s *Service) HasPortalBilling(ctx context.Context, tenantID, endUserID string) bool {

@@ -53,9 +53,31 @@ func (s *Service) fulfillOrder(ctx context.Context, o Order) (string, error) {
 		if days <= 0 {
 			return "", fmt.Errorf("subscription plan missing duration_days")
 		}
-		nextExp, err := extendEntitlementExpiryTx(ctx, tx, o.TenantID, o.TargetKind, o.TargetID, days, now)
-		if err != nil {
-			return "", err
+		var nextExp time.Time
+		if o.Source == "admin_manual_from_paid_at" && o.PaidAt != nil {
+			// Historical offline payment: compute expiry starting from paid_at + days,
+			// preserving any already-longer expiry so backfilling never shortens a customer.
+			candidate := o.PaidAt.UTC().Add(time.Duration(days) * 24 * time.Hour)
+			var raw any
+			if qErr := tx.QueryRowContext(ctx, `
+				SELECT expires_at FROM billing_entitlements
+				 WHERE tenant_id = ? AND target_kind = ? AND target_id = ?
+			`, o.TenantID, string(o.TargetKind), o.TargetID).Scan(&raw); qErr != nil && !errors.Is(qErr, sql.ErrNoRows) {
+				return "", qErr
+			}
+			nextExp = candidate
+			if current, ok := parseAnyTime(raw); ok && current.After(nextExp) {
+				nextExp = current
+			}
+			if err := setEntitlementExpiryTx(ctx, tx, o.TenantID, o.TargetKind, o.TargetID, &nextExp, now); err != nil {
+				return "", err
+			}
+		} else {
+			var extErr error
+			nextExp, extErr = extendEntitlementExpiryTx(ctx, tx, o.TenantID, o.TargetKind, o.TargetID, days, now, now)
+			if extErr != nil {
+				return "", extErr
+			}
 		}
 		parts = append(parts, fmt.Sprintf("有效期顺延 +%d 天（至 %s）", days, nextExp.In(time.Local).Format("2006-01-02 15:04")))
 

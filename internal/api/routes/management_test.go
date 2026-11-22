@@ -26,7 +26,7 @@ func TestRegisterManagementRouteTable(t *testing.T) {
 		routes[key] = route
 	}
 
-	if got, want := len(routes), 435; got != want {
+	if got, want := len(routes), 436; got != want {
 		t.Fatalf("route count = %d, want %d", got, want)
 	}
 	if got, want := sortedRouteKeys(routes), expectedManagementRoutes(); !slices.Equal(got, want) {
@@ -204,6 +204,7 @@ func TestManagementRoutePermissionsComplete(t *testing.T) {
 		{http.MethodPut, "/v0/management/billing/bindings", "tenant_settings.write"},
 		{http.MethodPost, "/v0/management/billing/bindings/b-1/rotate-code", "tenant_settings.write"},
 		{http.MethodDelete, "/v0/management/billing/bindings/b-1", "tenant_settings.write"},
+		{http.MethodPatch, "/v0/management/billing/entitlements", "tenant_settings.write"},
 		{http.MethodGet, "/v0/management/billing/orders", "tenant_settings.read"},
 		{http.MethodPost, "/v0/management/billing/orders/CP123/sync", "tenant_settings.write"},
 		{http.MethodPost, "/v0/management/billing/orders/CP123/fulfill", "tenant_settings.write"},
@@ -449,6 +450,7 @@ func expectedManagementRoutes() []string {
 		"PUT /v0/management/billing/bindings",
 		"POST /v0/management/billing/bindings/:id/rotate-code",
 		"DELETE /v0/management/billing/bindings/:id",
+		"PATCH /v0/management/billing/entitlements",
 		"GET /v0/management/billing/orders",
 		"POST /v0/management/billing/orders/:order_no/sync",
 		"POST /v0/management/billing/orders/:order_no/fulfill",

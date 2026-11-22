@@ -353,4 +353,101 @@ func TestBillingEndToEndSubscriptionQuotaAndIdempotency(t *testing.T) {
 	if cacheRefreshes.Load() < 2 {
 		t.Fatalf("expected cache refresh callback invoked on fulfillment, got %d", cacheRefreshes.Load())
 	}
+
+	// 9. Historical offline order (e.g. Oct 26 paid ¥400 for 2 months = 61 days) + operator free expiry adjustments.
+	paidOct26 := time.Date(2026, 10, 26, 12, 0, 0, 0, time.UTC)
+	amt400 := 40000
+	histKeyID := "key-hist-1"
+	if _, err := db.Exec(`INSERT INTO api_keys (id, tenant_id, key, name, end_user_id, disabled, access_policy) VALUES (?, ?, ?, ?, ?, 0, '{}')`,
+		histKeyID, tenantID, "sk-TEST-XXXX-HIST-0001", "Historical Key", userID); err != nil {
+		t.Fatalf("seed historical key: %v", err)
+	}
+	histOrder, err := svc.CreateManualOrder(ctx, tenantID, "admin", ManualOrderInput{
+		TargetKind:   TargetKindAPIKey,
+		TargetID:     histKeyID,
+		PlanID:       subPlan.ID,
+		AmountCents:  &amt400,
+		PaidAt:       &paidOct26,
+		DurationDays: 61,
+		ExtendMode:   ManualExtendFromPaidAt,
+		Note:         "10月26日线下付款400元两个月",
+	})
+	if err != nil || histOrder.Status != OrderStatusFulfilled {
+		t.Fatalf("CreateManualOrder historical: %+v err=%v", histOrder, err)
+	}
+	if histOrder.AmountCents != 40000 || histOrder.PaidAt == nil || !histOrder.PaidAt.Equal(paidOct26) {
+		t.Fatalf("expected backdated paid_at %v and amount 40000, got %+v", paidOct26, histOrder)
+	}
+	histExp, err := svc.Store().GetEntitlement(ctx, tenantID, TargetKindAPIKey, histKeyID)
+	if err != nil || histExp == nil {
+		t.Fatalf("expected historical expiry set, got %v err=%v", histExp, err)
+	}
+	wantDec26 := paidOct26.Add(61 * 24 * time.Hour)
+	if !histExp.Equal(wantDec26) {
+		t.Fatalf("expected expiry %v (Oct 26 + 61d), got %v", wantDec26, *histExp)
+	}
+
+	// Record-only manual order preserves expiry untouched and allows 0-cent comp.
+	zeroAmt := 0
+	recOnly, err := svc.CreateManualOrder(ctx, tenantID, "admin", ManualOrderInput{
+		TargetKind:  TargetKindAPIKey,
+		TargetID:    histKeyID,
+		PlanID:      subPlan.ID,
+		AmountCents: &zeroAmt,
+		ExtendMode:  ManualExtendRecordOnly,
+		Note:        "audit backfill",
+	})
+	if err != nil || recOnly.AmountCents != 0 || recOnly.Status != OrderStatusFulfilled {
+		t.Fatalf("CreateManualOrder record_only: %+v err=%v", recOnly, err)
+	}
+	histExpAfter, _ := svc.Store().GetEntitlement(ctx, tenantID, TargetKindAPIKey, histKeyID)
+	if histExpAfter == nil || !histExpAfter.Equal(wantDec26) {
+		t.Fatalf("record_only must not alter expiry: got %v want %v", histExpAfter, wantDec26)
+	}
+
+	// AdjustEntitlement: freely extend +30d, shorten -10d, set arbitrary future date, and clear.
+	refreshesBefore := cacheRefreshes.Load()
+	extView, err := svc.AdjustEntitlement(ctx, tenantID, AdjustEntitlementInput{
+		TargetKind: TargetKindAPIKey,
+		TargetID:   histKeyID,
+		Mode:       EntitlementModeAddDays,
+		DeltaDays:  30,
+	})
+	if err != nil || extView.ExpiresAt == nil {
+		t.Fatalf("AdjustEntitlement +30d: %+v err=%v", extView, err)
+	}
+	if !extView.ExpiresAt.Equal(wantDec26.Add(30 * 24 * time.Hour)) {
+		t.Fatalf("expected expiry extended +30d from Dec 26 to %v, got %v", wantDec26.Add(30*24*time.Hour), *extView.ExpiresAt)
+	}
+	shortView, err := svc.AdjustEntitlement(ctx, tenantID, AdjustEntitlementInput{
+		TargetKind: TargetKindAPIKey,
+		TargetID:   histKeyID,
+		Mode:       EntitlementModeAddDays,
+		DeltaDays:  -10,
+	})
+	if err != nil || shortView.ExpiresAt == nil || !shortView.ExpiresAt.Equal(wantDec26.Add(20*24*time.Hour)) {
+		t.Fatalf("AdjustEntitlement -10d: %+v err=%v", shortView, err)
+	}
+	customDate := time.Date(2027, 6, 1, 15, 59, 59, 0, time.UTC)
+	setView, err := svc.AdjustEntitlement(ctx, tenantID, AdjustEntitlementInput{
+		TargetKind: TargetKindAPIKey,
+		TargetID:   histKeyID,
+		Mode:       EntitlementModeSet,
+		ExpiresAt:  &customDate,
+	})
+	if err != nil || setView.ExpiresAt == nil || !setView.ExpiresAt.Equal(customDate) {
+		t.Fatalf("AdjustEntitlement set: %+v err=%v", setView, err)
+	}
+	clearView, err := svc.AdjustEntitlement(ctx, tenantID, AdjustEntitlementInput{
+		TargetKind: TargetKindAPIKey,
+		TargetID:   histKeyID,
+		Mode:       EntitlementModeSet,
+		ExpiresAt:  nil,
+	})
+	if err != nil || clearView.ExpiresAt != nil {
+		t.Fatalf("AdjustEntitlement clear: %+v err=%v", clearView, err)
+	}
+	if cacheRefreshes.Load() < refreshesBefore+4 {
+		t.Fatalf("expected cache refresh on every AdjustEntitlement call")
+	}
 }

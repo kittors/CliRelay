@@ -310,9 +310,44 @@ type ManualOrderInput struct {
 	TargetKind        TargetKind `json:"target_kind"`
 	TargetID          string     `json:"target_id"`
 	PlanID            string     `json:"plan_id"`
-	AmountCents       int        `json:"amount_cents"`
+	AmountCents       *int       `json:"amount_cents,omitempty"`
 	CustomAmountCents int        `json:"custom_amount_cents,omitempty"`
 	Note              string     `json:"note,omitempty"`
+	// PaidAt optionally backdates an offline payment (e.g. a historical transfer before billing launched).
+	PaidAt *time.Time `json:"paid_at,omitempty"`
+	// DurationDays optionally overrides a subscription plan's duration for this manual order (e.g. 2 months = 61 days).
+	DurationDays int `json:"duration_days,omitempty"`
+	// ExtendMode controls how a manual order affects expiry:
+	//   "" or "extend_current": extend from max(current expiry, now)
+	//   "from_paid_at":         set expiry to max(current expiry, paid_at + duration_days)
+	//   "record_only":          record revenue ledger entry only without mutating expiry or quota
+	ExtendMode string `json:"extend_mode,omitempty"`
+}
+
+const (
+	ManualExtendCurrent    = "extend_current"
+	ManualExtendFromPaidAt = "from_paid_at"
+	ManualExtendRecordOnly = "record_only"
+
+	EntitlementModeSet     = "set"
+	EntitlementModeAddDays = "add_days"
+)
+
+// AdjustEntitlementInput lets an operator freely extend, shorten, set, or clear
+// a target account or API key's subscription expiration.
+type AdjustEntitlementInput struct {
+	TargetKind TargetKind `json:"target_kind"`
+	TargetID   string     `json:"target_id"`
+	Mode       string     `json:"mode"` // "set" | "add_days"
+	DeltaDays  int        `json:"delta_days,omitempty"`
+	ExpiresAt  *time.Time `json:"expires_at,omitempty"`
+}
+
+// EntitlementView returns the effective expiration after an operator adjustment.
+type EntitlementView struct {
+	TargetKind TargetKind `json:"target_kind"`
+	TargetID   string     `json:"target_id"`
+	ExpiresAt  *time.Time `json:"expires_at,omitempty"`
 }
 
 // PortalPlanView is one plan offered to a specific target (with any per-target price override applied).
