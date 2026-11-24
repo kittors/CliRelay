@@ -309,7 +309,43 @@ func codexResponsesFailedStatusErr(payload []byte) statusErr {
 	if retryAfter := codexImageResponsesRetryAfter(message); retryAfter > 0 {
 		err.retryAfter = &retryAfter
 	}
+	// An overloaded fleet states its own wait in the event's headers object,
+	// not in the HTTP response, so it has to be read from the payload.
+	if retryAfter := codexResponsesRetryAfterHint(payload); retryAfter > 0 {
+		err.retryAfter = &retryAfter
+	}
 	return err
+}
+
+// codexResponsesRetryAfterHint reads the wait a Codex error event carries in its
+// own headers object, in seconds or milliseconds.
+func codexResponsesRetryAfterHint(payload []byte) time.Duration {
+	if len(payload) == 0 {
+		return 0
+	}
+	for _, path := range []string{
+		"error.headers.retry-after-ms", "error.headers.retry_after_ms",
+		"headers.retry-after-ms", "headers.retry_after_ms",
+	} {
+		if ms := gjson.GetBytes(payload, path); ms.Exists() {
+			if value := ms.Float(); value > 0 {
+				return time.Duration(value) * time.Millisecond
+			}
+		}
+	}
+	for _, path := range []string{
+		"error.headers.retry-after", "error.headers.retry_after",
+		"headers.retry-after", "headers.retry_after",
+	} {
+		raw := gjson.GetBytes(payload, path)
+		if !raw.Exists() {
+			continue
+		}
+		if value := raw.Float(); value > 0 {
+			return time.Duration(value * float64(time.Second))
+		}
+	}
+	return 0
 }
 
 func codexResponsesFailedField(payload []byte, paths ...string) string {
@@ -334,6 +370,10 @@ func codexResponsesFailedHTTPStatus(code string, errType string) int {
 		return http.StatusForbidden
 	case strings.Contains(lower, "timeout"):
 		return http.StatusRequestTimeout
+	case strings.Contains(lower, "overloaded"), strings.Contains(lower, "service_unavailable"):
+		// Capacity, not a broken request: 503 tells the client to back off
+		// rather than to change what it sent.
+		return http.StatusServiceUnavailable
 	default:
 		return http.StatusBadGateway
 	}
