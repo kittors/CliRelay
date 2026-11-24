@@ -389,7 +389,11 @@ func postgresSmokeAllowsStatus(routePath string, status int, body string) bool {
 		// therefore have no real target; dedicated handler tests cover success.
 		targetedLookup := routePath == "/v0/management/api-key-entries/daily-spending/reset" ||
 			routePath == "/v0/management/api-key-entries/daily-spending/reset-history"
-		return (strings.Contains(body, "not found") || strings.Contains(body, "validation") || strings.Contains(body, "invalid")) &&
+		return (strings.Contains(body, "not found") ||
+			strings.Contains(body, "not_found") ||
+			strings.Contains(body, "validation") ||
+			strings.Contains(body, "invalid") ||
+			strings.Contains(body, "missing_required_field")) &&
 			(strings.Contains(routePath, ":") || strings.Contains(routePath, "*") || targetedLookup)
 	}
 	if status == http.StatusServiceUnavailable && strings.Contains(body, "updater_unavailable") {
@@ -416,6 +420,8 @@ func postgresSmokeAllowsStatus(routePath string, status int, body string) bool {
 		"image generation service unavailable",
 		"video generation service unavailable",
 		"identity service unavailable",
+		`"service_unavailable"`,
+		`"identity_unavailable"`,
 	}
 	for _, text := range allowed {
 		if strings.Contains(body, text) {

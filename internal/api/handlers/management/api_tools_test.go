@@ -635,8 +635,9 @@ func TestAPICallRejectsLoopbackTarget(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected status %d, got %d, body=%s", http.StatusBadRequest, rec.Code, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), "blocked url") {
-		t.Fatalf("expected blocked url error, got body=%s", rec.Body.String())
+	env := decodeErrorEnvelope(t, rec.Body.Bytes())
+	if env.Error.Code != "blocked_private_address" || !strings.Contains(env.Error.Message, "127.0.0.1") {
+		t.Fatalf("expected blocked_private_address error mentioning 127.0.0.1, got body=%s", rec.Body.String())
 	}
 }
 
@@ -688,8 +689,12 @@ func TestAPICallRejectsUnknownAuthIndexTokenPlaceholder(t *testing.T) {
 	manager := coreauth.NewManager(&memoryAuthStore{}, nil, nil)
 	rec, hits := postAPICallWithTokenPlaceholder(t, "stale-or-cross-tenant-index", manager)
 
-	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "auth not found for index") {
-		t.Fatalf("got %d %s, want 400 with auth not found for index", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("got %d %s, want 400", rec.Code, rec.Body.String())
+	}
+	env := decodeErrorEnvelope(t, rec.Body.Bytes())
+	if env.Error.Code != "auth_not_found" || !strings.Contains(env.Error.Message, "stale-or-cross-tenant-index") {
+		t.Fatalf("got %d %s, want auth_not_found mentioning index", rec.Code, rec.Body.String())
 	}
 	if hits != 0 {
 		t.Fatalf("upstream was reached %d time(s)", hits)
@@ -699,8 +704,12 @@ func TestAPICallRejectsUnknownAuthIndexTokenPlaceholder(t *testing.T) {
 func TestAPICallRejectsMissingAuthIndexTokenPlaceholder(t *testing.T) {
 	rec, hits := postAPICallWithTokenPlaceholder(t, "", nil)
 
-	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "missing auth index") {
-		t.Fatalf("got %d %s, want 400 with missing auth index", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("got %d %s, want 400", rec.Code, rec.Body.String())
+	}
+	env := decodeErrorEnvelope(t, rec.Body.Bytes())
+	if env.Error.Code != "missing_auth_index" || !strings.Contains(env.Error.Message, "auth_index") {
+		t.Fatalf("got %d %s, want missing_auth_index", rec.Code, rec.Body.String())
 	}
 	if hits != 0 {
 		t.Fatalf("upstream was reached %d time(s)", hits)
@@ -729,8 +738,9 @@ func TestAPICallRejectsRedirectToLoopbackTarget(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected status %d, got %d, body=%s", http.StatusBadRequest, rec.Code, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), "blocked url") {
-		t.Fatalf("expected blocked url error, got body=%s", rec.Body.String())
+	env := decodeErrorEnvelope(t, rec.Body.Bytes())
+	if env.Error.Code != "blocked_redirect_target" || !strings.Contains(env.Error.Message, "重定向") {
+		t.Fatalf("expected blocked_redirect_target error, got body=%s", rec.Body.String())
 	}
 }
 
@@ -760,7 +770,96 @@ func TestAPICallRejectsOversizedUpstreamResponse(t *testing.T) {
 	if rec.Code != http.StatusBadGateway {
 		t.Fatalf("expected status %d, got %d, body=%s", http.StatusBadGateway, rec.Code, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), "upstream response too large") {
-		t.Fatalf("expected upstream size error, got body=%s", rec.Body.String())
+	env := decodeErrorEnvelope(t, rec.Body.Bytes())
+	if env.Error.Code != "upstream_response_too_large" || !strings.Contains(env.Error.Message, "4 MiB") {
+		t.Fatalf("expected upstream_response_too_large mentioning 4 MiB, got body=%s", rec.Body.String())
+	}
+}
+
+func TestAPICallAllowsDomainThroughExplicitProxy(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	var seenHost string
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenHost = r.Host
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	t.Cleanup(proxy.Close)
+
+	h := &Handler{cfg: &config.Config{SDKConfig: config.SDKConfig{ProxyURL: proxy.URL}}}
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	// Use a synthetic .invalid domain that cannot resolve on the host's local DNS;
+	// with an explicit proxy configured, DNS resolution belongs to the proxy.
+	body := []byte(`{"method":"GET","url":"http://chatgpt.proxy-only.invalid/backend-api/wham/rate-limit-reset-credits"}`)
+	req := httptest.NewRequest(http.MethodPost, "/v0/management/api-call", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	c.Request = req
+
+	h.APITools().APICall(c)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 via explicit proxy, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if seenHost != "chatgpt.proxy-only.invalid" {
+		t.Fatalf("proxy saw host %q, want chatgpt.proxy-only.invalid", seenHost)
+	}
+}
+
+func TestAPICallRejectsFakeIPLiteralAndBadSchemeClearly(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	h := &Handler{cfg: &config.Config{}}
+
+	cases := []struct {
+		name     string
+		body     string
+		wantCode string
+		wantHint string
+	}{
+		{
+			name:     "fake ip literal",
+			body:     `{"method":"GET","url":"http://198.18.0.42/test"}`,
+			wantCode: "blocked_fake_ip_address",
+			wantHint: "Fake-IP",
+		},
+		{
+			name:     "unsupported scheme",
+			body:     `{"method":"GET","url":"file:///etc/passwd"}`,
+			wantCode: "unsupported_url_scheme",
+			wantHint: "file",
+		},
+		{
+			name:     "missing host",
+			body:     `{"method":"GET","url":"https:///path-only"}`,
+			wantCode: "missing_url_host",
+			wantHint: "主机名",
+		},
+		{
+			name:     "invalid json body",
+			body:     `{"method":`,
+			wantCode: "empty_request_body",
+			wantHint: "请求体",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			req := httptest.NewRequest(http.MethodPost, "/v0/management/api-call", bytes.NewReader([]byte(tc.body)))
+			req.Header.Set("Content-Type", "application/json")
+			c.Request = req
+
+			h.APITools().APICall(c)
+
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400; body=%s", rec.Code, rec.Body.String())
+			}
+			env := decodeErrorEnvelope(t, rec.Body.Bytes())
+			if env.Error.Code != tc.wantCode || !strings.Contains(env.Error.Message, tc.wantHint) {
+				t.Fatalf("got code=%q message=%q, want code=%q containing %q", env.Error.Code, env.Error.Message, tc.wantCode, tc.wantHint)
+			}
+		})
 	}
 }

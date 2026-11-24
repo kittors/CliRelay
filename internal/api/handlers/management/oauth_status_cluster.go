@@ -23,18 +23,18 @@ func respondSharedAuthStatus(c *gin.Context, state string) bool {
 	}
 	lookup, err := shared.Lookup(state)
 	if err != nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"status": "error", "error": "oauth session store unavailable"})
+		c.JSON(http.StatusServiceUnavailable, gin.H{"status": "error", "code": "oauth_session_store_unavailable", "error": "集群 OAuth 会话存储暂时不可用，请稍后重试或检查共享存储连接"})
 		return true
 	}
 	if lookup.Outcome != oauthsession.LookupMissing {
 		if tenantID := lookup.Session.TenantID; tenantID != "" && tenantID != effectiveTenantID(c) {
-			c.JSON(http.StatusNotFound, gin.H{"status": "error", "error": "unknown or expired state", "code": oauthCodeSessionExpired})
+			c.JSON(http.StatusNotFound, gin.H{"status": "error", "error": "OAuth 登录状态不存在或已过期（unknown or expired state），请重新发起授权登录", "code": oauthCodeSessionExpired})
 			return true
 		}
 	}
 	switch lookup.Outcome {
 	case oauthsession.LookupMissing:
-		c.JSON(http.StatusNotFound, gin.H{"status": "error", "error": "oauth state not found or expired", "code": oauthCodeSessionExpired})
+		c.JSON(http.StatusNotFound, gin.H{"status": "error", "error": "OAuth 登录状态不存在或已过期（unknown or expired state），请重新发起授权登录", "code": oauthCodeSessionExpired})
 	case oauthsession.LookupExpired:
 		c.JSON(http.StatusNotFound, gin.H{"status": "error", "error": oauthsession.MessageExpired, "code": oauthCodeSessionExpired})
 	case oauthsession.LookupSuperseded:

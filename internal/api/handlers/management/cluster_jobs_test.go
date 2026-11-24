@@ -50,7 +50,7 @@ func TestClusterConsoleTaskPollReachesAnotherNode(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/image-generation/test/task-test", nil))
-	if rec.Code != http.StatusNotFound || !strings.Contains(rec.Body.String(), "not found") {
+	if rec.Code != http.StatusNotFound || !strings.Contains(rec.Body.String(), `"not_found"`) {
 		t.Fatalf("unknown task id = %d %s", rec.Code, rec.Body.String())
 	}
 }

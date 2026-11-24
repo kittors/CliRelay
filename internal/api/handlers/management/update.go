@@ -28,8 +28,12 @@ func (h *Handler) PutAutoUpdateEnabled(c *gin.Context) {
 	var body struct {
 		Value *bool `json:"value"`
 	}
-	if err := c.ShouldBindJSON(&body); err != nil || body.Value == nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+	if err := c.ShouldBindJSON(&body); err != nil {
+		writeInvalidBodyError(c, err)
+		return
+	}
+	if body.Value == nil {
+		writeMissingFieldError(c, "value", "请传入布尔类型的 value 字段以开启或关闭自动更新")
 		return
 	}
 	h.mu.Lock()
@@ -51,13 +55,17 @@ func (h *Handler) PutAutoUpdateChannel(c *gin.Context) {
 	var body struct {
 		Value *string `json:"value"`
 	}
-	if err := c.ShouldBindJSON(&body); err != nil || body.Value == nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+	if err := c.ShouldBindJSON(&body); err != nil {
+		writeInvalidBodyError(c, err)
+		return
+	}
+	if body.Value == nil {
+		writeMissingFieldError(c, "value", "请传入有效的更新通道名称（如 stable、dev）")
 		return
 	}
 	channel := managementupdate.NormalizeAutoUpdateChannel(*body.Value)
 	if channel == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid auto update channel"})
+		writeInvalidFieldError(c, "value", "不支持的自动更新通道，请选择受支持的更新频道")
 		return
 	}
 	h.mu.Lock()
@@ -145,23 +153,23 @@ func (h *Handler) StreamUpdateProgress(c *gin.Context) {
 
 func (h *Handler) ApplyUpdate(c *gin.Context) {
 	if h == nil || h.cfg == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "config_unavailable"})
+		writeError(c, http.StatusServiceUnavailable, "config_unavailable", "服务端配置尚未初始化，暂无法执行系统更新")
 		return
 	}
 	if !h.cfg.AutoUpdate.Enabled {
-		c.JSON(http.StatusForbidden, gin.H{"error": "auto_update_disabled"})
+		writeError(c, http.StatusForbidden, "auto_update_disabled", "当前节点未开启自动更新功能（auto-update.enabled=false），请先在系统设置中开启后再触发更新")
 		return
 	}
 
 	check, err := h.buildUpdateCheck(c.Request.Context())
 	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "update_check_failed", "message": err.Error()})
+		c.JSON(http.StatusBadGateway, gin.H{"error": "update_check_failed", "message": "检查新版本信息失败：" + err.Error()})
 		return
 	}
 	if check.UpdateAvailable && !check.UpdaterAvailable {
 		message := strings.TrimSpace(check.UpdaterHealthMessage)
 		if message == "" {
-			message = "updater is unavailable"
+			message = "更新器服务（updater sidecar）当前不可用，请检查更新器进程与通信配置"
 		}
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "updater_unavailable", "message": message})
 		return

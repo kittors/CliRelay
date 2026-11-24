@@ -52,7 +52,7 @@ type commandCodeWindow struct {
 func (h *Handler) QueryCommandCodeUsage(c *gin.Context) {
 	var body openCodeGoUsageRequest
 	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		writeInvalidBodyError(c, err)
 		return
 	}
 
@@ -73,13 +73,17 @@ func (h *Handler) QueryCommandCodeUsage(c *gin.Context) {
 		}
 	}
 	if apiKey == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "api-key is required"})
+		writeMissingFieldError(c, "api-key", "查询 Command Code 套餐用量必须提供有效的 api-key，或指定已配置的条目 index/name")
 		return
 	}
 
 	items, err := runtimeHandler.fetchCommandCodeUsage(c.Request.Context(), apiKey, proxyID, proxyURL, resolveUsageTimeout(body.TimeoutSec))
 	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		if _, isUsageErr := err.(openCodeGoUsageError); isUsageErr {
+			writeError(c, http.StatusBadGateway, "commandcode_usage_failed", err.Error())
+		} else {
+			writeUpstreamError(c, http.StatusBadGateway, "查询 Command Code 用量", err)
+		}
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"usage": items})

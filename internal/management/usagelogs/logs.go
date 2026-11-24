@@ -146,9 +146,9 @@ func (s *Service) ClearRequestLogs(options usage.ClearRequestLogsOptions) (int, 
 	result, err := usage.ClearRequestLogs(options)
 	if err != nil {
 		if strings.Contains(err.Error(), "at least one cleanup option") {
-			return http.StatusBadRequest, map[string]any{"error": err.Error()}, err
+			return http.StatusBadRequest, errorPayload("missing_cleanup_option", "请至少选择一项要清理的内容（请求体、详情内容或请求记录）后再执行清理"), err
 		}
-		return http.StatusInternalServerError, map[string]any{"error": err.Error()}, err
+		return http.StatusInternalServerError, internalErrorPayload("清理请求日志数据", err), err
 	}
 	return http.StatusOK, result, nil
 }

@@ -4,7 +4,6 @@ package management
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -282,7 +281,7 @@ func resolveSessionToken(c *gin.Context) string {
 func (h *Handler) authenticateSessionToken(c *gin.Context, token string) bool {
 	service := h.identity()
 	if service == nil {
-		c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"error": gin.H{"code": "identity_unavailable", "message": "identity service unavailable"}})
+		abortError(c, http.StatusServiceUnavailable, "identity_unavailable", "身份认证服务尚未初始化，请稍后重试或检查数据库配置")
 		return false
 	}
 	principal, err := service.Authenticate(c.Request.Context(), token, c.GetHeader("X-Effective-Tenant-ID"))
@@ -291,7 +290,7 @@ func (h *Handler) authenticateSessionToken(c *gin.Context, token string) bool {
 		return false
 	}
 	if principal.User.MustChangePassword {
-		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": gin.H{"code": "password_change_required", "message": "password change required"}})
+		abortError(c, http.StatusForbidden, "password_change_required", "当前账号首次登录或密码已重置，必须先修改密码后才能继续访问管理接口")
 		return false
 	}
 	permission := permissionForManagementRequest(c.Request.Method, c.Request.URL.Path)
@@ -305,7 +304,7 @@ func (h *Handler) authenticateSessionToken(c *gin.Context, token string) bool {
 	// after tenant switch so ops pages like /logs still work under an effective
 	// business tenant.
 	if deniesTenantResourceScope(principal, c.Request.URL.Path) {
-		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": gin.H{"code": "tenant_resource_scope_unavailable", "message": "tenant business resources are not enabled for this tenant"}})
+		abortError(c, http.StatusForbidden, "tenant_resource_scope_unavailable", "当前租户工作区未开放该全局/系统级资源接口，请切换至系统管理员或对应权限范围后重试")
 		h.recordManagementDenial(c, principal, denialTenantScope)
 		return false
 	}
@@ -325,7 +324,7 @@ func (h *Handler) persist(c *gin.Context) bool {
 	_, err := settingsstore.CommitLiveConfig(c.Request.Context(), cfg, h.configFilePath, requestVersion(c))
 	h.mu.Unlock()
 	if err != nil {
-		writeConfigSaveError(c, "failed to save config", err)
+		writeConfigSaveError(c, "保存系统配置", err)
 		return false
 	}
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
@@ -344,7 +343,7 @@ func (h *Handler) persistNodeLocal(c *gin.Context) bool {
 	err := settingsstore.SaveNodeLocalConfig(cfg, h.configFilePath)
 	h.mu.Unlock()
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to save config: %v", err)})
+		writeInternalError(c, "保存节点本地配置", err)
 		return false
 	}
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
@@ -391,8 +390,12 @@ func (h *Handler) updateBoolField(c *gin.Context, set func(*config.Config, bool)
 	var body struct {
 		Value *bool `json:"value"`
 	}
-	if err := c.ShouldBindJSON(&body); err != nil || body.Value == nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+	if err := c.ShouldBindJSON(&body); err != nil {
+		writeInvalidBodyError(c, err)
+		return
+	}
+	if body.Value == nil {
+		writeMissingFieldError(c, "value", "请提供布尔类型的 value 字段")
 		return
 	}
 	h.mutateSystemConfig(c, func(cfg *config.Config) error { set(cfg, *body.Value); return nil })
@@ -402,8 +405,12 @@ func (h *Handler) updateIntField(c *gin.Context, set func(*config.Config, int)) 
 	var body struct {
 		Value *int `json:"value"`
 	}
-	if err := c.ShouldBindJSON(&body); err != nil || body.Value == nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+	if err := c.ShouldBindJSON(&body); err != nil {
+		writeInvalidBodyError(c, err)
+		return
+	}
+	if body.Value == nil {
+		writeMissingFieldError(c, "value", "请提供整数类型的 value 字段")
 		return
 	}
 	h.mutateSystemConfig(c, func(cfg *config.Config) error { set(cfg, *body.Value); return nil })
@@ -413,8 +420,12 @@ func (h *Handler) updateStringField(c *gin.Context, set func(*config.Config, str
 	var body struct {
 		Value *string `json:"value"`
 	}
-	if err := c.ShouldBindJSON(&body); err != nil || body.Value == nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+	if err := c.ShouldBindJSON(&body); err != nil {
+		writeInvalidBodyError(c, err)
+		return
+	}
+	if body.Value == nil {
+		writeMissingFieldError(c, "value", "请提供字符串类型的 value 字段")
 		return
 	}
 	h.mutateSystemConfig(c, func(cfg *config.Config) error { set(cfg, *body.Value); return nil })

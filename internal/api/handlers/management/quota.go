@@ -34,26 +34,26 @@ type quotaReconcileRequest struct {
 
 func (h *Handler) PostQuotaReconcile(c *gin.Context) {
 	if h == nil || h.authManager == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "auth manager unavailable"})
+		writeServiceUnavailableError(c, "核心凭据管理服务")
 		return
 	}
 
 	var body quotaReconcileRequest
 	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		writeInvalidBodyError(c, err)
 		return
 	}
 
 	authIndex := firstNonEmptyString(body.AuthIndexSnake, body.AuthIndexCamel, body.AuthIndexPascal)
 	auth := h.authByIndexForTenant(effectiveTenantID(c), authIndex)
 	if auth == nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "auth not found"})
+		writeNotFoundError(c, "账号凭据", authIndex)
 		return
 	}
 
 	changed, err := h.authManager.ReconcileQuota(c.Request.Context(), auth.ID)
 	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		writeUpstreamError(c, http.StatusBadGateway, "校准账号配额状态", err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{
@@ -64,26 +64,26 @@ func (h *Handler) PostQuotaReconcile(c *gin.Context) {
 
 func (h *Handler) PostQuotaClearStatus(c *gin.Context) {
 	if h == nil || h.authManager == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "auth manager unavailable"})
+		writeServiceUnavailableError(c, "核心凭据管理服务")
 		return
 	}
 
 	var body quotaReconcileRequest
 	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		writeInvalidBodyError(c, err)
 		return
 	}
 
 	authIndex := firstNonEmptyString(body.AuthIndexSnake, body.AuthIndexCamel, body.AuthIndexPascal)
 	auth := h.authByIndexForTenant(effectiveTenantID(c), authIndex)
 	if auth == nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "auth not found"})
+		writeNotFoundError(c, "账号凭据", authIndex)
 		return
 	}
 
 	changed, err := h.authManager.ClearQuotaStatus(c.Request.Context(), auth.ID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeInternalError(c, "清除账号配额受限状态", err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{
@@ -118,19 +118,19 @@ type quotaSnapshotPointRequest struct {
 
 func (h *Handler) PostAuthFileQuotaSnapshot(c *gin.Context) {
 	if h == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "handler unavailable"})
+		writeServiceUnavailableError(c, "配额快照服务")
 		return
 	}
 
 	var body quotaSnapshotRequest
 	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		writeInvalidBodyError(c, err)
 		return
 	}
 
 	authIndex := firstNonEmptyString(body.AuthIndexSnake, body.AuthIndexCamel, body.AuthIndexPascal)
 	if strings.TrimSpace(authIndex) == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "auth_index is required"})
+		writeMissingFieldError(c, "auth_index", "请指定要写入配额快照的账号凭据编号（auth_index）")
 		return
 	}
 	quotaPoints := body.QuotaPoints
@@ -138,7 +138,7 @@ func (h *Handler) PostAuthFileQuotaSnapshot(c *gin.Context) {
 		quotaPoints = body.QuotaPointsCamel
 	}
 	if len(body.Quotas) == 0 && len(quotaPoints) == 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "quotas or quota_points is required"})
+		writeMissingFieldError(c, "quotas", "请至少提供 quotas 或 quota_points 之一")
 		return
 	}
 
@@ -147,7 +147,7 @@ func (h *Handler) PostAuthFileQuotaSnapshot(c *gin.Context) {
 	if h.authManager != nil {
 		auth := h.authByIndexForTenant(effectiveTenantID(c), authIndex)
 		if auth == nil {
-			c.JSON(http.StatusNotFound, gin.H{"error": "auth not found"})
+			writeNotFoundError(c, "账号凭据", authIndex)
 			return
 		}
 		if provider == "" {
@@ -160,7 +160,7 @@ func (h *Handler) PostAuthFileQuotaSnapshot(c *gin.Context) {
 
 	if len(body.Quotas) > 0 {
 		if err := usage.RecordDailyQuotaSnapshotIdentityForTenant(effectiveTenantID(c), authIndex, authSubjectID, provider, body.Quotas); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			writeInternalError(c, "保存每日配额快照", err)
 			return
 		}
 	}
@@ -199,7 +199,7 @@ func (h *Handler) PostAuthFileQuotaSnapshot(c *gin.Context) {
 			})
 		}
 		if err := usage.RecordQuotaSnapshotPointsIdentityForTenant(effectiveTenantID(c), authIndex, authSubjectID, provider, points); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			writeInternalError(c, "保存配额时间点快照", err)
 			return
 		}
 	}

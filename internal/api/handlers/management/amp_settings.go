@@ -70,7 +70,7 @@ func (h *Handler) PutAmpModelMappings(c *gin.Context) {
 		Value []config.AmpModelMapping `json:"value"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(400, gin.H{"error": "invalid body"})
+		writeInvalidBodyError(c, err)
 		return
 	}
 	h.mutateSystemConfig(c, func(cfg *config.Config) error { ampsettings.NewService(cfg).SetModelMappings(body.Value); return nil })
@@ -82,7 +82,7 @@ func (h *Handler) PatchAmpModelMappings(c *gin.Context) {
 		Value []config.AmpModelMapping `json:"value"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(400, gin.H{"error": "invalid body"})
+		writeInvalidBodyError(c, err)
 		return
 	}
 
@@ -126,7 +126,7 @@ func (h *Handler) PutAmpUpstreamAPIKeys(c *gin.Context) {
 		Value []config.AmpUpstreamAPIKeyEntry `json:"value"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(400, gin.H{"error": "invalid body"})
+		writeInvalidBodyError(c, err)
 		return
 	}
 	h.mutateSystemConfig(c, func(cfg *config.Config) error { ampsettings.NewService(cfg).SetUpstreamAPIKeys(body.Value); return nil })
@@ -139,7 +139,7 @@ func (h *Handler) PatchAmpUpstreamAPIKeys(c *gin.Context) {
 		Value []config.AmpUpstreamAPIKeyEntry `json:"value"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(400, gin.H{"error": "invalid body"})
+		writeInvalidBodyError(c, err)
 		return
 	}
 
@@ -158,12 +158,12 @@ func (h *Handler) DeleteAmpUpstreamAPIKeys(c *gin.Context) {
 		Value []string `json:"value"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(400, gin.H{"error": "invalid body"})
+		writeInvalidBodyError(c, err)
 		return
 	}
 
 	if body.Value == nil {
-		c.JSON(400, gin.H{"error": "missing value"})
+		writeMissingFieldError(c, "value", "请提供数组类型的 value 字段（传空数组将清空全部条目）")
 		return
 	}
 

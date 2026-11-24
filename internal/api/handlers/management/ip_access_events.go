@@ -51,7 +51,7 @@ func (h *Handler) GetAuthAttempts(c *gin.Context) {
 
 	events, total, err := recorder.List(c.Request.Context(), filter)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "list_failed", "message": err.Error()}})
+		writeInternalErrorWithCode(c, "list_failed", "查询鉴权拦截事件列表", err)
 		return
 	}
 	if events == nil {
@@ -79,7 +79,7 @@ func (h *Handler) GetAuthAttemptSummary(c *gin.Context) {
 
 	summaries, err := recorder.Summarize(c.Request.Context(), time.Now().Add(-window), limit)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "summary_failed", "message": err.Error()}})
+		writeInternalErrorWithCode(c, "summary_failed", "汇总鉴权拦截来源统计", err)
 		return
 	}
 	if summaries == nil {
@@ -157,7 +157,7 @@ func (h *Handler) PutIPAccessPolicy(c *gin.Context) {
 	}
 
 	if err := registry.UpdatePolicy(c.Request.Context(), body); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "policy_save_failed", "message": err.Error()}})
+		writeInternalErrorWithCode(c, "policy_save_failed", "保存 IP 防护策略", err)
 		return
 	}
 	// Throttle overrides take effect on the running limiter immediately; they

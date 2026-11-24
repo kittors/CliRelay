@@ -85,25 +85,28 @@ func (h *Handler) PutProxyPool(c *gin.Context) {
 	if err := c.ShouldBindJSON(&body); err != nil {
 		var entries []config.ProxyPoolEntry
 		if errArray := c.ShouldBindJSON(&entries); errArray != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+			writeInvalidBodyError(c, err)
 			return
 		}
 		body.Items = entries
 	}
 
 	if dups := config.ProxyPoolDuplicateIDs(body.Items); len(dups) > 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("duplicate proxy ids: %s", strings.Join(dups, ", "))})
+		writeError(c, http.StatusBadRequest, "duplicate_proxy_ids",
+			fmt.Sprintf("代理池配置中存在重复的代理 ID：%s，请确保每个代理条目的 ID 唯一", strings.Join(dups, ", ")),
+			map[string]any{"duplicate_ids": dups},
+		)
 		return
 	}
 	normalized := config.NormalizeProxyPool(body.Items)
 	if len(body.Items) > 0 && len(normalized) == 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "no valid proxy entries"})
+		writeError(c, http.StatusBadRequest, "invalid_proxy_entries", "提交的代理池条目均无效，请确认每条代理都包含合法的代理协议与地址（http/https/socks5）")
 		return
 	}
 	if proxypoolsettings.StoreAvailableForTenant(tenantID) {
 		version, err := proxypoolsettings.ReplaceForTenantExpect(c.Request.Context(), tenantID, normalized, requestExpectedVersion(c))
 		if err != nil {
-			writeConfigSaveError(c, "failed to save proxy pool", err)
+			writeConfigSaveError(c, "保存代理池配置失败", err)
 			return
 		}
 		setVersionHeader(c, version)
@@ -141,7 +144,7 @@ func (h *Handler) PatchProxyPoolEntry(c *gin.Context) {
 	tenantID := effectiveTenantID(c)
 	originalID := config.NormalizeProxyID(c.Param("id"))
 	if originalID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		writeInvalidFieldError(c, "id", "代理条目 ID 不能为空或包含非法字符")
 		return
 	}
 
@@ -151,8 +154,12 @@ func (h *Handler) PatchProxyPoolEntry(c *gin.Context) {
 		Enabled     *bool   `json:"enabled"`
 		Description *string `json:"description"`
 	}
-	if err := c.ShouldBindJSON(&body); err != nil || body.Name == nil || body.URL == nil || body.Enabled == nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+	if err := c.ShouldBindJSON(&body); err != nil {
+		writeInvalidBodyError(c, err)
+		return
+	}
+	if body.Name == nil || body.URL == nil || body.Enabled == nil {
+		writeMissingFieldError(c, "name/url/enabled", "更新代理条目必须同时提供 name、url 和 enabled 字段")
 		return
 	}
 
@@ -164,7 +171,7 @@ func (h *Handler) PatchProxyPoolEntry(c *gin.Context) {
 		Description: stringValue(body.Description),
 	}})
 	if len(normalized) != 1 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "no valid proxy entries"})
+		writeInvalidFieldError(c, "url", "代理地址格式无效，请提供合法的 http://、https:// 或 socks5:// 代理地址")
 		return
 	}
 	updated := normalized[0]
@@ -172,10 +179,10 @@ func (h *Handler) PatchProxyPoolEntry(c *gin.Context) {
 	if proxypoolsettings.StoreAvailableForTenant(tenantID) {
 		if err := proxypoolsettings.UpdateForTenant(tenantID, originalID, updated); err != nil {
 			if errors.Is(err, proxypoolsettings.ErrItemNotFound) {
-				c.JSON(http.StatusNotFound, gin.H{"error": "item not found"})
+				writeNotFoundError(c, "代理条目", originalID)
 				return
 			}
-			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to update proxy pool entry: %v", err)})
+			writeInternalError(c, "更新代理池条目", err)
 			return
 		}
 		if tenantID == identity.SystemTenantID {
@@ -214,7 +221,7 @@ func (h *Handler) PatchProxyPoolEntry(c *gin.Context) {
 	h.mu.Unlock()
 
 	if !found {
-		c.JSON(http.StatusNotFound, gin.H{"error": "item not found"})
+		writeNotFoundError(c, "代理条目", originalID)
 		return
 	}
 	h.persist(c)
@@ -245,7 +252,7 @@ func (h *Handler) PostProxyPoolCheck(c *gin.Context) {
 		TestURL string `json:"test_url"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		writeInvalidBodyError(c, err)
 		return
 	}
 
@@ -274,7 +281,7 @@ func (h *Handler) PostProxyPoolCheck(c *gin.Context) {
 		}
 	}
 	if err := config.ValidateProxyURL(proxyURL); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		writeInvalidFieldError(c, "url", "代理地址无效："+err.Error())
 		return
 	}
 
@@ -283,7 +290,7 @@ func (h *Handler) PostProxyPoolCheck(c *gin.Context) {
 		testURL = defaultProxyCheckURL(c.Request)
 	}
 	if _, err := url.ParseRequestURI(testURL); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid test_url"})
+		writeInvalidFieldError(c, "test_url", "探测目标地址（test_url）格式无效，请提供完整的 http:// 或 https:// 地址")
 		return
 	}
 
@@ -295,10 +302,12 @@ func (h *Handler) PostProxyPoolCheck(c *gin.Context) {
 	statusCode, err := checkProxyConnectivity(c.Request.Context(), proxyURL, testURL, sdkCfg)
 	latencyMs := time.Since(started).Milliseconds()
 	if err != nil {
+		code, msg := describeUpstreamNetworkError(err)
 		c.JSON(http.StatusOK, gin.H{
 			"ok":        false,
+			"code":      code,
 			"latencyMs": latencyMs,
-			"message":   err.Error(),
+			"message":   msg,
 		})
 		return
 	}

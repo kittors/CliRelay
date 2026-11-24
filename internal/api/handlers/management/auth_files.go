@@ -21,7 +21,7 @@ import (
 
 func (h *Handler) ListAuthFiles(c *gin.Context) {
 	if h == nil {
-		c.JSON(500, gin.H{"error": "handler not initialized"})
+		writeServiceUnavailableError(c, "凭据管理处理器")
 		return
 	}
 	if h.authManager == nil {
@@ -57,7 +57,7 @@ func (h *Handler) ListAuthFiles(c *gin.Context) {
 func (h *Handler) GetAuthFileModels(c *gin.Context) {
 	name := c.Query("name")
 	if name == "" {
-		c.JSON(400, gin.H{"error": "name is required"})
+		writeMissingFieldError(c, "name", "请通过查询参数 name 指定凭据文件名或 ID")
 		return
 	}
 
@@ -86,7 +86,7 @@ func (h *Handler) GetAuthFileModels(c *gin.Context) {
 func (h *Handler) listAuthFilesFromDisk(c *gin.Context) {
 	files, err := managementauthfiles.ListTenantDiskEntries(h.cfg.AuthDir, effectiveTenantID(c), time.Now())
 	if err != nil {
-		c.JSON(500, gin.H{"error": fmt.Sprintf("failed to read auth dir: %v", err)})
+		writeInternalError(c, "读取本地凭据目录", err)
 		return
 	}
 	c.JSON(200, gin.H{"files": files})
@@ -96,15 +96,15 @@ func (h *Handler) listAuthFilesFromDisk(c *gin.Context) {
 func (h *Handler) DownloadAuthFile(c *gin.Context) {
 	name, errValidate := managementauthfiles.ValidateFileQueryName(c.Query("name"), true)
 	if errValidate != nil {
-		c.JSON(400, gin.H{"error": errValidate.Error()})
+		writeInvalidFieldError(c, "name", errValidate.Error())
 		return
 	}
 	file, info, err := managementauthfiles.OpenTenantFile(h.cfg.AuthDir, effectiveTenantID(c), name)
 	if err != nil {
 		if os.IsNotExist(err) {
-			c.JSON(404, gin.H{"error": "file not found"})
+			writeNotFoundError(c, "凭据文件", name)
 		} else {
-			c.JSON(500, gin.H{"error": fmt.Sprintf("failed to read file: %v", err)})
+			writeInternalError(c, "读取凭据文件", err)
 		}
 		return
 	}
@@ -117,7 +117,7 @@ func (h *Handler) DownloadAuthFile(c *gin.Context) {
 func (h *Handler) UploadAuthFile(c *gin.Context) {
 	service := newAuthFileUploadService(h, c)
 	if !service.Available() {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "core auth manager unavailable"})
+		writeServiceUnavailableError(c, "核心凭据管理服务")
 		return
 	}
 	ctx := c.Request.Context()
@@ -129,14 +129,17 @@ func (h *Handler) UploadAuthFile(c *gin.Context) {
 		file, err := c.FormFile("file")
 		if err != nil {
 			if bodyutil.IsTooLarge(err) {
-				c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "file too large"})
+				writeReadBodyError(c, err, bodyutil.AuthFileBodyLimit)
 				return
 			}
-			c.JSON(http.StatusBadRequest, gin.H{"error": "file required"})
+			writeMissingFieldError(c, "file", "请通过表单字段 file 上传凭据文件（.json）")
 			return
 		}
 		if file.Size > bodyutil.AuthFileBodyLimit {
-			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "file too large"})
+			writeError(c, http.StatusRequestEntityTooLarge, "file_too_large",
+				fmt.Sprintf("上传的凭据文件过大，超出 %s 上限，请检查文件是否正确", formatByteLimit(bodyutil.AuthFileBodyLimit)),
+				map[string]any{"max_bytes": bodyutil.AuthFileBodyLimit},
+			)
 			return
 		}
 		if _, errValidate := service.ValidateMultipartFilename(file.Filename); errValidate != nil {
@@ -145,7 +148,7 @@ func (h *Handler) UploadAuthFile(c *gin.Context) {
 		}
 		src, errOpen := file.Open()
 		if errOpen != nil {
-			c.JSON(500, gin.H{"error": fmt.Sprintf("failed to read file: %v", errOpen)})
+			writeInternalError(c, "打开上传的凭据文件", errOpen)
 			return
 		}
 		defer func() {
@@ -156,10 +159,10 @@ func (h *Handler) UploadAuthFile(c *gin.Context) {
 		data, errRead := bodyutil.ReadAll(src, bodyutil.AuthFileBodyLimit)
 		if errRead != nil {
 			if bodyutil.IsTooLarge(errRead) {
-				c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "file too large"})
+				writeReadBodyError(c, errRead, bodyutil.AuthFileBodyLimit)
 				return
 			}
-			c.JSON(500, gin.H{"error": fmt.Sprintf("failed to read file: %v", errRead)})
+			writeInternalError(c, "读取上传的凭据文件内容", errRead)
 			return
 		}
 		if _, errUpload := service.UploadMultipart(ctx, file.Filename, data); errUpload != nil {
@@ -176,11 +179,7 @@ func (h *Handler) UploadAuthFile(c *gin.Context) {
 	}
 	data, err := bodyutil.ReadRequestBody(c, bodyutil.AuthFileBodyLimit)
 	if err != nil {
-		if bodyutil.IsTooLarge(err) {
-			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "request body too large"})
-			return
-		}
-		c.JSON(400, gin.H{"error": "failed to read body"})
+		writeReadBodyError(c, err, bodyutil.AuthFileBodyLimit)
 		return
 	}
 	if _, errUpload := service.UploadRaw(ctx, rawName, data); errUpload != nil {
@@ -193,7 +192,7 @@ func (h *Handler) UploadAuthFile(c *gin.Context) {
 // Delete auth files: single by name or all
 func (h *Handler) DeleteAuthFile(c *gin.Context) {
 	if h.authManager == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "core auth manager unavailable"})
+		writeServiceUnavailableError(c, "核心凭据管理服务")
 		return
 	}
 	ctx := c.Request.Context()
@@ -213,7 +212,7 @@ func (h *Handler) DeleteAuthFile(c *gin.Context) {
 	if managementauthfiles.IsDeleteAllValue(c.Query("all")) {
 		result, err := service.DeleteAll(ctx)
 		if err != nil && result.Deleted == 0 {
-			c.JSON(500, gin.H{"error": err.Error()})
+			writeInternalError(c, "批量删除凭据文件", err)
 			return
 		}
 		payload := gin.H{"status": "ok", "deleted": result.Deleted}
@@ -226,15 +225,15 @@ func (h *Handler) DeleteAuthFile(c *gin.Context) {
 	}
 	name, errValidate := managementauthfiles.ValidateFileQueryName(c.Query("name"), false)
 	if errValidate != nil {
-		c.JSON(400, gin.H{"error": errValidate.Error()})
+		writeInvalidFieldError(c, "name", errValidate.Error())
 		return
 	}
 	result, errDelete := service.DeleteOne(ctx, name)
 	if errDelete != nil && result.Deleted == 0 {
 		if errors.Is(errDelete, managementauthfiles.ErrAuthFileNotFound) {
-			c.JSON(404, gin.H{"error": "file not found"})
+			writeNotFoundError(c, "凭据文件", name)
 		} else {
-			c.JSON(500, gin.H{"error": errDelete.Error()})
+			writeInternalError(c, "删除凭据文件", errDelete)
 		}
 		return
 	}
@@ -268,11 +267,11 @@ func newAuthFileUploadService(h *Handler, c *gin.Context) managementauthfiles.Up
 func writeAuthFileUploadError(c *gin.Context, err error) {
 	switch {
 	case errors.Is(err, managementauthfiles.ErrAuthManagerUnavailable):
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "core auth manager unavailable"})
+		writeServiceUnavailableError(c, "核心凭据管理服务")
 	case managementauthfiles.IsUploadValidationError(err):
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		writeError(c, http.StatusBadRequest, "invalid_auth_file", fmt.Sprintf("凭据文件校验失败：%s", err.Error()))
 	default:
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeInternalError(c, "保存上传的凭据文件", err)
 	}
 }
 
@@ -280,7 +279,7 @@ func writeAuthFileUploadError(c *gin.Context, err error) {
 func (h *Handler) PatchAuthFileStatus(c *gin.Context) {
 	service := newAuthFilePatchService(h, c)
 	if !service.Available() {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "core auth manager unavailable"})
+		writeServiceUnavailableError(c, "核心凭据管理服务")
 		return
 	}
 
@@ -289,7 +288,7 @@ func (h *Handler) PatchAuthFileStatus(c *gin.Context) {
 		Disabled *bool  `json:"disabled"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		writeInvalidBodyError(c, err)
 		return
 	}
 
@@ -309,13 +308,13 @@ func (h *Handler) PatchAuthFileStatus(c *gin.Context) {
 func (h *Handler) PatchAuthFileFields(c *gin.Context) {
 	service := newAuthFilePatchService(h, c)
 	if !service.Available() {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "core auth manager unavailable"})
+		writeServiceUnavailableError(c, "核心凭据管理服务")
 		return
 	}
 
 	var req managementauthfiles.FieldPatch
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		writeInvalidBodyError(c, err)
 		return
 	}
 
@@ -355,17 +354,17 @@ func newAuthFilePatchService(h *Handler, c *gin.Context) managementauthfiles.Pat
 func writeAuthFilePatchError(c *gin.Context, err error) {
 	switch {
 	case errors.Is(err, managementauthfiles.ErrAuthManagerUnavailable):
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "core auth manager unavailable"})
+		writeServiceUnavailableError(c, "核心凭据管理服务")
 	case errors.Is(err, managementauthfiles.ErrNameRequired):
-		c.JSON(http.StatusBadRequest, gin.H{"error": "name is required"})
+		writeMissingFieldError(c, "name", "请指定要修改的凭据文件名")
 	case errors.Is(err, managementauthfiles.ErrDisabledRequired):
-		c.JSON(http.StatusBadRequest, gin.H{"error": "disabled is required"})
+		writeMissingFieldError(c, "disabled", "请明确传入布尔值 disabled（true 或 false）")
 	case errors.Is(err, managementauthfiles.ErrAuthFileNotFound):
-		c.JSON(http.StatusNotFound, gin.H{"error": "auth file not found"})
+		writeNotFoundError(c, "凭据文件", "")
 	case managementauthfiles.IsInternalPatchError(err):
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeInternalError(c, "更新凭据文件", err)
 	default:
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		writeError(c, http.StatusBadRequest, "invalid_auth_file_patch", fmt.Sprintf("更新凭据参数无效：%s", err.Error()))
 	}
 }
 

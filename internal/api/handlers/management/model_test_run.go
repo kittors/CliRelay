@@ -85,7 +85,7 @@ type modelTestEnvelope struct {
 func (h *Handler) GetModelTestOptions(c *gin.Context) {
 	model := strings.TrimSpace(c.Query("model"))
 	if model == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "model is required"})
+		writeMissingFieldError(c, "model", "请通过查询参数 model 指定要查看测试选项的模型 ID")
 		return
 	}
 	c.JSON(http.StatusOK, buildModelTestOptions(model, effectiveTenantID(c)))
@@ -101,46 +101,46 @@ func (h *Handler) GetModelTestOptions(c *gin.Context) {
 func (h *Handler) PostModelTest(c *gin.Context) {
 	var body modelTestRequest
 	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		writeInvalidBodyError(c, err)
 		return
 	}
 	body.Model = strings.TrimSpace(body.Model)
 	body.Prompt = strings.TrimSpace(body.Prompt)
 	if body.Model == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "model is required"})
+		writeMissingFieldError(c, "model", "请指定要测试的模型 ID（model）")
 		return
 	}
 	if body.Prompt == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "prompt is required"})
+		writeMissingFieldError(c, "prompt", "请输入用于测试模型的提示词（prompt）")
 		return
 	}
 	if len(body.Prompt) > modelTestPromptLimit {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "prompt is too long"})
+		writeInvalidFieldError(c, "prompt", fmt.Sprintf("测试提示词过长，最多支持 %d 个字符，请精简后重试", modelTestPromptLimit))
 		return
 	}
 	if h == nil || h.authManager == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "auth manager unavailable"})
+		writeServiceUnavailableError(c, "核心凭据管理服务")
 		return
 	}
 
 	mode, err := resolveModelTestMode(body.Model, body.Mode)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		writeInvalidFieldError(c, "mode", err.Error())
 		return
 	}
 	options := buildModelTestOptions(body.Model, effectiveTenantID(c))
 	if body.Images, err = validateModelTestImages(body.Images, mode, options.MaxImages); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		writeInvalidFieldError(c, "images", err.Error())
 		return
 	}
 	if err = validateModelTestProviders(body.Model, mode); err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		writeError(c, http.StatusNotFound, "model_provider_not_found", fmt.Sprintf("未找到可承接该模型的可用提供商：%s", err.Error()))
 		return
 	}
 
 	upstream, err := buildUpstreamPayload(body, mode)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeInternalError(c, "构造模型测试上游请求", err)
 		return
 	}
 
@@ -228,7 +228,7 @@ func (h *Handler) runSynchronousModelTest(c *gin.Context, body modelTestRequest,
 func (h *Handler) startModelTestTask(c *gin.Context, body modelTestRequest, mode modelTestMode, upstream []byte) {
 	service := h.ensureModelTestService()
 	if service == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "model test service unavailable"})
+		writeServiceUnavailableError(c, "模型测试任务服务")
 		return
 	}
 	envelope, err := json.Marshal(modelTestEnvelope{
@@ -238,7 +238,7 @@ func (h *Handler) startModelTestTask(c *gin.Context, body modelTestRequest, mode
 		Upstream: upstream,
 	})
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "encode model test request"})
+		writeInternalError(c, "编码异步模型测试任务请求", err)
 		return
 	}
 
@@ -254,17 +254,17 @@ func (h *Handler) startModelTestTask(c *gin.Context, body modelTestRequest, mode
 func (h *Handler) GetModelTestTask(c *gin.Context) {
 	taskID := strings.TrimSpace(c.Param("task_id"))
 	if taskID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "task_id is required"})
+		writeMissingFieldError(c, "task_id", "请在路径参数中提供模型测试任务 ID")
 		return
 	}
 	service := h.ensureModelTestService()
 	if service == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "model test service unavailable"})
+		writeServiceUnavailableError(c, "模型测试任务服务")
 		return
 	}
 	task, ok := service.Get(effectiveTenantID(c), taskID)
 	if !ok {
-		c.JSON(http.StatusNotFound, gin.H{"error": "model test task not found"})
+		writeNotFoundError(c, "模型测试任务", taskID)
 		return
 	}
 	c.JSON(http.StatusOK, modelTestTaskSnapshot(task))

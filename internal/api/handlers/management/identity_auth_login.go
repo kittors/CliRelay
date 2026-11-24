@@ -145,7 +145,7 @@ func (h *Handler) PostLogout(c *gin.Context) {
 		return
 	}
 	if err := h.identity().Logout(c.Request.Context(), principal.SessionID); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "logout_failed", "message": err.Error()}})
+		writeInternalErrorWithCode(c, "logout_failed", "退出登录", err)
 		return
 	}
 	h.identity().RecordAudit(c.Request.Context(), identity.AuditEvent{

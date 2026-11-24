@@ -99,7 +99,7 @@ type clineUsageResponse struct {
 func (h *Handler) QueryOpenCodeGoUsage(c *gin.Context) {
 	var body openCodeGoUsageRequest
 	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		writeInvalidBodyError(c, err)
 		return
 	}
 
@@ -120,13 +120,17 @@ func (h *Handler) QueryOpenCodeGoUsage(c *gin.Context) {
 		}
 	}
 	if apiKey == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "api-key is required"})
+		writeMissingFieldError(c, "api-key", "查询 OpenCode Go 套餐用量必须提供有效的 api-key，或指定已配置的条目 index/name")
 		return
 	}
 
 	items, err := runtimeHandler.fetchOpenCodeGoUsage(c.Request.Context(), apiKey, proxyID, proxyURL, resolveUsageTimeout(body.TimeoutSec))
 	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		if _, isUsageErr := err.(openCodeGoUsageError); isUsageErr {
+			writeError(c, http.StatusBadGateway, "opencode_go_usage_failed", err.Error())
+		} else {
+			writeUpstreamError(c, http.StatusBadGateway, "查询 OpenCode Go 用量", err)
+		}
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"usage": items})
@@ -136,7 +140,7 @@ func (h *Handler) QueryOpenCodeGoUsage(c *gin.Context) {
 func (h *Handler) QueryClineUsage(c *gin.Context) {
 	var body openCodeGoUsageRequest
 	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		writeInvalidBodyError(c, err)
 		return
 	}
 
@@ -158,13 +162,17 @@ func (h *Handler) QueryClineUsage(c *gin.Context) {
 	}
 	authCookie = normalizeDashboardCookie(authCookie)
 	if authCookie == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "auth-cookie is required"})
+		writeMissingFieldError(c, "auth-cookie", "查询 Cline 套餐用量必须提供有效的控制台 auth-cookie")
 		return
 	}
 
 	items, err := runtimeHandler.fetchClineUsage(c.Request.Context(), authCookie, proxyID, proxyURL, resolveUsageTimeout(body.TimeoutSec))
 	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		if _, isUsageErr := err.(openCodeGoUsageError); isUsageErr {
+			writeError(c, http.StatusBadGateway, "cline_usage_failed", err.Error())
+		} else {
+			writeUpstreamError(c, http.StatusBadGateway, "查询 Cline 用量", err)
+		}
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"usage": items})
@@ -174,7 +182,7 @@ func (h *Handler) QueryClineUsage(c *gin.Context) {
 func (h *Handler) QueryOllamaCloudUsage(c *gin.Context) {
 	var body openCodeGoUsageRequest
 	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		writeInvalidBodyError(c, err)
 		return
 	}
 
@@ -196,13 +204,17 @@ func (h *Handler) QueryOllamaCloudUsage(c *gin.Context) {
 	}
 	authCookie = normalizeDashboardCookie(authCookie)
 	if authCookie == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "auth-cookie is required"})
+		writeMissingFieldError(c, "auth-cookie", "查询 Ollama Cloud 套餐用量必须提供有效的控制台 auth-cookie")
 		return
 	}
 
 	items, err := runtimeHandler.fetchOllamaCloudUsage(c.Request.Context(), authCookie, proxyID, proxyURL, resolveUsageTimeout(body.TimeoutSec))
 	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		if _, isUsageErr := err.(openCodeGoUsageError); isUsageErr {
+			writeError(c, http.StatusBadGateway, "ollama_cloud_usage_failed", err.Error())
+		} else {
+			writeUpstreamError(c, http.StatusBadGateway, "查询 Ollama Cloud 用量", err)
+		}
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"usage": items})

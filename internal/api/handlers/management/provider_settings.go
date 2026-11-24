@@ -2,7 +2,6 @@ package management
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -73,7 +72,7 @@ func (h *ProviderKeysHandler) persistProviderSettings(c *gin.Context) bool {
 	}
 	keys, err := settingsstore.CommitTenantConfig(c.Request.Context(), tenantID, cfg, requestVersion(c), h.configFilePath)
 	if err != nil {
-		writeConfigSaveError(c, "failed to save provider setting", err)
+		writeConfigSaveError(c, "保存提供商密钥配置", err)
 		return false
 	}
 	payload := gin.H{"status": "ok"}
@@ -117,7 +116,7 @@ func (h *ProviderKeysHandler) GetGeminiKeys(c *gin.Context) {
 func (h *ProviderKeysHandler) PutGeminiKeys(c *gin.Context) {
 	data, err := c.GetRawData()
 	if err != nil {
-		c.JSON(400, gin.H{"error": "failed to read body"})
+		writeReadBodyError(c, err, 0)
 		return
 	}
 	var arr []config.GeminiKey
@@ -126,13 +125,13 @@ func (h *ProviderKeysHandler) PutGeminiKeys(c *gin.Context) {
 			Items []config.GeminiKey `json:"items"`
 		}
 		if err2 := json.Unmarshal(data, &obj); err2 != nil || len(obj.Items) == 0 {
-			c.JSON(400, gin.H{"error": "invalid body"})
+			writeInvalidBodyError(c, err)
 			return
 		}
 		arr = obj.Items
 	}
 	if err := providerSettingsService(h, c).ReplaceGeminiKeys(arr); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		writeProviderReplaceError(c, "Gemini 密钥", err)
 		return
 	}
 	h.persistProviderSettings(c)
@@ -145,15 +144,11 @@ func (h *ProviderKeysHandler) PatchGeminiKey(c *gin.Context) {
 		Value *providersettings.GeminiKeyPatch `json:"value"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil || body.Value == nil {
-		c.JSON(400, gin.H{"error": "invalid body"})
+		writeInvalidBodyError(c, err)
 		return
 	}
 	if err := providerSettingsService(h, c).PatchGeminiKey(body.Index, body.Match, *body.Value); err != nil {
-		if errors.Is(err, providersettings.ErrItemNotFound) {
-			c.JSON(404, gin.H{"error": "item not found"})
-			return
-		}
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		writeProviderPatchError(c, "Gemini 密钥", err)
 		return
 	}
 	h.persistProviderSettings(c)
@@ -164,7 +159,7 @@ func (h *ProviderKeysHandler) DeleteGeminiKey(c *gin.Context) {
 		if providerSettingsService(h, c).DeleteGeminiKeyByAPIKey(val) {
 			h.persistProviderSettings(c)
 		} else {
-			c.JSON(404, gin.H{"error": "item not found"})
+			writeNotFoundError(c, "Gemini 密钥条目", "")
 		}
 		return
 	}
@@ -175,7 +170,7 @@ func (h *ProviderKeysHandler) DeleteGeminiKey(c *gin.Context) {
 			return
 		}
 	}
-	c.JSON(400, gin.H{"error": "missing api-key or index"})
+	writeMissingFieldError(c, "api-key/index", "删除 Gemini 密钥时必须通过查询参数提供 api-key 或 index")
 }
 
 // claude-api-key: []ClaudeKey
@@ -186,7 +181,7 @@ func (h *ProviderKeysHandler) GetClaudeKeys(c *gin.Context) {
 func (h *ProviderKeysHandler) PutClaudeKeys(c *gin.Context) {
 	data, err := c.GetRawData()
 	if err != nil {
-		c.JSON(400, gin.H{"error": "failed to read body"})
+		writeReadBodyError(c, err, 0)
 		return
 	}
 	var arr []config.ClaudeKey
@@ -195,13 +190,13 @@ func (h *ProviderKeysHandler) PutClaudeKeys(c *gin.Context) {
 			Items []config.ClaudeKey `json:"items"`
 		}
 		if err2 := json.Unmarshal(data, &obj); err2 != nil || len(obj.Items) == 0 {
-			c.JSON(400, gin.H{"error": "invalid body"})
+			writeInvalidBodyError(c, err)
 			return
 		}
 		arr = obj.Items
 	}
 	if err := providerSettingsService(h, c).ReplaceClaudeKeys(arr); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		writeProviderReplaceError(c, "Claude 密钥", err)
 		return
 	}
 	h.persistProviderSettings(c)
@@ -214,15 +209,11 @@ func (h *ProviderKeysHandler) PatchClaudeKey(c *gin.Context) {
 		Value *providersettings.ClaudeKeyPatch `json:"value"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil || body.Value == nil {
-		c.JSON(400, gin.H{"error": "invalid body"})
+		writeInvalidBodyError(c, err)
 		return
 	}
 	if err := providerSettingsService(h, c).PatchClaudeKey(body.Index, body.Match, *body.Value); err != nil {
-		if errors.Is(err, providersettings.ErrItemNotFound) {
-			c.JSON(404, gin.H{"error": "item not found"})
-			return
-		}
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		writeProviderPatchError(c, "Claude 密钥", err)
 		return
 	}
 	h.persistProviderSettings(c)
@@ -242,7 +233,7 @@ func (h *ProviderKeysHandler) DeleteClaudeKey(c *gin.Context) {
 			return
 		}
 	}
-	c.JSON(400, gin.H{"error": "missing api-key or index"})
+	writeMissingFieldError(c, "api-key/index", "删除 Claude 密钥时必须通过查询参数提供 api-key 或 index")
 }
 
 // bedrock-api-key: []BedrockKey
@@ -253,7 +244,7 @@ func (h *ProviderKeysHandler) GetBedrockKeys(c *gin.Context) {
 func (h *ProviderKeysHandler) PutBedrockKeys(c *gin.Context) {
 	data, err := c.GetRawData()
 	if err != nil {
-		c.JSON(400, gin.H{"error": "failed to read body"})
+		writeReadBodyError(c, err, 0)
 		return
 	}
 	var arr []config.BedrockKey
@@ -262,13 +253,13 @@ func (h *ProviderKeysHandler) PutBedrockKeys(c *gin.Context) {
 			Items []config.BedrockKey `json:"items"`
 		}
 		if err2 := json.Unmarshal(data, &obj); err2 != nil || len(obj.Items) == 0 {
-			c.JSON(400, gin.H{"error": "invalid body"})
+			writeInvalidBodyError(c, err)
 			return
 		}
 		arr = obj.Items
 	}
 	if err := providerSettingsService(h, c).ReplaceBedrockKeys(arr); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		writeProviderReplaceError(c, "Bedrock 密钥", err)
 		return
 	}
 	h.persistProviderSettings(c)
@@ -281,15 +272,11 @@ func (h *ProviderKeysHandler) PatchBedrockKey(c *gin.Context) {
 		Value *providersettings.BedrockKeyPatch `json:"value"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil || body.Value == nil {
-		c.JSON(400, gin.H{"error": "invalid body"})
+		writeInvalidBodyError(c, err)
 		return
 	}
 	if err := providerSettingsService(h, c).PatchBedrockKey(body.Index, body.Match, *body.Value); err != nil {
-		if errors.Is(err, providersettings.ErrItemNotFound) {
-			c.JSON(404, gin.H{"error": "item not found"})
-			return
-		}
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		writeProviderPatchError(c, "Bedrock 密钥", err)
 		return
 	}
 	h.persistProviderSettings(c)
@@ -301,7 +288,7 @@ func (h *ProviderKeysHandler) DeleteBedrockKey(c *gin.Context) {
 			h.persistProviderSettings(c)
 			return
 		}
-		c.JSON(404, gin.H{"error": "item not found"})
+		writeNotFoundError(c, "Bedrock 密钥条目", "")
 		return
 	}
 	if val := strings.TrimSpace(c.Query("access-key-id")); val != "" {
@@ -309,7 +296,7 @@ func (h *ProviderKeysHandler) DeleteBedrockKey(c *gin.Context) {
 			h.persistProviderSettings(c)
 			return
 		}
-		c.JSON(404, gin.H{"error": "item not found"})
+		writeNotFoundError(c, "Bedrock 密钥条目", val)
 		return
 	}
 	if val := strings.TrimSpace(c.Query("name")); val != "" {
@@ -317,7 +304,7 @@ func (h *ProviderKeysHandler) DeleteBedrockKey(c *gin.Context) {
 			h.persistProviderSettings(c)
 			return
 		}
-		c.JSON(404, gin.H{"error": "item not found"})
+		writeNotFoundError(c, "Bedrock 密钥条目", val)
 		return
 	}
 	if idxStr := c.Query("index"); idxStr != "" {
@@ -327,7 +314,7 @@ func (h *ProviderKeysHandler) DeleteBedrockKey(c *gin.Context) {
 			return
 		}
 	}
-	c.JSON(400, gin.H{"error": "missing api-key, access-key-id, name, or index"})
+	writeMissingFieldError(c, "api-key/access-key-id/name/index", "删除 Bedrock 密钥时必须通过查询参数提供 api-key、access-key-id、name 或 index")
 }
 
 // opencode-go-api-key: []OpenCodeGoKey
@@ -338,7 +325,7 @@ func (h *ProviderKeysHandler) GetOpenCodeGoKeys(c *gin.Context) {
 func (h *ProviderKeysHandler) PutOpenCodeGoKeys(c *gin.Context) {
 	data, err := c.GetRawData()
 	if err != nil {
-		c.JSON(400, gin.H{"error": "failed to read body"})
+		writeReadBodyError(c, err, 0)
 		return
 	}
 	var arr []config.OpenCodeGoKey
@@ -347,13 +334,13 @@ func (h *ProviderKeysHandler) PutOpenCodeGoKeys(c *gin.Context) {
 			Items []config.OpenCodeGoKey `json:"items"`
 		}
 		if err2 := json.Unmarshal(data, &obj); err2 != nil || len(obj.Items) == 0 {
-			c.JSON(400, gin.H{"error": "invalid body"})
+			writeInvalidBodyError(c, err)
 			return
 		}
 		arr = obj.Items
 	}
 	if err := providerSettingsService(h, c).ReplaceOpenCodeGoKeys(arr); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		writeProviderReplaceError(c, "OpenCode Go 密钥", err)
 		return
 	}
 	h.persistProviderSettings(c)
@@ -367,15 +354,11 @@ func (h *ProviderKeysHandler) PatchOpenCodeGoKey(c *gin.Context) {
 		Value  *providersettings.OpenCodeGoPatch `json:"value"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil || body.Value == nil {
-		c.JSON(400, gin.H{"error": "invalid body"})
+		writeInvalidBodyError(c, err)
 		return
 	}
 	if err := providerSettingsService(h, c).PatchOpenCodeGoKey(body.Index, body.APIKey, body.Name, *body.Value); err != nil {
-		if errors.Is(err, providersettings.ErrItemNotFound) {
-			c.JSON(404, gin.H{"error": "item not found"})
-			return
-		}
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		writeProviderPatchError(c, "OpenCode Go 密钥", err)
 		return
 	}
 	h.persistProviderSettings(c)
@@ -387,7 +370,7 @@ func (h *ProviderKeysHandler) DeleteOpenCodeGoKey(c *gin.Context) {
 			h.persistProviderSettings(c)
 			return
 		}
-		c.JSON(404, gin.H{"error": "item not found"})
+		writeNotFoundError(c, "OpenCode Go 密钥条目", "")
 		return
 	}
 	if name := strings.TrimSpace(c.Query("name")); name != "" {
@@ -395,7 +378,7 @@ func (h *ProviderKeysHandler) DeleteOpenCodeGoKey(c *gin.Context) {
 			h.persistProviderSettings(c)
 			return
 		}
-		c.JSON(404, gin.H{"error": "item not found"})
+		writeNotFoundError(c, "OpenCode Go 密钥条目", name)
 		return
 	}
 	if idxStr := c.Query("index"); idxStr != "" {
@@ -405,7 +388,7 @@ func (h *ProviderKeysHandler) DeleteOpenCodeGoKey(c *gin.Context) {
 			return
 		}
 	}
-	c.JSON(400, gin.H{"error": "missing api-key, name, or index"})
+	writeMissingFieldError(c, "api-key/name/index", "删除 OpenCode Go 密钥时必须通过查询参数提供 api-key、name 或 index")
 }
 
 // cline-api-key: []ClineKey
@@ -416,7 +399,7 @@ func (h *ProviderKeysHandler) GetClineKeys(c *gin.Context) {
 func (h *ProviderKeysHandler) PutClineKeys(c *gin.Context) {
 	data, err := c.GetRawData()
 	if err != nil {
-		c.JSON(400, gin.H{"error": "failed to read body"})
+		writeReadBodyError(c, err, 0)
 		return
 	}
 	var arr []config.ClineKey
@@ -425,13 +408,13 @@ func (h *ProviderKeysHandler) PutClineKeys(c *gin.Context) {
 			Items []config.ClineKey `json:"items"`
 		}
 		if err2 := json.Unmarshal(data, &obj); err2 != nil || len(obj.Items) == 0 {
-			c.JSON(400, gin.H{"error": "invalid body"})
+			writeInvalidBodyError(c, err)
 			return
 		}
 		arr = obj.Items
 	}
 	if err := providerSettingsService(h, c).ReplaceClineKeys(arr); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		writeProviderReplaceError(c, "Cline 密钥", err)
 		return
 	}
 	h.persistProviderSettings(c)
@@ -445,15 +428,11 @@ func (h *ProviderKeysHandler) PatchClineKey(c *gin.Context) {
 		Value  *providersettings.ClinePatch `json:"value"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil || body.Value == nil {
-		c.JSON(400, gin.H{"error": "invalid body"})
+		writeInvalidBodyError(c, err)
 		return
 	}
 	if err := providerSettingsService(h, c).PatchClineKey(body.Index, body.APIKey, body.Name, *body.Value); err != nil {
-		if errors.Is(err, providersettings.ErrItemNotFound) {
-			c.JSON(404, gin.H{"error": "item not found"})
-			return
-		}
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		writeProviderPatchError(c, "Cline 密钥", err)
 		return
 	}
 	h.persistProviderSettings(c)
@@ -465,7 +444,7 @@ func (h *ProviderKeysHandler) DeleteClineKey(c *gin.Context) {
 			h.persistProviderSettings(c)
 			return
 		}
-		c.JSON(404, gin.H{"error": "item not found"})
+		writeNotFoundError(c, "Cline 密钥条目", "")
 		return
 	}
 	if name := strings.TrimSpace(c.Query("name")); name != "" {
@@ -473,7 +452,7 @@ func (h *ProviderKeysHandler) DeleteClineKey(c *gin.Context) {
 			h.persistProviderSettings(c)
 			return
 		}
-		c.JSON(404, gin.H{"error": "item not found"})
+		writeNotFoundError(c, "Cline 密钥条目", name)
 		return
 	}
 	if idxStr := c.Query("index"); idxStr != "" {
@@ -483,7 +462,7 @@ func (h *ProviderKeysHandler) DeleteClineKey(c *gin.Context) {
 			return
 		}
 	}
-	c.JSON(400, gin.H{"error": "missing api-key, name, or index"})
+	writeMissingFieldError(c, "api-key/name/index", "删除 Cline 密钥时必须通过查询参数提供 api-key、name 或 index")
 }
 
 // ollama-cloud-api-key: []OllamaCloudKey
@@ -494,7 +473,7 @@ func (h *ProviderKeysHandler) GetOllamaCloudKeys(c *gin.Context) {
 func (h *ProviderKeysHandler) PutOllamaCloudKeys(c *gin.Context) {
 	data, err := c.GetRawData()
 	if err != nil {
-		c.JSON(400, gin.H{"error": "failed to read body"})
+		writeReadBodyError(c, err, 0)
 		return
 	}
 	var arr []config.OllamaCloudKey
@@ -503,13 +482,13 @@ func (h *ProviderKeysHandler) PutOllamaCloudKeys(c *gin.Context) {
 			Items []config.OllamaCloudKey `json:"items"`
 		}
 		if err2 := json.Unmarshal(data, &obj); err2 != nil || len(obj.Items) == 0 {
-			c.JSON(400, gin.H{"error": "invalid body"})
+			writeInvalidBodyError(c, err)
 			return
 		}
 		arr = obj.Items
 	}
 	if err := providerSettingsService(h, c).ReplaceOllamaCloudKeys(arr); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		writeProviderReplaceError(c, "Ollama Cloud 密钥", err)
 		return
 	}
 	h.persistProviderSettings(c)
@@ -523,15 +502,11 @@ func (h *ProviderKeysHandler) PatchOllamaCloudKey(c *gin.Context) {
 		Value  *providersettings.OllamaCloudPatch `json:"value"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil || body.Value == nil {
-		c.JSON(400, gin.H{"error": "invalid body"})
+		writeInvalidBodyError(c, err)
 		return
 	}
 	if err := providerSettingsService(h, c).PatchOllamaCloudKey(body.Index, body.APIKey, body.Name, *body.Value); err != nil {
-		if errors.Is(err, providersettings.ErrItemNotFound) {
-			c.JSON(404, gin.H{"error": "item not found"})
-			return
-		}
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		writeProviderPatchError(c, "Ollama Cloud 密钥", err)
 		return
 	}
 	h.persistProviderSettings(c)
@@ -543,7 +518,7 @@ func (h *ProviderKeysHandler) DeleteOllamaCloudKey(c *gin.Context) {
 			h.persistProviderSettings(c)
 			return
 		}
-		c.JSON(404, gin.H{"error": "item not found"})
+		writeNotFoundError(c, "Ollama Cloud 密钥条目", "")
 		return
 	}
 	if name := strings.TrimSpace(c.Query("name")); name != "" {
@@ -551,7 +526,7 @@ func (h *ProviderKeysHandler) DeleteOllamaCloudKey(c *gin.Context) {
 			h.persistProviderSettings(c)
 			return
 		}
-		c.JSON(404, gin.H{"error": "item not found"})
+		writeNotFoundError(c, "Ollama Cloud 密钥条目", name)
 		return
 	}
 	if idxStr := c.Query("index"); idxStr != "" {
@@ -561,7 +536,7 @@ func (h *ProviderKeysHandler) DeleteOllamaCloudKey(c *gin.Context) {
 			return
 		}
 	}
-	c.JSON(400, gin.H{"error": "missing api-key, name, or index"})
+	writeMissingFieldError(c, "api-key/name/index", "删除 Ollama Cloud 密钥时必须通过查询参数提供 api-key、name 或 index")
 }
 
 // openai-compatibility: []OpenAICompatibility
@@ -572,7 +547,7 @@ func (h *ProviderKeysHandler) GetOpenAICompat(c *gin.Context) {
 func (h *ProviderKeysHandler) PutOpenAICompat(c *gin.Context) {
 	data, err := c.GetRawData()
 	if err != nil {
-		c.JSON(400, gin.H{"error": "failed to read body"})
+		writeReadBodyError(c, err, 0)
 		return
 	}
 	var arr []config.OpenAICompatibility
@@ -581,13 +556,13 @@ func (h *ProviderKeysHandler) PutOpenAICompat(c *gin.Context) {
 			Items []config.OpenAICompatibility `json:"items"`
 		}
 		if err2 := json.Unmarshal(data, &obj); err2 != nil || len(obj.Items) == 0 {
-			c.JSON(400, gin.H{"error": "invalid body"})
+			writeInvalidBodyError(c, err)
 			return
 		}
 		arr = obj.Items
 	}
 	if err := providerSettingsService(h, c).ReplaceOpenAICompatibility(arr); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		writeProviderReplaceError(c, "OpenAI 兼容渠道", err)
 		return
 	}
 	h.persistProviderSettings(c)
@@ -600,15 +575,11 @@ func (h *ProviderKeysHandler) PatchOpenAICompat(c *gin.Context) {
 		Value *providersettings.OpenAICompatibilityPatch `json:"value"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil || body.Value == nil {
-		c.JSON(400, gin.H{"error": "invalid body"})
+		writeInvalidBodyError(c, err)
 		return
 	}
 	if err := providerSettingsService(h, c).PatchOpenAICompatibility(body.Index, body.Name, *body.Value); err != nil {
-		if errors.Is(err, providersettings.ErrItemNotFound) {
-			c.JSON(404, gin.H{"error": "item not found"})
-			return
-		}
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		writeProviderPatchError(c, "OpenAI 兼容渠道", err)
 		return
 	}
 	h.persistProviderSettings(c)
@@ -628,7 +599,7 @@ func (h *ProviderKeysHandler) DeleteOpenAICompat(c *gin.Context) {
 			return
 		}
 	}
-	c.JSON(400, gin.H{"error": "missing name or index"})
+	writeMissingFieldError(c, "name/index", "删除 OpenAI 兼容渠道时必须通过查询参数提供 name 或 index")
 }
 
 // vertex-api-key: []VertexCompatKey
@@ -639,7 +610,7 @@ func (h *ProviderKeysHandler) GetVertexCompatKeys(c *gin.Context) {
 func (h *ProviderKeysHandler) PutVertexCompatKeys(c *gin.Context) {
 	data, err := c.GetRawData()
 	if err != nil {
-		c.JSON(400, gin.H{"error": "failed to read body"})
+		writeReadBodyError(c, err, 0)
 		return
 	}
 	var arr []config.VertexCompatKey
@@ -648,7 +619,7 @@ func (h *ProviderKeysHandler) PutVertexCompatKeys(c *gin.Context) {
 			Items []config.VertexCompatKey `json:"items"`
 		}
 		if err2 := json.Unmarshal(data, &obj); err2 != nil || len(obj.Items) == 0 {
-			c.JSON(400, gin.H{"error": "invalid body"})
+			writeInvalidBodyError(c, err)
 			return
 		}
 		arr = obj.Items
@@ -664,11 +635,11 @@ func (h *ProviderKeysHandler) PatchVertexCompatKey(c *gin.Context) {
 		Value *providersettings.VertexCompatPatch `json:"value"`
 	}
 	if errBindJSON := c.ShouldBindJSON(&body); errBindJSON != nil || body.Value == nil {
-		c.JSON(400, gin.H{"error": "invalid body"})
+		writeInvalidBodyError(c, errBindJSON)
 		return
 	}
 	if err := providerSettingsService(h, c).PatchVertexCompatKey(body.Index, body.Match, *body.Value); err != nil {
-		c.JSON(404, gin.H{"error": "item not found"})
+		writeNotFoundError(c, "Vertex 密钥条目", "")
 		return
 	}
 	h.persistProviderSettings(c)
@@ -688,7 +659,7 @@ func (h *ProviderKeysHandler) DeleteVertexCompatKey(c *gin.Context) {
 			return
 		}
 	}
-	c.JSON(400, gin.H{"error": "missing api-key or index"})
+	writeMissingFieldError(c, "api-key/index", "删除 Vertex 密钥时必须通过查询参数提供 api-key 或 index")
 }
 
 // codex-api-key: []CodexKey
@@ -699,7 +670,7 @@ func (h *ProviderKeysHandler) GetCodexKeys(c *gin.Context) {
 func (h *ProviderKeysHandler) PutCodexKeys(c *gin.Context) {
 	data, err := c.GetRawData()
 	if err != nil {
-		c.JSON(400, gin.H{"error": "failed to read body"})
+		writeReadBodyError(c, err, 0)
 		return
 	}
 	var arr []config.CodexKey
@@ -708,13 +679,13 @@ func (h *ProviderKeysHandler) PutCodexKeys(c *gin.Context) {
 			Items []config.CodexKey `json:"items"`
 		}
 		if err2 := json.Unmarshal(data, &obj); err2 != nil || len(obj.Items) == 0 {
-			c.JSON(400, gin.H{"error": "invalid body"})
+			writeInvalidBodyError(c, err)
 			return
 		}
 		arr = obj.Items
 	}
 	if err := providerSettingsService(h, c).ReplaceCodexKeys(arr); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		writeProviderReplaceError(c, "Codex 密钥", err)
 		return
 	}
 	h.persistProviderSettings(c)
@@ -727,15 +698,11 @@ func (h *ProviderKeysHandler) PatchCodexKey(c *gin.Context) {
 		Value *providersettings.CodexKeyPatch `json:"value"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil || body.Value == nil {
-		c.JSON(400, gin.H{"error": "invalid body"})
+		writeInvalidBodyError(c, err)
 		return
 	}
 	if err := providerSettingsService(h, c).PatchCodexKey(body.Index, body.Match, *body.Value); err != nil {
-		if errors.Is(err, providersettings.ErrItemNotFound) {
-			c.JSON(404, gin.H{"error": "item not found"})
-			return
-		}
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		writeProviderPatchError(c, "Codex 密钥", err)
 		return
 	}
 	h.persistProviderSettings(c)
@@ -755,5 +722,5 @@ func (h *ProviderKeysHandler) DeleteCodexKey(c *gin.Context) {
 			return
 		}
 	}
-	c.JSON(400, gin.H{"error": "missing api-key or index"})
+	writeMissingFieldError(c, "api-key/index", "删除 Codex 密钥时必须通过查询参数提供 api-key 或 index")
 }

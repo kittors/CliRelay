@@ -24,31 +24,31 @@ type authModelCooldownClearRequest struct {
 // nothing to clear answers 200 with changed=false: the goal state already holds.
 func (h *Handler) PostAuthFileModelCooldownClear(c *gin.Context) {
 	if h == nil || h.authManager == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "auth manager unavailable"})
+		writeServiceUnavailableError(c, "核心凭据管理服务")
 		return
 	}
 
 	var body authModelCooldownClearRequest
 	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		writeInvalidBodyError(c, err)
 		return
 	}
 	model := strings.TrimSpace(body.Model)
 	if model == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "model is required"})
+		writeMissingFieldError(c, "model", "请指定要解除冷却的模型名称")
 		return
 	}
 
 	authIndex := firstNonEmptyString(body.AuthIndexSnake, body.AuthIndexCamel, body.AuthIndexPascal)
 	auth := h.authByIndexForTenant(effectiveTenantID(c), authIndex)
 	if auth == nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "auth not found"})
+		writeNotFoundError(c, "账号凭据", authIndex)
 		return
 	}
 
 	changed, err := h.authManager.ClearModelCooldown(c.Request.Context(), auth.ID, model)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeInternalError(c, "解除模型冷却状态", err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"status": "ok", "changed": changed})

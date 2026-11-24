@@ -2003,8 +2003,9 @@ func TestGetPublicUsageLogs_RejectsOversizedPOSTBody(t *testing.T) {
 	if rec.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("expected status %d, got %d, body=%s", http.StatusRequestEntityTooLarge, rec.Code, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), "request body too large") {
-		t.Fatalf("expected oversized body rejection, body=%s", rec.Body.String())
+	env := decodeErrorEnvelope(t, rec.Body.Bytes())
+	if env.Error.Code != "request_body_too_large" || !strings.Contains(env.Error.Message, "8 KiB") {
+		t.Fatalf("expected request_body_too_large mentioning 8 KiB, body=%s", rec.Body.String())
 	}
 }
 

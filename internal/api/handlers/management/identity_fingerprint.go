@@ -50,33 +50,33 @@ func (h *Handler) GetIdentityFingerprint(c *gin.Context) {
 func (h *Handler) PutIdentityFingerprint(c *gin.Context) {
 	var body config.IdentityFingerprintConfig
 	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		writeInvalidBodyError(c, err)
 		return
 	}
 
 	body = config.NormalizeIdentityFingerprintConfig(body)
 	if err := validateCodexIdentityFingerprint(body.Codex); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		writeInvalidFieldError(c, "codex", err.Error())
 		return
 	}
 	if err := validateClaudeIdentityFingerprint(body.Claude); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		writeInvalidFieldError(c, "claude", err.Error())
 		return
 	}
 	if err := validateGeminiIdentityFingerprint(body.Gemini); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		writeInvalidFieldError(c, "gemini", err.Error())
 		return
 	}
 	if err := validateXAIIdentityFingerprint(body.XAI); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		writeInvalidFieldError(c, "xai", err.Error())
 		return
 	}
 	if err := validateKimiIdentityFingerprint(body.Kimi); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		writeInvalidFieldError(c, "kimi", err.Error())
 		return
 	}
 	if err := validateAntigravityIdentityFingerprint(body.Antigravity); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		writeInvalidFieldError(c, "antigravity", err.Error())
 		return
 	}
 	if body.Codex.Enabled && body.Codex.SessionMode == "fixed" && strings.TrimSpace(body.Codex.SessionID) == "" {
@@ -100,7 +100,7 @@ func (h *Handler) GetCodexFingerprintRecommendations(c *gin.Context) {
 		Limit: intQueryDefault(c, "limit", 200),
 	})
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeInternalError(c, "查询 Codex 身份指纹推荐", err)
 		return
 	}
 	c.JSON(http.StatusOK, result)
@@ -110,12 +110,12 @@ func (h *Handler) DeleteIdentityFingerprintLearned(c *gin.Context) {
 	provider := identityfingerprint.Provider(strings.TrimSpace(c.Query("provider")))
 	accountKey := strings.TrimSpace(c.Query("account_key"))
 	if provider == "" || accountKey == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "provider and account_key are required"})
+		writeMissingFieldError(c, "provider / account_key", "删除已学习的身份指纹时必须同时提供 provider 与 account_key 查询参数")
 		return
 	}
 	deleted, err := usage.DeleteIdentityFingerprint(provider, accountKey)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeInternalError(c, "删除已学习的身份指纹", err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"deleted": deleted})

@@ -33,7 +33,7 @@ func (h *Handler) GetCcSwitchImportConfigs(c *gin.Context) {
 func (h *Handler) PutCcSwitchImportConfigs(c *gin.Context) {
 	data, err := c.GetRawData()
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "failed to read body"})
+		writeReadBodyError(c, err, 0)
 		return
 	}
 
@@ -43,7 +43,7 @@ func (h *Handler) PutCcSwitchImportConfigs(c *gin.Context) {
 			Items []usage.CcSwitchImportConfigRow `json:"items"`
 		}
 		if err2 := json.Unmarshal(data, &body); err2 != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+			writeInvalidBodyError(c, err)
 			return
 		}
 		items = body.Items
@@ -68,20 +68,20 @@ func (h *Handler) PutCcSwitchImportConfigs(c *gin.Context) {
 		}
 
 		if !usage.IsCcSwitchClientType(items[idx].ClientType) {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "client-type must be one of " + strings.Join(usage.CcSwitchClientTypes(), ", ")})
+			writeInvalidFieldError(c, "client-type", "仅支持以下客户端类型："+strings.Join(usage.CcSwitchClientTypes(), ", "))
 			return
 		}
 
 		if items[idx].ID == "" {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "id is required"})
+			writeMissingFieldError(c, "id", "每条 CC Switch 导入配置必须包含非空 id")
 			return
 		}
 		if items[idx].ProviderName == "" {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "provider-name is required"})
+			writeMissingFieldError(c, "provider-name", "每条 CC Switch 导入配置必须包含非空 provider-name")
 			return
 		}
 		if items[idx].DefaultModel == "" {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "default-model is required"})
+			writeMissingFieldError(c, "default-model", "每条 CC Switch 导入配置必须包含非空 default-model")
 			return
 		}
 	}
@@ -91,7 +91,7 @@ func (h *Handler) PutCcSwitchImportConfigs(c *gin.Context) {
 		if writeConfigConflict(c, err) {
 			return
 		}
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		writeError(c, http.StatusBadRequest, "save_ccswitch_configs_failed", "保存 CC Switch 导入配置失败："+err.Error())
 		return
 	}
 	setVersionHeader(c, version)

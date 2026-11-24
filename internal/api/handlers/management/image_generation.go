@@ -49,17 +49,17 @@ func (h *Handler) GetImageGenerationSizePresets(c *gin.Context) {
 func (h *Handler) PutImageGenerationSizePresets(c *gin.Context) {
 	var body settingsstore.ImageSizePresetsSetting
 	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		writeInvalidBodyError(c, err)
 		return
 	}
 	sizes, err := normalizeImageGenerationSizePresets(body.Sizes)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		writeInvalidFieldError(c, "sizes", err.Error())
 		return
 	}
 	customSizes := customImageGenerationSizePresets(sizes)
 	if err := settingsstore.StoreImageSizePresetsSettingForTenant(effectiveTenantID(c), customSizes); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to save size presets: %v", err)})
+		writeInternalError(c, "保存图像生成尺寸预设", err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"sizes": mergeImageGenerationSizePresets(defaultImageGenerationSizePresets, customSizes)})
@@ -203,16 +203,16 @@ func parseImageGenerationSizeDimension(value string) (int, bool) {
 func (h *Handler) PostImageGenerationTest(c *gin.Context) {
 	payload, alt, err := parseImageGenerationTestPayload(c)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		writeError(c, http.StatusBadRequest, "invalid_image_generation_request", err.Error())
 		return
 	}
 	if h == nil || h.authManager == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "auth manager unavailable"})
+		writeServiceUnavailableError(c, "核心凭据管理服务")
 		return
 	}
 	service := h.ensureImageGenerationService()
 	if service == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "image generation service unavailable"})
+		writeServiceUnavailableError(c, "图像生成测试服务")
 		return
 	}
 
@@ -223,17 +223,17 @@ func (h *Handler) PostImageGenerationTest(c *gin.Context) {
 func (h *Handler) GetImageGenerationTestTask(c *gin.Context) {
 	taskID := strings.TrimSpace(c.Param("task_id"))
 	if taskID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "task_id is required"})
+		writeMissingFieldError(c, "task_id", "请在路径参数中提供图像生成测试任务 ID")
 		return
 	}
 	service := h.ensureImageGenerationService()
 	if service == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "image generation service unavailable"})
+		writeServiceUnavailableError(c, "图像生成测试服务")
 		return
 	}
 	task, ok := service.Get(effectiveTenantID(c), taskID)
 	if !ok {
-		c.JSON(http.StatusNotFound, gin.H{"error": "image generation task not found"})
+		writeNotFoundError(c, "图像生成测试任务", taskID)
 		return
 	}
 	c.JSON(http.StatusOK, imageGenerationTaskSnapshot(task))
@@ -425,7 +425,7 @@ func parseImageGenerationTestPayload(c *gin.Context) ([]byte, string, error) {
 		ImageSize   string `json:"image_size"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		return nil, "", fmt.Errorf("invalid body")
+		return nil, "", fmt.Errorf("请求体 JSON 格式无效，请检查图像生成参数是否正确")
 	}
 	model := strings.TrimSpace(body.Model)
 	if model == "" {
@@ -433,7 +433,7 @@ func parseImageGenerationTestPayload(c *gin.Context) ([]byte, string, error) {
 	}
 	prompt := strings.TrimSpace(body.Prompt)
 	if prompt == "" {
-		return nil, "", fmt.Errorf("prompt is required")
+		return nil, "", fmt.Errorf("缺少必填参数 prompt，请输入图像描述提示词")
 	}
 	payload := map[string]any{
 		"model":  model,
@@ -460,16 +460,16 @@ func parseImageGenerationTestPayload(c *gin.Context) ([]byte, string, error) {
 
 func parseImageGenerationMultipartPayload(c *gin.Context) ([]byte, string, error) {
 	if err := c.Request.ParseMultipartForm(20 << 20); err != nil {
-		return nil, "", fmt.Errorf("invalid body")
+		return nil, "", fmt.Errorf("解析多部分表单（multipart/form-data）失败，请检查表单格式和上传文件大小是否超出 20 MiB 限制")
 	}
 	form := c.Request.MultipartForm
 	if form == nil {
-		return nil, "", fmt.Errorf("invalid body")
+		return nil, "", fmt.Errorf("请求表单为空，请重新提交图像编辑表单")
 	}
 	model := firstImageGenerationFormValue(form.Value, "model", imageGenerationModel)
 	prompt := firstImageGenerationFormValue(form.Value, "prompt", "")
 	if strings.TrimSpace(prompt) == "" {
-		return nil, "", fmt.Errorf("prompt is required")
+		return nil, "", fmt.Errorf("缺少必填参数 prompt，请输入图像编辑提示词")
 	}
 	payload := map[string]any{
 		"model":  model,

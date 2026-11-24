@@ -107,13 +107,13 @@ func (h *Handler) PutRoutingConfig(c *gin.Context) {
 	tenantID := effectiveTenantID(c)
 	body, sentVirtualModels, err := bindRoutingConfigBody(c)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		writeInvalidBodyError(c, err)
 		return
 	}
 	// Checked before SanitizeRouting, which would quietly clamp what the
 	// operator typed into range.
 	if err := config.ValidateRoutingStreamGuards(body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		writeError(c, http.StatusBadRequest, "invalid_routing_config", "路由流控保护参数无效："+err.Error())
 		return
 	}
 	expected := requestExpectedVersion(c)
@@ -147,18 +147,18 @@ func (h *Handler) PutRoutingConfig(c *gin.Context) {
 		candidate.APIKeyEntries = canonicalizeAPIKeyEntriesChannels(candidate.APIKeyEntries, known)
 	}
 	if err := validateRoutingAndAPIKeyRestrictions(candidate, auths); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		writeError(c, http.StatusBadRequest, "invalid_routing_config", "路由配置与密钥限制校验失败："+err.Error())
 		return
 	}
 	if err := validateRoutingVirtualModels(candidate, auths, sentModels, sentVirtualModels); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		writeError(c, http.StatusBadRequest, "invalid_virtual_models", "虚拟模型路由配置校验失败："+err.Error())
 		return
 	}
 	// A PUT replaces the whole routing config, so it is checked against the
 	// version the client read, when it sent one.
 	version, err := usage.CompareAndSwapRoutingConfigForTenant(c.Request.Context(), tenantID, candidate.Routing, expected)
 	if err != nil {
-		writeConfigSaveError(c, "failed to save routing config", err)
+		writeConfigSaveError(c, "保存路由配置", err)
 		return
 	}
 	h.applyRoutingConfig(c, tenantID, candidate.Routing, version)

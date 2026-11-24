@@ -184,8 +184,8 @@ func TestRoutingVirtualModelsEndpoint(t *testing.T) {
 		body string
 		want string
 	}{
-		"no key":        {`{}`, "virtual-models is required"},
-		"not a list":    {`{"virtual-models":{}}`, "virtual-models is required"},
+		"no key":        {`{}`, `"missing_required_field"`},
+		"not a list":    {`{"virtual-models":{}}`, `"invalid_field_type"`},
 		"unknown group": {`{"virtual-models":[{"name":"x","members":[{"group":"nope","model":"a"}]}]}`, `channel group \"nope\" does not exist`},
 		"nesting":       {`{"virtual-models":[` + smartVirtualModel + `,{"name":"outer","members":[{"model":"smart"}]}]}`, "cannot contain other virtual models"},
 	} {

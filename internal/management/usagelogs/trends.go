@@ -41,11 +41,11 @@ func (s *Service) AuthFileGroupTrend(group string, days int) (AuthFileGroupTrend
 
 func (s *Service) AuthFileTrend(authIndex string, days int, hours int) (int, any) {
 	if strings.TrimSpace(authIndex) == "" {
-		return http.StatusBadRequest, map[string]any{"error": "auth_index is required"}
+		return http.StatusBadRequest, errorPayload("missing_required_field", "缺少必填查询参数 \"auth_index\"，请指定要查询趋势的账号凭据编号")
 	}
 	auth := s.authByIndex(authIndex)
 	if auth == nil {
-		return http.StatusNotFound, map[string]any{"error": "auth not found"}
+		return http.StatusNotFound, errorPayload("auth_not_found", "未找到指定编号的账号凭据，可能已被删除或不属于当前租户")
 	}
 	// Always compute tenant-private logs (legacy empty-subject rows + same-tenant traffic).
 	status, payload := s.authFileTrendFromTenantLogs(authIndex, auth, days, hours)
@@ -135,13 +135,13 @@ func (s *Service) authFileTrendFromSharedSubject(authIndex string, auth *coreaut
 
 	dailyRaw, err := usage.QueryAIAccountSubjectDailyUsage(subjectID, days)
 	if err != nil {
-		return http.StatusInternalServerError, map[string]any{"error": err.Error()}
+		return http.StatusInternalServerError, internalErrorPayload("查询共享账号每日用量趋势", err)
 	}
 	daily := fillDailyUsagePoints(dailyRaw, days)
 	// Shared day buckets have no hour grain; aggregate recent hours by subject across tenants.
 	hourly, err := usage.QueryHourlyUsageByAuthSubjectAcrossTenants(usage.AuthSubjectMatcher{SubjectID: subjectID}, hours)
 	if err != nil {
-		return http.StatusInternalServerError, map[string]any{"error": err.Error()}
+		return http.StatusInternalServerError, internalErrorPayload("查询共享账号小时级用量趋势", err)
 	}
 	if hourly == nil {
 		hourly = usage.EmptyHourlyUsageBuckets(hours)
@@ -149,7 +149,7 @@ func (s *Service) authFileTrendFromSharedSubject(authIndex string, auth *coreaut
 
 	series, err := usage.QueryAIAccountSubjectQuotaSeries(subjectID, trendStart, trendEnd)
 	if err != nil {
-		return http.StatusInternalServerError, map[string]any{"error": err.Error()}
+		return http.StatusInternalServerError, internalErrorPayload("查询共享账号配额快照序列", err)
 	}
 	if series == nil {
 		series = []usage.QuotaSnapshotSeries{}
@@ -159,7 +159,7 @@ func (s *Service) authFileTrendFromSharedSubject(authIndex string, auth *coreaut
 
 	cycleStarts, err := usage.QueryLatestAIAccountSubjectWeeklyCyclesBatch([]string{subjectID})
 	if err != nil {
-		return http.StatusInternalServerError, map[string]any{"error": err.Error()}
+		return http.StatusInternalServerError, internalErrorPayload("查询共享账号周周期起始时间", err)
 	}
 	cycleStart := cycleStarts[subjectID]
 	if cycleStart.IsZero() {
@@ -170,7 +170,7 @@ func (s *Service) authFileTrendFromSharedSubject(authIndex string, auth *coreaut
 
 	summaries, err := usage.QueryAIAccountSubjectUsageSummaries([]string{subjectID}, map[string]time.Time{subjectID: cycleStart})
 	if err != nil {
-		return http.StatusInternalServerError, map[string]any{"error": err.Error()}
+		return http.StatusInternalServerError, internalErrorPayload("查询共享账号用量汇总", err)
 	}
 	summary := summaries[subjectID]
 	requestTotal := summary.RequestTotal7d
@@ -213,13 +213,13 @@ func (s *Service) authFileTrendFromTenantLogs(authIndex string, auth *coreauth.A
 
 	dailyRaw, err := usage.QueryDailyUsageByAuthSubjectForTenant(s.tenantID, matcher, days)
 	if err != nil {
-		return http.StatusInternalServerError, map[string]any{"error": err.Error()}
+		return http.StatusInternalServerError, internalErrorPayload("查询账号每日用量趋势", err)
 	}
 	daily := fillDailyUsagePoints(dailyRaw, days)
 
 	hourly, err := usage.QueryHourlyUsageByAuthSubjectForTenant(s.tenantID, matcher, hours)
 	if err != nil {
-		return http.StatusInternalServerError, map[string]any{"error": err.Error()}
+		return http.StatusInternalServerError, internalErrorPayload("查询账号小时级用量趋势", err)
 	}
 	if hourly == nil {
 		hourly = []usage.HourlyUsagePoint{}
@@ -228,14 +228,14 @@ func (s *Service) authFileTrendFromTenantLogs(authIndex string, auth *coreauth.A
 	cutoff := usage.CutoffStartUTC(days)
 	requestTotal, err := usage.QueryRequestCountByAuthSubjectSinceForTenant(s.tenantID, matcher, cutoff)
 	if err != nil {
-		return http.StatusInternalServerError, map[string]any{"error": err.Error()}
+		return http.StatusInternalServerError, internalErrorPayload("统计账号周期请求总数", err)
 	}
 
 	trendStart := time.Now().AddDate(0, 0, -7)
 	trendEnd := time.Now().Add(time.Minute)
 	series, err := usage.QueryQuotaSnapshotSeriesByAuthSubjectForTenant(s.tenantID, matcher, trendStart, trendEnd)
 	if err != nil {
-		return http.StatusInternalServerError, map[string]any{"error": err.Error()}
+		return http.StatusInternalServerError, internalErrorPayload("查询账号配额快照序列", err)
 	}
 	if series == nil {
 		series = []usage.QuotaSnapshotSeries{}
@@ -247,7 +247,7 @@ func (s *Service) authFileTrendFromTenantLogs(authIndex string, auth *coreauth.A
 	if identity := usage.ResolveAuthSubjectIdentity(auth); identity != nil && identity.ID != "" {
 		cycle, err := usage.QueryLatestWeeklyQuotaCycleByAuthSubjectForTenant(s.tenantID, identity.ID, preferredWeeklyQuotaKeys...)
 		if err != nil {
-			return http.StatusInternalServerError, map[string]any{"error": err.Error()}
+			return http.StatusInternalServerError, internalErrorPayload("查询账号周周期信息", err)
 		}
 		if cycle != nil {
 			cycleStart = cycle.CycleStartAt.UTC()
@@ -265,15 +265,15 @@ func (s *Service) authFileTrendFromTenantLogs(authIndex string, auth *coreauth.A
 	if cycleKnown {
 		cycleRequestTotal, err = usage.QueryRequestCountByAuthSubjectSinceForTenant(s.tenantID, matcher, cycleStart)
 		if err != nil {
-			return http.StatusInternalServerError, map[string]any{"error": err.Error()}
+			return http.StatusInternalServerError, internalErrorPayload("统计账号本周期请求数", err)
 		}
 		cycleCostTotal, err = usage.QueryCostByAuthSubjectSinceForTenant(s.tenantID, matcher, cycleStart)
 		if err != nil {
-			return http.StatusInternalServerError, map[string]any{"error": err.Error()}
+			return http.StatusInternalServerError, internalErrorPayload("统计账号本周期费用", err)
 		}
 		cycleTotalTokens, err = usage.QueryTotalTokensByAuthSubjectSinceForTenant(s.tenantID, matcher, cycleStart)
 		if err != nil {
-			return http.StatusInternalServerError, map[string]any{"error": err.Error()}
+			return http.StatusInternalServerError, internalErrorPayload("统计账号本周期 Token 用量", err)
 		}
 	}
 

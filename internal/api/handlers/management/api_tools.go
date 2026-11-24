@@ -109,7 +109,7 @@ func (h *Handler) authByIndexForTenant(tenantID, authIndex string) *coreauth.Aut
 func (h *APIToolsHandler) APICall(c *gin.Context) {
 	var body apiCallRequest
 	if errBindJSON := c.ShouldBindJSON(&body); errBindJSON != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		writeInvalidBodyError(c, errBindJSON)
 		return
 	}
 	status, payload := h.serviceForTenant(effectiveTenantID(c)).APICall(c.Request.Context(), body)

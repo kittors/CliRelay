@@ -83,8 +83,7 @@ func (s *Service) APICallTransport(auth *coreauth.Auth) http.RoundTripper {
 	return s.APICallTransportForURL(auth, nil)
 }
 
-func (s *Service) APICallTransportForURL(auth *coreauth.Auth, targetURL *url.URL) http.RoundTripper {
-	var proxyCandidates []string
+func (s *Service) resolveProxyURL(auth *coreauth.Auth) string {
 	if s != nil && s.cfg != nil {
 		proxyID := ""
 		fallbackURL := ""
@@ -92,13 +91,33 @@ func (s *Service) APICallTransportForURL(auth *coreauth.Auth, targetURL *url.URL
 			proxyID = auth.ProxyID
 			fallbackURL = auth.ProxyURL
 		}
-		if proxyStr := strings.TrimSpace(s.cfg.ResolveProxyURL(proxyID, fallbackURL)); proxyStr != "" {
-			proxyCandidates = append(proxyCandidates, proxyStr)
-		}
-	} else if auth != nil {
-		if proxyStr := strings.TrimSpace(auth.ProxyURL); proxyStr != "" {
-			proxyCandidates = append(proxyCandidates, proxyStr)
-		}
+		return strings.TrimSpace(s.cfg.ResolveProxyURL(proxyID, fallbackURL))
+	}
+	if auth != nil {
+		return strings.TrimSpace(auth.ProxyURL)
+	}
+	return ""
+}
+
+// HasExplicitProxy reports whether outbound requests for auth are routed
+// through an explicitly configured HTTP/SOCKS egress proxy (so domain DNS
+// resolution is performed by the proxy rather than the host resolver).
+func (s *Service) HasExplicitProxy(auth *coreauth.Auth) bool {
+	proxyStr := s.resolveProxyURL(auth)
+	if proxyStr == "" {
+		return false
+	}
+	parsed, err := url.Parse(proxyStr)
+	if err != nil || strings.TrimSpace(parsed.Scheme) == "" || strings.TrimSpace(parsed.Host) == "" {
+		return false
+	}
+	return true
+}
+
+func (s *Service) APICallTransportForURL(auth *coreauth.Auth, targetURL *url.URL) http.RoundTripper {
+	var proxyCandidates []string
+	if proxyStr := s.resolveProxyURL(auth); proxyStr != "" {
+		proxyCandidates = append(proxyCandidates, proxyStr)
 	}
 
 	var sdkCfg *config.SDKConfig

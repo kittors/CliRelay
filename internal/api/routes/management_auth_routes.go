@@ -24,6 +24,8 @@ func registerManagementAuthRoutes(group *gin.RouterGroup, h *managementhandlers.
 	group.PATCH("/auth-files/fields", h.PatchAuthFileFields)
 	// Lifts the cooldown of one model on one account ("retry this model now").
 	group.POST("/auth-files/model-cooldown/clear", h.PostAuthFileModelCooldownClear)
+	// Consumes a Codex rate-limit reset credit directly from the backend.
+	group.POST("/auth-files/reset-credit", h.PostAuthFileResetCredit)
 	// Platform sharing of the system tenant's credentials (platform admins only).
 	group.PUT("/auth-files/sharing", h.PutAuthFileSharing)
 	group.POST("/vertex/import", h.ImportVertexCredential)

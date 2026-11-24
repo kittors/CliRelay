@@ -255,7 +255,7 @@ func loopGuardWriteError(c *gin.Context, err error) {
 func bindLoopGuardWrite(c *gin.Context) (loopGuardWrite, bool) {
 	var body loopGuardWrite
 	if err := c.ShouldBindJSON(&body); err != nil {
-		loopGuardError(c, http.StatusBadRequest, "invalid_request", "invalid body")
+		loopGuardError(c, http.StatusBadRequest, "invalid_request", describeInvalidJSONBody(err))
 		return body, false
 	}
 	if err := body.scope().Validate(); err != nil {

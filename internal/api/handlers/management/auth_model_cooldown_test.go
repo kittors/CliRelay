@@ -163,8 +163,9 @@ func TestPostAuthFileModelCooldownClearIsTenantScoped(t *testing.T) {
 		if rec.Code != http.StatusNotFound {
 			t.Fatalf("tenant %q: status = %d, want 404; body=%s", tenant, rec.Code, rec.Body.String())
 		}
-		if !strings.Contains(rec.Body.String(), "not found") {
-			t.Fatalf("tenant %q: body = %s, want a not-found message", tenant, rec.Body.String())
+		env := decodeErrorEnvelope(t, rec.Body.Bytes())
+		if env.Error.Code != "not_found" {
+			t.Fatalf("tenant %q: body = %s, want code not_found", tenant, rec.Body.String())
 		}
 		if !modelIsCooling(t, manager, "codex-cooling.json", "m-a") {
 			t.Fatalf("tenant %q released another tenant's model", tenant)
@@ -186,15 +187,15 @@ func TestPostAuthFileModelCooldownClearRejectsBadRequests(t *testing.T) {
 		name string
 		body string
 		want int
-		text string
+		code string
 	}{
-		{"malformed json", `{"auth_index":`, http.StatusBadRequest, "invalid body"},
-		{"not an object", `["m-a"]`, http.StatusBadRequest, "invalid body"},
-		{"no model", `{"auth_index":"` + index + `"}`, http.StatusBadRequest, "model is required"},
-		{"blank model", `{"auth_index":"` + index + `","model":"   "}`, http.StatusBadRequest, "model is required"},
-		{"no auth index", `{"model":"m-a"}`, http.StatusNotFound, "auth not found"},
-		{"blank auth index", `{"auth_index":"  ","model":"m-a"}`, http.StatusNotFound, "auth not found"},
-		{"unknown auth index", `{"auth_index":"0000000000000000","model":"m-a"}`, http.StatusNotFound, "auth not found"},
+		{"malformed json", `{"auth_index":`, http.StatusBadRequest, "empty_request_body"},
+		{"not an object", `["m-a"]`, http.StatusBadRequest, "invalid_field_type"},
+		{"no model", `{"auth_index":"` + index + `"}`, http.StatusBadRequest, "missing_required_field"},
+		{"blank model", `{"auth_index":"` + index + `","model":"   "}`, http.StatusBadRequest, "missing_required_field"},
+		{"no auth index", `{"model":"m-a"}`, http.StatusNotFound, "not_found"},
+		{"blank auth index", `{"auth_index":"  ","model":"m-a"}`, http.StatusNotFound, "not_found"},
+		{"unknown auth index", `{"auth_index":"0000000000000000","model":"m-a"}`, http.StatusNotFound, "not_found"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -202,8 +203,9 @@ func TestPostAuthFileModelCooldownClearRejectsBadRequests(t *testing.T) {
 			if rec.Code != tc.want {
 				t.Fatalf("status = %d, want %d; body=%s", rec.Code, tc.want, rec.Body.String())
 			}
-			if !strings.Contains(rec.Body.String(), tc.text) {
-				t.Fatalf("body = %s, want it to say %q", rec.Body.String(), tc.text)
+			env := decodeErrorEnvelope(t, rec.Body.Bytes())
+			if env.Error.Code != tc.code || strings.TrimSpace(env.Error.Message) == "" {
+				t.Fatalf("body = %s, want code %q with clear message", rec.Body.String(), tc.code)
 			}
 		})
 	}
@@ -244,8 +246,9 @@ func TestPostAuthFileModelCooldownClearWithoutAuthManager(t *testing.T) {
 			if rec.Code != http.StatusServiceUnavailable {
 				t.Fatalf("status = %d, want 503; body=%s", rec.Code, rec.Body.String())
 			}
-			if !strings.Contains(rec.Body.String(), "auth manager unavailable") {
-				t.Fatalf("body = %s, want the message the route smoke allows", rec.Body.String())
+			env := decodeErrorEnvelope(t, rec.Body.Bytes())
+			if env.Error.Code != "service_unavailable" || strings.TrimSpace(env.Error.Message) == "" {
+				t.Fatalf("body = %s, want code service_unavailable", rec.Body.String())
 			}
 		})
 	}

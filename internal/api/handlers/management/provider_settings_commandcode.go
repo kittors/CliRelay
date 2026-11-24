@@ -26,7 +26,7 @@ func (h *ProviderKeysHandler) GetCommandCodeKeys(c *gin.Context) {
 func (h *ProviderKeysHandler) PutCommandCodeKeys(c *gin.Context) {
 	data, err := c.GetRawData()
 	if err != nil {
-		c.JSON(400, gin.H{"error": "failed to read body"})
+		writeReadBodyError(c, err, 0)
 		return
 	}
 	var arr []config.CommandCodeKey
@@ -35,13 +35,13 @@ func (h *ProviderKeysHandler) PutCommandCodeKeys(c *gin.Context) {
 			Items []config.CommandCodeKey `json:"items"`
 		}
 		if err2 := json.Unmarshal(data, &obj); err2 != nil || len(obj.Items) == 0 {
-			c.JSON(400, gin.H{"error": "invalid body"})
+			writeInvalidBodyError(c, err)
 			return
 		}
 		arr = obj.Items
 	}
 	if err := providerSettingsService(h, c).ReplaceCommandCodeKeys(arr); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		writeError(c, http.StatusBadRequest, "invalid_provider_config", "Command Code 密钥配置校验失败："+err.Error())
 		return
 	}
 	h.persistProviderSettings(c)
@@ -54,16 +54,20 @@ func (h *ProviderKeysHandler) PatchCommandCodeKey(c *gin.Context) {
 		Index  *int                               `json:"index"`
 		Value  *providersettings.CommandCodePatch `json:"value"`
 	}
-	if err := c.ShouldBindJSON(&body); err != nil || body.Value == nil {
-		c.JSON(400, gin.H{"error": "invalid body"})
+	if err := c.ShouldBindJSON(&body); err != nil {
+		writeInvalidBodyError(c, err)
+		return
+	}
+	if body.Value == nil {
+		writeMissingFieldError(c, "value", "请提供要修改的 Command Code 密钥字段对象 value")
 		return
 	}
 	if err := providerSettingsService(h, c).PatchCommandCodeKey(body.Index, body.APIKey, body.Name, *body.Value); err != nil {
 		if errors.Is(err, providersettings.ErrItemNotFound) {
-			c.JSON(404, gin.H{"error": "item not found"})
+			writeNotFoundError(c, "Command Code 密钥条目", "")
 			return
 		}
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		writeError(c, http.StatusBadRequest, "invalid_provider_config", "更新 Command Code 密钥配置失败："+err.Error())
 		return
 	}
 	h.persistProviderSettings(c)
@@ -75,7 +79,7 @@ func (h *ProviderKeysHandler) DeleteCommandCodeKey(c *gin.Context) {
 			h.persistProviderSettings(c)
 			return
 		}
-		c.JSON(404, gin.H{"error": "item not found"})
+		writeNotFoundError(c, "Command Code 密钥条目", "")
 		return
 	}
 	if name := strings.TrimSpace(c.Query("name")); name != "" {
@@ -83,7 +87,7 @@ func (h *ProviderKeysHandler) DeleteCommandCodeKey(c *gin.Context) {
 			h.persistProviderSettings(c)
 			return
 		}
-		c.JSON(404, gin.H{"error": "item not found"})
+		writeNotFoundError(c, "Command Code 密钥条目", name)
 		return
 	}
 	if idxStr := c.Query("index"); idxStr != "" {
@@ -93,5 +97,5 @@ func (h *ProviderKeysHandler) DeleteCommandCodeKey(c *gin.Context) {
 			return
 		}
 	}
-	c.JSON(400, gin.H{"error": "missing api-key, name, or index"})
+	writeMissingFieldError(c, "api-key/name/index", "删除 Command Code 密钥时必须通过查询参数提供 api-key、name 或 index")
 }

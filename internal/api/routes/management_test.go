@@ -26,7 +26,7 @@ func TestRegisterManagementRouteTable(t *testing.T) {
 		routes[key] = route
 	}
 
-	if got, want := len(routes), 440; got != want {
+	if got, want := len(routes), 441; got != want {
 		t.Fatalf("route count = %d, want %d", got, want)
 	}
 	if got, want := sortedRouteKeys(routes), expectedManagementRoutes(); !slices.Equal(got, want) {
@@ -124,6 +124,7 @@ func TestRegisterManagementRouteTable(t *testing.T) {
 		"PUT /v0/management/codex-oauth-admission",
 		"POST /v0/management/quota/clear-status",
 		"POST /v0/management/auth-files/model-cooldown/clear",
+		"POST /v0/management/auth-files/reset-credit",
 		"GET /v0/management/observability/metrics",
 		"PUT /v0/management/observability/metrics",
 		"POST /v0/management/observability/metrics/token",
@@ -184,6 +185,7 @@ func TestManagementRoutePermissionsComplete(t *testing.T) {
 		{http.MethodDelete, "/v0/management/logs", "system.logs.delete"},
 		{http.MethodPost, "/v0/management/usage/import", "system.config.write"},
 		{http.MethodPost, "/v0/management/usage/auth-file-quota-snapshot", "auth_files.write"},
+		{http.MethodPost, "/v0/management/auth-files/reset-credit", "auth_files.write"},
 		{http.MethodGet, "/v0/management/ai-accounts/status", "auth_files.read"},
 		{http.MethodPost, "/v0/management/ai-accounts/status-refresh", "auth_files.write"},
 		{http.MethodGet, "/v0/management/ai-accounts/status-refresh/job-1", "auth_files.read"},
@@ -659,6 +661,7 @@ func expectedManagementRoutes() []string {
 		"POST /v0/management/api-key-entries/period-spending/reset",
 		"POST /v0/management/auth-files",
 		"POST /v0/management/auth-files/model-cooldown/clear",
+		"POST /v0/management/auth-files/reset-credit",
 		"POST /v0/management/auth-files/warmup/batch",
 		"POST /v0/management/auth-files/warmup/policies",
 		"POST /v0/management/auth-files/warmup/run",

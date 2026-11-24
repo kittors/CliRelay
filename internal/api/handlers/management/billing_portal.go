@@ -41,7 +41,7 @@ func (h *Handler) PostPortalBillingOrder(c *gin.Context) {
 	}
 	var input billing.CreateOrderInput
 	if err := c.ShouldBindJSON(&input); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"code": "invalid_billing_request", "message": "invalid JSON body"}})
+		writeInvalidBillingBodyError(c, err)
 		return
 	}
 	order, err := h.billingService().CreatePortalOrder(
@@ -107,7 +107,7 @@ func (h *Handler) GetPublicBillingPay(c *gin.Context) {
 func (h *Handler) PostPublicBillingOrder(c *gin.Context) {
 	var input billing.CreateOrderInput
 	if err := c.ShouldBindJSON(&input); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"code": "invalid_billing_request", "message": "invalid JSON body"}})
+		writeInvalidBillingBodyError(c, err)
 		return
 	}
 	order, err := h.billingService().CreatePublicOrder(c.Request.Context(), c.Param("code"), billingBaseURLFromRequest(c), input)
@@ -169,16 +169,16 @@ func (h *Handler) PostPublicXunhuPayCallback(c *gin.Context) {
 func (h *Handler) resolvePublicBillingAPIKey(c *gin.Context, rawKey string) (*usage.APIKeyRow, bool) {
 	apiKey := strings.TrimSpace(rawKey)
 	if apiKey == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"code": "invalid_billing_request", "message": "api_key is required"}})
+		writeError(c, http.StatusBadRequest, "invalid_billing_request", "缺少必填参数 api_key，请在请求体中提供有效的 API Key")
 		return nil, false
 	}
 	if config.IsPlaceholderAPIKey(apiKey) {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": gin.H{"code": "invalid_api_key", "message": "Invalid API key"}})
+		writeError(c, http.StatusUnauthorized, "invalid_api_key", "Invalid API key：该密钥为示例占位密钥，无法用于计费查询或下单，请使用有效的正式 API Key")
 		return nil, false
 	}
 	row := usage.GetAPIKey(apiKey)
 	if row == nil || row.Disabled || strings.TrimSpace(row.ID) == "" {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": gin.H{"code": "invalid_api_key", "message": "Invalid API key"}})
+		writeError(c, http.StatusUnauthorized, "invalid_api_key", "Invalid API key：该 API Key 不存在或已被禁用，请核对后重试")
 		return nil, false
 	}
 	return row, true
@@ -189,7 +189,7 @@ func (h *Handler) PostPublicKeyBillingOverview(c *gin.Context) {
 		APIKey string `json:"api_key"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"code": "invalid_billing_request", "message": "invalid JSON body"}})
+		writeInvalidBillingBodyError(c, err)
 		return
 	}
 	row, ok := h.resolvePublicBillingAPIKey(c, body.APIKey)
@@ -213,7 +213,7 @@ func (h *Handler) PostPublicKeyBillingOrder(c *gin.Context) {
 		CustomAmountCents int    `json:"custom_amount_cents,omitempty"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"code": "invalid_billing_request", "message": "invalid JSON body"}})
+		writeInvalidBillingBodyError(c, err)
 		return
 	}
 	row, ok := h.resolvePublicBillingAPIKey(c, body.APIKey)
@@ -245,7 +245,7 @@ func (h *Handler) PostPublicKeyBillingOrders(c *gin.Context) {
 		Size   int    `json:"size,omitempty"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"code": "invalid_billing_request", "message": "invalid JSON body"}})
+		writeInvalidBillingBodyError(c, err)
 		return
 	}
 	row, ok := h.resolvePublicBillingAPIKey(c, body.APIKey)
@@ -268,7 +268,7 @@ func (h *Handler) PostPublicKeyBillingOrderStatus(c *gin.Context) {
 		Sync    bool   `json:"sync,omitempty"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"code": "invalid_billing_request", "message": "invalid JSON body"}})
+		writeInvalidBillingBodyError(c, err)
 		return
 	}
 	row, ok := h.resolvePublicBillingAPIKey(c, body.APIKey)

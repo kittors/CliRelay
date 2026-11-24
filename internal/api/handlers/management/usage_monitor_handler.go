@@ -7,7 +7,6 @@ import (
 	"github.com/gin-gonic/gin"
 	managementusagelogs "github.com/router-for-me/CLIProxyAPI/v6/internal/management/usagelogs"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
-	log "github.com/sirupsen/logrus"
 )
 
 // GetUsageMonitorOverview serves the monitor center:
@@ -22,8 +21,7 @@ func (h *UsageLogsHandler) GetUsageMonitorOverview(c *gin.Context) {
 	}
 	payload, err := h.service(c).MonitorOverview(query)
 	if err != nil {
-		log.Warnf("management usage monitor: overview failed: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeInternalError(c, "查询监控总览数据", err)
 		return
 	}
 	c.JSON(http.StatusOK, monitorOverviewResponse{
@@ -40,8 +38,7 @@ func (h *UsageLogsHandler) GetUsageMonitorRealtime(c *gin.Context) {
 	}
 	payload, err := h.service(c).MonitorRealtime(query)
 	if err != nil {
-		log.Warnf("management usage monitor: realtime failed: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeInternalError(c, "查询实时监控趋势数据", err)
 		return
 	}
 	c.JSON(http.StatusOK, payload)
@@ -51,8 +48,11 @@ func monitorQueryFromRequest(c *gin.Context) (managementusagelogs.MonitorQuery, 
 	rangeKey, ok := usage.NormalizeMonitorRange(c.Query("range"))
 	if !ok {
 		c.JSON(http.StatusBadRequest, gin.H{
-			"error": "invalid range: use 1h, 6h, 24h, today, 7d, 14d or 30d",
-			"code":  "invalid_range",
+			"code": "invalid_range",
+			"error": gin.H{
+				"code":    "invalid_range",
+				"message": "不支持的时间范围参数 range，仅支持 1h、6h、24h、today、7d、14d 或 30d",
+			},
 		})
 		return managementusagelogs.MonitorQuery{}, false
 	}

@@ -140,13 +140,13 @@ type aiAccountStatusRefreshBody struct {
 func (h *Handler) PostAIAccountStatusRefresh(c *gin.Context) {
 	svc := h.aiAccountStatusService()
 	if svc == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "status service unavailable"})
+		writeServiceUnavailableError(c, "AI 账号状态刷新服务")
 		return
 	}
 	var body aiAccountStatusRefreshBody
 	if c.Request.ContentLength > 0 {
 		if err := c.ShouldBindJSON(&body); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+			writeInvalidBodyError(c, err)
 			return
 		}
 	}
@@ -167,17 +167,17 @@ func (h *Handler) PostAIAccountStatusRefresh(c *gin.Context) {
 func (h *Handler) GetAIAccountStatusRefreshJob(c *gin.Context) {
 	svc := h.aiAccountStatusService()
 	if svc == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "status service unavailable"})
+		writeServiceUnavailableError(c, "AI 账号状态刷新服务")
 		return
 	}
 	jobID := strings.TrimSpace(c.Param("job_id"))
 	if jobID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "job_id is required"})
+		writeMissingFieldError(c, "job_id", "请在路径参数中提供状态刷新任务 ID")
 		return
 	}
 	snap, ok := svc.GetJob(effectiveTenantID(c), jobID)
 	if !ok {
-		c.JSON(http.StatusNotFound, gin.H{"error": "job not found"})
+		writeNotFoundError(c, "状态刷新任务", jobID)
 		return
 	}
 	c.JSON(http.StatusOK, snap)
@@ -189,14 +189,14 @@ func (h *Handler) GetAIAccountStatusRefreshJob(c *gin.Context) {
 func (h *Handler) GetAIAccountStatus(c *gin.Context) {
 	svc := h.aiAccountStatusService()
 	if svc == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "status service unavailable"})
+		writeServiceUnavailableError(c, "AI 账号状态服务")
 		return
 	}
 	indexes := queryStringListMulti(c, "auth_index", "auth_indexes")
 	subjects := queryStringListMulti(c, "auth_subject_id", "auth_subject_ids")
 	payload, err := svc.ListStatus(effectiveTenantID(c), indexes, subjects)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeInternalError(c, "查询 AI 账号状态列表", err)
 		return
 	}
 	for i := range payload.Items {

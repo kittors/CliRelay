@@ -60,22 +60,22 @@ type identityFingerprintAccountDetail struct {
 func (h *Handler) GetIdentityFingerprintAccount(c *gin.Context) {
 	provider, ok := normalizeIdentityFingerprintProvider(c.Query("provider"))
 	if !ok {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "provider must be one of claude, codex, gemini, xai"})
+		writeInvalidFieldError(c, "provider", "不支持的身份指纹渠道类型，仅支持 claude、codex、gemini、xai、kimi 或 antigravity")
 		return
 	}
 	accountKey := strings.TrimSpace(c.Query("account_key"))
 	if accountKey == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "account_key is required"})
+		writeMissingFieldError(c, "account_key", "查询账号身份指纹详情时必须提供 account_key")
 		return
 	}
 	identity, bindingCount, ok := h.identityFingerprintScopeForTenant(effectiveTenantID(c), accountKey)
 	if !ok {
-		c.JSON(http.StatusNotFound, gin.H{"error": "account subject is not bound to the current tenant"})
+		writeNotFoundError(c, "账号主体绑定关系", accountKey)
 		return
 	}
 	detail, err := h.identityFingerprintAccountDetail(provider, accountKey, strings.TrimSpace(c.Query("auth_subject_id")))
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeInternalError(c, "查询账号身份指纹详情", err)
 		return
 	}
 	applyIdentityFingerprintScope(&detail, identity, bindingCount)
@@ -93,22 +93,22 @@ type identityFingerprintAccountPolicyRequest struct {
 func (h *Handler) PutIdentityFingerprintAccountPolicy(c *gin.Context) {
 	var body identityFingerprintAccountPolicyRequest
 	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		writeInvalidBodyError(c, err)
 		return
 	}
 	provider, ok := normalizeIdentityFingerprintProvider(body.Provider)
 	if !ok || provider != identityfingerprint.ProviderCodex {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "account identity selection is only supported for codex"})
+		writeInvalidFieldError(c, "provider", "账号级身份指纹策略目前仅支持 codex 渠道")
 		return
 	}
 	accountKey := strings.TrimSpace(body.AccountKey)
 	if accountKey == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "account_key is required"})
+		writeMissingFieldError(c, "account_key", "更新账号身份指纹策略时必须提供 account_key")
 		return
 	}
 	identity, bindingCount, bound := h.identityFingerprintScopeForTenant(effectiveTenantID(c), accountKey)
 	if !bound {
-		c.JSON(http.StatusNotFound, gin.H{"error": "account subject is not bound to the current tenant"})
+		writeNotFoundError(c, "账号主体绑定关系", accountKey)
 		return
 	}
 	strategy := identityfingerprint.AccountStrategy(strings.TrimSpace(body.Strategy))
@@ -116,16 +116,16 @@ func (h *Handler) PutIdentityFingerprintAccountPolicy(c *gin.Context) {
 	switch strategy {
 	case identityfingerprint.AccountStrategyCLIPreferred:
 		if activeProfileKey != "" {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "active_profile_key must be empty for cli_preferred"})
+			writeInvalidFieldError(c, "active_profile_key", "当 strategy 为 cli_preferred 时，active_profile_key 必须留空")
 			return
 		}
 	case identityfingerprint.AccountStrategyActiveProfile:
 		if activeProfileKey == "" {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "active_profile_key is required for active_profile"})
+			writeMissingFieldError(c, "active_profile_key", "当 strategy 为 active_profile 时，必须指定目标 profile_key")
 			return
 		}
 	default:
-		c.JSON(http.StatusBadRequest, gin.H{"error": "strategy must be cli_preferred or active_profile"})
+		writeInvalidFieldError(c, "strategy", "不支持的策略取值，仅支持 cli_preferred 或 active_profile")
 		return
 	}
 	policy, err := usage.SaveIdentityFingerprintAccountPolicy(identityfingerprint.AccountPolicy{
@@ -137,18 +137,19 @@ func (h *Handler) PutIdentityFingerprintAccountPolicy(c *gin.Context) {
 	if err != nil {
 		switch {
 		case errors.Is(err, usage.ErrIdentityFingerprintPolicyConflict):
-			c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
-		case errors.Is(err, usage.ErrIdentityFingerprintProfileMissing),
-			errors.Is(err, usage.ErrIdentityFingerprintProfileNotSelectable):
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			writeError(c, http.StatusConflict, "identity_fingerprint_policy_conflict", "账号身份指纹策略版本已变化，请刷新页面获取最新 revision 后重试")
+		case errors.Is(err, usage.ErrIdentityFingerprintProfileMissing):
+			writeInvalidFieldError(c, "active_profile_key", "所选身份指纹档案不存在，请刷新列表后重新选择")
+		case errors.Is(err, usage.ErrIdentityFingerprintProfileNotSelectable):
+			writeInvalidFieldError(c, "active_profile_key", "所选身份指纹档案当前不满足出站选择条件，无法设为激活档案")
 		default:
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			writeInternalError(c, "保存账号身份指纹策略", err)
 		}
 		return
 	}
 	detail, err := h.identityFingerprintAccountDetail(provider, accountKey, "")
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeInternalError(c, "刷新账号身份指纹详情", err)
 		return
 	}
 	detail.Policy = policy
@@ -160,28 +161,28 @@ func (h *Handler) PutIdentityFingerprintAccountPolicy(c *gin.Context) {
 func (h *Handler) DeleteIdentityFingerprintAccountProfile(c *gin.Context) {
 	provider, ok := normalizeIdentityFingerprintProvider(c.Query("provider"))
 	if !ok || provider != identityfingerprint.ProviderCodex {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "account identity profiles are only supported for codex"})
+		writeInvalidFieldError(c, "provider", "账号级身份指纹档案目前仅支持 codex 渠道")
 		return
 	}
 	accountKey := strings.TrimSpace(c.Query("account_key"))
 	profileKey := strings.TrimSpace(c.Query("profile_key"))
 	if accountKey == "" || profileKey == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "account_key and profile_key are required"})
+		writeMissingFieldError(c, "account_key / profile_key", "删除账号身份指纹档案时必须同时提供 account_key 与 profile_key")
 		return
 	}
 	identity, bindingCount, bound := h.identityFingerprintScopeForTenant(effectiveTenantID(c), accountKey)
 	if !bound {
-		c.JSON(http.StatusNotFound, gin.H{"error": "account subject is not bound to the current tenant"})
+		writeNotFoundError(c, "账号主体绑定关系", accountKey)
 		return
 	}
 	deleted, policy, err := usage.DeleteIdentityFingerprintProfileAndRepairPolicy(provider, accountKey, profileKey)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeInternalError(c, "删除账号身份指纹档案", err)
 		return
 	}
 	detail, err := h.identityFingerprintAccountDetail(provider, accountKey, "")
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeInternalError(c, "刷新账号身份指纹详情", err)
 		return
 	}
 	applyIdentityFingerprintScope(&detail, identity, bindingCount)

@@ -49,11 +49,11 @@ type errorLogSummary struct {
 // GetLogs returns log lines with optional incremental loading.
 func (h *Handler) GetLogs(c *gin.Context) {
 	if h == nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "handler unavailable"})
+		writeServiceUnavailableError(c, "日志服务处理器")
 		return
 	}
 	if h.cfg == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "configuration unavailable"})
+		writeServiceUnavailableError(c, "配置服务")
 		return
 	}
 	if !h.cfg.LoggingToFile {
@@ -68,7 +68,7 @@ func (h *Handler) GetLogs(c *gin.Context) {
 
 	logDir := h.logDirectory()
 	if strings.TrimSpace(logDir) == "" {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "log directory not configured"})
+		writeServiceUnavailableError(c, "日志存储目录")
 		return
 	}
 
@@ -83,13 +83,13 @@ func (h *Handler) GetLogs(c *gin.Context) {
 			})
 			return
 		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to list log files: %v", err)})
+		writeInternalError(c, "列出运行日志文件", err)
 		return
 	}
 
 	limit, errLimit := parseLimit(c.Query("limit"))
 	if errLimit != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("invalid limit: %v", errLimit)})
+		writeInvalidFieldError(c, "limit", errLimit.Error())
 		return
 	}
 
@@ -97,7 +97,7 @@ func (h *Handler) GetLogs(c *gin.Context) {
 	acc := newLogAccumulator(cutoff, limit)
 	for i := range files {
 		if errProcess := acc.consumeFile(files[i]); errProcess != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to read log file %s: %v", filepath.Base(files[i]), errProcess)})
+			writeInternalError(c, fmt.Sprintf("读取日志文件 %s", filepath.Base(files[i])), errProcess)
 			return
 		}
 	}
@@ -116,31 +116,31 @@ func (h *Handler) GetLogs(c *gin.Context) {
 // DeleteLogs removes all rotated log files and truncates the active log.
 func (h *Handler) DeleteLogs(c *gin.Context) {
 	if h == nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "handler unavailable"})
+		writeServiceUnavailableError(c, "日志服务处理器")
 		return
 	}
 	if h.cfg == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "configuration unavailable"})
+		writeServiceUnavailableError(c, "配置服务")
 		return
 	}
 	if !h.cfg.LoggingToFile {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "logging to file disabled"})
+		writeError(c, http.StatusBadRequest, "logging_to_file_disabled", "当前未启用文件日志记录（logging-to-file=false），无需清空日志文件")
 		return
 	}
 
 	dir := h.logDirectory()
 	if strings.TrimSpace(dir) == "" {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "log directory not configured"})
+		writeServiceUnavailableError(c, "日志存储目录")
 		return
 	}
 
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
-			c.JSON(http.StatusNotFound, gin.H{"error": "log directory not found"})
+			writeNotFoundError(c, "日志目录", "")
 			return
 		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to list log directory: %v", err)})
+		writeInternalError(c, "读取日志目录", err)
 		return
 	}
 
@@ -153,14 +153,14 @@ func (h *Handler) DeleteLogs(c *gin.Context) {
 		fullPath := filepath.Join(dir, name)
 		if name == defaultLogFileName {
 			if errTrunc := os.Truncate(fullPath, 0); errTrunc != nil && !os.IsNotExist(errTrunc) {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to truncate log file: %v", errTrunc)})
+				writeInternalError(c, "清空当前运行日志文件", errTrunc)
 				return
 			}
 			continue
 		}
 		if isRotatedLogFile(name) {
 			if errRemove := os.Remove(fullPath); errRemove != nil && !os.IsNotExist(errRemove) {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to remove %s: %v", name, errRemove)})
+				writeInternalError(c, fmt.Sprintf("删除归档日志文件 %s", name), errRemove)
 				return
 			}
 			removed++
@@ -178,11 +178,11 @@ func (h *Handler) DeleteLogs(c *gin.Context) {
 // It returns an empty list when RequestLog is enabled.
 func (h *Handler) GetRequestErrorLogs(c *gin.Context) {
 	if h == nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "handler unavailable"})
+		writeServiceUnavailableError(c, "日志服务处理器")
 		return
 	}
 	if h.cfg == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "configuration unavailable"})
+		writeServiceUnavailableError(c, "配置服务")
 		return
 	}
 	if h.cfg.RequestLog {
@@ -192,7 +192,7 @@ func (h *Handler) GetRequestErrorLogs(c *gin.Context) {
 
 	dir := h.logDirectory()
 	if strings.TrimSpace(dir) == "" {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "log directory not configured"})
+		writeServiceUnavailableError(c, "日志存储目录")
 		return
 	}
 
@@ -202,7 +202,7 @@ func (h *Handler) GetRequestErrorLogs(c *gin.Context) {
 			c.JSON(http.StatusOK, gin.H{"files": []any{}})
 			return
 		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to list request error logs: %v", err)})
+		writeInternalError(c, "列出请求错误日志文件", err)
 		return
 	}
 
@@ -224,7 +224,7 @@ func (h *Handler) GetRequestErrorLogs(c *gin.Context) {
 		}
 		info, errInfo := entry.Info()
 		if errInfo != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to read log info for %s: %v", name, errInfo)})
+			writeInternalError(c, fmt.Sprintf("读取错误日志文件 %s 信息", name), errInfo)
 			return
 		}
 		summary := readErrorLogSummary(filepath.Join(dir, name))
@@ -245,17 +245,17 @@ func (h *Handler) GetRequestErrorLogs(c *gin.Context) {
 // The ID is matched against the suffix of log file names (format: *-{requestID}.log).
 func (h *Handler) GetRequestLogByID(c *gin.Context) {
 	if h == nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "handler unavailable"})
+		writeServiceUnavailableError(c, "日志服务处理器")
 		return
 	}
 	if h.cfg == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "configuration unavailable"})
+		writeServiceUnavailableError(c, "配置服务")
 		return
 	}
 
 	dir := h.logDirectory()
 	if strings.TrimSpace(dir) == "" {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "log directory not configured"})
+		writeServiceUnavailableError(c, "日志存储目录")
 		return
 	}
 
@@ -264,21 +264,21 @@ func (h *Handler) GetRequestLogByID(c *gin.Context) {
 		requestID = strings.TrimSpace(c.Query("id"))
 	}
 	if requestID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "missing request ID"})
+		writeMissingFieldError(c, "id", "请提供要下载的请求日志 ID")
 		return
 	}
 	if strings.ContainsAny(requestID, "/\\") {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request ID"})
+		writeInvalidFieldError(c, "id", "请求日志 ID 不能包含路径分隔符")
 		return
 	}
 
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
-			c.JSON(http.StatusNotFound, gin.H{"error": "log directory not found"})
+			writeNotFoundError(c, "日志目录", "")
 			return
 		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to list log directory: %v", err)})
+		writeInternalError(c, "读取日志目录", err)
 		return
 	}
 
@@ -296,33 +296,33 @@ func (h *Handler) GetRequestLogByID(c *gin.Context) {
 	}
 
 	if matchedFile == "" {
-		c.JSON(http.StatusNotFound, gin.H{"error": "log file not found for the given request ID"})
+		writeNotFoundError(c, "请求日志文件", requestID)
 		return
 	}
 
 	dirAbs, errAbs := filepath.Abs(dir)
 	if errAbs != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to resolve log directory: %v", errAbs)})
+		writeInternalError(c, "解析日志目录路径", errAbs)
 		return
 	}
 	fullPath := filepath.Clean(filepath.Join(dirAbs, matchedFile))
 	prefix := dirAbs + string(os.PathSeparator)
 	if !strings.HasPrefix(fullPath, prefix) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid log file path"})
+		writeInvalidFieldError(c, "id", "解析后的日志文件路径超出允许范围")
 		return
 	}
 
 	info, errStat := os.Stat(fullPath)
 	if errStat != nil {
 		if os.IsNotExist(errStat) {
-			c.JSON(http.StatusNotFound, gin.H{"error": "log file not found"})
+			writeNotFoundError(c, "请求日志文件", requestID)
 			return
 		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to read log file: %v", errStat)})
+		writeInternalError(c, "读取请求日志文件状态", errStat)
 		return
 	}
 	if info.IsDir() {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid log file"})
+		writeInvalidFieldError(c, "id", "目标路径不是有效的日志文件")
 		return
 	}
 
@@ -332,53 +332,53 @@ func (h *Handler) GetRequestLogByID(c *gin.Context) {
 // DownloadRequestErrorLog downloads a specific error request log file by name.
 func (h *Handler) DownloadRequestErrorLog(c *gin.Context) {
 	if h == nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "handler unavailable"})
+		writeServiceUnavailableError(c, "日志服务处理器")
 		return
 	}
 	if h.cfg == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "configuration unavailable"})
+		writeServiceUnavailableError(c, "配置服务")
 		return
 	}
 
 	dir := h.logDirectory()
 	if strings.TrimSpace(dir) == "" {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "log directory not configured"})
+		writeServiceUnavailableError(c, "日志存储目录")
 		return
 	}
 
 	name := strings.TrimSpace(c.Param("name"))
 	if name == "" || strings.Contains(name, "/") || strings.Contains(name, "\\") {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid log file name"})
+		writeInvalidFieldError(c, "name", "错误日志文件名不能为空且不能包含路径分隔符")
 		return
 	}
 	if !strings.HasPrefix(name, "error-") || !strings.HasSuffix(name, ".log") {
-		c.JSON(http.StatusNotFound, gin.H{"error": "log file not found"})
+		writeNotFoundError(c, "错误日志文件", name)
 		return
 	}
 
 	dirAbs, errAbs := filepath.Abs(dir)
 	if errAbs != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to resolve log directory: %v", errAbs)})
+		writeInternalError(c, "解析日志目录路径", errAbs)
 		return
 	}
 	fullPath := filepath.Clean(filepath.Join(dirAbs, name))
 	prefix := dirAbs + string(os.PathSeparator)
 	if !strings.HasPrefix(fullPath, prefix) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid log file path"})
+		writeInvalidFieldError(c, "name", "日志文件路径超出允许的日志目录范围")
 		return
 	}
 
 	info, errStat := os.Stat(fullPath)
 	if errStat != nil {
 		if os.IsNotExist(errStat) {
-			c.JSON(http.StatusNotFound, gin.H{"error": "log file not found"})
+			writeNotFoundError(c, "错误日志文件", name)
 			return
 		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to read log file: %v", errStat)})
+		writeInternalError(c, "读取错误日志文件状态", errStat)
 		return
 	}
 	if info.IsDir() {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid log file"})
+		writeInvalidFieldError(c, "name", "目标路径不是有效的日志文件")
 		return
 	}
 
