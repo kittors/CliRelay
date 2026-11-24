@@ -216,6 +216,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	var streamErr error
 	var terminalLine []byte
 	for _, line := range codexResponsesSSEPayloads(lines) {
+		line, _ = normalizeCodexResponseDone(line)
 		switch gjson.GetBytes(line, "type").String() {
 		case "response.failed", "error":
 			streamErr = codexResponsesFailedStatusErr(line)
@@ -483,6 +484,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 			if err := execCtx.Context.Err(); err != nil {
 				return err
 			}
+			normalizeCodexResponseDoneLines(eventLines)
 			// The framer preserves original multiline data fields. Inspect their
 			// joined JSON without changing the lines forwarded to the translator.
 			for _, payload := range codexResponsesSSEPayloads(eventLines) {
