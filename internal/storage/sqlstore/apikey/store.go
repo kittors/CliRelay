@@ -740,10 +740,12 @@ func tombstoneStaleDisabledOwnedSecrets(db *sql.DB) {
 	if db == nil {
 		return
 	}
+	// end_user_id is TEXT in the SQLite schema and UUID in PostgreSQL, where
+	// trim(uuid) does not exist; CAST works in both.
 	rows, err := db.Query(`
 		SELECT id FROM api_keys
 		WHERE disabled != 0
-		  AND end_user_id IS NOT NULL AND trim(end_user_id) != ''
+		  AND end_user_id IS NOT NULL AND CAST(end_user_id AS TEXT) != ''
 		  AND key NOT LIKE 'sk-deleted-%'
 	`)
 	if err != nil {
