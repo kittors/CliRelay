@@ -98,21 +98,21 @@ func (h *Handler) PutProxyPoolSharing(c *gin.Context) {
 	}
 	id := config.NormalizeProxyID(c.Param("id"))
 	if id == "" || proxypoolsettings.GetForTenant(identity.SystemTenantID, id) == nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "proxy not found"})
+		writeNotFoundError(c, "系统代理条目", id)
 		return
 	}
 	var req sharingRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		writeInvalidBodyError(c, err)
 		return
 	}
 	grantees, err := resolveGrantees(sharingContext(c), req)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		writeInvalidFieldError(c, "tenant_ids", err.Error())
 		return
 	}
 	if _, err := usage.ReplaceResourceGrants(sharingContext(c), resourcegrants.KindProxy, []string{id}, grantees); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to save proxy sharing: %v", err)})
+		writeInternalError(c, "保存代理共享配置", err)
 		return
 	}
 	h.refreshSharedProxyPools()
@@ -132,26 +132,26 @@ func (h *Handler) PostProxyPoolAdopt(c *gin.Context) {
 	id := config.NormalizeProxyID(c.Param("id"))
 	shared := proxypoolsettings.GetForTenant(identity.SystemTenantID, id)
 	if id == "" || shared == nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "proxy not found"})
+		writeNotFoundError(c, "系统代理条目", id)
 		return
 	}
 	if !shared.Enabled {
-		c.JSON(http.StatusConflict, gin.H{"error": "the shared proxy is disabled; enable it before tenants switch to it"})
+		writeError(c, http.StatusConflict, "shared_proxy_disabled", "该共享代理当前处于禁用状态，请先启用后再让租户切换采用")
 		return
 	}
 	grants, err := usage.ListResourceGrants(ctx, resourcegrants.KindProxy)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to read proxy sharing: %v", err)})
+		writeInternalError(c, "读取代理共享授权列表", err)
 		return
 	}
 	grantees := grants[id]
 	if len(grantees) == 0 {
-		c.JSON(http.StatusConflict, gin.H{"error": "the proxy is not shared with any tenant"})
+		writeError(c, http.StatusConflict, "proxy_not_shared", "该代理尚未共享给任何租户，无法执行统一切换")
 		return
 	}
 	holders, err := proxypoolsettings.TenantsOverriding(ctx, []string{id})
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to read tenant proxies: %v", err)})
+		writeInternalError(c, "读取覆盖该代理的租户列表", err)
 		return
 	}
 	adopted := make([]string, 0, len(holders[id]))
@@ -161,7 +161,11 @@ func (h *Handler) PostProxyPoolAdopt(c *gin.Context) {
 		}
 		if err := removeTenantProxyEntry(ctx, tenantID, id); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
-				"error":   fmt.Sprintf("failed to update the proxies of tenant %s: %v", tenantID, err),
+				"error": gin.H{
+					"code":    "adopt_proxy_failed",
+					"message": fmt.Sprintf("切换租户 %q 的共享代理配置失败，部分租户已完成切换，请稍后重试或查看服务端日志", tenantID),
+					"details": gin.H{"tenant_id": tenantID},
+				},
 				"tenants": tenantRefs(ctx, adopted),
 			})
 			return

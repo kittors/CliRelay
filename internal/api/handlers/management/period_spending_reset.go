@@ -20,7 +20,7 @@ type periodSpendingResetRequest struct {
 func bindPeriodSpendingResetRequest(c *gin.Context) ([]quota.Period, bool) {
 	var body periodSpendingResetRequest
 	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"code": "invalid_body", "message": "Request body must be valid JSON"}})
+		writeError(c, http.StatusBadRequest, "invalid_body", "请求体 JSON 格式无效，请传入包含 periods 数组的合法 JSON")
 		return nil, false
 	}
 	periods, err := quota.NormalizePeriods(body.Periods)
@@ -30,11 +30,11 @@ func bindPeriodSpendingResetRequest(c *gin.Context) ([]quota.Period, bool) {
 	var invalid *quota.InvalidPeriodError
 	switch {
 	case errors.Is(err, quota.ErrPeriodsRequired):
-		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"code": "periods_required", "message": "periods must be a non-empty array"}})
+		writeError(c, http.StatusBadRequest, "periods_required", "缺少要重置的周期列表（periods），请至少选择一个周期（5h、day、week 或 month）")
 	case errors.As(err, &invalid):
-		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"code": "invalid_period", "message": fmt.Sprintf("Invalid period %q; allowed periods are 5h, day, week, month", invalid.Period)}})
+		writeError(c, http.StatusBadRequest, "invalid_period", fmt.Sprintf("不支持的周期类型 %q，仅允许 5h、day、week 或 month", invalid.Period))
 	default:
-		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"code": "invalid_period", "message": err.Error()}})
+		writeError(c, http.StatusBadRequest, "invalid_period", fmt.Sprintf("周期参数无效：%s", err.Error()))
 	}
 	return nil, false
 }
@@ -80,7 +80,7 @@ func (h *Handler) PostEndUserPeriodSpendingReset(c *gin.Context) {
 	}
 	svc := h.endUserService()
 	if svc == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "end user service unavailable"})
+		writeServiceUnavailableError(c, "终端用户服务")
 		return
 	}
 	tenantID := effectiveTenantID(c)
@@ -91,7 +91,7 @@ func (h *Handler) PostEndUserPeriodSpendingReset(c *gin.Context) {
 	}
 	accountQuota := usage.GetEndUserQuota(user.ID)
 	if accountQuota == nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"code": "period_limit_missing", "message": "Account period spending limits are not configured"}})
+		writeError(c, http.StatusBadRequest, "period_limit_missing", "该用户账号尚未配置周期消费限额，无需执行周期消费重置")
 		return
 	}
 	effective := usage.EffectiveEndUserQuota(*accountQuota)
@@ -103,7 +103,9 @@ func (h *Handler) PostEndUserPeriodSpendingReset(c *gin.Context) {
 		// all of them for that window at once.
 		if !quota.WindowHasLimit(matrix, effective.AccessPolicy.ModelRules, period) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{
-				"code": "period_limit_missing", "message": fmt.Sprintf("Account %s limit is not configured", period), "period": period,
+				"code":    "period_limit_missing",
+				"message": fmt.Sprintf("该用户账号尚未配置 %s 周期限额，无法重置该周期消费", period),
+				"period":  period,
 			}})
 			return
 		}
@@ -113,12 +115,12 @@ func (h *Handler) PostEndUserPeriodSpendingReset(c *gin.Context) {
 		UserID: actor.UserID, Username: actor.Username, Kind: actor.Kind,
 	})
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeInternalError(c, "重置用户周期消费额度", err)
 		return
 	}
 	count, err := usage.CountEndUserPeriodSpendingResetEvents(tenantID, user.ID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeInternalError(c, "查询用户周期消费重置次数", err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{

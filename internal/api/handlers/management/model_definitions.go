@@ -31,14 +31,17 @@ func (h *Handler) GetStaticModelDefinitions(c *gin.Context) {
 		channel = strings.TrimSpace(c.Query("channel"))
 	}
 	if channel == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "channel is required"})
+		writeMissingFieldError(c, "channel", "请提供要查询静态模型定义的渠道名称（channel）")
 		return
 	}
 
 	normalizedChannel := strings.ToLower(strings.TrimSpace(channel))
 	models := registry.GetStaticModelDefinitionsByChannel(normalizedChannel)
 	if models == nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "unknown channel", "channel": channel})
+		writeError(c, http.StatusBadRequest, "unknown_channel",
+			fmt.Sprintf("不支持的模型定义渠道 %q，请检查渠道名称拼写是否正确", channel),
+			map[string]any{"channel": channel},
+		)
 		return
 	}
 	if normalizedChannel == "cline" {

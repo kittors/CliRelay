@@ -239,10 +239,10 @@ func (h *Handler) RequestAnthropicToken(c *gin.Context) {
 		switch {
 		case errors.Is(err, claudeprovider.ErrPKCEGeneration):
 			log.Errorf("Failed to generate PKCE codes: %v", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate PKCE codes"})
+			writeError(c, http.StatusInternalServerError, "pkce_generation_failed", "生成 Anthropic OAuth 安全校验参数（PKCE）失败，请稍后重试")
 		case errors.Is(err, claudeprovider.ErrStateGeneration):
 			log.Errorf("Failed to generate state parameter: %v", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate state parameter"})
+			writeError(c, http.StatusInternalServerError, "state_generation_failed", "生成 Anthropic OAuth 登录状态标识（state）失败，请稍后重试")
 		case errors.Is(err, claudeprovider.ErrAuthURL):
 			log.Errorf("Failed to generate authorization URL: %v", err)
 			c.JSON(http.StatusInternalServerError, oauthStartFailure("failed to generate authorization url", err))
@@ -280,12 +280,12 @@ func (h *Handler) RequestGeminiCLIToken(c *gin.Context) {
 	if err != nil {
 		switch {
 		case errors.Is(err, geminicli.ErrOAuthClientIDMissing):
-			c.JSON(http.StatusBadRequest, gin.H{"error": "gemini oauth client-id not configured"})
+			writeError(c, http.StatusBadRequest, "gemini_oauth_client_id_missing", "尚未配置 Gemini OAuth Client ID，请先在服务端配置 oauth-clients.gemini 后重试")
 		case errors.Is(err, geminicli.ErrStateGeneration):
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate state parameter"})
+			writeError(c, http.StatusInternalServerError, "state_generation_failed", "生成 Gemini OAuth 登录状态标识（state）失败，请稍后重试")
 		case errors.Is(err, geminicli.ErrCallbackUnavailable):
 			log.WithError(err).Error("failed to compute gemini callback target")
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "callback server unavailable"})
+			writeError(c, http.StatusInternalServerError, "callback_server_unavailable", "无法确定 Gemini OAuth 本地回调服务地址，请检查服务监听端口配置")
 		case errors.Is(err, geminicli.ErrCallbackStart):
 			log.WithError(err).Error("failed to start gemini callback forwarder")
 			c.JSON(http.StatusInternalServerError, oauthStartFailure("failed to start callback server", err))
@@ -324,10 +324,10 @@ func (h *Handler) RequestCodexToken(c *gin.Context) {
 		switch {
 		case errors.Is(err, codexprovider.ErrPKCEGeneration):
 			log.Errorf("Failed to generate PKCE codes: %v", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate PKCE codes"})
+			writeError(c, http.StatusInternalServerError, "pkce_generation_failed", "生成 Codex OAuth 安全校验参数（PKCE）失败，请稍后重试")
 		case errors.Is(err, codexprovider.ErrStateGeneration):
 			log.Errorf("Failed to generate state parameter: %v", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate state parameter"})
+			writeError(c, http.StatusInternalServerError, "state_generation_failed", "生成 Codex OAuth 登录状态标识（state）失败，请稍后重试")
 		case errors.Is(err, codexprovider.ErrAuthURL):
 			log.Errorf("Failed to generate authorization URL: %v", err)
 			c.JSON(http.StatusInternalServerError, oauthStartFailure("failed to generate authorization url", err))
@@ -365,15 +365,15 @@ func (h *Handler) RequestAntigravityToken(c *gin.Context) {
 		switch {
 		case errors.Is(err, antigravityprovider.ErrStateGeneration):
 			log.Errorf("Failed to generate state parameter: %v", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate state parameter"})
+			writeError(c, http.StatusInternalServerError, "state_generation_failed", "生成 Antigravity OAuth 登录状态标识（state）失败，请稍后重试")
 		case errors.Is(err, antigravityprovider.ErrCallbackUnavailable):
 			log.WithError(err).Error("failed to compute antigravity callback target")
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "callback server unavailable"})
+			writeError(c, http.StatusInternalServerError, "callback_server_unavailable", "无法确定 Antigravity OAuth 本地回调服务地址，请检查服务监听端口配置")
 		case errors.Is(err, antigravityprovider.ErrCallbackStart):
 			log.WithError(err).Error("failed to start antigravity callback forwarder")
 			c.JSON(http.StatusInternalServerError, oauthStartFailure("failed to start callback server", err))
 		case errors.Is(err, antigravityprovider.ErrOAuthClientIDMissing):
-			c.JSON(http.StatusBadRequest, gin.H{"error": "antigravity oauth client-id not configured"})
+			writeError(c, http.StatusBadRequest, "antigravity_oauth_client_id_missing", "尚未配置 Antigravity OAuth Client ID，请先在服务端配置 oauth-clients.antigravity 后重试")
 		default:
 			log.WithError(err).Error("failed to start antigravity oauth flow")
 			c.JSON(http.StatusInternalServerError, oauthStartFailure("failed to start oauth flow", err))
@@ -454,13 +454,13 @@ func (h *Handler) RequestXAIToken(c *gin.Context) {
 		switch {
 		case errors.Is(err, xaiprovider.ErrPKCEGeneration):
 			log.WithError(err).Error("failed to generate xai PKCE codes")
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate PKCE codes"})
+			writeError(c, http.StatusInternalServerError, "pkce_generation_failed", "生成 xAI/Grok OAuth 安全校验参数（PKCE）失败，请稍后重试")
 		case errors.Is(err, xaiprovider.ErrStateGeneration):
 			log.WithError(err).Error("failed to generate xai state parameter")
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate state parameter"})
+			writeError(c, http.StatusInternalServerError, "state_generation_failed", "生成 xAI/Grok OAuth 登录状态标识（state）失败，请稍后重试")
 		case errors.Is(err, xaiprovider.ErrCallbackUnavailable):
 			log.WithError(err).Error("failed to compute xai callback target")
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "callback server unavailable"})
+			writeError(c, http.StatusInternalServerError, "callback_server_unavailable", "无法确定 xAI/Grok OAuth 本地回调服务地址，请检查服务监听端口配置")
 		case errors.Is(err, xaiprovider.ErrCallbackStart):
 			log.WithError(err).Error("failed to start xai callback forwarder")
 			c.JSON(http.StatusInternalServerError, oauthStartFailure("failed to start callback server", err))
@@ -500,7 +500,7 @@ func (h *Handler) RequestIFlowToken(c *gin.Context) {
 		switch {
 		case errors.Is(err, iflowprovider.ErrCallbackUnavailable):
 			log.WithError(err).Error("failed to compute iflow callback target")
-			c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "error": "callback server unavailable"})
+			c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "code": "callback_server_unavailable", "error": "无法确定 iFlow OAuth 本地回调服务地址，请检查服务监听端口配置"})
 		case errors.Is(err, iflowprovider.ErrCallbackStart):
 			log.WithError(err).Error("failed to start iflow callback forwarder")
 			c.JSON(http.StatusInternalServerError, withErrorStatus(oauthStartFailure("failed to start callback server", err)))
@@ -525,7 +525,7 @@ func (h *Handler) RequestIFlowCookieToken(c *gin.Context) {
 		ProxyID string `json:"proxy_id"`
 	}
 	if err := c.ShouldBindJSON(&payload); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "error": "cookie is required"})
+		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "code": "invalid_request_body", "error": "请求体格式无效或缺少 cookie 字段，请传入包含有效 iFlow Cookie 的 JSON"})
 		return
 	}
 	saveWithProxy := func(ctx context.Context, record *coreauth.Auth) (string, error) {
@@ -542,17 +542,19 @@ func (h *Handler) RequestIFlowCookieToken(c *gin.Context) {
 		var duplicate iflowprovider.DuplicateBXAuthError
 		switch {
 		case errors.Is(err, iflowprovider.ErrCookieRequired):
-			c.JSON(http.StatusBadRequest, gin.H{"status": "error", "error": "cookie is required"})
+			c.JSON(http.StatusBadRequest, gin.H{"status": "error", "code": "missing_cookie", "error": "缺少必填参数 cookie，请粘贴完整的 iFlow 登录 Cookie"})
 		case errors.Is(err, iflowprovider.ErrDuplicateCheck):
-			c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "error": "failed to check duplicate"})
+			log.WithError(err).Error("iflow cookie login failed duplicate check")
+			c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "code": "duplicate_check_failed", "error": "检查重复 iFlow 凭据时发生服务端异常，请稍后重试"})
 		case errors.As(err, &duplicate):
-			c.JSON(http.StatusConflict, gin.H{"status": "error", "error": "duplicate BXAuth found", "existing_file": duplicate.ExistingFileName()})
+			c.JSON(http.StatusConflict, gin.H{"status": "error", "code": "duplicate_bxauth", "error": fmt.Sprintf("该 iFlow 账号（BXAuth）已存在于凭据文件 %q 中，无需重复导入", duplicate.ExistingFileName()), "existing_file": duplicate.ExistingFileName()})
 		case errors.Is(err, iflowprovider.ErrExtractEmail):
-			c.JSON(http.StatusBadRequest, gin.H{"status": "error", "error": "failed to extract email from token"})
+			c.JSON(http.StatusBadRequest, gin.H{"status": "error", "code": "invalid_cookie_token", "error": "无法从提供的 iFlow Cookie 中解析出账号邮箱，请确认 Cookie 完整且未过期"})
 		case errors.Is(err, iflowprovider.ErrSaveTokens):
-			c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "error": "failed to save authentication tokens"})
+			log.WithError(err).Error("iflow cookie login failed to save tokens")
+			c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "code": "save_tokens_failed", "error": "保存 iFlow 认证凭据失败，请检查服务器存储权限或磁盘空间"})
 		default:
-			c.JSON(http.StatusBadRequest, gin.H{"status": "error", "error": err.Error()})
+			c.JSON(http.StatusBadRequest, gin.H{"status": "error", "code": "iflow_cookie_auth_failed", "error": fmt.Sprintf("iFlow Cookie 登录校验失败：%s", err.Error())})
 		}
 		return
 	}
@@ -573,7 +575,7 @@ func (h *Handler) GetAuthStatus(c *gin.Context) {
 		return
 	}
 	if err := ValidateOAuthState(state); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "error": "invalid state"})
+		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "code": "invalid_oauth_state", "error": "OAuth 状态参数格式无效（invalid state），请重新发起授权登录"})
 		return
 	}
 	if respondSharedAuthStatus(c, state) {
@@ -591,7 +593,7 @@ func (h *Handler) GetAuthStatus(c *gin.Context) {
 		return
 	}
 	if tenantID != "" && tenantID != effectiveTenantID(c) {
-		c.JSON(http.StatusNotFound, gin.H{"status": "error", "error": "unknown or expired state"})
+		c.JSON(http.StatusNotFound, gin.H{"status": "error", "error": "OAuth 登录状态不存在或已过期（unknown or expired state），请重新发起授权登录", "code": oauthCodeSessionExpired})
 		return
 	}
 	// A login replaced by another completed login of the same provider keeps

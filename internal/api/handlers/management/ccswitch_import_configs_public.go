@@ -130,13 +130,13 @@ func ccSwitchImportConfigMatchesAPIKeyPermissions(config usage.CcSwitchImportCon
 func (h *Handler) GetPublicCcSwitchImportConfigs(c *gin.Context) {
 	req, status, message := readPublicLookupRequest(c)
 	if message != "" {
-		c.JSON(status, gin.H{"error": message})
+		writePublicLookupError(c, status, message)
 		return
 	}
 
 	apiKey := strings.TrimSpace(req.APIKey)
 	if apiKey == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "api_key parameter is required"})
+		writeError(c, http.StatusBadRequest, "missing_api_key", "缺少必填参数 api_key（api_key parameter is required），请在请求体中提供 API Key")
 		return
 	}
 

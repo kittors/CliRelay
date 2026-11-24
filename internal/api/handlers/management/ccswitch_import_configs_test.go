@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -365,14 +366,14 @@ func TestPutCcSwitchImportConfigsRejectionNamesEveryClientType(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
 	}
-	var body struct {
-		Error string `json:"error"`
+	env := decodeErrorEnvelope(t, rec.Body.Bytes())
+	if env.Error.Code != "invalid_field" {
+		t.Fatalf("code = %q, want invalid_field; body=%s", env.Error.Code, rec.Body.String())
 	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
-		t.Fatalf("unmarshal error body: %v", err)
-	}
-	if want := "client-type must be one of claude, codex, gemini, opencode, openclaw, hermes"; body.Error != want {
-		t.Fatalf("error = %q, want %q", body.Error, want)
+	for _, clientType := range []string{"claude", "codex", "gemini", "opencode", "openclaw", "hermes"} {
+		if !strings.Contains(env.Error.Message, clientType) {
+			t.Fatalf("message = %q, want it to list %q", env.Error.Message, clientType)
+		}
 	}
 }
 

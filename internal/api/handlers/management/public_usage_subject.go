@@ -42,14 +42,15 @@ func (h *Handler) resolvePublicUsageSubject(c *gin.Context, apiKey string) (publ
 
 	apiKey = strings.TrimSpace(apiKey)
 	if apiKey == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "api_key parameter is required"})
+		writeError(c, http.StatusBadRequest, "missing_api_key", "缺少必填参数 api_key（api_key parameter is required），请在请求体中提供待查询的 API Key")
 		return publicUsageSubject{}, false
 	}
 	// Presenting the key is the only proof of ownership here, and the example keys
 	// from config.example.yaml are public. Refuse them the way the client API does
 	// rather than expose whatever was recorded under them.
 	if config.IsPlaceholderAPIKey(apiKey) {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid API key"})
+		// Keep "Invalid API key" verbatim for frontend ApiKeyLookupPage and public lookup tests.
+		writeError(c, http.StatusUnauthorized, "invalid_api_key", "Invalid API key：该密钥为示例占位密钥，无法用于查询用量，请使用有效的正式 API Key")
 		return publicUsageSubject{}, false
 	}
 

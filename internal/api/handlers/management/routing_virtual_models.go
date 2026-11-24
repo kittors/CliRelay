@@ -41,8 +41,12 @@ func (h *Handler) PutRoutingVirtualModels(c *gin.Context) {
 	var body struct {
 		VirtualModels *[]config.VirtualModel `json:"virtual-models"`
 	}
-	if err := c.ShouldBindJSON(&body); err != nil || body.VirtualModels == nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body: virtual-models is required"})
+	if err := c.ShouldBindJSON(&body); err != nil {
+		writeInvalidBodyError(c, err)
+		return
+	}
+	if body.VirtualModels == nil {
+		writeMissingFieldError(c, "virtual-models", "请提供虚拟模型配置数组 virtual-models")
 		return
 	}
 	sent := *body.VirtualModels
@@ -62,13 +66,13 @@ func (h *Handler) PutRoutingVirtualModels(c *gin.Context) {
 		auths = h.authManager.ListUsableForTenant(tenantID)
 	}
 	if err := config.ValidateVirtualModels(sent, knownRoutingGroups(candidate, auths)); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		writeError(c, http.StatusBadRequest, "invalid_virtual_models", "虚拟模型配置校验失败："+err.Error())
 		return
 	}
 	candidate.SanitizeRouting()
 	stored, err := usage.CompareAndSwapRoutingConfigForTenant(c.Request.Context(), tenantID, candidate.Routing, expected)
 	if err != nil {
-		writeConfigSaveError(c, "failed to save virtual models", err)
+		writeConfigSaveError(c, "保存虚拟模型配置", err)
 		return
 	}
 	h.applyRoutingConfig(c, tenantID, candidate.Routing, stored)

@@ -339,8 +339,9 @@ func TestPutProxyPoolRejectsDuplicateIDs(t *testing.T) {
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
 	}
-	if !strings.Contains(w.Body.String(), "duplicate proxy ids") {
-		t.Fatalf("body = %s, want duplicate proxy ids", w.Body.String())
+	env := decodeErrorEnvelope(t, w.Body.Bytes())
+	if env.Error.Code != "duplicate_proxy_ids" || !strings.Contains(env.Error.Message, "ip") {
+		t.Fatalf("body = %s, want duplicate_proxy_ids mentioning ip", w.Body.String())
 	}
 	if rows := usage.ListProxyPool(); len(rows) != 0 {
 		t.Fatalf("store should stay empty on rejected put, got %#v", rows)

@@ -10,7 +10,6 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/identity"
 	managementusagelogs "github.com/router-for-me/CLIProxyAPI/v6/internal/management/usagelogs"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
-	log "github.com/sirupsen/logrus"
 )
 
 const authFileGroupTrendCacheTTL = 30 * time.Second
@@ -108,8 +107,7 @@ func (h *UsageLogsHandler) GetUsageLogs(c *gin.Context) {
 		MatchNoClientNames: queryBool(c, "client_names_empty"),
 	})
 	if err != nil {
-		log.Warnf("management usage logs: get usage logs failed: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeInternalError(c, "查询请求日志列表", err)
 		return
 	}
 	c.JSON(http.StatusOK, payload)
@@ -119,8 +117,7 @@ func (h *UsageLogsHandler) DeleteUsageLogs(c *gin.Context) {
 	if c.Request.ContentLength == 0 {
 		result, err := h.service(c).ClearAllRequestLogs()
 		if err != nil {
-			log.Warnf("management usage logs: clear all request logs failed: %v", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			writeInternalError(c, "清空全部请求日志", err)
 			return
 		}
 		c.JSON(http.StatusOK, result)
@@ -129,7 +126,7 @@ func (h *UsageLogsHandler) DeleteUsageLogs(c *gin.Context) {
 
 	var req deleteUsageLogsRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		writeInvalidBodyError(c, err)
 		return
 	}
 	status, payload, err := h.service(c).ClearRequestLogs(usage.ClearRequestLogsOptions{
@@ -161,7 +158,7 @@ func (h *UsageLogsHandler) GetLogContent(c *gin.Context) {
 func (h *UsageLogsHandler) GetPublicUsageLogs(c *gin.Context) {
 	req, status, message := readPublicLookupRequest(c)
 	if message != "" {
-		c.JSON(status, gin.H{"error": message})
+		writePublicLookupError(c, status, message)
 		return
 	}
 	subject, ok := h.resolvePublicUsageSubject(c, req.APIKey)
@@ -186,8 +183,7 @@ func (h *UsageLogsHandler) GetPublicUsageLogs(c *gin.Context) {
 		Days:               req.Days,
 	})
 	if err != nil {
-		log.Warnf("management usage logs: public usage logs failed: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeInternalError(c, "查询公开请求日志", err)
 		return
 	}
 	c.JSON(http.StatusOK, payload)
@@ -197,7 +193,7 @@ func (h *UsageLogsHandler) GetPublicUsageLogs(c *gin.Context) {
 func (h *UsageLogsHandler) GetPublicUsageChartData(c *gin.Context) {
 	req, status, message := readPublicLookupRequest(c)
 	if message != "" {
-		c.JSON(status, gin.H{"error": message})
+		writePublicLookupError(c, status, message)
 		return
 	}
 	subject, ok := h.resolvePublicUsageSubject(c, req.APIKey)
@@ -215,8 +211,7 @@ func (h *UsageLogsHandler) GetPublicUsageChartData(c *gin.Context) {
 		payload, err = service.PublicChartData(subject.APIKey, req.Days)
 	}
 	if err != nil {
-		log.Warnf("management usage logs: public chart data failed: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeInternalError(c, "查询公开用量图表数据", err)
 		return
 	}
 	c.JSON(http.StatusOK, payload)
@@ -227,7 +222,7 @@ func (h *UsageLogsHandler) GetPublicUsageChartData(c *gin.Context) {
 func (h *UsageLogsHandler) GetPublicLogContent(c *gin.Context) {
 	req, status, message := readPublicLookupRequest(c)
 	if message != "" {
-		c.JSON(status, gin.H{"error": message})
+		writePublicLookupError(c, status, message)
 		return
 	}
 	subject, ok := h.resolvePublicUsageSubject(c, req.APIKey)
@@ -250,8 +245,7 @@ func (h *UsageLogsHandler) GetPublicLogContent(c *gin.Context) {
 func (h *UsageLogsHandler) GetUsageChartData(c *gin.Context) {
 	payload, err := h.service(c).UsageChartData(strings.TrimSpace(c.Query("api_key")), intQueryDefault(c, "days", 7))
 	if err != nil {
-		log.Warnf("management usage logs: usage chart data failed: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeInternalError(c, "查询用量图表数据", err)
 		return
 	}
 	c.JSON(http.StatusOK, payload)
@@ -277,8 +271,7 @@ func (h *UsageLogsHandler) GetEntityUsageStats(c *gin.Context) {
 
 	payload, err := h.service(c).EntityUsageStats(apiKey, days, authIndexes, sources)
 	if err != nil {
-		log.Warnf("management usage logs: entity usage stats failed: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeInternalError(c, "查询渠道实体用量统计", err)
 		return
 	}
 	h.setTrendCacheWithTTL(cacheKey, payload, entityUsageStatsCacheTTL)
@@ -356,8 +349,7 @@ func (h *UsageLogsHandler) GetAuthFileGroupTrend(c *gin.Context) {
 
 	payload, err := h.service(c).AuthFileGroupTrend(group, days)
 	if err != nil {
-		log.Warnf("management usage logs: auth file group trend failed: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeInternalError(c, "查询账号分组用量趋势", err)
 		return
 	}
 	h.setTrendCache(cacheKey, payload)
@@ -425,7 +417,7 @@ func parseLogID(c *gin.Context) (int64, bool) {
 	idStr := c.Param("id")
 	id, err := strconv.ParseInt(strings.TrimSpace(idStr), 10, 64)
 	if err != nil || id < 1 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid log id"})
+		writeInvalidFieldError(c, "id", "日志 ID 必须是大于 0 的整数")
 		return 0, false
 	}
 	return id, true

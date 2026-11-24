@@ -105,5 +105,5 @@ func respondObservabilityWriteError(c *gin.Context, err error) {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": gin.H{"code": "observability_unavailable", "message": err.Error()}})
 		return
 	}
-	c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "observability_save_failed", "message": err.Error()}})
+	writeInternalErrorWithCode(c, "observability_save_failed", "保存可观测性指标配置", err)
 }

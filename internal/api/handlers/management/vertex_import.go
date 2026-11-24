@@ -15,11 +15,11 @@ import (
 // ImportVertexCredential handles uploading a Vertex service account JSON and saving it as an auth record.
 func (h *Handler) ImportVertexCredential(c *gin.Context) {
 	if h == nil || h.cfg == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "config unavailable"})
+		writeServiceUnavailableError(c, "配置服务")
 		return
 	}
 	if h.cfg.AuthDir == "" {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "auth directory not configured"})
+		writeServiceUnavailableError(c, "凭据存储目录（auth-dir）")
 		return
 	}
 
@@ -30,20 +30,23 @@ func (h *Handler) ImportVertexCredential(c *gin.Context) {
 	fileHeader, err := c.FormFile("file")
 	if err != nil {
 		if bodyutil.IsTooLarge(err) {
-			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "file too large"})
+			writeReadBodyError(c, err, bodyutil.VertexCredentialBodyLimit)
 			return
 		}
-		c.JSON(http.StatusBadRequest, gin.H{"error": "file required"})
+		writeMissingFieldError(c, "file", "请通过表单字段 file 上传 Google Cloud Vertex Service Account JSON 文件")
 		return
 	}
 	if fileHeader.Size > bodyutil.VertexCredentialBodyLimit {
-		c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "file too large"})
+		writeError(c, http.StatusRequestEntityTooLarge, "file_too_large",
+			fmt.Sprintf("上传的 Vertex 凭据文件过大，超出 %s 上限，请确认选择了正确的 Service Account JSON 文件", formatByteLimit(bodyutil.VertexCredentialBodyLimit)),
+			map[string]any{"max_bytes": bodyutil.VertexCredentialBodyLimit},
+		)
 		return
 	}
 
 	file, err := fileHeader.Open()
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("failed to read file: %v", err)})
+		writeError(c, http.StatusBadRequest, "read_file_failed", "无法打开上传的 Vertex 凭据文件，请重新选择文件上传")
 		return
 	}
 	defer file.Close()
@@ -51,10 +54,10 @@ func (h *Handler) ImportVertexCredential(c *gin.Context) {
 	data, err := bodyutil.ReadAll(file, bodyutil.VertexCredentialBodyLimit)
 	if err != nil {
 		if bodyutil.IsTooLarge(err) {
-			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "file too large"})
+			writeReadBodyError(c, err, bodyutil.VertexCredentialBodyLimit)
 			return
 		}
-		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("failed to read file: %v", err)})
+		writeError(c, http.StatusBadRequest, "read_file_failed", "读取上传的 Vertex 凭据文件内容失败，请重试")
 		return
 	}
 
@@ -73,7 +76,7 @@ func (h *Handler) ImportVertexCredential(c *gin.Context) {
 
 	projectID := strings.TrimSpace(valueAsString(serviceAccount["project_id"]))
 	if projectID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "project_id missing"})
+		writeMissingFieldError(c, "project_id", "Vertex Service Account JSON 中缺少必填字段 project_id")
 		return
 	}
 	email := strings.TrimSpace(valueAsString(serviceAccount["client_email"]))

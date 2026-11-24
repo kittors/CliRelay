@@ -62,7 +62,7 @@ func (h *Handler) GetUsageLogEgress(c *gin.Context) {
 	idStr := c.Param("id")
 	id, err := strconv.ParseInt(strings.TrimSpace(idStr), 10, 64)
 	if err != nil || id < 1 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid log id"})
+		writeInvalidFieldError(c, "id", "日志 ID 必须是大于 0 的整数")
 		return
 	}
 
@@ -70,16 +70,16 @@ func (h *Handler) GetUsageLogEgress(c *gin.Context) {
 	logRow, err := usage.QueryLogRowByIDForTenant(tenantID, id)
 	if err != nil {
 		if strings.Contains(err.Error(), "no rows") {
-			c.JSON(http.StatusNotFound, gin.H{"error": "log entry not found"})
+			writeNotFoundError(c, "请求日志记录", strconv.FormatInt(id, 10))
 			return
 		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeInternalError(c, "查询请求日志记录", err)
 		return
 	}
 
 	detailsPart, err := usage.QueryLogContentPartForTenant(tenantID, id, "details")
 	if err != nil && !strings.Contains(err.Error(), "no rows") {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeInternalError(c, "查询请求日志出口详情", err)
 		return
 	}
 

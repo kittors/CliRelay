@@ -16,7 +16,17 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/quota/inflight"
 	sqlapikey "github.com/router-for-me/CLIProxyAPI/v6/internal/storage/sqlstore/apikey"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
+	log "github.com/sirupsen/logrus"
 )
+
+// writeAPIKeyCacheRefreshError logs the underlying cache refresh error and returns
+// a clear, structured 500 response keeping code "cache_refresh_failed".
+func writeAPIKeyCacheRefreshError(c *gin.Context, err error) {
+	if err != nil {
+		log.WithError(err).Error("management api key cache refresh failed")
+	}
+	writeError(c, http.StatusInternalServerError, "cache_refresh_failed", "变更已保存，但刷新内存中的 API Key 缓存失败，请稍后重试或查看服务端日志排查")
+}
 
 // accessPolicyCapabilities 声明本后端支持的访问策略能力。面板会自动升级到最新版本，
 // 可能跑在旧后端上；它只在看到显式 true 时才展示并提交新字段——旧后端会静默丢弃
@@ -187,7 +197,7 @@ func (b keyMutationBody) isEmpty() bool {
 func bindKeyMutation(c *gin.Context) (keyMutationBody, enduser.KeyPatch, bool) {
 	var body keyMutationBody
 	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		writeInvalidBodyError(c, err)
 		return body, enduser.KeyPatch{}, false
 	}
 	periodPatch, err := quota.ResolveLegacyDay(body.DailySpendingLimit, body.PeriodSpendingLimits)
@@ -215,7 +225,7 @@ func (h *Handler) GetEndUserAPIKeySecret(c *gin.Context) {
 	}
 	svc := h.endUserService()
 	if svc == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "end user service unavailable"})
+		writeServiceUnavailableError(c, "终端用户服务")
 		return
 	}
 	secret, err := svc.ResolveOwnedKeySecret(c.Request.Context(), effectiveTenantID(c), c.Param("id"), c.Param("key_id"))
@@ -233,7 +243,7 @@ func (h *Handler) PostEndUsersBatchPermissionProfile(c *gin.Context) {
 	principal, _ := principalFromContext(c)
 	svc := h.endUserService()
 	if svc == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "end user service unavailable"})
+		writeServiceUnavailableError(c, "终端用户服务")
 		return
 	}
 	var body struct {
@@ -241,7 +251,7 @@ func (h *Handler) PostEndUsersBatchPermissionProfile(c *gin.Context) {
 		PermissionProfileID string   `json:"permission-profile-id"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		writeInvalidBodyError(c, err)
 		return
 	}
 	result, err := svc.BindPermissionProfile(c.Request.Context(), principal, effectiveTenantID(c), body.IDs, strings.TrimSpace(body.PermissionProfileID))
@@ -250,7 +260,7 @@ func (h *Handler) PostEndUsersBatchPermissionProfile(c *gin.Context) {
 		return
 	}
 	if err := h.refreshAPIKeyCache(); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "cache_refresh_failed", "message": err.Error()}})
+		writeAPIKeyCacheRefreshError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, result)

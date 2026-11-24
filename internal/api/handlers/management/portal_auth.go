@@ -45,7 +45,7 @@ func (h *Handler) PostPortalLogin(c *gin.Context) {
 	}
 	svc := h.endUserService()
 	if svc == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "end user service unavailable"})
+		writeServiceUnavailableError(c, "终端用户门户服务")
 		return
 	}
 	var body struct {
@@ -103,7 +103,7 @@ func (h *Handler) PostPortalRefresh(c *gin.Context) {
 	}
 	svc := h.endUserService()
 	if svc == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "end user service unavailable"})
+		writeServiceUnavailableError(c, "终端用户门户服务")
 		return
 	}
 	var body struct {
@@ -124,7 +124,7 @@ func (h *Handler) PostPortalRefresh(c *gin.Context) {
 func (h *Handler) authenticatePortal(c *gin.Context) (enduser.User, string, bool) {
 	svc := h.endUserService()
 	if svc == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "end user service unavailable"})
+		writeServiceUnavailableError(c, "终端用户门户服务")
 		return enduser.User{}, "", false
 	}
 	token := bearerToken(c)
@@ -169,7 +169,7 @@ func (h *Handler) GetPortalMe(c *gin.Context) {
 	// profile-applied values, not the raw account row: a bound account used to
 	// read "unlimited" here while the gateway enforced its profile.
 	if err := decorateEndUser(&user); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeInternalError(c, "获取当前门户账号详情", err)
 		return
 	}
 	// word_policy_allowed says whether the portal offers the user sensitive
@@ -198,7 +198,7 @@ func (h *Handler) PutPortalPassword(c *gin.Context) {
 		NewPassword     string `json:"new_password"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		writeInvalidBodyError(c, err)
 		return
 	}
 	if err := h.endUserService().ChangePassword(c.Request.Context(), user, sessionID, body.CurrentPassword, body.NewPassword); err != nil {

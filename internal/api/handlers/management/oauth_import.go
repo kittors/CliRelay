@@ -171,12 +171,12 @@ func (h *Handler) ImportXAISSO(c *gin.Context) {
 
 func (h *Handler) importCredential(c *gin.Context, provider string) {
 	if h == nil || h.cfg == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"status": "error", "error": "config unavailable"})
+		c.JSON(http.StatusServiceUnavailable, gin.H{"status": "error", "code": "service_unavailable", "error": "服务端配置尚未就绪，请稍后重试"})
 		return
 	}
 	kind, ok := h.credentialImportKind(provider)
 	if !ok {
-		c.JSON(http.StatusNotFound, gin.H{"status": "error", "error": "unknown import provider"})
+		c.JSON(http.StatusNotFound, gin.H{"status": "error", "code": "unknown_import_provider", "error": "不支持该凭据导入渠道，请确认请求路径是否正确"})
 		return
 	}
 
@@ -185,11 +185,11 @@ func (h *Handler) importCredential(c *gin.Context, provider string) {
 	}
 	var payload credentialImportRequest
 	if err := c.ShouldBindJSON(&payload); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "code": importCodeRequestInvalid, "error": "invalid request body"})
+		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "code": importCodeRequestInvalid, "error": "导入请求体 JSON 格式无效，请检查字段格式后重试"})
 		return
 	}
 	if strings.TrimSpace(payload.Credential) == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "code": importCodeCredentialRequired, "error": "credential is required"})
+		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "code": importCodeCredentialRequired, "error": "缺少必填参数 credential，请粘贴要导入的账号凭据内容"})
 		return
 	}
 	// Reject a credential pasted into the wrong field before dialling any
@@ -197,7 +197,7 @@ func (h *Handler) importCredential(c *gin.Context, provider string) {
 	// saying so locally is faster and leaks nothing.
 	credential := kind.normalize(payload.Credential)
 	if credential == "" {
-		c.JSON(http.StatusUnprocessableEntity, gin.H{"status": "error", "code": importCodeCredentialMalformed, "error": "the pasted value is not a credential this import accepts"})
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"status": "error", "code": importCodeCredentialMalformed, "error": "粘贴的凭据格式不符合当前导入渠道的要求，请确认未贴错平台或缺少前后缀"})
 		return
 	}
 
@@ -230,7 +230,7 @@ func (h *Handler) importCredential(c *gin.Context, provider string) {
 	savedPath, err := h.saveTenantTokenRecord(saveCtx, tenantID, record)
 	if err != nil {
 		log.WithError(err).WithField("provider", provider).Error("failed to save imported credential")
-		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "code": importCodeSaveFailed, "error": "failed to save the account"})
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "code": importCodeSaveFailed, "error": "上游验证已通过，但保存导入的账号凭据失败，请检查服务器存储状态后重试"})
 		return
 	}
 

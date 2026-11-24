@@ -20,7 +20,7 @@ func systemUsageOnly(c *gin.Context) bool {
 	if coreauth.NormalizedTenantID(effectiveTenantID(c)) == coreauth.NormalizedTenantID("") {
 		return true
 	}
-	c.JSON(http.StatusForbidden, gin.H{"error": "the process-wide usage statistics are only available to the platform"})
+	writeError(c, http.StatusForbidden, "platform_scope_required", "全局进程级用量统计仅限系统平台管理员查看，业务租户请使用租户请求日志统计接口")
 	return false
 }
 
@@ -71,7 +71,7 @@ func (h *Handler) ExportUsageStatistics(c *gin.Context) {
 func (h *Handler) GetPublicUsageByAPIKey(c *gin.Context) {
 	req, status, message := readPublicLookupRequest(c)
 	if message != "" {
-		c.JSON(status, gin.H{"error": message})
+		writePublicLookupError(c, status, message)
 		return
 	}
 
@@ -166,23 +166,23 @@ func (h *Handler) ImportUsageStatistics(c *gin.Context) {
 		return
 	}
 	if h == nil || h.usageStats == nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "usage statistics unavailable"})
+		writeServiceUnavailableError(c, "内存用量统计服务")
 		return
 	}
 
 	data, err := c.GetRawData()
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "failed to read request body"})
+		writeReadBodyError(c, err, 0)
 		return
 	}
 
 	var payload usageImportPayload
 	if err := json.Unmarshal(data, &payload); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid json"})
+		writeInvalidBodyError(c, err)
 		return
 	}
 	if payload.Version != 0 && payload.Version != 1 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "unsupported version"})
+		writeInvalidFieldError(c, "version", "不支持的用量快照导出版本号，当前仅支持 version=1")
 		return
 	}
 

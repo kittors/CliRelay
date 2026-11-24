@@ -2,13 +2,13 @@ package management
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"sync/atomic"
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/management/warmup"
-	log "github.com/sirupsen/logrus"
 )
 
 type warmupPolicyStoreHolder struct{ store warmup.PolicyStore }
@@ -54,13 +54,13 @@ func (h *Handler) stopWarmupScheduler() {
 func (h *Handler) GetWarmupAccountTargets(c *gin.Context) {
 	authID := strings.TrimSpace(c.Query("auth_id"))
 	if authID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "auth_id is required"})
+		writeMissingFieldError(c, "auth_id", "请通过查询参数 auth_id 指定要查看预热目标的账号凭据 ID")
 		return
 	}
 
 	targets, err := h.warmupService().GetAccountTargets(effectiveTenantID(c), authID)
 	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		writeNotFoundError(c, "预热账号凭据", authID)
 		return
 	}
 
@@ -74,17 +74,17 @@ func (h *Handler) PostWarmupAccount(c *gin.Context) {
 		PoolID string `json:"pool_id"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		writeInvalidBodyError(c, err)
 		return
 	}
 
 	res, err := h.warmupService().WarmupSingleAccount(c.Request.Context(), effectiveTenantID(c), req.AuthID, req.PoolID)
 	if err != nil {
-		status := http.StatusInternalServerError
 		if errors.Is(err, warmup.ErrAuthNotFound) {
-			status = http.StatusNotFound
+			writeNotFoundError(c, "预热账号凭据", req.AuthID)
+			return
 		}
-		c.JSON(status, gin.H{"error": err.Error()})
+		writeInternalError(c, "执行单账号预热", err)
 		return
 	}
 
@@ -98,13 +98,13 @@ func (h *Handler) PostWarmupBatch(c *gin.Context) {
 		PoolID  string   `json:"pool_id"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		writeInvalidBodyError(c, err)
 		return
 	}
 
 	count, err := h.warmupService().WarmupBatchAccounts(c.Request.Context(), effectiveTenantID(c), req.AuthIDs, req.PoolID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeInternalError(c, "批量派发账号预热任务", err)
 		return
 	}
 
@@ -116,8 +116,7 @@ func (h *Handler) GetWarmupPolicies(c *gin.Context) {
 	tenantID := effectiveTenantID(c)
 	policies, err := h.warmupService().ListPolicies(c.Request.Context(), tenantID)
 	if err != nil {
-		log.WithError(err).Error("warmup: failed to list policies")
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load warmup policies"})
+		writeInternalError(c, "读取预热策略列表", err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{
@@ -130,18 +129,17 @@ func (h *Handler) GetWarmupPolicies(c *gin.Context) {
 func (h *Handler) PostWarmupPolicy(c *gin.Context) {
 	var p warmup.Policy
 	if err := c.ShouldBindJSON(&p); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid policy payload"})
+		writeInvalidBodyError(c, err)
 		return
 	}
 	p.TenantID = effectiveTenantID(c)
 	if p.ID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "policy ID is required"})
+		writeMissingFieldError(c, "id", "请提供预热策略的唯一标识（id）")
 		return
 	}
 
 	if err := h.warmupService().SavePolicy(c.Request.Context(), p); err != nil {
-		log.WithError(err).Error("warmup: failed to save policy")
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save warmup policy"})
+		writeInternalError(c, fmt.Sprintf("保存预热策略 %q", p.ID), err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"status": "ok", "policy": p})

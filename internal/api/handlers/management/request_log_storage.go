@@ -29,7 +29,7 @@ func (h *Handler) GetRequestLogBodyStorage(c *gin.Context) {
 func (h *Handler) GetRequestLogStorageStatus(c *gin.Context) {
 	status, err := usage.GetRequestLogStorageStatus()
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeInternalError(c, "查询请求日志存储状态", err)
 		return
 	}
 	c.JSON(http.StatusOK, status)
@@ -37,8 +37,12 @@ func (h *Handler) GetRequestLogStorageStatus(c *gin.Context) {
 
 func (h *Handler) PutRequestLogBodyStorage(c *gin.Context) {
 	var body requestLogBodyStorageUpdate
-	if err := c.ShouldBindJSON(&body); err != nil || body.Value == nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+	if err := c.ShouldBindJSON(&body); err != nil {
+		writeInvalidBodyError(c, err)
+		return
+	}
+	if body.Value == nil {
+		writeMissingFieldError(c, "value", "请传入布尔类型的 value 字段以开启或关闭请求体存储")
 		return
 	}
 	if !*body.Value && !body.ClearExisting {
@@ -49,14 +53,14 @@ func (h *Handler) PutRequestLogBodyStorage(c *gin.Context) {
 		return
 	}
 	if h == nil || h.cfg == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "config unavailable"})
+		writeServiceUnavailableError(c, "配置服务")
 		return
 	}
 
 	enabled := *body.Value
 	cfg, err := h.commitRequestLogBodyStorage(c, enabled)
 	if err != nil {
-		writeConfigSaveError(c, "failed to save config", err)
+		writeConfigSaveError(c, "保存请求日志存储设置", err)
 		return
 	}
 	h.mu.Lock()

@@ -300,7 +300,7 @@ func (h *Handler) PutAuthFileSharing(c *gin.Context) {
 		return
 	}
 	if h.authManager == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "core auth manager unavailable"})
+		writeServiceUnavailableError(c, "核心凭据管理服务")
 		return
 	}
 	var req struct {
@@ -308,7 +308,7 @@ func (h *Handler) PutAuthFileSharing(c *gin.Context) {
 		sharingRequest
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		writeInvalidBodyError(c, err)
 		return
 	}
 	owned := make(map[string]struct{})
@@ -331,20 +331,23 @@ func (h *Handler) PutAuthFileSharing(c *gin.Context) {
 		ids = append(ids, id)
 	}
 	if len(unknown) > 0 {
-		c.JSON(http.StatusNotFound, gin.H{"error": fmt.Sprintf("not a credential of the system tenant: %s", strings.Join(unknown, ", "))})
+		writeError(c, http.StatusNotFound, "system_auth_not_found",
+			fmt.Sprintf("以下凭据不属于系统租户或不存在，无法设置跨租户共享：%s", strings.Join(unknown, ", ")),
+			map[string]any{"unknown_ids": unknown},
+		)
 		return
 	}
 	if len(ids) == 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "ids is required"})
+		writeMissingFieldError(c, "ids", "请至少指定一个系统租户的凭据 ID")
 		return
 	}
 	grantees, err := resolveGrantees(sharingContext(c), req.sharingRequest)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		writeInvalidFieldError(c, "tenant_ids", err.Error())
 		return
 	}
 	if _, err := usage.ReplaceResourceGrants(sharingContext(c), resourcegrants.KindAuth, ids, grantees); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to save credential sharing: %v", err)})
+		writeInternalError(c, "保存凭据共享配置", err)
 		return
 	}
 	h.reloadSharedAuthGrants()

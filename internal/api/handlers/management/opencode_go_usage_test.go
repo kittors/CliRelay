@@ -291,20 +291,18 @@ func TestQueryOpenCodeGoUsageNamesOnlyTheReasonTheEndpointGave(t *testing.T) {
 			if w.Code != http.StatusBadGateway {
 				t.Fatalf("status = %d body=%s", w.Code, w.Body.String())
 			}
-			var decoded struct {
-				Error string `json:"error"`
-			}
-			if err := json.Unmarshal(w.Body.Bytes(), &decoded); err != nil {
-				t.Fatalf("decode response: %v", err)
+			env := decodeErrorEnvelope(t, w.Body.Bytes())
+			if env.Error.Code == "" {
+				t.Fatalf("expected structured error code, got body=%s", w.Body.String())
 			}
 			for _, want := range tt.want {
-				if !strings.Contains(decoded.Error, want) {
-					t.Errorf("error %q does not mention %q", decoded.Error, want)
+				if !strings.Contains(env.Error.Message, want) {
+					t.Errorf("error %q does not mention %q", env.Error.Message, want)
 				}
 			}
 			for _, reject := range append(tt.reject, "sk-go-secret") {
-				if strings.Contains(decoded.Error, reject) {
-					t.Errorf("error %q must not mention %q", decoded.Error, reject)
+				if strings.Contains(env.Error.Message, reject) {
+					t.Errorf("error %q must not mention %q", env.Error.Message, reject)
 				}
 			}
 		})
@@ -327,7 +325,8 @@ func TestQueryOpenCodeGoUsageRequiresAPIKey(t *testing.T) {
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d body=%s", w.Code, w.Body.String())
 	}
-	if !bytes.Contains(w.Body.Bytes(), []byte("api-key is required")) {
+	env := decodeErrorEnvelope(t, w.Body.Bytes())
+	if env.Error.Code != "missing_required_field" || !strings.Contains(env.Error.Message, "api-key") {
 		t.Fatalf("body = %s", w.Body.String())
 	}
 }

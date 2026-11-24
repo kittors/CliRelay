@@ -39,20 +39,20 @@ type publicLookupRequest struct {
 func readPublicLookupRequest(c *gin.Context) (publicLookupRequest, int, string) {
 	req := publicLookupRequest{}
 	if c == nil || c.Request == nil {
-		return req, http.StatusInternalServerError, "request unavailable"
+		return req, http.StatusInternalServerError, "请求上下文不可用，请重试"
 	}
 
 	if c.Request.Method == http.MethodPost {
 		body, err := bodyutil.ReadRequestBody(c, publicLookupBodyLimit)
 		if err != nil {
 			if bodyutil.IsTooLarge(err) {
-				return req, http.StatusRequestEntityTooLarge, "request body too large"
+				return req, http.StatusRequestEntityTooLarge, "查询请求体大小超出限制（最大允许 " + formatByteLimit(publicLookupBodyLimit) + "），请精简查询参数后重试"
 			}
-			return req, http.StatusBadRequest, "failed to read request body"
+			return req, http.StatusBadRequest, "读取查询请求体失败，可能是连接已中断，请重试"
 		}
 		if trimmed := strings.TrimSpace(string(body)); trimmed != "" {
 			if err := json.Unmarshal(body, &req); err != nil {
-				return req, http.StatusBadRequest, "invalid json body"
+				return req, http.StatusBadRequest, "查询请求体 JSON 格式有误，请检查提交参数是否为合法 JSON 对象"
 			}
 		}
 	}
@@ -120,6 +120,16 @@ func readPublicLookupRequest(c *gin.Context) (publicLookupRequest, int, string) 
 	req.Format = normalizeLogContentFormatValue(req.Format)
 
 	return req, 0, ""
+}
+
+func writePublicLookupError(c *gin.Context, status int, message string) {
+	code := "invalid_public_lookup_request"
+	if status == http.StatusRequestEntityTooLarge {
+		code = "request_body_too_large"
+	} else if status >= http.StatusInternalServerError {
+		code = "internal_error"
+	}
+	writeError(c, status, code, message)
 }
 
 func dedupePublicLookupStrings(values []string) []string {

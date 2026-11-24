@@ -55,7 +55,7 @@ func (h *Handler) GetPortalAuthAttempts(c *gin.Context) {
 		Size:     size,
 	})
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "list_failed", "message": err.Error()}})
+		writeInternalErrorWithCode(c, "list_failed", "查询门户登录记录", err)
 		return
 	}
 

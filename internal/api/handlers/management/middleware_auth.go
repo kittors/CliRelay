@@ -91,11 +91,11 @@ func (h *Handler) managementAuthMiddleware(c *gin.Context) {
 			// does not help on its own — it recovers the real client IP for the per-IP
 			// throttle, which is why it is named as an additional step rather than an
 			// alternative.
-			message := "remote management disabled"
+			message := "未开启远程管理访问（remote management disabled），请在配置中启用 remote-management.allow-remote=true 后重试"
 			if relayHeader := util.RelayIndicationHeader(c.Request); relayHeader != "" {
-				message = "remote management disabled: request was relayed (" + relayHeader + " header present), so it is not treated as local. Set remote-management.allow-remote=true to allow it, and list the proxy in trusted-proxies so per-IP throttling sees the real client."
+				message = "未开启远程管理访问（remote management disabled）：请求经过代理转发（检测到 " + relayHeader + " 请求头），因此不会被视作本机直连；请设置 remote-management.allow-remote=true 并将代理地址加入 trusted-proxies 以便按真实客户端 IP 限流"
 			}
-			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": message})
+			abortError(c, http.StatusForbidden, "remote_management_disabled", message)
 			return
 		}
 
@@ -115,7 +115,7 @@ func (h *Handler) managementAuthMiddleware(c *gin.Context) {
 	// 6) Nothing to compare against at all.
 	localPasswordConfigured := localClient && h.localPassword != ""
 	if secretHash == "" && envSecret == "" && !localPasswordConfigured {
-		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "remote management key not set"})
+		abortError(c, http.StatusForbidden, "remote_management_key_not_set", "服务端未配置管理密钥（remote management key not set），请先在配置文件或环境变量中设置 remote-management.secret-key")
 		return
 	}
 
@@ -135,7 +135,7 @@ func (h *Handler) managementAuthMiddleware(c *gin.Context) {
 				return
 			}
 		}
-		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "missing management key"})
+		abortError(c, http.StatusUnauthorized, "missing_management_key", "缺少管理密钥（missing management key），请在请求头中提供 Authorization: Bearer <key> 或 X-Management-Key")
 		return
 	}
 
@@ -167,7 +167,7 @@ func (h *Handler) managementAuthMiddleware(c *gin.Context) {
 				return
 			}
 		}
-		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid management key"})
+		abortError(c, http.StatusUnauthorized, "invalid_management_key", "管理密钥无效（invalid management key），请核对密钥后重试")
 		return
 	}
 
@@ -212,22 +212,27 @@ func classifyManagementCredential(c *gin.Context) (string, credentialKind) {
 // contract with the admin panel and must not drift.
 func abortThrottled(c *gin.Context, d throttleDecision) {
 	retryAfter := d.RetryAfter.Round(time.Second)
+	retrySeconds := int(retryAfter.Seconds())
+	if retrySeconds < 0 {
+		retrySeconds = 0
+	}
 	c.Header("Retry-After", retryAfterSecondsHeader(retryAfter))
 	if d.Outcome == outcomeBlocked {
-		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
-			"error": fmt.Sprintf("IP banned due to too many failed attempts. Try again in %s", retryAfter),
-		})
+		// Keep "IP banned due to too many failed attempts" verbatim: the admin panel's
+		// auth-fetch.ts matches this phrase on 403 responses to trigger forced logout.
+		abortError(c, http.StatusForbidden, "ip_banned",
+			fmt.Sprintf("IP banned due to too many failed attempts. Try again in %s（连续鉴权失败次数过多，当前 IP 已被临时封禁，请在 %s 后重试）", retryAfter, retryAfter),
+			map[string]any{"retry_after_seconds": retrySeconds},
+		)
 		return
 	}
 	// The 429 message must never contain "IP banned": the panel's shouldSuspendAuth
 	// regex-matches that string and forces a logout, and a soft rate limit is
 	// precisely the case where the session is still valid and must survive.
-	c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{
-		"error": gin.H{
-			"code":    "too_many_requests",
-			"message": fmt.Sprintf("too many requests, retry in %s", retryAfter),
-		},
-	})
+	abortError(c, http.StatusTooManyRequests, "too_many_requests",
+		fmt.Sprintf("请求过于频繁，请稍候 %s 后重试（too many requests, retry in %s）", retryAfter, retryAfter),
+		map[string]any{"retry_after_seconds": retrySeconds},
+	)
 }
 
 // logAuthFailure emits the operator-facing record of a throttle event.

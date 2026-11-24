@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"strconv"
@@ -140,7 +139,7 @@ func writeConfigSaveError(c *gin.Context, what string, err error) {
 	if writeConfigConflict(c, err) {
 		return
 	}
-	c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("%s: %v", what, err)})
+	writeInternalError(c, what, err)
 }
 
 // freshConfig returns a copy of the configuration of tenantID whose runtime
@@ -166,7 +165,7 @@ func (h *Handler) mutateSystemConfig(c *gin.Context, mutate func(*config.Config)
 	}
 	cfg := h.freshConfig(identity.SystemTenantID)
 	if err := mutate(cfg); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		writeError(c, http.StatusBadRequest, "invalid_config_change", "配置更新校验失败："+err.Error())
 		return false
 	}
 	return h.commitConfig(c, identity.SystemTenantID, cfg)
@@ -185,13 +184,13 @@ func (h *Handler) mutateLiveConfigFile(c *gin.Context, mutate func(*config.Confi
 	if err != nil {
 		*h.cfg = previous
 		h.mu.Unlock()
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		writeError(c, http.StatusBadRequest, "invalid_config_change", "配置更新校验失败："+err.Error())
 		return false
 	}
 	if saveErr := settingsstore.SaveConfig(h.cfg, h.configFilePath); saveErr != nil {
 		*h.cfg = previous
 		h.mu.Unlock()
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to save config: %v", saveErr)})
+		writeInternalError(c, "保存配置文件", saveErr)
 		return false
 	}
 	cfg := h.cfg

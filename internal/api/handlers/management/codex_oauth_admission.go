@@ -39,19 +39,19 @@ func (h *Handler) GetCodexOAuthAdmission(c *gin.Context) {
 func (h *Handler) PutCodexOAuthAdmission(c *gin.Context) {
 	var body codexOAuthAdmissionRequest
 	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		writeInvalidBodyError(c, err)
 		return
 	}
 	allowedClients, err := codexadmission.NormalizeAllowedClientPresets(body.AllowedClients)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		writeInvalidFieldError(c, "allowed_clients", err.Error())
 		return
 	}
 	next := config.CodexOAuthAdmissionConfig{AllowedClientPresets: allowedClients}
 
 	cfg := h.providerConfigForTenant(c)
 	if cfg == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "config unavailable"})
+		writeServiceUnavailableError(c, "配置服务")
 		return
 	}
 	// cfg is this request's fresh copy; a failed commit leaves nothing to undo.

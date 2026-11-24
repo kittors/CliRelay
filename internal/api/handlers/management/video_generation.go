@@ -131,16 +131,16 @@ func (h *Handler) videoGenerationChannelsByProvider(c *gin.Context) map[string][
 func (h *Handler) PostVideoGenerationTest(c *gin.Context) {
 	payload, err := parseVideoGenerationTestPayload(c)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		writeError(c, http.StatusBadRequest, "invalid_video_generation_request", err.Error())
 		return
 	}
 	if h == nil || h.authManager == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "auth manager unavailable"})
+		writeServiceUnavailableError(c, "核心凭据管理服务")
 		return
 	}
 	service := h.ensureVideoGenerationService()
 	if service == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "video generation service unavailable"})
+		writeServiceUnavailableError(c, "视频生成测试服务")
 		return
 	}
 
@@ -151,17 +151,17 @@ func (h *Handler) PostVideoGenerationTest(c *gin.Context) {
 func (h *Handler) GetVideoGenerationTestTask(c *gin.Context) {
 	taskID := strings.TrimSpace(c.Param("task_id"))
 	if taskID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "task_id is required"})
+		writeMissingFieldError(c, "task_id", "请在路径参数中提供视频生成测试任务 ID")
 		return
 	}
 	service := h.ensureVideoGenerationService()
 	if service == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "video generation service unavailable"})
+		writeServiceUnavailableError(c, "视频生成测试服务")
 		return
 	}
 	task, ok := service.Get(effectiveTenantID(c), taskID)
 	if !ok {
-		c.JSON(http.StatusNotFound, gin.H{"error": "video generation task not found"})
+		writeNotFoundError(c, "视频生成测试任务", taskID)
 		return
 	}
 	c.JSON(http.StatusOK, imageGenerationTaskSnapshot(task))
@@ -171,25 +171,25 @@ func (h *Handler) GetVideoGenerationTestTask(c *gin.Context) {
 func parseVideoGenerationTestPayload(c *gin.Context) ([]byte, error) {
 	raw, err := c.GetRawData()
 	if err != nil {
-		return nil, fmt.Errorf("invalid request body")
+		return nil, fmt.Errorf("读取视频生成请求体失败，请重试")
 	}
 	if !gjson.ValidBytes(raw) {
-		return nil, fmt.Errorf("invalid request body")
+		return nil, fmt.Errorf("请求体不是合法的 JSON 格式，请检查视频生成参数")
 	}
 
 	model := strings.TrimSpace(gjson.GetBytes(raw, "model").String())
 	if model == "" {
-		return nil, fmt.Errorf("model is required")
+		return nil, fmt.Errorf("缺少必填参数 model，请指定要测试的视频生成模型")
 	}
 	if registry.VideoGenerationProvider(model) == "" {
-		return nil, fmt.Errorf("model %q is not a supported video generation model", model)
+		return nil, fmt.Errorf("模型 %q 不支持视频生成功能，请选择支持的视频模型", model)
 	}
 	if strings.TrimSpace(gjson.GetBytes(raw, "prompt").String()) == "" {
-		return nil, fmt.Errorf("prompt is required")
+		return nil, fmt.Errorf("缺少必填参数 prompt，请输入视频生成提示词")
 	}
 	if duration := gjson.GetBytes(raw, "duration"); duration.Exists() {
 		if duration.Type != gjson.Number || duration.Int() < 1 {
-			return nil, fmt.Errorf("duration must be a positive number of seconds")
+			return nil, fmt.Errorf("参数 duration 必须是大于 0 的秒数")
 		}
 	}
 	return raw, nil

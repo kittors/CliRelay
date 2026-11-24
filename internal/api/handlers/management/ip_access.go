@@ -48,7 +48,7 @@ func (h *Handler) GetIPAccessRules(c *gin.Context) {
 
 	rules, total, err := registry.Store().List(c.Request.Context(), filter)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "list_failed", "message": err.Error()}})
+		writeInternalErrorWithCode(c, "list_failed", "查询 IP 访问控制规则", err)
 		return
 	}
 	if rules == nil {
@@ -208,7 +208,7 @@ func (h *Handler) PatchIPAccessRule(c *gin.Context) {
 			c.JSON(http.StatusNotFound, gin.H{"error": gin.H{"code": "rule_not_found", "message": err.Error()}})
 			return
 		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "update_failed", "message": err.Error()}})
+		writeInternalErrorWithCode(c, "update_failed", "更新 IP 访问控制规则", err)
 		return
 	}
 	_ = registry.Refresh(c.Request.Context())
@@ -227,7 +227,7 @@ func (h *Handler) DeleteIPAccessRule(c *gin.Context) {
 			c.JSON(http.StatusNotFound, gin.H{"error": gin.H{"code": "rule_not_found", "message": err.Error()}})
 			return
 		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "delete_failed", "message": err.Error()}})
+		writeInternalErrorWithCode(c, "delete_failed", "删除 IP 访问控制规则", err)
 		return
 	}
 	_ = registry.Refresh(c.Request.Context())

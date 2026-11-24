@@ -8,7 +8,6 @@ import (
 	apikeysettings "github.com/router-for-me/CLIProxyAPI/v6/internal/management/settings/apikey"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/quota"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
-	log "github.com/sirupsen/logrus"
 )
 
 type usageSummaryResponse struct {
@@ -50,7 +49,7 @@ type usageLimitsBody struct {
 func (h *Handler) GetPublicUsageSummary(c *gin.Context) {
 	req, status, message := readPublicLookupRequest(c)
 	if message != "" {
-		c.JSON(status, gin.H{"error": message})
+		writePublicLookupError(c, status, message)
 		return
 	}
 	subject, ok := h.resolvePublicUsageSubject(c, req.APIKey)
@@ -60,8 +59,7 @@ func (h *Handler) GetPublicUsageSummary(c *gin.Context) {
 
 	stats, err := usage.QueryStats(subject.logQueryParams(1))
 	if err != nil {
-		log.Warnf("management usage logs: public usage summary query failed: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to query usage summary"})
+		writeInternalError(c, "查询公开用量汇总", err)
 		return
 	}
 
@@ -79,8 +77,7 @@ func (h *Handler) GetPublicUsageSummary(c *gin.Context) {
 	}
 	quotaScopes, err := buildPublicQuotaScopes(subject, row)
 	if err != nil {
-		log.Warnf("management usage summary quota scopes failed: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to query quota usage"})
+		writeInternalError(c, "查询公开配额使用情况", err)
 		return
 	}
 

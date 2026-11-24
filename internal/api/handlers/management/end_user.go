@@ -70,7 +70,7 @@ func endUserError(c *gin.Context, err error) {
 	case errors.Is(err, enduser.ErrNotFound), errors.Is(err, apikeysettings.ErrItemNotFound):
 		c.AbortWithStatusJSON(http.StatusNotFound, gin.H{"error": gin.H{"code": "not_found", "message": err.Error()}})
 	case errors.Is(err, enduser.ErrPeriodDayLegacyConflict):
-		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": gin.H{"code": "period_day_legacy_conflict", "message": "daily-spending-limit conflicts with period-spending-limits.day"}})
+		abortError(c, http.StatusBadRequest, "period_day_legacy_conflict", "参数 daily-spending-limit 与 period-spending-limits.day 冲突，请勿同时提交这两个字段")
 	case func() bool { var target *quota.LimitExceedsAccountError; return errors.As(err, &target) }():
 		var target *quota.LimitExceedsAccountError
 		_ = errors.As(err, &target)
@@ -89,7 +89,7 @@ func (h *Handler) GetEndUsers(c *gin.Context) {
 	principal, _ := principalFromContext(c)
 	svc := h.endUserService()
 	if svc == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "end user service unavailable"})
+		writeServiceUnavailableError(c, "终端用户服务")
 		return
 	}
 	items, err := svc.ListUsers(c.Request.Context(), principal, effectiveTenantID(c))
@@ -100,7 +100,7 @@ func (h *Handler) GetEndUsers(c *gin.Context) {
 	// Effective (profile-applied) limits, per-model rules and current usage, batch
 	// loaded per tenant.
 	if err := decorateEndUsers(items); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeInternalError(c, "加载终端用户配额与用量信息", err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"items": items, "capabilities": accessPolicyCapabilities()})
@@ -110,7 +110,7 @@ func (h *Handler) PostEndUser(c *gin.Context) {
 	principal, _ := principalFromContext(c)
 	svc := h.endUserService()
 	if svc == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "end user service unavailable"})
+		writeServiceUnavailableError(c, "终端用户服务")
 		return
 	}
 	var body struct {
@@ -120,7 +120,7 @@ func (h *Handler) PostEndUser(c *gin.Context) {
 		PermissionProfileID string `json:"permission-profile-id"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		writeInvalidBodyError(c, err)
 		return
 	}
 	result, err := svc.CreateUser(c.Request.Context(), principal, effectiveTenantID(c), body.Username, body.DisplayName, body.Password,
@@ -130,11 +130,11 @@ func (h *Handler) PostEndUser(c *gin.Context) {
 		return
 	}
 	if err := decorateEndUser(&result.User); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeInternalError(c, "加载新建终端用户详情", err)
 		return
 	}
 	if err := h.refreshAPIKeyCache(); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "cache_refresh_failed", "message": err.Error()}})
+		writeAPIKeyCacheRefreshError(c, err)
 		return
 	}
 	c.JSON(http.StatusCreated, result)
@@ -144,7 +144,7 @@ func (h *Handler) PatchEndUser(c *gin.Context) {
 	principal, _ := principalFromContext(c)
 	svc := h.endUserService()
 	if svc == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "end user service unavailable"})
+		writeServiceUnavailableError(c, "终端用户服务")
 		return
 	}
 	var body struct {
@@ -170,7 +170,7 @@ func (h *Handler) PatchEndUser(c *gin.Context) {
 		ModelRoutes          *[]quota.ModelRoute              `json:"model-routes"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		writeInvalidBodyError(c, err)
 		return
 	}
 	periodPatch, err := quota.ResolveLegacyDay(body.DailySpendingLimit, body.PeriodSpendingLimits)
@@ -217,16 +217,13 @@ func (h *Handler) PatchEndUser(c *gin.Context) {
 	// Status or account quota changes affect auth metadata for owned keys.
 	if body.Status != nil || hasQuota {
 		if err := h.refreshAPIKeyCache(); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{
-				"code":    "cache_refresh_failed",
-				"message": err.Error(),
-			}})
+			writeAPIKeyCacheRefreshError(c, err)
 			return
 		}
 	}
 	cappedKeys, cappedCells := user.CappedKeys, user.CappedCells
 	if err := decorateEndUser(&user); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeInternalError(c, "加载更新后的终端用户详情", err)
 		return
 	}
 	user.CappedKeys, user.CappedCells = cappedKeys, cappedCells
@@ -237,7 +234,7 @@ func (h *Handler) DeleteEndUser(c *gin.Context) {
 	principal, _ := principalFromContext(c)
 	svc := h.endUserService()
 	if svc == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "end user service unavailable"})
+		writeServiceUnavailableError(c, "终端用户服务")
 		return
 	}
 	if err := svc.DeleteUser(c.Request.Context(), principal, effectiveTenantID(c), c.Param("id")); err != nil {
@@ -247,7 +244,7 @@ func (h *Handler) DeleteEndUser(c *gin.Context) {
 	h.forgetEndUserWords(c, effectiveTenantID(c), c.Param("id"))
 	h.forgetEndUserPrivacyMasking(c, effectiveTenantID(c), c.Param("id"))
 	if err := h.refreshAPIKeyCache(); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "cache_refresh_failed", "message": err.Error()}})
+		writeAPIKeyCacheRefreshError(c, err)
 		return
 	}
 	c.Status(http.StatusNoContent)
@@ -257,7 +254,7 @@ func (h *Handler) PostEndUserResetPassword(c *gin.Context) {
 	principal, _ := principalFromContext(c)
 	svc := h.endUserService()
 	if svc == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "end user service unavailable"})
+		writeServiceUnavailableError(c, "终端用户服务")
 		return
 	}
 	var body struct {
@@ -276,7 +273,7 @@ func (h *Handler) PostEndUserDailySpendingReset(c *gin.Context) {
 	principal, _ := principalFromContext(c)
 	svc := h.endUserService()
 	if svc == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "end user service unavailable"})
+		writeServiceUnavailableError(c, "终端用户服务")
 		return
 	}
 	if !principal.Has("end_users.write") && !principal.PlatformAdmin {
@@ -291,7 +288,7 @@ func (h *Handler) PostEndUserDailySpendingReset(c *gin.Context) {
 	}
 	accountQuota := usage.GetEndUserQuota(user.ID)
 	if accountQuota == nil || usage.EffectiveEndUserQuota(*accountQuota).DailySpendingLimit <= 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"code": "daily_spending_limit_missing", "message": "Account daily spending limit is unlimited"}})
+		writeError(c, http.StatusBadRequest, "daily_spending_limit_missing", "该终端用户未设置每日消费上限（当前为不限制），无需执行日额度重置")
 		return
 	}
 	actor := periodResetActorFromContext(c)
@@ -299,13 +296,13 @@ func (h *Handler) PostEndUserDailySpendingReset(c *gin.Context) {
 		UserID: actor.UserID, Username: actor.Username, Kind: actor.Kind,
 	})
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeInternalError(c, "重置终端用户今日消费基线", err)
 		return
 	}
 	usedBefore := reset.EffectiveUsedBefore.Day
 	rawToday := reset.Raw.Day
 	if err := usage.UpsertEndUserDailySpendingReset(tenantID, user.ID, rawToday); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeInternalError(c, "写入终端用户日消费重置记录", err)
 		return
 	}
 	if err := usage.InsertEndUserDailySpendingResetEvent(usage.EndUserDailySpendingResetEvent{
@@ -318,12 +315,12 @@ func (h *Handler) PostEndUserDailySpendingReset(c *gin.Context) {
 		ActorUsername:       actor.Username,
 		ActorKind:           actor.Kind,
 	}); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeInternalError(c, "记录终端用户日消费重置审计事件", err)
 		return
 	}
 	resetCount, err := usage.CountEndUserDailySpendingResetEvents(tenantID, user.ID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeInternalError(c, "统计终端用户日消费重置次数", err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{
@@ -345,7 +342,7 @@ func (h *Handler) GetEndUserDailySpendingResetHistory(c *gin.Context) {
 	}
 	svc := h.endUserService()
 	if svc == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "end user service unavailable"})
+		writeServiceUnavailableError(c, "终端用户服务")
 		return
 	}
 	tenantID := effectiveTenantID(c)
@@ -362,7 +359,7 @@ func (h *Handler) GetEndUserDailySpendingResetHistory(c *gin.Context) {
 	}
 	events, err := usage.ListEndUserDailySpendingResetEvents(tenantID, user.ID, limit)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeInternalError(c, "查询终端用户日消费重置历史", err)
 		return
 	}
 	if events == nil {
@@ -370,17 +367,17 @@ func (h *Handler) GetEndUserDailySpendingResetHistory(c *gin.Context) {
 	}
 	total, err := usage.CountEndUserDailySpendingResetEvents(tenantID, user.ID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeInternalError(c, "统计终端用户日消费重置总数", err)
 		return
 	}
 	rawToday, err := usage.QueryRawTodayCostByEndUserForTenant(tenantID, user.ID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeInternalError(c, "查询终端用户今日原始消费", err)
 		return
 	}
 	used, err := usage.QueryTodayEffectiveCostByEndUserForTenant(tenantID, user.ID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeInternalError(c, "查询终端用户今日有效消费", err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{
@@ -399,7 +396,7 @@ func (h *Handler) GetEndUserAPIKeys(c *gin.Context) {
 	}
 	svc := h.endUserService()
 	if svc == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "end user service unavailable"})
+		writeServiceUnavailableError(c, "终端用户服务")
 		return
 	}
 	tenantID := effectiveTenantID(c)
@@ -420,7 +417,7 @@ func (h *Handler) PostEndUserAPIKey(c *gin.Context) {
 	}
 	svc := h.endUserService()
 	if svc == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "end user service unavailable"})
+		writeServiceUnavailableError(c, "终端用户服务")
 		return
 	}
 	_, patch, ok := bindKeyMutation(c)
@@ -428,7 +425,7 @@ func (h *Handler) PostEndUserAPIKey(c *gin.Context) {
 		return
 	}
 	if patch.Disabled != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"code": "validation_failed", "message": "a new key is created enabled"}})
+		writeError(c, http.StatusBadRequest, "validation_failed", "新建 API Key 默认处于启用状态，创建时不支持直接传入 disabled 字段")
 		return
 	}
 	result, err := svc.CreateKeyWithPatch(c.Request.Context(), effectiveTenantID(c), c.Param("id"), patch)
@@ -437,7 +434,7 @@ func (h *Handler) PostEndUserAPIKey(c *gin.Context) {
 		return
 	}
 	if err := h.refreshAPIKeyCache(); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "cache_refresh_failed", "message": err.Error()}})
+		writeAPIKeyCacheRefreshError(c, err)
 		return
 	}
 	c.JSON(http.StatusCreated, result)
@@ -451,7 +448,7 @@ func (h *Handler) PatchEndUserAPIKey(c *gin.Context) {
 	}
 	svc := h.endUserService()
 	if svc == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "end user service unavailable"})
+		writeServiceUnavailableError(c, "终端用户服务")
 		return
 	}
 	body, patch, ok := bindKeyMutation(c)
@@ -459,7 +456,7 @@ func (h *Handler) PatchEndUserAPIKey(c *gin.Context) {
 		return
 	}
 	if body.isEmpty() {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		writeError(c, http.StatusBadRequest, "empty_update_payload", "未提供任何需要更新的字段，请至少修改一项属性后再提交")
 		return
 	}
 	tenantID := effectiveTenantID(c)
@@ -470,7 +467,7 @@ func (h *Handler) PatchEndUserAPIKey(c *gin.Context) {
 		return
 	}
 	if err := h.refreshAPIKeyCache(); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "cache_refresh_failed", "message": err.Error()}})
+		writeAPIKeyCacheRefreshError(c, err)
 		return
 	}
 	items, err := svc.ListKeys(c.Request.Context(), tenantID, userID)
@@ -495,7 +492,7 @@ func (h *Handler) PostEndUserAPIKeyRotate(c *gin.Context) {
 	}
 	svc := h.endUserService()
 	if svc == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "end user service unavailable"})
+		writeServiceUnavailableError(c, "终端用户服务")
 		return
 	}
 	result, err := svc.RotateKey(c.Request.Context(), effectiveTenantID(c), c.Param("id"), c.Param("key_id"))
@@ -504,7 +501,7 @@ func (h *Handler) PostEndUserAPIKeyRotate(c *gin.Context) {
 		return
 	}
 	if err := h.refreshAPIKeyCache(); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "cache_refresh_failed", "message": err.Error()}})
+		writeAPIKeyCacheRefreshError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, result)
@@ -518,7 +515,7 @@ func (h *Handler) DeleteEndUserAPIKey(c *gin.Context) {
 	}
 	svc := h.endUserService()
 	if svc == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "end user service unavailable"})
+		writeServiceUnavailableError(c, "终端用户服务")
 		return
 	}
 	if err := svc.DeleteKey(c.Request.Context(), effectiveTenantID(c), c.Param("id"), c.Param("key_id")); err != nil {
@@ -526,7 +523,7 @@ func (h *Handler) DeleteEndUserAPIKey(c *gin.Context) {
 		return
 	}
 	if err := h.refreshAPIKeyCache(); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "cache_refresh_failed", "message": err.Error()}})
+		writeAPIKeyCacheRefreshError(c, err)
 		return
 	}
 	c.Status(http.StatusNoContent)
@@ -540,7 +537,7 @@ func (h *Handler) PostEndUserAPIKeyDefault(c *gin.Context) {
 	}
 	svc := h.endUserService()
 	if svc == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "end user service unavailable"})
+		writeServiceUnavailableError(c, "终端用户服务")
 		return
 	}
 	if err := svc.SetDefaultKey(c.Request.Context(), effectiveTenantID(c), c.Param("id"), c.Param("key_id")); err != nil {
@@ -548,7 +545,7 @@ func (h *Handler) PostEndUserAPIKeyDefault(c *gin.Context) {
 		return
 	}
 	if err := h.refreshAPIKeyCache(); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "cache_refresh_failed", "message": err.Error()}})
+		writeAPIKeyCacheRefreshError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
@@ -606,7 +603,7 @@ func (h *Handler) PostPortalAPIKey(c *gin.Context) {
 		return
 	}
 	if patch.Disabled != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"code": "validation_failed", "message": "a new key is created enabled"}})
+		writeError(c, http.StatusBadRequest, "validation_failed", "新建 API Key 默认处于启用状态，创建时不支持直接传入 disabled 字段")
 		return
 	}
 	result, err := h.endUserService().CreateKeyWithPatch(c.Request.Context(), user.TenantID, user.ID, patch)
@@ -615,7 +612,7 @@ func (h *Handler) PostPortalAPIKey(c *gin.Context) {
 		return
 	}
 	if err := h.refreshAPIKeyCache(); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "cache_refresh_failed", "message": err.Error()}})
+		writeAPIKeyCacheRefreshError(c, err)
 		return
 	}
 	c.JSON(http.StatusCreated, result)
@@ -649,7 +646,7 @@ func (h *Handler) PatchPortalAPIKey(c *gin.Context) {
 		return
 	}
 	if err := h.refreshAPIKeyCache(); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "cache_refresh_failed", "message": err.Error()}})
+		writeAPIKeyCacheRefreshError(c, err)
 		return
 	}
 	for _, item := range items {
@@ -672,7 +669,7 @@ func (h *Handler) PostPortalAPIKeyRotate(c *gin.Context) {
 		return
 	}
 	if err := h.refreshAPIKeyCache(); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "cache_refresh_failed", "message": err.Error()}})
+		writeAPIKeyCacheRefreshError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, result)
@@ -688,7 +685,7 @@ func (h *Handler) DeletePortalAPIKey(c *gin.Context) {
 		return
 	}
 	if err := h.refreshAPIKeyCache(); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "cache_refresh_failed", "message": err.Error()}})
+		writeAPIKeyCacheRefreshError(c, err)
 		return
 	}
 	c.Status(http.StatusNoContent)
@@ -702,7 +699,7 @@ func (h *Handler) resetOwnedAPIKeyDailySpending(c *gin.Context, tenantID, endUse
 	result, err := h.apiKeySettingsForTenant(tenantID).ResetDailySpending(&keyID, nil, actor)
 	if err != nil {
 		if errors.Is(err, apikeysettings.ErrDailySpendingLimitMissing) {
-			c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"code": "daily_spending_limit_missing", "message": "Key daily spending limit is unlimited"}})
+			writeError(c, http.StatusBadRequest, "daily_spending_limit_missing", "该 API Key 未设置每日消费上限（当前为不限制），无需执行日额度重置")
 			return
 		}
 		endUserError(c, err)
@@ -729,7 +726,7 @@ func (h *Handler) ownedAPIKeyDailySpendingHistory(c *gin.Context, tenantID, endU
 	}
 	total, err := usage.CountDailySpendingResetEvents(tenantID, keyID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeInternalError(c, "统计 API Key 日消费重置次数", err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"items": events, "total": total})

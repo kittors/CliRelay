@@ -126,7 +126,7 @@ func (h *ModelsHandler) GetModelConfigs(c *gin.Context) {
 func (h *ModelsHandler) PostModelConfig(c *gin.Context) {
 	var body modelConfigEditRequest
 	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		writeInvalidBodyError(c, err)
 		return
 	}
 	tenantID := effectiveTenantID(c)
@@ -134,10 +134,10 @@ func (h *ModelsHandler) PostModelConfig(c *gin.Context) {
 	saved, err := h.service(c).UpsertModelConfig(body.ModelConfigPayload, "", modelConfigScope(c))
 	if err != nil {
 		if errors.Is(err, modelcatalog.ErrModelIDRequired) {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			writeMissingFieldError(c, "id", "请提供非空的模型标识（id）")
 			return
 		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeInternalError(c, "保存模型配置", err)
 		return
 	}
 	queuePricingResyncAfterEdit(tenantID, before, resyncModeFor(body.ResyncHistory))
@@ -149,7 +149,7 @@ func (h *ModelsHandler) PostModelConfig(c *gin.Context) {
 func (h *ModelsHandler) PutModelConfig(c *gin.Context) {
 	var body modelConfigEditRequest
 	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		writeInvalidBodyError(c, err)
 		return
 	}
 	tenantID := effectiveTenantID(c)
@@ -158,10 +158,10 @@ func (h *ModelsHandler) PutModelConfig(c *gin.Context) {
 	saved, err := h.service(c).UpsertModelConfig(body.ModelConfigPayload, modelConfigParamID(c), modelConfigScope(c))
 	if err != nil {
 		if errors.Is(err, modelcatalog.ErrModelIDRequired) {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			writeMissingFieldError(c, "id", "请提供非空的模型标识（id）")
 			return
 		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeInternalError(c, "更新模型配置", err)
 		return
 	}
 	queuePricingResyncAfterEdit(tenantID, before, resyncModeFor(body.ResyncHistory))
@@ -175,10 +175,10 @@ func (h *ModelsHandler) DeleteModelConfig(c *gin.Context) {
 	before := pricingFingerprints(tenantID, modelConfigParamID(c))
 	if err := h.service(c).DeleteModelConfig(modelConfigParamID(c)); err != nil {
 		if errors.Is(err, modelcatalog.ErrModelIDRequired) {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			writeMissingFieldError(c, "id", "请在路径参数中指定要删除的模型 ID")
 			return
 		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeInternalError(c, "删除模型配置", err)
 		return
 	}
 	queuePricingResyncAfterEdit(tenantID, before, usage.PricingResyncFill)
@@ -198,12 +198,12 @@ func (h *ModelsHandler) PutModelOwnerPresets(c *gin.Context) {
 		Items []usage.ModelOwnerPresetRow `json:"items"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		writeInvalidBodyError(c, err)
 		return
 	}
 	payload, version, err := h.service(c).ReplaceOwnerPresetsExpect(c.Request.Context(), body.Items, requestExpectedVersion(c))
 	if err != nil {
-		writeConfigSaveError(c, "failed to save owner presets", err)
+		writeConfigSaveError(c, "保存模型归属预设", err)
 		return
 	}
 	setVersionHeader(c, version)
@@ -222,16 +222,16 @@ func (h *ModelsHandler) PatchAuthGroupModelOwnerMapping(c *gin.Context) {
 		Owner     string `json:"owner"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		writeInvalidBodyError(c, err)
 		return
 	}
 	payload, err := h.service(c).PatchAuthGroupOwnerMapping(body.AuthGroup, body.Owner)
 	if err != nil {
 		if errors.Is(err, modelcatalog.ErrAuthGroupRequired) {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			writeMissingFieldError(c, "auth_group", "请指定要配置模型归属映射的认证分组名称（auth_group）")
 			return
 		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeInternalError(c, "更新认证分组模型归属映射", err)
 		return
 	}
 	// The mapping decides which catalog models a credential can serve, so it must
@@ -251,7 +251,7 @@ func (h *ModelsHandler) PutModelPricing(c *gin.Context) {
 		Items []modelcatalog.ModelPricingUpdateItem `json:"items"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		writeInvalidBodyError(c, err)
 		return
 	}
 	tenantID := effectiveTenantID(c)
@@ -262,7 +262,7 @@ func (h *ModelsHandler) PutModelPricing(c *gin.Context) {
 	before := pricingFingerprints(tenantID, ids...)
 	payload, err := h.service(c).UpdatePricing(body.Items)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeInternalError(c, "批量更新模型定价", err)
 		return
 	}
 	queuePricingResyncAfterEdit(tenantID, before, usage.PricingResyncFill)
@@ -281,12 +281,12 @@ func (h *ModelsHandler) PutOpenRouterModelSync(c *gin.Context) {
 		IntervalMinutes int  `json:"interval_minutes"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		writeInvalidBodyError(c, err)
 		return
 	}
 	state, err := h.service(c).UpdateOpenRouterModelSyncSettings(body.Enabled, body.IntervalMinutes)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeInternalError(c, "更新 OpenRouter 模型自动同步设置", err)
 		return
 	}
 	c.JSON(http.StatusOK, state)
@@ -305,7 +305,14 @@ func (h *ModelsHandler) PostOpenRouterModelSyncRun(c *gin.Context) {
 
 	result, state, err := h.service(c).RunOpenRouterModelSync(ctx)
 	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error(), "state": state})
+		code, msg := describeUpstreamNetworkError(err)
+		c.JSON(http.StatusBadGateway, gin.H{
+			"error": gin.H{
+				"code":    code,
+				"message": "同步 OpenRouter 模型目录失败：" + msg,
+			},
+			"state": state,
+		})
 		return
 	}
 	h.notifyModelConfigMutated(c)

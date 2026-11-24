@@ -319,7 +319,8 @@ func (h *Handler) GetLatestVersion(c *gin.Context) {
 
 	resp, err := client.Do(req)
 	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "request_failed", "message": err.Error()})
+		_, msg := describeUpstreamNetworkError(err)
+		c.JSON(http.StatusBadGateway, gin.H{"error": "request_failed", "message": "查询 GitHub 最新版本失败：" + msg})
 		return
 	}
 	defer func() {
@@ -330,13 +331,13 @@ func (h *Handler) GetLatestVersion(c *gin.Context) {
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		c.JSON(http.StatusBadGateway, gin.H{"error": "unexpected_status", "message": fmt.Sprintf("status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))})
+		c.JSON(http.StatusBadGateway, gin.H{"error": "unexpected_status", "message": fmt.Sprintf("GitHub 版本接口返回异常状态（HTTP %d）：%s", resp.StatusCode, strings.TrimSpace(string(body)))})
 		return
 	}
 
 	var info releaseInfo
 	if errDecode := json.NewDecoder(resp.Body).Decode(&info); errDecode != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "decode_failed", "message": errDecode.Error()})
+		c.JSON(http.StatusBadGateway, gin.H{"error": "decode_failed", "message": "解析 GitHub 版本响应 JSON 失败：" + errDecode.Error()})
 		return
 	}
 
@@ -345,7 +346,7 @@ func (h *Handler) GetLatestVersion(c *gin.Context) {
 		version = strings.TrimSpace(info.Name)
 	}
 	if version == "" {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "invalid_response", "message": "missing release version"})
+		c.JSON(http.StatusBadGateway, gin.H{"error": "invalid_response", "message": "GitHub 最新版本接口响应中缺少版本号字段（tag_name/name）"})
 		return
 	}
 
@@ -542,8 +543,12 @@ func (h *Handler) PutLogsMaxTotalSizeMB(c *gin.Context) {
 	var body struct {
 		Value *int `json:"value"`
 	}
-	if errBindJSON := c.ShouldBindJSON(&body); errBindJSON != nil || body.Value == nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+	if errBindJSON := c.ShouldBindJSON(&body); errBindJSON != nil {
+		writeInvalidBodyError(c, errBindJSON)
+		return
+	}
+	if body.Value == nil {
+		writeMissingFieldError(c, "value", "请提供整数类型的日志总大小上限（单位 MB）")
 		return
 	}
 	value := *body.Value
@@ -561,8 +566,12 @@ func (h *Handler) PutErrorLogsMaxFiles(c *gin.Context) {
 	var body struct {
 		Value *int `json:"value"`
 	}
-	if errBindJSON := c.ShouldBindJSON(&body); errBindJSON != nil || body.Value == nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+	if errBindJSON := c.ShouldBindJSON(&body); errBindJSON != nil {
+		writeInvalidBodyError(c, errBindJSON)
+		return
+	}
+	if body.Value == nil {
+		writeMissingFieldError(c, "value", "请提供整数类型的错误日志文件保留上限")
 		return
 	}
 	value := *body.Value
@@ -641,13 +650,17 @@ func (h *Handler) PutRoutingStrategy(c *gin.Context) {
 	var body struct {
 		Value *string `json:"value"`
 	}
-	if errBindJSON := c.ShouldBindJSON(&body); errBindJSON != nil || body.Value == nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+	if errBindJSON := c.ShouldBindJSON(&body); errBindJSON != nil {
+		writeInvalidBodyError(c, errBindJSON)
+		return
+	}
+	if body.Value == nil {
+		writeMissingFieldError(c, "value", "请提供路由策略 value（round-robin、session-sticky 或 fill-first）")
 		return
 	}
 	normalized, ok := normalizeRoutingStrategy(*body.Value)
 	if !ok {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid strategy"})
+		writeInvalidFieldError(c, "value", "不支持的路由策略，仅支持 round-robin、session-sticky 或 fill-first")
 		return
 	}
 	h.putRoutingStrategy(c, normalized)

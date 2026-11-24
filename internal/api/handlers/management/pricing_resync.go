@@ -69,7 +69,7 @@ func (h *ModelsHandler) GetPricingResyncJobs(c *gin.Context) {
 	limit, _ := strconv.Atoi(c.Query("limit"))
 	jobs, err := usage.ListPricingResyncJobs(effectiveTenantID(c), limit)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeInternalError(c, "查询模型定价重算任务列表", err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"jobs": jobs})

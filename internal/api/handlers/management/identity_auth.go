@@ -52,7 +52,7 @@ func (h *Handler) nextWithManagementAudit(c *gin.Context) {
 			return
 		}
 		if h.identity() == nil {
-			c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"error": gin.H{"code": "identity_unavailable", "message": "identity service unavailable"}})
+			abortError(c, http.StatusServiceUnavailable, "identity_unavailable", "身份与权限服务尚未就绪，请检查服务端数据库与初始化状态后重试")
 			return
 		}
 	}
@@ -264,7 +264,7 @@ func (h *Handler) PutPassword(c *gin.Context) {
 		NewPassword     string `json:"new_password"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"code": "invalid_body", "message": "invalid body"}})
+		writeInvalidBodyError(c, err)
 		return
 	}
 	if err := h.identity().ChangePassword(c.Request.Context(), principal, body.CurrentPassword, body.NewPassword); err != nil {
@@ -277,7 +277,7 @@ func (h *Handler) PutPassword(c *gin.Context) {
 func (h *Handler) GetTenants(c *gin.Context) {
 	items, err := h.identity().ListTenants(c.Request.Context())
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeInternalError(c, "获取租户列表", err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"items": items})
@@ -294,7 +294,7 @@ func (h *Handler) PostTenant(c *gin.Context) {
 		AdminPassword    string    `json:"admin_password"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		writeInvalidBodyError(c, err)
 		return
 	}
 	tenant, admin, err := h.identity().CreateTenant(c.Request.Context(), principal, identity.CreateTenantInput{
@@ -324,7 +324,7 @@ func (h *Handler) PatchTenant(c *gin.Context) {
 		Version                int64      `json:"version"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		writeInvalidBodyError(c, err)
 		return
 	}
 	tenant, err := h.identity().UpdateTenantDetails(c.Request.Context(), principal, c.Param("id"), body.Name, body.Description, body.Status, body.ExpiresAt, body.AccessTokenTTLSeconds, body.RefreshTokenTTLSeconds, body.Version)
@@ -339,7 +339,7 @@ func (h *Handler) GetUsers(c *gin.Context) {
 	principal, _ := principalFromContext(c)
 	items, err := h.identity().ListUsers(c.Request.Context(), principal.EffectiveTenant.ID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeInternalError(c, "获取管理用户列表", err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"items": items})
@@ -354,7 +354,7 @@ func (h *Handler) PostUser(c *gin.Context) {
 		RoleIDs     []string `json:"role_ids"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		writeInvalidBodyError(c, err)
 		return
 	}
 	user, initialPassword, err := h.identity().CreateUser(c.Request.Context(), principal, principal.EffectiveTenant.ID, body.Username, body.DisplayName, body.Password, body.RoleIDs)
@@ -377,7 +377,7 @@ func (h *Handler) PostUserResetPassword(c *gin.Context) {
 		Password string `json:"password"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		writeInvalidBodyError(c, err)
 		return
 	}
 	if err := h.identity().ResetPassword(c.Request.Context(), principal, principal.EffectiveTenant.ID, c.Param("id"), body.Password); err != nil {
@@ -391,7 +391,7 @@ func (h *Handler) GetRoles(c *gin.Context) {
 	principal, _ := principalFromContext(c)
 	items, err := h.identity().ListRoles(c.Request.Context(), principal.EffectiveTenant.ID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeInternalError(c, "获取角色列表", err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"items": items})
@@ -400,7 +400,7 @@ func (h *Handler) GetRoles(c *gin.Context) {
 func (h *Handler) GetMenus(c *gin.Context) {
 	items, err := h.identity().ListMenus(c.Request.Context())
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeInternalError(c, "获取菜单列表", err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"items": items})
@@ -410,7 +410,7 @@ func (h *Handler) PostMenu(c *gin.Context) {
 	principal, _ := principalFromContext(c)
 	var body identity.MenuInput
 	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		writeInvalidBodyError(c, err)
 		return
 	}
 	menu, err := h.identity().CreateMenu(c.Request.Context(), principal, body)
@@ -425,7 +425,7 @@ func (h *Handler) PatchMenu(c *gin.Context) {
 	principal, _ := principalFromContext(c)
 	var body identity.MenuInput
 	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		writeInvalidBodyError(c, err)
 		return
 	}
 	menu, err := h.identity().UpdateMenu(c.Request.Context(), principal, c.Param("code"), body)
@@ -440,7 +440,7 @@ func (h *Handler) DeleteMenu(c *gin.Context) {
 	principal, _ := principalFromContext(c)
 	version, err := strconv.ParseInt(strings.TrimSpace(c.Query("version")), 10, 64)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "version required"})
+		writeMissingFieldError(c, "version", "删除菜单必须通过查询参数 version 提供有效的数字版本号")
 		return
 	}
 	if err := h.identity().DeleteMenu(c.Request.Context(), principal, c.Param("code"), version); err != nil {
@@ -453,7 +453,7 @@ func (h *Handler) DeleteMenu(c *gin.Context) {
 func (h *Handler) GetPermissions(c *gin.Context) {
 	items, err := h.identity().ListPermissions(c.Request.Context())
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeInternalError(c, "获取权限列表", err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"items": items})
@@ -467,7 +467,7 @@ func (h *Handler) PostRole(c *gin.Context) {
 		Permissions []string `json:"permissions"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		writeInvalidBodyError(c, err)
 		return
 	}
 	role, err := h.identity().CreateRole(c.Request.Context(), principal, principal.EffectiveTenant.ID, body.Name, body.Description, body.Permissions)
@@ -485,7 +485,7 @@ func (h *Handler) PutRolePermissions(c *gin.Context) {
 		Version     int64    `json:"version"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		writeInvalidBodyError(c, err)
 		return
 	}
 	role, err := h.identity().ReplaceRolePermissions(c.Request.Context(), principal, principal.EffectiveTenant.ID, c.Param("id"), body.Permissions, body.Version)
@@ -644,7 +644,7 @@ func (h *Handler) PatchUser(c *gin.Context) {
 		Version int64  `json:"version"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		writeInvalidBodyError(c, err)
 		return
 	}
 	user, err := h.identity().UpdateUserStatus(c.Request.Context(), principal, principal.EffectiveTenant.ID, c.Param("id"), body.Status, body.Version)
@@ -661,7 +661,7 @@ func (h *Handler) PutUserRoles(c *gin.Context) {
 		RoleIDs []string `json:"role_ids"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		writeInvalidBodyError(c, err)
 		return
 	}
 	if err := h.identity().AssignUserRoles(c.Request.Context(), principal, principal.EffectiveTenant.ID, c.Param("id"), body.RoleIDs); err != nil {
@@ -678,7 +678,7 @@ func (h *Handler) PutRoleUsers(c *gin.Context) {
 		Version int64    `json:"version"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		writeInvalidBodyError(c, err)
 		return
 	}
 	if err := h.identity().ReplaceRoleUsers(c.Request.Context(), principal, principal.EffectiveTenant.ID, c.Param("id"), body.UserIDs, body.Version); err != nil {
@@ -712,7 +712,7 @@ func (h *Handler) DeleteTenant(c *gin.Context) {
 		Version int64 `json:"version"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		writeInvalidBodyError(c, err)
 		return
 	}
 	tenant, err := h.identity().DeleteTenant(c.Request.Context(), principal, c.Param("id"), body.Version)
@@ -730,7 +730,7 @@ func (h *Handler) GetAuditLogs(c *gin.Context) {
 	size, _ := strconv.Atoi(c.DefaultQuery("size", "50"))
 	result, err := h.identity().ListAuditLogs(c.Request.Context(), principal.EffectiveTenant.ID, platform, page, size)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeInternalError(c, "查询审计日志列表", err)
 		return
 	}
 	c.JSON(http.StatusOK, result)
@@ -741,7 +741,7 @@ func (h *Handler) GetAuditLog(c *gin.Context) {
 	platform := principal.Has("platform.audit.read")
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil || id <= 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		writeInvalidFieldError(c, "id", "审计日志 ID 必须为大于 0 的整数")
 		return
 	}
 	item, err := h.identity().GetAuditLog(c.Request.Context(), principal.EffectiveTenant.ID, platform, id)
@@ -757,7 +757,7 @@ func (h *Handler) DeleteAuditLog(c *gin.Context) {
 	platform := principal.Has("platform.audit.read")
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil || id <= 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		writeInvalidFieldError(c, "id", "审计日志 ID 必须为大于 0 的整数")
 		return
 	}
 	if err := h.identity().DeleteAuditLog(c.Request.Context(), principal.EffectiveTenant.ID, platform, id); err != nil {
@@ -772,7 +772,7 @@ func (h *Handler) ClearAuditLogs(c *gin.Context) {
 	platform := principal.Has("platform.audit.read")
 	result, err := h.identity().ClearAuditLogs(c.Request.Context(), principal.EffectiveTenant.ID, platform)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeInternalError(c, "清空审计日志", err)
 		return
 	}
 	c.JSON(http.StatusOK, result)

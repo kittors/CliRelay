@@ -81,7 +81,7 @@ func accessFreezeError(c *gin.Context, err error) {
 	case errors.Is(err, accessfreeze.ErrUnavailable):
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": gin.H{"code": "access_freezes_unavailable", "message": "access freezes are unavailable without the runtime database"}})
 	default:
-		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "access_freeze_failed", "message": err.Error()}})
+		writeInternalErrorWithCode(c, "access_freeze_failed", "处理访问冻结记录", err)
 	}
 }
 

@@ -164,8 +164,21 @@ func respondBillingError(c *gin.Context, err error) {
 		c.JSON(http.StatusFailedDependency, gin.H{"error": gin.H{"code": "provider_failed", "message": err.Error()}})
 	default:
 		log.WithError(err).Warn("billing: request failed")
-		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "billing_failed", "message": "billing operation failed"}})
+		writeError(c, http.StatusInternalServerError, "billing_failed", "计费操作处理失败，服务端内部发生异常，请稍后重试或查看服务端日志排查")
 	}
+}
+
+func writeInvalidBillingBodyError(c *gin.Context, err error) {
+	// Keep code "invalid_billing_request" for billing frontend error handlers while
+	// providing detailed JSON decode diagnostics.
+	var detailMsg string
+	if err != nil {
+		detailMsg = describeInvalidJSONBody(err)
+	}
+	if detailMsg == "" {
+		detailMsg = "计费请求体 JSON 格式无效，请检查字段格式和数据类型后重试"
+	}
+	writeError(c, http.StatusBadRequest, "invalid_billing_request", detailMsg)
 }
 
 func (h *Handler) GetBillingSettings(c *gin.Context) {
@@ -181,7 +194,7 @@ func (h *Handler) GetBillingSettings(c *gin.Context) {
 func (h *Handler) PutBillingSettings(c *gin.Context) {
 	var patch billing.SettingsPatch
 	if err := c.ShouldBindJSON(&patch); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"code": "invalid_billing_request", "message": "invalid JSON body"}})
+		writeInvalidBillingBodyError(c, err)
 		return
 	}
 	principal, _ := principalFromContext(c)
@@ -197,7 +210,7 @@ func (h *Handler) PutBillingSettings(c *gin.Context) {
 func (h *Handler) PostBillingSettingsTest(c *gin.Context) {
 	var req billing.TestChannelRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"code": "invalid_billing_request", "message": "invalid JSON body"}})
+		writeInvalidBillingBodyError(c, err)
 		return
 	}
 	result, err := h.billingService().TestChannel(c.Request.Context(), effectiveTenantID(c), req)
@@ -220,7 +233,7 @@ func (h *Handler) GetBillingPlans(c *gin.Context) {
 func (h *Handler) PostBillingPlan(c *gin.Context) {
 	var input billing.PlanInput
 	if err := c.ShouldBindJSON(&input); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"code": "invalid_billing_request", "message": "invalid JSON body"}})
+		writeInvalidBillingBodyError(c, err)
 		return
 	}
 	plan, err := h.billingService().CreatePlan(c.Request.Context(), effectiveTenantID(c), input)
@@ -234,7 +247,7 @@ func (h *Handler) PostBillingPlan(c *gin.Context) {
 func (h *Handler) PatchBillingPlan(c *gin.Context) {
 	var input billing.PlanInput
 	if err := c.ShouldBindJSON(&input); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"code": "invalid_billing_request", "message": "invalid JSON body"}})
+		writeInvalidBillingBodyError(c, err)
 		return
 	}
 	plan, err := h.billingService().UpdatePlan(c.Request.Context(), effectiveTenantID(c), c.Param("id"), input)
@@ -265,7 +278,7 @@ func (h *Handler) GetBillingBindings(c *gin.Context) {
 func (h *Handler) PutBillingBinding(c *gin.Context) {
 	var input billing.BindingInput
 	if err := c.ShouldBindJSON(&input); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"code": "invalid_billing_request", "message": "invalid JSON body"}})
+		writeInvalidBillingBodyError(c, err)
 		return
 	}
 	view, err := h.billingService().UpsertBinding(c.Request.Context(), effectiveTenantID(c), billingBaseURLFromRequest(c), input)
@@ -298,7 +311,7 @@ func (h *Handler) PatchBillingEntitlement(c *gin.Context) {
 	tenantID := effectiveTenantID(c)
 	var input billing.AdjustEntitlementInput
 	if err := c.ShouldBindJSON(&input); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"code": "invalid_billing_request", "message": "invalid JSON body"}})
+		writeInvalidBillingBodyError(c, err)
 		return
 	}
 	view, err := h.billingService().AdjustEntitlement(c.Request.Context(), tenantID, input)
@@ -367,7 +380,7 @@ func (h *Handler) PostBillingManualOrder(c *gin.Context) {
 	tenantID := effectiveTenantID(c)
 	var input billing.ManualOrderInput
 	if err := c.ShouldBindJSON(&input); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"code": "invalid_billing_request", "message": "invalid JSON body"}})
+		writeInvalidBillingBodyError(c, err)
 		return
 	}
 	order, err := h.billingService().CreateManualOrder(c.Request.Context(), tenantID, principal.User.Username, input)
