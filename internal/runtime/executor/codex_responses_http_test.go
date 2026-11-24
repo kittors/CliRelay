@@ -150,7 +150,7 @@ func TestCodexResponsesHTTPReadErrorDiscardsPartialEvent(t *testing.T) {
 		t.Fatal(err)
 	}
 	events := codexResponsesHTTPParseEvents(string(b))
-	if len(events) != 2 || events[0].name != "response.created" || events[1].name != "error" {
+	if len(events) != 3 || events[0].name != "response.created" || events[1].name != "response.failed" || events[2].name != "error" {
 		t.Fatalf("events=%+v wire=%q", events, b)
 	}
 	if strings.Contains(string(b), "unfinished") || strings.Contains(string(b), "response.completed") {
@@ -204,7 +204,7 @@ func TestCodexResponsesHTTPMalformedTerminal(t *testing.T) {
 		t.Fatal(err)
 	}
 	events := codexResponsesHTTPParseEvents(string(b))
-	if len(events) != 2 || events[1].name != "error" {
+	if len(events) != 3 || events[1].name != "response.failed" || events[2].name != "error" {
 		t.Fatalf("events=%+v wire=%q", events, b)
 	}
 	for _, e := range events {

@@ -235,7 +235,7 @@ func TestResponsesSSETrailingEmptyDataDoesNotDispatchBeforeError(t *testing.T) {
 	h := NewOpenAIResponsesAPIHandler(handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, nil))
 	h.forwardResponsesStream(ctx, ctx.Writer, func(error) {}, data, errs)
 	got := responsesSSETypes(recorder.Body.String())
-	if len(got) != 2 || got[0] != "delta" || got[1] != "error" {
-		t.Fatalf("event types=%q, want [delta error]; wire=%q", got, recorder.Body.String())
+	if len(got) != 3 || got[0] != "delta" || got[1] != "response.failed" || got[2] != "error" {
+		t.Fatalf("event types=%q, want [delta response.failed error]; wire=%q", got, recorder.Body.String())
 	}
 }

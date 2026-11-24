@@ -37,9 +37,12 @@ func TestCombinedNativeTerminalErrorCancellationBarrier(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			// The error frame is not forwarded to the client: it only ends the
+			// attempt. What must reach the client is the terminal event the
+			// upstream already sent, and never the error body.
 			barrier := false
 			for chunk := range stream.Chunks {
-				if strings.Contains(string(chunk.Payload), "event: error") {
+				if chunk.Err != nil {
 					barrier = true
 					cancel()
 				}
@@ -48,7 +51,7 @@ func TestCombinedNativeTerminalErrorCancellationBarrier(t *testing.T) {
 				}
 			}
 			if !barrier {
-				t.Fatal("missing error metadata barrier")
+				t.Fatal("missing failure barrier")
 			}
 			records := codexTerminalRecords(t, p, t.Name())
 			if len(records) != 1 || !records[0].Failed || records[0].Detail.TotalTokens != 5 {
