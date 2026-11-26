@@ -95,14 +95,25 @@ func (h *Handler) saveTenantTokenRecord(ctx context.Context, tenantID string, re
 	}
 	record.Attributes["path"] = managementauthfiles.TenantFilePath(h.cfg.AuthDir, tenantID, name)
 
+	// Inherit operator-managed settings (proxy binding, tags, concurrency,
+	// Codex options, etc.) from any existing credential for the same physical
+	// account before persisting, and collect older filename aliases (such as a
+	// previous plan-typed Codex file) to clean up once the new record is saved.
+	replacementPlan := managementauthfiles.FindReauthReplacementPlan(h.authManager, tenantID, record)
+	managementauthfiles.ApplyReauthOperationalInheritance(record, replacementPlan)
+
 	// A login creates or replaces the credential outright (see
 	// coreauth.WithCredentialCreate); single-node stores ignore the mark.
-	savedPath, err := h.authFileRepository().Save(coreauth.WithCredentialCreate(ctx), record)
+	createCtx := coreauth.WithCredentialCreate(ctx)
+	savedPath, err := h.authFileRepository().Save(createCtx, record)
 	if err != nil {
 		return "", err
 	}
 	if h.authManager != nil {
-		runtimeCtx := coreauth.WithSkipPersist(ctx)
+		// Propagate WithCredentialCreate to Manager.Update so stale 401
+		// cooldowns, StatusError, and old OAuth health from the previous token
+		// are cleared immediately on re-login.
+		runtimeCtx := coreauth.WithSkipPersist(createCtx)
 		if _, exists := h.authManager.GetByID(record.ID); exists {
 			_, err = h.authManager.Update(runtimeCtx, record)
 		} else {
@@ -112,6 +123,7 @@ func (h *Handler) saveTenantTokenRecord(ctx context.Context, tenantID string, re
 			return "", fmt.Errorf("register tenant auth record: %w", err)
 		}
 	}
+	h.cleanupSupersededReauthAliases(ctx, tenantID, record, replacementPlan.SupersededAliases)
 	return savedPath, nil
 }
 

@@ -75,3 +75,67 @@ func TestRefreshTokensWithRetry_InvalidGrant_IsPermanent(t *testing.T) {
 		t.Fatalf("expected 1 refresh attempt for invalid_grant, got %d", got)
 	}
 }
+
+func TestRefreshTokensWithRetry_AllPermanentCodesOnlyAttemptOnce(t *testing.T) {
+	cases := []struct {
+		name string
+		code string
+		body string
+	}{
+		{
+			name: "invalid_refresh_token",
+			code: "invalid_refresh_token",
+			body: `{"error":{"message":"Provided refresh token is invalid.","type":"invalid_request_error","code":"invalid_refresh_token"}}`,
+		},
+		{
+			name: "refresh_token_invalidated",
+			code: "refresh_token_invalidated",
+			body: `{"error":{"message":"Your refresh token has been invalidated.","type":"invalid_request_error","code":"refresh_token_invalidated"}}`,
+		},
+		{
+			name: "refresh_token_expired",
+			code: "refresh_token_expired",
+			body: `{"error":{"message":"Refresh token expired.","type":"invalid_request_error","code":"refresh_token_expired"}}`,
+		},
+		{
+			name: "token_revoked",
+			code: "token_revoked",
+			body: `{"error":{"message":"Encountered invalidated oauth token for user","code":"token_revoked"}}`,
+		},
+		{
+			name: "account_deactivated",
+			code: "account_deactivated",
+			body: `{"error":{"message":"Account deactivated","code":"account_deactivated"}}`,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var calls int32
+			auth := &CodexAuth{
+				httpClient: &http.Client{
+					Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+						atomic.AddInt32(&calls, 1)
+						return &http.Response{
+							StatusCode: http.StatusUnauthorized,
+							Body:       io.NopCloser(strings.NewReader(tc.body)),
+							Header:     make(http.Header),
+							Request:    req,
+						}, nil
+					}),
+				},
+			}
+
+			_, err := auth.RefreshTokensWithRetry(context.Background(), "dead_refresh_token", 3)
+			if err == nil {
+				t.Fatalf("expected error for %s", tc.code)
+			}
+			if !cliproxyauth.IsPermanentAuthError(err) {
+				t.Fatalf("expected PermanentAuthError for %s, got %T %v", tc.code, err, err)
+			}
+			if got := atomic.LoadInt32(&calls); got != 1 {
+				t.Fatalf("expected 1 refresh attempt for %s, got %d", tc.code, got)
+			}
+		})
+	}
+}

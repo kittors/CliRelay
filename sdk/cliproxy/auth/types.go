@@ -94,6 +94,12 @@ type Auth struct {
 	// Runtime carries non-serialisable data used during execution (in-memory only).
 	Runtime any `json:"-"`
 
+	// permanentRefreshFailedDigest records the SHA-256 hex digest of a refresh
+	// token that failed with PermanentAuthError so background auto-refresh does
+	// not keep retrying the same dead token until a different refresh token is
+	// installed (via re-login or cluster sync).
+	permanentRefreshFailedDigest string `json:"-"`
+
 	indexAssigned bool `json:"-"`
 }
 
