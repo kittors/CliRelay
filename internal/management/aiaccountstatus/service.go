@@ -163,7 +163,17 @@ func (s *Service) StartRefresh(tenantID string, req RefreshRequest) RefreshAccep
 		picks[identity.ID] = preferAuthRepresentative(picks[identity.ID], auth)
 	}
 	for _, idx := range req.AuthIndexes {
-		add(byIndex[strings.TrimSpace(idx)])
+		auth := byIndex[strings.TrimSpace(idx)]
+		if auth == nil {
+			continue
+		}
+		add(auth)
+		// When multiple aliases share one physical subject (for example an
+		// expired legacy plan file alongside a fresh login), probe through the
+		// healthiest alias so the stale alias cannot poison shared subject status.
+		if identity := usage.ResolveAuthSubjectIdentity(auth); identity != nil && identity.ID != "" {
+			add(bySubject[identity.ID])
+		}
 	}
 	for _, sid := range req.AuthSubjectIDs {
 		add(bySubject[strings.TrimSpace(sid)])
@@ -316,13 +326,6 @@ func (s *Service) StartRefresh(tenantID string, req RefreshRequest) RefreshAccep
 	}
 }
 
-func isAuthUsable(auth *coreauth.Auth) bool {
-	if auth == nil {
-		return false
-	}
-	return !auth.Disabled && auth.Status != coreauth.StatusDisabled
-}
-
 // needsRuntimeQuotaReconcile reports whether local scheduler state has an active
 // quota cooldown that still needs ProbeQuotaRecovery. Normal accounts return false
 // so status refresh performs only the management probe (one upstream call).
@@ -370,20 +373,6 @@ func (s *Service) maybeNormalizeStaleRefresh(tenantID string) {
 		fn = usage.NormalizeStaleAIAccountRefreshStates
 	}
 	_, _ = fn(tenantID, staleRefreshThreshold)
-}
-
-// preferAuthRepresentative keeps an enabled credential over a disabled alias for the same subject.
-func preferAuthRepresentative(current, candidate *coreauth.Auth) *coreauth.Auth {
-	if candidate == nil {
-		return current
-	}
-	if current == nil {
-		return candidate
-	}
-	if !isAuthUsable(current) && isAuthUsable(candidate) {
-		return candidate
-	}
-	return current
 }
 
 func (s *Service) runJob(jobID, tenantID string, auths []*coreauth.Auth) {

@@ -146,11 +146,23 @@ func (m *Manager) Update(ctx context.Context, auth *Auth) (*Auth, error) {
 	auth.EnsureIndex()
 	snapshot := auth.Clone()
 	var releasedModels []string
+	credentialCreate := IsCredentialCreate(ctx)
+	if credentialCreate {
+		clearStaleOAuthHealthOnCredentialCreate(snapshot)
+		snapshot.NextRefreshAfter = time.Time{}
+		snapshot.permanentRefreshFailedDigest = ""
+	}
 	if previous != nil {
 		now := time.Now()
-		preserveRuntimeFields(snapshot, previous)
-		preserveAvailabilityRuntimeForUpdate(snapshot, previous, now)
-		releasedModels = releaseCoolingOnDisable(snapshot, previous, now)
+		refreshChanged := CredentialRefreshTokenChanged(snapshot, previous)
+		dropAuthFailures := credentialCreate || authCredentialMaterialChanged(snapshot, previous)
+		preserveRuntimeFieldsForUpdate(snapshot, previous, credentialCreate)
+		if refreshChanged {
+			snapshot.NextRefreshAfter = time.Time{}
+			snapshot.permanentRefreshFailedDigest = ""
+		}
+		releasedAuthFailures := preserveAvailabilityRuntimeForUpdateWithOptions(snapshot, previous, now, dropAuthFailures)
+		releasedModels = append(releasedAuthFailures, releaseCoolingOnDisable(snapshot, previous, now)...)
 	}
 	m.auths[auth.ID] = snapshot
 	m.mu.Unlock()

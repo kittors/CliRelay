@@ -346,8 +346,16 @@ func isNonRetryableRefreshErr(err error) bool {
 		return false
 	}
 	raw := strings.ToLower(err.Error())
+	// OpenAI's token endpoint returns these codes when the refresh token is
+	// permanently dead (invalidated, expired, reused, or account revoked).
+	// Retrying them wastes attempts and loops every 15m in the refresh worker.
 	return strings.Contains(raw, "refresh_token_reused") ||
+		strings.Contains(raw, "invalid_refresh_token") ||
+		strings.Contains(raw, "refresh_token_invalidated") ||
+		strings.Contains(raw, "refresh_token_expired") ||
 		strings.Contains(raw, "invalid_grant") ||
+		strings.Contains(raw, "token_revoked") ||
+		strings.Contains(raw, "account_deactivated") ||
 		strings.Contains(raw, "token has been revoked") ||
 		strings.Contains(raw, "token has been expired")
 }

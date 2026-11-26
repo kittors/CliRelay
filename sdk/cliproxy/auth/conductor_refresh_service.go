@@ -161,6 +161,9 @@ func (s refreshService) shouldRefresh(auth *Auth, now time.Time) bool {
 	if auth.Disabled || auth.Status == StatusDisabled {
 		return false
 	}
+	if codexOAuthReauthRequired(auth) || isPermanentRefreshFailedToken(auth) {
+		return false
+	}
 	if !auth.NextRefreshAfter.IsZero() && now.Before(auth.NextRefreshAfter) {
 		return false
 	}
@@ -322,23 +325,35 @@ func (s refreshService) applyRefreshFailure(ctx context.Context, id string, auth
 			return
 		}
 	}
+	var persistSnapshot *Auth
 	s.manager.mu.Lock()
 	if current := s.manager.auths[id]; current != nil {
 		current.NextRefreshAfter = now.Add(refreshFailureBackoff)
 		current.LastError = &Error{Message: err.Error()}
 		if permanent {
+			if digest := refreshTokenDigest(cloned); digest != "" && digest == refreshTokenDigest(current) {
+				current.permanentRefreshFailedDigest = digest
+			}
 			if supportsRefreshTokenRaceRecovery(current) && canKeepRefreshFailureActive(current, now) {
 				current.Status = StatusActive
 				current.StatusMessage = ""
 			} else {
 				current.Status = StatusError
 				current.StatusMessage = err.Error()
+				if markCodexOAuthHealthRefreshPermanentFailureLocked(current, now, err) {
+					persistSnapshot = current.Clone()
+				}
 			}
 		}
 		current.UpdatedAt = now
 		s.manager.auths[id] = current
 	}
 	s.manager.mu.Unlock()
+	if persistSnapshot != nil {
+		// Persist only the runtime health update (reauth_required) so peer
+		// nodes in a cluster stop refreshing the same dead credential too.
+		_ = s.manager.persist(withResultPersist(ctx), persistSnapshot)
+	}
 }
 
 func (s refreshService) applyRefreshSuccess(ctx context.Context, auth *Auth, cloned *Auth, updated *Auth, now time.Time, before MetadataSnapshot) {
@@ -351,6 +366,7 @@ func (s refreshService) applyRefreshSuccess(ctx context.Context, auth *Auth, clo
 	updated.LastRefreshedAt = now
 	updated.NextRefreshAfter = time.Time{}
 	updated.LastError = nil
+	updated.permanentRefreshFailedDigest = ""
 	updated.UpdatedAt = now
 	markClaudeOAuthHealthRefreshSuccessLocked(updated, now)
 	markCodexOAuthHealthRefreshSuccessLocked(updated, now)
@@ -392,6 +408,7 @@ func (s refreshService) recoverRotatedRefreshToken(ctx context.Context, id strin
 		return false
 	}
 	applyRecoveredRefreshState(latest, now, refreshErr)
+	latest.permanentRefreshFailedDigest = ""
 	latest.UpdatedAt = now
 	latest.EnsureIndex()
 	s.manager.auths[id] = latest.Clone()

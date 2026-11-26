@@ -135,8 +135,14 @@ func (s *Service) applyCoreAuthAddOrUpdate(ctx context.Context, auth *coreauth.A
 			return
 		}
 		auth.CreatedAt = existing.CreatedAt
-		auth.LastRefreshedAt = existing.LastRefreshedAt
-		auth.NextRefreshAfter = existing.NextRefreshAfter
+		if !auth.LastRefreshedAt.After(existing.LastRefreshedAt) {
+			auth.LastRefreshedAt = existing.LastRefreshedAt
+		}
+		// A reload carrying a new refresh token (re-login or cluster sync)
+		// replaces the old credential and must not inherit its failure backoff.
+		if !coreauth.CredentialRefreshTokenChanged(auth, existing) {
+			auth.NextRefreshAfter = existing.NextRefreshAfter
+		}
 		op = "update"
 		// Serialize the manager mutation with the final commit of an in-flight
 		// listing. The listing generation is advanced only after the update is

@@ -55,10 +55,13 @@ const (
 )
 
 var codexReauthCodes = map[string]struct{}{
-	"token_revoked":        {},
-	"invalid_grant":        {},
-	"refresh_token_reused": {},
-	"account_deactivated":  {},
+	"token_revoked":             {},
+	"invalid_grant":             {},
+	"refresh_token_reused":      {},
+	"invalid_refresh_token":     {},
+	"refresh_token_invalidated": {},
+	"refresh_token_expired":     {},
+	"account_deactivated":       {},
 }
 
 // codexUnauthorizedCode reads the error code of a Codex 401. ChatGPT puts it at
@@ -114,7 +117,7 @@ func isCodexOAuthAuth(auth *Auth) bool {
 // codexOAuthRefreshPending reports whether a 401 told us the token needs renewing
 // and the renewal has not happened yet.
 func codexOAuthRefreshPending(auth *Auth) bool {
-	if !isCodexOAuthAuth(auth) || authRefreshToken(auth) == "" {
+	if !isCodexOAuthAuth(auth) || authRefreshToken(auth) == "" || isPermanentRefreshFailedToken(auth) {
 		return false
 	}
 	health := cloneCodexOAuthHealth(auth)
@@ -123,6 +126,62 @@ func codexOAuthRefreshPending(auth *Auth) bool {
 	}
 	status, _ := health["status"].(string)
 	return strings.EqualFold(strings.TrimSpace(status), codexOAuthHealthStatusRefreshPending)
+}
+
+// codexOAuthReauthRequired reports whether the credential is already known to
+// require operator re-login, so background refresh stops spending calls on it.
+func codexOAuthReauthRequired(auth *Auth) bool {
+	if !isCodexOAuthAuth(auth) {
+		return false
+	}
+	health := cloneCodexOAuthHealth(auth)
+	if len(health) == 0 {
+		return false
+	}
+	status, _ := health["status"].(string)
+	return strings.EqualFold(strings.TrimSpace(status), codexOAuthHealthStatusReauthRequired)
+}
+
+// markCodexOAuthHealthRefreshPermanentFailureLocked records an unrecoverable
+// refresh failure on a Codex OAuth credential so both the refresh loop and the
+// management panel know the account must be signed in again.
+func markCodexOAuthHealthRefreshPermanentFailureLocked(auth *Auth, now time.Time, err error) bool {
+	if !isCodexOAuthAuth(auth) {
+		return false
+	}
+	health := ensureCodexOAuthHealth(auth, now)
+	reason := codexRefreshPermanentReason(err)
+	health["status"] = codexOAuthHealthStatusReauthRequired
+	health["reauth_reason"] = reason
+	health["last_refresh_at"] = formatClaudeOAuthHealthTime(now)
+	if err != nil && strings.TrimSpace(err.Error()) != "" {
+		health["last_refresh_error"] = trimClaudeOAuthHealthMessage(err.Error())
+	}
+	delete(health, "temporary_unschedulable_until")
+	delete(health, "temporary_unschedulable_reason")
+	auth.Metadata[CodexOAuthHealthMetadataKey] = health
+	return true
+}
+
+func codexRefreshPermanentReason(err error) string {
+	if err == nil {
+		return "refresh_failed"
+	}
+	raw := strings.ToLower(err.Error())
+	for _, code := range []string{
+		"invalid_refresh_token",
+		"refresh_token_invalidated",
+		"refresh_token_reused",
+		"refresh_token_expired",
+		"token_revoked",
+		"account_deactivated",
+		"invalid_grant",
+	} {
+		if strings.Contains(raw, code) {
+			return code
+		}
+	}
+	return "refresh_failed"
 }
 
 func markCodexOAuthHealthSuccessLocked(auth *Auth, now time.Time) {
@@ -219,9 +278,9 @@ func applyCodexOAuthFailureLocked(auth *Auth, result Result, now time.Time, effe
 	failure.Code = code
 
 	// An expired access token is only worth a refresh when there is a refresh
-	// token to spend. Without one nothing can renew it and the account has to be
-	// signed in again, the same as a revoked one.
-	if kind == codexUnauthorizedExpired && authRefreshToken(auth) != "" {
+	// token to spend and that refresh token has not already failed permanently.
+	// Otherwise nothing can renew it and the account has to be signed in again.
+	if kind == codexUnauthorizedExpired && authRefreshToken(auth) != "" && !isPermanentRefreshFailedToken(auth) {
 		next := now.Add(codexOAuthRefreshCooldown)
 		// A refresh that is already running, or that just failed, sets when the
 		// next one may start. Retrying before that only draws the same 401.
