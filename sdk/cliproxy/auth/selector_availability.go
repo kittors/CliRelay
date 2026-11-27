@@ -307,6 +307,17 @@ func authBlockForModel(auth *Auth, model string, now time.Time) authBlock {
 	if auth.Disabled || auth.Status == StatusDisabled {
 		return authBlock{blocked: true, reason: blockReasonDisabled}
 	}
+	// A Codex OAuth credential already marked reauth_required cannot serve any
+	// model and will not self-heal when a 30-minute cooldown elapses. Hold it
+	// out of selection across every model (and across restarts once persisted
+	// in codex_oauth_health) until re-authenticated or cleared by an operator.
+	if codexOAuthReauthRequired(auth) {
+		return authBlock{
+			blocked: true,
+			reason:  blockReasonOther,
+			lastErr: codexOAuthReauthBlockError(auth),
+		}
+	}
 
 	// Quota exceeded is an auth-level cooldown signal. Once we know an auth is cooling down,
 	// we should block *all* model requests for that auth until recovery, even if per-model

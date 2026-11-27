@@ -2,10 +2,10 @@ package executor
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"net/http"
 	"net/url"
-	"strings"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -15,6 +15,14 @@ import (
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/net/proxy"
 )
+
+func failClosedWebsocketDialer(dialer *websocket.Dialer, err error) *websocket.Dialer {
+	dialer.Proxy = nil
+	dialer.NetDialContext = func(_ context.Context, _, _ string) (net.Conn, error) {
+		return nil, err
+	}
+	return dialer
+}
 
 func newProxyAwareWebsocketDialer(ctx context.Context, cfg *config.Config, auth *cliproxyauth.Auth) *websocket.Dialer {
 	dialer := &websocket.Dialer{
@@ -27,17 +35,11 @@ func newProxyAwareWebsocketDialer(ctx context.Context, cfg *config.Config, auth 
 		}).DialContext,
 	}
 
-	proxyURL := ""
-	if cfg != nil {
-		proxyID := ""
-		fallbackURL := ""
-		if auth != nil {
-			proxyID = auth.ProxyID
-			fallbackURL = auth.ProxyURL
-		}
-		proxyURL = cfg.ResolveProxyURL(proxyID, fallbackURL)
-	} else if auth != nil {
-		proxyURL = strings.TrimSpace(auth.ProxyURL)
+	proxyURL, errProxy := resolveAuthProxyURLStrict(cfg, auth)
+	if errProxy != nil {
+		log.Warnf("codex websockets executor: bound proxy unavailable, failing closed: %v", errProxy)
+		recordRequestLogEgressRoute(ctx, cfg, auth, "")
+		return failClosedWebsocketDialer(dialer, errProxy)
 	}
 	recordRequestLogEgressRoute(ctx, cfg, auth, proxyURL)
 	if proxyURL == "" {
@@ -47,7 +49,7 @@ func newProxyAwareWebsocketDialer(ctx context.Context, cfg *config.Config, auth 
 	parsedURL, errParse := url.Parse(proxyURL)
 	if errParse != nil {
 		log.Errorf("codex websockets executor: parse proxy URL failed: %v", errParse)
-		return dialer
+		return failClosedWebsocketDialer(dialer, fmt.Errorf("invalid proxy URL for websocket egress: %w", errParse))
 	}
 
 	switch parsedURL.Scheme {
@@ -64,7 +66,7 @@ func newProxyAwareWebsocketDialer(ctx context.Context, cfg *config.Config, auth 
 		socksDialer, errSOCKS5 := proxy.SOCKS5("tcp", parsedURL.Host, proxyAuth, egressbreaker.HopDialer{Base: proxy.Direct.DialContext})
 		if errSOCKS5 != nil {
 			log.Errorf("codex websockets executor: create SOCKS5 dialer failed: %v", errSOCKS5)
-			return dialer
+			return failClosedWebsocketDialer(dialer, fmt.Errorf("create SOCKS5 dialer failed: %w", errSOCKS5))
 		}
 		dialer.Proxy = nil
 		dialer.NetDialContext = func(_ context.Context, network, addr string) (net.Conn, error) {
@@ -79,6 +81,7 @@ func newProxyAwareWebsocketDialer(ctx context.Context, cfg *config.Config, auth 
 		dialer.NetDialContext = egressbreaker.MarkDial(dialer.NetDialContext)
 	default:
 		log.Errorf("codex websockets executor: unsupported proxy scheme: %s", parsedURL.Scheme)
+		return failClosedWebsocketDialer(dialer, fmt.Errorf("unsupported websocket proxy scheme: %s", parsedURL.Scheme))
 	}
 
 	return dialer

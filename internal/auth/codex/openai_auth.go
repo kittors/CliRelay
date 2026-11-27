@@ -7,10 +7,13 @@ package codex
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"net/http/httptrace"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/auth/refreshguard"
@@ -33,6 +36,8 @@ const (
 // exchanging authorization codes for tokens, and refreshing access tokens.
 type CodexAuth struct {
 	httpClient *http.Client
+	userAgent  string
+	originator string
 }
 
 // NewCodexAuth creates a new CodexAuth service instance.
@@ -48,9 +53,74 @@ func NewCodexAuth(cfg *config.Config) *CodexAuth {
 // when the two diverge. An empty proxyURL keeps the configured default.
 func NewCodexAuthWithProxy(cfg *config.Config, proxyURL string) *CodexAuth {
 	sdkCfg := sdkConfigWithProxy(cfg, proxyURL)
+	userAgent, originator := resolveCodexAuthClientIdentity(cfg)
 	return &CodexAuth{
 		httpClient: util.SetProxy(sdkCfg, util.NewHTTPClient(util.DefaultHTTPClientTimeout)),
+		userAgent:  userAgent,
+		originator: originator,
 	}
+}
+
+// WithClientIdentity pins the User-Agent and Originator headers presented to
+// auth.openai.com so token refreshes share the same official Codex client
+// identity as the credential's inference traffic.
+func (o *CodexAuth) WithClientIdentity(userAgent, originator string) *CodexAuth {
+	if o == nil {
+		return nil
+	}
+	if trimmed := strings.TrimSpace(userAgent); trimmed != "" {
+		o.userAgent = trimmed
+	}
+	if trimmed := strings.TrimSpace(originator); trimmed != "" {
+		o.originator = trimmed
+	}
+	return o
+}
+
+// ApplyAuthIdentityHeaders writes the canonical Codex auth-plane headers
+// (User-Agent and Originator, deliberately omitting inference-only Version)
+// onto a request bound for auth.openai.com.
+func ApplyAuthIdentityHeaders(req *http.Request, cfg *config.Config) {
+	if req == nil {
+		return
+	}
+	userAgent, originator := resolveCodexAuthClientIdentity(cfg)
+	req.Header.Set("User-Agent", userAgent)
+	req.Header.Set("Originator", originator)
+}
+
+func resolveCodexAuthClientIdentity(cfg *config.Config) (userAgent, originator string) {
+	if cfg != nil && cfg.IdentityFingerprint.Codex.Enabled {
+		fp := config.NormalizeCodexIdentityFingerprint(cfg.IdentityFingerprint.Codex)
+		userAgent = strings.TrimSpace(fp.UserAgent)
+		originator = strings.TrimSpace(fp.Originator)
+	}
+	if userAgent == "" {
+		userAgent = config.DefaultCodexFingerprintUserAgent
+	}
+	if originator == "" {
+		originator = config.DefaultCodexFingerprintOriginator
+	}
+	return userAgent, originator
+}
+
+// applyIdentityHeaders keeps auth.openai.com calls aligned with official
+// codex-rs auth traffic (default_headers sends User-Agent + originator without
+// inference-only Version) so refreshes never go out as bare Go-http-client.
+func (o *CodexAuth) applyIdentityHeaders(req *http.Request) {
+	if req == nil {
+		return
+	}
+	userAgent := strings.TrimSpace(o.userAgent)
+	if userAgent == "" {
+		userAgent = config.DefaultCodexFingerprintUserAgent
+	}
+	originator := strings.TrimSpace(o.originator)
+	if originator == "" {
+		originator = config.DefaultCodexFingerprintOriginator
+	}
+	req.Header.Set("User-Agent", userAgent)
+	req.Header.Set("Originator", originator)
 }
 
 // sdkConfigWithProxy copies the SDK config with proxyURL substituted, so pinning
@@ -125,6 +195,7 @@ func (o *CodexAuth) ExchangeCodeForTokensWithRedirect(ctx context.Context, code,
 
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
+	o.applyIdentityHeaders(req)
 
 	resp, err := o.httpClient.Do(req)
 	if err != nil {
@@ -209,6 +280,31 @@ func (o *CodexAuth) RefreshTokens(ctx context.Context, refreshToken string) (*Co
 // RefreshTokensWithRetry share it, so either one joins the other's exchange.
 const refreshGuardProvider = "codex"
 
+// refreshAttemptError distinguishes failures before the request reached
+// auth.openai.com from ambiguous in-flight errors and HTTP status rejections,
+// so single-use refresh tokens are never blindly replayed after transmission.
+type refreshAttemptError struct {
+	statusCode  int
+	permanent   bool
+	retryable   bool
+	requestSent bool
+	cause       error
+}
+
+func (e *refreshAttemptError) Error() string {
+	if e == nil || e.cause == nil {
+		return ""
+	}
+	return e.cause.Error()
+}
+
+func (e *refreshAttemptError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.cause
+}
+
 func (o *CodexAuth) refreshOnce(ctx context.Context, refreshToken string) (*CodexTokenData, error) {
 	data := url.Values{
 		"client_id":     {ClientID},
@@ -217,17 +313,35 @@ func (o *CodexAuth) refreshOnce(ctx context.Context, refreshToken string) (*Code
 		"scope":         {"openid profile email"},
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", TokenURL, strings.NewReader(data.Encode()))
+	var requestSent atomic.Bool
+	traceCtx := httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{
+		WroteRequest: func(info httptrace.WroteRequestInfo) {
+			if info.Err == nil {
+				requestSent.Store(true)
+			}
+		},
+	})
+
+	req, err := http.NewRequestWithContext(traceCtx, "POST", TokenURL, strings.NewReader(data.Encode()))
 	if err != nil {
-		return nil, fmt.Errorf("failed to create refresh request: %w", err)
+		return nil, &refreshAttemptError{
+			retryable: false,
+			cause:     fmt.Errorf("failed to create refresh request: %w", err),
+		}
 	}
 
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
+	o.applyIdentityHeaders(req)
 
 	resp, err := o.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("token refresh request failed: %w", err)
+		sent := requestSent.Load()
+		return nil, &refreshAttemptError{
+			retryable:   !sent && ctx.Err() == nil,
+			requestSent: sent,
+			cause:       fmt.Errorf("token refresh request failed: %w", err),
+		}
 	}
 	defer func() {
 		_ = resp.Body.Close()
@@ -235,11 +349,27 @@ func (o *CodexAuth) refreshOnce(ctx context.Context, refreshToken string) (*Code
 
 	body, err := util.ReadHTTPResponseBody("codex-oauth", resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read refresh response: %w", err)
+		// Response headers were already received, so the upstream may have
+		// rotated the single-use refresh token. Do not replay automatically.
+		return nil, &refreshAttemptError{
+			statusCode:  resp.StatusCode,
+			retryable:   false,
+			requestSent: true,
+			cause:       fmt.Errorf("failed to read refresh response: %w", err),
+		}
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("token refresh failed with status %d: %s", resp.StatusCode, string(body))
+		statusErr := fmt.Errorf("token refresh failed with status %d: %s", resp.StatusCode, string(body))
+		permanent := isPermanentRefreshStatus(resp.StatusCode, statusErr)
+		retryable := !permanent && isRetryableRefreshStatus(resp.StatusCode)
+		return nil, &refreshAttemptError{
+			statusCode:  resp.StatusCode,
+			permanent:   permanent,
+			retryable:   retryable,
+			requestSent: true,
+			cause:       statusErr,
+		}
 	}
 
 	var tokenResp struct {
@@ -251,7 +381,12 @@ func (o *CodexAuth) refreshOnce(ctx context.Context, refreshToken string) (*Code
 	}
 
 	if err = json.Unmarshal(body, &tokenResp); err != nil {
-		return nil, fmt.Errorf("failed to parse refresh response: %w", err)
+		return nil, &refreshAttemptError{
+			statusCode:  resp.StatusCode,
+			retryable:   false,
+			requestSent: true,
+			cause:       fmt.Errorf("failed to parse refresh response: %w", err),
+		}
 	}
 
 	// Extract account ID from ID token
@@ -310,6 +445,9 @@ func (o *CodexAuth) RefreshTokensWithRetry(ctx context.Context, refreshToken str
 }
 
 func (o *CodexAuth) refreshWithRetry(ctx context.Context, refreshToken string, maxRetries int) (*CodexTokenData, error) {
+	if maxRetries < 1 {
+		maxRetries = 1
+	}
 	var lastErr error
 
 	for attempt := 0; attempt < maxRetries; attempt++ {
@@ -326,7 +464,24 @@ func (o *CodexAuth) refreshWithRetry(ctx context.Context, refreshToken string, m
 		if err == nil {
 			return tokenData, nil
 		}
-		if isNonRetryableRefreshErr(err) {
+		var attemptErr *refreshAttemptError
+		if errors.As(err, &attemptErr) {
+			if attemptErr.permanent {
+				log.Warnf("Token refresh attempt %d failed with permanent error: %v", attempt+1, err)
+				return nil, &cliproxyauth.PermanentAuthError{
+					Reason: "credential revoked or expired",
+					Cause:  err,
+				}
+			}
+			if !attemptErr.retryable {
+				// Either a non-retryable 4xx (such as Cloudflare/region 403) or
+				// an ambiguous error after the request was already written to
+				// the wire; do not replay the single-use refresh token.
+				log.Warnf("Token refresh attempt %d failed without safe retry (request_sent=%v status=%d): %v",
+					attempt+1, attemptErr.requestSent, attemptErr.statusCode, err)
+				return nil, err
+			}
+		} else if isNonRetryableRefreshErr(err) {
 			log.Warnf("Token refresh attempt %d failed with non-retryable error: %v", attempt+1, err)
 			return nil, &cliproxyauth.PermanentAuthError{
 				Reason: "credential revoked or expired",
@@ -339,6 +494,31 @@ func (o *CodexAuth) refreshWithRetry(ctx context.Context, refreshToken string, m
 	}
 
 	return nil, fmt.Errorf("token refresh failed after %d attempts: %w", maxRetries, lastErr)
+}
+
+func isPermanentRefreshStatus(statusCode int, err error) bool {
+	// Matching official codex-rs auth manager behavior, any HTTP 401 from
+	// auth.openai.com/oauth/token rejects the session permanently.
+	if statusCode == http.StatusUnauthorized {
+		return true
+	}
+	return isNonRetryableRefreshErr(err)
+}
+
+func isRetryableRefreshStatus(statusCode int) bool {
+	switch statusCode {
+	case http.StatusRequestTimeout,
+		http.StatusTooManyRequests,
+		http.StatusBadGateway,
+		http.StatusServiceUnavailable,
+		http.StatusGatewayTimeout:
+		return true
+	default:
+		// 4xx rejections (e.g. Cloudflare/geo 403) and 500s (which may occur
+		// after token rotation) are surfaced once instead of replaying a
+		// single-use refresh token in a tight loop.
+		return false
+	}
 }
 
 func isNonRetryableRefreshErr(err error) bool {
@@ -356,6 +536,11 @@ func isNonRetryableRefreshErr(err error) bool {
 		strings.Contains(raw, "invalid_grant") ||
 		strings.Contains(raw, "token_revoked") ||
 		strings.Contains(raw, "account_deactivated") ||
+		strings.Contains(raw, "app_session_terminated") ||
+		strings.Contains(raw, "invalid_client") ||
+		strings.Contains(raw, "unauthorized_client") ||
+		strings.Contains(raw, "access_denied") ||
+		strings.Contains(raw, "invalid_scope") ||
 		strings.Contains(raw, "token has been revoked") ||
 		strings.Contains(raw, "token has been expired")
 }

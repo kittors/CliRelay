@@ -3,8 +3,12 @@ package util
 import (
 	"net"
 	"net/http"
+	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
 )
 
 func TestNewDefaultTransportUsesLongResponseHeaderTimeout(t *testing.T) {
@@ -96,5 +100,28 @@ func TestBuildProxyTransportSocks5HonorsClientTimeout(t *testing.T) {
 	case <-accepted:
 	default:
 		t.Fatal("test SOCKS5 listener did not receive a connection")
+	}
+}
+
+func TestSetProxyFailsClosedOnInvalidProxyURL(t *testing.T) {
+	var hits atomic.Int32
+	direct := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer direct.Close()
+
+	for _, badProxy := range []string{"ftp://127.0.0.1:21", "://bad-url"} {
+		client := SetProxy(&config.SDKConfig{ProxyURL: badProxy}, NewHTTPClient(2*time.Second))
+		resp, err := client.Get(direct.URL)
+		if resp != nil {
+			_ = resp.Body.Close()
+		}
+		if err == nil {
+			t.Fatalf("SetProxy(%q) succeeded, want fail-closed error", badProxy)
+		}
+	}
+	if got := hits.Load(); got != 0 {
+		t.Fatalf("direct origin received %d requests after invalid proxy config, want 0", got)
 	}
 }

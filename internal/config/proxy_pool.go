@@ -3,12 +3,19 @@ package config
 import (
 	"crypto/sha1"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/url"
 	"slices"
 	"strings"
 	"unicode"
 )
+
+// ErrBoundProxyUnavailable reports that a credential is pinned to a proxy-pool
+// ID that cannot be resolved to an enabled entry and has no credential-level
+// fallback proxy URL. Callers must fail closed rather than falling back to
+// global proxy or direct host egress.
+var ErrBoundProxyUnavailable = errors.New("bound proxy is unavailable")
 
 // ProxyPoolEntry describes a reusable outbound proxy managed by operators.
 type ProxyPoolEntry struct {
@@ -158,25 +165,53 @@ func MergeSharedProxyPool(own, shared []ProxyPoolEntry) []ProxyPoolEntry {
 	return merged
 }
 
-// ResolveProxyURL returns the effective proxy URL for a proxy-id plus legacy fallback URL.
-func (cfg *Config) ResolveProxyURL(proxyID string, fallbackURL string) string {
-	if cfg != nil {
-		id := normalizeProxyID(proxyID)
-		if id != "" {
+// ResolveBoundProxyURL returns the effective proxy URL for a proxy-id plus
+// legacy credential fallback URL, failing closed when proxyID is explicitly
+// bound but unavailable and no credential-level fallbackURL is configured.
+func (cfg *Config) ResolveBoundProxyURL(proxyID string, fallbackURL string) (string, error) {
+	id := normalizeProxyID(proxyID)
+	if id != "" {
+		reason := "config unavailable"
+		if cfg != nil {
+			reason = "not found"
 			for _, entry := range cfg.ProxyPool {
-				if entry.Enabled && normalizeProxyID(entry.ID) == id && strings.TrimSpace(entry.URL) != "" {
-					return strings.TrimSpace(entry.URL)
+				if normalizeProxyID(entry.ID) != id {
+					continue
 				}
+				if !entry.Enabled {
+					reason = "disabled"
+					break
+				}
+				if trimmed := strings.TrimSpace(entry.URL); trimmed != "" {
+					return trimmed, nil
+				}
+				reason = "empty url"
+				break
 			}
 		}
+		if fallback := strings.TrimSpace(fallbackURL); fallback != "" {
+			return fallback, nil
+		}
+		return "", fmt.Errorf("%w: proxy_id %q (%s)", ErrBoundProxyUnavailable, id, reason)
 	}
 	if fallback := strings.TrimSpace(fallbackURL); fallback != "" {
-		return fallback
+		return fallback, nil
 	}
 	if cfg != nil {
-		return strings.TrimSpace(cfg.ProxyURL)
+		return strings.TrimSpace(cfg.ProxyURL), nil
 	}
-	return ""
+	return "", nil
+}
+
+// ResolveProxyURL returns the effective proxy URL for a proxy-id plus legacy fallback URL.
+// When proxyID is bound but unavailable and no fallbackURL is set, it returns ""
+// rather than leaking traffic onto the unrelated process global proxy.
+func (cfg *Config) ResolveProxyURL(proxyID string, fallbackURL string) string {
+	resolved, err := cfg.ResolveBoundProxyURL(proxyID, fallbackURL)
+	if err != nil {
+		return ""
+	}
+	return resolved
 }
 
 // FindProxyPoolEntry finds a proxy pool entry by ID regardless of whether it is enabled.

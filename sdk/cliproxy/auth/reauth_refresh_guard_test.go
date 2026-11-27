@@ -112,7 +112,7 @@ func TestRefreshAuth_PermanentError_UsableAccessTokenStopsRetryingDeadRefreshTok
 		ID:       "codex-usable-access",
 		Provider: "codex",
 		Status:   StatusActive,
-		Runtime:  staticRefreshLead(5 * 24 * time.Hour),
+		Runtime:  staticRefreshLead(24 * time.Hour),
 		Metadata: map[string]any{
 			"type":          "codex",
 			"email":         "user@example.com",
@@ -123,18 +123,20 @@ func TestRefreshAuth_PermanentError_UsableAccessTokenStopsRetryingDeadRefreshTok
 		},
 	}
 	registerAuth(t, m, account)
+	// refresh_token_reused can occur from an external concurrent refresh while
+	// the upstream session and remaining access_token are still alive.
 	m.RegisterExecutor(&stubExecutor{
 		id: "codex",
 		refreshErr: &PermanentAuthError{
 			Reason: "credential revoked or expired",
-			Cause:  fmt.Errorf("refresh_token_invalidated"),
+			Cause:  fmt.Errorf("refresh_token_reused"),
 		},
 	})
 
 	m.refreshAuth(context.Background(), account.ID)
 	afterFail, _ := m.GetByID(account.ID)
 	if afterFail.Status != StatusActive {
-		t.Fatalf("Status = %q, want active while access token is still valid", afterFail.Status)
+		t.Fatalf("Status = %q, want active while access token is still valid after refresh_token_reused", afterFail.Status)
 	}
 	// Once NextRefreshAfter elapses, the dead refresh_token must not be retried again.
 	if m.shouldRefresh(afterFail, now.Add(time.Hour)) {
@@ -168,6 +170,200 @@ func TestRefreshAuth_PermanentError_UsableAccessTokenStopsRetryingDeadRefreshTok
 	}
 	if !m.shouldRefresh(updated, now) {
 		t.Fatal("shouldRefresh = false after installing a new refresh token")
+	}
+}
+
+func TestRefreshAuth_SessionRevokedError_ImmediatelyMarksReauthRequiredPersistsAndBlocksScheduling(t *testing.T) {
+	for _, tc := range []struct {
+		code       string
+		wantReason string
+	}{
+		{"invalid_refresh_token", "invalid_refresh_token"},
+		{"refresh_token_invalidated", "refresh_token_invalidated"},
+		{"refresh_token_expired", "refresh_token_expired"},
+		{"token_revoked", "token_revoked"},
+		{"account_deactivated", "account_deactivated"},
+		{"app_session_terminated", "app_session_terminated"},
+		{"unknown_future_401_code", "refresh_failed"},
+	} {
+		t.Run(tc.code, func(t *testing.T) {
+			store := &trackingStore{}
+			m := NewManager(store, nil, nil)
+			now := time.Now()
+
+			// Even when the local expired timestamp is still days away (as when
+			// proactive refresh runs early), OpenAI session-revocation errors
+			// invalidate the session immediately and must not stay StatusActive.
+			account := &Auth{
+				ID:       "codex-session-dead",
+				Provider: "codex",
+				Status:   StatusActive,
+				Runtime:  staticRefreshLead(24 * time.Hour),
+				Metadata: map[string]any{
+					"type":          "codex",
+					"email":         "user@example.com",
+					"access_token":  "locally-unexpired-access-token",
+					"refresh_token": "revoked-refresh-token",
+					"expired":       now.Add(5 * 24 * time.Hour).Format(time.RFC3339),
+					"last_refresh":  now.Add(-5 * 24 * time.Hour).Format(time.RFC3339),
+				},
+				ModelStates: map[string]*ModelState{
+					"gpt-5.4":       {Status: StatusActive},
+					"gpt-5.3-codex": {Status: StatusActive},
+				},
+			}
+			healthy := &Auth{
+				ID:       "codex-healthy",
+				Provider: "codex",
+				Status:   StatusActive,
+				Metadata: map[string]any{
+					"type":          "codex",
+					"email":         "healthy@example.com",
+					"access_token":  "healthy-access-token",
+					"refresh_token": "healthy-refresh-token",
+					"expired":       now.Add(9 * 24 * time.Hour).Format(time.RFC3339),
+				},
+			}
+			registerAuth(t, m, account)
+			registerAuth(t, m, healthy)
+			m.RegisterExecutor(&stubExecutor{
+				id: "codex",
+				refreshErr: &PermanentAuthError{
+					Reason: "credential revoked or expired",
+					Cause:  fmt.Errorf("token refresh failed with status 401: {\"error\":{\"code\":%q}}", tc.code),
+				},
+			})
+
+			m.refreshAuth(context.Background(), account.ID)
+
+			got, ok := m.GetByID(account.ID)
+			if !ok {
+				t.Fatal("expected auth to remain registered")
+			}
+			if got.Status != StatusError || !got.Unavailable {
+				t.Fatalf("status=%q unavailable=%v, want error + unavailable", got.Status, got.Unavailable)
+			}
+			health := codexHealth(t, got)
+			if health["status"] != codexOAuthHealthStatusReauthRequired || health["reauth_reason"] != tc.wantReason {
+				t.Fatalf("health = %#v, want reauth_required / %s", health, tc.wantReason)
+			}
+			if store.saveCount.Load() == 0 {
+				t.Fatal("expected reauth_required health to be persisted immediately for peer nodes")
+			}
+			if m.shouldRefresh(got, now.Add(2*time.Hour)) {
+				t.Fatal("shouldRefresh = true after session revocation")
+			}
+
+			// Blocked across every model, both immediately and well after 30 minutes.
+			for _, checkAt := range []time.Time{now.Add(time.Second), now.Add(2 * time.Hour)} {
+				for _, model := range []string{"gpt-5.4", "gpt-5.3-codex", "gpt-5.4-mini", ""} {
+					block := authBlockForModel(got, model, checkAt)
+					if !block.blocked {
+						t.Fatalf("authBlockForModel(%q, +%v) = unblocked, want blocked", model, checkAt.Sub(now))
+					}
+					if reason := CooldownReasonOf(block.lastErr, QuotaState{}); reason != CooldownReasonReauthRequired {
+						t.Fatalf("block reason(%q) = %q, want %q", model, reason, CooldownReasonReauthRequired)
+					}
+				}
+			}
+
+			// Selection skips the revoked credential and routes straight to healthy.
+			available, err := getAvailableAuths([]*Auth{got, healthy}, "codex", "gpt-5.4-mini", now.Add(2*time.Hour))
+			if err != nil {
+				t.Fatalf("getAvailableAuths: %v", err)
+			}
+			if len(available) != 1 || available[0].ID != healthy.ID {
+				t.Fatalf("available = %+v, want only %s", available, healthy.ID)
+			}
+
+			// Pinned sessions escape immediately instead of hitting 401.
+			held, pinReason := m.PinnedAuthHeldBack(account.ID, "gpt-5.4-mini")
+			if !held || pinReason != CooldownReasonReauthRequired {
+				t.Fatalf("PinnedAuthHeldBack = (%v, %q), want (true, %q)", held, pinReason, CooldownReasonReauthRequired)
+			}
+
+			// Routing simulator reports reauth_required with HTTP 401.
+			simBlocked, simUntil, simCause, simStatus := candidateBlockOf(got, "gpt-5.4-mini", now.Add(2*time.Hour))
+			if simBlocked != SimulatedBlockUnavailable || !simUntil.IsZero() || simCause != CooldownReasonReauthRequired || simStatus != http.StatusUnauthorized {
+				t.Fatalf("candidateBlockOf = (%q, %v, %q, %d), want (unavailable, zero, reauth_required, 401)", simBlocked, simUntil, simCause, simStatus)
+			}
+
+			// Simulate a restart / peer node reload where only persisted metadata
+			// (no in-memory LastError or ModelStates) is loaded from DB.
+			reloaded := &Auth{
+				ID:       account.ID,
+				Provider: "codex",
+				Status:   StatusActive,
+				Metadata: map[string]any{
+					"type":                      "codex",
+					"email":                     "user@example.com",
+					"access_token":              "locally-unexpired-access-token",
+					"refresh_token":             "revoked-refresh-token",
+					CodexOAuthHealthMetadataKey: cloneCodexOAuthHealth(got),
+				},
+			}
+			if block := authBlockForModel(reloaded, "gpt-5.4", now.Add(5*time.Hour)); !block.blocked || CooldownReasonOf(block.lastErr, QuotaState{}) != CooldownReasonReauthRequired {
+				t.Fatalf("reloaded credential was not blocked from persisted codex_oauth_health: %+v", block)
+			}
+
+			// Re-login clears the block cleanly.
+			recovered, err := m.Update(WithCredentialCreate(context.Background()), &Auth{
+				ID:       account.ID,
+				Provider: "codex",
+				Status:   StatusActive,
+				Metadata: map[string]any{
+					"type":          "codex",
+					"email":         "user@example.com",
+					"access_token":  "fresh-access-token",
+					"refresh_token": "fresh-refresh-token",
+				},
+			})
+			if err != nil {
+				t.Fatalf("re-login Update: %v", err)
+			}
+			if block := authBlockForModel(recovered, "gpt-5.4", now.Add(5*time.Hour)); block.blocked {
+				t.Fatalf("re-logged-in credential remained blocked: %+v", block)
+			}
+		})
+	}
+}
+
+func TestCodexOAuth401ReauthBlocksAllModelsBeyond30Minutes(t *testing.T) {
+	m := NewManager(nil, nil, nil)
+	now := time.Now()
+
+	account := codexOAuthAccount("codex-revoked-runtime", "dead-refresh-token")
+	account.ModelStates = map[string]*ModelState{
+		"gpt-5.4":       {Status: StatusActive},
+		"gpt-5.3-codex": {Status: StatusActive},
+	}
+	registerAuth(t, m, account)
+
+	codex401(m, account.ID, "gpt-5.4", `{"error":{"code":"token_revoked","message":"Encountered invalidated oauth token for user"}}`)
+
+	got, _ := m.GetByID(account.ID)
+	if !got.Unavailable || got.Status != StatusError {
+		t.Fatalf("auth unavailable=%v status=%q, want unavailable + error", got.Unavailable, got.Status)
+	}
+	if other := got.ModelStates["gpt-5.3-codex"]; other == nil || !other.Unavailable {
+		t.Fatalf("existing sibling model state was not held back: %+v", other)
+	}
+
+	// Even 45 minutes later (past the 30-minute timer) and on a brand-new model,
+	// selection must still refuse the dead credential instead of probing with live traffic.
+	for _, model := range []string{"gpt-5.4", "gpt-5.3-codex", "gpt-5.2"} {
+		if block := authBlockForModel(got, model, now.Add(45*time.Minute)); !block.blocked {
+			t.Fatalf("model %q became schedulable again after 30m while still reauth_required", model)
+		}
+	}
+
+	// Operator ClearQuotaStatus lifts the reauth block explicitly if desired.
+	if changed, err := m.ClearQuotaStatus(context.Background(), account.ID); err != nil || !changed {
+		t.Fatalf("ClearQuotaStatus = (%v, %v), want (true, nil)", changed, err)
+	}
+	cleared, _ := m.GetByID(account.ID)
+	if block := authBlockForModel(cleared, "gpt-5.4", now.Add(45*time.Minute)); block.blocked {
+		t.Fatalf("operator-cleared credential remained blocked: %+v", block)
 	}
 }
 

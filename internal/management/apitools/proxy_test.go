@@ -1,12 +1,15 @@
 package apitools
 
 import (
+	"errors"
 	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"sync/atomic"
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
-	"net/url"
 )
 
 func TestCachedManagementProxyTransportReusesSameKey(t *testing.T) {
@@ -62,6 +65,41 @@ func TestAPICallTransportForURL_SelectsTLSFingerprintForCodexUpstream(t *testing
 	tr := svc.APICallTransportForURL(auth, targetURL)
 	if tr == nil {
 		t.Fatal("expected non-nil transport for Codex URL")
+	}
+}
+
+func TestAPICallTransportForURL_FailsClosedWhenBoundProxyUnavailable(t *testing.T) {
+	var hits atomic.Int32
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer origin.Close()
+
+	cfg := &config.Config{
+		SDKConfig: config.SDKConfig{ProxyURL: origin.URL},
+		ProxyPool: []config.ProxyPoolEntry{
+			{ID: "pool-off", Name: "Off", URL: "socks5://127.0.0.1:1080", Enabled: false},
+		},
+	}
+	svc := NewForTenant("test-tenant", cfg, nil, Dependencies{})
+	targetURL, _ := url.Parse(origin.URL)
+	auth := &coreauth.Auth{Provider: "codex", ProxyID: "pool-off"}
+
+	tr := svc.APICallTransportForURL(auth, targetURL)
+	if tr == nil {
+		t.Fatal("expected fail-closed transport, got nil")
+	}
+	req, _ := http.NewRequest(http.MethodGet, origin.URL, nil)
+	resp, err := tr.RoundTrip(req)
+	if resp != nil {
+		_ = resp.Body.Close()
+	}
+	if !errors.Is(err, config.ErrBoundProxyUnavailable) {
+		t.Fatalf("RoundTrip err = %v, want ErrBoundProxyUnavailable", err)
+	}
+	if hits.Load() != 0 {
+		t.Fatalf("origin received %d direct requests, want 0", hits.Load())
 	}
 }
 

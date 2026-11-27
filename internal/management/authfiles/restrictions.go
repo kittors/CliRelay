@@ -18,15 +18,44 @@ func BuildRestrictionPayload(auth *coreauth.Auth, now time.Time) []map[string]an
 		return nil
 	}
 	restrictions := make([]map[string]any, 0)
-	if len(auth.ModelStates) == 0 || auth.Unavailable || auth.Quota.Exceeded || auth.NextRetryAfter.After(now) {
+	if len(auth.ModelStates) == 0 || auth.Unavailable || auth.Quota.Exceeded || auth.NextRetryAfter.After(now) || coreauth.IsCodexOAuthReauthRequired(auth) {
+		authStatus := auth.Status
+		authMessage := auth.StatusMessage
+		authUnavailable := auth.Unavailable
+		authErr := auth.LastError
+		if coreauth.IsCodexOAuthReauthRequired(auth) {
+			authUnavailable = true
+			if authStatus == "" || authStatus == coreauth.StatusUnknown || authStatus == coreauth.StatusActive {
+				authStatus = coreauth.StatusError
+			}
+			if coreauth.CooldownReasonOf(authErr, auth.Quota) != coreauth.CooldownReasonReauthRequired {
+				reason := ""
+				if health := CodexOAuthHealth(auth); len(health) > 0 {
+					if r, ok := health["reauth_reason"].(string); ok {
+						reason = strings.TrimSpace(r)
+					}
+				}
+				if reason == "" {
+					reason = "token_revoked"
+				}
+				if strings.TrimSpace(authMessage) == "" {
+					authMessage = "re-login required: " + reason
+				}
+				authErr = &coreauth.Error{
+					HTTPStatus: 401,
+					Code:       reason,
+					Message:    authMessage,
+				}
+			}
+		}
 		if restriction := buildRestrictionEntry(
 			"auth",
 			"",
-			auth.Status,
-			auth.StatusMessage,
-			auth.Unavailable,
+			authStatus,
+			authMessage,
+			authUnavailable,
 			auth.NextRetryAfter,
-			auth.LastError,
+			authErr,
 			auth.Quota,
 			now,
 		); restriction != nil {
@@ -238,12 +267,18 @@ func isActiveRestriction(status coreauth.Status, unavailable bool, nextRetryAfte
 }
 
 func restrictionCooldownReason(nextRetryAfter time.Time, lastError *coreauth.Error, quota coreauth.QuotaState, now time.Time) string {
+	reason := coreauth.CooldownReasonOf(lastError, quota)
+	if reason == coreauth.CooldownReasonReauthRequired {
+		// Reauth-required credentials stay blocked indefinitely until re-login,
+		// so surface the badge even when next_retry_after is unset or elapsed.
+		return reason
+	}
 	cooling := nextRetryAfter.After(now) ||
 		(quota.Exceeded && (quota.NextRecoverAt.After(now) || quota.RecoveryRequired))
 	if !cooling {
 		return ""
 	}
-	return coreauth.CooldownReasonOf(lastError, quota)
+	return reason
 }
 
 // BuildModelCooldownPayload lists the models held back on an account, one entry

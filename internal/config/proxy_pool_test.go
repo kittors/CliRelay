@@ -1,6 +1,9 @@
 package config
 
-import "testing"
+import (
+	"errors"
+	"testing"
+)
 
 func TestNormalizeProxyPoolTrimsDeduplicatesAndValidatesEntries(t *testing.T) {
 	t.Parallel()
@@ -147,5 +150,60 @@ func TestMergeSharedProxyPoolOwnEntriesWin(t *testing.T) {
 	}
 	if got := MergeSharedProxyPool(own, nil); len(got) != 1 {
 		t.Fatalf("no shared entries must leave the own pool alone: %#v", got)
+	}
+}
+
+func TestResolveBoundProxyURLFailsClosedOnUnavailableBoundProxy(t *testing.T) {
+	t.Parallel()
+
+	cfg := &Config{
+		SDKConfig: SDKConfig{ProxyURL: "http://global.example:7890"},
+		ProxyPool: []ProxyPoolEntry{
+			{ID: "hk", Name: "HK", URL: "socks5://127.0.0.1:1080", Enabled: true},
+			{ID: "disabled", Name: "Disabled", URL: "http://disabled.example:7890", Enabled: false},
+			{ID: "empty", Name: "Empty", URL: "   ", Enabled: true},
+		},
+	}
+
+	for _, tc := range []struct {
+		name        string
+		cfg         *Config
+		proxyID     string
+		fallbackURL string
+		wantURL     string
+		wantErr     bool
+	}{
+		{name: "enabled pool entry", cfg: cfg, proxyID: "hk", wantURL: "socks5://127.0.0.1:1080"},
+		{name: "disabled pool without fallback fails closed", cfg: cfg, proxyID: "disabled", wantErr: true},
+		{name: "missing pool without fallback fails closed", cfg: cfg, proxyID: "missing", wantErr: true},
+		{name: "empty pool url without fallback fails closed", cfg: cfg, proxyID: "empty", wantErr: true},
+		{name: "nil config with bound proxy_id fails closed", cfg: nil, proxyID: "hk", wantErr: true},
+		{name: "disabled pool uses explicit credential fallback", cfg: cfg, proxyID: "disabled", fallbackURL: "http://fallback.example:7890", wantURL: "http://fallback.example:7890"},
+		{name: "unbound credential uses global proxy", cfg: cfg, wantURL: "http://global.example:7890"},
+		{name: "nil config unbound credential stays direct", cfg: nil, wantURL: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := tc.cfg.ResolveBoundProxyURL(tc.proxyID, tc.fallbackURL)
+			if tc.wantErr {
+				if !errors.Is(err, ErrBoundProxyUnavailable) {
+					t.Fatalf("ResolveBoundProxyURL() err = %v, want ErrBoundProxyUnavailable", err)
+				}
+				if got != "" {
+					t.Fatalf("ResolveBoundProxyURL() url = %q, want empty on error", got)
+				}
+				if tc.cfg != nil {
+					if leaked := tc.cfg.ResolveProxyURL(tc.proxyID, tc.fallbackURL); leaked != "" {
+						t.Fatalf("ResolveProxyURL() leaked %q instead of empty when bound proxy unavailable", leaked)
+					}
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ResolveBoundProxyURL() unexpected error: %v", err)
+			}
+			if got != tc.wantURL {
+				t.Fatalf("ResolveBoundProxyURL() = %q, want %q", got, tc.wantURL)
+			}
+		})
 	}
 }

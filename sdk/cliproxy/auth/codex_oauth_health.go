@@ -62,6 +62,11 @@ var codexReauthCodes = map[string]struct{}{
 	"refresh_token_invalidated": {},
 	"refresh_token_expired":     {},
 	"account_deactivated":       {},
+	"app_session_terminated":    {},
+	"invalid_client":            {},
+	"unauthorized_client":       {},
+	"access_denied":             {},
+	"invalid_scope":             {},
 }
 
 // codexUnauthorizedCode reads the error code of a Codex 401. ChatGPT puts it at
@@ -128,8 +133,15 @@ func codexOAuthRefreshPending(auth *Auth) bool {
 	return strings.EqualFold(strings.TrimSpace(status), codexOAuthHealthStatusRefreshPending)
 }
 
+// IsCodexOAuthReauthRequired reports whether auth is a Codex OAuth credential
+// whose session has been marked as requiring operator re-login.
+func IsCodexOAuthReauthRequired(auth *Auth) bool {
+	return codexOAuthReauthRequired(auth)
+}
+
 // codexOAuthReauthRequired reports whether the credential is already known to
-// require operator re-login, so background refresh stops spending calls on it.
+// require operator re-login, so background refresh stops spending calls on it
+// and selection keeps it out of rotation across all models.
 func codexOAuthReauthRequired(auth *Auth) bool {
 	if !isCodexOAuthAuth(auth) {
 		return false
@@ -140,6 +152,66 @@ func codexOAuthReauthRequired(auth *Auth) bool {
 	}
 	status, _ := health["status"].(string)
 	return strings.EqualFold(strings.TrimSpace(status), codexOAuthHealthStatusReauthRequired)
+}
+
+// codexOAuthReauthBlockError returns a structured 401 reauth error for
+// selectors, routing simulations, and pinned-session escape checks, even after
+// a restart when only the persisted codex_oauth_health metadata is present.
+func codexOAuthReauthBlockError(auth *Auth) *Error {
+	if auth != nil && auth.LastError != nil && CooldownReasonOf(auth.LastError, QuotaState{}) == CooldownReasonReauthRequired {
+		return auth.LastError
+	}
+	reason := ""
+	if health := cloneCodexOAuthHealth(auth); len(health) > 0 {
+		if r, ok := health["reauth_reason"].(string); ok {
+			reason = strings.TrimSpace(r)
+		}
+	}
+	if reason == "" {
+		reason = "token_revoked"
+	}
+	return &Error{
+		HTTPStatus: http.StatusUnauthorized,
+		Code:       reason,
+		Message:    "re-login required: " + reason,
+	}
+}
+
+// isCodexSessionRevokedRefreshError reports whether a Codex refresh failure
+// indicates that OpenAI has terminated the underlying OAuth session itself
+// (so the still-unexpired local access_token is revoked or about to be revoked
+// by upstream) rather than a refresh-token rotation race such as
+// refresh_token_reused where the active access_token may still serve traffic.
+func isCodexSessionRevokedRefreshError(err error) bool {
+	if err == nil {
+		return false
+	}
+	raw := strings.ToLower(err.Error())
+	if strings.Contains(raw, "refresh_token_reused") {
+		return false
+	}
+	if strings.Contains(raw, "status 401") {
+		return true
+	}
+	for _, needle := range []string{
+		"invalid_refresh_token",
+		"refresh_token_invalidated",
+		"refresh_token_expired",
+		"token_revoked",
+		"account_deactivated",
+		"app_session_terminated",
+		"invalid_client",
+		"unauthorized_client",
+		"access_denied",
+		"invalid_scope",
+		"token has been revoked",
+		"token has been expired",
+	} {
+		if strings.Contains(raw, needle) {
+			return true
+		}
+	}
+	return false
 }
 
 // markCodexOAuthHealthRefreshPermanentFailureLocked records an unrecoverable
@@ -175,7 +247,12 @@ func codexRefreshPermanentReason(err error) string {
 		"refresh_token_expired",
 		"token_revoked",
 		"account_deactivated",
+		"app_session_terminated",
 		"invalid_grant",
+		"invalid_client",
+		"unauthorized_client",
+		"access_denied",
+		"invalid_scope",
 	} {
 		if strings.Contains(raw, code) {
 			return code
@@ -311,7 +388,18 @@ func applyCodexOAuthFailureLocked(auth *Auth, result Result, now time.Time, effe
 	delete(health, "temporary_unschedulable_reason")
 	auth.Metadata[CodexOAuthHealthMetadataKey] = health
 	message := "re-login required: " + code
-	applyCodexOAuthCooldownLocked(auth, result.Model, now, now.Add(codexOAuthReauthCooldown), StatusError, message, failure, "unauthorized", effects)
+	reauthUntil := now.Add(codexOAuthReauthCooldown)
+	applyCodexOAuthCooldownLocked(auth, result.Model, now, reauthUntil, StatusError, message, failure, "unauthorized", effects)
+	// Reauth failure invalidates the entire credential, not just the model that
+	// hit 401 first. Hold all existing model states and mark the auth record
+	// unavailable so management views and selectors agree immediately.
+	var failedState *ModelState
+	if result.Model != "" && auth.ModelStates != nil {
+		failedState = auth.ModelStates[result.Model]
+	}
+	holdCredentialModelsLocked(auth, failedState, failure, reauthUntil, now)
+	auth.Unavailable = true
+	auth.NextRetryAfter = reauthUntil
 	return true
 }
 

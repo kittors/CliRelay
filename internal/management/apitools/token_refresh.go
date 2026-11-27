@@ -108,7 +108,11 @@ func (s *Service) refreshXAIOAuthAccessToken(ctx context.Context, auth *coreauth
 	if cfg == nil {
 		cfg = &config.Config{}
 	}
-	svc := xaiauth.NewXAIAuthWithProxyURL(cfg, cfg.ResolveProxyURL(auth.ProxyID, auth.ProxyURL))
+	proxyURL, errProxy := cfg.ResolveBoundProxyURL(auth.ProxyID, auth.ProxyURL)
+	if errProxy != nil {
+		return "", errProxy
+	}
+	svc := xaiauth.NewXAIAuthWithProxyURL(cfg, proxyURL)
 	tokenData, errRefresh := svc.RefreshTokens(ctx, refreshToken, tokenEndpoint)
 	if errRefresh != nil {
 		return "", errRefresh
@@ -227,7 +231,11 @@ func (s *Service) refreshClaudeOAuthAccessToken(ctx context.Context, auth *corea
 			return claudeauth.NewClaudeAuth(cfg)
 		}
 	}
-	refresher := refresherFactory(s.claudeOAuthRefreshConfig(auth))
+	refreshCfg, errProxy := s.claudeOAuthRefreshConfig(auth)
+	if errProxy != nil {
+		return "", errProxy
+	}
+	refresher := refresherFactory(refreshCfg)
 	tokenData, errRefresh := refresher.RefreshTokens(ctx, refreshToken)
 	if errRefresh != nil {
 		return "", errRefresh
@@ -262,25 +270,33 @@ func (s *Service) refreshClaudeOAuthAccessToken(ctx context.Context, auth *corea
 	return strings.TrimSpace(tokenData.AccessToken), nil
 }
 
-func (s *Service) claudeOAuthRefreshConfig(auth *coreauth.Auth) *config.Config {
+func (s *Service) claudeOAuthRefreshConfig(auth *coreauth.Auth) (*config.Config, error) {
 	var cfgCopy config.Config
 	if s != nil && s.cfg != nil {
 		cfgCopy = *s.cfg
 	}
 	if auth == nil {
-		return &cfgCopy
+		return &cfgCopy, nil
 	}
 
-	var proxyURL string
+	var (
+		proxyURL string
+		err      error
+	)
 	if s != nil && s.cfg != nil {
-		proxyURL = s.cfg.ResolveProxyURL(auth.ProxyID, auth.ProxyURL)
+		proxyURL, err = s.cfg.ResolveBoundProxyURL(auth.ProxyID, auth.ProxyURL)
+		if err != nil {
+			return nil, err
+		}
+	} else if strings.TrimSpace(auth.ProxyID) != "" && strings.TrimSpace(auth.ProxyURL) == "" {
+		return nil, fmt.Errorf("%w: proxy_id %q (config unavailable)", config.ErrBoundProxyUnavailable, config.NormalizeProxyID(auth.ProxyID))
 	} else {
 		proxyURL = auth.ProxyURL
 	}
 	if trimmed := strings.TrimSpace(proxyURL); trimmed != "" {
 		cfgCopy.ProxyURL = trimmed
 	}
-	return &cfgCopy
+	return &cfgCopy, nil
 }
 
 func (s *Service) refreshGeminiOAuthAccessToken(ctx context.Context, auth *coreauth.Auth) (string, error) {

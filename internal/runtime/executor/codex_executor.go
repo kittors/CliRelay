@@ -656,9 +656,15 @@ func (e *CodexExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*
 	if refreshToken == "" {
 		return auth, nil
 	}
-	// Refresh goes out through this credential's own proxy, not the process
-	// default, so the token is renewed from the address that uses it.
-	svc := codexauth.NewCodexAuthWithProxy(e.cfg, resolveAuthProxyURL(e.cfg, auth))
+	// Refresh goes out through this credential's own proxy, failing closed if
+	// its bound proxy-pool entry is disabled or missing, and carries the same
+	// official Codex client identity as its inference requests.
+	proxyURL, errProxy := resolveAuthProxyURLStrict(e.cfg, auth)
+	if errProxy != nil {
+		return nil, errProxy
+	}
+	ua, originator := codexAuthClientIdentity(e.cfg, auth, ctx)
+	svc := codexauth.NewCodexAuthWithProxy(e.cfg, proxyURL).WithClientIdentity(ua, originator)
 	td, err := svc.RefreshTokensWithRetry(ctx, refreshToken, 3)
 	if err != nil {
 		return nil, err

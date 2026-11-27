@@ -372,7 +372,11 @@ func (e *IFlowExecutor) refreshCookieBased(ctx context.Context, auth *cliproxyau
 
 	log.Infof("iflow executor: refreshing cookie-based API key for user: %s", maskedEmail)
 
-	svc := iflowauth.NewIFlowAuthWithProxy(e.cfg, resolveAuthProxyURL(e.cfg, auth))
+	proxyURL, errProxy := resolveAuthProxyURLStrict(e.cfg, auth)
+	if errProxy != nil {
+		return nil, errProxy
+	}
+	svc := iflowauth.NewIFlowAuthWithProxy(e.cfg, proxyURL)
 	keyData, err := svc.RefreshAPIKey(ctx, cookie, email)
 	if err != nil {
 		log.Errorf("iflow executor: cookie-based API key refresh failed: %v", err)
@@ -420,7 +424,11 @@ func (e *IFlowExecutor) refreshOAuthBased(ctx context.Context, auth *cliproxyaut
 		log.Debugf("iflow executor: refreshing access token, old: %s", util.HideAPIKey(oldAccessToken))
 	}
 
-	svc := iflowauth.NewIFlowAuthWithProxy(e.cfg, resolveAuthProxyURL(e.cfg, auth))
+	proxyURL, errProxy := resolveAuthProxyURLStrict(e.cfg, auth)
+	if errProxy != nil {
+		return nil, errProxy
+	}
+	svc := iflowauth.NewIFlowAuthWithProxy(e.cfg, proxyURL)
 	tokenData, err := svc.RefreshTokens(ctx, refreshToken)
 	if err != nil {
 		log.Errorf("iflow executor: token refresh failed: %v", err)
