@@ -87,6 +87,11 @@ func ConvertClaudeRequestToCodex(modelName string, inputRawJSON []byte, _ bool) 
 		for i := 0; i < len(messageResults); i++ {
 			messageResult := messageResults[i]
 			messageRole := messageResult.Get("role").String()
+			// Codex Responses rejects role "system" inside input[]; match the
+			// top-level system and OpenAI->Codex translators by mapping it to "developer".
+			if messageRole == "system" {
+				messageRole = "developer"
+			}
 
 			var contentBuf bytes.Buffer
 			contentFirst := true
