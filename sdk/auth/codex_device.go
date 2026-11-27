@@ -67,7 +67,7 @@ func (a *CodexAuthenticator) loginWithDeviceFlow(ctx context.Context, cfg *confi
 
 	httpClient := util.SetProxy(&cfg.SDKConfig, util.NewHTTPClient(util.DefaultHTTPClientTimeout))
 
-	userCodeResp, err := requestCodexDeviceUserCode(ctx, httpClient)
+	userCodeResp, err := requestCodexDeviceUserCode(ctx, cfg, httpClient)
 	if err != nil {
 		return nil, err
 	}
@@ -95,7 +95,7 @@ func (a *CodexAuthenticator) loginWithDeviceFlow(ctx context.Context, cfg *confi
 		}
 	}
 
-	tokenResp, err := pollCodexDeviceToken(ctx, httpClient, deviceAuthID, deviceCode, pollInterval)
+	tokenResp, err := pollCodexDeviceToken(ctx, cfg, httpClient, deviceAuthID, deviceCode, pollInterval)
 	if err != nil {
 		return nil, err
 	}
@@ -124,7 +124,7 @@ func (a *CodexAuthenticator) loginWithDeviceFlow(ctx context.Context, cfg *confi
 	return a.buildAuthRecord(authSvc, authBundle)
 }
 
-func requestCodexDeviceUserCode(ctx context.Context, client *http.Client) (*codexDeviceUserCodeResponse, error) {
+func requestCodexDeviceUserCode(ctx context.Context, cfg *config.Config, client *http.Client) (*codexDeviceUserCodeResponse, error) {
 	body, err := json.Marshal(codexDeviceUserCodeRequest{ClientID: codex.ClientID})
 	if err != nil {
 		return nil, fmt.Errorf("failed to encode codex device request: %w", err)
@@ -136,6 +136,7 @@ func requestCodexDeviceUserCode(ctx context.Context, client *http.Client) (*code
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
+	codex.ApplyAuthIdentityHeaders(req, cfg)
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -167,7 +168,7 @@ func requestCodexDeviceUserCode(ctx context.Context, client *http.Client) (*code
 	return &parsed, nil
 }
 
-func pollCodexDeviceToken(ctx context.Context, client *http.Client, deviceAuthID, userCode string, interval time.Duration) (*codexDeviceTokenResponse, error) {
+func pollCodexDeviceToken(ctx context.Context, cfg *config.Config, client *http.Client, deviceAuthID, userCode string, interval time.Duration) (*codexDeviceTokenResponse, error) {
 	deadline := time.Now().Add(codexDeviceTimeout)
 
 	for {
@@ -189,6 +190,7 @@ func pollCodexDeviceToken(ctx context.Context, client *http.Client, deviceAuthID
 		}
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Accept", "application/json")
+		codex.ApplyAuthIdentityHeaders(req, cfg)
 
 		resp, err := client.Do(req)
 		if err != nil {

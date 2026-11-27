@@ -2,6 +2,7 @@ package executor
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
@@ -34,6 +35,37 @@ type requestLogEgressRoute struct {
 	ProxyURLHost string `json:"proxy_url_host,omitempty"`
 }
 
+type failingRoundTripper struct {
+	err error
+}
+
+func (f failingRoundTripper) RoundTrip(_ *http.Request) (*http.Response, error) {
+	return nil, f.err
+}
+
+// resolveAuthProxyURLStrict resolves the egress proxy for auth and fails closed
+// when auth pins a proxy_id that is disabled or missing (with no explicit
+// auth.ProxyURL fallback). Failing closed prevents OAuth refreshes and API
+// calls from silently leaking out through the host IP or another account's proxy.
+func resolveAuthProxyURLStrict(cfg *config.Config, auth *cliproxyauth.Auth) (string, error) {
+	proxyID, fallbackURL := "", ""
+	if auth != nil {
+		proxyID = auth.ProxyID
+		fallbackURL = auth.ProxyURL
+	}
+	if cfg == nil {
+		if strings.TrimSpace(proxyID) != "" && strings.TrimSpace(fallbackURL) == "" {
+			return "", fmt.Errorf("%w: proxy_id %q (config unavailable)", config.ErrBoundProxyUnavailable, config.NormalizeProxyID(proxyID))
+		}
+		return strings.TrimSpace(fallbackURL), nil
+	}
+	resolved, err := cfg.ResolveBoundProxyURL(proxyID, fallbackURL)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(resolved), nil
+}
+
 // resolveAuthProxyURL returns the proxy a credential's own traffic goes out
 // through, using the same precedence as newProxyAwareHTTPClient.
 //
@@ -45,21 +77,14 @@ type requestLogEgressRoute struct {
 // The access token then aged out and the account went unauthorized even though
 // its request path was healthy.
 //
-// It returns "" when nothing is configured, which leaves the caller on its
-// existing default.
+// It returns "" when nothing is configured (or when a bound proxy is
+// unavailable, in which case strict callers fail closed).
 func resolveAuthProxyURL(cfg *config.Config, auth *cliproxyauth.Auth) string {
-	if cfg == nil {
-		if auth == nil {
-			return ""
-		}
-		return strings.TrimSpace(auth.ProxyURL)
+	resolved, err := resolveAuthProxyURLStrict(cfg, auth)
+	if err != nil {
+		return ""
 	}
-	proxyID, fallbackURL := "", ""
-	if auth != nil {
-		proxyID = auth.ProxyID
-		fallbackURL = auth.ProxyURL
-	}
-	return strings.TrimSpace(cfg.ResolveProxyURL(proxyID, fallbackURL))
+	return resolved
 }
 
 // newProxyAwareHTTPClient creates an HTTP client with proper proxy configuration priority:
@@ -67,6 +92,9 @@ func resolveAuthProxyURL(cfg *config.Config, auth *cliproxyauth.Auth) string {
 // 2. Use auth.ProxyURL if configured
 // 3. Use cfg.ProxyURL if auth proxy is not configured
 // 4. Use RoundTripper from context if neither are configured
+//
+// When a credential pins an unavailable proxy_id or an invalid proxy URL, the
+// client fails closed instead of silently falling back to direct host egress.
 //
 // Parameters:
 //   - ctx: The context containing optional RoundTripper
@@ -79,23 +107,21 @@ func resolveAuthProxyURL(cfg *config.Config, auth *cliproxyauth.Auth) string {
 func newProxyAwareHTTPClient(ctx context.Context, cfg *config.Config, auth *cliproxyauth.Auth, timeout time.Duration) *http.Client {
 	httpClient := util.NewHTTPClient(timeout)
 
-	var proxyURL string
-	if cfg != nil {
-		proxyID := ""
-		fallbackURL := ""
-		if auth != nil {
-			proxyID = auth.ProxyID
-			fallbackURL = auth.ProxyURL
+	proxyURL, errProxy := resolveAuthProxyURLStrict(cfg, auth)
+	if errProxy != nil {
+		log.Warnf("bound proxy unavailable for auth request, failing closed: %v", errProxy)
+		recordRequestLogEgressRoute(ctx, cfg, auth, "")
+		httpClient.Transport = failingRoundTripper{err: errProxy}
+		if ginCtx, ok := ctx.Value(util.ContextKeyGin).(*gin.Context); ok && ginCtx != nil {
+			httpClient.Transport = &upstreamTracingTransport{base: httpClient.Transport, ginCtx: ginCtx}
 		}
-		proxyURL = cfg.ResolveProxyURL(proxyID, fallbackURL)
-	} else if auth != nil {
-		proxyURL = strings.TrimSpace(auth.ProxyURL)
+		return httpClient
 	}
 	recordRequestLogEgressRoute(ctx, cfg, auth, proxyURL)
 
 	// viaProxy is set once the transport chosen really sends through proxyURL;
-	// a proxy URL that cannot be used falls through to a transport that does
-	// not, and the egress breaker must not judge the proxy by those requests.
+	// a proxy URL that cannot be used fails closed instead of falling through
+	// to direct host egress, and the egress breaker only judges real proxy hops.
 	viaProxy := false
 
 	// A TLS fingerprint transport dials and tunnels on its own, because the
@@ -113,8 +139,13 @@ func newProxyAwareHTTPClient(ctx context.Context, cfg *config.Config, auth *clip
 			httpClient.Transport = transport
 			viaProxy = true
 		} else {
-			// If proxy setup failed, log and fall through to context RoundTripper
-			log.Debugf("failed to setup proxy from URL: %s, falling back to context transport", maskProxyURLHost(proxyURL))
+			errInvalid := fmt.Errorf("invalid proxy configuration for %s: refusing direct fallback", maskProxyURLHost(proxyURL))
+			log.Warnf("failed to setup proxy from URL %s, failing closed", maskProxyURLHost(proxyURL))
+			httpClient.Transport = failingRoundTripper{err: errInvalid}
+			if ginCtx, ok := ctx.Value(util.ContextKeyGin).(*gin.Context); ok && ginCtx != nil {
+				httpClient.Transport = &upstreamTracingTransport{base: httpClient.Transport, ginCtx: ginCtx}
+			}
+			return httpClient
 		}
 	}
 

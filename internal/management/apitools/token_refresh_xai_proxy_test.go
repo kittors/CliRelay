@@ -2,9 +2,11 @@ package apitools
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
@@ -76,4 +78,33 @@ func TestRefreshXAIOAuthAccessTokenResolvesProxyID(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("disabled or missing proxy_id without explicit fallback fails closed", func(t *testing.T) {
+		var leaked atomic.Int32
+		sink := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			leaked.Add(1)
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer sink.Close()
+
+		cfg := &config.Config{
+			SDKConfig: config.SDKConfig{ProxyURL: sink.URL},
+			ProxyPool: []config.ProxyPoolEntry{
+				{ID: "selected", URL: "socks5://127.0.0.1:1080", Enabled: false},
+			},
+		}
+		for _, proxyID := range []string{"selected", "missing"} {
+			auth := &coreauth.Auth{Provider: "xai", ProxyID: proxyID, Metadata: map[string]any{
+				"access_token": "test-expired-token", "refresh_token": "test-refresh-token",
+				"expired": "2000-01-01T00:00:00Z", "token_endpoint": sink.URL + "/token",
+			}}
+			svc := New(cfg, nil, Dependencies{})
+			if _, err := svc.refreshXAIOAuthAccessToken(context.Background(), auth); !errors.Is(err, config.ErrBoundProxyUnavailable) {
+				t.Fatalf("proxy_id=%q err = %v, want ErrBoundProxyUnavailable", proxyID, err)
+			}
+		}
+		if got := leaked.Load(); got != 0 {
+			t.Fatalf("leaked %d refresh calls to global/direct endpoint, want 0", got)
+		}
+	})
 }

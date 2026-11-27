@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"net/http"
 	"time"
 
 	log "github.com/sirupsen/logrus"
@@ -334,13 +335,32 @@ func (s refreshService) applyRefreshFailure(ctx context.Context, id string, auth
 			if digest := refreshTokenDigest(cloned); digest != "" && digest == refreshTokenDigest(current) {
 				current.permanentRefreshFailedDigest = digest
 			}
-			if supportsRefreshTokenRaceRecovery(current) && canKeepRefreshFailureActive(current, now) {
+			// A Codex session-revocation error (invalid_refresh_token,
+			// refresh_token_invalidated, token_revoked, account_deactivated, etc.)
+			// terminates the whole upstream session—OpenAI revokes the
+			// remaining access_token within seconds despite its local expiry
+			// timestamp. Do not keep it marked active or unpersisted; surface
+			// reauth_required immediately across the cluster and pull it out of
+			// scheduling. Rotation-race errors like refresh_token_reused keep
+			// the existing usable-access-token grace behavior.
+			sessionRevoked := isCodexOAuthAuth(current) && isCodexSessionRevokedRefreshError(err)
+			if !sessionRevoked && supportsRefreshTokenRaceRecovery(current) && canKeepRefreshFailureActive(current, now) {
 				current.Status = StatusActive
 				current.StatusMessage = ""
 			} else {
 				current.Status = StatusError
 				current.StatusMessage = err.Error()
 				if markCodexOAuthHealthRefreshPermanentFailureLocked(current, now, err) {
+					reason := codexRefreshPermanentReason(err)
+					failure := &Error{
+						HTTPStatus: http.StatusUnauthorized,
+						Code:       reason,
+						Message:    err.Error(),
+					}
+					current.StatusMessage = "re-login required: " + reason
+					current.LastError = failure
+					current.Unavailable = true
+					holdCredentialModelsLocked(current, nil, failure, now.Add(codexOAuthReauthCooldown), now)
 					persistSnapshot = current.Clone()
 				}
 			}

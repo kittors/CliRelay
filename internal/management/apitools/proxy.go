@@ -1,6 +1,7 @@
 package apitools
 
 import (
+	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
@@ -83,20 +84,40 @@ func (s *Service) APICallTransport(auth *coreauth.Auth) http.RoundTripper {
 	return s.APICallTransportForURL(auth, nil)
 }
 
-func (s *Service) resolveProxyURL(auth *coreauth.Auth) string {
-	if s != nil && s.cfg != nil {
-		proxyID := ""
-		fallbackURL := ""
-		if auth != nil {
-			proxyID = auth.ProxyID
-			fallbackURL = auth.ProxyURL
-		}
-		return strings.TrimSpace(s.cfg.ResolveProxyURL(proxyID, fallbackURL))
-	}
+type failClosedManagementTransport struct {
+	err error
+}
+
+func (t failClosedManagementTransport) RoundTrip(_ *http.Request) (*http.Response, error) {
+	return nil, t.err
+}
+
+func (s *Service) resolveProxyURLStrict(auth *coreauth.Auth) (string, error) {
+	proxyID := ""
+	fallbackURL := ""
 	if auth != nil {
-		return strings.TrimSpace(auth.ProxyURL)
+		proxyID = auth.ProxyID
+		fallbackURL = auth.ProxyURL
 	}
-	return ""
+	if s != nil && s.cfg != nil {
+		resolved, err := s.cfg.ResolveBoundProxyURL(proxyID, fallbackURL)
+		if err != nil {
+			return "", err
+		}
+		return strings.TrimSpace(resolved), nil
+	}
+	if strings.TrimSpace(proxyID) != "" && strings.TrimSpace(fallbackURL) == "" {
+		return "", fmt.Errorf("%w: proxy_id %q (config unavailable)", config.ErrBoundProxyUnavailable, config.NormalizeProxyID(proxyID))
+	}
+	return strings.TrimSpace(fallbackURL), nil
+}
+
+func (s *Service) resolveProxyURL(auth *coreauth.Auth) string {
+	resolved, err := s.resolveProxyURLStrict(auth)
+	if err != nil {
+		return ""
+	}
+	return resolved
 }
 
 // HasExplicitProxy reports whether outbound requests for auth are routed
@@ -115,16 +136,16 @@ func (s *Service) HasExplicitProxy(auth *coreauth.Auth) bool {
 }
 
 func (s *Service) APICallTransportForURL(auth *coreauth.Auth, targetURL *url.URL) http.RoundTripper {
-	var proxyCandidates []string
-	if proxyStr := s.resolveProxyURL(auth); proxyStr != "" {
-		proxyCandidates = append(proxyCandidates, proxyStr)
+	proxyStr, errProxy := s.resolveProxyURLStrict(auth)
+	if errProxy != nil {
+		return failClosedManagementTransport{err: errProxy}
 	}
 
 	var sdkCfg *config.SDKConfig
 	if s != nil && s.cfg != nil {
 		sdkCfg = &s.cfg.SDKConfig
 	}
-	for _, proxyStr := range proxyCandidates {
+	if proxyStr != "" {
 		if targetURL != nil && strings.EqualFold(targetURL.Scheme, "https") && isCodexTargetURL(auth, targetURL) {
 			if fpTransport := cachedManagementTLSFingerprintTransport(proxyStr, sdkCfg); fpTransport != nil {
 				return fpTransport
@@ -132,6 +153,9 @@ func (s *Service) APICallTransportForURL(auth *coreauth.Auth, targetURL *url.URL
 		}
 		if transport := cachedManagementProxyTransport(proxyStr, sdkCfg); transport != nil {
 			return transport
+		}
+		return failClosedManagementTransport{
+			err: fmt.Errorf("invalid proxy configuration: refusing to fall back to direct egress"),
 		}
 	}
 	if targetURL != nil && strings.EqualFold(targetURL.Scheme, "https") && isCodexTargetURL(auth, targetURL) {

@@ -6,6 +6,7 @@ package util
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/url"
@@ -165,9 +166,18 @@ func markProxyConnectRejection(_ context.Context, _ *url.URL, _ *http.Request, r
 	return egressbreaker.AuthRejected(errors.New(text))
 }
 
+type failClosedProxyTransport struct {
+	err error
+}
+
+func (t failClosedProxyTransport) RoundTrip(_ *http.Request) (*http.Response, error) {
+	return nil, t.err
+}
+
 // SetProxy configures the provided HTTP client with proxy settings from the configuration.
 // It supports SOCKS5, HTTP, and HTTPS proxies. The function modifies the client's transport
-// to route requests through the configured proxy server.
+// to route requests through the configured proxy server. When a non-empty ProxyURL cannot
+// be parsed or built, it fails closed instead of silently dialing direct from the host IP.
 func SetProxy(cfg *config.SDKConfig, httpClient *http.Client) *http.Client {
 	if httpClient == nil {
 		httpClient = NewHTTPClient(DefaultHTTPClientTimeout)
@@ -181,8 +191,15 @@ func SetProxy(cfg *config.SDKConfig, httpClient *http.Client) *http.Client {
 	if httpClient.Transport == nil {
 		httpClient.Transport = NewDefaultTransport(cfg.PreferIPv4)
 	}
-	if transport := BuildProxyTransport(cfg.ProxyURL, cfg.PreferIPv4); transport != nil {
-		httpClient.Transport = transport
+	if proxyURL := strings.TrimSpace(cfg.ProxyURL); proxyURL != "" {
+		if transport := BuildProxyTransport(proxyURL, cfg.PreferIPv4); transport != nil {
+			httpClient.Transport = transport
+		} else {
+			httpClient.Transport = failClosedProxyTransport{
+				err: fmt.Errorf("invalid proxy configuration: refusing to fall back to direct egress"),
+			}
+			return httpClient
+		}
 	}
 	if t, ok := httpClient.Transport.(*http.Transport); ok {
 		ApplyTLSConfig(t, cfg)

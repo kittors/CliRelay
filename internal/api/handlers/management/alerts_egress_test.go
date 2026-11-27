@@ -112,7 +112,8 @@ func TestAlertSourcesEgressTiesTheBreakerToTheTenantsProxies(t *testing.T) {
 	register(&coreauth.Auth{ID: "a3", Provider: "codex", ProxyID: "hk-shared"})
 	register(&coreauth.Auth{ID: "a4", Provider: "codex", ProxyURL: egressOwn})
 	register(&coreauth.Auth{ID: "a5", Provider: "codex"})
-	// Names a switched-off entry, so it leaves through the default proxy.
+	// Names a switched-off entry with no account-level fallback, so egress
+	// fails closed instead of falling back to the global default proxy.
 	register(&coreauth.Auth{ID: "a6", Provider: "codex", ProxyID: "sg-off"})
 	// Not counted: switched off, another tenant's, no executor to ask.
 	register(&coreauth.Auth{ID: "a7", Provider: "codex", ProxyID: "sg-1", Disabled: true, Status: coreauth.StatusDisabled})
@@ -158,7 +159,7 @@ func TestAlertSourcesEgressTiesTheBreakerToTheTenantsProxies(t *testing.T) {
 		{alerting.EgressPoolEntry, "sg-2", "SG Two", "socks5://203.0.113.11:1080", 0, false},
 		{alerting.EgressSharedEntry, "hk-shared", "HK shared", "socks5://198.51.100.20:1080", 1, false},
 		{alerting.EgressAccountProxy, "", "", "socks5://192.0.2.31:1080", 1, false},
-		{alerting.EgressDefaultProxy, "", "", "http://192.0.2.30:3128", 2, false},
+		{alerting.EgressDefaultProxy, "", "", "http://192.0.2.30:3128", 1, false},
 	}
 	if len(samples) != len(wants) {
 		t.Fatalf("samples = %+v, want %d", samples, len(wants))

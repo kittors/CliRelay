@@ -248,3 +248,20 @@ func (e *CodexExecutor) resolveCodexConfig(auth *cliproxyauth.Auth) *config.Code
 	}
 	return nil
 }
+
+// codexAuthClientIdentity resolves the User-Agent and Originator pair for
+// auth.openai.com requests from the same fingerprint resolver used by Codex
+// inference traffic, keeping one account's auth and inference identities aligned.
+func codexAuthClientIdentity(cfg *config.Config, auth *cliproxyauth.Auth, ctx context.Context) (userAgent, originator string) {
+	if fp, enabled := codexIdentityFingerprint(cfg, auth, ctx); enabled {
+		userAgent = strings.TrimSpace(fp.UserAgent)
+		originator = strings.TrimSpace(fp.Originator)
+	}
+	if userAgent == "" {
+		userAgent = codexUserAgent
+	}
+	if originator == "" {
+		originator = codexOriginator
+	}
+	return userAgent, originator
+}

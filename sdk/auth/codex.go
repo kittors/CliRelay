@@ -32,7 +32,12 @@ func (a *CodexAuthenticator) Provider() string {
 }
 
 func (a *CodexAuthenticator) RefreshLead() *time.Duration {
-	return new(5 * 24 * time.Hour)
+	// OpenAI Codex access tokens live for 10 days (official codex-rs refreshes
+	// after 8 days / 2 days before expiry). Refreshing 24 hours before expiry
+	// roughly halves refresh-endpoint exposure compared to the legacy 5-day
+	// lead, avoids forfeiting days of healthy access_token life if upstream
+	// invalidates a session early, and still leaves a full day of retry buffer.
+	return new(24 * time.Hour)
 }
 
 func (a *CodexAuthenticator) Login(ctx context.Context, cfg *config.Config, opts *LoginOptions) (*coreauth.Auth, error) {

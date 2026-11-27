@@ -275,3 +275,32 @@ func TestBuildEntryIncludesSanitizedCodexOAuthHealth(t *testing.T) {
 		t.Fatal("no auth or no metadata must give no health")
 	}
 }
+
+func TestBuildRestrictionPayloadSurfacesReauthRequiredAfterRestartAndCooldownExpiry(t *testing.T) {
+	now := time.Now()
+	auth := &coreauth.Auth{
+		ID:       "codex-reloaded-reauth",
+		Provider: "codex",
+		Status:   coreauth.StatusActive,
+		Metadata: map[string]any{
+			"type":          "codex",
+			"access_token":  "dead-at",
+			"refresh_token": "dead-rt",
+			coreauth.CodexOAuthHealthMetadataKey: map[string]any{
+				"status":        "reauth_required",
+				"reauth_reason": "invalid_refresh_token",
+			},
+		},
+	}
+	restrictions := BuildRestrictionPayload(auth, now)
+	if len(restrictions) != 1 {
+		t.Fatalf("restrictions = %#v, want 1 auth-level reauth_required entry", restrictions)
+	}
+	entry := restrictions[0]
+	if entry["scope"] != "auth" || entry["status"] != coreauth.StatusError || entry["unavailable"] != true {
+		t.Fatalf("restriction entry = %#v, want auth/error/unavailable", entry)
+	}
+	if entry["cooldown_reason"] != coreauth.CooldownReasonReauthRequired || entry["http_status"] != 401 {
+		t.Fatalf("restriction cooldown_reason/http_status = (%v, %v), want (reauth_required, 401)", entry["cooldown_reason"], entry["http_status"])
+	}
+}
