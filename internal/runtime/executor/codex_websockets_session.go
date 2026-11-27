@@ -10,6 +10,7 @@ import (
 	"github.com/gorilla/websocket"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
+	"github.com/tidwall/gjson"
 )
 
 // setActive makes ch the channel of the request now reading conn.
@@ -142,7 +143,18 @@ func (e *CodexWebsocketsExecutor) getOrCreateSession(sessionID string) *codexWeb
 	return sess
 }
 
-func (e *CodexWebsocketsExecutor) ensureUpstreamConn(ctx context.Context, auth *cliproxyauth.Auth, sess *codexWebsocketSession, authID string, wsURL string, headers http.Header) (*websocket.Conn, *http.Response, error) {
+func (s *codexWebsocketSession) rememberResponse(event, body []byte, chatGPTBackend bool) {
+	if s == nil {
+		return
+	}
+	s.unstoredResponseID = ""
+	if chatGPTBackend || gjson.GetBytes(body, "store").Type == gjson.False {
+		s.unstoredResponseID = gjson.GetBytes(event, "response.id").String()
+		s.responseSerial = s.connSerial
+	}
+}
+
+func (e *CodexWebsocketsExecutor) ensureUpstreamConn(ctx context.Context, auth *cliproxyauth.Auth, sess *codexWebsocketSession, authID string, wsURL string, headers http.Header, previousID string) (*websocket.Conn, *http.Response, error) {
 	if sess == nil {
 		return e.dialCodexWebsocket(ctx, auth, wsURL, headers)
 	}
@@ -153,7 +165,11 @@ func (e *CodexWebsocketsExecutor) ensureUpstreamConn(ctx context.Context, auth *
 	connAuthID := sess.authID
 	connURL := sess.wsURL
 	sess.connMu.Unlock()
-	if conn != nil && (connAuthID != authID || connURL != wsURL) {
+	sameUpstream := conn != nil && connAuthID == authID && connURL == wsURL
+	if previousID != "" && previousID == sess.unstoredResponseID && (!sameUpstream || sess.connSerial != sess.responseSerial) {
+		return nil, nil, statusErr{code: http.StatusBadRequest, msg: `{"error":{"type":"invalid_request_error","code":"previous_response_not_found","param":"previous_response_id","message":"The upstream connection holding the previous response was lost; send the full input."}}`}
+	}
+	if conn != nil && !sameUpstream {
 		// A socket authenticates once, as the credential that opened it, and the
 		// upstream keeps that account's context on it. The execution session is
 		// the client connection, which moves to another credential when its pin
@@ -189,6 +205,7 @@ func (e *CodexWebsocketsExecutor) ensureUpstreamConn(ctx context.Context, auth *
 		return previous, nil, nil
 	}
 	sess.conn = conn
+	sess.connSerial++
 	sess.wsURL = wsURL
 	sess.authID = authID
 	sess.readerConn = conn

@@ -42,6 +42,11 @@ type codexWebsocketSession struct {
 	sessionID string
 
 	reqMu sync.Mutex
+	// The serialized turn owns these fields. Remember only the connection-local
+	// response ID, never the transcript or a reference to a closed socket.
+	connSerial         uint64
+	responseSerial     uint64
+	unstoredResponseID string
 
 	connMu sync.Mutex
 	conn   *websocket.Conn
@@ -152,7 +157,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 	wsReqBody := buildCodexWebsocketRequestBody(body)
 	recorder.RecordRequest(wsURL, "WEBSOCKET", wsHeaders.Clone(), wsReqBody)
 
-	conn, respHS, errDial := e.ensureUpstreamConn(execCtx.Context, auth, sess, authID, wsURL, wsHeaders)
+	conn, respHS, errDial := e.ensureUpstreamConn(execCtx.Context, auth, sess, authID, wsURL, wsHeaders, "")
 	if respHS != nil {
 		recorder.RecordResponseMetadata(respHS.StatusCode, respHS.Header.Clone())
 	}
@@ -201,7 +206,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 			// Retry once with a fresh websocket connection. This is mainly to handle
 			// upstream closing the socket between sequential requests within the same
 			// execution session.
-			connRetry, respRetry, errDialRetry := e.ensureUpstreamConn(execCtx.Context, auth, sess, authID, wsURL, wsHeaders) //nolint:bodyclose // failed handshake body is closed below; successful websocket response is owned by connRetry.
+			connRetry, respRetry, errDialRetry := e.ensureUpstreamConn(execCtx.Context, auth, sess, authID, wsURL, wsHeaders, "") //nolint:bodyclose // failed handshake body is closed below; successful websocket response is owned by connRetry.
 			if errDialRetry != nil {
 				_ = websocketHandshakeBody(respRetry)
 			}
@@ -265,6 +270,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 		payload = normalizeCodexWebsocketCompletion(payload)
 		eventType := gjson.GetBytes(payload, "type").String()
 		if codexResponseFinished(eventType) {
+			sess.rememberResponse(payload, body, chatGPTBackend)
 			if detail, ok := parseCodexUsage(payload); ok {
 				reporter.publish(execCtx.Context, detail)
 			}
@@ -343,7 +349,8 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 	wsReqBody := buildCodexWebsocketRequestBody(body)
 	recorder.RecordRequest(wsURL, "WEBSOCKET", wsHeaders.Clone(), wsReqBody)
 
-	conn, respHS, errDial := e.ensureUpstreamConn(execCtx.Context, auth, sess, authID, wsURL, wsHeaders)
+	previousID := gjson.GetBytes(body, "previous_response_id").String()
+	conn, respHS, errDial := e.ensureUpstreamConn(execCtx.Context, auth, sess, authID, wsURL, wsHeaders, previousID)
 	var upstreamHeaders http.Header
 	if respHS != nil {
 		upstreamHeaders = respHS.Header.Clone()
@@ -386,7 +393,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 			e.invalidateUpstreamConn(sess, conn, "send_error", errSend)
 
 			// Retry once with a new websocket connection for the same execution session.
-			connRetry, respRetry, errDialRetry := e.ensureUpstreamConn(execCtx.Context, auth, sess, authID, wsURL, wsHeaders) //nolint:bodyclose // failed handshake body is closed below; successful websocket response is owned by connRetry.
+			connRetry, respRetry, errDialRetry := e.ensureUpstreamConn(execCtx.Context, auth, sess, authID, wsURL, wsHeaders, previousID) //nolint:bodyclose // failed handshake body is closed below; successful websocket response is owned by connRetry.
 			if errDialRetry != nil {
 				_ = websocketHandshakeBody(respRetry)
 			}
@@ -514,6 +521,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 			for _, eventPayload := range normalizedEvents {
 				eventType := gjson.GetBytes(eventPayload, "type").String()
 				if codexResponseFinished(eventType) || eventType == "response.done" {
+					sess.rememberResponse(eventPayload, body, chatGPTBackend)
 					if detail, ok := parseCodexUsage(eventPayload); ok {
 						reporter.publish(execCtx.Context, detail)
 					}
