@@ -2,6 +2,7 @@ package executor
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -279,5 +280,95 @@ func TestCodexTerminalScannerLimitRemainsFailure(t *testing.T) {
 				t.Errorf("detail=%+v", records[0].Detail)
 			}
 		})
+	}
+}
+
+// Codex upstream may close a turn with response.done. The relay must forward it
+// as response.completed; otherwise the client reports
+// "stream disconnected before completion: stream closed before response.completed".
+func TestCodexResponseDoneIsForwardedAsCompleted(t *testing.T) {
+	done := codexTerminalJSON("done", true)
+	body := "data: " + `{"type":"response.output_text.delta","delta":"hi"}` + "\n\n" +
+		"data: " + done + "\n\n"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(body))
+	}))
+	defer server.Close()
+
+	p := &usageCapturePlugin{records: make(chan coreusage.Record, 32)}
+	coreusage.RegisterPlugin(p)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	req, opts := codexTerminalRequest()
+	stream, err := NewCodexExecutor(&config.Config{}).ExecuteStream(ctx, codexTerminalAuth(t.Name(), server.URL), req, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var forwarded strings.Builder
+	var chunkErr error
+	for chunk := range stream.Chunks {
+		forwarded.Write(chunk.Payload)
+		if chunk.Err != nil {
+			chunkErr = chunk.Err
+		}
+	}
+	if chunkErr != nil {
+		t.Fatalf("a response.done turn must end without an error, got %v", chunkErr)
+	}
+	if !strings.Contains(forwarded.String(), `"response.completed"`) || strings.Contains(forwarded.String(), `"response.done"`) {
+		t.Fatalf("client stream must carry response.completed instead of response.done: %s", forwarded.String())
+	}
+	records := codexTerminalRecords(t, p, t.Name())
+	if len(records) != 1 || records[0].Failed || records[0].Detail.TotalTokens != 5 {
+		t.Fatalf("records=%+v, want one successful record with 5 tokens", records)
+	}
+}
+
+func TestNormalizeCodexResponseDone(t *testing.T) {
+	for _, tc := range []struct {
+		name, payload string
+		wantChanged   bool
+		wantType      string
+	}{
+		{"done", `{"type":"response.done","response":{"status":"done","output":[],"usage":{}}}`, true, "response.completed"},
+		{"completed", `{"type":"response.completed","response":{"status":"completed"}}`, false, "response.completed"},
+		{"bare_done", `{"type":"response.done"}`, false, "response.done"},
+		{"malformed", `{"type":"response.done"`, false, ""},
+		{"not_object", `[{"type":"response.done","response":{}}]`, false, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, changed := normalizeCodexResponseDone([]byte(tc.payload))
+			if changed != tc.wantChanged {
+				t.Fatalf("changed=%t want=%t", changed, tc.wantChanged)
+			}
+			if tc.wantType != "" {
+				if typ := gjson.GetBytes(got, "type").String(); typ != tc.wantType {
+					t.Fatalf("type=%q want %q", typ, tc.wantType)
+				}
+			}
+			if !changed && string(got) != tc.payload {
+				t.Fatalf("an untouched payload must be returned as is: %s", got)
+			}
+			if tc.wantChanged && gjson.GetBytes(got, "response.status").String() == "done" {
+				t.Fatalf("status must follow the event name: %s", got)
+			}
+		})
+	}
+}
+
+func TestNormalizeCodexResponseDoneLinesRewritesOnlyDataFrames(t *testing.T) {
+	event := []byte("event: response.done")
+	data := []byte(`data: {"type":"response.done","response":{"status":"completed"}}`)
+	lines := [][]byte{event, data}
+	normalizeCodexResponseDoneLines(lines)
+	if string(lines[0]) != string(event) {
+		t.Fatalf("event line changed: %s", lines[0])
+	}
+	if typ := gjson.GetBytes(bytes.TrimPrefix(lines[1], []byte("data: ")), "type").String(); typ != "response.completed" {
+		t.Fatalf("data line type=%q, want response.completed", typ)
+	}
+	if !bytes.HasPrefix(lines[1], []byte("data: ")) {
+		t.Fatalf("data prefix lost: %s", lines[1])
 	}
 }
