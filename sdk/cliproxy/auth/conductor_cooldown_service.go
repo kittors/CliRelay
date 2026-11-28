@@ -335,7 +335,15 @@ func (s cooldownService) applyModelFailureLocked(auth *Auth, result Result, now 
 				// The proxy in front of the upstream failed, not this credential.
 				state.NextRetryAfter = time.Time{}
 			} else if wait, ok := upstreamFailureCooldown(result); ok {
-				// The upstream said how long to leave it alone.
+				// The upstream said how long to leave it alone. A capacity
+				// refusal names the client's backoff, not how long this
+				// credential must stay out: every account would draw the same
+				// answer, and the figure an overloaded fleet ships (Codex sends
+				// ~370s) would empty a small pool for six minutes. Bound that
+				// case; ordinary 5xx hints are still followed.
+				if isTransientUpstreamOverloadError(result.Error) {
+					wait = min(wait, maxTransientOverloadCooldown)
+				}
 				state.NextRetryAfter = now.Add(wait)
 			} else if isTransientUpstreamOverloadError(result.Error) {
 				state.NextRetryAfter = now.Add(transientUpstreamOverloadCooldown)
@@ -468,6 +476,10 @@ const transientRateLimitCooldown = time.Minute
 // Long enough to let the current spike pass, short enough that a small pool
 // recovers before a retrying client can notice it was ever empty.
 const transientUpstreamOverloadCooldown = 5 * time.Second
+
+// maxTransientOverloadCooldown bounds a wait an overloaded fleet published for
+// itself. It is the client's retry-after, not a statement about this credential.
+const maxTransientOverloadCooldown = time.Minute
 
 // isTransientUpstreamOverloadError reports whether a 5xx describes the provider
 // shedding load rather than a fault attributable to this credential.

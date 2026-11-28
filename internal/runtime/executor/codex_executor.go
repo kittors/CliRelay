@@ -485,15 +485,27 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 			}
 			// The framer preserves original multiline data fields. Inspect their
 			// joined JSON without changing the lines forwarded to the translator.
+			suppressForward := false
 			for _, payload := range codexResponsesSSEPayloads(eventLines) {
 				eventType := gjson.GetBytes(payload, "type").String()
 				incremental.observe(eventType, payload)
 				switch eventType {
 				case "response.completed", "response.incomplete":
 					terminal.observe(payload)
-				case "response.failed", "error":
+				case "response.failed":
 					terminalErr = codexResponsesFailedStatusErr(payload)
+				case "error":
+					// A bare upsteam error frame is not a terminal Responses event.
+					// Forwarding it makes the client give up on this attempt before
+					// the relay can retry, and still leaves it without a
+					// response.completed. Let the handler publish the terminal
+					// failure once the retries are done.
+					terminalErr = codexResponsesFailedStatusErr(payload)
+					suppressForward = true
 				}
+			}
+			if suppressForward {
+				return terminalErr
 			}
 			var responseFrame bytes.Buffer
 			for _, eventLine := range eventLines {

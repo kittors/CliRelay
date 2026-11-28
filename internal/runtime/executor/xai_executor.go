@@ -388,6 +388,9 @@ func (e *XAIExecutor) prepareResponsesRequest(ctx context.Context, auth *cliprox
 	body = stripXAIUnsupportedWebSearchOptions(body)
 	// After flattening, so namespace children and lifted Lite tools are checked too.
 	body = normalizeXAIToolParameterRoots(body)
+	// Replayed reasoning must reach xAI exactly as it issued it; a null member is
+	// what turns a valid compaction blob into an undecodable one.
+	body = sanitizeXAIReasoningInputItems(body)
 	sets := map[string][]byte{
 		"stream": util.JSONBool(stream),
 	}

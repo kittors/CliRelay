@@ -3,8 +3,10 @@ package handlers
 import (
 	"encoding/json"
 	"errors"
+	"math"
 	"net/http"
 	"strconv"
+	"time"
 
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/egressbreaker"
@@ -72,8 +74,30 @@ func localRetryAfter(msg *StreamErrorMessage) string {
 		return ""
 	}
 	var egressErr *egressUnavailableError
-	if !errors.As(msg.Error, &egressErr) || egressErr == nil || egressErr.retryAfter <= 0 {
+	if errors.As(msg.Error, &egressErr) && egressErr != nil {
+		if egressErr.retryAfter <= 0 {
+			return ""
+		}
+		return strconv.Itoa(egressErr.retryAfter)
+	}
+	// An executor that parsed the upstream's own wait (a 503 carrying
+	// retry-after, a throttling body, a quota reset) hands it over here, so the
+	// client can back off for exactly as long as the upstream asked instead of
+	// retrying into the same refusal.
+	type retryAfterProvider interface {
+		RetryAfter() *time.Duration
+	}
+	var hinted retryAfterProvider
+	if !errors.As(msg.Error, &hinted) || hinted == nil {
 		return ""
 	}
-	return strconv.Itoa(egressErr.retryAfter)
+	wait := hinted.RetryAfter()
+	if wait == nil || *wait <= 0 {
+		return ""
+	}
+	seconds := int(math.Ceil(wait.Seconds()))
+	if seconds < 1 {
+		seconds = 1
+	}
+	return strconv.Itoa(seconds)
 }

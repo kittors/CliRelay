@@ -7,6 +7,7 @@
 package openai
 
 import (
+	"bytes"
 	"fmt"
 	"net/http"
 
@@ -187,9 +188,51 @@ func (h *OpenAIResponsesAPIHandler) handleStreamingResponse(c *gin.Context, rawJ
 	h.forwardResponsesStream(c, flusher, func(err error) { cliCancel(err) }, dataChan, errChan)
 }
 
+// responsesStreamReplyIdentity remembers which reply an event stream is
+// producing, so a terminal failure event can name it.
+type responsesStreamReplyIdentity struct {
+	id        string
+	model     string
+	createdAt int64
+	terminal  bool
+}
+
+func (r *responsesStreamReplyIdentity) observe(chunk []byte) {
+	if r == nil || len(chunk) == 0 {
+		return
+	}
+	for _, line := range bytes.Split(chunk, []byte("\n")) {
+		line = bytes.TrimSpace(bytes.TrimSuffix(line, []byte("\r")))
+		value, ok := bytes.CutPrefix(line, []byte("data:"))
+		if !ok {
+			continue
+		}
+		payload := bytes.TrimSpace(value)
+		if !gjson.ValidBytes(payload) {
+			continue
+		}
+		switch gjson.GetBytes(payload, "type").String() {
+		case "response.created", "response.in_progress":
+			if id := gjson.GetBytes(payload, "response.id").String(); id != "" {
+				r.id = id
+			}
+			if model := gjson.GetBytes(payload, "response.model").String(); model != "" {
+				r.model = model
+			}
+			if createdAt := gjson.GetBytes(payload, "response.created_at").Int(); createdAt > 0 {
+				r.createdAt = createdAt
+			}
+		case "response.completed", "response.incomplete", "response.failed":
+			r.terminal = true
+		}
+	}
+}
+
 func (h *OpenAIResponsesAPIHandler) forwardResponsesStream(c *gin.Context, flusher http.Flusher, cancel func(error), data <-chan []byte, errs <-chan *interfaces.ErrorMessage) {
+	identity := &responsesStreamReplyIdentity{}
 	h.ForwardStream(c, flusher, cancel, data, errs, handlers.StreamForwardOptions{
 		WriteChunk: func(chunk []byte) {
+			identity.observe(chunk)
 			writeResponsesSSEChunk(c.Writer, chunk)
 		},
 		WriteTerminalError: func(errMsg *interfaces.ErrorMessage) {
@@ -203,6 +246,15 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesStream(c *gin.Context, flush
 			errText := http.StatusText(status)
 			if errMsg.Error != nil && errMsg.Error.Error() != "" {
 				errText = errMsg.Error.Error()
+			}
+			// A Responses client only finishes a turn on a response.* terminal
+			// event. Without it Codex reports "stream closed before
+			// response.completed" and hides the real reason (for example an
+			// overloaded upstream), so send the failure as a terminal event too.
+			if !identity.terminal {
+				if failed := handlers.BuildOpenAIResponsesStreamFailedChunk(status, errText, identity.id, identity.model, identity.createdAt, 0); len(failed) > 0 {
+					_, _ = fmt.Fprintf(c.Writer, "event: response.failed\ndata: %s\n\n", string(failed))
+				}
 			}
 			chunk := handlers.BuildOpenAIResponsesStreamErrorChunk(status, errText, 0)
 			_, _ = fmt.Fprintf(c.Writer, "event: error\ndata: %s\n\n", string(chunk))

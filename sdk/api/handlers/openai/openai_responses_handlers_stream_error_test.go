@@ -97,8 +97,66 @@ func TestForwardResponsesStreamTerminalErrorUsesResponsesErrorChunk(t *testing.T
 	if !strings.Contains(body, `"type":"error"`) {
 		t.Fatalf("expected responses error chunk, got: %q", body)
 	}
-	if strings.Contains(body, `"error":{`) {
+	if strings.Contains(body, `{"error":`) {
 		t.Fatalf("expected streaming error chunk (top-level type), got HTTP error body: %q", body)
+	}
+	// A Responses client only finishes a turn on a response.* event: without
+	// this terminal event Codex hides the reason behind "stream closed before
+	// response.completed".
+	if !strings.Contains(body, "event: response.failed") || !strings.Contains(body, `"status":"failed"`) {
+		t.Fatalf("expected terminal response.failed event, got: %q", body)
+	}
+}
+
+func TestForwardResponsesStreamSkipsFailureEventAfterTerminalReply(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, nil)
+	h := NewOpenAIResponsesAPIHandler(base)
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	flusher, ok := c.Writer.(http.Flusher)
+	if !ok {
+		t.Fatalf("expected gin writer to implement http.Flusher")
+	}
+
+	data := make(chan []byte)
+	errs := make(chan *interfaces.ErrorMessage, 1)
+	go func() {
+		data <- []byte("event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"status\":\"completed\"}}")
+		errs <- &interfaces.ErrorMessage{StatusCode: http.StatusBadGateway, Error: errors.New("late transport error")}
+	}()
+
+	h.forwardResponsesStream(c, flusher, func(error) {}, data, errs)
+	if strings.Contains(recorder.Body.String(), "event: response.failed") {
+		t.Fatalf("terminal reply must not be followed by response.failed: %q", recorder.Body.String())
+	}
+}
+
+func TestForwardResponsesStreamNamesTheFailedReply(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, nil)
+	h := NewOpenAIResponsesAPIHandler(base)
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	flusher, _ := c.Writer.(http.Flusher)
+
+	data := make(chan []byte)
+	errs := make(chan *interfaces.ErrorMessage, 1)
+	go func() {
+		data <- []byte("event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_abc\",\"model\":\"gpt-6.2-sol\",\"created_at\":1795514955}}")
+		errs <- &interfaces.ErrorMessage{StatusCode: http.StatusServiceUnavailable, Error: errors.New(`{"type":"error","code":"server_is_overloaded","message":"Our servers are currently overloaded. Please try again later."}`)}
+	}()
+
+	h.forwardResponsesStream(c, flusher, func(error) {}, data, errs)
+	body := recorder.Body.String()
+	for _, want := range []string{`"id":"resp_abc"`, `"model":"gpt-6.2-sol"`, `"created_at":1795514955`, `"code":"server_is_overloaded"`, "Our servers are currently overloaded"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("failure event missing %s: %q", want, body)
+		}
 	}
 }
 

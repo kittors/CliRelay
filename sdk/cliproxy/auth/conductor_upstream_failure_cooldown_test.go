@@ -391,3 +391,18 @@ func TestUpdateReleasesA529CooldownWhenChannelTurnsCoolingOff(t *testing.T) {
 		}
 	})
 }
+
+// ChatGPT answers a busy fleet with server_is_overloaded and ships the client's
+// retry-after (~370s) inside the error event. Every account would draw the same
+// answer, so obeying that figure per credential would empty a small pool for six
+// minutes; the park is bounded while the client still receives the real number.
+func TestMarkResultOverloadHintIsBoundedForCapacity(t *testing.T) {
+	setGlobalCoolingDisabled(t, false)
+	m := NewManager(nil, nil, nil)
+	registerAuth(t, m, channelAuth("relay", ""))
+	before := time.Now()
+	overloaded := &Error{HTTPStatus: http.StatusServiceUnavailable, Code: "server_is_overloaded",
+		Message: `{"error":{"code":"server_is_overloaded","message":"Our servers are currently overloaded. Please try again later."}}`}
+	failWith(m, "relay", "glm-5", overloaded, retryHeaders("Retry-After", "373"), nil)
+	assertParkedFor(t, m, "relay", "glm-5", before, maxTransientOverloadCooldown)
+}
